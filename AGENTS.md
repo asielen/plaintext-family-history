@@ -229,7 +229,9 @@ fha person relate <P-id> --parent|--child|--sibling|--spouse <P-id2>   unsourced
                             belief (always status: hypothesis)
 fha person estimate <P-id> --birth|--death …      provisional, unsourced vitals estimate
 fha person set-sex <P-id> M|F|intersex|unknown    correct the one fact Ahnentafel placement
-                            reads; ends with the `fha views brackets` nudge
+                            reads; ends with the `fha index` then `fha views
+                            brackets` nudge, in that order (brackets reads the
+                            placement out of the index)
 fha person edit|note <P-id> --section … --text …  bounded prose write to Biography/Stories/
                             Research Notes (edit replaces/appends; note is append-only)
 fha person edit-note <P-id> --section … --old-text … --text …   rewrite ONE existing

@@ -4,7 +4,7 @@
 
 This file is the build guide for the **interface layer** - the `.claude/skills/` workflow skills and the harness conventions around them. It is the sibling of [`BUILD.md`](BUILD.md) (core `fha` tools) and [`BUILD_INGESTION.md`](BUILD_INGESTION.md) (capture / inbox on-ramp). Design rationale lives in [`TOOLING_INTERFACE.md`](TOOLING_INTERFACE.md); this file tells you the sequence and how to verify it.
 
-**Status: all layers authored (I1-I6; the 2026-07 usability-review wave shipped `photo-context`, `find-photos`, `share-and-export`, and the `today` connection-reaction extension; the 2026-08 recordings wave shipped `import-recordings`, `transcribe-audio`, and the `mine-transcript` two-transcript extension).** The `.claude/skills/` directory now holds `_STANDARD.md` (the authoring contract) and fifteen SKILL.md files: `today`, `review-claims`, `process-source`, `mine-transcript`, `write-biography`, `research-next`, `place-research`, `merge-identities`, `reconcile-site-edits`, `photo-context`, `find-photos`, `share-and-export`, `import-notes`, `import-recordings`, and `transcribe-audio`. Each SKILL.md was authored against the shipped tools (every `fha` command it invokes was verified to exist) and against `AGENTS.md` / `_STANDARD.md`; the lint invariant holds (`fha lint --root example-archive` still exits 1 on the pre-existing baseline, unchanged by the skill prose). The remaining acceptance gate for each is the **behavioral session check** (run it against `example-archive`, capture the transcript) - marked per-milestone below. Building surfaced **two core-tool gaps**, both closed at the verb level and now at the skill level: MI3.1's merge verb (`fha confirm merge` shipped and the skill's interim hand-edit was retired) and MI4's UserComment write (`fha photoindex set-summary` shipped; `photo-context/SKILL.md` landed with the usability-review wave).
+**Status: all layers authored (I1-I7; the 2026-07 usability-review wave shipped `photo-context`, `find-photos`, `share-and-export`, and the `today` connection-reaction extension; the 2026-08 recordings wave shipped `import-recordings`, `transcribe-audio`, and the `mine-transcript` two-transcript extension).** The `.claude/skills/` directory now holds `_STANDARD.md` (the authoring contract) and fifteen SKILL.md files: `today`, `review-claims`, `process-source`, `mine-transcript`, `write-biography`, `research-next`, `place-research`, `merge-identities`, `reconcile-site-edits`, `photo-context`, `find-photos`, `share-and-export`, `import-notes`, `import-recordings`, and `transcribe-audio` - one per milestone entry below, `reconcile-site-edits` and `import-notes` under Layer I7. Each SKILL.md was authored against the shipped tools (every `fha` command it invokes was verified to exist) and against `AGENTS.md` / `_STANDARD.md`; the lint invariant holds (`fha lint --root example-archive` still exits 1 on the pre-existing baseline, unchanged by the skill prose). The remaining acceptance gate for each is the **behavioral session check** (run it against `example-archive`, capture the transcript) - marked per-milestone below. Building surfaced **two core-tool gaps**, both closed at the verb level and now at the skill level: MI3.1's merge verb (`fha confirm merge` shipped and the skill's interim hand-edit was retired) and MI4's UserComment write (`fha photoindex set-summary` shipped; `photo-context/SKILL.md` landed with the usability-review wave).
 
 ---
 
@@ -253,6 +253,40 @@ python -m unittest tests.test_transcribe_audio -v   # atomic publish, portable h
 ### MI6.3 - `mine-transcript` two-transcript extension
 
 **Status: authored** (folded into `.claude/skills/mine-transcript/SKILL.md` step 1). Mine from the whisper/app comparison, anchor to the transcript actually quoted, and treat a coverage divergence as a signal the app truncated or mis-attached a file.
+
+---
+
+## Layer I7 - Skills authored outside the layered waves (Milestone I7 - authored)
+
+Two skills landed with the work they serve rather than with a numbered skill wave, so they had no
+milestone entry here while the header above already counted them. They are recorded here so every
+one of the fifteen shipped SKILL.md files has a status line in this doc, which is the authoritative
+build-status record for the interface layer. Design: TOOLING_INTERFACE.md §2.5.
+
+### MI7.1 - `reconcile-site-edits` skill
+
+**Status: authored** (`.claude/skills/reconcile-site-edits/SKILL.md`). Shipped with the static site's
+Phase E escape hatch (docs/SITE_PLAN.md layer (e)): `fha site` is deterministic and never reads its own
+output, so a hand-edited HTML page is overwritten on the next build. The skill reads the edited page,
+diffs it against a pristine baseline build to recover the human's intent, folds that intent into the
+real source (`.fha/design/custom.css`, `notes/home.md`, the person's record, or `fha.yaml`'s `site:`
+block), and rebuilds. Every source write is human-confirmed first; `fha site` learns nothing.
+Session check pending, like the other layers.
+
+**Orchestrates:** `fha site` (baseline + rebuild), `fha person edit`, plain file edits to the named
+sources - no new verb.
+
+### MI7.2 - `import-notes` skill
+
+**Status: authored** (`.claude/skills/import-notes/SKILL.md`). The legacy-notes on-ramp: chunk a pile of
+freeform research notes, propose a home per chunk under the routing rule (evidence someone asserted →
+inbox → source; a thing to find out → open question; a testable belief → hypothesis; a search already
+run → research log; everything else → `notes/research/`), and write each chunk only on the human's
+confirmation. It drafts no claims - evidence earns those later through `process-source` and
+`review-claims` - and never deletes or rewrites the original notes. Session check pending.
+
+**Orchestrates:** `fha process` (via the inbox hand-off to `process-source`), `fha find` for name
+resolution, plain writes into `notes/questions.md` and `notes/research/` - no new verb.
 
 ---
 

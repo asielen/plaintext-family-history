@@ -1,3 +1,19 @@
+"""
+test_packet.py - fha packet: the gather/copy/redact/zip contract.
+
+Fixtures only (AGENTS_TOOLING §5): every test builds a synthetic
+`.cache/index.sqlite` (and `.cache/photos.sqlite` where photos are involved)
+from index.py's and photoindex.py's own DDL inside a temp tree.
+
+One thread runs through the photo tests and is worth stating once: a packet
+ships **logical photos**, not scans. Group expansion puts the back and the crop
+of a matched front in the bundle, so every README caution about a photo is a
+statement about the group and is counted over the files actually copied - a
+name-match whose matched variant has gone off disk still warns while a sibling
+travels, and a group that put nothing in the bundle warns about nothing
+(PR #42 round 2).
+"""
+
 import os
 import sqlite3
 import sys
@@ -529,8 +545,8 @@ class PacketTests(unittest.TestCase):
 
     def test_missing_photo_row_not_counted_as_unverified(self):
         # The README's "matched by name only" count describes files the
-        # recipient can actually open in photos/, so a name-matched photo that
-        # is off disk must not inflate it.
+        # recipient can actually open in photos/, so a name-matched photo whose
+        # whole group is off disk - nothing of it copied - must not inflate it.
         self._seed_person()
         self._commit_fresh()
 
@@ -552,6 +568,68 @@ class PacketTests(unittest.TestCase):
         readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
         self.assertNotIn('matched by name only', readme)
         self.assertIn('photo not on disk, so not copied: photos/guess.jpg', readme)
+
+    def test_name_match_caution_survives_when_only_matched_variant_is_missing(self):
+        # The name match is a fact about the physical photo, not about one scan
+        # of it: the vanished front is what carried the unverified match, but
+        # the live back of the same group is what ships - so the recipient must
+        # still be told the photo in photos/ was picked by name alone.
+        self._seed_person()
+        self._commit_fresh()
+
+        photos_dir = self.archive_root / 'photos'
+        photos_dir.mkdir(parents=True, exist_ok=True)
+        (photos_dir / 'guess-back.jpg').write_bytes(b'back')
+
+        pconn = _make_photos_db(self.archive_root)
+        pconn.execute(
+            "INSERT INTO photos(path, group_id) VALUES ('MISSING:photos/guess.jpg', 'g1')"
+        )
+        pconn.execute("INSERT INTO photos(path, group_id) VALUES ('photos/guess-back.jpg', 'g1')")
+        pconn.execute(
+            "INSERT INTO photo_people(path, person_ref, via) VALUES "
+            "('MISSING:photos/guess.jpg', 'p-aaaaaaaaaa', 'name-match')"
+        )
+        pconn.commit()
+        pconn.close()
+        future = time.time() + 5
+        os.utime(self.archive_root / '.cache' / 'photos.sqlite', (future, future))
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir)
+        self.assertEqual(result['status'], 'ok')
+        self.assertTrue((result['packet_dir'] / 'photos' / 'guess-back.jpg').exists())
+        readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
+        self.assertIn('1 photo(s) in photos/ are matched by name only', readme)
+
+    def test_verified_tag_anywhere_in_group_lifts_the_name_match_caution(self):
+        # A group the person is tagged into by P-id keyword is verified as a
+        # whole, so a weaker name-match row left on a sibling variant must not
+        # make the packet call the copied photos unverified.
+        self._seed_person()
+        self._commit_fresh()
+
+        photos_dir = self.archive_root / 'photos'
+        photos_dir.mkdir(parents=True, exist_ok=True)
+        (photos_dir / 'sure-front.jpg').write_bytes(b'front')
+        (photos_dir / 'sure-back.jpg').write_bytes(b'back')
+
+        pconn = _make_photos_db(self.archive_root)
+        pconn.execute("INSERT INTO photos(path, group_id) VALUES ('photos/sure-front.jpg', 'g1')")
+        pconn.execute("INSERT INTO photos(path, group_id) VALUES ('photos/sure-back.jpg', 'g1')")
+        pconn.execute(
+            "INSERT INTO photo_people(path, person_ref, via) VALUES "
+            "('photos/sure-front.jpg', 'p-aaaaaaaaaa', 'pid-keyword'), "
+            "('photos/sure-back.jpg', 'p-aaaaaaaaaa', 'name-match')"
+        )
+        pconn.commit()
+        pconn.close()
+        future = time.time() + 5
+        os.utime(self.archive_root / '.cache' / 'photos.sqlite', (future, future))
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir)
+        self.assertEqual(result['status'], 'ok')
+        readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
+        self.assertNotIn('matched by name only', readme)
 
     def test_living_person_tagged_only_on_missing_variant_still_cautioned(self):
         # The vanished front scan keeps its tags through reconcile, and the
@@ -585,6 +663,36 @@ class PacketTests(unittest.TestCase):
         readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
         self.assertIn('CAUTION', readme)
         self.assertIn('Living Cousin', readme)
+
+    def test_living_person_from_a_wholly_missing_group_is_not_cautioned(self):
+        # The mirror of the test above: when every variant of that photo is off
+        # disk, nothing of it reaches the bundle - so naming the living person
+        # in the README would put a name in the packet that the packet does not
+        # otherwise contain.
+        self._seed_person()
+        self._seed_person(pid='p-bbbbbbbbbb', name='Living Cousin', living='unknown',
+                          surname='Cousin')
+        self._commit_fresh()
+
+        pconn = _make_photos_db(self.archive_root)
+        pconn.execute(
+            "INSERT INTO photos(path, group_id) VALUES ('MISSING:photos/gone.jpg', 'g1')"
+        )
+        pconn.execute(
+            "INSERT INTO photo_people(path, person_ref, via) VALUES "
+            "('MISSING:photos/gone.jpg', 'p-aaaaaaaaaa', 'pid-keyword'), "
+            "('MISSING:photos/gone.jpg', 'p-bbbbbbbbbb', 'pid-keyword')"
+        )
+        pconn.commit()
+        pconn.close()
+        future = time.time() + 5
+        os.utime(self.archive_root / '.cache' / 'photos.sqlite', (future, future))
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir)
+        self.assertEqual(result['status'], 'ok')
+        readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
+        self.assertNotIn('Living Cousin', readme)
+        self.assertIn('photo not on disk, so not copied: photos/gone.jpg', readme)
 
     def test_missing_profile_file_is_structural_failure(self):
         profile_path = self._seed_person()

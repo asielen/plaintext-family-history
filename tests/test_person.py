@@ -37,6 +37,16 @@ nothing (but still drawing a real, unwritten id - matching `fha stubs
 produces, the never-overwrite guard (forced via a monkeypatched `mint_ids`),
 and CLI wiring through `fha.main(['person', 'new', ...])`.
 
+Also pins the ORDER each verb advertises its next steps in (PR #42 round 2).
+The advice has to work when followed top to bottom: `set-sex` names `fha index`
+before `fha views brackets`, because Ahnentafel placement is derived from the
+INDEXED `sex:` and the write has just staled that index; `set-living` names the
+rebuild as a precondition of the exports rather than a convenience; and
+`set-profile-photo` puts the rebuild ahead of `fha site`, which refuses to build
+from a stale index (the workbench refreshes it itself). The last class here is
+`SkillInventoryDocsTests`, which holds the shipped docs' skill count and skill
+list against `.claude/skills/` itself.
+
 Fixtures only (AGENTS_TOOLING §5): everything runs against temp trees or a
 copy of example-archive; the real archive is never touched.
 """
@@ -44,6 +54,7 @@ copy of example-archive; the real archive is never touched.
 import contextlib
 import io
 import os
+import re
 import shutil
 import sqlite3
 import sys
@@ -223,6 +234,16 @@ class SetLivingEditTests(unittest.TestCase):
         self.assertEqual(len(nudges), 1)
         self.assertEqual(nudges[0].level, 'info')
 
+    def test_index_nudge_is_not_optional_convenience(self) -> None:
+        # Every export reads living: out of the index and refuses on a stale
+        # one, so "when convenient" understated it: the rebuild has to happen
+        # before the next export, not whenever.
+        result = person.run_set_living(self.root, PID, 'false')
+        text = ' '.join(m.text for m in result.messages)
+        self.assertNotIn('when convenient', text)
+        for command in ('fha site', 'fha packet', 'fha gedcom'):
+            self.assertIn(command, text)
+
     def test_value_case_is_normalized(self) -> None:
         result = person.run_set_living(self.root, PID, 'FALSE')
         self.assertEqual(result.exit_code, EXIT_CLEAN)
@@ -323,6 +344,19 @@ class SetSexTests(unittest.TestCase):
         self.assertIn('fha views brackets', text)
         self.assertIn('--realign', text)
         self.assertIn('fha views brackets', [m.next_step for m in result.messages if m.next_step])
+
+    def test_reindex_is_advertised_before_the_bracket_check(self) -> None:
+        # `fha views brackets` derives placement from persons.sex in
+        # .cache/index.sqlite (_lib.build_ahnentafel_map), and this write has
+        # just staled that index - so a human following the advice in the order
+        # printed would read the OLD placement, and --realign refuses outright.
+        # The reindex is step one, not an afterthought.
+        result = person.run_set_sex(self.root, CURATED_PID, 'F')
+        steps = [m.next_step for m in result.messages if m.next_step]
+        self.assertEqual(steps.index('fha index'), 0)
+        self.assertLess(steps.index('fha index'), steps.index('fha views brackets'))
+        text = ' '.join(m.text for m in result.messages)
+        self.assertNotIn('when convenient', text)
 
     def test_case_folds_onto_the_vocabulary(self) -> None:
         for typed, canonical in (('f', 'F'), ('m', 'M'), ('Intersex', 'intersex'),
@@ -918,6 +952,17 @@ class SetProfilePhotoQuotingTests(unittest.TestCase):
         self.assertEqual(result.exit_code, EXIT_CLEAN)
         text = Path(result.data['path']).read_text(encoding='utf-8')
         self.assertIn('profile_photo: portrait.jpg\n', text)
+
+    def test_site_advice_puts_the_reindex_first(self) -> None:
+        # `fha site` opens the index strictly and stops on "index is stale",
+        # which this write has just caused; the workbench rebuilds it itself.
+        # So the site half of the advice has to name `fha index` first, and
+        # the two must not be presented as interchangeable.
+        result = person.run_set_profile_photo(self.root, CURATED_PID, 'portrait.jpg')
+        text = ' '.join(m.text for m in result.messages)
+        self.assertIn('fha index', text)
+        self.assertLess(text.index('fha index'), text.index('fha site'))
+        self.assertIn('fha index', [m.next_step for m in result.messages if m.next_step])
 
 
 class RelateTests(unittest.TestCase):
@@ -2230,6 +2275,72 @@ class PromoteTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertIn('[dry-run]', out.getvalue())
         self.assertTrue(self.pa_stub.exists())
+
+
+class SkillInventoryDocsTests(unittest.TestCase):
+    """The docs' skill inventory must match what `.claude/skills/` actually holds.
+
+    AGENTS_TOOLING.md §7's status sweep keeps failing in the same direction: a
+    skill ships, the BUILD doc that owns it is updated, and the summaries that
+    cross-reference it keep quoting the old count and the old list (PR #42 round
+    2 - `TOOLING.md` §16 still said thirteen after fifteen had shipped). Prose
+    cannot be linted, but a count and a list of folder names can, so this pins
+    both against the directory itself.
+
+    It lives in this file only because the round-2 fix was scoped to
+    `tests/test_person.py` and `tests/test_packet.py`; it belongs in a docs test
+    module of its own the day one exists.
+    """
+
+    # Enough of the range to cover a wave or two in either direction. A count
+    # word outside this map means the docs and the directory have drifted so
+    # far that a person should look, which is what the KeyError says.
+    NUMBER_WORDS = {
+        11: 'eleven', 12: 'twelve', 13: 'thirteen', 14: 'fourteen', 15: 'fifteen',
+        16: 'sixteen', 17: 'seventeen', 18: 'eighteen', 19: 'nineteen', 20: 'twenty',
+    }
+
+    # doc -> the phrase whose number word states the count, as a regex with the
+    # word captured. Each is a shipped summary an archive owner or a builder
+    # reads as the inventory.
+    COUNT_PHRASES = {
+        'AGENTS.md': r'(\w+) workflow playbooks live at',
+        'TOOLING.md': r'all (\w+) authored and shipped',
+        'TOOLING_INTERFACE.md': r'all (\w+) SKILL\.md files',
+        'BUILD_INTERFACE.md': r'and (\w+) SKILL\.md files',
+    }
+
+    # doc -> True when it also spells the inventory out name by name.
+    NAME_LISTS = ('TOOLING.md', 'BUILD_INTERFACE.md', '.claude/skills/README.md')
+
+    def setUp(self) -> None:
+        self.skills_dir = ROOT / '.claude' / 'skills'
+        if not self.skills_dir.is_dir():
+            self.skipTest('no .claude/skills/ here (installed archives carry no BUILD docs either)')
+        self.skills = sorted(
+            d.name for d in self.skills_dir.iterdir()
+            if d.is_dir() and (d / 'SKILL.md').is_file()
+        )
+
+    def test_every_stated_count_matches_the_directory(self) -> None:
+        expected = self.NUMBER_WORDS[len(self.skills)]
+        for doc, pattern in self.COUNT_PHRASES.items():
+            with self.subTest(doc=doc):
+                text = (ROOT / doc).read_text(encoding='utf-8')
+                found = re.search(pattern, text)
+                self.assertIsNotNone(
+                    found, f'{doc} no longer states the skill count in the expected words')
+                self.assertEqual(
+                    found.group(1).lower(), expected,
+                    f'{doc} says {found.group(1)!r} but .claude/skills/ holds '
+                    f'{len(self.skills)} skills')
+
+    def test_every_shipped_skill_is_named_where_the_inventory_is_listed(self) -> None:
+        for doc in self.NAME_LISTS:
+            text = (ROOT / doc).read_text(encoding='utf-8')
+            for name in self.skills:
+                with self.subTest(doc=doc, skill=name):
+                    self.assertIn(name, text, f'{doc} never names the {name} skill')
 
 
 if __name__ == '__main__':

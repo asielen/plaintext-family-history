@@ -74,8 +74,12 @@ PHOTO GATHERING (TOOLING §8's "all photos of grandma" union):
   A photo the catalog still knows but disk no longer has (reconcile's
   'MISSING:' key) is never copied - a packet is a physical bundle - but it
   IS named in the README's missing-files list and warned about with the
-  command that re-links it, and its own person tags still count toward the
-  living-person caution.
+  command that re-links it. Its tags and its unverified-name-match status
+  still count, because they describe the physical photo rather than the one
+  scan of it: whenever a live variant of that photo ships, the vanished
+  side's living-person caution and "matched by name only" caution ship with
+  it. Both cautions are computed from the files actually copied, so a group
+  that contributed nothing to the bundle contributes no cautions either.
 
 WHY A LIBRARY FUNCTION (`run_packet`): mirrors the xref/cooccur/report
 convention of a testable `run_*(archive_root, ...) -> dict` core, separate
@@ -112,6 +116,7 @@ CODE MAP
     _is_missing_key               - is this catalog key a photo that is not on disk?
     _photo_people_paths           - photo_people rows for this pid (a/b/c union, already resolved)
     _expand_photo_groups          - path set → full variation-group path set
+    _name_only_group_aliases      - paths whose whole photo group is an unverified name match
     _source_image_paths           - image-suffixed files among included sources' assets (d)
 
   Timeline
@@ -891,6 +896,34 @@ def _expand_photo_groups(photos_conn: sqlite3.Connection, paths: set[str]) -> se
     return expanded
 
 
+def _name_only_group_aliases(photos_conn: sqlite3.Connection, pid: str) -> set[str]:
+    """
+    Every cached photo path whose *logical photo* is tied to pid by name alone.
+
+    "Matched by name only" is a fact about a physical photo, not about one scan
+    of it: group expansion ships the back and the crop alongside a matched
+    front, so the caution has to follow the group. It therefore survives when
+    the name-matched variant is the one that has gone off disk and a sibling is
+    what actually travels, and it lifts only when some stronger link - a P-id
+    keyword or an exact face tag - verifies the same group.
+
+    Returns alias keys with the 'MISSING:' ones left in, because a missing key
+    is still evidence about its group; the caller counts only the files it
+    managed to copy, which is what the recipient can actually look at.
+    """
+    name_matched: set[str] = set()
+    verified: set[str] = set()
+    for row in photos_conn.execute(
+        'SELECT path, via FROM photo_people WHERE person_ref = ?', (pid,)
+    ).fetchall():
+        target = name_matched if row['via'] == 'name-match' else verified
+        target.add(row['path'])
+    return (
+        _expand_photo_groups(photos_conn, name_matched)
+        - _expand_photo_groups(photos_conn, verified)
+    )
+
+
 def _source_image_paths(
     source_files_by_id: dict[str, list[Path]],
 ) -> set[Path]:
@@ -1626,15 +1659,14 @@ def _packet_payload(
                     people_paths = _photo_people_paths(pconn, pid)
                     # The README counts these as photos the recipient can look
                     # at ("N photo(s) in photos/ are matched by name only"), so
-                    # a name-matched photo that is no longer on disk - and
-                    # therefore never lands in photos/ - must not be counted.
-                    unverified_count = len({
-                        r['path'] for r in pconn.execute(
-                            "SELECT path FROM photo_people WHERE person_ref=? AND via='name-match'",
-                            (pid,),
-                        ).fetchall()
-                        if not _is_missing_key(r['path'])
-                    })
+                    # the tally is taken at the copy site below, over files that
+                    # actually landed in photos/. The name match itself belongs
+                    # to the whole logical photo, so the caution has to travel
+                    # with whichever variant ships: a group whose only link to
+                    # this person is an unverified name match stays unverified
+                    # even when the matched scan has gone off disk and only its
+                    # back is left to copy.
+                    name_only_aliases = _name_only_group_aliases(pconn, pid)
 
                     # Source-linked images aren't under photos/ control by tag, but a
                     # scan/copy of one may still share a photo_groups entry with a
@@ -1699,15 +1731,37 @@ def _packet_payload(
                         )
                         missing_assets.append(note)
 
+                    copied_aliases: set[str] = set()
+                    if photo_targets:
+                        photos_dir = packet_dir / 'photos'
+                        photos_dir.mkdir(exist_ok=True)
+                        for abs_path in sorted(photo_targets, key=str):
+                            alias_path = photo_targets[abs_path]
+                            if not abs_path.exists():
+                                display = alias_path or _display_path(abs_path, archive_root)
+                                note = f'photo missing on disk: {display}'
+                                messages.append(f'WARNING: {note}')
+                                missing_assets.append(note)
+                                continue
+                            if _copy_into(abs_path, photos_dir, messages=messages):
+                                photo_count += 1
+                                if alias_path is not None:
+                                    copied_aliases.add(alias_path)
+                                if alias_path in name_only_aliases:
+                                    unverified_count += 1
+
                     # A photo-group sibling may be tagged with a different,
                     # still-living/unknown person who never appears in any claim or
                     # source - catch that here so the caution list covers photo-only
-                    # matches too. Missing-file rows count: their tags survive
-                    # reconcile by design, and a live variant of the same
-                    # physical photo IS in the packet, so a living person tagged
-                    # only on the vanished side still belongs in the caution.
+                    # matches too. The list is built from what was actually copied,
+                    # then re-expanded to those photos' groups: a person tagged only
+                    # on a vanished front scan still belongs in the caution when the
+                    # back scan of the same physical photo ships, while a photo that
+                    # never made it into the bundle at all must not put a living
+                    # person's name in the README for nothing.
                     tagged_aliases = {
-                        a for a in expanded_aliases if _is_photo_alias(_live_alias(a))
+                        a for a in _expand_photo_groups(pconn, copied_aliases)
+                        if _is_photo_alias(_live_alias(a))
                     }
                     if tagged_aliases:
                         placeholders = ','.join('?' * len(tagged_aliases))
@@ -1726,20 +1780,6 @@ def _packet_payload(
                                 list(photo_person_ids),
                             ).fetchall():
                                 other_named_by_id.setdefault(row['id'], row)
-
-                    if photo_targets:
-                        photos_dir = packet_dir / 'photos'
-                        photos_dir.mkdir(exist_ok=True)
-                        for abs_path in sorted(photo_targets, key=str):
-                            alias_path = photo_targets[abs_path]
-                            if not abs_path.exists():
-                                display = alias_path or _display_path(abs_path, archive_root)
-                                note = f'photo missing on disk: {display}'
-                                messages.append(f'WARNING: {note}')
-                                missing_assets.append(note)
-                                continue
-                            if _copy_into(abs_path, photos_dir, messages=messages):
-                                photo_count += 1
                 finally:
                     pconn.close()
 

@@ -554,8 +554,15 @@ def run_set_living(
                    'unknown is treated as living - the safe default - so this '
                    'person will be redacted from every export (the site, GEDCOM, '
                    'and packets all follow this flag).')
+    # Not "when convenient": every export reads living: from the index, not
+    # from the record, and refuses to run while the index is out of date
+    # (`fha site`, `fha packet` and `fha gedcom` all open it strictly). So the
+    # rebuild is what has to happen before the next export, not after it.
     result.add('info',
-               'Next: run `fha index` when convenient so queries see the change.',
+               'Next: run `fha index` so queries and exports see the change - '
+               '`fha site`, `fha packet` and `fha gedcom` read this flag from '
+               'the index, and stop with an "index is stale" message until you '
+               'rebuild it.',
                next_step='fha index')
     return result
 
@@ -758,9 +765,16 @@ def run_set_profile_photo(
     result.data['status'] = 'ok'
     result.note_changed(path)
     result.add('info', f'{label} profile photo is now {val}.', path=path)
+    # The workbench rebuilds a stale index itself before rendering, so it needs
+    # no instruction; `fha site` does not - it opens the index strictly and
+    # stops on "index is stale" - so its half of this line has to name the
+    # rebuild first. The portrait itself is read from the record either way.
     result.add('info',
-               'Next: reload the workbench (or run `fha site`) to see it on the '
-               'page and in the tree.')
+               'Next: reload the workbench to see it on the page and in the tree '
+               '(it refreshes the index itself). To rebuild the shared site '
+               'instead, run `fha index` first, then `fha site` - a site build '
+               'stops rather than publish from an out-of-date index.',
+               next_step='fha index')
     return result
 
 
@@ -775,7 +789,10 @@ def run_set_sex(
     a lone linked parent with no usable value is placed by DEFAULT (W120). Until
     this verb existed a correction was a hand edit with nothing to say "the
     folder numbers above this person may have shifted" - so a live change ends
-    with that nudge (`fha views brackets`, `--realign` to apply). Same
+    with that nudge, in the order that actually works: `fha index` first
+    (placement is derived from the INDEXED sex:, and this write just made the
+    index stale), then `fha views brackets` (`--realign` to apply, which
+    refuses on a stale index rather than renaming folders from old data). Same
     surgical-single-line-replace shape as `run_set_living`/`run_set_profile_photo`:
     validate before any read, pre-write guard before any write, the file is
     updated in exactly one line or untouched. `data` is {'status':
@@ -966,15 +983,25 @@ def run_set_sex(
     result.add('info', f'{label} is now sex: {val} (was {old_display}).', path=path)
     # The nudge this verb exists for: sex decides which Ahnentafel slot a
     # parent takes, so a correction can shift every folder number above them.
+    # Order matters here. `fha views brackets` derives placement from the
+    # indexed sex: (`_lib.build_ahnentafel_map` reads persons.sex out of
+    # .cache/index.sqlite), and this write has just made that index stale - so
+    # a bracket check run first reports the OLD placement, and --realign
+    # refuses outright rather than renaming folders from stale data. Reindexing
+    # is the first step, not an afterthought.
     result.add('info',
                'Sex decides Ahnentafel placement (father/even vs mother/odd slot). '
-               'If this person is a direct-line ancestor, run `fha views brackets` '
-               'to check the folder numbering - `fha views brackets --realign` '
-               'previews and applies any shift.',
-               next_step='fha views brackets')
-    result.add('info',
-               'Next: run `fha index` when convenient so queries see the change.',
+               'Next: run `fha index` so the folder numbering is worked out from '
+               'the corrected record.',
                next_step='fha index')
+    result.add('info',
+               'Then, if this person is a direct-line ancestor, run '
+               '`fha views brackets` to check the folder numbering - '
+               '`fha views brackets --realign` previews and applies any shift. '
+               'Run them in that order: brackets reads the index, so before the '
+               'rebuild it still shows the old placement and --realign will not '
+               'run at all.',
+               next_step='fha views brackets')
     return result
 
 
@@ -2963,8 +2990,10 @@ def _add_set_sex_arguments(sub: argparse._SubParsersAction) -> None:
         help="Set or correct a person's sex: (M | F | intersex | unknown).",
         description='Set a person\'s sex: field - the one fact the Ahnentafel '
                     'derivation reads to place a parent in the father or mother slot. '
-                    'A change ends with the reminder to run `fha views brackets` '
-                    '(`--realign` applies any folder-number shift).',
+                    'A change ends with the reminder to run `fha index`, then '
+                    '`fha views brackets` (`--realign` applies any folder-number '
+                    'shift) - brackets reads the placement out of the index, so '
+                    'the rebuild comes first.',
     )
     sp.add_argument('person_id', metavar='P-id',
                     help='The person to update (e.g. P-2b3c4d5e6f).')
