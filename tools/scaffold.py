@@ -118,6 +118,8 @@ from _lib import (
     Result,
     configure_utf8_stdout,
     find_archive_root,
+    load_fha_yaml,
+    roots_change_orphans,
 )
 
 configure_utf8_stdout()
@@ -746,6 +748,22 @@ def _stamp_dict(manifest: dict, checksums: dict[str, str]) -> dict:
     }
 
 
+def _seed_roots_stamp(archive_root: Path) -> None:
+    """Remember the archive's current `roots:` so W121 has a baseline (#36).
+
+    The roots-change check compares fha.yaml against the mapping the tools last
+    ran with; with no baseline there is nothing to compare, and the first
+    `fha index` would silently accept whatever it finds - including a value
+    already narrowed into the trap. Install and update-tools are the two
+    moments an archive first meets this build, so they seed the stamp from the
+    fha.yaml as it stands. Best-effort: a malformed fha.yaml is doctor's job.
+    """
+    try:
+        roots_change_orphans(archive_root, load_fha_yaml(archive_root))
+    except Exception:
+        pass
+
+
 def _write_version_stamp(archive_root: Path, stamp: dict) -> None:
     """Write .plaintext-version (pretty JSON, trailing newline), atomically.
 
@@ -1042,6 +1060,7 @@ def run_install(
             changed.append(str(dest))
         _write_version_stamp(archive_path, _stamp_dict(manifest, checksums))
         changed.append(str(archive_path / VERSION_FILE))
+        _seed_roots_stamp(archive_path)
         _hide_vendor_dir(archive_path)
     except OSError as exc:
         raise ScaffoldError(
@@ -1628,6 +1647,7 @@ def run_update_tools(
             'Run `fha update-tools` again to re-record the state.',
             file=sys.stderr,
         )
+    _seed_roots_stamp(archive_root)
 
     print()
     print(

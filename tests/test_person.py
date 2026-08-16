@@ -2056,9 +2056,8 @@ class PromoteTests(unittest.TestCase):
         the archive mutation still reaches disk and we exercise the exact
         post-mutation failure window.
         """
-        import index as index_mod
         return mock.patch.object(
-            index_mod, 'relocate_person',
+            person, 'relocate_person_in_index',
             side_effect=sqlite3.OperationalError('database is locked'))
 
     def test_index_update_failure_after_move_warns_without_traceback(self) -> None:

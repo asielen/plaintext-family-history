@@ -732,13 +732,20 @@ def run_doctor(archive_root: Path, fha_config: dict) -> Result:
                 checks.append({'id': f'root:{alias}', 'status': 'error',
                                'detail': f'{resolved} not reachable', 'next_step': doctor_cmd})
                 worst = max(worst, EXIT_ERRORS)
-        # A root that resolves fine can still be the WRONG root: narrowing
-        # `photos:` to a subfolder orphans every filed asset in its siblings,
-        # and until now the first sign was a wall of lint E011 pointing at
-        # `fha reconcile`, which cannot help because nothing moved (#36).
-        for item in roots_change_orphans(archive_root, fha_config):
+        lines.append('')
+
+    # A root that resolves fine can still be the WRONG root: narrowing
+    # `photos:` to a subfolder orphans every filed asset under the alias, and
+    # until now the first sign was a wall of lint E011 pointing at
+    # `fha reconcile`, which cannot help because nothing moved (#36). Outside
+    # the `if roots:` block on purpose: deleting the whole roots: mapping is
+    # a change too (every alias falls back to an internal folder), and lint
+    # and index report it - doctor must not stay silent on the same fha.yaml.
+    orphaning = roots_change_orphans(archive_root, fha_config)
+    if orphaning:
+        for item in orphaning:
             lines.append(
-                f"  {_WARN} {format_roots_orphan_warning(item, archive_root)}  "
+                f"{_WARN} {format_roots_orphan_warning(item, archive_root)}  "
                 f'next: revert the {item["alias"]}: value in fha.yaml, or re-point '
                 'the records; use photos_ignore: to exclude a subtree'
             )

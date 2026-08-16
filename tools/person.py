@@ -238,6 +238,7 @@ from _lib import (
     promote_person_record,
     read_text_exact,
     reapply_newline,
+    relocate_person_in_index,
     render_stub_content,
     replace_paragraph_in_section,
     resolve_root_arg,
@@ -1167,8 +1168,11 @@ def run_promote(
     The write is `_lib.promote_person_record` - transactional (any failure
     rolls back every completed step) and shared verbatim with
     `--fix-promote`, so a batch promotion and this verb cannot drift.
-    After a live move the index cache is removed (a moved file is invisible
-    to the mtime staleness check - the `fha views brackets --fix` rule).
+    After a live move the index is updated IN PLACE (`_lib.relocate_person_in_index`:
+    every path-keyed row swapped to the new path, the tier flip applied, a fresh
+    research companion indexed) rather than removed - a moved file is invisible
+    to the mtime staleness check, and dropping the cache made the next promote
+    in a batch fail (#37).
 
     `data` is {'status': 'ok'|'already'|'dry-run'|'not-found'|'merged'|
     'refused', 'person_id', 'path', 'new_path', 'position', 'folder',
@@ -1382,9 +1386,9 @@ def run_promote(
     new_files = [applied['research_path']] if applied.get('research_create') else []
     db_path = archive_root / '.cache' / 'index.sqlite'
     try:
-        import index as _index
-        outcome = _index.relocate_person(
-            archive_root, pid, moves, tier='curated', new_files=new_files)
+        outcome = relocate_person_in_index(
+            archive_root, pid, moves, tier='curated',
+            new_research=new_files[0] if new_files else None)
     except (sqlite3.Error, OSError) as exc:
         # The record has ALREADY moved on disk - that archive mutation is
         # done and irreversible; only the in-place index update failed (a

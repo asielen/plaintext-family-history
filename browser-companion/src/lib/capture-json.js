@@ -78,11 +78,19 @@
   // escapes anyway, but at capture time with a raw browser error - this makes
   // the setting self-correcting at typing time instead). An input with nothing
   // left falls back to the default rather than staging into Downloads' root.
+  // Characters the downloads API rejects in a filename (`<>:"|?*`, controls),
+  // plus the ones that break the copied `fha capture --ingest "..."` command
+  // inside double quotes on some shell (`$`, backtick, `!` under interactive
+  // bash) - dropped rather than escaped, because the command is pasted into
+  // whichever shell the human has, and one escaping cannot fit them all. A
+  // segment's trailing dots/spaces go too (invalid on Windows), and a bare
+  // drive segment (`C:`) is not a Downloads subfolder.
+  const BAD_CHARS = /[<>:"|?*$`!\u0000-\u001f]/g;
   function sanitizeFolder(folder) {
     const segs = String(folder || '')
       .replace(/\\/g, '/')
       .split('/')
-      .map((s) => s.trim())
+      .map((s) => s.replace(BAD_CHARS, '').replace(/[. ]+$/, '').trim())
       .filter((s) => s && s !== '.' && s !== '..');
     return segs.length ? segs.join('/') : DEFAULT_FOLDER;
   }

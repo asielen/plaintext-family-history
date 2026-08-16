@@ -95,6 +95,7 @@ from _lib import (
     format_exiftool_error,
     format_roots_orphan_warning,
     format_source_type_error,
+    format_w120_message,
     id_type_of,
     is_fixture_path,
     is_template_file,
@@ -110,6 +111,7 @@ from _lib import (
     resolve_path,
     resolve_root_arg,
     roots_change_orphans,
+    sex_slot_is_defaulted,
     yaml_inline,
 )
 
@@ -1365,8 +1367,8 @@ def _build_ahnentafel_lint(
             if pp not in pid_to_pos:
                 pid_to_pos[pp] = pos
                 queue.append((pp, pos))
-                if sex_gaps is not None and sex not in ('M', 'F'):
-                    sex_gaps.append({'pid': pp, 'pos': pos})
+                if sex_gaps is not None and sex_slot_is_defaulted(sex):
+                    sex_gaps.append({'pid': pp, 'pos': pos, 'sex': sex})
         else:
             # Two or more genetic parent edges - assisted reproduction (e.g. a
             # donor-egg mother, a surrogate-genetic mother, and a donor-sperm
@@ -1448,13 +1450,8 @@ def _check_ahnentafel_placement(registry: Registry, findings: list[Finding]) -> 
         profile_paths = registry.person_profile_paths.get(pid, [])
         where = (profile_paths[0] if profile_paths
                  else registry.archive_root / 'fha.yaml')
-        findings.append(Finding('W', 'W120', where,
-            f'{name} took Ahnentafel position {gap["pos"]} (the father/even '
-            'slot) by default: they are the only linked parent of that couple '
-            'and their record has no sex: recorded, so their slot - and every '
-            'ancestor number above them - is a guess, not a derivation. '
-            'Record `sex: M` or `sex: F` on their record to confirm or '
-            'correct the placement, then run `fha views brackets`'))
+        findings.append(Finding('W', 'W120', where, format_w120_message(
+            name, gap['pos'], gap.get('sex'), '`fha views brackets`')))
 
     people_dir = registry.archive_root / 'people'
     excluded = {'stubs', 'connections'}

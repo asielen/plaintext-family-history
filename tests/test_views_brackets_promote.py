@@ -12,6 +12,7 @@ the other bracket fixes use. Fixtures only.
 
 import contextlib
 import io
+import os
 import shutil
 import sys
 import tempfile
@@ -450,6 +451,32 @@ class RealignTests(BracketsPromoteBase):
         self.assertFalse((self.root / '.cache' / 'index.sqlite').exists())
         self.assertIn('fha index', out)
         self.assertIn('fha views refresh', out)
+
+    def test_failed_rename_skips_the_promotions(self) -> None:
+        # The promotion destinations were rebased onto the POST-rename tree.
+        # If the rename fails non-fatally (Windows: the folder is open in
+        # Explorer), promoting GPA into '004 Gpa Deep' would create it BESIDE
+        # the un-renamed '004 Pa Deep + Ma Deep' - two canonical folders on
+        # prefix 004, the split the two-pass flow existed to prevent. The
+        # promotions must be skipped and the human told to re-run.
+        real_rename = os.rename
+
+        def failing_rename(src, dst, *a, **k):
+            if Path(src).name == self.WRONG:
+                raise PermissionError(13, 'The process cannot access the file')
+            return real_rename(src, dst, *a, **k)
+
+        with mock.patch('builtins.input', return_value='y'), \
+                mock.patch('os.rename', failing_rename):
+            res, _out, err = self._run(realign=True)
+        self.assertEqual(res.exit_code, EXIT_WARNINGS)
+        dirs = self._people_dirs()
+        self.assertIn(self.WRONG, dirs)          # the rename did not land
+        self.assertNotIn('004 Gpa Deep', dirs)   # and no folder was invented beside it
+        self.assertIn(f'deep__gpa_{GPA}.md', self._stub_names())
+        self.assertIn('NOT applied', err)
+        self.assertIn('--realign', err)
+        self.assertEqual(len([d for d in dirs if d.startswith('004')]), 1)
 
     def test_realign_converges_after_bracketing_the_fresh_folder(self) -> None:
         with mock.patch('builtins.input', return_value='y'):

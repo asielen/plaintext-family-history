@@ -71,7 +71,21 @@ class ViewWritesKeepIndexFreshTests(unittest.TestCase):
             p = self.folder / f'hartley__cur_{kind}_{CUR}.md'
             p.write_text('<!-- GENERATED -->\n', encoding='utf-8')
             os.utime(p, (future, future))
+        # The couple-folder sources-index carries no P-id in its name and is
+        # what `fha views refresh` writes for every couple folder.
+        p = self.folder / 'sources-index.md'
+        p.write_text('<!-- GENERATED -->\n', encoding='utf-8')
+        os.utime(p, (future, future))
         self.assertEqual(newest_record_mtime(self.root), before)
+
+    def test_refresh_twice_needs_no_reindex(self) -> None:
+        # `fha views refresh` writes per-person AND couple-folder companions;
+        # a second refresh must not fail on the strict gate.
+        first = views.run_refresh(self.root)
+        self.assertEqual(first.exit_code, EXIT_CLEAN, first.messages)
+        self.assertTrue(self._index_is_fresh())
+        second = views.run_refresh(self.root)
+        self.assertEqual(second.exit_code, EXIT_CLEAN, second.messages)
 
     def test_research_companion_still_counts(self) -> None:
         # Human-written: an edit there is an edit to a record and must stale.

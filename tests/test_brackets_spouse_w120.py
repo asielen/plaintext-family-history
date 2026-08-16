@@ -158,6 +158,19 @@ class SpouseExtendedBaseUnitTests(unittest.TestCase):
         self.assertEqual(base, '004 Jo Smith')
         self.assertIsNone(other)
 
+    def test_placeholder_names_are_never_written(self) -> None:
+        # `fha stubs` mints an unnamed reference as `name: unknown`; the index
+        # stores 'unknown' for a record with no name and 'None' for a bare
+        # `name:` key. None of those belong in a folder name - and W103's
+        # add-only rule would never revisit `+ unknown` once the real name
+        # lands, so the folder would carry the placeholder forever.
+        for placeholder in ('unknown', 'Unknown', 'None', '', '  ', 'null'):
+            names = {'p-1': 'Robert E. Church', 'p-2': placeholder}
+            base, other = spouse_extended_base(
+                '004 Robert E. Church', ['p-1', 'p-2'], names)
+            self.assertEqual(base, '004 Robert E. Church', repr(placeholder))
+            self.assertIsNone(other, repr(placeholder))
+
 
 class SpouseFolderNameTests(unittest.TestCase):
     """The live-archive case: both partners curated in the couple folder, the
@@ -258,7 +271,45 @@ class W120SexGapTests(unittest.TestCase):
         finally:
             conn.close()
         self.assertEqual(pos.get(MA.lower()), 2)   # defaulted to the even slot
-        self.assertEqual(gaps, [{'pid': MA.lower(), 'pos': 2}])
+        self.assertEqual(gaps, [{'pid': MA.lower(), 'pos': 2, 'sex': 'U'}])
+
+    def test_explicit_intersex_or_unknown_is_a_recorded_fact_not_a_gap(self) -> None:
+        # SPEC §9's vocabulary is M | F | intersex | unknown. An explicitly
+        # recorded intersex/unknown is a fact the human already stated: the
+        # deterministic tie-break is the designed behaviour for it, and a
+        # permanent W120 saying 'no sex: recorded ... record M or F' against
+        # a correct record would only teach the human to overwrite it. Both
+        # twins must agree.
+        for sex in ('intersex', 'unknown'):
+            root = _build(self._files(sex), root_person=KID)
+            index_mod.build_index(root, load_fha_yaml(root))
+            conn = _open(root)
+            try:
+                gaps: list[dict] = []
+                pos = build_ahnentafel_map(conn, KID.lower(), gaps)
+            finally:
+                conn.close()
+            self.assertEqual(pos.get(MA.lower()), 2, sex)   # still the even slot
+            self.assertEqual(gaps, [], sex)
+            res, _out, _err = _run_brackets(root)
+            self.assertEqual(res.data['w120'], 0, sex)
+            findings, _ = lint._run_lint_core(root, load_fha_yaml(root))
+            self.assertEqual([f for f in findings if f.code == 'W120'], [], sex)
+
+    def test_unrecognised_value_is_named_in_the_message(self) -> None:
+        # A lowercase 'f' is not in the vocabulary: it lands in the father
+        # slot AND the message must say what was found rather than claim
+        # nothing was recorded.
+        root = _build(self._files('f'), root_person=KID)
+        index_mod.build_index(root, load_fha_yaml(root))
+        res, out, _err = _run_brackets(root)
+        self.assertEqual(res.data['w120'], 1)
+        self.assertIn('`sex: f`', out)
+        self.assertIn('do not recognise', out)
+        findings, _ = lint._run_lint_core(root, load_fha_yaml(root))
+        w120 = [f for f in findings if f.code == 'W120']
+        self.assertEqual(len(w120), 1)
+        self.assertIn('`sex: f`', w120[0].message)
 
     def test_views_brackets_reports_w120(self) -> None:
         root = _build(self._files('U'), root_person=KID)

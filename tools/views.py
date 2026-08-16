@@ -108,8 +108,10 @@ from _lib import (
     find_person_record_path,   # disk-truth record lookup for --fix-promote applies,
     fmt_id_display,       # uppercase type prefix for output IDs (p-xxx → P-xxx),
     format_bracket_child,    # `Given` or `Given (adopted)` - shared with lint W103,
+    format_w120_message,  # the W120 wording - shared with lint so the twins agree,
     is_generated_text,    # GENERATED-header ownership test (first non-blank line),
     is_genetic_parent_subtype,
+    is_placeholder_name,  # 'unknown'/'None'/'' - never written into a folder name,
     load_fha_yaml,
     load_view_css,        # cached design/view.css loader -> (css, warning_or_None),
     nonbirth_bracket_label,  # 'adopted'/'step'/… mark for a non-birth child,
@@ -1659,6 +1661,29 @@ def _check_w110_ahnentafel(
     return issues
 
 
+def _new_couple_folder(archive_root: Path, prefix: int, members: list[dict]) -> Path:
+    """The folder a batch promotion invents for couple `prefix` when none exists.
+
+    Named after the even (father-slot) member - for a couple always the lower
+    position (N < N+1), for a lone stub simply that person, matching what
+    single-person `fha person promote` does. When BOTH partners are in the
+    batch, the folder names both from the start (`004 Robert + Jeanne`, the
+    SPEC §12.2 convention) - otherwise the fresh folder announces one partner
+    and waits for the next W103 pass to add the other. A partner whose only
+    "name" is a placeholder (`unknown`, an unnamed stub) is left off: a folder
+    name is for humans, and W103's add-only rule would otherwise never
+    revisit `+ unknown` once the real name is recorded. ONE rule, shared by
+    W119's preview and --realign's rebase, so the two can never invent
+    different names for the same couple.
+    """
+    namer = min(members, key=lambda c: c['pos'])
+    partner = next((c for c in members if c['pos'] == namer['pos'] + 1), None)
+    label = namer['name']
+    if partner is not None and not is_placeholder_name(partner['name']):
+        label = f'{namer["name"]} + {partner["name"]}'
+    return archive_root / 'people' / f'{str(prefix).zfill(3)} {label}'
+
+
 def _check_w119_direct_line_stubs(
     conn: sqlite3.Connection,
     archive_root: Path,
@@ -1740,14 +1765,7 @@ def _check_w119_direct_line_stubs(
         # the fresh folder announces only one partner and waits for the next
         # W103 pass to add the other.
         members = [c for c in candidates if c['prefix'] == prefix]
-        namer = min(members, key=lambda c: c['pos'])
-        partner = next(
-            (c for c in members if c['pos'] == namer['pos'] + 1), None)
-        folder_label = namer['name']
-        if partner is not None and partner['name']:
-            folder_label = f'{namer["name"]} + {partner["name"]}'
-        shared_dest[prefix] = (
-            archive_root / 'people' / f'{str(prefix).zfill(3)} {folder_label}')
+        shared_dest[prefix] = _new_couple_folder(archive_root, prefix, members)
 
     issues: list[dict] = []
     for c in candidates:
@@ -1828,6 +1846,7 @@ def _apply_promotions(w119: list[dict], archive_root: Path) -> tuple[int, int]:
 
 def _realign_promotion_dests(
     w119: list[dict], rename_map: dict[Path, Path], archive_root: Path,
+    created_folders: list[Path] | None = None,
 ) -> tuple[int, str | None]:
     """Point every W119 promotion at the couple folder as named AFTER the renames.
 
@@ -1851,7 +1870,15 @@ def _realign_promotion_dests(
     Mutates each issue's dest_folder in place. Returns (changed_count,
     problem): problem is None on success, else the plain-words refusal.
     """
+    # The post-fix tree: today's couple folders after the pending renames,
+    # PLUS the folders a W110 file_move will create (a misfiled record whose
+    # expected folder does not exist yet - _apply_bracket_fixes mkdirs it).
+    # Without those, a promotion for the same prefix would invent a second,
+    # differently-named folder beside the one the move is about to create.
     post_folders = [rename_map.get(f, f) for f in _couple_folder_dirs(archive_root)]
+    for extra in created_folders or []:
+        if extra not in post_folders:
+            post_folders.append(extra)
     by_prefix: dict[int, list[Path]] = {}
     for post in post_folders:
         m = re.match(r'^(\d+) ', post.name)
@@ -1876,13 +1903,7 @@ def _realign_promotion_dests(
         if posts:
             dest = posts[0]
         else:
-            namer = min(members, key=lambda c: c['pos'])
-            partner = next(
-                (c for c in members if c['pos'] == namer['pos'] + 1), None)
-            label = namer['name']
-            if partner is not None and partner['name']:
-                label = f'{namer["name"]} + {partner["name"]}'
-            dest = archive_root / 'people' / f'{str(prefix).zfill(3)} {label}'
+            dest = _new_couple_folder(archive_root, prefix, members)
         for item in members:
             if item['dest_folder'] != dest:
                 item['dest_folder'] = dest
@@ -2298,14 +2319,9 @@ def run_brackets(
                         'pid': gap['pid'],
                         'pos': gap['pos'],
                         'msg': (
-                            f'W120 {where}: {gap_name} took Ahnentafel '
-                            f'position {gap["pos"]} (the father/even slot) by '
-                            'default - they are the only linked parent of that '
-                            'couple and their record has no sex: recorded, so '
-                            'this slot and every ancestor number above it is a '
-                            'guess, not a derivation. Record `sex: M` or '
-                            '`sex: F` on their record to confirm or correct '
-                            'it, then re-run `fha views brackets`.'
+                            f'W120 {where}: ' + format_w120_message(
+                                gap_name, gap['pos'], gap.get('sex'),
+                                '`fha views brackets` (or `--realign`)')
                         ),
                     })
                 w110 = _check_w110_ahnentafel(conn, archive_root, pid_to_pos)
@@ -2380,11 +2396,14 @@ def run_brackets(
             rename_map: dict[Path, Path] = {}
             for item in w103:
                 rename_map[item['folder']] = item['folder'].parent / item['new_name']
+            created_folders: list[Path] = []
             for item in w110:
                 if item['kind'] == 'folder_rename':
                     rename_map[item['old_folder']] = item['new_folder']
+                elif item['kind'] == 'file_move' and item.get('expected_folder'):
+                    created_folders.append(item['expected_folder'])
             rebased, dest_problem = _realign_promotion_dests(
-                w119, rename_map, archive_root)
+                w119, rename_map, archive_root, created_folders)
             if dest_problem is not None:
                 print(f'ERROR: {dest_problem}', file=sys.stderr)
                 return _views_result(EXIT_FAILURE, data=issue_data)
@@ -2420,7 +2439,27 @@ def run_brackets(
                     return _views_result(EXIT_FAILURE, data=issue_data)
 
             promoted = 0
-            if w119:
+            skipped_promotions = 0
+            if w119 and failures:
+                # The promotion destinations were rebased onto the POST-rename
+                # tree. If any rename or move failed (a folder open in
+                # Explorer on Windows, say), promoting into those names would
+                # create the never-renamed folder BESIDE the old one and split
+                # the couple across two same-prefix folders - the exact state
+                # the two-pass --fix/--fix-promote flow existed to prevent.
+                # Skip the promotions; the human resolves the rename and
+                # re-runs, and the second pass sees the real tree.
+                skipped_promotions = len(w119)
+                print(
+                    f'\n{skipped_promotions} promotion(s) NOT applied: '
+                    f'{failures} rename/move(s) failed above, and the '
+                    'promotion destinations assumed those renames had landed. '
+                    'Resolve the failures (a folder open in another program is '
+                    'the usual cause), then re-run `fha views brackets '
+                    '--realign`.',
+                    file=sys.stderr,
+                )
+            elif w119:
                 promoted, pfail = _apply_promotions(w119, archive_root)
                 failures += pfail
 
@@ -2453,7 +2492,7 @@ def run_brackets(
             done_parts = []
             if w103 or w110:
                 done_parts.append('renames/moves applied')
-            if w119:
+            if w119 and not skipped_promotions:
                 done_parts.append(f'{promoted} of {len(w119)} stub(s) promoted')
             print(
                 f'\nRealigned - {", ".join(done_parts)}. Run `fha index` to '

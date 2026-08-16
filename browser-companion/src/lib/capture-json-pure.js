@@ -46,11 +46,12 @@ function bundleName(title, d) {
 
 const DEFAULT_FOLDER = 'fha-inbox';
 
+const BAD_CHARS = /[<>:"|?*$`!\u0000-\u001f]/g;
 function sanitizeFolder(folder) {
   const segs = String(folder || '')
     .replace(/\\/g, '/')
     .split('/')
-    .map((s) => s.trim())
+    .map((s) => s.replace(BAD_CHARS, '').replace(/[. ]+$/, '').trim())
     .filter((s) => s && s !== '.' && s !== '..');
   return segs.length ? segs.join('/') : DEFAULT_FOLDER;
 }

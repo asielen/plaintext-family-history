@@ -385,11 +385,29 @@ def spouse_extended_base(
         return base_name, None
     other = next(pid for pid in partner_ids if pid != matched[0])
     other_name = names.get(other)
-    # A partner with no recorded name resolves to their bare P-id - a folder
-    # name is for humans, so never write an ID into it.
-    if not other_name or other_name == other or _norm(other_name) == base_person:
+    # A partner with no recorded name resolves to their bare P-id, or to one
+    # of the archive's placeholders - a folder name is for humans, so never
+    # write an ID or a placeholder into it.
+    if (not other_name or other_name == other or is_placeholder_name(other_name)
+            or _norm(other_name) == base_person):
         return base_name, None
     return f'{base_name} + {other_name}', other_name
+
+
+def is_placeholder_name(name: object) -> bool:
+    """True for the strings that stand in for 'no name recorded'.
+
+    `fha stubs` mints an unnamed reference as `name: unknown`, the index stores
+    'unknown' for a record with no `name:` at all, and a bare `name:` key (YAML
+    null) reaches the index as the string 'None'. None of these may be written
+    into a couple-folder name or offered as a partner label; every naming
+    surface (W103's `+ spouse` half, W119's invented folder, --realign) checks
+    here so they can never disagree.
+    """
+    if name is None:
+        return True
+    text = ' '.join(str(name).split()).casefold()
+    return text in ('', 'unknown', 'none', 'null', 'unnamed', '?')
 
 # The keys that mark a YAML mapping as a claim, used to recognise hand-written
 # claims a human typed under `## Claims` but forgot to fence (read_record reads
@@ -433,6 +451,41 @@ def format_source_type_error(value: object, *, where: str = 'source_type') -> st
 # (like SOURCE_TYPES) rather than free text so `fha person new` and any future
 # validator can catch a typo ("m" vs "M", "male") before it lands in a record.
 PERSON_SEX_VALUES: frozenset[str] = frozenset({'M', 'F', 'intersex', 'unknown'})
+
+
+def sex_slot_is_defaulted(sex: object) -> bool:
+    """Whether a lone linked parent with this `sex:` value gets a DEFAULTED
+    Ahnentafel slot worth a W120 note.
+
+    The derivation puts a lone parent whose sex is not F in the father/even
+    slot. That is a default, not a derivation, whenever the value is absent,
+    blank, the legacy `U`, or something the vocabulary does not recognise
+    (`f`, `male`) - the human can settle it by recording `sex: M`/`sex: F`.
+    An explicitly recorded `intersex` or `unknown` (SPEC §9's vocabulary) is a
+    fact the human already stated: the tie-break is the designed behaviour
+    for it (TOOLING §7), there is nothing more to record, and a permanent
+    warning against a correct record would only teach the human to overwrite
+    it. Shared by lint and views so the twins fire on the same set.
+    """
+    text = ('' if sex is None else str(sex)).strip()
+    return text not in PERSON_SEX_VALUES
+
+
+def format_w120_message(name: str, pos: int, sex: object, cmd_hint: str) -> str:
+    """The W120 finding text, one wording for lint and views."""
+    text = ('' if sex is None else str(sex)).strip()
+    if text and text != 'U':
+        cause = (f'their record carries `sex: {text}`, which the tools do not '
+                 'recognise (the vocabulary is M | F | intersex | unknown)')
+    else:
+        cause = 'their record has no sex: recorded'
+    return (
+        f'{name} took Ahnentafel position {pos} (the father/even slot) by '
+        f'default: they are the only linked parent of that couple and {cause}, '
+        'so their slot - and every ancestor number above them - is a guess, '
+        'not a derivation. Record `sex: M` or `sex: F` on their record to '
+        f'confirm or correct the placement, then run {cmd_hint}.'
+    )
 
 
 def format_person_sex_error(value: object) -> str:
@@ -3513,7 +3566,12 @@ def archive_title(cfg: dict) -> str:
 # ── Archive freshness ─────────────────────────────────────────────────────────
 
 def _is_generated_companion(path: Path) -> bool:
-    """A `fha views` output under people/ (timeline / sources-index / draft-queue)."""
+    """A `fha views` output under people/: a per-person companion (timeline /
+    sources-index / draft-queue, P-id in the name) or the couple-folder
+    `sources-index.md` (`fha views sources-index --couple-folders`, also
+    written by `fha views refresh`), which carries no P-id at all."""
+    if path.name == 'sources-index.md':
+        return True
     parsed = parse_filename(path)
     return bool(parsed) and parsed.get('kind') in GENERATED_COMPANION_KINDS
 
@@ -3904,8 +3962,8 @@ def build_ahnentafel_map(
             if p_pid not in pid_to_pos:
                 pid_to_pos[p_pid] = pos
                 queue.append((p_pid, pos))
-                if sex_gaps is not None and p_sex not in ('M', 'F'):
-                    sex_gaps.append({'pid': p_pid, 'pos': pos})
+                if sex_gaps is not None and sex_slot_is_defaulted(p_sex):
+                    sex_gaps.append({'pid': p_pid, 'pos': pos, 'sex': p_sex})
         else:
             # Two or more genetic parent edges - assisted reproduction (a
             # donor-egg mother plus a surrogate-genetic mother plus a
@@ -4458,6 +4516,95 @@ def configure_utf8_stdout() -> None:
             sys.stdout.reconfigure(encoding='utf-8')  # type: ignore[union-attr]
         except Exception:
             pass
+
+
+
+def _index_tables_with_path_column(conn: sqlite3.Connection) -> list[str]:
+    """Every index table (FTS included) carrying a `path` column - the
+    relocation set. FTS5 shadow tables are skipped by name."""
+    names = [
+        row[0] for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' "
+            "AND name NOT LIKE 'sqlite_%'"
+        )
+        if not re.search(r'_(config|data|idx|docsize|content)$', row[0])
+    ]
+    out = []
+    for name in names:
+        cols = {row[1] for row in conn.execute(f'PRAGMA table_info("{name}")')}
+        if 'path' in cols:
+            out.append(name)
+    return out
+
+
+def relocate_person_in_index(
+    archive_root: Path,
+    pid: str,
+    moves: list[tuple[Path, Path]],
+    *,
+    tier: str | None = None,
+    new_research: Path | None = None,
+) -> str:
+    """
+    Keep .cache/index.sqlite correct across a person-record move without a
+    rebuild (#37) - the index-side twin of `promote_person_record`, here in
+    `_lib` because tools never import tools (TOOLING §1).
+
+    `fha person promote` moves a record out of people/stubs/ - a path change
+    the mtime watermark cannot see (a move keeps the file's time), which is
+    why promote used to DELETE the cache to force a rebuild. That made the
+    second promote in a batch fail with 'index.sqlite is unreadable or has an
+    incompatible schema... (schema version is missing)', which reads like
+    corruption, or with a root_person error that sent the human to fix
+    fha.yaml and run `fha stubs` when only the cache was absent. Rewriting the
+    rows in place is exact and cheap: every table keyed by `path` (persons,
+    person_files, notes_fts, citations, hypotheses, research_log, ...) has its
+    old relative path swapped for the new one; the tier flip is applied to
+    the persons row; a freshly scaffolded research companion gets its
+    person_files row and its body in notes_fts (a scaffold carries no
+    hypotheses or log entries yet - the next full build indexes those). The
+    sqlite write also bumps index.sqlite's own mtime past the record's, so
+    the freshness check reads 'fresh' - correctly, because it is.
+
+    Returns 'indexed', or 'index_absent' when there is no usable full index
+    to update (the caller then just says 'run fha index', as before).
+    """
+    db_path = Path(archive_root) / '.cache' / 'index.sqlite'
+    status, _detail = sqlite_cache_schema_status(
+        db_path, INDEX_SCHEMA_VERSION, ('persons', 'sources', 'claims'))
+    if status != 'fresh' and status != 'stale':
+        return 'index_absent'
+    pid = normalize_id(pid)
+    conn = sqlite3.connect(str(db_path))
+    try:
+        with conn:
+            tables = _index_tables_with_path_column(conn)
+            for old, new in moves:
+                old_rel = str(Path(old).relative_to(archive_root))
+                new_rel = str(Path(new).relative_to(archive_root))
+                if old_rel == new_rel:
+                    continue
+                for table in tables:
+                    conn.execute(
+                        f'UPDATE "{table}" SET path=? WHERE path=?', (new_rel, old_rel))
+            if tier is not None:
+                conn.execute('UPDATE persons SET tier=? WHERE id=?', (tier, pid))
+            if new_research is not None:
+                rel = str(Path(new_research).relative_to(archive_root))
+                conn.execute(
+                    'INSERT OR REPLACE INTO person_files(person_id, kind, path, generated) '
+                    'VALUES (?,?,?,0)', (pid, 'research', rel))
+                try:
+                    body = read_record(new_research).get('body') or ''
+                except Exception:
+                    body = ''
+                conn.execute('DELETE FROM notes_fts WHERE path=?', (rel,))
+                if body.strip():
+                    conn.execute(
+                        'INSERT INTO notes_fts(path, content) VALUES (?,?)', (rel, body))
+    finally:
+        conn.close()
+    return 'indexed'
 
 
 # ── Output helpers ────────────────────────────────────────────────────────────

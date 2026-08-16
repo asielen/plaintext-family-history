@@ -67,6 +67,15 @@ test('sanitizeFolder confines the setting to a Downloads-relative subpath', () =
   assert.strictEqual(sanitizeFolder('..\\..\\evil'), 'evil');
   assert.strictEqual(sanitizeFolder('/abs/path/'), 'abs/path');
   assert.strictEqual(sanitizeFolder('a/./b'), 'a/b');
+  // Characters the downloads API rejects, or that would break the copied
+  // shell command inside double quotes, are dropped at typing time - the
+  // setting is self-correcting, not a raw 'Invalid filename' at capture time.
+  assert.strictEqual(sanitizeFolder('C:\\Users\\me\\Downloads\\inbox'), 'C/Users/me/Downloads/inbox');
+  assert.strictEqual(sanitizeFolder('inbox: 2026'), 'inbox 2026');
+  assert.strictEqual(sanitizeFolder('photos?'), 'photos');
+  assert.strictEqual(sanitizeFolder('inbox.'), 'inbox');
+  assert.strictEqual(sanitizeFolder('Family $Photos'), 'Family Photos');
+  assert.strictEqual(sanitizeFolder('my "quoted" inbox'), 'my quoted inbox');
   // Nothing left after cleaning -> the default, never Downloads' root.
   assert.strictEqual(sanitizeFolder('..'), DEFAULT_FOLDER);
   assert.strictEqual(sanitizeFolder(''), DEFAULT_FOLDER);

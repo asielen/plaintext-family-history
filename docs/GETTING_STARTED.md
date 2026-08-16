@@ -242,7 +242,8 @@ Every working session is the same five beats:
   with `fha capture`), or just drop in a scan. There is also a browser extension that stages
   the open page with one click: your archive carries a ready-to-load copy at
   `.fha/browser-companion/` - open `chrome://extensions`, turn on Developer mode, click
-  **Load unpacked**, and pick that folder (its README has the details).
+  **Load unpacked**, and pick that folder (its README has the details; on Windows `.fha` is
+  hidden, so type the path into the picker's file-name box if it is not listed).
 - **File & process** - "process my inbox," as above.
 - **Review** - accept or set aside the suggested facts (the assistant records each decision with `fha claim`; you are still the one deciding).
 - **Report** - ask "what should I look at today?" The assistant runs `fha report` and reads you

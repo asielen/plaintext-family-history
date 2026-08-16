@@ -23,7 +23,10 @@ can load it with no clone of this repo:
 
 1. Open `chrome://extensions` (or `edge://extensions`), turn on Developer mode.
 2. Click **Load unpacked** and pick your archive's `.fha/browser-companion/`
-   folder.
+   folder. On Windows `.fha` is a hidden folder, so the picker may not list it:
+   type the path into the dialog's file-name box (e.g.
+   `D:\Family Archive\.fha\browser-companion`) and press Enter, or turn on
+   "Show hidden items" in Explorer's View menu first.
 
 The dev furniture here (`tests/`, `test-bundle/`, `package.json`) stays in the
 repo - what ships is exactly what the browser loads. Developing the extension

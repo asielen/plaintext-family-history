@@ -643,16 +643,53 @@
       if (!DATA_SCRIPT.test(type)) s.remove();
     });
 
-    // Anchor the snapshot's remaining RELATIVE references (anchors, CSS url()
-    // resources, anything the bounded inliner below skips) back to the live
-    // page: opened from file:// without a <base>, every relative URL would
-    // resolve into the local folder and break. A page that already declares
-    // its own <base> keeps it - the author's baseline wins.
-    const head = clone.querySelector('head');
-    if (head && !head.querySelector('base')) {
-      const base = document.createElement('base');
-      base.setAttribute('href', document.baseURI);
-      head.insertBefore(base, head.firstChild);
+    // Anchor the snapshot's remaining RELATIVE references (links, images the
+    // bounded inliner below skips, stylesheets) back to the live page: opened
+    // from file:// every relative URL would otherwise resolve into the local
+    // folder and break. Done by rewriting each attribute to its absolute
+    // form rather than injecting a <base>: a <base> re-targets fragment-only
+    // links too, so a table-of-contents `#facts` would navigate to the LIVE
+    // site (network, login wall) instead of scrolling the snapshot, SVG
+    // `<use href="#icon">` sprites would render blank, and a 1-2 KB base URL
+    // pushes the page's <meta charset> past the 1024-byte prescan window. A
+    // page that declares its own <base> is left alone - its author's
+    // baseline already governs resolution.
+    if (!clone.querySelector('head base')) {
+      const skip = /^(#|data:|blob:|javascript:|mailto:|tel:|about:)/i;
+      const absolutize = (value) => {
+        const v = (value || '').trim();
+        if (!v || skip.test(v)) return null;
+        try {
+          return new URL(v, document.baseURI).href;
+        } catch (_e) {
+          return null;
+        }
+      };
+      const URL_ATTRS = [
+        ['a', 'href'], ['area', 'href'], ['link', 'href'],
+        ['img', 'src'], ['source', 'src'], ['video', 'src'], ['audio', 'src'],
+        ['video', 'poster'], ['iframe', 'src'], ['embed', 'src'],
+        ['object', 'data'], ['track', 'src'], ['input', 'src'],
+      ];
+      for (const [tag, attr] of URL_ATTRS) {
+        for (const el of Array.from(clone.querySelectorAll(tag + '[' + attr + ']'))) {
+          const abs = absolutize(el.getAttribute(attr));
+          if (abs) el.setAttribute(attr, abs);
+        }
+      }
+      // srcset carries a comma-separated list of "url descriptor" pairs.
+      for (const el of Array.from(clone.querySelectorAll('[srcset]'))) {
+        const rewritten = (el.getAttribute('srcset') || '')
+          .split(',')
+          .map((cand) => {
+            const parts = cand.trim().split(/\s+/);
+            const abs = absolutize(parts[0]);
+            if (abs) parts[0] = abs;
+            return parts.join(' ');
+          })
+          .join(', ');
+        el.setAttribute('srcset', rewritten);
+      }
     }
 
     let budget = SINGLEFILE_MAX_RESOURCES;
