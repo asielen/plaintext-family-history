@@ -6,6 +6,7 @@ person.py - fha person: deterministic person-field write-backs (TOOLING §3c).
                  [--birth DATE] [--death DATE] [--dry-run] [--root PATH]
   fha person promote <P-id> [--into FOLDER] [--dry-run] [--root PATH]
   fha person set-living <P-id> true|false|unknown [--dry-run] [--root PATH]
+  fha person set-sex <P-id> M|F|intersex|unknown [--dry-run] [--root PATH]
   fha person relate <P-id> (--parent|--child|--sibling|--spouse) <P-id2>
                      [--subtype WORD] [--reciprocal] [--dry-run]
   fha person estimate <P-id> [--birth DATE|-] [--death DATE|-] [--dry-run]
@@ -149,6 +150,7 @@ CODE MAP
   _replace_living_line        - swap only the value, keep any trailing comment
   _frontmatter_edit_problem   - the living-specific wrapper over the shared guard
   run_set_living              - validate, locate, edit; returns a _lib.Result
+  run_set_sex                 - same shape for sex:, ends with the brackets nudge
   -- shared prelude for every verb below set-living --
   _refuse_result / _not_found_result - the two non-happy Result shapes every
                                  verb returns, factored so they cannot drift
@@ -759,6 +761,220 @@ def run_set_profile_photo(
     result.add('info',
                'Next: reload the workbench (or run `fha site`) to see it on the '
                'page and in the tree.')
+    return result
+
+
+def run_set_sex(
+    archive_root: Path, person_id: str, value: str, dry_run: bool = False,
+) -> Result:
+    """Set one person record's `sex:` field (SPEC §9: M | F | intersex |
+    unknown); return a Result.
+
+    The one frontmatter fact the Ahnentafel derivation reads: a parent with
+    `sex: F` takes the mother/odd slot, anything else the father/even one, and
+    a lone linked parent with no usable value is placed by DEFAULT (W120). Until
+    this verb existed a correction was a hand edit with nothing to say "the
+    folder numbers above this person may have shifted" - so a live change ends
+    with that nudge (`fha views brackets`, `--realign` to apply). Same
+    surgical-single-line-replace shape as `run_set_living`/`run_set_profile_photo`:
+    validate before any read, pre-write guard before any write, the file is
+    updated in exactly one line or untouched. `data` is {'status':
+    'ok'|'already'|'dry-run'|'not-found'|'merged'|'refused', 'person_id',
+    'path', 'old', 'new'}.
+    """
+    result = Result(data={
+        'status': None, 'person_id': None, 'path': None, 'old': None, 'new': None,
+    })
+
+    def _refuse(status: str, message: str) -> Result:
+        result.ok = False
+        result.exit_code = EXIT_FAILURE
+        result.data['status'] = status
+        result.add('error', message)
+        return result
+
+    val = _normalize_sex_input(value)
+    if not val or val not in PERSON_SEX_VALUES:
+        return _refuse('refused', format_person_sex_error(value))
+    result.data['new'] = val
+
+    if not (is_valid_id(person_id) and id_type_of(person_id) == 'P'):
+        return _refuse(
+            'refused',
+            f'{person_id!r} is not a valid person ID. P-ids look like P-2b3c4d5e6f '
+            '- a P followed by a dash and 10 characters from the archive alphabet.')
+    pid = normalize_id(person_id)
+    result.data['person_id'] = fmt_id_display(pid)
+
+    path = find_person_record_path(archive_root, pid)
+    if path is None:
+        result.ok = False
+        result.exit_code = EXIT_WARNINGS
+        result.data['status'] = 'not-found'
+        result.add('warning',
+                   f'No person record found for {fmt_id_display(pid)} under '
+                   f'{archive_root / "people"} - check the id with '
+                   f'`fha find {fmt_id_display(pid)}`.',
+                   next_step='fha find ' + fmt_id_display(pid))
+        return result
+    result.data['path'] = str(path)
+
+    try:
+        text = read_text_exact(path)
+    except OSError as e:
+        return _refuse('refused', f'cannot read {path}: {e}. Check the file is '
+                       'not open in another program and try again.')
+
+    fm = FRONT_RE.match(text)
+    if fm is None:
+        return _refuse(
+            'refused',
+            f'{path.name} has no frontmatter block (the header between --- lines '
+            f'at the top of the file), so there is nowhere safe to write the field. '
+            f'Open {path} and add the header by hand, then run `fha lint`. '
+            'Nothing was written.')
+    try:
+        before_meta = yaml.safe_load(fm.group(1))
+    except yaml.YAMLError:
+        before_meta = None
+    if not isinstance(before_meta, dict):
+        return _refuse(
+            'refused',
+            f'the header of {path.name} does not read as YAML, so editing it '
+            f'automatically could make things worse. Open {path}, fix the header '
+            'by hand (run `fha lint` to see the problem line), then retry. '
+            'Nothing was written.')
+
+    name = str(before_meta.get('name') or '').strip()
+    label = f'{fmt_id_display(pid)} ({name})' if name else fmt_id_display(pid)
+
+    if is_merged_meta(before_meta):
+        result.exit_code = EXIT_FAILURE
+        result.ok = False
+        result.data['status'] = 'merged'
+        survivor = normalize_id(str(before_meta.get('merged_into') or ''))
+        if survivor and is_valid_id(survivor):
+            result.add('error',
+                       f'{label} was merged into {fmt_id_display(survivor)} - this record '
+                       'is a tombstone that readers resolve through, so sex: lives on '
+                       'the surviving record. Set it there: '
+                       f'`fha person set-sex {fmt_id_display(survivor)} {val}`.')
+        else:
+            result.add('error',
+                       f'{label} is a merged tombstone, but its merged_into: pointer is '
+                       'missing or malformed, so the surviving record cannot be named. '
+                       f'Find it with `fha find {fmt_id_display(pid)}`. Nothing was written.')
+        return result
+
+    old_raw = before_meta.get('sex')
+    old = str(old_raw).strip() if old_raw is not None and str(old_raw).strip() else None
+    result.data['old'] = old
+
+    if 'sex' in before_meta and old == val:
+        result.data['status'] = 'already'
+        result.add('info', f'{label} is already sex: {val} - nothing to change.')
+        return result
+
+    lines = text.split('\n')
+    bounds = frontmatter_fence_span(lines)
+    if bounds is None:
+        return _refuse(
+            'refused',
+            f'could not locate the frontmatter fences in {path.name} to edit '
+            f'safely. Open {path} and set sex: {val} by hand, then run `fha lint`. '
+            'Nothing was written.')
+    start, end = bounds
+
+    key_lines = _key_line_indexes(lines, start + 1, end, 'sex')
+    new_lines = list(lines)
+    if len(key_lines) > 1:
+        return _refuse(
+            'refused',
+            f'{path.name} has more than one top-level sex: line in its header, '
+            'so the right one to edit cannot be chosen safely. Open '
+            f'{path} and fix the duplicate by hand, then run `fha lint`. '
+            'Nothing was written.')
+    if key_lines and 'sex' not in before_meta:
+        return _refuse(
+            'refused',
+            f'{path.name} has a sex: line that belongs to another field\'s value, '
+            'not a real sex field, so it cannot be edited safely. Open '
+            f'{path} and add a top-level sex: {val} line by hand, then run '
+            '`fha lint`. Nothing was written.')
+    if key_lines:
+        new_lines[key_lines[0]] = _replace_scalar_line(lines[key_lines[0]], 'sex', val)
+    elif 'sex' in before_meta:
+        return _refuse(
+            'refused',
+            f'the sex field in {path.name} is not written as its own line, so it '
+            f'cannot be edited safely. Open {path} and set sex: {val} by hand, '
+            'then run `fha lint`. Nothing was written.')
+    else:
+        # Key absent: insert in the person template's field order (SPEC §9 -
+        # after name / name_variants / face_tags, before living:), else just
+        # before the closing ---.
+        cr = '\r' if lines[start].endswith('\r') else ''
+        after = [
+            i for key in ('name', 'name_variants', 'face_tags')
+            for i in _key_line_indexes(lines, start + 1, end, key)
+        ]
+        if after:
+            insert_at = max(after) + 1
+            # A multi-line list value (name_variants:) continues on indented
+            # lines - skip past them so the new key lands at column 0 between
+            # fields, not inside a list.
+            while insert_at < end and (lines[insert_at].startswith((' ', '\t', '-'))
+                                       or not lines[insert_at].strip()):
+                insert_at += 1
+        else:
+            living_lines = _key_line_indexes(lines, start + 1, end, 'living')
+            insert_at = living_lines[0] if living_lines else end
+        new_lines.insert(insert_at, f'sex: {val}{cr}')
+
+    new_text = '\n'.join(new_lines)
+    problem = frontmatter_edit_problem(new_text, before_meta=before_meta,
+                                       changed_keys={'sex'})
+    if problem is not None:
+        return _refuse(
+            'refused',
+            f'Refusing to change {label}: {problem}, so saving could corrupt the '
+            f'record. Nothing was written. Open {path} and set sex: {val} by hand, '
+            'then run `fha lint` to check it.')
+
+    old_display = old if 'sex' in before_meta and old else '(absent)'
+    if dry_run:
+        result.data['status'] = 'dry-run'
+        result.add('info', f'[dry-run] Would set {label} sex: {old_display} -> {val}.')
+        for dline in difflib.unified_diff(
+            text.splitlines(), new_text.splitlines(),
+            fromfile=f'{path} (before)', tofile=f'{path} (after)', lineterm='',
+        ):
+            result.add('info', dline)
+        result.add('info', '[dry-run] No file written. Re-run without --dry-run to apply.')
+        return result
+
+    try:
+        write_text_exact(path, reapply_newline(new_text, text))
+    except OSError as e:
+        return _refuse(
+            'refused',
+            f'cannot write {path}: {e}. Check the file is not open elsewhere and '
+            'the folder is writable, then retry.')
+
+    result.data['status'] = 'ok'
+    result.note_changed(path)
+    result.add('info', f'{label} is now sex: {val} (was {old_display}).', path=path)
+    # The nudge this verb exists for: sex decides which Ahnentafel slot a
+    # parent takes, so a correction can shift every folder number above them.
+    result.add('info',
+               'Sex decides Ahnentafel placement (father/even vs mother/odd slot). '
+               'If this person is a direct-line ancestor, run `fha views brackets` '
+               'to check the folder numbering - `fha views brackets --realign` '
+               'previews and applies any shift.',
+               next_step='fha views brackets')
+    result.add('info',
+               'Next: run `fha index` when convenient so queries see the change.',
+               next_step='fha index')
     return result
 
 
@@ -2531,6 +2747,15 @@ def _cmd_set_profile_photo(args: argparse.Namespace) -> int:
         dry_run=bool(getattr(args, 'dry_run', False))))
 
 
+def _cmd_set_sex(args: argparse.Namespace) -> int:
+    archive_root = resolve_root_arg(args, command='fha person set-sex')
+    if archive_root is None:
+        return EXIT_FAILURE
+    return _emit(run_set_sex(
+        archive_root, person_id=args.person_id, value=args.value,
+        dry_run=bool(getattr(args, 'dry_run', False))))
+
+
 def _cmd_promote(args: argparse.Namespace) -> int:
     archive_root = resolve_root_arg(args, command='fha person promote')
     if archive_root is None:
@@ -2729,6 +2954,27 @@ def _add_set_profile_photo_arguments(sub: argparse._SubParsersAction) -> None:
     sp.add_argument('--dry-run', action='store_true', dest='dry_run',
                     help='Preview the one-line change without writing.')
     sp.set_defaults(func=_cmd_set_profile_photo)
+
+
+def _add_set_sex_arguments(sub: argparse._SubParsersAction) -> None:
+    """Register the set-sex verb on a group subparser (shared by both mains)."""
+    sp = sub.add_parser(
+        'set-sex',
+        help="Set or correct a person's sex: (M | F | intersex | unknown).",
+        description='Set a person\'s sex: field - the one fact the Ahnentafel '
+                    'derivation reads to place a parent in the father or mother slot. '
+                    'A change ends with the reminder to run `fha views brackets` '
+                    '(`--realign` applies any folder-number shift).',
+    )
+    sp.add_argument('person_id', metavar='P-id',
+                    help='The person to update (e.g. P-2b3c4d5e6f).')
+    sp.add_argument('value', metavar='SEX',
+                    help='M, F, intersex, or unknown (case-insensitive).')
+    sp.add_argument('--root', metavar='PATH', default=argparse.SUPPRESS,
+                    help='Archive root (auto-detected if omitted).')
+    sp.add_argument('--dry-run', action='store_true', dest='dry_run',
+                    help='Preview the one-line change without writing.')
+    sp.set_defaults(func=_cmd_set_sex)
 
 
 _PROMOTE_DESCRIPTION = """\
@@ -2969,7 +3215,7 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
     p = subs.add_parser(
         'person',
         help='Person-record write-backs: new, promote, set-living, '
-             'set-profile-photo, relate, estimate, edit, note',
+             'set-profile-photo, set-sex, relate, estimate, edit, note',
         description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -2979,6 +3225,7 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
     _add_promote_arguments(sub)
     _add_set_living_arguments(sub)
     _add_set_profile_photo_arguments(sub)
+    _add_set_sex_arguments(sub)
     _add_relate_arguments(sub)
     _add_estimate_arguments(sub)
     _add_edit_arguments(sub)
@@ -3000,6 +3247,7 @@ def _standalone_main(argv: list[str] | None = None) -> int:
     _add_promote_arguments(sub)
     _add_set_living_arguments(sub)
     _add_set_profile_photo_arguments(sub)
+    _add_set_sex_arguments(sub)
     _add_relate_arguments(sub)
     _add_estimate_arguments(sub)
     _add_edit_arguments(sub)

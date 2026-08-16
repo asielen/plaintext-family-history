@@ -483,8 +483,9 @@ def format_w120_message(name: str, pos: int, sex: object, cmd_hint: str) -> str:
         f'{name} took Ahnentafel position {pos} (the father/even slot) by '
         f'default: they are the only linked parent of that couple and {cause}, '
         'so their slot - and every ancestor number above them - is a guess, '
-        'not a derivation. Record `sex: M` or `sex: F` on their record to '
-        f'confirm or correct the placement, then run {cmd_hint}.'
+        'not a derivation. Record `sex: M` or `sex: F` on their record '
+        f'(`fha person set-sex <P-id> M|F`) to confirm or correct the placement, '
+        f'then run {cmd_hint}.'
     )
 
 

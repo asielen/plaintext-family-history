@@ -346,14 +346,14 @@
     {
       "path": ".fha/tools/README.md",
       "category": "operating",
-      "sha256": "955fd3325a3f3f133d69b820096e52559169a98b039d5cdd12e642699c48a687",
+      "sha256": "6f6e4f17d6c1498df79f4476f7135aaac0f348057ac8c854a657e833f82a1321",
       "spec_version": "1.2",
       "src": "tools/README.md"
     },
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "8e78a62ca763f7ee1eeeffa68337b3d18f62b70f0fecb1c5c2625832e0d918be",
+      "sha256": "037b464a7e421536924b87246f9833d1eb1c6b43cc09fdbc070d2897c71fd680",
       "spec_version": "1.2",
       "src": "tools/_lib.py"
     },
@@ -514,7 +514,7 @@
     {
       "path": ".fha/tools/person.py",
       "category": "operating",
-      "sha256": "decc6ca459ab1c06a35e639973e2052b459ea1f80c142260e27e45c008c5decf",
+      "sha256": "ee1d05922d191b4def00406b211dc85a723488f19280d71bd906cd4059c1ba80",
       "spec_version": "1.2",
       "src": "tools/person.py"
     },
@@ -577,7 +577,7 @@
     {
       "path": ".fha/tools/serve.py",
       "category": "operating",
-      "sha256": "d7902b08fbdcc34fbd4d8e61dbab54fd32d0d389e7f6b716a2ca4c90161aaed9",
+      "sha256": "321afd5f4d419a6331a2b4a65f996e5bc674e64074bbeff0df29299ad445a88b",
       "spec_version": "1.2",
       "src": "tools/serve.py"
     },
@@ -773,7 +773,7 @@
     {
       "path": "AGENTS.md",
       "category": "operating",
-      "sha256": "8d12dbd95f20aedb16d511c36d8ed8bfb63fc0feadaec99c702f1f43dfdc123a",
+      "sha256": "71a268429b9f2c4f6872c8134c993cdf67abff2e09dcb0dff93be500e71b78ad",
       "spec_version": "1.2"
     },
     {
@@ -797,7 +797,7 @@
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "66feab5ccea26d30f6cd3ce9eec40c3db03790ef001c954590d0a9544e5e4511",
+      "sha256": "54ec776554f3ddb1871a43148b41041d2569fb35db8d51020b309a7c7d45309b",
       "spec_version": "1.2"
     },
     {

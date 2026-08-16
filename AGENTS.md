@@ -228,6 +228,8 @@ fha person promote <P-id> [--into FOLDER]   graduate a direct-line stub to curat
 fha person relate <P-id> --parent|--child|--sibling|--spouse <P-id2>   unsourced family-tie
                             belief (always status: hypothesis)
 fha person estimate <P-id> --birth|--death …      provisional, unsourced vitals estimate
+fha person set-sex <P-id> M|F|intersex|unknown    correct the one fact Ahnentafel placement
+                            reads; ends with the `fha views brackets` nudge
 fha person edit|note <P-id> --section … --text …  bounded prose write to Biography/Stories/
                             Research Notes (edit replaces/appends; note is append-only)
 fha person edit-note <P-id> --section … --old-text … --text …   rewrite ONE existing

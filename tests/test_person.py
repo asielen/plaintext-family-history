@@ -293,6 +293,119 @@ class SetLivingEditTests(unittest.TestCase):
         self.assertEqual(self.stub.read_bytes(), before)
 
 
+class SetSexTests(unittest.TestCase):
+    """`fha person set-sex` - the 2026-07-26 feedback's item 3: a surgical
+    single-line edit for the one frontmatter fact the Ahnentafel derivation
+    reads, ending with the brackets/realign nudge that a hand edit could never
+    print. Same contract as set-living / set-profile-photo."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = _mk_archive(Path(self._tmp.name))
+        self.stub = self.root / 'people' / 'stubs' / f'hartley__rose_{PID}.md'
+        self.curated = self.root / 'people' / f'hartley__thomas_{CURATED_PID}.md'
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_correcting_a_recorded_value_changes_one_line_and_nudges(self) -> None:
+        before = self.curated.read_text(encoding='utf-8')
+        result = person.run_set_sex(self.root, CURATED_PID, 'F')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertEqual(result.data['status'], 'ok')
+        self.assertEqual(result.data['old'], 'M')
+        self.assertEqual(result.data['new'], 'F')
+        self.assertEqual(result.changed, [str(self.curated)])
+        after = self.curated.read_text(encoding='utf-8')
+        self.assertEqual(_one_line_diff(before, after), [('sex: M', 'sex: F')])
+        text = ' '.join(m.text for m in result.messages)
+        # The nudge this verb exists for.
+        self.assertIn('fha views brackets', text)
+        self.assertIn('--realign', text)
+        self.assertIn('fha views brackets', [m.next_step for m in result.messages if m.next_step])
+
+    def test_case_folds_onto_the_vocabulary(self) -> None:
+        for typed, canonical in (('f', 'F'), ('m', 'M'), ('Intersex', 'intersex'),
+                                 ('UNKNOWN', 'unknown')):
+            result = person.run_set_sex(self.root, CURATED_PID, typed)
+            self.assertEqual(result.exit_code, EXIT_CLEAN, typed)
+            self.assertEqual(result.data['new'], canonical, typed)
+        self.assertIn('sex: unknown\n', self.curated.read_text(encoding='utf-8'))
+
+    def test_absent_key_is_inserted_in_template_order(self) -> None:
+        # The stub has no sex: line; it lands after name: and before living:,
+        # the person template's order, and the trailing comment on living:
+        # survives untouched.
+        result = person.run_set_sex(self.root, PID, 'F')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertEqual(result.data['old'], None)
+        after = self.stub.read_text(encoding='utf-8')
+        self.assertIn('name: Rose Hartley\nsex: F\nliving: unknown  # not sure yet\n', after)
+
+    def test_already_is_a_no_op(self) -> None:
+        before = self.curated.read_bytes()
+        result = person.run_set_sex(self.root, CURATED_PID, 'm')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertEqual(result.data['status'], 'already')
+        self.assertFalse(result.changed)
+        self.assertEqual(self.curated.read_bytes(), before)
+
+    def test_dry_run_previews_and_writes_nothing(self) -> None:
+        before = self.curated.read_bytes()
+        result = person.run_set_sex(self.root, CURATED_PID, 'F', dry_run=True)
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertEqual(result.data['status'], 'dry-run')
+        self.assertFalse(result.changed)
+        self.assertEqual(self.curated.read_bytes(), before)
+        text = ' '.join(m.text for m in result.messages)
+        self.assertIn('-sex: M', text)
+        self.assertIn('+sex: F', text)
+
+    def test_invalid_value_refused_naming_the_vocabulary(self) -> None:
+        before = self.curated.read_bytes()
+        result = person.run_set_sex(self.root, CURATED_PID, 'male')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertEqual(result.data['status'], 'refused')
+        self.assertIn('intersex', result.messages[0].text)
+        self.assertEqual(self.curated.read_bytes(), before)
+
+    def test_unknown_pid_warns_with_next_step(self) -> None:
+        result = person.run_set_sex(self.root, 'P-9zzzzzzzzz', 'F')
+        self.assertEqual(result.exit_code, EXIT_WARNINGS)
+        self.assertEqual(result.data['status'], 'not-found')
+        self.assertIn('fha find', result.messages[0].text)
+
+    def test_merged_tombstone_names_survivor(self) -> None:
+        tomb = (
+            '---\n'
+            'id: P-dddddddddd\n'
+            'name: Thomas Hartley\n'
+            'sex: M\n'
+            'living: false\n'
+            'status: merged\n'
+            'merged_into: P-cccccccccc\n'
+            '---\n'
+        )
+        path = self.root / 'people' / 'MERGED-INTO-P-cccccccccc__hartley__thomas_P-dddddddddd.md'
+        path.write_text(tomb, encoding='utf-8')
+        before = path.read_bytes()
+        result = person.run_set_sex(self.root, 'P-dddddddddd', 'F')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertEqual(result.data['status'], 'merged')
+        self.assertIn('fha person set-sex P-cccccccccc F', result.messages[0].text)
+        self.assertEqual(path.read_bytes(), before)
+
+    def test_cli_round_trip_via_fha(self) -> None:
+        import fha
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            rc = fha.main(['person', 'set-sex', CURATED_PID, 'F',
+                           '--root', str(self.root)])
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertIn('sex: F', self.curated.read_text(encoding='utf-8'))
+        self.assertIn('fha views brackets', out.getvalue())
+
+
 class SetLivingRefusalTests(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()

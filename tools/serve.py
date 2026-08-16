@@ -1127,6 +1127,15 @@ def _echo_set_profile_photo(kw):
     return f'fha person set-profile-photo {kw.get("person_id", "?")} {_q(kw.get("value", "?"))}'
 
 
+def _verb_set_sex(state, kw, dry_run):
+    return person.run_set_sex(
+        state.archive_root, kw['person_id'], kw['value'], dry_run=dry_run)
+
+
+def _echo_set_sex(kw):
+    return f'fha person set-sex {kw.get("person_id", "?")} {kw.get("value", "?")}'
+
+
 def _verb_person_new(state, kw, dry_run):
     return person.run_new(
         state.archive_root, kw.get('name', ''), sex=kw.get('sex'), gender=kw.get('gender'),
@@ -1680,6 +1689,8 @@ VERBS: dict[str, dict] = {
     'person.set-profile-photo': {'schema': {'person_id': 'str', 'value': 'str'},
                                  'run': _verb_set_profile_photo, 'echo': _echo_set_profile_photo,
                                  'reindex': 'full'},
+    'person.set-sex': {'schema': {'person_id': 'str', 'value': 'str'},
+                       'run': _verb_set_sex, 'echo': _echo_set_sex, 'reindex': 'full'},
     'person.new': {'schema': {'name': 'str', 'sex': 'str', 'gender': 'str',
                              'birth': 'str', 'death': 'str', 'person_id': 'str',
                              'birth_place': 'str', 'death_place': 'str'},
