@@ -92,6 +92,7 @@ import yaml
 #    _coerce_coord           - one coords entry → float | None
 #    _parse_place_coords     - hand-edited coords: → (lat, lon, warning)
 #    _index_places           - places.yaml → places, place_names, place_history
+#    _carries_person_record_fields - frontmatter says "I am a person record"
 #    _index_person           - one person .md → persons + person_files
 #                              + hypotheses + search_log (research files)
 #    _index_source           - one source .md → sources + claims + claim_persons
@@ -773,6 +774,45 @@ def _index_research_log_block(
         )
 
 
+# SPEC §9's required person-record fields are `id`, `name` and `living`.  Only
+# the last two are usable as a "this file is a person record" signal: the
+# research companion (SPEC §16, `_lib.RESEARCH_TEMPLATE_FALLBACK`) carries an
+# `id:` of its own, so testing `id` would promote every research file to a
+# profile.  `name` and `living` appear on person records and on nothing else
+# the person walker meets.
+PERSON_RECORD_FIELDS = ('name', 'living')
+
+
+def _carries_person_record_fields(meta: dict) -> bool:
+    """True when a file's own frontmatter asserts it IS a person record (SPEC §9).
+
+    Why content and not the filename: SPEC §13's person grammar is
+    `{primary_sort_name}__{given_names}[_{kind}]_{P-id}.md` and underscores
+    inside given names are legal, so the optional kind slot and the last
+    given-name segment are the SAME slot.  The grammar is ambiguous by
+    construction - `hartley__marie_timeline_P-…` is either a generated timeline
+    or the profile of Marie Timeline Hartley, and no reading of the name will
+    ever tell them apart.  Reading it the wrong way is the expensive direction:
+    `_index_person` writes the `persons` row only for a profile, so a
+    misclassified profile gets no row at all and the person vanishes from
+    `fha find`, every view, every count, the tree, the site, GEDCOM, WikiTree
+    and every packet - while the file sits there untouched, so nothing looks
+    broken.  A file that says what it is outranks a file that is merely named
+    something; the filename stays a hint, content overrides it.  The same test
+    catches the inverse error, a generated companion someone hand-edited into a
+    real record.
+
+    Key presence, not truthiness: `living: false` is the commonest value the
+    field takes and is falsy in Python, so a plain `meta.get('living')` would
+    read a long-dead ancestor's record as carrying nothing.
+    """
+    for field in PERSON_RECORD_FIELDS:
+        value = meta.get(field)
+        if field in meta and value is not None and str(value).strip():
+            return True
+    return False
+
+
 def _index_person(conn: sqlite3.Connection, path: Path, archive_root: Path) -> None:
     """
     Index one person .md file into persons and person_files.
@@ -782,40 +822,66 @@ def _index_person(conn: sqlite3.Connection, path: Path, archive_root: Path) -> N
     - they don't create a second persons entry, but views can find them by
     person_id and kind.
 
+    Which of the two a file is comes from its CONTENT first and its filename
+    only as a fallback - see `_carries_person_record_fields` for why the
+    filename alone cannot answer the question.
+
     Surname is parsed from the filename's double-underscore convention
     ({surname}__{given}_{P-id}) rather than the name: field, because the
     frontmatter name may include middle names or honorifics while the filename
     slug is always the birth surname.
     """
+    if path.suffix.lower() != '.md':
+        # SPEC §13 spells every person record `.md`, and the walker only ever
+        # hands us `.md` files.  The guard is here because `parse_filename`
+        # reads the companion-kind slot for `.md` alone: give it any other
+        # extension and it returns kind=None, which the fallback below would
+        # turn into 'profile' - minting a full persons row (name 'unknown')
+        # for a stray `.txt` or `.pdf` that happened to land under people/.
+        return
     if is_template_file(path):
         return   # `_TEMPLATE.*` is a teaching template, not a record
     rec = read_record(path)
     meta = rec['meta']
+    parsed_name = parse_filename(path)
 
+    # Identity: the frontmatter id first, the filename's P-id as the fallback.
+    # Generated companions (timeline, sources-index, draft-queue) carry no
+    # frontmatter id at all - the P-id lives in the filename instead - so the
+    # fallback is what puts them in person_files and on `fha find`.
+    #
+    # Both are checked with `is_valid_id`, not a `p-` prefix test.  A hand-typed
+    # `id: P-notanid` passed the prefix test and went straight into persons.id,
+    # where it joins to nothing: claim_persons, relationships, citations and
+    # every view key off a real Crockford id.  The person read as present in one
+    # table and absent from every query built on it.  A malformed id is not an
+    # identity, so fall through to the filename - the id the archive's existing
+    # `[[P-…]]` links already use - and let `fha lint` E002 name the typo.
     pid = normalize_id(str(meta.get('id', '')))
+    if not is_valid_id(pid) or id_type_of(pid) != 'P':
+        pid = ''
+        if parsed_name and parsed_name['id_type'] == 'P':
+            pid = parsed_name['id_str']
     if not pid:
-        # Generated companion files (timeline, sources-index, draft-queue) carry no
-        # frontmatter id - the P-id lives in the filename instead.  Extract it so
-        # these files appear in person_files and are discoverable via fha find.
-        parsed = parse_filename(path)
-        if parsed and parsed['id_type'] == 'P':
-            pid = parsed['id_str']
-    if not pid or not pid.startswith('p-'):
         return
 
     name = str(meta.get('name', '')) or 'unknown'
     stem = path.stem
-    # Kind comes from the shared filename grammar, not a substring search of
-    # the stem. SPEC §13 puts the companion kind immediately before the P-id
-    # (`hartley__thomas_timeline_P-…`), so anywhere else in the name it is part
-    # of the given names - and a profile whose given names happen to contain
-    # one ('__timeline_marie_P-…') was being filed as a companion, which meant
-    # no persons row at all: a real person absent from `fha find`, from every
-    # view, and from every count, with nothing to say why. parse_filename is
-    # also what `_lib._companion_row` uses when a view write updates these same
-    # rows incrementally, so the two paths now agree on what a companion is.
-    parsed_name = parse_filename(path)
-    kind = (parsed_name or {}).get('kind') or 'profile'
+    # Content decides, the filename hints.  SPEC §13 puts the companion kind
+    # immediately before the P-id (`hartley__thomas_timeline_P-…`), but
+    # underscores are legal inside given names, so that slot is shared with the
+    # last given name and the grammar cannot separate them.  A file whose
+    # frontmatter carries the SPEC §9 person-record fields is a profile whatever
+    # its stem says; a kind-suffixed stem with no such frontmatter is the
+    # generated companion it looks like.  Reading the stem alone lost real
+    # people (see `_carries_person_record_fields`).
+    #
+    # Note the asymmetry: content can only promote a file TO a profile, never
+    # demote one.  A profile-named file with sparse frontmatter (a stub carrying
+    # just `id:`) stays a profile, which is what it is.
+    is_person_record = _carries_person_record_fields(meta)
+    filename_kind = (parsed_name or {}).get('kind') or 'profile'
+    kind = 'profile' if is_person_record else filename_kind
 
     is_companion = kind != 'profile'
 
@@ -936,7 +1002,10 @@ def _index_person(conn: sqlite3.Connection, path: Path, archive_root: Path) -> N
 
     # Always record the file association.  Generated views have no frontmatter id
     # (their id comes from the filename fallback above) so mark them generated=1.
-    is_generated = not meta.get('id')
+    # A file whose frontmatter names a person is never machine output, even when
+    # its id has not been minted yet - a hand-authored record with no id is a
+    # legal pre-machine state (SPEC §10), not a generated view.
+    is_generated = not meta.get('id') and not is_person_record
     conn.execute(
         'INSERT OR REPLACE INTO person_files(person_id, kind, path, generated) VALUES (?,?,?,?)',
         (pid, kind, str(path.relative_to(archive_root)), 1 if is_generated else 0),
