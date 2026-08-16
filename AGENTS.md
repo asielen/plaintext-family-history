@@ -113,7 +113,7 @@ README.md whenever a change affects how a human reads the archive (the README ru
 
 ### Session end (all modes)
 
-Summarize what changed and where; list any proposed-but-unapproved decisions; supply a one-line commit message (git is the change log - commit only when asked).
+Summarize what changed and where; list any proposed-but-unapproved decisions; name any tool defects you logged in `TOOL_ISSUES.md` this session (and whether any wants filing upstream - a proposal, not an action); supply a one-line commit message (git is the change log - commit only when asked).
 
 ## The map
 
@@ -277,6 +277,48 @@ Execution rules (all tools): `fha` is not on PATH - invoke it through the launch
 Query the index, not the tree: person/claim/photo questions are SQL or `fha` calls.
 Never bulk-ingest `photos/` or `documents/` into context.
 
+### When a tool is wrong (log it, and how to file it upstream)
+
+An archive cannot fix its own tools: `.fha/` is vendored, and any local edit is silently
+reverted by the next `fha update-tools`. So a defect found here dies with the session unless it
+is written down where it can travel back to the project repo. Two tiers:
+
+**Tier 1 - always log locally; no permission needed.** Whenever you hit a bug, a missing
+capability, output that misattributes its own cause, or find yourself working around the tools,
+add an entry to **`TOOL_ISSUES.md` at the archive root** *before moving on* (create the file if
+absent; a `.claude/skills/{name}/GAP.md` may hold the long write-up for a skill-scoped gap, the
+register just points at it). This applies in `research` mode as much as any other - most tool
+bugs are found by ordinary use, not tool-building. An actionable entry names: the component
+(file and function), the date; the symptom **quoted verbatim** as the user saw it (a message that
+blames the wrong cause is itself a bug); the real cause if you worked it out, and a reproduction
+with measured numbers rather than "fails on large libraries"; the impact, and whether it is
+silent; a suggested fix and what a regression test would need; the environment when it might be
+platform-specific. Two rules that go with it: **never silently work around a gap** - a missing
+capability is a halt-and-name (`_STANDARD.md` §6), and that extends to defects; say what is
+wrong, log it, let the human decide, because an unrecorded workaround becomes load-bearing. And
+**log the failed workarounds too** - what looked safe, why it wasn't, and which signal misled you
+is the most valuable entry in the file: it stops the next reader repeating it.
+
+**Tier 2 - filing upstream is a separate, human-authorised step.** Opening a public issue on
+the project repo is outward-facing, effectively permanent, and - uniquely here - can publish
+private family data. **Propose it, then file only on an explicit yes.** Before filing: search
+the tracker (`gh issue list --repo asielen/plaintext-family-history --state all --search
+"<keywords>"`) and comment on a near-match rather than opening a duplicate; reproduce it and
+paste real output; rule out local misconfiguration (`fha doctor`) so an environment problem is
+not filed as a tool bug; one issue per defect, grouped only where one fix addresses several. And
+**scrub before you file:** a reproduction drawn from a real archive carries real names - in
+filenames, folder names, absolute paths, record titles, quoted transcript text. Replace them
+with synthetic equivalents that reproduce the defect just as well (a character-encoding bug
+reproduces from *any* filename with a combining accent; it does not need the 1945 photograph's
+caption naming two families), then re-read the finished body for names, places and paths before
+posting. A bug report is worth nothing that a privacy leak costs. Record the issue number
+against the local entry, and the local entry in the issue, so the two stay connected.
+
+**If the human asks for a local patch anyway** (a blocking bug they cannot wait on), mark every
+patched line in-source with a searchable token - `LOCAL PATCH` plus the register ID - and put a
+"re-apply or drop after `fha update-tools`" note at the top of `TOOL_ISSUES.md`, so
+`grep -rn "LOCAL PATCH" .fha/tools/` finds everything the next update is about to revert.
+
 ### Playbooks (workflow skills)
 
 Thirteen workflow playbooks live at `.claude/skills/{name}/SKILL.md` - portable markdown
@@ -330,4 +372,5 @@ No bulk renames.
 NEVER rename or move anything under the photos root (one exception: `fha process refile --to documents` moves a photo OUT of the photos root, renaming it at the crossing - human-confirmed, record updated in the same transaction).
 No editing `places.yaml` coordinates without human confirmation.
 No writing to `.cache/` by hand.
+No hand-editing `.fha/` (vendored - log the defect in `TOOL_ISSUES.md`; a human-requested local patch is marked `LOCAL PATCH` line by line), and no filing an upstream issue without an explicit yes and a scrubbed body.
 No deleting anything without explicit instruction - prefer `status: rejected`/`superseded` and `closed` questions, which preserve the research trail.
