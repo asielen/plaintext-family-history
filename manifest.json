@@ -30,13 +30,13 @@
     {
       "path": ".claude/skills/import-recordings/GAP.md",
       "category": "operating",
-      "sha256": "b2b18076c3c2f8ea3e5d71c3872e5a5671018ff6125a1cfe33174ed13ac1a579",
+      "sha256": "8099865da2e06b9a9407ca9d8a8a61bb16a0432805bfa9909385b181d174dd11",
       "spec_version": "1.2"
     },
     {
       "path": ".claude/skills/import-recordings/SKILL.md",
       "category": "operating",
-      "sha256": "e995ca5285729a0f369115b49bd764f229ec2b112048d017eaf4068f6ca7cc9a",
+      "sha256": "ad5ca4e53c4876ecdb0f4ff534cf8fe294c76f90fcfbf13a99a81f99df321804",
       "spec_version": "1.2"
     },
     {
@@ -48,7 +48,7 @@
     {
       "path": ".claude/skills/import-recordings/scripts/find_duplicate_media.py",
       "category": "operating",
-      "sha256": "719b4ce4c221485bbdcc03595a7c5075320cebf1e96a85604845176adac63368",
+      "sha256": "12f0c5d7c39ad2147468cbffd8cf6210d98d0e734bab0eef7e6d8dc76a010bee",
       "spec_version": "1.2"
     },
     {
@@ -563,7 +563,7 @@
     {
       "path": ".fha/tools/person.py",
       "category": "operating",
-      "sha256": "6b82c75bb9f5ab7600a1fc356c2861d950ea64f5ce4f0d19db6bb04a6f874edb",
+      "sha256": "cac5d442f2ce54b62de0572b50420961f8c1af86215a41e985f315bcd2c5e755",
       "spec_version": "1.2",
       "src": "tools/person.py"
     },
