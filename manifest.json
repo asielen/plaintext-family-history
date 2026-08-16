@@ -138,7 +138,7 @@
     {
       "path": ".claude/skills/transcribe-audio/scripts/transcribe_audio.py",
       "category": "operating",
-      "sha256": "8058cc002bac6609d4f7072288a849361b895a9acf1cfc60d9c1cabe8dc1e46d",
+      "sha256": "29490a57d08ad9a8a87d7664a1cb35560d3304d6f422504aa2cc625bf0b1a88e",
       "spec_version": "1.2"
     },
     {

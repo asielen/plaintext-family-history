@@ -371,9 +371,18 @@ def _discard(path):
     Every caller is tidying up after something else - either a success (the
     temps did their job) or a failure (whose exception is the real news). A
     complaint from the wastebasket must never replace either one.
+
+    `os.unlink` rather than `Path.unlink`, matching the `os.replace`/`os.open`/
+    `os.fsync` this file already works in. On Python 3.10 `Path.unlink` reaches
+    the syscall through a `pathlib` accessor that captured `os.unlink` when
+    pathlib was imported - so the same call is one indirection deep there and
+    direct on 3.11+. Nothing about the deletion differs, but the marker's
+    removal is a step the durability guarantee is defined in terms of, and a
+    step that can only be observed on some of the versions we support is a step
+    only tested on some of the versions we support.
     """
     try:
-        Path(path).unlink()
+        os.unlink(str(path))
     except OSError:
         pass
 
@@ -514,7 +523,7 @@ def _restore_previous(placed, kept):
     healed = True
     for final in placed:
         try:
-            final.unlink()
+            os.unlink(str(final))   # os.*, not Path.*, for the reason in _discard
         except OSError:
             healed = False
     for final, aside in kept:
