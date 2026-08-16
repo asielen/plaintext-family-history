@@ -722,7 +722,16 @@ CREATE VIRTUAL TABLE photo_fts USING fts5(path, title, caption, user_comment, ke
 **Scan.** Run `exiftool -j -r <fields> <photos-root>` - one process, JSON, batch 500 files.
 Incremental by `(path, mtime, size)`; `--full` bypasses. For each file:
 - `source_id`: keyword matching `SOURCE:\s*([Ss]-[0-9a-hjkmnp-tv-z]{10})`.
-- `edtf` + `date_pattern`: keywords matching `DATE:EDTF` (strip prefix); confidence per SPEC §20.
+- `date_pattern`: the body of a keyword matching `DATE:\s*(.+)` (strip prefix). Per SPEC §20
+  rule 1 that body is a precision pattern in letters - `Y!M!D!`, `Y!M~`, `Y~` - and nothing
+  else; a digit-bearing body (`DATE: 1880`, `DATE: 1942!-11!-25!`, a raw EDTF string) is
+  outside the grammar and yields no date (counted as `nonspec_date_keywords`).
+- `edtf`: that pattern resolved against the photo's EXIF `DateTimeOriginal` (SPEC §20 rule 2 -
+  the keyword says which components to believe, the EXIF value supplies the digits), stopping
+  at the first component that is not `!` or `~`. NULL when the photo carries no DATE: keyword:
+  the keyword's presence is what marks a date reviewed, so EXIF alone never resolves.
+  One implementation in `_lib` (`resolve_photo_edtf`, `edtf_confidence`) - `fha process`
+  folder triage resolves the same way, so both triage rankings agree.
 - Face regions: parse `XMP-mwg-rs:RegionInfo` → `photo_face_regions`
   `{path, name, region_type, area_json}` rows.
 - Rebuild `photo_people` every scan from cached `photo_keywords` + `photo_face_regions`.
@@ -1372,7 +1381,12 @@ fha process photo.jpg --more photo_back.jpg role:back ... # adds files: entry
 **One PR.** Extend `tools/process.py` (TOOLING §6).
 
 **Folder mode.** Run photoindex triage scorer over the folder; print ranked candidates; prompt
-to select (number, comma-list, or `all`); process selected items one by one.
+to select (number, comma-list, or `all`); process selected items one by one. The signals are
+read per file with exiftool (caption, description, `UserComment`, `Keywords`/`Subject`,
+`DateTimeOriginal`) instead of from the catalog, but the date signal resolves through the same
+`_lib` functions photoindex scores with (`resolve_photo_edtf`, `edtf_confidence`) - the two
+rankings of one folder have to agree, and restating the rule locally is how they stopped
+agreeing once already.
 
 **Tier 1 variation detection.** Before processing any file, scan its directory for siblings
 sharing the same `base_id` (via `parse_media_filename`). If found:

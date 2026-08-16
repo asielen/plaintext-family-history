@@ -100,6 +100,7 @@ are found the user is asked whether they are *one* source (shared S-id) or
 #    _photo_variation_siblings - photos in a dir sharing one base_id
 #    _variation_role_copy      - (role, copy) annotation for a grouped member
 #    _batch_type               - A–D label for a multi-image set (informational)
+#    _photo_meta_from_row      - one exiftool row -> triage signals (date resolved via _lib)
 #    _run_exiftool_read_meta   - caption/date/keyword signals for triage scoring
 #    _score_photo_group        - TOOLING §15b evidence score (mirrors photoindex)
 #
@@ -157,6 +158,7 @@ from _lib import (
     append_paragraph_to_section,
     claims_edit_problem,
     configure_utf8_stdout,
+    edtf_confidence,
     find_source_record_path,
     format_edtf_error,
     format_exiftool_error,
@@ -165,7 +167,6 @@ from _lib import (
     frontmatter_fence_span,
     grouping_stem,
     id_type_of,
-    is_valid_edtf,
     is_valid_id,
     load_fha_yaml,
     mint_ids,
@@ -178,6 +179,7 @@ from _lib import (
     read_text_exact,
     reapply_newline,
     resolve_path,
+    resolve_photo_edtf,
     resolve_root_arg,
     scan_ids_in_tree,
     scan_person_record_ids,
@@ -945,24 +947,73 @@ def _batch_type(members: list[Path]) -> tuple[str, str]:
 # read the few needed fields straight off the files via exiftool, degrading to
 # filename-only signals (back-variant) when exiftool is unavailable so a triage
 # still ranks rather than crashing on a machine without the binary.
+#
+# "The same signals" has to mean the same code, or the two rankings drift apart
+# silently. The date signal is the one that did: it read the DATE: keyword body
+# as if it were an EDTF date, which no spec-conformant keyword ever is. So the
+# date vocabulary now lives in _lib (resolve_photo_edtf, edtf_confidence) and
+# both tools call it (tools never import tools).
 
 # A user_comment that is purely machine-authored is weak evidence (TOOLING §15b);
 # mirrors photoindex._AI_COMMENT_RE.
 _AI_COMMENT_RE = re.compile(r'^\s*(AI|Model):', re.I)
+# The keyword that carries a photo's date precision (SPEC §20); its body is a
+# letter pattern, resolved against DateTimeOriginal - never read as a date itself.
 _DATE_KEYWORD_RE = re.compile(r'^DATE:\s*(.+)$')
+
+
+def _photo_meta_from_row(row: dict) -> dict:
+    """Map one exiftool JSON row to the triage signals `_score_photo_group` reads.
+
+    Returns {'caption', 'user_comment', 'edtf', 'has_pid_keyword'}, where `edtf`
+    is the photo's RESOLVED date - never the raw keyword body. A DATE: keyword
+    carries only precision letters ('Y!M!D!', 'Y~'); the date itself is the
+    photo's EXIF DateTimeOriginal, and `_lib.resolve_photo_edtf` pairs the two
+    (SPEC §20). Reading the keyword body as a date is the bug this replaced: a
+    spec-conformant 'Y!M!D!' is not valid EDTF, so the confident-date signal
+    could never fire and only the retired digit form ever scored.
+
+    Split out from the exiftool call so a test can drive the real mapping from
+    a fake metadata row - the parsing is where the tools have to agree, and the
+    subprocess is what a test cannot run.
+    """
+    keywords: list[str] = []
+    for key in ('Keywords', 'Subject'):
+        val = row.get(key)
+        if val is None:
+            continue
+        for v in (val if isinstance(val, list) else [val]):
+            keywords.append(str(v))
+
+    date_pattern = None
+    for kw in keywords:
+        m = _DATE_KEYWORD_RE.match(kw.strip())
+        if m:
+            date_pattern = m.group(1).strip()
+            break
+    has_pid = any(id_type_of(kw.strip()) == 'P' for kw in keywords)
+
+    return {
+        'caption': row.get('Caption-Abstract') or row.get('Description'),
+        'user_comment': row.get('UserComment'),
+        'edtf': resolve_photo_edtf(date_pattern, row.get('DateTimeOriginal')),
+        'has_pid_keyword': has_pid,
+    }
 
 
 def _run_exiftool_read_meta(file_path: Path) -> dict:
     """Read the caption/date/keyword signals one photo contributes to triage.
 
-    Returns {'caption', 'user_comment', 'edtf', 'has_pid_keyword'}. A separate
-    seam from `_run_exiftool_read_keywords` (which reads only Keywords/Subject
-    to detect a SOURCE: marker) because triage also needs the caption and
-    description fields. Monkeypatched in tests; raises RuntimeError when exiftool
-    is absent so the caller can degrade rather than fail.
+    Returns `_photo_meta_from_row`'s dict. A separate seam from
+    `_run_exiftool_read_keywords` (which reads only Keywords/Subject to detect a
+    SOURCE: marker) because triage also needs the caption, description and
+    capture-date fields - DateTimeOriginal is requested here because a DATE:
+    keyword alone cannot yield a date (SPEC §20 rule 2). Monkeypatched in tests;
+    raises RuntimeError when exiftool is absent so the caller can degrade rather
+    than fail.
     """
     cmd = ['exiftool', '-j', '-Caption-Abstract', '-XMP-dc:Description',
-           '-UserComment', '-Keywords', '-Subject', str(file_path)]
+           '-UserComment', '-DateTimeOriginal', '-Keywords', '-Subject', str(file_path)]
     try:
         proc = subprocess.run(cmd, check=False, capture_output=True, text=True, encoding='utf-8')
     except FileNotFoundError as e:
@@ -973,30 +1024,7 @@ def _run_exiftool_read_meta(file_path: Path) -> dict:
         rows = json.loads(proc.stdout or '[]')
     except json.JSONDecodeError as e:
         raise RuntimeError(f'exiftool returned invalid JSON: {e}') from e
-    row = rows[0] if rows else {}
-
-    keywords: list[str] = []
-    for key in ('Keywords', 'Subject'):
-        val = row.get(key)
-        if val is None:
-            continue
-        for v in (val if isinstance(val, list) else [val]):
-            keywords.append(str(v))
-
-    edtf = None
-    for kw in keywords:
-        m = _DATE_KEYWORD_RE.match(kw.strip())
-        if m:
-            edtf = m.group(1).strip()
-            break
-    has_pid = any(id_type_of(kw.strip()) == 'P' for kw in keywords)
-
-    return {
-        'caption': row.get('Caption-Abstract') or row.get('Description'),
-        'user_comment': row.get('UserComment'),
-        'edtf': edtf,
-        'has_pid_keyword': has_pid,
-    }
+    return _photo_meta_from_row(rows[0] if rows else {})
 
 
 def _score_photo_group(members: list[Path]) -> tuple[int, list[str]]:
@@ -1010,6 +1038,12 @@ def _score_photo_group(members: list[Path]) -> tuple[int, list[str]]:
     photo). Per-file metadata is read best-effort; a member whose metadata can't
     be read (no exiftool, unreadable file) contributes only its filename-derived
     back-variant signal.
+
+    The confident-date signal shares photoindex's actual code, not a
+    restatement of it: `_lib.resolve_photo_edtf` resolves the date and
+    `_lib.edtf_confidence` scores it, exactly as photoindex does from its
+    cached rows. This used to be a local re-expression carrying a comment that
+    claimed parity, and it was wrong for every spec-conformant keyword.
     """
     metas = []
     for p in members:
@@ -1029,10 +1063,7 @@ def _score_photo_group(members: list[Path]) -> tuple[int, list[str]]:
     if any(m['has_pid_keyword'] for m in metas):
         score += 2
         signals.append('pid-keyword')
-    # A confident date is year-precise (or finer) with no approximation marker -
-    # photoindex's _edtf_confidence marker_rank 0 condition, expressed directly.
-    if any(m['edtf'] and is_valid_edtf(m['edtf']) and '~' not in m['edtf'] and '?' not in m['edtf']
-           for m in metas):
+    if any(m['edtf'] and edtf_confidence(m['edtf'])[1] == 0 for m in metas):
         score += 1
         signals.append('date:Y!+')
     if any(parse_media_filename(p.stem).part_kind == 'back' for p in members):
