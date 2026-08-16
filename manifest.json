@@ -1,7 +1,7 @@
 {
   "manifest_version": "1",
   "spec_version": "1.2",
-  "generated": "2026-08-15",
+  "generated": "2026-08-16",
   "files": [
     {
       "path": ".claude/skills/README.md",
@@ -42,7 +42,7 @@
     {
       "path": ".claude/skills/import-recordings/scripts/attribute_speakers.py",
       "category": "operating",
-      "sha256": "93c3d19737f89fd41d2d60bdcfebb3bcd05a24470bbffa347616a13113825f18",
+      "sha256": "bb2f6074da16150012cea01c0b0efb1e212f3ad35d52c957c965a5b9c36434d2",
       "spec_version": "1.2"
     },
     {
