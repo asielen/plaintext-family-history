@@ -419,9 +419,13 @@ class ConfirmArchiveTests(unittest.TestCase):
         import unittest.mock as mock
         srcs = sorted((self.root / 'sources').rglob('*.md'))
         before = {p: p.read_text(encoding='utf-8') for p in srcs}
-        # The surgical editors write byte-faithfully via write_text_exact, so the
-        # failure is injected there (not Path.write_text).
-        real_write = confirm.write_text_exact
+        # The surgical editors write byte-faithfully AND atomically via
+        # write_text_exact_atomic, so the failure is injected there (not
+        # Path.write_text). Injecting at the writer proves the ROLLBACK works;
+        # tests/test_atomic_record_writes.py injects one level lower - inside
+        # the writer, mid-`handle.write` - to prove the individual file survives
+        # a write that dies partway.
+        real_write = confirm.write_text_exact_atomic
         state = {'n': 0}
 
         def flaky(path, text):
@@ -430,7 +434,7 @@ class ConfirmArchiveTests(unittest.TestCase):
                 raise OSError('simulated disk full')
             return real_write(path, text)
 
-        with mock.patch.object(confirm, 'write_text_exact', flaky):
+        with mock.patch.object(confirm, 'write_text_exact_atomic', flaky):
             r = confirm.run_confirm_xref(
                 self.root, claim_a=CLAIM_A, claim_b=CLAIM_B, relation='corroborates')
         self.assertEqual(r.exit_code, EXIT_FAILURE)

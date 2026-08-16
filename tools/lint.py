@@ -112,10 +112,13 @@ from _lib import (
     normalize_id,
     parse_filename,
     read_record,
+    read_text_exact,
+    reapply_newline,
     resolve_path,
     resolve_root_arg,
     roots_change_orphans,
     sex_slot_is_defaulted,
+    write_text_exact_atomic,
     yaml_inline,
 )
 
@@ -182,7 +185,9 @@ import yaml
 #  Format checks / fix modes
 #    _check_format               - W109: final newline, CRLF line endings
 #    _fix_format                 - apply conservative format fixes
-#    _read_text_exact / _write_text_exact / _file_newline - byte-preserving IO
+#    _file_newline               - the file's own newline style, for inserted lines
+#                                   (byte-preserving IO itself is _lib's
+#                                    read_text_exact / write_text_exact_atomic)
 #    _wrap_unfenced_claims / _fix_claims_fence - verified ```yaml wrap for W114
 #    _merge_aliases_into_frontmatter - add slug/stem aliases to an existing block
 #    _fix_mint_ids               - complete id-less records: mint + rename + alias
@@ -2578,7 +2583,16 @@ def _fix_format(
     stays here in the compute layer.
     """
     try:
-        text = path.read_text(encoding='utf-8')
+        # Exact IO, not `Path.read_text`. The default read translates CRLF to LF
+        # before this function ever sees it, so `.replace('\r\n', '\n')` below
+        # found nothing and the CRLF half of the fix only worked by accident -
+        # via the default WRITE translating back to os.linesep, which happens to
+        # be LF on Linux and CRLF on Windows. That means the fix for W109 "File
+        # uses CRLF line endings" did nothing on a CRLF file that already ended
+        # in a newline, and on Windows converted a clean LF archive TO CRLF.
+        # Reading and writing exactly makes the code do what its docstring says
+        # on every platform.
+        text = read_text_exact(path)
     except OSError:
         return
     fixed = text.replace('\r\n', '\n')
@@ -2588,7 +2602,7 @@ def _fix_format(
         if dry_run:
             progress.append(f'Would fix formatting: {path.name}')
         else:
-            path.write_text(fixed, encoding='utf-8')
+            write_text_exact_atomic(path, fixed)
             progress.append(f'Fixed formatting: {path.name}')
             changed.append(str(path))
 
@@ -2922,25 +2936,15 @@ def _needs_sourcing_backlog(registry: Registry) -> list[str]:
     return lines
 
 
-# TODO: swap to _lib exact-IO helpers once the pre-wave lands (a shared
-# _read_text_exact/_write_text_exact pair is being added to _lib.py by the
-# packet/lib consolidation work; these local copies exist so lint's surgery
-# does not depend on that landing first).
-def _read_text_exact(path: Path) -> str:
-    """Read a file preserving its own newlines (no universal-newline mangling).
-
-    The fix modes' contract is byte-preserving surgery outside the edited
-    spans. `Path.read_text`/`write_text` silently translate line endings
-    (an LF archive rewritten wholesale to CRLF on Windows, and vice versa),
-    which turns a one-line fix into a full-file rewrite of someone's
-    version-controlled evidence."""
-    return path.read_bytes().decode('utf-8')
-
-
-def _write_text_exact(path: Path, text: str) -> None:
-    """Write text with newline='' so the newlines in `text` land verbatim."""
-    with path.open('w', encoding='utf-8', newline='') as fh:
-        fh.write(text)
+# Byte-preserving IO for the fix modes comes from `_lib`
+# (`read_text_exact` / `write_text_exact_atomic`). lint used to keep private
+# copies of that pair here while the shared ones were still being added to
+# `_lib.py`; they landed, lint was never switched over, and so lint alone
+# missed the later upgrade from the truncating writer to the atomic one. The
+# lesson is worth the comment: a private copy of shared code does not get the
+# shared code's fixes. The fix modes are the wrong place to learn that - they
+# rewrite person and source records in bulk and unattended, so nobody is
+# watching when one goes wrong.
 
 
 def _file_newline(text: str) -> str:
@@ -2977,7 +2981,7 @@ def _wrap_unfenced_claims(path: Path) -> tuple[str | None, str | None]:
         lines from the human's evidence.
     """
     try:
-        text = _read_text_exact(path)
+        text = read_text_exact(path)
     except OSError:
         return None, None
     nl = _file_newline(text)
@@ -3051,7 +3055,7 @@ def _fix_claims_fence(
         if dry_run:
             progress.append(f'--fix-claims-fence dry-run: would wrap the claims in {rel} in a ```yaml fence')
         else:
-            _write_text_exact(path, wrapped)
+            write_text_exact_atomic(path, wrapped)
             progress.append(f'Wrapped claims fence: {rel}')
             changed.append(str(path))
 
@@ -3316,7 +3320,7 @@ def _fix_mint_ids(
         if path.stem.lower() != slug:
             aliases.append(path.stem)
         try:
-            text = _read_text_exact(path)
+            text = read_text_exact(path)
         except OSError:
             remaining.append((path, kind))
             continue
@@ -3354,7 +3358,7 @@ def _fix_mint_ids(
                 'add the id by hand')
             remaining.append((path, kind))
             continue
-        _write_text_exact(path, new_text)
+        write_text_exact_atomic(path, new_text)
         if new_path != path and not new_path.exists():
             path.rename(new_path)
             changed.append(str(new_path))
@@ -3509,7 +3513,7 @@ def _mint_claim_ids_in_file(
     if not any(isinstance(c, dict) and _claim_id_missing(c) for c in claims):
         return
     try:
-        text = _read_text_exact(path)
+        text = read_text_exact(path)
     except OSError:
         progress.append(f'--fix-ids: could not read {rel}; its claims were left alone.')
         return
@@ -3704,7 +3708,7 @@ def _mint_claim_ids_in_file(
             f'hand instead (mint codes with `fha id mint C`).')
         return
 
-    _write_text_exact(path, new_text)
+    write_text_exact_atomic(path, new_text)
     changed.append(str(path))
     progress.append(f'Minted {len(plans)} claim id(s) in {rel}{ph_note}')
     if n_stamped:
@@ -3756,7 +3760,10 @@ def _fix_mint_stubs(
                 f'created: {_today()}\n'
                 f'tier: stub\n---\n'
             )
-            stub_path.write_text(stub_content, encoding='utf-8')
+            # Exact + atomic like every other record write: a stub is a real
+            # person record from the moment it lands, and this loop creates them
+            # in bulk with nobody watching.
+            write_text_exact_atomic(stub_path, stub_content)
             progress.append(f'Created stub: {stub_path.relative_to(archive_root)}')
             changed.append(str(stub_path))
 
@@ -3783,7 +3790,7 @@ def _fix_spawn_questions(
         progress.append(f'Would append {len(to_spawn)} question(s) to notes/questions.md')
         return
     (archive_root / 'notes').mkdir(parents=True, exist_ok=True)
-    existing = questions_path.read_text(encoding='utf-8') if questions_path.exists() else ''
+    existing = read_text_exact(questions_path) if questions_path.exists() else ''
     appended = []
     for f in to_spawn:
         appended.append(
@@ -3792,7 +3799,12 @@ def _fix_spawn_questions(
             f'- context:\n  - (tool, {_today()}) Auto-spawned by fha lint E009.\n'
         )
     if appended:
-        questions_path.write_text(existing + '\n'.join(appended), encoding='utf-8')
+        # The question log is the human's research trail. Appending rewrites it
+        # whole, so a torn write would trade every logged question for the new
+        # ones - and this runs unattended under --fix.
+        write_text_exact_atomic(
+            questions_path,
+            reapply_newline(existing + '\n'.join(appended), existing))
         progress.append(f'Appended {len(appended)} question(s) to {questions_path.relative_to(archive_root)}')
         changed.append(str(questions_path))
 
@@ -3896,7 +3908,7 @@ def _fix_reciprocal(
                 f"{owner_name} (claim {fmt_id_display(m['claim_id'])}) in {rel}")
             continue
         try:
-            text = path.read_text(encoding='utf-8')
+            text = read_text_exact(path)
         except OSError:
             progress.append(f"--fix-reciprocal: could not read {rel}; skipped.")
             continue
@@ -3908,7 +3920,9 @@ def _fix_reciprocal(
                 f"--fix-reciprocal: couldn't safely place the mirror in {rel} "
                 f"(its relationships: block isn't a simple list) - add it by hand.")
             continue
-        path.write_text(new_text, encoding='utf-8')
+        # A person record, edited in a loop over every missing mirror edge:
+        # atomic so one failure costs one skipped edge, not one lost ancestor.
+        write_text_exact_atomic(path, reapply_newline(new_text, text))
         changed.append(str(path))
         progress.append(
             f"Added reciprocal '{m['mirror_role']}' edge to {owner_name} "

@@ -829,7 +829,12 @@ class MergeArchiveTests(unittest.TestCase):
 
     def test_rollback_on_injected_write_failure(self) -> None:
         before = tree_state(self.root)
-        real_write = confirm.write_text_exact
+        # The merge writes (and its undo journal restores) through the atomic
+        # writer; this injection proves the JOURNAL replays the earlier,
+        # already-completed writes. The atomic writer covers the other half -
+        # the file being written when the failure lands - which
+        # tests/test_atomic_record_writes.py pins directly.
+        real_write = confirm.write_text_exact_atomic
         state = {'n': 0}
 
         def flaky(path, text):
@@ -838,7 +843,7 @@ class MergeArchiveTests(unittest.TestCase):
                 raise OSError('simulated disk full')
             return real_write(path, text)
 
-        with mock.patch.object(confirm, 'write_text_exact', flaky):
+        with mock.patch.object(confirm, 'write_text_exact_atomic', flaky):
             r = run_merge(self.root)
         self.assertEqual(r.exit_code, EXIT_FAILURE)
         self.assertEqual(r.changed, [])

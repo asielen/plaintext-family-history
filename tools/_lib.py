@@ -107,7 +107,9 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    photoindex_status         - classify .cache/photos.sqlite freshness for find/doctor
 #
 #  Record parsing
-#    read_text_exact / write_text_exact - newline-exact record IO (no CRLF/LF translation)
+#    read_text_exact            - newline-exact record read (no CRLF/LF translation)
+#    write_text_exact           - its non-atomic mirror; NOT for archive records
+#    write_text_exact_atomic    - the record writer: temp + fsync + os.replace
 #    reapply_newline           - restore a record's CRLF/LF convention after a text edit
 #    yaml_inline                - single-line quoted YAML scalar (every surgical writer's rule)
 #    _coerce_yaml              - normalise YAML scalar types for consistent comparisons
@@ -1589,7 +1591,26 @@ def write_text_exact(path: str | Path, text: str) -> None:
     """Write text with no newline translation (the mirror of read_text_exact).
 
     Without `newline=''`, Windows would CRLF-ify an LF-authored record on the
-    write half of a round-trip even when the read half preserved it."""
+    write half of a round-trip even when the read half preserved it.
+
+    DO NOT USE THIS ON AN ARCHIVE RECORD - use `write_text_exact_atomic` below.
+    Opening in `'w'` mode truncates the target before the first byte is
+    written, so a write that dies partway (disk full, the process killed)
+    leaves the record holding its first few bytes and nothing else, while the
+    caller's `except OSError` reports a clean refusal. The archive's truth is
+    destroyed by a command that says nothing happened. That defect reached ten
+    call sites in `person.py` and eight more across `places`, `confirm`,
+    `lint`, `normalize_links`, `serve`, `stubs` and `packet` before it was
+    found, purely because this function and the atomic one sit next to each
+    other with near-identical names and nothing here said which to reach for.
+
+    The only cases where this writer is defensible are ones where the target
+    holds nothing worth keeping - a file being created for the first time on a
+    path a preflight has proven empty (`convert_mining.apply_plan`'s
+    `write_new`, `gedcom_import`'s), or disposable output under `.cache/` or
+    `generated/`. Even there it is merely sufficient, never better: the atomic
+    writer costs one rename and is correct everywhere. If you are adding a new
+    call site, the answer is almost certainly `write_text_exact_atomic`."""
     with Path(path).open('w', encoding='utf-8', newline='') as f:
         f.write(text)
 
@@ -3927,6 +3948,15 @@ def write_generated_file(
     photoindex.py; keeping one copy here (tools never import tools, so _lib is
     the only legal shared home) means the ownership rule can never drift between
     the two writers.
+
+    The write is atomic even though generated output is regenerable, because of
+    how the ownership guard above fails otherwise. A truncating write that dies
+    partway leaves a file whose first line is a fragment of the GENERATED
+    marker - so on the NEXT run the guard no longer recognises it, and the
+    human is told the tool refuses to overwrite a file it does not own, about a
+    file the tool wrote itself. Regenerating is supposed to be the cure for a
+    damaged generated file; that failure mode makes it the one thing that
+    cannot fix it, and leaves a non-technical reader with no next step.
     """
     if out_path.exists():
         try:
@@ -3943,7 +3973,7 @@ def write_generated_file(
         if not create_parents:
             raise GeneratedFileParentMissing(out_path)
         out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(content, encoding='utf-8')
+    write_text_exact_atomic(out_path, content)
     return out_path
 
 

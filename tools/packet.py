@@ -99,9 +99,10 @@ CODE MAP
     _is_image_path                - extension sniff for photo-type asset files
 
   Privacy redaction of copied records
-    (read_text_exact / write_text_exact - the newline-preserving IO that keeps a
-                                     redacted copy byte-faithful outside the cuts -
-                                     now live in _lib, shared with claims surgery)
+    (read_text_exact / write_text_exact_atomic - the newline-preserving,
+                                     crash-safe IO that keeps a redacted copy
+                                     byte-faithful outside the cuts - now live in
+                                     _lib, shared with claims surgery)
     _yaml_list_item_spans         - map a YAML list's entries to their line spans
     _redact_source_record_text    - cut the flag-withheld claims from a source record copy
                                      (decided per parsed entry, never by claim id)
@@ -181,7 +182,7 @@ from _lib import (
     resolve_root_arg,
     strip_link_wrapper,
     strip_unaccepted_drafts,
-    write_text_exact,
+    write_text_exact_atomic,
 )
 
 configure_utf8_stdout()
@@ -233,7 +234,7 @@ def _restricted_included(value, *, include_restricted: bool, include_dna: bool) 
 # byte-faithful - and every doubt fails CLOSED: a copy that cannot be redacted
 # is not written at all.
 # The newline-preserving IO pair these cuts depend on (read_text_exact /
-# write_text_exact) moved to _lib so the claims-surgery tools share the cure.
+# write_text_exact_atomic) moved to _lib so the claims-surgery tools share the cure.
 
 def _yaml_list_item_spans(block: str) -> list[tuple[int, int]] | None:
     """Offsets of each top-level `- ` entry in a YAML list block.
@@ -1193,7 +1194,18 @@ def _copy_redacted_source(
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest = _unique_dest_path(dest_dir, src.name)
     try:
-        write_text_exact(dest, new_text)
+        # Atomic here specifically, though the packet is regenerable output.
+        # Every other write in the build raises into run_packet's cleanup
+        # handler, which rmtree's the whole half-built directory - a
+        # transaction stronger than any single-file guarantee, so those writes
+        # need nothing. This one is the exception: its OSError is caught right
+        # here and downgraded to a per-file WARNING, so the directory cleanup
+        # never runs and the packet still ships as 'ok'. A truncating write
+        # would leave a half-written source record sitting in sources/ that
+        # the README lists as absent, and a relative opening the packet would
+        # read it as the whole record. Fail closed means the file is either
+        # complete or not there.
+        write_text_exact_atomic(dest, new_text)
     except OSError as e:
         messages.append(f'WARNING: could not copy {src}: {e}')
         return None
@@ -1561,7 +1573,13 @@ def _packet_payload(
                     'the draft text, then rebuild the packet.'
                 )
             if profile_out_text != profile_text:
-                write_text_exact(
+                # An OSError here raises into the cleanup handler at the bottom
+                # of the build, which rmtree's the whole packet - so atomicity
+                # is not what makes this write safe. It is atomic anyway
+                # because there is no case where the truncating writer is
+                # BETTER, only cases where it is merely sufficient, and one
+                # writer for records is easier to keep right than two.
+                write_text_exact_atomic(
                     _unique_dest_path(profile_dir, profile_path.name), profile_out_text,
                 )
                 if hidden_name_count:

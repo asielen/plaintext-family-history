@@ -102,7 +102,7 @@ from _lib import (  # noqa: E402
     resolve_root_arg,
     Result,
     VENDOR_DIR,
-    write_text_exact,
+    write_text_exact_atomic,
     yaml_inline,)
 
 # The engines serve drives in-process. Front-door imports (see module docstring).
@@ -1622,7 +1622,7 @@ def _verb_home_edit(state, kw, dry_run):
     """Bounded write of notes/home.md - parity with editing the file directly.
     Dry-run shows a unified diff (contract SS6).
 
-    Reads/writes through `read_text_exact`/`write_text_exact` and reapplies the
+    Reads/writes through `read_text_exact`/`write_text_exact_atomic` and reapplies the
     file's own newline convention with `reapply_newline` (the same byte-faithful
     pattern the surgical claim/profile editors use) - a plain `Path.read_text`/
     `write_text` round-trip would silently convert every line of a CRLF-authored
@@ -1652,7 +1652,10 @@ def _verb_home_edit(state, kw, dry_run):
         return result
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        write_text_exact(path, new)
+        # Atomic so the refusal below is true: the human typed this homepage
+        # intro into a browser form and gets one line of feedback, so 'could
+        # not write' has to mean the old text is still there.
+        write_text_exact_atomic(path, new)
     except OSError as e:
         return Result(ok=False, exit_code=EXIT_FAILURE).add('error', f'could not write notes/home.md: {e}')
     result.note_changed(path)

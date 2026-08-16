@@ -2251,7 +2251,7 @@ def attach_more(
         # (permission issue, transient I/O error, non-UTF-8 record), nothing
         # has been written to the photo yet, so there's nothing to roll back.
         try:
-            old_text = record_path.read_text(encoding='utf-8')
+            old_text = read_text_exact(record_path)
         except (OSError, UnicodeDecodeError) as e:
             print(f'ERROR: could not read {_rel(record_path, archive_root)}: {e}',
                   file=sys.stderr)
@@ -2263,14 +2263,20 @@ def attach_more(
             return EXIT_FAILURE
         try:
             new_text = _append_file_entry(old_text, entry)
-            record_path.write_text(new_text, encoding='utf-8')
+            # Atomic, unlike the scaffolding writes above: those CREATE a record
+            # and their undo unlinks the partial, but this one REPLACES a
+            # complete source record to add one files: entry. A truncating write
+            # here would trade the whole record for a fragment, and the rollback
+            # below would be trying to restore a file the failure had already
+            # destroyed.
+            write_text_exact_atomic(record_path, reapply_newline(new_text, old_text))
         except Exception as e:
             try:
                 rollback_err = _run_exiftool_remove_source(more_file, sid)
             except RuntimeError as rollback_exc:
                 rollback_err = str(rollback_exc)
             try:
-                record_path.write_text(old_text, encoding='utf-8')
+                write_text_exact_atomic(record_path, old_text)
             except Exception:
                 pass
             print(f'ERROR: attach failed after keyword write: {e}', file=sys.stderr)
@@ -2332,7 +2338,7 @@ def attach_more(
 
     undo: list = []
     try:
-        old_text = record_path.read_text(encoding='utf-8')
+        old_text = read_text_exact(record_path)
     except (OSError, UnicodeDecodeError) as e:
         print(f'ERROR: could not read {_rel(record_path, archive_root)}: {e}', file=sys.stderr)
         return EXIT_FAILURE
@@ -2342,14 +2348,16 @@ def attach_more(
         undo.append((f'move {new_path.name} back to {more_file.name}',
                      lambda: new_path.rename(more_file)))
         new_text = _append_file_entry(old_text, entry)
-        record_path.write_text(new_text, encoding='utf-8')
+        # Atomic for the same reason as the photos branch above: an existing
+        # source record is being replaced, not created.
+        write_text_exact_atomic(record_path, reapply_newline(new_text, old_text))
     except Exception as e:
         # Undo the record entry and the rename best-effort, but keep any failure:
         # a file left renamed while the record no longer lists it is inconsistent,
         # so the owner is told rather than shown a false "rolled back".
         failed: list[str] = []
         try:
-            record_path.write_text(old_text, encoding='utf-8')
+            write_text_exact_atomic(record_path, old_text)
         except Exception as rec_exc:
             failed.append(f'restore {record_path.name} ({rec_exc})')
         failed.extend(_run_undo(undo))
@@ -2739,7 +2747,7 @@ def process_refile(
     provenance paragraph appended to `## Notes` via the shared
     `append_paragraph_to_section` engine, both computed BEFORE anything moves
     so an unmatchable line refuses up front instead of rolling back. Line
-    endings are preserved exactly (read_text_exact/write_text_exact).
+    endings are preserved exactly (read_text_exact/write_text_exact_atomic).
 
     Deliberately out of scope for v1: re-typing (`refile` moves location,
     never `source_type`), same-root moves (reconcile's domain), and moving the

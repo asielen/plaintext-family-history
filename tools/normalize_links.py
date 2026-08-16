@@ -65,8 +65,10 @@ from _lib import (
     load_fha_yaml,
     normalize_id,
     read_record,
+    read_text_exact,
     resolve_ref,
     resolve_root_arg,
+    write_text_exact_atomic,
 )
 
 try:
@@ -291,7 +293,12 @@ def run_normalize_links(
 
     for path in _record_files(archive_root):
         try:
-            original = path.read_text(encoding='utf-8')
+            # Byte-faithful read: the default translates CRLF to LF, and the
+            # matching default write would then re-translate on the way out, so
+            # tidying one citation in a CRLF-authored record rewrote every line
+            # ending in it. This verb touches every record in the archive at
+            # once, so that churn is archive-wide.
+            original = read_text_exact(path)
         except OSError:
             continue
         new_text, edits, ambiguous = normalize_text(original, alias_map, clashes)
@@ -316,7 +323,13 @@ def run_normalize_links(
         result.data['diffs'][rel] = diff
         result.add('info', f'{rel}: {edits} citation(s) to normalize', path=path)
         if write:
-            path.write_text(new_text, encoding='utf-8')
+            # Atomic: --write walks every record in the archive, so a failure
+            # midway (disk full on a large tree) would otherwise truncate
+            # whichever record it happened to be holding open. No
+            # `reapply_newline` needed - `normalize_text` is regex substitution
+            # over the untranslated text, so `new_text` already carries the
+            # record's own line endings verbatim.
+            write_text_exact_atomic(path, new_text)
             result.note_changed(path)
 
     result.data['files_changed'] = files_changed

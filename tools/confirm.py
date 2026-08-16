@@ -176,7 +176,7 @@ from _lib import (
     result_fail,
     resolve_typed_ref,
     strip_link_wrapper,
-    write_text_exact,
+    write_text_exact_atomic,
     scan_ids_in_tree,
     scan_person_record_ids,
     yaml_inline,
@@ -635,7 +635,11 @@ def run_confirm_xref(
         # part-way through the reciprocal pair never leaves a one-sided link.
         for p, original in reversed(written):
             try:
-                write_text_exact(p, original)
+                # The rollback must be at least as safe as the write it undoes.
+                # A truncating restore turns a recoverable half-done pair into a
+                # destroyed source record - the failure path doing more damage
+                # than the failure.
+                write_text_exact_atomic(p, original)
             except OSError:
                 pass
         result.changed.clear()
@@ -643,7 +647,13 @@ def run_confirm_xref(
 
     for path, before, after in previews:
         try:
-            write_text_exact(path, reapply_newline(after, before))
+            # Atomic so `written` stays truthful: a path only enters the
+            # rollback list after its write landed whole, and a path that
+            # raised was never touched at all. With a truncating writer the
+            # failing file would be ruined and absent from the list, so the
+            # rollback would restore everything except the one file that
+            # needed it.
+            write_text_exact_atomic(path, reapply_newline(after, before))
         except OSError as e:
             _rollback_xref()
             return _fail(result, 'failed',
@@ -687,7 +697,7 @@ def _spawn_contradiction_question(archive_root: Path, ca: str, cb: str) -> Path:
     notes_dir = archive_root / 'notes'
     notes_dir.mkdir(parents=True, exist_ok=True)
     q_path = notes_dir / 'questions.md'
-    existing = q_path.read_text(encoding='utf-8') if q_path.exists() else ''
+    existing = read_text_exact(q_path) if q_path.exists() else ''
     a_disp, b_disp = fmt_id_display(ca), fmt_id_display(cb)
     block = (
         f'\n## Q: Contradiction: {a_disp} contradicts {b_disp}\n'
@@ -695,7 +705,11 @@ def _spawn_contradiction_question(archive_root: Path, ca: str, cb: str) -> Path:
         f'- context:\n  - (tool, {_today()}) Confirmed via `fha confirm xref`; '
         'resolve which claim stands.\n'
     )
-    q_path.write_text(existing + block, encoding='utf-8')
+    # The question log is archive truth and this is an append to it, so the
+    # whole existing file is rewritten: a torn write would drop every question
+    # the human has ever logged in order to add one. Byte-faithful IO too, so
+    # appending to a CRLF-authored log does not rewrite its every line.
+    write_text_exact_atomic(q_path, reapply_newline(existing + block, existing))
     return q_path
 
 
@@ -872,7 +886,10 @@ def run_confirm_cooccur(
                 result.add('info', '[dry-run] No file written.')
                 return result
             try:
-                write_text_exact(source_path, reapply_newline(after, before))
+                # Atomic: the refusal below tells the human nothing was
+                # written, and only a writer that leaves the source untouched
+                # on failure makes that message true.
+                write_text_exact_atomic(source_path, reapply_newline(after, before))
             except OSError as e:
                 return _fail(result, 'failed', f'cannot write {source_path}: {e}')
             result.note_changed(source_path)
@@ -943,7 +960,9 @@ def run_confirm_cooccur(
         return result
 
     try:
-        write_text_exact(source_path, reapply_newline(after, before))
+        # Atomic: this rewrites the whole source record to append one claim, so
+        # a torn write would cost every other claim on it.
+        write_text_exact_atomic(source_path, reapply_newline(after, before))
     except OSError as e:
         return _fail(result, 'failed', f'cannot write {source_path}: {e}')
 
@@ -1155,7 +1174,7 @@ def run_confirm_place(
         before = file_edits.get(path)
         if before is None:
             try:
-                before = path.read_text(encoding='utf-8')
+                before = read_text_exact(path)
             except OSError as e:
                 return _fail(result, 'failed', f'cannot read {path}: {e}')
             file_originals[path] = before
@@ -1195,15 +1214,19 @@ def run_confirm_place(
     written_files: list[Path] = []
 
     def _rollback() -> None:
+        # Restores go through the atomic writer for the same reason the writes
+        # do: a rollback that dies partway would destroy the record it was
+        # trying to rescue, and this path only ever runs when something has
+        # already gone wrong.
         for p in reversed(written_files):
             try:
-                p.write_text(file_originals[p], encoding='utf-8')
+                write_text_exact_atomic(p, file_originals[p])
             except OSError:
                 pass
         if into is None:
             try:
                 if places_existed:
-                    places_yaml.write_text(places_prior or '', encoding='utf-8')
+                    write_text_exact_atomic(places_yaml, places_prior or '')
                 elif places_yaml.exists():
                     places_yaml.unlink()
             except OSError:
@@ -1212,11 +1235,15 @@ def run_confirm_place(
     # 1. Registry write (new place only).
     if into is None:
         try:
-            places_prior = places_yaml.read_text(encoding='utf-8') if places_existed else None
+            places_prior = read_text_exact(places_yaml) if places_existed else None
             existing = places_prior or ''
             sep = '' if (not existing or existing.endswith('\n')) else '\n'
             places_yaml.parent.mkdir(parents=True, exist_ok=True)
-            places_yaml.write_text(existing + sep + '\n'.join(new_block_lines) + '\n', encoding='utf-8')
+            # The registry for every place in the archive, rewritten whole to
+            # append one block - atomic, or one bad write costs all of them.
+            new_registry = existing + sep + '\n'.join(new_block_lines) + '\n'
+            write_text_exact_atomic(
+                places_yaml, reapply_newline(new_registry, existing))
         except OSError as e:
             return _fail(result, 'failed', f'cannot write {places_yaml}: {e}')
 
@@ -1224,7 +1251,11 @@ def run_confirm_place(
     #    already folded into file_edits[path]).
     for path, after in file_edits.items():
         try:
-            path.write_text(after, encoding='utf-8')
+            # Atomic keeps `written_files` honest: a path is appended only after
+            # its bytes landed whole, so the rollback list and what is actually
+            # on disk cannot disagree.
+            write_text_exact_atomic(
+                path, reapply_newline(after, file_originals[path]))
         except OSError as e:
             _rollback()
             return _fail(result, 'failed', f'cannot write {path}: {e}')
@@ -1328,9 +1359,12 @@ def run_add_discovery(
 
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        existing = path.read_text(encoding='utf-8') if path.exists() else '# Discoveries Log\n'
+        existing = read_text_exact(path) if path.exists() else '# Discoveries Log\n'
         sep = '' if existing.endswith('\n') else '\n'
-        path.write_text(existing + sep + entry + '\n', encoding='utf-8')
+        # Appending one line rewrites the whole log, so the write is atomic:
+        # a torn one would trade every recorded discovery for the new one.
+        write_text_exact_atomic(
+            path, reapply_newline(existing + sep + entry + '\n', existing))
     except OSError as e:
         return _fail(result, 'failed', f'cannot write {path}: {e}')
 
@@ -1428,7 +1462,10 @@ def run_accept_draft(
         return result
 
     try:
-        write_text_exact(profile, reapply_newline(after, before))
+        # A person profile is often the archive's only account of that
+        # ancestor, and flipping the AI-DRAFT markers rewrites the whole file.
+        # Atomic, so accepting a draft can never cost the biography.
+        write_text_exact_atomic(profile, reapply_newline(after, before))
     except OSError as e:
         return _fail(result, 'failed', f'cannot write {profile}: {e}')
 
@@ -2967,12 +3004,28 @@ def run_confirm_merge(
         result.changed.clear()
 
     for path, (before, after) in planned.items():
-        # Register the restore BEFORE writing (the convert_mining pattern): a
-        # write that fails partway can still leave a half-written file, and
-        # restoring the pristine text covers that too.
-        undo.append(lambda p=path, t=before: write_text_exact(p, t))
+        # Register the restore BEFORE writing (the convert_mining pattern).
+        #
+        # Does the atomic writer make this journal unnecessary? Half of it, yes.
+        # The old justification was that "a write that fails partway can still
+        # leave a half-written file" - `write_text_exact_atomic` retires that
+        # one outright: the failing path is left holding its original bytes, so
+        # there is no torn file for the journal to repair. What the journal is
+        # still for is the OTHER files. A merge rewrites many records, and a
+        # failure on record N leaves records 1..N-1 completely and correctly
+        # written - to the survivor's half of a merge the human never
+        # authorised. No writer can undo those; only a replay of their pristine
+        # text can. So the journal stays, and registering the entry before the
+        # write stays too: an atomic write either happened or did not, and a
+        # restore for a write that never happened is a harmless no-op rewrite
+        # of identical bytes.
+        #
+        # The restore itself is atomic for the same reason the write is - a
+        # rollback is exactly when the archive can least afford a second
+        # failure to destroy the record it is rescuing.
+        undo.append(lambda p=path, t=before: write_text_exact_atomic(p, t))
         try:
-            write_text_exact(path, reapply_newline(after, before))
+            write_text_exact_atomic(path, reapply_newline(after, before))
         except OSError as e:
             _rollback_merge()
             return _fail(result, 'failed',
