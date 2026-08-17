@@ -1836,8 +1836,15 @@ def _role_pids(claim: dict, role: str, alias_map: dict[str, str] | None = None) 
     """Normalised P-ids filling one `roles:` key (scalar or list both accepted).
 
     Values resolve like persons: entries (`roles: {child: "[[Sam Rivera]]"}` is
-    the quickstart's form), so role matching agrees with _claim_person_ids."""
-    val = (claim.get('roles') or {}).get(role)
+    the quickstart's form), so role matching agrees with _claim_person_ids.
+
+    A hand-written `roles:` is not always the mapping the schema asks for -
+    E015's own message suggests the shorthand `roles: [parent, child]`, and a
+    list carries no person to resolve. Treat any non-mapping as "no roles
+    given" rather than letting `.get` raise: a lint pass must never hand the
+    human a traceback over a hand-edit it can simply read as empty."""
+    roles = claim.get('roles')
+    val = roles.get(role) if isinstance(roles, dict) else None
     out: set[str] = set()
     for ref in link_field_refs(val):
         pid = _resolve_person_ref(ref, alias_map)
@@ -2148,6 +2155,40 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
                         "missing from every timeline, vitals tally, and merge check). "
                         'Check the spelling, add the name as an alias on the right '
                         'person, or create the person - or leave it if it is only a note.'))
+
+            # W125: a marriage/divorce naming more than two people with no
+            # `roles: spouse:` map. Certificates routinely name the couple AND
+            # both sets of parents, and listing all six in persons: is correct
+            # (SPEC §8.3) - but then only the roles: map says who married whom.
+            # Without it the index cannot tell the couple from their parents and
+            # deliberately records NO spouse link rather than guessing one
+            # (index.py _spouse_parties). That silence is safe but invisible:
+            # the couple simply never appears in the tree. This warning is what
+            # makes it visible, and it is the whole reason the indexer is
+            # allowed to stay quiet.
+            # The legacy `relationship` + `subtype: spouse-of` shape derives
+            # spouse edges through the same rule, so it earns the same warning.
+            # Scoped to spouse-of alone: an ordinary parent/child relationship
+            # claim names three people (a child and two parents) and has no
+            # business being asked for a spouse role.
+            claim_type = str(claim.get('type', '')).strip().lower()
+            derives_spouses = claim_type in ('marriage', 'divorce') or (
+                claim_type == 'relationship'
+                and str(claim.get('subtype', '')).strip().lower() == 'spouse-of')
+            if derives_spouses:
+                named = _claim_person_ids(claim, alias_map)
+                if len(named) > 2 and not _role_pids(claim, 'spouse', alias_map):
+                    cost = ('no marriage is recorded as ending'
+                            if claim_type == 'divorce' else
+                            'no marriage is recorded between any of them')
+                    findings.append(Finding('W', 'W125', src_path,
+                        f'Claim {claim.get("id","?")} (type: {claim_type}) names '
+                        f'{len(named)} people but does not say which two of them were '
+                        f'the couple, so {cost} - they will be missing from the family '
+                        'tree, from `fha relate`, and from the charts on their pages. '
+                        'Leave everyone in persons: (a certificate names the parents '
+                        'too, and that is right) and add a roles: map naming the pair - '
+                        '`roles:` then an indented `spouse: [P-…, P-…]` line.'))
 
             # place reference - forgiving (PR 05): never reject a place the human
             # typed.  A well-formed L-id (bare or [[wrapped]]) that doesn't
