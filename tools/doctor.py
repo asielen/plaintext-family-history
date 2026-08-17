@@ -23,6 +23,10 @@ Checks (in order):
  11. Tools version      (.plaintext-version + pending update backups)
  12. Backup recency     (reads .cache/last_backup.json, the `fha backup` stamp;
                          always printed, info-level - never changes the exit code)
+ 13. Sources swallowed by .gitignore (#57: an unanchored pattern like `photos/`
+                         also matches `sources/photos/`, silently untracking
+                         SOURCE RECORDS, not the binary asset it was meant for;
+                         asks `git check-ignore`, never a hand-rolled parser)
 
 Exit codes: 0 = all pass; 1 = warnings only; 2 = errors.  TOOLING §3a.
 """
@@ -32,6 +36,7 @@ from __future__ import annotations
 import argparse
 import datetime
 import json
+import re
 import shlex
 import subprocess
 import os
@@ -101,6 +106,9 @@ configure_utf8_stdout()
 #    _is_restricted_value      - restricted marker predicate (mirrors index.py)
 #    _counts_from_index        - SQL queries against the fresh index
 #    _counts_from_scan         - quick file walk when index is absent or stale
+#
+#  Git-asked checks (never a hand-rolled parser - precedent commit 0f92e0a)
+#    _check_sources_gitignore  - #57: is anything under sources/ git-ignored?
 #
 #  Top-level
 #    run_doctor                - orchestrate all checks; return a Result (no printing)
@@ -304,6 +312,87 @@ def _counts_from_scan(archive_root: Path) -> dict:
                 living_unknown += 1
 
     return {'restricted': restricted, 'living': living_true, 'unknown': living_unknown}
+
+
+# ── Sources swallowed by .gitignore (#57) ───────────────────────────────────
+
+def _check_sources_gitignore(archive_root: Path, roots: dict,
+                              lines: list[str], checks: list[dict]) -> int:
+    """Ask git whether an unanchored `.gitignore` pattern is untracking sources/.
+
+    #57: a `.gitignore` pattern without a leading slash (`photos/`) matches a
+    directory of that name at ANY depth, so it also catches `sources/photos/` -
+    the SOURCE RECORDS (.md files carrying claims) that document each photo,
+    not the binary asset the pattern was meant for. Nothing else surfaces
+    this: `fha lint` is clean, `git status` shows nothing, the files read
+    fine on disk. An archive made from a template carrying that mistake
+    silently drops its photo (or document, or inbox-named) source records
+    from version control forever, and `fha update-tools` never touches a
+    committed `.gitignore` - it is the archive's own file - so an archive
+    already exposed stays exposed until something tells the owner.
+
+    ASK GIT, do not reimplement it - same reasoning as the .gitattributes
+    check below (precedent commit 0f92e0a): three hand-rolled parsers in
+    this codebase's history were each wrong in a different way, and `git
+    check-ignore` already implements precedence, negation and anchoring
+    correctly. Probes every mapped-root alias name (`roots:` keys - normally
+    `photos`/`documents`, the exact names the bug collides with) as a
+    sources/ subfolder, plus every subfolder that actually exists under
+    sources/ today, so a custom source_type folder name is covered too. One
+    batched `git check-ignore -v` call answers for every probe at once - it
+    exits 0 if ANY probe is ignored, 1 if none are, and either way prints one
+    line per ignored probe naming the exact pattern and line number that did it.
+    """
+    sources_dir = archive_root / 'sources'
+    probe_names: set[str] = set(roots.keys()) if isinstance(roots, dict) else set()
+    if sources_dir.is_dir():
+        probe_names.update(p.name for p in sources_dir.iterdir() if p.is_dir())
+    if not probe_names:
+        return EXIT_CLEAN
+
+    probes = [f'sources/{name}/probe.md' for name in sorted(probe_names)]
+    try:
+        out = subprocess.run(
+            ['git', 'check-ignore', '-v', '--'] + probes,
+            cwd=str(archive_root), capture_output=True, text=True, timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return EXIT_CLEAN          # no usable git: this check cannot answer, so it says nothing
+
+    if out.returncode not in (0, 1):
+        return EXIT_CLEAN          # not a git repo (or another answer git can't give) - say nothing
+
+    # -v prints one "source:line:pattern\tpath" line per IGNORED probe and
+    # nothing for the rest, so the exit code alone can't tell us which
+    # sources/ subfolder (if any) is affected - parse the matched lines.
+    findings: list[tuple[str, str, str, str]] = []
+    for line in out.stdout.splitlines():
+        if not line.strip() or '\t' not in line:
+            continue
+        rule, path = line.split('\t', 1)
+        m = re.match(r'^(?P<file>.+):(?P<lineno>\d+):(?P<pattern>.*)$', rule)
+        if not m:
+            continue
+        findings.append((path, m.group('file'), m.group('lineno'), m.group('pattern')))
+
+    if not findings:
+        return EXIT_CLEAN
+
+    for path, gi_file, lineno, pattern in findings:
+        rel_dir = path[:-len('/probe.md')] if path.endswith('/probe.md') else path
+        anchored = pattern if pattern.startswith('/') else f'/{pattern}'
+        lines.append(
+            f'sources ignored: {rel_dir}/ is caught by {gi_file}:{lineno} '
+            f'(pattern `{pattern}`)  next: anchor it to the archive root - change '
+            f'`{pattern}` to `{anchored}` in {gi_file} so it stops matching {rel_dir}/'
+        )
+    checks.append({
+        'id': 'sources_gitignore', 'status': 'warn',
+        'detail': f'{len(findings)} sources/ subfolder(s) ignored: '
+                  + ', '.join(f[0].rsplit("/probe.md", 1)[0] for f in findings),
+        'next_step': 'anchor the offending .gitignore pattern(s) with a leading slash',
+    })
+    return EXIT_WARNINGS
 
 
 # ── Tools-version check (fha install / fha update-tools, BUILD.md M9) ───────────
@@ -764,6 +853,12 @@ def run_doctor(archive_root: Path, fha_config: dict) -> Result:
                 'detail': f'{len(unprotected)} asset root(s) unprotected',
                 'next_step': 'add `<root>/** -text` to .gitattributes',
             })
+
+    # #57: an unanchored .gitignore pattern can silently untrack sources/.
+    # Same "ask git" gate as the .gitattributes check above - only meaningful
+    # for a git-tracked archive, and only answerable when git itself is usable.
+    if isinstance(roots, dict) and (archive_root / '.git').exists():
+        worst = max(worst, _check_sources_gitignore(archive_root, roots, lines, checks))
 
     if wc_mode:
         lines.append(

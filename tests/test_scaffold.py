@@ -16,6 +16,7 @@ Run: python -m unittest tests.test_scaffold -v
 
 import argparse
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -518,6 +519,64 @@ class ManifestSyncTest(unittest.TestCase):
         # Meanwhile the machinery IS vendored.
         self.assertTrue([p for p in by_path if p.startswith('.fha/tools/')])
         self.assertTrue([p for p in by_path if p.startswith('.fha/design/')])
+
+
+class ManifestChecksumMatchesGitBlobTests(unittest.TestCase):
+    """Postmortem for a manifest checksum that disagreed with git itself.
+
+    The repo's root `.gitattributes` pins `eol=lf` for every text extension
+    it ships (`*.md`, `*.py`, `*.json`, `*.yaml`, even `.gitignore`) so
+    `write-manifest` computes the same byte-hash on every platform - but it
+    had never pinned `.gitattributes` itself. On a Windows checkout that left
+    `archive-template/.gitattributes` (and any other file literally named
+    `.gitattributes`) falling through to `* text=auto`, which normalized it
+    to CRLF in the working tree. `write-manifest` hashes the working-tree
+    file, so the committed manifest entry silently drifted from what git's
+    own object store (and every LF platform) agrees the file's content is -
+    exactly #57's defect shape: a coverage rule that fails to cover the one
+    thing it's about, corrupting committed data nothing else checks.
+
+    A wrong checksum here is not cosmetic: `scaffold.generate_manifest`
+    (`_sha256_file`) feeds the checksums `fha install`/`fha update-tools`
+    compare against an archive's files to decide stock-vs-customized
+    (scaffold.py's reconcile logic) - a wrong hash can read a pristine stock
+    file as user-modified, or the reverse, on the next update.
+
+    This pins the manifest's checksum for the highest-risk skeleton dotfiles
+    against git's OWN stored blob (`git show HEAD:<path>`), bypassing the
+    working tree entirely, so a future missing `eol=lf` pin is caught the
+    moment the manifest is regenerated - on any platform - rather than
+    silently re-committed."""
+
+    def _git_blob_sha256(self, rel_path: str) -> str:
+        blob = subprocess.run(
+            ['git', 'show', f'HEAD:{rel_path}'],
+            cwd=ROOT, capture_output=True, check=True,
+        ).stdout
+        return hashlib.sha256(blob).hexdigest()
+
+    def _committed_manifest_entry(self, path: str) -> dict:
+        manifest = json.loads((ROOT / 'manifest.json').read_text(encoding='utf-8'))
+        return next(e for e in manifest['files'] if e['path'] == path)
+
+    def _assert_matches_git_blob(self, manifest_path: str) -> None:
+        entry = self._committed_manifest_entry(manifest_path)
+        src = entry.get('src', entry['path'])
+        expected = self._git_blob_sha256(src)
+        self.assertEqual(
+            entry['sha256'], expected,
+            f"manifest.json's checksum for {manifest_path} (src: {src}) does not "
+            f"match the sha256 of git's own stored content - this checkout is "
+            f"producing different bytes than the committed blob (almost always a "
+            f"missing `eol=lf` pin for this filename in the root .gitattributes). "
+            f"Fix the pin, `git add --renormalize {src}`, then regenerate the "
+            f"manifest - never hand-edit the checksum.")
+
+    def test_gitattributes_checksum_matches_the_git_blob(self):
+        self._assert_matches_git_blob('.gitattributes')
+
+    def test_gitignore_checksum_matches_the_git_blob(self):
+        self._assert_matches_git_blob('.gitignore')
 
 
 class InstallTest(unittest.TestCase):

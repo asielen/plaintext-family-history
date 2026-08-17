@@ -1,7 +1,7 @@
 {
   "manifest_version": "1",
   "spec_version": "1.2",
-  "generated": "2026-08-16",
+  "generated": "2026-08-17",
   "files": [
     {
       "path": ".claude/skills/README.md",
@@ -407,7 +407,7 @@
     {
       "path": ".fha/tools/README.md",
       "category": "operating",
-      "sha256": "d97b0e2737061adff745ee3cc7fb18f97a93a78f64b35ac1a8e62da14f28e171",
+      "sha256": "a493b286a990f477eb34a3a11393fdf4bb836d446e1460f3132c51594dd45fe9",
       "spec_version": "1.2",
       "src": "tools/README.md"
     },
@@ -505,7 +505,7 @@
     {
       "path": ".fha/tools/doctor.py",
       "category": "operating",
-      "sha256": "04795f7d65b798a797856c7e641c11a385ee59ffa5ae284cbdff64dfd3d8544f",
+      "sha256": "c2b12bec9d611f1a9599a661f8f9d8646b4a110a0250f413c1ca5b31806b1a01",
       "spec_version": "1.2",
       "src": "tools/doctor.py"
     },
@@ -827,7 +827,7 @@
     {
       "path": ".gitignore",
       "category": "skeleton",
-      "sha256": "a5d3066eaefc0a1767e7ab49817fdb2f801e0f4abfd34e2910f4216e6f22e29c",
+      "sha256": "90b32612e8a5224cb340436c4be0d1deca4919d812e36181580d94d89d67ea31",
       "spec_version": "1.2",
       "src": "archive-template/.gitignore"
     },
@@ -864,7 +864,7 @@
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "34a94c9b61f81dfa65ed1ee4b867a7372a2ab83fcc635e8c5b74575fe9ecad81",
+      "sha256": "c791613b5d179ef92b525fb25b2dfda08b21465104df84d6d46bf9c6cb00d7f9",
       "spec_version": "1.2"
     },
     {

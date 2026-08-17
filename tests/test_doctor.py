@@ -26,6 +26,8 @@ import datetime
 import io
 import json
 import os
+import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -402,6 +404,115 @@ class BackupStampTests(unittest.TestCase):
         self.assertIn('unreadable', check['detail'])
         self.assertIn('fha backup', check['next_step'])
         self.assertEqual(result.exit_code, EXIT_WARNINGS)
+
+
+@unittest.skipUnless(shutil.which('git'), 'requires git on PATH')
+class SourcesGitignoreTests(unittest.TestCase):
+    """#57: an unanchored `.gitignore` pattern (`photos/` instead of
+    `/photos/`) also matches `sources/photos/` at any depth - silently
+    dropping SOURCE RECORDS from version control, not the binary asset the
+    pattern was meant for. Nothing else surfaces this (lint is clean, `git
+    status` shows nothing), so doctor has to ask git directly - and stay
+    silent, never crash, when there is no git repo or no git binary at all,
+    since neither is an error condition for doctor."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        _write(self.root / 'fha.yaml',
+               'roots:\n  photos: photos\n  documents: documents\n')
+        (self.root / 'photos').mkdir()
+        (self.root / 'documents').mkdir()
+        subprocess.run(['git', 'init', '-q'], cwd=self.root, check=True)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _fha_config(self) -> dict:
+        return {'roots': {'photos': 'photos', 'documents': 'documents'}}
+
+    def _gitignore_check(self, result):
+        return next(
+            (c for c in result.data['checks'] if c['id'] == 'sources_gitignore'),
+            None,
+        )
+
+    def test_unanchored_pattern_is_flagged_with_pattern_and_fix(self) -> None:
+        _write(self.root / '.gitignore', 'photos/\ndocuments/\ninbox/\n')
+        (self.root / 'sources' / 'photos').mkdir(parents=True)
+
+        result = doctor.run_doctor(self.root, self._fha_config())
+        report = '\n'.join(result.data['lines'])
+
+        self.assertIn('sources ignored', report)
+        self.assertIn('sources/photos', report)
+        self.assertIn('photos/', report)          # the offending pattern, named
+        self.assertIn('/photos/', report)         # the one-line repair, named
+        check = self._gitignore_check(result)
+        self.assertIsNotNone(check, 'doctor must report a sources_gitignore finding')
+        self.assertEqual(check['status'], 'warn')
+        self.assertGreaterEqual(result.exit_code, EXIT_WARNINGS)
+
+    def test_anchored_pattern_is_clean(self) -> None:
+        _write(self.root / '.gitignore', '/photos/\n/documents/\n/inbox/\n')
+        (self.root / 'sources' / 'photos').mkdir(parents=True)
+
+        result = doctor.run_doctor(self.root, self._fha_config())
+        report = '\n'.join(result.data['lines'])
+
+        self.assertNotIn('sources ignored', report)
+        self.assertIsNone(self._gitignore_check(result))
+
+    def test_no_gitignore_file_is_clean(self) -> None:
+        (self.root / 'sources' / 'photos').mkdir(parents=True)
+        result = doctor.run_doctor(self.root, self._fha_config())
+        self.assertIsNone(self._gitignore_check(result))
+
+    def test_not_a_git_repo_is_silent_never_an_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp2:
+            root2 = Path(tmp2)
+            _write(root2 / 'fha.yaml', 'roots:\n  photos: photos\n')
+            (root2 / 'photos').mkdir()
+            _write(root2 / '.gitignore', 'photos/\n')     # no `git init` at all
+            (root2 / 'sources' / 'photos').mkdir(parents=True)
+
+            result = doctor.run_doctor(root2, {'roots': {'photos': 'photos'}})
+            self.assertIsNone(self._gitignore_check(result))
+            self.assertNotIn('sources ignored', '\n'.join(result.data['lines']))
+
+    def test_git_binary_missing_is_silent_never_an_error(self) -> None:
+        """A broken PATH (git uninstalled or unreachable) must degrade this
+        one check to silence, exactly like the .gitattributes check it
+        borrows the pattern from - never a traceback, never a false finding."""
+        _write(self.root / '.gitignore', 'photos/\n')
+        (self.root / 'sources' / 'photos').mkdir(parents=True)
+
+        orig_run = doctor.subprocess.run
+
+        def _no_git(cmd, **kwargs):
+            if cmd[:2] == ['git', 'check-ignore']:
+                raise FileNotFoundError('git not found on PATH')
+            return orig_run(cmd, **kwargs)
+
+        doctor.subprocess.run = _no_git
+        try:
+            result = doctor.run_doctor(self.root, self._fha_config())
+        finally:
+            doctor.subprocess.run = orig_run
+
+        self.assertIsNone(self._gitignore_check(result))
+        self.assertNotIn('sources ignored', '\n'.join(result.data['lines']))
+
+    def test_custom_source_type_folder_is_probed_too(self) -> None:
+        """Not just photos/documents from roots: - any real subfolder under
+        sources/ is probed, so a custom source_type folder name colliding
+        with some other unrelated pattern is caught too."""
+        _write(self.root / '.gitignore', 'newspapers/\n')
+        (self.root / 'sources' / 'newspapers').mkdir(parents=True)
+
+        result = doctor.run_doctor(self.root, self._fha_config())
+        report = '\n'.join(result.data['lines'])
+        self.assertIn('sources/newspapers', report)
 
 
 class RenderTests(unittest.TestCase):
