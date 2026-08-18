@@ -2241,3 +2241,97 @@ class UnreadableRecordBuildTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class UndecodableFileBuildTests(unittest.TestCase):
+    """A file that is not UTF-8 must not take the whole index down (#62 class).
+
+    Sibling of `UnreadableRecordBuildTests`, found by sweeping for the same
+    shape.  Three reads in this module - each note, `notes/research-log.md`,
+    and `.cache/capture_log.jsonl` - guarded only `except OSError`.
+    `UnicodeDecodeError` is a **ValueError**, not an OSError, so a file saved in
+    the machine's own codepage sailed straight past the guard and out of
+    `build_index`: an unhandled traceback, and NOTHING indexed at all.  Strictly
+    worse than the silent drop #62 was filed for, and reachable by writing one
+    note in a Windows editor - cp1252 is its default, and the names this archive
+    is full of (Krakow, Muller, nee) are exactly the bytes that differ.
+
+    That the codebase already knew is what makes it a miss rather than an
+    oversight: the `dump_text` read in this same file catches
+    `UnicodeDecodeError` by name.  Three siblings never got the same treatment.
+
+    Pinned here: the build survives, the rest of the archive still indexes, the
+    file is named with what its loss costs, and the run ends on the documented
+    warnings exit rather than 0 or a crash.  The file is never rewritten - it is
+    the human's, and it is not damaged, only encoded differently.
+    """
+
+    def setUp(self) -> None:
+        self.root = Path(tempfile.mkdtemp())
+        (self.root / 'fha.yaml').write_text(
+            'roots:\n  documents: documents\n', encoding='utf-8')
+        (self.root / 'notes').mkdir()
+        (self.root / 'sources').mkdir()
+        (self.root / 'people').mkdir()
+
+    def _cp1252(self, rel: str) -> Path:
+        p = self.root / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes('# Note\n\nGrandma in Krak\u00f3w, n\u00e9e M\u00fcller.\n'.encode('cp1252'))
+        return p
+
+    def test_a_cp1252_note_does_not_crash_the_build(self) -> None:
+        self._cp1252('notes/research.md')
+        result = index.build_index(self.root, {'roots': {'documents': 'documents'}})
+        self.assertEqual(1, result.exit_code,
+                         'a file that will not decode is a warning, not a clean run')
+
+    def test_the_rest_of_the_archive_still_indexes(self) -> None:
+        self._cp1252('notes/research.md')
+        (self.root / 'notes' / 'good.md').write_text(
+            '# Good\n\nfindable words here\n', encoding='utf-8')
+        index.build_index(self.root, {'roots': {'documents': 'documents'}})
+        conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
+        try:
+            rows = conn.execute(
+                "SELECT count(*) FROM notes_fts WHERE content LIKE '%findable%'"
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        self.assertEqual(1, rows,
+                         'one undecodable note must not cost the notes that DO decode')
+
+    def test_the_message_names_the_file_and_the_loss(self) -> None:
+        self._cp1252('notes/research.md')
+        result = index.build_index(self.root, {'roots': {'documents': 'documents'}})
+        text = '\n'.join(m.text for m in result.messages)
+        self.assertIn('notes/research.md', text)
+        self.assertIn('UTF-8', text)
+        self.assertNotIn(str(self.root), text,
+                         'a local absolute path has no business in a committed report')
+
+    def test_an_undecodable_research_log_is_reported(self) -> None:
+        self._cp1252('notes/research-log.md')
+        result = index.build_index(self.root, {'roots': {'documents': 'documents'}})
+        self.assertEqual(1, result.exit_code)
+        self.assertIn('research-log.md',
+                      '\n'.join(m.text for m in result.messages))
+
+    def test_an_undecodable_capture_log_is_reported(self) -> None:
+        self._cp1252('.cache/capture_log.jsonl')
+        result = index.build_index(self.root, {'roots': {'documents': 'documents'}})
+        self.assertEqual(1, result.exit_code)
+        self.assertIn('capture_log.jsonl',
+                      '\n'.join(m.text for m in result.messages))
+
+    def test_the_file_is_never_rewritten(self) -> None:
+        p = self._cp1252('notes/research.md')
+        before = p.read_bytes()
+        index.build_index(self.root, {'roots': {'documents': 'documents'}})
+        self.assertEqual(before, p.read_bytes(),
+                         'the note is the human\'s and is not damaged - never touch it')
+
+    def test_a_clean_archive_still_exits_zero(self) -> None:
+        (self.root / 'notes' / 'fine.md').write_text('# Fine\n\nwords\n', encoding='utf-8')
+        result = index.build_index(self.root, {'roots': {'documents': 'documents'}})
+        self.assertEqual(0, result.exit_code, 'no new noise on a clean archive')

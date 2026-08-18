@@ -1408,7 +1408,8 @@ def _index_source(
         )
 
 
-def _index_notes(conn: sqlite3.Connection, archive_root: Path, on_error=None) -> None:
+def _index_notes(conn: sqlite3.Connection, archive_root: Path, on_error=None,
+                 on_decode_error=None) -> None:
     """Index notes files for FTS.
 
     `on_error` is the build's shared unreadable-folder recorder (see
@@ -1423,6 +1424,19 @@ def _index_notes(conn: sqlite3.Connection, archive_root: Path, on_error=None) ->
         try:
             content = path.read_text(encoding='utf-8')
         except OSError:
+            continue
+        except UnicodeDecodeError:
+            # A note saved in the machine's own codepage rather than UTF-8 -
+            # cp1252 is what a Windows editor writes by default, and the names
+            # this archive is full of (Krakow, Muller, nee) are exactly the
+            # characters that differ. Left uncaught this raised straight out of
+            # build_index and took the WHOLE index down: nothing indexed at
+            # all, a traceback for an answer. UnicodeDecodeError is a
+            # ValueError, not an OSError, so the guard above never saw it -
+            # which is why the sibling read at `dump_text` catches it by name
+            # and these three did not.
+            if on_decode_error is not None:
+                on_decode_error(path)
             continue
         conn.execute(
             'INSERT INTO notes_fts(path, content) VALUES (?,?)',
@@ -1439,12 +1453,19 @@ def _index_notes(conn: sqlite3.Connection, archive_root: Path, on_error=None) ->
             content = research_log_path.read_text(encoding='utf-8')
         except OSError:
             content = ''
+        except UnicodeDecodeError:
+            # Same class as the per-note read above; the research log is one
+            # file, so losing it silently loses every search ever logged there.
+            if on_decode_error is not None:
+                on_decode_error(research_log_path)
+            content = ''
         if content.strip():
             rel_path = str(research_log_path.relative_to(archive_root))
             _index_research_log_block(conn, content, None, rel_path)
 
 
-def _index_capture_log(conn: sqlite3.Connection, archive_root: Path) -> None:
+def _index_capture_log(conn: sqlite3.Connection, archive_root: Path,
+                       on_decode_error=None) -> None:
     """Re-ingest `.cache/capture_log.jsonl` rows into search_log.
 
     `fha capture` writes a search_log row directly into index.sqlite for
@@ -1459,6 +1480,14 @@ def _index_capture_log(conn: sqlite3.Connection, archive_root: Path) -> None:
         try:
             lines = capture_log_path.read_text(encoding='utf-8').splitlines()
         except OSError:
+            lines = []
+        except UnicodeDecodeError:
+            # capture_log.jsonl is the ONLY record of captures made before this
+            # index existed (`_drop_tables` clears search_log every build and
+            # this replays it), so decoding it away silently loses that history
+            # for good rather than until the next run.
+            if on_decode_error is not None:
+                on_decode_error(capture_log_path)
             lines = []
         for line in lines:
             line = line.strip()
@@ -1830,6 +1859,14 @@ def build_index(archive_root: Path, fha_config: dict, verbose: bool = False) -> 
     # ride one collector to one warning list.
     parse_warnings: list[tuple[str, str, str]] = []
     on_parse_error = _parse_error_recorder(parse_warnings, archive_root)
+    # Files whose BYTES would not decode as UTF-8 - a different failure from a
+    # record that decoded and then would not parse, and it needs its own list:
+    # `_parse_error_recorder`'s message promises "`fha lint` reports the same
+    # problem", and for these it does not. lint reads the same files through
+    # the same `except OSError` guard and dies on them too, so pointing the
+    # human at lint here would be sending them at a second crash.
+    undecodable_files: list[Path] = []
+    on_decode_error = undecodable_files.append
 
     try:
         with conn:
@@ -1879,10 +1916,10 @@ def build_index(archive_root: Path, fha_config: dict, verbose: bool = False) -> 
                 print(f'  indexed {source_count} source files')
 
             # Notes FTS
-            _index_notes(conn, archive_root, on_error)
+            _index_notes(conn, archive_root, on_error, on_decode_error)
 
             # Capture log (durability: survives a search_log drop/rebuild)
-            _index_capture_log(conn, archive_root)
+            _index_capture_log(conn, archive_root, on_decode_error)
 
             # Citation scan - the full alias map now includes source stems, so a
             # `[[grandmas-album]]` prose link resolves to its S-id and a cited
@@ -1932,6 +1969,20 @@ def build_index(archive_root: Path, fha_config: dict, verbose: bool = False) -> 
             'read. This is usually a folder whose permissions changed, or a '
             'drive or network share that is not connected - reconnect it (or '
             'restore your access), then run `fha index` again.'
+        )
+    if undecodable_files:
+        shown = ', '.join(
+            _archive_relative(p, archive_root) for p in undecodable_files[:5])
+        if len(undecodable_files) > 5:
+            shown += f' and {len(undecodable_files) - 5} more'
+        unreadable_warnings.append(
+            f'{len(undecodable_files)} file(s) are not saved as UTF-8 text, so '
+            f'their words are not in the index: {shown}. They will not be found '
+            'by `fha find --text`, and a research log or capture log that will '
+            'not decode loses the searches recorded in it. The file itself is '
+            'fine and nothing was changed - it was written in an older encoding '
+            '(a Windows editor defaults to one). Re-save it as UTF-8, then run '
+            '`fha index` again.'
         )
 
     # One row per record that would not parse, in walk order, without repeating
