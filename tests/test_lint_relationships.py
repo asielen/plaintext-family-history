@@ -355,5 +355,140 @@ class NeedsSourcingBacklogTests(unittest.TestCase):
         self.assertIn('hypothesis', joined)
 
 
+class MarriageScopeW115Tests(unittest.TestCase):
+    """W115 must read a marriage claim's `roles:` map the way the indexer does.
+
+    A marriage certificate names the couple AND both sets of parents (SPEC §8.3),
+    and `roles: spouse:` says which two of them married. Treating everyone named
+    as a spouse makes lint demand `relationships:` spouse entries between the
+    bride and her father-in-law - marriages the same claim explicitly excludes
+    and the indexer correctly refuses to derive. Lint asking the human to record
+    a marriage the tools have just decided did not happen is the worst kind of
+    warning: it is confident, wrong, and its "fix" corrupts the tree.
+    """
+
+    HUS, WIF = 'P-h1h1h1h1h1', 'P-w2w2w2w2w2'
+    HFA, HMO = 'P-f3f3f3f3f3', 'P-m4m4m4m4m4'
+    WFA, WMO = 'P-f5f5f5f5f5', 'P-m6m6m6m6m6'
+    MARRIAGE = 'C-1111111111'
+    SRC = 'S-7777777777'
+
+    def _files(self, *, blocks: dict | None = None) -> dict:
+        everyone = [self.HUS, self.WIF, self.HFA, self.HMO, self.WFA, self.WMO]
+        files = {}
+        for n, pid in enumerate(everyone):
+            block = (blocks or {}).get(pid, '')
+            fname, text = _person(pid, 'kin', f'p{n}', relationships=block)
+            files[fname] = text
+        claim = (
+            '- value: "married"\n'
+            f'  id: {self.MARRIAGE}\n'
+            '  type: marriage\n'
+            f'  persons: [{", ".join(everyone)}]\n'
+            '  roles:\n'
+            f'    spouse: [{self.HUS}, {self.WIF}]\n'
+            '  status: accepted\n'
+            '  reviewed: 2026-01-01\n'
+            '  confidence: high\n'
+            '  date: 1890\n'
+            '  information: primary\n'
+            '  evidence: direct\n'
+            '  notes: A test marriage claim.\n'
+        )
+        files[f'sources/notes/{self.SRC.lower()}.md'] = (
+            '---\n'
+            f'id: {self.SRC}\n'
+            'title: Marriage certificate\n'
+            'source_type: vital-record\n'
+            '---\n\n'
+            f'## Claims\n\n```yaml\n{claim}```\n'
+        )
+        return files
+
+    def test_parent_on_the_certificate_is_not_asked_for_a_spouse_entry(self) -> None:
+        # The groom's father opted into a relationships: block. The certificate
+        # names him because he is the groom's father, and its roles: map says
+        # so. Lint must not read him as a spouse and demand he record a
+        # marriage - the indexer derives none for him.
+        block = '\n'.join([
+            'relationships:',
+            f'  - to: "[[{self.HMO}|P3 Kin]]"',
+            '    type: spouse',
+            '    status: hypothesis',
+        ])
+        root = _build(self._files(blocks={self.HFA: block}))
+        findings, _registry = lint._run_lint_core(root, {})
+        self.assertEqual(
+            [f.message for f in _codes(findings, 'W115')], [],
+            'a marriage claim marries the people its roles: map names - not '
+            'every person printed on the certificate')
+
+    def test_the_couple_is_still_asked_for_their_spouse_entry(self) -> None:
+        # The other half of the same rule: the people the roles: map DOES name
+        # still have to apply the claim in an opted-in block, or W115 says so.
+        block = '\n'.join([
+            'relationships:',
+            f'  - to: "[[{self.HFA}|P2 Kin]]"',
+            '    type: parent',
+            '    status: hypothesis',
+        ])
+        root = _build(self._files(blocks={self.HUS: block}))
+        findings, _registry = lint._run_lint_core(root, {})
+        messages = [f.message for f in _codes(findings, 'W115')]
+        self.assertTrue(
+            any('a spouse edge naming them' in m for m in messages), messages)
+
+    def test_sourced_spouse_entry_between_two_parents_is_flagged(self) -> None:
+        # The forward direction. The groom's parents ARE married - but not by
+        # this claim, and citing their son's marriage certificate for it is the
+        # drift W115 exists to name. Before the scoping fix lint accepted the
+        # link silently, so the person doc said one thing and the index another.
+        block = '\n'.join([
+            'relationships:',
+            f'  - to: "[[{self.HMO}|P3 Kin]]"',
+            '    type: spouse',
+            f'    claim: "[[{self.MARRIAGE}]]"',
+        ])
+        root = _build(self._files(blocks={self.HFA: block}))
+        findings, _registry = lint._run_lint_core(root, {})
+        messages = [f.message for f in _codes(findings, 'W115')]
+        self.assertTrue(
+            any('does not record this spouse edge' in m for m in messages),
+            messages)
+
+    def test_ordinary_two_person_marriage_still_backs_the_edge(self) -> None:
+        # The common claim - two people, no roles: map - must keep reconciling
+        # exactly as before. This is the case the scoping must not touch.
+        files = {}
+        for n, pid in enumerate([self.HUS, self.WIF]):
+            block = '\n'.join([
+                'relationships:',
+                f'  - to: "[[{self.WIF if pid == self.HUS else self.HUS}|Spouse]]"',
+                '    type: spouse',
+                f'    claim: "[[{self.MARRIAGE}]]"',
+            ])
+            fname, text = _person(pid, 'kin', f'p{n}', relationships=block)
+            files[fname] = text
+        claim = (
+            '- value: "married"\n'
+            f'  id: {self.MARRIAGE}\n'
+            '  type: marriage\n'
+            f'  persons: [{self.HUS}, {self.WIF}]\n'
+            '  status: accepted\n'
+            '  reviewed: 2026-01-01\n'
+            '  confidence: high\n'
+            '  date: 1890\n'
+            '  information: primary\n'
+            '  evidence: direct\n'
+            '  notes: A test marriage claim.\n'
+        )
+        files[f'sources/notes/{self.SRC.lower()}.md'] = (
+            f'---\nid: {self.SRC}\ntitle: Marriage certificate\n'
+            f'source_type: vital-record\n---\n\n## Claims\n\n```yaml\n{claim}```\n'
+        )
+        findings, _registry = lint._run_lint_core(_build(files), {})
+        self.assertEqual([f.message for f in _codes(findings, 'W115')], [])
+
+
 if __name__ == '__main__':
     unittest.main()

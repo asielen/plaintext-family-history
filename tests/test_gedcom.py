@@ -290,5 +290,227 @@ class GedcomExportTests(unittest.TestCase):
             self.assertEqual(r['status'], 'no-index')
 
 
+class MarriageRoleScopingTests(unittest.TestCase):
+    """The export reads `roles:` for who married whom, exactly as the index does.
+
+    A marriage certificate names the couple AND both sets of parents, and
+    listing all six in `persons:` is correct (`persons:` is who the claim is
+    about, SPEC §8.3). The GEDCOM writer keys each marriage claim to a FAM by
+    its spouse pair; keying it by the first two people on the certificate
+    instead hangs the son's wedding date and place on his parents' family
+    record - a fact about the wrong marriage, exported as truth into whatever
+    program reads the file. Index and export must answer "who married whom" the
+    same way or the archive contradicts its own export (TOOLING §197).
+    """
+
+    HUS, WIF = 'p-1000000001', 'p-1000000002'
+    HFA, HMO = 'p-1000000003', 'p-1000000004'
+    WFA, WMO = 'p-1000000005', 'p-1000000006'
+    KID = 'p-1000000007'
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        conn = _make_index(self.root)
+        for pid, name, sex, surname in (
+            (self.HUS, 'Amos Prentice', 'M', 'Prentice'),
+            (self.WIF, 'Clara Denby', 'F', 'Denby'),
+            (self.HFA, 'Reuben Prentice', 'M', 'Prentice'),
+            (self.HMO, 'Hannah Prentice', 'F', 'Prentice'),
+            (self.WFA, 'Silas Denby', 'M', 'Denby'),
+            (self.WMO, 'Martha Denby', 'F', 'Denby'),
+            (self.KID, 'Ida Prentice', 'F', 'Prentice'),
+        ):
+            _add_person(conn, pid, name, sex, surname=surname)
+        # Both sets of parents are genuinely married; each raised one of the
+        # couple; the couple has a child, so their own family record exists
+        # whether or not the marriage claim could be scoped.
+        _spouse(conn, self.HFA, self.HMO)
+        _spouse(conn, self.WFA, self.WMO)
+        for parent in (self.HFA, self.HMO):
+            _parent_child(conn, parent, self.HUS)
+        for parent in (self.WFA, self.WMO):
+            _parent_child(conn, parent, self.WIF)
+        for parent in (self.HUS, self.WIF):
+            _parent_child(conn, parent, self.KID)
+        _add_source(conn, 's-0000000009', 'Prentice-Denby marriage certificate')
+        conn.commit()
+        self.conn = conn
+
+    def tearDown(self):
+        try:
+            self.conn.close()
+        except sqlite3.ProgrammingError:
+            pass
+        self._tmp.cleanup()
+
+    def _certificate(self, roles: dict | None) -> None:
+        """The six-person certificate, parents transcribed first (the ordinary
+        order on a printed form), optionally carrying a `roles: spouse:` map."""
+        self.conn.execute(
+            'INSERT INTO claims(id, source_id, type, date_edtf, date_min, place_text, '
+            'value, status) VALUES (?,?,?,?,?,?,?,?)',
+            ('c-0000000009', 's-0000000009', 'marriage', '1890', '1890-01-01',
+             'Wedding Town', 'married', 'accepted'),
+        )
+        order = [self.HFA, self.HMO, self.WFA, self.WMO, self.HUS, self.WIF]
+        for pos, pid in enumerate(order):
+            self.conn.execute(
+                'INSERT INTO claim_persons(claim_id, person_id, position, role) '
+                'VALUES (?,?,?,?)',
+                ('c-0000000009', pid, pos, (roles or {}).get(pid)),
+            )
+        self.conn.commit()
+        self.conn.close()
+
+    def _families(self, text: str) -> dict[frozenset, str]:
+        """Every FAM record in the export, keyed by its HUSB/WIFE person ids."""
+        xref_to_pid = {}
+        blocks, current = [], None
+        for line in text.split('\r\n'):
+            if line.startswith('0 '):
+                if current is not None:
+                    blocks.append(current)
+                current = [line] if ' INDI' in line or ' FAM' in line else None
+                continue
+            if current is not None:
+                current.append(line)
+        if current is not None:
+            blocks.append(current)
+        for block in blocks:
+            if block[0].endswith(' INDI'):
+                xref = block[0].split('@')[1]
+                for line in block:
+                    if line.startswith('1 REFN '):
+                        xref_to_pid[xref] = line[len('1 REFN '):].strip().lower()
+        out = {}
+        for block in blocks:
+            if not block[0].endswith(' FAM'):
+                continue
+            members = frozenset(
+                xref_to_pid.get(line.split('@')[1], line)
+                for line in block
+                if line.startswith('1 HUSB ') or line.startswith('1 WIFE ')
+            )
+            out[members] = '\r\n'.join(block)
+        return out
+
+    def test_six_person_certificate_without_roles_never_marries_the_parents(self):
+        # Pre-fix the writer fell back to the first two people on the claim -
+        # here the groom's parents - and hung the son's 1890 wedding on THEIR
+        # family record. The index (correctly) derives no spouse edge from this
+        # claim at all, so the export must record no marriage from it either.
+        self._certificate(roles=None)
+        r = gedcom.run_gedcom(self.root, self.HUS, mode='connected')
+        self.assertEqual(r['status'], 'ok')
+        self.assertNotIn(
+            'Wedding Town', r['text'],
+            "a certificate that never says who the couple were must not put "
+            "its date and place on somebody else's family record")
+        fams = self._families(r['text'])
+        parents_fam = fams.get(frozenset({self.HFA, self.HMO}))
+        self.assertIsNotNone(parents_fam, 'the parents keep their own family record')
+        self.assertNotIn('MARR', parents_fam)
+
+    def test_six_person_certificate_with_roles_marries_the_couple(self):
+        # With the roles: map present the event belongs to the couple - and to
+        # nobody else on the certificate.
+        self._certificate(roles={self.HUS: 'spouse', self.WIF: 'spouse'})
+        conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
+        _spouse(conn, self.HUS, self.WIF)     # the edge the fixed index derives
+        conn.commit()
+        conn.close()
+        r = gedcom.run_gedcom(self.root, self.HUS, mode='connected')
+        fams = self._families(r['text'])
+        couple_fam = fams.get(frozenset({self.HUS, self.WIF}))
+        self.assertIsNotNone(couple_fam)
+        self.assertIn('MARR', couple_fam)
+        self.assertIn('Wedding Town', couple_fam)
+        self.assertNotIn('MARR', fams[frozenset({self.HFA, self.HMO})])
+        self.assertNotIn('MARR', fams[frozenset({self.WFA, self.WMO})])
+
+    def test_partial_roles_map_falls_back_to_the_two_named_people(self):
+        # A roles: map naming one resolvable spouse has not answered the
+        # question, so a two-person claim still marries the two it names - the
+        # same fallback the index applies, so the two never disagree.
+        self.conn.execute(
+            'INSERT INTO claims(id, source_id, type, date_edtf, date_min, place_text, '
+            'value, status) VALUES (?,?,?,?,?,?,?,?)',
+            ('c-0000000009', 's-0000000009', 'marriage', '1890', '1890-01-01',
+             'Wedding Town', 'married', 'accepted'),
+        )
+        for pos, (pid, role) in enumerate(
+                [(self.HUS, 'spouse'), (self.WIF, None)]):
+            self.conn.execute(
+                'INSERT INTO claim_persons(claim_id, person_id, position, role) '
+                'VALUES (?,?,?,?)', ('c-0000000009', pid, pos, role))
+        _spouse(self.conn, self.HUS, self.WIF)
+        self.conn.commit()
+        self.conn.close()
+        r = gedcom.run_gedcom(self.root, self.HUS, mode='connected')
+        couple_fam = self._families(r['text'])[frozenset({self.HUS, self.WIF})]
+        self.assertIn('Wedding Town', couple_fam)
+
+    def test_serial_marriage_event_that_finds_no_family_is_reported(self):
+        # A `roles: spouse:` naming three people (successive marriages recorded
+        # on one claim) is a party set no two-person FAM key can match, so the
+        # MARR date and place simply have nowhere to go. Refusing to guess
+        # which two of the three to hang it on is right; dropping the event
+        # without a word is not - the export would carry the families and quietly
+        # lose the marriage facts, and nothing on the human's screen would say so.
+        self.conn.execute(
+            'INSERT INTO claims(id, source_id, type, date_edtf, date_min, place_text, '
+            'value, status) VALUES (?,?,?,?,?,?,?,?)',
+            ('c-0000000009', 's-0000000009', 'marriage', '1890', '1890-01-01',
+             'Wedding Town', 'married', 'accepted'),
+        )
+        for pos, pid in enumerate([self.HUS, self.WIF, self.HMO]):
+            self.conn.execute(
+                'INSERT INTO claim_persons(claim_id, person_id, position, role) '
+                'VALUES (?,?,?,?)', ('c-0000000009', pid, pos, 'spouse'))
+        # The three pairings the index derives from that claim.
+        for a, b in ((self.HUS, self.WIF), (self.HUS, self.HMO), (self.WIF, self.HMO)):
+            _spouse(self.conn, a, b)
+        self.conn.commit()
+        self.conn.close()
+        r = gedcom.run_gedcom(self.root, self.HUS, mode='connected')
+        self.assertEqual(r['status'], 'ok')
+        # The event really is absent - that part is the deliberate refusal.
+        self.assertNotIn('Wedding Town', r['text'])
+        # And the export says so, in the same place it reports redactions.
+        said = ' '.join(r['messages'])
+        self.assertIn('marriage', said.lower())
+        self.assertIn('c-0000000009', said.lower())
+        self.assertIn('3 people', said)
+        self.assertIn('roles:', said)
+
+    def test_an_ordinary_marriage_reports_nothing(self):
+        # The false positive the warning must not have: a two-person marriage
+        # whose family the export builds is placed, and nothing is said.
+        self._certificate(roles={self.HUS: 'spouse', self.WIF: 'spouse'})
+        conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
+        _spouse(conn, self.HUS, self.WIF)
+        conn.commit()
+        conn.close()
+        r = gedcom.run_gedcom(self.root, self.HUS, mode='connected')
+        self.assertEqual(
+            [m for m in r['messages'] if 'marriage' in m.lower()], [])
+
+    def test_a_marriage_outside_the_exported_set_reports_nothing(self):
+        # The other false positive: a depth-capped or seeded export leaves
+        # people out on purpose, and a marriage whose couple is not in the file
+        # is scoping, not a lost fact. Only an event whose people ARE all here
+        # and still has no home is worth a word.
+        self._certificate(roles={self.HUS: 'spouse', self.WIF: 'spouse'})
+        conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
+        _spouse(conn, self.HUS, self.WIF)
+        conn.commit()
+        conn.close()
+        r = gedcom.run_gedcom(self.root, self.WFA, mode='ancestors')
+        self.assertEqual(r['status'], 'ok')
+        self.assertEqual(
+            [m for m in r['messages'] if 'marriage' in m.lower()], [])
+
+
 if __name__ == '__main__':
     unittest.main()
