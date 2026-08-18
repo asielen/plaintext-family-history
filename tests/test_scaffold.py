@@ -580,6 +580,60 @@ class ManifestChecksumMatchesGitBlobTests(unittest.TestCase):
     def test_gitignore_checksum_matches_the_git_blob(self):
         self._assert_matches_git_blob('.gitignore')
 
+    def test_every_manifest_checksum_matches_its_git_blob(self):
+        """The same check over EVERY entry, not just the two dotfiles above.
+
+        The two named tests pin the files whose `eol=lf` pin was actually
+        missing. They would not have caught the recurrence: `tools/README.md`
+        was authored with CRLF, `.gitattributes` normalized it to LF on
+        commit (so `git status` stayed clean), and `write-manifest` recorded
+        the working tree's CRLF hash - a value no other platform reproduces.
+        Three separate audits missed it because they compared the manifest
+        against the WORKING TREE, which is circular: it passes on exactly
+        this bug. Only git's stored blob is an independent answer.
+
+        Reports every drifted entry at once rather than dying on the first,
+        because the failure mode is "whoever regenerated the manifest last
+        was on Windows" - which tends to move several files together."""
+        manifest = json.loads((ROOT / 'manifest.json').read_text(encoding='utf-8'))
+        drifted = []
+        for entry in manifest['files']:
+            src = entry.get('src', entry['path'])
+            blob = subprocess.run(
+                ['git', 'show', f'HEAD:{src}'],
+                cwd=ROOT, capture_output=True, check=False,
+            )
+            if blob.returncode != 0:
+                continue     # not committed at HEAD (a brand-new file): nothing to compare
+            # git stores every text blob LF-normalized, but a file pinned
+            # `eol=crlf` (the Windows launchers, `*.cmd`) is CHECKED OUT with
+            # CRLF on every platform - and the checkout is what ships into an
+            # archive, so the CRLF hash is the correct manifest value there.
+            # Compare against the bytes a checkout produces, not the raw blob,
+            # or this test demands that a deliberately-pinned file be wrong.
+            content = blob.stdout
+            eol = subprocess.run(
+                ['git', 'check-attr', 'eol', '--', src],
+                cwd=ROOT, capture_output=True, text=True, check=False,
+            ).stdout
+            if eol.rstrip().endswith(': crlf'):
+                content = content.replace(b'\n', b'\r\n')
+            actual = hashlib.sha256(content).hexdigest()
+            if entry['sha256'] != actual:
+                drifted.append(f"  {entry['path']} (src: {src})\n"
+                               f"    manifest: {entry['sha256']}\n"
+                               f"    git blob: {actual}")
+        self.assertEqual(
+            [], drifted,
+            "manifest.json records checksums that disagree with git's own stored "
+            "bytes for these entries:\n" + '\n'.join(drifted) + '\n'
+            "This checkout produced different bytes than the committed blob - "
+            "almost always CRLF in the working tree (a missing `eol=lf` pin, or a "
+            "file authored with CRLF that git normalized on commit). Fix the line "
+            "endings, then regenerate the manifest - never hand-edit a checksum, "
+            "and never audit the manifest against the working tree, which cannot "
+            "detect this.")
+
 
 class ManifestChecksumMatchesGitBlobSkipGuardTests(unittest.TestCase):
     """PR #60 review finding 3, kept in its own class - not inside
