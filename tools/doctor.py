@@ -342,6 +342,17 @@ def _check_sources_gitignore(archive_root: Path, roots: dict,
     batched `git check-ignore -v` call answers for every probe at once - it
     exits 0 if ANY probe is ignored, 1 if none are, and either way prints one
     line per ignored probe naming the exact pattern and line number that did it.
+
+    `-v` ALSO prints a line for a probe that matched a `!`-negated pattern -
+    the probe is NOT ignored (a whitelist-style `.gitignore`, `*` followed by
+    `!sources/**`, is a normal way to track only sources/ in an otherwise-
+    ignored tree), but git still exits 0 and still names the matching rule.
+    Those lines are not findings and are filtered out below before the
+    anchoring advice is built - anchoring a negated pattern by prefixing `/`
+    would turn `!sources/**` into `/!sources/**`, which git parses as a
+    LITERAL path named "!sources/**" rather than a negation, silencing the
+    unignore rule and re-ignoring the very file this check exists to
+    protect. Verified against real git, not reasoned about (PR #60 review).
     """
     sources_dir = archive_root / 'sources'
     probe_names: set[str] = set(roots.keys()) if isinstance(roots, dict) else set()
@@ -373,7 +384,10 @@ def _check_sources_gitignore(archive_root: Path, roots: dict,
         m = re.match(r'^(?P<file>.+):(?P<lineno>\d+):(?P<pattern>.*)$', rule)
         if not m:
             continue
-        findings.append((path, m.group('file'), m.group('lineno'), m.group('pattern')))
+        pattern = m.group('pattern')
+        if pattern.startswith('!'):
+            continue        # negated: probe is NOT ignored - not a finding, see docstring
+        findings.append((path, m.group('file'), m.group('lineno'), pattern))
 
     if not findings:
         return EXIT_CLEAN
@@ -855,9 +869,17 @@ def run_doctor(archive_root: Path, fha_config: dict) -> Result:
             })
 
     # #57: an unanchored .gitignore pattern can silently untrack sources/.
-    # Same "ask git" gate as the .gitattributes check above - only meaningful
-    # for a git-tracked archive, and only answerable when git itself is usable.
-    if isinstance(roots, dict) and (archive_root / '.git').exists():
+    # No `(archive_root / '.git').exists()` gate here (PR #60 review): an
+    # archive kept as a records folder INSIDE a larger personal git repo -
+    # a normal way to keep one - has no `.git` of its own at the archive
+    # root, yet its files are still subject to a `.gitignore` higher up the
+    # tree, and that is exactly where #57 bites. `git check-ignore` already
+    # walks up to find the enclosing repo on its own; `_check_sources_
+    # gitignore` already degrades silently (EXIT_CLEAN, no finding) whenever
+    # git cannot answer - no repo anywhere above, no git binary, a timeout -
+    # so a local `.git` gate here was redundant when present and wrong when
+    # the archive is nested.
+    if isinstance(roots, dict):
         worst = max(worst, _check_sources_gitignore(archive_root, roots, lines, checks))
 
     if wc_mode:

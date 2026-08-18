@@ -514,6 +514,63 @@ class SourcesGitignoreTests(unittest.TestCase):
         report = '\n'.join(result.data['lines'])
         self.assertIn('sources/newspapers', report)
 
+    def test_whitelist_style_gitignore_produces_no_finding(self) -> None:
+        """PR #60 review finding 1: `git check-ignore -v` also prints a line
+        for a `!`-negated pattern - the path is NOT ignored, and git still
+        exits 0 - so a whitelist-shaped .gitignore (`*` then `!sources/` /
+        `!sources/**`, the common way to track only sources/ in an otherwise-
+        ignored tree) must NOT be reported as a finding. Verified against
+        real git first (not reasoned about): `git check-ignore -v` on this
+        exact shape prints `.gitignore:3:!sources/**  sources/photos/...`
+        and exits 0, while `git add -n` confirms the path is genuinely
+        trackable. The old code counted every printed -v line as a finding,
+        so this shape produced a false "sources ignored" warning - and its
+        remedy (`change !sources/** to /!sources/**`) is invalid syntax that
+        git parses as a LITERAL path named "!sources/**", silencing the
+        unignore rule and re-ignoring the file: the fix would cause the very
+        data-loss bug #57 exists to catch."""
+        _write(self.root / '.gitignore', '*\n!sources/\n!sources/**\n')
+        (self.root / 'sources' / 'photos').mkdir(parents=True)
+
+        result = doctor.run_doctor(self.root, self._fha_config())
+        report = '\n'.join(result.data['lines'])
+
+        self.assertNotIn('sources ignored', report)
+        self.assertIsNone(self._gitignore_check(result))
+
+    def test_nested_archive_inside_parent_repo_is_still_checked(self) -> None:
+        """PR #60 review finding 2: the archive itself need not hold `.git` -
+        a normal way to keep an archive is as a records folder inside a
+        larger personal git repo, where the archive's files are still
+        subject to a `.gitignore` higher up the tree. Verified against real
+        git first: `git check-ignore -v` run with cwd set to a subfolder
+        that has no `.git` of its own still walks up and answers from the
+        parent repo's .gitignore. The old `(archive_root / '.git').exists()`
+        gate skipped this case entirely - exactly where #57 bites - even
+        though `_check_sources_gitignore` already degrades silently on its
+        own when git cannot answer, making the gate redundant everywhere
+        else and harmful here."""
+        with tempfile.TemporaryDirectory() as tmp2:
+            parent = Path(tmp2)
+            subprocess.run(['git', 'init', '-q'], cwd=parent, check=True)
+            _write(parent / '.gitignore', 'photos/\ndocuments/\ninbox/\n')
+            archive = parent / 'family-archive'
+            _write(archive / 'fha.yaml',
+                   'roots:\n  photos: photos\n  documents: documents\n')
+            (archive / 'photos').mkdir()
+            (archive / 'documents').mkdir()
+            (archive / 'sources' / 'photos').mkdir(parents=True)
+            self.assertFalse((archive / '.git').exists(),
+                             'the archive itself must NOT hold its own .git')
+
+            result = doctor.run_doctor(archive, self._fha_config())
+            report = '\n'.join(result.data['lines'])
+
+            self.assertIn('sources ignored', report)
+            check = self._gitignore_check(result)
+            self.assertIsNotNone(
+                check, 'a nested archive still owes a sources_gitignore finding')
+
 
 class RenderTests(unittest.TestCase):
     """_cmd_doctor renders data['lines'] verbatim and returns the exit code."""

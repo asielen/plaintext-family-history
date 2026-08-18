@@ -17,6 +17,7 @@ Run: python -m unittest tests.test_scaffold -v
 import argparse
 import contextlib
 import hashlib
+import importlib
 import io
 import json
 import os
@@ -521,6 +522,7 @@ class ManifestSyncTest(unittest.TestCase):
         self.assertTrue([p for p in by_path if p.startswith('.fha/design/')])
 
 
+@unittest.skipUnless((ROOT / '.git').exists(), 'requires a git checkout')
 class ManifestChecksumMatchesGitBlobTests(unittest.TestCase):
     """Postmortem for a manifest checksum that disagreed with git itself.
 
@@ -577,6 +579,71 @@ class ManifestChecksumMatchesGitBlobTests(unittest.TestCase):
 
     def test_gitignore_checksum_matches_the_git_blob(self):
         self._assert_matches_git_blob('.gitignore')
+
+
+class ManifestChecksumMatchesGitBlobSkipGuardTests(unittest.TestCase):
+    """PR #60 review finding 3, kept in its own class - not inside
+    `ManifestChecksumMatchesGitBlobTests` - because these tests reload and
+    re-run that class via `TestLoader`; a meta-test living inside the class
+    it reloads would load and run itself too, recursing forever."""
+
+    def test_class_skips_without_a_git_checkout_instead_of_erroring(self) -> None:
+        """Unlike the two sibling classes this PR adds
+        (test_gitignore.ArchiveTemplateAnchoringTests and
+        ExampleArchiveGeneratedIgnoreTests, both
+        `@unittest.skipUnless((ROOT / '.git').exists(), 'requires a git
+        checkout')`), `ManifestChecksumMatchesGitBlobTests` had no skip
+        guard - `git show HEAD:...` (`check=True`) raises an uncaught
+        CalledProcessError when there is no `.git` (a zip download, say),
+        an ERROR rather than the graceful skip every other git-dependent
+        class in this PR gives.
+
+        Reloads test_scaffold with `.git` faked absent - the same condition
+        the sibling idiom checks - so the class-level decorator (evaluated
+        at class-body execution time, i.e. at reload) bakes in the skip,
+        then runs the reloaded class in isolation and checks the result:
+        both tests must be skipped, not errored or actually run."""
+        mod = sys.modules[self.__class__.__module__]
+        git_path = str(ROOT / '.git')
+        orig_exists = Path.exists
+
+        def _fake_exists(path_self):
+            if str(path_self) == git_path:
+                return False
+            return orig_exists(path_self)
+
+        with mock.patch.object(Path, 'exists', _fake_exists):
+            importlib.reload(mod)
+        try:
+            cls = mod.ManifestChecksumMatchesGitBlobTests
+            suite = unittest.TestLoader().loadTestsFromTestCase(cls)
+            result = unittest.TestResult()
+            suite.run(result)
+        finally:
+            importlib.reload(mod)      # restore the real (git-present) module state
+
+        self.assertEqual(result.errors, [],
+                         f'must skip without a .git checkout, not error: {result.errors}')
+        self.assertEqual(result.failures, [])
+        self.assertEqual(
+            len(result.skipped), suite.countTestCases(),
+            'both checksum tests must be skipped, not actually run, without a .git checkout')
+
+    def test_genuine_checksum_mismatch_still_fails(self) -> None:
+        """The skip guard must not weaken the assertion it guards: a real
+        checksum drift (the CRLF-vs-LF postmortem `ManifestChecksumMatches
+        GitBlobTests` exists for) has to still fail the test, not be
+        swallowed alongside the skip case. Feeds a deliberately wrong
+        manifest entry straight into the comparison, bypassing disk/git
+        I/O entirely."""
+        case = ManifestChecksumMatchesGitBlobTests('test_gitignore_checksum_matches_the_git_blob')
+        with mock.patch.object(
+            ManifestChecksumMatchesGitBlobTests, '_committed_manifest_entry',
+            return_value={'path': '.gitignore', 'src': '.gitignore',
+                          'sha256': '0' * 64},
+        ):
+            with self.assertRaises(AssertionError):
+                case._assert_matches_git_blob('.gitignore')
 
 
 class InstallTest(unittest.TestCase):
