@@ -1339,8 +1339,11 @@ This layer is the deterministic core of intake: `fha process` (M7.1-M7.4) and th
 **One PR.** New file `tools/process.py`. Wire `fha process <file> [--type TYPE]
 [--title "…"] [--slug SLUG]` (TOOLING §6, document root only).
 
-Detect as document (not a photo extension; not under photos root). Refuse if filename already
-contains `_{S-id}.` pattern. Mint S-id. **Documents root: rename** `{slug}_{S-id}.{ext}` in
+Detect as document (not a photo extension; not under photos root). **Amended 2026-08-17
+(#59):** detection now asks where the file already lives, then the stated `--type`, then the
+extension - a non-photo `--type` files the asset as a document whatever its suffix, so a
+scanned census supplied as a `.jpg` no longer lands in the photo library (TOOLING §6). Refuse
+if filename already contains `_{S-id}.` pattern. Mint S-id. **Documents root: rename** `{slug}_{S-id}.{ext}` in
 place (record `original_filename`). Scaffold `sources/{type}/{slug}_{S-id}.md` from §14
 template; `files:` pre-filled; empty `## Claims`. Print record path. Any failure → rollback.
 
@@ -1909,6 +1912,15 @@ since process's parser takes a positional FILE. Exits 0 ok/dry-run ·
 1 not-found/working-copy · 3 refusals. Tests: `tests/test_process_refile.py`
 (25 cases: both directions, the refusal surface, dry-run zero-writes,
 rollback, dispatcher interception).
+
+**Amended 2026-08-17 (#59):** re-typing is no longer out of scope. `--type TYPE`
+rewrites `source_type:` value-exactly and moves the record file to
+`sources/{type}/` inside the same transaction (both destinations preflighted,
+both rolled back), and it is required going into documents while the record is
+still typed `photo` - otherwise the default destination is a `documents/photos/`
+folder invented for the purpose and the record is left describing a family photo
+that is no longer in the photo library. `--dry-run` prints the identical
+refusal; an explicit `--type photo` is honoured as a deliberate choice.
 
 ### M11.7 - Ahnentafel realignment wave (✓ shipped 2026-07-26)
 

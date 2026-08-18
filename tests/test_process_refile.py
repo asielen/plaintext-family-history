@@ -252,13 +252,19 @@ class ProcessRefileTestCase(unittest.TestCase):
                       record.read_text(encoding='utf-8'))
 
     # -- photos -> documents ---------------------------------------------------
+    #
+    # These fixtures are photo-TYPED records, so they pass `--type photo`: since
+    # issue #59 a record still typed photo must say what it becomes when it
+    # leaves the photo library, and `--type photo` is the human keeping the type
+    # (and with it the documents/photos/ destination) on purpose. The refusal
+    # when he says nothing at all has its own tests further down.
 
     def test_photo_to_doc_with_yes(self) -> None:
         store = self._install_photo_store()
         asset, record = self._write_photo_source()
         store.keywords[str(asset)] = [f'SOURCE: {SID}']
 
-        rc, out, _err = self._run_captured([SID, '--to', 'documents', '--yes'])
+        rc, out, _err = self._run_captured([SID, '--to', 'documents', '--type', 'photo', '--yes'])
 
         self.assertEqual(rc, EXIT_CLEAN)
         self.assertFalse(asset.exists())
@@ -277,7 +283,7 @@ class ProcessRefileTestCase(unittest.TestCase):
         self._install_photo_store()
         asset, _record = self._write_photo_source()
 
-        rc = self._run([SID, '--to', 'documents', '--yes', '--dest', 'letters'])
+        rc = self._run([SID, '--to', 'documents', '--type', 'photo', '--yes', '--dest', 'letters'])
 
         self.assertEqual(rc, EXIT_CLEAN)
         self.assertFalse(asset.exists())
@@ -289,7 +295,7 @@ class ProcessRefileTestCase(unittest.TestCase):
         asset, record = self._write_photo_source()
         before = record.read_bytes()
 
-        rc, _out, err = self._run_captured([SID, '--to', 'documents'])
+        rc, _out, err = self._run_captured([SID, '--to', 'documents', '--type', 'photo'])
 
         self.assertEqual(rc, EXIT_FAILURE)
         self.assertIn('--yes', err)
@@ -303,7 +309,7 @@ class ProcessRefileTestCase(unittest.TestCase):
         asset, record = self._write_photo_source()
         before = record.read_bytes()
 
-        rc, out, _err = self._run_captured([SID, '--to', 'documents'])
+        rc, out, _err = self._run_captured([SID, '--to', 'documents', '--type', 'photo'])
 
         self.assertEqual(rc, EXIT_CLEAN)
         self.assertIn('nothing changed', out.lower())
@@ -459,7 +465,7 @@ class ProcessRefileTestCase(unittest.TestCase):
         # No --yes and no interactive answer needed: dry-run never prompts.
         process._stdin_is_interactive = lambda: False
 
-        rc, out, _err = self._run_captured([SID, '--to', 'documents', '--dry-run'])
+        rc, out, _err = self._run_captured([SID, '--to', 'documents', '--type', 'photo', '--dry-run'])
 
         self.assertEqual(rc, EXIT_CLEAN)
         self.assertEqual(self._snapshot_tree(self.archive), before)
@@ -797,7 +803,7 @@ class ProcessRefileTestCase(unittest.TestCase):
         process._prompt = lambda _msg: 'y'
         asset, record = self._write_photo_source()
 
-        rc = self._run([SID, '--to', 'documents'])
+        rc = self._run([SID, '--to', 'documents', '--type', 'photo'])
 
         self.assertEqual(rc, EXIT_CLEAN)
         self.assertFalse(asset.exists())
@@ -819,7 +825,7 @@ class ProcessRefileTestCase(unittest.TestCase):
         asset, record = self._write_photo_source()
         before = record.read_bytes()
 
-        rc, _out, err = self._run_captured([SID, '--to', 'documents'])
+        rc, _out, err = self._run_captured([SID, '--to', 'documents', '--type', 'photo'])
 
         self.assertEqual(rc, EXIT_FAILURE)
         self.assertIn('--yes', err)
@@ -884,7 +890,7 @@ class ProcessRefileTestCase(unittest.TestCase):
         record = self.archive / 'sources' / 'photos' / f'portrait_{SID}.md'
         record.write_bytes(_record_text(entry, source_type='photo').encode('utf-8'))
 
-        rc = self._run([SID, '--to', 'documents', '--yes'])
+        rc = self._run([SID, '--to', 'documents', '--type', 'photo', '--yes'])
 
         self.assertEqual(rc, EXIT_CLEAN)
         self.assertFalse(asset.exists())
@@ -939,7 +945,7 @@ class ProcessRefileTestCase(unittest.TestCase):
         record = self.archive / 'sources' / 'photos' / f'portrait_{SID}.md'
         record.write_bytes(_record_text(entry, source_type='photo').encode('utf-8'))
 
-        rc = self._run([SID, '--to', 'documents', '--yes', '--dest', 'letters'])
+        rc = self._run([SID, '--to', 'documents', '--type', 'photo', '--yes', '--dest', 'letters'])
 
         self.assertEqual(rc, EXIT_CLEAN)
         self.assertFalse(asset.exists())
@@ -1076,6 +1082,196 @@ class ProcessRefileTestCase(unittest.TestCase):
                          'a folder this run created is removed again')
         self.assertEqual(record.read_bytes(), before_record)
 
+    # -- refile carries the type across the roots (issue #59) ------------------
+    #
+    # Before this, refile moved the asset and rewrote files: but left the record
+    # typed photo in sources/photos/, and defaulted the asset destination to the
+    # documents root plus the record own type subdirectory - which for a
+    # photo-typed record is a junk documents/photos/ folder it created for the
+    # purpose. Both halves were left as hand-edits fha lint flags neither.
+
+    def test_photo_typed_record_without_type_refuses_and_names_the_flag(self) -> None:
+        self._install_photo_store()
+        asset, record = self._write_photo_source()
+        before = record.read_bytes()
+
+        rc, _out, err = self._run_captured([SID, '--to', 'documents', '--yes'])
+
+        self.assertEqual(rc, EXIT_FAILURE)
+        self.assertIn('--type', err)
+        self.assertIn('census', err)
+        self.assertNotIn('Traceback', err)
+        self.assertTrue(asset.is_file(), 'nothing moved')
+        self.assertEqual(record.read_bytes(), before)
+        self.assertFalse((self.archive / 'documents' / 'photos').exists(),
+                         'no junk documents/photos/ folder is ever created')
+
+    def test_dry_run_prints_the_identical_refusal(self) -> None:
+        self._install_photo_store()
+        self._write_photo_source()
+
+        rc, _out, err = self._run_captured([SID, '--to', 'documents', '--dry-run'])
+
+        self.assertEqual(rc, EXIT_FAILURE)
+        self.assertIn('--type', err)
+        self.assertFalse((self.archive / 'documents' / 'photos').exists())
+
+    def test_type_moves_asset_record_and_rewrites_source_type(self) -> None:
+        self._install_photo_store()
+        asset, record = self._write_photo_source()
+
+        rc, out, _err = self._run_captured(
+            [SID, '--to', 'documents', '--yes', '--type', 'census'])
+
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertFalse(asset.exists())
+        moved = self.archive / 'documents' / 'census' / f'portrait_{SID}.jpg'
+        self.assertTrue(moved.is_file())
+        self.assertFalse(record.exists(), 'the record left sources/photos/')
+        new_record = self.archive / 'sources' / 'census' / f'portrait_{SID}.md'
+        self.assertTrue(new_record.is_file(), 'the record followed its type')
+        rec = read_record(new_record)
+        self.assertEqual(rec['meta']['source_type'], 'census')
+        self.assertEqual(rec['meta']['files'][0]['file'],
+                         f'documents/census/portrait_{SID}.jpg')
+        self.assertIn('census', out)
+        self.assertFalse((self.archive / 'documents' / 'photos').exists())
+
+    def test_dry_run_with_type_writes_nothing(self) -> None:
+        self._install_photo_store()
+        self._write_photo_source()
+        before = self._snapshot_tree(self.archive)
+
+        rc, out, _err = self._run_captured(
+            [SID, '--to', 'documents', '--type', 'census', '--dry-run'])
+
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertEqual(self._snapshot_tree(self.archive), before)
+        self.assertIn('sources/census/', out.replace('\\', '/'))
+
+    def test_explicit_photo_type_into_documents_is_honoured(self) -> None:
+        # Asked for explicitly, `documents/photos/` is the human's choice, not
+        # a folder the tool invented: the record keeps its type and its place.
+        self._install_photo_store()
+        asset, record = self._write_photo_source()
+
+        rc = self._run([SID, '--to', 'documents', '--yes', '--type', 'photo'])
+
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertFalse(asset.exists())
+        self.assertTrue((self.archive / 'documents' / 'photos'
+                         / f'portrait_{SID}.jpg').is_file())
+        self.assertTrue(record.is_file(), 'the type did not change, so neither did the record')
+
+    def test_unknown_type_refused_before_anything_moves(self) -> None:
+        self._install_photo_store()
+        asset, record = self._write_photo_source()
+        before = self._snapshot_tree(self.archive)
+
+        rc, _out, err = self._run_captured(
+            [SID, '--to', 'documents', '--yes', '--type', 'bogus'])
+
+        self.assertEqual(rc, EXIT_FAILURE)
+        self.assertIn('census', err)
+        self.assertNotIn('Traceback', err)
+        self.assertTrue(asset.is_file())
+        self.assertEqual(self._snapshot_tree(self.archive), before)
+        self.assertTrue(record.is_file())
+
+    def test_non_photo_typed_record_without_type_is_unchanged(self) -> None:
+        # A census-typed source whose scan was filed in the photo library needs
+        # no re-typing: its type was right all along, only its filing was wrong.
+        self._install_photo_store()
+        asset = self.archive / 'photos' / '1880' / 'sheet.jpg'
+        asset.write_bytes(b'jpegbytes')
+        entry = '  - file: photos/1880/sheet.jpg\n    role: primary\n'
+        record = self.archive / 'sources' / 'census' / f'sheet_{SID}.md'
+        record.write_bytes(_record_text(entry).encode('utf-8'))
+
+        rc = self._run([SID, '--to', 'documents', '--yes'])
+
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertTrue((self.archive / 'documents' / 'census'
+                         / f'sheet_{SID}.jpg').is_file())
+        self.assertTrue(record.is_file(), 'the record stayed in sources/census/')
+        self.assertEqual(read_record(record)['meta']['source_type'], 'census')
+
+    def test_already_under_documents_keeps_the_reconcile_message(self) -> None:
+        # The type refusal must not shadow a better-fitting one: a photo-typed
+        # record whose file is ALREADY in the documents root is a reconcile
+        # question, not a "what kind of record is this" question.
+        self._install_photo_store()
+        asset = self.archive / 'documents' / 'census' / f'card_{SID}.jpg'
+        asset.write_bytes(b'jpegbytes')
+        entry = f'  - file: documents/census/card_{SID}.jpg\n    role: primary\n'
+        record = self.archive / 'sources' / 'photos' / f'card_{SID}.md'
+        record.write_bytes(_record_text(entry, source_type='photo').encode('utf-8'))
+
+        rc, _out, err = self._run_captured([SID, '--to', 'documents', '--yes'])
+
+        self.assertEqual(rc, EXIT_FAILURE)
+        self.assertIn('fha reconcile', err)
+        self.assertNotIn('--type', err)
+
+    def test_type_carries_across_into_photos_too(self) -> None:
+        # The mirror direction: a document source that turns out to be a family
+        # photo is re-typed and its record moves the same way.
+        store = self._install_photo_store()
+        asset, record = self._write_doc_source()
+
+        rc = self._run([SID, '--to', 'photos', '--dest', '1880s', '--type', 'photo'])
+
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertFalse(asset.exists())
+        moved = self.archive / 'photos' / '1880s' / 'campaign-card.jpg'
+        self.assertTrue(moved.is_file())
+        self.assertEqual(store.keywords[str(moved)], [f'SOURCE: {SID}'])
+        self.assertFalse(record.exists())
+        new_record = self.archive / 'sources' / 'photos' / f'campaign-card_{SID}.md'
+        self.assertTrue(new_record.is_file())
+        self.assertEqual(read_record(new_record)['meta']['source_type'], 'photo')
+
+    def test_record_move_collision_refused_before_anything_moves(self) -> None:
+        self._install_photo_store()
+        asset, record = self._write_photo_source()
+        (self.archive / 'sources' / 'census').mkdir(parents=True, exist_ok=True)
+        squatter = self.archive / 'sources' / 'census' / f'portrait_{SID}.md'
+        squatter.write_text('someone else got here first\n', encoding='utf-8')
+        before = self._snapshot_tree(self.archive)
+
+        rc, _out, err = self._run_captured(
+            [SID, '--to', 'documents', '--yes', '--type', 'census'])
+
+        self.assertEqual(rc, EXIT_FAILURE)
+        self.assertIn('portrait', err)
+        self.assertTrue(asset.is_file())
+        self.assertTrue(record.is_file())
+        self.assertEqual(self._snapshot_tree(self.archive), before)
+
+    def test_rollback_puts_the_record_back_in_its_own_folder(self) -> None:
+        self._install_photo_store()
+        asset, record = self._write_photo_source()
+        before_text = record.read_bytes()
+
+        real_write = process.write_text_exact_atomic
+        calls = {'n': 0}
+
+        def flaky(path: Path, text: str) -> None:
+            calls['n'] += 1
+            if calls['n'] == 1:
+                raise OSError('simulated record write failure')
+            real_write(path, text)
+
+        process.write_text_exact_atomic = flaky
+        rc, _out, _err = self._run_captured(
+            [SID, '--to', 'documents', '--yes', '--type', 'census'])
+
+        self.assertEqual(rc, EXIT_FAILURE)
+        self.assertTrue(asset.is_file(), 'the photo went home')
+        self.assertTrue(record.is_file(), 'the record went home')
+        self.assertEqual(record.read_bytes(), before_text)
+        self.assertFalse((self.archive / 'sources' / 'census'
+                          / f'portrait_{SID}.md').exists())
 
 class RefilePickEntryUnitTests(unittest.TestCase):
     """`_refile_pick_entry` normalizes a stored alias before basename matching.
