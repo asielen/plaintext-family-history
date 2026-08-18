@@ -1941,5 +1941,199 @@ class UntranscribedEvidenceTests(unittest.TestCase):
         self.assertIn('W124', [m.code for m in result.messages])
 
 
+class UnscopedCoupleClaimW125Tests(unittest.TestCase):
+    """W125: a marriage/divorce claim naming more than two people with no
+    `roles: spouse:` map.
+
+    The indexer refuses to guess which two of six people married each other and
+    records no spouse edge at all (index.py `_spouse_parties`). That is the
+    right call - a false marriage is read back as fact by `fha relate` and the
+    family charts, while a missing one is merely missing - but it is silent,
+    and a couple quietly absent from the tree is its own kind of wrong. This
+    warning is what makes the silence visible; without it the fix would trade a
+    loud error for a quiet one.
+    """
+
+    HUS = 'P-h1h1h1h1h1'
+    WIF = 'P-w2w2w2w2w2'
+    PARENTS = ['P-f3f3f3f3f3', 'P-m4m4m4m4m4', 'P-f5f5f5f5f5', 'P-m6m6m6m6m6']
+    SID = 'S-7777777777'
+
+    def _build(self, *, ctype: str = 'marriage', persons=None,
+               roles_block: str = '', status: str = 'accepted',
+               negated: bool = False) -> Path:
+        root = Path(tempfile.mkdtemp())
+        (root / 'people').mkdir(parents=True)
+        (root / 'sources' / 'notes').mkdir(parents=True)
+        (root / 'fha.yaml').write_text('roots:\n  documents: documents\n',
+                                       encoding='utf-8')
+        everyone = [self.HUS, self.WIF] + self.PARENTS
+        for n, pid in enumerate(everyone):
+            (root / 'people' / f'x__p{n}_{pid}.md').write_text(
+                f'---\nid: {pid}\nname: Person {n}\nsex: U\nliving: false\n'
+                f'tier: stub\n---\n\n# Person {n}\n', encoding='utf-8')
+        named = everyone if persons is None else persons
+        claim = (f'- value: "a {ctype}"\n'
+                 f'  id: C-1111111111\n'
+                 f'  type: {ctype}\n'
+                 f'  persons: [{", ".join(named)}]\n'
+                 f'  status: {status}\n  reviewed: 2026-01-01\n'
+                 f'  confidence: high\n  date: 1890\n'
+                 + ('  negated: true\n  evidence: negative\n' if negated
+                    else '  information: primary\n  evidence: direct\n')
+                 + '  notes: x.\n'
+                 + roles_block)
+        (root / 'sources' / 'notes' / f'rec_{self.SID.lower()}.md').write_text(
+            f'---\nid: {self.SID}\ntitle: Rec\nsource_type: vital-record\n---\n\n'
+            f'## Claims\n```yaml\n{claim}```\n', encoding='utf-8')
+        return root
+
+    def _w125(self, root: Path) -> list:
+        from _lib import load_fha_yaml
+        findings, _reg = lint._run_lint_core(root, load_fha_yaml(root))
+        return [f for f in findings if f.code == 'W125']
+
+    def test_six_person_marriage_without_roles_warns(self) -> None:
+        w = self._w125(self._build())
+        self.assertEqual(len(w), 1)
+        f = w[0]
+        self.assertEqual(f.severity, 'W')
+        # Says what is wrong, what it costs, and the concrete repair.
+        self.assertIn('names 6 people', f.message)
+        self.assertIn('which two of them were the couple', f.message)
+        self.assertIn('fha relate', f.message)
+        self.assertIn('spouse: [P-', f.message)
+        # The repair must never be "delete the parents from persons:".
+        self.assertIn('Leave everyone in persons:', f.message)
+
+    def test_six_person_divorce_without_roles_warns(self) -> None:
+        w = self._w125(self._build(ctype='divorce'))
+        self.assertEqual(len(w), 1)
+        self.assertIn('no marriage is recorded as ending', w[0].message)
+
+    def test_roles_map_naming_the_couple_is_clean(self) -> None:
+        roles = f'  roles:\n    spouse: [{self.HUS}, {self.WIF}]\n'
+        self.assertEqual(self._w125(self._build(roles_block=roles)), [])
+
+    def test_two_person_claim_without_roles_is_clean(self) -> None:
+        # The ordinary hand-written marriage claim - the indexer's two-person
+        # fallback handles it, so there is nothing to warn about.
+        self.assertEqual(
+            self._w125(self._build(persons=[self.HUS, self.WIF])), [])
+
+    def test_legacy_spouse_of_relationship_warns(self) -> None:
+        # `relationship` + `subtype: spouse-of` derives spouse edges through the
+        # same rule, so it earns the same warning. A `roles:` map that names no
+        # resolvable spouse (here the list shorthand) leaves the claim in the
+        # identical could-not-tell state.
+        root = self._build(ctype='relationship',
+                           roles_block='  subtype: spouse-of\n  roles: [spouse, spouse]\n')
+        w = self._w125(root)
+        self.assertEqual(len(w), 1)
+        self.assertIn('no marriage is recorded between any of them', w[0].message)
+
+    def test_ordinary_parent_child_claim_never_warns(self) -> None:
+        # The false positive this rule must not have: a normal relationship
+        # claim names a child and two parents - three people, no spouse role,
+        # and nothing whatever wrong with it.
+        roles = (f'  subtype: biological\n  roles:\n    child: {self.HUS}\n'
+                 f'    parent: [{self.PARENTS[0]}, {self.PARENTS[1]}]\n')
+        root = self._build(ctype='relationship',
+                           persons=[self.HUS, self.PARENTS[0], self.PARENTS[1]],
+                           roles_block=roles)
+        self.assertEqual(self._w125(root), [])
+
+    def test_roles_map_naming_one_spouse_still_warns(self) -> None:
+        # A roles: map that resolves to a single spouse - one typo'd id, one
+        # spouse left out of persons: - has not said who the couple were, and
+        # the indexer derives nothing from it (_lib.spouse_parties). W125 tests
+        # the derivation rule itself, not the mere presence of a roles: key, so
+        # this silence is reported like any other.
+        roles = f'  roles:\n    spouse: [{self.HUS}]\n'
+        self.assertEqual(len(self._w125(self._build(roles_block=roles))), 1)
+
+    def test_roles_map_naming_three_spouses_is_clean(self) -> None:
+        # Successive marriages recorded on one claim: the map HAS answered the
+        # question and every pairing is derived, so there is nothing to warn.
+        roles = ('  roles:\n    spouse: '
+                 f'[{self.HUS}, {self.WIF}, {self.PARENTS[0]}]\n')
+        self.assertEqual(self._w125(self._build(roles_block=roles)), [])
+
+    def test_suggested_claim_does_not_warn(self) -> None:
+        # Relationship derivation reads `accepted` claims only, so a suggested
+        # claim derives nothing whatever its roles: map says. Warning that a
+        # couple is missing from the tree because of a claim nobody has accepted
+        # yet points at the wrong repair: the repair is review (W102 already
+        # tracks that backlog), not a roles: map. The warning becomes true the
+        # day the claim is accepted, and fires then.
+        self.assertEqual(self._w125(self._build(status='suggested')), [])
+
+    def test_needs_review_claim_does_not_warn(self) -> None:
+        self.assertEqual(self._w125(self._build(status='needs-review')), [])
+
+    def test_negated_claim_does_not_warn(self) -> None:
+        # A negated marriage is a researched absence - "we looked, and these
+        # people did not marry" (SPEC §8.6). Derivation skips it deliberately.
+        # Warning here would tell the human a marriage is missing from the tree
+        # about a claim whose whole content is that the marriage never happened.
+        self.assertEqual(
+            self._w125(self._build(negated=True)), [])
+
+    def test_accepted_claim_still_warns(self) -> None:
+        # The control for the three above: the status that DOES derive edges
+        # keeps its warning.
+        self.assertEqual(len(self._w125(self._build())), 1)
+
+    def test_two_person_claim_with_a_contradictory_role_warns(self) -> None:
+        # The shape the `len(named) > 2` heuristic could never see. This claim
+        # names two people and calls one of them a parent, so the indexer
+        # derives no couple from it (it must not contradict the claim's own
+        # words) - and the marriage is then missing from the tree with nothing
+        # said about it. W125's real subject is the derivation rule: a couple
+        # claim that resolves two or more people and yields no couple.
+        roles = f'  roles:\n    spouse: [{self.HUS}]\n    parent: [{self.WIF}]\n'
+        w = self._w125(self._build(persons=[self.HUS, self.WIF], roles_block=roles))
+        self.assertEqual(len(w), 1)
+        msg = w[0].message
+        self.assertIn('names 2 people', msg)
+        # The wording has to fit THIS shape, not the six-person certificate:
+        # "does not say which two of them were the couple" would be false here.
+        self.assertNotIn('which two of them', msg)
+        self.assertIn('a parent', msg)
+        self.assertIn('no marriage is recorded between them', msg)
+        self.assertIn('spouse: [P-', msg)
+
+    def test_two_person_divorce_with_a_contradictory_role_warns(self) -> None:
+        roles = f'  roles:\n    spouse: [{self.HUS}]\n    parent: [{self.WIF}]\n'
+        w = self._w125(self._build(ctype='divorce', persons=[self.HUS, self.WIF],
+                                   roles_block=roles))
+        self.assertEqual(len(w), 1)
+        # A divorce costs a marriage not recorded as ENDING, whatever the shape.
+        self.assertIn('no marriage is recorded as ending', w[0].message)
+
+    def test_duplicate_persons_entry_does_not_warn(self) -> None:
+        # A bare P-id and a name-link for the same person are two persons:
+        # entries and ONE person. There is no couple here and nothing a roles:
+        # map could add, so W125 has nothing to say - counting entries instead
+        # of people would demand a spouse pair from a claim that names one man.
+        root = self._build(persons=[self.HUS, '"[[Person 0]]"'])
+        self.assertEqual(self._w125(root), [])
+
+    def test_duplicate_persons_entry_beside_a_spouse_does_not_warn(self) -> None:
+        # Three entries, two people - the ordinary two-person claim wearing a
+        # duplicate. The indexer derives the pair, so there is no silence to
+        # report.
+        root = self._build(persons=[self.HUS, '"[[Person 0]]"', self.WIF])
+        self.assertEqual(self._w125(root), [])
+
+    def test_list_form_roles_does_not_crash_lint(self) -> None:
+        # `roles: [spouse, spouse]` is the shorthand lint's OWN E015 message
+        # suggests. It names no person, so it cannot scope the couple (W125
+        # still fires), but it must never raise: a traceback on the human's
+        # screen is always a defect (AGENTS.md - "Who you serve").
+        w = self._w125(self._build(roles_block='  roles: [spouse, spouse]\n'))
+        self.assertEqual(len(w), 1)
+
+
 if __name__ == '__main__':
     unittest.main()

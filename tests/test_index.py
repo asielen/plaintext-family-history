@@ -1631,5 +1631,388 @@ class TranscriptCompanionIndexingTests(unittest.TestCase):
         self.assertTrue(any('transcript' in h['detail'] for h in hits), hits)
 
 
+# ── Marriage / divorce role scoping ──────────────────────────────────────────
+#
+# A marriage certificate names the couple AND both sets of parents - six people
+# is the ordinary shape of a Vermont-style certificate, and listing all six in
+# `persons:` is correct (`persons:` is "who the claim is about", SPEC §8.3).
+# Only the two people in `roles: spouse:` married each other. Expanding
+# `persons:` into a complete graph turns a father-in-law into a spouse.
+#
+# The rule these tests pin (TOOLING §197 - `type: marriage` yields reciprocal
+# spouse edges, `date_end` backfilled from a divorce claim BETWEEN THE PAIR):
+#   - `roles: spouse:` names the couple whenever it is present;
+#   - exactly two persons and no roles map falls back to those two;
+#   - more than two persons and no usable roles map emits NOTHING. Silence is
+#     recoverable, a false marriage is not.
+
+_MDR_HUS = 'P-h1h1h1h1h1'
+_MDR_WIF = 'P-w2w2w2w2w2'
+_MDR_HFA = 'P-f3f3f3f3f3'
+_MDR_HMO = 'P-m4m4m4m4m4'
+_MDR_WFA = 'P-f5f5f5f5f5'
+_MDR_WMO = 'P-m6m6m6m6m6'
+
+_MDR_ALL = [_MDR_HUS, _MDR_WIF, _MDR_HFA, _MDR_HMO, _MDR_WFA, _MDR_WMO]
+
+_MDR_NAMES = {
+    _MDR_HUS: 'Amos Prentice',
+    _MDR_WIF: 'Clara Denby',
+    _MDR_HFA: 'Reuben Prentice',
+    _MDR_HMO: 'Hannah Prentice',
+    _MDR_WFA: 'Silas Denby',
+    _MDR_WMO: 'Martha Denby',
+}
+
+
+def _mdr_person(pid: str) -> str:
+    name = _MDR_NAMES[pid]
+    return (f'---\nid: {pid}\nname: {name}\nliving: false\n'
+            f'aliases: [{pid}, {name}]\n---\n\n# {name}\n')
+
+
+def _mdr_claim(cid: str, ctype: str, persons: list, date: str,
+               spouse_roles: list = None, other_roles: dict = None) -> str:
+    """One accepted marriage/divorce claim, with or without a `roles:` map.
+
+    `other_roles` adds non-spouse role keys ({'parent': [P-…]}) so a claim can
+    say outright that somebody it names was NOT a party to the marriage."""
+    text = (f'- id: {cid}\n'
+            f'  value: "{ctype} record"\n'
+            f'  type: {ctype}\n'
+            f'  persons: [{", ".join(persons)}]\n'
+            f'  status: accepted\n'
+            f'  reviewed: 2026-01-01\n'
+            f'  date: {date}\n')
+    if spouse_roles is not None or other_roles:
+        text += '  roles:\n'
+        if spouse_roles is not None:
+            text += f'    spouse: [{", ".join(spouse_roles)}]\n'
+        for role_name, who in (other_roles or {}).items():
+            text += f'    {role_name}: [{", ".join(who)}]\n'
+    return text
+
+
+class MarriageRoleScopingTests(unittest.TestCase):
+    """A marriage claim naming the couple plus both sets of parents must derive
+    exactly one spouse pair - the couple - not a complete graph of all six."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        for pid in _MDR_ALL:
+            _write(self.root / 'people' / f'p_{pid}.md', _mdr_person(pid))
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _write_source(self, claims: str) -> None:
+        _write(self.root / 'sources' / 'marriage_S-7777777777.md',
+               '---\nid: S-7777777777\ntitle: Marriage record\n'
+               'source_type: vital-record\n---\n\n'
+               f'## Claims\n```yaml\n{claims}```\n')
+
+    def _spouse_edges(self) -> set:
+        conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
+        try:
+            return {
+                (p, o) for p, o in conn.execute(
+                    "SELECT person_id, other_id FROM relationships WHERE rel = 'spouse'")
+            }
+        finally:
+            conn.close()
+
+    def test_six_person_marriage_with_roles_derives_only_the_couple(self) -> None:
+        # The reporter's actual claim shape: a certificate naming the couple and
+        # both sets of parents. Six people, one marriage.
+        self._write_source(_mdr_claim(
+            'C-1111111111', 'marriage', _MDR_ALL, '1890',
+            spouse_roles=[_MDR_HUS, _MDR_WIF]))
+        index.build_index(self.root, {})
+        edges = self._spouse_edges()
+        self.assertEqual(
+            edges,
+            {(_MDR_HUS.lower(), _MDR_WIF.lower()),
+             (_MDR_WIF.lower(), _MDR_HUS.lower())},
+            'a six-person marriage certificate must derive exactly two directed '
+            'spouse edges, between the couple named in roles: spouse:')
+
+    def test_six_person_marriage_without_roles_emits_nothing(self) -> None:
+        # No roles map and more than two people: the tool cannot know who
+        # married whom, so it must not guess. Silence is recoverable; a false
+        # marriage edge read out of `fha relate` is not. W125 tells the human.
+        self._write_source(_mdr_claim(
+            'C-1111111111', 'marriage', _MDR_ALL, '1890'))
+        index.build_index(self.root, {})
+        self.assertEqual(self._spouse_edges(), set(),
+                         'more than two persons with no roles: map must emit no '
+                         'spouse edges at all, never a guessed pairing')
+
+    def test_two_person_marriage_without_roles_still_derives(self) -> None:
+        # The overwhelmingly common case - it must not regress.
+        self._write_source(_mdr_claim(
+            'C-1111111111', 'marriage', [_MDR_HUS, _MDR_WIF], '1890'))
+        index.build_index(self.root, {})
+        self.assertEqual(
+            self._spouse_edges(),
+            {(_MDR_HUS.lower(), _MDR_WIF.lower()),
+             (_MDR_WIF.lower(), _MDR_HUS.lower())})
+
+    def test_partial_roles_map_falls_back_to_the_two_named_people(self) -> None:
+        # A roles: map answers "who married whom" only when it names a couple.
+        # One typo'd id, one spouse left out of persons:, one alias that stopped
+        # resolving - each leaves a SINGLE resolvable spouse, which is not an
+        # answer. Two people are named, so the ordinary two-person rule applies
+        # exactly as it would with no roles: map at all. Treating a thin roles
+        # map as authoritative would silently drop the edge from an ordinary
+        # two-person marriage, and W125 could never catch it (it only speaks
+        # above two people).
+        self._write_source(_mdr_claim(
+            'C-1111111111', 'marriage', [_MDR_HUS, _MDR_WIF], '1890',
+            spouse_roles=[_MDR_HUS, 'P-zzzzzzzzzz']))
+        index.build_index(self.root, {})
+        self.assertEqual(
+            self._spouse_edges(),
+            {(_MDR_HUS.lower(), _MDR_WIF.lower()),
+             (_MDR_WIF.lower(), _MDR_HUS.lower())},
+            'a roles: map naming one resolvable spouse has not said who the '
+            'couple were, so a two-person claim must still derive its pair')
+
+    def test_roles_map_resolving_to_nobody_falls_back_to_the_two_named(self) -> None:
+        # The same state one step further along: every id in the roles: map is
+        # broken, so it resolves to nobody at all. Still two people named, still
+        # the ordinary claim.
+        self._write_source(_mdr_claim(
+            'C-1111111111', 'marriage', [_MDR_HUS, _MDR_WIF], '1890',
+            spouse_roles=['P-zzzzzzzzzz', 'P-yyyyyyyyyy']))
+        index.build_index(self.root, {})
+        self.assertEqual(
+            self._spouse_edges(),
+            {(_MDR_HUS.lower(), _MDR_WIF.lower()),
+             (_MDR_WIF.lower(), _MDR_HUS.lower())})
+
+    def test_six_person_marriage_with_one_id_roles_map_emits_nothing(self) -> None:
+        # The fallback must not reach past two people. A thin roles: map on a
+        # six-person certificate leaves the tool exactly where a missing one
+        # does - unable to tell the couple from their parents - so it stays
+        # silent and W125 does the talking.
+        self._write_source(_mdr_claim(
+            'C-1111111111', 'marriage', _MDR_ALL, '1890',
+            spouse_roles=[_MDR_HUS]))
+        index.build_index(self.root, {})
+        self.assertEqual(self._spouse_edges(), set())
+
+    def test_serial_roles_map_of_three_still_pairs_all_three(self) -> None:
+        # A roles: map naming three or more spouses has answered the question -
+        # serial marriages recorded on one claim - and keeps its full pairing.
+        self._write_source(_mdr_claim(
+            'C-1111111111', 'marriage', _MDR_ALL, '1890',
+            spouse_roles=[_MDR_HUS, _MDR_WIF, _MDR_HMO]))
+        index.build_index(self.root, {})
+        trio = [_MDR_HUS.lower(), _MDR_WIF.lower(), _MDR_HMO.lower()]
+        expected = {(a, b) for a in trio for b in trio if a != b}
+        self.assertEqual(self._spouse_edges(), expected)
+
+    def test_legacy_spouse_of_relationship_is_scoped_too(self) -> None:
+        # The third path into the spouse graph: `relationship` +
+        # `subtype: spouse-of`, whose roles: fallback had the same unguarded
+        # shape. A roles: map that resolves no spouse (the list shorthand
+        # lint's own E015 message suggests) must not pair six people off.
+        claims = (
+            '- id: C-4444444444\n'
+            '  value: "spouses"\n'
+            '  type: relationship\n'
+            '  subtype: spouse-of\n'
+            f'  persons: [{", ".join(_MDR_ALL)}]\n'
+            '  roles: [spouse, spouse]\n'
+            '  status: accepted\n'
+            '  reviewed: 2026-01-01\n'
+            '  date: 1890\n'
+        )
+        self._write_source(claims)
+        index.build_index(self.root, {})
+        self.assertEqual(self._spouse_edges(), set())
+
+    def test_duplicate_persons_entry_never_marries_someone_to_himself(self) -> None:
+        # `persons:` accepts a bare P-id and a name-link, and nothing stops both
+        # from landing on the same person - `claim_persons` has no UNIQUE
+        # constraint and stores one row per entry. Two rows for Amos meant two
+        # "spouses", and the pairing loop married him to himself: a spouse edge
+        # from a person to themselves, silent in lint (W125 cannot speak, there
+        # is only one distinct person) and read back as fact by `fha relate`,
+        # the family charts and the GEDCOM export.
+        self._write_source(_mdr_claim(
+            'C-1111111111', 'marriage',
+            [_MDR_HUS, f'"[[{_MDR_NAMES[_MDR_HUS]}]]"'], '1890'))
+        index.build_index(self.root, {})
+        edges = self._spouse_edges()
+        self.assertEqual(
+            [e for e in edges if e[0] == e[1]], [],
+            'nobody is married to themselves - a duplicate persons: entry must '
+            'never become a spouse edge')
+        # One distinct person is not a couple, so the claim derives nothing.
+        self.assertEqual(edges, set())
+
+    def test_duplicate_persons_entry_beside_a_real_spouse_derives_the_pair(self) -> None:
+        # The same duplicate on an otherwise ordinary claim. Counted as three
+        # entries the claim overshot the two-person fallback and derived
+        # nothing; counted as the two PEOPLE it actually names, it is the
+        # commonest shape there is and must derive its pair.
+        self._write_source(_mdr_claim(
+            'C-1111111111', 'marriage',
+            [_MDR_HUS, f'"[[{_MDR_NAMES[_MDR_HUS]}]]"', _MDR_WIF], '1890'))
+        index.build_index(self.root, {})
+        self.assertEqual(
+            self._spouse_edges(),
+            {(_MDR_HUS.lower(), _MDR_WIF.lower()),
+             (_MDR_WIF.lower(), _MDR_HUS.lower())})
+
+    def test_explicit_non_spouse_role_is_never_married(self) -> None:
+        # The two-person fallback exists for a claim that says nothing about
+        # who married whom. This claim SAYS: one spouse, one parent. Pairing
+        # them anyway contradicts the claim in its own words and marries a man
+        # to his own father - the exact corruption the roles: scoping was added
+        # to prevent, reached through the fallback instead.
+        self._write_source(_mdr_claim(
+            'C-1111111111', 'marriage', [_MDR_HUS, _MDR_HFA], '1890',
+            spouse_roles=[_MDR_HUS], other_roles={'parent': [_MDR_HFA]}))
+        index.build_index(self.root, {})
+        self.assertEqual(
+            self._spouse_edges(), set(),
+            'a claim that calls someone a parent must never have them married '
+            'to the person it calls a spouse')
+
+    def test_insert_site_refuses_a_self_edge_even_when_handed_duplicates(self) -> None:
+        # Belt and braces. `spouse_parties` dedupes, so this state is already
+        # unreachable through it - but the insert sites are what actually write
+        # the tree, and a self-marriage must be impossible there too, whatever
+        # a future caller hands them.
+        self._write_source(_mdr_claim(
+            'C-1111111111', 'marriage', [_MDR_HUS, _MDR_WIF], '1890'))
+        with unittest.mock.patch.object(
+                index, 'spouse_parties',
+                lambda _rows: [_MDR_HUS.lower(), _MDR_HUS.lower()]):
+            index.build_index(self.root, {})
+        self.assertEqual(self._spouse_edges(), set())
+
+    def test_upsert_source_matches_full_build(self) -> None:
+        # The incremental path re-derives relationships too; a fix applied to
+        # build_index only would let `fha index --source` restore the false
+        # edges (the full-rebuild / upsert symmetry pair).
+        self._write_source(_mdr_claim(
+            'C-1111111111', 'marriage', _MDR_ALL, '1890',
+            spouse_roles=[_MDR_HUS, _MDR_WIF]))
+        index.build_index(self.root, {})
+        full = self._spouse_edges()
+        status = index.upsert_source(self.root, {}, 's-7777777777')
+        self.assertEqual(status, 'indexed')
+        self.assertEqual(self._spouse_edges(), full)
+
+
+class DivorceRoleScopingTests(unittest.TestCase):
+    """A divorce claim ends a spouse edge rather than minting one, so the same
+    unscoped pair loop corrupts differently: it closes OTHER people's real
+    marriages. A divorce record naming the couple plus both sets of parents
+    pairs each parent couple with itself - and those two are genuinely married,
+    so the UPDATE lands and their marriage is recorded as ending on the
+    couple's divorce date."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        for pid in _MDR_ALL:
+            _write(self.root / 'people' / f'p_{pid}.md', _mdr_person(pid))
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _write_source(self, divorce_claim: str) -> None:
+        # Two plain two-person marriages (the couple, and the husband's
+        # parents), then the divorce under test. Both marriages derive
+        # correctly through the two-person fallback, so anything wrong in the
+        # result is the divorce branch alone.
+        claims = (
+            _mdr_claim('C-1111111111', 'marriage', [_MDR_HUS, _MDR_WIF], '1890')
+            + _mdr_claim('C-2222222222', 'marriage', [_MDR_HFA, _MDR_HMO], '1860')
+            + divorce_claim
+        )
+        _write(self.root / 'sources' / 'divorce_S-8888888888.md',
+               '---\nid: S-8888888888\ntitle: Divorce record\n'
+               'source_type: vital-record\n---\n\n'
+               f'## Claims\n```yaml\n{claims}```\n')
+
+    def _date_end(self, a: str, b: str):
+        conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
+        try:
+            row = conn.execute(
+                "SELECT date_end FROM relationships WHERE rel = 'spouse' "
+                'AND person_id = ? AND other_id = ?',
+                (a.lower(), b.lower())).fetchone()
+            self.assertIsNotNone(row, f'no spouse edge {a} -> {b}')
+            return row[0]
+        finally:
+            conn.close()
+
+    def test_six_person_divorce_with_roles_ends_only_the_couple(self) -> None:
+        self._write_source(_mdr_claim(
+            'C-3333333333', 'divorce', _MDR_ALL, '1900',
+            spouse_roles=[_MDR_HUS, _MDR_WIF]))
+        index.build_index(self.root, {})
+        self.assertIsNotNone(self._date_end(_MDR_HUS, _MDR_WIF),
+                             "the couple's own marriage must be closed by their divorce")
+        self.assertIsNone(
+            self._date_end(_MDR_HFA, _MDR_HMO),
+            "the husband's parents were merely named on the certificate - their "
+            'marriage must not be recorded as ending on their child\'s divorce date')
+        self.assertIsNone(self._date_end(_MDR_HMO, _MDR_HFA))
+
+    def test_six_person_divorce_without_roles_ends_nothing(self) -> None:
+        self._write_source(_mdr_claim(
+            'C-3333333333', 'divorce', _MDR_ALL, '1900'))
+        index.build_index(self.root, {})
+        self.assertIsNone(self._date_end(_MDR_HUS, _MDR_WIF),
+                          'with no roles: map and six people the tool cannot know '
+                          'whose marriage ended, so it must close none')
+        self.assertIsNone(self._date_end(_MDR_HFA, _MDR_HMO))
+
+    def test_two_person_divorce_with_partial_roles_still_ends_the_marriage(self) -> None:
+        # The divorce branch reads the same rule, so it inherits the same
+        # regression: a decree whose roles: map resolves to one person must not
+        # leave a two-person divorce unable to close its own marriage.
+        self._write_source(_mdr_claim(
+            'C-3333333333', 'divorce', [_MDR_HUS, _MDR_WIF], '1900',
+            spouse_roles=[_MDR_HUS, 'P-zzzzzzzzzz']))
+        index.build_index(self.root, {})
+        self.assertIsNotNone(
+            self._date_end(_MDR_HUS, _MDR_WIF),
+            'a roles: map naming one resolvable spouse has not said whose '
+            'marriage ended, so the two named people still apply')
+        self.assertIsNone(self._date_end(_MDR_HFA, _MDR_HMO))
+
+    def test_two_person_divorce_without_roles_still_ends_the_marriage(self) -> None:
+        self._write_source(_mdr_claim(
+            'C-3333333333', 'divorce', [_MDR_HUS, _MDR_WIF], '1900'))
+        index.build_index(self.root, {})
+        self.assertIsNotNone(self._date_end(_MDR_HUS, _MDR_WIF))
+        self.assertIsNone(self._date_end(_MDR_HFA, _MDR_HMO))
+
+    def test_two_person_divorce_with_an_explicit_parent_role_ends_nothing(self) -> None:
+        # The two-person fallback on the ending side. A decree naming the
+        # husband and his father, calling one a spouse and the other a parent,
+        # says plainly that these two were not the marriage - so closing an
+        # edge between them (his parents' marriage, in the general case) is a
+        # real marriage recorded as ending on the wrong date and by the wrong
+        # decree.
+        self._write_source(_mdr_claim(
+            'C-3333333333', 'divorce', [_MDR_HFA, _MDR_HMO], '1900',
+            spouse_roles=[_MDR_HFA], other_roles={'parent': [_MDR_HMO]}))
+        index.build_index(self.root, {})
+        self.assertIsNone(
+            self._date_end(_MDR_HFA, _MDR_HMO),
+            'a decree that calls one of its two people a parent has not said '
+            "whose marriage ended, so it must not close anybody's")
+        self.assertIsNone(self._date_end(_MDR_HMO, _MDR_HFA))
+
+
 if __name__ == '__main__':
     unittest.main()
