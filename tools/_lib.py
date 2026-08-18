@@ -94,6 +94,9 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    spouse_parties            - a claim's (pid, role) list -> the people it says
 #                                 married EACH OTHER; the one rule index, gedcom
 #                                 and lint all read, so they cannot disagree
+#    parentage_parties         - the same question for parentage: a claim's
+#                                 (pid, role) list -> (children, parents), roles
+#                                 only, never position; read by index and lint
 #
 #  Archive configuration
 #    find_archive_root         - walk up from CWD to find fha.yaml
@@ -476,6 +479,67 @@ def spouse_parties(persons_with_roles: Iterable[tuple[str, Any]]) -> list[str]:
     if len(pairs) == 2 and not any(role and role != 'spouse' for _pid, role in pairs):
         return [pid for pid, _role in pairs]
     return []
+
+
+def parentage_parties(
+    persons_with_roles: Iterable[tuple[str, Any]],
+) -> tuple[list[str], list[str]]:
+    """
+    Who a claim says was born, and who it says they were born to.
+
+    Returns `(children, parents)` - or `([], [])` when the claim has not
+    answered both halves of the question, so one truth test (`if children and
+    parents`) covers every caller.
+
+    Input is the claim's people paired with the role each plays, in the claim's
+    own order: `[(pid, role), …]`, role None or '' where the claim gave none.
+    People are counted ONCE each, first appearance keeping their place, for the
+    reason spelled out in `spouse_parties`: `persons: [P-a, "[[Sam Rivera]]"]`
+    is one child written two ways, and `claim_persons` stores a row per entry.
+
+    **Roles only. There is no positional fallback, at any person count.** This
+    is the one place the rule is stricter than `spouse_parties`, and the
+    difference is not fussiness:
+
+      - Marriage is symmetric, so a claim naming exactly two people admits
+        exactly one answer - A married B, and it does not matter which is
+        which. Parentage is DIRECTED. `persons: [P-a, P-b]` on a birth record
+        does not say which of them was born, and getting it backwards makes a
+        newborn her own mother's parent.
+      - `persons: [child, father, mother]` is a habit, not a contract. SPEC
+        §8.3 says so outright: positional convention alone is too fragile for
+        exporters and tree regeneration, which is why `roles:` exists.
+      - The extra person on a birth record is not reliably a parent. Registers
+        name informants, midwives, attending physicians, and the deponent whose
+        statement fixed the date. A two-person fallback would file each of them
+        as somebody's father.
+
+    So a claim that has not said gets nothing derived from it. A false parent
+    edge is read back as fact by `fha relate`, the tree views, `fha report` and
+    the GEDCOM export, and it drags a whole Ahnentafel line with it; a missing
+    one is merely missing. Silence is recoverable, a false parent is not.
+
+    Nothing here is silent in the archive: `fha lint` W126 warns whenever an
+    accepted birth claim names two or more people and this returns nothing, so
+    the refusal is never the end of the story - the same bargain W125 strikes
+    for couple claims.
+
+    Shared by `fha index` (both the `birth` and the `relationship` branch of
+    relationship derivation, so two ways of writing one fact reach the tree as
+    the same edges) and by `fha lint` (W126). One rule, one home: a rule
+    implemented twice drifts, and the two disagreeing is worse than either
+    being wrong alone.
+    """
+    first_role: dict[str, str] = {}
+    for pid, role in persons_with_roles:
+        if pid not in first_role:
+            first_role[pid] = str(role or '').strip().lower()
+
+    children = [pid for pid, role in first_role.items() if role == 'child']
+    parents = [pid for pid, role in first_role.items() if role == 'parent']
+    if not children or not parents:
+        return [], []
+    return children, parents
 
 
 def spouse_extended_base(
