@@ -21,6 +21,13 @@ Two modes:
     place, then re-derive relationships.  Use after editing a single source file
     - completes in under a second on a normal archive.
 
+Neither mode is allowed to hold less than the files do without saying so.  A
+record folder that will not open, and a record whose YAML will not parse, both
+mean the index is missing content the archive has - so both are collected
+during the walk and reported at the end, and either one ends the run on the
+warnings exit (1) rather than a clean 0.  The rows stay dropped; the silence
+does not (#62).
+
 The schema lives in _DDL.  Foreign keys are OFF because the archive allows
 forward references (a claim can reference a person whose file appears later in
 the walk), and referential integrity is enforced by `fha lint` instead.
@@ -89,6 +96,10 @@ import yaml
 #
 #  Schema
 #    _DDL                    - CREATE TABLE statements for all index tables
+#
+#  Unreadable records
+#    _parse_error_recorder   - shared collector: a record whose YAML would not
+#                              parse → one warning naming the file and the loss
 #
 #  Low-level DB helpers
 #    _get_db                 - open (or create) the SQLite file, apply DDL
@@ -376,6 +387,96 @@ _RELATIONSHIPS_SOCIAL_SUBTYPES = {'friend', 'associate', 'neighbor'}
 # attached as `role: transcript` by a slip of the hand - and reading a media
 # file as UTF-8 would fail on every build and print a "re-save it as UTF-8"
 # warning naming a file that was never text at all.
+
+
+# ── Unreadable records ────────────────────────────────────────────────────────
+#
+# `read_record` never raises on a malformed record: it hands back whatever it
+# could parse and lists what it could not in `parse_errors`.  That is the right
+# shape for a walker - one bad file must not take a whole build down - but it
+# means a record whose YAML does not parse indexes as an EMPTY record, and for
+# a source that is silent data loss: the claims block is dropped, so the claims
+# and every relationship edge derived from them simply are not there, while the
+# build reports success (#62).  A field report of this cost 16% of an archive's
+# spouse edges with nothing on screen to say so.
+#
+# The claims stay dropped - unparseable YAML cannot be indexed, and guessing at
+# it would be worse than losing it.  What changes is that the build now SAYS so,
+# through the same collect-then-report seam the unreadable-folder warning uses:
+# every record walk shares one recorder, and a non-empty list ends the build on
+# the documented warnings exit (§1: 1 = warnings only).  Warning, not error: the
+# index is built and usable, the fix is in the human's file rather than in the
+# tools, and `fha index` already exits 1 for the strictly worse case of a folder
+# it could not open at all.
+
+_LOST_CLAIMS = (
+    'its claims could not be read, so none of them are in the index - they '
+    'will not appear in `fha find`, on a timeline, in `fha report` or in any '
+    'export, and any relationship they record is missing from the family tree'
+)
+
+_LOST_SOURCE = (
+    'this source could not be read, so it is not in the index at all - neither '
+    'it nor its claims will appear in `fha find`, on a timeline, in `fha '
+    'report` or in any export'
+)
+
+# Deliberately vaguer about the fields than the source phrasing: this text
+# covers a person PROFILE (where the frontmatter carries the name, the vitals
+# and the living flag) and its generated companions alike, and promising the
+# reader a specific loss the file never held would be its own small lie.
+_LOST_PERSON_FIELDS = (
+    'its frontmatter could not be read, so nothing that block records - a '
+    'person record keeps its name, vital dates, living flag and tier there - '
+    'reached the index, and what it holds reads as blank wherever the index '
+    'is queried'
+)
+
+_LOST_PERSON = (
+    'this person record could not be read, so it is not in the index at all - '
+    'the person will not appear in `fha find`, on a timeline, in `fha report` '
+    'or in any export'
+)
+
+
+def _parse_error_recorder(
+    collected: list[tuple[str, str, str]], archive_root: Path,
+):
+    """Return the callback the record walkers report an unreadable record through.
+
+    Mirrors `_lib.unreadable_dir_recorder`: one recorder is shared by every walk
+    in a build, so the Result can report "these records did not read" once,
+    whichever tree they came from.  Each entry is (archive-relative path, code,
+    text) - the path and the code travel separately from the prose because a
+    Message carries both as fields, and because index output can end up in a
+    committed `fha report`, where a local absolute path has no business.
+
+    The code is `read_record`'s own (E010 today), passed through rather than
+    written out here: this build is not minting a new finding, it is reporting
+    the one `fha lint` already reports, and the two must never drift into
+    describing the same broken file by different names.
+
+    `lost` is the caller's phrase for what the failure actually cost, because
+    only the caller knows: a source whose frontmatter parsed but whose claims
+    did not is still in the index minus its claims, while one whose frontmatter
+    failed is not there at all.  Naming the wrong loss would be worse than
+    naming none.
+    """
+    def record(path: Path, code: str, detail: str, lost: str) -> None:
+        rel = _archive_relative(path, archive_root)
+        body = (
+            f'{lost}. {detail}\n'
+            f'Fix that spot in the file, then run `fha index` again - '
+            f'`fha lint` reports the same problem ({code}) and points at it too.'
+        )
+        # Every line after the first is indented two spaces. `detail` carries a
+        # worked example whose lines start with '- ', and `fha report` writes
+        # these messages into a markdown bullet list: unindented, the example
+        # would break out of its own bullet and read as four more findings.
+        # The same indent is what makes it a readable block on a terminal.
+        collected.append((rel, code, f'{rel}: ' + body.replace('\n', '\n  ')))
+
+    return record
 
 
 # ── Build helpers ─────────────────────────────────────────────────────────────
@@ -790,7 +891,12 @@ def _index_research_log_block(
         )
 
 
-def _index_person(conn: sqlite3.Connection, path: Path, archive_root: Path) -> None:
+def _index_person(
+    conn: sqlite3.Connection,
+    path: Path,
+    archive_root: Path,
+    on_parse_error=None,
+) -> None:
     """
     Index one person .md file into persons and person_files.
 
@@ -807,6 +913,14 @@ def _index_person(conn: sqlite3.Connection, path: Path, archive_root: Path) -> N
     ({surname}__{given}_{P-id}) rather than the name: field, because the
     frontmatter name may include middle names or honorifics while the filename
     slug is always the birth surname.
+
+    `on_parse_error`, when supplied, is the build's shared recorder (see
+    `_parse_error_recorder`).  A person file whose frontmatter will not parse
+    does not fail loudly here - it indexes with an empty `meta`, which means the
+    name, the vital dates and the `living` flag are quietly gone, or (with no
+    P-id in the filename to fall back on) the person is gone entirely.  Either
+    way the human has to be told; the argument is optional so the incremental
+    and test paths that pass no recorder still work.
     """
     if path.suffix.lower() != '.md':
         # SPEC §13 spells every person record `.md`, and the walker only ever
@@ -839,6 +953,15 @@ def _index_person(conn: sqlite3.Connection, path: Path, archive_root: Path) -> N
         pid = ''
         if parsed_name and parsed_name['id_type'] == 'P':
             pid = parsed_name['id_str']
+
+    # Reported here rather than straight after read_record because only now do
+    # we know which loss to name: the filename P-id fallback decides whether
+    # this record lands in the index stripped of its frontmatter or not at all.
+    if rec['parse_errors'] and on_parse_error is not None:
+        lost = _LOST_PERSON_FIELDS if pid else _LOST_PERSON
+        for code, detail in rec['parse_errors']:
+            on_parse_error(path, code, detail, lost)
+
     if not pid:
         return
 
@@ -1027,6 +1150,7 @@ def _index_source(
     archive_root: Path,
     fha_config: dict,
     alias_map: dict[str, str] | None = None,
+    on_parse_error=None,
 ) -> None:
     """Index one source markdown file.
 
@@ -1034,6 +1158,12 @@ def _index_source(
     (`people:`/`places:`) - e.g. `people: ["[[Ken Smith]]"]` → the matching
     P-id. Without it the fields are read the legacy bare-ID way, so this stays
     callable for the incremental and test paths that pass no map.
+
+    `on_parse_error`, when supplied, is the build's shared recorder (see
+    `_parse_error_recorder`).  This is the seam #62 was about: `read_record`
+    reports a malformed `## Claims` block through `parse_errors` and hands back
+    `claims: []`, so without this call the block is dropped and the build says
+    nothing.  Optional for the same reason as `alias_map`.
     """
     if is_template_file(path):
         return   # `_TEMPLATE.*` is a teaching template, not a record
@@ -1041,6 +1171,15 @@ def _index_source(
     meta = rec['meta']
 
     sid = normalize_id(str(meta.get('id', '')))
+
+    # Before the early return below, so a source whose FRONTMATTER failed (and
+    # is therefore about to vanish whole) is reported too, not just one whose
+    # claims failed. Which of those two happened decides the phrase.
+    if rec['parse_errors'] and on_parse_error is not None:
+        lost = _LOST_CLAIMS if sid.startswith('s-') else _LOST_SOURCE
+        for code, detail in rec['parse_errors']:
+            on_parse_error(path, code, detail, lost)
+
     if not sid or not sid.startswith('s-'):
         return
 
@@ -1269,7 +1408,8 @@ def _index_source(
         )
 
 
-def _index_notes(conn: sqlite3.Connection, archive_root: Path, on_error=None) -> None:
+def _index_notes(conn: sqlite3.Connection, archive_root: Path, on_error=None,
+                 on_decode_error=None) -> None:
     """Index notes files for FTS.
 
     `on_error` is the build's shared unreadable-folder recorder (see
@@ -1284,6 +1424,19 @@ def _index_notes(conn: sqlite3.Connection, archive_root: Path, on_error=None) ->
         try:
             content = path.read_text(encoding='utf-8')
         except OSError:
+            continue
+        except UnicodeDecodeError:
+            # A note saved in the machine's own codepage rather than UTF-8 -
+            # cp1252 is what a Windows editor writes by default, and the names
+            # this archive is full of (Krakow, Muller, nee) are exactly the
+            # characters that differ. Left uncaught this raised straight out of
+            # build_index and took the WHOLE index down: nothing indexed at
+            # all, a traceback for an answer. UnicodeDecodeError is a
+            # ValueError, not an OSError, so the guard above never saw it -
+            # which is why the sibling read at `dump_text` catches it by name
+            # and these three did not.
+            if on_decode_error is not None:
+                on_decode_error(path)
             continue
         conn.execute(
             'INSERT INTO notes_fts(path, content) VALUES (?,?)',
@@ -1300,12 +1453,19 @@ def _index_notes(conn: sqlite3.Connection, archive_root: Path, on_error=None) ->
             content = research_log_path.read_text(encoding='utf-8')
         except OSError:
             content = ''
+        except UnicodeDecodeError:
+            # Same class as the per-note read above; the research log is one
+            # file, so losing it silently loses every search ever logged there.
+            if on_decode_error is not None:
+                on_decode_error(research_log_path)
+            content = ''
         if content.strip():
             rel_path = str(research_log_path.relative_to(archive_root))
             _index_research_log_block(conn, content, None, rel_path)
 
 
-def _index_capture_log(conn: sqlite3.Connection, archive_root: Path) -> None:
+def _index_capture_log(conn: sqlite3.Connection, archive_root: Path,
+                       on_decode_error=None) -> None:
     """Re-ingest `.cache/capture_log.jsonl` rows into search_log.
 
     `fha capture` writes a search_log row directly into index.sqlite for
@@ -1320,6 +1480,14 @@ def _index_capture_log(conn: sqlite3.Connection, archive_root: Path) -> None:
         try:
             lines = capture_log_path.read_text(encoding='utf-8').splitlines()
         except OSError:
+            lines = []
+        except UnicodeDecodeError:
+            # capture_log.jsonl is the ONLY record of captures made before this
+            # index existed (`_drop_tables` clears search_log every build and
+            # this replays it), so decoding it away silently loses that history
+            # for good rather than until the next run.
+            if on_decode_error is not None:
+                on_decode_error(capture_log_path)
             lines = []
         for line in lines:
             line = line.strip()
@@ -1685,6 +1853,21 @@ def build_index(archive_root: Path, fha_config: dict, verbose: bool = False) -> 
     unreadable_dirs: list[Path] = []
     on_error = unreadable_dir_recorder(unreadable_dirs)
 
+    # The same idea one level down: a folder that would not open loses every
+    # record in it, and a record whose YAML will not parse loses whatever that
+    # YAML held. Both are "the index holds less than your files do", so both
+    # ride one collector to one warning list.
+    parse_warnings: list[tuple[str, str, str]] = []
+    on_parse_error = _parse_error_recorder(parse_warnings, archive_root)
+    # Files whose BYTES would not decode as UTF-8 - a different failure from a
+    # record that decoded and then would not parse, and it needs its own list:
+    # `_parse_error_recorder`'s message promises "`fha lint` reports the same
+    # problem", and for these it does not. lint reads the same files through
+    # the same `except OSError` guard and dies on them too, so pointing the
+    # human at lint here would be sending them at a second crash.
+    undecodable_files: list[Path] = []
+    on_decode_error = undecodable_files.append
+
     try:
         with conn:
             # Places. Coord-shape warnings are collected (not printed) so they
@@ -1707,7 +1890,7 @@ def build_index(archive_root: Path, fha_config: dict, verbose: bool = False) -> 
             person_count = 0
             if people_root.exists():
                 for path in walk_files(people_root, suffix='.md', on_error=on_error):
-                    _index_person(conn, path, archive_root)
+                    _index_person(conn, path, archive_root, on_parse_error)
                     person_count += 1
             if verbose:
                 print(f'  indexed {person_count} person files')
@@ -1726,16 +1909,17 @@ def build_index(archive_root: Path, fha_config: dict, verbose: bool = False) -> 
             source_count = 0
             if sources_root.exists():
                 for path in walk_files(sources_root, suffix='.md', on_error=on_error):
-                    _index_source(conn, path, archive_root, fha_config, link_alias_map)
+                    _index_source(conn, path, archive_root, fha_config,
+                                  link_alias_map, on_parse_error)
                     source_count += 1
             if verbose:
                 print(f'  indexed {source_count} source files')
 
             # Notes FTS
-            _index_notes(conn, archive_root, on_error)
+            _index_notes(conn, archive_root, on_error, on_decode_error)
 
             # Capture log (durability: survives a search_log drop/rebuild)
-            _index_capture_log(conn, archive_root)
+            _index_capture_log(conn, archive_root, on_decode_error)
 
             # Citation scan - the full alias map now includes source stems, so a
             # `[[grandmas-album]]` prose link resolves to its S-id and a cited
@@ -1786,14 +1970,38 @@ def build_index(archive_root: Path, fha_config: dict, verbose: bool = False) -> 
             'drive or network share that is not connected - reconnect it (or '
             'restore your access), then run `fha index` again.'
         )
+    if undecodable_files:
+        shown = ', '.join(
+            _archive_relative(p, archive_root) for p in undecodable_files[:5])
+        if len(undecodable_files) > 5:
+            shown += f' and {len(undecodable_files) - 5} more'
+        unreadable_warnings.append(
+            f'{len(undecodable_files)} file(s) are not saved as UTF-8 text, so '
+            f'their words are not in the index: {shown}. They will not be found '
+            'by `fha find --text`, and a research log or capture log that will '
+            'not decode loses the searches recorded in it. The file itself is '
+            'fine and nothing was changed - it was written in an older encoding '
+            '(a Windows editor defaults to one). Re-save it as UTF-8, then run '
+            '`fha index` again.'
+        )
+
+    # One row per record that would not parse, in walk order, without repeating
+    # a file that produced two errors (a broken frontmatter AND a broken claims
+    # block is one file to go and fix).
+    unreadable_records: list[str] = []
+    for rel, _code, _text in parse_warnings:
+        if rel not in unreadable_records:
+            unreadable_records.append(rel)
 
     # Warnings (today: malformed place coords, an orphaning roots: change, a
-    # folder that would not open) put the build on the documented warnings
-    # exit path (§1: 1 = warnings only) without failing it - the human must
-    # SEE that a hand-edited line was skipped or a folder went unread.
+    # folder that would not open, a record whose YAML would not parse) put the
+    # build on the documented warnings exit path (§1: 1 = warnings only)
+    # without failing it - the human must SEE that a hand-edited line was
+    # skipped, a folder went unread, or a claims block was dropped.
     return Result(
         exit_code=(EXIT_WARNINGS
-                   if (place_warnings or roots_warnings or unreadable_warnings)
+                   if (place_warnings or roots_warnings or unreadable_warnings
+                       or parse_warnings)
                    else EXIT_CLEAN),
         data={
             'mode': 'full',
@@ -1802,6 +2010,9 @@ def build_index(archive_root: Path, fha_config: dict, verbose: bool = False) -> 
             'sources': source_count,
             'unreadable_dirs': [
                 _archive_relative(p, archive_root) for p in unreadable_dirs],
+            # Records whose YAML the build could not read, so the index holds
+            # less than the files do until they are fixed (#62).
+            'unreadable_records': unreadable_records,
             'db_path': str(db_path),
         },
         messages=[
@@ -1812,6 +2023,9 @@ def build_index(archive_root: Path, fha_config: dict, verbose: bool = False) -> 
             for w in roots_warnings
         ] + [
             Message(level='warning', text=w) for w in unreadable_warnings
+        ] + [
+            Message(level='warning', text=text, code=code, path=rel)
+            for rel, code, text in parse_warnings
         ],
         changed=[str(db_path)],
     )
@@ -1886,7 +2100,9 @@ def _require_existing_index(cache_dir: Path) -> bool:
         return False
 
 
-def upsert_source(archive_root: Path, fha_config: dict, source_id: str) -> str:
+def upsert_source(
+    archive_root: Path, fha_config: dict, source_id: str, on_parse_error=None,
+) -> str:
     """
     Incremental re-index of one source and its claims.
 
@@ -1904,6 +2120,15 @@ def upsert_source(archive_root: Path, fha_config: dict, source_id: str) -> str:
     Re-derives relationships after the upsert so the relationships table
     reflects any changed claim statuses.  Does not re-index persons or places
     - those only change on a full rebuild.
+
+    `on_parse_error` is the same recorder the full rebuild uses (see
+    `_parse_error_recorder`), and it is here because the two paths have to
+    answer identically: an upsert of a source whose claims block will not parse
+    DELETES that source's claim rows and re-inserts nothing, so the incremental
+    path can lose a claims block just as silently as the full rebuild did
+    (#62).  The return value stays the documented status string - callers
+    branch on `'indexed'` - so the report travels through the recorder rather
+    than through a widened return type.
     """
     sid = normalize_id(source_id)
     if not is_valid_id(sid) or id_type_of(sid) != 'S':
@@ -1957,7 +2182,8 @@ def upsert_source(archive_root: Path, fha_config: dict, source_id: str) -> str:
             # claim_persons/source_people rows the full build keeps (the
             # row-for-row equivalence contract, round-2 finding 8).
             link_alias_map = _resolve_map_from_aliases(conn, record_types=('P', 'L'))
-            _index_source(conn, found, archive_root, fha_config, link_alias_map)
+            _index_source(conn, found, archive_root, fha_config, link_alias_map,
+                          on_parse_error)
             # Re-scan citations for the re-indexed source file (resolving stems),
             # with the map refreshed to include this source's reinserted stems.
             _index_citations_for_file(
@@ -2033,7 +2259,12 @@ def _run_index(args: argparse.Namespace) -> int:
         return EXIT_FAILURE
 
     if getattr(args, 'source', None):
-        status = upsert_source(archive_root, fha_config, args.source)
+        # Same seam as the full rebuild: collect, then render at this layer.
+        parse_warnings: list[tuple[str, str, str]] = []
+        status = upsert_source(
+            archive_root, fha_config, args.source,
+            _parse_error_recorder(parse_warnings, archive_root),
+        )
         if status == 'invalid_id':
             print(
                 f'ERROR: {args.source!r} is not a valid S- source ID.',
@@ -2053,6 +2284,10 @@ def _run_index(args: argparse.Namespace) -> int:
             )
             return EXIT_FAILURE
         print(f'Upserted source {args.source}')
+        if parse_warnings:
+            for _rel, _code, text in parse_warnings:
+                print(f'WARNING: {text}', file=sys.stderr)
+            return EXIT_WARNINGS
     else:
         db_path = archive_root / '.cache' / 'index.sqlite'
         status, detail = sqlite_cache_schema_status(
