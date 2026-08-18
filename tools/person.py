@@ -1161,6 +1161,7 @@ def run_new(
     birth: str | None = None, death: str | None = None, dry_run: bool = False,
     person_id: str | None = None,
     birth_place: str | None = None, death_place: str | None = None,
+    surname: str | None = None,
 ) -> Result:
     """Mint one P-id, render its stub, and write it under people/stubs/;
     return a Result.
@@ -1212,6 +1213,14 @@ def run_new(
     handing back an ID, so reaching an existing file at the fresh ID's target
     path should be next to impossible - but "next to impossible" still gets a
     plain refusal instead of a silent overwrite.
+
+    `surname`, when given, overrides the filename's automatic surname split
+    (see `_lib.stub_slug_name`'s `surname` argument) - the escape hatch for
+    names no heuristic should be expected to get right (Spanish double
+    surnames, particles, surname-first conventions), and independently the
+    fix for a suffix the built-in Jr/Sr/II/III/IV/V list gets wrong (issue
+    #53). `name:` is written exactly as given either way; only the filename's
+    surname slug changes.
     """
     result = Result(data={'status': None, 'person_id': None, 'path': None, 'name': None})
 
@@ -1269,7 +1278,7 @@ def run_new(
                 f'`fha find {fmt_id_display(pid)}`.')
     else:
         pid = mint_ids('P', 1, archive_root)[0].lower()
-    filename = stub_filename(clean_name, pid)
+    filename = stub_filename(clean_name, pid, surname=surname)
     path = stubs_dir / filename
     result.data['person_id'] = fmt_id_display(pid)
     result.data['path'] = str(path)
@@ -2775,6 +2784,7 @@ def _cmd_new(args: argparse.Namespace) -> int:
         birth=args.birth, death=args.death,
         birth_place=getattr(args, 'birth_place', None),
         death_place=getattr(args, 'death_place', None),
+        surname=getattr(args, 'surname', None),
         dry_run=bool(getattr(args, 'dry_run', False))))
 
 
@@ -2913,14 +2923,19 @@ Mint a brand-new person - the one-command "+ add person" mint.
   fha person new "Jane Doe"
   fha person new "Jane Doe" --sex F --birth 1870 --death 1940
   fha person new "Cortez" --gender "two-spirit"
+  fha person new "Maria Garcia Lopez" --surname "Garcia Lopez"
 
 Mints one P-id, writes a stub under people/stubs/, and reports where it
 landed. --sex accepts M, F, intersex, or unknown (case-insensitive for M/F).
 --gender is free text - omit it unless there is something to record.
 --birth/--death record PROVISIONAL, unsourced estimates: the archive's exact
 date form (1870, 1870-06) or plain words ("circa 1870", "before 1940") -
-loose wording is translated for you. A sourced birth/death claim always
-supersedes these later (`fha claim`). Use `fha person relate` next to tie
+loose wording is translated for you. A generational suffix (Jr, Sr, II, III,
+IV, V) in the name is recognised automatically and never taken as the
+surname. --surname overrides the filename's surname split outright, for
+names no automatic split can be expected to get right (Spanish double
+surnames, particles like "van der", surname-first conventions) - name: is
+written exactly as given either way. Use `fha person relate` next to tie
 the new person to family, and `fha find` to confirm the record."""
 
 _SET_LIVING_DESCRIPTION = """\
@@ -2944,6 +2959,11 @@ def _add_new_arguments(sub: argparse._SubParsersAction) -> None:
     )
     nw.add_argument('name', metavar='NAME',
                     help='The person\'s full name, e.g. "Jane Doe".')
+    nw.add_argument('--surname', metavar='TEXT',
+                    help='Override the filename\'s surname split - for names no '
+                         'automatic split can be expected to get right (Spanish '
+                         'double surnames, particles like "van der", surname-first '
+                         'conventions). name: is written exactly as given either way.')
     # No choices= here (unlike set-living's `value`): an unrecognised sex
     # should refuse with run_new's plain, gender-glossed message
     # (_lib.format_person_sex_error), not argparse's bare "invalid choice" text.

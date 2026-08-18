@@ -539,6 +539,34 @@ class ApiRunTests(_ServeCase):
         self.assertTrue(payload['ok'], payload)
         self.assertEqual(payload['data']['person_id'], previewed)
 
+    def test_person_new_surname_override_reaches_the_engine(self):
+        # Issue #53's --surname escape hatch (person.run_new's `surname`
+        # kwarg) is threaded through `_verb_person_new`, but the verb's
+        # schema whitelist did not list it - `_coerce` rejected any request
+        # carrying `surname` with a 400 before the new code ever ran. Prove
+        # the API round-trips it end to end, the same as the CLI.
+        s, d, _h = self.post_run(
+            'person.new',
+            {'name': 'Maria Jose Garcia Lopez', 'surname': 'Garcia Lopez'}, True)
+        self.assertEqual(s, 200)
+        payload = json.loads(d)
+        self.assertTrue(payload['ok'], payload)
+        filename = Path(payload['data']['path']).name
+        self.assertTrue(filename.startswith('garcia_lopez__maria_jose_'), filename)
+
+    def test_add_family_surname_override_reaches_the_engine(self):
+        # Same schema gap as person.new, on person.add_family's typed-name
+        # mint path (`_verb_add_family` also threads `surname` through).
+        s, d, _h = self.post_run(
+            'person.add_family',
+            {'person_id': 'P-6f7g8h9jka', 'relation_type': 'sibling',
+             'name': 'Maria Jose Garcia Lopez', 'surname': 'Garcia Lopez'}, True)
+        self.assertEqual(s, 200)
+        payload = json.loads(d)
+        self.assertTrue(payload['ok'], payload)
+        filename = Path(payload['data']['path']).name
+        self.assertTrue(filename.startswith('garcia_lopez__maria_jose_'), filename)
+
     def test_claim_new_apply_reuses_the_previewed_minted_id(self):
         row = self.a_suggested_claim()
         sid = row[1]

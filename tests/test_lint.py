@@ -579,6 +579,91 @@ class HyphenatedNameFilenameTests(unittest.TestCase):
         self.assertEqual(companion_names, ['cole__margaret_sources-index_P-5555555555.md'])
 
 
+class PersonFilenamePartsSuffixTests(unittest.TestCase):
+    """`lint._person_filename_parts` is the third of issue #53's three sites:
+    `--fix-ids` re-derives the SAME §13 surname/given split independently
+    when it renames a hand-authored, id-less person record. It must apply
+    the shared `_lib.strip_generational_suffix` rule exactly like
+    `_lib.stub_slug_name` does, so a hand-typed "Roy Eugene Dodson Jr" mints
+    as `dodson__roy_eugene_jr_P-….md`, not `jr__roy_eugene_dodson_P-….md`."""
+
+    def test_suffix_is_pulled_off_the_surname_slot(self) -> None:
+        self.assertEqual(
+            lint._person_filename_parts('Roy Eugene Dodson Jr', 'fallback'),
+            ('dodson', 'roy_eugene_jr'),
+        )
+
+    def test_father_and_son_share_the_same_surname(self) -> None:
+        father = lint._person_filename_parts('Roy Eugene Dodson', 'fallback')
+        son = lint._person_filename_parts('Roy Eugene Dodson Jr', 'fallback')
+        self.assertEqual(father[0], son[0])
+        self.assertEqual(father[0], 'dodson')
+
+    def test_every_suffix_in_the_list_round_trips(self) -> None:
+        for suffix in ('Jr', 'Jr.', 'Sr', 'Sr.', 'II', 'III', 'IV', 'V'):
+            with self.subTest(suffix=suffix):
+                surname, given = lint._person_filename_parts(
+                    f'James Whitelock {suffix}', 'fallback')
+                self.assertEqual(surname, 'whitelock')
+                self.assertEqual(given, f'james_{suffix.rstrip(".").lower()}')
+
+    def test_two_token_given_plus_suffix_has_no_promoted_surname(self) -> None:
+        self.assertEqual(
+            lint._person_filename_parts('Roy Jr', 'fallback'), ('', 'roy_jr'))
+
+    def test_suffix_alone_falls_through_to_the_pre_existing_single_token_path(self) -> None:
+        # Nothing left to strip TO - reads as an ordinary given name, same as
+        # before this fix (this function's pre-existing single-token
+        # behaviour, untouched: surname = the one word, given = 'unknown').
+        self.assertEqual(
+            lint._person_filename_parts('Jr', 'fallback'), ('jr', 'unknown'))
+
+    def test_no_suffix_single_token_behaviour_is_unchanged(self) -> None:
+        # This function's own (pre-existing, non-SPEC-mononym) single-token
+        # convention is out of scope for #53 and must not move.
+        self.assertEqual(
+            lint._person_filename_parts('Cher', 'fallback'), ('cher', 'unknown'))
+
+
+class FixIdsRenamesSuffixedNamesTests(unittest.TestCase):
+    """End-to-end: `--fix-ids` renaming a hand-authored, id-less person file
+    whose name carries a generational suffix (issue #53, confirmed by the
+    reporter "fixed here by hand" on the live archive before this fix)."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        (self.root / 'fha.yaml').write_text('roots: {}\n', encoding='utf-8')
+        (self.root / 'people').mkdir(parents=True)
+        (self.root / 'sources').mkdir()
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_fix_ids_files_the_suffixed_name_under_the_surname(self) -> None:
+        (self.root / 'people' / 'Roy Eugene Dodson Jr.md').write_text(
+            '---\nname: Roy Eugene Dodson Jr\nliving: false\n---\n\n'
+            '# Roy Eugene Dodson Jr\n', encoding='utf-8')
+        lint.run_lint(self.root, {}, fix_ids=True)
+        minted = [p.name for p in (self.root / 'people').glob('dodson__roy_eugene_jr_P-*.md')]
+        self.assertEqual(len(minted), 1,
+                          sorted(p.name for p in (self.root / 'people').iterdir()))
+
+    def test_fix_ids_father_and_son_file_under_the_same_surname(self) -> None:
+        (self.root / 'people' / 'Roy Eugene Dodson.md').write_text(
+            '---\nname: Roy Eugene Dodson\nliving: false\n---\n\n'
+            '# Roy Eugene Dodson\n', encoding='utf-8')
+        (self.root / 'people' / 'Roy Eugene Dodson Jr.md').write_text(
+            '---\nname: Roy Eugene Dodson Jr\nliving: false\n---\n\n'
+            '# Roy Eugene Dodson Jr\n', encoding='utf-8')
+        lint.run_lint(self.root, {}, fix_ids=True)
+        people_dir = self.root / 'people'
+        father = list(people_dir.glob('dodson__roy_eugene_P-*.md'))
+        son = list(people_dir.glob('dodson__roy_eugene_jr_P-*.md'))
+        self.assertEqual(len(father), 1, sorted(p.name for p in people_dir.iterdir()))
+        self.assertEqual(len(son), 1, sorted(p.name for p in people_dir.iterdir()))
+
+
 class ResearchHypothesisE004Tests(unittest.TestCase):
     """Fix for the E004 false positive on research-file hypotheses: SPEC §16
     homes `## Hypotheses` in `…_research_P-….md`, and index.py indexes them

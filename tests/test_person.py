@@ -1014,6 +1014,82 @@ class NewTests(unittest.TestCase):
         self.assertTrue(path.name.startswith('__cher_'))
         self.assertTrue(path.name.endswith('.md'))
 
+    def test_generational_suffix_sorts_adjacent_to_the_parent(self) -> None:
+        # Issue #53: "Roy Eugene Dodson Jr" used to file as `jr__roy_eugene_
+        # dodson_P-….md`, sorting the son under a different letter than his
+        # father. The father and son must now share the same surname slot.
+        father = person.run_new(self.root, 'Roy Eugene Dodson')
+        son = person.run_new(self.root, 'Roy Eugene Dodson Jr')
+        self.assertEqual(father.exit_code, EXIT_CLEAN)
+        self.assertEqual(son.exit_code, EXIT_CLEAN)
+        father_name = Path(father.data['path']).name
+        son_name = Path(son.data['path']).name
+        self.assertTrue(father_name.startswith('dodson__roy_eugene_'), father_name)
+        self.assertTrue(son_name.startswith('dodson__roy_eugene_jr_'), son_name)
+        # "Adjacent" means the shared surname slot sorts them together -
+        # neither leads with the suffix, so both start with the same prefix.
+        self.assertEqual(father_name.split('__')[0], son_name.split('__')[0])
+
+    def test_every_suffix_round_trips(self) -> None:
+        for suffix in ('Jr', 'Jr.', 'Sr', 'Sr.', 'II', 'III', 'IV', 'V'):
+            with self.subTest(suffix=suffix):
+                result = person.run_new(self.root, f'James Whitelock {suffix}')
+                self.assertEqual(result.exit_code, EXIT_CLEAN)
+                name = Path(result.data['path']).name
+                self.assertTrue(name.startswith('whitelock__james_'), name)
+                # name: is untouched - the suffix stays exactly as typed there.
+                meta = read_record(Path(result.data['path']))['meta']
+                self.assertEqual(meta['name'], f'James Whitelock {suffix}')
+
+    def test_lowercase_suffix_is_recognised(self) -> None:
+        result = person.run_new(self.root, 'Roy Dodson jr')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        name = Path(result.data['path']).name
+        self.assertTrue(name.startswith('dodson__roy_jr_'), name)
+
+    def test_given_name_plus_suffix_has_no_promoted_surname(self) -> None:
+        # "Roy Jr" has no more of a real surname than "Roy" alone does - the
+        # suffix must not promote the one remaining word into a surname
+        # (that would just move the original bug from "Jr" to "Roy").
+        result = person.run_new(self.root, 'Roy Jr')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        name = Path(result.data['path']).name
+        self.assertTrue(name.startswith('__roy_jr_'), name)
+
+    def test_suffix_alone_is_not_stripped_reads_as_a_plain_name(self) -> None:
+        # A name that IS only a suffix ("Jr") has nothing left to strip TO,
+        # so it falls through to the ordinary mononym path unchanged.
+        result = person.run_new(self.root, 'Jr')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        name = Path(result.data['path']).name
+        self.assertTrue(name.startswith('__jr_'), name)
+
+    def test_roman_numeral_given_name_alone_is_a_plain_mononym(self) -> None:
+        result = person.run_new(self.root, 'IV')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        name = Path(result.data['path']).name
+        self.assertTrue(name.startswith('__iv_'), name)
+
+    def test_surname_override_replaces_the_automatic_split(self) -> None:
+        # The escape hatch: a Spanish double surname no last-word heuristic
+        # can be expected to split correctly.
+        result = person.run_new(
+            self.root, 'Maria Jose Garcia Lopez', surname='Garcia Lopez')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        name = Path(result.data['path']).name
+        self.assertTrue(name.startswith('garcia_lopez__maria_jose_'), name)
+        # name: is untouched by the override.
+        meta = read_record(Path(result.data['path']))['meta']
+        self.assertEqual(meta['name'], 'Maria Jose Garcia Lopez')
+
+    def test_surname_override_unrelated_to_name_keeps_full_name_as_given(self) -> None:
+        # An override that is neither a prefix nor a suffix of the typed name
+        # must not silently drop any of it.
+        result = person.run_new(self.root, 'Mystery Person', surname='Totally Different')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        name = Path(result.data['path']).name
+        self.assertTrue(name.startswith('totally_different__mystery_person_'), name)
+
     def test_never_overwrites_an_existing_target(self) -> None:
         # mint_ids' own collision scan makes a REAL collision astronomically
         # unlikely, so the guard is exercised directly: monkeypatch mint_ids
@@ -1934,6 +2010,29 @@ class PersonNewVerbsCliTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertIn('[dry-run]', out)
         self.assertEqual({p.name for p in stubs_dir.iterdir()}, before)
+
+    def test_new_cli_surname_override(self) -> None:
+        stubs_dir = self.root / 'people' / 'stubs'
+        before = {p.name for p in stubs_dir.iterdir()}
+        rc, out, _ = self._run(
+            ['person', 'new', 'Maria Jose Garcia Lopez', '--surname', 'Garcia Lopez',
+             '--root', str(self.root)])
+        self.assertEqual(rc, 0)
+        new_files = {p.name for p in stubs_dir.iterdir()} - before
+        self.assertEqual(len(new_files), 1)
+        filename = new_files.pop()
+        self.assertTrue(filename.startswith('garcia_lopez__maria_jose_'), filename)
+
+    def test_new_cli_generational_suffix(self) -> None:
+        stubs_dir = self.root / 'people' / 'stubs'
+        before = {p.name for p in stubs_dir.iterdir()}
+        rc, out, _ = self._run(
+            ['person', 'new', 'Roy Eugene Dodson Jr', '--root', str(self.root)])
+        self.assertEqual(rc, 0)
+        new_files = {p.name for p in stubs_dir.iterdir()} - before
+        self.assertEqual(len(new_files), 1)
+        filename = new_files.pop()
+        self.assertTrue(filename.startswith('dodson__roy_eugene_jr_'), filename)
 
     def test_new_invalid_sex_at_cli_is_a_plain_refusal_not_argparse_error(self) -> None:
         # --sex has no argparse choices= (the plain-language, gender-glossed
