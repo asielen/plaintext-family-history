@@ -2211,5 +2211,258 @@ class TriageDateSignalTests(unittest.TestCase):
             self.assertEqual(folder_scores['wedding_1902.jpg'], (-2, ['ai-only']))
 
 
+class TypeFlagRoutingTests(unittest.TestCase):
+    """`fha process --type` decides the root, not the file extension (issue #59).
+
+    The regression these pin: a scanned census supplied as a `.jpg` was routed
+    by extension into the family photo library and scaffolded `source_type:
+    photo`, with `--type census` accepted and silently discarded. SPEC 12 calls
+    the photos root "all photos" and the documents root "scans, clippings,
+    recordings, transcripts", and SPEC 14's `source_type` vocabulary is a
+    vocabulary of RECORDS - so a stated non-photo type names a record, and a
+    record belongs in the documents root whatever its extension.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self.archive = _make_archive(self.tmp)
+        (self.archive / 'inbox').mkdir()
+        self._orig_read = process._run_exiftool_read_keywords
+        self._orig_embed = process._run_exiftool_embed_source
+        self._orig_remove = process._run_exiftool_remove_source
+        self.store = FakePhotoStore()
+        process._run_exiftool_read_keywords = self.store.read
+        process._run_exiftool_embed_source = self.store.embed
+        process._run_exiftool_remove_source = self.store.remove
+
+    def tearDown(self) -> None:
+        process._run_exiftool_read_keywords = self._orig_read
+        process._run_exiftool_embed_source = self._orig_embed
+        process._run_exiftool_remove_source = self._orig_remove
+        self._tmp.cleanup()
+
+    def _run(self, argv: list[str]) -> int:
+        with contextlib.redirect_stdout(io.StringIO()):
+            return process._standalone_main(argv + ['--root', str(self.archive)])
+
+    def _run_captured(self, argv: list[str]) -> tuple[int, str, str]:
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = process._standalone_main(argv + ['--root', str(self.archive)])
+        return rc, out.getvalue(), err.getvalue()
+
+    @contextlib.contextmanager
+    def _watch_renames(self):
+        """Record every Path.rename destination for the duration of the block.
+
+        Issue #59's acceptance criterion is that nothing is written into the
+        photos root AT ANY POINT - a scan that transits the real Lightroom
+        library and is moved out again is half the complaint, and an end-state
+        assertion cannot see it. Every filing move in `fha process` goes
+        through `Path.rename`, so recording its destinations catches a transit
+        that a before/after snapshot would miss.
+        """
+        seen: list[Path] = []
+        original = Path.rename
+
+        def spy(self_path, target):
+            seen.append(Path(target))
+            return original(self_path, target)
+
+        Path.rename = spy
+        try:
+            yield seen
+        finally:
+            Path.rename = original
+
+    def _assert_photos_root_untouched(self, renames: list[Path]) -> None:
+        photos_root = (self.archive / 'photos').resolve()
+        for target in renames:
+            self.assertFalse(
+                process._is_under(target, photos_root),
+                f'{target} was written into the photos root',
+            )
+        self.assertEqual(
+            [p.name for p in (self.archive / 'photos').rglob('*') if p.is_file()],
+            [], 'the photos root must hold no files')
+        self.assertEqual(self.store.keywords, {},
+                         'no photo keyword may be embedded on a document route')
+
+    # -- the reported case -----------------------------------------------------
+
+    def test_image_with_document_type_files_as_a_document(self) -> None:
+        scan = self.archive / 'inbox' / '43290879-california-061582-0002.jpg'
+        scan.write_bytes(b'jpegbytes')
+
+        with self._watch_renames() as renames:
+            rc = self._run([str(scan), '--type', 'census',
+                            '--title', 'Jessie R. Boyd Household - 1950 Census',
+                            '--date', '1950-04-17'])
+
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertFalse(scan.exists())
+        filed = list((self.archive / 'documents' / 'census').glob('*_S-*.jpg'))
+        self.assertEqual(len(filed), 1, 'the scan belongs under the documents root')
+        records = list((self.archive / 'sources' / 'census').glob('*_S-*.md'))
+        self.assertEqual(len(records), 1, 'the record belongs under sources/census/')
+        self.assertEqual(read_record(records[0])['meta']['source_type'], 'census')
+        self.assertFalse((self.archive / 'sources' / 'photos').exists())
+        self._assert_photos_root_untouched(renames)
+
+    def test_image_with_document_type_dry_run_previews_the_document_route(self) -> None:
+        scan = self.archive / 'inbox' / 'census-page.jpg'
+        scan.write_bytes(b'jpegbytes')
+
+        with self._watch_renames() as renames:
+            rc, out, _err = self._run_captured([str(scan), '--type', 'census', '--dry-run'])
+
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertIn('documents', out)
+        self.assertIn('sources/census/', out)
+        self.assertTrue(scan.exists(), 'a dry run writes nothing')
+        self._assert_photos_root_untouched(renames)
+
+    # -- what must NOT change --------------------------------------------------
+
+    def test_image_without_type_is_still_a_photo(self) -> None:
+        photo = self.archive / 'inbox' / 'portrait.jpg'
+        photo.write_bytes(b'jpegbytes')
+
+        rc = self._run([str(photo)])
+
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertTrue((self.archive / 'photos' / 'portrait.jpg').is_file())
+        records = list((self.archive / 'sources' / 'photos').glob('*_S-*.md'))
+        self.assertEqual(len(records), 1)
+        self.assertEqual(read_record(records[0])['meta']['source_type'], 'photo')
+
+    def test_document_type_on_a_non_image_is_unchanged(self) -> None:
+        deed = self.archive / 'inbox' / 'deed.pdf'
+        deed.write_bytes(b'%PDF-1.4')
+
+        rc = self._run([str(deed), '--type', 'land-record'])
+
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertEqual(
+            len(list((self.archive / 'documents' / 'land-record').glob('deed_S-*.pdf'))), 1)
+        self.assertEqual(
+            len(list((self.archive / 'sources' / 'land-record').glob('deed_S-*.md'))), 1)
+
+    def test_photo_type_on_an_image_is_unchanged(self) -> None:
+        photo = self.archive / 'inbox' / 'portrait.jpg'
+        photo.write_bytes(b'jpegbytes')
+
+        rc = self._run([str(photo), '--type', 'photo'])
+
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertTrue((self.archive / 'photos' / 'portrait.jpg').is_file())
+
+    def test_unknown_type_on_an_image_is_refused(self) -> None:
+        photo = self.archive / 'inbox' / 'portrait.jpg'
+        photo.write_bytes(b'jpegbytes')
+
+        with self._watch_renames() as renames:
+            rc, _out, err = self._run_captured([str(photo), '--type', 'bogus'])
+
+        self.assertEqual(rc, EXIT_ERRORS)
+        self.assertIn('census', err)
+        self.assertNotIn('Traceback', err)
+        self.assertTrue(photo.exists(), 'the asset stays in the inbox')
+        self.assertEqual(list((self.archive / 'sources').rglob('*.md')), [])
+        self._assert_photos_root_untouched(renames)
+
+    # -- interaction with the sidecar hint ------------------------------------
+
+    def test_explicit_type_beats_the_sidecar_hint(self) -> None:
+        scan = self.archive / 'inbox' / 'page.jpg'
+        scan.write_bytes(b'jpegbytes')
+        sidecar = self.archive / 'inbox' / 'page.notes.md'
+        sidecar.write_text('---\nsource_type: photo\n---\nFrom the album.\n',
+                           encoding='utf-8')
+
+        with self._watch_renames() as renames:
+            rc = self._run([str(scan), '--type', 'newspaper'])
+
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertEqual(
+            len(list((self.archive / 'documents' / 'newspaper').glob('page_S-*.jpg'))), 1)
+        self.assertEqual(
+            len(list((self.archive / 'sources' / 'newspaper').glob('*_S-*.md'))), 1)
+        self._assert_photos_root_untouched(renames)
+
+    # -- a file already living in the photo library ---------------------------
+
+    def test_type_on_a_photos_root_file_types_the_record_and_never_moves_it(self) -> None:
+        # A photos-root file is NEVER moved by `fha process` (SPEC 12.1) - only
+        # `fha process refile` may carry one out, and only with a confirmation.
+        # The flag is still honoured as far as the spec allows: the RECORD is
+        # typed and filed as the human said, the file stays exactly where it
+        # is, and the output names refile as the way to move it.
+        scan = self.archive / 'photos' / '1880' / 'census-page.jpg'
+        scan.write_bytes(b'jpegbytes')
+
+        rc, out, _err = self._run_captured([str(scan), '--type', 'census'])
+
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertTrue(scan.is_file(), 'the photo library is never rearranged')
+        records = list((self.archive / 'sources' / 'census').glob('*_S-*.md'))
+        self.assertEqual(len(records), 1)
+        self.assertEqual(read_record(records[0])['meta']['source_type'], 'census')
+        self.assertIn('refile', out)
+
+    # -- the folder modes honour it too ---------------------------------------
+
+    def test_bundle_with_document_type_files_every_scan_as_a_document(self) -> None:
+        # A bundle of census page scans: all .jpg, so the all-photos inference
+        # would send the whole set to the photo library. `--type` outranks it.
+        bundle = self.archive / 'inbox' / '1950-census-pages'
+        bundle.mkdir()
+        for name in ('page-1.jpg', 'page-2.jpg'):
+            (bundle / name).write_bytes(b'jpegbytes')
+        (bundle / 'notes.md').write_text(
+            'Two pages of the 1950 census sheet.\n', encoding='utf-8')
+
+        with self._watch_renames() as renames:
+            rc = self._run([str(bundle), '--type', 'census'])
+
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertFalse(bundle.exists(), 'the bundle folder dissolves')
+        filed = sorted(p.name for p in (self.archive / 'documents' / 'census').glob('*_S-*.jpg'))
+        self.assertEqual(len(filed), 2, filed)
+        records = list((self.archive / 'sources' / 'census').glob('*_S-*.md'))
+        self.assertEqual(len(records), 1)
+        self.assertEqual(read_record(records[0])['meta']['source_type'], 'census')
+        self._assert_photos_root_untouched(renames)
+
+    def test_bundle_type_outranks_the_notes_hint(self) -> None:
+        bundle = self.archive / 'inbox' / 'clipping'
+        bundle.mkdir()
+        (bundle / 'scan.jpg').write_bytes(b'jpegbytes')
+        (bundle / 'notes.md').write_text(
+            '---\nsource_type: photo\n---\nFrom the album.\n', encoding='utf-8')
+
+        with self._watch_renames() as renames:
+            rc = self._run([str(bundle), '--type', 'newspaper'])
+
+        self.assertEqual(rc, EXIT_CLEAN)
+        records = list((self.archive / 'sources' / 'newspaper').glob('*_S-*.md'))
+        self.assertEqual(len(records), 1)
+        self._assert_photos_root_untouched(renames)
+
+    def test_bundle_without_type_still_infers_photo(self) -> None:
+        bundle = self.archive / 'inbox' / 'album-page'
+        bundle.mkdir()
+        (bundle / 'front.jpg').write_bytes(b'jpegbytes')
+        (bundle / 'notes.md').write_text('From the album.\n', encoding='utf-8')
+
+        rc = self._run([str(bundle)])
+
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertTrue((self.archive / 'photos' / 'front.jpg').is_file())
+        self.assertEqual(
+            len(list((self.archive / 'sources' / 'photos').glob('*_S-*.md'))), 1)
+
+
 if __name__ == '__main__':
     unittest.main()

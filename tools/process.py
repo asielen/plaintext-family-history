@@ -5,7 +5,8 @@ process.py - fha process: Stage A of the intake pipeline.
   fha process <file> [--type TYPE] [--title "…"] [--date DATE] [--slug SLUG]
                                                                  Process one asset
   fha process <photo> --more <file> ROLE[:copy]                  Attach a file to its source
-  fha process refile <S-id> --to photos|documents [--dest SUB]   Move a filed file across roots
+  fha process refile <S-id> --to photos|documents [--type TYPE] [--dest SUB]
+                                                                 Move a filed file across roots
   fha process <file> --dry-run                                   Preview, write nothing
 
 This is the *deterministic* stage of processing an original into a Source
@@ -24,9 +25,14 @@ Two roots, two identity rules (the spine of SPEC §12.1):
     catalog). Identity travels in the embedded `SOURCE: S-xxxx` keyword
     (written via exiftool) plus the record's `files:` inventory.
 
-Detection is by extension and by the photos-root mapping in `fha.yaml`: a file
-with a photo extension, or any file living under the resolved photos root, is a
-photo; everything else is a document.
+Which root a new file belongs in is decided by `classify_asset`, in three
+steps: where the file already lives (a file under either root stays under it -
+`fha process` never moves a filed original across the roots), then the stated
+`--type` (any type but `photo` names a record, and records live in the
+documents root - a scanned census is a census whether it arrives as a `.pdf`
+or a `.jpg`), then the extension. Before issue #59 only the last of those was
+consulted for a new file, so `--type census` on a `.jpg` was accepted and
+silently discarded and the sheet went into the family photo library.
 
 **Refile** (`fha process refile <S-id> --to photos|documents`) is the
 owner-approved carve-out to SPEC 12.1's one-sanctioned-move rule: the
@@ -35,8 +41,13 @@ one of a source's files to the other root, re-establishes the destination
 root's identity carriers (the last-chance rename + SOURCE: keyword going into
 photos; the 13-grammar rename going into documents), and updates the record -
 value-exact inventory rewrite plus a dated Notes provenance line - in one
-transaction. Within-root moves are NOT refile's business (free + healed by
-`fha reconcile`). See `process_refile` for the full contract.
+transaction. `--type` carries the source's TYPE across in that same
+transaction: `source_type:` is rewritten and the record file itself moves to
+`sources/{type}/`, because a scan leaving the photo library is not a family
+photo any more and leaving it typed `photo` in `sources/photos/` is a
+hand-edit `fha lint` never flags. Within-root moves are NOT refile's business
+(free + healed by `fha reconcile`). See `process_refile` for the full
+contract.
 
 Every mutating path is transactional: each filesystem effect registers an undo,
 and any failure unwinds them in reverse so an interrupted run leaves no partial
@@ -80,7 +91,7 @@ are found the user is asked whether they are *one* source (shared S-id) or
 #
 #  Asset classification
 #    _is_under                 - is a path inside a (resolved) root directory?
-#    classify_asset            - 'photo' | 'document' for a file + fha.yaml
+#    classify_asset            - 'photo' | 'document' for a file + fha.yaml + --type
 #    _filename_has_source_id   - does a filename already carry _{S-id}? (refuse)
 #
 #  exiftool seams (monkeypatched in tests - process never imports photoindex)
@@ -114,6 +125,7 @@ are found the user is asked whether they are *one* source (shared S-id) or
 #  Top-level operations
 #    process_document          - M7.1: rename + scaffold (transactional)
 #    process_photo             - M7.2: keyword + scaffold (transactional)
+#    _photo_root_type_note     - the refile next step for a typed photos-root file
 #    process_photo_group       - M7.3: one S-id over a variation set (transactional)
 #    process_folder            - M7.3: triage a folder, process selected groups
 #    process_bundle            - M7.4: dissolve a notes.md bundle into one source
@@ -123,6 +135,7 @@ are found the user is asked whether they are *one* source (shared S-id) or
 #    _stdin_is_interactive     - tty seam for the photo-catalog confirm (tests patch it)
 #    _move_file                - rename with a copy+delete fallback across drives
 #    _rewrite_file_line        - value-exact files: line rewrite (mirrors reconcile.py)
+#    _rewrite_source_type_line - value-exact source_type: rewrite (the --type carry)
 #    _file_line_count          - refuse-rather-than-corrupt shape guard
 #    _validate_dest_subpath    - --dest containment (no absolutes, no '..', inside the root)
 #    _refile_pick_entry        - choose which files: entry moves (never guesses)
@@ -192,6 +205,7 @@ from _lib import (
     resolve_root_arg,
     scan_ids_in_tree,
     scan_person_record_ids,
+    source_type_list,
     select_variation_primary,
     is_working_copy,
     variant_role,
@@ -206,8 +220,8 @@ configure_utf8_stdout()
 # the AI draft pass) refines it during review.
 _DEFAULT_DOCUMENT_TYPE = 'other'
 
-# Photos always scaffold to sources/photos/ with source_type 'photo' regardless
-# of any --type - the directory is plural by SPEC convention, the type singular.
+# The photo root's alias and the source_type that names a family photo. The
+# directory is plural by SPEC convention, the type singular (see _record_subdir).
 _PHOTO_DIR = 'photos'
 _PHOTO_SOURCE_TYPE = 'photo'
 
@@ -278,24 +292,54 @@ def _is_under(path: Path, root: Path) -> bool:
         return False
 
 
-def classify_asset(file_path: Path, fha_config: dict, archive_root: Path) -> str:
+def classify_asset(file_path: Path, fha_config: dict, archive_root: Path,
+                   *, source_type: str | None = None) -> str:
     """Return 'photo' or 'document' for an asset file (TOOLING §6).
 
-    The documents root takes precedence: a file filed there is a document even
-    if it has a photo extension (a scanned record saved as `.jpg`) - the
-    documents-root identity rule (rename + provenance) applies to whatever was
-    deliberately filed there. Otherwise a file is a photo if it has a known
-    photo extension OR lives under the resolved photos root - the latter
-    catches odd-extension scans filed in the photo library. Everything else is
-    a document.
+    Read as three questions in order: where does the file already live, what
+    did the human say it is, and failing both, what does it look like.
+
+    **Where it lives wins**, because that is the one answer this tool may not
+    argue with. A file under the documents root is a document even with a
+    photo extension (a scanned record saved as `.jpg`) - the documents-root
+    identity rule, rename plus provenance, applies to whatever was
+    deliberately filed there. A file under the photos root is a photo, because
+    `fha process` may never carry a file out of the photo library at all
+    (SPEC §12.1); only `fha process refile` may, and only with the human's yes.
+
+    **Then a stated `source_type`** - the human's `--type`, or a source stub's
+    `source_type:` hint - for a file that is not yet in either root (the inbox
+    case, which is how new material actually arrives). A stated type other
+    than `photo` names a RECORD: SPEC §14's vocabulary is a vocabulary of
+    records (census, vital-record, land-record, probate), and records are what
+    SPEC §12 puts in the documents root, "scans, clippings, recordings,
+    transcripts". A scanned census sheet is a census whether it arrives as a
+    `.pdf` or a `.jpg`, so the stated type beats the extension. Before this,
+    the extension decided alone and `--type census` on a `.jpg` was accepted
+    and silently discarded - the sheet was filed into the family photo library
+    and typed `photo` (issue #59). A flag accepted and then ignored is the
+    confident-wrong-answer class this project treats as the cardinal sin, so
+    the flag wins.
+
+    A stated `photo` does NOT push a file the other way. The photos root is an
+    external library another program owns (Lightroom and its like), and
+    nothing but a real photograph belongs in it; a `.pdf` labelled
+    `--type photo` therefore falls through to the extension test below and is
+    filed as a document, with its record still typed as the human asked.
+
+    **Then the file itself:** a known photo extension is a photo, everything
+    else a document.
     """
     documents_root = resolve_path('documents', fha_config, archive_root)
     if _is_under(file_path, documents_root):
         return 'document'
-    if file_path.suffix.lower() in PHOTO_EXTENSIONS:
-        return 'photo'
     photos_root = resolve_path(_PHOTO_DIR, fha_config, archive_root)
     if _is_under(file_path, photos_root):
+        return 'photo'
+    stated = str(source_type).strip().lower() if source_type else ''
+    if stated and stated != _PHOTO_SOURCE_TYPE:
+        return 'document'
+    if file_path.suffix.lower() in PHOTO_EXTENSIONS:
         return 'photo'
     return 'document'
 
@@ -688,6 +732,7 @@ def _relocate_from_inbox(
     file_path: Path,
     sidecar: Path | None,
     *,
+    source_type: str | None = None,
     dry_run: bool,
 ) -> tuple[Path, Path | None, object]:
     """Move an inbox-staged asset (+ sidecar) into its documents/photos root.
@@ -721,10 +766,14 @@ def _relocate_from_inbox(
     if not _is_under(file_path, inbox_root):
         return file_path, sidecar, None
 
-    # A sidecar's `source_type` hint (e.g. `census`, `vital-record`) overrides
-    # the extension heuristic: a record image like `census.jpg` is a photo
-    # *extension* but the recipe/stub already knows it's a document-typed
-    # source, and filing it under photos/ would scaffold the wrong record type.
+    # A stated source_type overrides the extension heuristic: a record image
+    # like `census.jpg` has a photo *extension* but is a document-typed source,
+    # and filing it under photos/ would put a census sheet in the family photo
+    # library. `--type` (source_type) is the human saying so directly; a stub's
+    # `source_type:` hint is the recipe or the capture saying so on his behalf,
+    # and the explicit flag outranks the hint. classify_asset owns the rule -
+    # including that a stated `photo` never pushes a non-photo file into the
+    # photo library.
     hinted_type = None
     if sidecar is not None:
         try:
@@ -732,10 +781,8 @@ def _relocate_from_inbox(
             hinted_type = sidecar_meta.get('source_type')
         except ProcessError:
             pass  # downstream re-parse will raise the real error
-    if hinted_type:
-        kind = _PHOTO_SOURCE_TYPE if str(hinted_type) == _PHOTO_SOURCE_TYPE else 'document'
-    else:
-        kind = classify_asset(file_path, fha_config, archive_root)
+    kind = classify_asset(file_path, fha_config, archive_root,
+                          source_type=source_type or hinted_type)
     dest_root = (
         resolve_path(_PHOTO_DIR, fha_config, archive_root) if kind == 'photo'
         else resolve_path('documents', fha_config, archive_root)
@@ -1482,6 +1529,7 @@ def process_photo(
     title: str | None,
     source_date: str | None,
     dry_run: bool,
+    source_type: str | None = None,
     people: list[str] | None = None,
     real_path: Path | None = None,
     source_id: str | None = None,
@@ -1494,6 +1542,15 @@ def process_photo(
     first: if exiftool fails, nothing is scaffolded (TOOLING §6 "abort on
     failure, do not scaffold"). If the scaffold then fails, the just-written
     keyword is removed so the photo is not left half-processed.
+
+    `source_type` is reached only by a file that ALREADY lives in the photos
+    root and was given a non-photo `--type` (a census sheet the human filed
+    into the photo library before deciding what it was). `fha process` may
+    never carry a file out of that root - only `fha process refile` may, and
+    only with the human's yes (SPEC §12.1) - so the flag is honoured as far as
+    the spec allows: the record is typed and filed as he asked, the file stays
+    exactly where it is, and the caller is told refile is how it moves.
+    Defaults to `photo`, the ordinary case.
 
     `people` is a validated list of P-ids from `--people`; each is written as
     a bare keyword in the same exiftool call as SOURCE: (one atomic write, one
@@ -1560,7 +1617,8 @@ def process_photo(
     if report is not None:
         report['source_id'] = sid
     final_slug = _derive_slug(slug, final_title if title is None else title, file_path)
-    record_dir = archive_root / 'sources' / _PHOTO_DIR
+    resolved_type = source_type or _PHOTO_SOURCE_TYPE
+    record_dir = archive_root / 'sources' / _record_subdir(resolved_type)
     record_path = record_dir / f'{final_slug}_{sid}.md'
     file_alias = path_to_alias(file_path, _PHOTO_DIR, fha_config, archive_root)
 
@@ -1568,7 +1626,7 @@ def process_photo(
         raise ProcessError(f'record already exists: {_rel(record_path, archive_root)}')
 
     text = _scaffold_text(
-        sid, final_title, _PHOTO_SOURCE_TYPE,
+        sid, final_title, resolved_type,
         [{'file': file_alias, 'role': 'primary', 'is_primary': True}],
         notes_body=notes_body,
         restricted=_sidecar_flag(sidecar_meta, 'restricted'),
@@ -1588,6 +1646,8 @@ def process_photo(
         kw_desc = f'SOURCE: {sid}' + (f' + {len(new_people)} P-id keyword(s)' if new_people else '')
         print(f'[dry-run] Would embed {kw_desc} in {file_path.name} (no rename)')
         print(f'[dry-run] Would scaffold {_rel(record_path, archive_root)}')
+        if note := _photo_root_type_note(sid, resolved_type):
+            print(f'[dry-run] {note}')
         if new_people:
             print(f'[dry-run] people: {", ".join(new_people)}')
         if sidecar is not None:
@@ -1633,9 +1693,30 @@ def process_photo(
     if new_people:
         print(f'Tagged people: {", ".join(new_people)}')
     print(f'Scaffolded {_rel(record_path, archive_root)}')
+    if note := _photo_root_type_note(sid, resolved_type):
+        print(note)
     if sidecar is not None:
         print(f'Consumed stub {sidecar.name} (notes -> ## Notes)')
     return EXIT_CLEAN
+
+
+def _photo_root_type_note(sid: str, resolved_type: str) -> str | None:
+    """The next step for a non-photo record whose file sits in the photo library.
+
+    `fha process` never carries a file out of the photos root (SPEC §12.1;
+    only `fha process refile` may, and only with the human's yes), so a
+    photos-root file given a non-photo `--type` gets the record it asked for
+    and keeps its place. That is half an answer unless he is told the other
+    half, so this names refile - the one verb allowed to move it - with the
+    command already filled in. Returns None for an ordinary photo, which needs
+    no explanation at all.
+    """
+    if resolved_type == _PHOTO_SOURCE_TYPE:
+        return None
+    return (f'This file lives in your photo library, so it stays there and the record '
+            f'is typed {resolved_type}. If the scan itself belongs with your records '
+            f'instead, run `fha process refile {sid} --to documents '
+            f'--type {resolved_type}`.')
 
 
 def _read_existing_source_keyword(file_path: Path, dry_run: bool) -> tuple[str | None, bool]:
@@ -1665,6 +1746,7 @@ def process_photo_group(
     title: str | None,
     source_date: str | None,
     dry_run: bool,
+    source_type: str | None = None,
     people: list[str] | None = None,
     real_paths: dict[Path, Path] | None = None,
     backup: OriginalBackup | None = None,
@@ -1687,6 +1769,10 @@ def process_photo_group(
     and sidecar discovery run against reality - the process_photo `real_path`
     contract, extended to a set where at most one member (the relocated file)
     is virtual. Members not in the map are on disk where they claim to be.
+
+    `source_type` is process_photo's - a non-photo `--type` on a set that
+    already lives in the photos root types the record and moves nothing. See
+    that function's docstring for why the flag cannot move these files.
     """
     members = sorted(members)
     real_paths = real_paths or {}
@@ -1740,7 +1826,8 @@ def process_photo_group(
 
     sid = _mint_one_source_id(archive_root)
     final_slug = _derive_slug(slug, final_title if title is None else title, primary)
-    record_dir = archive_root / 'sources' / _PHOTO_DIR
+    resolved_type = source_type or _PHOTO_SOURCE_TYPE
+    record_dir = archive_root / 'sources' / _record_subdir(resolved_type)
     record_path = record_dir / f'{final_slug}_{sid}.md'
     if record_path.exists():
         raise ProcessError(f'record already exists: {_rel(record_path, archive_root)}')
@@ -1759,7 +1846,7 @@ def process_photo_group(
         file_entries.append(entry)
 
     text = _scaffold_text(
-        sid, final_title, _PHOTO_SOURCE_TYPE, file_entries,
+        sid, final_title, resolved_type, file_entries,
         notes_body=notes_body,
         restricted=_sidecar_flag(sidecar_meta, 'restricted'),
         citation=_sidecar_str(sidecar_meta, 'citation'),
@@ -1778,6 +1865,8 @@ def process_photo_group(
         if people:
             print(f'[dry-run] people: {", ".join(people)} (keyword on every member)')
         print(f'[dry-run] Would scaffold {_rel(record_path, archive_root)}')
+        if note := _photo_root_type_note(sid, resolved_type):
+            print(f'[dry-run] {note}')
         if sidecar is not None:
             print(f'[dry-run] Would delete stub {sidecar.name} (its notes -> ## Notes)')
         return EXIT_CLEAN
@@ -1832,6 +1921,8 @@ def process_photo_group(
     if people:
         print(f'Tagged people: {", ".join(people)} (on all {len(members)} files)')
     print(f'Scaffolded {_rel(record_path, archive_root)} with {len(members)} files')
+    if note := _photo_root_type_note(sid, resolved_type):
+        print(note)
     if sidecar is not None:
         print(f'Consumed stub {sidecar.name} (notes -> ## Notes)')
     return EXIT_CLEAN
@@ -1846,6 +1937,7 @@ def _process_variation_set(
     title: str | None,
     source_date: str | None,
     dry_run: bool,
+    source_type: str | None = None,
     people: list[str] | None = None,
     real_paths: dict[Path, Path] | None = None,
     source_id: str | None = None,
@@ -1862,7 +1954,9 @@ def _process_variation_set(
 
     `real_paths` (the process_photo_group contract) maps a virtual dry-run
     inbox destination to its real on-disk location; it is threaded into every
-    processing branch so preview reads stay against reality.
+    processing branch so preview reads stay against reality. `source_type` is
+    threaded the same way - a non-photo `--type` on files already in the photo
+    library types the record wherever the human's one/separate choice lands.
 
     `source_id`/`report` (`process_document`'s mint-override/report-back
     pair) are only meaningful for the single-member fast path below - a real
@@ -1875,7 +1969,7 @@ def _process_variation_set(
     if len(members) == 1:
         return process_photo(archive_root, fha_config, members[0],
                              slug=slug, title=title, source_date=source_date,
-                             dry_run=dry_run, people=people,
+                             dry_run=dry_run, source_type=source_type, people=people,
                              real_path=real_paths.get(members[0]),
                              source_id=source_id, report=report, backup=backup)
 
@@ -1896,14 +1990,16 @@ def _process_variation_set(
     if answer.startswith('one') or answer == 'o':
         return process_photo_group(archive_root, fha_config, members,
                                    slug=slug, title=title, source_date=source_date,
-                                   dry_run=dry_run, people=people,
+                                   dry_run=dry_run, source_type=source_type,
+                                   people=people,
                                    real_paths=real_paths or None, backup=backup)
     if answer.startswith('sep'):
         rc = EXIT_CLEAN
         for m in members:
             rc = max(rc, process_photo(archive_root, fha_config, m,
                                        slug=None, title=None, source_date=source_date,
-                                       dry_run=dry_run, people=people,
+                                       dry_run=dry_run, source_type=source_type,
+                                       people=people,
                                        real_path=real_paths.get(m), backup=backup))
         return rc
     print('Skipped - deferred to a later session.')
@@ -1945,6 +2041,7 @@ def process_folder(
     *,
     source_date: str | None,
     dry_run: bool,
+    source_type: str | None = None,
     people: list[str] | None = None,
     backup: OriginalBackup | None = None,
 ) -> int:
@@ -1957,6 +2054,11 @@ def process_folder(
     groups (numbers, a comma/space list, or `all`); each chosen group is then
     run through the one/separate/skip flow. Non-recursive: a folder *containing*
     a `notes.md` is a bundle (process_bundle), handled before we get here.
+
+    `source_type` is `--type`, threaded down to every selected group so the
+    flag is honoured here too rather than quietly dropped on the folder path.
+    Nothing moves: a triage folder's files are already filed, so the type
+    lands on the records only (see `process_photo`).
     """
     photo_files = sorted(
         p for p in folder.iterdir()
@@ -2001,8 +2103,8 @@ def process_folder(
         members = scored[idx]['members']
         rc = max(rc, _process_variation_set(
             archive_root, fha_config, members, slug=None, title=None,
-            source_date=source_date, dry_run=dry_run, people=people,
-            backup=backup))
+            source_date=source_date, dry_run=dry_run, source_type=source_type,
+            people=people, backup=backup))
     return rc
 
 
@@ -2013,6 +2115,7 @@ def process_bundle(
     *,
     source_date: str | None,
     dry_run: bool,
+    source_type: str | None = None,
     backup: OriginalBackup | None = None,
 ) -> int:
     """M7.4: dissolve a `notes.md` bundle folder into one source (SPEC §12.1).
@@ -2034,6 +2137,11 @@ def process_bundle(
     filename grammar for documents, the SOURCE: keyword for photos, notes →
     ## Notes, and the folder dissolving - is honored exactly. The bundle folder
     itself carries no durable meaning; the minted S-id binds the assets.
+
+    `source_type` is `--type`. It outranks the notes' own `source_type:` hint,
+    which outranks the all-photos inference, and it decides each asset's root
+    as well as the record's type - so a bundle of census page scans is filed
+    as records whatever their suffix (#59).
 
     Transactional: every move/rename/keyword-embed registers an undo and the
     record write is last; any failure unwinds everything so a failed dissolution
@@ -2072,19 +2180,28 @@ def process_bundle(
 
     photos_root = resolve_path(_PHOTO_DIR, fha_config, archive_root)
     documents_root = resolve_path('documents', fha_config, archive_root)
-    asset_kinds = {a: classify_asset(a, fha_config, archive_root) for a in assets}
+    # The type decides the whole bundle: one S-id, one source_type, and one
+    # root per asset. `--type` outranks the notes' `source_type:` hint, which
+    # outranks the all-photos inference - the same precedence the single-file
+    # path uses, so a bundle of census page scans does not land in the photo
+    # library on the strength of their .jpg suffix (#59).
+    stated_type = source_type
+    if stated_type is None:
+        hinted_type = sidecar_meta.get('source_type')
+        if hinted_type:
+            hinted_type = str(hinted_type)
+            if hinted_type not in SOURCE_TYPES:
+                raise ProcessError(
+                    f"{notes_path.name} hints {format_source_type_error(hinted_type)} "
+                    'Fix the notes before dissolving the bundle.'
+                )
+            stated_type = hinted_type
+    asset_kinds = {a: classify_asset(a, fha_config, archive_root, source_type=stated_type)
+                   for a in assets}
 
-    source_type = _DEFAULT_DOCUMENT_TYPE
-    hinted_type = sidecar_meta.get('source_type')
-    if hinted_type:
-        hinted_type = str(hinted_type)
-        if hinted_type not in SOURCE_TYPES:
-            raise ProcessError(
-                f"{notes_path.name} hints {format_source_type_error(hinted_type)} "
-                'Fix the notes before dissolving the bundle.'
-            )
-        source_type = hinted_type
-    elif asset_kinds and all(kind == 'photo' for kind in asset_kinds.values()):
+    source_type = stated_type or _DEFAULT_DOCUMENT_TYPE
+    if stated_type is None and asset_kinds \
+            and all(kind == 'photo' for kind in asset_kinds.values()):
         source_type = _PHOTO_SOURCE_TYPE
 
     hinted_primary = [
@@ -2799,6 +2916,41 @@ def _photo_library_name(src: Path, entry: dict) -> str:
     return f'{stem or "photo"}{src.suffix}'
 
 
+def _rewrite_source_type_line(text: str, old_type: str, new_type: str) -> tuple[str, int]:
+    """Rewrite the frontmatter's `source_type:` value, value-exactly.
+
+    The same discipline `_rewrite_file_line` applies to a `files:` entry, and
+    for the same reason: a substring replace would also hit the word inside a
+    citation, a note, or a claim value. The scan is confined to the
+    frontmatter fence and matches only a top-level `source_type:` line whose
+    value is the one the record was read as - a quoted or extra-spaced
+    spelling still matches, a trailing YAML comment is carried across
+    untouched. Returns (new_text, matches); the caller refuses on anything but
+    exactly one, and re-parses the result before writing.
+    """
+    lines = text.split('\n')
+    bounds = frontmatter_fence_span(lines)
+    if bounds is None:
+        return text, 0
+    start, end = bounds
+    matched = 0
+    out = list(lines)
+    for i in range(start + 1, end):
+        line = lines[i]
+        if not line.startswith('source_type:'):
+            continue
+        body = line[len('source_type:'):].rstrip('\r')
+        cr = '\r' if line.endswith('\r') else ''
+        # A ' #' opens a YAML comment; keep the human's note exactly as written.
+        hash_at = body.find(' #')
+        value, comment = (body, '') if hash_at == -1 else (body[:hash_at], body[hash_at:])
+        if value.strip().strip('\'"') != old_type:
+            continue
+        matched += 1
+        out[i] = f'source_type: {new_type}{comment}{cr}'
+    return '\n'.join(out), matched
+
+
 def process_refile(
     archive_root: Path,
     fha_config: dict,
@@ -2807,6 +2959,7 @@ def process_refile(
     to: str,
     file_name: str | None = None,
     dest: str | None = None,
+    new_type: str | None = None,
     dry_run: bool = False,
     assume_yes: bool = False,
     backup: OriginalBackup | None = None,
@@ -2860,6 +3013,13 @@ def process_refile(
             'archive alphabet (0-9 and lowercase a-z, except i, l, o, u). '
             'Run `fha find <a word from the title>` to look one up.')
     sid = fmt_id_display(normalize_id(source_id))
+    if new_type is not None:
+        # Pure argument validation, so it belongs beside the S-id check rather
+        # than down among the record-aware refusals.
+        new_type = str(new_type).strip().lower()
+        if new_type not in SOURCE_TYPES:
+            raise ProcessError(
+                f'{format_source_type_error(new_type, where="--type")} Nothing was moved.')
 
     record_path = find_source_record_path(archive_root, sid)
     if record_path is None:
@@ -2902,6 +3062,30 @@ def process_refile(
             '`fha reconcile` first so the record points at its real location, '
             'then re-run.')
 
+    # The source's type, resolved. A type that is wrong for the destination
+    # root is part of the misfiling this verb corrects, so refile carries the
+    # type across with the file rather than leaving it as a hand-edit
+    # `fha lint` never flags (#59). Placed after the refusals above so
+    # "already under the documents root" and "not on disk" keep their own,
+    # better-fitting messages.
+    current_type = str(meta.get('source_type') or _DEFAULT_DOCUMENT_TYPE).strip()
+    current_type = current_type or _DEFAULT_DOCUMENT_TYPE
+    if new_type is None and to == 'documents' and current_type == _PHOTO_SOURCE_TYPE:
+        # The junk-folder case: with the record still typed `photo`, the default
+        # destination would be a `documents/photos/` folder invented for the
+        # purpose, and the record would stay in `sources/photos/` describing
+        # something that is no longer in the photo library. What it is instead
+        # is not derivable - a census sheet and a deed scan look identical to a
+        # tool - so ask rather than guess, in the only way a command line can:
+        # name the flag and a real example.
+        raise ProcessError(
+            f'{record_path.name} is still typed photo, and a scan that leaves the '
+            'photo library is not a family photo any more. Say what kind of record '
+            'it is and refile will carry the type across with the file, e.g. '
+            f'`fha process refile {sid} --to documents --type census`. '
+            f'Valid types: {source_type_list()}. Nothing was moved.')
+    resolved_type = new_type or current_type
+
     # Plan the destination. Both directions compute everything - destination
     # directory, final name, record surgery - before any byte moves, so every
     # refusal happens with the archive untouched.
@@ -2935,11 +3119,10 @@ def process_refile(
                 'lives on an external drive, plug it in, then re-run. (Refusing '
                 'rather than recreating the mount path on the local disk, which '
                 'would strand the file when the drive reconnects.)')
-        source_type = str(meta.get('source_type') or _DEFAULT_DOCUMENT_TYPE)
         if dest:
             dest_dir = _validate_dest_subpath(documents_root, dest, 'documents')
         else:
-            dest_dir = documents_root / _record_subdir(source_type)
+            dest_dir = documents_root / _record_subdir(resolved_type)
         rec_stem = record_path.stem
         m = _FILENAME_SOURCE_ID_RE.search(rec_stem)
         slug = rec_stem[:m.start()] if m else _slugify(rec_stem)
@@ -2981,6 +3164,28 @@ def process_refile(
             'shape of its files: list - refusing. Fix the entry by hand '
             '(`fha lint` names the spot). Nothing was moved.')
 
+    # A re-type is two writes that must not come apart: the frontmatter field,
+    # and the record file's own folder (SPEC §14 files a source at
+    # `sources/{type}/`). Both are planned here, before any byte moves, so a
+    # collision refuses with the archive untouched.
+    new_record_path: Path | None = None
+    if resolved_type != current_type:
+        rewritten, type_matched = _rewrite_source_type_line(
+            rewritten, current_type, resolved_type)
+        if type_matched != 1:
+            raise ProcessError(
+                f'{record_path.name}: could not find its single `source_type: '
+                f'{current_type}` line to rewrite - the record may spell it '
+                'differently, or list it twice. Fix it by hand (`fha lint` names '
+                'the spot), then re-run. Nothing was moved.')
+        new_record_path = (archive_root / 'sources' / _record_subdir(resolved_type)
+                           / record_path.name)
+        if new_record_path.exists():
+            raise ProcessError(
+                f'the record cannot move to {_rel(new_record_path, archive_root)} - '
+                'a file is already there. Move or rename it first, then re-run. '
+                'Nothing was moved.')
+
     if to == _PHOTO_DIR:
         note = (f'Refiled {_today()}: {stored_alias} -> {new_alias} '
                 '(fha process refile). The file was living in the records '
@@ -2990,6 +3195,11 @@ def process_refile(
                 '(fha process refile). The photo was living in the photo '
                 'library but belongs with the records; it was previously '
                 f'named {src.name}.')
+
+    if resolved_type != current_type:
+        note += (f' Its type was corrected from {current_type} to {resolved_type}, '
+                 f'so the record moved to sources/{_record_subdir(resolved_type)}/ '
+                 'with it.')
 
     rew_lines = rewritten.split('\n')
     bounds = frontmatter_fence_span(rew_lines)
@@ -3018,6 +3228,14 @@ def process_refile(
             f'refusing: the new path {new_alias!r} would not survive cleanly in '
             f'{record_path.name} - use a simpler --dest (letters, digits, '
             'hyphens). Nothing was moved or written.')
+    # Only when this run rewrote the type: a record that never carried a
+    # `source_type:` line is a lint problem, not a reason to refuse a move
+    # this verb was not asked to re-type.
+    if new_record_path is not None and str(reparsed.get('source_type') or '') != resolved_type:
+        raise ProcessError(
+            f'refusing: {record_path.name} would not read back as source_type '
+            f'{resolved_type} after the edit. Open the record and check its '
+            'source_type line by hand, then re-run. Nothing was moved or written.')
 
     embed_keyword = to == _PHOTO_DIR
     keyword_supported = dest_path.suffix.lower() in PHOTO_EXTENSIONS
@@ -3044,6 +3262,9 @@ def process_refile(
                       'the record\'s files: inventory would carry the identity alone.')
         print(f'[dry-run] Would rewrite the files: entry in '
               f'{_rel(record_path, archive_root)}: {stored_alias} -> {new_alias}')
+        if new_record_path is not None:
+            print(f'[dry-run] Would retype the record {current_type} -> {resolved_type} '
+                  f'and move it to {_rel(new_record_path, archive_root)}')
         print(f'[dry-run] Would add a Notes line: {note}')
         return EXIT_CLEAN
 
@@ -3084,6 +3305,7 @@ def process_refile(
     # record pointing at a now-missing old path while the file sits in the
     # destination root - a split a file browser never surfaces.
     created_dirs: list[Path] = []
+    record_moved = False
     file_moved = False
     keyword_warning: str | None = None
     keyword_embedded = False
@@ -3136,6 +3358,18 @@ def process_refile(
         # transaction (BUILD M11.6), so a mid-write failure after the asset has
         # moved must leave the record fully written or untouched, never torn.
         write_text_exact_atomic(record_path, reapply_newline(final_text, old_text))
+
+        # The record's own move comes last: it is the cheapest step to undo
+        # (a rename back), and doing it after the text write means the write
+        # above always has one, known target.
+        if new_record_path is not None:
+            probe = new_record_path.parent
+            while not probe.exists() and probe != probe.parent:
+                created_dirs.append(probe)
+                probe = probe.parent
+            new_record_path.parent.mkdir(parents=True, exist_ok=True)
+            record_path.rename(new_record_path)
+            record_moved = True
     except Exception as e:
         # Best-effort rollback that never claims more than it did. Every step is
         # attempted even when an earlier one fails, failures are collected rather
@@ -3176,6 +3410,17 @@ def process_refile(
                 file_home = dest_path
                 move_back_error = move_exc
 
+        # 2b. Put the record file back in its own folder before step 3 writes to
+        #     it, so the restore lands on the record's real path either way. If
+        #     even that fails, step 3 writes wherever the record actually is.
+        record_home = record_path
+        if record_moved and new_record_path is not None and new_record_path.exists():
+            try:
+                new_record_path.rename(record_path)
+                undone.append(f'moved the record back to {_rel(record_path, archive_root)}')
+            except OSError:
+                record_home = new_record_path
+
         # 3. Point the record at the file's real location. Move-back done -> old
         #    alias (a full undo); move-back failed -> the file is still in the
         #    destination, so the record must point THERE to keep the archive
@@ -3189,7 +3434,7 @@ def process_refile(
         try:
             # Atomic, same as the forward write: the rollback restore must not
             # be able to tear the record it is trying to make whole.
-            write_text_exact_atomic(record_path, record_text)
+            write_text_exact_atomic(record_home, record_text)
         except Exception:
             record_consistent = False
 
@@ -3214,7 +3459,7 @@ def process_refile(
             except OSError:
                 pass
 
-        rel_record = _rel(record_path, archive_root)
+        rel_record = _rel(record_home, archive_root)
         if move_back_error is None and record_consistent:
             # File is home AND the record was restored to its pre-refile text:
             # the only state that is truly a clean, complete rollback. Both
@@ -3310,8 +3555,12 @@ def process_refile(
         print(f'Embedded SOURCE: {sid} in {new_name}')
     if keyword_warning:
         print(keyword_warning, file=sys.stderr)
+    final_record_path = new_record_path if record_moved else record_path
     print(f'Updated the files: entry and added a Notes line in '
-          f'{_rel(record_path, archive_root)}')
+          f'{_rel(final_record_path, archive_root)}')
+    if record_moved and new_record_path is not None:
+        print(f'Retyped the source {current_type} -> {resolved_type} and moved its '
+              f'record to {_rel(new_record_path, archive_root)}')
     print('Next: run `fha index` so searches see the new location, then '
           '`fha photoindex` to refresh the photo catalog'
           + (' (this file is new to it).' if to == _PHOTO_DIR
@@ -3458,7 +3707,7 @@ _REFILE_CLI_DESCRIPTION = """\
 Move a filed source file to the other asset root - the filing correction.
 
   fha process refile S-2b3c4d5e6f --to photos --dest 1880s    records drawer -> photo library
-  fha process refile S-2b3c4d5e6f --to documents              photo library -> records drawer
+  fha process refile S-2b3c4d5e6f --to documents --type census   photo library -> records
   fha process refile S-2b3c4d5e6f --file scan-back.jpg --to photos --dest 1880s
 
 Fixes a filing decision after the fact: a scan processed as a document that
@@ -3494,6 +3743,12 @@ def build_process_refile_parser() -> argparse.ArgumentParser:
                    help='Destination folder under the target root. Required with '
                         '--to photos (e.g. "1880s" or "Family/Hartley"); with '
                         '--to documents it defaults to documents/{type}/')
+    p.add_argument('--type', metavar='TYPE', dest='new_type',
+                   help='What kind of source this really is, e.g. census. Rewrites '
+                        'source_type: and moves the record to sources/{type}/ in the '
+                        'same transaction. Required with --to documents when the '
+                        'record is still typed photo - a scan leaving the photo '
+                        'library is not a family photo any more')
     p.add_argument('--yes', action='store_true',
                    help='Skip the photo-catalog confirmation (--to documents)')
     p.add_argument('--dry-run', action='store_true', help='Preview without writing')
@@ -3529,6 +3784,7 @@ def _cmd_refile(args: argparse.Namespace) -> int:
             to=args.to,
             file_name=getattr(args, 'file_name', None),
             dest=getattr(args, 'dest', None),
+            new_type=getattr(args, 'new_type', None),
             dry_run=bool(getattr(args, 'dry_run', False)),
             assume_yes=bool(getattr(args, 'yes', False)),
         )
@@ -3560,8 +3816,13 @@ def _add_arguments(p: argparse.ArgumentParser) -> None:
                         'a folder triages its photos, or dissolves a notes.md bundle')
     p.add_argument('--root', metavar='PATH', help='Archive root')
     p.add_argument('--type', metavar='TYPE', dest='source_type',
-                   help=f'Source type for a document (default: {_DEFAULT_DOCUMENT_TYPE}); '
-                        'photos are always source_type photo')
+                   help=f'What kind of source this is, e.g. census (default: '
+                        f'{_DEFAULT_DOCUMENT_TYPE}). Any type but photo files the '
+                        'asset in the documents root whatever its extension, so a '
+                        'scanned record supplied as a .jpg is filed as a record. A '
+                        'file already in the photo library is never moved out of it: '
+                        'the record is typed as asked and `fha process refile` is '
+                        'named as the way to move the file')
     p.add_argument('--title', metavar='TITLE', help='Source title (also seeds the slug)')
     p.add_argument('--slug', metavar='SLUG', help='Explicit filename slug')
     p.add_argument('--date', metavar='DATE', dest='source_date',
@@ -3678,6 +3939,19 @@ def _run_process(args: argparse.Namespace) -> int:
         )
         return EXIT_ERRORS
 
+    # Validate --type once, before any file I/O and before any branch. It used
+    # to be checked only inside the document branch, so an unknown --type on an
+    # image was accepted in silence along with everything else the flag said
+    # (#59); the vocabulary is the same one whatever the file turns out to be
+    # (SPEC §14), so the check belongs here.
+    source_type = getattr(args, 'source_type', None)
+    if source_type is not None:
+        source_type = str(source_type).strip().lower()
+        if source_type not in SOURCE_TYPES:
+            print(f'ERROR: {format_source_type_error(source_type, where="--type")}',
+                  file=sys.stderr)
+            return EXIT_ERRORS
+
     # Parse --people early so a bad P-id fails fast (before any file I/O).
     try:
         people = _parse_people_ids(getattr(args, 'people', None), archive_root)
@@ -3710,10 +3984,12 @@ def _run_process(args: argparse.Namespace) -> int:
                 return process_bundle(
                     archive_root, fha_config, file_path,
                     source_date=source_date, dry_run=dry_run,
+                    source_type=source_type,
                 )
             return process_folder(
                 archive_root, fha_config, file_path,
                 source_date=source_date, dry_run=dry_run,
+                source_type=source_type,
             )
         except ProcessError as e:
             print(f'ERROR: {e}', file=sys.stderr)
@@ -3737,7 +4013,7 @@ def _run_process(args: argparse.Namespace) -> int:
                     return EXIT_ERRORS
                 rc = process_pointer_only(
                     archive_root, fha_config, file_path,
-                    source_type=args.source_type, slug=args.slug, title=args.title,
+                    source_type=source_type, slug=args.slug, title=args.title,
                     source_date=source_date, dry_run=dry_run,
                     source_id=source_id_override, report=mint_report,
                 )
@@ -3749,7 +4025,8 @@ def _run_process(args: argparse.Namespace) -> int:
             sidecar_path = _find_sidecar(file_path)
         pre_move_path = file_path
         file_path, sidecar_path, relocate_undo = _relocate_from_inbox(
-            archive_root, fha_config, file_path, sidecar_path, dry_run=dry_run,
+            archive_root, fha_config, file_path, sidecar_path,
+            source_type=source_type, dry_run=dry_run,
         )
     except ProcessError as e:
         print(f'ERROR: {e}', file=sys.stderr)
@@ -3785,7 +4062,8 @@ def _run_process(args: argparse.Namespace) -> int:
                 rc = attach_more(archive_root, fha_config, file_path, more_file,
                                   role, copy, dry_run=dry_run, real_path=real_path)
         else:
-            kind = classify_asset(file_path, fha_config, archive_root)
+            kind = classify_asset(file_path, fha_config, archive_root,
+                                  source_type=source_type)
             if kind == 'photo':
                 # Tier-1 variation detection (M7.3): a single photo may have
                 # front/back/crop/copy siblings sitting beside it.
@@ -3798,7 +4076,7 @@ def _run_process(args: argparse.Namespace) -> int:
                 rc = _process_variation_set(
                     archive_root, fha_config, siblings,
                     slug=args.slug, title=args.title, source_date=source_date,
-                    dry_run=dry_run, people=people or None,
+                    dry_run=dry_run, source_type=source_type, people=people or None,
                     real_paths={file_path: real_path} if real_path is not None else None,
                     source_id=source_id_override, report=mint_report,
                 )
@@ -3810,18 +4088,14 @@ def _run_process(args: argparse.Namespace) -> int:
                           file=sys.stderr)
                     rc = EXIT_ERRORS
                 else:
-                    source_type = (args.source_type or _DEFAULT_DOCUMENT_TYPE).strip().lower()
-                    if source_type not in SOURCE_TYPES:
-                        print(f'ERROR: {format_source_type_error(source_type, where="--type")}', file=sys.stderr)
-                        rc = EXIT_ERRORS
-                    else:
-                        rc = process_document(
-                            archive_root, fha_config, file_path,
-                            source_type=source_type, slug=args.slug, title=args.title,
-                            source_date=source_date, dry_run=dry_run,
-                            real_path=real_path,
-                            source_id=source_id_override, report=mint_report,
-                        )
+                    rc = process_document(
+                        archive_root, fha_config, file_path,
+                        source_type=source_type or _DEFAULT_DOCUMENT_TYPE,
+                        slug=args.slug, title=args.title,
+                        source_date=source_date, dry_run=dry_run,
+                        real_path=real_path,
+                        source_id=source_id_override, report=mint_report,
+                    )
         if rc != EXIT_CLEAN and relocate_undo is not None:
             relocate_undo()
         args.result_source_id = mint_report.get('source_id')
