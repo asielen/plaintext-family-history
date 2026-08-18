@@ -407,14 +407,14 @@
     {
       "path": ".fha/tools/README.md",
       "category": "operating",
-      "sha256": "c52a09c473a4f74ff8240d8601eed4dfb01b36f52889a3391853e12dc4d0da61",
+      "sha256": "88b2400fe5f15b007eba0c5ca9071ff0a867cbff2fe4393633fa8b48f7eadf54",
       "spec_version": "1.2",
       "src": "tools/README.md"
     },
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "bf58558d7b7367a58f673393c89ab12dd4599bb321ab0870998ceacebfad1954",
+      "sha256": "62ec8f617072c8286cb7d4d242b71be7725fa657ef573396f634896b2d19bbe1",
       "spec_version": "1.2",
       "src": "tools/_lib.py"
     },
@@ -547,14 +547,14 @@
     {
       "path": ".fha/tools/index.py",
       "category": "operating",
-      "sha256": "7525da110c6f79098a19d52f7793cdbe34f8e48e0c5b3663c86fadc20fdc564b",
+      "sha256": "d3b3fadc7d8a33f2ef18d90aa531fe6531a77ab151e19f7a58798b3e07bc8a14",
       "spec_version": "1.2",
       "src": "tools/index.py"
     },
     {
       "path": ".fha/tools/lint.py",
       "category": "operating",
-      "sha256": "e5c549b1e54148b7e4a85e9bed5047eab52d6cc711612ef32a8a78e910718835",
+      "sha256": "5e177e35684247b457de59349b89079b5650031f91ea78170dd620e413f1f531",
       "spec_version": "1.2",
       "src": "tools/lint.py"
     },
@@ -575,7 +575,7 @@
     {
       "path": ".fha/tools/person.py",
       "category": "operating",
-      "sha256": "cac5d442f2ce54b62de0572b50420961f8c1af86215a41e985f315bcd2c5e755",
+      "sha256": "08ff94ec3323cc137d4f851163eb62971a3371484e7a835de44295383478af98",
       "spec_version": "1.2",
       "src": "tools/person.py"
     },
@@ -638,7 +638,7 @@
     {
       "path": ".fha/tools/serve.py",
       "category": "operating",
-      "sha256": "a8345e1f4a9d81fd96b73a0258a07e1cf3b7861984f17292426890c95959805d",
+      "sha256": "4f229d46dd97a7737cc1841f93ecd1222394f5b4bfdbfd493407c8bf6204dfe5",
       "spec_version": "1.2",
       "src": "tools/serve.py"
     },
@@ -864,7 +864,7 @@
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "6ed632e0729d53ffcd1751ae4a4389bd294854ea588b688edbf4b8e0bd6935fc",
+      "sha256": "c35a23a8de20c24bb6c1a135e8a8d54cb29d663dd99812d0cc8740f6534738e5",
       "spec_version": "1.2"
     },
     {
