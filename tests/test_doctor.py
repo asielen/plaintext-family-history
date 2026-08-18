@@ -490,7 +490,7 @@ class SourcesGitignoreTests(unittest.TestCase):
         orig_run = doctor.subprocess.run
 
         def _no_git(cmd, **kwargs):
-            if cmd[:2] == ['git', 'check-ignore']:
+            if 'check-ignore' in cmd:
                 raise FileNotFoundError('git not found on PATH')
             return orig_run(cmd, **kwargs)
 
@@ -570,6 +570,81 @@ class SourcesGitignoreTests(unittest.TestCase):
             check = self._gitignore_check(result)
             self.assertIsNotNone(
                 check, 'a nested archive still owes a sources_gitignore finding')
+
+    def test_nested_gitignore_gets_a_remedy_that_actually_works(self) -> None:
+        """PR #60 review round 2, finding 1: when the offending pattern lives
+        in a NESTED .gitignore (sources/.gitignore, not the archive root's),
+        the round-1 anchoring advice - 'change `photos/` to `/photos/`' - is
+        a no-op: a leading slash in a nested file anchors to THAT FILE's own
+        directory (still sources/photos/), not the archive root. Verified
+        against real git: after applying the round-1 advice literally,
+        `git add -n sources/photos/rec.md` still refuses the file. The fixed
+        report must (a) name the file that actually holds the pattern, (b)
+        say plainly that anchoring there will not help, and (c) not repeat
+        the round-1 wording verbatim for this case."""
+        _write(self.root / 'sources' / '.gitignore', 'photos/\n')
+        (self.root / 'sources' / 'photos').mkdir(parents=True)
+
+        result = doctor.run_doctor(self.root, self._fha_config())
+        report = '\n'.join(result.data['lines'])
+
+        self.assertIn('sources ignored', report)
+        self.assertIn('sources/.gitignore', report)          # names the real file
+        self.assertIn('sources/photos', report)
+        # The round-1 remedy text must NOT be offered for a nested file - it
+        # does not fix anything there (verified against real git above).
+        self.assertNotIn('anchor it to the archive root', report)
+        # A remedy that is verified to work: delete the line, or negate it
+        # in place, in the SAME (nested) file.
+        self.assertIn('!photos/', report)
+
+    def test_nonascii_source_folder_name_is_reported_cleanly(self) -> None:
+        """PR #60 review round 2, finding 2: a `sources/fötos/` folder
+        produced a mangled, unfollowable message on Windows - the pattern
+        rendered as `fÃ¶tos/` (locale-codepage mis-decode of git's UTF-8
+        output) and the probe path arrived C-quoted (`"sources/f\\303\\266
+        tos/probe.md"`, since git quotes non-ASCII paths by default), so the
+        `.../probe.md` suffix strip silently failed and the raw quoted probe
+        path leaked into the report with a stray `/` appended. A genealogy
+        archive is exactly where `Kraków`, `Suwałki`, `fötos` appear, so this
+        is not a corner case here. Verified against real git first (not
+        reasoned about): `git -c core.quotePath=false check-ignore -v`
+        prints the path unquoted, and decoding the subprocess output with
+        `encoding='utf-8'` (not the implicit locale codepage) renders it
+        correctly."""
+        _write(self.root / '.gitignore', 'fötos/\n')  # 'fötos/'
+        (self.root / 'sources' / 'fötos').mkdir(parents=True)
+
+        result = doctor.run_doctor(self.root, self._fha_config())
+        report = '\n'.join(result.data['lines'])
+        gi_line = next((l for l in result.data['lines']
+                         if l.startswith('sources ignored')), '')
+
+        self.assertIn('sources ignored', report)
+        self.assertIn('sources/fötos/', gi_line)   # the folder, spelled correctly
+        self.assertNotIn('Ã', gi_line)                   # locale-codepage mojibake
+        self.assertNotIn('\\303\\266', gi_line)          # git's C-quoted octal escape
+        self.assertNotIn('"', gi_line)                   # no stray quoting artifact
+        self.assertNotIn('probe.md"', gi_line)            # the failed-strip symptom
+
+    def test_source_folder_name_with_spaces_still_works(self) -> None:
+        """Not a bug found in review, but named explicitly as a case that
+        must not regress while fixing the non-ASCII quoting/encoding bug
+        above: git does NOT C-quote a path for a plain space (only for
+        non-ASCII or other special bytes), so this already worked - keep it
+        working under the `-c core.quotePath=false` + explicit `utf-8`
+        decode change."""
+        _write(self.root / '.gitignore', 'family photos/\n')
+        (self.root / 'sources' / 'family photos').mkdir(parents=True)
+
+        result = doctor.run_doctor(self.root, self._fha_config())
+        report = '\n'.join(result.data['lines'])
+        gi_line = next((l for l in result.data['lines']
+                         if l.startswith('sources ignored')), '')
+
+        self.assertIn('sources ignored', report)
+        self.assertIn('sources/family photos/', gi_line)
+        self.assertNotIn('"', gi_line)
 
 
 class RenderTests(unittest.TestCase):

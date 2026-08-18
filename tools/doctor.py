@@ -109,6 +109,10 @@ configure_utf8_stdout()
 #
 #  Git-asked checks (never a hand-rolled parser - precedent commit 0f92e0a)
 #    _check_sources_gitignore  - #57: is anything under sources/ git-ignored?
+#    _classify_gitignore_source - which file holds the pattern (root /
+#                               nested / .git/info/exclude / global), since
+#                               the remedy that works differs by location
+#                               (PR #60 review, finding 1)
 #
 #  Top-level
 #    run_doctor                - orchestrate all checks; return a Result (no printing)
@@ -363,11 +367,22 @@ def _check_sources_gitignore(archive_root: Path, roots: dict,
 
     probes = [f'sources/{name}/probe.md' for name in sorted(probe_names)]
     try:
+        # `-c core.quotePath=false` (must precede the subcommand) stops git
+        # from C-quoting a non-ASCII path (`"sources/f\303\266tos/probe.md"`)
+        # - PR #60 review, finding 2b. Left unquoted, the trailing
+        # `/probe.md` strip below (path.endswith(...)) matches again; quoted,
+        # it silently didn't, and the raw quoted probe path leaked into the
+        # report. `encoding='utf-8'` (PR #60 review, finding 2a) replaces the
+        # implicit locale-codepage decode, which mangled `fötos/` into
+        # `fÃ¶tos/` on a Windows cp1252 console - an instruction to edit a
+        # string that does not exist in the file. Both verified against a
+        # real repo with a non-ASCII, git-tracked folder, not reasoned about.
         out = subprocess.run(
-            ['git', 'check-ignore', '-v', '--'] + probes,
-            cwd=str(archive_root), capture_output=True, text=True, timeout=15,
+            ['git', '-c', 'core.quotePath=false', 'check-ignore', '-v', '--'] + probes,
+            cwd=str(archive_root), capture_output=True, text=True,
+            encoding='utf-8', errors='replace', timeout=15,
         )
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError, UnicodeDecodeError):
         return EXIT_CLEAN          # no usable git: this check cannot answer, so it says nothing
 
     if out.returncode not in (0, 1):
@@ -394,19 +409,102 @@ def _check_sources_gitignore(archive_root: Path, roots: dict,
 
     for path, gi_file, lineno, pattern in findings:
         rel_dir = path[:-len('/probe.md')] if path.endswith('/probe.md') else path
-        anchored = pattern if pattern.startswith('/') else f'/{pattern}'
+        kind = _classify_gitignore_source(gi_file)
+        if kind == 'root':
+            # git already resolves `gi_file` relative to the REPOSITORY root
+            # (verified: even run from an archive with no `.git` of its own,
+            # nested inside a parent repo, `check-ignore -v` still prints
+            # `.gitignore`, not `../.gitignore`) - so a bare `.gitignore`
+            # here really is the top-of-tree file, and a leading `/` really
+            # does anchor to it. Unchanged from round 1.
+            anchored = pattern if pattern.startswith('/') else f'/{pattern}'
+            remedy = (
+                f'anchor it to the archive root - change `{pattern}` to '
+                f'`{anchored}` in {gi_file} so it stops matching {rel_dir}/'
+            )
+        elif kind == 'nested':
+            # PR #60 review, finding 1: a leading `/` in a NESTED .gitignore
+            # anchors to THAT FILE's own directory, not the archive root - so
+            # the round-1 advice was a no-op here (verified against real
+            # git: `git add -n` still refused after "fixing" it). The
+            # working fix has to happen in the file that actually holds the
+            # pattern: delete the line, or negate it in place. `!{pattern}`
+            # on the next line, in the SAME file, is verified to un-ignore
+            # the path again regardless of whether `pattern` already carries
+            # a leading slash.
+            containing_dir = gi_file.rsplit('/', 1)[0]
+            remedy = (
+                f'{gi_file} is not the repository\'s top .gitignore, so a '
+                f'leading slash there only reaches {containing_dir}/, not the '
+                f'archive root - remove the `{pattern}` line (line {lineno}) '
+                f'from {gi_file}, or add `!{pattern}` on the next line in the '
+                f'same file, to stop it matching {rel_dir}/'
+            )
+        else:
+            # kind in ('local_exclude', 'global'): the pattern is not even in
+            # a file the archive carries - `.git/info/exclude` is per-clone
+            # and never committed, and a global `core.excludesFile` is a
+            # machine-wide setting outside the archive entirely. Anchoring
+            # (round 1's advice) is not "wrong" in the sense of failing to
+            # match - it does - but instructing a non-technical owner to
+            # hand-edit either is a dead end (AGENTS.md: no hand-editing
+            # hidden/vendored internals; a global file also risks changing
+            # behavior for every OTHER repo on the machine). A negation in
+            # the archive's OWN root .gitignore overrides both - verified
+            # against real git - and is a file the owner already knows.
+            where = (
+                'this repository\'s local exclude list (.git/info/exclude - '
+                'not part of the archive, and not shared with any copy of it)'
+                if kind == 'local_exclude' else
+                f'a git setting on this computer that applies to every '
+                f'repository ({gi_file}), not to this archive'
+            )
+            remedy = (
+                f'the pattern lives in {where} - add `!{rel_dir}/` to the '
+                f'.gitignore at the archive root instead, so it stops '
+                f'matching {rel_dir}/ there'
+            )
         lines.append(
             f'sources ignored: {rel_dir}/ is caught by {gi_file}:{lineno} '
-            f'(pattern `{pattern}`)  next: anchor it to the archive root - change '
-            f'`{pattern}` to `{anchored}` in {gi_file} so it stops matching {rel_dir}/'
+            f'(pattern `{pattern}`)  next: {remedy}'
         )
     checks.append({
         'id': 'sources_gitignore', 'status': 'warn',
         'detail': f'{len(findings)} sources/ subfolder(s) ignored: '
                   + ', '.join(f[0].rsplit("/probe.md", 1)[0] for f in findings),
-        'next_step': 'anchor the offending .gitignore pattern(s) with a leading slash',
+        'next_step': 'anchor or remove the offending .gitignore pattern(s) - see report for where',
     })
     return EXIT_WARNINGS
+
+
+def _classify_gitignore_source(gi_file: str) -> str:
+    """Where a `check-ignore -v` source file actually lives (PR #60 review,
+    finding 1) - the remedy that works differs by location, so the report
+    text has to know which one it is looking at.
+
+    `check-ignore -v` prints `gi_file` relative to the REPOSITORY root, not
+    the current directory and not the archive root (verified against real
+    git - run from an archive nested inside a parent repo with no `.git` of
+    its own, it still prints `.gitignore`, never `../.gitignore`). So:
+
+      - `.gitignore` (no directory component) is the repo's own top-level
+        file - a leading `/` genuinely anchors there.
+      - `.git/info/exclude` is the repo-local exclude list - never
+        committed, never shared with a clone.
+      - an absolute path is a machine-global `core.excludesFile` - same
+        problem, wider: it is not this archive's file at all.
+      - anything else (a directory component, e.g. `sources/.gitignore`) is
+        a NESTED .gitignore - a leading `/` only anchors within its own
+        folder, so it cannot reach the archive root.
+    """
+    posix = gi_file.replace('\\', '/')
+    if Path(gi_file).is_absolute():
+        return 'global'
+    if posix == '.git/info/exclude':
+        return 'local_exclude'
+    if posix == '.gitignore':
+        return 'root'
+    return 'nested'
 
 
 # ── Tools-version check (fha install / fha update-tools, BUILD.md M9) ───────────
@@ -835,9 +933,9 @@ def run_doctor(archive_root: Path, fha_config: dict) -> Result:
                 out = subprocess.run(
                     ['git', 'check-attr', 'text', '--'] + probes,
                     cwd=str(archive_root), capture_output=True, text=True,
-                    timeout=15,
+                    encoding='utf-8', errors='replace', timeout=15,
                 )
-            except (OSError, subprocess.SubprocessError):
+            except (OSError, subprocess.SubprocessError, UnicodeDecodeError):
                 break          # no usable git: this check cannot answer, so it says nothing
             if out.returncode != 0:
                 break
