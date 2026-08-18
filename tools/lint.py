@@ -1967,11 +1967,19 @@ def _claim_backs_edge(
     claim: dict, owner_pid: str, other_pid: str | None, role: str,
     alias_map: dict[str, str] | None = None,
 ) -> bool:
-    """True if `claim` is an accepted relationship/marriage claim that records the
-    edge a person-doc entry asserts. When `other_pid` is None (the `to:` name has
-    no minted record yet) only the owner's side is checked, so a forgiving name
-    never produces a false reconciliation failure. `alias_map` lets name-linked
-    persons:/roles: entries back an edge the same as bare P-ids."""
+    """True if `claim` is an accepted relationship/marriage/birth claim that
+    records the edge a person-doc entry asserts. When `other_pid` is None (the
+    `to:` name has no minted record yet) only the owner's side is checked, so a
+    forgiving name never produces a false reconciliation failure. `alias_map`
+    lets name-linked persons:/roles: entries back an edge the same as bare
+    P-ids.
+
+    Lint reads the same claim types the indexer derives edges from, or it
+    contradicts the tools: a birth claim whose `roles:` map names a child and a
+    parent now puts that bond in the tree (#71), so a person-doc entry citing
+    it is reconciled, not drifting. Telling the human their correctly-written
+    record disagrees with a claim the archive itself is reading would send them
+    to repair something that is not broken."""
     if str(claim.get('status', '')) != 'accepted':
         return False
     ctype = str(claim.get('type', ''))
@@ -1980,6 +1988,18 @@ def _claim_backs_edge(
         # claim's roles: map scopes the couple (_claim_spouse_pids).
         persons = _claim_spouse_pids(claim, alias_map)
         return owner_pid in persons and (other_pid is None or other_pid in persons)
+    if role in ('parent', 'child') and ctype == 'birth':
+        # Scoped by the derivation rule, not by the presence of a roles: key -
+        # a birth claim the indexer derives nothing from backs nothing here.
+        children, parents = _claim_parentage_pids(claim, alias_map)
+        if not (children and parents):
+            return False
+        # An entry of `type: parent` says the owner HAS a parent, so the owner
+        # is the child on the claim - the same inversion _EDGE_ROLE_MAP encodes.
+        owner_side, other_side = ((children, parents) if role == 'parent'
+                                  else (parents, children))
+        return (owner_pid in owner_side
+                and (other_pid is None or other_pid in other_side))
     pair = _EDGE_ROLE_MAP.get(role)
     if ctype != 'relationship' or not pair:
         return False
@@ -2002,6 +2022,20 @@ def _person_reconcilable_role_label(
         # Only the couple the claim marries owes a spouse entry - a parent
         # named on the certificate owes nothing (_claim_spouse_pids).
         return 'spouse' if pid in _claim_spouse_pids(claim, alias_map) else None
+    if ctype == 'birth':
+        # The mirror of the forward check: a birth claim that derives parentage
+        # is a kin claim, so an opted-in block that omits it is incomplete for
+        # the same reason it would be if the bond were written as a
+        # relationship claim. A birth claim the indexer derives nothing from
+        # owes nothing - only the child and the parents it actually named do.
+        children, parents = _claim_parentage_pids(claim, alias_map)
+        if not (children and parents):
+            return None
+        if pid in children:
+            return 'parent'     # the person was born → their entry names a parent
+        if pid in parents:
+            return 'child'
+        return None
     if ctype != 'relationship':
         return None
     if pid in _role_pids(claim, 'child', alias_map):
@@ -2067,7 +2101,13 @@ def _check_relationships_reconciliation(
     backing claim must exist and record this edge (else W115), its nature must
     match (else W115), and the other person should mirror it (else W116). The
     reverse direction (an accepted kin claim naming this person but absent from
-    their block) is also W115, so an opted-in block stays complete."""
+    their block) is also W115, so an opted-in block stays complete.
+
+    A kin claim here is whatever the indexer derives a kin edge from: a
+    `relationship` claim, a `marriage` claim, and - since #71 - a `birth` claim
+    whose `roles:` map names a child and a parent. Both directions read the
+    same list, so an entry citing a birth claim reconciles and a birth claim
+    the block omits is reported, exactly as for the other two."""
     for pid in sorted(registry.person_meta):
         block = registry.person_meta[pid].get('relationships')
         if not isinstance(block, list) or not block:
@@ -2130,7 +2170,7 @@ def _check_relationships_reconciliation(
             for claim in claims:
                 if not isinstance(claim, dict) or str(claim.get('status', '')) != 'accepted':
                     continue
-                if str(claim.get('type', '')) not in ('relationship', 'marriage'):
+                if str(claim.get('type', '')) not in ('relationship', 'marriage', 'birth'):
                     continue
                 cid = normalize_id(str(claim.get('id', '')))
                 if not cid or cid in referenced_cids:

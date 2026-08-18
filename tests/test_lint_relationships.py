@@ -490,5 +490,125 @@ class MarriageScopeW115Tests(unittest.TestCase):
         self.assertEqual([f.message for f in _codes(findings, 'W115')], [])
 
 
+class BirthClaimBacksAParentEntryTests(unittest.TestCase):
+    """W115 reads the same claim types the indexer derives edges from.
+
+    Since #71 a `birth` claim whose `roles:` map names a child and a parent
+    puts that bond in the tree, so a person-doc `relationships:` entry citing
+    one is reconciled - not drifting. Lint reading a narrower list than the
+    indexer would tell the human that a correctly-written record disagrees
+    with a claim the archive itself is reading, and send them to repair
+    something that is not broken.
+    """
+
+    BIRTH = 'C-9999999999'
+    SRC = 'S-9999999999'
+
+    def _birth_source(self, *, roles: bool = True) -> str:
+        roles_block = (f'  roles:\n    child: {CHILD}\n    parent: {PARENT}\n'
+                       if roles else '')
+        claim = (
+            '- value: "born to parent"\n'
+            f'  id: {self.BIRTH}\n'
+            '  type: birth\n'
+            f'  persons: [{CHILD}, {PARENT}]\n'
+            + roles_block +
+            '  status: accepted\n'
+            '  reviewed: 2026-01-01\n'
+            '  confidence: high\n'
+            '  date: 1902-04-17\n'
+            '  information: primary\n'
+            '  evidence: direct\n'
+            '  notes: A test birth claim.\n'
+        )
+        return (f'---\nid: {self.SRC}\ntitle: Certificate of live birth\n'
+                f'source_type: vital-record\n---\n\n## Claims\n\n```yaml\n{claim}```\n')
+
+    def _files(self, *, child_block: str, parent_block: str,
+               roles: bool = True) -> dict:
+        files = {}
+        fname, text = _person(CHILD, 'kid', 'ann', relationships=child_block)
+        files[fname] = text
+        fname, text = _person(PARENT, 'kid', 'bob', relationships=parent_block)
+        files[fname] = text
+        files[f'sources/notes/{self.SRC.lower()}.md'] = self._birth_source(roles=roles)
+        return files
+
+    def test_a_reconciled_pair_backed_by_a_birth_claim_is_clean(self) -> None:
+        child_block = '\n'.join([
+            'relationships:',
+            f'  - to: "[[{PARENT}|Bob Kid]]"',
+            '    type: parent',
+            f'    claim: "[[{self.BIRTH}]]"',
+        ])
+        parent_block = '\n'.join([
+            'relationships:',
+            f'  - to: "[[{CHILD}|Ann Kid]]"',
+            '    type: child',
+            f'    claim: "[[{self.BIRTH}]]"',
+        ])
+        findings, _reg = lint._run_lint_core(
+            _build(self._files(child_block=child_block,
+                               parent_block=parent_block)), {})
+        self.assertEqual([f.message for f in _codes(findings, 'W115')], [])
+        self.assertEqual([f.message for f in _codes(findings, 'W116')], [])
+
+    def test_a_birth_claim_deriving_nothing_backs_nothing(self) -> None:
+        # No roles: map, so the indexer records no edge. An entry that claims
+        # the birth record backs a parent link is genuinely drifting, and lint
+        # must not wave it through just because the type is right.
+        child_block = '\n'.join([
+            'relationships:',
+            f'  - to: "[[{PARENT}|Bob Kid]]"',
+            '    type: parent',
+            f'    claim: "[[{self.BIRTH}]]"',
+        ])
+        findings, _reg = lint._run_lint_core(
+            _build(self._files(child_block=child_block, parent_block='',
+                               roles=False)), {})
+        drift = [f for f in _codes(findings, 'W115')
+                 if 'does not record this parent edge' in f.message]
+        self.assertEqual(len(drift), 1)
+
+    def test_an_opted_in_block_that_omits_the_birth_claim_is_reported(self) -> None:
+        # The reverse direction, the mirror of the forward check: the child has
+        # a relationships: block, the birth claim names them, and the block
+        # does not apply it. Same rule the marriage and relationship types get.
+        child_block = '\n'.join([
+            'relationships:',
+            f'  - to: "[[{OTHERKID}|Cara Kid]]"',
+            '    type: sibling',
+            '    status: hypothesis',
+        ])
+        files = self._files(child_block=child_block, parent_block='')
+        fname, text = _person(OTHERKID, 'kid', 'cara')
+        files[fname] = text
+        findings, _reg = lint._run_lint_core(_build(files), {})
+        omitted = [f for f in _codes(findings, 'W115')
+                   if self.BIRTH.lower() in f.message.lower()]
+        self.assertEqual(len(omitted), 1)
+        self.assertIn('a parent edge naming them', omitted[0].message)
+
+    def test_an_unroled_birth_claim_is_owed_by_nobody(self) -> None:
+        # The indexer derives nothing from it, so an opted-in block that does
+        # not apply it is not incomplete. W126 is what speaks about that claim,
+        # and it speaks once - the human must not get two warnings pointing at
+        # two different repairs for one missing roles: map.
+        child_block = '\n'.join([
+            'relationships:',
+            f'  - to: "[[{OTHERKID}|Cara Kid]]"',
+            '    type: sibling',
+            '    status: hypothesis',
+        ])
+        files = self._files(child_block=child_block, parent_block='', roles=False)
+        fname, text = _person(OTHERKID, 'kid', 'cara')
+        files[fname] = text
+        findings, _reg = lint._run_lint_core(_build(files), {})
+        self.assertEqual(
+            [f.message for f in _codes(findings, 'W115')
+             if self.BIRTH.lower() in f.message.lower()], [])
+        self.assertEqual(len(_codes(findings, 'W126')), 1)
+
+
 if __name__ == '__main__':
     unittest.main()
