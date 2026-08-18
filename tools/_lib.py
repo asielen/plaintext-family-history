@@ -90,6 +90,11 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    file_entry_carries_text   - one files: entry -> is its content searchable text?
 #    files_carry_searchable_text - a source's files: block -> any text at all?
 #
+#  Who a marriage claim marries (SPEC §8.3, TOOLING §197)
+#    spouse_parties            - a claim's (pid, role) list -> the people it says
+#                                 married EACH OTHER; the one rule index, gedcom
+#                                 and lint all read, so they cannot disagree
+#
 #  Archive configuration
 #    find_archive_root         - walk up from CWD to find fha.yaml
 #    archive_root_missing_message - one plain recovery message for missing roots
@@ -397,6 +402,55 @@ def format_bracket_child(given_name: str, label: str | None) -> str:
     child joined other than by birth. Shared by lint (W103) and views (W103) so
     both derive byte-identical bracket lists (SPEC §12.2, TOOLING §7)."""
     return f'{given_name} ({label})' if label else given_name
+
+
+def spouse_parties(persons_with_roles: Iterable[tuple[str, Any]]) -> list[str]:
+    """
+    Who a marriage/divorce claim says were married TO EACH OTHER.
+
+    `persons:` is the index of who a claim is ABOUT, not a list of couples
+    (SPEC §8.3). A marriage or divorce record routinely names more than the two
+    principals - a Vermont marriage certificate names the couple and both sets
+    of parents, a divorce decree can name witnesses or a judge - and listing all
+    of them is the correct way to write the claim. The semantics live in the
+    optional `roles:` map, which is what this reads.
+
+    Input is the claim's people paired with the role each plays, in the claim's
+    own order: `[(pid, role), …]`, role None or '' where the claim gave none.
+    Three cases, in order:
+
+      1. `roles: spouse:` naming TWO OR MORE people -> those people, whatever
+         else is listed. Two is a couple; three or more is the serial case (one
+         claim recording successive marriages), and every pairing is derived.
+      2. Otherwise, exactly two people named -> those two. This is the ordinary
+         hand-written claim and by far the commonest shape; it must keep working
+         without ceremony. Note what falls in here besides "no roles: map at
+         all": a map naming ONE resolvable spouse. A typo'd id, a spouse left
+         out of `persons:`, an alias that stopped resolving - each leaves a
+         single spouse, and one name is not an answer to "who married whom".
+         Treating it as one would silently drop the edge from an ordinary
+         two-person marriage, and `fha lint` W125 could never catch that: it
+         only speaks above two people.
+      3. Otherwise (more than two people and no usable roles map) -> NOTHING.
+         The tool cannot tell the couple from their parents, and it must not
+         guess: an invented spouse edge is read back as fact by `fha relate`,
+         the tree views, `fha report`'s confirmed-connections list and the
+         GEDCOM export, while a missing one is merely missing. Silence is
+         recoverable; a false marriage is not. W125 surfaces exactly this shape
+         so the silence is never the end of the story.
+
+    Shared by `fha index` (spouse edges, and the `date_end` a divorce writes)
+    and `fha gedcom` (which FAM a marriage event belongs to) so the archive and
+    its export can never answer this question differently - a rule implemented
+    twice drifts, and the two disagreeing is worse than either being wrong
+    alone. `fha lint`'s W115 reads the same rule over raw claim YAML.
+    """
+    pairs = [(pid, str(role or '').strip().lower()) for pid, role in persons_with_roles]
+    spouses = [pid for pid, role in pairs if role == 'spouse']
+    if len(spouses) >= 2:
+        return spouses
+    named = [pid for pid, _role in pairs]
+    return named if len(named) == 2 else []
 
 
 def spouse_extended_base(

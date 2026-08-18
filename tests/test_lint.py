@@ -1960,7 +1960,8 @@ class UnscopedCoupleClaimW125Tests(unittest.TestCase):
     SID = 'S-7777777777'
 
     def _build(self, *, ctype: str = 'marriage', persons=None,
-               roles_block: str = '') -> Path:
+               roles_block: str = '', status: str = 'accepted',
+               negated: bool = False) -> Path:
         root = Path(tempfile.mkdtemp())
         (root / 'people').mkdir(parents=True)
         (root / 'sources' / 'notes').mkdir(parents=True)
@@ -1976,9 +1977,11 @@ class UnscopedCoupleClaimW125Tests(unittest.TestCase):
                  f'  id: C-1111111111\n'
                  f'  type: {ctype}\n'
                  f'  persons: [{", ".join(named)}]\n'
-                 f'  status: accepted\n  reviewed: 2026-01-01\n'
+                 f'  status: {status}\n  reviewed: 2026-01-01\n'
                  f'  confidence: high\n  date: 1890\n'
-                 f'  information: primary\n  evidence: direct\n  notes: x.\n'
+                 + ('  negated: true\n  evidence: negative\n' if negated
+                    else '  information: primary\n  evidence: direct\n')
+                 + '  notes: x.\n'
                  + roles_block)
         (root / 'sources' / 'notes' / f'rec_{self.SID.lower()}.md').write_text(
             f'---\nid: {self.SID}\ntitle: Rec\nsource_type: vital-record\n---\n\n'
@@ -2039,6 +2042,47 @@ class UnscopedCoupleClaimW125Tests(unittest.TestCase):
                            persons=[self.HUS, self.PARENTS[0], self.PARENTS[1]],
                            roles_block=roles)
         self.assertEqual(self._w125(root), [])
+
+    def test_roles_map_naming_one_spouse_still_warns(self) -> None:
+        # A roles: map that resolves to a single spouse - one typo'd id, one
+        # spouse left out of persons: - has not said who the couple were, and
+        # the indexer derives nothing from it (_lib.spouse_parties). W125 tests
+        # the derivation rule itself, not the mere presence of a roles: key, so
+        # this silence is reported like any other.
+        roles = f'  roles:\n    spouse: [{self.HUS}]\n'
+        self.assertEqual(len(self._w125(self._build(roles_block=roles))), 1)
+
+    def test_roles_map_naming_three_spouses_is_clean(self) -> None:
+        # Successive marriages recorded on one claim: the map HAS answered the
+        # question and every pairing is derived, so there is nothing to warn.
+        roles = ('  roles:\n    spouse: '
+                 f'[{self.HUS}, {self.WIF}, {self.PARENTS[0]}]\n')
+        self.assertEqual(self._w125(self._build(roles_block=roles)), [])
+
+    def test_suggested_claim_does_not_warn(self) -> None:
+        # Relationship derivation reads `accepted` claims only, so a suggested
+        # claim derives nothing whatever its roles: map says. Warning that a
+        # couple is missing from the tree because of a claim nobody has accepted
+        # yet points at the wrong repair: the repair is review (W102 already
+        # tracks that backlog), not a roles: map. The warning becomes true the
+        # day the claim is accepted, and fires then.
+        self.assertEqual(self._w125(self._build(status='suggested')), [])
+
+    def test_needs_review_claim_does_not_warn(self) -> None:
+        self.assertEqual(self._w125(self._build(status='needs-review')), [])
+
+    def test_negated_claim_does_not_warn(self) -> None:
+        # A negated marriage is a researched absence - "we looked, and these
+        # people did not marry" (SPEC §8.6). Derivation skips it deliberately.
+        # Warning here would tell the human a marriage is missing from the tree
+        # about a claim whose whole content is that the marriage never happened.
+        self.assertEqual(
+            self._w125(self._build(negated=True)), [])
+
+    def test_accepted_claim_still_warns(self) -> None:
+        # The control for the three above: the status that DOES derive edges
+        # keeps its warning.
+        self.assertEqual(len(self._w125(self._build())), 1)
 
     def test_list_form_roles_does_not_crash_lint(self) -> None:
         # `roles: [spouse, spouse]` is the shorthand lint's OWN E015 message

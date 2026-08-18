@@ -76,6 +76,7 @@ from _lib import (
     resolve_typed_ref,
     roots_change_orphans,
     format_roots_orphan_warning,
+    spouse_parties,
     sqlite_cache_schema_status,
     strip_link_wrapper,
     unreadable_dir_recorder,
@@ -1452,41 +1453,6 @@ def _register_cited_claim_aliases(conn: sqlite3.Connection, cited_cids: set[str]
             )
 
 
-def _spouse_parties(all_persons: list) -> list:
-    """
-    Return the people a marriage/divorce claim says were married to each other.
-
-    `persons:` is the index of who a claim is ABOUT, not a list of couples
-    (SPEC §8.3). A marriage or divorce record routinely names more than the
-    two principals - a Vermont marriage certificate names the couple and both
-    sets of parents, a divorce decree can name witnesses or a judge - and
-    listing all of them is the correct way to write the claim. The semantics
-    live in the optional `roles:` map, which is what this reads.
-
-    Three cases, in order:
-      1. `roles: spouse:` present  -> those people, whatever else is listed.
-      2. No roles map, exactly two persons -> those two. This is the ordinary
-         hand-written claim and by far the commonest shape; it must keep
-         working without ceremony.
-      3. No roles map, more than two persons -> NOTHING. The tool cannot tell
-         the couple from their parents, and it must not guess: an invented
-         spouse edge is read back as fact by `fha relate`, the tree views and
-         `fha report`'s confirmed-connections list, while a missing one is
-         merely missing. Silence is recoverable; a false marriage is not.
-         `fha lint` W125 surfaces exactly this shape so the silence is never
-         the end of the story.
-
-    Returning a list (not a pair) keeps the serial case honest: a roles map
-    naming three spouses yields all three pairings, matching how the
-    `relationship` branch already treats `roles: spouse:`.
-    """
-    spouse_ids = [p for p, r in all_persons if r == 'spouse']
-    if spouse_ids:
-        return spouse_ids
-    pids = [p for p, r in all_persons]
-    return pids if len(pids) == 2 else []
-
-
 def _derive_relationships(conn: sqlite3.Connection) -> None:
     """
     Materialise relationship edges from accepted claims into the relationships table.
@@ -1554,12 +1520,14 @@ def _derive_relationships(conn: sqlite3.Connection) -> None:
             elif spouse_ids or subtype == 'spouse-of':
                 # A relationship claim naming spouses (or a legacy spouse-of
                 # subtype) yields reciprocal spouse edges, like a marriage claim
-                # - and obeys the same scoping rule, for the same reason. The
-                # fallback here is only reached by a legacy `spouse-of` claim
-                # whose roles: map names no resolvable spouse; pairing off three
-                # or more people in that state would invent marriages exactly
-                # as the marriage branch used to.
-                spouse_pids = _spouse_parties(all_persons)
+                # - and obeys the same scoping rule (_lib.spouse_parties), for
+                # the same reason. The two-person fallback inside that rule is
+                # reached here by a claim whose roles: map resolves to fewer
+                # than two spouses - a legacy `spouse-of` with no usable map, or
+                # a map holding one typo'd id - and pairing off three or more
+                # people in that state would invent marriages exactly as the
+                # marriage branch used to.
+                spouse_pids = spouse_parties(all_persons)
                 for i, p1 in enumerate(spouse_pids):
                     for p2 in spouse_pids[i+1:]:
                         conn.execute(
@@ -1608,7 +1576,7 @@ def _derive_relationships(conn: sqlite3.Connection) -> None:
             # parents (six people), and listing all six in persons: is correct -
             # persons: is "who the claim is about" (SPEC §8.3). Pairing them off
             # blindly would make a man's father-in-law his spouse.
-            spouse_pids = _spouse_parties(all_persons)
+            spouse_pids = spouse_parties(all_persons)
             for i, p1 in enumerate(spouse_pids):
                 for p2 in spouse_pids[i+1:]:
                     conn.execute(
@@ -1628,7 +1596,7 @@ def _derive_relationships(conn: sqlite3.Connection) -> None:
             # lands and the parents' marriage is recorded as ending on their
             # child's divorce date. TOOLING §197 is explicit that date_end is
             # backfilled from a divorce claim *between the pair*.
-            spouse_pids = _spouse_parties(all_persons)
+            spouse_pids = spouse_parties(all_persons)
             for i, p1 in enumerate(spouse_pids):
                 for p2 in spouse_pids[i+1:]:
                     conn.execute(

@@ -1751,6 +1751,61 @@ class MarriageRoleScopingTests(unittest.TestCase):
             {(_MDR_HUS.lower(), _MDR_WIF.lower()),
              (_MDR_WIF.lower(), _MDR_HUS.lower())})
 
+    def test_partial_roles_map_falls_back_to_the_two_named_people(self) -> None:
+        # A roles: map answers "who married whom" only when it names a couple.
+        # One typo'd id, one spouse left out of persons:, one alias that stopped
+        # resolving - each leaves a SINGLE resolvable spouse, which is not an
+        # answer. Two people are named, so the ordinary two-person rule applies
+        # exactly as it would with no roles: map at all. Treating a thin roles
+        # map as authoritative would silently drop the edge from an ordinary
+        # two-person marriage, and W125 could never catch it (it only speaks
+        # above two people).
+        self._write_source(_mdr_claim(
+            'C-1111111111', 'marriage', [_MDR_HUS, _MDR_WIF], '1890',
+            spouse_roles=[_MDR_HUS, 'P-zzzzzzzzzz']))
+        index.build_index(self.root, {})
+        self.assertEqual(
+            self._spouse_edges(),
+            {(_MDR_HUS.lower(), _MDR_WIF.lower()),
+             (_MDR_WIF.lower(), _MDR_HUS.lower())},
+            'a roles: map naming one resolvable spouse has not said who the '
+            'couple were, so a two-person claim must still derive its pair')
+
+    def test_roles_map_resolving_to_nobody_falls_back_to_the_two_named(self) -> None:
+        # The same state one step further along: every id in the roles: map is
+        # broken, so it resolves to nobody at all. Still two people named, still
+        # the ordinary claim.
+        self._write_source(_mdr_claim(
+            'C-1111111111', 'marriage', [_MDR_HUS, _MDR_WIF], '1890',
+            spouse_roles=['P-zzzzzzzzzz', 'P-yyyyyyyyyy']))
+        index.build_index(self.root, {})
+        self.assertEqual(
+            self._spouse_edges(),
+            {(_MDR_HUS.lower(), _MDR_WIF.lower()),
+             (_MDR_WIF.lower(), _MDR_HUS.lower())})
+
+    def test_six_person_marriage_with_one_id_roles_map_emits_nothing(self) -> None:
+        # The fallback must not reach past two people. A thin roles: map on a
+        # six-person certificate leaves the tool exactly where a missing one
+        # does - unable to tell the couple from their parents - so it stays
+        # silent and W125 does the talking.
+        self._write_source(_mdr_claim(
+            'C-1111111111', 'marriage', _MDR_ALL, '1890',
+            spouse_roles=[_MDR_HUS]))
+        index.build_index(self.root, {})
+        self.assertEqual(self._spouse_edges(), set())
+
+    def test_serial_roles_map_of_three_still_pairs_all_three(self) -> None:
+        # A roles: map naming three or more spouses has answered the question -
+        # serial marriages recorded on one claim - and keeps its full pairing.
+        self._write_source(_mdr_claim(
+            'C-1111111111', 'marriage', _MDR_ALL, '1890',
+            spouse_roles=[_MDR_HUS, _MDR_WIF, _MDR_HMO]))
+        index.build_index(self.root, {})
+        trio = [_MDR_HUS.lower(), _MDR_WIF.lower(), _MDR_HMO.lower()]
+        expected = {(a, b) for a in trio for b in trio if a != b}
+        self.assertEqual(self._spouse_edges(), expected)
+
     def test_legacy_spouse_of_relationship_is_scoped_too(self) -> None:
         # The third path into the spouse graph: `relationship` +
         # `subtype: spouse-of`, whose roles: fallback had the same unguarded
@@ -1849,6 +1904,20 @@ class DivorceRoleScopingTests(unittest.TestCase):
         self.assertIsNone(self._date_end(_MDR_HUS, _MDR_WIF),
                           'with no roles: map and six people the tool cannot know '
                           'whose marriage ended, so it must close none')
+        self.assertIsNone(self._date_end(_MDR_HFA, _MDR_HMO))
+
+    def test_two_person_divorce_with_partial_roles_still_ends_the_marriage(self) -> None:
+        # The divorce branch reads the same rule, so it inherits the same
+        # regression: a decree whose roles: map resolves to one person must not
+        # leave a two-person divorce unable to close its own marriage.
+        self._write_source(_mdr_claim(
+            'C-3333333333', 'divorce', [_MDR_HUS, _MDR_WIF], '1900',
+            spouse_roles=[_MDR_HUS, 'P-zzzzzzzzzz']))
+        index.build_index(self.root, {})
+        self.assertIsNotNone(
+            self._date_end(_MDR_HUS, _MDR_WIF),
+            'a roles: map naming one resolvable spouse has not said whose '
+            'marriage ended, so the two named people still apply')
         self.assertIsNone(self._date_end(_MDR_HFA, _MDR_HMO))
 
     def test_two_person_divorce_without_roles_still_ends_the_marriage(self) -> None:

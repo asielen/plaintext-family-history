@@ -89,6 +89,7 @@ from _lib import (
     photos_ignore_matcher,
     photos_ignore_patterns,
     spouse_extended_base,
+    spouse_parties,
     extract_token_ids,
     extract_wikilinks,
     link_field_refs,
@@ -1875,6 +1876,38 @@ def _claim_subtype_norm(claim: dict) -> str:
     return ''
 
 
+def _claim_spouse_pids(
+    claim: dict, alias_map: dict[str, str] | None = None,
+) -> set[str]:
+    """Who a couple claim says married each other, read the way the index reads it.
+
+    A couple claim is a `marriage`, a `divorce`, or the legacy `relationship` +
+    `subtype: spouse-of` - the three shapes that put spouse edges in the tree.
+
+    A marriage certificate names the couple AND both sets of parents, and
+    listing all six in `persons:` is correct - `persons:` is who the claim is
+    about (SPEC §8.3) - so only `roles: spouse:` says which two of them married.
+    `_lib.spouse_parties` is that rule, shared with `fha index` and
+    `fha gedcom`; this wrapper just hands it the claim's people paired with
+    their roles, resolved through the alias map so a name-linked entry counts
+    like a bare P-id.
+
+    Lint must read it identically or it contradicts the tools: treating every
+    person on the certificate as a spouse makes W115 demand `relationships:`
+    spouse entries between the bride and her father-in-law - marriages the same
+    claim excludes and the indexer correctly refuses to derive. A lint warning
+    whose repair corrupts the tree is worse than no warning.
+
+    Only people actually named in `persons:` can carry a role, matching how the
+    index builds `claim_persons`: a `roles:` entry naming somebody left out of
+    `persons:` is a broken map, not a secret extra spouse.
+    """
+    named = _claim_person_ids(claim, alias_map)
+    role_holders = _role_pids(claim, 'spouse', alias_map)
+    return set(spouse_parties(
+        (pid, 'spouse' if pid in role_holders else None) for pid in named))
+
+
 def _claim_backs_edge(
     claim: dict, owner_pid: str, other_pid: str | None, role: str,
     alias_map: dict[str, str] | None = None,
@@ -1888,7 +1921,9 @@ def _claim_backs_edge(
         return False
     ctype = str(claim.get('type', ''))
     if role == 'spouse' and ctype == 'marriage':
-        persons = set(_claim_person_ids(claim, alias_map))
+        # Not everyone on a certificate married everyone else on it: the
+        # claim's roles: map scopes the couple (_claim_spouse_pids).
+        persons = _claim_spouse_pids(claim, alias_map)
         return owner_pid in persons and (other_pid is None or other_pid in persons)
     pair = _EDGE_ROLE_MAP.get(role)
     if ctype != 'relationship' or not pair:
@@ -1909,7 +1944,9 @@ def _person_reconcilable_role_label(
     parent/child/spouse so social and power ties never over-flag."""
     ctype = str(claim.get('type', ''))
     if ctype == 'marriage':
-        return 'spouse' if pid in _claim_person_ids(claim, alias_map) else None
+        # Only the couple the claim marries owes a spouse entry - a parent
+        # named on the certificate owes nothing (_claim_spouse_pids).
+        return 'spouse' if pid in _claim_spouse_pids(claim, alias_map) else None
     if ctype != 'relationship':
         return None
     if pid in _role_pids(claim, 'child', alias_map):
@@ -2156,28 +2193,44 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
                         'Check the spelling, add the name as an alias on the right '
                         'person, or create the person - or leave it if it is only a note.'))
 
-            # W125: a marriage/divorce naming more than two people with no
-            # `roles: spouse:` map. Certificates routinely name the couple AND
-            # both sets of parents, and listing all six in persons: is correct
-            # (SPEC §8.3) - but then only the roles: map says who married whom.
-            # Without it the index cannot tell the couple from their parents and
-            # deliberately records NO spouse link rather than guessing one
-            # (index.py _spouse_parties). That silence is safe but invisible:
-            # the couple simply never appears in the tree. This warning is what
-            # makes it visible, and it is the whole reason the indexer is
-            # allowed to stay quiet.
+            # W125: a marriage/divorce naming more than two people without
+            # saying which two were the couple. Certificates routinely name the
+            # couple AND both sets of parents, and listing all six in persons:
+            # is correct (SPEC §8.3) - but then only the roles: map says who
+            # married whom. Without a usable one the index cannot tell the
+            # couple from their parents and deliberately records NO spouse link
+            # rather than guessing one (_lib.spouse_parties). That silence is
+            # safe but invisible: the couple simply never appears in the tree.
+            # This warning is what makes it visible, and it is the whole reason
+            # the indexer is allowed to stay quiet.
+            # The test is the derivation rule itself, not "is there a roles:
+            # map" - a map that resolves to fewer than two spouses (one typo'd
+            # id, one spouse left out of persons:) leaves the indexer in the
+            # identical could-not-tell state, and a warning that missed it would
+            # let exactly the silence it exists to prevent go unreported.
             # The legacy `relationship` + `subtype: spouse-of` shape derives
             # spouse edges through the same rule, so it earns the same warning.
             # Scoped to spouse-of alone: an ordinary parent/child relationship
             # claim names three people (a child and two parents) and has no
             # business being asked for a spouse role.
+            # Only claims that actually derive edges can lose one. Derivation
+            # reads `accepted`, non-negated claims (index.py
+            # _derive_relationships), so a `suggested` claim's missing roles:
+            # map has cost nothing yet - the repair there is review, which W102
+            # already tracks, and this warning starts the day it is accepted.
+            # A NEGATED marriage is a researched absence, "we looked and they
+            # did not marry" (SPEC §8.6); telling the human a marriage is
+            # missing from the tree because of it would be backwards.
             claim_type = str(claim.get('type', '')).strip().lower()
             derives_spouses = claim_type in ('marriage', 'divorce') or (
                 claim_type == 'relationship'
                 and str(claim.get('subtype', '')).strip().lower() == 'spouse-of')
-            if derives_spouses:
+            derives_edges = (
+                str(claim.get('status', '')).strip() == 'accepted'
+                and claim.get('negated') not in (True, 'true'))
+            if derives_spouses and derives_edges:
                 named = _claim_person_ids(claim, alias_map)
-                if len(named) > 2 and not _role_pids(claim, 'spouse', alias_map):
+                if len(named) > 2 and not _claim_spouse_pids(claim, alias_map):
                     cost = ('no marriage is recorded as ending'
                             if claim_type == 'divorce' else
                             'no marriage is recorded between any of them')
