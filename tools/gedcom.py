@@ -475,8 +475,11 @@ def _spouse_persons_for_claim(conn: sqlite3.Connection, claim_id: str) -> frozen
 
     A claim whose roles: map names three or more spouses (successive marriages
     recorded on one claim) yields a party set larger than a couple. No FAM can
-    hold it, so `_load_marriages` simply finds no home for that event rather
-    than picking two of the three - the same refusal to guess.
+    hold it, so `_load_marriages` finds no home for that event rather than
+    picking two of the three - the same refusal to guess. The export says so
+    out loud (`_gedcom_payload` reports every marriage event it could not
+    place, beside the redaction counts): refusing to guess is right, but
+    dropping a wedding date out of a complete-looking file in silence is not.
     """
     rows = conn.execute(
         """
@@ -848,6 +851,42 @@ def _gedcom_payload(
                 f'{restricted_redacted} restricted person(s) redacted as /Restricted/ '
                 '(no override - SPEC §21).'
             )
+
+        # A marriage event that found no family to live on. `_load_marriages`
+        # keys each claim by the people it says married EACH OTHER, and a FAM
+        # record holds one couple - so a claim whose `roles: spouse:` names
+        # three or more (successive marriages recorded on one claim) matches no
+        # key at all, and its date and place go nowhere. Refusing to pick two
+        # of the three is right, and the index still derives every pairing, so
+        # the export carries the families; dropping the marriage facts without
+        # a word is the part that is not. The human would open a
+        # complete-looking file with the wedding quietly missing from it.
+        # Reported in the same place as the redaction counts, for the same
+        # reason: what left the archive, and what did not.
+        # Scoped to events whose people are ALL in this export - a couple left
+        # out by a seed person or a generation cap is scoping, not a lost fact,
+        # and saying so on every capped export would train the human to ignore
+        # the line.
+        family_keys = {key for key, _children in families}
+        for key, row in sorted(marriages.items(), key=lambda kv: kv[1]['id']):
+            if key in family_keys or not key <= included:
+                continue
+            if len(key) > 2:
+                messages.append(
+                    f'Marriage {fmt_id_display(row["id"])} names {len(key)} people as '
+                    'spouses, and a family record holds one couple, so its date and '
+                    'place were left out of the export. To export them, write one '
+                    'marriage claim per couple - each with its own `roles:` then an '
+                    'indented `spouse: [P-…, P-…]` line - and run `fha index`.'
+                )
+            else:
+                pair = ' and '.join(fmt_id_display(p) for p in sorted(key))
+                messages.append(
+                    f'Marriage {fmt_id_display(row["id"])} names {pair}, who have no '
+                    'family record in this export, so its date and place were left '
+                    'out. Run `fha index` and export again; if it is still missing, '
+                    'the two are not linked by an accepted claim - add one.'
+                )
 
         # GEDCOM 5.5.1 lines are CR/LF-terminated; emit the file with a trailing newline.
         text = '\r\n'.join(lines) + '\r\n'

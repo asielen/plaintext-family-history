@@ -1672,8 +1672,11 @@ def _mdr_person(pid: str) -> str:
 
 
 def _mdr_claim(cid: str, ctype: str, persons: list, date: str,
-               spouse_roles: list = None) -> str:
-    """One accepted marriage/divorce claim, with or without a `roles:` map."""
+               spouse_roles: list = None, other_roles: dict = None) -> str:
+    """One accepted marriage/divorce claim, with or without a `roles:` map.
+
+    `other_roles` adds non-spouse role keys ({'parent': [P-…]}) so a claim can
+    say outright that somebody it names was NOT a party to the marriage."""
     text = (f'- id: {cid}\n'
             f'  value: "{ctype} record"\n'
             f'  type: {ctype}\n'
@@ -1681,8 +1684,12 @@ def _mdr_claim(cid: str, ctype: str, persons: list, date: str,
             f'  status: accepted\n'
             f'  reviewed: 2026-01-01\n'
             f'  date: {date}\n')
-    if spouse_roles is not None:
-        text += f'  roles:\n    spouse: [{", ".join(spouse_roles)}]\n'
+    if spouse_roles is not None or other_roles:
+        text += '  roles:\n'
+        if spouse_roles is not None:
+            text += f'    spouse: [{", ".join(spouse_roles)}]\n'
+        for role_name, who in (other_roles or {}).items():
+            text += f'    {role_name}: [{", ".join(who)}]\n'
     return text
 
 
@@ -1826,6 +1833,68 @@ class MarriageRoleScopingTests(unittest.TestCase):
         index.build_index(self.root, {})
         self.assertEqual(self._spouse_edges(), set())
 
+    def test_duplicate_persons_entry_never_marries_someone_to_himself(self) -> None:
+        # `persons:` accepts a bare P-id and a name-link, and nothing stops both
+        # from landing on the same person - `claim_persons` has no UNIQUE
+        # constraint and stores one row per entry. Two rows for Amos meant two
+        # "spouses", and the pairing loop married him to himself: a spouse edge
+        # from a person to themselves, silent in lint (W125 cannot speak, there
+        # is only one distinct person) and read back as fact by `fha relate`,
+        # the family charts and the GEDCOM export.
+        self._write_source(_mdr_claim(
+            'C-1111111111', 'marriage',
+            [_MDR_HUS, f'"[[{_MDR_NAMES[_MDR_HUS]}]]"'], '1890'))
+        index.build_index(self.root, {})
+        edges = self._spouse_edges()
+        self.assertEqual(
+            [e for e in edges if e[0] == e[1]], [],
+            'nobody is married to themselves - a duplicate persons: entry must '
+            'never become a spouse edge')
+        # One distinct person is not a couple, so the claim derives nothing.
+        self.assertEqual(edges, set())
+
+    def test_duplicate_persons_entry_beside_a_real_spouse_derives_the_pair(self) -> None:
+        # The same duplicate on an otherwise ordinary claim. Counted as three
+        # entries the claim overshot the two-person fallback and derived
+        # nothing; counted as the two PEOPLE it actually names, it is the
+        # commonest shape there is and must derive its pair.
+        self._write_source(_mdr_claim(
+            'C-1111111111', 'marriage',
+            [_MDR_HUS, f'"[[{_MDR_NAMES[_MDR_HUS]}]]"', _MDR_WIF], '1890'))
+        index.build_index(self.root, {})
+        self.assertEqual(
+            self._spouse_edges(),
+            {(_MDR_HUS.lower(), _MDR_WIF.lower()),
+             (_MDR_WIF.lower(), _MDR_HUS.lower())})
+
+    def test_explicit_non_spouse_role_is_never_married(self) -> None:
+        # The two-person fallback exists for a claim that says nothing about
+        # who married whom. This claim SAYS: one spouse, one parent. Pairing
+        # them anyway contradicts the claim in its own words and marries a man
+        # to his own father - the exact corruption the roles: scoping was added
+        # to prevent, reached through the fallback instead.
+        self._write_source(_mdr_claim(
+            'C-1111111111', 'marriage', [_MDR_HUS, _MDR_HFA], '1890',
+            spouse_roles=[_MDR_HUS], other_roles={'parent': [_MDR_HFA]}))
+        index.build_index(self.root, {})
+        self.assertEqual(
+            self._spouse_edges(), set(),
+            'a claim that calls someone a parent must never have them married '
+            'to the person it calls a spouse')
+
+    def test_insert_site_refuses_a_self_edge_even_when_handed_duplicates(self) -> None:
+        # Belt and braces. `spouse_parties` dedupes, so this state is already
+        # unreachable through it - but the insert sites are what actually write
+        # the tree, and a self-marriage must be impossible there too, whatever
+        # a future caller hands them.
+        self._write_source(_mdr_claim(
+            'C-1111111111', 'marriage', [_MDR_HUS, _MDR_WIF], '1890'))
+        with unittest.mock.patch.object(
+                index, 'spouse_parties',
+                lambda _rows: [_MDR_HUS.lower(), _MDR_HUS.lower()]):
+            index.build_index(self.root, {})
+        self.assertEqual(self._spouse_edges(), set())
+
     def test_upsert_source_matches_full_build(self) -> None:
         # The incremental path re-derives relationships too; a fix applied to
         # build_index only would let `fha index --source` restore the false
@@ -1926,6 +1995,23 @@ class DivorceRoleScopingTests(unittest.TestCase):
         index.build_index(self.root, {})
         self.assertIsNotNone(self._date_end(_MDR_HUS, _MDR_WIF))
         self.assertIsNone(self._date_end(_MDR_HFA, _MDR_HMO))
+
+    def test_two_person_divorce_with_an_explicit_parent_role_ends_nothing(self) -> None:
+        # The two-person fallback on the ending side. A decree naming the
+        # husband and his father, calling one a spouse and the other a parent,
+        # says plainly that these two were not the marriage - so closing an
+        # edge between them (his parents' marriage, in the general case) is a
+        # real marriage recorded as ending on the wrong date and by the wrong
+        # decree.
+        self._write_source(_mdr_claim(
+            'C-3333333333', 'divorce', [_MDR_HFA, _MDR_HMO], '1900',
+            spouse_roles=[_MDR_HFA], other_roles={'parent': [_MDR_HMO]}))
+        index.build_index(self.root, {})
+        self.assertIsNone(
+            self._date_end(_MDR_HFA, _MDR_HMO),
+            'a decree that calls one of its two people a parent has not said '
+            "whose marriage ended, so it must not close anybody's")
+        self.assertIsNone(self._date_end(_MDR_HMO, _MDR_HFA))
 
 
 if __name__ == '__main__':

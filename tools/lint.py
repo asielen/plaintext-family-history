@@ -1876,6 +1876,32 @@ def _claim_subtype_norm(claim: dict) -> str:
     return ''
 
 
+def _claim_roles_by_person(
+    claim: dict, alias_map: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """Each named person's role on this claim, read the way the index stores it.
+
+    `fha index` fills `claim_persons.role` by walking the `roles:` map in the
+    order it was written and taking the FIRST key whose people include this
+    person (index.py, the claim_persons insert). Lint mirrors that exactly:
+    the two must not disagree about what a claim says, or a warning here
+    describes a tree the indexer never built.
+
+    Roles the claim never mentions are simply absent - a person with no role is
+    a person the claim said nothing about, which is a different thing from a
+    person it placed somewhere other than the couple.
+    """
+    roles = claim.get('roles')
+    if not isinstance(roles, dict):
+        return {}   # `roles: [parent, child]` names nobody; not a crash, just empty
+    out: dict[str, str] = {}
+    for role_name in roles:
+        norm = str(role_name).strip().lower()
+        for pid in _role_pids(claim, role_name, alias_map):
+            out.setdefault(pid, norm)
+    return out
+
+
 def _claim_spouse_pids(
     claim: dict, alias_map: dict[str, str] | None = None,
 ) -> set[str]:
@@ -1901,11 +1927,15 @@ def _claim_spouse_pids(
     Only people actually named in `persons:` can carry a role, matching how the
     index builds `claim_persons`: a `roles:` entry naming somebody left out of
     `persons:` is a broken map, not a secret extra spouse.
+
+    Every role is passed through, not just `spouse`. The rule's two-person
+    fallback turns on whether the OTHER person carries an explicit role, so a
+    wrapper that flattened every non-spouse role to "no role" would have lint
+    reporting a couple the index refuses to derive.
     """
     named = _claim_person_ids(claim, alias_map)
-    role_holders = _role_pids(claim, 'spouse', alias_map)
-    return set(spouse_parties(
-        (pid, 'spouse' if pid in role_holders else None) for pid in named))
+    by_person = _claim_roles_by_person(claim, alias_map)
+    return set(spouse_parties((pid, by_person.get(pid)) for pid in named))
 
 
 def _claim_backs_edge(
@@ -2203,11 +2233,20 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
             # safe but invisible: the couple simply never appears in the tree.
             # This warning is what makes it visible, and it is the whole reason
             # the indexer is allowed to stay quiet.
-            # The test is the derivation rule itself, not "is there a roles:
-            # map" - a map that resolves to fewer than two spouses (one typo'd
-            # id, one spouse left out of persons:) leaves the indexer in the
-            # identical could-not-tell state, and a warning that missed it would
-            # let exactly the silence it exists to prevent go unreported.
+            # The condition IS the derivation rule, not a count of people: a
+            # couple claim that resolves two or more distinct persons and
+            # yields no couple. That single test covers every shape the
+            # silence takes - more than two people with no roles: map, more
+            # than two with a map resolving fewer than two spouses (one typo'd
+            # id, one spouse left out of persons:), and exactly two where the
+            # map calls one of them something other than a spouse. A
+            # "more than two people" heuristic could see only the first two,
+            # and the third would be exactly the silence this exists to
+            # prevent, going unreported.
+            # Distinct PERSONS, not persons: entries: a bare P-id and a
+            # name-link for one man are two entries and one person, and there
+            # is no couple to ask about (spouse_parties folds them together for
+            # the same reason).
             # The legacy `relationship` + `subtype: spouse-of` shape derives
             # spouse edges through the same rule, so it earns the same warning.
             # Scoped to spouse-of alone: an ordinary parent/child relationship
@@ -2230,18 +2269,44 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
                 and claim.get('negated') not in (True, 'true'))
             if derives_spouses and derives_edges:
                 named = _claim_person_ids(claim, alias_map)
-                if len(named) > 2 and not _claim_spouse_pids(claim, alias_map):
-                    cost = ('no marriage is recorded as ending'
-                            if claim_type == 'divorce' else
-                            'no marriage is recorded between any of them')
-                    findings.append(Finding('W', 'W125', src_path,
-                        f'Claim {claim.get("id","?")} (type: {claim_type}) names '
-                        f'{len(named)} people but does not say which two of them were '
-                        f'the couple, so {cost} - they will be missing from the family '
-                        'tree, from `fha relate`, and from the charts on their pages. '
-                        'Leave everyone in persons: (a certificate names the parents '
-                        'too, and that is right) and add a roles: map naming the pair - '
-                        '`roles:` then an indented `spouse: [P-…, P-…]` line.'))
+                distinct = {pid: None for pid in named}   # ordered, deduplicated
+                if len(distinct) >= 2 and not _claim_spouse_pids(claim, alias_map):
+                    where_they_go = (
+                        ' - they will be missing from the family tree, from '
+                        '`fha relate`, and from the charts on their pages. ')
+                    if len(distinct) > 2:
+                        # The certificate shape: too many people, nothing saying
+                        # which two of them are the couple.
+                        cost = ('no marriage is recorded as ending'
+                                if claim_type == 'divorce' else
+                                'no marriage is recorded between any of them')
+                        findings.append(Finding('W', 'W125', src_path,
+                            f'Claim {claim.get("id","?")} (type: {claim_type}) names '
+                            f'{len(distinct)} people but does not say which two of them '
+                            f'were the couple, so {cost}{where_they_go}'
+                            'Leave everyone in persons: (a certificate names the parents '
+                            'too, and that is right) and add a roles: map naming the '
+                            'pair - `roles:` then an indented `spouse: [P-…, P-…]` line.'))
+                    else:
+                        # Exactly two people, and the claim placed one of them
+                        # somewhere other than the couple. It HAS said which two
+                        # of them were the couple - it said these two were not -
+                        # so the certificate wording would read as nonsense here.
+                        by_person = _claim_roles_by_person(claim, alias_map)
+                        elsewhere = ', '.join(
+                            f'{fmt_id_display(pid)} a {by_person[pid]}'
+                            for pid in distinct
+                            if by_person.get(pid) and by_person[pid] != 'spouse')
+                        cost = ('no marriage is recorded as ending'
+                                if claim_type == 'divorce' else
+                                'no marriage is recorded between them')
+                        findings.append(Finding('W', 'W125', src_path,
+                            f'Claim {claim.get("id","?")} (type: {claim_type}) names '
+                            f'2 people, but its roles: map calls {elsewhere} rather than '
+                            f'a spouse, so {cost}{where_they_go}'
+                            'If these two were the couple, name them both - `roles:` then '
+                            'an indented `spouse: [P-…, P-…]` line. If they were not, the '
+                            'couple is missing from persons: - add them there.'))
 
             # place reference - forgiving (PR 05): never reject a place the human
             # typed.  A well-formed L-id (bare or [[wrapped]]) that doesn't

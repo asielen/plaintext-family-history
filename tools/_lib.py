@@ -417,27 +417,45 @@ def spouse_parties(persons_with_roles: Iterable[tuple[str, Any]]) -> list[str]:
 
     Input is the claim's people paired with the role each plays, in the claim's
     own order: `[(pid, role), …]`, role None or '' where the claim gave none.
-    Three cases, in order:
+
+    People are counted ONCE each, first appearance keeping their place. A claim
+    can name the same person twice - `persons: [P-a, "[[Alice Smith]]"]` is one
+    man written two ways, and `claim_persons` stores a row per entry with no
+    UNIQUE constraint to stop it. Counting entries instead of people read those
+    two rows as a couple and married the man to himself: a spouse edge from a
+    person to themselves, which `fha lint` cannot see (W125 needs two distinct
+    people to speak) and every consumer reads back as fact. Every producer
+    assigns a person's role by their id, so the duplicate entries carry the
+    same role and first-one-wins loses nothing.
+
+    Then three cases, in order:
 
       1. `roles: spouse:` naming TWO OR MORE people -> those people, whatever
          else is listed. Two is a couple; three or more is the serial case (one
          claim recording successive marriages), and every pairing is derived.
-      2. Otherwise, exactly two people named -> those two. This is the ordinary
+      2. Otherwise, exactly two people named AND no named person carrying an
+         explicit role other than spouse -> those two. This is the ordinary
          hand-written claim and by far the commonest shape; it must keep working
          without ceremony. Note what falls in here besides "no roles: map at
          all": a map naming ONE resolvable spouse. A typo'd id, a spouse left
          out of `persons:`, an alias that stopped resolving - each leaves a
-         single spouse, and one name is not an answer to "who married whom".
-         Treating it as one would silently drop the edge from an ordinary
-         two-person marriage, and `fha lint` W125 could never catch that: it
-         only speaks above two people.
-      3. Otherwise (more than two people and no usable roles map) -> NOTHING.
-         The tool cannot tell the couple from their parents, and it must not
-         guess: an invented spouse edge is read back as fact by `fha relate`,
-         the tree views, `fha report`'s confirmed-connections list and the
-         GEDCOM export, while a missing one is merely missing. Silence is
-         recoverable; a false marriage is not. W125 surfaces exactly this shape
-         so the silence is never the end of the story.
+         single spouse and a partner with NO role, and one name is not an answer
+         to "who married whom". Treating it as one would silently drop the edge
+         from an ordinary two-person marriage.
+         What the role test excludes is the claim that answered the question and
+         said no: `roles: {spouse: [P-a], parent: [P-b]}` calls P-b a parent, so
+         pairing the two contradicts the claim in its own words and marries a
+         man to his father-in-law - the same corruption case 3 refuses, reached
+         through the fallback instead. A silence is inferred only from a silence.
+      3. Otherwise -> NOTHING. The tool cannot tell the couple from their
+         parents, and it must not guess: an invented spouse edge is read back as
+         fact by `fha relate`, the tree views, `fha report`'s confirmed-
+         connections list and the GEDCOM export, while a missing one is merely
+         missing. Silence is recoverable; a false marriage is not.
+
+    Nothing here is silent in the archive: `fha lint` W125 warns whenever a
+    couple claim resolves two or more distinct people and this returns nothing -
+    cases 2-refused and 3 alike - so the silence is never the end of the story.
 
     Shared by `fha index` (spouse edges, and the `date_end` a divorce writes)
     and `fha gedcom` (which FAM a marriage event belongs to) so the archive and
@@ -445,12 +463,18 @@ def spouse_parties(persons_with_roles: Iterable[tuple[str, Any]]) -> list[str]:
     twice drifts, and the two disagreeing is worse than either being wrong
     alone. `fha lint`'s W115 reads the same rule over raw claim YAML.
     """
-    pairs = [(pid, str(role or '').strip().lower()) for pid, role in persons_with_roles]
+    first_role: dict[str, str] = {}
+    for pid, role in persons_with_roles:
+        if pid not in first_role:
+            first_role[pid] = str(role or '').strip().lower()
+    pairs = list(first_role.items())
+
     spouses = [pid for pid, role in pairs if role == 'spouse']
     if len(spouses) >= 2:
         return spouses
-    named = [pid for pid, _role in pairs]
-    return named if len(named) == 2 else []
+    if len(pairs) == 2 and not any(role and role != 'spouse' for _pid, role in pairs):
+        return [pid for pid, _role in pairs]
+    return []
 
 
 def spouse_extended_base(

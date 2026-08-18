@@ -451,6 +451,66 @@ class MarriageRoleScopingTests(unittest.TestCase):
         couple_fam = self._families(r['text'])[frozenset({self.HUS, self.WIF})]
         self.assertIn('Wedding Town', couple_fam)
 
+    def test_serial_marriage_event_that_finds_no_family_is_reported(self):
+        # A `roles: spouse:` naming three people (successive marriages recorded
+        # on one claim) is a party set no two-person FAM key can match, so the
+        # MARR date and place simply have nowhere to go. Refusing to guess
+        # which two of the three to hang it on is right; dropping the event
+        # without a word is not - the export would carry the families and quietly
+        # lose the marriage facts, and nothing on the human's screen would say so.
+        self.conn.execute(
+            'INSERT INTO claims(id, source_id, type, date_edtf, date_min, place_text, '
+            'value, status) VALUES (?,?,?,?,?,?,?,?)',
+            ('c-0000000009', 's-0000000009', 'marriage', '1890', '1890-01-01',
+             'Wedding Town', 'married', 'accepted'),
+        )
+        for pos, pid in enumerate([self.HUS, self.WIF, self.HMO]):
+            self.conn.execute(
+                'INSERT INTO claim_persons(claim_id, person_id, position, role) '
+                'VALUES (?,?,?,?)', ('c-0000000009', pid, pos, 'spouse'))
+        # The three pairings the index derives from that claim.
+        for a, b in ((self.HUS, self.WIF), (self.HUS, self.HMO), (self.WIF, self.HMO)):
+            _spouse(self.conn, a, b)
+        self.conn.commit()
+        self.conn.close()
+        r = gedcom.run_gedcom(self.root, self.HUS, mode='connected')
+        self.assertEqual(r['status'], 'ok')
+        # The event really is absent - that part is the deliberate refusal.
+        self.assertNotIn('Wedding Town', r['text'])
+        # And the export says so, in the same place it reports redactions.
+        said = ' '.join(r['messages'])
+        self.assertIn('marriage', said.lower())
+        self.assertIn('c-0000000009', said.lower())
+        self.assertIn('3 people', said)
+        self.assertIn('roles:', said)
+
+    def test_an_ordinary_marriage_reports_nothing(self):
+        # The false positive the warning must not have: a two-person marriage
+        # whose family the export builds is placed, and nothing is said.
+        self._certificate(roles={self.HUS: 'spouse', self.WIF: 'spouse'})
+        conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
+        _spouse(conn, self.HUS, self.WIF)
+        conn.commit()
+        conn.close()
+        r = gedcom.run_gedcom(self.root, self.HUS, mode='connected')
+        self.assertEqual(
+            [m for m in r['messages'] if 'marriage' in m.lower()], [])
+
+    def test_a_marriage_outside_the_exported_set_reports_nothing(self):
+        # The other false positive: a depth-capped or seeded export leaves
+        # people out on purpose, and a marriage whose couple is not in the file
+        # is scoping, not a lost fact. Only an event whose people ARE all here
+        # and still has no home is worth a word.
+        self._certificate(roles={self.HUS: 'spouse', self.WIF: 'spouse'})
+        conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
+        _spouse(conn, self.HUS, self.WIF)
+        conn.commit()
+        conn.close()
+        r = gedcom.run_gedcom(self.root, self.WFA, mode='ancestors')
+        self.assertEqual(r['status'], 'ok')
+        self.assertEqual(
+            [m for m in r['messages'] if 'marriage' in m.lower()], [])
+
 
 if __name__ == '__main__':
     unittest.main()

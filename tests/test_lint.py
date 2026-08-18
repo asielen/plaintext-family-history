@@ -2084,6 +2084,48 @@ class UnscopedCoupleClaimW125Tests(unittest.TestCase):
         # keeps its warning.
         self.assertEqual(len(self._w125(self._build())), 1)
 
+    def test_two_person_claim_with_a_contradictory_role_warns(self) -> None:
+        # The shape the `len(named) > 2` heuristic could never see. This claim
+        # names two people and calls one of them a parent, so the indexer
+        # derives no couple from it (it must not contradict the claim's own
+        # words) - and the marriage is then missing from the tree with nothing
+        # said about it. W125's real subject is the derivation rule: a couple
+        # claim that resolves two or more people and yields no couple.
+        roles = f'  roles:\n    spouse: [{self.HUS}]\n    parent: [{self.WIF}]\n'
+        w = self._w125(self._build(persons=[self.HUS, self.WIF], roles_block=roles))
+        self.assertEqual(len(w), 1)
+        msg = w[0].message
+        self.assertIn('names 2 people', msg)
+        # The wording has to fit THIS shape, not the six-person certificate:
+        # "does not say which two of them were the couple" would be false here.
+        self.assertNotIn('which two of them', msg)
+        self.assertIn('a parent', msg)
+        self.assertIn('no marriage is recorded between them', msg)
+        self.assertIn('spouse: [P-', msg)
+
+    def test_two_person_divorce_with_a_contradictory_role_warns(self) -> None:
+        roles = f'  roles:\n    spouse: [{self.HUS}]\n    parent: [{self.WIF}]\n'
+        w = self._w125(self._build(ctype='divorce', persons=[self.HUS, self.WIF],
+                                   roles_block=roles))
+        self.assertEqual(len(w), 1)
+        # A divorce costs a marriage not recorded as ENDING, whatever the shape.
+        self.assertIn('no marriage is recorded as ending', w[0].message)
+
+    def test_duplicate_persons_entry_does_not_warn(self) -> None:
+        # A bare P-id and a name-link for the same person are two persons:
+        # entries and ONE person. There is no couple here and nothing a roles:
+        # map could add, so W125 has nothing to say - counting entries instead
+        # of people would demand a spouse pair from a claim that names one man.
+        root = self._build(persons=[self.HUS, '"[[Person 0]]"'])
+        self.assertEqual(self._w125(root), [])
+
+    def test_duplicate_persons_entry_beside_a_spouse_does_not_warn(self) -> None:
+        # Three entries, two people - the ordinary two-person claim wearing a
+        # duplicate. The indexer derives the pair, so there is no silence to
+        # report.
+        root = self._build(persons=[self.HUS, '"[[Person 0]]"', self.WIF])
+        self.assertEqual(self._w125(root), [])
+
     def test_list_form_roles_does_not_crash_lint(self) -> None:
         # `roles: [spouse, spouse]` is the shorthand lint's OWN E015 message
         # suggests. It names no person, so it cannot scope the couple (W125

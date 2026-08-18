@@ -1489,9 +1489,21 @@ def _derive_relationships(conn: sqlite3.Connection) -> None:
     ).fetchall()
 
     for (cid, ctype, subtype, date_edtf, dmin, dmax) in rows:
-        all_persons = conn.execute(
-            'SELECT person_id, role FROM claim_persons WHERE claim_id=?', (cid,)
-        ).fetchall()
+        # One row per persons: ENTRY, and claim_persons has no UNIQUE
+        # constraint - `persons: [P-a, "[[Alice Smith]]"]` is one person named
+        # two ways and lands twice. Every derivation below asks "who does this
+        # claim name", which is a question about people, so fold the duplicates
+        # out once here: undeduplicated, a pairing loop pairs a person with
+        # themselves (a self-marriage, a self-friendship) and every consumer
+        # reads that edge back as fact.
+        all_persons: list[tuple[str, str | None]] = []
+        seen_pids: set[str] = set()
+        for person_id, role in conn.execute(
+                'SELECT person_id, role FROM claim_persons WHERE claim_id=? '
+                'ORDER BY position', (cid,)):
+            if person_id not in seen_pids:
+                seen_pids.add(person_id)
+                all_persons.append((person_id, role))
         pids = [p for p, r in all_persons]
 
         if ctype == 'relationship':
@@ -1530,6 +1542,8 @@ def _derive_relationships(conn: sqlite3.Connection) -> None:
                 spouse_pids = spouse_parties(all_persons)
                 for i, p1 in enumerate(spouse_pids):
                     for p2 in spouse_pids[i+1:]:
+                        if p1 == p2:
+                            continue   # nobody is married to themselves
                         conn.execute(
                             'INSERT OR IGNORE INTO relationships VALUES (?,?,?,?,?,?)',
                             (p1, 'spouse', p2, cid, dmin, None),
@@ -1576,9 +1590,17 @@ def _derive_relationships(conn: sqlite3.Connection) -> None:
             # parents (six people), and listing all six in persons: is correct -
             # persons: is "who the claim is about" (SPEC §8.3). Pairing them off
             # blindly would make a man's father-in-law his spouse.
+            # The p1 == p2 guard on this loop and its two siblings is belt and
+            # braces: spouse_parties already returns each person once, and
+            # all_persons is deduplicated above, so a self-marriage is
+            # unreachable twice over. It stays because the insert is what
+            # actually writes the tree - a future caller handing this loop a
+            # repeated id must not be able to marry somebody to themselves.
             spouse_pids = spouse_parties(all_persons)
             for i, p1 in enumerate(spouse_pids):
                 for p2 in spouse_pids[i+1:]:
+                    if p1 == p2:
+                        continue   # nobody is married to themselves
                     conn.execute(
                         'INSERT OR IGNORE INTO relationships VALUES (?,?,?,?,?,?)',
                         (p1, 'spouse', p2, cid, dmin, None),
@@ -1599,6 +1621,8 @@ def _derive_relationships(conn: sqlite3.Connection) -> None:
             spouse_pids = spouse_parties(all_persons)
             for i, p1 in enumerate(spouse_pids):
                 for p2 in spouse_pids[i+1:]:
+                    if p1 == p2:
+                        continue   # nobody is married to themselves
                     conn.execute(
                         '''UPDATE relationships SET date_end = ?
                            WHERE person_id = ? AND rel = 'spouse' AND other_id = ?
