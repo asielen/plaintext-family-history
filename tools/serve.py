@@ -1141,6 +1141,7 @@ def _verb_person_new(state, kw, dry_run):
         state.archive_root, kw.get('name', ''), sex=kw.get('sex'), gender=kw.get('gender'),
         birth=kw.get('birth'), death=kw.get('death'), dry_run=dry_run,
         birth_place=kw.get('birth_place'), death_place=kw.get('death_place'),
+        surname=kw.get('surname'),
         # Threaded back in by the workbench's Apply step from the id its own
         # earlier dry-run preview minted and showed the human, so Apply
         # commits exactly that person instead of `run_new` minting a second,
@@ -1153,7 +1154,7 @@ def _verb_person_new(state, kw, dry_run):
 
 def _echo_person_new(kw):
     parts = ['fha person new', _q(kw.get('name', ''))]
-    for flag in ('sex', 'gender', 'birth', 'birth-place', 'death', 'death-place'):
+    for flag in ('sex', 'gender', 'birth', 'birth-place', 'death', 'death-place', 'surname'):
         key = flag.replace('-', '_')
         if kw.get(key):
             parts += [f'--{flag}', _q(kw[key])]
@@ -1183,6 +1184,7 @@ def _verb_add_family(state, kw, dry_run):
         state.archive_root, name, sex=kw.get('sex'), gender=kw.get('gender'),
         birth=kw.get('birth'), death=kw.get('death'),
         birth_place=kw.get('birth_place'), death_place=kw.get('death_place'),
+        surname=kw.get('surname'),
         dry_run=dry_run, person_id=kw.get('new_person_id'))
     if not minted.ok or not minted.data.get('person_id'):
         return minted

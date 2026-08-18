@@ -222,6 +222,75 @@ def _person_md(pid: str, name: str) -> str:
             f'tier: curated\n---\n\n# {name}\n\n## Biography\n\nHer life.\n')
 
 
+class IndexPersonSurnameSuffixTests(unittest.TestCase):
+    """Surname derivation is the third site issue #53 named. Index reads
+    surname from the §13 filename slug when the file has already been
+    renamed (its normal, documented path - `_index_person`'s docstring), so
+    fixing the filename at the two writing sites (`_lib.stub_slug_name` /
+    `lint._person_filename_parts`) already fixes what the index shows for
+    every MINTED record - these tests confirm that.
+
+    They also cover the fallback this fix adds: a hand-authored, not-yet-
+    minted file (SPEC §10's legal pre-machine state) has no `__` filename
+    slug yet, so `surname` now falls back to splitting `name:` with the same
+    suffix-aware rule, rather than staying permanently None until the next
+    `fha lint --fix-ids` rename.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.archive_root = Path(self._tmp.name)
+        self.conn = sqlite3.connect(':memory:')
+        self.conn.row_factory = sqlite3.Row
+        self.conn.executescript(index._DDL)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _index_text(self, filename: str, text: str) -> None:
+        path = self.archive_root / 'people' / filename
+        _write(path, text)
+        index._index_person(self.conn, path, self.archive_root)
+
+    def _surname(self, pid: str) -> str | None:
+        row = self.conn.execute(
+            'SELECT surname FROM persons WHERE id=?', (pid,)).fetchone()
+        return row['surname'] if row else None
+
+    def test_minted_filename_with_suffix_reads_the_correct_surname(self) -> None:
+        # The already-fixed filename (dodson__roy_eugene_jr_P-…) is what
+        # `fha person new`/`fha stubs`/`--fix-ids` now write for issue #53 -
+        # the index must read Dodson from it, not Jr.
+        self._index_text(
+            'dodson__roy_eugene_jr_P-1111111111.md',
+            _person_md('P-1111111111', 'Roy Eugene Dodson Jr'))
+        self.assertEqual(self._surname('p-1111111111'), 'Dodson')
+
+    def test_hand_authored_suffixed_name_falls_back_to_the_name_field(self) -> None:
+        # No `__` in the stem yet (SPEC §10 pre-machine state) - the fallback
+        # must apply the same suffix rule, not read "Jr" as the surname.
+        self._index_text(
+            'Roy Eugene Dodson Jr.md',
+            '---\nid: P-2222222222\nname: Roy Eugene Dodson Jr\nliving: false\n---\n\n'
+            '# Roy Eugene Dodson Jr\n')
+        self.assertEqual(self._surname('p-2222222222'), 'Dodson')
+
+    def test_hand_authored_plain_name_still_falls_back_correctly(self) -> None:
+        self._index_text(
+            'Roy Eugene Dodson.md',
+            '---\nid: P-3333333333\nname: Roy Eugene Dodson\nliving: false\n---\n\n'
+            '# Roy Eugene Dodson\n')
+        self.assertEqual(self._surname('p-3333333333'), 'Dodson')
+
+    def test_hand_authored_mononym_stays_surname_less(self) -> None:
+        # A single-token name (or a suffix with nothing real to attach to)
+        # must NOT get a fabricated surname out of the fallback.
+        self._index_text(
+            'Cher.md',
+            '---\nid: P-4444444444\nname: Cher\nliving: false\n---\n\n# Cher\n')
+        self.assertIsNone(self._surname('p-4444444444'))
+
+
 class IndexPersonKindTests(unittest.TestCase):
     """A person file's kind comes from its CONTENT, with the filename as a hint.
 

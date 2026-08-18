@@ -90,6 +90,7 @@ from _lib import (
     photos_ignore_patterns,
     spouse_extended_base,
     spouse_parties,
+    strip_generational_suffix,
     extract_token_ids,
     extract_wikilinks,
     link_field_refs,
@@ -3437,15 +3438,34 @@ def _person_filename_parts(name: str, fallback_slug: str) -> tuple[str, str]:
     Derived from the `name:` field - surname is the last word, given the rest -
     falling back to the hand-filename when there is no usable name. Letters only,
     so the generated filename matches the strict person grammar and lint won't
-    immediately re-flag it."""
+    immediately re-flag it.
+
+    A trailing generational suffix (Jr, Sr, II, III, IV, V) is pulled off
+    first via the shared `_lib.strip_generational_suffix` (issue #53) so
+    `--fix-ids` never mints a hand-authored "Roy Eugene Dodson Jr" as
+    `jr__roy_eugene_dodson` - the suffix rides at the end of the given slug
+    instead, the same rule `_lib.stub_slug_name` applies for `fha person new`
+    and `fha stubs --from-names`, so all three sites file a suffixed name the
+    same way. A leftover single core token after the suffix is stripped ("Roy
+    Jr") gets the same surname-less treatment `stub_slug_name` gives it - the
+    suffix does not promote the one remaining word into a surname. The
+    ORIGINAL single-token-with-no-suffix behaviour just below (surname =
+    that word, given = 'unknown') is untouched - it predates this fix and is
+    not part of it; SPEC §13's actual mononym convention (empty surname) is
+    `stub_slug_name`'s job, not this function's."""
     def letters(word: str) -> str:
         return re.sub(r'[^a-z]+', '', word.lower())
     parts = [p for p in str(name).split() if letters(p)]
-    if len(parts) >= 2:
-        return (letters(parts[-1]) or 'unknown',
-                '_'.join(letters(p) for p in parts[:-1]) or 'unknown')
-    if parts:
-        return letters(parts[0]) or 'unknown', 'unknown'
+    core, suffix = strip_generational_suffix(parts)
+    if len(core) >= 2:
+        given_parts = core[:-1] + ([suffix] if suffix else [])
+        return (letters(core[-1]) or 'unknown',
+                '_'.join(letters(p) for p in given_parts) or 'unknown')
+    if core:
+        if suffix:
+            given = f'{core[0]} {suffix}'
+            return '', '_'.join(letters(p) for p in given.split()) or 'unknown'
+        return letters(core[0]) or 'unknown', 'unknown'
     seg = re.sub(r'[^a-z]+', '', fallback_slug.lower())
     return (seg or 'unknown'), 'unknown'
 

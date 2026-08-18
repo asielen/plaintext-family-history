@@ -85,6 +85,7 @@ from _lib import (
     format_roots_orphan_warning,
     spouse_parties,
     sqlite_cache_schema_status,
+    strip_generational_suffix,
     strip_link_wrapper,
     unreadable_dir_recorder,
     walk_files,
@@ -912,7 +913,15 @@ def _index_person(
     Surname is parsed from the filename's double-underscore convention
     ({surname}__{given}_{P-id}) rather than the name: field, because the
     frontmatter name may include middle names or honorifics while the filename
-    slug is always the birth surname.
+    slug is always the birth surname. A hand-authored, not-yet-minted record
+    (SPEC §10's legal pre-machine state - no `__` in the stem yet) has no
+    filename slug to read, so `surname` falls back to splitting `name:` with
+    the same `_lib.strip_generational_suffix` rule `stub_slug_name` and
+    `lint._person_filename_parts` use (issue #53), so a hand-typed "Roy
+    Eugene Dodson Jr" indexes under Dodson even before its first `fha lint
+    --fix-ids` rename - rather than staying surname-less, which is what this
+    fallback used to do (it computed a name-based split and then never used
+    it; see the fix commit).
 
     `on_parse_error`, when supplied, is the build's shared recorder (see
     `_parse_error_recorder`).  A person file whose frontmatter will not parse
@@ -988,12 +997,20 @@ def _index_person(
 
     if not is_companion:
         # Primary profile - upsert person row
-        name_parts = name.rsplit(' ', 1)
         surname = None
         if '__' in stem:
             # extract from filename: {surname}__{given...}
             surname_part = stem.split('__')[0]
             surname = surname_part.replace('_', ' ').title()
+        elif name and name != 'unknown':
+            # Pre-machine, not-yet-minted file (SPEC §10): no §13 filename
+            # slug to read yet, so fall back to splitting name: with the
+            # same suffix-aware rule the filename-writing sites use, rather
+            # than leaving surname permanently None until the next
+            # `fha lint --fix-ids` rename.
+            core, _suffix = strip_generational_suffix(name.split())
+            if len(core) >= 2:
+                surname = core[-1].title()
 
         living_val = str(meta.get('living', 'unknown')).lower()
         if living_val not in ('true', 'false', 'unknown'):

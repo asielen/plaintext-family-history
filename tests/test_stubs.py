@@ -89,6 +89,91 @@ class StubSlugNameTests(unittest.TestCase):
         self.assertNotIn('-', given + surname)
         self.assertNotIn('.', given)
 
+    # -- Generational suffixes (issue #53) --------------------------------
+    # "Roy Eugene Dodson Jr" used to file as `jr__roy_eugene_dodson_P-….md`,
+    # sorting the son under a different letter than his father
+    # (`dodson__roy_eugene_P-….md`). A trailing Jr/Sr/II/III/IV/V must never
+    # become the surname - it rides at the end of the given slug instead.
+
+    def test_suffix_is_pulled_off_the_surname_slot(self) -> None:
+        self.assertEqual(
+            stub_slug_name('Roy Eugene Dodson Jr'),
+            ('dodson', 'roy_eugene_jr'),
+        )
+
+    def test_father_and_son_share_the_same_surname_slug(self) -> None:
+        father = stub_slug_name('Roy Eugene Dodson')
+        son = stub_slug_name('Roy Eugene Dodson Jr')
+        self.assertEqual(father[0], son[0])
+        self.assertEqual(father[0], 'dodson')
+
+    def test_every_suffix_in_the_list_round_trips(self) -> None:
+        for suffix in ('Jr', 'Jr.', 'Sr', 'Sr.', 'II', 'III', 'IV', 'V'):
+            with self.subTest(suffix=suffix):
+                surname, given = stub_slug_name(f'James Whitelock {suffix}')
+                self.assertEqual(surname, 'whitelock')
+                self.assertEqual(given, f'james_{suffix.rstrip(".").lower()}')
+
+    def test_suffix_is_case_insensitive(self) -> None:
+        self.assertEqual(stub_slug_name('Roy Dodson jr'), ('dodson', 'roy_jr'))
+
+    def test_two_token_given_plus_suffix_has_no_promoted_surname(self) -> None:
+        # "Roy Jr" is no more a real surname than "Roy" alone - the suffix
+        # must not promote the remaining word into one (that would just move
+        # the original bug from "Jr" to "Roy").
+        self.assertEqual(stub_slug_name('Roy Jr'), ('', 'roy_jr'))
+
+    def test_suffix_alone_has_nothing_to_strip_to_reads_as_a_mononym(self) -> None:
+        # A name that IS only a suffix has no token left over to carry the
+        # name once stripped, so it falls through unchanged to the ordinary
+        # single-token/mononym path.
+        self.assertEqual(stub_slug_name('Jr'), ('', 'jr'))
+
+    def test_roman_numeral_alone_is_a_plain_mononym(self) -> None:
+        # "IV" with nothing else present is just a given name/mononym, not a
+        # suffix with nothing to attach to.
+        self.assertEqual(stub_slug_name('IV'), ('', 'iv'))
+
+    def test_roman_numeral_as_second_token_reads_as_a_suffix(self) -> None:
+        # Documented tradeoff: "IV" after another token is indistinguishable
+        # from the generational suffix - the --surname override is the
+        # escape hatch when that reading is wrong.
+        self.assertEqual(stub_slug_name('John IV'), ('', 'john_iv'))
+
+    def test_true_mononym_is_byte_identical_to_before_the_fix(self) -> None:
+        # The suffix fix must not touch the real mononym contract at all -
+        # same code path, same output, no new sanitisation applied.
+        self.assertEqual(stub_slug_name('Cher'), ('', 'cher'))
+
+    # -- --surname override -------------------------------------------------
+
+    def test_surname_override_replaces_the_automatic_split(self) -> None:
+        self.assertEqual(
+            stub_slug_name('Maria Jose Garcia Lopez', surname='Garcia Lopez'),
+            ('garcia_lopez', 'maria_jose'),
+        )
+
+    def test_surname_override_matches_a_leading_surname_first_name(self) -> None:
+        self.assertEqual(
+            stub_slug_name('Garcia Lopez Maria Jose', surname='Garcia Lopez'),
+            ('garcia_lopez', 'maria_jose'),
+        )
+
+    def test_surname_override_unrelated_to_name_keeps_the_full_name_as_given(self) -> None:
+        # Neither a prefix nor a suffix of the name - never silently drop
+        # part of it; a redundant given slug is honest, a guessed deletion
+        # is not.
+        self.assertEqual(
+            stub_slug_name('Mystery Person', surname='Totally Different'),
+            ('totally_different', 'mystery_person'),
+        )
+
+    def test_surname_override_takes_priority_over_suffix_handling(self) -> None:
+        self.assertEqual(
+            stub_slug_name('Roy Eugene Dodson Jr', surname='Dodson'),
+            ('dodson', 'roy_eugene_jr'),
+        )
+
 
 class StubFilenameTests(unittest.TestCase):
     def test_named_person(self) -> None:
@@ -284,6 +369,56 @@ class RenderStubContentExtensionTests(unittest.TestCase):
             keys,
             ['id', 'aliases', 'name', 'living', 'birth', 'death', 'created', 'tier'],
         )
+
+
+class FromNamesGenerationalSuffixTests(unittest.TestCase):
+    """`fha stubs --from-names` (`mint_named_stubs`) is the SECOND entry point
+    issue #53 confirmed the bug on ("Roy Dodson Jr." -> `jr__roy_dodson_...`).
+    It shares `_lib.stub_filename` with `fha person new`, so this exercises
+    that shared path from the batch side."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        (self.root / 'people' / 'stubs').mkdir(parents=True)
+        (self.root / 'fha.yaml').write_text('roots: {}\n', encoding='utf-8')
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _stub_names(self) -> set[str]:
+        stubs_dir = self.root / 'people' / 'stubs'
+        if not stubs_dir.is_dir():
+            return set()
+        return {p.name for p in stubs_dir.iterdir()}
+
+    def test_suffix_and_father_file_under_the_same_surname(self) -> None:
+        stubs.mint_named_stubs(
+            self.root, ['Roy Eugene Dodson', 'Roy Eugene Dodson Jr'])
+        names = sorted(self._stub_names())
+        self.assertEqual(len(names), 2)
+        prefixes = {n.split('__')[0] for n in names}
+        self.assertEqual(prefixes, {'dodson'})
+        suffixed = [n for n in names if 'jr' in n]
+        self.assertEqual(len(suffixed), 1)
+        self.assertTrue(suffixed[0].startswith('dodson__roy_eugene_jr_'), suffixed[0])
+
+    def test_period_suffix_from_the_reported_repro(self) -> None:
+        # The issue's own confirmed reproduction: "Roy Dodson Jr." via
+        # --from-names.
+        stubs.mint_named_stubs(self.root, ['Roy Dodson Jr.'])
+        names = self._stub_names()
+        self.assertEqual(len(names), 1)
+        filename = next(iter(names))
+        self.assertTrue(filename.startswith('dodson__roy_jr_'), filename)
+
+    def test_second_confirmed_repro_name(self) -> None:
+        # Also confirmed the same day on "James Whitelock Jr." per the issue.
+        stubs.mint_named_stubs(self.root, ['James Whitelock Jr.'])
+        names = self._stub_names()
+        self.assertEqual(len(names), 1)
+        filename = next(iter(names))
+        self.assertTrue(filename.startswith('whitelock__james_jr_'), filename)
 
 
 class StubsModuleWrapperTests(unittest.TestCase):

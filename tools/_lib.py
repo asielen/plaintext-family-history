@@ -195,6 +195,7 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    is_fixture_path           - path under example-archive/ or tests/fixtures/?
 #    find_person_record_path   - scan people/ for one P-id's record file (never the index)
 #    find_source_record_path   - scan sources/ for one S-id's record file (never the index)
+#    strip_generational_suffix - pull a trailing Jr/Sr/II/III/IV/V off name tokens (issue #53)
 #    stub_slug_name            - display name → (surname_slug, given_slug) for a filename
 #    stub_filename             - {surname}__{given}_{P-id}.md, the stub naming grammar
 #    render_stub_content       - the stub frontmatter text `fha stubs`/`fha person new` write
@@ -5349,7 +5350,51 @@ def find_source_record_path(
     return None
 
 
-def stub_slug_name(name: str) -> tuple[str, str]:
+# Generational suffixes SPEC §13's filename split must never mistake for a
+# surname (issue #53: "Roy Eugene Dodson Jr" filed as `jr__roy_eugene_dodson`,
+# sorting the son under a different letter than his father). Matched
+# case-insensitively with a trailing period tolerated ("Jr." and "Jr" are the
+# same token) - see `strip_generational_suffix`.
+PERSON_NAME_SUFFIXES: frozenset[str] = frozenset({'jr', 'sr', 'ii', 'iii', 'iv', 'v'})
+
+
+def strip_generational_suffix(parts: list[str]) -> tuple[list[str], str | None]:
+    """Pull a trailing generational suffix off whitespace-split name tokens.
+
+    Shared by every site that derives a person's SPEC §13 filename surname
+    from a plain name string (`_lib.stub_slug_name` behind both `fha person
+    new` and `fha stubs --from-names`, `lint._person_filename_parts` behind
+    `--fix-ids`' rename, and `index.py`'s name-based surname fallback) so the
+    suffix list and its match rule live in exactly one place. Before this fix
+    each site re-implemented "the last word is the surname" independently and
+    only some of them would have grown suffix awareness at the same time -
+    the same drift the marriage-edge work (#58/PR #61) had to undo for
+    `spouse_parties`.
+
+    Returns `(core_parts, suffix)`: `core_parts` is `parts` with the trailing
+    suffix token removed and `suffix` is its lowercased, period-stripped form
+    ('jr', 'sr', 'ii', 'iii', 'iv', 'v') - or `(parts, None)` unchanged when
+    the last token is not a recognised suffix.
+
+    Deliberately does nothing when `parts` has fewer than two tokens: a bare
+    "Jr" or "IV" has no token left to carry the name once the suffix is
+    pulled off, so it is left alone and reads as an ordinary (if odd) given
+    name/mononym rather than being reduced to nothing. The same rule makes
+    "IV" used as an actual given name indistinguishable from the
+    generational suffix once a second token precedes it ("John IV" reads as
+    given "John" + suffix "IV") - a deliberate, documented tradeoff; the
+    `--surname` override on `fha person new` (`stub_slug_name`'s `surname`
+    argument) is the escape hatch for any name this heuristic gets wrong.
+    """
+    if len(parts) < 2:
+        return parts, None
+    candidate = parts[-1].rstrip('.').lower()
+    if candidate in PERSON_NAME_SUFFIXES:
+        return parts[:-1], candidate
+    return parts, None
+
+
+def stub_slug_name(name: str, surname: str | None = None) -> tuple[str, str]:
     """Parse a display name into (surname_slug, given_slug) for a stub filename.
 
     Best effort, not a real name-parsing engine: the last word is taken as the
@@ -5359,27 +5404,84 @@ def stub_slug_name(name: str) -> tuple[str, str]:
     properly). Sanitised to `[a-z0-9_]` so the slug is always a safe filename
     component regardless of what punctuation the display name carries.
 
-    A SINGLE-token name is a surname-less person - a mononym (`Cher`), an
-    enslaved ancestor recorded only by a given name, a patronymic. SPEC §13
-    files those with the sort-name slot EMPTY, so the filename leads with the
-    double underscore (`__cher_P-….md`), a distinct no-surname sort group -
-    hence the empty surname slug here, not the literal 'unknown'. 'unknown'
-    stays reserved for the genuinely nameless fallback below (a blank or
-    whitespace-only display name), which is a missing name, not a mononym.
+    A trailing generational suffix (Jr, Sr, II, III, IV, V - see
+    `strip_generational_suffix`) is never taken as the surname: it is pulled
+    off first, and rides at the END of the given-name slug instead, so
+    `dodson__roy_eugene_jr_P-….md` sorts directly under
+    `dodson__roy_eugene_P-….md` (issue #53). Splitting then continues on
+    whatever tokens remain: two or more -> the last is the surname as usual;
+    exactly one -> the SAME surname-less treatment the true mononym case
+    below gets ("Roy Jr" has no more of a real surname than "Roy" alone
+    does - the suffix does not promote "Roy" into one).
+
+    A SINGLE-token name (with no suffix to strip) is a surname-less person -
+    a mononym (`Cher`), an enslaved ancestor recorded only by a given name, a
+    patronymic. SPEC §13 files those with the sort-name slot EMPTY, so the
+    filename leads with the double underscore (`__cher_P-….md`), a distinct
+    no-surname sort group - hence the empty surname slug here, not the
+    literal 'unknown'. 'unknown' stays reserved for the genuinely nameless
+    fallback below (a blank or whitespace-only display name), which is a
+    missing name, not a mononym. This exact single-token path is untouched by
+    the suffix fix above (same code, same output as before) precisely so
+    that contract holds.
+
+    `surname`, when given, overrides the automatic split outright - the
+    escape hatch for names no heuristic should be expected to get right:
+    Spanish double surnames ("García López"), particles ("van der Berg"),
+    surname-first conventions. It becomes the surname slug as typed; the
+    given-name slug is `name` with that surname text removed from wherever
+    it sits - the end (the common case) or the start (a surname-first name) -
+    matched whole-word and case-insensitively AFTER a trailing generational
+    suffix is set aside (so `--surname Dodson` on "Roy Eugene Dodson Jr"
+    still finds "Dodson" at the end of what is left and the suffix still
+    rides in the given slug, exactly as the automatic path would place it).
+    When the surname text is neither a prefix nor a suffix of `name` (an
+    unrelated override), the full name is kept as the given slug rather than
+    silently dropping part of it - a redundant sort handle is honest; a
+    guessed-wrong deletion is not.
     """
     parts = name.strip().split()
     if not parts:
         return ('unknown', 'unknown')
+    if surname is not None and surname.strip():
+        surname_tokens = surname.strip().split()
+        n = len(surname_tokens)
+        core, suffix = strip_generational_suffix(parts)
+        lowered_core = [p.lower() for p in core]
+        surname_lowered = [t.lower() for t in surname_tokens]
+        if lowered_core[-n:] == surname_lowered:
+            given_tokens = core[:-n] if n else core
+        elif lowered_core[:n] == surname_lowered:
+            given_tokens = core[n:]
+        else:
+            # Matches neither end of the suffix-stripped core - the override
+            # is unrelated to `name`, or the caller's suffix and surname text
+            # overlap in a way this heuristic cannot untangle. Keep the FULL
+            # original name rather than guess: dropping the wrong words would
+            # be worse than a redundant given slug.
+            given_tokens = parts
+            suffix = None
+        if suffix:
+            given_tokens = given_tokens + [suffix]
+        surname_slug = re.sub(r'[^a-z0-9_]', '', '_'.join(t.lower() for t in surname_tokens))
+        given_slug = re.sub(r'[^a-z0-9_]', '', '_'.join(p.lower() for p in given_tokens))
+        return (surname_slug or 'unknown', given_slug or 'unknown')
     if len(parts) == 1:
         return ('', parts[0].lower())
-    surname = parts[-1].lower().replace(' ', '_')
-    given = '_'.join(p.lower() for p in parts[:-1])
-    surname = re.sub(r'[^a-z0-9_]', '', surname)
+    core, suffix = strip_generational_suffix(parts)
+    if len(core) == 1:
+        given = core[0] if not suffix else f'{core[0]}_{suffix}'
+        given = re.sub(r'[^a-z0-9_]', '', given.lower())
+        return ('', given or 'unknown')
+    surname_tok = core[-1].lower().replace(' ', '_')
+    given_parts = core[:-1] + ([suffix] if suffix else [])
+    given = '_'.join(p.lower() for p in given_parts)
+    surname_tok = re.sub(r'[^a-z0-9_]', '', surname_tok)
     given = re.sub(r'[^a-z0-9_]', '', given)
-    return (surname or 'unknown', given or 'unknown')
+    return (surname_tok or 'unknown', given or 'unknown')
 
 
-def stub_filename(name: str | None, pid: str) -> str:
+def stub_filename(name: str | None, pid: str, surname: str | None = None) -> str:
     """Return the `{surname}__{given}_{P-id}.md` stub filename (SPEC §13).
 
     A blank or literal "unknown" name falls back to the surname-less
@@ -5387,12 +5489,16 @@ def stub_filename(name: str | None, pid: str) -> str:
     name with nothing to slug - the double underscore is the same convention
     §13 uses for surname-less people (mononyms, enslaved ancestors named only
     by a given name), so an unresolved reference reads the same way on disk.
+
+    `surname` is passed straight through to `stub_slug_name` (see its
+    docstring) - the explicit override for names the automatic split
+    cannot be expected to get right.
     """
     if name and name.lower() not in ('unknown', ''):
-        surname, given = stub_slug_name(name)
+        surname_slug, given = stub_slug_name(name, surname=surname)
     else:
-        surname, given = 'unknown', 'unknown'
-    return f'{surname}__{given}_{pid}.md'
+        surname_slug, given = 'unknown', 'unknown'
+    return f'{surname_slug}__{given}_{pid}.md'
 
 
 def render_stub_content(
