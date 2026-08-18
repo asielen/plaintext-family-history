@@ -407,7 +407,7 @@
     {
       "path": ".fha/tools/README.md",
       "category": "operating",
-      "sha256": "812667983ead33063f3cbddc7c2728bd074a0f852c6c1d40cff25b1a4416d552",
+      "sha256": "e89de69d3646c78dc1919a752637ec6f9efc080d105d7d7b89061094525ece23",
       "spec_version": "1.2",
       "src": "tools/README.md"
     },
@@ -505,7 +505,7 @@
     {
       "path": ".fha/tools/doctor.py",
       "category": "operating",
-      "sha256": "04795f7d65b798a797856c7e641c11a385ee59ffa5ae284cbdff64dfd3d8544f",
+      "sha256": "978d49ffb22024a317a76db5413e7e0d958e0cbb6ee075eb9c2a72103f7c9eec",
       "spec_version": "1.2",
       "src": "tools/doctor.py"
     },
@@ -827,7 +827,7 @@
     {
       "path": ".gitignore",
       "category": "skeleton",
-      "sha256": "a5d3066eaefc0a1767e7ab49817fdb2f801e0f4abfd34e2910f4216e6f22e29c",
+      "sha256": "90b32612e8a5224cb340436c4be0d1deca4919d812e36181580d94d89d67ea31",
       "spec_version": "1.2",
       "src": "archive-template/.gitignore"
     },
@@ -864,7 +864,7 @@
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "cfc79fda89b35dfce3cf7dce2595a728aaab1e2be78c5f79b1a5f933501c6b63",
+      "sha256": "ef9d52db650859f3d37799f5363b7761461579efb5b93ffe65f6810d97b1d5e8",
       "spec_version": "1.2"
     },
     {

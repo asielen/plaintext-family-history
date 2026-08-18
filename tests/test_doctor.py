@@ -26,6 +26,8 @@ import datetime
 import io
 import json
 import os
+import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -402,6 +404,247 @@ class BackupStampTests(unittest.TestCase):
         self.assertIn('unreadable', check['detail'])
         self.assertIn('fha backup', check['next_step'])
         self.assertEqual(result.exit_code, EXIT_WARNINGS)
+
+
+@unittest.skipUnless(shutil.which('git'), 'requires git on PATH')
+class SourcesGitignoreTests(unittest.TestCase):
+    """#57: an unanchored `.gitignore` pattern (`photos/` instead of
+    `/photos/`) also matches `sources/photos/` at any depth - silently
+    dropping SOURCE RECORDS from version control, not the binary asset the
+    pattern was meant for. Nothing else surfaces this (lint is clean, `git
+    status` shows nothing), so doctor has to ask git directly - and stay
+    silent, never crash, when there is no git repo or no git binary at all,
+    since neither is an error condition for doctor."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        _write(self.root / 'fha.yaml',
+               'roots:\n  photos: photos\n  documents: documents\n')
+        (self.root / 'photos').mkdir()
+        (self.root / 'documents').mkdir()
+        subprocess.run(['git', 'init', '-q'], cwd=self.root, check=True)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _fha_config(self) -> dict:
+        return {'roots': {'photos': 'photos', 'documents': 'documents'}}
+
+    def _gitignore_check(self, result):
+        return next(
+            (c for c in result.data['checks'] if c['id'] == 'sources_gitignore'),
+            None,
+        )
+
+    def test_unanchored_pattern_is_flagged_with_pattern_and_fix(self) -> None:
+        _write(self.root / '.gitignore', 'photos/\ndocuments/\ninbox/\n')
+        (self.root / 'sources' / 'photos').mkdir(parents=True)
+
+        result = doctor.run_doctor(self.root, self._fha_config())
+        report = '\n'.join(result.data['lines'])
+
+        self.assertIn('sources ignored', report)
+        self.assertIn('sources/photos', report)
+        self.assertIn('photos/', report)          # the offending pattern, named
+        self.assertIn('/photos/', report)         # the one-line repair, named
+        check = self._gitignore_check(result)
+        self.assertIsNotNone(check, 'doctor must report a sources_gitignore finding')
+        self.assertEqual(check['status'], 'warn')
+        self.assertGreaterEqual(result.exit_code, EXIT_WARNINGS)
+
+    def test_anchored_pattern_is_clean(self) -> None:
+        _write(self.root / '.gitignore', '/photos/\n/documents/\n/inbox/\n')
+        (self.root / 'sources' / 'photos').mkdir(parents=True)
+
+        result = doctor.run_doctor(self.root, self._fha_config())
+        report = '\n'.join(result.data['lines'])
+
+        self.assertNotIn('sources ignored', report)
+        self.assertIsNone(self._gitignore_check(result))
+
+    def test_no_gitignore_file_is_clean(self) -> None:
+        (self.root / 'sources' / 'photos').mkdir(parents=True)
+        result = doctor.run_doctor(self.root, self._fha_config())
+        self.assertIsNone(self._gitignore_check(result))
+
+    def test_not_a_git_repo_is_silent_never_an_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp2:
+            root2 = Path(tmp2)
+            _write(root2 / 'fha.yaml', 'roots:\n  photos: photos\n')
+            (root2 / 'photos').mkdir()
+            _write(root2 / '.gitignore', 'photos/\n')     # no `git init` at all
+            (root2 / 'sources' / 'photos').mkdir(parents=True)
+
+            result = doctor.run_doctor(root2, {'roots': {'photos': 'photos'}})
+            self.assertIsNone(self._gitignore_check(result))
+            self.assertNotIn('sources ignored', '\n'.join(result.data['lines']))
+
+    def test_git_binary_missing_is_silent_never_an_error(self) -> None:
+        """A broken PATH (git uninstalled or unreachable) must degrade this
+        one check to silence, exactly like the .gitattributes check it
+        borrows the pattern from - never a traceback, never a false finding."""
+        _write(self.root / '.gitignore', 'photos/\n')
+        (self.root / 'sources' / 'photos').mkdir(parents=True)
+
+        orig_run = doctor.subprocess.run
+
+        def _no_git(cmd, **kwargs):
+            if 'check-ignore' in cmd:
+                raise FileNotFoundError('git not found on PATH')
+            return orig_run(cmd, **kwargs)
+
+        doctor.subprocess.run = _no_git
+        try:
+            result = doctor.run_doctor(self.root, self._fha_config())
+        finally:
+            doctor.subprocess.run = orig_run
+
+        self.assertIsNone(self._gitignore_check(result))
+        self.assertNotIn('sources ignored', '\n'.join(result.data['lines']))
+
+    def test_custom_source_type_folder_is_probed_too(self) -> None:
+        """Not just photos/documents from roots: - any real subfolder under
+        sources/ is probed, so a custom source_type folder name colliding
+        with some other unrelated pattern is caught too."""
+        _write(self.root / '.gitignore', 'newspapers/\n')
+        (self.root / 'sources' / 'newspapers').mkdir(parents=True)
+
+        result = doctor.run_doctor(self.root, self._fha_config())
+        report = '\n'.join(result.data['lines'])
+        self.assertIn('sources/newspapers', report)
+
+    def test_whitelist_style_gitignore_produces_no_finding(self) -> None:
+        """PR #60 review finding 1: `git check-ignore -v` also prints a line
+        for a `!`-negated pattern - the path is NOT ignored, and git still
+        exits 0 - so a whitelist-shaped .gitignore (`*` then `!sources/` /
+        `!sources/**`, the common way to track only sources/ in an otherwise-
+        ignored tree) must NOT be reported as a finding. Verified against
+        real git first (not reasoned about): `git check-ignore -v` on this
+        exact shape prints `.gitignore:3:!sources/**  sources/photos/...`
+        and exits 0, while `git add -n` confirms the path is genuinely
+        trackable. The old code counted every printed -v line as a finding,
+        so this shape produced a false "sources ignored" warning - and its
+        remedy (`change !sources/** to /!sources/**`) is invalid syntax that
+        git parses as a LITERAL path named "!sources/**", silencing the
+        unignore rule and re-ignoring the file: the fix would cause the very
+        data-loss bug #57 exists to catch."""
+        _write(self.root / '.gitignore', '*\n!sources/\n!sources/**\n')
+        (self.root / 'sources' / 'photos').mkdir(parents=True)
+
+        result = doctor.run_doctor(self.root, self._fha_config())
+        report = '\n'.join(result.data['lines'])
+
+        self.assertNotIn('sources ignored', report)
+        self.assertIsNone(self._gitignore_check(result))
+
+    def test_nested_archive_inside_parent_repo_is_still_checked(self) -> None:
+        """PR #60 review finding 2: the archive itself need not hold `.git` -
+        a normal way to keep an archive is as a records folder inside a
+        larger personal git repo, where the archive's files are still
+        subject to a `.gitignore` higher up the tree. Verified against real
+        git first: `git check-ignore -v` run with cwd set to a subfolder
+        that has no `.git` of its own still walks up and answers from the
+        parent repo's .gitignore. The old `(archive_root / '.git').exists()`
+        gate skipped this case entirely - exactly where #57 bites - even
+        though `_check_sources_gitignore` already degrades silently on its
+        own when git cannot answer, making the gate redundant everywhere
+        else and harmful here."""
+        with tempfile.TemporaryDirectory() as tmp2:
+            parent = Path(tmp2)
+            subprocess.run(['git', 'init', '-q'], cwd=parent, check=True)
+            _write(parent / '.gitignore', 'photos/\ndocuments/\ninbox/\n')
+            archive = parent / 'family-archive'
+            _write(archive / 'fha.yaml',
+                   'roots:\n  photos: photos\n  documents: documents\n')
+            (archive / 'photos').mkdir()
+            (archive / 'documents').mkdir()
+            (archive / 'sources' / 'photos').mkdir(parents=True)
+            self.assertFalse((archive / '.git').exists(),
+                             'the archive itself must NOT hold its own .git')
+
+            result = doctor.run_doctor(archive, self._fha_config())
+            report = '\n'.join(result.data['lines'])
+
+            self.assertIn('sources ignored', report)
+            check = self._gitignore_check(result)
+            self.assertIsNotNone(
+                check, 'a nested archive still owes a sources_gitignore finding')
+
+    def test_nested_gitignore_gets_a_remedy_that_actually_works(self) -> None:
+        """PR #60 review round 2, finding 1: when the offending pattern lives
+        in a NESTED .gitignore (sources/.gitignore, not the archive root's),
+        the round-1 anchoring advice - 'change `photos/` to `/photos/`' - is
+        a no-op: a leading slash in a nested file anchors to THAT FILE's own
+        directory (still sources/photos/), not the archive root. Verified
+        against real git: after applying the round-1 advice literally,
+        `git add -n sources/photos/rec.md` still refuses the file. The fixed
+        report must (a) name the file that actually holds the pattern, (b)
+        say plainly that anchoring there will not help, and (c) not repeat
+        the round-1 wording verbatim for this case."""
+        _write(self.root / 'sources' / '.gitignore', 'photos/\n')
+        (self.root / 'sources' / 'photos').mkdir(parents=True)
+
+        result = doctor.run_doctor(self.root, self._fha_config())
+        report = '\n'.join(result.data['lines'])
+
+        self.assertIn('sources ignored', report)
+        self.assertIn('sources/.gitignore', report)          # names the real file
+        self.assertIn('sources/photos', report)
+        # The round-1 remedy text must NOT be offered for a nested file - it
+        # does not fix anything there (verified against real git above).
+        self.assertNotIn('anchor it to the archive root', report)
+        # A remedy that is verified to work: delete the line, or negate it
+        # in place, in the SAME (nested) file.
+        self.assertIn('!photos/', report)
+
+    def test_nonascii_source_folder_name_is_reported_cleanly(self) -> None:
+        """PR #60 review round 2, finding 2: a `sources/fötos/` folder
+        produced a mangled, unfollowable message on Windows - the pattern
+        rendered as `fÃ¶tos/` (locale-codepage mis-decode of git's UTF-8
+        output) and the probe path arrived C-quoted (`"sources/f\\303\\266
+        tos/probe.md"`, since git quotes non-ASCII paths by default), so the
+        `.../probe.md` suffix strip silently failed and the raw quoted probe
+        path leaked into the report with a stray `/` appended. A genealogy
+        archive is exactly where `Kraków`, `Suwałki`, `fötos` appear, so this
+        is not a corner case here. Verified against real git first (not
+        reasoned about): `git -c core.quotePath=false check-ignore -v`
+        prints the path unquoted, and decoding the subprocess output with
+        `encoding='utf-8'` (not the implicit locale codepage) renders it
+        correctly."""
+        _write(self.root / '.gitignore', 'fötos/\n')  # 'fötos/'
+        (self.root / 'sources' / 'fötos').mkdir(parents=True)
+
+        result = doctor.run_doctor(self.root, self._fha_config())
+        report = '\n'.join(result.data['lines'])
+        gi_line = next((l for l in result.data['lines']
+                         if l.startswith('sources ignored')), '')
+
+        self.assertIn('sources ignored', report)
+        self.assertIn('sources/fötos/', gi_line)   # the folder, spelled correctly
+        self.assertNotIn('Ã', gi_line)                   # locale-codepage mojibake
+        self.assertNotIn('\\303\\266', gi_line)          # git's C-quoted octal escape
+        self.assertNotIn('"', gi_line)                   # no stray quoting artifact
+        self.assertNotIn('probe.md"', gi_line)            # the failed-strip symptom
+
+    def test_source_folder_name_with_spaces_still_works(self) -> None:
+        """Not a bug found in review, but named explicitly as a case that
+        must not regress while fixing the non-ASCII quoting/encoding bug
+        above: git does NOT C-quote a path for a plain space (only for
+        non-ASCII or other special bytes), so this already worked - keep it
+        working under the `-c core.quotePath=false` + explicit `utf-8`
+        decode change."""
+        _write(self.root / '.gitignore', 'family photos/\n')
+        (self.root / 'sources' / 'family photos').mkdir(parents=True)
+
+        result = doctor.run_doctor(self.root, self._fha_config())
+        report = '\n'.join(result.data['lines'])
+        gi_line = next((l for l in result.data['lines']
+                         if l.startswith('sources ignored')), '')
+
+        self.assertIn('sources ignored', report)
+        self.assertIn('sources/family photos/', gi_line)
+        self.assertNotIn('"', gi_line)
 
 
 class RenderTests(unittest.TestCase):

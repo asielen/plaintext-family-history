@@ -16,6 +16,8 @@ Run: python -m unittest tests.test_scaffold -v
 
 import argparse
 import contextlib
+import hashlib
+import importlib
 import io
 import json
 import os
@@ -518,6 +520,184 @@ class ManifestSyncTest(unittest.TestCase):
         # Meanwhile the machinery IS vendored.
         self.assertTrue([p for p in by_path if p.startswith('.fha/tools/')])
         self.assertTrue([p for p in by_path if p.startswith('.fha/design/')])
+
+
+@unittest.skipUnless((ROOT / '.git').exists(), 'requires a git checkout')
+class ManifestChecksumMatchesGitBlobTests(unittest.TestCase):
+    """Postmortem for a manifest checksum that disagreed with git itself.
+
+    The repo's root `.gitattributes` pins `eol=lf` for every text extension
+    it ships (`*.md`, `*.py`, `*.json`, `*.yaml`, even `.gitignore`) so
+    `write-manifest` computes the same byte-hash on every platform - but it
+    had never pinned `.gitattributes` itself. On a Windows checkout that left
+    `archive-template/.gitattributes` (and any other file literally named
+    `.gitattributes`) falling through to `* text=auto`, which normalized it
+    to CRLF in the working tree. `write-manifest` hashes the working-tree
+    file, so the committed manifest entry silently drifted from what git's
+    own object store (and every LF platform) agrees the file's content is -
+    exactly #57's defect shape: a coverage rule that fails to cover the one
+    thing it's about, corrupting committed data nothing else checks.
+
+    A wrong checksum here is not cosmetic: `scaffold.generate_manifest`
+    (`_sha256_file`) feeds the checksums `fha install`/`fha update-tools`
+    compare against an archive's files to decide stock-vs-customized
+    (scaffold.py's reconcile logic) - a wrong hash can read a pristine stock
+    file as user-modified, or the reverse, on the next update.
+
+    This pins the manifest's checksum for the highest-risk skeleton dotfiles
+    against git's OWN stored blob (`git show HEAD:<path>`), bypassing the
+    working tree entirely, so a future missing `eol=lf` pin is caught the
+    moment the manifest is regenerated - on any platform - rather than
+    silently re-committed."""
+
+    def _git_blob_sha256(self, rel_path: str) -> str:
+        blob = subprocess.run(
+            ['git', 'show', f'HEAD:{rel_path}'],
+            cwd=ROOT, capture_output=True, check=True,
+        ).stdout
+        return hashlib.sha256(blob).hexdigest()
+
+    def _committed_manifest_entry(self, path: str) -> dict:
+        manifest = json.loads((ROOT / 'manifest.json').read_text(encoding='utf-8'))
+        return next(e for e in manifest['files'] if e['path'] == path)
+
+    def _assert_matches_git_blob(self, manifest_path: str) -> None:
+        entry = self._committed_manifest_entry(manifest_path)
+        src = entry.get('src', entry['path'])
+        expected = self._git_blob_sha256(src)
+        self.assertEqual(
+            entry['sha256'], expected,
+            f"manifest.json's checksum for {manifest_path} (src: {src}) does not "
+            f"match the sha256 of git's own stored content - this checkout is "
+            f"producing different bytes than the committed blob (almost always a "
+            f"missing `eol=lf` pin for this filename in the root .gitattributes). "
+            f"Fix the pin, `git add --renormalize {src}`, then regenerate the "
+            f"manifest - never hand-edit the checksum.")
+
+    def test_gitattributes_checksum_matches_the_git_blob(self):
+        self._assert_matches_git_blob('.gitattributes')
+
+    def test_gitignore_checksum_matches_the_git_blob(self):
+        self._assert_matches_git_blob('.gitignore')
+
+    def test_every_manifest_checksum_matches_its_git_blob(self):
+        """The same check over EVERY entry, not just the two dotfiles above.
+
+        The two named tests pin the files whose `eol=lf` pin was actually
+        missing. They would not have caught the recurrence: `tools/README.md`
+        was authored with CRLF, `.gitattributes` normalized it to LF on
+        commit (so `git status` stayed clean), and `write-manifest` recorded
+        the working tree's CRLF hash - a value no other platform reproduces.
+        Three separate audits missed it because they compared the manifest
+        against the WORKING TREE, which is circular: it passes on exactly
+        this bug. Only git's stored blob is an independent answer.
+
+        Reports every drifted entry at once rather than dying on the first,
+        because the failure mode is "whoever regenerated the manifest last
+        was on Windows" - which tends to move several files together."""
+        manifest = json.loads((ROOT / 'manifest.json').read_text(encoding='utf-8'))
+        drifted = []
+        for entry in manifest['files']:
+            src = entry.get('src', entry['path'])
+            blob = subprocess.run(
+                ['git', 'show', f'HEAD:{src}'],
+                cwd=ROOT, capture_output=True, check=False,
+            )
+            if blob.returncode != 0:
+                continue     # not committed at HEAD (a brand-new file): nothing to compare
+            # git stores every text blob LF-normalized, but a file pinned
+            # `eol=crlf` (the Windows launchers, `*.cmd`) is CHECKED OUT with
+            # CRLF on every platform - and the checkout is what ships into an
+            # archive, so the CRLF hash is the correct manifest value there.
+            # Compare against the bytes a checkout produces, not the raw blob,
+            # or this test demands that a deliberately-pinned file be wrong.
+            content = blob.stdout
+            eol = subprocess.run(
+                ['git', 'check-attr', 'eol', '--', src],
+                cwd=ROOT, capture_output=True, text=True, check=False,
+            ).stdout
+            if eol.rstrip().endswith(': crlf'):
+                content = content.replace(b'\n', b'\r\n')
+            actual = hashlib.sha256(content).hexdigest()
+            if entry['sha256'] != actual:
+                drifted.append(f"  {entry['path']} (src: {src})\n"
+                               f"    manifest: {entry['sha256']}\n"
+                               f"    git blob: {actual}")
+        self.assertEqual(
+            [], drifted,
+            "manifest.json records checksums that disagree with git's own stored "
+            "bytes for these entries:\n" + '\n'.join(drifted) + '\n'
+            "This checkout produced different bytes than the committed blob - "
+            "almost always CRLF in the working tree (a missing `eol=lf` pin, or a "
+            "file authored with CRLF that git normalized on commit). Fix the line "
+            "endings, then regenerate the manifest - never hand-edit a checksum, "
+            "and never audit the manifest against the working tree, which cannot "
+            "detect this.")
+
+
+class ManifestChecksumMatchesGitBlobSkipGuardTests(unittest.TestCase):
+    """PR #60 review finding 3, kept in its own class - not inside
+    `ManifestChecksumMatchesGitBlobTests` - because these tests reload and
+    re-run that class via `TestLoader`; a meta-test living inside the class
+    it reloads would load and run itself too, recursing forever."""
+
+    def test_class_skips_without_a_git_checkout_instead_of_erroring(self) -> None:
+        """Unlike the two sibling classes this PR adds
+        (test_gitignore.ArchiveTemplateAnchoringTests and
+        ExampleArchiveGeneratedIgnoreTests, both
+        `@unittest.skipUnless((ROOT / '.git').exists(), 'requires a git
+        checkout')`), `ManifestChecksumMatchesGitBlobTests` had no skip
+        guard - `git show HEAD:...` (`check=True`) raises an uncaught
+        CalledProcessError when there is no `.git` (a zip download, say),
+        an ERROR rather than the graceful skip every other git-dependent
+        class in this PR gives.
+
+        Reloads test_scaffold with `.git` faked absent - the same condition
+        the sibling idiom checks - so the class-level decorator (evaluated
+        at class-body execution time, i.e. at reload) bakes in the skip,
+        then runs the reloaded class in isolation and checks the result:
+        both tests must be skipped, not errored or actually run."""
+        mod = sys.modules[self.__class__.__module__]
+        git_path = str(ROOT / '.git')
+        orig_exists = Path.exists
+
+        def _fake_exists(path_self):
+            if str(path_self) == git_path:
+                return False
+            return orig_exists(path_self)
+
+        with mock.patch.object(Path, 'exists', _fake_exists):
+            importlib.reload(mod)
+        try:
+            cls = mod.ManifestChecksumMatchesGitBlobTests
+            suite = unittest.TestLoader().loadTestsFromTestCase(cls)
+            result = unittest.TestResult()
+            suite.run(result)
+        finally:
+            importlib.reload(mod)      # restore the real (git-present) module state
+
+        self.assertEqual(result.errors, [],
+                         f'must skip without a .git checkout, not error: {result.errors}')
+        self.assertEqual(result.failures, [])
+        self.assertEqual(
+            len(result.skipped), suite.countTestCases(),
+            'both checksum tests must be skipped, not actually run, without a .git checkout')
+
+    def test_genuine_checksum_mismatch_still_fails(self) -> None:
+        """The skip guard must not weaken the assertion it guards: a real
+        checksum drift (the CRLF-vs-LF postmortem `ManifestChecksumMatches
+        GitBlobTests` exists for) has to still fail the test, not be
+        swallowed alongside the skip case. Feeds a deliberately wrong
+        manifest entry straight into the comparison, bypassing disk/git
+        I/O entirely."""
+        case = ManifestChecksumMatchesGitBlobTests('test_gitignore_checksum_matches_the_git_blob')
+        with mock.patch.object(
+            ManifestChecksumMatchesGitBlobTests, '_committed_manifest_entry',
+            return_value={'path': '.gitignore', 'src': '.gitignore',
+                          'sha256': '0' * 64},
+        ):
+            with self.assertRaises(AssertionError):
+                case._assert_matches_git_blob('.gitignore')
 
 
 class InstallTest(unittest.TestCase):
