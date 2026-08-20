@@ -204,6 +204,13 @@ def _escape(value: str | None) -> str:
     return ' '.join(str(value).split())
 
 
+# `fha index` writes this exact string into `persons.name` for a record with
+# no `name:` field, and `str.title()`s it out of an `unknown__unknown_P-….md`
+# filename slug into `persons.surname` - see `_gedcom_name`, which drops it
+# from both slots rather than publishing it as a name.
+_PLACEHOLDER_NAME = 'unknown'
+
+
 def _name_text(value: str) -> str:
     """Strip GEDCOM's surname delimiter out of free NAME text.
 
@@ -259,9 +266,24 @@ def _gedcom_name(name: str, surname: str | None) -> tuple[str, str | None]:
 
     Both inputs run through `_name_text` first, so a `/` in either can
     never redraw the slash field (see that function).
+
+    The literal `unknown` is a machine placeholder, not a name, on either
+    side. `fha index` stores a record with no `name:` as the string
+    "unknown" and reads the surname out of the `unknown__unknown_P-….md`
+    filename slug as "Unknown", so a person nobody has named yet reached
+    this function looking like a person surnamed Unknown - and exported as
+    `1 NAME /Unknown/`, asserting a surname the archive does not have. The
+    same slug survives a rename-lagging record: a human who types a name
+    into an `unknown__unknown_…` file (before `fha lint --fix-ids` renames
+    it) got `Roy Dodson /Unknown/`. Both sides are dropped here, the same
+    `('unknown', '')` convention `_lib.stub_filename` uses, leaving the
+    `or 'Unknown'` given-name placeholder below as the one place the word
+    is allowed to appear.
     """
-    name = _name_text(_escape(name)) or 'Unknown'
-    parts = name.split()
+    name = _name_text(_escape(name))
+    if name.lower() == _PLACEHOLDER_NAME:
+        name = ''
+    parts = (name or 'Unknown').split()
     core, suffix = strip_generational_suffix(parts)
     raw_suffix = parts[-1] if suffix else None
 
@@ -270,6 +292,8 @@ def _gedcom_name(name: str, surname: str | None) -> tuple[str, str | None]:
         return f'{field} {raw_suffix}' if raw_suffix else field
 
     sn = _name_text(_escape(surname)) if surname else ''
+    if sn.lower() == _PLACEHOLDER_NAME:
+        sn = ''
     if sn:
         sn_tokens = sn.split()
         n = len(sn_tokens)

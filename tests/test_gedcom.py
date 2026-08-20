@@ -227,22 +227,53 @@ class GedcomNameTests(unittest.TestCase):
         self.assertEqual(gedcom._gedcom_name('/', None), ('Unknown //', None))
         self.assertEqual(gedcom._gedcom_name(' // ', 'Dodson'), ('Unknown /Dodson/', None))
 
+    # ── `unknown` is the machine's placeholder, not somebody's name ──
+
+    def test_the_unknown_placeholder_is_never_exported_as_a_surname(self):
+        # GUARD: `fha index` stores a record with no `name:` as the string
+        # "unknown" and reads "Unknown" out of the `unknown__unknown_…`
+        # filename slug, so a person nobody has named yet exported as
+        # '1 NAME /Unknown/' - a surname asserted in material that leaves
+        # the archive. Both slots drop it; the given-name placeholder the
+        # exporter already had is the one place the word may appear.
+        for name, indexed in (('unknown', 'Unknown'), ('unknown', None),
+                              ('Unknown', 'Unknown')):
+            with self.subTest(name=name, indexed=indexed):
+                self.assertEqual(gedcom._gedcom_name(name, indexed), ('Unknown //', None))
+
+    def test_a_named_person_under_a_placeholder_slug_keeps_their_own_name(self):
+        # GUARD: the same slug outlives the placeholder - a human types a
+        # name into an `unknown__unknown_…` file and `fha lint --fix-ids`
+        # has not renamed it yet. That exported as 'Roy Dodson /Unknown/'.
+        self.assertEqual(gedcom._gedcom_name('Roy Dodson', 'Unknown'),
+                         ('Roy /Dodson/', None))
+
     def test_the_exported_name_survives_a_round_trip_through_the_importer(self):
         # Two-sided rule, two-sided test: whatever `_gedcom_name` writes,
         # `gedcom_import._parse_gedcom_name` must read back with the same
-        # surname. This is the assertion the slash defect failed.
-        for name, indexed in (
-            ('Roy A/B Dodson', 'Dodson'),
-            ('Roy Eugene Dodson Jr', 'Dodson'),
-            ('Roy Eugene Dodson Jr', None),
-            ('John McDonald', 'Mcdonald'),
-            ('Cher', None),
+        # surname AND the same display name. This is the assertion the
+        # slash defect failed. The expected field is spelled out rather
+        # than derived from the output, so a wrong field cannot satisfy
+        # its own round trip.
+        for name, indexed, expected_field, expected_display in (
+            ('Roy A/B Dodson', 'Dodson', 'Roy A B /Dodson/', 'Roy A B Dodson'),
+            ('Roy Eugene Dodson Jr', 'Dodson',
+             'Roy Eugene /Dodson/ Jr', 'Roy Eugene Dodson Jr'),
+            ('Roy Eugene Dodson Jr', None,
+             'Roy Eugene /Dodson/ Jr', 'Roy Eugene Dodson Jr'),
+            ('John McDonald', 'Mcdonald', 'John /McDonald/', 'John McDonald'),
+            ('Cher', None, 'Cher //', 'Cher'),
+            ('unknown', 'Unknown', 'Unknown //', 'Unknown'),
         ):
             with self.subTest(name=name):
-                field, _suffix = gedcom._gedcom_name(name, indexed)
-                _display, _given, surname_slot = gedcom_import._parse_gedcom_name(field)
-                expected = '' if '//' in field else field.split('/')[1]
-                self.assertEqual(surname_slot, expected)
+                field, suffix = gedcom._gedcom_name(name, indexed)
+                self.assertEqual(field, expected_field)
+                # The exporter writes the suffix twice (NAME text + NSFX);
+                # the importer is handed both, exactly as the file has it.
+                display, _given, surname_slot = gedcom_import._parse_gedcom_name(
+                    field, suffix or '')
+                self.assertEqual(display, expected_display)
+                self.assertEqual(surname_slot, '' if '//' in field else field.split('/')[1])
 
 
 class GedcomExportTests(unittest.TestCase):

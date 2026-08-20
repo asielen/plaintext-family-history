@@ -623,6 +623,43 @@ class AdminTagTestCase(_ArchiveCase):
         self.assertIn('CREA', dict(plan.unread_top))
 
 
+class NameSubtagTestCase(_ArchiveCase):
+    """`2 NSFX` end to end: the suffix reaches the stub, and the tag is not
+    reported as a line this importer never read (it now reads it)."""
+
+    def _plan_for(self, body: str):
+        ged = Path(self._tmp.name) / 'nsfx.ged'
+        ged.write_text('0 HEAD\n1 SOUR App\n1 CHAR UTF-8\n' + body + '0 TRLR\n',
+                       encoding='utf-8')
+        return gedcom_import.build_plan(self.archive, self.config, ged)
+
+    def test_an_nsfx_only_suffix_reaches_the_stub_name_and_filename(self) -> None:
+        # GUARD: the "Jr" lived only in the sub-tag, so the archive record
+        # came out named "Roy Eugene Dodson" - the suffix silently gone.
+        plan = self._plan_for(
+            '0 @I1@ INDI\n1 NAME Roy Eugene /Dodson/\n2 NSFX Jr\n1 SEX M\n')
+        stub = plan.stubs[0]
+        self.assertEqual(stub.name, 'Roy Eugene Dodson Jr')
+        self.assertEqual(
+            gedcom_import._person_filename(stub.given, stub.surname, stub.pid),
+            f'dodson__roy_eugene_jr_{stub.pid}.md')
+
+    def test_a_read_nsfx_is_not_counted_as_a_tag_this_importer_skipped(self) -> None:
+        # Honesty runs both ways: the not-read tally must not name a tag
+        # whose value is now in the record.
+        plan = self._plan_for(
+            '0 @I1@ INDI\n1 NAME Roy Eugene /Dodson/\n2 NSFX Jr\n')
+        self.assertNotIn('NSFX', dict(plan.unread_top))
+
+    def test_the_name_slot_siblings_stay_in_the_not_read_tally(self) -> None:
+        # GIVN/SURN/SPFX genuinely are not read - the split stays the
+        # documented best-effort one - so they keep being reported.
+        plan = self._plan_for(
+            '0 @I1@ INDI\n1 NAME Jose de la Cruz\n2 GIVN Jose\n2 SURN de la Cruz\n')
+        self.assertIn('SURN', dict(plan.unread_top))
+        self.assertIn('GIVN', dict(plan.unread_top))
+
+
 class DuplicateXrefTestCase(_ArchiveCase):
     """Finding 6: '0 @I1@ INDI' twice would map both people to ONE minted pid
     (one id burned, the second stub write truncating the first). A malformed
@@ -882,20 +919,83 @@ class ParseGedcomNameTests(unittest.TestCase):
         self.assertEqual(
             gedcom_import._parse_gedcom_name('Cher'), ('Cher', 'Cher', ''))
         self.assertEqual(gedcom_import._parse_gedcom_name(''), ('', '', ''))
-        # A surname with no given name keeps its own deliberate fallback
-        # (`dodson__dodson`, not `dodson__unknown`).
-        self.assertEqual(self._filename('/Dodson/'), 'dodson__dodson_P-0000000001.md')
+
+    def test_a_surname_with_no_given_name_does_not_invent_one(self):
+        # GUARD: `1 NAME /Dodson/` says this person has a surname and no
+        # given name. The given slot used to fall back to the surname, so
+        # the file read `dodson__dodson_P-….md` - the invented-name half
+        # of the `cher__cher` defect this same change fixed in
+        # `convert_mining`, and NOT what `_lib.stub_filename` answers for
+        # the same name.
+        self.assertEqual(
+            gedcom_import._parse_gedcom_name('/Dodson/'), ('Dodson', '', 'Dodson'))
+        self.assertEqual(self._filename('/Dodson/'), 'dodson__unknown_P-0000000001.md')
+
+    # ── the `2 NSFX` sub-tag ──
+
+    def test_a_suffix_that_lives_only_in_the_nsfx_subtag_is_not_lost(self):
+        # GUARD: 5.5.1 makes NSFX a sub-tag of the name structure and a
+        # great many apps put the suffix THERE and nowhere else. Reading
+        # only the NAME line dropped the "Jr" out of the archive
+        # altogether - the very suffix this parser exists to place.
+        display, given, surname = gedcom_import._parse_gedcom_name(
+            'Roy Eugene /Dodson/', 'Jr')
+        self.assertEqual((display, given, surname),
+                         ('Roy Eugene Dodson Jr', 'Roy Eugene Jr', 'Dodson'))
+        self.assertEqual(
+            gedcom_import._person_filename(given, surname, 'P-0000000001'),
+            'dodson__roy_eugene_jr_P-0000000001.md')
+
+    def test_an_nsfx_on_a_slashless_name_lands_in_the_given_slot_too(self):
+        self.assertEqual(
+            gedcom_import._parse_gedcom_name('Roy Eugene Dodson', 'Jr'),
+            ('Roy Eugene Dodson Jr', 'Roy Eugene Jr', 'Dodson'))
+
+    def test_an_nsfx_the_name_already_carries_is_not_doubled(self):
+        # This repo's own export writes the suffix BOTH ways (trailing
+        # text on `1 NAME`, and `2 NSFX` naming it structurally), so
+        # re-importing an `fha gedcom` file must not yield "Dodson Jr Jr".
+        # The trailing-token match ignores the period an app may add.
+        for raw in ('Roy Eugene /Dodson/ Jr', 'Roy Eugene /Dodson/ Jr.',
+                    'Roy Eugene Dodson Jr'):
+            with self.subTest(raw=raw):
+                display, given, surname = gedcom_import._parse_gedcom_name(raw, 'Jr')
+                self.assertEqual(display.lower().count('jr'), 1, display)
+                self.assertEqual(surname, 'Dodson')
+
+    def test_a_non_generational_nsfx_never_reaches_the_surname_slot(self):
+        # NSFX is any name suffix, not only Jr/Sr - it is folded in AFTER
+        # the surname split, so "Esq" cannot become the surname.
+        self.assertEqual(
+            gedcom_import._parse_gedcom_name('Roy Eugene Dodson', 'Esq'),
+            ('Roy Eugene Dodson Esq', 'Roy Eugene Esq', 'Dodson'))
 
     def test_it_files_a_person_the_way_the_shared_rule_does(self):
         # Two-sided rule, two-sided test: import and `fha person new` must
         # not drift apart again.
         for raw in ('Roy Eugene Dodson Jr', 'Roy Eugene /Dodson/ Jr',
-                    'Roy Eugene Dodson', 'Cher', 'Roy Jr'):
+                    'Roy Eugene Dodson', 'Cher', 'Roy Jr', '/Dodson/',
+                    '/Dodson/ Jr'):
             with self.subTest(raw=raw):
                 display, _given, surname = gedcom_import._parse_gedcom_name(raw)
                 self.assertEqual(
                     self._filename(raw),
                     stub_filename(display, 'P-0000000001', surname=surname or None))
+
+    def test_the_only_deliberate_difference_from_the_shared_rule_is_the_cap(self):
+        # `_name_slot` caps each slot at 60 characters and `stub_slug_name`
+        # does not - a machine-driven import can mint thousands of files at
+        # once, so it stays inside Windows path limits where a human typing
+        # one name does not. Pinned here so "they agree" above is not read
+        # as a promise this cap breaks silently.
+        long_name = ('Bartholomew Fitzwilliam Montgomery Cholmondeley '
+                     'Featherstonehaugh Wodehouse')
+        display, given, surname = gedcom_import._parse_gedcom_name(long_name)
+        mine = gedcom_import._person_filename(given, surname, 'P-0000000001')
+        shared = stub_filename(display, 'P-0000000001', surname=surname)
+        self.assertNotEqual(mine, shared)
+        self.assertTrue(shared.startswith(mine[:-len('_P-0000000001.md')]), (mine, shared))
+        self.assertEqual(len(mine.split('__')[1].rsplit('_P-', 1)[0]), 60)
 
 
 if __name__ == '__main__':
