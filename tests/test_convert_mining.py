@@ -70,7 +70,9 @@ class ConvertMiningTestCase(unittest.TestCase):
         self.assertEqual(stub_meta['tier'], 'stub')
         self.assertEqual(stub_meta['living'], 'unknown')
 
-        mary = next(p for p in sources if 'mary' in p.name)
+        # Matched on the slug half only - the minted S-id in the same string
+        # is random, so a substring test can hit the wrong file.
+        mary = next(p for p in sources if 'mary' in p.name.split('_S-')[0])
         rec = read_record(mary)
         self.assertEqual(rec['parse_errors'], [])
         self.assertEqual(rec['meta']['source_type'], 'interview')
@@ -205,7 +207,7 @@ class ConvertMiningTestCase(unittest.TestCase):
         self.assertEqual(rc, EXIT_WARNINGS)
         mary_copy = next(p for p in sorted(
             (self.archive / 'documents' / 'interviews').glob('*_S-*.txt'))
-            if 'mary' in p.name)
+            if 'mary' in p.name.split('_S-')[0])
         self.assertEqual(mary_copy.read_bytes(), raw)            # byte-identical copy
 
     def test_unattached_story_warns(self) -> None:

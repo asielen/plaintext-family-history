@@ -416,11 +416,17 @@ class FromNamesGenerationalSuffixTests(unittest.TestCase):
             self.root, ['Roy Eugene Dodson', 'Roy Eugene Dodson Jr'])
         names = sorted(self._stub_names())
         self.assertEqual(len(names), 2)
-        prefixes = {n.split('__')[0] for n in names}
-        self.assertEqual(prefixes, {'dodson'})
-        suffixed = [n for n in names if 'jr' in n]
-        self.assertEqual(len(suffixed), 1)
-        self.assertTrue(suffixed[0].startswith('dodson__roy_eugene_jr_'), suffixed[0])
+        # Compared as whole name slots, never as a substring of the filename:
+        # the minted P-id is 10 random Crockford characters sitting in that
+        # same string, so `'jr' in name` also matched the FATHER whenever his
+        # id happened to contain those two letters next to each other (about
+        # one run in a hundred - `dodson__roy_eugene_p-xnq0gwdjr1.md` is a
+        # real CI failure). Substring where a token was meant is the defect
+        # this whole issue is about; the test should not repeat it.
+        self.assertEqual(
+            {n[:-len('.md')].rsplit('_', 1)[0] for n in names},
+            {'dodson__roy_eugene', 'dodson__roy_eugene_jr'},
+        )
 
     def test_period_suffix_from_the_reported_repro(self) -> None:
         # The issue's own confirmed reproduction: "Roy Dodson Jr." via
