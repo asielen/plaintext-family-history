@@ -156,7 +156,8 @@ configure_utf8_stdout()
 #    _edtf_gloss                 - plain-language gloss for a canonical EDTF value
 #    _check_date_value           - forgiving date check: valid/loose-W109/broken-E014
 #    _collect_token_refs         - scan a text block for [ID] tokens → registry
-#    _research_hypothesis_ids    - H-ids defined in a research file's ## Hypotheses
+#    _research_hypothesis_ids    - H-ids defined in a person file's ## Hypotheses
+#                                   (any kind - #56, content decides not filename)
 #    _question_blocks            - split a questions.md into per-heading blocks
 #    _metadata_values            - normalise scalar/list exiftool field values
 #    _w122_message               - W122: filename says generated page, content says person
@@ -221,6 +222,7 @@ configure_utf8_stdout()
 #    _fix_mint_claim_ids         - complete id-less claims: mint id, stamp reviewed
 #    _claim_item_spans           - split the claims YAML into per-item spans
 #    _fix_mint_stubs             - create stubs for the E005 set (--mint-stubs)
+#    _e009_question_heading      - value:-quoting question heading for one spawn (#55)
 #    _fix_spawn_questions        - append question entries for E009 set (--spawn-questions)
 #    _fix_reciprocal             - append missing mirror edges for the W116 set (--fix-reciprocal)
 #    _append_relationship_entry  - additive frontmatter surgery for the mirror entry
@@ -740,8 +742,13 @@ def _collect_token_refs(text: str, path: Path, registry: Registry) -> None:
             registry.name_link_refs.setdefault(target.lower(), []).append((path, lineno))
 
 
-# Where hypothesis records LIVE (SPEC §16): the `## Hypotheses` section of a
-# person research file, one `- id: H-… / hypothesis: … / …` entry per belief.
+# Where hypothesis records LIVE (SPEC §16): a `## Hypotheses` section, one
+# `- id: H-… / hypothesis: … / …` entry per belief. SPEC §16 RECOMMENDS the
+# person research file as the home for a curated person's hypotheses, but
+# does not forbid the section from appearing in a profile or a stub - the
+# archive already does this (issue #56) - so the parse below (and its caller
+# in _process_person_file) is not scoped to any one file kind: it just looks
+# for the section, in whatever person file carries it.
 # These two patterns mirror index.py's discovery (_extract_section_body +
 # _parse_md_list_blocks feeding _index_hypotheses_block) without importing it
 # (tools never import tools): the section is the text between the heading and
@@ -757,15 +764,19 @@ _HYPOTHESIS_ID_LINE_RE = re.compile(
 
 
 def _research_hypothesis_ids(body: str) -> set[str]:
-    """H-ids DEFINED in a research file's `## Hypotheses` section.
+    """H-ids DEFINED in a person file's `## Hypotheses` section, wherever the
+    section lives (issue #56: a profile or stub carries it just as validly as
+    a research companion - the content decides, not the filename).
 
-    SPEC §16 homes hypothesis records there, and index.py already indexes them
-    from there - so lint must count them as existing records too, or every
-    `[[H-…]]` cite of a research-file hypothesis is a false E004 "create the
-    missing record". Scope mirrors the index: only `id:` entry lines inside the
-    Hypotheses section define an H-id; a mere `[[H-…]]` citation elsewhere in
-    the file is a reference, never a definition, so a genuinely dangling H-id
-    still fails E004."""
+    index.py indexes the section the same content-first way - so lint must
+    count these ids as existing records too, or every `[[H-…]]` cite of a
+    hypothesis living in a profile or stub is a false E004 "create the
+    missing record". Only `id:` entry lines inside the Hypotheses section
+    define an H-id; a mere `[[H-…]]` citation elsewhere in the file is a
+    reference, never a definition, so a genuinely dangling H-id still fails
+    E004. Returns an empty set for a file with no such section - callers
+    apply this unconditionally to every person file rather than gating the
+    call on kind."""
     ids: set[str] = set()
     for section in _HYPOTHESES_SECTION_RE.finditer(body):
         for m in _HYPOTHESIS_ID_LINE_RE.finditer(section.group(1)):
@@ -1008,17 +1019,25 @@ def _process_person_file(path: Path, registry: Registry,
         findings.append(Finding('W', 'W122', path,
                                 _w122_message(path, parsed, meta)))
 
-    # H-ids defined in this file's ## Hypotheses section (SPEC §16 homes them in
-    # `…_research_P-….md`). The kind comes from the shared filename grammar plus
-    # this file's own frontmatter, not a substring search of the stem:
-    # `research` anywhere but the slot before the P-id is part of the given
-    # names, and a file in that slot that carries a person record is that
-    # person's profile - reading either one as a research file turned one
-    # person's working notes into archive-wide hypothesis records.
-    # Applied before any id checks so a mid-graduation (id-less) research file's
+    # H-ids defined in this file's ## Hypotheses section (issue #56). SPEC §16
+    # RECOMMENDS `…_research_P-….md` as the home for a curated person's
+    # hypotheses, but the archive already writes them straight into profiles
+    # and stubs too - a stub especially, since "is this the same man as that
+    # other stub?" is a stub-shaped question and a stub has no companion
+    # files at all (SPEC §16) to put one in. The section used to be gated on
+    # `is_person_file_kind(path, 'research', meta)`, which reads a PROFILE's
+    # own Hypotheses block as not existing: the same content/filename
+    # ambiguity W122 already fixed for the kind slot itself (the slot before
+    # the P-id is also a legal last given name), applied one layer up - here
+    # it silently dropped a well-formed section instead of just mis-typing
+    # the file. The fix is the same principle: content decides. Any person
+    # file - profile, stub, or research companion - registers whatever H-ids
+    # its own `## Hypotheses` section defines; `_research_hypothesis_ids`
+    # already returns an empty set for a file that has no such section, so
+    # this is unconditional rather than gated on kind at all.
+    # Applied before any id checks so a mid-graduation (id-less) file's
     # hypotheses still count as existing records for E004.
-    if is_person_file_kind(path, 'research', meta):
-        registry.hypothesis_ids.update(_research_hypothesis_ids(rec['body']))
+    registry.hypothesis_ids.update(_research_hypothesis_ids(rec['body']))
 
     if id_placeholder:
         registry.placeholder_id_paths.add(path)
@@ -3822,6 +3841,15 @@ def _file_newline(text: str) -> str:
 # quoted evidence inside a claim value - both make the auto-wrap unsafe.
 _FENCE_LOOKALIKE_RE = re.compile(r'^\s*```')
 
+# A GENUINE fence delimiter: flush against the left margin (no leading
+# whitespace), an optional bare language tag, nothing else on the line. This
+# is deliberately stricter than _FENCE_LOOKALIKE_RE above - it is used only
+# to recognise the boundary marker(s) a human actually typed (issue #52's
+# opening-without-closing / closing-without-opening cases), never content
+# quoted inside a claim's `value:` block scalar, which is always indented
+# under the list item that owns it and so never matches here.
+_FLUSH_FENCE_RE = re.compile(r'^```[a-zA-Z]*\s*$')
+
 
 def _wrap_unfenced_claims(path: Path) -> tuple[str | None, str | None]:
     """Compute the ```yaml wrap for `path`'s unfenced `## Claims` content.
@@ -3842,6 +3870,21 @@ def _wrap_unfenced_claims(path: Path) -> tuple[str | None, str | None]:
         terminate the new fence early, so those files are refused with the
         line number instead of the old behavior of silently dropping the
         lines from the human's evidence.
+
+    Issue #52: a file can also arrive here with ONE genuine boundary marker
+    already present - an opening ```yaml with the closing ``` accidentally
+    deleted, or the reverse. `read_record`'s CLAIMS_RE only recognises a
+    complete ```yaml ... ``` pair, so either half-typed case still reads as
+    "unfenced" and lands here (the data is not lost - `_read_unfenced_claims`
+    already strips a lone fence line and parses the rest) but the OLD wrap
+    treated that surviving marker as a lookalike quoted inside a value and
+    refused the whole file, naming a repair (`--fix-claims-fence`) that then
+    did nothing. Recognise a flush-left marker at the very start and/or very
+    end of the section first, drop it, and regenerate a canonical fresh pair
+    around whatever remains - the rest of this function (interior safety
+    scan, dedent, round-trip verify) is unchanged and applies identically to
+    all three shapes (no marker, one marker, past this point never two - a
+    file with both already reads fenced and never reaches this function).
     """
     try:
         text = read_text_exact(path)
@@ -3854,10 +3897,31 @@ def _wrap_unfenced_claims(path: Path) -> tuple[str | None, str | None]:
     m = re.search(r'(^##\s+Claims\s*\r?\n)(.*?)(?=^##\s|\Z)', text, re.S | re.M)
     if not m:
         return None, None
-    content_lines = m.group(2).splitlines()
-    for offset, ln in enumerate(content_lines):
+    raw_lines = m.group(2).splitlines()
+
+    # Recognise a genuine boundary fence at the section's first and/or last
+    # non-blank line and drop it - see the docstring note on #52 above.
+    non_blank = [i for i, ln in enumerate(raw_lines) if ln.strip()]
+    first_idx = non_blank[0] if non_blank else None
+    last_idx = non_blank[-1] if non_blank else None
+    drop_idx: set[int] = set()
+    if first_idx is not None and _FLUSH_FENCE_RE.match(raw_lines[first_idx]):
+        drop_idx.add(first_idx)
+    if (last_idx is not None and last_idx not in drop_idx
+            and _FLUSH_FENCE_RE.match(raw_lines[last_idx])):
+        drop_idx.add(last_idx)
+    if len(drop_idx) == 2:
+        # Both a flush opening and a flush closing marker are present -
+        # CLAIMS_RE should already have matched this file, so it would never
+        # have been unfenced in the first place. Defensive no-op only.
+        return None, None
+    # Keep (original_index, line) pairs so a refusal below can still report
+    # the TRUE line number in the file, not an offset into the filtered list.
+    kept = [(i, ln) for i, ln in enumerate(raw_lines) if i not in drop_idx]
+
+    for orig_idx, ln in kept:
         if _FENCE_LOOKALIKE_RE.match(ln):
-            line_no = text[:m.start(2)].count('\n') + offset + 1
+            line_no = text[:m.start(2)].count('\n') + orig_idx + 1
             return None, (
                 f'line {line_no} of {path.name} has a ``` line inside the claims '
                 f'section (a half-typed fence, or ``` quoted inside a claim '
@@ -3867,7 +3931,7 @@ def _wrap_unfenced_claims(path: Path) -> tuple[str | None, str | None]:
                 f'after the last one.')
     # Dedent exactly the way the unfenced reader does (join + strip), so the
     # fenced interior is the very text whose parse produced the W114 claims.
-    yaml_text = '\n'.join(content_lines).strip()
+    yaml_text = '\n'.join(ln for _, ln in kept).strip()
     if not yaml_text:
         return None, None
     try:
@@ -4659,6 +4723,55 @@ def _fix_mint_stubs(
             changed.append(str(stub_path))
 
 
+# Extracts the two C-ids straight out of an E009 finding's own message text
+# ("Claim {cid} contradicts {tid} but no open question...", normalize_id's
+# lowercase form) - the message already carries them verbatim (lint writes
+# both from the same `cid`/`tid` it detected the contradiction with), so this
+# reads them back instead of re-scanning the archive a second way. Anchored
+# loosely (case-insensitive, no "Claim " prefix required) so it also matches
+# a hand-built Finding in a test.
+_E009_MESSAGE_IDS_RE = re.compile(r'(c-[0-9a-z]+)\s+contradicts\s+(c-[0-9a-z]+)', re.I)
+
+
+def _e009_question_heading(registry: Registry | None, cid: str, tid: str) -> str:
+    """A question-phrased `## Q:` heading for one E009 contradiction (#55).
+
+    The old heading was the lint error text itself, instruction and all - a
+    question log that told its reader to run the command that had just
+    written it. This asks the actual research question instead, quoting each
+    claim's own `value:` text so the two positions are visible without
+    opening the source file. `_claim_by_id` is the SAME lookup the E009
+    check has `claim` for at its own call site (and already uses for `tid`)
+    - reused here rather than re-derived, so the heading can never disagree
+    with what the check found.
+
+    `registry` may be None (a test exercising the write path alone, or any
+    future caller with no archive in hand) and a claim id may not resolve to
+    a claim (a dangling reference, or a synthetic finding in a test) - both
+    degrade to a plainer heading built from the two ids alone rather than
+    raising, because a spawned question with a weaker heading is still far
+    better than a crashed --fix run.
+    """
+    a_disp, b_disp = fmt_id_display(cid), fmt_id_display(tid)
+    claim = _claim_by_id(registry, cid) if registry is not None else None
+    target = _claim_by_id(registry, tid) if registry is not None else None
+
+    def _snippet(c: dict | None) -> str:
+        if not c:
+            return ''
+        val = str(c.get('value', '')).strip()
+        return val if len(val) <= 60 else val[:60] + '...'
+
+    a_val, b_val = _snippet(claim), _snippet(target)
+    if a_val and b_val:
+        return f'{a_disp} says "{a_val}", but {b_disp} says "{b_val}" - which is right?'
+    if a_val or b_val:
+        known_disp, known_val = (a_disp, a_val) if a_val else (b_disp, b_val)
+        other_disp = b_disp if a_val else a_disp
+        return f'{known_disp} says "{known_val}", but {other_disp} disagrees - which is right?'
+    return f'{a_disp} and {b_disp} disagree - which is right?'
+
+
 def _fix_spawn_questions(
     registry: Registry,
     findings: list[Finding],
@@ -4705,9 +4818,25 @@ def _fix_spawn_questions(
         existing = ''
     appended = []
     for f in to_spawn:
+        # #55: pull the two C-ids the E009 check itself detected out of its
+        # own message, so the question that gets written links to the exact
+        # claims the contradiction is about (SPEC §17's refs:) instead of
+        # leaving refs: [] and the heading as a copy of the error text. A
+        # message that does not carry the expected shape (should not happen
+        # from lint's own E009 check - kept as a fallback for a hand-built
+        # Finding) keeps the old echo-the-message behavior and empty refs,
+        # since there is nothing to link.
+        m = _E009_MESSAGE_IDS_RE.search(f.message)
+        if m:
+            cid, tid = normalize_id(m.group(1)), normalize_id(m.group(2))
+            heading = _e009_question_heading(registry, cid, tid)
+            refs = f'[{fmt_id_display(cid)}, {fmt_id_display(tid)}]'
+        else:
+            heading = f'Contradiction: {f.message}'
+            refs = '[]'
         appended.append(
-            f'\n## Q: Contradiction: {f.message}\n'
-            f'- origin: tool\n- status: open\n- refs: []\n'
+            f'\n## Q: {heading}\n'
+            f'- origin: tool\n- status: open\n- refs: {refs}\n'
             f'- context:\n  - (tool, {_today()}) Auto-spawned by fha lint E009.\n'
         )
     if appended:
