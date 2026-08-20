@@ -828,8 +828,24 @@ def _read_sidecar(sidecar: Path) -> tuple[dict, str]:
     it: the sidecar is consumed (deleted) on a successful run, so any citation/
     title/source-type hints in unparseable frontmatter would otherwise be lost
     instead of surfaced for the user to fix.
+
+    A sidecar saved in another encoding (cp1252, a Windows editor's default)
+    gets the same clean refusal rather than the `UnicodeDecodeError` traceback
+    `read_record` raises by default (#68): every call site here runs well
+    before the mkdir/rename/write/unlink sequence that consumes the sidecar,
+    so an uncaught crash left the sidecar untouched anyway - but a bare
+    traceback is still not the refusal this function's docstring promises,
+    and "not valid UTF-8" is a different fix (re-save the file) than
+    "malformed frontmatter" (fix the YAML), so it gets its own message.
     """
-    rec = read_record(sidecar)
+    rec = read_record(sidecar, on_decode_error=lambda p: None)
+    if rec['undecodable']:
+        raise ProcessError(
+            f'{sidecar.name} is not saved as UTF-8 text, so its hints could not '
+            'be read. Nothing was changed or deleted - open it and save it '
+            'again choosing UTF-8 (in Notepad: Save As, then pick UTF-8 from '
+            'the Encoding menu), then re-run.'
+        )
     if rec.get('parse_errors'):
         errors = '; '.join(msg for _, msg in rec['parse_errors'])
         raise ProcessError(f'{sidecar.name} has malformed frontmatter: {errors}')
@@ -3027,7 +3043,13 @@ def process_refile(
               f'with `fha find {sid}`.', file=sys.stderr)
         return EXIT_WARNINGS
 
-    rec = read_record(record_path)
+    rec = read_record(record_path, on_decode_error=lambda p: None)
+    if rec['undecodable']:
+        raise ProcessError(
+            f'{record_path.name} is not saved as UTF-8 text, so its files: '
+            'inventory could not be read. Nothing was moved - open it and save '
+            'it again choosing UTF-8 (in Notepad: Save As, then pick UTF-8 from '
+            'the Encoding menu), then re-run.')
     if rec.get('parse_errors'):
         raise ProcessError(
             f'{record_path.name} has malformed frontmatter, so its files: '
