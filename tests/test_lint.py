@@ -2373,6 +2373,299 @@ class BirthClaimWithoutParentageW126Tests(unittest.TestCase):
         self.assertNotIn(str(root), w[0].message)
 
 
+class RootPersonHasChildW127Tests(unittest.TestCase):
+    """W127: `root_person` in `fha.yaml` has an accepted genetic child on
+    record (issue #70).
+
+    SPEC §12.2 fixes the convention: "#1 = the children, collectively" -
+    `root_person` must be anchored at the youngest generation, never at a
+    person who has a child on record, or every direct-line couple folder
+    derives one generation high while the tree faithfully matches its own
+    (wrong) derivation - nothing else catches this, because W110/W119/brackets
+    all just verify the folders match the numbers this same walk produces.
+    This reuses the exact `children_of` map `_check_ahnentafel_placement`
+    already builds for that walk (genetic-only, accepted claims), so the
+    check costs nothing extra and can never see an edge the numbering itself
+    does not also see.
+    """
+
+    ROOT = 'P-4aaaaaaaaa'
+    CHILD = 'P-4bbbbbbbbb'
+    OTHER = 'P-4ccccccccc'
+    SID = 'S-4aaaaaaaaa'
+
+    def _ptext(self, pid: str, name: str, sex: str = 'U') -> str:
+        return (f'---\nid: {pid}\nname: {name}\nsex: {sex}\nliving: false\n'
+                f'tier: curated\n---\n\n# {name}\n\n## Biography\n\nx\n')
+
+    def _build(self, *, subtype: str = 'biological',
+               status: str = 'accepted', root_person: bool = True,
+               claim_type: str = 'relationship', negated: bool = False,
+               persons: list | None = None, children: list | None = None,
+               root_name: str | None = 'Root Person') -> Path:
+        """One archive: root_person, a child, a bystander, and one claim.
+
+        The keywords are the axes the derivation rule actually turns on, so
+        each test can state exactly one difference from the warning case:
+        `claim_type` (a `birth` claim derives parentage too, since #71),
+        `negated` (a researched absence derives nothing, SPEC §8.6), `persons`
+        (a `roles:` entry naming somebody left out of `persons:` is a broken
+        map, not an extra parent), `children` (how many the message counts),
+        and `root_name` (None writes a record with an EMPTY `name:`).
+        """
+        root = Path(tempfile.mkdtemp())
+        (root / 'people').mkdir(parents=True)
+        (root / 'sources' / 'notes').mkdir(parents=True)
+        cfg = f'root_person: {self.ROOT}\n' if root_person else ''
+        (root / 'fha.yaml').write_text(
+            cfg + 'roots:\n  documents: documents\n', encoding='utf-8')
+        root_text = (self._ptext(self.ROOT, root_name, 'M') if root_name
+                     else f'---\nid: {self.ROOT}\nname:\nsex: M\nliving: false\n'
+                          f'tier: curated\n---\n\n# Root\n\n## Biography\n\nx\n')
+        (root / 'people' / f'x__root_{self.ROOT}.md').write_text(
+            root_text, encoding='utf-8')
+        (root / 'people' / f'x__child_{self.CHILD}.md').write_text(
+            self._ptext(self.CHILD, 'Child Person', 'F'), encoding='utf-8')
+        (root / 'people' / f'x__other_{self.OTHER}.md').write_text(
+            self._ptext(self.OTHER, 'Other Person', 'U'), encoding='utf-8')
+        kids = children or [self.CHILD]
+        named = persons if persons is not None else kids + [self.ROOT]
+        subtype_line = f'  subtype: {subtype}\n' if claim_type == 'relationship' else ''
+        negated_lines = '  negated: true\n  evidence: negative\n' if negated else '  evidence: direct\n'
+        claim = (
+            f'- value: "{kids[0]} child of {self.ROOT}"\n'
+            f'  id: C-4aaaaaaaaa\n  type: {claim_type}\n' + subtype_line +
+            f'  persons: [{", ".join(named)}]\n  roles:\n'
+            f'    child: [{", ".join(kids)}]\n    parent: [{self.ROOT}]\n'
+            f'  status: {status}\n  reviewed: 2026-01-01\n  confidence: high\n'
+            f'  information: primary\n' + negated_lines + '  notes: x.\n'
+        )
+        (root / 'sources' / 'notes' / f'rel_{self.SID.lower()}.md').write_text(
+            f'---\nid: {self.SID}\ntitle: Rel\nsource_type: other\n---\n\n'
+            f'## Claims\n```yaml\n{claim}```\n', encoding='utf-8')
+        return root
+
+    def _w127(self, root: Path) -> list:
+        from _lib import load_fha_yaml
+        findings, _reg = lint._run_lint_core(root, load_fha_yaml(root))
+        return [f for f in findings if f.code == 'W127']
+
+    def test_root_person_with_genetic_child_warns(self) -> None:
+        w = self._w127(self._build())
+        self.assertEqual(len(w), 1)
+        f = w[0]
+        self.assertEqual(f.severity, 'W')
+        self.assertIn(self.ROOT, f.message)
+        self.assertIn(self.CHILD, f.message)
+        self.assertIn('12.2', f.message)
+        self.assertIn('--realign', f.message)
+        self.assertEqual(Path(str(f.path)).name, 'fha.yaml')
+
+    def test_root_person_with_no_child_stays_clean(self) -> None:
+        # No relationship claim naming ROOT as a parent at all - the
+        # ordinary, correctly-anchored archive.
+        root = Path(tempfile.mkdtemp())
+        (root / 'people').mkdir(parents=True)
+        (root / 'sources' / 'notes').mkdir(parents=True)
+        (root / 'fha.yaml').write_text(
+            f'root_person: {self.ROOT}\nroots:\n  documents: documents\n',
+            encoding='utf-8')
+        (root / 'people' / f'x__root_{self.ROOT}.md').write_text(
+            self._ptext(self.ROOT, 'Root Person', 'M'), encoding='utf-8')
+        self.assertEqual(self._w127(root), [])
+
+    def test_adoptive_only_child_does_not_warn(self) -> None:
+        # A social/legal-only bond is never numbered into the pedigree (SPEC
+        # §12.2), so it must not trip the same warning that protects the
+        # numbering - an adoptive parent legitimately anchors the tree.
+        self.assertEqual(self._w127(self._build(subtype='adoptive')), [])
+
+    def test_suggested_child_claim_does_not_warn(self) -> None:
+        # Derivation (and the Ahnentafel walk itself) reads accepted claims
+        # only, so a still-`suggested` child claim has not numbered anything
+        # high yet.
+        self.assertEqual(self._w127(self._build(status='suggested')), [])
+
+    def test_no_root_person_stays_silent(self) -> None:
+        self.assertEqual(self._w127(self._build(root_person=False)), [])
+
+    def test_unresolvable_root_person_stays_silent_on_w127(self) -> None:
+        # An unresolvable root_person already gets its own W110 note and the
+        # whole Ahnentafel walk is skipped (children_of is never consulted) -
+        # W127 must not pile a second, contradictory finding onto the same cause.
+        root = Path(tempfile.mkdtemp())
+        (root / 'people').mkdir(parents=True)
+        (root / 'sources' / 'notes').mkdir(parents=True)
+        (root / 'fha.yaml').write_text(
+            'root_person: P-9999999999\nroots:\n  documents: documents\n',
+            encoding='utf-8')
+        self.assertEqual(self._w127(root), [])
+
+    def test_the_message_carries_no_absolute_path(self) -> None:
+        root = self._build()
+        w = self._w127(root)
+        self.assertEqual(len(w), 1)
+        self.assertNotIn(str(root), w[0].message)
+
+    def test_negated_child_claim_does_not_warn(self) -> None:
+        # A `negated: true` claim is a researched ABSENCE (SPEC §8.6): "we
+        # looked and she was not his daughter". `fha index` derives no edge
+        # from it, so it numbers nothing high - and telling the human their
+        # anchor is wrong on the strength of a claim that denies the bond
+        # would be the warning arguing against the archive's own research.
+        self.assertEqual(self._w127(self._build(negated=True)), [])
+
+    def test_a_birth_claim_naming_the_parents_warns(self) -> None:
+        # Since #71/#82 a birth claim whose roles: map names a child and a
+        # parent puts that bond in the pedigree, so it anchors the tree one
+        # generation high exactly as a relationship claim does. Reading only
+        # `relationship` claims here would leave the hole open in the plainest
+        # parentage evidence an archive ever holds.
+        w = self._w127(self._build(claim_type='birth'))
+        self.assertEqual(len(w), 1)
+        self.assertIn(self.CHILD, w[0].message)
+
+    def test_a_role_naming_someone_outside_persons_does_not_warn(self) -> None:
+        # `persons:` is who the claim is about (SPEC §8.3), and the indexer
+        # builds claim_persons from it - so a roles: entry naming somebody left
+        # out of persons: is a broken map, not a secret extra child. Deriving
+        # an edge here that `fha index` refuses would put lint one generation
+        # out of step with the tree it is describing.
+        self.assertEqual(self._w127(self._build(persons=[self.ROOT])), [])
+
+    def test_several_children_are_counted_in_the_message(self) -> None:
+        w = self._w127(self._build(children=[self.CHILD, self.OTHER]))
+        self.assertEqual(len(w), 1)
+        self.assertIn('and 1 more', w[0].message)
+
+    def test_a_nameless_root_person_is_named_by_its_id(self) -> None:
+        # `name:` present but empty parses to None. Formatting it would
+        # address a person as "None" in a message about her own family, and a
+        # bare lowercase p-id would look like a different kind of thing from
+        # the P-ids in every other message.
+        w = self._w127(self._build(root_name=None))
+        self.assertEqual(len(w), 1)
+        self.assertNotIn('None', w[0].message)
+        self.assertNotIn(self.ROOT.lower(), w[0].message)
+        self.assertIn(self.ROOT, w[0].message)
+
+    def test_the_named_fix_reindexes_before_realigning(self) -> None:
+        # Editing root_person edits fha.yaml, which is part of the index
+        # freshness watermark - so `fha views brackets --realign` refuses with
+        # "index is stale" until `fha index` has run. A next step that fails
+        # the moment it is followed is a dead end.
+        w = self._w127(self._build())
+        self.assertEqual(len(w), 1)
+        self.assertIn('`fha index` and `fha views brackets --realign`',
+                      w[0].message)
+
+
+class ParentageDerivationParityTests(unittest.TestCase):
+    """lint's in-memory parent edges match the ones `fha index` derives.
+
+    `_build_child_edges` is lint's twin of `index.py` `_derive_relationships`,
+    and everything shaped by it - W103 bracket lists, the W110/W119/W127
+    Ahnentafel walk, E013 summary drift - is only as right as the twin. Read a
+    narrower set of claims than the indexer and lint reports a correctly
+    written record as broken, then names `fha views brackets --fix` as the
+    repair; that command reads the index, so it makes no such change and the
+    warning never clears no matter how many times it is run.
+
+    Three rules, each verified here against a claim shape the indexer accepts
+    or refuses: `birth` claims derive parentage too (#71), a `negated: true`
+    claim derives nothing (SPEC §8.6), and roles are scoped to `persons:`.
+    """
+
+    A = 'P-5aaaaaaaaa'      # the parent, and the couple folder's occupant
+    B = 'P-5bbbbbbbbb'      # the child
+    SID = 'S-5aaaaaaaaa'
+    FOLDER = '002 A Person + Spouse []'
+
+    def _ptext(self, pid: str, name: str, sex: str, summary: str = '') -> str:
+        return (f'---\nid: {pid}\nname: {name}\nsex: {sex}\nliving: false\n'
+                f'tier: curated\n---\n\n# {name}\n\n{summary}## Biography\n\nx\n')
+
+    def _build(self, *, claim_type: str = 'birth', negated: bool = False,
+               persons: list | None = None, summary_on_child: bool = False) -> Path:
+        root = Path(tempfile.mkdtemp())
+        (root / 'people' / self.FOLDER).mkdir(parents=True)
+        (root / 'sources' / 'notes').mkdir(parents=True)
+        (root / 'fha.yaml').write_text(
+            'roots:\n  documents: documents\n', encoding='utf-8')
+        (root / 'people' / self.FOLDER / f'x__a_{self.A}.md').write_text(
+            self._ptext(self.A, 'A Person', 'M'), encoding='utf-8')
+        summary = (f'**Parents:** [[{self.A}|A Person]] [[{self.SID}]]\n\n'
+                   if summary_on_child else '')
+        (root / 'people' / f'x__b_{self.B}.md').write_text(
+            self._ptext(self.B, 'B Person', 'F', summary), encoding='utf-8')
+        named = persons if persons is not None else [self.B, self.A]
+        subtype_line = '  subtype: biological\n' if claim_type == 'relationship' else ''
+        negated_lines = ('  negated: true\n  evidence: negative\n' if negated
+                         else '  evidence: direct\n')
+        claim = (
+            f'- value: "B born to A"\n  id: C-5aaaaaaaaa\n'
+            f'  type: {claim_type}\n' + subtype_line +
+            f'  persons: [{", ".join(named)}]\n  roles:\n'
+            f'    child: {self.B}\n    parent: [{self.A}]\n'
+            f'  status: accepted\n  reviewed: 2026-01-01\n  confidence: high\n'
+            f'  information: primary\n' + negated_lines + '  notes: x.\n'
+        )
+        (root / 'sources' / 'notes' / f'rel_{self.SID.lower()}.md').write_text(
+            f'---\nid: {self.SID}\ntitle: Birth register\n'
+            f'source_type: vital-record\n---\n\n'
+            f'## Claims\n```yaml\n{claim}```\n', encoding='utf-8')
+        return root
+
+    def _codes(self, root: Path, code: str) -> list:
+        from _lib import load_fha_yaml
+        findings, _reg = lint._run_lint_core(root, load_fha_yaml(root))
+        return [f for f in findings if f.code == code]
+
+    def test_a_birth_claim_fills_the_bracket_list(self) -> None:
+        # The folder already names B in its brackets, correctly. Deriving only
+        # from `relationship` claims made lint call that list stale and ask for
+        # the child to be REMOVED, while `fha views brackets` (reading the
+        # index, which does see the birth edge) had nothing to change.
+        root = self._build(claim_type='birth')
+        folder = root / 'people' / self.FOLDER
+        folder.rename(folder.parent / '002 A Person + Spouse [B]')
+        self.assertEqual(self._codes(root, 'W103'), [])
+
+    def test_a_negated_claim_stays_out_of_the_bracket_list(self) -> None:
+        # The mirror: the folder brackets are empty and must stay empty. A
+        # researched absence must never put a child in a couple's folder name.
+        # Written as a `relationship` claim on purpose - that is the shape the
+        # old derivation DID read, so this pins the negated rule itself rather
+        # than passing for free because birth claims were skipped.
+        self.assertEqual(
+            self._codes(self._build(claim_type='relationship', negated=True),
+                        'W103'), [])
+
+    def test_a_role_outside_persons_stays_out_of_the_bracket_list(self) -> None:
+        # Same reason for `relationship` here: the persons: scoping rule is
+        # what is under test, not the claim type.
+        self.assertEqual(
+            self._codes(self._build(claim_type='relationship',
+                                    persons=[self.A]), 'W103'), [])
+
+    def test_a_birth_claim_backs_a_parents_summary_line(self) -> None:
+        # E013 is an ERROR, so this false positive did not merely add noise -
+        # it failed the archive's clean-lint gate over a profile whose Parents
+        # line cites exactly the evidence the tools tell you to cite.
+        root = self._build(claim_type='birth', summary_on_child=True)
+        folder = root / 'people' / self.FOLDER
+        folder.rename(folder.parent / '002 A Person + Spouse [B]')
+        self.assertEqual(self._codes(root, 'E013'), [])
+        self.assertEqual(self._codes(root, 'W104'), [])
+
+    def test_a_negated_claim_does_not_back_a_parents_summary_line(self) -> None:
+        # The other half of the same rule: a denied bond is not evidence for
+        # the Parents line, so the drift is real and E013 still fires.
+        root = self._build(claim_type='relationship', negated=True,
+                           summary_on_child=True)
+        self.assertEqual(len(self._codes(root, 'E013')), 1)
+
+
 class UndecodableSingleFileReadTests(unittest.TestCase):
     """#68, call-shape A: a single required-file read - E009's questions.md
     (line ~831 today) and E018's AGENTS.md (line ~3098 today).
@@ -2520,51 +2813,170 @@ class UndecodableFormatCheckTests(unittest.TestCase):
         self.assertIn('W128', [m.code for m in result.messages])
 
 
-class UndecodableResearchCompanionTests(unittest.TestCase):
-    """#68 site 2 (line ~848 today): the per-person research-companion read
-    that feeds E009's research scope.
+class UndecodablePersonAndSourceRecordTests(unittest.TestCase):
+    """#68 site 2 and the read that used to mask it: a PERSON or SOURCE record
+    whose bytes are not UTF-8.
 
-    Masking discovery, recorded here as an executable fact rather than only
-    as prose: `_process_person_file` reads the SAME path moments earlier in
-    the SAME walk, through `_lib.read_record` (`_lib.py` line ~2463), which
-    has its own unguarded `except OSError`-only read of the identical bytes -
-    one of #68's other 25 sites (in fact one of `_lib.py`'s own three),
-    explicitly left for a later batch by this dispatch. Because both reads
-    decode the identical file with the identical codec, `read_record` always
-    fails FIRST on a genuinely undecodable person/research file, and the line
-    this PR fixed is never reached in practice yet.
-
-    `test_read_record_masks_this_site_today` pins that fact so it cannot
-    silently stop being true; `test_the_companion_read_itself_skips_not_crashes`
-    patches `read_record` out to isolate and prove the ONE line #68 actually
-    asked for here. The PR body flags `_lib.read_record` as the priority
-    pickup for the follow-up batch, since fixing it is what makes this
-    already-shipped line start mattering for every person and source file.
+    Every record in the archive is read through `_lib.read_record`, whose own
+    `except OSError`-only guard let `UnicodeDecodeError` (a ValueError) out -
+    so `_process_person_file` crashed on a cp1252 person file before the
+    research-companion read below it was ever reached, and `fha lint` still
+    died on the single most common kind of file in the archive. `read_record`
+    now reports the decode through the caller's recorder and hands back
+    `undecodable: True`; lint skips the record on that flag rather than
+    linting an empty one, so the file earns exactly one W128 instead of a
+    cascade of "missing id" / "filename disagrees" errors invented out of
+    bytes nobody read.
     """
 
     def setUp(self) -> None:
         self.root = Path(tempfile.mkdtemp())
         (self.root / 'people').mkdir(parents=True)
+        (self.root / 'sources').mkdir(parents=True)
         (self.root / 'fha.yaml').write_text('roots: {}\n', encoding='utf-8')
         self.path = self.root / 'people' / 'x__anne_research_P-3333333333.md'
         self.path.write_bytes(
             ('---\nid: P-3333333333\ncreated: 2026-01-01\n---\n\n'
              '## Open Questions\n\nGrandma in Kraków.\n').encode('cp1252'))
 
-    def test_read_record_masks_this_site_today(self) -> None:
-        with self.assertRaises(UnicodeDecodeError):
-            lint._run_lint_core(self.root, {})
+    def test_an_undecodable_person_file_does_not_crash_lint(self) -> None:
+        _findings, reg = lint._run_lint_core(self.root, {})
+        self.assertIn(self.path, reg.undecodable_files)
 
-    def test_the_companion_read_itself_skips_not_crashes(self) -> None:
-        stub_rec = {
-            'meta': {}, 'claims': [], 'stories': None, 'body': '',
-            'unfenced_claims': False, 'parse_errors': [],
-        }
-        with unittest.mock.patch('lint.read_record', return_value=stub_rec):
-            _findings, reg = lint._run_lint_core(self.root, {})
+    def test_the_companion_read_does_not_enter_the_e009_research_scope(self) -> None:
+        _findings, reg = lint._run_lint_core(self.root, {})
         self.assertEqual(list(reg.research_content), [],
                          'an undecodable companion must not enter the E009 research scope')
-        self.assertIn(self.path, reg.undecodable_files)
+
+    def test_no_errors_are_invented_out_of_bytes_nobody_read(self) -> None:
+        findings, _reg = lint._run_lint_core(self.root, {})
+        offenders = [f for f in findings
+                     if f.severity == 'E' and f.path == self.path]
+        self.assertEqual(offenders, [],
+                         'a file that was never read has no spec violations to report')
+
+    def test_the_file_earns_exactly_one_w128(self) -> None:
+        result = lint.run_lint(self.root, {})
+        w128 = [m for m in result.messages if m.code == 'W128']
+        self.assertEqual(len(w128), 1)
+        self.assertIn('x__anne_research_P-3333333333.md', w128[0].text)
+
+    def test_an_undecodable_source_file_is_reported_the_same_way(self) -> None:
+        src = self.root / 'sources' / 'letter_S-4444444444.md'
+        src.write_bytes(
+            ('---\nid: S-4444444444\ntitle: Lettre de Kraków\n---\n\n'
+             '## Claims\n\n```yaml\n[]\n```\n').encode('cp1252'))
+        result = lint.run_lint(self.root, {})
+        w128 = [m for m in result.messages
+                if m.code == 'W128' and 'letter_S-4444444444.md' in m.text]
+        self.assertEqual(len(w128), 1)
+
+    def test_the_record_is_never_rewritten(self) -> None:
+        before = self.path.read_bytes()
+        lint.run_lint(self.root, {})
+        self.assertEqual(before, self.path.read_bytes())
+
+    def test_one_undecodable_record_does_not_cost_the_others(self) -> None:
+        good = self.root / 'people' / 'doe__jane_P-1111111111.md'
+        good.write_text(_PERSON_MD, encoding='utf-8')
+        _findings, reg = lint._run_lint_core(self.root, {})
+        self.assertIn('p-1111111111', reg.all_record_ids)
+
+    def test_the_archive_around_the_skipped_record_still_resolves(self) -> None:
+        # The skipped record's ID is read off its FILENAME (SPEC §13 puts it
+        # there too, and the filename is bytes this pass CAN read), so a link
+        # to her is not reported as an orphan reference to a person who is
+        # sitting right there on disk.
+        other = self.root / 'people' / 'doe__jane_P-1111111111.md'
+        other.write_text(
+            _PERSON_MD.replace('## Biography',
+                               '## Biography\n\nSister of [[P-3333333333]].'),
+            encoding='utf-8')
+        findings, _reg = lint._run_lint_core(self.root, {})
+        invented = [f for f in findings if f.code in ('E004', 'E005')]
+        self.assertEqual(invented, [],
+                         'a record nobody could read is not a record that is missing')
+
+    def test_the_id_is_claimed_without_inventing_a_person_record(self) -> None:
+        # The ID resolves, but the record's CONTENT is still absent - so no
+        # check that needs its frontmatter runs over an empty stand-in.
+        _findings, reg = lint._run_lint_core(self.root, {})
+        self.assertTrue(reg.has_person('P-3333333333'))
+        self.assertNotIn('p-3333333333', reg.person_meta)
+        self.assertNotIn('p-3333333333', reg.person_profile_paths)
+
+
+class UndecodableFormatWriteTests(unittest.TestCase):
+    """#68, the write half of the `--format-write` loop (`_fix_format`).
+
+    `_check_format` (the read half) skips an undecodable file; `_fix_format`
+    runs on the very next line of the same loop over the same path, through
+    `_lib.read_text_exact` - a different call shape the issue's grep sweep
+    never matched. Guarding only the read half left `fha lint --format-write`
+    crashing on exactly the file the report had just learned to describe.
+    """
+
+    def setUp(self) -> None:
+        self.root = Path(tempfile.mkdtemp())
+        (self.root / 'fha.yaml').write_text('roots: {}\n', encoding='utf-8')
+        self.path = self.root / 'stray.md'
+        # No final newline: `--format-write` WOULD rewrite this file if it
+        # could read it, which is what makes the skip worth pinning.
+        self.path.write_bytes('Grandma in Kraków.'.encode('cp1252'))
+
+    def test_format_write_does_not_crash(self) -> None:
+        result = lint.run_lint(self.root, {}, format_write=True)
+        self.assertIn('W128', [m.code for m in result.messages])
+
+    def test_format_write_never_rewrites_bytes_it_could_not_read(self) -> None:
+        before = self.path.read_bytes()
+        lint.run_lint(self.root, {}, format_write=True)
+        self.assertEqual(before, self.path.read_bytes())
+
+    def test_format_write_still_fixes_the_files_it_can_read(self) -> None:
+        good = self.root / 'ok.md'
+        good.write_text('no final newline', encoding='utf-8')
+        lint.run_lint(self.root, {}, format_write=True)
+        self.assertEqual(good.read_text(encoding='utf-8'), 'no final newline\n')
+
+
+class UndecodableQuestionsSpawnTests(unittest.TestCase):
+    """#68 in a WRITE path: `--fix` appending E009 contradiction questions.
+
+    `_fix_spawn_questions` rewrites notes/questions.md whole, so its read had
+    to be guarded in the one way that does not lose data: refuse. An
+    unguarded read crashed here, and a read that fell back to `''` would have
+    traded every question the human ever logged for the newly spawned ones -
+    unattended, under `--fix`.
+    """
+
+    def setUp(self) -> None:
+        self.root = Path(tempfile.mkdtemp())
+        (self.root / 'notes').mkdir(parents=True)
+        (self.root / 'fha.yaml').write_text('roots: {}\n', encoding='utf-8')
+        self.questions = self.root / 'notes' / 'questions.md'
+        self.questions.write_bytes(
+            '# Questions\n\n## Q: Where was Kraków?\n'.encode('cp1252'))
+
+    def _run(self) -> tuple[list[str], list[str]]:
+        progress: list[str] = []
+        changed: list[str] = []
+        finding = lint.Finding('E', 'E009', self.root / 'x.md', 'a contradiction')
+        lint._fix_spawn_questions(
+            lint.Registry(self.root, {}), [finding], self.root, progress, changed)
+        return progress, changed
+
+    def test_the_existing_question_log_is_never_clobbered(self) -> None:
+        before = self.questions.read_bytes()
+        self._run()
+        self.assertEqual(before, self.questions.read_bytes(),
+                         'a read failure must never turn an append into a truncation')
+
+    def test_the_refusal_is_reported_and_names_the_fix(self) -> None:
+        progress, changed = self._run()
+        self.assertEqual(changed, [])
+        self.assertTrue(any('questions.md' in line and 'UTF-8' in line
+                            for line in progress), progress)
 
 
 class UndecodableFileReportingTests(unittest.TestCase):

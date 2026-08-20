@@ -2440,7 +2440,7 @@ def _coerce_yaml(obj: Any) -> Any:
     return obj
 
 
-def read_record(path: str | Path) -> dict:
+def read_record(path: str | Path, on_decode_error=None) -> dict:
     """
     Parse a markdown archive record file.
 
@@ -2453,8 +2453,47 @@ def read_record(path: str | Path) -> dict:
             'unfenced_claims': bool, claims were read from an UNfenced `## Claims`
                                      section (a human forgot the ```yaml fence);
                                      lint offers to wrap it. False normally.
+            'undecodable': bool,    the file's BYTES are not UTF-8, so nothing
+                                    below was read from it - distinct from a
+                                    record that decoded and then would not
+                                    parse (that is `parse_errors`), and from a
+                                    file that could not be opened at all (also
+                                    `parse_errors`, as it always was). Only
+                                    ever True when `on_decode_error` was
+                                    supplied; see below.
             'parse_errors': list,   [(code, message), ...]
         }
+
+    Every record read in the suite funnels through here, so this is the site
+    #68's crash is actually reached from: a person or source file saved in
+    another codepage (cp1252, a Windows editor's default) takes down whatever
+    command is running, because `UnicodeDecodeError` is a ValueError and the
+    guard below catches `OSError`.
+
+    `on_decode_error` is how a caller asks for that to be REPORTED instead.
+    Supply it and a bad decode calls it with the `Path` (the callback
+    contract `read_text_or_report` shares) and returns the empty record with
+    `undecodable: True`, for the caller to skip. **Omit it and the read still
+    raises**, exactly as it always has - deliberately, and this is the part
+    worth reading before changing it:
+
+      an undecodable record answered as an empty one is INVISIBLE to the two
+      guards this codebase actually uses. A caller that tests
+      `rec['parse_errors']` sees none (the record is not malformed - nothing
+      was read), and a caller that wraps the read in `except Exception` never
+      fires. Both then proceed on empty content. Empty content is not neutral
+      here: `restricted:` reads as absent, so `fha site` and `fha wikitree`
+      publish a person who asked to be left out; `fha process`'s sidecar
+      refusal is skipped and the stub is deleted after scaffolding a record
+      from nothing; `fha stubs` mints a second record for a P-id that already
+      has one. A traceback is a bad answer, but it is a LOUD one, and every
+      one of those is worse.
+
+    So the report is opt-in, per caller, and a caller opts in by having
+    somewhere to put the report: `fha lint` (one W128 naming the file) and
+    `fha index` (the build's undecodable-files warning). The rest of #68's
+    sites are fixed by giving them a channel, one at a time - not by making
+    this function quietly hand every existing guard an empty record.
     """
     path = Path(path)
     errors: list[tuple[str, str]] = []
@@ -2464,8 +2503,21 @@ def read_record(path: str | Path) -> dict:
     except OSError as e:
         return {
             'meta': {}, 'claims': [], 'stories': None, 'body': '',
-            'unfenced_claims': False,
+            'unfenced_claims': False, 'undecodable': False,
             'parse_errors': [('E010', f'Cannot read file: {e}')],
+        }
+    except UnicodeDecodeError:
+        if on_decode_error is None:
+            raise   # see the docstring: silence here defeats the callers' guards
+        on_decode_error(path)
+        # No E010: the record is not malformed and the human has nothing to
+        # correct inside it - only its encoding is wrong, which is a warning
+        # (`fha lint`'s W128 / `fha index`'s own note), not a spec violation.
+        # The caller asked for this shape and reads `undecodable` to skip it.
+        return {
+            'meta': {}, 'claims': [], 'stories': None, 'body': '',
+            'unfenced_claims': False, 'undecodable': True,
+            'parse_errors': [],
         }
 
     # Frontmatter
@@ -2530,6 +2582,7 @@ def read_record(path: str | Path) -> dict:
         'stories': stories,
         'body': body,
         'unfenced_claims': unfenced_claims,
+        'undecodable': False,
         'parse_errors': errors,
     }
 
@@ -5108,6 +5161,12 @@ def walk_files(root: Path, suffix: str | None = None, on_error=None):
 # filed issue rather than a hypothetical one. `index.py`'s `dump_text` read
 # already caught it by name at one site; this is that same catch, shared, so
 # the other sites stop reinventing it one at a time.
+#
+# This helper serves a caller that wants the file's TEXT. The record readers
+# have their own door onto the same contract - `read_record` takes the same
+# `on_decode_error` callback and answers `undecodable: True` - because a
+# record that would not decode has to be told apart from one that is empty,
+# and a bare `None` return cannot say which happened.
 
 def read_text_or_report(path: str | Path, on_decode_error=None) -> str | None:
     """Read a record as UTF-8 text, turning a bad decode into a reportable gap

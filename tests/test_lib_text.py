@@ -701,5 +701,88 @@ class ReadTextOrReportTests(unittest.TestCase):
         self.assertEqual(into, [p])
 
 
+class ReadRecordUndecodableTests(unittest.TestCase):
+    """`read_record` on a file whose BYTES are not UTF-8 (#68).
+
+    Every record read in the suite funnels through here, so this was the site
+    the crash was actually reached from - `fha lint`, `fha index`, `fha report`
+    and `fha doctor` all died with a traceback on one person file saved in
+    cp1252, because `UnicodeDecodeError` is a ValueError and the guard is
+    `except OSError`. The read now reports and returns "nothing was read
+    here", the same shape an unopenable file always produced - with one
+    difference the callers need: `undecodable` distinguishes "this file was
+    never read" from "this file is empty", and no E010 is invented, because
+    there is nothing inside the record for the human to correct.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self._tmp.name)
+        self.path = self.dir / 'x__anne_P-1111111111.md'
+        self.path.write_bytes(
+            ('---\nid: P-1111111111\nname: Anne Müller\n---\n\n'
+             '## Biography\n\nBorn in Kraków.\n').encode('cp1252'))
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_without_a_callback_the_read_still_raises(self) -> None:
+        # Deliberate, and the most important line in this class. An empty
+        # record is invisible to BOTH guards this codebase uses: a caller
+        # testing `parse_errors` sees none (nothing was read, so nothing is
+        # malformed) and a caller wrapping the read in `except Exception`
+        # never fires. Empty content is not neutral - `restricted:` reads as
+        # absent, so `fha site`/`fha wikitree` would publish a person who
+        # asked to be left out, and `fha process` would skip its sidecar
+        # refusal and delete the stub after scaffolding from nothing. The
+        # report is opt-in per caller, and a caller opts in by having
+        # somewhere to put it.
+        with self.assertRaises(UnicodeDecodeError):
+            read_record(self.path)
+
+    def test_with_a_callback_it_reports_instead(self) -> None:
+        rec = read_record(self.path, on_decode_error=lambda _p: None)
+        self.assertTrue(rec['undecodable'])
+
+    def test_nothing_is_read_out_of_it(self) -> None:
+        rec = read_record(self.path, on_decode_error=lambda _p: None)
+        self.assertEqual(rec['meta'], {})
+        self.assertEqual(rec['claims'], [])
+        self.assertEqual(rec['body'], '')
+
+    def test_no_parse_error_is_invented(self) -> None:
+        # The record is not malformed - only its encoding is wrong - so there
+        # is nothing inside it for the human to fix, and E010 would name a
+        # correction that does not exist. The caller that asked for this shape
+        # reads `undecodable` instead.
+        rec = read_record(self.path, on_decode_error=lambda _p: None)
+        self.assertEqual(rec['parse_errors'], [])
+
+    def test_the_callback_receives_the_path(self) -> None:
+        calls: list = []
+        read_record(self.path, on_decode_error=calls.append)
+        self.assertEqual(calls, [self.path])
+
+    def test_the_file_is_never_rewritten(self) -> None:
+        before = self.path.read_bytes()
+        read_record(self.path, on_decode_error=lambda _p: None)
+        self.assertEqual(before, self.path.read_bytes())
+
+    def test_a_missing_file_is_still_an_e010_and_not_a_decode_report(self) -> None:
+        calls: list = []
+        rec = read_record(self.dir / 'nope.md', on_decode_error=calls.append)
+        self.assertFalse(rec['undecodable'])
+        self.assertEqual([code for code, _ in rec['parse_errors']], ['E010'])
+        self.assertEqual(calls, [])
+
+    def test_a_good_record_carries_the_flag_as_false(self) -> None:
+        good = self.dir / 'ok__jo_P-2222222222.md'
+        good.write_text('---\nid: P-2222222222\nname: Jo\n---\n\nbody\n',
+                        encoding='utf-8')
+        rec = read_record(good)
+        self.assertFalse(rec['undecodable'])
+        self.assertEqual(rec['meta']['name'], 'Jo')
+
+
 if __name__ == '__main__':
     unittest.main()

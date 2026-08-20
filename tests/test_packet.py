@@ -222,6 +222,58 @@ class PacketTests(unittest.TestCase):
         self.assertTrue(any(n.endswith('README.txt') for n in names))
         self.assertTrue(any(n.endswith('file1.txt') for n in names))
 
+    # ── issue #78: a generational suffix must not reach the packet filename ──
+    # as the surname. `_seed_person(surname='')` simulates a person with no
+    # indexed surname - the `person['surname'] or person_name.split()[-1]`
+    # fallback is exactly where the bug lived (the indexed-surname branch
+    # short-circuits before the fallback runs, so it was never broken - the
+    # "with an indexed surname" cases below are regression coverage, not
+    # guard cases).
+
+    _SUFFIXES = ['Jr', 'Sr', 'II', 'III', 'IV', 'V']
+
+    def _packet_zip_name(self, pid):
+        result = packet.run_packet(self.archive_root, pid, self.out_dir, no_photos=True)
+        self.assertEqual(result['status'], 'ok')
+        return result['zip_path'].name
+
+    def test_suffix_without_indexed_surname_is_not_taken_as_surname(self):
+        # GUARD (issue #78 case 2): no indexed surname, the last-token
+        # fallback used to name the deliverable `packet_jr_...zip`. A
+        # distinct pid per suffix (same archive) keeps each packet's
+        # output path from colliding with the last.
+        for i, suffix in enumerate(self._SUFFIXES):
+            with self.subTest(suffix=suffix):
+                pid = f'p-suffix{i:03d}aa'
+                self._seed_person(pid=pid, name=f'Roy Eugene Dodson {suffix}', surname='')
+                self._commit_fresh()
+                zip_name = self._packet_zip_name(pid)
+                self.assertTrue(zip_name.startswith('packet_dodson_'), zip_name)
+
+    def test_suffix_with_indexed_surname_unaffected(self):
+        # Indexed surname present: `person['surname'] or ...` short-circuits
+        # before the fallback, so this was never broken - regression
+        # coverage per the issue's own suggested test list.
+        for i, suffix in enumerate(self._SUFFIXES):
+            with self.subTest(suffix=suffix):
+                pid = f'p-suffix{i:03d}bb'
+                self._seed_person(pid=pid, name=f'Roy Eugene Dodson {suffix}', surname='Dodson')
+                self._commit_fresh()
+                zip_name = self._packet_zip_name(pid)
+                self.assertTrue(zip_name.startswith('packet_dodson_'), zip_name)
+
+    def test_mononym_unchanged(self):
+        self._seed_person(name='Cher', surname='')
+        self._commit_fresh()
+        zip_name = self._packet_zip_name('p-aaaaaaaaaa')
+        self.assertTrue(zip_name.startswith('packet_cher_'), zip_name)
+
+    def test_surname_genuinely_at_the_end_unchanged(self):
+        self._seed_person(name='Roy Eugene Dodson', surname='')
+        self._commit_fresh()
+        zip_name = self._packet_zip_name('p-aaaaaaaaaa')
+        self.assertTrue(zip_name.startswith('packet_dodson_'), zip_name)
+
     def test_timeline_tags_parked_and_low_confidence_claims(self):
         # Owner decision 2026-07-22: a packet is family research material, so
         # needs-review claims stay in its timeline - tagged, same words as

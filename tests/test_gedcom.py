@@ -99,14 +99,55 @@ class GedcomDateTests(unittest.TestCase):
 
 
 class GedcomNameTests(unittest.TestCase):
+    """`_gedcom_name` returns `(name_field, suffix)` (issue #78): a
+    generational suffix must never become - or double as - the /Surname/
+    field, whether the index carries a surname or not."""
+
     def test_surname_suffix(self):
-        self.assertEqual(gedcom._gedcom_name('John Smith', 'Smith'), 'John /Smith/')
+        self.assertEqual(gedcom._gedcom_name('John Smith', 'Smith'), ('John /Smith/', None))
 
     def test_no_surname_uses_last_token(self):
-        self.assertEqual(gedcom._gedcom_name('John Smith', None), 'John /Smith/')
+        self.assertEqual(gedcom._gedcom_name('John Smith', None), ('John /Smith/', None))
 
     def test_single_name(self):
-        self.assertEqual(gedcom._gedcom_name('Madonna', None), 'Madonna //')
+        self.assertEqual(gedcom._gedcom_name('Madonna', None), ('Madonna //', None))
+
+    # ── issue #78: generational suffix must not reach the /Surname/ field ──
+
+    _SUFFIXES = ['Jr', 'Sr', 'II', 'III', 'IV', 'V']
+
+    def test_suffix_without_indexed_surname_is_not_taken_as_surname(self):
+        # GUARD (issue #78 case 1): no indexed surname, the `parts[-1]`
+        # fallback used to make the suffix itself the surname -
+        # 'Roy Eugene Dodson Jr' -> 'Roy Eugene Dodson /Jr/'.
+        for suffix in self._SUFFIXES:
+            with self.subTest(suffix=suffix):
+                field, returned_suffix = gedcom._gedcom_name(f'Roy Eugene Dodson {suffix}', None)
+                self.assertEqual(field, f'Roy Eugene /Dodson/ {suffix}')
+                self.assertEqual(returned_suffix, suffix)
+
+    def test_suffix_with_indexed_surname_does_not_double_the_surname(self):
+        # GUARD (issue #78 case 1, the #53-created regression): once the
+        # index correctly holds 'Dodson', the old `endswith` guard failed
+        # (the raw name ends with the suffix, not the surname) and fell
+        # through to the append-both-copies branch -
+        # 'Roy Eugene Dodson Jr' -> 'Roy Eugene Dodson Jr /Dodson/'.
+        for suffix in self._SUFFIXES:
+            with self.subTest(suffix=suffix):
+                field, returned_suffix = gedcom._gedcom_name(f'Roy Eugene Dodson {suffix}', 'Dodson')
+                self.assertEqual(field, f'Roy Eugene /Dodson/ {suffix}')
+                self.assertEqual(returned_suffix, suffix)
+
+    def test_mononym_unchanged(self):
+        self.assertEqual(gedcom._gedcom_name('Cher', None), ('Cher //', None))
+
+    def test_surname_genuinely_at_the_end_unchanged(self):
+        self.assertEqual(
+            gedcom._gedcom_name('Roy Eugene Dodson', 'Dodson'), ('Roy Eugene /Dodson/', None),
+        )
+        self.assertEqual(
+            gedcom._gedcom_name('Roy Eugene Dodson', None), ('Roy Eugene /Dodson/', None),
+        )
 
 
 class GedcomExportTests(unittest.TestCase):

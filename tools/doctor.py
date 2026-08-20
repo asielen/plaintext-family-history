@@ -88,6 +88,7 @@ from _lib import (
     Result,
     roots_change_orphans,
     sqlite_cache_schema_status,
+    undecodable_file_recorder,
     unreadable_dir_recorder,
     VENDOR_DIR,
     walk_files,)
@@ -279,6 +280,12 @@ def _counts_from_index(archive_root: Path) -> dict | None:
             'restricted': restricted,
             'living': row[0] or 0,
             'unknown': row[1] or 0,
+            # Parity with `_counts_from_scan`'s shape (the two must stay
+            # comparable key-for-key). Always 0 here: this path reads rows,
+            # not files, so it cannot tell whether a record was skipped for
+            # its encoding - `fha index` said so when it built these rows, and
+            # `fha lint` names the files as W128.
+            'unread': 0,
         }
     except Exception:
         return None
@@ -289,13 +296,27 @@ def _counts_from_scan(archive_root: Path) -> dict:
     Quick-scan counts when the index is absent or stale.  Parses only
     frontmatter of profile files (skips companion files to avoid double-counting
     person records that share a P-id with timeline/research/etc. companions).
+
+    A record whose bytes will not decode as UTF-8 is skipped and counted in
+    `unread`, never allowed to raise (#68). `fha doctor` is the command every
+    error message in this suite points at - including the one a decode crash
+    itself prints - so a traceback here left the human with the recovery
+    command telling them to run the recovery command. These are counts of
+    PRIVACY-bearing records, though, so a skip cannot pass in silence either:
+    the caller prints `unread` as the same kind of "counted low" caveat the
+    unreadable-folder case gets, because a low number a human reads as a total
+    is worse than no number.
     """
     restricted = living_true = living_unknown = 0
+    unread: list[Path] = []
+    note_unread = undecodable_file_recorder(unread)
 
     sources_dir = archive_root / 'sources'
     if sources_dir.is_dir():
         for p in sources_dir.rglob('*.md'):
-            rec = read_record(p)
+            rec = read_record(p, on_decode_error=note_unread)
+            if rec['undecodable']:
+                continue
             # Same predicate the index write uses - a typed value
             # (`restricted: by-request`) counts, matching WHERE restricted = 1
             # on the index path.
@@ -308,14 +329,17 @@ def _counts_from_scan(archive_root: Path) -> dict:
             parsed = parse_filename(p)
             if not parsed or parsed.get('kind') != 'profile':
                 continue
-            rec = read_record(p)
+            rec = read_record(p, on_decode_error=note_unread)
+            if rec['undecodable']:
+                continue
             living_val = str(rec['meta'].get('living', '')).lower()
             if living_val == 'true':
                 living_true += 1
             elif living_val == 'unknown':
                 living_unknown += 1
 
-    return {'restricted': restricted, 'living': living_true, 'unknown': living_unknown}
+    return {'restricted': restricted, 'living': living_true,
+            'unknown': living_unknown, 'unread': len(unread)}
 
 
 # ── Sources swallowed by .gitignore (#57) ───────────────────────────────────
@@ -819,6 +843,10 @@ def _legacy_doctor_report_before_next_step_audit(archive_root: Path, fha_config:
     print(f'  sources restricted:  {counts["restricted"]}')
     print(f'  persons living:      {counts["living"]}')
     print(f'  persons unknown:    {counts["unknown"]}')
+    if counts.get('unread'):
+        print(f'  (counted low: {counts["unread"]} file(s) are not saved as UTF-8 '
+              'text, so nothing in them is in these numbers - re-save them as '
+              'UTF-8; `fha lint` names them as W128)')
     print()
 
     # ── 10. E018 findings ───────────────────────────────────────────────────
@@ -1316,6 +1344,13 @@ def run_doctor(archive_root: Path, fha_config: dict) -> Result:
     lines.append(f'  sources restricted:  {counts["restricted"]}')
     lines.append(f'  persons living:      {counts["living"]}')
     lines.append(f'  persons unknown:     {counts["unknown"]}')
+    if counts.get('unread'):
+        # Same reasoning as the unreadable-folder caveat below, one level down
+        # (#68): a privacy count taken over files nobody could read is a floor.
+        lines.append(
+            f'  (counted low: {counts["unread"]} file(s) are not saved as UTF-8 '
+            'text, so nothing in them is in these numbers - re-save them as '
+            'UTF-8; `fha lint` names them as W128)')
     if counts is not None and label.startswith('counts (scanned') and unreadable_dirs:
         # These are counts of PRIVACY-bearing records, read by a human
         # deciding what is safe to share. Counted by walking the same folders

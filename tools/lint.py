@@ -157,6 +157,7 @@ import yaml
 #    _question_blocks            - split a questions.md into per-heading blocks
 #    _metadata_values            - normalise scalar/list exiftool field values
 #    _w122_message               - W122: filename says generated page, content says person
+#    _person_label               - `Ada Hartley (P-…)` for findings; ID alone if nameless
 #
 #  Pass 1 - walk and collect
 #    _walk_archive               - top-level coordinator; calls the _process_* functions
@@ -164,13 +165,16 @@ import yaml
 #                                   (returns the record it read; content decides the kind)
 #    _process_source_file        - index one source file + file-level checks + claims
 #
-#  Bracket / Ahnentafel checks (W103, W110, W119, W120)
-#    _build_child_edges          - parent → {child → {nature,…}} from accepted claims
+#  Bracket / Ahnentafel checks (W103, W110, W119, W120, W127)
+#    _build_child_edges          - parent → {child → {nature,…}} from the accepted,
+#                                   non-negated relationship/birth claims the indexer
+#                                   derives parent edges from (lint's twin of it)
 #    _build_children_of          - parent → {children}; genetic_only filters numbering
 #    _check_bracket_lists        - W103: stale bracket lists + missing `+ spouse` half
 #    _build_ahnentafel_lint      - BFS from root_person using in-memory registry
 #    _check_ahnentafel_placement - W110: person file in wrong Ahnentafel folder;
-#                                   also emits W120 (slot defaulted, sex: unrecorded)
+#                                   also emits W127 (root_person anchored a generation
+#                                   too high) and W120 (slot defaulted, sex: unrecorded)
 #    _check_direct_line_stubs    - W119: direct-line ancestor still filed as a stub
 #                                   (report-only lead; brackets --fix-promote applies)
 #
@@ -197,7 +201,9 @@ import yaml
 #    _check_unreadable_dirs      - W123: a record folder this lint could not open
 #                                   (runs last; the caveat on everything above)
 #    _check_undecodable_files    - W128: a file this lint could not read as UTF-8
-#                                   (called once all reads are done - see its docstring)
+#                                   (additive: once in _run_lint_core so every
+#                                    caller reports it, again after the format
+#                                    pass - see its docstring)
 #
 #  Format checks / fix modes
 #    _check_format               - W109: final newline, CRLF line endings
@@ -333,6 +339,30 @@ class Registry:
         # (`run_lint` / `run_lint_silent`), never from inside a single pass.
         self.undecodable_files: list[Path] = []
 
+        # One recorder over that list, built once and handed to every read
+        # site (rather than each site building its own over the same list):
+        # the sites are spread across three functions and two entry points,
+        # and "which pass constructed the callback" is exactly the detail
+        # nobody should have to keep straight to get one warning per file.
+        self.note_undecodable = undecodable_file_recorder(self.undecodable_files)
+
+        # Paths `_check_undecodable_files` has already turned into a W128.
+        # The emitter runs more than once (once inside `_run_lint_core`, so
+        # EVERY caller of the core pass reports these - `fha report`'s exit
+        # code is the lint verdict and would otherwise certify an archive
+        # clean over files it never read - and again in `run_lint` after
+        # `--format-check`'s later reads discover more). Reporting is
+        # therefore additive, never repeated.
+        self.undecodable_reported: set[Path] = set()
+
+        # IDs claimed by a record this lint SKIPPED because it could not read
+        # it (W128), read off the filename rather than the frontmatter - see
+        # `_register_unread_record_id`. Consulted by `all_known_ids` and
+        # `has_person` so the archive AROUND an unreadable record still lints,
+        # and by nothing else: the record has no meta, no claims and no body
+        # here, so every check that needs its CONTENT correctly skips it.
+        self.unread_record_ids: set[str] = set()
+
         # The alias resolve map (alias_lower → canonical id), built once at the
         # start of Pass 2 from everything Pass 1 collected. Claim persons:/roles:
         # references resolve through it (TOOLING §3 E004: "resolved through the
@@ -349,12 +379,15 @@ class Registry:
         ids.update(self.claim_ids.keys())
         ids.update(self.place_ids)
         ids.update(self.hypothesis_ids)
+        ids.update(self.unread_record_ids)
         return ids
 
     def has_person(self, pid: str) -> bool:
         """Return True if pid has at least a stub or profile record."""
         pid = normalize_id(pid)
-        return pid in self.person_profile_paths or pid in self.person_companion_paths
+        return (pid in self.person_profile_paths
+                or pid in self.person_companion_paths
+                or pid in self.unread_record_ids)
 
 
 # ── Filename grammar patterns (SPEC §13) ─────────────────────────────────────
@@ -737,6 +770,21 @@ def _research_hypothesis_ids(body: str) -> set[str]:
     return ids
 
 
+def _person_label(registry: Registry, pid: str) -> str:
+    """How a person is named in a finding: `Ada Hartley (P-…)`, or the bare P-id.
+
+    Two sentinels have to be handled rather than printed. A record with no
+    `name:` key at all would otherwise put a lowercase `p-…` where the reader
+    expects a name, and a record whose `name:` is present but empty parses to
+    None, which formats as the literal word "None" - a person addressed as
+    None in a message about her own family is the kind of line that makes a
+    tool look untrustworthy about everything else it just said. Falling back to
+    the ID alone says exactly as much as is known.
+    """
+    name = str(registry.person_meta.get(pid, {}).get('name') or '').strip()
+    return f'{name} ({fmt_id_display(pid)})' if name else fmt_id_display(pid)
+
+
 def _w122_message(path: Path, parsed: dict, meta: dict) -> str:
     """W122: the file's name says generated page, the file itself says person.
 
@@ -823,7 +871,7 @@ def _walk_archive(archive_root: Path, registry: Registry, findings: list[Finding
     # read below shares these two recorders; W123/W128 report what they
     # caught at the end of the run.
     on_error = unreadable_dir_recorder(registry.unreadable_dirs)
-    on_decode_error = undecodable_file_recorder(registry.undecodable_files)
+    on_decode_error = registry.note_undecodable
 
     # Notes: load questions + research for E009 check
     questions_path = archive_root / 'notes' / 'questions.md'
@@ -869,6 +917,31 @@ def _walk_archive(archive_root: Path, registry: Registry, findings: list[Finding
                     registry.hypothesis_ids.add(normalize_id(m.group(0)))
 
 
+def _register_unread_record_id(path: Path, registry: Registry) -> None:
+    """Claim a skipped record's ID from its FILENAME so the archive around it
+    still lints (#68).
+
+    A record whose bytes will not decode is skipped (W128), and a skipped
+    record used to take its ID out of `all_record_ids` with it - so every
+    `[[P-…]]` pointing at Great-Grandma became an E004 "references unknown
+    person", and every source citing her an E005. Six invented errors, in
+    files that are perfectly correct, about a person who is right there on
+    disk: the human would go looking for a broken link and find nothing wrong.
+
+    SPEC §13 puts the ID in the filename as well as the frontmatter, and the
+    filename is bytes this pass CAN read. Registering it says the only true
+    thing available - "a record with this ID exists at this path" - and
+    nothing more: the file is still absent from `person_meta`/`source_meta`,
+    so none of the checks that need its CONTENT run over an empty stand-in
+    (no `name:`, no vitals, no claims, no summary). A file with no ID in its
+    name registers nothing; there is nothing to register.
+    """
+    parsed = parse_filename(path)
+    rid = normalize_id(str(parsed.get('id_str', ''))) if parsed else ''
+    if rid:
+        registry.unread_record_ids.add(rid)
+
+
 def _process_person_file(path: Path, registry: Registry,
                          findings: list[Finding]) -> dict | None:
     """Process one person file into the registry, with file-level checks.
@@ -881,7 +954,17 @@ def _process_person_file(path: Path, registry: Registry,
     """
     if is_template_file(path):
         return None   # `_TEMPLATE.*` is a teaching template, not a record
-    rec = read_record(path)
+    rec = read_record(path, on_decode_error=registry.note_undecodable)
+    if rec.get('undecodable'):
+        # The file's bytes are not UTF-8, so nothing below was read from it
+        # (#68). Returning here rather than checking an empty record is the
+        # whole point: every check downstream would otherwise report a missing
+        # `id:`, a filename that disagrees with frontmatter, and an absent
+        # `name:` - three errors invented out of bytes nobody read, aimed at a
+        # record that is very probably correct. The file earns exactly one
+        # W128, already recorded by the callback above.
+        _register_unread_record_id(path, registry)
+        return None
     meta = rec['meta']
 
     # Parse errors → E010
@@ -1039,7 +1122,12 @@ def _process_source_file(path: Path, registry: Registry, findings: list[Finding]
     """Process one source file into the registry, with file-level checks."""
     if is_template_file(path):
         return   # `_TEMPLATE.*` is a teaching template, not a record
-    rec = read_record(path)
+    rec = read_record(path, on_decode_error=registry.note_undecodable)
+    if rec.get('undecodable'):
+        # Same as the person walk above: an unread source is reported as
+        # unread (W128), never linted as an empty one (#68).
+        _register_unread_record_id(path, registry)
+        return
     meta = rec['meta']
 
     for code, msg in rec['parse_errors']:
@@ -1304,32 +1392,65 @@ def _process_source_file(path: Path, registry: Registry, findings: list[Finding]
     _collect_token_refs(rec['body'], path, registry)
 
 
-# ── Bracket and Ahnentafel checks (W103, W110, W119) ─────────────────────────
+# ── Bracket and Ahnentafel checks (W103, W110, W119, W120, W127) ─────────────
+
+# The claim types that put a parent edge in the tree, and the only ones lint may
+# derive one from: `index.py` `_derive_relationships` mints parentage from these
+# two and nothing else. `birth` joined the list in #71 - a birth register is the
+# plainest parentage evidence an archive ever holds.
+_PARENTAGE_CLAIM_TYPES = ('relationship', 'birth')
+
 
 def _build_child_edges(registry: Registry) -> dict[str, dict[str, set[str]]]:
-    """parent_pid → {child_pid: {subtype, …}} from accepted parent/child claims.
+    """parent_pid → {child_pid: {nature, …}} from the claims that derive parentage.
 
-    A parent/child edge is identified by its `roles:` map (it names both a `child`
-    and a `parent`), NOT by `subtype:` - `subtype` names the *nature* of the bond
-    (biological, adoptive, step, …; SPEC §8.2). One pair may carry several natures
-    across sources (a biological AND an adoptive edge - the co-valid NPE/adoption
-    case), so each child maps to the SET of its edge natures. Scalars and lists are
-    both accepted in either role (SPEC §8.4); a legacy `subtype: child-of` claim
-    lands here too, recorded as the nature string it carries.
+    This is lint's in-memory twin of the indexer's `relationships` table, and it
+    has to read the SAME claims the same way. A twin that reads a narrower set
+    tells the human their correctly-written record is broken and names a fix
+    that cannot work: `fha views brackets --fix` reads the index, so it will not
+    make the change lint is asking for, no matter how many times it is run.
+    Three rules, each one the indexer's:
+
+      - **Which types** - `relationship` and `birth` (`_PARENTAGE_CLAIM_TYPES`).
+        Since #71/#82 a birth claim whose `roles:` map names a child and a
+        parent puts that bond in the tree, so every check built on this map
+        (W103 brackets, W110/W119/W127 Ahnentafel, E013 summary drift) has to
+        see it too.
+      - **Never negated** - a `negated: true` claim is a researched absence,
+        "we looked and she was not his daughter" (SPEC §8.6). It must not mint
+        an edge, or lint spends its warnings asking for the very bond the
+        research denied.
+      - **Roles, scoped to `persons:`** - `_lib.parentage_parties` through
+        `_claim_parentage_pids`, the same rule and the same wrapper W126 uses.
+        A `roles:` entry naming somebody left out of `persons:` is a broken map,
+        not a secret extra parent, and reading first-role-per-person is also
+        what makes `roles: {child: [P-a], parent: [P-a]}` derive nothing rather
+        than filing a man as his own father.
+
+    A parent/child edge is identified by its `roles:` map (it names both a
+    `child` and a `parent`), NOT by `subtype:` - `subtype` names the *nature* of
+    the bond (biological, adoptive, step, …; SPEC §8.2). One pair may carry
+    several natures across sources (a biological AND an adoptive edge - the
+    co-valid NPE/adoption case), so each child maps to the SET of its edge
+    natures. Scalars and lists are both accepted in either role (SPEC §8.4); a
+    legacy `subtype: child-of` claim lands here too, recorded as the nature
+    string it carries, and a `birth` claim normally carries no subtype at all,
+    which reads as genetic - exactly what the SQLite twin's
+    `COALESCE(LOWER(c.subtype), '')` does with the same claim.
     """
     edges: dict[str, dict[str, set[str]]] = {}
     for claims in registry.source_claims.values():
         for claim in claims:
             if (not isinstance(claim, dict)
                     or str(claim.get('status', '')) != 'accepted'
-                    or claim.get('type') != 'relationship'):
+                    or claim.get('negated') in (True, 'true')
+                    or str(claim.get('type', '')) not in _PARENTAGE_CLAIM_TYPES):
                 continue
             # Role values resolve like persons: entries (wrapped IDs and
             # unambiguous names both land on their P-id; registry.alias_map is
             # populated before any Pass 2 caller runs), so brackets/Ahnentafel
             # derive the same edges the index's relationships table does.
-            child_ids = _role_pids(claim, 'child', registry.alias_map)
-            parent_ids = _role_pids(claim, 'parent', registry.alias_map)
+            child_ids, parent_ids = _claim_parentage_pids(claim, registry.alias_map)
             if not child_ids or not parent_ids:
                 continue
             subtype = str(claim.get('subtype', '')).strip().lower()
@@ -1340,7 +1461,7 @@ def _build_child_edges(registry: Registry) -> dict[str, dict[str, set[str]]]:
 
 
 def _build_children_of(registry: Registry, genetic_only: bool = False) -> dict[str, set[str]]:
-    """parent_pid → {child_pids} from accepted parent/child relationship claims.
+    """parent_pid → {child_pids} from the accepted claims that derive parentage.
 
     With `genetic_only`, an edge survives only if at least one of its natures is
     genetic (SPEC §12.2) - so the Ahnentafel NUMBERING walk skips adoptive, step,
@@ -1363,9 +1484,10 @@ def _check_bracket_lists(registry: Registry, findings: list[Finding]) -> None:
     """W103: stale couple-folder bracket lists.
 
     For each digit-prefixed directory under people/ (excluding stubs/connections),
-    derives the expected bracket list from accepted parent/child relationship
-    claims (by their roles: map) whose parent names a person residing in that
-    folder, marking a child who joined other than by birth (`Ruth (adopted)`).
+    derives the expected bracket list from the accepted parent/child claims
+    (`_build_child_edges`, by their roles: map) whose parent names a person
+    residing in that folder, marking a child who joined other than by birth
+    (`Ruth (adopted)`).
     ALL children appear - direct-line children with their own folder included -
     mirroring the bracket convention documented in TOOLING §7.
 
@@ -1555,10 +1677,19 @@ def _check_ahnentafel_placement(registry: Registry, findings: list[Finding]) -> 
     live in the couple folder whose numeric prefix equals their expected position
     (or position−1 if they hold the odd/mother slot).
 
-    Also emits W120 for every placement the map builder made by DEFAULT rather
-    than derivation: a lone linked parent with no recorded `sex:` silently
-    takes the father (even) slot, so the folder numbers above them look
-    confirmed while being a guess (the views twin reports the same set).
+    Also emits W127 and W120, the two findings about the derivation itself
+    rather than about the folders - both live here because both are read off
+    the same walk this function runs, and neither can be checked by comparing
+    folders to numbers:
+
+    - W127 (#70): `root_person` has a genetic child on record, so the walk
+      starts one generation too high and every couple folder below it is
+      numbered one generation high with it. Emitted before the walk, off the
+      same `children_of` map the walk is about to use.
+    - W120: a placement the map builder made by DEFAULT rather than derivation
+      - a lone linked parent with no recorded `sex:` silently takes the father
+      (even) slot, so the folder numbers above them look confirmed while being
+      a guess (the views twin reports the same set).
 
     Skips persons in people/connections/ or people/stubs/.
 
@@ -1580,6 +1711,35 @@ def _check_ahnentafel_placement(registry: Registry, findings: list[Finding]) -> 
     # Ahnentafel numbering follows only the genetic pedigree (SPEC §12.2); social
     # and legal parent edges are shown in the bracket list but never numbered.
     children_of = _build_children_of(registry, genetic_only=True)
+
+    # W127: root_person itself has an accepted genetic child on record (#70).
+    # SPEC §12.2 fixes the convention - "#1 = the children, collectively" -
+    # root_person must be anchored at the YOUNGEST generation. Point it at
+    # someone with a child on record instead and every direct-line couple
+    # folder below derives one generation high, and no other check can say so:
+    # W110, W119 and `fha views brackets` all only verify that the folders
+    # match the numbers THIS SAME WALK produced, so on an archive whose folders
+    # were built to the wrong anchor they are all satisfied. They cannot see
+    # that the walk itself started one rung too high. `children_of` is the
+    # identical genetic-only, accepted-claims map the walk below is about to
+    # BFS from root_pid with, so this check sees exactly the edges that would
+    # number the tree wrong and nothing else - a suggested-only, disputed,
+    # negated, or purely social/legal (adoptive, step, …) child claim is silent
+    # here for the same reason it is silent in the walk itself.
+    root_children = sorted(children_of.get(root_pid, set()))
+    if root_children:
+        extra = '' if len(root_children) == 1 else f' (and {len(root_children) - 1} more)'
+        findings.append(Finding('W', 'W127', registry.archive_root / 'fha.yaml',
+            f'root_person {_person_label(registry, root_pid)} has a child on record - '
+            f'{_person_label(registry, root_children[0])}{extra}. SPEC §12.2 anchors #1 at '
+            'the youngest generation, so this numbers every couple folder one '
+            'generation high - and nothing else can tell you, because W110, W119 and '
+            '`fha views brackets` only check that the folders match the numbers this '
+            'same walk derives. Re-anchor root_person to a child in fha.yaml, then run '
+            '`fha index` and `fha views brackets --realign` to realign the '
+            'already-promoted folders - or leave this as-is if anchoring at yourself '
+            'is deliberate.'))
+
     sex_gaps: list[dict] = []
     pid_to_pos = _build_ahnentafel_lint(root_pid, children_of, registry, sex_gaps)
 
@@ -1815,9 +1975,13 @@ def _alias_checks(registry: Registry, findings: list[Finding]) -> None:
 #
 # The person-doc `relationships:` block (SPEC §9) is the human-writable surface
 # where relationship claims are applied to the lives they concern. A SOURCED
-# entry (it carries `claim:`/`source:`) must reconcile against an accepted
-# `relationship` claim - same pair, same role, same nature (subtype). An entry
-# that cites a missing claim, or whose nature disagrees with the claim, is W115.
+# entry (it carries `claim:`/`source:`) must reconcile against an accepted kin
+# claim - same pair, same role, same nature (subtype). A kin claim is whatever
+# the indexer derives an edge from: a `relationship`, a `marriage`, or a `birth`
+# claim whose `roles:` map names a child and a parent, and never a `negated:
+# true` one (SPEC §8.6 - a researched absence derives nothing, so it backs no
+# entry and demands none). An entry that cites a missing claim, a negated one,
+# or one whose nature disagrees with the entry, is W115.
 # A sourced edge recorded on one person but not mirrored on the other is W116;
 # `fha lint --fix-reciprocal` offers to append the missing mirror. UNSOURCED
 # beliefs (no link, or `status: hypothesis`) are never findings - they land on
@@ -1999,8 +2163,17 @@ def _claim_backs_edge(
     parent now puts that bond in the tree (#71), so a person-doc entry citing
     it is reconciled, not drifting. Telling the human their correctly-written
     record disagrees with a claim the archive itself is reading would send them
-    to repair something that is not broken."""
+    to repair something that is not broken.
+
+    The same rule in the other direction is why a `negated: true` claim backs
+    nothing (SPEC §8.6). It is an accepted finding, but the finding is that the
+    bond is ABSENT - "we looked and they did not marry" - and the indexer mints
+    no edge from it. An entry that cites one is pointing at evidence for the
+    opposite of what it records, which `_check_relationships_reconciliation`
+    says in those words."""
     if str(claim.get('status', '')) != 'accepted':
+        return False
+    if claim.get('negated') in (True, 'true'):
         return False
     ctype = str(claim.get('type', ''))
     if role == 'spouse' and ctype == 'marriage':
@@ -2036,7 +2209,16 @@ def _person_reconcilable_role_label(
 ) -> str | None:
     """For the reverse check: the entry `type` this person's block would use to
     apply `claim`, or None if the claim isn't a kin edge naming them. Limited to
-    parent/child/spouse so social and power ties never over-flag."""
+    parent/child/spouse so social and power ties never over-flag.
+
+    A `negated: true` claim owes nothing either (SPEC §8.6): it records a bond
+    the research found ABSENT, so an opted-in block that leaves it out is
+    complete, not incomplete. Asking for the entry would be asking the human to
+    write down the very relationship the claim exists to deny - and if they
+    did, `fha index` would still derive no edge, so the warning could never
+    clear."""
+    if claim.get('negated') in (True, 'true'):
+        return None
     ctype = str(claim.get('type', ''))
     if ctype == 'marriage':
         # Only the couple the claim marries owes a spouse entry - a parent
@@ -2127,7 +2309,12 @@ def _check_relationships_reconciliation(
     `relationship` claim, a `marriage` claim, and - since #71 - a `birth` claim
     whose `roles:` map names a child and a parent. Both directions read the
     same list, so an entry citing a birth claim reconciles and a birth claim
-    the block omits is reported, exactly as for the other two."""
+    the block omits is reported, exactly as for the other two.
+
+    A `negated: true` claim is on neither side of that ledger (SPEC §8.6). It
+    derives no edge, so it backs no entry and it asks for none: a block that
+    omits "they did not marry" is complete. An entry that cites one anyway gets
+    its own wording, because the claim is not the thing that needs fixing."""
     for pid in sorted(registry.person_meta):
         block = registry.person_meta[pid].get('relationships')
         if not isinstance(block, list) or not block:
@@ -2155,6 +2342,20 @@ def _check_relationships_reconciliation(
                     findings.append(Finding('W', 'W115', profile_path,
                         f"relationships: {role or 'edge'} entry links claim {fmt_id_display(cid)}, "
                         f"but no such claim exists - fix the link, or add the claim to its source."))
+                    continue
+                if claim.get('negated') in (True, 'true'):
+                    # Its own branch because the generic wording ("check its
+                    # persons and roles") would send the human to inspect a
+                    # claim that is written perfectly well. A negated claim is
+                    # a researched absence (SPEC §8.6); the entry and the claim
+                    # say opposite things, and only the human knows which one
+                    # is the mistake.
+                    findings.append(Finding('W', 'W115', profile_path,
+                        f"relationships: {role or 'edge'} entry links claim {fmt_id_display(cid)}, but "
+                        f"that claim records a researched ABSENCE (`negated: true`) - it is the finding "
+                        f"that this {role or 'relationship'} did NOT hold, so it backs no edge and "
+                        f"`fha index` derives none from it. Either cite the claim that does record the "
+                        f"edge, or remove the entry if the negated claim is the settled answer."))
                     continue
                 if not _claim_backs_edge(claim, pid, other_pid, role, alias_map):
                     findings.append(Finding('W', 'W115', profile_path,
@@ -2642,7 +2843,7 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
     # W104: summary line without supporting accepted claim (handled in E013 pass)
     # W105: hand-edits under GENERATED header
     _check_generated_headers(registry.archive_root, findings,
-                              on_decode_error=undecodable_file_recorder(registry.undecodable_files))
+                             on_decode_error=registry.note_undecodable)
 
     # W108: README.md older than SPEC.md
     _check_readme_age(registry.archive_root, findings)
@@ -2761,15 +2962,29 @@ def _check_undecodable_files(registry: Registry, findings: list[Finding]) -> Non
     human with no working diagnostic at all (the whole reason this is filed as
     #68 rather than folded quietly into whichever check hit it first).
 
-    Every read site now goes through `_lib.read_text_or_report`, which treats
-    a bad decode as a skip - like a missing file always was - and records the
-    path here (via `_lib.undecodable_file_recorder`, shared by every site so
-    one file touched by more than one pass earns exactly one warning) instead
-    of crashing. This function turns that list into the same kind of report
-    W123 gives a folder: report-only, warning severity (the file is almost
-    certainly fine - what is wrong is its encoding, not its content, and that
-    is not a spec violation), naming what was skipped and why, and the exact
-    fix. It never reads or rewrites the file itself.
+    Every read `fha lint` performs now survives it. The plain reads go through
+    `_lib.read_text_or_report`; every person and source RECORD goes through
+    `_lib.read_record`, which reports the decode the same way and hands back
+    `undecodable: True` so the walk skips the record instead of linting an
+    empty one; and the `--format-write` / `--fix-*` write paths, which read
+    exactly through `_lib.read_text_exact`, skip the file rather than
+    rewriting bytes they never decoded. Each treats a bad decode as a skip -
+    like a missing file always was - and records the path here (via
+    `_lib.undecodable_file_recorder`, shared by every site so one file touched
+    by more than one pass earns exactly one warning) instead of crashing.
+
+    This function turns that list into the same kind of report W123 gives a
+    folder: report-only, warning severity (the file is almost certainly fine -
+    what is wrong is its encoding, not its content, and that is not a spec
+    violation), naming what was skipped and why, and the exact fix. It never
+    reads or rewrites the file itself.
+
+    Called more than once per run, and additively (`undecodable_reported`):
+    once inside `_run_lint_core`, so no caller of the core pass can lose the
+    finding by not knowing to ask - `fha report` reads those findings as its
+    verdict and would otherwise certify an archive clean over a file nobody
+    read - and once more in `run_lint`, after `--format-check` reaches files
+    the core pass never opens.
 
     Do NOT point the human at `fha lint` here for anything other than
     re-running it after the fix - before this fix landed, lint's own reads
@@ -2779,6 +2994,13 @@ def _check_undecodable_files(registry: Registry, findings: list[Finding]) -> Non
     different channel).
     """
     for path in registry.undecodable_files:
+        if path in registry.undecodable_reported:
+            # Already named by an earlier call in this same run (the core pass
+            # reports before `--format-check` adds to the list). One file, one
+            # warning - the same contract `undecodable_file_recorder`'s
+            # de-duplication keeps for one file read by two passes.
+            continue
+        registry.undecodable_reported.add(path)
         try:
             shown = path.relative_to(registry.archive_root).as_posix()
         except ValueError:
@@ -2787,11 +3009,14 @@ def _check_undecodable_files(registry: Registry, findings: list[Finding]) -> Non
             'W', 'W128', path,
             f'This file is not saved as UTF-8 text, so nothing in this report '
             f'checked {shown} - it was skipped rather than crashing the run. '
-            'The file itself is fine and nothing about it was changed - it is '
-            'only saved in an older encoding (a Windows editor defaults to '
-            'one, commonly cp1252). Open it and save it again choosing UTF-8 '
-            '(in Notepad: Save As, then pick UTF-8 from the Encoding menu), '
-            'then run `fha lint` again.'))
+            'If it is a person or source record, anything the rest of the '
+            'archive says about it may be reported as out of date here (a '
+            "couple folder's bracket list, a link to this record) until it can "
+            'be read. The file itself is fine and nothing about it was changed '
+            '- it is only saved in an older encoding (a Windows editor '
+            'defaults to one, commonly cp1252). Open it and save it again '
+            'choosing UTF-8 (in Notepad: Save As, then pick UTF-8 from the '
+            'Encoding menu), then run `fha lint` again.'))
 
 
 def _check_reverse_inventory(
@@ -3004,14 +3229,21 @@ def _check_summary_line(
     Each [S-id] citation must have a matching accepted claim of the right type for
     this person; each [P-id] cross-link must resolve to a known person record.
     For Parents/Children, each [P-id] must also be supported by an accepted
-    child-of relationship claim (E013), not merely exist as a record.
+    parent/child edge (E013), not merely exist as a record - the same derived
+    edges the pedigree walks (`_build_child_edges`), so a `birth` claim whose
+    `roles:` map names a child and a parent backs the line and a `negated: true`
+    claim backs nothing.
     """
+    # Which accepted claim types can back each summary label. Parents/Children
+    # accept `birth` alongside `relationship` for the same reason the pedigree
+    # does (#71): a birth register naming a child and a parent IS the parentage
+    # evidence, and citing that source on the Parents line is right, not a gap.
     label_to_types = {
         'Born': ['birth', 'baptism'],
         'Died': ['death', 'burial'],
         'Married': ['marriage'],
-        'Parents': ['relationship'],
-        'Children': ['relationship'],
+        'Parents': ['relationship', 'birth'],
+        'Children': ['relationship', 'birth'],
     }
     expected_types = label_to_types.get(label, [])
 
@@ -3194,6 +3426,16 @@ def _fix_format(
         text = read_text_exact(path)
     except OSError:
         return
+    except UnicodeDecodeError:
+        # `--format-write` runs this immediately after `_check_format` skipped
+        # the same file for the same reason (#68). Guarding only the read half
+        # left `fha lint --format-write` crashing on the very file the report
+        # had just learned to describe. Nothing to fix here anyway: a final
+        # newline and CRLF endings are properties of text this pass cannot
+        # read, and re-writing bytes it never decoded is the one thing a
+        # format fixer must never do. W128 already names the file (the
+        # `_check_format` call in the same loop recorded it).
+        return
     fixed = text.replace('\r\n', '\n')
     if fixed and not fixed.endswith('\n'):
         fixed += '\n'
@@ -3226,11 +3468,16 @@ def _run_lint_core(
     _walk_archive(archive_root, registry, findings)
     _cross_file_checks(registry, findings, with_exif=with_exif)
     _check_agent_drift(archive_root, findings,
-                       on_decode_error=undecodable_file_recorder(registry.undecodable_files))
-    # W128 (#68) is NOT raised here: `run_lint`'s --format-check pass reads
-    # more files AFTER this function returns, and `run_lint_silent` never
-    # runs that pass at all. Each entry point calls `_check_undecodable_files`
-    # itself, once, after every read IT will make is done - see both callers.
+                       on_decode_error=registry.note_undecodable)
+    # W128 (#68) is raised here, over every read the CORE pass made, so no
+    # caller of `_run_lint_core` can lose it by forgetting to ask: `fha
+    # report` (report.py) and `fha doctor` (`run_lint_silent`) both consume
+    # these findings as their verdict, and an archive holding a file nobody
+    # could read must not come back from either of them looking clean.
+    # `run_lint` calls the emitter a SECOND time after its `--format-check`
+    # pass, which reads more files than this function does; the emitter only
+    # reports paths it has not reported yet, so that costs nothing here.
+    _check_undecodable_files(registry, findings)
     return findings, registry
 
 
@@ -3293,7 +3540,7 @@ def run_lint(
 
     # Format checks / fixes
     if format_check or format_write:
-        on_decode_error = undecodable_file_recorder(registry.undecodable_files)
+        on_decode_error = registry.note_undecodable
         for path in archive_root.rglob('*.md'):
             if '.cache' not in path.parts and not is_template_file(path):
                 _check_format(path, findings, on_decode_error=on_decode_error)
@@ -3317,11 +3564,12 @@ def run_lint(
     if fix_reciprocal:
         _fix_reciprocal(registry, archive_root, progress, changed, dry_run=dry_run)
 
-    # W128: files this run could not decode as UTF-8 (#68). Called here, after
-    # the format-check pass above, rather than from inside _run_lint_core -
-    # --format-check reads more files AFTER that function returns, and this is
-    # the first point where every read this command will make is done. Last
-    # of the two "read less than the archive holds" caveats (see W123 above).
+    # W128: files this run could not decode as UTF-8 (#68). `_run_lint_core`
+    # already reported the ones ITS passes hit; this second call picks up the
+    # files only `--format-check`/`--format-write` above reached, which read
+    # more of the tree than the core pass does. The emitter tracks what it has
+    # already named, so nothing is reported twice. Last of the two "read less
+    # than the archive holds" caveats (see W123 above).
     _check_undecodable_files(registry, findings)
 
     # Sort findings by severity then path
@@ -3594,7 +3842,10 @@ def _wrap_unfenced_claims(path: Path) -> tuple[str | None, str | None]:
     """
     try:
         text = read_text_exact(path)
-    except OSError:
+    except (OSError, UnicodeDecodeError):
+        # A file whose bytes will not decode is left exactly alone, like an
+        # unreadable one always was (#68) - wrapping a claims section in a
+        # fence means rewriting the file, and this pass cannot read it.
         return None, None
     nl = _file_newline(text)
     m = re.search(r'(^##\s+Claims\s*\r?\n)(.*?)(?=^##\s|\Z)', text, re.S | re.M)
@@ -3952,7 +4203,10 @@ def _fix_mint_ids(
             aliases.append(path.stem)
         try:
             text = read_text_exact(path)
-        except OSError:
+        except (OSError, UnicodeDecodeError):
+            # Undecodable bytes are as unusable to an id mint as an
+            # unopenable file (#68): the record stays on `remaining` and no
+            # id is burned on a file this pass could not read.
             remaining.append((path, kind))
             continue
         nl = _file_newline(text)
@@ -4145,7 +4399,10 @@ def _mint_claim_ids_in_file(
         return
     try:
         text = read_text_exact(path)
-    except OSError:
+    except (OSError, UnicodeDecodeError):
+        # Same message either way - "could not read it, so it was left alone"
+        # is exactly what happened, and the file's encoding is named by W128
+        # in the same report (#68).
         progress.append(f'--fix-ids: could not read {rel}; its claims were left alone.')
         return
     nl = _file_newline(text)
@@ -4421,7 +4678,28 @@ def _fix_spawn_questions(
         progress.append(f'Would append {len(to_spawn)} question(s) to notes/questions.md')
         return
     (archive_root / 'notes').mkdir(parents=True, exist_ok=True)
-    existing = read_text_exact(questions_path) if questions_path.exists() else ''
+    # Read before append, and REFUSE rather than default to '' when the read
+    # fails. This write rewrites questions.md whole, so a failed read that
+    # fell through to an empty string would trade every question the human
+    # ever logged for the new ones - and it runs unattended under `--fix`.
+    # Both failures are real: the file exists but cannot be opened (a lock, a
+    # permission change), or its bytes will not decode as UTF-8 (#68 - a
+    # question log with an accented place name in it, saved by a Windows
+    # editor in cp1252, used to crash `fha lint --fix` outright here).
+    if questions_path.exists():
+        try:
+            existing = read_text_exact(questions_path)
+        except (OSError, UnicodeDecodeError):
+            progress.append(
+                f'--fix: could not read notes/questions.md, so the '
+                f'{len(to_spawn)} contradiction question(s) were not added - '
+                'appending would have rewritten the file and lost every '
+                'question already in it. The questions are listed above as '
+                'E009; re-save the file as UTF-8 (or restore access to it) '
+                'and run the same command again.')
+            return
+    else:
+        existing = ''
     appended = []
     for f in to_spawn:
         appended.append(
@@ -4540,7 +4818,9 @@ def _fix_reciprocal(
             continue
         try:
             text = read_text_exact(path)
-        except OSError:
+        except (OSError, UnicodeDecodeError):
+            # One person record in another encoding costs its own mirror edge,
+            # not the whole `--fix-reciprocal` pass (#68).
             progress.append(f"--fix-reciprocal: could not read {rel}; skipped.")
             continue
         item = _format_mirror_entry(m['owner_pid'], owner_name, m['mirror_role'],
@@ -4573,13 +4853,12 @@ def run_lint_silent(
     Used by fha doctor to embed a lint summary in the health report.
     Delegates to _run_lint_core so any new core pass is automatically reflected here.
     `--format-check` never runs here (doctor asks for a summary, not a format
-    pass), so this is the first point after _run_lint_core where every read
-    this path will make is done - the right place for its own W128 pass (#68).
+    pass), so `_run_lint_core`'s own W128 pass (#68) is already the complete
+    one for this path - nothing is read after it returns.
     """
     if not (archive_root / 'fha.yaml').exists():
         return (1, 0, [])
-    findings, registry = _run_lint_core(archive_root, fha_config)
-    _check_undecodable_files(registry, findings)
+    findings, _registry = _run_lint_core(archive_root, fha_config)
     n_errors = sum(1 for f in findings if f.severity == 'E')
     n_warnings = sum(1 for f in findings if f.severity == 'W')
     e018 = [f for f in findings if f.code == 'E018']
