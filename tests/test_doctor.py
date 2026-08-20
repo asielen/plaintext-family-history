@@ -208,7 +208,7 @@ class CountsParityTests(unittest.TestCase):
         self.assertEqual(idx, scan)
         # And both agree on the truth: by-request + true = 2 restricted
         # (the typed value counted), one living, one unknown-living.
-        self.assertEqual(scan, {'restricted': 2, 'living': 1, 'unknown': 1})
+        self.assertEqual(scan, {'restricted': 2, 'living': 1, 'unknown': 1, 'unread': 0})
 
 
 class StagedCapturesDegradeTests(unittest.TestCase):
@@ -749,6 +749,48 @@ class CopyMeNextStepsNameTheLauncherTests(unittest.TestCase):
         self.assertTrue(named, steps)
         for step in named:
             self.assertTrue(step.startswith(doctor._LAUNCHER), step)
+
+
+class UndecodableRecordCountsTests(unittest.TestCase):
+    """`fha doctor` must survive a record whose bytes are not UTF-8 (#68).
+
+    `_counts_from_scan` reads every source and profile record directly, and it
+    runs whenever the index is not fresh - exactly the state a broken archive
+    is in. An unguarded read crashed the whole report, and the crash message
+    the suite prints on an unhandled error says "Run `fha doctor`": the
+    recovery command told the human to run the recovery command.
+
+    These are PRIVACY-bearing counts (restricted sources, living persons), so
+    surviving is not enough - a low number a human reads as a total is worse
+    than no number. The skipped files are counted and said out loud.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        _make_archive(self.root)
+        (self.root / 'people' / 'muller__anne_P-3333333333.md').write_bytes(
+            ('---\nid: P-3333333333\nname: Anne Müller\nliving: true\n---\n\n'
+             '## Biography\n\nBorn in Kraków.\n').encode('cp1252'))
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_the_scan_does_not_crash(self) -> None:
+        counts = doctor._counts_from_scan(self.root)
+        self.assertEqual(counts['unread'], 1)
+
+    def test_the_records_that_do_decode_are_still_counted(self) -> None:
+        counts = doctor._counts_from_scan(self.root)
+        self.assertEqual(counts['restricted'], 2)
+        self.assertEqual(counts['living'], 1)
+
+    def test_the_report_says_the_counts_are_low(self) -> None:
+        result = doctor.run_doctor(self.root, {})
+        text = '\n'.join(result.data['lines'])
+        self.assertIn('counted low', text)
+        self.assertIn('UTF-8', text)
+        self.assertEqual(result.data['counts']['unread'], 1)
 
 
 if __name__ == '__main__':

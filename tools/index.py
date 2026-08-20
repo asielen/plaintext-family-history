@@ -78,6 +78,7 @@ from _lib import (
     parse_filename,
     person_file_kind,
     read_record,
+    read_text_or_report,
     resolve_path,
     resolve_ref,
     resolve_root_arg,
@@ -88,6 +89,7 @@ from _lib import (
     sqlite_cache_schema_status,
     strip_generational_suffix,
     strip_link_wrapper,
+    undecodable_file_recorder,
     unreadable_dir_recorder,
     walk_files,
 )
@@ -899,6 +901,7 @@ def _index_person(
     path: Path,
     archive_root: Path,
     on_parse_error=None,
+    on_decode_error=None,
 ) -> None:
     """
     Index one person .md file into persons and person_files.
@@ -932,6 +935,17 @@ def _index_person(
     P-id in the filename to fall back on) the person is gone entirely.  Either
     way the human has to be told; the argument is optional so the incremental
     and test paths that pass no recorder still work.
+
+    `on_decode_error` is the build's sibling recorder for the failure one step
+    earlier: a record whose BYTES are not UTF-8 at all (#68).  #66 fixed the
+    three note/log reads; this is the fourth and largest - every person record
+    in the archive - and until it was wired the whole build still died with a
+    traceback on one file saved in cp1252.  Reported through the same channel
+    as the notes (`build_index`'s undecodable-files warning, which already
+    says these words are not in the index and names the re-save), and the file
+    is SKIPPED rather than indexed as an empty person: an empty `meta` here
+    would put a nameless, date-less row in `persons` where a real ancestor
+    belongs, which reads as a sparse record rather than as a file nobody read.
     """
     if path.suffix.lower() != '.md':
         # SPEC §13 spells every person record `.md`, and the walker only ever
@@ -943,7 +957,9 @@ def _index_person(
         return
     if is_template_file(path):
         return   # `_TEMPLATE.*` is a teaching template, not a record
-    rec = read_record(path)
+    rec = read_record(path, on_decode_error=on_decode_error)
+    if rec['undecodable']:
+        return   # nothing was read; the build reports it (#68, see docstring)
     meta = rec['meta']
     parsed_name = parse_filename(path)
 
@@ -1170,6 +1186,7 @@ def _index_source(
     fha_config: dict,
     alias_map: dict[str, str] | None = None,
     on_parse_error=None,
+    on_decode_error=None,
 ) -> None:
     """Index one source markdown file.
 
@@ -1183,10 +1200,16 @@ def _index_source(
     reports a malformed `## Claims` block through `parse_errors` and hands back
     `claims: []`, so without this call the block is dropped and the build says
     nothing.  Optional for the same reason as `alias_map`.
+
+    `on_decode_error` is the same seam one step earlier: a source file whose
+    bytes will not decode as UTF-8 is skipped and reported, never indexed as
+    an empty source (#68) - see `_index_person` for the full note.
     """
     if is_template_file(path):
         return   # `_TEMPLATE.*` is a teaching template, not a record
-    rec = read_record(path)
+    rec = read_record(path, on_decode_error=on_decode_error)
+    if rec['undecodable']:
+        return   # nothing was read; the build reports it (#68)
     meta = rec['meta']
 
     sid = normalize_id(str(meta.get('id', '')))
@@ -1932,11 +1955,16 @@ def build_index(archive_root: Path, fha_config: dict, verbose: bool = False) -> 
     # Files whose BYTES would not decode as UTF-8 - a different failure from a
     # record that decoded and then would not parse, and it needs its own list:
     # `_parse_error_recorder`'s message promises "`fha lint` reports the same
-    # problem", and for these it does not. lint reads the same files through
-    # the same `except OSError` guard and dies on them too, so pointing the
-    # human at lint here would be sending them at a second crash.
+    # problem", and for these it says it its own way: lint reports the same
+    # files as W128 (#68) rather than crashing on them as it once did. The
+    # separate list stays because the REMEDY differs - a parse error is a fix
+    # inside the record, this is a re-save of the whole file - and because the
+    # message below has to name what the index lost, which lint's cannot.
     undecodable_files: list[Path] = []
-    on_decode_error = undecodable_files.append
+    # The shared recorder, not a bare `list.append`: since the record walks
+    # feed this too (#68), a file can now be reached by more than one pass in
+    # one build, and the human should read its name once.
+    on_decode_error = undecodable_file_recorder(undecodable_files)
 
     try:
         with conn:
@@ -1960,7 +1988,8 @@ def build_index(archive_root: Path, fha_config: dict, verbose: bool = False) -> 
             person_count = 0
             if people_root.exists():
                 for path in walk_files(people_root, suffix='.md', on_error=on_error):
-                    _index_person(conn, path, archive_root, on_parse_error)
+                    _index_person(conn, path, archive_root, on_parse_error,
+                                  on_decode_error)
                     person_count += 1
             if verbose:
                 print(f'  indexed {person_count} person files')
@@ -1980,7 +2009,7 @@ def build_index(archive_root: Path, fha_config: dict, verbose: bool = False) -> 
             if sources_root.exists():
                 for path in walk_files(sources_root, suffix='.md', on_error=on_error):
                     _index_source(conn, path, archive_root, fha_config,
-                                  link_alias_map, on_parse_error)
+                                  link_alias_map, on_parse_error, on_decode_error)
                     source_count += 1
             if verbose:
                 print(f'  indexed {source_count} source files')
@@ -2047,11 +2076,14 @@ def build_index(archive_root: Path, fha_config: dict, verbose: bool = False) -> 
             shown += f' and {len(undecodable_files) - 5} more'
         unreadable_warnings.append(
             f'{len(undecodable_files)} file(s) are not saved as UTF-8 text, so '
-            f'their words are not in the index: {shown}. They will not be found '
-            'by `fha find --text`, and a research log or capture log that will '
-            'not decode loses the searches recorded in it. The file itself is '
-            'fine and nothing was changed - it was written in an older encoding '
-            '(a Windows editor defaults to one). Re-save it as UTF-8, then run '
+            f'nothing in them was indexed: {shown}. A note will not be found by '
+            '`fha find --text`; a research log or capture log that will not '
+            'decode loses the searches recorded in it; and a person or source '
+            'record that will not decode is absent from the index entirely - '
+            'off timelines, out of searches and exports, and not counted in any '
+            'report - until it can be read. The file itself is fine and nothing '
+            'was changed - it was written in an older encoding (a Windows editor '
+            'defaults to one, commonly cp1252). Re-save it as UTF-8, then run '
             '`fha index` again.'
         )
 
@@ -2183,6 +2215,8 @@ def upsert_source(
       'not_found'     - no source under sources/ matches that exact ID.
       'invalid_id'    - source_id is not a syntactically valid S- ID.
       'index_absent'  - no full index exists; run `fha index` first.
+      'undecodable'   - the file was found but its bytes are not UTF-8, so
+                        nothing could be read from it (#68).
 
     Deletion order matters: child tables must be deleted before their parent rows.
     citations references sources.path, so it is deleted before sources.
@@ -2199,6 +2233,15 @@ def upsert_source(
     (#62).  The return value stays the documented status string - callers
     branch on `'indexed'` - so the report travels through the recorder rather
     than through a widened return type.
+
+    `'undecodable'` is the one failure that DOES widen the return type,
+    because it has to be answered before the deletes rather than reported
+    after them: a source saved in another codepage (#68) reads as nothing at
+    all, so letting it reach the mutation below would delete the source, its
+    claims, its citations and its FTS rows and re-insert none of them - the
+    exact silent loss `on_parse_error` exists to prevent, one step earlier and
+    with no record left to report against. It is checked immediately after the
+    file is located, alongside the other three before-any-mutation guards.
     """
     sid = normalize_id(source_id)
     if not is_valid_id(sid) or id_type_of(sid) != 'S':
@@ -2207,6 +2250,17 @@ def upsert_source(
     found = _find_source_file(archive_root, sid)
     if found is None:
         return 'not_found'
+
+    # Before any mutation (see the docstring): a file whose bytes will not
+    # decode is a file with nothing to re-insert, and the upsert deletes
+    # first. Asked through `read_text_or_report` rather than `read_record`
+    # because the question here is only "do these bytes decode" - an OSError
+    # is a different answer (the file is gone or locked), and the walk below
+    # already reports that its own way.
+    _decode_failed: list[Path] = []
+    read_text_or_report(found, on_decode_error=_decode_failed.append)
+    if _decode_failed:
+        return 'undecodable'
 
     cache_dir = archive_root / '.cache'
     if not _require_existing_index(cache_dir):
@@ -2350,6 +2404,18 @@ def _run_index(args: argparse.Namespace) -> int:
         if status == 'index_absent':
             print(
                 'ERROR: incremental --source requires an existing full index; run `fha index` first.',
+                file=sys.stderr,
+            )
+            return EXIT_FAILURE
+        if status == 'undecodable':
+            print(
+                f'ERROR: source {args.source} is not saved as UTF-8 text, so nothing '
+                'could be read from it and the index was left exactly as it was. '
+                'The file itself is fine and nothing about it was changed - it is '
+                'only saved in an older encoding (a Windows editor defaults to one, '
+                'commonly cp1252). Open it and save it again choosing UTF-8 (in '
+                'Notepad: Save As, then pick UTF-8 from the Encoding menu), then run '
+                'this command again.',
                 file=sys.stderr,
             )
             return EXIT_FAILURE
