@@ -107,6 +107,7 @@ from _lib import (
     read_record,
     resolve_root_arg,
     strip_unaccepted_drafts,
+    undecodable_file_recorder,
 )
 
 configure_utf8_stdout()
@@ -131,6 +132,23 @@ def _is_restricted_value(value) -> bool:
     booleans to `'true'`/`'false'`.) A public path has no opt-in - even
     `restricted: by-request` is honored - so one truthiness test suffices."""
     return value not in (None, False, '', 'false')
+
+# The tail every "this file is not UTF-8" message in the suite ends with (#68:
+# `fha lint`'s W128, `fha index`'s build warning). Kept word-for-word alongside
+# them on purpose - the human meets this sentence from whichever command they
+# happened to run, and it must read as one archive speaking, not three tools.
+# Duplicated rather than imported for the same reason the `restricted` helpers
+# above are (tools never import tools, TOOLING §15). It names `fha lint` at the
+# end because W128 is the one surface that lists EVERY file with this problem:
+# an export refuses at the first one it meets, so a human fixing them one
+# export at a time would find them one at a time.
+_NOT_UTF8_ADVICE = (
+    'The file itself is fine and nothing about it was changed - it is only '
+    'saved in an older encoding (a Windows editor defaults to one, commonly '
+    'cp1252). Open it and save it again choosing UTF-8 (in Notepad: Save As, '
+    'then pick UTF-8 from the Encoding menu), then run `fha wikitree` again. '
+    '`fha lint` names every file in the archive with the same problem (W128).'
+)
 
 _TEMPLATES_FILE = Path(__file__).parent / 'wikitree_templates.yaml'
 
@@ -452,7 +470,8 @@ def _restricted_claim_ids(conn: sqlite3.Connection, archive_root: Path) -> set[s
     return out
 
 
-def _restricted_source_refs(conn: sqlite3.Connection, archive_root: Path, text: str) -> list[sqlite3.Row]:
+def _restricted_source_refs(conn: sqlite3.Connection, archive_root: Path, text: str,
+                            on_decode_error=None) -> list[sqlite3.Row]:
     """Non-publishable source tokens cited in the profile body.
 
     SPEC §21 bars restricted, DNA, and publication_ok=false sources from
@@ -462,6 +481,17 @@ def _restricted_source_refs(conn: sqlite3.Connection, archive_root: Path, text: 
     leakage. A free-text restricted type (`restricted: by-request`) stores
     `restricted=0` in the index, so cited sources are also read from their
     record files to catch it.
+
+    `on_decode_error` (#68) is the caller's channel for a record whose BYTES
+    are not UTF-8: with it, `read_record` REPORTS the path instead of raising,
+    so the caller can name the encoding as the reason this export refused
+    rather than sending the human to remove a restriction that is not there.
+    Without it the read raises as it always has and the `except` arm catches
+    it. Either way the source is flagged - and flagging it explicitly is not
+    optional: a reported decode failure comes back as an EMPTY record with no
+    `parse_errors`, so both tests below would read it as a clean, publishable
+    source. That is the exact invisibility `_lib.read_record`'s docstring
+    warns about, so `undecodable` is tested first and fails closed on its own.
     """
     extra_sids, _ = _resolve_wikilink_ids(conn, text)
     source_ids = sorted({
@@ -489,30 +519,43 @@ def _restricted_source_refs(conn: sqlite3.Connection, archive_root: Path, text: 
         if not bad and row['path']:
             record_path = archive_root / row['path']
             try:
-                rec = read_record(record_path)
+                rec = read_record(record_path, on_decode_error=on_decode_error)
             except Exception:
                 # A source record present but unreadable is non-publishable.
                 bad = True
             else:
-                # read_record reports a malformed record through parse_errors
-                # with empty meta, not an exception; empty meta would hide a
-                # free-text `restricted:` marker (the index stores those as 0),
-                # so a malformed-but-present record fails closed (AGENTS.md
-                # privacy rule). An absent file is index staleness, not a leak.
-                malformed = bool(rec['parse_errors']) and record_path.exists()
-                bad = malformed or _is_restricted_value(rec['meta'].get('restricted'))
+                if rec['undecodable']:
+                    # Reported, not raised (see the docstring): an empty record
+                    # with no parse_errors, which the two tests below would read
+                    # as "no marker, publishable". Fail closed here instead.
+                    bad = True
+                else:
+                    # read_record reports a malformed record through parse_errors
+                    # with empty meta, not an exception; empty meta would hide a
+                    # free-text `restricted:` marker (the index stores those as 0),
+                    # so a malformed-but-present record fails closed (AGENTS.md
+                    # privacy rule). An absent file is index staleness, not a leak.
+                    malformed = bool(rec['parse_errors']) and record_path.exists()
+                    bad = malformed or _is_restricted_value(rec['meta'].get('restricted'))
         if bad:
             flagged.append(row)
     return flagged
 
 
-def _restricted_person_refs(conn: sqlite3.Connection, archive_root: Path, text: str) -> list[sqlite3.Row]:
+def _restricted_person_refs(conn: sqlite3.Connection, archive_root: Path, text: str,
+                            on_decode_error=None) -> list[sqlite3.Row]:
     """Restricted person tokens linked in the profile body.
 
     A `[[P-id]]` link to a person whose record carries a `restricted` marker
     (any value) can't appear in public WikiTree output. The index has no
     person-level `restricted` column, so each linked person's record file is
-    read. Returns the offending persons (id + name) for the cleanup message."""
+    read. Returns the offending persons (id + name) for the cleanup message.
+
+    `on_decode_error` (#68) is the same channel `_restricted_source_refs`
+    documents, for the same reason and with the same fail-closed `undecodable`
+    test: a person record saved in another codepage is flagged either way, and
+    the channel is only what lets the refusal name the encoding instead of a
+    restriction the human will not find in the file."""
     _, extra_pids = _resolve_wikilink_ids(conn, text)
     person_ids = sorted({
         t for t in extract_token_ids(text) if id_type_of(t) == 'P'
@@ -530,9 +573,15 @@ def _restricted_person_refs(conn: sqlite3.Connection, archive_root: Path, text: 
             continue
         record_path = archive_root / row['path']
         try:
-            rec = read_record(record_path)
+            rec = read_record(record_path, on_decode_error=on_decode_error)
         except Exception:
             # A person record present but unreadable is assumed restricted.
+            flagged.append(row)
+            continue
+        if rec['undecodable']:
+            # Reported, not raised (see the docstring): an empty record with no
+            # parse_errors, which both tests below would read as "no marker,
+            # publishable". Fail closed here instead.
             flagged.append(row)
             continue
         # read_record surfaces a malformed record through parse_errors with
@@ -986,6 +1035,29 @@ def _research_notes_lines(
     return items
 
 
+def _split_by_decode_failure(archive_root: Path, rows, undecodable: list) -> tuple[list, list]:
+    """Split flagged rows into (could not be decoded, everything else).
+
+    The scans fail closed on both, and rightly - but the two need different
+    sentences. A record that says `restricted:` asks the human to remove or
+    rewrite a reference; a record that is merely saved in another codepage has
+    nothing to remove, and telling them to remove it hands them a refusal they
+    can never clear. Membership is by path against the run's shared
+    `undecodable` list, so nothing is read a second time to ask.
+
+    Only the DECODE failure is split out. A record that decoded and then would
+    not parse stays with the restricted rows and keeps their sentence, as it
+    always has: its defect is inside the file, where the human is being sent
+    anyway, and `fha lint` names the parse error. Widening this to a third
+    cause is a separate change to these scans' return contract, not part of
+    #68.
+    """
+    paths = set(undecodable)
+    cannot_read = [r for r in rows if r['path'] and (archive_root / r['path']) in paths]
+    ids = {r['id'] for r in cannot_read}
+    return cannot_read, [r for r in rows if r['id'] not in ids]
+
+
 def _wikitree_payload(archive_root: Path, pid: str) -> dict:
     """
     Render the WikiTree-dialect markup for one curated person. Returns:
@@ -993,6 +1065,16 @@ def _wikitree_payload(archive_root: Path, pid: str) -> dict:
        'unreadable-subject'|'restricted-sources'|'restricted-people'|'restricted-names'|
        'living-people'|'broken-draft-marker'|'no-index'|'bad-args',
        'text': str|None, 'messages': [str, ...]}
+
+    Three of those statuses name the SCAN that refused, not the marker value
+    it found, because a record this export cannot read is refused by the same
+    scan and for the same reason as a restricted one (fail closed, AGENTS.md
+    privacy rule): 'unreadable-subject' is the subject's own record unreadable
+    OR not valid UTF-8; 'restricted-sources' / 'restricted-people' likewise
+    cover a cited source or linked person that may not be published or could
+    not be read to tell. The `messages` say which of those actually happened -
+    and must, since "remove the restriction" is not a fix a human can apply to
+    a file whose only defect is its encoding.
     """
     if not is_valid_id(pid) or id_type_of(pid) != 'P':
         return {'status': 'bad-args', 'text': None,
@@ -1021,13 +1103,36 @@ def _wikitree_payload(archive_root: Path, pid: str) -> dict:
                         'wikitree refuses living/unknown subjects (external-facing output).'
                     ]}
 
-        rec = read_record(archive_root / person['path'])
         # The subject's own restriction marker lives in this record, not the
         # index. read_record does not raise on a malformed record - it returns
         # parse_errors with empty/partial meta, which would slip a `restricted:`
         # (or a whole record) past every check below and publish it. Refuse
         # before any privacy scan runs: a subject whose record we cannot read is
         # assumed private (AGENTS.md privacy rule, fail closed).
+        #
+        # A record whose BYTES are not UTF-8 (#68's residual gap) is the same
+        # "cannot confirm the privacy markers" case, not a different one - so
+        # it gets the on_decode_error channel (see `_lib.read_record`'s
+        # docstring) rather than letting the bare read raise, and the same
+        # 'unreadable-subject' refusal, worded for the actual cause instead of
+        # a parse error.
+        #
+        # ONE recorder serves this read and the two privacy scans below, the
+        # shape `fha index`'s build uses: every record this export opens
+        # reports through the same list, so the refusal that fires can say
+        # which file could not be read no matter which read found it.
+        undecodable: list[Path] = []
+        note_undecodable = undecodable_file_recorder(undecodable)
+        rec = read_record(archive_root / person['path'],
+                          on_decode_error=note_undecodable)
+        if rec['undecodable']:
+            return {'status': 'unreadable-subject', 'text': None,
+                    'messages': [
+                        f"{fmt_id_display(pid)}'s record ({person['path']}) is not saved as "
+                        'UTF-8 text, so WikiTree could not read the `restricted:` marker '
+                        'that decides whether this profile may be published at all, and '
+                        f'will not publish from a record it could not read. {_NOT_UTF8_ADVICE}'
+                    ]}
         if rec['parse_errors']:
             detail = '; '.join(msg for _, msg in rec['parse_errors'])
             return {'status': 'unreadable-subject', 'text': None,
@@ -1065,32 +1170,61 @@ def _wikitree_payload(archive_root: Path, pid: str) -> dict:
                         'has no opt-in. Remove the restriction or export a different person.'
                     ]}
 
-        restricted_refs = _restricted_source_refs(conn, archive_root, body)
+        restricted_refs = _restricted_source_refs(conn, archive_root, body,
+                                                  on_decode_error=note_undecodable)
         if restricted_refs:
-            items = ', '.join(
-                f'{fmt_id_display(r["id"])} ({r["title"] or "untitled"})'
-                for r in restricted_refs
-            )
-            return {'status': 'restricted-sources', 'text': None,
-                    'messages': [
-                        'WikiTree output is public-facing; remove or rewrite citations '
-                        f'to restricted/DNA sources before export: {items}.'
-                    ]}
+            # Same refusal, two causes, two sentences (#68): a source that is
+            # restricted, and one whose bytes would not decode. Both are still
+            # refused - only the wording changes, because "remove or rewrite
+            # the citation" is not a fix for an encoding.
+            cannot_read, still_restricted = _split_by_decode_failure(
+                archive_root, restricted_refs, undecodable)
+            messages: list[str] = []
+            if still_restricted:
+                items = ', '.join(
+                    f'{fmt_id_display(r["id"])} ({r["title"] or "untitled"})'
+                    for r in still_restricted
+                )
+                messages.append(
+                    'WikiTree output is public-facing; remove or rewrite citations '
+                    f'to restricted/DNA sources before export: {items}.')
+            if cannot_read:
+                items = ', '.join(
+                    f'{fmt_id_display(r["id"])} ({r["path"]})' for r in cannot_read)
+                messages.append(
+                    'WikiTree will not publish a profile citing a source record it '
+                    f'could not read: {items} - not saved as UTF-8 text, so the '
+                    '`restricted:` and `publication_ok:` markers that decide whether a '
+                    f'source may appear in public output could not be checked. {_NOT_UTF8_ADVICE}')
+            return {'status': 'restricted-sources', 'text': None, 'messages': messages}
 
         # A restricted PERSON linked in the prose can't be published either;
         # fail closed with the offending P-ids named for cleanup (same posture
         # as restricted sources), rather than silently dropping the link.
-        restricted_people = _restricted_person_refs(conn, archive_root, body)
+        restricted_people = _restricted_person_refs(conn, archive_root, body,
+                                                    on_decode_error=note_undecodable)
         if restricted_people:
-            items = ', '.join(
-                f'{fmt_id_display(r["id"])} ({r["name"] or "unnamed"})'
-                for r in restricted_people
-            )
-            return {'status': 'restricted-people', 'text': None,
-                    'messages': [
-                        'WikiTree output is public-facing; remove or rewrite links '
-                        f'to restricted people before export: {items}.'
-                    ]}
+            # Two causes, two sentences - as for the sources above.
+            cannot_read, still_restricted = _split_by_decode_failure(
+                archive_root, restricted_people, undecodable)
+            messages = []
+            if still_restricted:
+                items = ', '.join(
+                    f'{fmt_id_display(r["id"])} ({r["name"] or "unnamed"})'
+                    for r in still_restricted
+                )
+                messages.append(
+                    'WikiTree output is public-facing; remove or rewrite links '
+                    f'to restricted people before export: {items}.')
+            if cannot_read:
+                items = ', '.join(
+                    f'{fmt_id_display(r["id"])} ({r["path"]})' for r in cannot_read)
+                messages.append(
+                    'WikiTree will not publish a profile linking a person record it '
+                    f'could not read: {items} - not saved as UTF-8 text, so the '
+                    '`restricted:` marker that decides whether a person may appear in '
+                    f'public output could not be checked. {_NOT_UTF8_ADVICE}')
+            return {'status': 'restricted-people', 'text': None, 'messages': messages}
 
         # A restricted NAME variant (deadname, SPEC §18) written as a name-style
         # wikilink renders verbatim and would publish the deadname even when the

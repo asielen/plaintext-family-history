@@ -407,7 +407,7 @@
     {
       "path": ".fha/tools/README.md",
       "category": "operating",
-      "sha256": "6b4be4d5ab031f48e5fb3e36adb1f655ffff888d534907b341e77685f1d9a53e",
+      "sha256": "9a7b40fa378b6db430c5644b1b399297e7fe73e6e55a5c2cb9904eeb0f8d4719",
       "spec_version": "1.2",
       "src": "tools/README.md"
     },
@@ -792,7 +792,7 @@
     {
       "path": ".fha/tools/wikitree.py",
       "category": "operating",
-      "sha256": "6b861438b39d0c22912e799661245c6973ee5e90d9732974aa52a8355bc153cf",
+      "sha256": "5bbcbc0b85ac4d75b3b0ebf9ac19bf674b0efde3965373c629bb27b8c95120b3",
       "spec_version": "1.2",
       "src": "tools/wikitree.py"
     },
@@ -864,7 +864,7 @@
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "1e3afb00906ace916e815a6c2710343e5495f4ac83c653cc616482733a8017c0",
+      "sha256": "e83bf8bf0e784fb491608ca5ee9be0b4c6e978dc64c6a96c2cbd1ac7e4fc947a",
       "spec_version": "1.2"
     },
     {
