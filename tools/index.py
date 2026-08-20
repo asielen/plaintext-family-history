@@ -74,11 +74,13 @@ from _lib import (
     is_working_copy,
     link_field_refs,
     load_fha_yaml,
+    name_match_key,
     normalize_id,
     parentage_parties,
     parse_filename,
     person_file_kind,
     read_record,
+    record_filename_name_key,
     read_text_or_report,
     resolve_path,
     resolve_ref,
@@ -363,6 +365,29 @@ CREATE TABLE IF NOT EXISTS aliases(
   kind TEXT              -- id | stem | name | variant | claim
 );
 
+-- unread_records: the records this build could not DECODE (#68), remembered by
+-- the one thing about them that stayed readable - their filename.
+--
+-- Deliberately NOT rows in `aliases`, which is the resolution surface every
+-- other tool reads (find, site, wikitree, photoindex all query that table
+-- directly): these strings must never resolve to anything. They exist only to
+-- STOP a resolution. An unread person record is absent from `aliases`, so it
+-- cannot clash with anything, so two people who really share a name read as
+-- one and a `[[John Smith]]` claim reference silently attaches to whichever
+-- twin happened to decode - the wrong person, on the wrong timeline, in every
+-- export, from a file nobody read. `name_key` is `_lib.record_filename_name_key`
+-- of the filename (SPEC §13 derives it from the name), and
+-- `_resolve_map_from_aliases` withholds every alias that keys the same.
+-- `record_type` keeps the ('P','L') filter's equivalence contract intact: an
+-- unread SOURCE vetoes a person's name no more than a read one does.
+-- Persisted rather than held in memory so `--source` upserts read the same
+-- withholding the full build applied (that same contract).
+CREATE TABLE IF NOT EXISTS unread_records(
+  path TEXT,             -- archive-relative, as the human filed it
+  record_type TEXT,      -- 'P' | 'S' - which walk found it, never guessed
+  name_key TEXT          -- _lib.record_filename_name_key(path); '' matches nothing
+);
+
 -- source_places: source-to-place edges from a source's `places:` frontmatter
 -- (resolved to L-ids), the location half of the human graph surface.
 CREATE TABLE IF NOT EXISTS source_places(source_id TEXT, place_id TEXT);
@@ -503,7 +528,7 @@ def _drop_tables(conn: sqlite3.Connection) -> None:
         'person_external', 'sources', 'source_files', 'claims', 'claim_persons',
         'claim_links', 'source_people', 'source_places', 'relationships',
         'places', 'place_names', 'place_history', 'search_log', 'hypotheses',
-        'citations', 'aliases', 'notes_fts', 'transcripts_fts',
+        'citations', 'aliases', 'unread_records', 'notes_fts', 'transcripts_fts',
     ]
     for t in tables:
         conn.execute(f'DROP TABLE IF EXISTS {t}')
@@ -548,6 +573,58 @@ def _insert_record_aliases(
         add(v, 'variant')
 
 
+def _note_unread_record(
+    conn: sqlite3.Connection,
+    path: Path,
+    archive_root: Path,
+    record_type: str,
+) -> None:
+    """Remember a record this build could not decode, by its filename (#68).
+
+    Called from the same early return that SKIPS the record, so the two facts
+    are recorded together: nothing of its content is in the index, and its name
+    is unknown. What goes in is only what the filename says (SPEC §13 puts both
+    the id and a slug of the name there), keyed through the shared
+    `_lib.record_filename_name_key` so an alias can be compared against it
+    without either side's spelling mattering.
+
+    A file whose name keys empty is not recorded: an empty key would match
+    every other empty key and withhold aliases that have nothing to do with it.
+    See the `unread_records` DDL for why this is its own table and not a row in
+    `aliases`.
+    """
+    key = record_filename_name_key(path)
+    if not key:
+        return
+    conn.execute(
+        'INSERT INTO unread_records(path, record_type, name_key) VALUES (?,?,?)',
+        (_archive_relative(path, archive_root), record_type, key),
+    )
+
+
+def _withheld_name_keys(
+    conn: sqlite3.Connection,
+    record_types: tuple[str, ...] | None = None,
+) -> set[str]:
+    """The name keys no alias may resolve through, because a record that could
+    have owned them went unread this build (#68).
+
+    `record_types` is the caller's own filter, applied here for the same
+    reason `_resolve_map_from_aliases` applies it to the alias rows: an unread
+    SOURCE must veto a person's name no more than a read source's clashing
+    alias does, or the ('P','L') map stops being the snapshot the full build
+    and the upsert have to agree on (round-2 finding 8).
+    """
+    keys: set[str] = set()
+    for key, rtype in conn.execute(
+            'SELECT name_key, record_type FROM unread_records'):
+        if record_types is not None and rtype not in record_types:
+            continue
+        if key:
+            keys.add(key)
+    return keys
+
+
 def _resolve_map_from_aliases(
     conn: sqlite3.Connection,
     record_types: tuple[str, ...] | None = None,
@@ -567,13 +644,33 @@ def _resolve_map_from_aliases(
     ('P', 'L') makes both maps identical by construction, and the filter runs
     before clash detection so an out-of-scope alias can never veto an
     in-scope name. The citation scans pass None on purpose - they resolve
-    source stems and on-demand C-ids too."""
+    source stems and on-demand C-ids too.
+
+    Also gap-aware (#68). A record this build could not DECODE contributed no
+    alias rows at all, so it cannot clash with anything - and an alias that
+    should have been ambiguous instead names exactly one record and resolves
+    to it. That is how a `[[John Smith]]` claim reference comes to attach to
+    whichever John Smith happened to decode: the wrong person, on the wrong
+    timeline and in every export, from a file nobody read. `unread_records`
+    remembers what those files' NAMES were (their filenames, the one part that
+    stayed readable), and every alias keying the same is withheld from the map
+    here - so the reference resolves to nobody and `fha lint` W118 reports it,
+    which is the same answer a real clash gets.
+
+    Withholding only ever REMOVES a resolution; an unread record can never
+    become one. That is the whole reason the keys live outside `aliases`, and
+    it is what makes a lossy key safe: `_lib.name_match_key` cannot tell Muller
+    from Muller, so it may withhold one name too many - a reported
+    non-resolution, which a human fixes by re-saving one file - but it can
+    never invent an attachment."""
+    withheld = _withheld_name_keys(conn, record_types)
     idx: dict[str, set[str]] = {}
     for alias, cid in conn.execute('SELECT alias, canonical_id FROM aliases'):
         if record_types is not None and id_type_of(cid) not in record_types:
             continue
         idx.setdefault(alias, set()).add(cid)
-    return {a: next(iter(ids)) for a, ids in idx.items() if len(ids) == 1}
+    return {a: next(iter(ids)) for a, ids in idx.items()
+            if len(ids) == 1 and name_match_key(a) not in withheld}
 
 
 def _resolve_link_field(value: object, alias_map: dict[str, str] | None) -> list[str]:
@@ -960,7 +1057,12 @@ def _index_person(
         return   # `_TEMPLATE.*` is a teaching template, not a record
     rec = read_record(path, on_decode_error=on_decode_error)
     if rec['undecodable']:
-        return   # nothing was read; the build reports it (#68, see docstring)
+        # Nothing was read; the build reports it (#68, see docstring). What
+        # the FILENAME says this person is called is remembered first, so a
+        # name they may share with someone readable stops resolving to that
+        # someone instead - see the `unread_records` DDL.
+        _note_unread_record(conn, path, archive_root, 'P')
+        return
     meta = rec['meta']
     parsed_name = parse_filename(path)
 
@@ -1210,7 +1312,12 @@ def _index_source(
         return   # `_TEMPLATE.*` is a teaching template, not a record
     rec = read_record(path, on_decode_error=on_decode_error)
     if rec['undecodable']:
-        return   # nothing was read; the build reports it (#68)
+        # Nothing was read; the build reports it (#68). Its filename slug is
+        # remembered for the same reason a person's name is - a stem this
+        # source may own must not resolve to another record that happens to
+        # share it (see the `unread_records` DDL).
+        _note_unread_record(conn, path, archive_root, 'S')
+        return
     meta = rec['meta']
 
     sid = normalize_id(str(meta.get('id', '')))
@@ -2291,6 +2398,14 @@ def upsert_source(
             # C-id aliases owned by it) so a renamed stem or removed citation
             # doesn't leave a stale resolution behind.
             conn.execute('DELETE FROM aliases WHERE canonical_id=?', (sid,))
+            # If the last full build could not decode this file, that note is
+            # now out of date - we are about to read it (the 'undecodable'
+            # refusal above already returned for a file that still will not
+            # decode). Keyed by path, because the note was written when the
+            # record's own id was exactly what could not be read (#68).
+            conn.execute(
+                'DELETE FROM unread_records WHERE path=?',
+                (_archive_relative(found, archive_root),))
             # Forward-safety: drop any transcript rows for this source so a future
             # transcript-indexing pass cannot leave stale FTS content behind.
             conn.execute('DELETE FROM transcripts_fts WHERE source_id=?', (sid,))

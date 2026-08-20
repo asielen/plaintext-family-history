@@ -2819,3 +2819,136 @@ class UpsertUndecodableSourceTests(unittest.TestCase):
     def test_a_decodable_source_still_upserts(self) -> None:
         self.assertEqual(
             index.upsert_source(self.archive_root, {}, self.SID), 'indexed')
+
+
+class UnreadRecordCannotUnmakeAClashTests(unittest.TestCase):
+    """#68, the half the skip-and-report fix left open: a record the build
+    could not DECODE contributes no alias rows, so it cannot clash with
+    anything - and a name two people really share reads as belonging to just
+    one. `[[Anne Müller]]` then attached to whichever Anne Müller happened to
+    decode: the wrong person, on the wrong timeline, in every export, from a
+    file nobody read.
+
+    `unread_records` remembers what the unread file's FILENAME says its name
+    is (SPEC §13 derives it from the name), and `_resolve_map_from_aliases`
+    withholds every alias keying the same. Withholding only ever removes a
+    resolution - the unread record can never become one - so the worst a lossy
+    key can do is report a name as unresolved, which is what a real clash does
+    too.
+    """
+
+    LINK = 'Anne Müller'
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        (self.root / 'people').mkdir()
+        (self.root / 'sources').mkdir()
+        (self.root / 'fha.yaml').write_text(
+            'roots:\n  documents: documents\n', encoding='utf-8')
+        (self.root / 'people' / 'mller__anne_P-1111111111.md').write_text(
+            '---\nid: P-1111111111\nname: Anne Müller\nliving: false\n---\n',
+            encoding='utf-8')
+        (self.root / 'sources' / 'deed_S-1111111111.md').write_text(
+            '---\nid: S-1111111111\ntitle: Deed\nsource_type: other\n---\n\n'
+            '## Claims\n```yaml\n- id: C-1111111111\n  type: birth\n'
+            f'  persons: ["[[{self.LINK}]]"]\n  value: born 1880\n'
+            '  status: accepted\n  confidence: high\n```\n', encoding='utf-8')
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _twin(self, *, decodable: bool) -> None:
+        """A SECOND Anne Müller - the person the first one must not be mistaken
+        for. `decodable=False` writes her in cp1252, the state this is about."""
+        body = ('---\nid: P-2222222222\nname: Anne Müller\nliving: false\n'
+                '---\n')
+        path = self.root / 'people' / 'mller__anne_P-2222222222.md'
+        if decodable:
+            path.write_text(body, encoding='utf-8')
+        else:
+            path.write_bytes(body.encode('utf-8') + b'note: M\xe9nard\n')
+
+    def _attached(self) -> list[str]:
+        with redirect_stderr(io.StringIO()):
+            index.build_index(self.root, {})
+        conn = sqlite3.connect(self.root / '.cache' / 'index.sqlite')
+        try:
+            return sorted(r[0] for r in conn.execute(
+                'SELECT person_id FROM claim_persons'))
+        finally:
+            conn.close()
+
+    def test_a_readable_twin_makes_the_name_ambiguous(self) -> None:
+        # The baseline the unreadable case has to match: two people share the
+        # name, so it resolves to neither (SPEC §7).
+        self._twin(decodable=True)
+        self.assertEqual(self._attached(), [])
+
+    def test_an_unreadable_twin_makes_it_ambiguous_too(self) -> None:
+        # THE guard. Pre-fix this returned ['p-1111111111'] - the claim filed
+        # on the readable Anne Müller, chosen for no reason but that her file
+        # opened. Note the accents: the key normalizes both sides the way the
+        # §13 slug does, so `Müller` and its `mller__` filename match.
+        self._twin(decodable=False)
+        self.assertEqual(self._attached(), [])
+
+    def test_an_unrelated_unreadable_record_withholds_nothing(self) -> None:
+        # No false alarm: an unreadable file is only allowed to withhold the
+        # name IT could have been called.
+        (self.root / 'people' / 'smith__john_P-3333333333.md').write_bytes(
+            b'---\nid: P-3333333333\nname: John Smith\nnote: M\xe9nard\n---\n')
+        self.assertEqual(self._attached(), ['p-1111111111'])
+
+    def test_one_readable_person_still_resolves(self) -> None:
+        self.assertEqual(self._attached(), ['p-1111111111'])
+
+    def test_an_unreadable_source_never_vetoes_a_person_name(self) -> None:
+        # The ('P','L') filter's equivalence contract (round-2 finding 8): a
+        # SOURCE's alias cannot clash a person's name out of the link map, so
+        # an UNREAD source must not either - otherwise the full build and the
+        # `--source` upsert stop agreeing row for row.
+        (self.root / 'sources' / 'anne_mller_S-2222222222.md').write_bytes(
+            b'---\nid: S-2222222222\ntitle: Anne M\xe9nard\n---\n')
+        self.assertEqual(self._attached(), ['p-1111111111'])
+
+    def test_the_upsert_reads_the_same_withholding(self) -> None:
+        # An upsert rebuilds the link map from the table; if the note were
+        # held in memory by the full build only, re-indexing one source would
+        # put the wrong attachment straight back.
+        self._twin(decodable=False)
+        self.assertEqual(self._attached(), [])
+        with redirect_stderr(io.StringIO()):
+            index.upsert_source(self.root, {}, 'S-1111111111')
+        conn = sqlite3.connect(self.root / '.cache' / 'index.sqlite')
+        try:
+            rows = sorted(r[0] for r in conn.execute(
+                'SELECT person_id FROM claim_persons'))
+        finally:
+            conn.close()
+        self.assertEqual(rows, [])
+
+    def test_a_re_saved_source_drops_its_own_unread_note(self) -> None:
+        # The note is keyed by path and must not outlive the condition.
+        (self.root / 'sources' / 'deed_S-1111111111.md').write_bytes(
+            b'---\nid: S-1111111111\ntitle: Deed M\xe9nard\n---\n')
+        with redirect_stderr(io.StringIO()):
+            index.build_index(self.root, {})
+        conn = sqlite3.connect(self.root / '.cache' / 'index.sqlite')
+        try:
+            self.assertEqual(
+                [r[0] for r in conn.execute('SELECT path FROM unread_records')],
+                ['sources/deed_S-1111111111.md'])
+        finally:
+            conn.close()
+        (self.root / 'sources' / 'deed_S-1111111111.md').write_text(
+            '---\nid: S-1111111111\ntitle: Deed\nsource_type: other\n---\n',
+            encoding='utf-8')
+        with redirect_stderr(io.StringIO()):
+            index.upsert_source(self.root, {}, 'S-1111111111')
+        conn = sqlite3.connect(self.root / '.cache' / 'index.sqlite')
+        try:
+            self.assertEqual(
+                [r[0] for r in conn.execute('SELECT path FROM unread_records')], [])
+        finally:
+            conn.close()

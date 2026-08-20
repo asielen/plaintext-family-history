@@ -197,6 +197,17 @@ CREATE TABLE citations(token TEXT, kind TEXT, path TEXT, line INTEGER);  -- toke
 -- string that resolves to a record: its canonical ID, any human stem, an on-demand C-id (added only
 -- when a [[C-…]] citation exists), and a person's/place's display name + variants. Lowercased.
 CREATE TABLE aliases(alias TEXT, canonical_id TEXT, kind TEXT);  -- kind: id | stem | name | variant | claim
+-- unread_records: what a record this build could not DECODE (#68) is CALLED, read off
+-- its filename (SPEC §13 puts a slug of the name there). Never a resolution - the whole
+-- point is to withhold one: a record absent from `aliases` cannot clash, so two people
+-- who really share a name read as one and `[[John Smith]]` attaches to whichever twin
+-- decoded. `_resolve_map_from_aliases` drops every alias keying the same
+-- (`_lib.name_match_key`, which normalizes both sides the way the slug does, so `Müller`
+-- and `mller__` match). Withholding only ever REMOVES a resolution, which is what makes
+-- a lossy key safe. `record_type` keeps the ('P','L') filter's equivalence contract: an
+-- unread SOURCE vetoes a person's name no more than a read one does. Persisted, not held
+-- in memory, so a `--source` upsert reads the same withholding the full build applied.
+CREATE TABLE unread_records(path TEXT, record_type TEXT, name_key TEXT);  -- record_type: P | S
 
 CREATE VIRTUAL TABLE notes_fts USING fts5(path, content);
 -- transcripts_fts holds the archive's copy of what a source SAYS. `fha index`

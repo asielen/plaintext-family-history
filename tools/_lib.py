@@ -857,7 +857,7 @@ GENERATED_COMPANION_KINDS: frozenset[str] = frozenset({'timeline', 'sources-inde
 # built on the column - so bump to force `fha index` to rebuild before
 # doctor/find/exporter queries trust it (same rationale as v2).
 # 6: places.notes column (place research notes rendered on place pages).
-INDEX_SCHEMA_VERSION = 6
+INDEX_SCHEMA_VERSION = 7
 PHOTOINDEX_SCHEMA_VERSION = 1
 CACHE_SCHEMA_KEY = 'schema_version'
 
@@ -5726,6 +5726,57 @@ def stub_slug_name(name: str, surname: str | None = None) -> tuple[str, str]:
     surname_tok = re.sub(r'[^a-z0-9_]', '', surname_tok)
     given = re.sub(r'[^a-z0-9_]', '', given)
     return (surname_tok or 'unknown', given or 'unknown')
+
+
+def name_match_key(text: str) -> str:
+    """A name reduced to the form a SPEC §13 filename slug would have reduced it to.
+
+    Two strings get the same key exactly when the filename grammar could not
+    have told them apart: `"Anne Müller"`, `"anne muller"` and the slug
+    `muller__anne` all key as `"anne mller"`. Word order does not matter (the
+    tokens are sorted), because `{surname}__{given}` reverses the spoken
+    order and both spellings name the same person.
+
+    The reduction is `stub_slug_name`'s, applied token by token: split on
+    whitespace and underscores (the slug's own word separator), then drop
+    everything outside `[a-z0-9]` from each token, exactly as that function's
+    final `re.sub` does. Hyphens are dropped rather than split on, so
+    `"Mary-Jane Hartley"` keys the same as its `hartley__maryjane` slug.
+    An empty key ('' - no letters or digits anywhere) matches nothing on
+    purpose: it says the name is unusable, which is not the same as saying
+    two unusable names are the same name.
+
+    This exists for one question, and it is a question about a file NOBODY
+    COULD READ (#68): "could this alias be the name of that record?" A record
+    whose bytes will not decode still has a filename, and SPEC §13 derives
+    that filename from the name - so the key is the most the archive can
+    honestly say about who is in there. It is used only to WITHHOLD a
+    resolution, never to make one: the reduction is lossy (Müller and Muller
+    key alike, and so would two genuinely different names that slug the same),
+    and a lossy key may say "I cannot be sure these are different people" but
+    must never be allowed to say "these are the same person".
+    """
+    tokens = [re.sub(r'[^a-z0-9]', '', part.lower())
+              for part in re.split(r'[\s_]+', str(text or ''))]
+    return ' '.join(sorted(tok for tok in tokens if tok))
+
+
+def record_filename_name_key(path: str | Path) -> str:
+    """`name_match_key` of what a record's FILENAME says its name is.
+
+    The trailing `_{ID}` is dropped first (it is identity, not name), leaving
+    the `{surname}__{given}` of a person record or the `{slug}` of a source
+    record - both of which are name-derived by SPEC §13. A filename with no
+    trailing ID keys on the whole stem, which is the best available reading of
+    a hand-authored file that never got one.
+
+    A companion (`…_research_P-…`) keys on its kind word too, so it matches no
+    person's name - correct, and harmless: this key only ever withholds, and a
+    key that matches nothing withholds nothing.
+    """
+    stem = Path(path).stem
+    stem = re.sub(r'_[PSCLH]-[0-9a-hjkmnp-tv-z]{10}$', '', stem, flags=re.I)
+    return name_match_key(stem)
 
 
 def stub_filename(name: str | None, pid: str, surname: str | None = None) -> str:
