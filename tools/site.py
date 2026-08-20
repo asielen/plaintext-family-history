@@ -168,6 +168,7 @@ from _lib import (
     pip_command,
     PROVISIONAL_VITAL_FIELDS,
     read_record,
+    read_text_or_report,
     resolve_path,
     resolve_root_arg,
     Result,
@@ -323,6 +324,42 @@ _FAMILY_GROUPS = [
     ('associate', 'Associates'),
     ('neighbor', 'Neighbors'),
 ]
+
+
+# ── Undecodable records (#68 follow-through; see `_lib.read_record`'s docstring) ──
+# Left at its default, `read_record` raises `UnicodeDecodeError` on a file
+# saved in another codepage (cp1252, a Windows editor's default). Every site
+# below opts in to the reporting shape instead, in one of two ways depending
+# on what it already does with the failure:
+
+def _raise_friendly_decode_error(path: Path) -> None:
+    """`on_decode_error` for a site that already catches its read in
+    `except Exception as e:` and shows `str(e)` to the human inside a
+    WARNING naming the file. Left unset, that `e` would be the raw
+    `UnicodeDecodeError` - accurate, but stated in byte offsets and codec
+    names that mean nothing to a non-technical reader. Raising a friendlier
+    exception here lands in that same `except` block (Python allows a new
+    exception to be raised from inside a callback an `except` calls), so it
+    swaps only what `str(e)` says - no call site's control flow changes.
+    Wording echoes `fha lint`'s W128 (and `fha index`'s undecodable-files
+    note) - same cause, same fix, said in one line rather than W128's full
+    paragraph, because this one arrives inside a build report."""
+    raise ValueError(
+        "this file isn't saved as UTF-8 text - a Windows editor's default "
+        "encoding, often cp1252, is the usual cause; open it and save it "
+        "again choosing UTF-8"
+    )
+
+
+def _ignore_decode_error(path: Path) -> None:
+    """`on_decode_error` for a site that branches on `rec['undecodable']`
+    itself rather than showing `str(e)` anywhere. Supplying ANY callable
+    (even one that does nothing) is what turns a bad decode from a raise
+    into the empty record `read_record` returns for a caller who asked to
+    be told - see its docstring. A bare `except Exception` could not have
+    told a decode failure apart from a real parse error; this makes the two
+    paths explicit even at a site where they happen to share one fallback."""
+    return None
 
 
 def _today() -> str:
@@ -1302,7 +1339,8 @@ class _SiteBuilder:
             if not row['path']:
                 continue
             try:
-                rec = read_record(self.archive_root / row['path'])
+                rec = read_record(self.archive_root / row['path'],
+                                   on_decode_error=_raise_friendly_decode_error)
                 trouble = rec['parse_errors'][0][1] if rec['parse_errors'] else None
             except Exception as e:   # noqa: BLE001 - any failure is the same failure here
                 rec, trouble = None, str(e)
@@ -1329,7 +1367,8 @@ class _SiteBuilder:
             if row['restricted'] or not row['path']:
                 continue   # index-restricted sources are already handled
             try:
-                rec = read_record(self.archive_root / row['path'])
+                rec = read_record(self.archive_root / row['path'],
+                                   on_decode_error=_raise_friendly_decode_error)
                 trouble = rec['parse_errors'][0][1] if rec['parse_errors'] else None
             except Exception as e:   # noqa: BLE001 - any failure is the same failure here
                 rec, trouble = None, str(e)
@@ -1758,7 +1797,8 @@ class _SiteBuilder:
         citation = ''
         record_body = ''
         try:
-            rec = read_record(self.archive_root / row['path'])
+            rec = read_record(self.archive_root / row['path'],
+                               on_decode_error=_raise_friendly_decode_error)
             citation = ' '.join(str(rec['meta'].get('citation', '') or '').split())
             record_body = rec.get('body') or ''
             if rec['parse_errors']:
@@ -2023,9 +2063,34 @@ class _SiteBuilder:
         if not row:
             return [], []
         try:
-            meta = read_record(self.archive_root / row['path'])['meta']
-        except Exception:
+            rec = read_record(self.archive_root / row['path'],
+                               on_decode_error=_ignore_decode_error)
+        except Exception as e:  # noqa: BLE001 - defensive; read_record does not
+            # raise once on_decode_error is supplied, short of a genuine bug
+            self.messages.append(
+                f'WARNING: could not read {row["path"]} ({e}); this person\'s '
+                f'alternate names and editorial tags are omitted from their page.')
             return [], []
+        if rec.get('undecodable'):
+            # This one speaks where its silent neighbours (`_provisional_vital`,
+            # `_person_hypothesis_ties`, `_build_family_wings`) do not, and the
+            # difference is what the message SAYS, not which file it names.
+            # `_person_prose` reads this same file earlier in the same
+            # `build_person_page` and warns about it - but its line ends
+            # "skipping its prose", which a reader can fairly take as the whole
+            # cost. The header is a second, visibly separate part of the page,
+            # so a second line naming what else went missing is information,
+            # not an echo. It costs one extra line per broken file per build
+            # (this helper runs once per page), which is the noise the
+            # per-vital and per-ancestor helpers had to avoid.
+            self.messages.append(
+                f'WARNING: could not read {row["path"]} (this file isn\'t saved '
+                f'as UTF-8 text - a Windows editor\'s default encoding, often '
+                f'cp1252, is the usual cause); this person\'s alternate names '
+                f'and editorial tags are omitted from their page. Open it and '
+                f'save it again choosing UTF-8, then run `fha site` again.')
+            return [], []
+        meta = rec['meta']
         restricted = set() if self.linked else self.restricted_names.get(pid, set())
         seen = {display_name.strip().lower()}
         alts: list[str] = []
@@ -2211,10 +2276,19 @@ class _SiteBuilder:
         if not row:
             return None
         try:
-            meta = read_record(self.archive_root / row['path'])['meta']
-        except Exception:
+            rec = read_record(self.archive_root / row['path'],
+                               on_decode_error=_ignore_decode_error)
+        except Exception:  # noqa: BLE001 - defensive; see _ignore_decode_error
             return None
-        val = meta.get(field)
+        if rec.get('undecodable'):
+            # Same file `_person_prose` reads for this same page - its own
+            # WARNING already names it. This helper runs up to four times per
+            # page (birth/death x date/place), so repeating the warning here
+            # would spam one broken file's worth of near-identical lines
+            # rather than add information; staying quiet is the deliberate
+            # choice, not an oversight.
+            return None
+        val = rec['meta'].get(field)
         return str(val).strip() if val not in (None, '') else None
 
     def _person_prose(self, row: sqlite3.Row, page_dir: Path) -> tuple:
@@ -2235,7 +2309,8 @@ class _SiteBuilder:
         rendering on a publication path, and the prose returns the moment
         the marker is repaired (or the draft accepted) and the site rebuilt."""
         try:
-            rec = read_record(self.archive_root / row['path'])
+            rec = read_record(self.archive_root / row['path'],
+                               on_decode_error=_raise_friendly_decode_error)
         except Exception as e:
             self.messages.append(f'WARNING: could not read {row["path"]} ({e}); skipping its prose.')
             return '', '', '', '', [], []
@@ -2696,9 +2771,16 @@ class _SiteBuilder:
         if row is None:
             return {}
         try:
-            meta = read_record(self.archive_root / row['path'])['meta']
+            rec = read_record(self.archive_root / row['path'],
+                               on_decode_error=_ignore_decode_error)
         except Exception:  # noqa: BLE001 - an unreadable record just contributes nothing here
             return {}
+        if rec.get('undecodable'):
+            # Same file `_person_prose` already reads for this page and
+            # warns about; contributing nothing here is deliberate, not an
+            # oversight - see `_ignore_decode_error`.
+            return {}
+        meta = rec['meta']
         out: dict[str, list[str]] = {}
         for group, target in self._hypothesis_tie_ids_from_meta(meta, pid):
             if skip is not None and target in skip.get(group, ()):
@@ -2751,9 +2833,28 @@ class _SiteBuilder:
         if row is None:
             return []
         try:
-            meta = read_record(self.archive_root / row['path'])['meta']
+            rec = read_record(self.archive_root / row['path'],
+                               on_decode_error=_ignore_decode_error)
         except Exception:  # noqa: BLE001 - an unreadable record just contributes nothing here
             return []
+        if rec.get('undecodable'):
+            # Contributing nothing here is deliberate, not an oversight - see
+            # `_ignore_decode_error`. Kept symmetric with the sibling read in
+            # `_person_hypothesis_ties`, which stays quiet for the same reason
+            # (see its comment), and staying quiet costs no coverage even
+            # though this one is reached for ancestors rather than only for
+            # the page's own subject. This method reads the record of whoever
+            # the pedigree walk is standing on, and it only runs at all under
+            # `if self.workbench:` - a mode that builds a page for EVERY
+            # person in the index, stubs included (see `prepare()`'s
+            # person_pages loop). So whoever's file this is has a page of
+            # their own in this same build, and `_person_prose` names the file
+            # there. `prepare()`'s file-scan warning is indeed standalone-only
+            # and never runs here, but it is not the only channel: the page
+            # build is. A warning here would just repeat that line once per
+            # descendant whose pedigree walks through this ancestor.
+            return []
+        meta = rec['meta']
         out: list[str] = []
         for group, target in self._hypothesis_tie_ids_from_meta(meta, pid):
             if group == 'parents' and target not in out:
@@ -3104,8 +3205,26 @@ class _SiteBuilder:
         if not self.linked and self._person_is_redacted(meta):
             return None
         try:
-            rec = read_record(self.archive_root / meta['path'])
-        except Exception:  # noqa: BLE001 - an unreadable record just yields no portrait
+            rec = read_record(self.archive_root / meta['path'],
+                               on_decode_error=_ignore_decode_error)
+        except Exception as e:  # noqa: BLE001 - defensive; see _ignore_decode_error
+            self.messages.append(
+                f'WARNING: could not read {meta["path"]} ({e}); skipping the '
+                f'profile photo for {fmt_id_display(pid)}.')
+            return None
+        if rec.get('undecodable'):
+            # Unlike the workbench-only hypothesis-tie helpers above, this one
+            # is memoized per pid (`_profile_photo_file`'s cache) and reached
+            # for ancestors/spouses/children drawn into ANY tree on the site,
+            # not only the broken record's own page - `prepare()`'s file-scan
+            # warning (standalone only) may never run and no other read of
+            # this file is guaranteed, so this is worth naming once here.
+            self.messages.append(
+                f'WARNING: could not read {meta["path"]} (this file isn\'t '
+                f'saved as UTF-8 text - a Windows editor\'s default encoding, '
+                f'often cp1252, is the usual cause); skipping the profile '
+                f'photo for {fmt_id_display(pid)}. Open it and save it again '
+                f'choosing UTF-8, then run `fha site` again.')
             return None
         ref = str((rec.get('meta') or {}).get('profile_photo') or '').strip()
         if not ref:
@@ -3406,9 +3525,32 @@ class _SiteBuilder:
         if self._discoveries is not None:
             return self._discoveries
         path = self.archive_root / 'notes' / 'discoveries.md'
-        try:
-            text = path.read_text(encoding='utf-8')
-        except OSError:
+        # NOT a plain `read_text` with an `except OSError` (#68): a
+        # `UnicodeDecodeError` is a ValueError, so a discoveries.md saved in
+        # another codepage (cp1252, a Windows editor's default) sailed straight
+        # past that guard and raised out of `run_site` itself - past that
+        # function's contract to RETURN a Result, so the CLI fell back to
+        # `fha.py`'s catch-all (raw codec text, exit 3) and serve's workbench
+        # rebuild, which calls `run_site` directly, took the exception. The
+        # only read in this module that could still do that, because it is the
+        # only one that does not go through `read_record`.
+        # `read_text_or_report` splits the two failures the way this method
+        # already wants them split: a missing/unreadable file stays the silent
+        # skip it has always been (running without a discoveries log is
+        # ordinary), and a bad decode is reported. Memoized like the rest of
+        # this method, so the discoveries page and the home teaser - both
+        # callers - earn exactly one warning between them.
+        undecodable: list[Path] = []
+        text = read_text_or_report(path, on_decode_error=undecodable.append)
+        if text is None:
+            if undecodable:
+                self.messages.append(
+                    "WARNING: could not read notes/discoveries.md (this file "
+                    "isn't saved as UTF-8 text - a Windows editor's default "
+                    "encoding, often cp1252, is the usual cause); the "
+                    'discoveries page and the home page teaser are empty. Open '
+                    'it and save it again choosing UTF-8, then run `fha site` '
+                    'again.')
             self._discoveries = ('', [])
             return self._discoveries
         # Exclude unaccepted AI-DRAFT prose before publishing, same as person
@@ -3748,9 +3890,16 @@ class _SiteBuilder:
             meta = None
             if row is not None:
                 try:
-                    meta = read_record(self.archive_root / row['path'])['meta']
+                    rec = read_record(self.archive_root / row['path'],
+                                       on_decode_error=_ignore_decode_error)
                 except Exception:  # noqa: BLE001 - an unreadable record contributes nothing
-                    meta = None
+                    rec = None
+                # Same file `_person_prose` reads for this same page, earlier
+                # in `build_person_page` - its own WARNING already names an
+                # undecodable one, so contributing nothing here (rather than
+                # repeating it) is deliberate, not an oversight.
+                if rec is not None and not rec.get('undecodable'):
+                    meta = rec['meta']
             if meta:
                 have = {'spouses': {normalize_id(str(s['id'])) for s in spouses},
                         'children': {normalize_id(str(c['id'])) for c in children}}
@@ -3944,7 +4093,9 @@ class _SiteBuilder:
         home_md = self.archive_root / 'notes' / 'home.md'
         if home_md.is_file():
             try:
-                body = (read_record(home_md).get('body') or '').strip()
+                body = (read_record(home_md,
+                                     on_decode_error=_raise_friendly_decode_error)
+                        .get('body') or '').strip()
                 if body:
                     # The text AS WRITTEN - any pending AI-DRAFT block intact -
                     # captured before draft-stripping below, for the workbench
@@ -3967,8 +4118,9 @@ class _SiteBuilder:
                         intro = self._markup(_prose_to_html(body, render, embed, drop_private=not self.linked))
                         if self.workbench:
                             intro_raw = body_as_written
-            except Exception:  # noqa: BLE001 - a bad home.md just falls back to the default
-                self.messages.append('WARNING: notes/home.md could not be read; using the default intro.')
+            except Exception as e:  # noqa: BLE001 - a bad home.md just falls back to the default
+                self.messages.append(
+                    f'WARNING: notes/home.md could not be read ({e}); using the default intro.')
 
         # Optional hero banner. `fha.yaml site: hero:` is either a scalar photo
         # ref (an S-id or path - legacy shape) or a mapping documented in
