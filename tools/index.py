@@ -89,6 +89,7 @@ from _lib import (
     sqlite_cache_schema_status,
     strip_generational_suffix,
     strip_link_wrapper,
+    undecodable_file_recorder,
     unreadable_dir_recorder,
     walk_files,
 )
@@ -1960,7 +1961,10 @@ def build_index(archive_root: Path, fha_config: dict, verbose: bool = False) -> 
     # inside the record, this is a re-save of the whole file - and because the
     # message below has to name what the index lost, which lint's cannot.
     undecodable_files: list[Path] = []
-    on_decode_error = undecodable_files.append
+    # The shared recorder, not a bare `list.append`: since the record walks
+    # feed this too (#68), a file can now be reached by more than one pass in
+    # one build, and the human should read its name once.
+    on_decode_error = undecodable_file_recorder(undecodable_files)
 
     try:
         with conn:

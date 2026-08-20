@@ -5184,11 +5184,11 @@ def read_text_or_report(path: str | Path, on_decode_error=None) -> str | None:
     which every caller already treats as ordinary. Pass
     `undecodable_file_recorder`'s callback to collect paths for one aggregated
     report instead of a silent skip (the shape `fha lint`'s W128 uses); pass a
-    plain `list.append`, or nothing at all, for a caller that only needs the
-    text (the shape `index.py`'s per-record reads use for their own
-    `on_decode_error` callback - this function does not replace those call
-    sites, which already catch `UnicodeDecodeError` by name; it exists so
-    every site written AFTER this one does not have to).
+    plain `list.append` for a caller that aggregates its own way (the shape
+    `index.py`'s note/research-log/capture-log reads use, which catch
+    `UnicodeDecodeError` by name from #66 and are not migrated onto this
+    function); pass nothing at all for a caller that only needs the text and
+    already treats an absent file as ordinary.
 
     Never re-encodes, rewrites, or otherwise touches the file - it is the
     human's, and it is not damaged, only saved in a different encoding.
