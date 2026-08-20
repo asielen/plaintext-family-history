@@ -407,7 +407,7 @@
     {
       "path": ".fha/tools/README.md",
       "category": "operating",
-      "sha256": "92fab141d9f9a20b421038ae4b470fa4dd39228b24fb31e9f5297a93727aa18d",
+      "sha256": "ff2da56173f823886237e5596eab258116c6a7d8da151d2038d22108743e2d47",
       "spec_version": "1.2",
       "src": "tools/README.md"
     },
@@ -813,7 +813,7 @@
     {
       "path": ".fha/tools/xref.py",
       "category": "operating",
-      "sha256": "464c465b1d254ae4a432cf954a5d84bad8890a05e94c841b06b9ca41f7fc94e6",
+      "sha256": "699cd4b4000458ecc40cfa438a7267ec194249df0c6679f7c60d2a77f4be6187",
       "spec_version": "1.2",
       "src": "tools/xref.py"
     },
@@ -864,7 +864,7 @@
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "4ae6ab6bc60f55b053bb693a0b2ed4d1bd1a7e0082cbedd381fa7ca70d3c26f1",
+      "sha256": "1dee2d7da32e6e2c4bc32e25e5ff559f01d04aae20a5bd7529ec849c35b0c361",
       "spec_version": "1.2"
     },
     {

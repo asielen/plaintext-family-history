@@ -463,6 +463,205 @@ class XrefTests(unittest.TestCase):
         self.assertEqual(result['status'], 'failed')
         self.assertEqual(result['groups'], [])
 
+    # ── #63: marriage/divorce bucketing by spouse_parties, not "every other
+    # person" ──────────────────────────────────────────────────────────────
+
+    def test_two_records_of_one_marriage_are_compared_via_roles_scoped_certificate(self) -> None:
+        # #63's original bug: a six-person certificate correctly scoped by
+        # roles: spouse: and a plain two-person claim recording the SAME
+        # marriage with a conflicting place must be compared. Bucketing by
+        # "every other named person" (the pre-#63 behavior) keys the
+        # certificate by all four bystanders and the plain claim by just the
+        # other spouse - the two never land in the same bucket, so the
+        # contradiction is missed and `fha xref` reports "no
+        # contradictions" when it actually means "couldn't tell".
+        self._seed_persons_sources()
+        for pid, name in (
+            ('p-bbbbbbbbbb', 'Bride'),
+            ('p-cccccccccc', 'Groom Father'),
+            ('p-dddddddddd', 'Groom Mother'),
+            ('p-eeeeeeeeee', 'Bride Father'),
+            ('p-ffffffffff', 'Bride Mother'),
+        ):
+            self.conn.execute(
+                "INSERT INTO persons(id, name, living, tier, path) VALUES (?,?,'false','curated',?)",
+                (pid, name, f'{pid}.md'),
+            )
+        self.conn.execute(
+            "INSERT INTO sources(id, title, path) VALUES ('s-3333333333','Marriage Certificate','c.md')"
+        )
+        _insert_claim(
+            self.conn, 'c-aaaaaaaaaa', 's-3333333333', 'marriage',
+            'married in Kansas', date_edtf='1870', place_text='Kansas',
+            persons=['p-aaaaaaaaaa', 'p-bbbbbbbbbb', 'p-cccccccccc',
+                     'p-dddddddddd', 'p-eeeeeeeeee', 'p-ffffffffff'],
+            roles={'p-aaaaaaaaaa': 'spouse', 'p-bbbbbbbbbb': 'spouse'},
+        )
+        _insert_claim(
+            self.conn, 'c-bbbbbbbbbb', 's-2222222222', 'marriage',
+            'married in Missouri', date_edtf='1870', place_text='Missouri',
+            persons=['p-aaaaaaaaaa', 'p-bbbbbbbbbb'],
+        )
+        self.conn.commit()
+
+        result = xref.run_xref(self.archive_root)
+        self.assertEqual(result['status'], 'ok')
+        # Only the couple get a bucket for this claim - never the
+        # certificate's parents, who are named on it but are not one of the
+        # two people roles: spouse: actually calls married (#63's second
+        # open question).
+        self.assertEqual(
+            sorted(g['person_name'] for g in result['groups']),
+            ['Bride', 'Test Person'],
+        )
+        for group in result['groups']:
+            self.assertEqual(len(group['pairs']), 1)
+            self.assertEqual(group['pairs'][0]['kind'], 'contradicts')
+        self.assertEqual(result['unscoped'], [])
+
+    def test_roles_less_certificate_not_compared_against_unrelated_marriage(self) -> None:
+        # #63's second probe (the naive-fix regression): a roles-less
+        # certificate (no roles: spouse: map, so spouse_parties cannot tell
+        # the couple from the parents also named on it) must NOT be compared
+        # against the parents' own, unrelated marriage. See
+        # test_naive_spouse_parties_substitution_would_fabricate_contradiction
+        # below for a concrete demonstration of why the obvious substitution
+        # gets this wrong. The certificate should instead be reported in
+        # `unscoped`, paired with nothing.
+        self._seed_persons_sources()
+        self.conn.execute(
+            "INSERT INTO persons(id, name, living, tier, path) VALUES "
+            "('p-bbbbbbbbbb','Bride','false','curated','y.md')")
+        self.conn.execute(
+            "INSERT INTO persons(id, name, living, tier, path) VALUES "
+            "('p-cccccccccc','Father','false','curated','z.md')")
+        self.conn.execute(
+            "INSERT INTO persons(id, name, living, tier, path) VALUES "
+            "('p-dddddddddd','Mother','false','curated','w.md')")
+        self.conn.execute(
+            "INSERT INTO sources(id, title, path) VALUES ('s-3333333333','Certificate','c.md')"
+        )
+        self.conn.execute(
+            "INSERT INTO sources(id, title, path) VALUES ('s-4444444444','Parents Marriage','d.md')"
+        )
+        # The roles-less certificate: groom, bride, and the groom's parents -
+        # no roles: map, so spouse_parties cannot tell the couple from the
+        # parents.
+        _insert_claim(
+            self.conn, 'c-aaaaaaaaaa', 's-3333333333', 'marriage',
+            'married, certificate names four people', date_edtf='1880',
+            persons=['p-aaaaaaaaaa', 'p-bbbbbbbbbb', 'p-cccccccccc', 'p-dddddddddd'],
+        )
+        # The parents' own, properly-scoped 1860 marriage - unrelated to
+        # their son's certificate above.
+        _insert_claim(
+            self.conn, 'c-bbbbbbbbbb', 's-4444444444', 'marriage',
+            'married 1860', date_edtf='1860',
+            persons=['p-cccccccccc', 'p-dddddddddd'],
+            roles={'p-cccccccccc': 'spouse', 'p-dddddddddd': 'spouse'},
+        )
+        self.conn.commit()
+
+        result = xref.run_xref(self.archive_root)
+        self.assertEqual(result['status'], 'ok')
+        self.assertEqual(result['groups'], [])
+        unscoped_ids = [item['claim']['id'] for item in result['unscoped']]
+        self.assertEqual(unscoped_ids, ['c-aaaaaaaaaa'])
+        self.assertEqual(
+            sorted(result['unscoped'][0]['persons']),
+            sorted(['Test Person', 'Bride', 'Father', 'Mother']),
+        )
+
+    def test_naive_spouse_parties_substitution_would_fabricate_contradiction(self) -> None:
+        # #63 measured that the "obvious" fix - swap _lib.spouse_parties in
+        # for "every other named person" but keep the ORIGINAL two-bucket
+        # split (by_group vs no_counterpart/all_of_type, where no_counterpart
+        # entries are compared against every claim of that type) - is not
+        # safe: an empty party set still lands a positive, merely-ambiguous
+        # certificate in `no_counterpart`, which is the bucket built for
+        # genuine negations and gets compared against every marriage claim
+        # on file for that person.
+        #
+        # This reimplements exactly that naive substitution - NOT xref.py's
+        # real code, which keeps ambiguous claims out of every bucket (see
+        # _run_xref_queries's `unscoped_ids`) - against the same fixture as
+        # test_roles_less_certificate_not_compared_against_unrelated_marriage,
+        # to prove with real output that the naive approach fabricates a
+        # contradiction between a certificate and an unrelated marriage.
+        from _lib import spouse_parties as _spouse_parties
+
+        cert = {
+            'id': 'c-cert', 'source_id': 's-cert', 'type': 'marriage',
+            'date_edtf': '1880', 'place_id': None, 'place_text': None,
+            'value': 'married, certificate names four people', 'negated': 0,
+        }
+        parents_marriage = {
+            'id': 'c-parents', 'source_id': 's-parents', 'type': 'marriage',
+            'date_edtf': '1860', 'place_id': None, 'place_text': None,
+            'value': 'married 1860', 'negated': 0,
+        }
+        cert_persons = [
+            ('p-groom', None), ('p-bride', None),
+            ('p-father', None), ('p-mother', None),
+        ]
+        parents_persons = [('p-father', 'spouse'), ('p-mother', 'spouse')]
+
+        # The father's bucket, built the naive way.
+        by_group: dict = {}
+        no_counterpart: list = []
+        all_of_type: list = []
+        for claim, persons_with_roles in (
+            (cert, cert_persons), (parents_marriage, parents_persons),
+        ):
+            others = frozenset(
+                p for p in _spouse_parties(persons_with_roles) if p != 'p-father'
+            )
+            all_of_type.append(claim['id'])
+            if others:
+                by_group.setdefault(others, []).append(claim['id'])
+            else:
+                no_counterpart.append(claim['id'])
+
+        # The certificate's spouse_parties is empty (no roles: map says
+        # which two of the four are the couple), so the naive substitution
+        # lands it in no_counterpart - and no_counterpart is compared
+        # against every marriage claim for the father, including his own,
+        # unrelated 1860 marriage.
+        self.assertEqual(no_counterpart, ['c-cert'])
+        self.assertIn('c-parents', all_of_type)
+
+        kind = xref._classify_pair(cert, parents_marriage)
+        self.assertEqual(
+            kind, 'contradicts',
+            'the naive substitution would report the certificate as '
+            "contradicting the father's own, unrelated marriage")
+
+    def test_negated_marriage_still_compares_broadly_after_scoping_fix(self) -> None:
+        # Two-sided guard for #63: a genuine negation (SPEC §8.6) with no
+        # spouse named must still be compared against every other marriage
+        # claim for that person - the same behavior no_counterpart/
+        # all_of_type gave before this fix (see also
+        # test_negated_marriage_with_no_spouse_named_contradicts_positive_marriage
+        # above). A negated claim is identified from its OWN `negated`
+        # field, never from an empty spouse_parties result, so this must
+        # keep working even though the bucketing now runs every
+        # marriage/divorce claim through spouse_parties first.
+        self._seed_persons_sources()
+        self.conn.execute("INSERT INTO persons(id, name, living, tier, path) VALUES "
+                           "('p-bbbbbbbbbb','Spouse','false','curated','y.md')")
+        _insert_claim(self.conn, 'c-aaaaaaaaaa', 's-1111111111', 'divorce',
+                       'no divorce on record', date_edtf=None, negated=1,
+                       persons=['p-aaaaaaaaaa'])
+        _insert_claim(self.conn, 'c-bbbbbbbbbb', 's-2222222222', 'divorce',
+                       'divorced Spouse', date_edtf='1870',
+                       persons=['p-aaaaaaaaaa', 'p-bbbbbbbbbb'],
+                       roles={'p-aaaaaaaaaa': 'spouse', 'p-bbbbbbbbbb': 'spouse'})
+        self.conn.commit()
+
+        result = xref.run_xref(self.archive_root)
+        pairs = result['groups'][0]['pairs']
+        self.assertEqual(pairs[0]['kind'], 'contradicts')
+
 
 if __name__ == '__main__':
     unittest.main()
