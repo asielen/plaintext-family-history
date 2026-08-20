@@ -2373,5 +2373,264 @@ class BirthClaimWithoutParentageW126Tests(unittest.TestCase):
         self.assertNotIn(str(root), w[0].message)
 
 
+class UndecodableSingleFileReadTests(unittest.TestCase):
+    """#68, call-shape A: a single required-file read - E009's questions.md
+    (line ~831 today) and E018's AGENTS.md (line ~3098 today).
+
+    Both used to be guarded only by `except OSError`, which does not catch
+    `UnicodeDecodeError` (a ValueError, not an OSError). A file saved in
+    another codepage - cp1252 is what a Windows editor writes by default, and
+    the accented names this archive is full of (Krakow, Muller, nee) are
+    exactly the bytes that differ from UTF-8 - crashed `fha lint` outright
+    instead of being treated as the ordinary "nothing there to check" case a
+    missing file already was.
+    """
+
+    def setUp(self) -> None:
+        self.root = Path(tempfile.mkdtemp())
+        (self.root / 'notes').mkdir(parents=True)
+        (self.root / 'people').mkdir(parents=True)
+        (self.root / 'sources').mkdir(parents=True)
+        (self.root / 'fha.yaml').write_text('roots: {}\n', encoding='utf-8')
+
+    def _cp1252(self, rel: str, text: str) -> Path:
+        p = self.root / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(text.encode('cp1252'))
+        return p
+
+    def test_questions_md_cp1252_does_not_crash_lint(self) -> None:
+        self._cp1252('notes/questions.md',
+                     '## Q: Who was she?\n\nGrandma in Kraków, née Müller.\n')
+        findings, reg = lint._run_lint_core(self.root, {})
+        self.assertEqual(reg.questions_content, '',
+                         'an undecodable questions.md reads as "nothing to check", not a crash')
+
+    def test_questions_md_undecodable_is_recorded(self) -> None:
+        path = self._cp1252('notes/questions.md', 'Grandma in Kraków.\n')
+        _findings, reg = lint._run_lint_core(self.root, {})
+        self.assertIn(path, reg.undecodable_files)
+
+    def test_agents_md_cp1252_does_not_crash_and_e018_stays_silent(self) -> None:
+        self._cp1252('AGENTS.md', '# Agents\n\nUse fha promote. Grandma in Kraków.\n')
+        findings: list = []
+        # The OLD 2-arg call shape (on_decode_error defaults to None) - still
+        # valid after the fix, so this alone proves the crash is gone.
+        lint._check_agent_drift(self.root, findings)
+        self.assertEqual(findings, [],
+                         'a file that cannot be read has nothing to check for E018 - silent, not a crash')
+
+    def test_agents_md_bytes_are_never_touched(self) -> None:
+        path = self._cp1252('AGENTS.md', '# Agents\n\nGrandma in Kraków.\n')
+        before = path.read_bytes()
+        lint._check_agent_drift(self.root, [])
+        self.assertEqual(before, path.read_bytes(),
+                         "the file is the human's and is not damaged - never touch it")
+
+
+class UndecodablePerFileWalkTests(unittest.TestCase):
+    """#68, call-shape B: a per-file loop read that must not let one bad file
+    cost the rest of the walk - the notes/token-ref sweep (line ~862 today,
+    `_walk_archive`) and the GENERATED-header sweep (`_check_generated_headers`,
+    line ~3007 today).
+    """
+
+    def setUp(self) -> None:
+        self.root = Path(tempfile.mkdtemp())
+        (self.root / 'notes').mkdir(parents=True)
+        (self.root / 'people').mkdir(parents=True)
+        (self.root / 'sources').mkdir(parents=True)
+        (self.root / 'fha.yaml').write_text('roots: {}\n', encoding='utf-8')
+
+    def _cp1252(self, rel: str, text: str) -> Path:
+        p = self.root / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(text.encode('cp1252'))
+        return p
+
+    def test_notes_walk_cp1252_does_not_crash_lint(self) -> None:
+        self._cp1252('notes/bad.md', '# Bad\n\nGrandma in Kraków.\n')
+        (self.root / 'notes' / 'good.md').write_text(
+            '# Good\n\nfindable words here [H-abcabcabca]\n', encoding='utf-8')
+        findings, reg = lint._run_lint_core(self.root, {})
+        # One bad note costs only itself - the good note's H-id reference
+        # still registers, exactly as index.py's sibling fix keeps indexing
+        # the notes that DO decode (#66's "one undecodable note must not cost
+        # the notes that DO decode").
+        self.assertIn('h-abcabcabca', reg.hypothesis_ids)
+
+    def test_notes_walk_undecodable_file_is_recorded(self) -> None:
+        path = self._cp1252('notes/bad.md', 'Grandma in Kraków.\n')
+        _findings, reg = lint._run_lint_core(self.root, {})
+        self.assertIn(path, reg.undecodable_files)
+
+    def test_generated_headers_cp1252_does_not_crash(self) -> None:
+        # Placed outside people/sources/notes so `_lib.read_record` (a
+        # DIFFERENT, out-of-scope #68 site - see UndecodableResearchCompanionTests
+        # below) never touches this path first: isolates the one line this
+        # function owns.
+        self._cp1252('stray.md', '# Stray\n\nGrandma in Kraków.\n')
+        findings: list = []
+        lint._check_generated_headers(self.root, findings)   # old 2-arg call
+        self.assertEqual(findings, [])
+
+    def test_generated_headers_still_reads_the_rest_of_the_tree(self) -> None:
+        self._cp1252('stray.md', '# Stray\n\nGrandma in Kraków.\n')
+        (self.root / 'ok.md').write_text(
+            '<!-- GENERATED by fha views -->\n\nbody\n', encoding='utf-8')
+        findings: list = []
+        # Must not raise, and must still walk past the bad file to ok.md.
+        lint._check_generated_headers(self.root, findings)
+
+
+class UndecodableFormatCheckTests(unittest.TestCase):
+    """#68, call-shape C: the `--format-check` / `--format-write` read
+    (`_check_format`, line ~3152 today).
+
+    Only `_check_format` (the READ side) is in scope here. `--format-write`'s
+    actual write path, `_fix_format`, reads through `_lib.read_text_exact` -
+    a different call shape (`.open('r', encoding='utf-8', newline='')`, not
+    `read_text(encoding='utf-8')`) that the issue's grep sweep never matched,
+    and it is NOT touched by this change - see the PR body.
+    """
+
+    def setUp(self) -> None:
+        self.root = Path(tempfile.mkdtemp())
+        (self.root / 'fha.yaml').write_text('roots: {}\n', encoding='utf-8')
+
+    def _cp1252(self, rel: str, text: str) -> Path:
+        p = self.root / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(text.encode('cp1252'))
+        return p
+
+    def test_format_check_cp1252_does_not_crash(self) -> None:
+        # No final newline and CRLF-worthy content - if this were read, W109
+        # would fire twice. It must not be read at all.
+        path = self._cp1252('stray.md', 'Grandma in Kraków.')
+        findings: list = []
+        lint._check_format(path, findings)   # old 2-arg call
+        self.assertEqual(findings, [],
+                         'an undecodable file was never read, so W109 has nothing to report')
+
+    def test_format_check_via_run_lint_does_not_crash(self) -> None:
+        self._cp1252('stray.md', 'Grandma in Kraków.')
+        result = lint.run_lint(self.root, {}, format_check=True)
+        self.assertNotIn('W109', [m.code for m in result.messages])
+        self.assertIn('W128', [m.code for m in result.messages])
+
+
+class UndecodableResearchCompanionTests(unittest.TestCase):
+    """#68 site 2 (line ~848 today): the per-person research-companion read
+    that feeds E009's research scope.
+
+    Masking discovery, recorded here as an executable fact rather than only
+    as prose: `_process_person_file` reads the SAME path moments earlier in
+    the SAME walk, through `_lib.read_record` (`_lib.py` line ~2463), which
+    has its own unguarded `except OSError`-only read of the identical bytes -
+    one of #68's other 25 sites (in fact one of `_lib.py`'s own three),
+    explicitly left for a later batch by this dispatch. Because both reads
+    decode the identical file with the identical codec, `read_record` always
+    fails FIRST on a genuinely undecodable person/research file, and the line
+    this PR fixed is never reached in practice yet.
+
+    `test_read_record_masks_this_site_today` pins that fact so it cannot
+    silently stop being true; `test_the_companion_read_itself_skips_not_crashes`
+    patches `read_record` out to isolate and prove the ONE line #68 actually
+    asked for here. The PR body flags `_lib.read_record` as the priority
+    pickup for the follow-up batch, since fixing it is what makes this
+    already-shipped line start mattering for every person and source file.
+    """
+
+    def setUp(self) -> None:
+        self.root = Path(tempfile.mkdtemp())
+        (self.root / 'people').mkdir(parents=True)
+        (self.root / 'fha.yaml').write_text('roots: {}\n', encoding='utf-8')
+        self.path = self.root / 'people' / 'x__anne_research_P-3333333333.md'
+        self.path.write_bytes(
+            ('---\nid: P-3333333333\ncreated: 2026-01-01\n---\n\n'
+             '## Open Questions\n\nGrandma in Kraków.\n').encode('cp1252'))
+
+    def test_read_record_masks_this_site_today(self) -> None:
+        with self.assertRaises(UnicodeDecodeError):
+            lint._run_lint_core(self.root, {})
+
+    def test_the_companion_read_itself_skips_not_crashes(self) -> None:
+        stub_rec = {
+            'meta': {}, 'claims': [], 'stories': None, 'body': '',
+            'unfenced_claims': False, 'parse_errors': [],
+        }
+        with unittest.mock.patch('lint.read_record', return_value=stub_rec):
+            _findings, reg = lint._run_lint_core(self.root, {})
+        self.assertEqual(list(reg.research_content), [],
+                         'an undecodable companion must not enter the E009 research scope')
+        self.assertIn(self.path, reg.undecodable_files)
+
+
+class UndecodableFileReportingTests(unittest.TestCase):
+    """W128 (#68): the aggregated report over every file `fha lint` could not
+    decode as UTF-8 this run - the file-level twin of W123
+    (`_check_unreadable_dirs`)."""
+
+    def setUp(self) -> None:
+        self.root = Path(tempfile.mkdtemp())
+        (self.root / 'notes').mkdir(parents=True)
+        (self.root / 'people').mkdir(parents=True)
+        (self.root / 'sources').mkdir(parents=True)
+        (self.root / 'fha.yaml').write_text('roots: {}\n', encoding='utf-8')
+
+    def _cp1252(self, rel: str, text: str) -> Path:
+        p = self.root / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(text.encode('cp1252'))
+        return p
+
+    def test_run_lint_reports_w128_and_moves_off_exit_zero(self) -> None:
+        self._cp1252('notes/questions.md', '# Q\n\nGrandma in Kraków.\n')
+        result = lint.run_lint(self.root, {})
+        self.assertEqual(result.exit_code, EXIT_WARNINGS)
+        w128 = [m for m in result.messages if m.code == 'W128']
+        self.assertEqual(len(w128), 1)
+        self.assertIn('notes/questions.md', w128[0].text)
+        self.assertIn('UTF-8', w128[0].text)
+
+    def test_the_message_carries_no_absolute_path(self) -> None:
+        self._cp1252('notes/questions.md', 'Grandma in Kraków.\n')
+        result = lint.run_lint(self.root, {})
+        w128 = [m for m in result.messages if m.code == 'W128']
+        self.assertEqual(len(w128), 1)
+        self.assertNotIn(str(self.root), w128[0].text)
+
+    def test_the_file_is_never_rewritten(self) -> None:
+        path = self._cp1252('notes/questions.md', 'Grandma in Kraków.\n')
+        before = path.read_bytes()
+        lint.run_lint(self.root, {})
+        self.assertEqual(before, path.read_bytes(),
+                         'the note is never rewritten - only its encoding is wrong, not its content')
+
+    def test_a_file_touched_by_more_than_one_pass_earns_one_warning(self) -> None:
+        # AGENTS.md sits directly under archive_root, so it is read once by
+        # _check_generated_headers's rglob (site 4) and once by
+        # _check_agent_drift (site 5) - the de-duplication
+        # `undecodable_file_recorder` promises must hold across both.
+        self._cp1252('AGENTS.md', '# Agents\n\nGrandma in Kraków.\n')
+        result = lint.run_lint(self.root, {})
+        w128 = [m for m in result.messages
+                if m.code == 'W128' and 'AGENTS.md' in m.text]
+        self.assertEqual(len(w128), 1)
+
+    def test_run_lint_silent_also_counts_the_warning(self) -> None:
+        # fha doctor's embedded lint summary must not silently omit this.
+        self._cp1252('notes/questions.md', 'Grandma in Kraków.\n')
+        n_errors, n_warnings, _e018 = lint.run_lint_silent(self.root, {})
+        self.assertEqual(n_errors, 0)
+        self.assertGreaterEqual(n_warnings, 1)
+
+    def test_a_clean_archive_stays_clean(self) -> None:
+        (self.root / 'notes' / 'fine.md').write_text('# Fine\n\nwords\n', encoding='utf-8')
+        result = lint.run_lint(self.root, {})
+        self.assertNotIn('W128', [m.code for m in result.messages])
+
+
 if __name__ == '__main__':
     unittest.main()

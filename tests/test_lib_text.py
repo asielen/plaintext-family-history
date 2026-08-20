@@ -27,6 +27,13 @@ Covers the round-2 consolidation wave (private/plans/review-round2-fixes.md):
   - _read_unfenced_claims (via read_record) - strict-first parsing: a ```
     quoted inside an unfenced claim's `value: |` is evidence, not a fence,
     and must survive the read; the drop retry stays for half-typed fences.
+  - read_text_or_report / undecodable_file_recorder (#68) - the shared fix for
+    `UnicodeDecodeError` (a ValueError, not an OSError) crashing a read the
+    codebase guarded only with `except OSError`: a bad decode returns `None`
+    like a missing file always did, optionally reporting the path through a
+    caller-supplied callback instead of raising. `tools/lint.py`'s six sites
+    are the first consumer (tests/test_lint.py); this file pins the shared
+    primitive itself.
 
 The site/wikitree integration halves of the draft-strip contract live in
 tests/test_site.py (withhold + warn) and tests/test_wikitree.py (refusal).
@@ -50,12 +57,14 @@ from _lib import (
     is_generated_text,
     read_record,
     read_text_exact,
+    read_text_or_report,
     reapply_newline,
     resolve_root_arg,
     resolve_typed_ref,
     strip_unaccepted_drafts,
     transcript_review_state,
     transcript_text_is_unchecked,
+    undecodable_file_recorder,
     write_text_exact,
 )
 
@@ -614,6 +623,82 @@ class TranscriptReviewStateTests(unittest.TestCase):
                 '<!--\n  AI-DRAFT 2026-08-16 some-model\n'
                 '  transcript of probate.jpg, pages 1-1\n-->\n')
         self.assertEqual(transcript_review_state(text), 'unreviewed')
+
+
+class ReadTextOrReportTests(unittest.TestCase):
+    """`read_text_or_report` / `undecodable_file_recorder` (#68): the shared
+    primitive `tools/lint.py`'s six fixed sites are built on.
+
+    `Path.read_text(encoding='utf-8')` raises `UnicodeDecodeError` - a
+    ValueError, not an OSError - on a file saved in another codepage. The
+    near-universal `except OSError` guard in this codebase does not catch
+    that, so the read used to raise straight out of whatever command was
+    running. This helper folds BOTH failure modes a caller already had to
+    plan for (missing/unreadable file, and now a bad decode) into one `None`
+    return, so a caller's existing "skip on failure" logic keeps working
+    unchanged - only a decode failure, never a plain missing file, is
+    reported through `on_decode_error`.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self._tmp.name)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_valid_utf8_reads_through(self) -> None:
+        p = self.dir / 'good.md'
+        p.write_text('Grandma in Kraków, née Müller.\n', encoding='utf-8')
+        self.assertEqual(read_text_or_report(p),
+                         'Grandma in Kraków, née Müller.\n')
+
+    def test_missing_file_returns_none_and_never_calls_back(self) -> None:
+        calls = []
+        result = read_text_or_report(self.dir / 'nope.md',
+                                     on_decode_error=calls.append)
+        self.assertIsNone(result)
+        self.assertEqual(calls, [], 'a missing file is ordinary, not a decode failure')
+
+    def test_cp1252_file_returns_none_and_calls_back_with_the_path(self) -> None:
+        p = self.dir / 'bad.md'
+        p.write_bytes('Grandma in Kraków.\n'.encode('cp1252'))
+        calls = []
+        result = read_text_or_report(p, on_decode_error=calls.append)
+        self.assertIsNone(result)
+        self.assertEqual(calls, [p])
+
+    def test_cp1252_file_with_no_callback_still_returns_none(self) -> None:
+        # A caller that only needs the text (index.py's own per-record shape)
+        # must not be forced to supply on_decode_error.
+        p = self.dir / 'bad.md'
+        p.write_bytes('Grandma in Kraków.\n'.encode('cp1252'))
+        self.assertIsNone(read_text_or_report(p))
+
+    def test_the_file_is_never_rewritten(self) -> None:
+        p = self.dir / 'bad.md'
+        original = 'Grandma in Kraków.\n'.encode('cp1252')
+        p.write_bytes(original)
+        read_text_or_report(p, on_decode_error=lambda _p: None)
+        self.assertEqual(p.read_bytes(), original)
+
+    def test_recorder_deduplicates_first_seen_order(self) -> None:
+        into: list = []
+        record = undecodable_file_recorder(into)
+        p1, p2 = Path('a.md'), Path('b.md')
+        record(p1)
+        record(p2)
+        record(p1)   # a second pass touching the same file (#68's dedup contract)
+        self.assertEqual(into, [p1, p2])
+
+    def test_recorder_wired_through_read_text_or_report_deduplicates(self) -> None:
+        p = self.dir / 'bad.md'
+        p.write_bytes('Grandma in Kraków.\n'.encode('cp1252'))
+        into: list = []
+        on_decode_error = undecodable_file_recorder(into)
+        read_text_or_report(p, on_decode_error=on_decode_error)
+        read_text_or_report(p, on_decode_error=on_decode_error)
+        self.assertEqual(into, [p])
 
 
 if __name__ == '__main__':

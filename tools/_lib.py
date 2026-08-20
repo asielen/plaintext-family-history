@@ -5091,6 +5091,78 @@ def walk_files(root: Path, suffix: str | None = None, on_error=None):
             yield here / name
 
 
+# `walk_files`/`unreadable_dir_recorder` close the "a folder that would not
+# LIST" gap (#36-class). This pair closes the sibling gap one level down: a
+# folder that lists fine but holds a file that will not DECODE (#68/#62's
+# class, applied to the file the codebase already knew how to catch once and
+# forgot to catch thirty more times).
+#
+# `Path.read_text(encoding='utf-8')` raises `UnicodeDecodeError` on a file
+# saved in another codepage - cp1252 is what a Windows editor writes by
+# default, and the accented names a genealogy archive is full of (Krakow,
+# Muller, nee) are exactly the bytes that differ from UTF-8. `UnicodeDecodeError`
+# is a **ValueError**, not an `OSError`, so the near-universal `except OSError`
+# guard in this codebase does not catch it, and the read raises straight out
+# of whatever command is running - a plain-text file taking down an entire
+# `fha index` build with a traceback for an answer, the crash that made this a
+# filed issue rather than a hypothetical one. `index.py`'s `dump_text` read
+# already caught it by name at one site; this is that same catch, shared, so
+# the other sites stop reinventing it one at a time.
+
+def read_text_or_report(path: str | Path, on_decode_error=None) -> str | None:
+    """Read a record as UTF-8 text, turning a bad decode into a reportable gap
+    instead of an unhandled crash.
+
+    Returns the file's text, or `None` on EITHER failure a caller already had
+    to plan for: the file cannot be opened at all (`OSError` - missing,
+    permissions, a race with a delete; every existing call site already
+    treated this as a silent skip, and that behaviour is unchanged here), or
+    the file opens but its bytes are not valid UTF-8 (`UnicodeDecodeError`,
+    see the note above this function).
+
+    `on_decode_error`, when given, is called with the offending `path` - and
+    ONLY on the decode failure, never on a plain missing/unreadable file,
+    which every caller already treats as ordinary. Pass
+    `undecodable_file_recorder`'s callback to collect paths for one aggregated
+    report instead of a silent skip (the shape `fha lint`'s W128 uses); pass a
+    plain `list.append`, or nothing at all, for a caller that only needs the
+    text (the shape `index.py`'s per-record reads use for their own
+    `on_decode_error` callback - this function does not replace those call
+    sites, which already catch `UnicodeDecodeError` by name; it exists so
+    every site written AFTER this one does not have to).
+
+    Never re-encodes, rewrites, or otherwise touches the file - it is the
+    human's, and it is not damaged, only saved in a different encoding.
+    """
+    try:
+        return Path(path).read_text(encoding='utf-8')
+    except OSError:
+        return None
+    except UnicodeDecodeError:
+        if on_decode_error is not None:
+            on_decode_error(Path(path))
+        return None
+
+
+def undecodable_file_recorder(into: list):
+    """Build a `read_text_or_report` `on_decode_error` callback that records
+    the files it failed to decode as UTF-8.
+
+    Appends the offending path (de-duplicated, first-seen order) to `into` -
+    the same contract as `unreadable_dir_recorder`, one level down (a file
+    instead of a folder). De-duplication matters here specifically: a single
+    lint run reads some files through more than one pass (a notes file through
+    the token-ref walk AND the GENERATED-header sweep; any file through
+    `--format-check`), and without it the same undecodable file would earn a
+    separate finding from each pass that touched it, or need coordination that
+    caring about which pass ran first should never require.
+    """
+    def note(path: Path) -> None:
+        if path not in into:
+            into.append(path)
+    return note
+
+
 def unreadable_dir_hold_mtimes(dirs) -> list[float]:
     """File times a cache must sit behind so an incomplete walk keeps reading 'stale'.
 

@@ -118,11 +118,13 @@ from _lib import (
     parse_filename,
     read_record,
     read_text_exact,
+    read_text_or_report,
     reapply_newline,
     resolve_path,
     resolve_root_arg,
     roots_change_orphans,
     sex_slot_is_defaulted,
+    undecodable_file_recorder,
     unreadable_dir_recorder,
     walk_files,
     write_text_exact_atomic,
@@ -194,6 +196,8 @@ import yaml
 #                                   (runs first; the E011 fallout follows it)
 #    _check_unreadable_dirs      - W123: a record folder this lint could not open
 #                                   (runs last; the caveat on everything above)
+#    _check_undecodable_files    - W128: a file this lint could not read as UTF-8
+#                                   (called once all reads are done - see its docstring)
 #
 #  Format checks / fix modes
 #    _check_format               - W109: final newline, CRLF line endings
@@ -315,6 +319,19 @@ class Registry:
         # nobody could read: whatever is filed in these folders was never
         # checked against the spec at all.
         self.unreadable_dirs: list[Path] = []
+
+        # Files this lint tried to read but could not decode as UTF-8 (W128,
+        # #68) - the same "a clean bill of health must not be issued over
+        # records nobody read" reasoning as unreadable_dirs, one level down: a
+        # folder that lists fine can still hold a file saved in another
+        # encoding, and every read site below feeds the SAME list (via
+        # `_lib.undecodable_file_recorder`) so one file touched by more than
+        # one pass earns exactly one warning. Filled throughout the run, not
+        # only in Pass 1 - `_check_agent_drift` and `--format-check`'s
+        # `_check_format` read AFTER Pass 2, so `_check_undecodable_files` is
+        # deliberately called once, at the very end of each entry point
+        # (`run_lint` / `run_lint_silent`), never from inside a single pass.
+        self.undecodable_files: list[Path] = []
 
         # The alias resolve map (alias_lower → canonical id), built once at the
         # start of Pass 2 from everything Pass 1 collected. Claim persons:/roles:
@@ -796,21 +813,26 @@ def _walk_archive(archive_root: Path, registry: Registry, findings: list[Finding
         except Exception as e:
             findings.append(Finding('E', 'E010', places_path, f'places.yaml parse error: {e}'))
 
+    # `walk_files`/read recorders, not rglob + bare read_text: lint's whole
+    # product is the sentence "your archive matches the spec", and either
+    # would hand it that sentence over material it never actually read - a
+    # folder rglob silently skipped, or a file whose bytes would not decode
+    # (#68: `UnicodeDecodeError` is a ValueError, not an OSError, so the
+    # `except OSError` this codebase uses everywhere else does not catch it,
+    # and the read used to raise straight out of `fha lint`). Every record
+    # read below shares these two recorders; W123/W128 report what they
+    # caught at the end of the run.
+    on_error = unreadable_dir_recorder(registry.unreadable_dirs)
+    on_decode_error = undecodable_file_recorder(registry.undecodable_files)
+
     # Notes: load questions + research for E009 check
     questions_path = archive_root / 'notes' / 'questions.md'
     if questions_path.exists():
-        try:
-            registry.questions_content = questions_path.read_text(encoding='utf-8')
-        except OSError:
-            pass
+        text = read_text_or_report(questions_path, on_decode_error=on_decode_error)
+        if text is not None:
+            registry.questions_content = text
 
     # People
-    #
-    # `walk_files` with a recorder, not rglob: lint's whole product is the
-    # sentence "your archive matches the spec", and rglob would hand it that
-    # sentence over a subtree it never opened. Every record walk below shares
-    # one recorder; W123 reports the folders at the end of Pass 2.
-    on_error = unreadable_dir_recorder(registry.unreadable_dirs)
     people_root = archive_root / 'people'
     if people_root.exists():
         for path in sorted(walk_files(people_root, suffix='.md', on_error=on_error)):
@@ -823,10 +845,9 @@ def _walk_archive(archive_root: Path, registry: Registry, findings: list[Finding
             # Questions in a profile. Reading it as research pulled her whole
             # file into the E009 scope.
             if rec is not None and is_person_file_kind(path, 'research', rec['meta']):
-                try:
-                    registry.research_content[path] = path.read_text(encoding='utf-8')
-                except OSError:
-                    pass
+                text = read_text_or_report(path, on_decode_error=on_decode_error)
+                if text is not None:
+                    registry.research_content[path] = text
 
     # Sources
     sources_root = archive_root / 'sources'
@@ -838,15 +859,14 @@ def _walk_archive(archive_root: Path, registry: Registry, findings: list[Finding
     notes_root = archive_root / 'notes'
     if notes_root.exists():
         for path in sorted(walk_files(notes_root, suffix='.md', on_error=on_error)):
-            try:
-                text = path.read_text(encoding='utf-8')
-                _collect_token_refs(text, path, registry)
-                # Collect H-ids from notes
-                for m in ID_RE.finditer(text):
-                    if m.group(1).upper() == 'H':
-                        registry.hypothesis_ids.add(normalize_id(m.group(0)))
-            except OSError:
-                pass
+            text = read_text_or_report(path, on_decode_error=on_decode_error)
+            if text is None:
+                continue
+            _collect_token_refs(text, path, registry)
+            # Collect H-ids from notes
+            for m in ID_RE.finditer(text):
+                if m.group(1).upper() == 'H':
+                    registry.hypothesis_ids.add(normalize_id(m.group(0)))
 
 
 def _process_person_file(path: Path, registry: Registry,
@@ -2621,7 +2641,8 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
 
     # W104: summary line without supporting accepted claim (handled in E013 pass)
     # W105: hand-edits under GENERATED header
-    _check_generated_headers(registry.archive_root, findings)
+    _check_generated_headers(registry.archive_root, findings,
+                              on_decode_error=undecodable_file_recorder(registry.undecodable_files))
 
     # W108: README.md older than SPEC.md
     _check_readme_age(registry.archive_root, findings)
@@ -2723,6 +2744,54 @@ def _check_unreadable_dirs(registry: Registry, findings: list[Finding]) -> None:
             'Usually a folder whose permissions changed, or a drive or network '
             'share that is not connected. Reconnect it (or restore your access '
             'to the folder), then run `fha lint` again.'))
+
+
+def _check_undecodable_files(registry: Registry, findings: list[Finding]) -> None:
+    """W128: name every file this lint tried to read but could not decode as UTF-8 (#68).
+
+    W123's twin one level down. A folder that lists fine can still hold a
+    file saved in another encoding - cp1252 is what a Windows editor writes by
+    default, and the accented names a genealogy archive is full of (Krakow,
+    Muller, nee) are exactly the bytes that differ from UTF-8.
+    `UnicodeDecodeError` is a ValueError, not an OSError, so the
+    `except OSError` guard every read site in this file used to rely on never
+    caught it - the read raised straight out of whichever check was running,
+    and `fha lint` crashed instead of answering. Since lint is the command
+    every other workflow points at to diagnose a broken archive, that left the
+    human with no working diagnostic at all (the whole reason this is filed as
+    #68 rather than folded quietly into whichever check hit it first).
+
+    Every read site now goes through `_lib.read_text_or_report`, which treats
+    a bad decode as a skip - like a missing file always was - and records the
+    path here (via `_lib.undecodable_file_recorder`, shared by every site so
+    one file touched by more than one pass earns exactly one warning) instead
+    of crashing. This function turns that list into the same kind of report
+    W123 gives a folder: report-only, warning severity (the file is almost
+    certainly fine - what is wrong is its encoding, not its content, and that
+    is not a spec violation), naming what was skipped and why, and the exact
+    fix. It never reads or rewrites the file itself.
+
+    Do NOT point the human at `fha lint` here for anything other than
+    re-running it after the fix - before this fix landed, lint's own reads
+    were exactly the ones that crashed, so naming lint as the way to check
+    THIS problem would have sent him at a second crash (the same reasoning
+    `index.py`'s parallel #66 fix used to route its own warning through a
+    different channel).
+    """
+    for path in registry.undecodable_files:
+        try:
+            shown = path.relative_to(registry.archive_root).as_posix()
+        except ValueError:
+            shown = str(path).replace('\\', '/')
+        findings.append(Finding(
+            'W', 'W128', path,
+            f'This file is not saved as UTF-8 text, so nothing in this report '
+            f'checked {shown} - it was skipped rather than crashing the run. '
+            'The file itself is fine and nothing about it was changed - it is '
+            'only saved in an older encoding (a Windows editor defaults to '
+            'one, commonly cp1252). Open it and save it again choosing UTF-8 '
+            '(in Notepad: Save As, then pick UTF-8 from the Encoding menu), '
+            'then run `fha lint` again.'))
 
 
 def _check_reverse_inventory(
@@ -2980,15 +3049,21 @@ def _check_summary_line(
                     f'relationship claim links them to {profile_pid}'))
 
 
-def _check_generated_headers(archive_root: Path, findings: list[Finding]) -> None:
-    """W105: detect hand-edits below a GENERATED header."""
+def _check_generated_headers(archive_root: Path, findings: list[Finding],
+                             on_decode_error=None) -> None:
+    """W105: detect hand-edits below a GENERATED header.
+
+    `on_decode_error` (see `_lib.read_text_or_report`) is the caller's
+    W128 recorder: a file this rglob cannot decode as UTF-8 is skipped here
+    exactly like a missing file always was, and reported once, aggregated,
+    rather than crashing this sweep (#68).
+    """
     gen_header = re.compile(r'^<!-- GENERATED', re.M)
     for path in archive_root.rglob('*.md'):
         if '.cache' in path.parts:
             continue
-        try:
-            text = path.read_text(encoding='utf-8')
-        except OSError:
+        text = read_text_or_report(path, on_decode_error=on_decode_error)
+        if text is None:
             continue
         if gen_header.search(text):
             # Existence of the header is noted; we'd need mtime vs generation
@@ -3012,14 +3087,21 @@ def _check_readme_age(archive_root: Path, findings: list[Finding]) -> None:
 
 _DEPRECATED_COMMANDS = ['fha promote']
 
-def _check_agent_drift(archive_root: Path, findings: list[Finding]) -> None:
-    """E018: check AGENTS.md and skills for deprecated commands."""
+def _check_agent_drift(archive_root: Path, findings: list[Finding],
+                       on_decode_error=None) -> None:
+    """E018: check AGENTS.md and skills for deprecated commands.
+
+    `on_decode_error` (see `_lib.read_text_or_report`) is the caller's W128
+    recorder: an AGENTS.md that will not decode as UTF-8 is skipped exactly
+    like a missing one always was (silently - E018 simply has nothing to
+    check this run), and reported once, aggregated, rather than crashing
+    every other lint check that runs after this one (#68).
+    """
     agents_path = archive_root / 'AGENTS.md'
     if not agents_path.exists():
         return
-    try:
-        text = agents_path.read_text(encoding='utf-8')
-    except OSError:
+    text = read_text_or_report(agents_path, on_decode_error=on_decode_error)
+    if text is None:
         return
 
     for cmd in _DEPRECATED_COMMANDS:
@@ -3064,11 +3146,17 @@ _FRONTMATTER_KEY_ORDER_SOURCES = [
 ]
 
 
-def _check_format(path: Path, findings: list[Finding]) -> None:
-    """Conservative format checks."""
-    try:
-        text = path.read_text(encoding='utf-8')
-    except OSError:
+def _check_format(path: Path, findings: list[Finding], on_decode_error=None) -> None:
+    """Conservative format checks.
+
+    `on_decode_error` (see `_lib.read_text_or_report`) is the caller's W128
+    recorder: a file `--format-check`/`--format-write` cannot decode as UTF-8
+    is skipped here exactly like a missing file always was - it is simply not
+    checked for a final newline or CRLF endings this run - rather than
+    crashing the whole format pass (#68).
+    """
+    text = read_text_or_report(path, on_decode_error=on_decode_error)
+    if text is None:
         return
 
     # Check final newline
@@ -3137,7 +3225,12 @@ def _run_lint_core(
     _check_roots_change(archive_root, fha_config, findings)
     _walk_archive(archive_root, registry, findings)
     _cross_file_checks(registry, findings, with_exif=with_exif)
-    _check_agent_drift(archive_root, findings)
+    _check_agent_drift(archive_root, findings,
+                       on_decode_error=undecodable_file_recorder(registry.undecodable_files))
+    # W128 (#68) is NOT raised here: `run_lint`'s --format-check pass reads
+    # more files AFTER this function returns, and `run_lint_silent` never
+    # runs that pass at all. Each entry point calls `_check_undecodable_files`
+    # itself, once, after every read IT will make is done - see both callers.
     return findings, registry
 
 
@@ -3200,9 +3293,10 @@ def run_lint(
 
     # Format checks / fixes
     if format_check or format_write:
+        on_decode_error = undecodable_file_recorder(registry.undecodable_files)
         for path in archive_root.rglob('*.md'):
             if '.cache' not in path.parts and not is_template_file(path):
-                _check_format(path, findings)
+                _check_format(path, findings, on_decode_error=on_decode_error)
                 if format_write:
                     _fix_format(path, progress, changed, dry_run=dry_run)
 
@@ -3222,6 +3316,13 @@ def run_lint(
                             extra_source_paths=minted_sources)
     if fix_reciprocal:
         _fix_reciprocal(registry, archive_root, progress, changed, dry_run=dry_run)
+
+    # W128: files this run could not decode as UTF-8 (#68). Called here, after
+    # the format-check pass above, rather than from inside _run_lint_core -
+    # --format-check reads more files AFTER that function returns, and this is
+    # the first point where every read this command will make is done. Last
+    # of the two "read less than the archive holds" caveats (see W123 above).
+    _check_undecodable_files(registry, findings)
 
     # Sort findings by severity then path
     findings.sort(key=lambda f: (f.code, f.path))
@@ -4471,10 +4572,14 @@ def run_lint_silent(
 
     Used by fha doctor to embed a lint summary in the health report.
     Delegates to _run_lint_core so any new core pass is automatically reflected here.
+    `--format-check` never runs here (doctor asks for a summary, not a format
+    pass), so this is the first point after _run_lint_core where every read
+    this path will make is done - the right place for its own W128 pass (#68).
     """
     if not (archive_root / 'fha.yaml').exists():
         return (1, 0, [])
-    findings, _ = _run_lint_core(archive_root, fha_config)
+    findings, registry = _run_lint_core(archive_root, fha_config)
+    _check_undecodable_files(registry, findings)
     n_errors = sum(1 for f in findings if f.severity == 'E')
     n_warnings = sum(1 for f in findings if f.severity == 'W')
     e018 = [f for f in findings if f.code == 'E018']
