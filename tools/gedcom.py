@@ -50,7 +50,7 @@ CODE MAP
 --------
   Date / name formatting
     _edtf_to_gedcom        - EDTF date string → GEDCOM 5.5.1 date phrase
-    _gedcom_name           - (name, surname) → GEDCOM `Given /Surname/`
+    _gedcom_name           - (name, surname) → (GEDCOM `Given /Surname/ [Suffix]`, suffix)
     _escape                - collapse newlines for a single GEDCOM line value
 
   Graph
@@ -93,6 +93,7 @@ from _lib import (
     read_record,
     resolve_root_arg,
     spouse_parties,
+    strip_generational_suffix,
 )
 
 configure_utf8_stdout()
@@ -202,26 +203,65 @@ def _escape(value: str | None) -> str:
     return ' '.join(str(value).split())
 
 
-def _gedcom_name(name: str, surname: str | None) -> str:
-    """Render a person name as GEDCOM `Given /Surname/`.
+def _gedcom_name(name: str, surname: str | None) -> tuple[str, str | None]:
+    """Render a person name as GEDCOM `Given /Surname/` (+ NSFX suffix).
 
-    Uses the index's `surname` (the birth surname from the filename slug) when
-    present; otherwise falls back to the last whitespace token of the full name.
+    Uses the index's `surname` (the birth surname from the filename slug)
+    when present; otherwise falls back to the last whitespace token of the
+    full name. Either way, a trailing generational suffix (Jr, Sr, II, III,
+    IV, V - `_lib.strip_generational_suffix`, issue #53) is pulled off the
+    name FIRST and never folded into the slash field: GEDCOM's `1 NAME` line
+    carries it as trailing free text and the dedicated `NSFX` sub-tag also
+    names it structurally, so the caller emits `2 NSFX <suffix>` alongside
+    the `1 NAME` line built from what this returns (issue #78).
+
+    Returns `(name_field, suffix)`: `name_field` is the full
+    `Given /Surname/ [Suffix]` text for the `1 NAME` line; `suffix` is the
+    token exactly as it appeared in `name` (original case, e.g. "Jr"), or
+    `None` when the name carried none.
+
+    The indexed surname, when present, is matched as a TOKEN (or trailing
+    token run, for a multi-word surname) of the suffix-stripped name - not
+    a raw string suffix. A plain `name.endswith(sn)` test is wrong two
+    ways: it treats a suffix-stripped hit as a miss (an indexed "Dodson" on
+    "Roy Eugene Dodson Jr" no longer ends the raw string, so the old code
+    fell through to the append-both-copies branch below and doubled the
+    surname), and it treats an incidental substring hit as a match
+    ("Vandodson".endswith("dodson") is true with no "Dodson" token at
+    all). Testing token equality against the suffix-stripped core fixes
+    both.
     """
     name = _escape(name) or 'Unknown'
+    parts = name.split()
+    core, suffix = strip_generational_suffix(parts)
+    raw_suffix = parts[-1] if suffix else None
+
+    def compose(given: str, sn_field: str) -> str:
+        field = f'{given} /{sn_field}/'.strip()
+        return f'{field} {raw_suffix}' if raw_suffix else field
+
     sn = _escape(surname) if surname else ''
-    if sn and name.lower().endswith(sn.lower()):
-        given = name[: len(name) - len(sn)].strip()
-        return f'{given} /{sn}/'.strip()
-    if not sn:
-        parts = name.split()
-        if len(parts) == 1:
-            return f'{parts[0]} //'
-        sn = parts[-1]
-        given = ' '.join(parts[:-1])
-        return f'{given} /{sn}/'
-    # surname recorded but not a suffix of name - append it as the slash field
-    return f'{name} /{sn}/'
+    if sn:
+        sn_tokens = sn.split()
+        n = len(sn_tokens)
+        core_lower = [p.lower() for p in core]
+        if core_lower[-n:] == [t.lower() for t in sn_tokens]:
+            given = ' '.join(core[:-n])
+            return compose(given, sn), raw_suffix
+        # Indexed surname recorded but not present as a trailing token run
+        # of the (suffix-stripped) name - an override this heuristic
+        # cannot place. Keep the full suffix-stripped name as the given
+        # field rather than silently dropping or duplicating it.
+        return compose(' '.join(core), sn), raw_suffix
+
+    if len(core) <= 1:
+        # Mononym, with or without a stripped suffix riding along - the
+        # suffix does not promote the one remaining token into a surname
+        # (mirrors `stub_slug_name`'s same-shaped rule).
+        return compose(core[0], ''), raw_suffix
+
+    given = ' '.join(core[:-1])
+    return compose(given, core[-1]), raw_suffix
 
 
 # ── Graph traversal ─────────────────────────────────────────────────────────────
@@ -609,7 +649,10 @@ def _emit_individual(
     if redacted:
         lines.append(f'1 NAME {_redacted_name(person, restricted_persons)}')
     else:
-        lines.append(f'1 NAME {_gedcom_name(person["name"], person["surname"])}')
+        name_field, suffix = _gedcom_name(person['name'], person['surname'])
+        lines.append(f'1 NAME {name_field}')
+        if suffix:
+            lines.append(f'2 NSFX {suffix}')
 
     sex = (person['sex'] or '').strip().upper()
     if sex in ('M', 'F'):

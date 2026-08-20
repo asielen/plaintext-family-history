@@ -213,6 +213,7 @@ from _lib import (
     read_text_exact,
     resolve_path,
     resolve_root_arg,
+    strip_generational_suffix,
     strip_link_wrapper,
     strip_unaccepted_drafts,
     unreadable_dir_recorder,
@@ -1724,7 +1725,13 @@ def _packet_payload(
         )
         unsafe_source_ids = {sid for sid, mode in copy_plan.items() if mode == 'unsafe'}
 
-        surname = person['surname'] or person_name.split()[-1]
+        # A generational suffix (Jr, Sr, II, III, IV, V) is never the
+        # surname (issue #78, the same #53 rule every other consumer
+        # shares via `_lib.strip_generational_suffix`) - without an
+        # indexed surname, the naive last-token fallback named the
+        # deliverable `packet_jr_....zip`.
+        _core, _ = strip_generational_suffix(person_name.split())
+        surname = person['surname'] or _core[-1]
         slug_surname = ''.join(c for c in surname.lower() if c.isalnum()) or 'person'
         packet_name = f'packet_{slug_surname}_{fmt_id_display(pid)}_{_today()}'
         packet_dir = out_dir / packet_name
