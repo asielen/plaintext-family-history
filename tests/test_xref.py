@@ -662,6 +662,82 @@ class XrefTests(unittest.TestCase):
         pairs = result['groups'][0]['pairs']
         self.assertEqual(pairs[0]['kind'], 'contradicts')
 
+    def test_serial_marriage_claim_still_compares_against_single_partner_claim(self) -> None:
+        # spouse_parties' serial case (SPEC §8.3): one claim's roles: spouse:
+        # names 3+ people, recording successive marriages on one record (e.g.
+        # an obituary: "survived by his wife Mary, predeceased by his first
+        # wife Jane"). Bucketing that claim by the WHOLE remaining party set
+        # ({Jane, Mary}) instead of once per individual partner reintroduces
+        # #63's exact bug one level up: a plain marriage certificate naming
+        # just {Test Person, Mary} keys its own bucket by {Mary} alone, so
+        # the two records of the Test Person/Mary marriage would never land
+        # in the same bucket and the contradiction/corroboration check would
+        # silently miss them - "no candidates" meaning "couldn't tell", not
+        # "nothing to find".
+        self._seed_persons_sources()
+        self.conn.execute("INSERT INTO persons(id, name, living, tier, path) VALUES "
+                           "('p-jjjjjjjjjj','Jane','false','curated','j.md')")
+        self.conn.execute("INSERT INTO persons(id, name, living, tier, path) VALUES "
+                           "('p-mmmmmmmmmm','Mary','false','curated','m.md')")
+        self.conn.execute("INSERT INTO sources(id, title, path) VALUES "
+                           "('s-3333333333','Obituary','o.md')")
+        _insert_claim(
+            self.conn, 'c-aaaaaaaaaa', 's-3333333333', 'marriage',
+            'survived by wife Mary, predeceased by first wife Jane',
+            persons=['p-aaaaaaaaaa', 'p-jjjjjjjjjj', 'p-mmmmmmmmmm'],
+            roles={'p-aaaaaaaaaa': 'spouse', 'p-jjjjjjjjjj': 'spouse', 'p-mmmmmmmmmm': 'spouse'},
+        )
+        _insert_claim(
+            self.conn, 'c-bbbbbbbbbb', 's-2222222222', 'marriage',
+            'married Mary in Ohio', date_edtf='1849',
+            persons=['p-aaaaaaaaaa', 'p-mmmmmmmmmm'],
+            roles={'p-aaaaaaaaaa': 'spouse', 'p-mmmmmmmmmm': 'spouse'},
+        )
+        self.conn.commit()
+
+        result = xref.run_xref(self.archive_root)
+        self.assertEqual(result['status'], 'ok')
+        self.assertEqual(result['unscoped'], [])
+        self.assertEqual(
+            sorted(g['person_name'] for g in result['groups']),
+            ['Mary', 'Test Person'],
+        )
+        for group in result['groups']:
+            self.assertEqual(
+                [(p['claim_a']['id'], p['claim_b']['id']) for p in group['pairs']],
+                [('c-aaaaaaaaaa', 'c-bbbbbbbbbb')],
+            )
+
+    def test_unscoped_persons_list_dedupes_a_person_named_twice(self) -> None:
+        # `_lib.spouse_parties`'s own docstring: a claim can name the same
+        # person twice - `persons: [P-a, "[[Alice Smith]]"]` is one man
+        # written two ways - and `claim_persons` stores a row per entry with
+        # no UNIQUE constraint to stop it. The `unscoped` list's `persons`
+        # display must not repeat that person's name just because their row
+        # appears twice.
+        self._seed_persons_sources()
+        self.conn.execute("INSERT INTO persons(id, name, living, tier, path) VALUES "
+                           "('p-bbbbbbbbbb','Bride','false','curated','y.md')")
+        self.conn.execute("INSERT INTO persons(id, name, living, tier, path) VALUES "
+                           "('p-cccccccccc','Father','false','curated','z.md')")
+        self.conn.execute("INSERT INTO sources(id, title, path) VALUES "
+                           "('s-3333333333','Certificate','c.md')")
+        # Roles-less (ambiguous -> unscoped), with the groom named twice -
+        # once by id, once via an alias that resolved to the same person.
+        _insert_claim(
+            self.conn, 'c-aaaaaaaaaa', 's-3333333333', 'marriage',
+            'married, certificate names the groom twice', date_edtf='1880',
+            persons=['p-aaaaaaaaaa', 'p-aaaaaaaaaa', 'p-bbbbbbbbbb', 'p-cccccccccc'],
+        )
+        self.conn.commit()
+
+        result = xref.run_xref(self.archive_root)
+        self.assertEqual(len(result['unscoped']), 1)
+        self.assertEqual(
+            result['unscoped'][0]['persons'],
+            ['Test Person', 'Bride', 'Father'],
+        )
+
 
 if __name__ == '__main__':
     unittest.main()

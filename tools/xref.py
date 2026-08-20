@@ -63,7 +63,13 @@ per-person bucketing:
     ambiguous ABOUT, negated or not - unchanged from before #63, it takes
     the same broad every-claim-of-this-type path a negation does.
   - A resolved couple (`spouse_parties` non-empty) buckets narrowly by that
-    couple, same as any other counterpart-keyed group.
+    couple. `spouse_parties`'s serial case (`roles: spouse:` naming 3+ people,
+    one claim recording successive marriages) buckets once per individual
+    partner rather than once per whole remaining party set, the same way the
+    `relationship` branch below already bundles several counterparts - so a
+    claim naming {Jane, Mary} as this person's spouses still lands in the
+    same bucket as a plain claim naming just {Mary}, instead of the two only
+    matching a claim naming the exact same pair.
   - An unresolved, non-negated claim naming 2+ people (a roles-less
     certificate, or a `roles:` map that names fewer than two spouses) is
     AMBIGUOUS: comparing it against everything fabricates contradictions
@@ -380,10 +386,23 @@ def _run_xref_queries(conn: sqlite3.Connection) -> dict:
                 # spouse_parties named one, broad (no_counterpart, compared
                 # against every claim of this type) when it didn't.
                 all_of_type.setdefault(claim['type'], []).append(cid)
-                others = frozenset(p for p in parties if p != person_id)
+                others = [p for p in parties if p != person_id]
                 if others:
-                    key = (claim['type'], others)
-                    by_group.setdefault(key, []).append(cid)
+                    # Bucketed once per individual partner, not once per
+                    # whole remaining party set - same reasoning as the
+                    # relationship branch above. spouse_parties' serial case
+                    # (roles: spouse: naming 3+ people, SPEC §8.3) leaves
+                    # `others` with 2+ entries for this person; keying on the
+                    # full frozenset would bucket that claim only against
+                    # another claim naming the exact same set of partners,
+                    # so a plain claim recording just one of those marriages
+                    # (`roles: spouse:` naming this person and just one of
+                    # the 2+) would never land in the same bucket - the same
+                    # missed-comparison shape #63 fixed, reintroduced one
+                    # level up.
+                    for other in others:
+                        key = (claim['type'], other)
+                        by_group.setdefault(key, []).append(cid)
                 else:
                     no_counterpart.setdefault(claim['type'], []).append(cid)
             else:
@@ -443,8 +462,15 @@ def _run_xref_queries(conn: sqlite3.Connection) -> dict:
     unscoped = [
         {
             'claim': claims_by_id[cid],
+            # dict.fromkeys dedupes while keeping first-seen order - a claim
+            # can name the same person twice (an alias written two ways,
+            # `_lib.spouse_parties`'s own documented duplicate-handling
+            # case), and claim_persons stores a row per entry with no
+            # UNIQUE constraint to stop it, so without this a repeated
+            # person shows up twice in the "Names ..." list below.
             'persons': [
-                person_names.get(pid, pid) for pid in claim_persons.get(cid, [])
+                person_names.get(pid, pid)
+                for pid in dict.fromkeys(claim_persons.get(cid, []))
             ],
         }
         for cid in sorted(unscoped_claim_ids)
