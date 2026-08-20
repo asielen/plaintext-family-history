@@ -39,6 +39,8 @@ from _lib import (
     stub_filename,
     stub_slug_name,
     undecodable_file_recorder,
+    name_undecodable_files,
+    utf8_resave_remedy,
     write_text_exact_atomic,
 )
 
@@ -286,15 +288,13 @@ def _unread_message(paths: list, archive_root: Path) -> str:
     `fha index`'s undecodable-files warning and `fha lint`'s W128, because it
     is the same condition seen from a third command.
     """
-    shown = ', '.join(archive_relative(p, archive_root) for p in paths[:5])
-    if len(paths) > 5:
-        shown += f' and {len(paths) - 5} more'
+    many = len(paths) != 1
     return (
-        f'{len(paths)} file(s) are not saved as UTF-8 text, so this run could '
-        f'not read them: {shown}. The file itself is fine and nothing about it '
-        'was changed - it is only saved in an older encoding (a Windows editor '
-        'defaults to one, commonly cp1252). Open it and save it again choosing '
-        'UTF-8 (in Notepad: Save As, then pick UTF-8 from the Encoding menu).'
+        name_undecodable_files(paths, archive_root, 'so this run could not read them')
+        + (' The files themselves are fine and nothing about them was changed - '
+           if many else
+           ' The file itself is fine and nothing about it was changed - ')
+        + utf8_resave_remedy(plural=many)
     )
 
 

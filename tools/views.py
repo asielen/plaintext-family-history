@@ -128,6 +128,7 @@ from _lib import (
     resolve_root_arg,      # --root flag, else find_archive_root(), shared error message,
     spouse_extended_base,    # add-only `+ second spouse` folder-name rule - shared with lint W103,
     sync_generated_view_rows,   # keep notes_fts/person_files in step with view writes/deletes,
+    utf8_resave_remedy,   # the shared #68 "re-save it as UTF-8" way out,
     unreadable_dir_recorder,  # os.walk error seam - a shut folder is not an empty one,
     walk_files,           # rglob replacement that HAS that error seam,
     write_generated_file,    # marker-guarded write shared with photoindex gallery,
@@ -1311,9 +1312,9 @@ def _generate_draft_queue(
         # other two; the batch's own closing line already says to re-run for
         # the people that were skipped.
         print(f'WARNING: {archive_relative(profile_p, archive_root)} is not saved '
-              'as UTF-8 text - skipped. Open it and save it again choosing UTF-8 '
-              '(in Notepad: Save As, then pick UTF-8 from the Encoding menu), '
-              'then re-run. (`fha lint` reports the same file as W128.)',
+              'as UTF-8 text - skipped. '
+              + utf8_resave_remedy('this command', with_cause=False)
+              + ' (`fha lint` reports the same file as W128.)',
               file=sys.stderr)
         return None
     body = rec['body']

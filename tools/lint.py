@@ -128,6 +128,7 @@ from _lib import (
     undecodable_file_recorder,
     unreadable_dir_recorder,
     walk_files,
+    utf8_resave_remedy,
     write_text_exact_atomic,
     yaml_inline,
 )
@@ -3082,11 +3083,8 @@ def _check_undecodable_files(registry: Registry, findings: list[Finding]) -> Non
             'If it is a person or source record, anything the rest of the '
             'archive says about it may be reported as out of date here (a '
             "couple folder's bracket list, a link to this record) until it can "
-            'be read. The file itself is fine and nothing about it was changed '
-            '- it is only saved in an older encoding (a Windows editor '
-            'defaults to one, commonly cp1252). Open it and save it again '
-            'choosing UTF-8 (in Notepad: Save As, then pick UTF-8 from the '
-            'Encoding menu), then run `fha lint` again.'))
+            'be read. The file itself is fine and nothing about it was changed - '
+            + utf8_resave_remedy('`fha lint`')))
 
 
 def _check_reverse_inventory(

@@ -210,6 +210,7 @@ from _lib import (
     select_variation_primary,
     is_working_copy,
     variant_role,
+    utf8_resave_remedy,
     write_text_exact_atomic,
     yaml_inline,
 )
@@ -843,9 +844,8 @@ def _read_sidecar(sidecar: Path) -> tuple[dict, str]:
     if rec['undecodable']:
         raise ProcessError(
             f'{sidecar.name} is not saved as UTF-8 text, so its hints could not '
-            'be read. Nothing was changed or deleted - open it and save it '
-            'again choosing UTF-8 (in Notepad: Save As, then pick UTF-8 from '
-            'the Encoding menu), then re-run.'
+            'be read. Nothing was changed or deleted - '
+            + utf8_resave_remedy('this command')
         )
     if rec.get('parse_errors'):
         errors = '; '.join(msg for _, msg in rec['parse_errors'])
@@ -3048,9 +3048,8 @@ def process_refile(
     if rec['undecodable']:
         raise ProcessError(
             f'{record_path.name} is not saved as UTF-8 text, so its files: '
-            'inventory could not be read. Nothing was moved - open it and save '
-            'it again choosing UTF-8 (in Notepad: Save As, then pick UTF-8 from '
-            'the Encoding menu), then re-run.')
+            'inventory could not be read. Nothing was moved - '
+            + utf8_resave_remedy('this command'))
     if rec.get('parse_errors'):
         raise ProcessError(
             f'{record_path.name} has malformed frontmatter, so its files: '

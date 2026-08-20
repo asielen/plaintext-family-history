@@ -64,12 +64,14 @@ from _lib import (
     is_generated_file,
     is_template_file,
     load_fha_yaml,
+    name_undecodable_files,
     normalize_id,
     read_record,
     read_text_exact,
     resolve_ref,
     resolve_root_arg,
     undecodable_file_recorder,
+    utf8_resave_remedy,
     write_text_exact_atomic,
 )
 
@@ -492,12 +494,10 @@ def run_normalize_links(
             'warning',
             f'{_name_files(unreadable, archive_root)} Each was skipped rather '
             'than stopping the run. Anything written in one of them is left '
-            'exactly as it was; nothing about the file was changed. It is only '
-            'saved in an older encoding (a Windows editor defaults to one, '
-            'commonly cp1252) - open it and save it again choosing UTF-8 (in '
-            'Notepad: Save As, then pick UTF-8 from the Encoding menu), then '
-            'run `fha normalize-links` again. (`fha lint` reports the same '
-            'files as W128.)')
+            'exactly as it was; nothing about the file(s) was changed - '
+            + utf8_resave_remedy('`fha normalize-links`',
+                                 plural=len(unreadable) != 1)
+            + ' (`fha lint` reports the same files as W128.)')
 
     if map_gaps or places_gaps:
         # A preview: say why it cannot be trusted, and that `--write` will
@@ -520,17 +520,15 @@ def run_normalize_links(
 
 
 def _name_files(paths: list, archive_root: Path) -> str:
-    """"N file(s) are not saved as UTF-8 text ...: a, b, c." - up to five names.
+    """"N file(s) are not saved as UTF-8 text, so this run could not read them:
+    a, b, c." - the shared opener, with this command's own consequence.
 
-    The one sentence every report below opens with, spelled the way `fha index`
-    and `fha lint`'s W128 spell it, so the same condition reads the same from
-    whichever command the human happened to run.
+    Spelled the way `fha index` and `fha lint`'s W128 spell it (they call the
+    same builder), so the condition reads the same from whichever command the
+    human happened to run.
     """
-    shown = ', '.join(archive_relative(p, archive_root) for p in paths[:5])
-    if len(paths) > 5:
-        shown += f' and {len(paths) - 5} more'
-    return (f'{len(paths)} file(s) are not saved as UTF-8 text, so this run '
-            f'could not read them: {shown}.')
+    return name_undecodable_files(
+        paths, archive_root, 'so this run could not read them')
 
 
 def _map_gap_reason(

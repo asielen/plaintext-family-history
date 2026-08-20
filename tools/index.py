@@ -94,6 +94,8 @@ from _lib import (
     strip_link_wrapper,
     undecodable_file_recorder,
     unreadable_dir_recorder,
+    name_undecodable_files,
+    utf8_resave_remedy,
     walk_files,
 )
 
@@ -2199,21 +2201,20 @@ def build_index(archive_root: Path, fha_config: dict, verbose: bool = False) -> 
             'restore your access), then run `fha index` again.'
         )
     if undecodable_files:
-        shown = ', '.join(
-            _archive_relative(p, archive_root) for p in undecodable_files[:5])
-        if len(undecodable_files) > 5:
-            shown += f' and {len(undecodable_files) - 5} more'
         unreadable_warnings.append(
-            f'{len(undecodable_files)} file(s) are not saved as UTF-8 text, so '
-            f'nothing in them was indexed: {shown}. A note will not be found by '
+            name_undecodable_files(
+                undecodable_files, archive_root, 'so nothing in them was indexed')
+            + ' A note will not be found by '
             '`fha find --text`; a research log or capture log that will not '
             'decode loses the searches recorded in it; and a person or source '
             'record that will not decode is absent from the index entirely - '
             'off timelines, out of searches and exports, and not counted in any '
-            'report - until it can be read. The file itself is fine and nothing '
-            'was changed - it was written in an older encoding (a Windows editor '
-            'defaults to one, commonly cp1252). Re-save it as UTF-8, then run '
-            '`fha index` again.'
+            'report - until it can be read. '
+            + ('The files themselves are fine and nothing about them was '
+               'changed - ' if len(undecodable_files) != 1 else
+               'The file itself is fine and nothing about it was changed - ')
+            + utf8_resave_remedy('`fha index`',
+                                 plural=len(undecodable_files) != 1)
         )
 
     # One row per record that would not parse, in walk order, without repeating
@@ -2546,11 +2547,8 @@ def _run_index(args: argparse.Namespace) -> int:
             print(
                 f'ERROR: source {args.source} is not saved as UTF-8 text, so nothing '
                 'could be read from it and the index was left exactly as it was. '
-                'The file itself is fine and nothing about it was changed - it is '
-                'only saved in an older encoding (a Windows editor defaults to one, '
-                'commonly cp1252). Open it and save it again choosing UTF-8 (in '
-                'Notepad: Save As, then pick UTF-8 from the Encoding menu), then run '
-                'this command again.',
+                'The file itself is fine and nothing about it was changed - '
+                + utf8_resave_remedy('this command'),
                 file=sys.stderr,
             )
             return EXIT_FAILURE

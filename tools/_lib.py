@@ -5256,6 +5256,74 @@ def archive_relative(path: str | Path, archive_root: str | Path) -> str:
         return str(path).replace('\\', '/')
 
 
+def name_undecodable_files(paths, archive_root, consequence: str) -> str:
+    """"N file(s) are not saved as UTF-8 text, {consequence}: a, b, c." Up to
+    five names, then "and N more".
+
+    The sentence every #68 report opens with. `consequence` is the half only
+    the calling command can say - "so nothing in them was indexed", "so this
+    run could not read them" - because what a skip COSTS differs per command
+    even though the condition does not.
+
+    Paths are spelled archive-relative (`archive_relative`), never as the local
+    absolute path: the human filed them, and that is how he will find them.
+    """
+    paths = list(paths)
+    shown = ', '.join(archive_relative(p, archive_root) for p in paths[:5])
+    if len(paths) > 5:
+        shown += f' and {len(paths) - 5} more'
+    return (f'{len(paths)} file(s) are not saved as UTF-8 text, '
+            f'{consequence}: {shown}.')
+
+
+def utf8_resave_remedy(
+    next_command: str | None = None,
+    *,
+    plural: bool = False,
+    with_cause: bool = True,
+) -> str:
+    """The #68 remedy, in the words every command says it in.
+
+    "it is only saved in an older encoding (a Windows editor defaults to one,
+    commonly cp1252). Open it and save it again choosing UTF-8 (in Notepad:
+    Save As, then pick UTF-8 from the Encoding menu), then run `X` again."
+
+    The cause clause starts LOWERCASE: every caller reaches it as the far side
+    of a dash, after saying what this command did or did not do ("Nothing was
+    moved - ", "The file itself is fine and nothing about it was changed - ").
+    With `with_cause=False` the string starts at "Open it", a sentence of its
+    own, capitalised.
+
+    Seven commands reached this same dead end and each spelled the way out
+    longhand, which is six chances for the wording to drift apart - and it had
+    already started to ("it is only saved in" vs "it was written in"). The
+    human meets this condition through whichever command he happened to run,
+    so the way out has to read the same from all of them.
+
+    What is NOT here, deliberately: what the command lost, and what it left
+    alone ("Nothing was moved", "Nothing was minted", "The file itself is fine
+    and nothing about it was changed"). Only the caller knows those, and they
+    are the half that makes each message worth reading. This owns the cause and
+    the keystrokes, which are the same everywhere.
+
+    `next_command` is what goes inside "then run X again" - a backticked
+    command, or 'this command' where the exact invocation varies. Omitted, the
+    sentence simply ends after the keystrokes, for a report that has somewhere
+    else to send the human. `with_cause=False` drops the encoding sentence for
+    a message that has already named the cause. `plural` for a report naming
+    more than one file.
+    """
+    cause = ''
+    if with_cause:
+        cause = (('they are' if plural else 'it is')
+                 + ' only saved in an older encoding (a Windows editor '
+                   'defaults to one, commonly cp1252). ')
+    open_it = 'Open each' if plural else 'Open it'
+    run = f', then run {next_command} again' if next_command else ''
+    return (f'{cause}{open_it} and save it again choosing UTF-8 (in Notepad: '
+            f'Save As, then pick UTF-8 from the Encoding menu){run}.')
+
+
 def undecodable_file_recorder(into: list):
     """Build a `read_text_or_report` `on_decode_error` callback that records
     the files it failed to decode as UTF-8.
