@@ -88,9 +88,11 @@ this verb (and `fha claim new`) can write now echoes the value it actually
 wrote as an extra `field: value` line on success - cheap insurance against any
 wrapper (a different shell, a CI runner, an MCP bridge) that mangles an
 argument before this tool sees it. `--date`/`--type`/`--place`/`--persons`/
-`--confidence` already echoed their new value inline in the summary line and
-are unchanged; `--value`/`--place-text`/`--information`/`--evidence`/
-`--anchor`/`--notes` gained the explicit echo line.
+`--confidence`/`--information`/`--evidence` already echoed (or now echo,
+for the two new Mills fields) their new value inline in the summary line -
+closed-vocabulary or already-short values, so the summary line is legible
+either way; `--value`/`--place-text`/`--anchor`/`--notes` gained the
+explicit echo line.
 
 The edit is **surgical**: only the one named claim's entry inside its source
 `.md` `## Claims` block is touched - its sibling claims, the block's key order,
@@ -1465,10 +1467,15 @@ def _render_new_claim_lines(
     `negated: true` sits there too, for the same reason: it inverts what the
     type asserts (a negated marriage claim means "confirmed never married"),
     so it must be visible before the reader reaches the value's details.
-    `information`/`evidence`/`anchor` (issue #50) land where SPEC §8.4's own
-    illustrative block lists them, among the "other optional fields" right
-    after `place_text`; `notes` lands in its SPEC-illustrated slot, right
-    after `reviewed`.
+    `information` (issue #50) lands where SPEC §8.4's own illustrative block
+    lists it, among the "other optional fields" right after `place_text`.
+    `evidence` keeps its PRE-EXISTING slot right after `confidence` (where
+    the negated-absence case already wrote `evidence: negative` before this
+    issue) rather than moving to its SPEC-illustrated spot - the two cases
+    (an explicit `--evidence`, an implicit one from `--negated`) render
+    through the same line, so there is only one slot to place. `anchor`
+    lands right after `evidence`, and `notes` lands in its SPEC-illustrated
+    slot, right after `reviewed`.
 
     `confidence` is always written: SPEC §8.5 marks it required on every claim
     (lint E010, the same required set as `persons`), and the same section
@@ -1734,6 +1741,15 @@ def run_claim_new(
 
     kind = f'negated {claim_type} (confirmed absence)' if negated else claim_type
     summary = f'{fmt_id_display(cid)}: {kind} ({status}) on {fmt_id_display(sid)}'
+    # information/evidence are closed-vocabulary (like run_claim's own
+    # changed_bits), so they are named inline here too rather than through
+    # _echo_field_lines - without this, a caller passing --information/
+    # --evidence to `claim new` never saw what was actually minted, the
+    # exact issue #54 blind spot this verb otherwise closes.
+    if information is not None:
+        summary += f'; information -> {information}'
+    if evidence is not None:
+        summary += f'; evidence -> {evidence}'
 
     if dry_run:
         result.data['status'] = 'ok'

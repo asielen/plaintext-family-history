@@ -1801,15 +1801,18 @@ def _append_name_variant(
     Never a REPLACE - `--keep-variant` files the PRIOR name away, it never
     drops an existing variant, mirroring how `fha claim`'s field flags each
     touch only their own key. `added` is False with `note=None` when
-    `old_name` is already present (a case/whitespace-insensitive substring
-    check against the field's raw text - good enough to skip an exact
-    duplicate without a full YAML flow-list parse this one-shot append does
-    not need) - a legitimate no-op, not a problem. `added` is False with a
-    `note` when the field is written in a form this text surgery cannot
-    extend safely (anything but an inline `[...]` list, a block `- item`
-    list, or entirely absent) - the caller downgrades that to a warning
-    rather than refusing the whole rename, since the `name:` correction
-    itself does not depend on it.
+    `old_name` is already present - parsed as actual list items (the flow
+    `[...]` form or the block `- item` form) and compared exactly
+    (case/whitespace-insensitively), never a raw substring test: a substring
+    check would wrongly call "Elizabeth Cole" already present just because
+    "Elizabeth Cole Hartley" (a married name) sits in the list, silently
+    swallowing the very variant `--keep-variant` exists to file away - a
+    legitimate no-op only when the old name is a real, whole entry, not a
+    problem. `added` is False with a `note` when the field is written in a
+    form this text surgery cannot extend safely (anything but an inline
+    `[...]` list, a block `- item` list, or entirely absent) - the caller
+    downgrades that to a warning rather than refusing the whole rename,
+    since the `name:` correction itself does not depend on it.
     """
     rendered = yaml_inline(old_name)
     span = _fm_top_level_key_span(lines, start, end, 'name_variants')
@@ -1825,11 +1828,27 @@ def _append_name_variant(
     key_line, span_end = span
     m = re.match(r'^(name_variants\s*:\s*)(.*)$', lines[key_line])
     raw_value = m.group(2) if m else ''
-    existing_text = raw_value + '\n' + '\n'.join(lines[key_line + 1:span_end])
-    if _norm_variant_text(old_name) in _norm_variant_text(existing_text):
+    stripped = raw_value.strip()
+
+    # Parse the field's actual items (whichever form it is written in) to
+    # test for an EXACT existing entry - see the docstring above for why a
+    # substring test over the raw text is not good enough here.
+    existing_items: list[str] = []
+    try:
+        if stripped.startswith('[') and stripped.endswith(']'):
+            parsed = yaml.safe_load(stripped)
+        elif not stripped:
+            parsed = yaml.safe_load('\n'.join(lines[key_line + 1:span_end]))
+        else:
+            parsed = None
+    except yaml.YAMLError:
+        parsed = None
+    if isinstance(parsed, list):
+        existing_items = [str(v) for v in parsed if v is not None]
+    norm_old = _norm_variant_text(old_name)
+    if any(_norm_variant_text(v) == norm_old for v in existing_items):
         return lines, False, None
 
-    stripped = raw_value.strip()
     if stripped.startswith('[') and stripped.endswith(']'):
         inner = stripped[1:-1].strip()
         combined = f'{inner}, {rendered}' if inner else rendered
@@ -2305,6 +2324,16 @@ def run_rename(
         result.add('info',
                    f'Left the couple folder name as is - {folder_skip_reason}. Rename '
                    f'people/{old_folder.name}/ by hand if it should change too.')
+
+    # name: and (usually) the record's path both just changed - both are
+    # facts .cache/index.sqlite caches, and `fha site`/`fha packet`/
+    # `fha gedcom` all open the index strictly and refuse while it is stale,
+    # the same reminder `set-living`/`set-sex`/`set-profile-photo` give for
+    # their own single-field writes.
+    result.add('info',
+               'Next: run `fha index` so search, exports, and site generation '
+               'see the new name and file location.',
+               next_step='fha index')
 
     return result
 

@@ -2682,6 +2682,46 @@ class RenameTests(unittest.TestCase):
         self.assertIn('Betty T. Kelly', text)
         self.assertNotIn('Betty Turley Kelly', text)
 
+    def test_keep_variant_not_fooled_by_a_superstring_existing_variant(self) -> None:
+        # A raw substring check would wrongly call "Betty Cole" already
+        # present just because "Betty Cole Hartley" (a different, longer,
+        # married-name variant) already sits in name_variants: - silently
+        # dropping the very name --keep-variant exists to file away. The
+        # match must require a whole list entry, not a text fragment.
+        pid = 'P-c0ffeeb4d5'
+        folder = self.root / 'people' / 'connections'
+        folder.mkdir(parents=True)
+        profile = folder / f'kelly__betty_cole_{pid}.md'
+        profile.write_text(
+            _rename_profile_text('Betty Cole', variants='Betty Cole Hartley'),
+            encoding='utf-8')
+        res = person.run_rename(self.root, pid, 'Betty Slamon Kelly', keep_variant=True)
+        self.assertEqual(res.exit_code, EXIT_CLEAN, res.messages)
+        new_path = folder / f'kelly__betty_slamon_{pid.lower()}.md'
+        variants = read_record(new_path)['meta'].get('name_variants')
+        self.assertIn('Betty Cole Hartley', variants)   # existing entry untouched
+        self.assertIn('Betty Cole', variants)            # OLD name filed away too
+
+    def test_keep_variant_exact_duplicate_is_still_a_clean_no_op(self) -> None:
+        # Control for the fix above: an EXACT existing entry must still be
+        # recognised (no duplicate line added), just not a mere substring.
+        res = person.run_rename(self.root, RENAME_PID, 'Betty Slamon Kelly',
+                                keep_variant=True)
+        self.assertEqual(res.exit_code, EXIT_CLEAN, res.messages)
+        new_profile, _ = self._new_paths()
+        variants = read_record(new_profile)['meta'].get('name_variants')
+        self.assertEqual(variants.count('Betty Turley Kelly'), 1)
+
+    def test_index_reminder_follows_a_live_rename(self) -> None:
+        # name: and the record's path both just changed - both facts
+        # .cache/index.sqlite caches - so a live rename must remind the
+        # human to reindex, the same as set-living/set-sex/set-profile-photo
+        # do for their own single-field writes.
+        res = person.run_rename(self.root, RENAME_PID, 'Betty Slamon Kelly')
+        self.assertEqual(res.exit_code, EXIT_CLEAN, res.messages)
+        all_text = ' '.join(m.text for m in res.messages)
+        self.assertIn('fha index', all_text)
+
     def test_already_named_is_a_clean_no_op(self) -> None:
         res = person.run_rename(self.root, RENAME_PID, 'Betty Turley Kelly')
         self.assertEqual(res.exit_code, EXIT_CLEAN)
@@ -2702,7 +2742,11 @@ class RenameTests(unittest.TestCase):
         self.assertEqual(res.data['status'], 'ok')
         self.assertIsNone(res.data['folder'])
         self.assertIsNone(res.data['new_folder'])
-        new_path = stubs / f'smith__jane_{solo_pid}.md'
+        # stub_filename embeds the lowercase-normalized id (see _new_paths's
+        # own comment above) - lowercase the WHOLE id, prefix letter
+        # included, or this assertion checks a filename the tool would
+        # never write on a case-sensitive filesystem.
+        new_path = stubs / f'smith__jane_{solo_pid.lower()}.md'
         self.assertTrue(new_path.exists(), list(stubs.iterdir()))
         self.assertFalse(profile.exists())
         self.assertIn('name: Jane Smith', new_path.read_text(encoding='utf-8'))
@@ -2761,7 +2805,10 @@ class RenameTests(unittest.TestCase):
         self.assertIsNone(res.data['new_folder'])
         self.assertTrue(odd_folder.is_dir())   # folder name untouched
         self.assertFalse(profile.exists())      # the record itself still renamed
-        new_profile = odd_folder / f'kelly__betty_slamon_{RENAME_PID}.md'
+        # stub_filename embeds the lowercase-normalized id (see _new_paths's
+        # own comment) - RENAME_PID's own literal 'P-' prefix must be
+        # lowered too, or this checks a filename never actually written.
+        new_profile = odd_folder / f'kelly__betty_slamon_{RENAME_PID.lower()}.md'
         self.assertTrue(new_profile.exists())
 
     def test_cwd_inside_folder_blocks_only_the_folder_step(self) -> None:
@@ -2780,8 +2827,10 @@ class RenameTests(unittest.TestCase):
         # The record itself is fully renamed despite the folder step failing.
         new_profile, new_research = self._new_paths()
         # NOTE: the folder did NOT get renamed, so the profile/research files
-        # still sit under the OLD folder name.
-        old_new_profile = self.folder / f'kelly__betty_slamon_{RENAME_PID}.md'
+        # still sit under the OLD folder name. stub_filename embeds the
+        # lowercase-normalized id (see _new_paths's own comment), so
+        # RENAME_PID's literal 'P-' prefix must be lowered here too.
+        old_new_profile = self.folder / f'kelly__betty_slamon_{RENAME_PID.lower()}.md'
         self.assertTrue(old_new_profile.exists())
         self.assertIn('name: Betty Slamon Kelly',
                       old_new_profile.read_text(encoding='utf-8'))

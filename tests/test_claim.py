@@ -2110,6 +2110,23 @@ class EchoOnSuccessTests(unittest.TestCase):
         all_text = ' '.join(m.text for m in result.messages)
         self.assertIn(value, all_text)
 
+    def test_claim_new_live_mint_also_shows_information_and_evidence(self) -> None:
+        # `run_claim`'s edit verb already named --information/--evidence
+        # inline in its summary; `run_claim_new`'s own summary line omitted
+        # both entirely (unlike --value/--place-text/--anchor/--notes, which
+        # got the explicit echo line) - the same issue #54 blind spot on the
+        # mint path, just for the two closed-vocabulary Mills fields instead
+        # of a free-text one.
+        _write_person(self.root, 'P-aaaaaaaaaa', 'Anna Smith')
+        result = claim.run_claim_new(
+            self.root, source_id='S-1111111111', claim_type='occupation',
+            value='Bookkeeper', persons=['P-aaaaaaaaaa'],
+            information='primary', evidence='direct')
+        self.assertEqual(result.exit_code, EXIT_CLEAN, result.messages)
+        all_text = ' '.join(m.text for m in result.messages)
+        self.assertIn('information -> primary', all_text)
+        self.assertIn('evidence -> direct', all_text)
+
 
 if __name__ == '__main__':
     unittest.main()
