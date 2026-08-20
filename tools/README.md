@@ -285,9 +285,13 @@ given, `sex` validates against the controlled vocabulary, and `stubs.py`'s thin 
 (including the historical `(pid, name)` argument order) still work. `StubSlugNameTests`
 also covers issue #53's `_lib.strip_generational_suffix` rule directly (every suffix
 round-trips, father/son share a surname slug, case-insensitivity, "Roy Jr"/"Jr" alone/"IV"
-alone/"John IV" adversarial cases, the true mononym path proven byte-identical to before
-the fix, and the `--surname` override including its surname-first and unrelated-override
-cases) and `FromNamesGenerationalSuffixTests` proves the SAME fix from the
+alone/"John IV" adversarial cases, the true mononym path still surname-less, and the
+`--surname` override including its surname-first and unrelated-override cases). It also
+pins the mononym slug's sanitation: the single-token path used to return the token
+unslugged - the one place the `[a-z0-9_]` promise was not kept - so `Bob/Rob` filed as
+`__bob/rob_P-….md`, a path separator inside a filename, and a `?` or `:` produced a name
+Windows refuses; a token with nothing left after sanitising falls back to `unknown` in the
+given slot while the sort-name slot stays empty and `FromNamesGenerationalSuffixTests` proves the SAME fix from the
 `--from-names`/`mint_named_stubs` batch entry point, including the issue's own two
 confirmed reproductions ("Roy Dodson Jr.", "James Whitelock Jr."). Run with `python -m
 unittest tests.test_person -v` and `python -m unittest tests.test_stubs -v` from the
@@ -722,8 +726,9 @@ Automated tests: `tests/test_convert_mining.py` copies
 (writes nothing), `--apply` (sources/claims/privacy-safe stubs, story + question
 import, mapping CSV), repeat-apply refusal, rollback after a write failure, the
 AI pass audit block, EDTF/type-heuristic units, the stub filename grammar (suffix,
-mononym, underscore joins, and equality with `_lib.stub_filename` by construction,
-so the two cannot drift again), the missing-`mining/` error, and
+mononym (including a punctuated one, which the shared rule used to slug less
+safely than the private copy did), underscore joins, and equality with
+`_lib.stub_filename` by construction, so the two cannot drift again), the missing-`mining/` error, and
  - the contract - that the converted archive lints with zero errors via
 `lint.run_lint_silent`. Run with `python -m unittest tests.test_convert_mining
 -v` from the repo root.

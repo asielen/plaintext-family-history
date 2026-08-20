@@ -431,6 +431,21 @@ class PersonFilenameTests(unittest.TestCase):
             'dodson__roy_eugene_P-0000000001.md',
         )
 
+    def test_a_punctuated_mononym_is_still_a_safe_filename(self):
+        # The private copy this now delegates to slugged with `_slugify`,
+        # so switching to the shared rule had to not LOSE that: a mononym
+        # is the one name `stub_slug_name` used to hand back unslugged, and
+        # `Bob/Rob` would have written `__bob/rob_P-….md` - a path
+        # separator inside a filename.
+        self.assertEqual(
+            convert_mining._person_filename('Bob/Rob', 'P-0000000001'),
+            '__bobrob_P-0000000001.md',
+        )
+        self.assertEqual(
+            convert_mining._person_filename("O'Brien", 'P-0000000001'),
+            '__obrien_P-0000000001.md',
+        )
+
     def test_a_nameless_person_still_gets_the_unknown_form(self):
         self.assertEqual(
             convert_mining._person_filename('', 'P-0000000001'),
@@ -440,7 +455,8 @@ class PersonFilenameTests(unittest.TestCase):
     def test_it_agrees_with_the_shared_rule_by_construction(self):
         # Two-sided rule, two-sided test: if `stub_filename` ever changes,
         # this migration changes with it rather than drifting again.
-        for name in ('Roy Eugene Dodson Jr', 'Cher', 'Anne-Marie de Vries', ''):
+        for name in ('Roy Eugene Dodson Jr', 'Cher', 'Anne-Marie de Vries', '',
+                     "O'Brien", 'Bob/Rob'):
             with self.subTest(name=name):
                 self.assertEqual(
                     convert_mining._person_filename(name, 'P-0000000001'),

@@ -973,9 +973,13 @@ class ParseGedcomNameTests(unittest.TestCase):
     def test_it_files_a_person_the_way_the_shared_rule_does(self):
         # Two-sided rule, two-sided test: import and `fha person new` must
         # not drift apart again.
+        # A punctuated mononym is in the list because the two answered
+        # differently until `stub_slug_name`'s single-token path started
+        # sanitising like every other path in it: `__obrien` here vs
+        # `__o'brien` there.
         for raw in ('Roy Eugene Dodson Jr', 'Roy Eugene /Dodson/ Jr',
                     'Roy Eugene Dodson', 'Cher', 'Roy Jr', '/Dodson/',
-                    '/Dodson/ Jr'):
+                    '/Dodson/ Jr', "O'Brien", 'Bob/Rob'):
             with self.subTest(raw=raw):
                 display, _given, surname = gedcom_import._parse_gedcom_name(raw)
                 self.assertEqual(
