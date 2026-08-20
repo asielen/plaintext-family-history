@@ -568,7 +568,7 @@
     {
       "path": ".fha/tools/normalize_links.py",
       "category": "operating",
-      "sha256": "227a319682f7469663447a0f9f25c50e587594d1da5bb81fbb0adaf544146a28",
+      "sha256": "04fa61325d5501f6596f792374f9229851901c317beba7141294753b147ddeaf",
       "spec_version": "1.2",
       "src": "tools/normalize_links.py"
     },
@@ -603,7 +603,7 @@
     {
       "path": ".fha/tools/process.py",
       "category": "operating",
-      "sha256": "4dc75be9bb1c06398622aee3f49e77eb80bb99613605d8847f929c9514c5c222",
+      "sha256": "df487c8cd84e17438016ffa93143b90f0ebd883d780ca57d90e8703e70fdfc14",
       "spec_version": "1.2",
       "src": "tools/process.py"
     },
@@ -666,7 +666,7 @@
     {
       "path": ".fha/tools/stubs.py",
       "category": "operating",
-      "sha256": "b7586a9b8facdf5ad3cb7aa5b0487c36e4a418157b3be253de6a5b8ea38e0730",
+      "sha256": "d4447a683ae94155d5a845bb70708713bc68bd92286c61b94c2ebdcdb2a679c3",
       "spec_version": "1.2",
       "src": "tools/stubs.py"
     },
@@ -792,7 +792,7 @@
     {
       "path": ".fha/tools/views.py",
       "category": "operating",
-      "sha256": "3466c7bcf7051f6c45b3467e2f8deae0d2b3b3779dae94b87a532b8fb22edca2",
+      "sha256": "7a1ea455693ee72d106d8518a1642db4dcfdc650697d0c5484b50582341b42c7",
       "spec_version": "1.2",
       "src": "tools/views.py"
     },
