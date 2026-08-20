@@ -153,35 +153,71 @@ sweep. Works one item at a time; for a full inbox, triage and confirm each with 
      ```
      `fha stubs` mints a **fresh random** `P-…` on each run, so the dry-run's ID is illustrative only —
      use the `P-…` the **apply** command prints (not the dry-run's) when you draft the claim's `persons:`.
-   Resolve places against the registry before falling back to free text:
+   Resolve places against the registry before falling back to free text — looking up the **settlement name
+   on its own**, not the source's whole place wording. `--kind place` matches a place's `name:` and its
+   `alt_names:`, and nothing else: `hierarchy:` is not a searched field, so a query in the usual
+   "Town, County, State" shape a `place_text` carries finds nothing even when that town *is* registered.
    ```
-   fha find --json "San Diego, California" --kind place   # does this text already match a registered place?
+   fha find --json "San Diego" --kind place                 # the town alone — this is the query that hits
+   fha find --json "San Diego, California" --kind place     # always [], however well-registered the town
    ```
-   - A clean single match → set the claim's `place:` to that `L-id`. `place_text:` still carries the
-     source's own wording unchanged (SPEC §15 — `place_text` is never altered, linking only adds `place:`
-     alongside it).
+   (`--kind` needs `--json`; a bare `fha find` silently ignores it, and bare `fha find "<text>"` is
+   full-text search over records and notes, which never reads the registry tables at all.)
+   - A single hit → check the `detail` it prints back — that place's `hierarchy:` — against the rest of
+     the source's wording. Same town → set the claim's `place:` to that `L-id`. `place_text:` still carries
+     the source's own wording unchanged (SPEC §15 — `place_text` is never altered, linking only adds
+     `place:` alongside it).
+   - Several hits, or one whose hierarchy is a different county or state → present the candidates and let
+     the human pick, exactly as for an ambiguous person name. A bare town name is not an identification.
    - No match → **an unlinked place is still fine** — leave `place_text:` as written, that is the normal
      case, not a shortfall. But before moving on, check whether this text is a first-time mention or an
      already-recurring miss:
      ```
      fha places candidates   # ranked unlinked place-text clusters (the recurrence detector, TOOLING §10)
      ```
+     Run it **once** and reuse the list across this item's place texts — it can only change if a
+     registration below actually fires, and then you re-run it after that reindex. Read it as it is
+     computed: clusters are normalized
+     (case, punctuation and St/Co abbreviations folded, words sorted) and shown under whichever wording is
+     commonest, so match your text to a cluster **by town, not by string equality**; and the counts are
+     `accepted`/`needs-review` claims only, so the `suggested` claims you draft here don't enter the list
+     at all until the human accepts them in `review-claims`.
      If this place text's cluster is in that list at **10 or more claims**, that is well past
      `fha places candidates`'s own default surfacing bar of 3 (report §6b's and `place-research`'s
      everyday threshold) — a real, established pattern rather than an incidental third mention — so make
      **one** offer, same explicit-yes rule as every other offer here, never repeated this session once
      declined: *"'San Diego, California' now appears in 12 claims and isn't a registered place yet — want
      me to register it?"* On his yes, register it exactly the way `place-research` does (never hand-write
-     `places.yaml`):
+     `places.yaml`) — the settlement as `--name`, the full string as `--hierarchy`, which is precisely why
+     the lookup above searches the name alone. **First check the cluster isn't another wording of a place
+     already registered** — the same name lookup on the cluster's own town, and on its obvious variant (drop
+     a "City"/"Township" suffix, expand an abbreviation), since the cluster is shown under whichever
+     wording is commonest and that may not be the one you just searched. A second `L-id` for one town is
+     the duplicate `fha places lint` reports as **PL002**, so merge into the existing place instead —
+     `--into`, the arm `place-research` documents beside the mint.
      ```
+     fha confirm place <C-id> <C-id> … --into <L-id> --dry-run                # already registered: merge
      fha confirm place <C-id> <C-id> … --name "San Diego" --hierarchy "San Diego, California, USA" --dry-run
      fha confirm place <C-id> <C-id> … --name "San Diego" --hierarchy "San Diego, California, USA"
      ```
-     (the cluster's own `claim_ids` list, printed by `fha places candidates`, is the id list to pass — the
-     claim you're about to draft isn't among them yet, so set its `place:` to the new `L-id` yourself once
-     the registry write lands, rather than leaving it as the next miss). Below 10, or on "not now" /
-     silence, the miss is a legitimate permanent state (SPEC §15) — leave `place_text:` as written and
-     move on; `place-research` or a later session is still there for it once it recurs further.
+     The cluster's own `claim_ids` list, printed by `fha places candidates`, is the id list to pass. Show
+     him the `--dry-run` before applying: this is the one write in this skill that reaches past the item in
+     hand, into `places.yaml` and into every source record holding one of those claims. Like `fha stubs`
+     above, a minted place is a **fresh random** `L-…` on each run, so the dry-run's ID is illustrative only
+     — use the `L-…` the **apply** command prints when you set `place:` on the claim you're about to draft
+     (that claim isn't in the cluster, so the tool doesn't relink it for you; the dry-run's ID would land in
+     the record as a place that was never registered, `fha places lint`'s **PL001**). Then reindex, because
+     a registry write is the one thing here that changes the query surface — the rest of Stage B, and
+     `fha places lint` itself, would otherwise read an index with no new `L-id` in it (`place-research`
+     step 4):
+     ```
+     fha index                # fold the new L-id and the relinked place: claims into the query surface
+     fha places lint          # registry hygiene: orphan L-ids, duplicate names, dangling within: links
+     ```
+     The full `fha lint` still belongs to the review close-out (step 9) — these two are the follow-through
+     that write owns. Below 10, or on "not now" / silence, the miss is a legitimate permanent state
+     (SPEC §15) — leave `place_text:` as written and move on; `place-research` or a later session is still
+     there for it once it recurs further.
 
 6. **Draft `suggested` claims with anchors and Mills fields.** For each substantive assertion in the
    evidence, add a claim to the record's `## Claims` block:
@@ -247,6 +283,9 @@ sweep. Works one item at a time; for a full inbox, triage and confirm each with 
 - The place-registration offer fires at most **once per place-text cluster per session**, only on an
   explicit yes, never repeated once declined in the same session — the same discipline `review-claims`'
   promotion nudge uses, extended to places (issue #81).
+- A registry write is the only query-surface change this skill makes, and it owns its own follow-through:
+  `fha index` then `fha places lint`, immediately, never deferred to the review close-out. The `L-id`
+  written into a claim is always the one the **apply** run printed, never the dry-run's.
 
 ## Done when
 
@@ -259,9 +298,12 @@ sweep. Works one item at a time; for a full inbox, triage and confirm each with 
   context in `## Notes`, AI pass recorded with `outputs: []`, no review hand-off, no forced claims.
 - An image-only item is transcribed at Stage A½ *before* any claim is drafted: the source carries a
   `role: transcript` companion, and the Stage B claims cite its `[Page N]` anchors.
-- A place text that matches the registry gets `place:` set on the claim without asking; a place text with
+- A place text whose **settlement name** resolves to one registry place whose hierarchy agrees gets
+  `place:` set on the claim without asking; several hits go to the human as candidates; a place text with
   no match that is already a 10-or-more-claim recurring miss in `fha places candidates` gets exactly one
-  registration offer this session, written only via `fha confirm place` on an explicit yes.
+  registration offer this session, written only via `fha confirm place` on an explicit yes — merged
+  `--into` an existing place rather than minted twice — and followed straight away by `fha index` +
+  `fha places lint`.
 - Every drafted claim is `suggested` (no claim is `accepted` at this stage).
 - `fha lint --root example-archive` still exits 1 with only the documented baseline warnings
   (`_STANDARD.md` §9).

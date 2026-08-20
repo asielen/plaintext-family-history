@@ -206,25 +206,48 @@ its claims to the people asked about and leave the rest for later sessions.
 
    **Places.** A review pass that just accepted a batch of claims is precisely the moment a place-text
    cluster crosses its threshold — check for it here rather than leaving it for a session that never comes
-   back to it (issue #81):
+   back to it (issue #81). It reads the index step 5 just rebuilt, and it counts exactly the statuses this
+   pass just moved: the detector groups `accepted`/`needs-review` claims only, so what he accepted a moment
+   ago is in the list and anything still `suggested` is not.
    ```
    fha places candidates   # ranked unlinked place-text clusters (default threshold 3), sorted largest first
    ```
    That threshold (3) is `fha places candidates`' own bar for "worth surfacing at all" — the same one
    `place-research` and report §6b already use. This nudge asks a stricter question — "worth interrupting
    the close-out for" — so only act when the single **largest** returned cluster is at **10 or more
-   claims** (`process-source`'s same offer bar, §"Resolve places…"); a smaller cluster is a real candidate
-   but not this nudge's business, and stays for `place-research`/a later session instead. At or over 10,
+   claims** (`process-source`'s same offer bar, its step 5); a smaller cluster is a real candidate but not
+   this nudge's business, and stays for `place-research`/a later session instead. At or over 10,
    name that one cluster only — not the whole list, same one-thing-at-a-time restraint as the promotion
    nudge: "'San Diego, California' now appears in 22 claims and isn't a registered place yet — want me to
    register it?" **Only on his explicit yes**, register it the way `place-research` does (never hand-write
-   `places.yaml`):
+   `places.yaml`) — and look the cluster's **town name** up first:
    ```
-   fha confirm place <C-id> <C-id> … --name "…" --hierarchy "…" --dry-run
+   fha find --json "San Diego" --kind place   # the town alone: --kind place matches name:/alt_names:
+                                              # and never hierarchy:, so the cluster's full wording
+                                              # returns [] even for a town already registered
+   ```
+   Already there under another wording → **merge into it**; a second `L-id` for one town is the duplicate
+   `fha places lint` reports as **PL002**. Otherwise mint it, settlement as `--name` and the full string as
+   `--hierarchy`:
+   ```
+   fha confirm place <C-id> <C-id> … --into <L-id> --dry-run                # already registered: merge
+   fha confirm place <C-id> <C-id> … --name "…" --hierarchy "…" --dry-run   # new place
    fha confirm place <C-id> <C-id> … --name "…" --hierarchy "…"
    ```
-   (the cluster's own `claim_ids` list, printed by `fha places candidates`, is the id list to pass). No
-   yes, no write — one nudge per place per session, then let it rest, same as promotion.
+   (the cluster's own `claim_ids` list, printed by `fha places candidates`, is the id list to pass — show
+   him that `--dry-run` before applying, because those claims reach past this session's source into every
+   record holding one, and a minted place is a fresh-random `L-…` per run, so the id that is real is the
+   one the **apply** run printed, never the dry-run's). This write lands *after* the `fha lint` above and
+   `fha confirm place` does not reindex, so a yes here means the close-out isn't finished — reopen it,
+   exactly as `place-research` step 4 does:
+   ```
+   fha index                # fold the new L-id and the relinked place: claims into the query surface
+   fha places lint          # registry hygiene: orphan L-ids, duplicate names, dangling within: links
+   fha lint                 # the done-gate again, now covering the last write
+   ```
+   (Cosmetic, and deliberately not chased here: a relinked claim's place shows as a clickable `[[L-…]]` in
+   an affected person's timeline only after that person's next `fha views timeline <P-id>`.) No yes, no
+   write — one nudge per place per session, then let it rest, same as promotion.
 
 ## Guardrails
 
@@ -244,6 +267,8 @@ its claims to the people asked about and leave the rest for later sessions.
   on silence or a hedge.
 - The place nudge names at most **one** cluster (the largest) and fires at most once per session, same
   cap as promotion — never every returned cluster, never repeated once declined.
+- A place nudge answered yes **reopens the close-out** — `fha index`, `fha places lint`, `fha lint` — since
+  it writes after the done-gate and `fha confirm place` doesn't reindex. A session never ends on that write.
 - Record no separate `## AI Passes` entry here *unless* you drafted a new claim in this session (a manual
   addition you formatted) — plain acceptance of existing drafts is the human's pass, not the AI's.
 - Any record ID you write into prose (a note, a spawned question, a story) is `[[ ]]`-wrapped,
@@ -268,5 +293,7 @@ its claims to the people asked about and leave the rest for later sessions.
   (`fha person promote` + `write-biography` hand-off), and the place nudge (`fha confirm place`, when the
   session's `fha places candidates` top cluster is at or over 10 claims) fired **only on explicit yeses**
   — no yes, no write, no run.
+- A place nudge that *did* fire ends on a reopened close-out: `fha index`, `fha places lint` clean, and
+  `fha lint` re-run over the registry and the relinked claims.
 - `fha lint --root example-archive` still exits 1 with only the documented baseline warnings
   (`_STANDARD.md` §9).
