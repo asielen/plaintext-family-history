@@ -3046,3 +3046,83 @@ class UndecodableFileReportingTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class WrongKindOfRecordInALinkFieldTests(unittest.TestCase):
+    """E020: a `people:`/`places:` entry that names the wrong KIND of record.
+
+    Both fields resolve through the one ('P','L') alias map, so the map
+    answers a question neither field asked: a town written under `people:`, a
+    person written under `places:`. The index refuses the cross-type edge now
+    (`_lib.resolve_typed_ref`'s `want` gate), which keeps a P-id out of
+    `source_places.place_id` - but a silent drop is what let this sit, and the
+    name RESOLVED, so it is a typo the archive can point straight at rather
+    than the forgiving unresolved-name case.
+    """
+
+    def _archive(self, *, people: str, places: str,
+                 person_name: str = 'Florence Hartley',
+                 place_name: str = 'Siena') -> Path:
+        root = Path(tempfile.mkdtemp())
+        for sub in ('people', 'sources', 'places'):
+            (root / sub).mkdir(parents=True)
+        (root / 'fha.yaml').write_text('roots: {}\n', encoding='utf-8')
+        (root / 'people' / 'hartley__florence_P-1111111111.md').write_text(
+            f'---\nid: P-1111111111\nname: {person_name}\nliving: false\n'
+            'aliases: ["P-1111111111"]\n---\n', encoding='utf-8')
+        (root / 'places' / 'places.yaml').write_text(
+            f'- id: L-1111111111\n  name: {place_name}\n  country: Italy\n',
+            encoding='utf-8')
+        (root / 'sources' / 'deed_S-1111111111.md').write_text(
+            '---\nid: S-1111111111\ntitle: Deed\nsource_type: other\n'
+            'date: 1880\ncitation: A deed\naliases: ["S-1111111111"]\n'
+            f'people: {people}\nplaces: {places}\n---\n', encoding='utf-8')
+        return root
+
+    def _e020(self, **kw) -> list[str]:
+        findings, _reg = lint._run_lint_core(self._archive(**kw), {})
+        return [f.message for f in findings if f.code == 'E020']
+
+    def test_a_person_under_places_is_named(self) -> None:
+        msgs = self._e020(people='[]', places='["[[Florence Hartley]]"]')
+        self.assertEqual(len(msgs), 1, msgs)
+        self.assertIn('is a person, not a place', msgs[0])
+
+    def test_a_town_under_people_is_named(self) -> None:
+        # The half lint could not see before: place NAMES are kept out of the
+        # W112/W113 clash surface, so the registry is asked directly.
+        msgs = self._e020(people='["[[Siena]]"]', places='[]')
+        self.assertEqual(len(msgs), 1, msgs)
+        self.assertIn('is a place, not a person', msgs[0])
+
+    def test_a_bare_id_of_the_wrong_type_is_named(self) -> None:
+        msgs = self._e020(people='["L-1111111111"]', places='[]')
+        self.assertEqual(len(msgs), 1, msgs)
+        self.assertIn('is a place, not a person', msgs[0])
+
+    def test_the_remedy_names_the_other_field(self) -> None:
+        msgs = self._e020(people='[]', places='["[[Florence Hartley]]"]')
+        self.assertIn('Move it to people:', msgs[0])
+
+    # ── what must NOT be a finding ──────────────────────────────────────────
+
+    def test_entries_in_the_right_field_are_silent(self) -> None:
+        self.assertEqual(
+            self._e020(people='["[[Florence Hartley]]"]', places='["[[Siena]]"]'), [])
+
+    def test_an_ambiguous_name_is_not_accused_of_being_a_town(self) -> None:
+        # A person AND a town both called Florence. The reference is ambiguous,
+        # not mistyped - "that is a town" is an accusation this check cannot
+        # support, so it stays out of it.
+        self.assertEqual(
+            self._e020(people='["[[Florence]]"]', places='[]',
+                       person_name='Florence', place_name='Florence'), [])
+
+    def test_an_unknown_name_stays_inert(self) -> None:
+        # TOOLING §3: an unresolved non-ID link is an inert note-link.
+        self.assertEqual(self._e020(people='["[[Nobody At All]]"]', places='[]'), [])
+
+    def test_a_dangling_id_of_the_RIGHT_type_is_left_to_e005(self) -> None:
+        # Dangling and wrong-type are different failures; E020 must not take
+        # E005's work.
+        self.assertEqual(self._e020(people='["P-9999999999"]', places='[]'), [])

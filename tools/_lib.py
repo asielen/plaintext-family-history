@@ -4521,26 +4521,37 @@ def resolve_typed_ref(
     ["[[Sam Rivera]]"]`), so a bare `normalize_id(str(...))` would store the
     literal `[[sam rivera]]` and break every downstream join. Instead:
       - the `[[ ]]` wrapper, `|display`, and `#fragment` are stripped;
-      - an ID-shaped target is kept as-is, even when dangling - integrity is
-        lint's job (E005), not the resolver's;
+      - an ID-shaped target of the type the field means is kept as-is, even
+        when dangling - integrity is lint's job (E005), not the resolver's;
+      - `want` is a TYPE gate, not a tie-breaker, so it is applied to an
+        ID-shaped target too: `place: P-…` names a person, and a person is not
+        somewhere a thing happened. It resolves to None rather than putting a
+        P-id in a place column, and `fha lint` E020 names the field. Dangling
+        and wrong-type are different failures - the first is a record that
+        should exist, the second a value that never belonged in this field;
       - a name resolves through the alias map, but only to the record type the
-        field means (`want`: 'P' for persons/roles, 'L' for place), so a name
-        clash across types never yields a cross-type edge;
+        field means, so a name clash across types never yields a cross-type
+        edge;
       - an unknown or ambiguous name returns None - per TOOLING §3, "an
         unresolved non-ID `[[stem]]` is an inert note-link, not a finding" -
         so nothing garbage ever lands in an index row or an idempotency key.
 
     Shared home for the identical per-tool resolvers (round-2 cleanup K4).
-    Live consumers: confirm.py's cooccur idempotency gate (round-2 finding 6)
-    and index.py's claim persons/roles/place resolution (its local
-    `_resolve_claim_ref` copy was retired in the round-2 finding-8 wave).
+    Live consumers: confirm.py's cooccur idempotency gate (round-2 finding 6),
+    index.py's claim persons/roles/place resolution (its local
+    `_resolve_claim_ref` copy was retired in the round-2 finding-8 wave), and
+    index.py's source frontmatter `people:`/`places:` fields - the ones this
+    docstring already claimed to share a contract with, while in fact they
+    resolved through an untyped local that let a town into `source_people` and
+    a person into `source_places`.
     # TODO(K4): lint.py's `_resolve_person_ref` (plus its inline place
     # variant) still holds a local copy - re-point it here in the cleanup wave."""
     ref = strip_link_wrapper(str(raw)) if raw is not None else ''
     if not ref:
         return None
     if id_type_of(ref):
-        return normalize_id(ref)
+        rid = normalize_id(ref)
+        return rid if (want is None or id_type_of(rid) == want) else None
     resolved = resolve_ref(ref, alias_map) if alias_map else None
     if resolved and (want is None or id_type_of(resolved) == want):
         return resolved

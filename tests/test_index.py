@@ -2952,3 +2952,85 @@ class UnreadRecordCannotUnmakeAClashTests(unittest.TestCase):
                 [r[0] for r in conn.execute('SELECT path FROM unread_records')], [])
         finally:
             conn.close()
+
+
+class LinkFieldTypeGateTests(unittest.TestCase):
+    """A `people:`/`places:` entry only ever draws an edge to the kind of
+    record the FIELD means.
+
+    Both fields read the one ('P','L') alias map, and `_resolve_link_field`
+    used to keep whatever came back - so the map answered a question neither
+    field had asked:
+
+        people: ["[[Siena]]"]            -> source_people.person_id l-…  a TOWN
+        places: ["[[Florence Hartley]]"] -> source_places.place_id  p-…  a PERSON
+
+    A person filed as a location reaches place pages and exports from there.
+    No unreadable file is needed - just a name under the wrong heading - which
+    is why the gate lives in the resolver (`_lib.resolve_typed_ref`'s `want`)
+    and not in the decode-error handling that surfaced it.
+    """
+
+    def _build(self, *, people: str = '[]', places: str = '[]',
+               places_readable: bool = True,
+               person_name: str = 'Florence Hartley',
+               place_name: str = 'Siena') -> tuple[list[str], list[str]]:
+        root = Path(tempfile.mkdtemp())
+        for sub in ('people', 'sources', 'places'):
+            (root / sub).mkdir(parents=True)
+        (root / 'fha.yaml').write_text('roots:\n  documents: documents\n',
+                                       encoding='utf-8')
+        (root / 'people' / 'hartley__florence_P-1111111111.md').write_text(
+            f'---\nid: P-1111111111\nname: {person_name}\nliving: false\n---\n',
+            encoding='utf-8')
+        yml = f'- id: L-1111111111\n  name: {place_name}\n  country: Italy\n'
+        if places_readable:
+            (root / 'places' / 'places.yaml').write_text(yml, encoding='utf-8')
+        else:
+            (root / 'places' / 'places.yaml').write_bytes(
+                yml.encode('utf-8') + b'  note: caf\xe9\n')
+        (root / 'sources' / 'deed_S-1111111111.md').write_text(
+            '---\nid: S-1111111111\ntitle: Deed\nsource_type: other\n'
+            f'people: {people}\nplaces: {places}\n---\n', encoding='utf-8')
+        with redirect_stderr(io.StringIO()):
+            index.build_index(root, {})
+        conn = sqlite3.connect(root / '.cache' / 'index.sqlite')
+        try:
+            return (sorted(r[0] for r in conn.execute(
+                        'SELECT person_id FROM source_people')),
+                    sorted(r[0] for r in conn.execute(
+                        'SELECT place_id FROM source_places')))
+        finally:
+            conn.close()
+
+    def test_the_right_field_still_draws_its_edge(self) -> None:
+        self.assertEqual(
+            self._build(people='["[[Florence Hartley]]"]', places='["[[Siena]]"]'),
+            (['p-1111111111'], ['l-1111111111']))
+
+    def test_a_town_named_under_people_draws_nothing(self) -> None:
+        self.assertEqual(self._build(people='["[[Siena]]"]'), ([], []))
+
+    def test_a_person_named_under_places_draws_nothing(self) -> None:
+        self.assertEqual(self._build(places='["[[Florence Hartley]]"]'), ([], []))
+
+    def test_a_bare_wrong_type_id_draws_nothing(self) -> None:
+        # An explicitly-typed ID is not a tie to break - it simply does not
+        # belong in this field, so `want` gates it too.
+        self.assertEqual(self._build(places='["P-1111111111"]'), ([], []))
+
+    def test_a_dangling_right_type_id_is_still_kept(self) -> None:
+        # Integrity stays lint's job (E005); the gate is about type, not
+        # existence.
+        self.assertEqual(self._build(people='["P-9999999999"]'),
+                         (['p-9999999999'], []))
+
+    def test_an_unreadable_places_file_no_longer_files_a_person_as_a_place(self) -> None:
+        # How this was found. A person and a town both called Florence cancel
+        # out as ambiguous; one unreadable record removes the tie, and the
+        # survivor won by default - `source_places` got a P-id. Both readings
+        # must now agree, and agree on drawing nothing.
+        kw = dict(places='["[[Florence]]"]', person_name='Florence',
+                  place_name='Florence')
+        self.assertEqual(self._build(places_readable=True, **kw), ([], []))
+        self.assertEqual(self._build(places_readable=False, **kw), ([], []))

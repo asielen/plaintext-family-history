@@ -259,6 +259,12 @@ class Registry:
         self.source_paths: dict[str, Path] = {}   # S-id → path
         self.claim_ids: dict[str, str] = {}        # C-id → source S-id
         self.place_ids: set[str] = set()           # L-ids
+        # Place NAME -> L-id, lowercased. Deliberately NOT fed into
+        # `_alias_records`: place names stay out of the W112/W113 clash
+        # surface (the index carries those, see that function). This map
+        # exists for E020 alone, which has to be able to say 'that is a
+        # town' about a name written under `people:`.
+        self.place_names: dict[str, str] = {}
         self.hypothesis_ids: set[str] = set()      # H-ids
 
         # id → path (for any type, first seen)
@@ -859,6 +865,11 @@ def _walk_archive(archive_root: Path, registry: Registry, findings: list[Finding
                     if pid and pid.startswith('l-'):
                         registry.place_ids.add(pid)
                         registry.all_record_ids[pid] = places_path
+                        for label in ([place.get('name')]
+                                      + list(place.get('alt_names') or [])):
+                            key = str(label or '').strip().lower()
+                            if key:
+                                registry.place_names.setdefault(key, pid)
         except Exception as e:
             findings.append(Finding('E', 'E010', places_path, f'places.yaml parse error: {e}'))
 
@@ -1923,6 +1934,27 @@ def _self_alias_ok(meta: dict, cid: str) -> bool:
     return normalize_id(cid) in present
 
 
+# E020's plain words for "what kind of thing is this ID". Deliberately the
+# words a human filing papers would use, not the record-type letters: the
+# finding has to read as "you put a town where a person goes", which is the
+# actual mistake, and the letters are what the human got wrong in the first
+# place.
+_RECORD_KIND_WORDS = {
+    'P': 'a person',
+    'L': 'a place',
+    'S': 'a source',
+    'C': 'a claim',
+    'H': 'a hypothesis',
+}
+
+_E020_REMEDY = {
+    'people': 'Move it to places: if that is where this happened, or pin the '
+              'entry to the P-id of the person you meant.',
+    'places': 'Move it to people: if they were involved, or pin the entry to '
+              'the L-id of the place you meant.',
+}
+
+
 def _alias_checks(registry: Registry, findings: list[Finding]) -> None:
     """The alias-layer maintenance + integrity checks (Pass 2).
 
@@ -1970,6 +2002,46 @@ def _alias_checks(registry: Registry, findings: list[Finding]) -> None:
             findings.append(Finding('W', 'W112', anchor,
                 f"'{name}' names {len(ids)} records ({id_list}); any link to it must be pinned "
                 'to an ID (it cannot resolve by name alone).'))
+
+    # E020 - a `people:`/`places:` entry that resolves to the WRONG KIND of
+    # record. Both fields read the one ('P','L') alias map, so the map will
+    # happily answer a question the field never asked: a town under `people:`,
+    # a person under `places:`. `index._resolve_link_field` now refuses the
+    # cross-type answer (`_lib.resolve_typed_ref`'s `want` gate), which stops a
+    # person landing in `source_places.place_id` - but refusing in silence is
+    # what let this sit unnoticed, and silence is wrong here for a specific
+    # reason: the name RESOLVED. This is not the forgiving unresolved-name case
+    # (inert by design, TOOLING §3) nor a dangling ID (E004/E005 own that) - it
+    # is a real record named under the wrong heading, which is a typo the
+    # archive can see and point straight at.
+    for sid, links in sorted(registry.source_links.items()):
+        path = registry.source_paths.get(sid, Path(sid))
+        for field, want in (('people', 'P'), ('places', 'L')):
+            for ref in links.get(field, []):
+                target = (normalize_id(ref) if id_type_of(ref)
+                          else resolve_ref(ref, registry.alias_map))
+                if not target and not id_type_of(ref):
+                    # Not a person or source name. It may still be a TOWN, and
+                    # a town under `people:` is exactly half this finding - but
+                    # lint keeps place names out of the clash surface, so ask
+                    # the place registry directly. Only when NOTHING in the
+                    # person/source surface claims the string: if a person of
+                    # that name exists too, the reference is ambiguous (not
+                    # mistyped), and "that is a town" would be an accusation
+                    # this check cannot support.
+                    key = strip_link_wrapper(ref).lower()
+                    if key not in registry.alias_map and key not in clashes:
+                        target = registry.place_names.get(key, '')
+                if not target:
+                    continue        # unresolved name - inert, never a finding
+                got = id_type_of(target)
+                if got == want:
+                    continue
+                findings.append(Finding('E', 'E020', path,
+                    f'Source {field}: names {fmt_id_display(target)}, which is '
+                    f'{_RECORD_KIND_WORDS.get(got, "another kind of record")}, not '
+                    f'{_RECORD_KIND_WORDS[want]}. '
+                    f'{_E020_REMEDY[field]}'))
 
 
 # ── Relationship reconciliation (W115 / W116) ─────────────────────────────────

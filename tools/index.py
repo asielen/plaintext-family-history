@@ -673,20 +673,41 @@ def _resolve_map_from_aliases(
             if len(ids) == 1 and name_match_key(a) not in withheld}
 
 
-def _resolve_link_field(value: object, alias_map: dict[str, str] | None) -> list[str]:
+def _resolve_link_field(
+    value: object,
+    alias_map: dict[str, str] | None,
+    want: str | None = None,
+) -> list[str]:
     """Resolve a link-valued frontmatter field (`people:`/`places:`) to canonical
     IDs. Each entry may be a bare ID, a `[[Name]]`, a `[[P-…|Name]]`, or the
     nested-list shape an unquoted `[[Name]]` parses into. A name that resolves via
     the alias map becomes its ID; an unresolved-but-ID-shaped entry is kept as-is
     (a possibly-dangling bare ID, which lint flags); an unresolved name draws no
-    edge (inert until some record claims it as an alias)."""
+    edge (inert until some record claims it as an alias).
+
+    `want` is the type the FIELD means - 'P' for `people:`, 'L' for `places:` -
+    and it is the whole point of routing this through `_lib.resolve_typed_ref`
+    rather than resolving here. Both fields read the same ('P','L') alias map,
+    and this function used to accept whatever came back, so the map answered a
+    question neither field had asked:
+
+        places: ["[[Siena]]"]            -> source_places.place_id  l-…   right
+        people: ["[[Siena]]"]            -> source_people.person_id l-…   a TOWN
+        places: ["[[Florence Hartley]]"] -> source_places.place_id  p-…   a PERSON
+
+    No unreadable file required - just a name written under the wrong heading.
+    A person filed as a location reaches place pages and exports from there.
+    (The decode-crash work is what surfaced it: a person and a town that share
+    a name normally cancel out as ambiguous, and one unreadable record removes
+    the tie, so the survivor wins by default.) A wrong-type entry now draws no
+    edge and `fha lint` E020 names it - dropped in silence is what let this sit,
+    and the human typed a name that DID resolve, which is a typo worth pointing
+    at rather than an absence."""
     out: list[str] = []
     for ref in link_field_refs(value):
-        resolved = resolve_ref(ref, alias_map) if alias_map else None
+        resolved = resolve_typed_ref(ref, alias_map, want=want)
         if resolved:
             out.append(resolved)
-        elif id_type_of(ref):
-            out.append(normalize_id(ref))
     return out
 
 
@@ -1381,14 +1402,14 @@ def _index_source(
     # People listed on the source - the human graph surface (frontmatter
     # cross-links). Entries may be bare P-ids or name-first `[[Ken Smith]]`
     # links; resolve each to a canonical P-id via the alias map.
-    for pid in _resolve_link_field(meta.get('people'), alias_map):
+    for pid in _resolve_link_field(meta.get('people'), alias_map, want='P'):
         conn.execute(
             'INSERT INTO source_people(source_id, person_id) VALUES (?,?)',
             (sid, pid),
         )
 
     # Places the source involves - optional location half of the graph surface.
-    for lid in _resolve_link_field(meta.get('places'), alias_map):
+    for lid in _resolve_link_field(meta.get('places'), alias_map, want='L'):
         conn.execute(
             'INSERT INTO source_places(source_id, place_id) VALUES (?,?)',
             (sid, lid),
