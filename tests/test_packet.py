@@ -274,6 +274,19 @@ class PacketTests(unittest.TestCase):
         zip_name = self._packet_zip_name('p-aaaaaaaaaa')
         self.assertTrue(zip_name.startswith('packet_dodson_'), zip_name)
 
+    def test_a_person_with_no_name_left_to_split_still_gets_a_packet(self):
+        # GUARD: the suffix-stripping fallback has to be able to REACH the
+        # `or 'person'` default below it. A record whose `name:` is
+        # whitespace, filed under a stem with no `{surname}__` slot for the
+        # indexer to read, leaves both the indexed surname and the name
+        # tokens empty - and the fallback raised IndexError on the way
+        # past, so the packet came out as "something went wrong" instead
+        # of a deliverable named for nobody in particular.
+        self._seed_person(name='   ', surname='')
+        self._commit_fresh()
+        zip_name = self._packet_zip_name('p-aaaaaaaaaa')
+        self.assertTrue(zip_name.startswith('packet_person_'), zip_name)
+
     def test_timeline_tags_parked_and_low_confidence_claims(self):
         # Owner decision 2026-07-22: a packet is family research material, so
         # needs-review claims stay in its timeline - tagged, same words as

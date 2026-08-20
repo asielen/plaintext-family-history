@@ -29,6 +29,7 @@ from _lib import (
     EXIT_WARNINGS,
     load_fha_yaml,
     read_record,
+    stub_filename,
 )
 
 FIXTURE = ROOT / 'tests' / 'fixtures' / 'legacy-export'
@@ -394,6 +395,57 @@ class ConvertMiningTestCase(unittest.TestCase):
             plan.sources.append(mock.Mock(transcript_src=Path('/nonexistent')))
             with self.assertRaises(convert_mining.ConvertError):
                 convert_mining._preflight_apply(plan)
+
+
+class PersonFilenameTests(unittest.TestCase):
+    """The migration files a person the way every other stub-writing path
+    does - `_lib.stub_filename`, the one home for the SPEC §13 grammar -
+    rather than the private copy of "the last word is the surname" it
+    used to carry (issues #53/#78)."""
+
+    def test_a_generational_suffix_is_never_the_surname_slot(self):
+        # GUARD: the private copy filed this as `jr__roy-eugene-dodson_…`,
+        # exactly the #53/#78 defect, in a path that WRITES records.
+        for suffix in ('Jr', 'Sr', 'II', 'III', 'IV', 'V'):
+            with self.subTest(suffix=suffix):
+                self.assertEqual(
+                    convert_mining._person_filename(
+                        f'Roy Eugene Dodson {suffix}', 'P-0000000001'),
+                    f'dodson__roy_eugene_{suffix.lower()}_P-0000000001.md',
+                )
+
+    def test_a_mononym_files_surname_less_per_spec_13(self):
+        # GUARD: `cher__cher_P-….md` invented a surname for someone who
+        # has none; §13 leads with the double underscore instead.
+        self.assertEqual(
+            convert_mining._person_filename('Cher', 'P-0000000001'),
+            '__cher_P-0000000001.md',
+        )
+
+    def test_given_names_join_with_underscores_like_every_other_path(self):
+        # GUARD: the private copy slugged with hyphens
+        # (`dodson__roy-eugene_…`), so a migrated person did not look like
+        # a person `fha person new` had filed.
+        self.assertEqual(
+            convert_mining._person_filename('Roy Eugene Dodson', 'P-0000000001'),
+            'dodson__roy_eugene_P-0000000001.md',
+        )
+
+    def test_a_nameless_person_still_gets_the_unknown_form(self):
+        self.assertEqual(
+            convert_mining._person_filename('', 'P-0000000001'),
+            'unknown__unknown_P-0000000001.md',
+        )
+
+    def test_it_agrees_with_the_shared_rule_by_construction(self):
+        # Two-sided rule, two-sided test: if `stub_filename` ever changes,
+        # this migration changes with it rather than drifting again.
+        for name in ('Roy Eugene Dodson Jr', 'Cher', 'Anne-Marie de Vries', ''):
+            with self.subTest(name=name):
+                self.assertEqual(
+                    convert_mining._person_filename(name, 'P-0000000001'),
+                    stub_filename(name, 'P-0000000001'),
+                )
 
 
 if __name__ == '__main__':

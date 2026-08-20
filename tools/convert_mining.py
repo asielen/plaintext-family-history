@@ -64,7 +64,8 @@ re-use of the same `_lib` primitives `fha process` uses, not an import of it.
 #
 #  Resolution + minting
 #    PersonResolver            - name → P-id (alias or fresh), tracks stubs to mint
-#    _person_filename / _person_stub_text
+#    _person_filename          - the §13 stub filename, via _lib.stub_filename
+#    _person_stub_text
 #    _slugify / _yaml_inline
 #
 #  Building
@@ -114,6 +115,7 @@ from _lib import (
     resolve_path,
     resolve_root_arg,
     scan_person_record_ids,
+    stub_filename,
     write_text_exact_atomic,
 )
 
@@ -495,14 +497,20 @@ class PersonResolver:
 
 
 def _person_filename(name: str, pid: str) -> str:
-    tokens = [t for t in re.split(r'\s+', name.strip()) if t]
-    if len(tokens) >= 2:
-        surname = _slugify(tokens[-1])
-        given = _slugify(' '.join(tokens[:-1]))
-    else:
-        surname = _slugify(tokens[0]) if tokens else 'unknown'
-        given = surname
-    return f'{surname}__{given}_{pid}.md'
+    """`{surname}__{given}_{P-id}.md` for a migrated person (SPEC §13).
+
+    Delegates to `_lib.stub_filename`, the one home for that grammar, so a
+    person this migration files reads on disk exactly like one `fha person
+    new` or `fha stubs --from-names` files. This function used to carry a
+    private fourth copy of "the last word is the surname" and drifted from
+    the shared rule three ways: a generational suffix became the surname
+    ("Roy Eugene Dodson Jr" filed as `jr__roy-eugene-dodson_P-….md` -
+    issues #53/#78, the same bug in a record-writing path); a mononym was
+    filed as `cher__cher_P-….md` rather than §13's surname-less
+    `__cher_P-….md`; and given names were joined with hyphens where every
+    other stub-writing path uses underscores.
+    """
+    return stub_filename(name, pid)
 
 
 def _person_stub_text(name: str, pid: str) -> str:

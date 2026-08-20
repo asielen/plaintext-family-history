@@ -8,6 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
 
 import gedcom
+import gedcom_import
 from index import _DDL
 from _lib import EXIT_FAILURE
 
@@ -149,6 +150,100 @@ class GedcomNameTests(unittest.TestCase):
             gedcom._gedcom_name('Roy Eugene Dodson', None), ('Roy Eugene /Dodson/', None),
         )
 
+    # ── the token-match rule the suffix fix introduced, in its own right ──
+    # #85 changed the surname guard from `endswith` to token equality and
+    # claimed two further fixes in its docstring without testing either.
+    # These pin them, plus the `/` and capitalisation defects the rewrite
+    # left standing. Comments marked GUARD name behaviour that was broken
+    # when the test was written; the rest is regression coverage.
+
+    def test_an_incidental_substring_is_not_a_surname_match(self):
+        # GUARD: the old `name.lower().endswith(sn.lower())` guard read
+        # "Vandodson" as a hit for an indexed "Dodson" and sliced the field
+        # mid-token - 'Roy Van /Dodson/', inventing a given name "Van" and
+        # a surname the name never carried. Token equality says no match,
+        # so the indexed surname is appended as the override it is.
+        self.assertEqual(
+            gedcom._gedcom_name('Roy Vandodson', 'Dodson'),
+            ('Roy Vandodson /Dodson/', None),
+        )
+
+    def test_a_multi_word_indexed_surname_matches_as_a_token_run(self):
+        self.assertEqual(
+            gedcom._gedcom_name('Roy van der Berg', 'van der Berg'),
+            ('Roy /van der Berg/', None),
+        )
+        self.assertEqual(
+            gedcom._gedcom_name('Roy van der Berg III', 'van der Berg'),
+            ('Roy /van der Berg/ III', 'III'),
+        )
+
+    def test_an_indexed_surname_the_name_does_not_carry_is_appended(self):
+        # A married woman filed under her birth surname: the index says
+        # Jones, the record says Smith. Neither is dropped.
+        self.assertEqual(
+            gedcom._gedcom_name('Mary Smith', 'Jones'), ('Mary Smith /Jones/', None),
+        )
+
+    def test_the_surname_keeps_the_records_own_capitalisation(self):
+        # GUARD: `persons.surname` is the lowercase filename slug run
+        # through `str.title()` (index.py), so `mcdonald__john_P-….md`
+        # indexes as "Mcdonald" and the export published the machine's
+        # spelling of a name the record spells "McDonald". The match is
+        # case-insensitive, so the name's own tokens are free to win.
+        self.assertEqual(
+            gedcom._gedcom_name('John McDonald', 'Mcdonald'), ('John /McDonald/', None),
+        )
+        self.assertEqual(
+            gedcom._gedcom_name('Roy van Dodson', 'Van Dodson'),
+            ('Roy /van Dodson/', None),
+        )
+
+    # ── `/` is the NAME line's grammar, never name text ──
+
+    def test_a_slash_in_the_name_never_redraws_the_surname_field(self):
+        # GUARD: `1 NAME` delimits the surname with slashes, so a slash in
+        # the name text moved the field. 'Roy A/B Dodson' exported as
+        # '1 NAME Roy A/B /Dodson/', which reads back - through this
+        # repo's own `fha gedcom import` - with the surname "B".
+        for surname in ('Dodson', None):
+            with self.subTest(surname=surname):
+                self.assertEqual(
+                    gedcom._gedcom_name('Roy A/B Dodson', surname),
+                    ('Roy A B /Dodson/', None),
+                )
+
+    def test_a_slash_in_the_indexed_surname_never_redraws_the_field(self):
+        # The same defect from the other side: a slash inside the slash
+        # field closes it early.
+        self.assertEqual(
+            gedcom._gedcom_name('Roy Dodson', 'Dod/son'),
+            ('Roy Dodson /Dod son/', None),
+        )
+
+    def test_a_name_of_nothing_but_slashes_falls_back_to_unknown(self):
+        # Removing the slashes can empty the name; the `or 'Unknown'`
+        # fallback has to survive that, not just an empty input.
+        self.assertEqual(gedcom._gedcom_name('/', None), ('Unknown //', None))
+        self.assertEqual(gedcom._gedcom_name(' // ', 'Dodson'), ('Unknown /Dodson/', None))
+
+    def test_the_exported_name_survives_a_round_trip_through_the_importer(self):
+        # Two-sided rule, two-sided test: whatever `_gedcom_name` writes,
+        # `gedcom_import._parse_gedcom_name` must read back with the same
+        # surname. This is the assertion the slash defect failed.
+        for name, indexed in (
+            ('Roy A/B Dodson', 'Dodson'),
+            ('Roy Eugene Dodson Jr', 'Dodson'),
+            ('Roy Eugene Dodson Jr', None),
+            ('John McDonald', 'Mcdonald'),
+            ('Cher', None),
+        ):
+            with self.subTest(name=name):
+                field, _suffix = gedcom._gedcom_name(name, indexed)
+                _display, _given, surname_slot = gedcom_import._parse_gedcom_name(field)
+                expected = '' if '//' in field else field.split('/')[1]
+                self.assertEqual(surname_slot, expected)
+
 
 class GedcomExportTests(unittest.TestCase):
     def setUp(self):
@@ -211,6 +306,45 @@ class GedcomExportTests(unittest.TestCase):
         self.assertIn('Liz /Doe/', r['text'])
         self.assertIn('Kid /Smith/', r['text'])
         self.assertNotIn('/Living/', r['text'])
+
+    def test_a_suffix_reaches_the_file_as_a_name_line_and_an_nsfx_subtag(self):
+        # GUARD (issue #78, end to end): `_gedcom_name` returning the
+        # suffix is only half the contract - the exported FILE has to
+        # carry it, on the `1 NAME` line and under the dedicated `2 NSFX`
+        # sub-tag beneath it. Before the fix this person exported as
+        # '1 NAME Roy Eugene Dodson Jr /Dodson/' with no NSFX at all.
+        conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
+        conn.row_factory = sqlite3.Row
+        _add_person(conn, 'p-0000000006', 'Roy Eugene Dodson Jr', 'M', surname='Dodson')
+        _parent_child(conn, 'p-0000000001', 'p-0000000006')
+        conn.commit()
+        conn.close()
+
+        text = gedcom.run_gedcom(self.root, 'p-0000000001', mode='descendants')['text']
+        lines = text.replace('\r\n', '\n').split('\n')
+        self.assertIn('1 NAME Roy Eugene /Dodson/ Jr', lines)
+        # The NSFX must sit directly under that NAME line - a level-2
+        # sub-tag belongs to whatever level-1 line precedes it, so a
+        # stray one would attach the suffix to the wrong person.
+        i = lines.index('1 NAME Roy Eugene /Dodson/ Jr')
+        self.assertEqual(lines[i + 1], '2 NSFX Jr')
+        self.assertEqual(text.count('2 NSFX'), 1)
+        self.assertNotIn('Dodson Jr /Dodson/', text)
+
+    def test_a_redacted_person_emits_no_nsfx(self):
+        # A withheld name gives nothing away, suffix included: `2 NSFX Jr`
+        # under '1 NAME /Living/' would leak that this is a junior.
+        conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
+        conn.row_factory = sqlite3.Row
+        _add_person(conn, 'p-0000000007', 'Roy Eugene Dodson Jr', 'M',
+                    living='true', surname='Dodson')
+        _parent_child(conn, 'p-0000000001', 'p-0000000007')
+        conn.commit()
+        conn.close()
+
+        text = gedcom.run_gedcom(self.root, 'p-0000000001', mode='descendants')['text']
+        self.assertIn('1 NAME /Living/', text)
+        self.assertNotIn('NSFX', text)
 
     def test_vitals_and_sources_emitted(self):
         r = gedcom.run_gedcom(self.root, 'p-0000000001', mode='ancestors')

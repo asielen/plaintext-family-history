@@ -1730,8 +1730,14 @@ def _packet_payload(
         # shares via `_lib.strip_generational_suffix`) - without an
         # indexed surname, the naive last-token fallback named the
         # deliverable `packet_jr_....zip`.
-        _core, _ = strip_generational_suffix(person_name.split())
-        surname = person['surname'] or _core[-1]
+        #
+        # A name with no tokens at all (a record whose `name:` is blank or
+        # whitespace, filed under a stem with no `{surname}__` slot to read)
+        # leaves nothing to fall back ON. The `or 'person'` below is the
+        # answer to that, so this fallback has to be able to reach it
+        # instead of raising IndexError on the way past.
+        _core, _ = strip_generational_suffix((person_name or '').split())
+        surname = person['surname'] or (_core[-1] if _core else '')
         slug_surname = ''.join(c for c in surname.lower() if c.isalnum()) or 'person'
         packet_name = f'packet_{slug_surname}_{fmt_id_display(pid)}_{_today()}'
         packet_dir = out_dir / packet_name
