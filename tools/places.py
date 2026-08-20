@@ -103,6 +103,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 import yaml
 
 from _lib import (
+    configure_utf8_stdout,
     EXIT_CLEAN,
     EXIT_ERRORS,
     EXIT_FAILURE,
@@ -129,6 +130,8 @@ from _lib import (
     write_text_exact_atomic,
     yaml_inline,
 )
+
+configure_utf8_stdout()
 
 _LINT_REQUIRED_TABLES = ('places', 'place_names', 'place_history', 'claims')
 _CANDIDATES_REQUIRED_TABLES = ('claims', 'places')

@@ -19,6 +19,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
+    configure_utf8_stdout,
     ID_RE,
     EXIT_CLEAN,
     EXIT_ERRORS,
@@ -28,6 +29,7 @@ from _lib import (
     normalize_id,
 )
 
+configure_utf8_stdout()
 
 
 # ── Minting ───────────────────────────────────────────────────────────────────

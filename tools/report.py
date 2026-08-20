@@ -102,6 +102,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
+    configure_utf8_stdout,
     EXIT_CLEAN,
     EXIT_ERRORS,
     EXIT_FAILURE,
@@ -124,6 +125,8 @@ import cooccur
 import index
 import lint
 import photoindex
+
+configure_utf8_stdout()
 
 # ── Section registry ─────────────────────────────────────────────────────────
 

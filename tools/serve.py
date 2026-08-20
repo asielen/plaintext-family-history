@@ -83,6 +83,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (  # noqa: E402
+    configure_utf8_stdout,
     ASSET_ROOT_ALIASES,
     EXIT_CLEAN,
     EXIT_FAILURE,
@@ -104,6 +105,8 @@ from _lib import (  # noqa: E402
     VENDOR_DIR,
     write_text_exact_atomic,
     yaml_inline,)
+
+configure_utf8_stdout()
 
 # The engines serve drives in-process. Front-door imports (see module docstring).
 import capture  # noqa: E402

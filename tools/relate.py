@@ -44,6 +44,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
+    configure_utf8_stdout,
     EXIT_CLEAN,
     EXIT_FAILURE,
     FhaConfigError,
@@ -57,6 +58,8 @@ from _lib import (
     open_index_db,
     resolve_root_arg,
 )
+
+configure_utf8_stdout()
 
 # ── CODE MAP ──────────────────────────────────────────────────────────────────
 #
