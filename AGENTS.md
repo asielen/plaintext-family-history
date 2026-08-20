@@ -232,6 +232,9 @@ fha person new "Name" …      mint a brand-new person stub from nothing (provis
 fha person promote <P-id> [--into FOLDER]   graduate a direct-line stub to curated: tier flip,
                             couple-folder filing, research-file scaffold; always explicit, never
                             automatic; non-direct people keep their stub (a legitimate state)
+fha person rename <P-id> "New Name" [--keep-variant]   correct a name: frontmatter, profile +
+                            research filenames, stale generated companions (regenerate via
+                            `fha views …`), and - when unambiguous - the couple folder text
 fha person relate <P-id> --parent|--child|--sibling|--spouse <P-id2>   unsourced family-tie
                             belief (always status: hypothesis)
 fha person estimate <P-id> --birth|--death …      provisional, unsourced vitals estimate

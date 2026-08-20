@@ -5,6 +5,8 @@ person.py - fha person: deterministic person-field write-backs (TOOLING §3c).
   fha person new "Full Name" [--sex M|F|intersex|unknown] [--gender TEXT]
                  [--birth DATE] [--death DATE] [--dry-run] [--root PATH]
   fha person promote <P-id> [--into FOLDER] [--dry-run] [--root PATH]
+  fha person rename <P-id> "New Name" [--keep-variant] [--surname TEXT]
+                     [--dry-run] [--root PATH]
   fha person set-living <P-id> true|false|unknown [--dry-run] [--root PATH]
   fha person set-sex <P-id> M|F|intersex|unknown [--dry-run] [--root PATH]
   fha person relate <P-id> (--parent|--child|--sibling|--spouse) <P-id2>
@@ -25,17 +27,22 @@ the human's explicit yes) flips the flag with one command.
 This module opens the `fha person` namespace for every deterministic
 person-record write-back that used to require a hand edit: `new` (mint a
 brand-new person from nothing), `promote` (graduate a stub to curated),
-`set-living` (the privacy flag), `relate` (an unsourced relationships:
-belief), `estimate` (the provisional birth:/death: fields), and `edit`/`note`
-(the curated profile's prose sections). The verbs below `new` share one
-shape: an engine (`run_*`) that validates, locates the record by scanning
-`people/` (never the index), performs surgical text edits, and returns a
-`_lib.Result`; a thin `_cmd_*` renders it. `new` is the one exception to
-"locate": there is no existing record to find, so it mints a fresh P-id and
-writes a brand-new stub instead of editing one - see its own design-rule
-bullet below. `promote` is the one verb whose WRITE is a shared _lib engine
-(`_lib.promote_person_record`) because `fha views brackets --fix-promote`
-batch-applies the identical operation - see its own bullet too.
+`rename` (correct a name: frontmatter, files, and the couple folder text -
+issue #51), `set-living` (the privacy flag), `relate` (an unsourced
+relationships: belief), `estimate` (the provisional birth:/death: fields),
+and `edit`/`note` (the curated profile's prose sections). The verbs below
+`new` share one shape: an engine (`run_*`) that validates, locates the
+record by scanning `people/` (never the index), performs surgical text
+edits, and returns a `_lib.Result`; a thin `_cmd_*` renders it. `new` is the
+one exception to "locate": there is no existing record to find, so it mints
+a fresh P-id and writes a brand-new stub instead of editing one - see its
+own design-rule bullet below. `promote` is the one verb whose WRITE is a
+shared _lib engine (`_lib.promote_person_record`) because `fha views
+brackets --fix-promote` batch-applies the identical operation - see its own
+bullet too. `rename` is the one verb that touches MULTIPLE files (frontmatter,
+the profile filename, the research companion filename, stale generated
+companions, and conditionally a folder) - see its own section's module
+comment for why each piece is handled the way it is.
 
 DESIGN RULES (why the code looks the way it does)
 -------------------------------------------------
@@ -178,6 +185,19 @@ CODE MAP
   _validate_into_folder        - the --into FOLDER override's plain-refusal gate
   run_promote                  - decide (already/non-direct/destination), then
                                  apply via the shared _lib.promote_person_record
+  -- rename --
+  _fm_top_level_key_span       - locate one top-level frontmatter key's full span
+                                 (this file's own copy of confirm.py's _fm_key_span)
+  _norm_variant_text           - case/whitespace-insensitive comparison key
+  _append_name_variant         - file the OLD name into name_variants: (--keep-variant)
+  _split_couple_folder_name    - parse a couple folder's free-form text (prefix,
+                                 '+'-joined partner segments, bracket suffix)
+  _renamed_couple_folder_name  - REPLACE the one segment matching the old name,
+                                 or (None, reason) when 0 or 2+ segments match
+  _folder_rename_blocker       - the Windows cwd-inside-folder guard (issue #51)
+  run_rename                    - frontmatter -> profile/research file renames ->
+                                 delete stale GENERATED companions -> (best-effort)
+                                 couple-folder rename; returns a _lib.Result
   -- relate --
   RELATION_TYPES, _RECIPROCAL_RELATION, KIN_SUBTYPES - the closed vocabularies
   _relationship_entry_exists  - idempotency test: same target id + type already there?
@@ -230,6 +250,7 @@ from _lib import (
     append_paragraph_to_section,
     build_ahnentafel_map,
     configure_utf8_stdout,
+    couple_folder_dirs,
     couple_folder_for_prefix,
     couple_folder_prefix,
     create_section_at_eof,
@@ -241,6 +262,7 @@ from _lib import (
     frontmatter_edit_problem,
     frontmatter_fence_span,
     id_type_of,
+    is_generated_file,
     is_merged_meta,
     is_valid_edtf,
     is_valid_id,
@@ -256,6 +278,7 @@ from _lib import (
     relocate_person_in_index,
     render_stub_content,
     replace_paragraph_in_section,
+    research_companion_filename,
     resolve_root_arg,
     result_fail,
     section_bounds,
@@ -1486,7 +1509,6 @@ def run_promote(
         result.data['folder'] = parent.name
         # A curated-and-filed person can still lack the research companion no
         # other surface will ever scaffold - say so rather than no-op silently.
-        from _lib import research_companion_filename
         research_name = research_companion_filename(path.name)
         note = ''
         if research_name and not (parent / research_name).exists():
@@ -1698,6 +1720,592 @@ def run_promote(
                f'`fha views sources-index {fmt_id_display(pid)}`, '
                f'`fha views draft-queue {fmt_id_display(pid)}` '
                '(or `fha views refresh` for everyone).')
+    return result
+
+
+# ── rename ───────────────────────────────────────────────────────────────────
+#
+# Issue #51: a corrected name used to be seven hand steps (frontmatter name +
+# name_variants, the profile/research/timeline/sources-index/draft-queue
+# filenames, the couple folder's own text) with nothing checking that all
+# seven landed. This verb does the mechanically-derivable ones - frontmatter,
+# the profile and research FILE renames, clearing the three stale-named
+# GENERATED companions, and (when safe) the couple folder's own text - and
+# reports exactly what moved.
+#
+# WHY THE GENERATED COMPANIONS ARE DELETED, NEVER RE-NAMED HERE: their output
+# path is `views.py`'s own `_out_path_for` (strip the profile's `_{P-id}`
+# suffix, append `_{kind}_{P-id}`) - `tools/` files never import each other,
+# and re-deriving that naming rule a second time here would be the exact
+# duplicate-pathway drift AGENTS_TOOLING.md warns against. Every companion
+# this verb removes carries the `<!-- GENERATED -->` header (`is_generated_file`
+# - verified before any delete, so a look-alike human file is never touched),
+# so deleting the stale-named copy loses nothing: `fha views
+# timeline|sources-index|draft-queue <P-id>` (or `fha views refresh`) writes
+# it straight back out under the correctly-derived new name. This is
+# "trigger the existing regeneration machinery through its CLI surface,"
+# never a hand-rolled re-implementation of its naming logic.
+#
+# WHY THE COUPLE FOLDER IS A REPLACE ON THE ONE MATCHING SEGMENT, NEVER A
+# FULL REBUILD: SPEC §12.2 is explicit that folder names carry no machine
+# meaning and are refreshed by ADDING only (`_lib.spouse_extended_base`'s own
+# "only ADD, never rewrite, never guess" rule, for the "+ second spouse"
+# gap). Correcting an existing partner's name is a different operation (a
+# REPLACE) that no existing tool performs, so this verb parses the folder's
+# own free-form text just enough to find the ONE partner-name segment that
+# is (case/whitespace-insensitively) the record's OLD name, and rewrites
+# only that segment - 0 or 2+ matches are left alone rather than guessed at,
+# exactly the same conservatism `spouse_extended_base` already applies to
+# its own narrower case. The bracket child-list suffix is never touched -
+# any stale name inside IT is `fha views brackets`' job (W103), unaffected
+# by (and unrelated to) this verb.
+
+
+def _fm_top_level_key_span(
+    lines: list[str], start: int, end: int, key: str,
+) -> tuple[int, int] | None:
+    """Locate one top-level frontmatter key; return (key_line, span_end) or None.
+
+    A top-level key sits at column zero; its span extends through every
+    following line that is blank or indented (a block list's `- item` lines,
+    a block scalar's continuation) - a column-zero line (the next key, or a
+    human comment) ends it. This is `fha confirm merge`'s own private
+    `_fm_key_span` in every particular; kept as this file's own small copy
+    (tools never import tools) rather than promoted to `_lib.py`, matching
+    this module's established precedent of deliberately duplicating small
+    surgical primitives per-file (see the module docstring's note on
+    `set_living`'s own separate prelude) rather than growing a shared helper
+    for a single caller on each side.
+    """
+    pattern = re.compile(r'^' + re.escape(key) + r'\s*:')
+    for i in range(start + 1, end):
+        if pattern.match(lines[i]):
+            j = i + 1
+            while j < end and (not lines[j].strip() or lines[j][:1] in (' ', '\t')):
+                j += 1
+            return i, j
+    return None
+
+
+def _norm_variant_text(text: str) -> str:
+    """Case/whitespace-insensitive comparison key for a name or name-list text."""
+    return ' '.join(text.split()).casefold()
+
+
+def _append_name_variant(
+    lines: list[str], start: int, end: int, old_name: str,
+) -> tuple[list[str], bool, str | None]:
+    """Append `old_name` to the frontmatter `name_variants:` list (creating the
+    key if absent); return (new_lines, added, note).
+
+    Never a REPLACE - `--keep-variant` files the PRIOR name away, it never
+    drops an existing variant, mirroring how `fha claim`'s field flags each
+    touch only their own key. `added` is False with `note=None` when
+    `old_name` is already present (a case/whitespace-insensitive substring
+    check against the field's raw text - good enough to skip an exact
+    duplicate without a full YAML flow-list parse this one-shot append does
+    not need) - a legitimate no-op, not a problem. `added` is False with a
+    `note` when the field is written in a form this text surgery cannot
+    extend safely (anything but an inline `[...]` list, a block `- item`
+    list, or entirely absent) - the caller downgrades that to a warning
+    rather than refusing the whole rename, since the `name:` correction
+    itself does not depend on it.
+    """
+    rendered = yaml_inline(old_name)
+    span = _fm_top_level_key_span(lines, start, end, 'name_variants')
+    if span is None:
+        # No name_variants: key at all - insert right after name: (SPEC §9's
+        # own field order lists name_variants immediately after name).
+        name_span = _fm_top_level_key_span(lines, start, end, 'name')
+        insert_at = name_span[1] if name_span else end
+        new_lines = list(lines)
+        new_lines.insert(insert_at, f'name_variants: [{rendered}]')
+        return new_lines, True, None
+
+    key_line, span_end = span
+    m = re.match(r'^(name_variants\s*:\s*)(.*)$', lines[key_line])
+    raw_value = m.group(2) if m else ''
+    existing_text = raw_value + '\n' + '\n'.join(lines[key_line + 1:span_end])
+    if _norm_variant_text(old_name) in _norm_variant_text(existing_text):
+        return lines, False, None
+
+    stripped = raw_value.strip()
+    if stripped.startswith('[') and stripped.endswith(']'):
+        inner = stripped[1:-1].strip()
+        combined = f'{inner}, {rendered}' if inner else rendered
+        new_lines = list(lines)
+        new_lines[key_line] = f'name_variants: [{combined}]'
+        return new_lines, True, None
+    if not stripped:
+        # Block list form: item indent taken from the first `- ` continuation
+        # line, falling back to two spaces (the stub template's convention).
+        item_indent = '  '
+        for j in range(key_line + 1, span_end):
+            mi = re.match(r'^(\s*)-\s', lines[j])
+            if mi:
+                item_indent = mi.group(1)
+                break
+        insert_at = span_end
+        while insert_at > key_line + 1 and not lines[insert_at - 1].strip():
+            insert_at -= 1
+        new_lines = list(lines)
+        new_lines[insert_at:insert_at] = [f'{item_indent}- {rendered}']
+        return new_lines, True, None
+    # Some other written form (a bare scalar, a mapping) this text surgery
+    # cannot safely extend - leave it untouched; the caller warns and names
+    # the file so the human can add it by hand.
+    return lines, False, 'name_variants: is not written as a list this tool can extend automatically'
+
+
+_COUPLE_FOLDER_PREFIX_RE = re.compile(r'^(\d+[a-z]?)(\s+)(.*)$', re.I)
+_COUPLE_FOLDER_BRACKET_RE = re.compile(r'\s(\[[^\[\]]*\])\s*$')
+
+
+def _split_couple_folder_name(folder_name: str) -> tuple[str, list[str], str]:
+    """Parse SPEC §12.2's free-form couple-folder name into (numeric prefix
+    with its trailing space, the '+'-joined partner-name segments, the
+    bracketed child-list suffix).
+
+    Read-only text parsing to find where a renamed partner's OLD name sits in
+    the folder's own text - SPEC §12.2 is explicit that folder names carry NO
+    machine meaning otherwise ("scripts never parse them"), and nothing here
+    derives who belongs in the folder from this text; `couple_folder_dirs`
+    and the Ahnentafel derivation (`fha views brackets`) remain the only
+    source of truth for that. Returns ('', [], '') when `folder_name` does
+    not start with the expected digit prefix (an unusual hand-named folder -
+    the caller leaves it alone rather than guess).
+    """
+    m = _COUPLE_FOLDER_PREFIX_RE.match(folder_name)
+    if not m:
+        return '', [], ''
+    prefix, sep, rest = m.group(1), m.group(2), m.group(3)
+    text, bracket = rest, ''
+    bm = _COUPLE_FOLDER_BRACKET_RE.search(rest)
+    if bm:
+        text = rest[:bm.start()]
+        bracket = bm.group(1)
+    segments = [s.strip() for s in text.split(' + ')] if text.strip() else []
+    return prefix + sep, segments, bracket
+
+
+def _renamed_couple_folder_name(
+    folder_name: str, old_name: str, new_name: str,
+) -> tuple[str | None, str | None]:
+    """If `old_name` is exactly one whole partner-name segment of a couple
+    folder's free-form text, return (new_folder_name, None); otherwise
+    (None, reason).
+
+    Deliberately conservative, the same shape as `_lib.spouse_extended_base`'s
+    "only ADD, never rewrite, never guess" rule for the folder's missing
+    second-spouse half - this is that same conservatism applied to a REPLACE
+    instead of an add (a name correction, not filling in a missing partner).
+    Zero matches (the folder text does not spell the person's old name - a
+    nickname, an already-stale name, a placeholder like "004 unknown") and
+    two-or-more matches (both partners happened to share the exact same
+    name - which one is ambiguous) are both left alone rather than guessed
+    at; the caller reports either as an informational note, never a refusal,
+    since the record's own rename does not depend on the folder text at all.
+    The bracketed child list is carried through UNCHANGED - a stale name
+    inside it is `fha views brackets`' job (W103), not this verb's.
+    """
+    prefix, segments, bracket = _split_couple_folder_name(folder_name)
+    if not segments:
+        return None, 'the folder name has no recognisable partner-name text to update'
+    norm_old = _norm_variant_text(old_name)
+    matches = [i for i, seg in enumerate(segments) if _norm_variant_text(seg) == norm_old]
+    if not matches:
+        return None, f'{old_name!r} does not appear in the folder name as written'
+    if len(matches) > 1:
+        return None, f'{old_name!r} appears more than once in the folder name - which one is ambiguous'
+    new_segments = list(segments)
+    new_segments[matches[0]] = new_name
+    new_base = prefix + ' + '.join(new_segments)
+    return (f'{new_base} {bracket}' if bracket else new_base), None
+
+
+def _folder_rename_blocker(folder: Path) -> str | None:
+    """Return a plain-language refusal if renaming `folder` looks unsafe to
+    attempt, else None.
+
+    Windows-specific (issue #51's reproduction): a process whose CURRENT
+    WORKING DIRECTORY sits inside a folder holds an OS-level handle on it
+    that blocks a rename - `Path.rename` then raises a raw `PermissionError`
+    or "the process cannot access the file because it is being used by
+    another process," neither of which means anything to a non-technical
+    reader (AGENTS.md - "who you serve"). The shell running this very
+    command is the single most likely holder (`cd` into the folder being
+    renamed, then run `fha person rename` from there), so that ONE case is
+    checked and named plainly BEFORE the rename is attempted; any other
+    holder (an open Explorer window, an editor with the folder as its
+    project root) still surfaces as a caught `OSError` at the call site,
+    translated the same plain way rather than as a raw traceback - this
+    function only shortcuts the one cause that is cheaply detectable and
+    exactly matches what the issue's reproduction hit twice.
+    """
+    try:
+        cwd = Path.cwd().resolve()
+        target = folder.resolve()
+    except OSError:
+        return None   # cannot resolve either path; let the rename attempt surface the real error
+    if cwd == target or target in cwd.parents:
+        return (f'the current folder is inside {folder} - a folder cannot be renamed while a '
+                'program (this shell included) is sitting inside it. Run this command from the '
+                'archive root, or anywhere outside that folder, then retry.')
+    return None
+
+
+def run_rename(
+    archive_root: Path, person_id: str, new_name: str, *,
+    keep_variant: bool = False, surname: str | None = None, dry_run: bool = False,
+) -> Result:
+    """Rename one person: `name:`/`name_variants:`, the profile and research
+    FILES, the stale GENERATED companions, and (when unambiguous) the couple
+    folder's own text; return a Result.
+
+    Steps, always in this order (a later step never runs after an earlier one
+    fails, and only the folder rename is allowed to fail without failing the
+    whole call - see below):
+
+      1. Frontmatter: `name:` is replaced; `name_variants:` gains the OLD name
+         when `--keep-variant` is given (a genuine append - an existing
+         variant is never dropped).
+      2. The profile file is renamed to the SPEC §13 filename the NEW name
+         derives (`_lib.stub_filename` - the same deriver `fha person new`
+         and `fha stubs` already use, so a renamed record's filename is
+         byte-identical to what minting that name fresh would produce).
+      3. The research companion (a HAND-AUTHORED file - Research Notes, Open
+         Questions, Hypotheses, Research Log - never GENERATED) is renamed
+         alongside it when one exists, so the human's notes travel with the
+         record exactly like `fha person promote` already does for its own
+         file move.
+      4. Any GENERATED companion still sitting at the OLD filename (timeline,
+         sources-index, draft-queue - identified by the shared
+         `is_generated_file` header check, never by name-guessing) is
+         DELETED, never renamed - see the module comment above this section
+         for why regenerating via `fha views …` is the correct fix rather
+         than re-deriving `views.py`'s own naming rule here.
+      5. If (and only if) the record lives in a couple folder AND the OLD
+         name appears as exactly one unambiguous partner-name segment of that
+         folder's own free-form text, the folder is renamed too. This is the
+         ONE step allowed to be skipped or to fail without failing the whole
+         call - SPEC §12.2 folder names carry no machine meaning, so a
+         correct record sitting in a stale-named folder is a cosmetic gap,
+         not a corruption, and is reported as a warning naming the exact
+         `fha person rename` retry (once the blocker - most often a shell
+         sitting inside the folder - is cleared) rather than blocking the
+         four steps that already succeeded.
+
+    Steps 1-4 are checked as far as possible BEFORE any write (frontmatter
+    parses, the target filenames do not already collide with a DIFFERENT
+    file) so a doomed rename refuses cleanly with nothing written, matching
+    every other verb in this file. Once writing starts, steps 1-3 use the
+    same reversible primitives every other verb here does (atomic frontmatter
+    write, then a plain filesystem rename) - reversible because both are
+    single-file operations on a person's OWN files; on a failure partway,
+    completed steps are unwound in reverse (frontmatter text restored, any
+    completed rename reversed) so a failed live run leaves the record exactly
+    where it started, the same promise `promote_person_record` makes for its
+    own multi-step write. Step 4's deletions are NOT unwound on a later
+    failure - they are GENERATED, content-free of anything but derived text,
+    and regenerate identically from `fha views …` whether or not the rest of
+    the rename lands, so there is nothing to lose by deleting them early.
+
+    `data` is {'status': 'ok'|'ok-folder-unrenamed'|'already'|'dry-run'|
+    'not-found'|'merged'|'refused', 'person_id', 'path', 'new_path',
+    'old_name', 'new_name', 'folder', 'new_folder', 'deleted_companions'}.
+    """
+    result = Result(data={
+        'status': None, 'person_id': None, 'path': None, 'new_path': None,
+        'old_name': None, 'new_name': None, 'folder': None, 'new_folder': None,
+        'deleted_companions': [],
+    })
+
+    located = _locate_person(archive_root, person_id, result)
+    if located is None:
+        return result
+    path, text, before_meta, pid = located
+    result.data['person_id'] = fmt_id_display(pid)
+    result.data['path'] = str(path)
+
+    clean_new = str(new_name or '').strip()
+    if not clean_new:
+        return _refuse_result(
+            result, 'refused',
+            'a new name is required - e.g. `fha person rename <P-id> "Jane Doe"`. '
+            'Nothing was changed.')
+    result.data['new_name'] = clean_new
+
+    old_name = str(before_meta.get('name') or '').strip()
+    result.data['old_name'] = old_name
+    label = f'{old_name} ({fmt_id_display(pid)})' if old_name else fmt_id_display(pid)
+
+    if old_name and _norm_variant_text(old_name) == _norm_variant_text(clean_new):
+        result.data['status'] = 'already'
+        result.add('info', f'{label} is already named {clean_new!r} - nothing to change.')
+        return result
+
+    # ── 1. Frontmatter: name: (+ name_variants: under --keep-variant) ────────
+    lines = text.split('\n')
+    bounds = frontmatter_fence_span(lines)
+    if bounds is None:
+        return _refuse_result(
+            result, 'refused',
+            f'could not locate the frontmatter fences in {path.name} to edit safely. '
+            f'Open {path} and set name: {clean_new} by hand, then run `fha lint`. '
+            'Nothing was written.')
+    start, end = bounds
+
+    name_key_lines = _key_line_indexes(lines, start + 1, end, 'name')
+    if len(name_key_lines) != 1:
+        return _refuse_result(
+            result, 'refused',
+            f'{path.name} does not have exactly one top-level name: line to edit safely '
+            f'(found {len(name_key_lines)}). Open {path} and fix it by hand, then run '
+            '`fha lint`. Nothing was written.')
+    new_lines = list(lines)
+    new_lines[name_key_lines[0]] = _replace_scalar_line(
+        lines[name_key_lines[0]], 'name', yaml_inline(clean_new))
+
+    changed_keys = {'name'}
+    variant_note = None
+    if keep_variant and old_name:
+        new_lines, variant_added, variant_note = _append_name_variant(
+            new_lines, start, end, old_name)
+        if variant_added:
+            changed_keys.add('name_variants')
+
+    new_text = '\n'.join(new_lines)
+    problem = frontmatter_edit_problem(new_text, before_meta=before_meta, changed_keys=changed_keys)
+    if problem is not None:
+        return _refuse_result(
+            result, 'refused',
+            f'Refusing to rename {label}: {problem}, so saving could corrupt the record. '
+            f'Nothing was written. Open {path} and set name: {clean_new} by hand, then run '
+            '`fha lint` to check it.')
+
+    # ── 2/3. Compute the new profile + research filenames, pre-flight collisions ──
+    new_filename = stub_filename(clean_new, pid, surname=surname)
+    new_path = path.with_name(new_filename)
+    renaming_file = new_path != path
+    if renaming_file and new_path.exists():
+        return _refuse_result(
+            result, 'refused',
+            f'{new_filename} already exists in {path.parent} - a rename should never '
+            f'overwrite another record. Compare the two files (`fha find {fmt_id_display(pid)}`), '
+            'resolve the duplicate, then retry. Nothing was written.')
+    result.data['new_path'] = str(new_path)
+
+    old_research_name = research_companion_filename(path.name)
+    new_research_name = research_companion_filename(new_filename)
+    old_research_path = path.parent / old_research_name if old_research_name else None
+    new_research_path = path.parent / new_research_name if new_research_name else None
+    renaming_research = (
+        old_research_path is not None and old_research_path.exists()
+        and new_research_path is not None and new_research_path != old_research_path
+    )
+    if renaming_research and new_research_path.exists():
+        return _refuse_result(
+            result, 'refused',
+            f'{new_research_path.name} already exists in {path.parent} - a rename should '
+            f'never overwrite another file. Resolve the duplicate, then retry. '
+            'Nothing was written.')
+
+    # ── 4. Stale GENERATED companions still at the OLD filename ──────────────
+    # Anything sharing the person's `_{P-id}.md` suffix that is NOT the
+    # profile or the research file - checked against the shared
+    # is_generated_file header before it is ever a delete candidate, so a
+    # look-alike human file is never touched (defense in depth: a companion
+    # this verb does not recognise is left exactly alone and reported, never
+    # silently skipped without a word).
+    stale_companions: list[Path] = []
+    skipped_non_generated: list[Path] = []
+    id_suffix = f'_{fmt_id_display(pid)}.md'
+    for candidate in sorted(path.parent.glob(f'*{id_suffix}')):
+        if candidate in (path, old_research_path):
+            continue
+        if is_generated_file(candidate):
+            stale_companions.append(candidate)
+        else:
+            skipped_non_generated.append(candidate)
+
+    # ── 5. The couple folder, if this record lives in one ─────────────────────
+    in_couple_folder = path.parent in couple_folder_dirs(archive_root)
+    new_folder_name = folder_skip_reason = None
+    if in_couple_folder and old_name:
+        new_folder_name, folder_skip_reason = _renamed_couple_folder_name(
+            path.parent.name, old_name, clean_new)
+    old_folder = path.parent
+    new_folder = old_folder.with_name(new_folder_name) if new_folder_name else None
+    if new_folder is not None and new_folder.exists() and new_folder != old_folder:
+        # Another folder already has that exact name - leave the folder alone
+        # rather than merge two folders' contents by surprise.
+        folder_skip_reason = f'a folder named {new_folder_name!r} already exists'
+        new_folder_name = None
+        new_folder = None
+
+    # ── Plain-words plan (both --dry-run and the live run's messages use it) ──
+    steps = [f'set name: {old_name or "(none)"} -> {clean_new}']
+    if keep_variant:
+        if 'name_variants' in changed_keys:
+            steps.append(f'add {old_name!r} to name_variants:')
+        elif variant_note:
+            steps.append(f'--keep-variant: could not add {old_name!r} to name_variants: '
+                         f'automatically ({variant_note}) - add it by hand')
+        elif old_name:
+            steps.append(f'{old_name!r} is already in name_variants: - left as is')
+    if renaming_file:
+        steps.append(f'rename {path.name} -> {new_filename}')
+    if renaming_research:
+        steps.append(f'rename {old_research_path.name} -> {new_research_path.name}')
+    for stale in stale_companions:
+        steps.append(f'delete {stale.name} (GENERATED - regenerate with `fha views …`)')
+    if new_folder is not None:
+        steps.append(f'rename the couple folder {old_folder.name} -> {new_folder.name}')
+    elif in_couple_folder and folder_skip_reason:
+        steps.append(f'leave the couple folder name as is ({folder_skip_reason})')
+
+    if dry_run:
+        result.data['status'] = 'dry-run'
+        result.add('info', f'[dry-run] Would rename {label}:')
+        for step in steps:
+            result.add('info', f'  - {step}')
+        result.add('info', '[dry-run] No file written. Re-run without --dry-run to apply.')
+        return result
+
+    # ── Live apply: frontmatter, then the two file renames, reversible ───────
+    wrote_frontmatter = moved_file = moved_research = False
+    try:
+        write_text_exact_atomic(path, reapply_newline(new_text, text))
+        wrote_frontmatter = True
+        if renaming_file:
+            path.rename(new_path)
+            moved_file = True
+        if renaming_research:
+            # old_research_path may itself have just moved if it sits at the
+            # SAME name as the profile's own path would (never true in
+            # practice - research filenames always differ from the profile's -
+            # but the rename targets are computed from the pre-move paths,
+            # which stay valid since only the PROFILE file moved above).
+            old_research_path.rename(new_research_path)
+            moved_research = True
+    except OSError as e:
+        # Unwind what completed, in reverse - the same promise
+        # promote_person_record makes for its own multi-step write.
+        # `profile_path` tracks where the record ACTUALLY is as rollback
+        # proceeds (mirrors promote_person_record's identical bookkeeping):
+        # the file-rename-undo below only moves it back to `path` if that
+        # undo itself succeeds, so the frontmatter-undo write must target
+        # wherever the record really sits, never blindly `path` - writing to
+        # an absent `path` after a failed move-back would create a SECOND
+        # file there instead of restoring the one that already exists at
+        # new_path.
+        rollback_notes: list[str] = []
+        profile_path = new_path if moved_file else path
+        try:
+            if moved_research:
+                new_research_path.rename(old_research_path)
+        except OSError as undo_err:
+            rollback_notes.append(f'could not undo the research rename ({undo_err})')
+        try:
+            if moved_file:
+                new_path.rename(path)
+                profile_path = path
+        except OSError as undo_err:
+            rollback_notes.append(f'could not undo the file rename ({undo_err})')
+        try:
+            if wrote_frontmatter:
+                write_text_exact_atomic(profile_path, text)
+        except OSError as undo_err:
+            rollback_notes.append(f'could not undo the frontmatter edit ({undo_err})')
+        detail = ('; '.join(rollback_notes) + ' - run `fha lint` to check the record'
+                 ) if rollback_notes else 'every completed step was undone'
+        return _refuse_result(
+            result, 'refused',
+            f'Renaming {label} failed partway ({e}); {detail}. Nothing is left half-renamed '
+            'unless noted above.')
+
+    final_path = new_path if renaming_file else path
+    result.note_changed(final_path)
+    result.data['path'] = str(final_path)
+
+    # Companion deletion happens after the renames succeed and is never
+    # rolled back on a LATER failure (the folder rename below) - see the
+    # docstring: these files are pure GENERATED output and regenerate
+    # identically regardless of what else this call did.
+    for stale in stale_companions:
+        try:
+            stale.unlink()
+            result.data['deleted_companions'].append(str(stale))
+            result.note_changed(stale)
+        except OSError as e:
+            result.add('warning',
+                       f'could not delete the stale companion {stale.name}: {e}. It will be '
+                       'overwritten (not corrupted) the next time you regenerate it, or '
+                       'delete it by hand.')
+
+    result.data['status'] = 'ok'
+    changed_bits = [f'name -> {clean_new}']
+    if renaming_file:
+        changed_bits.append(f'file -> {new_filename}')
+    if renaming_research:
+        changed_bits.append(f'research -> {new_research_path.name}')
+    if stale_companions:
+        changed_bits.append(
+            f'{len(stale_companions)} stale companion(s) deleted: '
+            + ', '.join(s.name for s in stale_companions))
+    result.add('info', f'Renamed {fmt_id_display(pid)}: ' + '; '.join(changed_bits), path=final_path)
+    if variant_note and keep_variant:
+        result.add('warning',
+                   f'--keep-variant: could not add {old_name!r} to name_variants: '
+                   f'automatically ({variant_note}). Open {final_path} and add it by hand.')
+    if skipped_non_generated:
+        result.add('info',
+                   'Left untouched (not a GENERATED file this tool recognises, so not safe '
+                   'to delete automatically): '
+                   + ', '.join(p.name for p in skipped_non_generated))
+    if stale_companions:
+        result.add('info',
+                   'Regenerate the deleted companions under the new name: '
+                   f'`fha views timeline {fmt_id_display(pid)}`, '
+                   f'`fha views sources-index {fmt_id_display(pid)}`, '
+                   f'`fha views draft-queue {fmt_id_display(pid)}` '
+                   '(or `fha views refresh` for everyone).')
+
+    # ── The couple folder rename - the one step allowed to fail on its own ──
+    if new_folder is not None:
+        blocker = _folder_rename_blocker(old_folder)
+        if blocker is not None:
+            result.exit_code = EXIT_WARNINGS
+            result.data['status'] = 'ok-folder-unrenamed'
+            result.add('warning',
+                       f'{label} was renamed, but the couple folder could not be renamed to '
+                       f'match ({blocker}) Once that is clear, run '
+                       f'`fha person rename {fmt_id_display(pid)} "{clean_new}"` again to '
+                       'retry just the folder rename (the name is already correct, so this '
+                       'second call will have nothing else to do).')
+        else:
+            try:
+                old_folder.rename(new_folder)
+            except OSError as e:
+                result.exit_code = EXIT_WARNINGS
+                result.data['status'] = 'ok-folder-unrenamed'
+                result.add('warning',
+                           f'{label} was renamed, but the couple folder could not be renamed '
+                           f'to match: {e}. The record itself is fine where it is - rename the '
+                           f'folder {old_folder.name!r} -> {new_folder.name!r} by hand, or '
+                           're-run this command once whatever is holding the folder is closed.')
+            else:
+                result.data['folder'] = old_folder.name
+                result.data['new_folder'] = new_folder.name
+                result.note_changed(new_folder)
+                result.add('info',
+                           f'Renamed the couple folder to match: {old_folder.name} -> '
+                           f'{new_folder.name}.')
+    elif in_couple_folder and folder_skip_reason:
+        result.add('info',
+                   f'Left the couple folder name as is - {folder_skip_reason}. Rename '
+                   f'people/{old_folder.name}/ by hand if it should change too.')
+
     return result
 
 
@@ -2825,6 +3433,17 @@ def _cmd_promote(args: argparse.Namespace) -> int:
         dry_run=bool(getattr(args, 'dry_run', False))))
 
 
+def _cmd_rename(args: argparse.Namespace) -> int:
+    archive_root = resolve_root_arg(args, command='fha person rename')
+    if archive_root is None:
+        return EXIT_FAILURE
+    return _emit(run_rename(
+        archive_root, person_id=args.person_id, new_name=args.new_name,
+        keep_variant=bool(getattr(args, 'keep_variant', False)),
+        surname=getattr(args, 'surname', None),
+        dry_run=bool(getattr(args, 'dry_run', False))))
+
+
 def _cmd_relate(args: argparse.Namespace) -> int:
     archive_root = resolve_root_arg(args, command='fha person relate')
     if archive_root is None:
@@ -2902,6 +3521,7 @@ Update a person's record directly - the deterministic person-field write-backs.
 
   fha person new "Full Name" [--sex M|F|intersex|unknown] [--gender TEXT]
   fha person promote <P-id> [--into FOLDER]
+  fha person rename <P-id> "New Name" [--keep-variant]
   fha person set-living <P-id> true|false|unknown
   fha person relate <P-id> --parent|--child|--sibling|--spouse <P-id2>
   fha person estimate <P-id> --birth DATE --death DATE
@@ -2911,7 +3531,9 @@ Update a person's record directly - the deterministic person-field write-backs.
 
 new mints a brand-new person and writes their stub record. promote graduates
 a direct-line stub to curated (tier flip, couple-folder filing, research
-file). set-living marks a person as living, passed away, or unknown (drives
+file). rename corrects a name: filename, research companion, stale generated
+companions, and (when unambiguous) the couple folder's own text all follow.
+set-living marks a person as living, passed away, or unknown (drives
 export privacy). relate jots an unsourced family-tie belief. estimate writes
 a provisional, unsourced birth/death date. edit and note add or replace
 prose in the curated profile's Biography, Stories, and Research Notes
@@ -3083,6 +3705,54 @@ def _add_promote_arguments(sub: argparse._SubParsersAction) -> None:
     pr.add_argument('--dry-run', action='store_true', dest='dry_run',
                     help='Preview the tier flip, move, and research scaffold without writing.')
     pr.set_defaults(func=_cmd_promote)
+
+
+_RENAME_DESCRIPTION = """\
+Correct a person's name everywhere it is mechanically derivable.
+
+  fha person rename P-2b3c4d5e6f "Betty Slamon Kelly"
+  fha person rename P-2b3c4d5e6f "Betty Slamon Kelly" --keep-variant
+  fha person rename P-2b3c4d5e6f "Maria Garcia Lopez" --surname "Garcia Lopez"
+
+Rewrites name: (and, with --keep-variant, files the OLD name into
+name_variants: rather than losing it), renames the profile and research
+files to match (SPEC §13's filename grammar, the same deriver `fha person
+new` uses), deletes any stale-named GENERATED companion (timeline,
+sources-index, draft-queue - regenerate them under the new name with `fha
+views timeline|sources-index|draft-queue <P-id>` or `fha views refresh`),
+and - only when the OLD name appears as exactly one unambiguous partner-name
+segment of the couple folder's own text - renames that folder to match too.
+The couple-folder step is the one part that can fail on its own (a program
+sitting inside the folder blocks a Windows rename); everything else has
+already landed if it does, and the warning names the exact retry. --surname
+overrides the filename's surname split, same escape hatch as `fha person
+new --surname`. Preview everything first with --dry-run; a failed live
+write (before the folder step) rolls itself back."""
+
+
+def _add_rename_arguments(sub: argparse._SubParsersAction) -> None:
+    """Register the rename verb on a group subparser (shared by both mains)."""
+    rn = sub.add_parser(
+        'rename',
+        help="Correct a person's name: frontmatter, files, and (when safe) the couple folder.",
+        description=_RENAME_DESCRIPTION,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    rn.add_argument('person_id', metavar='P-id',
+                    help='The person to rename (e.g. P-2b3c4d5e6f).')
+    rn.add_argument('new_name', metavar='NAME',
+                    help='The corrected full name, e.g. "Betty Slamon Kelly".')
+    rn.add_argument('--keep-variant', action='store_true', dest='keep_variant',
+                    help='File the OLD name into name_variants: instead of losing it.')
+    rn.add_argument('--surname', metavar='TEXT',
+                    help='Override the renamed filename\'s surname split - for names no '
+                         'automatic split can be expected to get right (Spanish double '
+                         'surnames, particles like "van der", surname-first conventions).')
+    rn.add_argument('--root', metavar='PATH', default=argparse.SUPPRESS,
+                    help='Archive root (auto-detected if omitted).')
+    rn.add_argument('--dry-run', action='store_true', dest='dry_run',
+                    help='Preview every rename without writing.')
+    rn.set_defaults(func=_cmd_rename)
 
 
 _RELATE_DESCRIPTION = """\
@@ -3285,7 +3955,7 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
     """Register 'person' onto the main fha parser."""
     p = subs.add_parser(
         'person',
-        help='Person-record write-backs: new, promote, set-living, '
+        help='Person-record write-backs: new, promote, rename, set-living, '
              'set-profile-photo, set-sex, relate, estimate, edit, note',
         description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -3294,6 +3964,7 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest='person_command', metavar='SUBCOMMAND')
     _add_new_arguments(sub)
     _add_promote_arguments(sub)
+    _add_rename_arguments(sub)
     _add_set_living_arguments(sub)
     _add_set_profile_photo_arguments(sub)
     _add_set_sex_arguments(sub)
@@ -3316,6 +3987,7 @@ def _standalone_main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest='person_command', metavar='SUBCOMMAND')
     _add_new_arguments(sub)
     _add_promote_arguments(sub)
+    _add_rename_arguments(sub)
     _add_set_living_arguments(sub)
     _add_set_profile_photo_arguments(sub)
     _add_set_sex_arguments(sub)

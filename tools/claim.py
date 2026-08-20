@@ -7,12 +7,17 @@ claim.py - fha claim: human-directed claim review + minting (AGENTS.md, SPEC §8
                    [--reviewed DATE] [--value "…"] [--date EDTF]
                    [--type TYPE] [--place L-id] [--place-text TEXT]
                    [--persons P-id[,P-id...]] [--confidence high|medium|low]
-                   [--root PATH] [--dry-run]
+                   [--information primary|secondary|undetermined]
+                   [--evidence direct|indirect|negative] [--anchor TEXT]
+                   [--notes TEXT] [--root PATH] [--dry-run]
 
   fha claim new --source S-id --type TYPE --value TEXT [--date DATE]
                 [--place L-id] [--place-text TEXT] [--persons P-id[,P-id...]]
                 [--subtype WORD] [--status suggested|accepted] [--negated]
-                [--confidence high|medium|low] [--dry-run] [--root PATH]
+                [--confidence high|medium|low]
+                [--information primary|secondary|undetermined]
+                [--evidence direct|indirect|negative] [--anchor TEXT]
+                [--notes TEXT] [--dry-run] [--root PATH]
 
 Two verbs share one file because both are surgical `## Claims` block writers on
 an existing source record, and the second (`new`) was built by lifting the
@@ -22,10 +27,34 @@ first's machinery rather than inventing a second way to edit the block.
 during review: moving one claim's `status:` out of `suggested` into any of the
 SPEC §8.1 review outcomes (`accepted` / `disputed` / `rejected` / `needs-review`
 / `superseded`), and now also correcting any of `value`/`date`/`type`/`place`/
-`place_text`/`persons` on a claim that already exists. Today that move is done
-by hand-editing the `## Claims` YAML or through the `review-claims` AI skill;
-this tool makes it a real, contract-safe CLI action that any front door (chat
-now, a UI later) can drive.
+`place_text`/`persons`/`information`/`evidence`/`anchor`/`notes` on a claim
+that already exists. Today that move is done by hand-editing the `## Claims`
+YAML or through the `review-claims` AI skill; this tool makes it a real,
+contract-safe CLI action that any front door (chat now, a UI later) can drive.
+
+**Mills fields and notes (2026-08, issue #50):** `--information`/`--evidence`
+close the gap `--confidence` left open - SPEC §8.5's analytical vocabulary
+(Mills, *Evidence Explained*) was only ever settable by hand-editing the
+claim's YAML, even though AI-assisted drafting is directed to populate these
+fields by default (SPEC §8.4) and the linter's W106 pings an accepted claim
+that is still missing them. `--anchor` and `--notes` close the same gap for
+the position-in-source pointer and the free-text context line (W109 pings an
+accepted substantive/low-confidence-vital claim with no `notes:`). All four
+follow the same REPLACE contract every other field flag on this verb already
+has (`--value`, `--place-text`, …) - there is no append mode; passing the
+flag sets the field to exactly what was given. `--evidence`/`--information`
+are validated against SPEC §8.5's closed vocabularies (shared with
+`fha claim new` via `_validate_field_args`, `_lib.EVIDENCE_VALUES`/
+`INFORMATION_VALUES`); `--anchor`/`--notes` are free text, quoted the same
+way `--value`/`--place-text` are (`yaml_inline`). `--notes` deliberately does
+NOT share `--value`'s block-scalar refusal: a hand-written `notes: >` or
+`notes: |` block is common (SPEC §8.4's own illustrative example uses one),
+and refusing to correct it would defeat the flag's whole purpose. The
+existing `set_scalar` machinery already replaces a key's FULL span - including
+a multi-line block-scalar continuation - safely (`_value_span_end`, built for
+`persons:`'s block-list form and exercised here against `notes:` by
+`tests/test_claim.py`'s `NotesFieldEditTests`), so no new corruption-guard
+logic is needed for this field specifically.
 
 **Contract (AGENTS.md / SPEC §8.2):** only the *human* moves a claim to
 `accepted`, and an accepted claim must carry a `reviewed:` date (lint E006). The
@@ -42,10 +71,26 @@ way, distinct from a `rejected` claim the reviewer has ruled out.
 the edit verb. Before this build every call had to move the status; now a
 field-only correction (`fha claim <C-id> --place L-baba9801fa`) is legal on its
 own, and at least one mutation flag (`--status`/`--value`/`--date`/`--type`/
-`--place`/`--place-text`/`--persons`) is required so a bare `fha claim <C-id>`
+`--place`/`--place-text`/`--persons`/`--confidence`/`--information`/
+`--evidence`/`--anchor`/`--notes`) is required so a bare `fha claim <C-id>`
 with nothing to do is refused rather than silently doing nothing. `reviewed:`
 is stamped only when `--status` is given, exactly as before - a field-only edit
 never touches status or reviewed.
+
+**Echo on success (2026-08, issue #54).** A successful field write used to say
+only "value updated" / "place_text updated" - identical whether the value
+written was the one intended or a corrupted one (the concrete repro: on
+Windows PowerShell 5.1 a single-quoted string loses embedded double quotes
+before the tool ever sees the argument, so `Robert Justin "Bob" Knipscheer`
+silently arrives as `Robert Justin Bob Knipscheer`; `--dry-run` showed this in
+its diff, a live run did not show it at all). Every free-text/vocabulary field
+this verb (and `fha claim new`) can write now echoes the value it actually
+wrote as an extra `field: value` line on success - cheap insurance against any
+wrapper (a different shell, a CI runner, an MCP bridge) that mangles an
+argument before this tool sees it. `--date`/`--type`/`--place`/`--persons`/
+`--confidence` already echoed their new value inline in the summary line and
+are unchanged; `--value`/`--place-text`/`--information`/`--evidence`/
+`--anchor`/`--notes` gained the explicit echo line.
 
 The edit is **surgical**: only the one named claim's entry inside its source
 `.md` `## Claims` block is touched - its sibling claims, the block's key order,
@@ -88,6 +133,21 @@ file, for exactly this reason). Anything else - a relationship needing a role
 vocabulary these two verbs don't cover - is a hand-edit of the claim block,
 same as always.
 
+**Also deliberately out of scope: amending `roles:` (issue #50).** The issue
+that added `--information`/`--evidence`/`--anchor`/`--notes` also flagged that
+`roles:` cannot be set or amended on an existing claim, only tentatively
+sketching `--role parent=P-a,P-b --role child=P-c` as a possible shape. That
+needs real design, not a flag: `roles:` values can be a single P-id OR a list
+(SPEC §8.3's `child: P-de957bcda1` vs `parent: [P-aaaaaaaaaa]`), the role
+vocabulary spans four families (child/parent, spouse, head/household_member,
+enslaved/enslaver, employer/employee, member) each with different arity
+expectations, and (unlike every flat scalar this file writes) an edit here
+would interact with `--persons` in ways that are not obvious - does setting a
+role auto-add the person to `persons:` if absent, and does removing the last
+role for a person imply removing them from `persons:` too? None of that is
+settled by SPEC or by the issue itself, so it stays a hand-edit of the claim
+block for now, same as minting a `relationship` claim does.
+
 CODE MAP
 --------
   Shared
@@ -98,13 +158,18 @@ CODE MAP
     _invalid_person_ids       - which --persons entries are not P-id shaped
     _unresolvable_person_ids  - which (shape-valid) P-ids have no person record
     _place_known_in_index     - best-effort L-id existence check (warns, never refuses)
-    _validate_field_args      - the place/place_text/confidence/date/persons checks
-                                both verbs share verbatim (identical wording)
+    _validate_field_args      - the place/place_text/confidence/date/persons/
+                                information/evidence checks both verbs share
+                                verbatim (identical wording)
+    _echo_field_lines         - "field: value" success lines shared by run_claim
+                                and run_claim_new (issue #54)
 
   fha claim <C-id> [<C-id> ...] (review + field edit; batch = status-only)
     _find_claim_record        - scan sources/ for the .md holding one C-id
     _own_key_indent / _own_id_key_line - which id: line is an item's OWN key
-    _apply_claim_review       - surgical `## Claims` block edit (status/value/date/type/place/persons)
+    _apply_claim_review       - surgical `## Claims` block edit (status/value/date/
+                                type/place/persons/confidence/information/
+                                evidence/anchor/notes)
     run_claim                 - validate, locate, edit ONE claim, return a Result
     run_claim_batch           - dedupe, all-or-nothing validate, loop run_claim
     _cmd_claim
@@ -136,9 +201,11 @@ import yaml
 from _lib import (
     CLAIM_TYPES,
     CONFIDENCE_VALUES,
+    EVIDENCE_VALUES,
     EXIT_CLEAN,
     EXIT_FAILURE,
     EXIT_WARNINGS,
+    INFORMATION_VALUES,
     ClaimEditRefused,
     default_confidence,
     INDEX_SCHEMA_VERSION,
@@ -297,19 +364,26 @@ def _validate_field_args(
     persons: list[str] | None,
     confidence: str | None,
     date: str | None,
+    information: str | None = None,
+    evidence: str | None = None,
 ) -> tuple[Result | None, str | None, list[str] | None]:
     """Validate the claim field-arguments common to both verbs of `fha claim`.
 
     `run_claim` (edit) and `run_claim_new` (mint) accept the same
-    `--place`/`--place-text`/`--persons`/`--confidence`/`--date` arguments and
-    refuse each malformed value with byte-identical wording; this is the one
-    copy of those five checks so the strings cannot drift. The checks run in a
-    fixed order - confidence vocabulary, date
+    `--place`/`--place-text`/`--persons`/`--confidence`/`--date`/
+    `--information`/`--evidence` arguments and refuse each malformed value
+    with byte-identical wording; this is the one copy of those checks so the
+    strings cannot drift. The checks run in a
+    fixed order - confidence vocabulary, information/evidence vocabulary, date
     shape, place L-id shape, persons shape + resolvability - matching the order
     `run_claim_new` already used; `run_claim` calls this after its own
     status/type checks, which nudges (only) where its confidence refusal fires
     relative to a status refusal when more than one argument is malformed at
     once, but changes no message text.
+
+    `--anchor`/`--notes` are NOT validated here - SPEC §8.4 leaves both free
+    text (a position pointer, a context note), so there is no vocabulary to
+    check; each caller passes them straight through to the writer.
 
     Returns `(refusal, normalized_date, persons_norm)`:
       - `refusal` - a completed refusal `Result` the caller returns as-is, or
@@ -330,6 +404,20 @@ def _validate_field_args(
                      f'{confidence!r} is not a confidence level. confidence records evidence '
                      'quality (separate from status, the review state) - use one of: '
                      f'{", ".join(CONFIDENCE_VALUES)} (SPEC §8.5).'), None, None
+
+    if information is not None and information not in INFORMATION_VALUES:
+        return _fail(result, 'failed',
+                     f'{information!r} is not a Mills information value. information records '
+                     'whether the informant behind this assertion was there at the time '
+                     '(primary), reporting secondhand (secondary), or unknown - use one of: '
+                     f'{", ".join(INFORMATION_VALUES)} (SPEC §8.5).'), None, None
+
+    if evidence is not None and evidence not in EVIDENCE_VALUES:
+        return _fail(result, 'failed',
+                     f'{evidence!r} is not a Mills evidence value. evidence records whether '
+                     'the source answers the question directly (direct), only through '
+                     "correlation (indirect), or is evidence of an absence (negative) - use "
+                     f'one of: {", ".join(EVIDENCE_VALUES)} (SPEC §8.5).'), None, None
 
     normalized_date = None
     if date is not None:
@@ -476,8 +564,13 @@ def _apply_claim_review(
     place_text: str | None = None,
     persons: list[str] | None = None,
     confidence: str | None = None,
+    information: str | None = None,
+    evidence: str | None = None,
+    anchor: str | None = None,
+    notes: str | None = None,
 ) -> tuple[str, bool]:
-    """Surgically set any of status/reviewed/value/date/type/place/persons on one claim.
+    """Surgically set any of status/reviewed/value/date/type/place/persons/
+    confidence/information/evidence/anchor/notes on one claim.
 
     Only the claim whose `id:` matches `claim_id` (case-insensitive) inside the
     `## Claims` fenced YAML block is touched; every other line - sibling claims,
@@ -516,7 +609,12 @@ def _apply_claim_review(
     corruption: `--value` against a multi-line block scalar (`value: >` /
     `value: |`), which a human edits by hand, and the belt-and-braces case
     where the located entry does not read back as the target claim when the
-    block is parsed.
+    block is parsed. `--notes` does NOT share `--value`'s block-scalar
+    refusal (SPEC §8.4's own illustrative claim uses `notes: >` and a human
+    correcting notes through this flag is the issue #50 use case) - the
+    generic `set_scalar`/`_value_span_end` machinery below already replaces a
+    key's FULL span, block-scalar continuation included, so no separate
+    corruption guard is needed for it.
     """
     target = normalize_id(claim_id)
     lines = text.splitlines()
@@ -666,23 +764,29 @@ def _apply_claim_review(
     # 3. status (required on every valid claim). status is now OPTIONAL here
     # (2026-07 compat change: a field-only edit is legal on its own) - when
     # given, it is replaced in place as before; when not, the EXISTING status
-    # line is located read-only, purely as the anchor other new keys insert
-    # after (0, the item's own first line, is the safe fallback).
+    # line is located read-only, purely as the insert point other new keys
+    # insert after (0, the item's own first line, is the safe fallback).
+    #
+    # NAMING NOTE: this "where does the next new key land" tracker is called
+    # `insert_pos`, deliberately NOT `anchor` - SPEC §8.4 also names a real
+    # claim FIELD `anchor:` (the position-in-source pointer, issue #50's
+    # --anchor), and reusing the word for both would shadow one with the
+    # other the moment both are in scope.
     if status is not None:
         status_idx = set_scalar('status', status, insert_after=0)
     else:
         found_status_idx, _found_kind, _ = find_key('status')
         status_idx = found_status_idx if found_status_idx is not None else 0
 
-    anchor = status_idx
+    insert_pos = status_idx
     if reviewed is not None:
-        anchor = set_scalar('reviewed', reviewed, insert_after=status_idx)
+        insert_pos = set_scalar('reviewed', reviewed, insert_after=status_idx)
     if date is not None:
         date_idx, date_kind, _ = find_key('date')
         if date_idx is not None:
             set_scalar('date', date, insert_after=date_idx)
         else:
-            anchor = set_scalar('date', date, insert_after=anchor)
+            insert_pos = set_scalar('date', date, insert_after=insert_pos)
     if value is not None:
         _, _, raw = find_key('value')
         if raw is not None and (raw == '' or raw[:1] in ('>', '|')):
@@ -696,21 +800,21 @@ def _apply_claim_review(
         if type_idx is not None:
             set_scalar('type', type_, insert_after=type_idx)
         else:
-            anchor = set_scalar('type', type_, insert_after=anchor)
+            insert_pos = set_scalar('type', type_, insert_after=insert_pos)
     if place is not None:
         # Any existing place_text: stays untouched (SPEC §15).
         place_idx, _place_kind, _ = find_key('place')
         if place_idx is not None:
             set_scalar('place', place, insert_after=place_idx)
         else:
-            anchor = set_scalar('place', place, insert_after=anchor)
+            insert_pos = set_scalar('place', place, insert_after=insert_pos)
     if place_text is not None:
         # Any existing place: link stays untouched (SPEC §15).
         pt_idx, _pt_kind, _ = find_key('place_text')
         if pt_idx is not None:
             set_scalar('place_text', _yaml_inline(place_text), insert_after=pt_idx)
         else:
-            anchor = set_scalar('place_text', _yaml_inline(place_text), insert_after=anchor)
+            insert_pos = set_scalar('place_text', _yaml_inline(place_text), insert_after=insert_pos)
     if persons is not None:
         rendered_persons = '[' + ', '.join(fmt_id_display(p) for p in persons) + ']'
         persons_idx, _persons_kind, _ = find_key('persons')
@@ -718,21 +822,52 @@ def _apply_claim_review(
             before_len = len(item)
             set_scalar('persons', rendered_persons, insert_after=persons_idx)
             # A block-style persons: list collapses to one flow-style line here,
-            # shrinking `item`. `anchor` may already point past this key (e.g. a
-            # newly-inserted --date landed right after status, which can sit
+            # shrinking `item`. `insert_pos` may already point past this key (e.g.
+            # a newly-inserted --date landed right after status, which can sit
             # below a block-style persons: in file order) - shift it by the same
             # delta or confidence's fallback insert below lands short.
             delta = len(item) - before_len
-            if delta and anchor > persons_idx:
-                anchor += delta
+            if delta and insert_pos > persons_idx:
+                insert_pos += delta
         else:
-            anchor = set_scalar('persons', rendered_persons, insert_after=anchor)
+            insert_pos = set_scalar('persons', rendered_persons, insert_after=insert_pos)
     if confidence is not None:
         conf_idx, _conf_kind, _ = find_key('confidence')
         if conf_idx is not None:
             set_scalar('confidence', confidence, insert_after=conf_idx)
         else:
-            anchor = set_scalar('confidence', confidence, insert_after=anchor)
+            insert_pos = set_scalar('confidence', confidence, insert_after=insert_pos)
+    if information is not None:
+        info_idx, _info_kind, _ = find_key('information')
+        if info_idx is not None:
+            set_scalar('information', information, insert_after=info_idx)
+        else:
+            insert_pos = set_scalar('information', information, insert_after=insert_pos)
+    if evidence is not None:
+        evid_idx, _evid_kind, _ = find_key('evidence')
+        if evid_idx is not None:
+            set_scalar('evidence', evidence, insert_after=evid_idx)
+        else:
+            insert_pos = set_scalar('evidence', evidence, insert_after=insert_pos)
+    if anchor is not None:
+        anc_idx, _anc_kind, _ = find_key('anchor')
+        if anc_idx is not None:
+            set_scalar('anchor', _yaml_inline(anchor), insert_after=anc_idx)
+        else:
+            insert_pos = set_scalar('anchor', _yaml_inline(anchor), insert_after=insert_pos)
+    if notes is not None:
+        notes_idx, _notes_kind, _ = find_key('notes')
+        if notes_idx is not None:
+            before_len = len(item)
+            set_scalar('notes', _yaml_inline(notes), insert_after=notes_idx)
+            # Same block-collapse accounting as persons: above - a multi-line
+            # `notes: >`/`notes: |` block scalar collapses to one flow-quoted
+            # line, so any insert_pos already pointing past it must shift.
+            delta = len(item) - before_len
+            if delta and insert_pos > notes_idx:
+                insert_pos += delta
+        else:
+            insert_pos = set_scalar('notes', _yaml_inline(notes), insert_after=insert_pos)
 
     new_lines = lines[:start] + item + lines[end:]
     trailing_nl = '\n' if text.endswith('\n') else ''
@@ -744,6 +879,25 @@ def _apply_claim_review(
 # Kept as a module-level name here so existing call sites in this file (and
 # any test importing `claim._yaml_inline`) do not need to change.
 _yaml_inline = yaml_inline
+
+
+def _echo_field_lines(**fields: str | None) -> list[str]:
+    """Issue #54: one 'field: value' line per non-None free-text/vocabulary
+    field, for the live-write success message.
+
+    `--date`/`--type`/`--place`/`--persons`/`--confidence`/`--information`/
+    `--evidence` already echo their new value INLINE in the one-line summary
+    (`date -> 1880`, `persons -> [P-a, P-b]`, `information -> primary`, …) -
+    closed-vocabulary or already-short values, so the summary line is
+    legible either way - and are not repeated here. This covers the fields
+    that used to say only "value updated"/"place_text updated" - identical
+    whether the write landed correctly or a wrapper (a shell that ate a
+    quote, a CI runner, an MCP bridge) mangled the argument first - plus the
+    two new free-text SPEC §8.4 fields from issue #50 (`anchor`/`notes`),
+    which would otherwise ship with the exact same blind spot on day one.
+    Order is the caller's (`**fields` preserves insertion order in Python
+    3.7+), so both call sites control which field prints first."""
+    return [f'  {name}: {value}' for name, value in fields.items() if value is not None]
 
 
 # ── Top-level operation ───────────────────────────────────────────────────────
@@ -761,6 +915,10 @@ def run_claim(
     place_text: str | None = None,
     persons: list[str] | None = None,
     confidence: str | None = None,
+    information: str | None = None,
+    evidence: str | None = None,
+    anchor: str | None = None,
+    notes: str | None = None,
     dry_run: bool = False,
 ) -> Result:
     """Edit one claim (status move and/or field corrections); return a Result.
@@ -781,7 +939,8 @@ def run_claim(
 
     `status` is OPTIONAL (2026-07 compatibility change - see the module
     docstring): at least one of status/value/date/claim_type/place/
-    place_text/persons must be given, or the call is a plain `no-op` refusal.
+    place_text/persons/confidence/information/evidence/anchor/notes must be
+    given, or the call is a plain `no-op` refusal.
     `reviewed:` is stamped only together with a `status` move, exactly as
     before - passing `reviewed` without `status` is refused rather than
     silently ignored, so a human is never left wondering why a date they typed
@@ -790,8 +949,13 @@ def run_claim(
     §15) - each sets only its own, never removing the other, and both may be
     given together; `persons` REPLACES the whole
     list and every P-id must already resolve to a record (SPEC §9) or the call
-    refuses naming the missing id and the fix. The success message names the
-    re-index next step (`fha index`).
+    refuses naming the missing id and the fix. `information`/`evidence` are
+    validated against SPEC §8.5's closed vocabularies; `anchor`/`notes` are
+    free text (issue #50) - all four REPLACE their field, same as `value`/
+    `place_text`. The success message names the re-index next step
+    (`fha index`) and echoes each free-text/vocabulary field's new value on
+    its own line (issue #54 - a wrapper that mangled the argument before this
+    tool saw it is now visible at the point the write happened).
     """
     result = Result(data={
         'status': None, 'claim_id': None, 'before_status': None,
@@ -815,10 +979,12 @@ def run_claim(
 
     if (status is None and value is None and date is None and claim_type is None
             and place is None and place_text is None and persons is None
-            and confidence is None):
+            and confidence is None and information is None and evidence is None
+            and anchor is None and notes is None):
         return _fail(result, 'no-op',
                      'Nothing to change - pass at least one of --status, --value, --date, '
-                     '--type, --place, --place-text, --persons, or --confidence.')
+                     '--type, --place, --place-text, --persons, --confidence, '
+                     '--information, --evidence, --anchor, or --notes.')
 
     if status is not None and status not in REVIEW_STATUSES:
         result.ok = False
@@ -840,11 +1006,13 @@ def run_claim(
             return _fail(result, 'refused' if claim_type == 'relationship' else 'invalid-type',
                          problem)
 
-    # The place/place_text/confidence/date/persons checks are shared verbatim
-    # with `run_claim_new` - one helper, identical wording (SPEC §8.4/§8.5).
+    # The place/place_text/confidence/date/persons/information/evidence checks
+    # are shared verbatim with `run_claim_new` - one helper, identical wording
+    # (SPEC §8.4/§8.5).
     refusal, normalized_date, persons_norm = _validate_field_args(
         result, archive_root, place=place, place_text=place_text,
-        persons=persons, confidence=confidence, date=date)
+        persons=persons, confidence=confidence, date=date,
+        information=information, evidence=evidence)
     if refusal is not None:
         return refusal
 
@@ -911,7 +1079,8 @@ def run_claim(
             text, cid, status=status, reviewed=reviewed,
             value=value, date=normalized_date, type_=claim_type,
             place=place_display, place_text=place_text, persons=persons_norm,
-            confidence=confidence,
+            confidence=confidence, information=information, evidence=evidence,
+            anchor=anchor, notes=notes,
         )
     except _ClaimEditRefused as e:
         result.ok = False
@@ -979,7 +1148,21 @@ def run_claim(
         changed_bits.append('persons -> [' + ', '.join(fmt_id_display(p) for p in persons_norm) + ']')
     if confidence is not None:
         changed_bits.append(f'confidence -> {confidence}')
+    if information is not None:
+        changed_bits.append(f'information -> {information}')
+    if evidence is not None:
+        changed_bits.append(f'evidence -> {evidence}')
+    if anchor is not None:
+        changed_bits.append('anchor updated')
+    if notes is not None:
+        changed_bits.append('notes updated')
     summary = f'{fmt_id_display(cid)}: ' + '; '.join(changed_bits)
+    # Issue #54: every free-text field that could be silently mangled between
+    # the human/agent typing it and this tool receiving it (value/place_text/
+    # anchor/notes) gets its own echoed line on a live write - see
+    # _echo_field_lines. information/evidence are closed-vocabulary, already
+    # visible in the summary line above, so they are not repeated here.
+    echo_lines = _echo_field_lines(value=value, place_text=place_text, anchor=anchor, notes=notes)
 
     if dry_run:
         result.data['status'] = 'ok'
@@ -1012,6 +1195,8 @@ def run_claim(
     result.data['status'] = 'ok'
     result.note_changed(record_path)
     result.add('info', f'Set {summary}', path=record_path)
+    for line in echo_lines:
+        result.add('info', line)
     result.add('info', _INDEX_REMINDER, next_step='fha index')
     return result
 
@@ -1029,6 +1214,10 @@ def run_claim_batch(
     place_text: str | None = None,
     persons: list[str] | None = None,
     confidence: str | None = None,
+    information: str | None = None,
+    evidence: str | None = None,
+    anchor: str | None = None,
+    notes: str | None = None,
     dry_run: bool = False,
 ) -> Result:
     """The edit verb's front door: one C-id or several, one contract (TOOLING §3b).
@@ -1042,10 +1231,11 @@ def run_claim_batch(
     are as legitimate as batch-accept).
 
     The status-only gate: with more than one distinct C-id, any field-edit
-    argument (value/date/claim_type/place/place_text/persons/confidence) is a
-    plain refusal - a field correction states a new fact about one particular
-    claim, so it is inherently per-claim and keeps the surgical single-id
-    form. With exactly one distinct id this function delegates straight to
+    argument (value/date/claim_type/place/place_text/persons/confidence/
+    information/evidence/anchor/notes) is a plain refusal - a field correction
+    states a new fact about one particular claim, so it is inherently
+    per-claim and keeps the surgical single-id form. With exactly one distinct
+    id this function delegates straight to
     `run_claim` with every argument, so the single-id behavior (field edits
     included) is bit-for-bit the old contract - callers like `_cmd_claim` can
     route everything through here.
@@ -1106,6 +1296,7 @@ def run_claim_batch(
             archive_root, claim_id=deduped[0], status=status, reviewed=reviewed,
             value=value, date=date, claim_type=claim_type, place=place,
             place_text=place_text, persons=persons, confidence=confidence,
+            information=information, evidence=evidence, anchor=anchor, notes=notes,
             dry_run=dry_run)
         if duplicates:
             # Surface the dedupe first, so the human sees why one id "went
@@ -1120,7 +1311,9 @@ def run_claim_batch(
 
     field_args = (('--value', value), ('--date', date), ('--type', claim_type),
                   ('--place', place), ('--place-text', place_text),
-                  ('--persons', persons), ('--confidence', confidence))
+                  ('--persons', persons), ('--confidence', confidence),
+                  ('--information', information), ('--evidence', evidence),
+                  ('--anchor', anchor), ('--notes', notes))
     given = [name for name, val in field_args if val is not None]
     if given:
         return _fail(result, 'refused',
@@ -1259,7 +1452,8 @@ def _render_new_claim_lines(
     cid: str, claim_type: str, value: str, *,
     persons: list[str], date: str | None, place: str | None, place_text: str | None,
     subtype: str | None, status: str, reviewed: str | None, confidence: str,
-    negated: bool = False,
+    negated: bool = False, information: str | None = None, evidence: str | None = None,
+    anchor: str | None = None, notes: str | None = None,
 ) -> list[str]:
     """Build the YAML lines for one brand-new claim item (SPEC §8.4 field order).
 
@@ -1271,6 +1465,10 @@ def _render_new_claim_lines(
     `negated: true` sits there too, for the same reason: it inverts what the
     type asserts (a negated marriage claim means "confirmed never married"),
     so it must be visible before the reader reaches the value's details.
+    `information`/`evidence`/`anchor` (issue #50) land where SPEC §8.4's own
+    illustrative block lists them, among the "other optional fields" right
+    after `place_text`; `notes` lands in its SPEC-illustrated slot, right
+    after `reviewed`.
 
     `confidence` is always written: SPEC §8.5 marks it required on every claim
     (lint E010, the same required set as `persons`), and the same section
@@ -1278,10 +1476,13 @@ def _render_new_claim_lines(
     missing - `run_claim_new` resolves the default (`_lib.default_confidence`)
     or takes the human's --confidence override, so by the time this renderer
     runs the value is settled. `information`/`notes` are SPEC-legal fields
-    this verb deliberately leaves unset (lint only pings them
-    informationally); `evidence` is set exactly when `negated` is - SPEC §8.6
-    pairs a confirmed absence with `evidence: negative`, and writing one
-    without the other would be a half-recorded conclusion.
+    this verb used to always leave unset (lint only pings them
+    informationally) and now write when the caller supplies them (issue #50).
+    `evidence` is set whenever the caller supplies one, OR whenever `negated`
+    is true - SPEC §8.6 pairs a confirmed absence with `evidence: negative`,
+    and writing one without the other would be a half-recorded conclusion;
+    `run_claim_new` refuses an `--evidence` that contradicts `--negated`
+    before this renderer ever runs, so the two never disagree here.
     """
     lines = [
         f'- value: {_yaml_inline(value)}',
@@ -1302,12 +1503,19 @@ def _render_new_claim_lines(
         # Not an elif: the registry link and the source-as-written wording
         # are different facts and legally coexist on one claim (SPEC §15).
         lines.append(f'  place_text: {_yaml_inline(place_text)}')
+    if information:
+        lines.append(f'  information: {information}')
     lines.append(f'  status: {status}')
     lines.append(f'  confidence: {confidence}')
-    if negated:
-        lines.append('  evidence: negative')
+    effective_evidence = evidence if evidence is not None else ('negative' if negated else None)
+    if effective_evidence:
+        lines.append(f'  evidence: {effective_evidence}')
+    if anchor:
+        lines.append(f'  anchor: {_yaml_inline(anchor)}')
     if status == 'accepted' and reviewed:
         lines.append(f'  reviewed: {reviewed}')
+    if notes:
+        lines.append(f'  notes: {_yaml_inline(notes)}')
     return lines
 
 
@@ -1325,6 +1533,10 @@ def run_claim_new(
     status: str = 'accepted',
     confidence: str | None = None,
     negated: bool = False,
+    information: str | None = None,
+    evidence: str | None = None,
+    anchor: str | None = None,
+    notes: str | None = None,
     dry_run: bool = False,
     claim_id: str | None = None,
 ) -> Result:
@@ -1338,7 +1550,19 @@ def run_claim_new(
     so everything downstream already understands it (lint counts a negated
     marriage toward vitals completeness, xref treats opposite polarity as a
     contradiction candidate, cooccur/find exclude negated claims from
-    positive-evidence surfaces).
+    positive-evidence surfaces). `--evidence` that contradicts `--negated`
+    (anything but `negative`) is refused before any write - SPEC §8.6's
+    pairing is mandatory, not a default that a conflicting override silently
+    wins over.
+
+    `information`/`evidence`/`anchor`/`notes` (issue #50) are the Mills
+    analysis fields and free-text context SPEC §8.4 already allows on every
+    claim; before this build `fha claim new` never wrote them, so every claim
+    minted this way landed missing them and - for `notes` on a substantive or
+    low-confidence-vital claim - immediately tripped the linter's own W109.
+    `information`/`evidence` are validated against SPEC §8.5's closed
+    vocabularies (shared with the edit verb via `_validate_field_args`);
+    `anchor`/`notes` are free text, quoted the same way `place_text` is.
 
     `claim_id` is NOT a CLI flag - `fha claim new` always mints its own id,
     same as before. It exists for a caller (`fha serve`'s claim.new verb)
@@ -1406,11 +1630,20 @@ def run_claim_new(
                      f'{", ".join(NEW_CLAIM_STATUSES)}. (Review moves a claim on to disputed/'
                      'rejected/needs-review/superseded later, with `fha claim <C-id> --status …`.)')
 
-    # The place/place_text/confidence/date/persons checks are shared verbatim
-    # with `run_claim`'s edit verb - one helper, identical wording (SPEC §8.4/§8.5).
+    if negated and evidence is not None and evidence != 'negative':
+        return _fail(result, 'refused',
+                     f'--negated records a confirmed absence, which SPEC §8.6 pairs with '
+                     f'evidence: negative - --evidence {evidence!r} contradicts that. Drop '
+                     '--evidence to let --negated set it automatically, or drop --negated '
+                     'if this is not a confirmed-absence claim.')
+
+    # The place/place_text/confidence/date/persons/information/evidence checks
+    # are shared verbatim with `run_claim`'s edit verb - one helper, identical
+    # wording (SPEC §8.4/§8.5).
     refusal, normalized_date, persons_norm = _validate_field_args(
         result, archive_root, place=place, place_text=place_text,
-        persons=persons, confidence=confidence, date=date)
+        persons=persons, confidence=confidence, date=date,
+        information=information, evidence=evidence)
     if refusal is not None:
         return refusal
     # This verb builds a fresh claim, so an unset persons list is the empty
@@ -1466,7 +1699,8 @@ def run_claim_new(
     item_lines = _render_new_claim_lines(
         cid, claim_type, value, persons=persons_norm, date=normalized_date,
         place=place, place_text=place_text, subtype=subtype, status=status, reviewed=reviewed,
-        confidence=confidence, negated=negated,
+        confidence=confidence, negated=negated, information=information, evidence=evidence,
+        anchor=anchor, notes=notes,
     )
 
     try:
@@ -1523,6 +1757,12 @@ def run_claim_new(
     result.data['status'] = 'ok'
     result.note_changed(source_path)
     result.add('info', f'Minted {summary}', path=source_path)
+    # Issue #54, extended to the mint path: a live write's summary line never
+    # showed the free-text values it just wrote, so the same silent-mangling
+    # blind spot existed here too (a mint is a write like any other). value
+    # is always given (required); place_text/anchor/notes are optional.
+    for line in _echo_field_lines(value=value, place_text=place_text, anchor=anchor, notes=notes):
+        result.add('info', line)
     if status == 'suggested':
         result.add('info',
                    'Minted as `suggested` - review it with '
@@ -1560,6 +1800,10 @@ def _cmd_claim(args: argparse.Namespace) -> int:
         place_text=getattr(args, 'place_text', None),
         persons=persons,
         confidence=getattr(args, 'confidence', None),
+        information=getattr(args, 'information', None),
+        evidence=getattr(args, 'evidence', None),
+        anchor=getattr(args, 'anchor', None),
+        notes=getattr(args, 'notes', None),
         dry_run=bool(getattr(args, 'dry_run', False)),
     )
     for msg in result.messages:
@@ -1591,6 +1835,10 @@ def _cmd_claim_new(args: argparse.Namespace) -> int:
         status=args.status,
         confidence=getattr(args, 'confidence', None),
         negated=bool(getattr(args, 'negated', False)),
+        information=getattr(args, 'information', None),
+        evidence=getattr(args, 'evidence', None),
+        anchor=getattr(args, 'anchor', None),
+        notes=getattr(args, 'notes', None),
         dry_run=bool(getattr(args, 'dry_run', False)),
     )
     for msg in result.messages:
@@ -1607,7 +1855,8 @@ def _add_arguments(p: argparse.ArgumentParser) -> None:
                         'stops the whole batch before anything is written.')
     p.add_argument('--status', choices=REVIEW_STATUSES,
                    help='The review status to set. At least one of --status/--value/--date/'
-                        '--type/--place/--place-text/--persons/--confidence is required.')
+                        '--type/--place/--place-text/--persons/--confidence/--information/'
+                        '--evidence/--anchor/--notes is required.')
     p.add_argument('--reviewed', metavar='DATE',
                    help='Review date (YYYY-MM-DD); defaults to today. Only takes effect '
                         'together with --status.')
@@ -1631,6 +1880,21 @@ def _add_arguments(p: argparse.ArgumentParser) -> None:
     p.add_argument('--confidence', choices=CONFIDENCE_VALUES,
                    help='Optionally set the evidence-quality level (SPEC §8.5; separate '
                         'from --status, the review state).')
+    p.add_argument('--information', choices=INFORMATION_VALUES,
+                   help='Optionally set the Mills information value (SPEC §8.5): was the '
+                        'informant behind this assertion there at the time (primary), '
+                        'reporting secondhand (secondary), or unknown.')
+    p.add_argument('--evidence', choices=EVIDENCE_VALUES,
+                   help='Optionally set the Mills evidence value (SPEC §8.5): does the '
+                        'source answer the question directly (direct), only through '
+                        'correlation (indirect), or is it evidence of an absence (negative).')
+    p.add_argument('--anchor', metavar='TEXT',
+                   help='Optionally set the position inside the source this claim rests on '
+                        '(a timestamp, page, or line - e.g. "00:14:32" or "p. 12").')
+    p.add_argument('--notes', metavar='TEXT',
+                   help='Optionally REPLACE the claim\'s notes: - the context/detail behind '
+                        'it. Safe even when the existing notes: is a multi-line block '
+                        '(notes: > or notes: |); the whole field is replaced, never appended.')
     p.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
     p.add_argument('--dry-run', action='store_true', dest='dry_run',
                    help='Preview the YAML change without writing.')
@@ -1667,6 +1931,22 @@ def _add_new_arguments(p: argparse.ArgumentParser) -> None:
     p.add_argument('--confidence', choices=CONFIDENCE_VALUES,
                    help='Evidence-quality level (SPEC §8.5). Defaults from the source\'s '
                         'source_type (vital-record: high, interview: low, else medium).')
+    p.add_argument('--information', choices=INFORMATION_VALUES,
+                   help='Mills information value (SPEC §8.5): was the informant behind '
+                        'this assertion there at the time (primary), reporting secondhand '
+                        '(secondary), or unknown. Optional - omit if undetermined.')
+    p.add_argument('--evidence', choices=EVIDENCE_VALUES,
+                   help='Mills evidence value (SPEC §8.5): does the source answer the '
+                        'question directly (direct), only through correlation (indirect), '
+                        'or is it evidence of an absence (negative). --negated sets this to '
+                        'negative automatically - --evidence must agree if both are given.')
+    p.add_argument('--anchor', metavar='TEXT',
+                   help='Position inside the source this claim rests on (a timestamp, '
+                        'page, or line - e.g. "00:14:32" or "p. 12").')
+    p.add_argument('--notes', metavar='TEXT',
+                   help='The context/detail behind the claim - EXPECTED (not required) on '
+                        'a substantive or low-confidence-vital claim (lint W109 pings an '
+                        'accepted one with none).')
     p.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
     p.add_argument('--dry-run', action='store_true', dest='dry_run',
                    help='Preview the claim block that would be appended, without writing.')
@@ -1683,10 +1963,10 @@ Record your verdict on a suggested fact - the human decision point.
 
 Only you move a claim to accepted. Nothing becomes a fact until you decide here.
 At least one of --status/--value/--date/--type/--place/--place-text/--persons/
---confidence is required. Several C-ids at once move status only - every id is
-checked first, and one bad id stops the whole batch before anything is written;
-field corrections take exactly one claim. Preview any change first with
---dry-run.
+--confidence/--information/--evidence/--anchor/--notes is required. Several
+C-ids at once move status only - every id is checked first, and one bad id
+stops the whole batch before anything is written; field corrections take
+exactly one claim. Preview any change first with --dry-run.
 
 To mint a brand-new claim onto a source, use `fha claim new` (`fha claim new --help`)."""
 
@@ -1700,7 +1980,9 @@ Defaults to --status accepted (typing this command IS the review). Pass
 --status suggested for an AI-drafted claim awaiting human review.
 --type relationship is refused - it needs a roles: map this command does not
 build; use `fha person relate` (hypothesis) or `fha confirm cooccur` (sourced)
-instead. Preview any change first with --dry-run."""
+instead. --information/--evidence/--anchor/--notes (SPEC §8.4/§8.5) mint the
+Mills analysis fields and context note in the same step, instead of needing a
+hand-edit right after minting. Preview any change first with --dry-run."""
 
 
 def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:

@@ -719,6 +719,19 @@ def format_person_sex_error(value: object) -> str:
 # VALID_CONFIDENCE mirrors the same three values for validation.
 CONFIDENCE_VALUES: tuple[str, ...] = ('high', 'medium', 'low')
 
+# The Mills (Evidence Explained) analysis fields on a claim (SPEC §8.4/§8.5) -
+# optional, but AI-assisted research populates them by default and `fha claim`
+# validates any human override against these same closed vocabularies so a
+# typo (`--evidence direkt`) refuses with the valid list rather than writing a
+# value the linter's W106 Mills check would silently never recognise.
+# `information` is judged per informant per assertion (was the person who
+# supplied this fact present at the time, or reporting secondhand, or is that
+# unknown); `evidence` is relative to the question the claim answers (does the
+# source say this directly, or does it take correlation to reach the
+# conclusion, or is it evidence of an absence - SPEC §8.6).
+INFORMATION_VALUES: tuple[str, ...] = ('primary', 'secondary', 'undetermined')
+EVIDENCE_VALUES: tuple[str, ...] = ('direct', 'indirect', 'negative')
+
 _CONFIDENCE_BY_SOURCE_TYPE: dict[str, str] = {
     'vital-record': 'high',
     'interview': 'low',
