@@ -74,7 +74,47 @@ tool-only fix.
 
 ---
 
-## 3. Minor / informational
+## 3. `#68`'s write-path reads are still on the pre-fix guard
+
+**Where:** every `_lib.read_text_exact` call site outside `tools/lint.py` -
+`confirm.py` (12), `person.py` (4), `packet.py` / `process.py` / `source.py` (3
+each), `claim.py` / `places.py` (2 each), and one each in `convert_mining.py`,
+`normalize_links.py`, `reconcile.py`, `serve.py`.
+
+**Issue:** `read_text_exact` decodes UTF-8 strictly, and every one of those
+sites sits inside a `try: ... except OSError:` - the exact guard `#68` is
+about, since `UnicodeDecodeError` is a **ValueError**. So a record or note
+saved in another codepage (cp1252, a Windows editor's default) raises past the
+refusal path of a *write* verb. The plainest case: `fha confirm discovery`
+appends to `notes/discoveries.md` by reading the whole log first
+(`tools/confirm.py`, ~line 1366), so one cp1252 byte anywhere in that log makes
+every future discovery entry fail with the raw codec text through `fha.py`'s
+catch-all ("something went wrong: 'utf-8' codec can't decode byte 0xf3 …",
+exit 3) and a "run `fha doctor`" line that does not name the file. `fha lint`
+W128 does name it, but nothing points the human there from the failure.
+
+**Why it errs safe today:** these are read-modify-write paths, and the read is
+what fails - so nothing is written, nothing is truncated, and no private
+material leaks. The cost is a dead-end refusal, not lost data. That is why
+`#68` has been closed one caller at a time (see `_lib.read_record`'s docstring:
+"the rest of #68's sites are fixed by giving them a channel, one at a time -
+not by making this function quietly hand every existing guard an empty
+record"), and `lint.py` - whose write paths already skip an undecodable file
+rather than rewriting bytes it could not read - is the model.
+
+**Proposed approach:** per tool, not repo-wide. A write verb has a natural
+channel already: refuse *this one file* with W128's plain cause and the
+re-save fix, leave the file untouched, and keep the tool's existing exit-code
+convention for a refusal. Never re-encode: the file is the human's and it is
+not damaged, only saved in another encoding.
+
+**Severity:** low (fail-closed, loud, no data loss) - but it is a dead end for
+a non-technical human, which is the one thing `AGENTS_TOOLING.md` class 13
+exists to catch.
+
+---
+
+## 4. Minor / informational
 
 - **`fha confirm cooccur` hard-codes `confidence: medium`** for the minted
   relationship claim (`tools/confirm.py`, ~line 708) instead of defaulting from
@@ -92,6 +132,7 @@ tool-only fix.
 ---
 
 *Source: the spec-accuracy + philosophy audit (see git history around the
-`Docs:`/`lint:`/`photoindex:` audit-fix commits). Items 1–3 here were the
-audit's "deferred / needs-a-decision" findings; the rest of the audit's findings
-were fixed inline.*
+`Docs:`/`lint:`/`photoindex:` audit-fix commits). Items 1–2 and 4 here were the
+audit's "deferred / needs-a-decision" findings and the rest of that audit was
+fixed inline; item 3 came later, from the adversarial review of PR #89
+(`fha site`'s #68 follow-through).*
