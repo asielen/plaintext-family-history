@@ -6424,12 +6424,22 @@ def find_source_record(
 
 
 def configure_utf8_stdout() -> None:
-    """Reconfigure stdout to UTF-8 so ✓/✗ render on Windows cp1252 terminals."""
-    if hasattr(sys.stdout, 'reconfigure'):
-        try:
-            sys.stdout.reconfigure(encoding='utf-8')  # type: ignore[union-attr]
-        except Exception:
-            pass
+    """Reconfigure stdout AND stderr to UTF-8 so ✓/✗, accented names, and other
+    non-ASCII text render on Windows cp1252 terminals/redirects instead of
+    raising or mojibaking (#64). Every tool prints its human-facing report to
+    stdout but its WARNING/ERROR lines to stderr (see e.g. index.py's
+    `print(f'WARNING: {m.text}', file=sys.stderr)`) - both are console-facing
+    text channels a Windows console or `2> err.txt` redirect defaults to the
+    locale codepage on, so both need the same fix. Kept the original,
+    stdout-sized name rather than renaming or splitting it in two - every
+    tool already imports and calls it under this name.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, 'reconfigure'):
+            try:
+                stream.reconfigure(encoding='utf-8')  # type: ignore[union-attr]
+            except Exception:
+                pass
 
 
 

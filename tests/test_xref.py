@@ -1,3 +1,5 @@
+import os
+import subprocess
 import sqlite3
 import sys
 import tempfile
@@ -737,6 +739,78 @@ class XrefTests(unittest.TestCase):
             result['unscoped'][0]['persons'],
             ['Test Person', 'Bride', 'Father'],
         )
+
+
+class XrefStdoutIsValidUtf8Tests(unittest.TestCase):
+    """Issue #64's sibling scope: `xref.py` was one of the 11 confirmed
+    missing-`configure_utf8_stdout()` modules alongside lint.py. Unlike
+    lint.py's fixed-string ellipsis, xref's non-ASCII text is entirely
+    data-carried (`_fmt_claim` prints a claim's own `place_text`/`value`
+    verbatim) - this covers that other shape of the bug, and doubles as the
+    "one CLI-heavy tool besides lint.py" end-to-end case called for
+    alongside the source-inspection sweep in test_tools_utf8_stdout.py.
+
+    Same technique as LintStdoutIsValidUtf8Tests in test_lint.py: a real
+    subprocess, with `PYTHONIOENCODING=cp1252` pinning the interpreter's
+    startup stdout encoding to the Windows console/redirect default this bug
+    needs, portably (this need not run on Windows to prove the issue)."""
+
+    def _build_archive_with_corroborating_place(self) -> Path:
+        """Two accepted birth claims for the same person, overlapping dates,
+        sharing an accented place name with no `place_id` - xref's
+        place-fallback path (`_place_from_vital_value`/`place_text`)
+        classifies this pair as corroborating and `_fmt_claim` prints the
+        place text verbatim, guaranteeing the accented text reaches
+        stdout."""
+        root = Path(tempfile.mkdtemp())
+        conn = _make_index(root)
+        conn.execute("INSERT INTO persons(id, name, living, tier, path) VALUES "
+                     "('p-aaaaaaaaaa','Test Person','false','curated','x.md')")
+        conn.execute("INSERT INTO sources(id, title, path) VALUES "
+                     "('s-1111111111','Source One','a.md')")
+        conn.execute("INSERT INTO sources(id, title, path) VALUES "
+                     "('s-2222222222','Source Two','b.md')")
+        _insert_claim(conn, 'c-aaaaaaaaaa', 's-1111111111', 'birth',
+                      'born in Kraków', date_edtf='1840', place_text='Kraków',
+                      persons=['p-aaaaaaaaaa'])
+        _insert_claim(conn, 'c-bbbbbbbbbb', 's-2222222222', 'birth',
+                      'born 1840 Kraków', date_edtf='1840', place_text='Kraków',
+                      persons=['p-aaaaaaaaaa'])
+        conn.commit()
+        conn.close()
+        (root / 'fha.yaml').write_text('roots: {}\n', encoding='utf-8')
+        return root
+
+    def test_accented_place_survives_redirected_stdout_as_valid_utf8(self) -> None:
+        root = self._build_archive_with_corroborating_place()
+        env = dict(os.environ)
+        env['PYTHONIOENCODING'] = 'cp1252'  # the Windows-default this bug needs
+        proc = subprocess.run(
+            [sys.executable, str(ROOT / 'tools' / 'xref.py'), '--root', str(root)],
+            capture_output=True, check=False, env=env,
+        )
+
+        # A pure-ASCII substring check: once fixed, stdout is genuinely
+        # UTF-8, and decoding genuine UTF-8 bytes as cp1252 mojibakes the
+        # accented character (e.g. 'Kraków' -> 'KrakÃ³w') even though the
+        # bytes are now correct - so this sanity check must not assume a
+        # cp1252 decode reproduces the original text, only that the run
+        # actually reached xref's corroboration-printing code path at all.
+        stdout_lossy = proc.stdout.decode('cp1252')
+        self.assertIn('corroborates', stdout_lossy, 'fixture did not print '
+                       f'the corroborating pair - nothing to reproduce the issue with.\n{stdout_lossy}')
+        self.assertIn('Krak', stdout_lossy)
+
+        try:
+            decoded = proc.stdout.decode('utf-8')
+        except UnicodeDecodeError as e:
+            self.fail(
+                'xref stdout was not valid UTF-8 under a cp1252 default '
+                f'stdout encoding (issue #64): {e}. Raw bytes near the '
+                f'failure: {proc.stdout[max(0, e.start - 8):e.start + 8]!r}'
+            )
+        else:
+            self.assertIn('Kraków', decoded)
 
 
 if __name__ == '__main__':

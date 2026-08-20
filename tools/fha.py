@@ -548,6 +548,17 @@ def main(argv: list[str] | None = None) -> int:
     debug = '--debug' in argv_list
 
     try:
+        # Every other tool module calls this right after its top-of-file
+        # imports (see doctor.py, process.py, ...); fha.py can't do that -
+        # it deliberately imports NOTHING from _lib at module level, so a
+        # missing PyYAML doesn't break `fha install`/`fha doctor` before
+        # their own guarded entry points below get a turn. `_lib` itself
+        # guards its own `import yaml`, so importing just this one name is
+        # safe on a fresh machine; call it first, before anything below can
+        # print a byte of output.
+        from _lib import configure_utf8_stdout
+        configure_utf8_stdout()
+
         command = _first_command_token(argv_list)
         if command is not None and command not in COMMANDS:
             return _unknown_command_exit(command)

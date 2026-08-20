@@ -110,6 +110,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
+    configure_utf8_stdout,
     EXIT_CLEAN,
     EXIT_FAILURE,
     Result,
@@ -120,6 +121,8 @@ from _lib import (
     resolve_root_arg,
     spouse_parties,
 )
+
+configure_utf8_stdout()
 
 _VITAL_TYPES = {'birth', 'death', 'marriage', 'baptism', 'burial'}
 
