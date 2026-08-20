@@ -287,6 +287,26 @@ class PacketTests(unittest.TestCase):
         zip_name = self._packet_zip_name('p-aaaaaaaaaa')
         self.assertTrue(zip_name.startswith('packet_person_'), zip_name)
 
+    def test_a_placeholder_surname_never_names_the_deliverable(self):
+        # GUARD: `unknown__unknown_P-….md` indexes with the title-cased
+        # surname "Unknown", and that slug outlives the placeholder - a
+        # human types a real name into the record and `fha lint --fix-ids`
+        # has not renamed the file yet. Roy Dodson's packet came out as
+        # `packet_unknown_….zip`; a packet filename is a naming surface,
+        # so it asks `_lib.is_placeholder_name` like every other one.
+        self._seed_person(name='Roy Dodson', surname='Unknown')
+        self._commit_fresh()
+        zip_name = self._packet_zip_name('p-aaaaaaaaaa')
+        self.assertTrue(zip_name.startswith('packet_dodson_'), zip_name)
+
+    def test_a_placeholder_on_both_sides_falls_through_to_the_default(self):
+        # ... and with nothing but placeholders, the `or 'person'` default
+        # is still what answers - never `packet_none_….zip`.
+        self._seed_person(name='None', surname='unknown')
+        self._commit_fresh()
+        zip_name = self._packet_zip_name('p-aaaaaaaaaa')
+        self.assertTrue(zip_name.startswith('packet_person_'), zip_name)
+
     def test_timeline_tags_parked_and_low_confidence_claims(self):
         # Owner decision 2026-07-22: a packet is family research material, so
         # needs-review claims stay in its timeline - tagged, same words as

@@ -88,6 +88,7 @@ from _lib import (
     configure_utf8_stdout,
     fmt_id_display,
     id_type_of,
+    is_placeholder_name,
     is_valid_id,
     normalize_id,
     open_index_db,
@@ -204,13 +205,6 @@ def _escape(value: str | None) -> str:
     return ' '.join(str(value).split())
 
 
-# `fha index` writes this exact string into `persons.name` for a record with
-# no `name:` field, and `str.title()`s it out of an `unknown__unknown_P-….md`
-# filename slug into `persons.surname` - see `_gedcom_name`, which drops it
-# from both slots rather than publishing it as a name.
-_PLACEHOLDER_NAME = 'unknown'
-
-
 def _name_text(value: str) -> str:
     """Strip GEDCOM's surname delimiter out of free NAME text.
 
@@ -267,21 +261,22 @@ def _gedcom_name(name: str, surname: str | None) -> tuple[str, str | None]:
     Both inputs run through `_name_text` first, so a `/` in either can
     never redraw the slash field (see that function).
 
-    The literal `unknown` is a machine placeholder, not a name, on either
-    side. `fha index` stores a record with no `name:` as the string
-    "unknown" and reads the surname out of the `unknown__unknown_P-….md`
-    filename slug as "Unknown", so a person nobody has named yet reached
-    this function looking like a person surnamed Unknown - and exported as
-    `1 NAME /Unknown/`, asserting a surname the archive does not have. The
-    same slug survives a rename-lagging record: a human who types a name
-    into an `unknown__unknown_…` file (before `fha lint --fix-ids` renames
-    it) got `Roy Dodson /Unknown/`. Both sides are dropped here, the same
-    `('unknown', '')` convention `_lib.stub_filename` uses, leaving the
-    `or 'Unknown'` given-name placeholder below as the one place the word
-    is allowed to appear.
+    A placeholder is not a name, on either side, and this is a naming
+    surface like any other - so it asks `_lib.is_placeholder_name`, the
+    one home for "that string stands in for a name nobody recorded"
+    (`unknown`, `none`/`null` from a bare `name:` key, `unnamed`, `?`,
+    blank). `fha index` stores a record with no `name:` as "unknown" and
+    reads the surname out of an `unknown__unknown_P-….md` filename slug
+    as "Unknown", so a person nobody has named yet arrived here looking
+    like a person surnamed Unknown - and left as `1 NAME /Unknown/`, a
+    surname asserted in material that goes out to other people. The slug
+    also outlives the placeholder: a human who types a name into that
+    file before `fha lint --fix-ids` renames it got
+    `Roy Dodson /Unknown/`. Both slots drop it, leaving the `or 'Unknown'`
+    given-name placeholder below as the one place the word may appear.
     """
     name = _name_text(_escape(name))
-    if name.lower() == _PLACEHOLDER_NAME:
+    if is_placeholder_name(name):
         name = ''
     parts = (name or 'Unknown').split()
     core, suffix = strip_generational_suffix(parts)
@@ -292,7 +287,7 @@ def _gedcom_name(name: str, surname: str | None) -> tuple[str, str | None]:
         return f'{field} {raw_suffix}' if raw_suffix else field
 
     sn = _name_text(_escape(surname)) if surname else ''
-    if sn.lower() == _PLACEHOLDER_NAME:
+    if is_placeholder_name(sn):
         sn = ''
     if sn:
         sn_tokens = sn.split()

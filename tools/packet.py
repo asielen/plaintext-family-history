@@ -203,6 +203,7 @@ from _lib import (
     Result,
     configure_utf8_stdout,
     fmt_id_display,
+    is_placeholder_name,
     is_working_copy,
     load_fha_yaml,
     normalize_id,
@@ -1736,8 +1737,22 @@ def _packet_payload(
         # leaves nothing to fall back ON. The `or 'person'` below is the
         # answer to that, so this fallback has to be able to reach it
         # instead of raising IndexError on the way past.
+        #
+        # A packet filename is a naming surface - the human hands this zip
+        # to a relative - so a placeholder is never allowed to name it
+        # (`_lib.is_placeholder_name`, the same guard the couple-folder
+        # names and the GEDCOM `1 NAME` line use). The indexed surname of
+        # a person still filed as `unknown__unknown_P-….md` is the
+        # title-cased slug "Unknown", which outlives the placeholder: a
+        # human types a real name into that record and, until
+        # `fha lint --fix-ids` renames the file, Roy Dodson's packet came
+        # out as `packet_unknown_….zip`. Falling through to the name
+        # gives him `packet_dodson_….zip`; a person with neither still
+        # lands on the `or 'person'` default.
         _core, _ = strip_generational_suffix((person_name or '').split())
-        surname = person['surname'] or (_core[-1] if _core else '')
+        indexed = '' if is_placeholder_name(person['surname']) else person['surname']
+        fallback = '' if _core and is_placeholder_name(_core[-1]) else (_core[-1] if _core else '')
+        surname = indexed or fallback
         slug_surname = ''.join(c for c in surname.lower() if c.isalnum()) or 'person'
         packet_name = f'packet_{slug_surname}_{fmt_id_display(pid)}_{_today()}'
         packet_dir = out_dir / packet_name
