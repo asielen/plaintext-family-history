@@ -813,7 +813,7 @@
     {
       "path": ".fha/tools/xref.py",
       "category": "operating",
-      "sha256": "699cd4b4000458ecc40cfa438a7267ec194249df0c6679f7c60d2a77f4be6187",
+      "sha256": "adb4913df6552f816e541b2e69a4049368d6dbee3f108b1a403cdd3ea2290fe5",
       "spec_version": "1.2",
       "src": "tools/xref.py"
     },
