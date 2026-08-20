@@ -9,6 +9,8 @@ brackets exactly as before (back-compat). Both backends are exercised: lint's
 in-memory registry and views' SQLite index, which must agree.
 """
 
+import contextlib
+import io
 import sqlite3
 import sys
 import tempfile
@@ -22,6 +24,7 @@ import lint
 import views
 import index as index_mod
 from _lib import (
+    EXIT_WARNINGS,
     load_fha_yaml,
     is_genetic_parent_subtype,
     nonbirth_bracket_label,
@@ -298,6 +301,124 @@ class BackCompatTests(unittest.TestCase):
         w103 = [f for f in findings if f.code == 'W103']
         self.assertTrue(w103)
         self.assertNotIn('(', w103[0].message.split('->')[1])  # no nature marks
+
+
+class RootAnchorW127TwinTests(unittest.TestCase):
+    """W127 fires from BOTH backends: lint's registry and views' SQLite index.
+
+    SPEC §12.2 anchors #1 at the youngest generation. A `root_person` with a
+    genetic child on record seeds the walk one rung too high, and every couple
+    folder derived below it is numbered one generation high with it.
+
+    The views half is not a courtesy copy. `fha views brackets --fix` and
+    `--realign` are the commands that RENAME the folders from this walk, so on
+    a mis-anchored archive they are the tool that writes the wrong numbers to
+    disk - and nothing else in that pass can object, because W103, W110 and
+    W119 all compare the folders against the numbers this same walk produced.
+    A human who never runs `fha lint` would otherwise never be told.
+    """
+
+    def _files(self, subtype: str) -> dict:
+        return {
+            f'people/stubs/kid__ann_{KID}.md': _ptext(KID, 'Ann Kid', 'F'),
+            f'people/stubs/bio__pa_{BIOP}.md': _ptext(BIOP, 'Pa Bio', 'M'),
+            f'people/stubs/bio__ma_{BIOM}.md': _ptext(BIOM, 'Ma Bio', 'F'),
+            f'sources/notes/{SID.lower()}.md': _source(
+                SID, _rel_claim('C-1111111111', KID, [BIOP, BIOM], subtype)),
+        }
+
+    def _lint_w127(self, root: Path) -> list:
+        findings, _reg = lint._run_lint_core(root, load_fha_yaml(root))
+        return [f for f in findings if f.code == 'W127']
+
+    def _views_w127(self, root: Path, root_pid: str) -> list:
+        index_mod.build_index(root, load_fha_yaml(root))
+        conn = _open(root)
+        try:
+            return views._check_w127_root_anchor(conn, root_pid)
+        finally:
+            conn.close()
+
+    def test_both_backends_warn_when_root_person_has_a_genetic_child(self) -> None:
+        # Anchored at the FATHER, who has Ann on record.
+        root = _build(self._files('biological'), root_person=BIOP)
+        self.assertEqual(len(self._lint_w127(root)), 1)
+        v = self._views_w127(root, BIOP.lower())
+        self.assertEqual(len(v), 1)
+        self.assertIn('W127', v[0]['msg'])
+        self.assertIn(KID, v[0]['msg'])
+
+    def test_both_backends_are_silent_at_the_youngest_generation(self) -> None:
+        # Anchored at Ann, who has no children - the correct anchor.
+        root = _build(self._files('biological'), root_person=KID)
+        self.assertEqual(self._lint_w127(root), [])
+        self.assertEqual(self._views_w127(root, KID.lower()), [])
+
+    def test_both_backends_ignore_a_purely_adoptive_child(self) -> None:
+        # A social/legal bond is never numbered (SPEC §12.2), so it cannot
+        # number anything high - adopting a child does not retroactively make
+        # you the wrong generation.
+        root = _build(self._files('adoptive'), root_person=BIOP)
+        self.assertEqual(self._lint_w127(root), [])
+        self.assertEqual(self._views_w127(root, BIOP.lower()), [])
+
+    def test_fha_views_brackets_reports_it_and_moves_the_exit_code(self) -> None:
+        # End to end through the command a human actually runs. The archive has
+        # no couple folders at all, so W103/W110/W119 have nothing to say: the
+        # run would have printed "brackets: no issues found." and exited clean
+        # while sitting on a tree numbered one generation high.
+        root = _build(self._files('biological'), root_person=BIOP)
+        index_mod.build_index(root, load_fha_yaml(root))
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            res = views.run_brackets(root)
+        self.assertEqual(res.data['w127'], 1)
+        self.assertEqual(res.exit_code, EXIT_WARNINGS)
+        self.assertIn('W127', out.getvalue())
+        self.assertIn('Ann Kid', out.getvalue())
+
+    def test_a_correctly_anchored_archive_is_never_told_off(self) -> None:
+        # Anchored at Ann, the correct anchor. The run still reports the two
+        # direct-line stubs it just derived (W119, a research lead), but not a
+        # word about the anchor - the false positive here would land on every
+        # correctly-configured archive in existence.
+        root = _build(self._files('biological'), root_person=KID)
+        index_mod.build_index(root, load_fha_yaml(root))
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            res = views.run_brackets(root)
+        self.assertEqual(res.data['w127'], 0)
+        self.assertNotIn('W127', out.getvalue())
+
+    def test_every_flag_path_keeps_the_warning_and_its_exit_code(self) -> None:
+        # W127 is report-only, so each flag path has to end by saying what the
+        # human should do instead - and none of them may exit 0 having just
+        # printed that the anchor is wrong. `--fix` is the sharp one: its
+        # "nothing here is applied" line is built from a list of notes, and an
+        # archive whose ONLY finding is W127 would have ended that sentence on
+        # a bare full stop.
+        root = _build(self._files('biological'), root_person=BIOP)
+        index_mod.build_index(root, load_fha_yaml(root))
+        for kwargs, expected in (
+            ({}, 'W127'),
+            ({'fix': True, 'dry_run': True}, 'not by a fix here'),
+            ({'fix_promote': True, 'dry_run': True}, 'W119 is clear'),
+            ({'realign': True, 'dry_run': True}, 'Nothing to realign'),
+        ):
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                res = views.run_brackets(root, **kwargs)
+            self.assertEqual(res.exit_code, EXIT_WARNINGS, kwargs)
+            self.assertIn(expected, out.getvalue(), kwargs)
+            self.assertNotIn(' - .', out.getvalue(), kwargs)
+
+    def test_both_messages_reindex_before_realigning(self) -> None:
+        # Editing root_person edits fha.yaml, which is in the index freshness
+        # watermark, so --realign refuses until `fha index` has run.
+        root = _build(self._files('biological'), root_person=BIOP)
+        for msg in (self._lint_w127(root)[0].message,
+                    self._views_w127(root, BIOP.lower())[0]['msg']):
+            self.assertIn('`fha index` and `fha views brackets --realign`', msg)
 
 
 if __name__ == '__main__':

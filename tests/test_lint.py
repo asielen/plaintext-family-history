@@ -2373,5 +2373,298 @@ class BirthClaimWithoutParentageW126Tests(unittest.TestCase):
         self.assertNotIn(str(root), w[0].message)
 
 
+class RootPersonHasChildW127Tests(unittest.TestCase):
+    """W127: `root_person` in `fha.yaml` has an accepted genetic child on
+    record (issue #70).
+
+    SPEC §12.2 fixes the convention: "#1 = the children, collectively" -
+    `root_person` must be anchored at the youngest generation, never at a
+    person who has a child on record, or every direct-line couple folder
+    derives one generation high while the tree faithfully matches its own
+    (wrong) derivation - nothing else catches this, because W110/W119/brackets
+    all just verify the folders match the numbers this same walk produces.
+    This reuses the exact `children_of` map `_check_ahnentafel_placement`
+    already builds for that walk (genetic-only, accepted claims), so the
+    check costs nothing extra and can never see an edge the numbering itself
+    does not also see.
+    """
+
+    ROOT = 'P-4aaaaaaaaa'
+    CHILD = 'P-4bbbbbbbbb'
+    OTHER = 'P-4ccccccccc'
+    SID = 'S-4aaaaaaaaa'
+
+    def _ptext(self, pid: str, name: str, sex: str = 'U') -> str:
+        return (f'---\nid: {pid}\nname: {name}\nsex: {sex}\nliving: false\n'
+                f'tier: curated\n---\n\n# {name}\n\n## Biography\n\nx\n')
+
+    def _build(self, *, subtype: str = 'biological',
+               status: str = 'accepted', root_person: bool = True,
+               claim_type: str = 'relationship', negated: bool = False,
+               persons: list | None = None, children: list | None = None,
+               root_name: str | None = 'Root Person') -> Path:
+        """One archive: root_person, a child, a bystander, and one claim.
+
+        The keywords are the axes the derivation rule actually turns on, so
+        each test can state exactly one difference from the warning case:
+        `claim_type` (a `birth` claim derives parentage too, since #71),
+        `negated` (a researched absence derives nothing, SPEC §8.6), `persons`
+        (a `roles:` entry naming somebody left out of `persons:` is a broken
+        map, not an extra parent), `children` (how many the message counts),
+        and `root_name` (None writes a record with an EMPTY `name:`).
+        """
+        root = Path(tempfile.mkdtemp())
+        (root / 'people').mkdir(parents=True)
+        (root / 'sources' / 'notes').mkdir(parents=True)
+        cfg = f'root_person: {self.ROOT}\n' if root_person else ''
+        (root / 'fha.yaml').write_text(
+            cfg + 'roots:\n  documents: documents\n', encoding='utf-8')
+        root_text = (self._ptext(self.ROOT, root_name, 'M') if root_name
+                     else f'---\nid: {self.ROOT}\nname:\nsex: M\nliving: false\n'
+                          f'tier: curated\n---\n\n# Root\n\n## Biography\n\nx\n')
+        (root / 'people' / f'x__root_{self.ROOT}.md').write_text(
+            root_text, encoding='utf-8')
+        (root / 'people' / f'x__child_{self.CHILD}.md').write_text(
+            self._ptext(self.CHILD, 'Child Person', 'F'), encoding='utf-8')
+        (root / 'people' / f'x__other_{self.OTHER}.md').write_text(
+            self._ptext(self.OTHER, 'Other Person', 'U'), encoding='utf-8')
+        kids = children or [self.CHILD]
+        named = persons if persons is not None else kids + [self.ROOT]
+        subtype_line = f'  subtype: {subtype}\n' if claim_type == 'relationship' else ''
+        negated_lines = '  negated: true\n  evidence: negative\n' if negated else '  evidence: direct\n'
+        claim = (
+            f'- value: "{kids[0]} child of {self.ROOT}"\n'
+            f'  id: C-4aaaaaaaaa\n  type: {claim_type}\n' + subtype_line +
+            f'  persons: [{", ".join(named)}]\n  roles:\n'
+            f'    child: [{", ".join(kids)}]\n    parent: [{self.ROOT}]\n'
+            f'  status: {status}\n  reviewed: 2026-01-01\n  confidence: high\n'
+            f'  information: primary\n' + negated_lines + '  notes: x.\n'
+        )
+        (root / 'sources' / 'notes' / f'rel_{self.SID.lower()}.md').write_text(
+            f'---\nid: {self.SID}\ntitle: Rel\nsource_type: other\n---\n\n'
+            f'## Claims\n```yaml\n{claim}```\n', encoding='utf-8')
+        return root
+
+    def _w127(self, root: Path) -> list:
+        from _lib import load_fha_yaml
+        findings, _reg = lint._run_lint_core(root, load_fha_yaml(root))
+        return [f for f in findings if f.code == 'W127']
+
+    def test_root_person_with_genetic_child_warns(self) -> None:
+        w = self._w127(self._build())
+        self.assertEqual(len(w), 1)
+        f = w[0]
+        self.assertEqual(f.severity, 'W')
+        self.assertIn(self.ROOT, f.message)
+        self.assertIn(self.CHILD, f.message)
+        self.assertIn('12.2', f.message)
+        self.assertIn('--realign', f.message)
+        self.assertEqual(Path(str(f.path)).name, 'fha.yaml')
+
+    def test_root_person_with_no_child_stays_clean(self) -> None:
+        # No relationship claim naming ROOT as a parent at all - the
+        # ordinary, correctly-anchored archive.
+        root = Path(tempfile.mkdtemp())
+        (root / 'people').mkdir(parents=True)
+        (root / 'sources' / 'notes').mkdir(parents=True)
+        (root / 'fha.yaml').write_text(
+            f'root_person: {self.ROOT}\nroots:\n  documents: documents\n',
+            encoding='utf-8')
+        (root / 'people' / f'x__root_{self.ROOT}.md').write_text(
+            self._ptext(self.ROOT, 'Root Person', 'M'), encoding='utf-8')
+        self.assertEqual(self._w127(root), [])
+
+    def test_adoptive_only_child_does_not_warn(self) -> None:
+        # A social/legal-only bond is never numbered into the pedigree (SPEC
+        # §12.2), so it must not trip the same warning that protects the
+        # numbering - an adoptive parent legitimately anchors the tree.
+        self.assertEqual(self._w127(self._build(subtype='adoptive')), [])
+
+    def test_suggested_child_claim_does_not_warn(self) -> None:
+        # Derivation (and the Ahnentafel walk itself) reads accepted claims
+        # only, so a still-`suggested` child claim has not numbered anything
+        # high yet.
+        self.assertEqual(self._w127(self._build(status='suggested')), [])
+
+    def test_no_root_person_stays_silent(self) -> None:
+        self.assertEqual(self._w127(self._build(root_person=False)), [])
+
+    def test_unresolvable_root_person_stays_silent_on_w127(self) -> None:
+        # An unresolvable root_person already gets its own W110 note and the
+        # whole Ahnentafel walk is skipped (children_of is never consulted) -
+        # W127 must not pile a second, contradictory finding onto the same cause.
+        root = Path(tempfile.mkdtemp())
+        (root / 'people').mkdir(parents=True)
+        (root / 'sources' / 'notes').mkdir(parents=True)
+        (root / 'fha.yaml').write_text(
+            'root_person: P-9999999999\nroots:\n  documents: documents\n',
+            encoding='utf-8')
+        self.assertEqual(self._w127(root), [])
+
+    def test_the_message_carries_no_absolute_path(self) -> None:
+        root = self._build()
+        w = self._w127(root)
+        self.assertEqual(len(w), 1)
+        self.assertNotIn(str(root), w[0].message)
+
+    def test_negated_child_claim_does_not_warn(self) -> None:
+        # A `negated: true` claim is a researched ABSENCE (SPEC §8.6): "we
+        # looked and she was not his daughter". `fha index` derives no edge
+        # from it, so it numbers nothing high - and telling the human their
+        # anchor is wrong on the strength of a claim that denies the bond
+        # would be the warning arguing against the archive's own research.
+        self.assertEqual(self._w127(self._build(negated=True)), [])
+
+    def test_a_birth_claim_naming_the_parents_warns(self) -> None:
+        # Since #71/#82 a birth claim whose roles: map names a child and a
+        # parent puts that bond in the pedigree, so it anchors the tree one
+        # generation high exactly as a relationship claim does. Reading only
+        # `relationship` claims here would leave the hole open in the plainest
+        # parentage evidence an archive ever holds.
+        w = self._w127(self._build(claim_type='birth'))
+        self.assertEqual(len(w), 1)
+        self.assertIn(self.CHILD, w[0].message)
+
+    def test_a_role_naming_someone_outside_persons_does_not_warn(self) -> None:
+        # `persons:` is who the claim is about (SPEC §8.3), and the indexer
+        # builds claim_persons from it - so a roles: entry naming somebody left
+        # out of persons: is a broken map, not a secret extra child. Deriving
+        # an edge here that `fha index` refuses would put lint one generation
+        # out of step with the tree it is describing.
+        self.assertEqual(self._w127(self._build(persons=[self.ROOT])), [])
+
+    def test_several_children_are_counted_in_the_message(self) -> None:
+        w = self._w127(self._build(children=[self.CHILD, self.OTHER]))
+        self.assertEqual(len(w), 1)
+        self.assertIn('and 1 more', w[0].message)
+
+    def test_a_nameless_root_person_is_named_by_its_id(self) -> None:
+        # `name:` present but empty parses to None. Formatting it would
+        # address a person as "None" in a message about her own family, and a
+        # bare lowercase p-id would look like a different kind of thing from
+        # the P-ids in every other message.
+        w = self._w127(self._build(root_name=None))
+        self.assertEqual(len(w), 1)
+        self.assertNotIn('None', w[0].message)
+        self.assertNotIn(self.ROOT.lower(), w[0].message)
+        self.assertIn(self.ROOT, w[0].message)
+
+    def test_the_named_fix_reindexes_before_realigning(self) -> None:
+        # Editing root_person edits fha.yaml, which is part of the index
+        # freshness watermark - so `fha views brackets --realign` refuses with
+        # "index is stale" until `fha index` has run. A next step that fails
+        # the moment it is followed is a dead end.
+        w = self._w127(self._build())
+        self.assertEqual(len(w), 1)
+        self.assertIn('`fha index` and `fha views brackets --realign`',
+                      w[0].message)
+
+
+class ParentageDerivationParityTests(unittest.TestCase):
+    """lint's in-memory parent edges match the ones `fha index` derives.
+
+    `_build_child_edges` is lint's twin of `index.py` `_derive_relationships`,
+    and everything shaped by it - W103 bracket lists, the W110/W119/W127
+    Ahnentafel walk, E013 summary drift - is only as right as the twin. Read a
+    narrower set of claims than the indexer and lint reports a correctly
+    written record as broken, then names `fha views brackets --fix` as the
+    repair; that command reads the index, so it makes no such change and the
+    warning never clears no matter how many times it is run.
+
+    Three rules, each verified here against a claim shape the indexer accepts
+    or refuses: `birth` claims derive parentage too (#71), a `negated: true`
+    claim derives nothing (SPEC §8.6), and roles are scoped to `persons:`.
+    """
+
+    A = 'P-5aaaaaaaaa'      # the parent, and the couple folder's occupant
+    B = 'P-5bbbbbbbbb'      # the child
+    SID = 'S-5aaaaaaaaa'
+    FOLDER = '002 A Person + Spouse []'
+
+    def _ptext(self, pid: str, name: str, sex: str, summary: str = '') -> str:
+        return (f'---\nid: {pid}\nname: {name}\nsex: {sex}\nliving: false\n'
+                f'tier: curated\n---\n\n# {name}\n\n{summary}## Biography\n\nx\n')
+
+    def _build(self, *, claim_type: str = 'birth', negated: bool = False,
+               persons: list | None = None, summary_on_child: bool = False) -> Path:
+        root = Path(tempfile.mkdtemp())
+        (root / 'people' / self.FOLDER).mkdir(parents=True)
+        (root / 'sources' / 'notes').mkdir(parents=True)
+        (root / 'fha.yaml').write_text(
+            'roots:\n  documents: documents\n', encoding='utf-8')
+        (root / 'people' / self.FOLDER / f'x__a_{self.A}.md').write_text(
+            self._ptext(self.A, 'A Person', 'M'), encoding='utf-8')
+        summary = (f'**Parents:** [[{self.A}|A Person]] [[{self.SID}]]\n\n'
+                   if summary_on_child else '')
+        (root / 'people' / f'x__b_{self.B}.md').write_text(
+            self._ptext(self.B, 'B Person', 'F', summary), encoding='utf-8')
+        named = persons if persons is not None else [self.B, self.A]
+        subtype_line = '  subtype: biological\n' if claim_type == 'relationship' else ''
+        negated_lines = ('  negated: true\n  evidence: negative\n' if negated
+                         else '  evidence: direct\n')
+        claim = (
+            f'- value: "B born to A"\n  id: C-5aaaaaaaaa\n'
+            f'  type: {claim_type}\n' + subtype_line +
+            f'  persons: [{", ".join(named)}]\n  roles:\n'
+            f'    child: {self.B}\n    parent: [{self.A}]\n'
+            f'  status: accepted\n  reviewed: 2026-01-01\n  confidence: high\n'
+            f'  information: primary\n' + negated_lines + '  notes: x.\n'
+        )
+        (root / 'sources' / 'notes' / f'rel_{self.SID.lower()}.md').write_text(
+            f'---\nid: {self.SID}\ntitle: Birth register\n'
+            f'source_type: vital-record\n---\n\n'
+            f'## Claims\n```yaml\n{claim}```\n', encoding='utf-8')
+        return root
+
+    def _codes(self, root: Path, code: str) -> list:
+        from _lib import load_fha_yaml
+        findings, _reg = lint._run_lint_core(root, load_fha_yaml(root))
+        return [f for f in findings if f.code == code]
+
+    def test_a_birth_claim_fills_the_bracket_list(self) -> None:
+        # The folder already names B in its brackets, correctly. Deriving only
+        # from `relationship` claims made lint call that list stale and ask for
+        # the child to be REMOVED, while `fha views brackets` (reading the
+        # index, which does see the birth edge) had nothing to change.
+        root = self._build(claim_type='birth')
+        folder = root / 'people' / self.FOLDER
+        folder.rename(folder.parent / '002 A Person + Spouse [B]')
+        self.assertEqual(self._codes(root, 'W103'), [])
+
+    def test_a_negated_claim_stays_out_of_the_bracket_list(self) -> None:
+        # The mirror: the folder brackets are empty and must stay empty. A
+        # researched absence must never put a child in a couple's folder name.
+        # Written as a `relationship` claim on purpose - that is the shape the
+        # old derivation DID read, so this pins the negated rule itself rather
+        # than passing for free because birth claims were skipped.
+        self.assertEqual(
+            self._codes(self._build(claim_type='relationship', negated=True),
+                        'W103'), [])
+
+    def test_a_role_outside_persons_stays_out_of_the_bracket_list(self) -> None:
+        # Same reason for `relationship` here: the persons: scoping rule is
+        # what is under test, not the claim type.
+        self.assertEqual(
+            self._codes(self._build(claim_type='relationship',
+                                    persons=[self.A]), 'W103'), [])
+
+    def test_a_birth_claim_backs_a_parents_summary_line(self) -> None:
+        # E013 is an ERROR, so this false positive did not merely add noise -
+        # it failed the archive's clean-lint gate over a profile whose Parents
+        # line cites exactly the evidence the tools tell you to cite.
+        root = self._build(claim_type='birth', summary_on_child=True)
+        folder = root / 'people' / self.FOLDER
+        folder.rename(folder.parent / '002 A Person + Spouse [B]')
+        self.assertEqual(self._codes(root, 'E013'), [])
+        self.assertEqual(self._codes(root, 'W104'), [])
+
+    def test_a_negated_claim_does_not_back_a_parents_summary_line(self) -> None:
+        # The other half of the same rule: a denied bond is not evidence for
+        # the Parents line, so the drift is real and E013 still fires.
+        root = self._build(claim_type='relationship', negated=True,
+                           summary_on_child=True)
+        self.assertEqual(len(self._codes(root, 'E013')), 1)
+
+
 if __name__ == '__main__':
     unittest.main()

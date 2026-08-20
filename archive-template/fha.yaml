@@ -6,8 +6,12 @@
 # your setup and edit the path.
 #
 # root_person: P-xxxxxxxxxx
-#   Set to the P-id of your direct-line descendant at Ahnentafel position #1
-#   (typically the researcher or the focal youngest generation).
+#   Set to the P-id of your direct-line descendant at Ahnentafel position #1 -
+#   the YOUNGEST generation in the tree. If you have children in the archive,
+#   point this at one of them, not at yourself: every ancestor folder is
+#   numbered outward from here, so starting one generation up numbers the whole
+#   tree one generation high. (`fha lint` and `fha views brackets` say so if it
+#   happens - W127.) Anchoring at yourself is fine when it is deliberate.
 #   Any full sibling works - siblings share one ancestor tree.
 #   Enables Ahnentafel folder-number verification and person placement via
 #   `fha views brackets`. Omit to disable those checks.
