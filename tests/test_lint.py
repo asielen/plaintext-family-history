@@ -2373,5 +2373,120 @@ class BirthClaimWithoutParentageW126Tests(unittest.TestCase):
         self.assertNotIn(str(root), w[0].message)
 
 
+class RootPersonHasChildW127Tests(unittest.TestCase):
+    """W127: `root_person` in `fha.yaml` has an accepted genetic child on
+    record (issue #70).
+
+    SPEC §12.2 fixes the convention: "#1 = the children, collectively" -
+    `root_person` must be anchored at the youngest generation, never at a
+    person who has a child on record, or every direct-line couple folder
+    derives one generation high while the tree faithfully matches its own
+    (wrong) derivation - nothing else catches this, because W110/W119/brackets
+    all just verify the folders match the numbers this same walk produces.
+    This reuses the exact `children_of` map `_check_ahnentafel_placement`
+    already builds for that walk (genetic-only, accepted claims), so the
+    check costs nothing extra and can never see an edge the numbering itself
+    does not also see.
+    """
+
+    ROOT = 'P-4aaaaaaaaa'
+    CHILD = 'P-4bbbbbbbbb'
+    OTHER = 'P-4ccccccccc'
+    SID = 'S-4aaaaaaaaa'
+
+    def _ptext(self, pid: str, name: str, sex: str = 'U') -> str:
+        return (f'---\nid: {pid}\nname: {name}\nsex: {sex}\nliving: false\n'
+                f'tier: curated\n---\n\n# {name}\n\n## Biography\n\nx\n')
+
+    def _build(self, *, subtype: str = 'biological',
+               status: str = 'accepted', root_person: bool = True) -> Path:
+        root = Path(tempfile.mkdtemp())
+        (root / 'people').mkdir(parents=True)
+        (root / 'sources' / 'notes').mkdir(parents=True)
+        cfg = f'root_person: {self.ROOT}\n' if root_person else ''
+        (root / 'fha.yaml').write_text(
+            cfg + 'roots:\n  documents: documents\n', encoding='utf-8')
+        (root / 'people' / f'x__root_{self.ROOT}.md').write_text(
+            self._ptext(self.ROOT, 'Root Person', 'M'), encoding='utf-8')
+        (root / 'people' / f'x__child_{self.CHILD}.md').write_text(
+            self._ptext(self.CHILD, 'Child Person', 'F'), encoding='utf-8')
+        (root / 'people' / f'x__other_{self.OTHER}.md').write_text(
+            self._ptext(self.OTHER, 'Other Person', 'U'), encoding='utf-8')
+        claim = (
+            f'- value: "{self.CHILD} child of {self.ROOT}"\n'
+            f'  id: C-4aaaaaaaaa\n  type: relationship\n  subtype: {subtype}\n'
+            f'  persons: [{self.CHILD}, {self.ROOT}]\n  roles:\n'
+            f'    child: {self.CHILD}\n    parent: [{self.ROOT}]\n'
+            f'  status: {status}\n  reviewed: 2026-01-01\n  confidence: high\n'
+            f'  information: primary\n  evidence: direct\n  notes: x.\n'
+        )
+        (root / 'sources' / 'notes' / f'rel_{self.SID.lower()}.md').write_text(
+            f'---\nid: {self.SID}\ntitle: Rel\nsource_type: other\n---\n\n'
+            f'## Claims\n```yaml\n{claim}```\n', encoding='utf-8')
+        return root
+
+    def _w127(self, root: Path) -> list:
+        from _lib import load_fha_yaml
+        findings, _reg = lint._run_lint_core(root, load_fha_yaml(root))
+        return [f for f in findings if f.code == 'W127']
+
+    def test_root_person_with_genetic_child_warns(self) -> None:
+        w = self._w127(self._build())
+        self.assertEqual(len(w), 1)
+        f = w[0]
+        self.assertEqual(f.severity, 'W')
+        self.assertIn(self.ROOT, f.message)
+        self.assertIn(self.CHILD, f.message)
+        self.assertIn('12.2', f.message)
+        self.assertIn('--realign', f.message)
+        self.assertEqual(Path(str(f.path)).name, 'fha.yaml')
+
+    def test_root_person_with_no_child_stays_clean(self) -> None:
+        # No relationship claim naming ROOT as a parent at all - the
+        # ordinary, correctly-anchored archive.
+        root = Path(tempfile.mkdtemp())
+        (root / 'people').mkdir(parents=True)
+        (root / 'sources' / 'notes').mkdir(parents=True)
+        (root / 'fha.yaml').write_text(
+            f'root_person: {self.ROOT}\nroots:\n  documents: documents\n',
+            encoding='utf-8')
+        (root / 'people' / f'x__root_{self.ROOT}.md').write_text(
+            self._ptext(self.ROOT, 'Root Person', 'M'), encoding='utf-8')
+        self.assertEqual(self._w127(root), [])
+
+    def test_adoptive_only_child_does_not_warn(self) -> None:
+        # A social/legal-only bond is never numbered into the pedigree (SPEC
+        # §12.2), so it must not trip the same warning that protects the
+        # numbering - an adoptive parent legitimately anchors the tree.
+        self.assertEqual(self._w127(self._build(subtype='adoptive')), [])
+
+    def test_suggested_child_claim_does_not_warn(self) -> None:
+        # Derivation (and the Ahnentafel walk itself) reads accepted claims
+        # only, so a still-`suggested` child claim has not numbered anything
+        # high yet.
+        self.assertEqual(self._w127(self._build(status='suggested')), [])
+
+    def test_no_root_person_stays_silent(self) -> None:
+        self.assertEqual(self._w127(self._build(root_person=False)), [])
+
+    def test_unresolvable_root_person_stays_silent_on_w127(self) -> None:
+        # An unresolvable root_person already gets its own W110 note and the
+        # whole Ahnentafel walk is skipped (children_of is never consulted) -
+        # W127 must not pile a second, contradictory finding onto the same cause.
+        root = Path(tempfile.mkdtemp())
+        (root / 'people').mkdir(parents=True)
+        (root / 'sources' / 'notes').mkdir(parents=True)
+        (root / 'fha.yaml').write_text(
+            'root_person: P-9999999999\nroots:\n  documents: documents\n',
+            encoding='utf-8')
+        self.assertEqual(self._w127(root), [])
+
+    def test_the_message_carries_no_absolute_path(self) -> None:
+        root = self._build()
+        w = self._w127(root)
+        self.assertEqual(len(w), 1)
+        self.assertNotIn(str(root), w[0].message)
+
+
 if __name__ == '__main__':
     unittest.main()

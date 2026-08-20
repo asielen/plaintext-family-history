@@ -1560,6 +1560,38 @@ def _check_ahnentafel_placement(registry: Registry, findings: list[Finding]) -> 
     # Ahnentafel numbering follows only the genetic pedigree (SPEC §12.2); social
     # and legal parent edges are shown in the bracket list but never numbered.
     children_of = _build_children_of(registry, genetic_only=True)
+
+    # W127: root_person itself has an accepted genetic child on record (#70).
+    # SPEC §12.2 fixes the convention - "#1 = the children, collectively" -
+    # root_person must be anchored at the YOUNGEST generation. Point it at
+    # someone with a child on record instead and every direct-line couple
+    # folder below derives one generation high, while W110/W119/brackets all
+    # stay clean, because they only check that the folders match the numbers
+    # THIS SAME WALK produced - they can never see that the walk itself
+    # started one rung too high. `children_of` is the identical genetic-only,
+    # accepted-claims map the walk below is about to BFS from root_pid with,
+    # so this check sees exactly the edges that would number the tree wrong
+    # and nothing else - a suggested-only, disputed, or purely social/legal
+    # (adoptive, step, …) child claim is silent here for the same reason it
+    # is silent in the walk itself.
+    root_children = sorted(children_of.get(root_pid, set()))
+    if root_children:
+        root_name = str(registry.person_meta.get(root_pid, {}).get('name', root_pid))
+        child_pid = root_children[0]
+        child_name = str(registry.person_meta.get(child_pid, {}).get('name', child_pid))
+        extra = '' if len(root_children) == 1 else f' (and {len(root_children) - 1} more)'
+        root_display = root_pid[0].upper() + root_pid[1:]
+        child_display = child_pid[0].upper() + child_pid[1:]
+        findings.append(Finding('W', 'W127', registry.archive_root / 'fha.yaml',
+            f'root_person {root_name} ({root_display}) has a child on record - '
+            f'{child_name} ({child_display}){extra}. SPEC §12.2 anchors #1 at the '
+            'youngest generation, so this numbers every couple folder one '
+            'generation high while every check still reports clean, because '
+            'the folders faithfully match this (wrong) derivation. Re-anchor '
+            'root_person to a child in fha.yaml, then run `fha views brackets '
+            '--realign` to realign the already-promoted folders - or leave '
+            'this as-is if anchoring at yourself is deliberate.'))
+
     sex_gaps: list[dict] = []
     pid_to_pos = _build_ahnentafel_lint(root_pid, children_of, registry, sex_gaps)
 

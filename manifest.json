@@ -1,7 +1,7 @@
 {
   "manifest_version": "1",
   "spec_version": "1.2",
-  "generated": "2026-08-18",
+  "generated": "2026-08-20",
   "files": [
     {
       "path": ".claude/skills/README.md",
@@ -407,7 +407,7 @@
     {
       "path": ".fha/tools/README.md",
       "category": "operating",
-      "sha256": "80b072800351b12fb3e5e3cf536c55475135a086cb0dba9d3a4dbba6e9bb7670",
+      "sha256": "7213c3e8fc88ecbca13aa005e3875eca8d919dc070e4fad6e036379e0e0785cd",
       "spec_version": "1.2",
       "src": "tools/README.md"
     },
@@ -554,7 +554,7 @@
     {
       "path": ".fha/tools/lint.py",
       "category": "operating",
-      "sha256": "1c35f20e08836f3281cb63eff054b06b809d4576c3819dca11f3fcfee3486eea",
+      "sha256": "d935081ce797127e53734cdc2858b8e8bada906b11622a73721b2180f8bb58ac",
       "spec_version": "1.2",
       "src": "tools/lint.py"
     },
@@ -864,7 +864,7 @@
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "0e7848e50830bedead92cc509e4acefe26850f5652459247a4777cfa7d296e34",
+      "sha256": "6dc4cfcc5c0538f96cee542018ea3e04228f477593ed367b2d02d59fa9244071",
       "spec_version": "1.2"
     },
     {
