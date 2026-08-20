@@ -1,7 +1,7 @@
 {
   "manifest_version": "1",
   "spec_version": "1.2",
-  "generated": "2026-08-18",
+  "generated": "2026-08-20",
   "files": [
     {
       "path": ".claude/skills/README.md",
@@ -90,7 +90,7 @@
     {
       "path": ".claude/skills/process-source/SKILL.md",
       "category": "operating",
-      "sha256": "47875eb65c38439ead7f35c4ecb17ea5cc5c59a1ee6d6bcc5ff98f9299e9c533",
+      "sha256": "5d1dff561e8ae43a679bb40932d6f020d87eaf25c4b12168eecb75c8f20c4ef5",
       "spec_version": "1.2"
     },
     {
@@ -108,7 +108,7 @@
     {
       "path": ".claude/skills/review-claims/SKILL.md",
       "category": "operating",
-      "sha256": "7a884a647497e7dade2164dd05cd2733bf16be6b809d5f7e8c1c4cce093ddd47",
+      "sha256": "1c0659d9c567eac63958d44a3966a5c7c9897639042b7b68f147a726fc3cc4ee",
       "spec_version": "1.2"
     },
     {
@@ -120,7 +120,7 @@
     {
       "path": ".claude/skills/today/SKILL.md",
       "category": "operating",
-      "sha256": "5b2968c7e037f0ad1132b3e052e8a35279a9854d1901d98198e5ae2196dce352",
+      "sha256": "2e871b0e957b5ae78f36e921279e1e83a423ddcdeba8fc77d55bbdc4eb502469",
       "spec_version": "1.2"
     },
     {

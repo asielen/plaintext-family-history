@@ -189,17 +189,42 @@ its claims to the people asked about and leave the rest for later sessions.
    notice, nothing left flagged." If lint flags something, name the fix in plain words (_STANDARD.md §4),
    don't paste the code.
 
-   Then, with the index fresh from step 5, check for **one promotion nudge** — for **direct-line**
-   people only (the promote verb serves the direct line; curating anyone else is an open design
-   decision): is any person decided-on this session flagged by the `fha views brackets` run above as a
-   **direct-line stub**, or a direct-line stub now holding accepted claims at or over the promotion
-   threshold — `fha.yaml`'s `promotion:` → `claims_threshold`, default 5 when the key is absent (read
-   the file directly)? If so, say one plain nudge: "Frank S. Woodbury now has 9 accepted claims and no
-   curated profile — want me to promote him and draft a bio?" **Only on his explicit yes**, run
-   `fha person promote <P-id>` and hand off to `write-biography`. A NON-direct person who crosses the
-   threshold gets an FYI, never the offer: "Frank keeps turning up — 5 accepted claims now — but he
-   sits off the direct line, so he stays a stub for now." No yes, no write, no nagging — one nudge per
-   person per session, then let it rest.
+   Then, with the index fresh from step 5, check for **two nudges — promotion and places — each capped at
+   one per session, same explicit-yes gate, never repeated once declined this session.**
+
+   **Promotion**, for **direct-line** people only (the promote verb serves the direct line; curating
+   anyone else is an open design decision): is any person decided-on this session flagged by the
+   `fha views brackets` run above as a **direct-line stub**, or a direct-line stub now holding accepted
+   claims at or over the promotion threshold — `fha.yaml`'s `promotion:` → `claims_threshold`, default 5
+   when the key is absent (read the file directly)? If so, say one plain nudge: "Frank S. Woodbury now has
+   9 accepted claims and no curated profile — want me to promote him and draft a bio?" **Only on his
+   explicit yes**, run `fha person promote <P-id>` and hand off to `write-biography`. A NON-direct person
+   who crosses the threshold gets an FYI, never the offer: "Frank keeps turning up — 5 accepted claims
+   now — but he sits off the direct line, so a real profile isn't wired up for people off it yet — that's
+   a known gap (issue #80), not a permanent no." No yes, no write, no nagging — one nudge per person per
+   session, then let it rest.
+
+   **Places.** A review pass that just accepted a batch of claims is precisely the moment a place-text
+   cluster crosses its threshold — check for it here rather than leaving it for a session that never comes
+   back to it (issue #81):
+   ```
+   fha places candidates   # ranked unlinked place-text clusters (default threshold 3), sorted largest first
+   ```
+   That threshold (3) is `fha places candidates`' own bar for "worth surfacing at all" — the same one
+   `place-research` and report §6b already use. This nudge asks a stricter question — "worth interrupting
+   the close-out for" — so only act when the single **largest** returned cluster is at **10 or more
+   claims** (`process-source`'s same offer bar, §"Resolve places…"); a smaller cluster is a real candidate
+   but not this nudge's business, and stays for `place-research`/a later session instead. At or over 10,
+   name that one cluster only — not the whole list, same one-thing-at-a-time restraint as the promotion
+   nudge: "'San Diego, California' now appears in 22 claims and isn't a registered place yet — want me to
+   register it?" **Only on his explicit yes**, register it the way `place-research` does (never hand-write
+   `places.yaml`):
+   ```
+   fha confirm place <C-id> <C-id> … --name "…" --hierarchy "…" --dry-run
+   fha confirm place <C-id> <C-id> … --name "…" --hierarchy "…"
+   ```
+   (the cluster's own `claim_ids` list, printed by `fha places candidates`, is the id list to pass). No
+   yes, no write — one nudge per place per session, then let it rest, same as promotion.
 
 ## Guardrails
 
@@ -214,8 +239,11 @@ its claims to the people asked about and leave the rest for later sessions.
   matters (AGENTS.md §"Don'ts").
 - A contradiction always ends with an open question (E009-clean) — let `fha confirm xref … --as
   contradicts` spawn it.
-- The park offer and the promotion nudge are **offers**: they write (`## Q:` block, hypothesis) or run
-  (`fha person promote`) only on the human's explicit yes, never on silence or a hedge.
+- The park offer, the promotion nudge, and the place nudge are **offers**: they write (`## Q:` block,
+  hypothesis) or run (`fha person promote`, `fha confirm place`) only on the human's explicit yes, never
+  on silence or a hedge.
+- The place nudge names at most **one** cluster (the largest) and fires at most once per session, same
+  cap as promotion — never every returned cluster, never repeated once declined.
 - Record no separate `## AI Passes` entry here *unless* you drafted a new claim in this session (a manual
   addition you formatted) — plain acceptance of existing drafts is the human's pass, not the AI's.
 - Any record ID you write into prose (a note, a spawned question, a story) is `[[ ]]`-wrapped,
@@ -236,8 +264,9 @@ its claims to the people asked about and leave the rest for later sessions.
   claim carries a `reviewed:` date (post-run `fha lint` shows no **E006**).
 - A contradiction surfaced by xref ends in `fha confirm xref … --as contradicts`, leaving the archive
   **E009**-clean.
-- The park offer (an SPEC §17 `## Q:` block or a `verify:` hypothesis) and the promotion nudge
-  (`fha person promote` + `write-biography` hand-off) fired **only on explicit yeses** — no yes, no
-  write, no run.
+- The park offer (an SPEC §17 `## Q:` block or a `verify:` hypothesis), the promotion nudge
+  (`fha person promote` + `write-biography` hand-off), and the place nudge (`fha confirm place`, when the
+  session's `fha places candidates` top cluster is at or over 10 claims) fired **only on explicit yeses**
+  — no yes, no write, no run.
 - `fha lint --root example-archive` still exits 1 with only the documented baseline warnings
   (`_STANDARD.md` §9).

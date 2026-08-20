@@ -153,8 +153,35 @@ sweep. Works one item at a time; for a full inbox, triage and confirm each with 
      ```
      `fha stubs` mints a **fresh random** `P-…` on each run, so the dry-run's ID is illustrative only —
      use the `P-…` the **apply** command prints (not the dry-run's) when you draft the claim's `persons:`.
-   Resolve places the same way (`fha find <place text>`; an unlinked place is fine — leave `place_text:`
-   as written and let `place-research` / `fha confirm place` elevate a recurring one later).
+   Resolve places against the registry before falling back to free text:
+   ```
+   fha find --json "San Diego, California" --kind place   # does this text already match a registered place?
+   ```
+   - A clean single match → set the claim's `place:` to that `L-id`. `place_text:` still carries the
+     source's own wording unchanged (SPEC §15 — `place_text` is never altered, linking only adds `place:`
+     alongside it).
+   - No match → **an unlinked place is still fine** — leave `place_text:` as written, that is the normal
+     case, not a shortfall. But before moving on, check whether this text is a first-time mention or an
+     already-recurring miss:
+     ```
+     fha places candidates   # ranked unlinked place-text clusters (the recurrence detector, TOOLING §10)
+     ```
+     If this place text's cluster is in that list at **10 or more claims**, that is well past
+     `fha places candidates`'s own default surfacing bar of 3 (report §6b's and `place-research`'s
+     everyday threshold) — a real, established pattern rather than an incidental third mention — so make
+     **one** offer, same explicit-yes rule as every other offer here, never repeated this session once
+     declined: *"'San Diego, California' now appears in 12 claims and isn't a registered place yet — want
+     me to register it?"* On his yes, register it exactly the way `place-research` does (never hand-write
+     `places.yaml`):
+     ```
+     fha confirm place <C-id> <C-id> … --name "San Diego" --hierarchy "San Diego, California, USA" --dry-run
+     fha confirm place <C-id> <C-id> … --name "San Diego" --hierarchy "San Diego, California, USA"
+     ```
+     (the cluster's own `claim_ids` list, printed by `fha places candidates`, is the id list to pass — the
+     claim you're about to draft isn't among them yet, so set its `place:` to the new `L-id` yourself once
+     the registry write lands, rather than leaving it as the next miss). Below 10, or on "not now" /
+     silence, the miss is a legitimate permanent state (SPEC §15) — leave `place_text:` as written and
+     move on; `place-research` or a later session is still there for it once it recurs further.
 
 6. **Draft `suggested` claims with anchors and Mills fields.** For each substantive assertion in the
    evidence, add a claim to the record's `## Claims` block:
@@ -217,6 +244,9 @@ sweep. Works one item at a time; for a full inbox, triage and confirm each with 
   bare IDs only inside the claims YAML block, frontmatter lists, and tool arguments (_STANDARD.md §11).
 - Never force a claim out of an item that asserts nothing — the zero-claims exit above is the correct
   path, not a fallback.
+- The place-registration offer fires at most **once per place-text cluster per session**, only on an
+  explicit yes, never repeated once declined in the same session — the same discipline `review-claims`'
+  promotion nudge uses, extended to places (issue #81).
 
 ## Done when
 
@@ -229,6 +259,9 @@ sweep. Works one item at a time; for a full inbox, triage and confirm each with 
   context in `## Notes`, AI pass recorded with `outputs: []`, no review hand-off, no forced claims.
 - An image-only item is transcribed at Stage A½ *before* any claim is drafted: the source carries a
   `role: transcript` companion, and the Stage B claims cite its `[Page N]` anchors.
+- A place text that matches the registry gets `place:` set on the claim without asking; a place text with
+  no match that is already a 10-or-more-claim recurring miss in `fha places candidates` gets exactly one
+  registration offer this session, written only via `fha confirm place` on an explicit yes.
 - Every drafted claim is `suggested` (no claim is `accepted` at this stage).
 - `fha lint --root example-archive` still exits 1 with only the documented baseline warnings
   (`_STANDARD.md` §9).
