@@ -1503,6 +1503,45 @@ class DiscoveriesTests(_Base):
         self.assertIn('No discoveries', self._read('discoveries.html'))
         self.assertNotIn('Recent discoveries', self._read('index.html'))
 
+    def test_cp1252_discoveries_file_reports_instead_of_crashing(self):
+        # #68 in the one place in site.py that never went through
+        # `read_record`: this file was read with a plain `read_text` guarded by
+        # `except OSError`, and `UnicodeDecodeError` is a ValueError - so a
+        # discoveries.md saved in another codepage raised straight out of
+        # `run_site`, after every page had already been written. Not a wording
+        # fix like the record reads: `run_site`'s contract is to RETURN a
+        # Result, so the CLI turned it into `fha.py`'s catch-all ("something
+        # went wrong: 'utf-8' codec can't decode byte 0xf3...", exit 3 - raw
+        # codec text and a dead end) and serve's workbench snapshot rebuild,
+        # which calls `run_site` directly and unguarded, got the exception.
+        self._seed_person('p-aaaaaaaaaa', 'Dan')
+        path = self.archive_root / 'notes' / 'discoveries.md'
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(
+            '# Discoveries Log\n\n## 2026-06-01\nFound in Krak\u00f3w.\n'.encode('cp1252'))
+        res = self._run(linked=False)
+        self.assertEqual(res['status'], 'ok')
+        # Fails closed: nothing from the file reaches either surface.
+        self.assertIn('No discoveries', self._read('discoveries.html'))
+        self.assertNotIn('Recent discoveries', self._read('index.html'))
+        messages = res['messages']
+        hits = [m for m in messages if 'notes/discoveries.md' in m]
+        self.assertTrue(
+            any("isn't saved as UTF-8 text" in m for m in hits), messages)
+        self.assertFalse(any('codec' in m for m in messages), messages)
+        # Both callers (the discoveries page and the home teaser) go through
+        # the same memoized read, so one broken file earns exactly one line.
+        self.assertEqual(len(hits), 1, messages)
+
+    def test_missing_discoveries_file_stays_silent(self):
+        # The other half of the split `read_text_or_report` makes: an absent
+        # (or unopenable) discoveries.md is ordinary and must NOT warn - only
+        # a file that opens and will not decode does.
+        self._seed_person('p-aaaaaaaaaa', 'Dan')
+        res = self._run(linked=True)
+        self.assertFalse(
+            [m for m in res['messages'] if 'discoveries' in m], res['messages'])
+
     def test_ambiguous_name_link_to_living_is_redacted(self):
         # Two people share a name; one is living. The clash drops the name from
         # the single-id alias_map, so `[[John Smith]]` fails to resolve - it must
@@ -2357,6 +2396,30 @@ class WorkbenchModeTests(_Base):
         self.assertTrue(all("isn't saved as UTF-8 text" in m for m in file_warnings),
                         file_warnings)
         self.assertFalse(any('codec' in m for m in messages), messages)
+
+    def test_cp1252_stub_record_is_still_named_in_workbench(self):
+        # Guards the reason `_hypothesis_parent_ids` and `_provisional_vital`
+        # are allowed to stay silent about an undecodable file: workbench mode
+        # builds a page for EVERY person in the index, stubs included, so
+        # `_person_prose` names the file on that person's own page no matter
+        # which ancestor walk reached them. If `prepare()`'s person_pages loop
+        # ever stopped giving stubs a page, those silent sites would become a
+        # real coverage gap and this test is what says so.
+        self._seed_person('p-aaaaaaaaaa', 'Curated Kid', tier='curated')
+        self._seed_person('p-bbbbbbbbbb', 'Stub Parent', tier='stub',
+                          surname='Stub')
+        self._seed_rel('p-aaaaaaaaaa', 'parent', 'p-bbbbbbbbbb')
+        broken = self.archive_root / 'people' / 'stub__test_p-bbbbbbbbbb.md'
+        broken.write_bytes(
+            ('---\nid: p-bbbbbbbbbb\nname: Stub Parent\n'
+             '---\n\n## Biography\n\nBorn in Krak\u00f3w.\n').encode('cp1252'))
+        res = self._run_wb()
+        self.assertTrue(res.ok, res.messages)
+        self.assertTrue((self.out_dir / 'persons' / 'p-bbbbbbbbbb.html').exists())
+        messages = res['messages']
+        self.assertTrue(
+            any('stub__test_p-bbbbbbbbbb.md' in m and "isn't saved as UTF-8 text" in m
+                for m in messages), messages)
 
     def test_provisional_vital_shows_in_workbench_only(self):
         # A curated person with an unsourced birth: estimate and no birth claim.

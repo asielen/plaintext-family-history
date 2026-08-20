@@ -168,6 +168,7 @@ from _lib import (
     pip_command,
     PROVISIONAL_VITAL_FIELDS,
     read_record,
+    read_text_or_report,
     resolve_path,
     resolve_root_arg,
     Result,
@@ -340,8 +341,9 @@ def _raise_friendly_decode_error(path: Path) -> None:
     exception here lands in that same `except` block (Python allows a new
     exception to be raised from inside a callback an `except` calls), so it
     swaps only what `str(e)` says - no call site's control flow changes.
-    Wording matches `fha lint`'s W128, the report channel this same failure
-    already has everywhere else in the suite."""
+    Wording echoes `fha lint`'s W128 (and `fha index`'s undecodable-files
+    note) - same cause, same fix, said in one line rather than W128's full
+    paragraph, because this one arrives inside a build report."""
     raise ValueError(
         "this file isn't saved as UTF-8 text - a Windows editor's default "
         "encoding, often cp1252, is the usual cause; open it and save it "
@@ -2070,6 +2072,17 @@ class _SiteBuilder:
                 f'alternate names and editorial tags are omitted from their page.')
             return [], []
         if rec.get('undecodable'):
+            # This one speaks where its silent neighbours (`_provisional_vital`,
+            # `_person_hypothesis_ties`, `_build_family_wings`) do not, and the
+            # difference is what the message SAYS, not which file it names.
+            # `_person_prose` reads this same file earlier in the same
+            # `build_person_page` and warns about it - but its line ends
+            # "skipping its prose", which a reader can fairly take as the whole
+            # cost. The header is a second, visibly separate part of the page,
+            # so a second line naming what else went missing is information,
+            # not an echo. It costs one extra line per broken file per build
+            # (this helper runs once per page), which is the noise the
+            # per-vital and per-ancestor helpers had to avoid.
             self.messages.append(
                 f'WARNING: could not read {row["path"]} (this file isn\'t saved '
                 f'as UTF-8 text - a Windows editor\'s default encoding, often '
@@ -2827,18 +2840,19 @@ class _SiteBuilder:
         if rec.get('undecodable'):
             # Contributing nothing here is deliberate, not an oversight - see
             # `_ignore_decode_error`. Kept symmetric with the sibling read in
-            # `_person_hypothesis_ties`, which stays quiet for the same
-            # reason (see its comment) - but note the coverage this one loses
-            # is real, not just a duplicate: `prepare()`'s file-scan warning
-            # only runs in standalone mode (linked skips it, "no redaction at
-            # all"), and this method is workbench-only (always linked), so an
-            # ancestor reached ONLY through an unsourced hypothesis edge, and
-            # never built as a page of their own, may go unreported anywhere
-            # in this build. Accepted for now, not fixed: this method is
-            # visited once per ancestor on every descendant's pedigree walk,
-            # so a warning here would repeat once per descendant that shares
-            # the same broken ancestor - a real gap traded for avoiding that
-            # noise, not an oversight.
+            # `_person_hypothesis_ties`, which stays quiet for the same reason
+            # (see its comment), and staying quiet costs no coverage even
+            # though this one is reached for ancestors rather than only for
+            # the page's own subject. This method reads the record of whoever
+            # the pedigree walk is standing on, and it only runs at all under
+            # `if self.workbench:` - a mode that builds a page for EVERY
+            # person in the index, stubs included (see `prepare()`'s
+            # person_pages loop). So whoever's file this is has a page of
+            # their own in this same build, and `_person_prose` names the file
+            # there. `prepare()`'s file-scan warning is indeed standalone-only
+            # and never runs here, but it is not the only channel: the page
+            # build is. A warning here would just repeat that line once per
+            # descendant whose pedigree walks through this ancestor.
             return []
         meta = rec['meta']
         out: list[str] = []
@@ -3511,9 +3525,32 @@ class _SiteBuilder:
         if self._discoveries is not None:
             return self._discoveries
         path = self.archive_root / 'notes' / 'discoveries.md'
-        try:
-            text = path.read_text(encoding='utf-8')
-        except OSError:
+        # NOT a plain `read_text` with an `except OSError` (#68): a
+        # `UnicodeDecodeError` is a ValueError, so a discoveries.md saved in
+        # another codepage (cp1252, a Windows editor's default) sailed straight
+        # past that guard and raised out of `run_site` itself - past that
+        # function's contract to RETURN a Result, so the CLI fell back to
+        # `fha.py`'s catch-all (raw codec text, exit 3) and serve's workbench
+        # rebuild, which calls `run_site` directly, took the exception. The
+        # only read in this module that could still do that, because it is the
+        # only one that does not go through `read_record`.
+        # `read_text_or_report` splits the two failures the way this method
+        # already wants them split: a missing/unreadable file stays the silent
+        # skip it has always been (running without a discoveries log is
+        # ordinary), and a bad decode is reported. Memoized like the rest of
+        # this method, so the discoveries page and the home teaser - both
+        # callers - earn exactly one warning between them.
+        undecodable: list[Path] = []
+        text = read_text_or_report(path, on_decode_error=undecodable.append)
+        if text is None:
+            if undecodable:
+                self.messages.append(
+                    "WARNING: could not read notes/discoveries.md (this file "
+                    "isn't saved as UTF-8 text - a Windows editor's default "
+                    "encoding, often cp1252, is the usual cause); the "
+                    'discoveries page and the home page teaser are empty. Open '
+                    'it and save it again choosing UTF-8, then run `fha site` '
+                    'again.')
             self._discoveries = ('', [])
             return self._discoveries
         # Exclude unaccepted AI-DRAFT prose before publishing, same as person
