@@ -128,8 +128,10 @@ configure_utf8_stdout()
 #  Markdown block parsing
 #    _parse_md_list_blocks   - generic "- field: value" block parser, shared by
 #                              the Hypotheses and Research Log section parsers
-#    _index_hypotheses_block - ## Hypotheses entries → hypotheses rows
+#    _index_hypotheses_block - ## Hypotheses entries → hypotheses rows (any
+#                              person file kind - #56, content decides)
 #    _index_research_log_block - ## Research Log entries → search_log rows
+#                              (research companions only, per SPEC §16)
 #
 #  Derived tables
 #    _insert_parent_edges    - one claim's parent/child pairs → both directions
@@ -1171,15 +1173,29 @@ def _index_person(
             (str(path.relative_to(archive_root)), body),
         )
 
-    # Research files (SPEC §16) carry ## Hypotheses and ## Research Log
-    # sections - the only place those durable records live.  Without this,
-    # the report's hypotheses/search-log sections always read empty even when
-    # the archive has real entries (the report rebuilds the index right
-    # before querying these tables).
-    if kind == 'research' and body.strip():
+    # Hypotheses (issue #56) and Research Log (SPEC §16) sections. Without
+    # this, the report's hypotheses/search-log sections always read empty
+    # even when the archive has real entries (the report rebuilds the index
+    # right before querying these tables).
+    #
+    # The two sections are NOT scoped alike. SPEC §16 recommends the research
+    # companion as the home for a curated person's Research Log, and nothing
+    # widens that here. Hypotheses is different: the archive already writes
+    # `## Hypotheses` straight into profiles and stubs too - a stub most of
+    # all, since "is this the same man as that other stub?" is a stub-shaped
+    # question and a stub has no companion file (SPEC §16) to hold one in.
+    # Gating hypothesis indexing on `kind == 'research'` read a profile's own
+    # section as not existing, so `fha find --related` could never connect a
+    # claim to a hypothesis living anywhere but a research file. Content
+    # decides instead: `_index_hypotheses_block` already no-ops on a body
+    # with no section, so indexing it is unconditional on kind - lint's
+    # `_research_hypothesis_ids` was widened the same way for the matching
+    # E004 check, and the two must keep agreeing on what counts as a record.
+    if body.strip():
         rel_path = str(path.relative_to(archive_root))
         _index_hypotheses_block(conn, body, pid, rel_path)
-        _index_research_log_block(conn, body, pid, rel_path)
+        if kind == 'research':
+            _index_research_log_block(conn, body, pid, rel_path)
 
 
 def _index_source(

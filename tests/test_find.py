@@ -312,7 +312,7 @@ class RelatedHypothesisTests(unittest.TestCase):
 
         rc, out = _run(find.run_related, 'h-1111111111', None, self.archive_root, {})
         self.assertEqual(rc, EXIT_CLEAN)
-        self.assertIn('hypothesis indexing is deferred', out)
+        self.assertIn('no hypotheses-table row', out)
         self.assertIn('Alice [p-aaaaaaaaaa]', out)
         self.assertIn('c-1111111111', out)
 

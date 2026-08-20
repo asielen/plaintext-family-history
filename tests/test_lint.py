@@ -711,6 +711,20 @@ class ResearchHypothesisE004Tests(unittest.TestCase):
         e004 = [f for f in findings if f.code == 'E004' and 'h-9999999999' in f.message]
         self.assertTrue(e004)
 
+    def test_dangling_hypothesis_e004_names_the_right_fix(self) -> None:
+        # Issue #56's own complaint: the generic E004 orphan message suggests
+        # `fha stubs` - a PERSON-record minting command - for what is plainly
+        # an H- reference. There is no hypothesis-minting tool at all; a
+        # hypothesis is defined by hand in some person's ## Hypotheses
+        # section (SPEC §16), so the hint should say that instead.
+        self._write_profile('Working theory: [[H-9999999999]] covers the arrival.')
+        self._write_research('## Hypotheses\n\n*(none yet)*\n')
+        findings, _ = lint._run_lint_core(self.root, {})
+        e004 = [f for f in findings if f.code == 'E004' and 'h-9999999999' in f.message]
+        self.assertTrue(e004)
+        self.assertIn('## Hypotheses', e004[0].message)
+        self.assertNotIn('fha stubs', e004[0].message)
+
     def test_citation_in_research_body_is_not_a_definition(self) -> None:
         # A [[H-…]] reference OUTSIDE the ## Hypotheses entries (a research-log
         # question, prose) is a cite, not a record - it must not self-resolve.
@@ -724,6 +738,51 @@ class ResearchHypothesisE004Tests(unittest.TestCase):
         self.assertNotIn('h-7777777777', reg.hypothesis_ids)
         self.assertTrue([f for f in findings
                          if f.code == 'E004' and 'h-7777777777' in f.message])
+
+    def test_hypothesis_defined_directly_in_a_profile_is_not_e004(self) -> None:
+        # #56: the gate used to be the FILENAME (`_research_` in the stem),
+        # not the content - so a well-formed ## Hypotheses section written
+        # straight into a curated person's own profile (no research
+        # companion at all here) was invisible to E004, and citing its H-id
+        # from anywhere else in the archive drew a false "create the missing
+        # record - run `fha stubs`" (wrong advice for an H-id besides).
+        (self.root / 'people' / 'hartley__thomas_P-1111111111.md').write_text(
+            '---\nid: P-1111111111\nname: Thomas Hartley\nliving: false\n---\n\n'
+            '# Thomas Hartley\n\n## Hypotheses\n\n'
+            '- id: H-bqwstmdxb6\n'
+            '  hypothesis: "possible duplicate of the unplaced stub"\n'
+            '  origin: agent\n  status: open\n', encoding='utf-8')
+        (self.root / 'sources').mkdir(exist_ok=True)
+        (self.root / 'sources' / 'interview_S-1111111111.md').write_text(
+            '---\nid: S-1111111111\ntitle: t\nsource_type: other\n---\n\n'
+            'Working theory: [[H-bqwstmdxb6]] covers the identity question.\n',
+            encoding='utf-8')
+        findings, reg = lint._run_lint_core(self.root, {})
+        self.assertIn('h-bqwstmdxb6', reg.hypothesis_ids)
+        e004 = [f for f in findings if f.code == 'E004' and 'h-bqwstmdxb6' in f.message]
+        self.assertEqual(e004, [], [f.message for f in findings])
+
+    def test_hypothesis_defined_in_a_stub_is_not_e004(self) -> None:
+        # #56's worst case: a stub has NO companion files at all (SPEC §16),
+        # so its own body is the only legal place a hypothesis about it can
+        # live - the old filename gate made that hypothesis permanently
+        # uncitable except as plain text (against _STANDARD.md §11).
+        (self.root / 'people' / 'stubs').mkdir(parents=True, exist_ok=True)
+        (self.root / 'people' / 'stubs' / 'unknown__unknown_P-2222222222.md').write_text(
+            '---\nid: P-2222222222\nname: unknown\nliving: unknown\n'
+            'tier: stub\n---\n\n## Hypotheses\n\n'
+            '- id: H-mtvwstmdx7\n'
+            '  hypothesis: "same man as P-1111111111"\n'
+            '  origin: agent\n  status: open\n', encoding='utf-8')
+        (self.root / 'sources').mkdir(exist_ok=True)
+        (self.root / 'sources' / 'interview_S-1111111111.md').write_text(
+            '---\nid: S-1111111111\ntitle: t\nsource_type: other\n---\n\n'
+            'Working theory: [[H-mtvwstmdx7]] covers the identity question.\n',
+            encoding='utf-8')
+        findings, reg = lint._run_lint_core(self.root, {})
+        self.assertIn('h-mtvwstmdx7', reg.hypothesis_ids)
+        e004 = [f for f in findings if f.code == 'E004' and 'h-mtvwstmdx7' in f.message]
+        self.assertEqual(e004, [], [f.message for f in findings])
 
 
 class ResearchCompanionIdentityTests(unittest.TestCase):
@@ -783,7 +842,13 @@ class ResearchCompanionIdentityTests(unittest.TestCase):
     def test_a_given_name_containing_the_kind_word_is_still_a_profile(self) -> None:
         path = self._write('smith__research_anne_P-3333333333.md')
         _findings, reg = lint._run_lint_core(self.root, {})
-        self.assertNotIn('h-abcabcabca', reg.hypothesis_ids)
+        # #56: a profile's own ## Hypotheses section is a real record whatever
+        # its filename looks like - content decides, so this DOES register
+        # despite the file being (correctly) a profile, not a research
+        # companion. Open Questions is a different, still-filename-scoped
+        # gate (SPEC §16 homes it only in the research companion) and stays
+        # empty here.
+        self.assertIn('h-abcabcabca', reg.hypothesis_ids)
         self.assertEqual(list(reg.research_content), [])
         # The other half of the same reading: it registers as a profile, so the
         # required-field checks that only profiles get still apply to it.
@@ -799,12 +864,14 @@ class ResearchCompanionIdentityTests(unittest.TestCase):
 
     def test_a_person_record_in_that_slot_is_her_record_not_research(self) -> None:
         # The slot before the P-id is also a legal last given name, so this
-        # same filename may be Anne Research Smith's own record. Then SPEC §16
-        # homes neither the hypotheses nor the questions in it - a profile is
-        # not a research file however it is named.
+        # same filename may be Anne Research Smith's own record. A profile is
+        # not a research file however it is named - SPEC §16 still homes the
+        # Open Questions scope only in the research companion - but #56
+        # widened Hypotheses to any person file that carries the section, so
+        # her own ## Hypotheses block here IS a real record now.
         self._write('smith__anne_research_P-3333333333.md')
         _findings, reg = lint._run_lint_core(self.root, {})
-        self.assertNotIn('h-abcabcabca', reg.hypothesis_ids)
+        self.assertIn('h-abcabcabca', reg.hypothesis_ids)
         self.assertEqual(list(reg.research_content), [])
 
     def test_an_id_less_research_companion_is_still_read(self) -> None:
@@ -1299,6 +1366,82 @@ class ClaimsFenceFixTests(_SurgeryBase):
         self.assertEqual(self.src.read_bytes(), before)
         self.assertEqual(result.changed, [])
         self.assertIn('would wrap', self._progress(result))
+
+    def test_opening_only_missing_close_is_repaired(self) -> None:
+        # #52: a hand-edit deleted the closing ``` and left the opening
+        # ```yaml in place. The OLD fixer saw that surviving ```yaml line as
+        # a lookalike quoted inside a value and refused the whole file,
+        # naming --fix-claims-fence as the remedy while doing nothing - the
+        # exact bug reported. The repair must insert the missing delimiter.
+        self._write_src(self._unfenced(
+            '```yaml\n- value: farmer\n  type: note\n  persons: [P-1111111111]\n'
+            '  status: suggested\n  confidence: low\n'))
+        self.assertEqual(len(read_record(self.src)['claims']), 1)
+        result = lint.run_lint(self.root, {}, fix_claims_fence=True)
+        self.assertIn(str(self.src), result.changed)
+        rec = read_record(self.src)
+        self.assertEqual(rec['parse_errors'], [])
+        self.assertEqual(len(rec['claims']), 1)
+        self.assertEqual(rec['claims'][0]['value'], 'farmer')
+        self.assertFalse(rec['unfenced_claims'])
+        findings, _ = lint._run_lint_core(self.root, {})
+        self.assertEqual([f for f in findings if f.code == 'W114'], [])
+
+    def test_closing_only_missing_open_is_repaired(self) -> None:
+        # #52's other asymmetric case: the opening ```yaml was never typed
+        # (or was deleted) but a stray closing ``` remains at the end of the
+        # section.
+        self._write_src(self._unfenced(
+            '- value: farmer\n  type: note\n  persons: [P-1111111111]\n'
+            '  status: suggested\n  confidence: low\n```\n'))
+        self.assertEqual(len(read_record(self.src)['claims']), 1)
+        result = lint.run_lint(self.root, {}, fix_claims_fence=True)
+        self.assertIn(str(self.src), result.changed)
+        rec = read_record(self.src)
+        self.assertEqual(rec['parse_errors'], [])
+        self.assertEqual(len(rec['claims']), 1)
+        self.assertEqual(rec['claims'][0]['value'], 'farmer')
+        self.assertFalse(rec['unfenced_claims'])
+        findings, _ = lint._run_lint_core(self.root, {})
+        self.assertEqual([f for f in findings if f.code == 'W114'], [])
+
+    def test_no_fence_at_all_still_leaves_lint_clean(self) -> None:
+        # Pre-existing fixture shape (the fully unfenced case) - a fourth
+        # shape alongside the two asymmetric ones above, kept green here so
+        # the #52 fix cannot be verified to work on the asymmetric cases
+        # while silently regressing the case that already worked.
+        self._write_src(self._unfenced(
+            '- value: farmer\n  type: note\n  persons: [P-1111111111]\n'
+            '  status: suggested\n  confidence: low\n'))
+        result = lint.run_lint(self.root, {}, fix_claims_fence=True)
+        self.assertIn(str(self.src), result.changed)
+        findings, _ = lint._run_lint_core(self.root, {})
+        self.assertEqual([f for f in findings if f.code == 'W114'], [])
+
+    def test_bare_fence_both_ends_no_yaml_tag_is_repaired(self) -> None:
+        # A fifth shape the #52 fix itself introduced a new way to get wrong:
+        # a hand-typed ``` on BOTH the opening and closing line, with no
+        # `yaml` language tag on either. CLAIMS_RE requires the literal
+        # ```yaml opener, so this never reads as fenced and W114 fires - but
+        # the boundary scan (language tag optional on both ends) recognises
+        # BOTH lines as markers, which the first version of the #52 fix
+        # treated as proof the file must already be fenced (an assumed-
+        # unreachable case) and silently returned "nothing to wrap" for -
+        # W114 kept firing forever with --fix-claims-fence reporting nothing
+        # at all, the exact silent-refusal failure #52 was filed over.
+        self._write_src(self._unfenced(
+            '```\n- value: farmer\n  type: note\n  persons: [P-1111111111]\n'
+            '  status: suggested\n  confidence: low\n```\n'))
+        self.assertEqual(len(read_record(self.src)['claims']), 1)
+        result = lint.run_lint(self.root, {}, fix_claims_fence=True)
+        self.assertIn(str(self.src), result.changed)
+        rec = read_record(self.src)
+        self.assertEqual(rec['parse_errors'], [])
+        self.assertEqual(len(rec['claims']), 1)
+        self.assertEqual(rec['claims'][0]['value'], 'farmer')
+        self.assertFalse(rec['unfenced_claims'])
+        findings, _ = lint._run_lint_core(self.root, {})
+        self.assertEqual([f for f in findings if f.code == 'W114'], [])
 
 
 class NearMissIdTests(_SurgeryBase):
@@ -1820,9 +1963,12 @@ class ContentDecidesPersonKindTests(unittest.TestCase):
         self.assertIn('W122', out)
 
     def test_a_research_name_over_a_person_record_is_not_research(self) -> None:
-        # SPEC §16 homes ## Hypotheses and ## Open Questions in the research
-        # companion. A person record that happens to be named like one is
-        # neither, so its body must stay out of the E009 research scope.
+        # SPEC §16 homes ## Open Questions in the research companion. A person
+        # record that happens to be named like one is not a research file, so
+        # its body must stay out of the E009 research scope. ## Hypotheses is
+        # different (#56): the archive already writes it into profiles too,
+        # so her own section here is a real record whether or not the file
+        # also happens to be named like a research companion.
         self._write(
             'smith__anne_research_P-3333333333.md',
             '---\nid: P-3333333333\nname: Anne Research Smith\nliving: false\n---\n\n'
@@ -1832,7 +1978,7 @@ class ContentDecidesPersonKindTests(unittest.TestCase):
             '  hypothesis: "arrived by ~1869"\n  origin: agent\n  status: open\n')
         findings, reg = lint._run_lint_core(self.root, {})
         self.assertEqual(list(reg.research_content), [])
-        self.assertNotIn('h-abcabcabca', reg.hypothesis_ids)
+        self.assertIn('h-abcabcabca', reg.hypothesis_ids)
         self.assertIn('W122', self._codes(findings))
 
 
@@ -2939,6 +3085,59 @@ class UndecodableFormatWriteTests(unittest.TestCase):
         good.write_text('no final newline', encoding='utf-8')
         lint.run_lint(self.root, {}, format_write=True)
         self.assertEqual(good.read_text(encoding='utf-8'), 'no final newline\n')
+
+
+class SpawnQuestionsRefsTests(unittest.TestCase):
+    """#55: `--spawn-questions` wrote the E009 error text itself as the `## Q:`
+    heading (a question log telling its reader to run the command that just
+    wrote it) and always left `refs: []` even though the two contradicting
+    C-ids were right there in the message. The fix must phrase a real
+    question using each claim's own `value:` and populate `refs:` with both
+    ids - the issue's own regression-test spec: refs contains both C-ids, and
+    the heading does not contain the substring `--spawn-questions`.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        (self.root / 'fha.yaml').write_text('roots: {}\n', encoding='utf-8')
+        (self.root / 'people').mkdir(parents=True)
+        (self.root / 'sources').mkdir()
+        (self.root / 'notes').mkdir()
+        (self.root / 'people' / 'rivera__sam_P-1111111111.md').write_text(
+            _NAMED_PERSON, encoding='utf-8')
+        (self.root / 'sources' / 'test_S-1111111111.md').write_text(
+            '---\nid: S-1111111111\ntitle: t\nsource_type: other\n---\n\n'
+            '## Claims\n```yaml\n'
+            '- id: C-1111111111\n  type: birth\n  persons: [P-1111111111]\n'
+            '  value: "born 1885"\n  status: accepted\n  confidence: medium\n'
+            '  contradicts: [C-2222222222]\n'
+            '- id: C-2222222222\n  type: birth\n  persons: [P-1111111111]\n'
+            '  value: "born 1886"\n  status: accepted\n  confidence: medium\n'
+            '```\n', encoding='utf-8')
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_spawned_question_has_refs_and_a_real_heading(self) -> None:
+        result = lint.run_lint(self.root, {}, spawn_questions=True)
+        self.assertIn(str(self.root / 'notes' / 'questions.md'), result.changed)
+        q = (self.root / 'notes' / 'questions.md').read_text(encoding='utf-8')
+        # The issue's own regression-test spec, verbatim: refs contains both
+        # C-ids, and the heading does not echo the --spawn-questions error.
+        self.assertIn('refs: [C-1111111111, C-2222222222]', q)
+        heading_line = [ln for ln in q.splitlines() if ln.startswith('## Q:')][0]
+        self.assertNotIn('--spawn-questions', heading_line)
+        # The claims' own value: text makes a far better heading than the
+        # error message - both positions of the disagreement are visible
+        # without opening the source.
+        self.assertIn('born 1885', heading_line)
+        self.assertIn('born 1886', heading_line)
+
+    def test_spawned_question_satisfies_e009_on_relint(self) -> None:
+        lint.run_lint(self.root, {}, spawn_questions=True)
+        findings, _ = lint._run_lint_core(self.root, {})
+        self.assertEqual([f for f in findings if f.code == 'E009'], [])
 
 
 class UndecodableQuestionsSpawnTests(unittest.TestCase):
