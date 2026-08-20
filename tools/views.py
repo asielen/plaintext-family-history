@@ -98,6 +98,7 @@ from _lib import (
     GeneratedFileRefused,    # shared refusal when a write would clobber a non-generated file,
     PromotionError,       # a --fix-promote promotion refused/failed (rolled back),
     Result,               # the structured-result contract every run_* returns,
+    SOCIAL_PARENT_SUBTYPES,  # natures never numbered into the pedigree (SPEC §12.2),
     ahnentafel_generation,   # Ahnentafel position → generation depth (--generations cap),
     archive_title,        # masthead/page title from fha.yaml site.archive_name,
     build_ahnentafel_map,    # index BFS {P-id → position}; shared with fha person promote,
@@ -198,6 +199,9 @@ def _views_result(
 #    _persons_in_folder           - person_ids whose profile files live in a folder
 #    _build_ahnentafel_map        - BFS from root_person → {pid: int position}
 #                                    (+ W120 sex-gap collection via _lib)
+#    _person_label_from_db        - `Ada Hartley (P-…)`, or the ID alone if nameless
+#    _check_w127_root_anchor      - W127: root_person has a child, so the walk starts
+#                                    a generation too high (lint twin: lint.py)
 #    _check_w103_brackets         - derive expected bracket lists + the missing
 #                                    `+ spouse` half, find mismatches
 #    _person_couple_folder        - locate a person's current couple folder via index
@@ -1452,6 +1456,77 @@ def _build_ahnentafel_map(
     return build_ahnentafel_map(conn, root_pid, sex_gaps)
 
 
+def _person_label_from_db(conn: sqlite3.Connection, pid: str) -> str:
+    """`Ada Hartley (P-…)` for a message, or the bare P-id when nothing names her.
+
+    The twin of lint's `_person_label`, and it exists for the same reason: a
+    person whose record carries no `name:`, or an empty one, would otherwise be
+    addressed as `None` in a message about her own family.
+    """
+    row = conn.execute('SELECT name FROM persons WHERE id = ?', (pid,)).fetchone()
+    name = str((row['name'] if row else '') or '').strip()
+    return f'{name} ({fmt_id_display(pid)})' if name else fmt_id_display(pid)
+
+
+def _check_w127_root_anchor(
+    conn: sqlite3.Connection, root_pid: str
+) -> list[dict]:
+    """W127: `root_person` has a genetic child on record, so it is anchored a
+    generation too high (SPEC §12.2, issue #70). The lint twin lives in
+    `lint._check_ahnentafel_placement`; this is the views half.
+
+    It belongs HERE, not only in lint, because this command is the one that
+    acts on the derivation: `--fix` and `--realign` rename and renumber the
+    whole promoted tree from the walk seeded at `root_person`. Seeded one rung
+    too high, every folder it writes is one generation high, and no other check
+    in this pass can object - W103, W110 and W119 all compare the folders
+    against the numbers this same walk produced, so they are satisfied exactly
+    when the tree has been renumbered wrong consistently. A human who only ever
+    runs `fha views brackets` would never be told.
+
+    Reads the relationships table with the identical genetic-only filter
+    `_lib.build_ahnentafel_map` walks with (SPEC §12.2: a social or legal
+    nature - adoptive, step, foster, guardian, surrogate-gestational, social -
+    is never numbered, so it never trips this either; an unset or unrecognised
+    nature defaults to genetic). The table is derived from accepted,
+    non-negated claims, so a suggested or researched-absence child claim is
+    silent here for the same reason it is silent in the numbering.
+
+    Report-only, one finding, and never a rename: the repair is one line in
+    `fha.yaml`, which no tool may write on a guess.
+    """
+    social = sorted(SOCIAL_PARENT_SUBTYPES)
+    social_ph = ','.join('?' * len(social))
+    rows = conn.execute(
+        f"""
+        SELECT DISTINCT r.other_id AS pid
+        FROM relationships r
+        LEFT JOIN claims c ON r.claim_id = c.id
+        WHERE r.person_id = ? AND r.rel = 'child'
+          AND COALESCE(LOWER(c.subtype), '') NOT IN ({social_ph})
+        ORDER BY r.other_id
+        """,
+        (root_pid, *social),
+    ).fetchall()
+    if not rows:
+        return []
+    extra = '' if len(rows) == 1 else f' (and {len(rows) - 1} more)'
+    return [{
+        'code': 'W127',
+        'pid': root_pid,
+        'child_pid': rows[0]['pid'],
+        'msg': (
+            f'W127 fha.yaml: root_person {_person_label_from_db(conn, root_pid)} has a '
+            f'child on record - {_person_label_from_db(conn, rows[0]["pid"])}{extra}. '
+            'SPEC §12.2 anchors #1 at the youngest generation, so every couple folder '
+            'below derives one generation high - including anything `--fix` or '
+            '`--realign` writes from here. Re-anchor root_person to a child in '
+            'fha.yaml, then run `fha index` and `fha views brackets --realign` - or '
+            'leave this as-is if anchoring at yourself is deliberate.'
+        ),
+    }]
+
+
 def _check_w103_brackets(
     conn: sqlite3.Connection, archive_root: Path
 ) -> list[dict]:
@@ -2523,9 +2598,18 @@ def run_brackets(
       4. W119 - direct-line ancestors (derived position >= 2) still filed as
                  stubs (`tier: stub`, or a record under people/stubs/).
                  (Requires root_person.  `generations` caps the depth.)
-    Plus one report-only note: W120 - a placement the derivation made by
-    default (a lone linked parent with no recorded `sex:` takes the father/even
-    slot); nothing mechanical to fix - the human records `sex:` to settle it.
+    Plus two report-only notes, both about the DERIVATION rather than the
+    folders, so no fix flag touches either:
+      * W120 - a placement the derivation made by default (a lone linked parent
+                with no recorded `sex:` takes the father/even slot); the human
+                records `sex:` to settle it.
+      * W127 - `root_person` has a genetic child on record, so the walk that
+                feeds checks 1-4 starts a generation too high and every number
+                it produces is off by one (#70). The four checks above cannot
+                see it - they only verify the folders match these same numbers -
+                and `--fix`/`--realign` would write the wrong ones to disk. The
+                human re-anchors `root_person` in `fha.yaml`, reindexes, and
+                re-runs with `--realign`.
 
     Without a fix flag or --dry-run: report only (W119 included - a lead, not
     a defect).  --dry-run: findings + full preview, exit without writing.
@@ -2610,6 +2694,7 @@ def run_brackets(
         w110: list[dict] = []
         w119: list[dict] = []
         w120: list[dict] = []
+        w127: list[dict] = []
 
         if root_person_raw:
             root_pid = normalize_id(str(root_person_raw))
@@ -2620,6 +2705,10 @@ def run_brackets(
                     file=sys.stderr,
                 )
             else:
+                # W127 before the walk, because it is about where the walk
+                # STARTS: everything below numbers correctly relative to a
+                # root that may itself be a generation too high (#70).
+                w127 = _check_w127_root_anchor(conn, root_pid)
                 sex_gaps: list[dict] = []
                 pid_to_pos = _build_ahnentafel_map(conn, root_pid, sex_gaps)
                 # W120: a slot the derivation DEFAULTED rather than derived - a
@@ -2673,9 +2762,12 @@ def run_brackets(
         # ── Compose renames that touch the same folder ────────────────────
         w103, w110, w103_suppressed = _compose_folder_renames(w103, w110)
 
-        all_issues = w103 + w110 + w119 + w120
+        # W127 rides in all_issues so it is printed and moves the exit code,
+        # but never in the apply lists: it is report-only, and its repair is a
+        # line in fha.yaml that no tool may write on a guess.
+        all_issues = w127 + w103 + w110 + w119 + w120
         issue_data = {'w103': len(w103), 'w110': len(w110),
-                      'w119': len(w119), 'w120': len(w120)}
+                      'w119': len(w119), 'w120': len(w120), 'w127': len(w127)}
 
         # ── Report ────────────────────────────────────────────────────────
         for item in all_issues:
@@ -2700,8 +2792,8 @@ def run_brackets(
         # ── --realign: both halves, one combined preview, one Apply? gate ──
         if realign:
             if not (w103 or w110 or w119):
-                # Only report-only notes (W120) remain - nothing mechanical to
-                # realign; the note above already names the human's fix.
+                # Only report-only notes (W120/W127) remain - nothing mechanical
+                # to realign; the note above already names the human's fix.
                 print(
                     '\nNothing to realign - the promoted tree already matches '
                     'the derivation.'
@@ -2823,7 +2915,7 @@ def run_brackets(
             if not w119:
                 print('\nNo direct-line stubs to promote (W119 is clear).')
                 return _views_result(
-                    EXIT_WARNINGS if (w103 or w110 or w120) else EXIT_CLEAN,
+                    EXIT_WARNINGS if (w103 or w110 or w120 or w127) else EXIT_CLEAN,
                     data=issue_data)
             _print_promote_preview(w119, archive_root)
             if dry_run:
@@ -2859,7 +2951,7 @@ def run_brackets(
                 return _views_result(EXIT_WARNINGS, changed=changed,
                                      data={**issue_data, 'failures': failures})
             return _views_result(
-                EXIT_WARNINGS if (w103 or w110 or w120) else EXIT_CLEAN,
+                EXIT_WARNINGS if (w103 or w110 or w120 or w127) else EXIT_CLEAN,
                 changed=changed, data=issue_data)
 
         # ── --fix / --dry-run: the W103/W110 renames and moves ────────────
@@ -2874,6 +2966,15 @@ def run_brackets(
                 notes.append(
                     'a W120 note is settled by recording sex: M or sex: F on '
                     'the named person, not by a fix')
+            if w127:
+                # Every note in this list has to be named, or the sentence ends
+                # in a bare full stop - and on an archive whose only finding is
+                # W127, that empty sentence would be the whole answer to
+                # `--fix`, right after printing that the anchor is wrong.
+                notes.append(
+                    'the W127 anchor note is settled by editing root_person in '
+                    'fha.yaml, then `fha index` and `fha views brackets '
+                    '--realign`, not by a fix here')
             print('\nNothing here is applied by --fix - ' + '; '.join(notes) + '.')
             return _views_result(EXIT_WARNINGS, data=issue_data)
 

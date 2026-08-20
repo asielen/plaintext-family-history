@@ -155,6 +155,7 @@ import yaml
 #    _question_blocks            - split a questions.md into per-heading blocks
 #    _metadata_values            - normalise scalar/list exiftool field values
 #    _w122_message               - W122: filename says generated page, content says person
+#    _person_label               - `Ada Hartley (P-…)` for findings; ID alone if nameless
 #
 #  Pass 1 - walk and collect
 #    _walk_archive               - top-level coordinator; calls the _process_* functions
@@ -162,13 +163,16 @@ import yaml
 #                                   (returns the record it read; content decides the kind)
 #    _process_source_file        - index one source file + file-level checks + claims
 #
-#  Bracket / Ahnentafel checks (W103, W110, W119, W120)
-#    _build_child_edges          - parent → {child → {nature,…}} from accepted claims
+#  Bracket / Ahnentafel checks (W103, W110, W119, W120, W127)
+#    _build_child_edges          - parent → {child → {nature,…}} from the accepted,
+#                                   non-negated relationship/birth claims the indexer
+#                                   derives parent edges from (lint's twin of it)
 #    _build_children_of          - parent → {children}; genetic_only filters numbering
 #    _check_bracket_lists        - W103: stale bracket lists + missing `+ spouse` half
 #    _build_ahnentafel_lint      - BFS from root_person using in-memory registry
 #    _check_ahnentafel_placement - W110: person file in wrong Ahnentafel folder;
-#                                   also emits W120 (slot defaulted, sex: unrecorded)
+#                                   also emits W127 (root_person anchored a generation
+#                                   too high) and W120 (slot defaulted, sex: unrecorded)
 #    _check_direct_line_stubs    - W119: direct-line ancestor still filed as a stub
 #                                   (report-only lead; brackets --fix-promote applies)
 #
@@ -718,6 +722,21 @@ def _research_hypothesis_ids(body: str) -> set[str]:
         for m in _HYPOTHESIS_ID_LINE_RE.finditer(section.group(1)):
             ids.add(normalize_id(m.group(1)))
     return ids
+
+
+def _person_label(registry: Registry, pid: str) -> str:
+    """How a person is named in a finding: `Ada Hartley (P-…)`, or the bare P-id.
+
+    Two sentinels have to be handled rather than printed. A record with no
+    `name:` key at all would otherwise put a lowercase `p-…` where the reader
+    expects a name, and a record whose `name:` is present but empty parses to
+    None, which formats as the literal word "None" - a person addressed as
+    None in a message about her own family is the kind of line that makes a
+    tool look untrustworthy about everything else it just said. Falling back to
+    the ID alone says exactly as much as is known.
+    """
+    name = str(registry.person_meta.get(pid, {}).get('name') or '').strip()
+    return f'{name} ({fmt_id_display(pid)})' if name else fmt_id_display(pid)
 
 
 def _w122_message(path: Path, parsed: dict, meta: dict) -> str:
@@ -1284,32 +1303,65 @@ def _process_source_file(path: Path, registry: Registry, findings: list[Finding]
     _collect_token_refs(rec['body'], path, registry)
 
 
-# ── Bracket and Ahnentafel checks (W103, W110, W119) ─────────────────────────
+# ── Bracket and Ahnentafel checks (W103, W110, W119, W120, W127) ─────────────
+
+# The claim types that put a parent edge in the tree, and the only ones lint may
+# derive one from: `index.py` `_derive_relationships` mints parentage from these
+# two and nothing else. `birth` joined the list in #71 - a birth register is the
+# plainest parentage evidence an archive ever holds.
+_PARENTAGE_CLAIM_TYPES = ('relationship', 'birth')
+
 
 def _build_child_edges(registry: Registry) -> dict[str, dict[str, set[str]]]:
-    """parent_pid → {child_pid: {subtype, …}} from accepted parent/child claims.
+    """parent_pid → {child_pid: {nature, …}} from the claims that derive parentage.
 
-    A parent/child edge is identified by its `roles:` map (it names both a `child`
-    and a `parent`), NOT by `subtype:` - `subtype` names the *nature* of the bond
-    (biological, adoptive, step, …; SPEC §8.2). One pair may carry several natures
-    across sources (a biological AND an adoptive edge - the co-valid NPE/adoption
-    case), so each child maps to the SET of its edge natures. Scalars and lists are
-    both accepted in either role (SPEC §8.4); a legacy `subtype: child-of` claim
-    lands here too, recorded as the nature string it carries.
+    This is lint's in-memory twin of the indexer's `relationships` table, and it
+    has to read the SAME claims the same way. A twin that reads a narrower set
+    tells the human their correctly-written record is broken and names a fix
+    that cannot work: `fha views brackets --fix` reads the index, so it will not
+    make the change lint is asking for, no matter how many times it is run.
+    Three rules, each one the indexer's:
+
+      - **Which types** - `relationship` and `birth` (`_PARENTAGE_CLAIM_TYPES`).
+        Since #71/#82 a birth claim whose `roles:` map names a child and a
+        parent puts that bond in the tree, so every check built on this map
+        (W103 brackets, W110/W119/W127 Ahnentafel, E013 summary drift) has to
+        see it too.
+      - **Never negated** - a `negated: true` claim is a researched absence,
+        "we looked and she was not his daughter" (SPEC §8.6). It must not mint
+        an edge, or lint spends its warnings asking for the very bond the
+        research denied.
+      - **Roles, scoped to `persons:`** - `_lib.parentage_parties` through
+        `_claim_parentage_pids`, the same rule and the same wrapper W126 uses.
+        A `roles:` entry naming somebody left out of `persons:` is a broken map,
+        not a secret extra parent, and reading first-role-per-person is also
+        what makes `roles: {child: [P-a], parent: [P-a]}` derive nothing rather
+        than filing a man as his own father.
+
+    A parent/child edge is identified by its `roles:` map (it names both a
+    `child` and a `parent`), NOT by `subtype:` - `subtype` names the *nature* of
+    the bond (biological, adoptive, step, …; SPEC §8.2). One pair may carry
+    several natures across sources (a biological AND an adoptive edge - the
+    co-valid NPE/adoption case), so each child maps to the SET of its edge
+    natures. Scalars and lists are both accepted in either role (SPEC §8.4); a
+    legacy `subtype: child-of` claim lands here too, recorded as the nature
+    string it carries, and a `birth` claim normally carries no subtype at all,
+    which reads as genetic - exactly what the SQLite twin's
+    `COALESCE(LOWER(c.subtype), '')` does with the same claim.
     """
     edges: dict[str, dict[str, set[str]]] = {}
     for claims in registry.source_claims.values():
         for claim in claims:
             if (not isinstance(claim, dict)
                     or str(claim.get('status', '')) != 'accepted'
-                    or claim.get('type') != 'relationship'):
+                    or claim.get('negated') in (True, 'true')
+                    or str(claim.get('type', '')) not in _PARENTAGE_CLAIM_TYPES):
                 continue
             # Role values resolve like persons: entries (wrapped IDs and
             # unambiguous names both land on their P-id; registry.alias_map is
             # populated before any Pass 2 caller runs), so brackets/Ahnentafel
             # derive the same edges the index's relationships table does.
-            child_ids = _role_pids(claim, 'child', registry.alias_map)
-            parent_ids = _role_pids(claim, 'parent', registry.alias_map)
+            child_ids, parent_ids = _claim_parentage_pids(claim, registry.alias_map)
             if not child_ids or not parent_ids:
                 continue
             subtype = str(claim.get('subtype', '')).strip().lower()
@@ -1320,7 +1372,7 @@ def _build_child_edges(registry: Registry) -> dict[str, dict[str, set[str]]]:
 
 
 def _build_children_of(registry: Registry, genetic_only: bool = False) -> dict[str, set[str]]:
-    """parent_pid → {child_pids} from accepted parent/child relationship claims.
+    """parent_pid → {child_pids} from the accepted claims that derive parentage.
 
     With `genetic_only`, an edge survives only if at least one of its natures is
     genetic (SPEC §12.2) - so the Ahnentafel NUMBERING walk skips adoptive, step,
@@ -1343,9 +1395,10 @@ def _check_bracket_lists(registry: Registry, findings: list[Finding]) -> None:
     """W103: stale couple-folder bracket lists.
 
     For each digit-prefixed directory under people/ (excluding stubs/connections),
-    derives the expected bracket list from accepted parent/child relationship
-    claims (by their roles: map) whose parent names a person residing in that
-    folder, marking a child who joined other than by birth (`Ruth (adopted)`).
+    derives the expected bracket list from the accepted parent/child claims
+    (`_build_child_edges`, by their roles: map) whose parent names a person
+    residing in that folder, marking a child who joined other than by birth
+    (`Ruth (adopted)`).
     ALL children appear - direct-line children with their own folder included -
     mirroring the bracket convention documented in TOOLING §7.
 
@@ -1535,10 +1588,19 @@ def _check_ahnentafel_placement(registry: Registry, findings: list[Finding]) -> 
     live in the couple folder whose numeric prefix equals their expected position
     (or position−1 if they hold the odd/mother slot).
 
-    Also emits W120 for every placement the map builder made by DEFAULT rather
-    than derivation: a lone linked parent with no recorded `sex:` silently
-    takes the father (even) slot, so the folder numbers above them look
-    confirmed while being a guess (the views twin reports the same set).
+    Also emits W127 and W120, the two findings about the derivation itself
+    rather than about the folders - both live here because both are read off
+    the same walk this function runs, and neither can be checked by comparing
+    folders to numbers:
+
+    - W127 (#70): `root_person` has a genetic child on record, so the walk
+      starts one generation too high and every couple folder below it is
+      numbered one generation high with it. Emitted before the walk, off the
+      same `children_of` map the walk is about to use.
+    - W120: a placement the map builder made by DEFAULT rather than derivation
+      - a lone linked parent with no recorded `sex:` silently takes the father
+      (even) slot, so the folder numbers above them look confirmed while being
+      a guess (the views twin reports the same set).
 
     Skips persons in people/connections/ or people/stubs/.
 
@@ -1565,32 +1627,29 @@ def _check_ahnentafel_placement(registry: Registry, findings: list[Finding]) -> 
     # SPEC §12.2 fixes the convention - "#1 = the children, collectively" -
     # root_person must be anchored at the YOUNGEST generation. Point it at
     # someone with a child on record instead and every direct-line couple
-    # folder below derives one generation high, while W110/W119/brackets all
-    # stay clean, because they only check that the folders match the numbers
-    # THIS SAME WALK produced - they can never see that the walk itself
-    # started one rung too high. `children_of` is the identical genetic-only,
-    # accepted-claims map the walk below is about to BFS from root_pid with,
-    # so this check sees exactly the edges that would number the tree wrong
-    # and nothing else - a suggested-only, disputed, or purely social/legal
-    # (adoptive, step, …) child claim is silent here for the same reason it
-    # is silent in the walk itself.
+    # folder below derives one generation high, and no other check can say so:
+    # W110, W119 and `fha views brackets` all only verify that the folders
+    # match the numbers THIS SAME WALK produced, so on an archive whose folders
+    # were built to the wrong anchor they are all satisfied. They cannot see
+    # that the walk itself started one rung too high. `children_of` is the
+    # identical genetic-only, accepted-claims map the walk below is about to
+    # BFS from root_pid with, so this check sees exactly the edges that would
+    # number the tree wrong and nothing else - a suggested-only, disputed,
+    # negated, or purely social/legal (adoptive, step, …) child claim is silent
+    # here for the same reason it is silent in the walk itself.
     root_children = sorted(children_of.get(root_pid, set()))
     if root_children:
-        root_name = str(registry.person_meta.get(root_pid, {}).get('name', root_pid))
-        child_pid = root_children[0]
-        child_name = str(registry.person_meta.get(child_pid, {}).get('name', child_pid))
         extra = '' if len(root_children) == 1 else f' (and {len(root_children) - 1} more)'
-        root_display = root_pid[0].upper() + root_pid[1:]
-        child_display = child_pid[0].upper() + child_pid[1:]
         findings.append(Finding('W', 'W127', registry.archive_root / 'fha.yaml',
-            f'root_person {root_name} ({root_display}) has a child on record - '
-            f'{child_name} ({child_display}){extra}. SPEC §12.2 anchors #1 at the '
-            'youngest generation, so this numbers every couple folder one '
-            'generation high while every check still reports clean, because '
-            'the folders faithfully match this (wrong) derivation. Re-anchor '
-            'root_person to a child in fha.yaml, then run `fha views brackets '
-            '--realign` to realign the already-promoted folders - or leave '
-            'this as-is if anchoring at yourself is deliberate.'))
+            f'root_person {_person_label(registry, root_pid)} has a child on record - '
+            f'{_person_label(registry, root_children[0])}{extra}. SPEC §12.2 anchors #1 at '
+            'the youngest generation, so this numbers every couple folder one '
+            'generation high - and nothing else can tell you, because W110, W119 and '
+            '`fha views brackets` only check that the folders match the numbers this '
+            'same walk derives. Re-anchor root_person to a child in fha.yaml, then run '
+            '`fha index` and `fha views brackets --realign` to realign the '
+            'already-promoted folders - or leave this as-is if anchoring at yourself '
+            'is deliberate.'))
 
     sex_gaps: list[dict] = []
     pid_to_pos = _build_ahnentafel_lint(root_pid, children_of, registry, sex_gaps)
@@ -1827,9 +1886,13 @@ def _alias_checks(registry: Registry, findings: list[Finding]) -> None:
 #
 # The person-doc `relationships:` block (SPEC §9) is the human-writable surface
 # where relationship claims are applied to the lives they concern. A SOURCED
-# entry (it carries `claim:`/`source:`) must reconcile against an accepted
-# `relationship` claim - same pair, same role, same nature (subtype). An entry
-# that cites a missing claim, or whose nature disagrees with the claim, is W115.
+# entry (it carries `claim:`/`source:`) must reconcile against an accepted kin
+# claim - same pair, same role, same nature (subtype). A kin claim is whatever
+# the indexer derives an edge from: a `relationship`, a `marriage`, or a `birth`
+# claim whose `roles:` map names a child and a parent, and never a `negated:
+# true` one (SPEC §8.6 - a researched absence derives nothing, so it backs no
+# entry and demands none). An entry that cites a missing claim, a negated one,
+# or one whose nature disagrees with the entry, is W115.
 # A sourced edge recorded on one person but not mirrored on the other is W116;
 # `fha lint --fix-reciprocal` offers to append the missing mirror. UNSOURCED
 # beliefs (no link, or `status: hypothesis`) are never findings - they land on
@@ -2011,8 +2074,17 @@ def _claim_backs_edge(
     parent now puts that bond in the tree (#71), so a person-doc entry citing
     it is reconciled, not drifting. Telling the human their correctly-written
     record disagrees with a claim the archive itself is reading would send them
-    to repair something that is not broken."""
+    to repair something that is not broken.
+
+    The same rule in the other direction is why a `negated: true` claim backs
+    nothing (SPEC §8.6). It is an accepted finding, but the finding is that the
+    bond is ABSENT - "we looked and they did not marry" - and the indexer mints
+    no edge from it. An entry that cites one is pointing at evidence for the
+    opposite of what it records, which `_check_relationships_reconciliation`
+    says in those words."""
     if str(claim.get('status', '')) != 'accepted':
+        return False
+    if claim.get('negated') in (True, 'true'):
         return False
     ctype = str(claim.get('type', ''))
     if role == 'spouse' and ctype == 'marriage':
@@ -2048,7 +2120,16 @@ def _person_reconcilable_role_label(
 ) -> str | None:
     """For the reverse check: the entry `type` this person's block would use to
     apply `claim`, or None if the claim isn't a kin edge naming them. Limited to
-    parent/child/spouse so social and power ties never over-flag."""
+    parent/child/spouse so social and power ties never over-flag.
+
+    A `negated: true` claim owes nothing either (SPEC §8.6): it records a bond
+    the research found ABSENT, so an opted-in block that leaves it out is
+    complete, not incomplete. Asking for the entry would be asking the human to
+    write down the very relationship the claim exists to deny - and if they
+    did, `fha index` would still derive no edge, so the warning could never
+    clear."""
+    if claim.get('negated') in (True, 'true'):
+        return None
     ctype = str(claim.get('type', ''))
     if ctype == 'marriage':
         # Only the couple the claim marries owes a spouse entry - a parent
@@ -2139,7 +2220,12 @@ def _check_relationships_reconciliation(
     `relationship` claim, a `marriage` claim, and - since #71 - a `birth` claim
     whose `roles:` map names a child and a parent. Both directions read the
     same list, so an entry citing a birth claim reconciles and a birth claim
-    the block omits is reported, exactly as for the other two."""
+    the block omits is reported, exactly as for the other two.
+
+    A `negated: true` claim is on neither side of that ledger (SPEC §8.6). It
+    derives no edge, so it backs no entry and it asks for none: a block that
+    omits "they did not marry" is complete. An entry that cites one anyway gets
+    its own wording, because the claim is not the thing that needs fixing."""
     for pid in sorted(registry.person_meta):
         block = registry.person_meta[pid].get('relationships')
         if not isinstance(block, list) or not block:
@@ -2167,6 +2253,20 @@ def _check_relationships_reconciliation(
                     findings.append(Finding('W', 'W115', profile_path,
                         f"relationships: {role or 'edge'} entry links claim {fmt_id_display(cid)}, "
                         f"but no such claim exists - fix the link, or add the claim to its source."))
+                    continue
+                if claim.get('negated') in (True, 'true'):
+                    # Its own branch because the generic wording ("check its
+                    # persons and roles") would send the human to inspect a
+                    # claim that is written perfectly well. A negated claim is
+                    # a researched absence (SPEC §8.6); the entry and the claim
+                    # say opposite things, and only the human knows which one
+                    # is the mistake.
+                    findings.append(Finding('W', 'W115', profile_path,
+                        f"relationships: {role or 'edge'} entry links claim {fmt_id_display(cid)}, but "
+                        f"that claim records a researched ABSENCE (`negated: true`) - it is the finding "
+                        f"that this {role or 'relationship'} did NOT hold, so it backs no edge and "
+                        f"`fha index` derives none from it. Either cite the claim that does record the "
+                        f"edge, or remove the entry if the negated claim is the settled answer."))
                     continue
                 if not _claim_backs_edge(claim, pid, other_pid, role, alias_map):
                     findings.append(Finding('W', 'W115', profile_path,
@@ -2967,14 +3067,21 @@ def _check_summary_line(
     Each [S-id] citation must have a matching accepted claim of the right type for
     this person; each [P-id] cross-link must resolve to a known person record.
     For Parents/Children, each [P-id] must also be supported by an accepted
-    child-of relationship claim (E013), not merely exist as a record.
+    parent/child edge (E013), not merely exist as a record - the same derived
+    edges the pedigree walks (`_build_child_edges`), so a `birth` claim whose
+    `roles:` map names a child and a parent backs the line and a `negated: true`
+    claim backs nothing.
     """
+    # Which accepted claim types can back each summary label. Parents/Children
+    # accept `birth` alongside `relationship` for the same reason the pedigree
+    # does (#71): a birth register naming a child and a parent IS the parentage
+    # evidence, and citing that source on the Parents line is right, not a gap.
     label_to_types = {
         'Born': ['birth', 'baptism'],
         'Died': ['death', 'burial'],
         'Married': ['marriage'],
-        'Parents': ['relationship'],
-        'Children': ['relationship'],
+        'Parents': ['relationship', 'birth'],
+        'Children': ['relationship', 'birth'],
     }
     expected_types = label_to_types.get(label, [])
 
