@@ -277,6 +277,80 @@ class ExitLadderTests(unittest.TestCase):
             self.assertIn('not reachable', '\n'.join(result.data['lines']))
 
 
+class MediaOptionalDependencyTests(unittest.TestCase):
+    """`fha media probe`'s two backends (#44), reported the way exiftool
+    (binary, warn-if-missing) and Pillow/pypdf (optional package,
+    info-if-missing) already are - ffprobe is the primary so its absence
+    warns, PyAV is only the fallback so its absence alone is informational."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        _make_archive(self.root)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _check(self, result, check_id: str) -> dict:
+        return next(c for c in result.data['checks'] if c['id'] == check_id)
+
+    def test_ffprobe_present_is_ok_and_never_warns(self) -> None:
+        with unittest.mock.patch('doctor.shutil.which',
+                                 side_effect=lambda name: '/usr/bin/%s' % name):
+            result = doctor.run_doctor(self.root, {})
+        check = self._check(result, 'ffprobe')
+        self.assertEqual(check['status'], 'ok')
+
+    def test_ffprobe_missing_warns_and_names_the_fix(self) -> None:
+        real_which = shutil.which
+
+        def fake_which(name):
+            if name == 'ffprobe':
+                return None
+            return real_which(name)
+
+        with unittest.mock.patch('doctor.shutil.which', side_effect=fake_which):
+            result = doctor.run_doctor(self.root, {})
+        check = self._check(result, 'ffprobe')
+        self.assertEqual(check['status'], 'warn')
+        self.assertGreaterEqual(result.exit_code, EXIT_WARNINGS)
+        report = '\n'.join(result.data['lines'])
+        self.assertIn('ffprobe', report)
+        self.assertIn('media probe', report)
+
+    def test_pyav_missing_is_informational_only_never_a_warning(self) -> None:
+        """PyAV is only the fallback (ffprobe is primary) - its own absence
+        must not, by itself, move the exit code the way ffprobe's does.
+
+        `run_doctor` does `import importlib.util as _ilu` LOCALLY (matching
+        the existing Jinja2/Pillow/pypdf checks right above it), so the alias
+        is bound to the one real `importlib.util` module object each call -
+        patching `find_spec` there, not a nonexistent `doctor._ilu`, is what
+        actually reaches it.
+        """
+        import importlib.util as real_ilu
+        real_find_spec = real_ilu.find_spec
+
+        def fake_find_spec(name, *a, **kw):
+            if name == 'av':
+                return None
+            return real_find_spec(name, *a, **kw)
+
+        with unittest.mock.patch('doctor.shutil.which',
+                                 side_effect=lambda name: '/usr/bin/%s' % name), \
+             unittest.mock.patch('importlib.util.find_spec', side_effect=fake_find_spec):
+            result = doctor.run_doctor(self.root, {})
+        check = self._check(result, 'pyav')
+        self.assertEqual(check['status'], 'info')
+
+    def test_pyav_present_is_ok(self) -> None:
+        with unittest.mock.patch('doctor.shutil.which',
+                                 side_effect=lambda name: '/usr/bin/%s' % name):
+            result = doctor.run_doctor(self.root, {})
+        check = self._check(result, 'pyav')
+        self.assertIn(check['status'], ('ok', 'info'))   # 'ok' when PyAV is actually installed here
+
+
 class BackupStampTests(unittest.TestCase):
     """The backup reminder reads real state from `.cache/last_backup.json`
     (written by `fha backup`) - the actual date and zip when a stamp exists,

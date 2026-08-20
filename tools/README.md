@@ -582,6 +582,33 @@ from before the write" is an assertion about content, not about call order - and
 injects copy failures at `_lib.shutil.copy2` rather than with `chmod` (CI runs as
 root, where a read-only folder is still writable).
 
+## fha media - implementation status
+
+Two read-only verbs (`media.py`, TOOLING §6a, issues #43/#44) that answer a question before `fha
+process` files something - registered as the `media` subcommand group beside `fha confirm`/`fha
+gedcom`'s own sub-subcommand pattern. Both retire an `import-recordings` skill owner exception
+(`.claude/skills/import-recordings/GAP.md`, both entries now closed); `fha media dedupe` ports
+`find_duplicate_media.py`'s (the retired interim script) coverage-walking and dedup logic rather
+than re-deriving it, with roots resolved through `_lib.get_roots`/`resolve_path` instead of that
+script's own hand-rolled YAML reader.
+
+| Command | Flags | Status | Notes |
+|---|---|---|---|
+| `fha media dedupe FILE [FILE...]` | `--root`, `--json PATH`, `--quiet` | ✓ | Content-hashes each incoming file against everything filed under the archive's `documents`/`photos` roots - size-compare first (directory-entry read, opens nothing), SHA-256 only on a size collision. `new` (exit 0) is a coverage statement, not a search result: it requires every configured media root to be resolved and readable, every folder under those roots enumerated (hidden folders and folders behind a directory symlink included, each visited once), the same audio/video rule applied to both sides with anything outside it reported as not-checked, every same-size archived candidate opened and hashed, and the incoming batch compared against itself - short of any one of those the answer is `indeterminate` (exit 3), never `new`. A file already living in a media root is reported `duplicate … already filed`, never cleared. **Its own four-code exit ladder, not the suite's usual one:** 0 = clean (checked everything, no match), 1 = usage/config error, 2 = duplicate found (a clean answer, not a failure), 3 = coverage incomplete - see the module docstring before assuming the numbers mean what they mean elsewhere in the suite. `--json PATH` writes the findings as a report file in alias-form paths only (`documents/…`, `incoming/…`), refused before the first byte is hashed if the path would land on an incoming recording, an archived one, `fha.yaml`, or inside a media root. No `--media-root` override (unlike the interim script) - the real verb always resolves the archive's own configured roots |
+| `fha media probe FILE` | `--root`, `--json` | ✓ | Reads a recording's true duration and container `creation_time` (`ffprobe` primary backend, optional dependency reported by `fha doctor` the way exiftool is; PyAV fallback when `ffprobe` is absent, the same library `transcribe-audio`'s `transcribe_audio.py` already uses) and derives the local start time, following SKILL.md step 4's formula: `com.apple.quicktime.creationdate` settles the offset outright when present (local time *with* its own offset, naming the same instant as `creation_time`); failing that, the filename clock is solved for the offset (`offset = filename_time + duration − creation_time`, rounded to the nearest quarter hour, rejected past a couple of minutes' miss); failing both, reports `offset_source: none` and says so plainly - never a silent fallback to the machine's own timezone or the file's filesystem mtime. Flags `crosses_midnight` when the derived local start's calendar date differs from the UTC date. Ordinary 0/1/2/3 ladder: 0 offset settled, 1 duration+`creation_time` read but no offset, 2 no usable creation timestamp at all, 3 tool failure (unreadable file, or neither backend available). Path resolution is forgiving like `fha process` (as typed, retried under the archive root) |
+
+Automated tests: `tests/test_media.py` covers the dedupe coverage invariant as real fixtures - an
+unhashable same-size candidate, a configured-but-missing root, a directory symlink, a symlink loop
+(both skip-guarded where this platform cannot create one), and a batch containing its own duplicate
+- plus the two named consequences (already-filed self-exclusion, a narrower root answering the same
+question), the `--json` collision refusals, and `resolve_media_roots`'s missing-vs-unconfigured
+distinction. The probe arithmetic is pinned as pure functions (`_parse_iso8601`,
+`_parse_filename_clock`, `_solve_offset_from_filename`, `_derive_local_start`, including the
+`filename_time + duration == creation_time` cross-check GAP.md calls out) and exercised through
+`run_media_probe` against a MOCKED `ffprobe` backend (never a real binary dependency in tests) -
+quicktime-creationdate-settles, filename-clock-solves, neither-available, and the midnight-straddle
+case. `tests/test_doctor.py`'s `MediaOptionalDependencyTests` covers the `fha doctor` reporting.
+
 ## fha site - implementation status
 
 The static-HTML family explorer (TOOLING §12). Reads structured data from
@@ -873,7 +900,9 @@ Automated tests: `tests/test_wikitree.py` builds a small on-disk archive (profil
 | Archive root + fha.yaml | ✓ | Fatal exit 2 if either absent/unparseable |
 | Mapped roots reachable | ✓ | ✓/✗ per root; unreachable → exit 2 |
 | exiftool on PATH | ✓ | ✗ → exit 1 (warning; not a hard dep for most commands) |
+| ffprobe on PATH (`fha media probe`'s primary backend, #44) | ✓ | ✗ → exit 1 (warning) - same posture as exiftool, since a missing binary blocks a feature, not the archive |
 | Python deps (PyYAML) | ✓ | ✗ → exit 2 |
+| PyAV installed (`fha media probe`'s fallback when ffprobe is absent) | ✓ | ✗ → informational only, same posture as Pillow/pypdf - it is only the fallback, so its own absence must not move the exit code the way ffprobe's does |
 | Index freshness | ✓ | absent/stale → exit 1 (D5) |
 | Photoindex freshness | ✓ | schema probed before "fresh"; absent/stale/unreadable → exit 1 (D5). Stale also covers a settings change: the scan stamps the `photos_ignore:` set and the configured `roots: photos` value into the catalog's `meta` row, and a mismatch reads stale (neither edit moves a photo's mtime, so the watermark cannot see it). A catalog stamped by no build has nothing to compare and is never stale on this ground |
 | Lint summary | ✓ | import-and-call `run_lint_silent`; E-level findings → exit 2 |

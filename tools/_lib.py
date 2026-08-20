@@ -782,6 +782,24 @@ def format_exiftool_error(command: str = 'fha process') -> str:
     )
 
 
+def format_ffprobe_error(command: str = 'fha media probe') -> str:
+    """Explain that a media-metadata feature needs ffprobe and name the fix.
+
+    `ffprobe` (part of the ffmpeg distribution) is the primary backend for
+    reading a recording's container metadata (duration, creation_time,
+    quicktime creationdate); PyAV is the fallback `fha media probe` also
+    tries before giving up. Mirrors `format_exiftool_error`'s shape - a
+    missing binary is an environment problem, not a data error, so the
+    message names the capability and where to verify it after installing.
+    """
+    return (
+        f'{command} needs ffprobe (part of ffmpeg) or the PyAV Python package to read a '
+        f"recording's container metadata. Install ffmpeg and make sure the `ffprobe` "
+        f'command works, or install PyAV, then run `{command}` again. '
+        'Run `fha doctor` to check your archive.'
+    )
+
+
 def format_yaml_dependency_error() -> str:
     """Return the central missing-PyYAML message used before config parsing.
 

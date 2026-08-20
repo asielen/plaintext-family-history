@@ -11,8 +11,9 @@ code 1 (warning), not 2 (error).  Design decision D5, TOOLING §3a.
 Checks (in order):
   1. Archive root present, fha.yaml parses              [fatal exit 2 if bad]
   2. Mapped roots (photos/, documents/, …) reachable
-  3. exiftool on PATH
-  4. Python deps (PyYAML; Jinja2/Pillow for `fha site`; pypdf for `fha source extract`)
+  3. exiftool on PATH; ffprobe on PATH (`fha media probe`'s primary backend, #44)
+  4. Python deps (PyYAML; Jinja2/Pillow for `fha site`; pypdf for `fha source extract`;
+                  PyAV as ffprobe's fallback for `fha media probe`)
   5. Index freshness    (.cache/index.sqlite vs newest record mtime)
   6. Photoindex freshness  (.cache/photos.sqlite vs photos root mtime)
   7. Lint summary       (E/W counts, import-and-call, no shell-out)
@@ -1099,6 +1100,27 @@ def run_doctor(archive_root: Path, fha_config: dict) -> Result:
         )
         checks.append({'id': 'exiftool', 'status': 'warn', 'detail': 'not found on PATH', 'next_step': doctor_cmd})
         worst = max(worst, EXIT_WARNINGS)
+
+    # ffprobe (part of ffmpeg) is `fha media probe`'s primary backend (#44) -
+    # reported the same way exiftool is above, because both are external
+    # binaries one archive feature depends on and neither ships with Python.
+    # PyAV is that verb's fallback when ffprobe is missing (already the
+    # transcribe-audio skill's own fallback for decoding, `transcribe_audio.py`
+    # `prepare_audio`), so its absence alone is informational like Pillow/pypdf
+    # below - only when BOTH are missing does `fha media probe` actually stop.
+    ffprobe_path = shutil.which('ffprobe')
+    if ffprobe_path:
+        lines.append(f'ffprobe:   {_OK} {ffprobe_path}  next: no action needed')
+        checks.append({'id': 'ffprobe', 'status': 'ok', 'detail': ffprobe_path, 'next_step': None})
+    else:
+        lines.append(
+            f'ffprobe:   {_WARN} not found on PATH (fha media probe)  '
+            f'next: install ffmpeg, then run `{doctor_cmd}`'
+        )
+        checks.append({'id': 'ffprobe', 'status': 'warn', 'detail': 'not found on PATH',
+                       'next_step': doctor_cmd})
+        worst = max(worst, EXIT_WARNINGS)
+
     lines.append(f'python deps (PyYAML): {_OK}  next: no action needed')
     checks.append({'id': 'pyyaml', 'status': 'ok', 'detail': 'installed', 'next_step': None})
 
@@ -1140,6 +1162,19 @@ def run_doctor(archive_root: Path, fha_config: dict) -> Result:
         )
         checks.append({'id': 'pypdf', 'status': 'info', 'detail': 'not installed (optional)',
                        'next_step': pip_command('pypdf')})
+    # PyAV mirrors Pillow/pypdf's posture: purely optional, since ffprobe
+    # (checked above) is `fha media probe`'s primary backend and PyAV is only
+    # the fallback - absence is informational, never a warning, on its own.
+    if _ilu.find_spec('av') is not None:
+        lines.append(f'PyAV (fha media probe fallback): {_OK}  next: no action needed')
+        checks.append({'id': 'pyav', 'status': 'ok', 'detail': 'installed', 'next_step': None})
+    else:
+        lines.append(
+            'PyAV (fha media probe fallback): not installed (optional - only used when '
+            f'ffprobe is missing)  next: `{pip_command("av")}` if you also do not have ffmpeg'
+        )
+        checks.append({'id': 'pyav', 'status': 'info', 'detail': 'not installed (optional)',
+                       'next_step': pip_command('av')})
     lines.append('')
 
     idx_status, idx_delta = _index_freshness(archive_root)

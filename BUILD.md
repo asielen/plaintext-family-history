@@ -1965,6 +1965,52 @@ activity. Docs: TOOLING §13c, TOOLING_INGESTION §5 + status,
 browser-companion/README, AGENTS.md, GETTING_STARTED. Test:
 `test_manifest_vendors_the_browser_companion` in `tests/test_scaffold.py`.
 
+### M11.8 - `fha media dedupe` / `fha media probe` (✓ shipped, issues #43/#44)
+
+New `tools/media.py`, registered as the `media` subcommand group (`fha media dedupe` / `fha media
+probe`) beside `fha process` (TOOLING §6a) - retires the two `_STANDARD.md` §6 owner exceptions
+`import-recordings/GAP.md` recorded (both entries there now marked CLOSED).
+
+**`fha media dedupe FILE [FILE...] [--root PATH] [--json PATH] [--quiet]`** - content-hash dedupe,
+porting `find_duplicate_media.py`'s (the interim skill script) coverage-walking and dedup logic
+rather than re-deriving it: every review-round finding that script's own history recorded - an
+unhashable same-size candidate, a directory symlink, a symlink loop, a configured-but-missing root,
+a batch containing its own duplicate - is caught the same way here, proven with guard-test fixtures
+for each in `tests/test_media.py`. Roots resolve through `_lib.get_roots`/`resolve_path` (the tool
+suite's own canonical roots helper), not the interim script's hand-rolled YAML reader, which existed
+only because that script had no `_lib` to import running standalone. Its own bespoke exit-code
+ladder is preserved exactly (0 = checked everything, no match; 1 = usage/config error; 2 = duplicate
+found; 3 = coverage could not be completed) - a deliberate departure from the rest of the suite's
+0/1/2/3 = clean/warnings/errors/failure convention, documented prominently in the module docstring
+so it is not mistaken for the ordinary ladder. `--json PATH` writes the findings as a report file,
+refused before any hashing if the path would land on an incoming recording, an archived one,
+`fha.yaml`, or inside a media root.
+
+**`fha media probe FILE [--root PATH] [--json]`** - reads a recording's true duration and container
+`creation_time` via `ffprobe` (primary backend, reported by `fha doctor` the way exiftool is) or
+PyAV (fallback, the same library `transcribe-audio`'s `transcribe_audio.py` already uses), and
+derives the local start time following SKILL.md step 4's formula exactly: `com.apple.
+quicktime.creationdate` settles the offset outright when present; failing that, the filename clock
+is solved for the offset (`offset = filename_time + duration − creation_time`, rounded to the
+nearest quarter hour, rejected past a couple of minutes' miss); failing both, the verb reports
+`offset_source: none` and says so plainly - never a silent fallback to the machine's own timezone or
+the file's mtime. Flags the midnight-straddle case (derived local date ≠ UTC date). Ordinary
+0/1/2/3 exit ladder (0 offset settled, 1 no offset but duration+creation_time read, 2 no usable
+timestamp at all, 3 tool failure). Verified against a real `ffprobe`-probed synthetic file during
+development (the module docstring's arithmetic is exercised by mocked-JSON fixtures in
+`tests/test_media.py`, matching the project's rule against a hard binary dependency in tests) - the
+derived local start recovered the filename's own timestamp exactly, and the midnight-straddle flag
+fired correctly.
+
+`import-recordings/SKILL.md` steps 3-4 now call these verbs directly; `find_duplicate_media.py` is
+retired in place (its own docstring says so - `tests/test_import_recordings.py` still exercises it
+as a historical artifact, since `attribute_speakers.py` and `backup.py` both still cite pieces of it
+as a design precedent and deleting it would orphan those citations). `fha doctor` reports `ffprobe`
+(warn if missing, matching exiftool) and PyAV (info if missing, matching Pillow/pypdf - it is only
+the fallback). Tests: `tests/test_media.py` (dedupe coverage-invariant fixtures, probe arithmetic,
+mocked-ffprobe-backend `run_media_probe` cases); `tests/test_doctor.py`
+(`MediaOptionalDependencyTests`).
+
 ---
 
 ## Testing invariants (all PRs)

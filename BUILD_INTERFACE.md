@@ -230,7 +230,7 @@ Authored against real phone-app exports in a live archive on 2026-08-11..13 and 
 
 The recordings on-ramp: dedupe by content, date from the container, group by sitting into one session source, always a fresh whisper pass beside the app transcript, speaker labels only under gates and speaker names only on the human's yes.
 
-**Orchestrates:** `fha find` (and `fha search` for a same-sitting lead when the bytes differ), `fha process` (`--type interview --slug`, then `--more FILE ROLE` once per companion), `fha index`, `fha lint`; the skill's own `scripts/` for whisper, label transfer, and the size-then-SHA-256 duplicate check; `ffprobe` for the container probe. The last two are the interim enactments recorded in `GAP.md` (wanted: `fha media dedupe` #43, `fha media probe` #44 - core-tool backlog).
+**Orchestrates:** `fha find` (and `fha search` for a same-sitting lead when the bytes differ), `fha process` (`--type interview --slug`, then `--more FILE ROLE` once per companion), `fha media dedupe` and `fha media probe` (shipped `tools/media.py`, issues #43/#44 - see `GAP.md`, both entries now closed), `fha index`, `fha lint`; the skill's own `scripts/` for whisper and label transfer only.
 
 **Done when:** see the skill's own "Done when" - one sitting lands as one folder under one S-id with every companion attached by its own `--more` call; a byte-identical repeat is skipped and reported with the path it duplicates; a pair failing the 50% gate degrades to two plain transcripts; speaker → person is a table and no name is written until answered.
 
