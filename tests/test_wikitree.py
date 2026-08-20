@@ -154,6 +154,24 @@ class WikitreeRenderTests(unittest.TestCase):
         self.assertTrue(text.rstrip().endswith('<references/>'))
         self.assertIn('== Sources ==', text)
 
+    def test_undecodable_cited_source_falls_back_to_title_not_crash(self):
+        # `_source_reference`'s read is wrapped in a bare `except Exception`,
+        # which already catches `UnicodeDecodeError` (a ValueError) - unlike
+        # the subject-record site, this one never needed `on_decode_error` to
+        # avoid crashing. Unit-level: going through `run_wikitree` instead
+        # would only prove `_restricted_source_refs`' EARLIER fail-closed scan
+        # (also already decode-safe) refuses the export first, never reaching
+        # this fallback. Pin the fallback directly: a source saved in another
+        # codepage degrades to its indexed title as the citation text, the
+        # same graceful fallback an unreadable/missing source already gets.
+        (self.root / 'sources' / 'birth.md').write_bytes(
+            ('---\nid: S-0000000001\ntitle: Birth cert\nsource_type: vital-record\n'
+             'citation: "Akt urodzenia, Kraków."\n---\n').encode('cp1252')
+        )
+        source_row = {'id': 'S-0000000001', 'title': 'Birth cert', 'path': 'sources/birth.md'}
+        citation = wikitree._source_reference(self.root, source_row)
+        self.assertEqual(citation, 'Birth cert')
+
     def _reopen(self):
         conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
         conn.row_factory = sqlite3.Row
@@ -268,6 +286,41 @@ class WikitreeRenderTests(unittest.TestCase):
         r = wikitree.run_wikitree(self.root, 'p-0000000001')
         self.assertEqual(r['status'], 'unreadable-subject')
         self.assertIsNone(r['text'])
+
+    def test_undecodable_subject_record_refused_not_crashed(self):
+        # #68's residual gap: `read_record` raises `UnicodeDecodeError` unless
+        # a caller supplies `on_decode_error`, and _wikitree_payload's subject
+        # read (the export's own entry point) called it bare. A person record
+        # saved in another codepage - cp1252 is a Windows editor's default,
+        # and the accented names this archive is full of are exactly the
+        # bytes that differ from UTF-8 - crashed the export outright instead
+        # of refusing like the malformed-record case just above. Same
+        # fail-closed posture, same 'unreadable-subject' status: the subject's
+        # own restriction marker cannot be confirmed, so nothing publishes.
+        (self.root / 'people' / 'subject.md').write_bytes(
+            ('---\nid: P-0000000001\nname: John Smith\ntier: curated\n'
+             'living: false\n---\n\n# John Smith\n\nBorn in Kraków.\n').encode('cp1252')
+        )
+        _freshen_index(self.root)
+        r = wikitree.run_wikitree(self.root, 'p-0000000001')
+        self.assertEqual(r['status'], 'unreadable-subject')
+        self.assertIsNone(r['text'])
+        # The message must name the real cause (encoding), not a generic
+        # parse error, and must not surface a raw traceback to the human.
+        self.assertTrue(any('UTF-8' in m for m in r['messages']),
+                         r['messages'])
+
+    def test_undecodable_subject_record_bytes_are_never_touched(self):
+        path = self.root / 'people' / 'subject.md'
+        path.write_bytes(
+            ('---\nid: P-0000000001\nname: John Smith\ntier: curated\n'
+             'living: false\n---\n\nBorn in Kraków.\n').encode('cp1252')
+        )
+        before = path.read_bytes()
+        _freshen_index(self.root)
+        wikitree.run_wikitree(self.root, 'p-0000000001')
+        self.assertEqual(before, path.read_bytes(),
+                          "the file is the human's and is not damaged - never touch it")
 
     def test_restricted_source_research_note_withheld(self):
         conn = self._reopen()

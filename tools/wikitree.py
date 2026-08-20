@@ -107,6 +107,7 @@ from _lib import (
     read_record,
     resolve_root_arg,
     strip_unaccepted_drafts,
+    undecodable_file_recorder,
 )
 
 configure_utf8_stdout()
@@ -1021,13 +1022,32 @@ def _wikitree_payload(archive_root: Path, pid: str) -> dict:
                         'wikitree refuses living/unknown subjects (external-facing output).'
                     ]}
 
-        rec = read_record(archive_root / person['path'])
         # The subject's own restriction marker lives in this record, not the
         # index. read_record does not raise on a malformed record - it returns
         # parse_errors with empty/partial meta, which would slip a `restricted:`
         # (or a whole record) past every check below and publish it. Refuse
         # before any privacy scan runs: a subject whose record we cannot read is
         # assumed private (AGENTS.md privacy rule, fail closed).
+        #
+        # A record whose BYTES are not UTF-8 (#68's residual gap) is the same
+        # "cannot confirm the privacy markers" case, not a different one - so
+        # it gets the on_decode_error channel (see `_lib.read_record`'s
+        # docstring) rather than letting the bare read raise, and the same
+        # 'unreadable-subject' refusal, worded for the actual cause instead of
+        # a parse error.
+        undecodable: list[Path] = []
+        rec = read_record(archive_root / person['path'],
+                           on_decode_error=undecodable_file_recorder(undecodable))
+        if undecodable:
+            return {'status': 'unreadable-subject', 'text': None,
+                    'messages': [
+                        f"{fmt_id_display(pid)}'s record ({person['path']}) is not saved as "
+                        'UTF-8 text, so WikiTree cannot confirm whether its privacy markers '
+                        '(restricted, living) are set and will not publish from it. The file '
+                        'itself is fine, only its encoding is - open it and save it again '
+                        'choosing UTF-8 (in Notepad: Save As, then pick UTF-8 from the '
+                        'Encoding menu), then export again.'
+                    ]}
         if rec['parse_errors']:
             detail = '; '.join(msg for _, msg in rec['parse_errors'])
             return {'status': 'unreadable-subject', 'text': None,

@@ -792,7 +792,7 @@
     {
       "path": ".fha/tools/wikitree.py",
       "category": "operating",
-      "sha256": "6b861438b39d0c22912e799661245c6973ee5e90d9732974aa52a8355bc153cf",
+      "sha256": "644a99b61b667e7aae9eda6c5dfb596bf79f51ea13eb1f2917913f5931442aef",
       "spec_version": "1.2",
       "src": "tools/wikitree.py"
     },
