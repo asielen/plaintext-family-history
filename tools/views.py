@@ -1279,7 +1279,8 @@ def _generate_draft_queue(
 
     The queue lists each uncited source with its accepted claims so the
     biographer can see what facts still need to be woven into the prose.
-    Returns the path written, or None if the person has no profile in the index.
+    Returns the path written, or None if the person has no profile in the
+    index, or if the profile file exists but will not decode as UTF-8 (#68).
     """
     profile_p = _profile_path_for(conn, person_id, archive_root)
     if not profile_p:
@@ -1289,7 +1290,20 @@ def _generate_draft_queue(
     name_row = conn.execute('SELECT name FROM persons WHERE id = ?', (person_id,)).fetchone()
     person_name = name_row['name'] if name_row else person_id
 
-    rec = read_record(profile_p)
+    # Same skip-and-warn idiom as the missing-profile case above, extended to
+    # a profile that exists but will not decode as UTF-8 (#68): without
+    # `on_decode_error`, `read_record` raises and takes the whole batch run
+    # down over one person's file saved in another encoding (cp1252, a
+    # Windows editor's default). The cause named here is deliberately
+    # different from "no profile found" - the fix is re-saving the file's
+    # encoding, not filing a profile that is already there.
+    rec = read_record(profile_p, on_decode_error=lambda p: None)
+    if rec['undecodable']:
+        print(f'WARNING: {profile_p.name} is not saved as UTF-8 text - skipped. '
+              'Open it and save it again choosing UTF-8 (in Notepad: Save As, '
+              'then pick UTF-8 from the Encoding menu), then run '
+              '`fha views draft-queue` again.', file=sys.stderr)
+        return None
     body = rec['body']
     # Citation tokens (new `[[S-…]]` or legacy `[S-…]`); filter to S- sources.
     cited_sids: set[str] = {

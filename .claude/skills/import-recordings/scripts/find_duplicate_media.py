@@ -2,7 +2,23 @@
 """
 find_duplicate_media.py - is this recording already filed, by content not by name?
 
-WHY THIS EXISTS
+RETIRED (kept as a historical/reference artifact, not invoked by the skill)
+=============================================================================
+`fha media dedupe` shipped (project issue #43, `tools/media.py`) and
+`import-recordings/SKILL.md` now calls that verb instead of this script - see
+this folder's `GAP.md` for the closed-gap record. This file is no longer part
+of the skill's live flow, and is kept only because it is still cited as the
+canonical source of two things `tools/media.py` (which CAN import `_lib`) and
+`attribute_speakers.py` (which, like this file, must run standalone with no
+archive present, so it cannot import a sibling script) still point back to:
+the coverage-invariant logic `tools/media.py` ported, and the path-identity
+helpers (`same_file`/`could_be_same_file`/`canonical_path`) `attribute_speakers.py`
+duplicates rather than shares, by design, for the same standalone-script reason.
+Do not point the skill back at this file; if it ever needs deleting, update
+those two citations (`attribute_speakers.py`'s own comment, and `backup.py`'s
+`walk_covering` precedent note) in the same change.
+
+WHY THIS EXISTED
 ===============
 A real 16-zip phone export held six recordings that were byte-identical to audio
 already in the archive. Nothing in the filenames said so: the app had renamed
@@ -10,9 +26,9 @@ them to relative weekday labels ("Thursday at 3-11 PM"), so the same afternoon
 arrived three times under three different names. Imported blind, one recording
 gets two source records and its claims split between them.
 
-`fha` has no content-dedupe verb yet (wanted: `fha media dedupe`, project issue
-#43, recorded in this folder's GAP.md). Until it ships, the import-recordings
-skill runs this script instead of guessing from filenames or from a full-text
+`fha` had no content-dedupe verb (wanted: `fha media dedupe`, project issue
+#43, recorded in this folder's GAP.md). Until it shipped, the import-recordings
+skill ran this script instead of guessing from filenames or from a full-text
 search - a text search finds a transcript that reads alike, which is a different
 question and a much weaker answer.
 

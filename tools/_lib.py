@@ -191,6 +191,9 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    is_valid_id               - syntactic validity check
 #    id_type_of                - extract P/S/C/L/H type prefix
 #    fmt_id_display            - uppercase the type prefix for display (p-xxx → P-xxx)
+#    contradiction_question_heading - value:-quoting ## Q: heading for a
+#                              contradicts: pair, shared by lint.py's
+#                              --spawn-questions and confirm.py's xref write
 #    scan_ids_in_tree          - full-tree scan used by id mint for collision checking
 #
 #  Filename / path helpers
@@ -788,6 +791,24 @@ def format_exiftool_error(command: str = 'fha process') -> str:
     return (
         f'{command} needs exiftool for photo metadata. Install exiftool and make '
         f'sure the `exiftool` command works, then run `{command}` again. '
+        'Run `fha doctor` to check your archive.'
+    )
+
+
+def format_ffprobe_error(command: str = 'fha media probe') -> str:
+    """Explain that a media-metadata feature needs ffprobe and name the fix.
+
+    `ffprobe` (part of the ffmpeg distribution) is the primary backend for
+    reading a recording's container metadata (duration, creation_time,
+    quicktime creationdate); PyAV is the fallback `fha media probe` also
+    tries before giving up. Mirrors `format_exiftool_error`'s shape - a
+    missing binary is an environment problem, not a data error, so the
+    message names the capability and where to verify it after installing.
+    """
+    return (
+        f'{command} needs ffprobe (part of ffmpeg) or the PyAV Python package to read a '
+        f"recording's container metadata. Install ffmpeg and make sure the `ffprobe` "
+        f'command works, or install PyAV, then run `{command}` again. '
         'Run `fha doctor` to check your archive.'
     )
 
@@ -4127,6 +4148,44 @@ def fmt_id_display(id_str: str) -> str:
     if not id_str:
         return id_str
     return id_str[0].upper() + id_str[1:]
+
+
+def contradiction_question_heading(cid: str, cval: str | None, tid: str, tval: str | None) -> str:
+    """Phrase a `## Q:` heading for one `contradicts:` pair (issue #55).
+
+    Two call sites spawn an `origin: tool` question to satisfy lint's E009
+    ("contradicts: with no open question"): `fha lint --spawn-questions` and
+    `fha confirm xref --relation contradicts`. Both must word the heading
+    identically - a human reading `notes/questions.md` should never be able
+    to tell which command wrote a given entry, and a second copy of this
+    logic is a second place for the wording to drift out of sync (as it did
+    until this function existed: confirm.py's version echoed a bare "C-a
+    contradicts C-b" while lint's quoted the claims' own text). Quoting each
+    claim's `value:` turns the heading into the actual research question
+    ("C-a says X, but C-b says Y - which is right?") instead of a fact the
+    reader already knows (a contradiction exists) with no hint what it is
+    about.
+
+    `cval`/`tval` are the two claims' raw `value:` text, or `None`/empty when
+    a caller could not resolve one (a dangling id, or a hand-built call in a
+    test) - this degrades to a plainer heading rather than raising, since a
+    spawned question with a weaker heading is still far better than a
+    crashed write.
+    """
+    a_disp, b_disp = fmt_id_display(cid), fmt_id_display(tid)
+
+    def _snippet(v: str | None) -> str:
+        v = (v or '').strip()
+        return v if len(v) <= 60 else v[:60] + '...'
+
+    a_val, b_val = _snippet(cval), _snippet(tval)
+    if a_val and b_val:
+        return f'{a_disp} says "{a_val}", but {b_disp} says "{b_val}" - which is right?'
+    if a_val or b_val:
+        known_disp, known_val = (a_disp, a_val) if a_val else (b_disp, b_val)
+        other_disp = b_disp if a_val else a_disp
+        return f'{known_disp} says "{known_val}", but {other_disp} disagrees - which is right?'
+    return f'{a_disp} and {b_disp} disagree - which is right?'
 
 
 def normalize_place_text(text: str | None) -> str:

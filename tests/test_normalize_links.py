@@ -22,7 +22,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
 
 import normalize_links
-from _lib import EXIT_CLEAN, EXIT_ERRORS
+from _lib import EXIT_CLEAN, EXIT_ERRORS, EXIT_WARNINGS
 
 SOURCE_ID = 'S-fa00000001'
 
@@ -138,6 +138,65 @@ class NormalizeLinksDryRunTests(unittest.TestCase):
             text=True, capture_output=True, check=False)
         self.assertEqual(both.returncode, 2, both.stderr + both.stdout)
         self.assertIn('pick one', both.stderr)
+
+
+class NormalizeLinksUndecodableTests(unittest.TestCase):
+    """#68: `_scan_records` (the alias/name resolve-map builder) walks every
+    people/ and sources/ record. A file saved in another encoding (cp1252, a
+    Windows editor's default) must not crash the whole `fha normalize-links`
+    run - both loops (people/, sources/) share this one test class because
+    they are the same shape: skip the bad file, keep scanning, report once
+    via the Result the engine returns."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.archive = _make_archive(Path(self._tmp.name))
+        self.record = self.archive / 'sources' / 'other' / f'family-album_{SOURCE_ID}.md'
+        (self.archive / 'people').mkdir(parents=True)
+        # A readable person, so the fix can be checked NOT to lose good data
+        # alongside the bad file.
+        (self.archive / 'people' / 'smith__ken_P-1111111111.md').write_text(
+            '---\nid: P-1111111111\nname: Ken Smith\nliving: false\n---\n',
+            encoding='utf-8')
+        # One undecodable file in EACH loop.
+        (self.archive / 'people' / 'muller__anne_P-2222222222.md').write_bytes(
+            ('---\nid: P-2222222222\nname: Anne Müller\nliving: false\n---\n'
+             ).encode('cp1252'))
+        (self.archive / 'sources' / 'other' / 'krakow_S-2222222222.md').write_bytes((
+            '---\nid: S-2222222222\ntitle: Kraków deed\n---\n\nBorn in Kraków.\n'
+        ).encode('cp1252'))
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_scan_records_does_not_crash(self) -> None:
+        # Pre-fix, `_scan_records` calls `read_record(path)` with no
+        # `on_decode_error` in either loop, so a bad decode raises straight
+        # out of the walk (read_record's default) and the whole run crashes.
+        records = normalize_links._scan_records(
+            self.archive,
+            on_decode_error=lambda p: None,
+        )
+        ids = {r['id'] for r in records}
+        self.assertIn('p-1111111111', ids)   # the readable person still scanned
+        self.assertIn(SOURCE_ID.lower(), ids)  # the readable source still scanned
+        self.assertNotIn('p-2222222222', ids)  # the bad person was skipped
+        self.assertNotIn('s-2222222222', ids)  # the bad source was skipped
+
+    def test_run_normalize_links_does_not_crash_and_still_rewrites(self) -> None:
+        result = normalize_links.run_normalize_links(self.archive, {}, write=True)
+        self.assertEqual(result.exit_code, EXIT_WARNINGS)
+        text = self.record.read_text(encoding='utf-8')
+        self.assertIn(f'[[{SOURCE_ID}]]', text)   # the good record still normalized
+
+    def test_result_names_both_skipped_files(self) -> None:
+        result = normalize_links.run_normalize_links(self.archive, {})
+        warnings = ' '.join(m.text for m in result.messages if m.level == 'warning')
+        self.assertNotIn('Traceback', warnings)
+        self.assertIn('2 file(s)', warnings)
+        self.assertIn('muller__anne_P-2222222222.md', warnings)
+        self.assertIn('krakow_S-2222222222.md', warnings)
+        self.assertIn('not saved as UTF-8', warnings)
 
 
 if __name__ == '__main__':

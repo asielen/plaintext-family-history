@@ -17,7 +17,9 @@ load-bearing guarantees this file checks:
     order (the shared `_lib.stub_filename` takes (name, pid) instead).
 """
 
+import contextlib
 import datetime
+import io
 import os
 import sys
 import tempfile
@@ -470,6 +472,94 @@ class StubsModuleWrapperTests(unittest.TestCase):
             stubs._stub_content('P-aaaaaaaaaa', 'Jane Doe'),
             render_stub_content('P-aaaaaaaaaa', 'Jane Doe'),
         )
+
+
+_GOOD_PERSON = '''---
+id: P-1111111111
+name: Known Person
+living: false
+---
+'''
+
+_GOOD_SOURCE = '''---
+id: S-1111111111
+title: Test source
+source_type: other
+---
+
+## Claims
+```yaml
+- id: C-1111111111
+  type: birth
+  persons: ["[[P-9999999999|Ghost Person]]"]
+  value: born sometime
+  status: suggested
+  confidence: low
+```
+'''
+
+
+class UndecodableFileScanTests(unittest.TestCase):
+    """#68: `_collect_unresolved_persons` scans every people/ and sources/
+    file to build known-pid and unresolved-pid sets - a whole-archive walk,
+    so one file saved in another encoding (cp1252, a Windows editor's
+    default) must not crash the whole `fha stubs` run. Both loops (people/
+    at line ~78, sources/ at line ~96) share this one test class because
+    they are the same shape: skip the bad file, keep scanning, report once.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        (self.root / 'people').mkdir(parents=True)
+        (self.root / 'sources').mkdir(parents=True)
+        (self.root / 'people' / 'known__person_P-1111111111.md').write_text(
+            _GOOD_PERSON, encoding='utf-8')
+        (self.root / 'sources' / 'test_S-1111111111.md').write_text(
+            _GOOD_SOURCE, encoding='utf-8')
+        # One undecodable file in EACH loop - a person record and a source
+        # record, both saved as cp1252 rather than UTF-8.
+        (self.root / 'people' / 'muller__anne_P-2222222222.md').write_bytes(
+            ('---\nid: P-2222222222\nname: Anne Müller\nliving: false\n---\n'
+             ).encode('cp1252'))
+        (self.root / 'sources' / 'krakow_S-2222222222.md').write_bytes((
+            '---\nid: S-2222222222\ntitle: Kraków deed\nsource_type: other\n---\n\n'
+            '## Claims\n```yaml\n- id: C-3333333333\n'
+            '  type: birth\n  persons: ["[[P-8888888888|Another Ghost]]"]\n'
+            '  value: born sometime\n  status: suggested\n  confidence: low\n```\n'
+        ).encode('cp1252'))
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_scan_does_not_crash_on_either_bad_file(self) -> None:
+        # Pre-fix, either read_record(path) call (people/ or sources/) raises
+        # UnicodeDecodeError with no try/except at all, and the WHOLE stubs
+        # scan crashes before it can report anything.
+        unresolved = stubs._collect_unresolved_persons(self.root)
+        self.assertIsInstance(unresolved, dict)
+
+    def test_readable_files_still_contribute_despite_the_bad_ones(self) -> None:
+        # The good source's unresolved P-9999999999 reference must still be
+        # found even though a sibling source and a sibling person record
+        # could not be read this run - one bad file must not blind the scan
+        # to every other file.
+        unresolved = stubs._collect_unresolved_persons(self.root)
+        self.assertIn('p-9999999999', unresolved)
+        # The known person (P-1111111111) is still recognized, so no stub
+        # would be minted for someone who already has a record.
+        self.assertNotIn('p-1111111111', unresolved)
+
+    def test_aggregated_warning_names_both_skipped_files(self) -> None:
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            stubs._collect_unresolved_persons(self.root)
+        text = stderr.getvalue()
+        self.assertNotIn('Traceback', text)
+        self.assertIn('2 file(s)', text)
+        self.assertIn('muller__anne_P-2222222222.md', text)
+        self.assertIn('krakow_S-2222222222.md', text)
+        self.assertIn('not saved as UTF-8', text)
 
 
 if __name__ == '__main__':

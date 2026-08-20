@@ -28,7 +28,7 @@ COMMANDS = (
     'gedcom', 'wikitree', 'process', 'capture', 'convert-mining', 'claim', 'confirm',
     'person', 'source', 'site', 'serve', 'install', 'update-tools',
     'working-copy',
-    'normalize-links', 'backup', 'reconcile',
+    'normalize-links', 'backup', 'reconcile', 'media',
 )
 
 
@@ -631,6 +631,7 @@ def main(argv: list[str] | None = None) -> int:
         from normalize_links import register as normalize_links_register
         from backup import register as backup_register
         from reconcile import register as reconcile_register
+        from media import register as media_register
         # 'site' shadows Python's stdlib site module (already cached in
         # sys.modules at interpreter startup), so `from site import …` would
         # find the wrong module. Load tools/site.py by path under a private name.
@@ -669,6 +670,7 @@ def main(argv: list[str] | None = None) -> int:
         normalize_links_register(subs)
         backup_register(subs)
         reconcile_register(subs)
+        media_register(subs)
 
         args = parser.parse_args(argv_list)
         debug = bool(getattr(args, 'debug', False))

@@ -1046,6 +1046,47 @@ class ProcessRefileTestCase(unittest.TestCase):
         self.assertTrue(card.exists())
         self.assertEqual(record.read_bytes(), before)
 
+    def test_undecodable_record_refused_cleanly(self) -> None:
+        # #68: a source record saved in another encoding (cp1252, a Windows
+        # editor's default) must get a clean ProcessError naming the real fix
+        # (re-save as UTF-8), not a raw UnicodeDecodeError traceback, and the
+        # refile must refuse before anything moves - same contract as the
+        # malformed-frontmatter refusal above, different cause and message.
+        self._install_photo_store()
+        card = self.archive / 'documents' / 'census' / 'card.jpg'
+        card.write_bytes(b'jpegbytes')
+        record = self.archive / 'sources' / 'census' / f'campaign-card_{SID}.md'
+        record.write_bytes((
+            '---\n'
+            f'id: {SID}\n'
+            f'aliases: [{SID}]\n'
+            'title: Kraków campaign card\n'
+            'source_type: census\n'
+            'source_class: original\n'
+            'repository: unknown\n'
+            'citation: Kraków campaign card\n'
+            'people: []\n'
+            'files: [{file: documents/census/card.jpg, role: primary}]\n'
+            'created: 2026-07-01\n'
+            '---\n'
+            '\n'
+            '## Claims\n'
+            '```yaml\n'
+            '```\n'
+            '\n'
+            '## Notes\n'
+            'Born in Kraków.\n'
+        ).encode('cp1252'))
+        before = record.read_bytes()
+
+        rc, _out, err = self._run_captured([SID, '--to', 'photos', '--dest', '1880s'])
+
+        self.assertEqual(rc, EXIT_FAILURE)
+        self.assertNotIn('Traceback', err)
+        self.assertIn('not saved as UTF-8', err)
+        self.assertTrue(card.exists())  # nothing moved
+        self.assertEqual(record.read_bytes(), before)  # record untouched
+
     def test_move_fallback_unlink_failure_leaves_no_stray_copy(self) -> None:
         # rename fails, copy2 succeeds, src.unlink fails (a locked source on
         # Windows): the destination copy must be cleaned up and the original

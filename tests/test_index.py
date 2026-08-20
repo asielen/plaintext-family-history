@@ -189,16 +189,69 @@ class IndexPersonResearchTests(unittest.TestCase):
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM hypotheses').fetchone()[0], 0)
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM search_log').fetchone()[0], 0)
 
-    def test_profile_kind_file_does_not_index_hypotheses(self) -> None:
-        # A plain profile (not a *_research_* file) should never feed these
-        # tables even if its body happens to contain a matching heading.
+    def test_profile_kind_file_indexes_hypotheses_but_not_search_log(self) -> None:
+        # #56: this used to assert the OPPOSITE for hypotheses - a plain
+        # profile's ## Hypotheses section fed no tables at all, gated on the
+        # `_research_` filename stem rather than on the section being
+        # present. The archive already writes hypotheses straight into
+        # profiles and stubs, so that read a real record as nonexistent.
+        # Research Log stays scoped to the research companion: SPEC §16 has
+        # never homed it anywhere else, and #56 does not widen it - a
+        # profile carrying that heading (as this shared fixture does) must
+        # still feed search_log with nothing.
         path = self.archive_root / 'people' / 'jones__test_P-cccccccccc.md'
         _write(path, _RESEARCH_MD_WELL_FORMED.replace('P-aaaaaaaaaa', 'P-cccccccccc'))
 
         index._index_person(self.conn, path, self.archive_root)
 
-        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM hypotheses').fetchone()[0], 0)
+        hyps = self.conn.execute('SELECT * FROM hypotheses ORDER BY id').fetchall()
+        self.assertEqual(len(hyps), 2)
+        self.assertEqual(hyps[0]['id'], 'h-1111111111')
+        self.assertEqual(hyps[0]['person_id'], 'p-cccccccccc')
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM search_log').fetchone()[0], 0)
+
+    def test_hypothesis_in_a_real_profile_is_indexed(self) -> None:
+        # A more direct case than the shared fixture above: a genuine person
+        # record (name:/living: present, so content - not just a bare
+        # filename fallback - marks this 'profile' kind) carrying its own
+        # ## Hypotheses section, exactly the archive's existing pattern the
+        # issue names (church__robert_e_p-kyzmxzdwy0.md carries H-7xh5vb9g3d
+        # in its own file).
+        path = self.archive_root / 'people' / 'church__robert_P-dddddddddd.md'
+        _write(path, (
+            '---\nid: P-dddddddddd\nname: Robert Church\nliving: false\n---\n\n'
+            '# Robert Church\n\n## Hypotheses\n\n'
+            '- id: H-eeeeeeeeee\n'
+            '  hypothesis: "same man as the unplaced stub"\n'
+            '  origin: agent\n  status: open\n'
+        ))
+
+        index._index_person(self.conn, path, self.archive_root)
+
+        hyps = self.conn.execute('SELECT * FROM hypotheses').fetchall()
+        self.assertEqual(len(hyps), 1)
+        self.assertEqual(hyps[0]['id'], 'h-eeeeeeeeee')
+        self.assertEqual(hyps[0]['person_id'], 'p-dddddddddd')
+
+    def test_hypothesis_in_a_stub_is_indexed(self) -> None:
+        # #56's worst case: a stub has NO companion files at all (SPEC §16),
+        # so its own body is the only legal place a hypothesis about it can
+        # live.
+        path = self.archive_root / 'people' / 'stubs' / 'unknown__unknown_P-ffffffffff.md'
+        _write(path, (
+            '---\nid: P-ffffffffff\nname: unknown\nliving: unknown\n'
+            'tier: stub\n---\n\n## Hypotheses\n\n'
+            '- id: H-1010101010\n'
+            '  hypothesis: "possible duplicate of P-dddddddddd"\n'
+            '  origin: agent\n  status: open\n'
+        ))
+
+        index._index_person(self.conn, path, self.archive_root)
+
+        hyps = self.conn.execute('SELECT * FROM hypotheses').fetchall()
+        self.assertEqual(len(hyps), 1)
+        self.assertEqual(hyps[0]['id'], 'h-1010101010')
+        self.assertEqual(hyps[0]['person_id'], 'p-ffffffffff')
 
 
 _GENERATED_TIMELINE = (

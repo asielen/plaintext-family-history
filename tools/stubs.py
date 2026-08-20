@@ -34,8 +34,17 @@ from _lib import (
     render_stub_content,
     stub_filename,
     stub_slug_name,
+    undecodable_file_recorder,
     write_text_exact_atomic,
 )
+
+
+def _rel(path: Path, archive_root: Path) -> str:
+    """A path as the human filed it (archive-relative), never a local absolute one."""
+    try:
+        return path.relative_to(archive_root).as_posix()
+    except ValueError:
+        return str(path).replace('\\', '/')
 
 
 # The slugging/filename/content rendering below now lives in `_lib.py`
@@ -67,7 +76,24 @@ def _collect_unresolved_persons(archive_root: Path) -> dict[str, str | None]:
     # TODO: extract name from claim value when claim type is 'relationship'
     #   and the value follows the "{name} is a child of …" pattern - that
     #   would give us a name hint for most auto-generated relationship claims.
+
+    This is a whole-archive scan, so a single file saved in another encoding
+    (cp1252, a Windows editor's default) must not blind it to every other file
+    (#68): each loop skips an undecodable file rather than letting
+    `read_record`'s default `UnicodeDecodeError` take the whole command down,
+    and both loops share one `undecodable` list (one `on_decode_error`
+    callback, built once) so a file touched by both passes - unlikely here
+    since people/ and sources/ do not overlap, but cheap to guarantee - earns
+    one warning, not two. The warning is printed once at the end, after both
+    loops, naming what a skip actually costs: a stub might get (re-)minted for
+    someone who already has a record (the people/ loop never saw their id), or
+    a real reference inside that file's claims goes unseen this run (the
+    sources/ loop never read them) - matching `fha index`'s own aggregated
+    undecodable-files warning in tone.
     """
+    undecodable: list[Path] = []
+    on_decode_error = undecodable_file_recorder(undecodable)
+
     # Collect all known P-ids from existing person files
     known_pids: set[str] = set()
     people_root = archive_root / 'people'
@@ -75,7 +101,9 @@ def _collect_unresolved_persons(archive_root: Path) -> dict[str, str | None]:
         for path in people_root.rglob('*.md'):
             if is_template_file(path):
                 continue   # `_TEMPLATE.*` placeholder ids are not real records
-            rec = read_record(path)
+            rec = read_record(path, on_decode_error=on_decode_error)
+            if rec['undecodable']:
+                continue
             pid = normalize_id(str(rec['meta'].get('id', '')))
             if pid and pid.startswith('p-'):
                 known_pids.add(pid)
@@ -93,7 +121,9 @@ def _collect_unresolved_persons(archive_root: Path) -> dict[str, str | None]:
         for path in sources_root.rglob('*.md'):
             if is_template_file(path):
                 continue   # template claims carry teaching placeholders only
-            rec = read_record(path)
+            rec = read_record(path, on_decode_error=on_decode_error)
+            if rec['undecodable']:
+                continue
             for claim in rec['claims']:
                 if not isinstance(claim, dict):
                     continue
@@ -103,6 +133,22 @@ def _collect_unresolved_persons(archive_root: Path) -> dict[str, str | None]:
                     ppid = normalize_id(ref)
                     if ppid not in known_pids and ppid not in unresolved:
                         unresolved[ppid] = None   # name extracted by TODO above
+
+    if undecodable:
+        shown = ', '.join(_rel(p, archive_root) for p in undecodable[:5])
+        if len(undecodable) > 5:
+            shown += f' and {len(undecodable) - 5} more'
+        print(
+            f'WARNING: {len(undecodable)} file(s) are not saved as UTF-8 text and '
+            f'were skipped rather than crashing this scan: {shown}. A stub might '
+            'now be (re-)minted for someone who already has a record, or a real '
+            "cross-reference inside that file's claims may be missed, because this "
+            "run could not read it. The file itself is fine and nothing was "
+            'changed - it is only saved in an older encoding (a Windows editor '
+            'defaults to one, commonly cp1252). Open it and save it again '
+            'choosing UTF-8 (in Notepad: Save As, then pick UTF-8 from the '
+            'Encoding menu), then run `fha stubs` again.',
+            file=sys.stderr)
 
     return unresolved
 

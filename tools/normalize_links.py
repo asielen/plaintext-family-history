@@ -68,6 +68,7 @@ from _lib import (
     read_text_exact,
     resolve_ref,
     resolve_root_arg,
+    undecodable_file_recorder,
     write_text_exact_atomic,
 )
 
@@ -86,10 +87,25 @@ _FENCE_RE = re.compile(r'(```.*?```)', re.S)
 
 # ── Record scan → alias map ───────────────────────────────────────────────────
 
-def _scan_records(archive_root: Path) -> list[dict]:
+def _scan_records(
+    archive_root: Path,
+    *,
+    on_decode_error=None,
+) -> list[dict]:
     """Collect the identity + alias surface of every record, for the resolve map
     and clash check: persons (id/name/variants/stems), sources (id/stems), and
-    places (id/name/alt_names)."""
+    places (id/name/alt_names).
+
+    A whole-archive scan, same shape as `stubs.py`'s unresolved-reference walk:
+    a file saved in another encoding (cp1252, a Windows editor's default) must
+    not blind the rest of the scan (#68). `on_decode_error`, when given, is
+    handed to every `read_record` call here (people and sources both - the
+    same `undecodable_file_recorder` callback for both loops, so one file
+    touched by more than one pass earns one report, not two) and the file is
+    skipped rather than crashed on; the caller (`run_normalize_links`) is the
+    one with somewhere to put the aggregated report, so it owns the list this
+    callback feeds. Omitted, the old crash-on-decode behaviour is unchanged -
+    matching `read_record`'s own opt-in contract."""
     records: list[dict] = []
 
     people_root = archive_root / 'people'
@@ -97,7 +113,10 @@ def _scan_records(archive_root: Path) -> list[dict]:
         for path in people_root.rglob('*.md'):
             if is_template_file(path):
                 continue
-            meta = read_record(path)['meta']
+            rec = read_record(path, on_decode_error=on_decode_error)
+            if rec['undecodable']:
+                continue
+            meta = rec['meta']
             rid = normalize_id(str(meta.get('id', '')))
             if rid.startswith('p-'):
                 records.append({
@@ -113,7 +132,10 @@ def _scan_records(archive_root: Path) -> list[dict]:
         for path in sources_root.rglob('*.md'):
             if is_template_file(path):
                 continue
-            meta = read_record(path)['meta']
+            rec = read_record(path, on_decode_error=on_decode_error)
+            if rec['undecodable']:
+                continue
+            meta = rec['meta']
             rid = normalize_id(str(meta.get('id', '')))
             if rid.startswith('s-'):
                 records.append({'id': rid, 'aliases': meta.get('aliases') or []})
@@ -281,7 +303,9 @@ def run_normalize_links(
     """Compute (and, with write=True, apply) the citation normalization, returning
     a Result. `data` carries `files_changed`, `edits`, the per-file unified
     `diffs`, and the `ambiguous` names that were left for a human to pin."""
-    records = _scan_records(archive_root)
+    undecodable: list[Path] = []
+    on_decode_error = undecodable_file_recorder(undecodable)
+    records = _scan_records(archive_root, on_decode_error=on_decode_error)
     alias_map = build_alias_map(records)
     clashes = alias_clashes(records)
 
@@ -300,6 +324,20 @@ def run_normalize_links(
             # once, so that churn is archive-wide.
             original = read_text_exact(path)
         except OSError:
+            continue
+        except UnicodeDecodeError:
+            # A second #68 site beyond the two `_scan_records` was built for
+            # (found while testing this fix, not in the original two-site
+            # list): `_record_files` walks people/, sources/ AND notes/ for
+            # the actual rewrite, wider than `_scan_records`'s alias-map scan
+            # (people/sources only). `read_text_exact` has no
+            # `on_decode_error` seam (it is byte-preserving, not the
+            # frontmatter parser), so the decode is caught here directly and
+            # fed the SAME recorder `_scan_records` used above - a file that
+            # both scans touch (any people/sources record) earns one report,
+            # not two, matching the shared-recorder contract `undecodable_
+            # file_recorder` documents.
+            on_decode_error(path)
             continue
         new_text, edits, ambiguous = normalize_text(original, alias_map, clashes)
         rel = str(path.relative_to(archive_root)).replace('\\', '/')
@@ -346,7 +384,26 @@ def run_normalize_links(
                    'Re-run with --write to apply.',
                    next_step='fha normalize-links --write')
 
-    if ambiguous_seen:
+    if undecodable:
+        shown = ', '.join(
+            str(p.relative_to(archive_root)).replace('\\', '/') for p in undecodable[:5])
+        if len(undecodable) > 5:
+            shown += f' and {len(undecodable) - 5} more'
+        result.add(
+            'warning',
+            f'{len(undecodable)} file(s) are not saved as UTF-8 text, so they were '
+            f'skipped rather than crashing this run: {shown}. A person or source '
+            "record's aliases in that file will not be considered for normalization, "
+            'so a citation that should resolve through it may be reported as '
+            'unrecognized/ambiguous instead - and if the file itself has citations to '
+            'normalize, they are left exactly as written this run, same as any other '
+            'skipped file. The file itself is fine and nothing was changed - it is '
+            'only saved in an older encoding (a Windows editor defaults to one, '
+            'commonly cp1252). Open it and save it again choosing UTF-8 (in Notepad: '
+            'Save As, then pick UTF-8 from the Encoding menu), '
+            'then run `fha normalize-links` again.')
+
+    if ambiguous_seen or undecodable:
         result.ok = False
         result.exit_code = EXIT_WARNINGS
     return result

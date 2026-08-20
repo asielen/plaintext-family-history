@@ -1028,6 +1028,33 @@ class ProcessTestCase(unittest.TestCase):
         self.assertTrue(asset.exists())  # not renamed
         self.assertEqual(list((self.archive / 'sources').rglob('*.md')), [])
 
+    def test_sidecar_undecodable_refused_cleanly(self) -> None:
+        # #68: a sidecar saved in another encoding (cp1252, a Windows editor's
+        # default) must get the same clean ProcessError refusal as malformed
+        # YAML, naming the real fix (re-save as UTF-8), not a raw
+        # UnicodeDecodeError traceback - and the sidecar must survive
+        # untouched, exactly like the malformed-frontmatter case above.
+        asset = self.archive / 'documents' / 'census' / 'accented.txt'
+        asset.write_text('x', encoding='utf-8')
+        sidecar = self.archive / 'documents' / 'census' / 'accented.notes.md'
+        sidecar.write_bytes(
+            '---\ntitle: Kraków deed\n---\nBorn in Kraków.\n'.encode('cp1252'))
+        before = sidecar.read_bytes()
+
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            rc = self._run([str(asset)])
+
+        self.assertEqual(rc, EXIT_ERRORS)
+        text = err.getvalue()
+        self.assertNotIn('Traceback', text)
+        self.assertIn('accented.notes.md', text)
+        self.assertIn('not saved as UTF-8', text)
+        self.assertTrue(sidecar.exists())  # not consumed on failure
+        self.assertEqual(sidecar.read_bytes(), before)  # untouched
+        self.assertTrue(asset.exists())  # not renamed
+        self.assertEqual(list((self.archive / 'sources').rglob('*.md')), [])
+
     # ── Pointer-only sources (TOOLING §13b case (c), explicit stub flag) ──────
 
     def test_sidecar_no_companion_refused_without_flag(self) -> None:
