@@ -27,6 +27,13 @@ Covers the round-2 consolidation wave (private/plans/review-round2-fixes.md):
   - _read_unfenced_claims (via read_record) - strict-first parsing: a ```
     quoted inside an unfenced claim's `value: |` is evidence, not a fence,
     and must survive the read; the drop retry stays for half-typed fences.
+  - read_text_or_report / undecodable_file_recorder (#68) - the shared fix for
+    `UnicodeDecodeError` (a ValueError, not an OSError) crashing a read the
+    codebase guarded only with `except OSError`: a bad decode returns `None`
+    like a missing file always did, optionally reporting the path through a
+    caller-supplied callback instead of raising. `tools/lint.py`'s six sites
+    are the first consumer (tests/test_lint.py); this file pins the shared
+    primitive itself.
 
 The site/wikitree integration halves of the draft-strip contract live in
 tests/test_site.py (withhold + warn) and tests/test_wikitree.py (refusal).
@@ -50,12 +57,14 @@ from _lib import (
     is_generated_text,
     read_record,
     read_text_exact,
+    read_text_or_report,
     reapply_newline,
     resolve_root_arg,
     resolve_typed_ref,
     strip_unaccepted_drafts,
     transcript_review_state,
     transcript_text_is_unchecked,
+    undecodable_file_recorder,
     write_text_exact,
 )
 
@@ -614,6 +623,165 @@ class TranscriptReviewStateTests(unittest.TestCase):
                 '<!--\n  AI-DRAFT 2026-08-16 some-model\n'
                 '  transcript of probate.jpg, pages 1-1\n-->\n')
         self.assertEqual(transcript_review_state(text), 'unreviewed')
+
+
+class ReadTextOrReportTests(unittest.TestCase):
+    """`read_text_or_report` / `undecodable_file_recorder` (#68): the shared
+    primitive `tools/lint.py`'s six fixed sites are built on.
+
+    `Path.read_text(encoding='utf-8')` raises `UnicodeDecodeError` - a
+    ValueError, not an OSError - on a file saved in another codepage. The
+    near-universal `except OSError` guard in this codebase does not catch
+    that, so the read used to raise straight out of whatever command was
+    running. This helper folds BOTH failure modes a caller already had to
+    plan for (missing/unreadable file, and now a bad decode) into one `None`
+    return, so a caller's existing "skip on failure" logic keeps working
+    unchanged - only a decode failure, never a plain missing file, is
+    reported through `on_decode_error`.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self._tmp.name)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_valid_utf8_reads_through(self) -> None:
+        p = self.dir / 'good.md'
+        p.write_text('Grandma in Kraków, née Müller.\n', encoding='utf-8')
+        self.assertEqual(read_text_or_report(p),
+                         'Grandma in Kraków, née Müller.\n')
+
+    def test_missing_file_returns_none_and_never_calls_back(self) -> None:
+        calls = []
+        result = read_text_or_report(self.dir / 'nope.md',
+                                     on_decode_error=calls.append)
+        self.assertIsNone(result)
+        self.assertEqual(calls, [], 'a missing file is ordinary, not a decode failure')
+
+    def test_cp1252_file_returns_none_and_calls_back_with_the_path(self) -> None:
+        p = self.dir / 'bad.md'
+        p.write_bytes('Grandma in Kraków.\n'.encode('cp1252'))
+        calls = []
+        result = read_text_or_report(p, on_decode_error=calls.append)
+        self.assertIsNone(result)
+        self.assertEqual(calls, [p])
+
+    def test_cp1252_file_with_no_callback_still_returns_none(self) -> None:
+        # A caller that only needs the text (index.py's own per-record shape)
+        # must not be forced to supply on_decode_error.
+        p = self.dir / 'bad.md'
+        p.write_bytes('Grandma in Kraków.\n'.encode('cp1252'))
+        self.assertIsNone(read_text_or_report(p))
+
+    def test_the_file_is_never_rewritten(self) -> None:
+        p = self.dir / 'bad.md'
+        original = 'Grandma in Kraków.\n'.encode('cp1252')
+        p.write_bytes(original)
+        read_text_or_report(p, on_decode_error=lambda _p: None)
+        self.assertEqual(p.read_bytes(), original)
+
+    def test_recorder_deduplicates_first_seen_order(self) -> None:
+        into: list = []
+        record = undecodable_file_recorder(into)
+        p1, p2 = Path('a.md'), Path('b.md')
+        record(p1)
+        record(p2)
+        record(p1)   # a second pass touching the same file (#68's dedup contract)
+        self.assertEqual(into, [p1, p2])
+
+    def test_recorder_wired_through_read_text_or_report_deduplicates(self) -> None:
+        p = self.dir / 'bad.md'
+        p.write_bytes('Grandma in Kraków.\n'.encode('cp1252'))
+        into: list = []
+        on_decode_error = undecodable_file_recorder(into)
+        read_text_or_report(p, on_decode_error=on_decode_error)
+        read_text_or_report(p, on_decode_error=on_decode_error)
+        self.assertEqual(into, [p])
+
+
+class ReadRecordUndecodableTests(unittest.TestCase):
+    """`read_record` on a file whose BYTES are not UTF-8 (#68).
+
+    Every record read in the suite funnels through here, so this was the site
+    the crash was actually reached from - `fha lint`, `fha index`, `fha report`
+    and `fha doctor` all died with a traceback on one person file saved in
+    cp1252, because `UnicodeDecodeError` is a ValueError and the guard is
+    `except OSError`. The read now reports and returns "nothing was read
+    here", the same shape an unopenable file always produced - with one
+    difference the callers need: `undecodable` distinguishes "this file was
+    never read" from "this file is empty", and no E010 is invented, because
+    there is nothing inside the record for the human to correct.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self._tmp.name)
+        self.path = self.dir / 'x__anne_P-1111111111.md'
+        self.path.write_bytes(
+            ('---\nid: P-1111111111\nname: Anne Müller\n---\n\n'
+             '## Biography\n\nBorn in Kraków.\n').encode('cp1252'))
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_without_a_callback_the_read_still_raises(self) -> None:
+        # Deliberate, and the most important line in this class. An empty
+        # record is invisible to BOTH guards this codebase uses: a caller
+        # testing `parse_errors` sees none (nothing was read, so nothing is
+        # malformed) and a caller wrapping the read in `except Exception`
+        # never fires. Empty content is not neutral - `restricted:` reads as
+        # absent, so `fha site`/`fha wikitree` would publish a person who
+        # asked to be left out, and `fha process` would skip its sidecar
+        # refusal and delete the stub after scaffolding from nothing. The
+        # report is opt-in per caller, and a caller opts in by having
+        # somewhere to put it.
+        with self.assertRaises(UnicodeDecodeError):
+            read_record(self.path)
+
+    def test_with_a_callback_it_reports_instead(self) -> None:
+        rec = read_record(self.path, on_decode_error=lambda _p: None)
+        self.assertTrue(rec['undecodable'])
+
+    def test_nothing_is_read_out_of_it(self) -> None:
+        rec = read_record(self.path, on_decode_error=lambda _p: None)
+        self.assertEqual(rec['meta'], {})
+        self.assertEqual(rec['claims'], [])
+        self.assertEqual(rec['body'], '')
+
+    def test_no_parse_error_is_invented(self) -> None:
+        # The record is not malformed - only its encoding is wrong - so there
+        # is nothing inside it for the human to fix, and E010 would name a
+        # correction that does not exist. The caller that asked for this shape
+        # reads `undecodable` instead.
+        rec = read_record(self.path, on_decode_error=lambda _p: None)
+        self.assertEqual(rec['parse_errors'], [])
+
+    def test_the_callback_receives_the_path(self) -> None:
+        calls: list = []
+        read_record(self.path, on_decode_error=calls.append)
+        self.assertEqual(calls, [self.path])
+
+    def test_the_file_is_never_rewritten(self) -> None:
+        before = self.path.read_bytes()
+        read_record(self.path, on_decode_error=lambda _p: None)
+        self.assertEqual(before, self.path.read_bytes())
+
+    def test_a_missing_file_is_still_an_e010_and_not_a_decode_report(self) -> None:
+        calls: list = []
+        rec = read_record(self.dir / 'nope.md', on_decode_error=calls.append)
+        self.assertFalse(rec['undecodable'])
+        self.assertEqual([code for code, _ in rec['parse_errors']], ['E010'])
+        self.assertEqual(calls, [])
+
+    def test_a_good_record_carries_the_flag_as_false(self) -> None:
+        good = self.dir / 'ok__jo_P-2222222222.md'
+        good.write_text('---\nid: P-2222222222\nname: Jo\n---\n\nbody\n',
+                        encoding='utf-8')
+        rec = read_record(good)
+        self.assertFalse(rec['undecodable'])
+        self.assertEqual(rec['meta']['name'], 'Jo')
 
 
 if __name__ == '__main__':

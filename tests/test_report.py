@@ -19,6 +19,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
 
+import lint
 import report
 
 
@@ -885,6 +886,53 @@ class PromotionCandidatesTests(unittest.TestCase):
         cfg = self._build()
         result = report.run_report(self.root, cfg, full=True)
         self.assertIn('## 7b. Promotion candidates', result['markdown'])
+
+
+class ReportUndecodableFileVerdictTests(unittest.TestCase):
+    """`fha report`'s exit code IS the lint verdict, so a lint finding it
+    cannot see is an archive certified clean over a file nobody read (#68).
+
+    `fha report` calls `lint._run_lint_core` directly - a third entry point
+    beside `run_lint` and `run_lint_silent`. When W128 was raised only by the
+    two named entry points, this one silently dropped it and came back exit 0
+    on an archive holding an unreadable record, which is precisely the failure
+    W123/W128 exist to prevent. The emitter now runs inside the core pass, so
+    no caller can lose it by not knowing to ask.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.archive_root = Path(self._tmp.name)
+        (self.archive_root / 'people').mkdir()
+        (self.archive_root / 'people' / 'test__person_P-aaaaaaaaaa.md').write_text(
+            _PERSON_MD, encoding='utf-8')
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _write_bad_note(self) -> None:
+        (self.archive_root / 'notes').mkdir(exist_ok=True)
+        (self.archive_root / 'notes' / 'bad.md').write_bytes(
+            '# Kraków\n'.encode('cp1252'))
+
+    def test_the_core_pass_report_consumes_carries_the_finding(self) -> None:
+        # report reads `findings` straight out of `_run_lint_core`; this is
+        # the seam where W128 used to be missing, and the exit code below is
+        # derived from exactly this list.
+        self._write_bad_note()
+        findings, _registry = lint._run_lint_core(self.archive_root, {})
+        self.assertIn('W128', [f.code for f in findings])
+
+    def test_the_report_verdict_is_not_clean(self) -> None:
+        self._write_bad_note()
+        result = report.run_report(self.archive_root, {}, full=True)
+        self.assertNotEqual(result.exit_code, 0,
+                            'a file nobody could read must not come back as a clean archive')
+
+    def test_the_refresh_still_completes(self) -> None:
+        self._write_bad_note()
+        result = report.run_report(self.archive_root, {}, full=True)
+        self.assertIn('## 0.', result['markdown'])
 
 
 if __name__ == '__main__':

@@ -2709,3 +2709,113 @@ class BirthClaimParentageTests(unittest.TestCase):
             index.upsert_source(self.root, {}, self.SID), 'indexed')
         c, f = _BIRTH_CHILD.lower(), _BIRTH_FATHER.lower()
         self.assertEqual(self._edges(), {(c, 'parent', f), (f, 'child', c)})
+
+
+class UndecodableRecordTests(unittest.TestCase):
+    """A person or source record whose BYTES are not UTF-8 (#68).
+
+    #66 taught `build_index` to survive a note saved in another codepage, but
+    every RECORD still went through `_lib.read_record`'s `except OSError`-only
+    guard - so one cp1252 person file took the whole build down with a
+    traceback and nothing at all was indexed. The record is now skipped and
+    reported through the same channel #66 built: never indexed as an empty
+    person, because a nameless, date-less row in `persons` reads as a sparse
+    record rather than as a file nobody read.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.archive_root = Path(self._tmp.name)
+        (self.archive_root / 'people').mkdir(parents=True)
+        (self.archive_root / 'sources').mkdir(parents=True)
+        (self.archive_root / 'notes').mkdir(parents=True)
+        self.bad = self.archive_root / 'people' / 'muller__anne_P-3333333333.md'
+        self.bad.write_bytes(
+            ('---\nid: P-3333333333\nname: Anne Müller\nliving: false\n---\n\n'
+             '## Biography\n\nBorn in Kraków.\n').encode('cp1252'))
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _persons(self) -> list:
+        conn = sqlite3.connect(str(self.archive_root / '.cache' / 'index.sqlite'))
+        try:
+            return conn.execute('SELECT id FROM persons').fetchall()
+        finally:
+            conn.close()
+
+    def test_the_build_completes_instead_of_crashing(self) -> None:
+        result = index.build_index(self.archive_root, {})
+        self.assertEqual(result.exit_code, EXIT_WARNINGS)
+
+    def test_the_build_says_which_file_it_could_not_read(self) -> None:
+        result = index.build_index(self.archive_root, {})
+        texts = [m.text for m in result.messages]
+        self.assertTrue(any('muller__anne_P-3333333333.md' in t and 'UTF-8' in t
+                            for t in texts), texts)
+
+    def test_no_empty_person_row_is_written_for_it(self) -> None:
+        index.build_index(self.archive_root, {})
+        self.assertEqual(self._persons(), [])
+
+    def test_one_undecodable_record_does_not_cost_the_others(self) -> None:
+        good = self.archive_root / 'people' / 'doe__jane_P-1111111111.md'
+        _write(good, _person_md('P-1111111111', 'Jane Doe'))
+        index.build_index(self.archive_root, {})
+        self.assertEqual([r[0] for r in self._persons()], ['p-1111111111'])
+
+    def test_the_record_is_never_rewritten(self) -> None:
+        before = self.bad.read_bytes()
+        index.build_index(self.archive_root, {})
+        self.assertEqual(before, self.bad.read_bytes())
+
+
+class UpsertUndecodableSourceTests(unittest.TestCase):
+    """`fha index --source S-…` on a source file whose bytes will not decode.
+
+    The upsert DELETES the source's rows before re-inserting them, so this had
+    to be answered before any mutation: a read that came back empty would have
+    dropped the source, its claims, its citations and its FTS rows and put
+    none of them back - the same silent loss #62's recorder exists to prevent,
+    one step earlier and with no record left to report against.
+    """
+
+    SID = 'S-5555555555'
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.archive_root = Path(self._tmp.name)
+        (self.archive_root / 'people').mkdir(parents=True)
+        (self.archive_root / 'sources').mkdir(parents=True)
+        self.src = self.archive_root / 'sources' / f'letter_{self.SID}.md'
+        _write(self.src, (
+            f'---\nid: {self.SID}\ntitle: A letter\nsource_type: other\n---\n\n'
+            '## Claims\n\n```yaml\n[]\n```\n'
+        ))
+        index.build_index(self.archive_root, {})
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _source_rows(self) -> list:
+        conn = sqlite3.connect(str(self.archive_root / '.cache' / 'index.sqlite'))
+        try:
+            return conn.execute('SELECT id FROM sources').fetchall()
+        finally:
+            conn.close()
+
+    def test_the_upsert_reports_undecodable_instead_of_crashing(self) -> None:
+        self.src.write_bytes(
+            (f'---\nid: {self.SID}\ntitle: Lettre de Kraków\n---\n').encode('cp1252'))
+        self.assertEqual(
+            index.upsert_source(self.archive_root, {}, self.SID), 'undecodable')
+
+    def test_the_indexed_source_survives_the_refused_upsert(self) -> None:
+        self.src.write_bytes(
+            (f'---\nid: {self.SID}\ntitle: Lettre de Kraków\n---\n').encode('cp1252'))
+        index.upsert_source(self.archive_root, {}, self.SID)
+        self.assertEqual([r[0] for r in self._source_rows()], [self.SID.lower()])
+
+    def test_a_decodable_source_still_upserts(self) -> None:
+        self.assertEqual(
+            index.upsert_source(self.archive_root, {}, self.SID), 'indexed')
