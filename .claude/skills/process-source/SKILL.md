@@ -162,7 +162,11 @@ sweep. Works one item at a time; for a full inbox, triage and confirm each with 
    fha find --json "San Diego, California" --kind place     # always [], however well-registered the town
    ```
    (`--kind` needs `--json`; a bare `fha find` silently ignores it, and bare `fha find "<text>"` is
-   full-text search over records and notes, which never reads the registry tables at all.)
+   full-text search over records and notes, which never reads the registry tables at all.) `--kind place`
+   reads those tables whole, so `[]` is a real answer — but in an archive holding sources with no
+   searchable text the same command prints the D14 coverage caveat on stderr ("this search could not look
+   everywhere"). That caveat is about *text* search and says nothing about the registry: read the `[]`, not
+   the caveat.
    - A single hit → check the `detail` it prints back — that place's `hierarchy:` — against the rest of
      the source's wording. Same town → set the claim's `place:` to that `L-id`. `place_text:` still carries
      the source's own wording unchanged (SPEC §15 — `place_text` is never altered, linking only adds
@@ -184,17 +188,26 @@ sweep. Works one item at a time; for a full inbox, triage and confirm each with 
      at all until the human accepts them in `review-claims`.
      If this place text's cluster is in that list at **10 or more claims**, that is well past
      `fha places candidates`'s own default surfacing bar of 3 (report §6b's and `place-research`'s
-     everyday threshold) — a real, established pattern rather than an incidental third mention — so make
-     **one** offer, same explicit-yes rule as every other offer here, never repeated this session once
-     declined: *"'San Diego, California' now appears in 12 claims and isn't a registered place yet — want
-     me to register it?"* On his yes, register it exactly the way `place-research` does (never hand-write
-     `places.yaml`) — the settlement as `--name`, the full string as `--hierarchy`, which is precisely why
-     the lookup above searches the name alone. **First check the cluster isn't another wording of a place
-     already registered** — the same name lookup on the cluster's own town, and on its obvious variant (drop
-     a "City"/"Township" suffix, expand an abbreviation), since the cluster is shown under whichever
-     wording is commonest and that may not be the one you just searched. A second `L-id` for one town is
-     the duplicate `fha places lint` reports as **PL002**, so merge into the existing place instead —
-     `--into`, the arm `place-research` documents beside the mint.
+     everyday threshold) — a real, established pattern rather than an incidental third mention — so it has
+     earned **one** offer, same explicit-yes rule as every other offer here, never repeated this session
+     once declined.
+     **Look the cluster up before you speak the offer.** The lookup above cleared *your* place text; the
+     cluster is shown under whichever wording is commonest, which may not be the one you just searched, so
+     run the same name lookup on the cluster's own town and on its obvious variant (drop a
+     "City"/"Township" suffix, expand an abbreviation). Unlinked is not unregistered — the cluster's claims
+     carry no `place:`, which says nothing about what `places.yaml` holds — and the offer is about to make
+     a claim either way, so make it a checked one:
+     - **No hit** → *"'San Diego, California' now appears in 12 claims and isn't a registered place yet —
+       want me to register it?"*
+     - **One hit whose `detail` (that place's `hierarchy:`) is the same town** → *"'San Diego, California'
+       turns up in 12 claims that aren't linked to the San Diego already in the registry — want me to link
+       them?"* A second `L-id` for one town is the duplicate `fha places lint` reports as **PL002**, so
+       this case merges — `--into`, the arm `place-research` documents beside the mint — never mints.
+     - **Several hits, or one whose hierarchy is a different county or state** → present the candidates
+       and let him pick, exactly as for an ambiguous person name.
+     On his yes, write it exactly the way `place-research` does (never hand-write `places.yaml`) — for a
+     mint, the settlement as `--name` and the full string as `--hierarchy`, which is precisely why every
+     lookup here searches the name alone.
      ```
      fha confirm place <C-id> <C-id> … --into <L-id> --dry-run                # already registered: merge
      fha confirm place <C-id> <C-id> … --name "San Diego" --hierarchy "San Diego, California, USA" --dry-run
@@ -203,13 +216,13 @@ sweep. Works one item at a time; for a full inbox, triage and confirm each with 
      The cluster's own `claim_ids` list, printed by `fha places candidates`, is the id list to pass. Show
      him the `--dry-run` before applying: this is the one write in this skill that reaches past the item in
      hand, into `places.yaml` and into every source record holding one of those claims. Like `fha stubs`
-     above, a minted place is a **fresh random** `L-…` on each run, so the dry-run's ID is illustrative only
-     — use the `L-…` the **apply** command prints when you set `place:` on the claim you're about to draft
-     (that claim isn't in the cluster, so the tool doesn't relink it for you; the dry-run's ID would land in
-     the record as a place that was never registered, `fha places lint`'s **PL001**). Then reindex, because
-     a registry write is the one thing here that changes the query surface — the rest of Stage B, and
-     `fha places lint` itself, would otherwise read an index with no new `L-id` in it (`place-research`
-     step 4):
+     above, a **minted** place is a **fresh random** `L-…` on each run, so the dry-run's ID is illustrative
+     only — use the `L-…` the **apply** command prints when you set `place:` on the claim you're about to
+     draft (that claim isn't in the cluster, so the tool doesn't relink it for you; the dry-run's ID would
+     land in the record as a place that was never registered, `fha places lint`'s **PL001**). A `--into`
+     merge mints nothing: the `L-id` is the one you passed, the same in both runs. Then reindex, because
+     this write is the one that reaches past the item — the rest of Stage B, and `fha places lint` itself,
+     would otherwise read an index with no new `L-id` in it (`place-research` step 4):
      ```
      fha index                # fold the new L-id and the relinked place: claims into the query surface
      fha places lint          # registry hygiene: orphan L-ids, duplicate names, dangling within: links
@@ -266,7 +279,10 @@ sweep. Works one item at a time; for a full inbox, triage and confirm each with 
 9. **Hand off to `review-claims`** for this source. That skill walks each drafted claim with the human,
    captures accept/dispute/edit, and does the close-out (`fha index` — full, since intake usually minted
    new person stubs — `fha xref`, a timeline/sources-index/draft-queue refresh for the people touched, `fha lint`).
-   Don't duplicate that work here — the reindex/xref/views/lint belong to the review close-out.
+   Don't duplicate that work here — the reindex/xref/views/lint belong to the review close-out. The one
+   exception is step 5's registry write, if it fired: `fha confirm place` changes the query surface the
+   rest of Stage B reads, so its `fha index` + `fha places lint` already ran there and are not deferred
+   here. The full `fha lint` still belongs to the close-out.
 
 ## Guardrails
 
@@ -283,9 +299,12 @@ sweep. Works one item at a time; for a full inbox, triage and confirm each with 
 - The place-registration offer fires at most **once per place-text cluster per session**, only on an
   explicit yes, never repeated once declined in the same session — the same discipline `review-claims`'
   promotion nudge uses, extended to places (issue #81).
-- A registry write is the only query-surface change this skill makes, and it owns its own follow-through:
-  `fha index` then `fha places lint`, immediately, never deferred to the review close-out. The `L-id`
-  written into a claim is always the one the **apply** run printed, never the dry-run's.
+- A registry write is the one write here that reaches **past the item in hand** — into `places.yaml` and
+  into other sources' records — so unlike the rest of Stage B it owns its own follow-through: `fha index`
+  then `fha places lint`, immediately, never deferred to the review close-out. (Stage A's scaffold and a
+  `fha stubs` mint also add records the index hasn't seen; those are this item's own and ride the review
+  close-out's full reindex as they always have.) The `L-id` written into a claim is always the one the
+  **apply** run printed, never the dry-run's.
 
 ## Done when
 
@@ -301,9 +320,9 @@ sweep. Works one item at a time; for a full inbox, triage and confirm each with 
 - A place text whose **settlement name** resolves to one registry place whose hierarchy agrees gets
   `place:` set on the claim without asking; several hits go to the human as candidates; a place text with
   no match that is already a 10-or-more-claim recurring miss in `fha places candidates` gets exactly one
-  registration offer this session, written only via `fha confirm place` on an explicit yes — merged
-  `--into` an existing place rather than minted twice — and followed straight away by `fha index` +
-  `fha places lint`.
+  registration offer this session — worded from a registry lookup on the cluster's own town, so an
+  already-registered town is offered as a `--into` merge rather than minted twice — written only via
+  `fha confirm place` on an explicit yes, and followed straight away by `fha index` + `fha places lint`.
 - Every drafted claim is `suggested` (no claim is `accepted` at this stage).
 - `fha lint --root example-archive` still exits 1 with only the documented baseline warnings
   (`_STANDARD.md` §9).

@@ -46,9 +46,11 @@ check** against `example-archive/` (capture the transcript).
 - No skill imports another; the only cross-skill links are the documented hand-offs into `review-claims`
   (from `process-source` whenever it drafted claims — its zero-claims exit skips review — and from
   `mine-transcript` when the human reviews right away), `import-notes`' hand-off of evidence into
-  `process-source` (its inbox items enter the normal intake path), and `transcribe-source`'s two —
+  `process-source` (its inbox items enter the normal intake path), `transcribe-source`'s two —
   called from `process-source`'s Stage A½ when an item is image-only, and handing the text it wrote to
-  `mine-transcript` for the facts no claim covers — hand-offs, not code dependencies.
+  `mine-transcript` for the facts no claim covers — and `today`'s one next-action hand-off, into
+  `review-claims`, `process-source`, or (when §6b's largest unlinked place-text cluster outsizes the
+  review backlog) `place-research` — hand-offs, not code dependencies.
 - Verification is behavioral — run the skill against `example-archive/` and confirm the documented writes,
   graceful degradation, and that `fha lint` still exits 1 with only the documented baseline warnings
   (`_STANDARD.md` §9).
