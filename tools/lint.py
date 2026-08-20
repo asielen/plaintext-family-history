@@ -81,6 +81,7 @@ from _lib import (
     build_alias_map,
     claim_item_key_indent,
     claims_edit_problem,
+    contradiction_question_heading,
     edtf_bounds,
     files_carry_searchable_text,
     finding_to_message,
@@ -2464,11 +2465,21 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
         tid_type = token_id[0].upper() if token_id else ''
 
         if token_id not in known_ids:
-            # E004: orphan reference
+            # E004: orphan reference. `fha stubs` only mints P-ids - naming it
+            # for an H-id misdirects (issue #56's own complaint: the prefix is
+            # unambiguous, so the hint can say the right thing instead of the
+            # one that only ever applies to persons). A hypothesis has no
+            # minting tool at all; it is defined by hand, in place, wherever
+            # the person it concerns is written up (SPEC §16).
+            if tid_type == 'H':
+                fix_hint = ('Add an `id:` entry for it under some person\'s '
+                             '`## Hypotheses` section, or fix the ID.')
+            else:
+                fix_hint = 'Create the missing record (for a person, run `fha stubs`) or fix the ID.'
             for ref_path, ref_line in refs[:3]:   # report first 3 sites
                 findings.append(Finding('E', 'E004', ref_path,
                     f'Orphan reference [{token_id}] (line {ref_line}) - no matching record. '
-                    'Create the missing record (for a person, run `fha stubs`) or fix the ID.'))
+                    f'{fix_hint}'))
 
         if tid_type == 'P' and not registry.has_person(token_id):
             # E005: referenced person has no record at all
@@ -3882,9 +3893,11 @@ def _wrap_unfenced_claims(path: Path) -> tuple[str | None, str | None]:
     did nothing. Recognise a flush-left marker at the very start and/or very
     end of the section first, drop it, and regenerate a canonical fresh pair
     around whatever remains - the rest of this function (interior safety
-    scan, dedent, round-trip verify) is unchanged and applies identically to
-    all three shapes (no marker, one marker, past this point never two - a
-    file with both already reads fenced and never reaches this function).
+    scan, dedent, round-trip verify) is unchanged and applies identically no
+    matter how many boundary markers were found (0, 1, or 2 - a bare ``` with
+    no `yaml` tag on BOTH ends still fails CLAIMS_RE's `` ```yaml `` opener
+    test and reads as unfenced, so two markers is a real, not merely
+    hypothetical, shape here too).
     """
     try:
         text = read_text_exact(path)
@@ -3910,11 +3923,18 @@ def _wrap_unfenced_claims(path: Path) -> tuple[str | None, str | None]:
     if (last_idx is not None and last_idx not in drop_idx
             and _FLUSH_FENCE_RE.match(raw_lines[last_idx])):
         drop_idx.add(last_idx)
-    if len(drop_idx) == 2:
-        # Both a flush opening and a flush closing marker are present -
-        # CLAIMS_RE should already have matched this file, so it would never
-        # have been unfenced in the first place. Defensive no-op only.
-        return None, None
+    # Both markers present is NOT unreachable: CLAIMS_RE only recognises a
+    # literal ```yaml opener (a bare ``` with no language tag never matches
+    # it, whatever the closer looks like), while this boundary scan accepts
+    # any-or-no language tag on either end. A hand-typed bare-```-on-both-ends
+    # fence (no `yaml` tag at all) therefore reads as unfenced and lands here
+    # with both markers flagged. An earlier version special-cased that count
+    # as an assumed-unreachable no-op; on the bare-``` file it silently did
+    # nothing while W114 kept firing - the exact silent-refusal failure mode
+    # #52 was filed over, just with no message at all. Both markers are
+    # dropped and a fresh canonical fence generated the same as the
+    # one-marker cases below; the round-trip verify at the end of this
+    # function is what actually guards correctness, not this count.
     # Keep (original_index, line) pairs so a refusal below can still report
     # the TRUE line number in the file, not an offset into the filtered list.
     kept = [(i, ln) for i, ln in enumerate(raw_lines) if i not in drop_idx]
@@ -4738,38 +4758,30 @@ def _e009_question_heading(registry: Registry | None, cid: str, tid: str) -> str
 
     The old heading was the lint error text itself, instruction and all - a
     question log that told its reader to run the command that had just
-    written it. This asks the actual research question instead, quoting each
-    claim's own `value:` text so the two positions are visible without
-    opening the source file. `_claim_by_id` is the SAME lookup the E009
-    check has `claim` for at its own call site (and already uses for `tid`)
-    - reused here rather than re-derived, so the heading can never disagree
-    with what the check found.
+    written it. This resolves each side's claim and hands their `value:` text
+    to `_lib.contradiction_question_heading`, the wording shared with `fha
+    confirm xref --relation contradicts` (that command spawns the identical
+    kind of question through its own claim lookup) - two call sites for one
+    kind of spawned question stay worded alike instead of drifting the way
+    they did before that helper existed. `_claim_by_id` is the SAME lookup
+    the E009 check has `claim` for at its own call site (and already uses
+    for `tid`) - reused here rather than re-derived, so the heading can
+    never disagree with what the check found.
 
     `registry` may be None (a test exercising the write path alone, or any
     future caller with no archive in hand) and a claim id may not resolve to
     a claim (a dangling reference, or a synthetic finding in a test) - both
     degrade to a plainer heading built from the two ids alone rather than
     raising, because a spawned question with a weaker heading is still far
-    better than a crashed --fix run.
+    better than a crashed --fix run (`contradiction_question_heading` itself
+    handles the degradation; this just passes None through when there is no
+    registry or no resolved claim).
     """
-    a_disp, b_disp = fmt_id_display(cid), fmt_id_display(tid)
     claim = _claim_by_id(registry, cid) if registry is not None else None
     target = _claim_by_id(registry, tid) if registry is not None else None
-
-    def _snippet(c: dict | None) -> str:
-        if not c:
-            return ''
-        val = str(c.get('value', '')).strip()
-        return val if len(val) <= 60 else val[:60] + '...'
-
-    a_val, b_val = _snippet(claim), _snippet(target)
-    if a_val and b_val:
-        return f'{a_disp} says "{a_val}", but {b_disp} says "{b_val}" - which is right?'
-    if a_val or b_val:
-        known_disp, known_val = (a_disp, a_val) if a_val else (b_disp, b_val)
-        other_disp = b_disp if a_val else a_disp
-        return f'{known_disp} says "{known_val}", but {other_disp} disagrees - which is right?'
-    return f'{a_disp} and {b_disp} disagree - which is right?'
+    cval = str(claim.get('value', '')) if claim else None
+    tval = str(target.get('value', '')) if target else None
+    return contradiction_question_heading(cid, cval, tid, tval)
 
 
 def _fix_spawn_questions(

@@ -457,6 +457,28 @@ class ConfirmArchiveTests(unittest.TestCase):
         e009 = [m for m in lint_result.messages if m.code == 'E009']
         self.assertEqual(e009, [], f'E009 should be satisfied by the spawned question: {e009}')
 
+    def test_xref_contradiction_heading_quotes_claim_values(self) -> None:
+        # `fha confirm xref --relation contradicts` and `fha lint
+        # --spawn-questions` (#55) spawn the same kind of question and must
+        # word it the same way (`_lib.contradiction_question_heading`) - a
+        # reader of notes/questions.md should never be able to tell which
+        # command wrote a given entry. Before that helper was shared, this
+        # spawner wrote a bare "C-a contradicts C-b" heading that repeated
+        # the fact the reader already knew (a contradiction exists) without
+        # saying what it was about.
+        result = confirm.run_confirm_xref(
+            self.root, claim_a=CLAIM_A, claim_b=CLAIM_B, relation='contradicts')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        q = (self.root / 'notes' / 'questions.md').read_text(encoding='utf-8')
+        heading_line = [ln for ln in q.splitlines() if ln.startswith('## Q:')][-1]
+        # Both claim values run past the heading's 60-char snippet cap, so
+        # only the (identical) truncated prefix is asserted here.
+        self.assertIn('Frances Hartley is a child of Thomas Hartley and Margaret Co',
+                       heading_line)
+        self.assertIn('Calvin George Hartley is a child of Thomas Edward Hartley an',
+                       heading_line)
+        self.assertNotIn('contradicts', heading_line.lower())
+
     def test_xref_already_linked(self) -> None:
         confirm.run_confirm_xref(self.root, claim_a=CLAIM_A, claim_b=CLAIM_B, relation='corroborates')
         again = confirm.run_confirm_xref(self.root, claim_a=CLAIM_A, claim_b=CLAIM_B, relation='corroborates')
