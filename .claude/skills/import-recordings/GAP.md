@@ -4,7 +4,13 @@ Per `_STANDARD.md` §6, a skill that enacts something the tool suite should own 
 rather than quietly hand-rolling it. Each entry names the wanted verb, what the skill does in the
 meantime, and why the interim enactment is safe.
 
-## 1. `fha media dedupe <file> [--root PATH]`
+**Both entries below are CLOSED.** `fha media dedupe` and `fha media probe` shipped (`tools/media.py`,
+issues #43/#44) and `import-recordings/SKILL.md` now calls the real verbs instead of the interim
+enactments this file used to authorize. Kept as the historical record of the spec-discovery, per the
+convention `merge-identities/GAP.md` set for its own closed gap — there is no live gap and no interim
+path left in either entry below.
+
+## 1. `fha media dedupe <file> [--root PATH]` (CLOSED: the verb shipped)
 
 **Wanted:** ask the archive whether an incoming media file is already filed, by content rather than
 by name, and print the S-id and path of the twin.
@@ -79,7 +85,21 @@ Not a substitute for it: `fha search "<phrase>"` (which does exist). It searches
 record text, so it finds a recording that *reads* alike — a useful lead when the bytes differ
 because a sitting was re-exported or re-encoded, but never proof of an identical file.
 
-## 2. `fha media probe <file>`
+### How it closed
+
+`fha media dedupe <file...> [--root PATH] [--json PATH] [--quiet]` shipped in `tools/media.py`,
+porting `find_duplicate_media.py`'s coverage-walking and dedup logic (every one of the five parts
+above, and both consequences) rather than re-deriving it — roots resolve through the tool suite's
+own `_lib.get_roots`/`resolve_path` instead of the interim script's hand-rolled YAML reader, which
+existed only because that script had to run standalone with no `_lib` to import. The exit-code
+ladder above is unchanged, byte for byte, and is a deliberate departure from the rest of the suite's
+usual 0/1/2/3 = clean/warnings/errors/failure meaning — read the tool's own docstring before
+assuming the numbers mean what they mean everywhere else. `import-recordings/SKILL.md` step 3 now
+calls the verb directly; `scripts/find_duplicate_media.py` is retired (its own docstring says so)
+and kept only because `attribute_speakers.py` and `backup.py` still cite pieces of it as a design
+precedent.
+
+## 2. `fha media probe <file>` (CLOSED: the verb shipped)
 
 **Wanted:** read a recording's true duration and creation timestamp out of its container, and
 return the derived local start time with the UTC/end-of-recording caveat already applied - together
@@ -103,6 +123,21 @@ three answers, `source_date` is written as an interval spanning the candidate da
 an exact date the evidence cannot carry (SKILL.md step 4). Whenever `fha media probe` ships it
 inherits that rule: never present a converted date as exact while the offset behind it is a guess.
 
+### How it closed
+
+`fha media probe <file> [--root PATH] [--json]` shipped in `tools/media.py`, with `ffprobe` as the
+primary backend (`fha doctor` reports it the way it reports exiftool) and PyAV — the
+`transcribe-audio` skill's own existing fallback — used only when `ffprobe` is not on PATH. The
+arithmetic is SKILL.md step 4's formula unchanged: `com.apple.quicktime.creationdate` settles the
+offset outright when present; failing that, the filename clock is solved for the offset the same
+way (`offset = filename_time + duration − creation_time`, rounded to the nearest quarter hour, with
+the fit rejected past a couple of minutes' miss); failing both, the verb reports `offset_source:
+none` and says so plainly rather than guessing or falling back to filesystem mtime — asking the
+human (step 4's third option) is left to the skill, since the verb cannot ask a question. The
+`filename_time + duration == creation_time` cross-check is asserted directly in
+`tests/test_media.py`. `import-recordings/SKILL.md` step 4 now calls the verb directly instead of
+a raw `ffprobe` command plus manual arithmetic.
+
 ## Not gaps (recorded so they are not re-reported)
 
 - **Attaching a file to an existing source** is `fha process <filed-primary> --more <file> <role>`.
@@ -115,4 +150,6 @@ inherits that rule: never present a converted date as exact while the offset beh
 
 ## Upstream status
 
-Both verbs are filed on the project repo as issues #43 (`fha media dedupe`) and #44 (`fha media probe`), 2026-08-15. Until they ship, the interim enactments above stand under the `_STANDARD.md` §6 owner exception.
+Both verbs shipped: issue #43 (`fha media dedupe`) and #44 (`fha media probe`), filed on the project
+repo 2026-08-15, closed by `tools/media.py`. No skill under this repo currently uses an interim
+`_STANDARD.md` §6 enactment.

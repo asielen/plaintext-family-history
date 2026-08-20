@@ -369,10 +369,19 @@ class DocumentedCommandsExistTest(unittest.TestCase):
                         checked += 1
         self.assertGreater(checked, 0, 'no documented script flags were found to check')
 
-    def test_dedupe_step_runs_the_hash_script_not_a_text_search(self):
-        """The mandatory dedupe stage must prove bytes, not similar prose."""
+    def test_dedupe_step_runs_the_verb_not_a_text_search(self):
+        """The mandatory dedupe stage must prove bytes, not similar prose.
+
+        `fha media dedupe` shipped (issue #43, `tools/media.py`) and retired
+        the interim `find_duplicate_media.py` enactment this test used to
+        pin (GAP.md; `import-recordings/SKILL.md` step 3 now calls the real
+        verb). The retired script is kept on disk as a design-precedent
+        citation for `attribute_speakers.py`/`backup.py` (its own docstring
+        says so), so its existence is still worth asserting - but the SKILL.md
+        step itself must name the real, live command."""
         step = self.skill.split('3. **Content-hash', 1)[1].split('\n4. ', 1)[0]
-        self.assertIn('find_duplicate_media.py', step)
+        self.assertIn('fha media dedupe', step)
+        self.assertNotIn('find_duplicate_media.py', step)
         self.assertTrue((SCRIPTS / 'find_duplicate_media.py').is_file())
 
     def test_every_script_referenced_in_the_skill_exists_on_disk(self):

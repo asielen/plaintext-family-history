@@ -64,13 +64,13 @@ your first reply and don't drift out of it.
   `living:` flag must be right, and anything the human flags as sensitive gets `restricted: true` on
   the source (SPEC §19).
 
-Two things in this flow are **not** `fha` verbs and are enacted here only under the owner exception
-in `_STANDARD.md` §6 — recorded in this folder's [`GAP.md`](GAP.md), never silently: the content-hash
-duplicate check (wanted: `fha media dedupe`, enacted by `scripts/find_duplicate_media.py`) and the
-container-metadata date read (wanted: `fha media probe`, enacted by `ffprobe`). The local whisper run
-and the speaker-label transfer are owned by this skill's own `scripts/`. All three scripts are
-read-only on the archive: they report, and `fha process` is still the only thing that writes.
-If a further capability turns out to be missing, **stop and name it** — do not hand-roll it in prose.
+The content-hash duplicate check and the container-metadata date read are now real `fha` verbs -
+`fha media dedupe` and `fha media probe` (project issues #43/#44) - retiring the two owner exceptions
+this folder's [`GAP.md`](GAP.md) used to record. The local whisper run and the speaker-label transfer
+remain this skill's own `scripts/`, since they are model-dependent and non-portable (GAP.md's "Not
+gaps" section). All four are read-only on the archive: they report, and `fha process` is still the
+only thing that writes. If a further capability turns out to be missing, **stop and name it** — do
+not hand-roll it in prose (`_STANDARD.md` §6).
 
 ## Flow
 
@@ -94,11 +94,11 @@ directory — pass `--root <archive>` on every call rather than guessing.
 3. **Content-hash every incoming media file against what is already archived, and skip the
    duplicates.** This is not hypothetical: in a real 16-zip phone export, **6 were byte-identical to
    audio already filed**. Compare byte size first and hash only on a size collision — a whole-root
-   hash sweep is wasteful and a whole-root read is discouraged (_STANDARD.md §8). That is exactly
-   what this skill's own script does, and it is the only thing that answers the question:
+   hash sweep is wasteful and a whole-root read is discouraged (_STANDARD.md §8). `fha media dedupe`
+   does exactly that, and it is the only thing that answers the question:
 
    ```
-   python ".claude/skills/import-recordings/scripts/find_duplicate_media.py" "<incoming file or folder>" --root "<archive>"
+   fha media dedupe "<incoming file or folder>" --root "<archive>"
    ```
 
    It reads sizes from the directory entries of the archive's configured media roots, opens nothing
@@ -109,9 +109,10 @@ directory — pass `--root <archive>` on every call rather than guessing.
 
    **What a `new` verdict promises, and why that is the whole contract.** This gate authorises
    imports, so `new` is not "I found no twin" — it is *"I examined everything I claim to have
-   examined, and none of it was this recording."* Five review rounds each found a different way for
-   the old script to examine less than that and still answer confidently, so the promise is now
-   written as five parts, and the script fails closed on any of them:
+   examined, and none of it was this recording."* Five review rounds on the interim hand-rolled
+   version of this check (`GAP.md`) each found a different way for it to examine less than that and
+   still answer confidently, so the promise is written as five parts, and the verb fails closed on
+   any of them:
 
    - **Roots** — every media root `fha.yaml` names was resolved and is readable. A configured root
      that is not there right now (external drive unplugged, folder renamed) refuses the run; it is
@@ -126,29 +127,28 @@ directory — pass `--root <archive>` on every call rather than guessing.
      waiting there is never reported as already filed.
    - **Candidates** — every archived recording of exactly the same byte size was opened and hashed.
    - **Batch** — the incoming files were compared against each other too. One afternoon exported
-     twice under two names is two honest `new` verdicts that are together wrong; the script clears
+     twice under two names is two honest `new` verdicts that are together wrong; the verb clears
      the first and marks the rest `DUPLICATE … in the same batch`. Import the one it names.
 
    Two more things follow from that. A file you hand over that already lives in a media root is the
    archive's own copy: it comes back `DUPLICATE … already filed in the archive`, never `new`, so
    selecting a filed recording (or handing over `documents/interviews/`) cannot authorise a second
-   import of it. And if you ever find yourself narrowing the check to make it answer — pointing
-   `--media-root` at a subfolder, skipping a root that will not mount — stop: that is examining less
-   and reporting the same confidence, which is precisely the failure this contract exists to close.
+   import of it. And if you ever find yourself narrowing the check to make it answer — pointing it at
+   a subfolder instead of the whole bundle, skipping a root that will not mount — stop: that is
+   examining less and reporting the same confidence, which is precisely the failure this contract
+   exists to close.
 
    Exit **1** is usage or configuration: a path that is not there, PyYAML not installed, or a media
-   root `fha.yaml` names that is not there on this machine. The script needs PyYAML to read which
-   folders hold the recordings (those folders are allowed to sit on another drive) and refuses rather
-   than guessing — a guess searches the wrong folder and calls an already-filed recording new. It is
-   the same PyYAML every `fha` command needs, so the fix is `python -m pip install pyyaml`; the
-   message says so. A named-but-absent root is the same kind of refusal for the same reason: the
-   message tells the human to reconnect the drive, create the folder, or fix the path, and any of the
-   three is a one-step fix. Do not work around either by pointing `--media-root` at a folder you
-   picked yourself.
+   root `fha.yaml` names that is not there on this machine. `fha media dedupe` needs PyYAML to read
+   which folders hold the recordings (those folders are allowed to sit on another drive) and refuses
+   rather than guessing — a guess searches the wrong folder and calls an already-filed recording new.
+   A named-but-absent root is the same kind of refusal for the same reason: the message tells the
+   human to reconnect the drive, create the folder, or fix the path, and any of the three is a
+   one-step fix.
 
    `--json <path>` saves the same findings as a file, and that path is the one thing in this step
    that writes: give it a name of its own in the scratchpad, never a recording's name and never a
-   path inside a media root. The script refuses the run - before it hashes anything - if that path
+   path inside a media root. The verb refuses the run - before it hashes anything - if that path
    lands on an incoming recording, on an archived one, on `fha.yaml`, or anywhere inside a media
    root, because a report written over a recording would destroy it *after* clearing it as safe to
    import. It asks the filesystem rather than comparing the spelling, so `./`, a symlink, a hard
@@ -169,14 +169,13 @@ directory — pass `--root <archive>` on every call rather than guessing.
    the recording nobody could read. Tell the human in his own terms — *"I can't tell yet whether
    these are already filed: the folder holding your interviews isn't readable right now"* — name the
    thing to fix, and re-run the same command afterwards. Never fall back to filenames, never fall
-   back to `fha search`, and never narrow `--media-root` onto the part that happens to be readable
+   back to `fha search`, and never narrow the check onto the part that happens to be readable
    just to get a clean exit; that is the gate answering a question you did not ask.
 
    `fha search "<distinctive phrase from the transcript's first minute>"` is a *different* question
    and a weaker answer: it finds a transcript that reads alike, which is a lead, not proof of an
    identical recording. Use it only to explain a near-miss (same sitting re-exported, trimmed, or
-   re-encoded, so the bytes differ) — never in place of the hash check. Until `fha media dedupe`
-   ships (GAP.md, project issue #43) the script is the check.
+   re-encoded, so the bytes differ) — never in place of `fha media dedupe`.
 
    On a match: **report and stop for that item** — *"this is the same file as the recording already
    filed at `documents/interviews/…` — skipping it, nothing imported."* Do not re-process it:
@@ -205,36 +204,46 @@ directory — pass `--root <archive>` on every call rather than guessing.
    > interview.
 
    ```
-   ffprobe -v quiet -print_format json -show_format "<file>"
+   fha media probe "<file>" --root "<archive>"
    ```
 
    That trap has a second half, and it is the one that produces a wrong date in silence: **a UTC
    instant is not a calendar date until you know where the clock was standing.** Converting
    `creation_time` with *your* machine's timezone answers a question nobody asked - a Sunday
    afternoon recorded two zones east converts to the wrong day and looks perfectly ordinary doing
-   it. So establish the recording's offset FIRST, before any arithmetic and before you name a date.
-   Three places to get it, strongest first:
+   it. So `fha media probe` establishes the recording's offset FIRST, before any arithmetic and
+   before it names a date, and always says which of three places the offset came from:
 
    1. **The container's own local timestamp.** Phones and most modern cameras write
-      `com.apple.quicktime.creationdate` alongside `creation_time` - it is already in the
-      `format.tags` of the command above, and it is local time *with* its offset
-      (`1998-06-14T20:15:00-0500`). That is the recording's own timezone, written by the device
-      that was in the room. It settles the question outright; ask nothing.
-   2. **The filename clock, solved for the offset.** When the app filename carries a clock time,
-      the free cross-check runs in the useful direction: local stop is `filename_time + duration`
-      and UTC stop is `creation_time`, so `offset = filename_time + duration − creation_time`.
-      Round to the nearest quarter hour. A fit that misses by more than a couple of minutes means
-      the filename clock is not what you took it for, so it answers nothing - go to 3.
-   3. **Ask him, before you say any date.** *"Where was this recorded - the same timezone you're in
-      now?"* He was there; he knows. One short question up front costs a sentence, and it is the
-      only thing that reaches the truth when the container carries nothing. Asking it *after*
-      converting is the bug: by then a wrong exact date is already on the page.
+      `com.apple.quicktime.creationdate` alongside `creation_time` - it is local time *with* its
+      offset (`1998-06-14T20:15:00-0500`). That is the recording's own timezone, written by the
+      device that was in the room. The verb reports `offset_source: quicktime_creationdate` and
+      settles the question outright; nothing to ask.
+   2. **The filename clock, solved for the offset.** When the app filename carries a clock time, the
+      verb runs the free cross-check in the useful direction itself: local stop is
+      `filename_time + duration` and UTC stop is `creation_time`, so
+      `offset = filename_time + duration − creation_time`, rounded to the nearest quarter hour. A
+      fit that misses by more than a couple of minutes means the filename clock is not what it was
+      taken for, so the verb reports `offset_source: filename_clock` on a fit and leaves it unsolved
+      otherwise - go to 3.
+   3. **Ask him, before you say any date.** When the verb reports no offset at all
+      (`offset_source: none` - no local timestamp, no solvable filename clock), it says so plainly
+      rather than guessing, and this is where YOUR judgment picks up: *"Where was this recorded - the
+      same timezone you're in now?"* He was there; he knows. One short question up front costs a
+      sentence, and it is the only thing that reaches the truth when the container carries nothing.
+      Asking it *after* you have already written a date down is the bug.
 
-   Then, and only then, the arithmetic: local start is `creation_time` − duration rendered in
-   **that** zone, and its day is the date - `source_date: 1998-06-14`. If 1 and 2 both answered,
-   the date is confirmed from two independent directions; say so. If the sitting itself runs past
-   midnight, the day it *started* is still the `source_date`; note the overrun rather than
-   splitting one interview across two dates.
+   When the offset is settled, the verb has already done the arithmetic: `derived local start` is
+   `creation_time` − duration rendered in **that** zone, and its day is the date -
+   `source_date: 1998-06-14`. It also flags `crosses_midnight` when the local start's date differs
+   from the UTC date - the sitting-runs-past-midnight case; the day it *started* is still the
+   `source_date`, note the overrun rather than splitting one interview across two dates. Exit **0**
+   means the offset was settled and the date is confident; exit **1** means duration and
+   `creation_time` were read but no offset could be established - go to step 3 above rather than
+   trusting a bare `source_date`; exit **2** means the container carries no usable creation timestamp
+   at all, and the verb says so rather than falling back to the file's modified-on-disk time (a fact
+   about the FILE, not the recording); exit **3** is a tool failure (the file could not be read, or
+   neither `ffprobe` nor PyAV is available - `fha doctor` reports both the way it reports exiftool).
 
    **If the timezone is still unknown, do not write an exact date.** An unconfirmed value must
    never be presented as exact (AGENTS.md §"The contract"), and the archive's date vocabulary
@@ -643,9 +652,9 @@ proposal-and-confirm is unchanged.
   gate at all.
 - Nothing mines silently. Intake is not extraction — in interactive mode this skill drafts zero
   claims and hands off.
-- Only `fha` and this skill's own `scripts/` are shelled from here. The two interim enactments
-  (dedupe hash, container probe) are the owner-decided exception recorded in [`GAP.md`](GAP.md); a
-  further missing capability is a halt-and-report, not an improvisation (_STANDARD.md §6).
+- Only `fha` and this skill's own `scripts/` (whisper, speaker-label transfer) are shelled from here.
+  The dedupe hash and container probe are now `fha media dedupe`/`fha media probe`, not hand-rolled -
+  a further missing capability is a halt-and-report, not an improvisation (_STANDARD.md §6).
 
 ## Done when
 
