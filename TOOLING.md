@@ -536,6 +536,39 @@ Lint E012 for photos checks keyword↔inventory agreement (no filename carrier).
 
 ---
 
+## 6a. `fha media` - dedupe and container probe for incoming recordings
+
+`fha media dedupe FILE [FILE...] [--root PATH] [--json PATH] [--quiet]`
+`fha media probe FILE [--root PATH] [--json]`
+
+Two read-only verbs (issues #43, #44) that answer a question *before* `fha process` files something - which is why they sit beside it rather than under their own top-level section. Neither renames, moves, deletes, or embeds anything; `fha process` is still the only thing that writes. Both retire an `import-recordings` skill owner exception (`_STANDARD.md` §6) - see that skill's `GAP.md` for the closed-gap record and `.claude/skills/import-recordings/scripts/find_duplicate_media.py`, the hardened interim script whose coverage-walking and dedup logic this module ports rather than re-derives.
+
+**`fha media dedupe`** content-hashes each incoming file against everything already filed under the archive's `documents`/`photos` roots (`_lib.get_roots`/`resolve_path`, not a hand-rolled reader - an external root is found the same as everywhere else in the suite). Size-compare first (read straight off the directory entry, nothing opened), SHA-256 only on a size collision. `new` is a **coverage statement**, not a search result, and it takes all five of the following holding at once - anything short of any one is `indeterminate`, never `new`:
+
+1. **Roots** - every media root `fha.yaml` names was resolved and is readable right now. A root the config *names* and the disk lacks is a coverage gap (drive unplugged, folder renamed), distinct from a default alias the config never mentions (an ordinary young archive).
+2. **Enumeration** - every file under every root was listed: hidden folders and folders behind a directory symlink included, each folder visited once (a followlinks walk with a `(device, inode)` loop guard).
+3. **Domain** - the same audio/video extension rule applies to both sides; a path named on the command line that falls outside it is reported as not checked, never given a verdict. "Archived" means **filed** - the inbox is staging even when SPEC §12.4 lets it sit inside a media root, so a file waiting there is never "already filed."
+4. **Candidates** - every same-size archived file was opened and hashed; one that could not be read leaves the question open.
+5. **Batch** - the incoming files are compared against each other too, so one sitting exported twice under two names yields exactly one `new` and the rest `duplicate … in the same batch`.
+
+Two consequences follow: a file handed to the verb that already lives in a media root is the archive's own copy, reported `duplicate … already filed`, never cleared; and the verb must never answer a *smaller* question in the same words - there is no folder-narrowing override, unlike the interim script's `--media-root` (dropped: the real verb always resolves the archive's configured roots).
+
+**Exit codes are a bespoke four-code ladder** (GAP.md's contract, not the suite's usual 0/1/2/3 = clean/warnings/errors/failure meaning): 0 = every incoming file was checked against every candidate and none matched; 1 = usage or configuration error (bad path, unparseable `fha.yaml`, a configured root that is not there); 2 = at least one incoming file is byte-identical to a filed recording or to another file in the same batch (a clean "found, nothing to do" answer, not a failure); 3 = the check could not be completed for at least one file, so nothing in the run is cleared for import.
+
+`--json PATH` also writes the findings as a report file - alias-form paths only (`documents/…`, or `incoming/…` for the bundle being checked), never an absolute machine path. That path is canonicalised and the run refused **before the first byte is hashed** if it would resolve onto an incoming recording, an archived one, `fha.yaml`, or anywhere inside a media root - a read-only tool's one way to break its own promise is a report written last, over a file it has already cleared as safe to import.
+
+**`fha media probe`** reads a recording's true duration and container `creation_time` (`ffprobe` primary backend - optional dependency, reported by `fha doctor` the way exiftool is; PyAV fallback when `ffprobe` is absent, the same library `transcribe-audio`'s `transcribe_audio.py` already uses) and derives the local start time, following the same rule the interim `ffprobe` + manual-arithmetic enactment used (SKILL.md step 4): QuickTime/MP4 writes `creation_time` in **UTC at the moment recording stopped**; an app-written filename clock names **local time at the moment it started**. So `local_start = (creation_time + offset) - duration`, and the offset is never guessed - it is reported alongside where it came from:
+
+1. **`com.apple.quicktime.creationdate`**, when the container carries one - local time *with* its own offset, naming the same instant as `creation_time`. Settles the question outright.
+2. **The filename clock, solved for the offset** - `offset = filename_time + duration − creation_time`, rounded to the nearest quarter hour; a fit missing by more than a couple of minutes is rejected as unsolved, not forced.
+3. **Neither** - the verb reports `offset_source: none` and says so plainly. It never falls back to the machine's own timezone or to the file's filesystem mtime (a fact about the file, not the recording); asking the human is left to the skill layer, since the verb cannot ask a question.
+
+Flags `crosses_midnight` when the derived local start's calendar date differs from the UTC date. Ordinary 0/1/2/3 exit ladder: 0 = offset settled, local start reported with confidence; 1 = duration and `creation_time` read but the offset could not be established; 2 = the container carries no usable creation timestamp at all; 3 = tool failure (unreadable file, or neither `ffprobe` nor PyAV available).
+
+Registered in `fha.py`'s `COMMANDS` as the `media` subcommand group, the same pattern `fha confirm`/`fha gedcom` use for their own sub-subcommands. Implementation status: `tools/README.md`.
+
+---
+
 ## 7. View generators - `fha views`
 
 All write GENERATED-headed `.md` into the tree; all derive purely from the index. The per-person forms skip a stub person with a plain note (exit 1) - companion views are curated-person files (SPEC §16), and the guard lives in the tool so no caller has to remember it. The three content views (timeline, sources-index, draft-queue) and `refresh` also take **`--format md|html`** (default `md`; `refresh` additionally accepts `both`): `html` renders the same content as a standalone single-file page under `generated/views/` - see design decision D11 below for the conventions.
@@ -1187,6 +1220,8 @@ Organized by how often *you* touch it - the skills are the real working surface;
 | `fha backup [--to PATH] [--include-assets] [--dry-run]` (T C) | One dated zip of the whole archive, written **outside** it (default: the `{root}-backups/` sibling folder). Records-only by default - the photos/documents roots are excluded and named every run; `--include-assets` packs external roots under their alias names (roots mapped inside the archive keep their real relative path, so unzip restores the exact layout `fha.yaml` describes). Verified after writing; refuses on duplicate member names; stamps `.cache/last_backup.json` so `fha doctor` reports the real last-backup date. Restore = unzip (§13e). |
 | `fha install <path>` (clone) / `fha update-tools` (T C) | Bootstrap a private archive with the operating layer, or refresh it later - backs up your edits, never deletes, never touches data. |
 | `fha capture` (T C, + browser companion) | Capturing a record from an open web page (Ancestry etc.): citation + asset/HTML-snapshot + research-log entry → `fha process`. The main intake on-ramp. `fha capture --path PATH [--note TEXT]` is a distinct mode - register a file (a photo still living in someone else's library) that must never move; no HTML read, no asset copy, one pointer stub only. |
+| `fha media dedupe FILE [FILE...] [--json PATH]` (T C) | "Is this recording already filed?" Before `fha process`ing a phone-app export - content-hashes each incoming file against everything already filed (§6a). Read-only; its own exit-code ladder (0 clean, 1 usage error, 2 duplicate found, 3 coverage incomplete). Retires an `import-recordings` skill owner exception (GAP.md, issue #43). |
+| `fha media probe FILE` (T C) | "When was this really recorded?" Reads the container's true duration + `creation_time` and derives the local start time, timezone provenance stated plainly (§6a). Read-only; ordinary 0/1/2/3 ladder. Retires an `import-recordings` skill owner exception (GAP.md, issue #44). |
 | `fha gedcom <P-id\|--all>` (T C) | Exporting relationships+vitals to GEDCOM for another genealogy app. One-way; redacts living/unknown. |
 | `fha gedcom import <file.ged> [--apply] [--plan-out FILE]` (T C) | Coming FROM Ancestry (or any GEDCOM): file the tree as one source + person stubs + suggested claims. Dry-run plan by default; one-shot re-run guard; everything enters `suggested` (§13a2). |
 | `fha views tree <P-id> --mode …` (T C) | Generating an ancestor/descendant/FAN tree (json/dot; html arrives with the site's full-tree feature - refused with a pointer to `fha site` until then). |
