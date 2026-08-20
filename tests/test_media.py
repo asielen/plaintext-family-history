@@ -307,6 +307,15 @@ class ArithmeticTests(unittest.TestCase):
         self.assertIsNone(media._parse_iso8601(''))
         self.assertIsNone(media._parse_iso8601(None))
 
+    def test_parse_iso8601_refuses_an_out_of_range_offset_instead_of_crashing(self):
+        """Regression: the regex accepts any two digits for the offset hours
+        (00-99), and `datetime.timezone()` raises ValueError past +/-24h. A
+        corrupt or malformed tag straight from a media file's own container
+        metadata ('+99:00') must come back None, like any other unparseable
+        string - never an unhandled crash on untrusted external input."""
+        self.assertIsNone(media._parse_iso8601('2020-06-14T20:15:00+99:00'))
+        self.assertIsNone(media._parse_iso8601('2020-06-14T20:15:00-5000'))
+
     def test_filename_clock_reads_common_app_and_camera_shapes(self):
         cases = {
             '2020-06-14 15.30.00.m4a': datetime.datetime(2020, 6, 14, 15, 30, 0),
@@ -348,6 +357,21 @@ class ArithmeticTests(unittest.TestCase):
         solved, raw, miss = media._solve_offset_from_filename(filename_dt, duration, utc_stop)
         self.assertIsNone(solved)
         self.assertGreater(miss, media.FILENAME_CLOCK_TOLERANCE_SECONDS)
+
+    def test_a_filename_clock_a_whole_number_of_days_off_does_not_solve_despite_perfect_fit(self):
+        """Regression: a filename clock naming the WRONG DAY (a fat-fingered
+        year, a device clock reset) still lands on an exact quarter-hour
+        multiple against creation_time - miss is ~0, a 'perfect' fit - so the
+        tolerance check alone would confidently solve a many-day, not-a-real-
+        timezone offset. Before the fix this also crashed `_derive_local_start`
+        (`datetime.timezone()` refuses an offset past +/-24h)."""
+        filename_dt = datetime.datetime(2019, 6, 14, 20, 15, 0)   # a year off
+        duration = 300.0
+        creation_time = datetime.datetime(2020, 6, 15, 1, 20, 0, tzinfo=datetime.timezone.utc)
+        solved, raw, miss = media._solve_offset_from_filename(filename_dt, duration, creation_time)
+        self.assertIsNone(solved)
+        self.assertLess(miss, 1.0)   # the fit itself is "perfect" - magnitude is the reason
+        self.assertGreater(abs(raw), 24 * 3600)
 
     def test_fmt_offset_handles_negative_and_positive_and_zero(self):
         self.assertEqual(media._fmt_offset(datetime.timedelta(hours=-5)), '-05:00')
@@ -416,6 +440,61 @@ class RunMediaProbeTests(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertTrue(any('no usable creation timestamp' in m.text for m in result.messages))
         self.assertIsNone(result.data['creation_time_utc'])
+
+    def test_a_creation_time_with_no_utc_marker_is_treated_as_unusable(self):
+        """A `creation_time` tag missing its 'Z'/offset is a value that PARSES
+        but cannot be trusted as UTC. `datetime.astimezone()` on a naive value
+        silently presumes THIS MACHINE's own local timezone (documented
+        Python behavior) - exactly the guess this verb exists to refuse, so a
+        naive `creation_time` must be treated the same as none at all, never
+        quietly converted with the machine's own zone.
+
+        Regression for a real pre-fix bug, independently reproduced by hand
+        with `TZ=America/New_York`: before the fix this returned exit 0 with
+        a `local_start` silently corrupted by 4-5 hours (the machine's own
+        UTC offset baked into `creation_time_utc` itself) - a confident,
+        wrong answer with no warning at all. Not reproduced here via `TZ` +
+        `time.tzset()` because `tzset()` does not exist on Windows
+        (`_STANDARD.md`'s coding standard runs on both); the assertions below
+        hold on any machine regardless of its own configured timezone, which
+        is exactly the property the fix restores.
+        """
+        result = self._probe({'creation_time': '2020-06-15T01:20:00.000000'})   # no 'Z'
+        self.assertEqual(result.exit_code, EXIT_ERRORS)
+        self.assertFalse(result.ok)
+        self.assertTrue(any('no usable creation timestamp' in m.text for m in result.messages))
+        self.assertIsNone(result.data['creation_time_utc'])
+        self.assertIsNone(result.data['local_start'])
+
+    def test_a_naive_creation_time_alongside_an_aware_quicktime_tag_does_not_crash(self):
+        """Regression: before the fix, a naive `creation_time` reached the
+        drift check against an AWARE `com.apple.quicktime.creationdate`
+        (`qt_dt.astimezone(utc) - creation_time`) and raised an unhandled
+        `TypeError: can't subtract offset-naive and offset-aware datetimes` -
+        a raw traceback, which AGENTS_TOOLING.md forbids reaching the user."""
+        result = self._probe({
+            'creation_time': '2020-06-15T01:20:00.000000',   # no 'Z'
+            'com.apple.quicktime.creationdate': '2020-06-14T20:20:00-0500',
+        })
+        self.assertEqual(result.exit_code, EXIT_ERRORS)
+        self.assertFalse(result.ok)
+
+    def test_a_filename_clock_a_year_off_does_not_crash_and_reports_no_offset(self):
+        """End-to-end regression for the whole-days-off filename clock bug:
+        before the fix this crashed inside `_derive_local_start` with
+        `ValueError: offset must be a timedelta strictly between
+        -timedelta(hours=24) and timedelta(hours=24)`."""
+        renamed = self.tmp / '2019-06-14_20-15-00.m4a'   # a year off from creation_time below
+        self.recording.rename(renamed)
+        with mock.patch('media._probe_with_ffprobe',
+                        return_value={'duration': 300.0,
+                                     'tags': {'creation_time': '2020-06-15T01:20:00.000000Z'}}), \
+             mock.patch('media.shutil.which', return_value='/usr/bin/ffprobe'):
+            result = media.run_media_probe(self.archive, {}, file_arg=str(renamed))
+        self.assertEqual(result.exit_code, EXIT_WARNINGS)
+        self.assertFalse(result.ok)
+        self.assertIsNone(result.data['local_start'])
+        self.assertIsNone(result.data['offset'])
 
     def test_midnight_straddle_is_flagged(self):
         result = self._probe({'creation_time': '2020-06-15T01:20:00.000000Z'}, duration=300.0)

@@ -200,6 +200,18 @@ REPORT_EXAMPLE = 'dedupe-report.json'
 FILENAME_CLOCK_TOLERANCE_SECONDS = 180
 FILENAME_CLOCK_ROUND_SECONDS = 900   # nearest quarter hour
 
+# Real-world UTC offsets run from -12:00 (Baker/Howland Islands) to +14:00
+# (Kiribati's Line Islands) - nothing on Earth is further out than that. A
+# filename clock that is a whole number of DAYS off from creation_time (the
+# wrong year typed into a filename, a camera clock reset to its epoch) still
+# rounds to an exact multiple of the quarter-hour grid - miss lands at or
+# near 0 - so the tolerance check alone would call a wrong-by-months date a
+# confidently "solved" offset. Bounding to what a real timezone can be also
+# closes the crash `datetime.timezone()` would otherwise raise on an offset
+# past +/-24h (its own hard limit).
+MIN_PLAUSIBLE_OFFSET_SECONDS = -12 * 3600
+MAX_PLAUSIBLE_OFFSET_SECONDS = 14 * 3600
+
 
 class ConfigProblem(Exception):
     """fha.yaml exists but cannot be trusted to say where the media lives.
@@ -1124,16 +1136,23 @@ def _parse_iso8601(value: str) -> datetime.datetime | None:
     frac = m.group('frac') or '0'
     microsecond = int((frac + '000000')[:6])
     tz = m.group('tz')
-    if tz is None:
-        tzinfo = None
-    elif tz == 'Z':
-        tzinfo = datetime.timezone.utc
-    else:
-        sign = 1 if tz[0] == '+' else -1
-        digits = tz[1:].replace(':', '')
-        hh, mm = int(digits[:2]), int(digits[2:4] or '0')
-        tzinfo = datetime.timezone(sign * datetime.timedelta(hours=hh, minutes=mm))
     try:
+        if tz is None:
+            tzinfo = None
+        elif tz == 'Z':
+            tzinfo = datetime.timezone.utc
+        else:
+            sign = 1 if tz[0] == '+' else -1
+            digits = tz[1:].replace(':', '')
+            hh, mm = int(digits[:2]), int(digits[2:4] or '0')
+            # `datetime.timezone` refuses an offset outside +/-24h. The regex
+            # accepts any two digits (00-99) for hh, so a corrupt or
+            # malformed tag (a bit-flipped byte, an encoder bug) can spell an
+            # offset like '+99:00' - this is untrusted data straight out of
+            # the media file's own container metadata, not a value this
+            # module produced, so it is treated as an unparseable string
+            # (return None) rather than crashing the whole probe.
+            tzinfo = datetime.timezone(sign * datetime.timedelta(hours=hh, minutes=mm))
         return datetime.datetime(
             int(m.group('y')), int(m.group('mo')), int(m.group('d')),
             int(m.group('h')), int(m.group('mi')), int(m.group('s')),
@@ -1179,10 +1198,17 @@ def _solve_offset_from_filename(
     once rounded to the nearest quarter hour, or None when the fit misses by
     more than `FILENAME_CLOCK_TOLERANCE_SECONDS` - SKILL.md's "a fit that
     misses by more than a couple of minutes means the filename clock is not
-    what you took it for". `raw_seconds` is the unrounded offset implied by
-    this one file (useful for the data payload); `miss_seconds` is the
-    distance from that raw value to the nearest quarter hour - the number a
-    human-facing message wants, since "misses by 18300s" (the raw offset
+    what you took it for" - OR when the rounded offset falls outside
+    `MIN_PLAUSIBLE_OFFSET_SECONDS`/`MAX_PLAUSIBLE_OFFSET_SECONDS`. That second
+    guard matters because a filename clock a whole number of days off from
+    `creation_time` still rounds to an exact quarter hour (miss lands near
+    0) - a wrong year in the filename would otherwise "solve" a many-day
+    offset with full confidence, and one past +/-24h would crash
+    `_derive_local_start`'s `datetime.timezone()` outright. `raw_seconds` is
+    the unrounded offset implied by this one file (useful for the data
+    payload); `miss_seconds` is the distance from that raw value to the
+    nearest quarter hour - the number a human-facing message wants, since
+    "misses by 18300s" (the raw offset
     itself, which is mostly just this recording's real timezone) reads as a
     much bigger problem than "misses by 300s" (how far off the QUARTER-HOUR
     FIT is) actually is.
@@ -1193,6 +1219,8 @@ def _solve_offset_from_filename(
     rounded = round(raw / FILENAME_CLOCK_ROUND_SECONDS) * FILENAME_CLOCK_ROUND_SECONDS
     miss = abs(raw - rounded)
     if miss > FILENAME_CLOCK_TOLERANCE_SECONDS:
+        return None, raw, miss
+    if not (MIN_PLAUSIBLE_OFFSET_SECONDS <= rounded <= MAX_PLAUSIBLE_OFFSET_SECONDS):
         return None, raw, miss
     return datetime.timedelta(seconds=rounded), raw, miss
 
@@ -1364,6 +1392,16 @@ def run_media_probe(archive_root: Path, fha_config: dict, *, file_arg: str) -> R
 
     creation_raw = tags.get('creation_time')
     creation_time = _parse_iso8601(creation_raw) if creation_raw else None
+    # A parsed-but-naive creation_time (no 'Z'/offset marker) is treated as
+    # UNUSABLE, not as UTC: `creation_time` is documented (TOOLING §6a) to
+    # always be UTC, but a naive datetime's `.astimezone()` presumes THIS
+    # MACHINE's own local timezone (Python's own documented behavior for a
+    # naive value) - exactly the guess this verb exists to refuse, and the
+    # one further down this function that a disagreeing-but-aware
+    # `com.apple.quicktime.creationdate` tag would turn into an unhandled
+    # `TypeError` (naive minus aware) instead of a plain message.
+    if creation_time is not None and creation_time.tzinfo is None:
+        creation_time = None
     if creation_time is None:
         result.exit_code = EXIT_ERRORS
         result.ok = False
@@ -1420,6 +1458,18 @@ def run_media_probe(archive_root: Path, fha_config: dict, *, file_arg: str) -> R
                            'timezone solved from the filename clock (%s): offset %s, confirmed '
                            'by filename_time + duration matching creation_time to within a few '
                            'minutes.' % (filename_dt.isoformat(timespec='seconds'), _fmt_offset(offset)))
+            elif miss_seconds <= FILENAME_CLOCK_TOLERANCE_SECONDS:
+                # A good quarter-hour fit that still got rejected: the only
+                # other reason is an implausible magnitude (MIN/MAX_PLAUSIBLE_
+                # OFFSET_SECONDS) - a whole number of days off from
+                # creation_time rounds cleanly too, so a fit alone cannot
+                # tell a wrong year in the filename from a real timezone.
+                result.add('warning',
+                           'the filename carries a clock (%s) that fits creation_time almost '
+                           'exactly, but only by implying an offset around %.1f hours - no real '
+                           'timezone reaches that far, so this points to a wrong date somewhere '
+                           '(the filename, or the container), not a solved timezone.'
+                           % (filename_dt.isoformat(timespec='seconds'), raw_seconds / 3600.0))
             else:
                 result.add('warning',
                            'the filename carries a clock (%s), but filename_time + duration '
