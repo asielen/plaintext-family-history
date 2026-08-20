@@ -6430,9 +6430,9 @@ def configure_utf8_stdout() -> None:
     stdout but its WARNING/ERROR lines to stderr (see e.g. index.py's
     `print(f'WARNING: {m.text}', file=sys.stderr)`) - both are console-facing
     text channels a Windows console or `2> err.txt` redirect defaults to the
-    locale codepage on, so both need the same fix. The name kept its original,
-    stdout-only shape (every tool already imports and calls it under this
-    name) rather than being renamed or split in two.
+    locale codepage on, so both need the same fix. Kept the original,
+    stdout-sized name rather than renaming or splitting it in two - every
+    tool already imports and calls it under this name.
     """
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, 'reconfigure'):
