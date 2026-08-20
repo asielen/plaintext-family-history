@@ -48,7 +48,7 @@ of `fha process`/`fha stubs` (and a per-file inbox path would be wrong for a
 #  Field derivation
 #    gedcom_date_to_edtf       - GEDCOM date phrase → valid EDTF, or None
 #    _edtf_ymd                 - numeric ordering key for range sanity checks
-#    _parse_gedcom_name        - `Given /Surname/` → (display, given, surname)
+#    _parse_gedcom_name        - `Given /Surname/ Suffix` → (display, given, surname)
 #    _oneline                  - CONT-folded HEAD value → one line (YAML-safe)
 #    living_flag_for_import    - THE living: heuristic (owner-flagged default)
 #    _birth_year_upper         - latest plausible birth year from an EDTF
@@ -108,6 +108,7 @@ from _lib import (
     read_record,
     resolve_path,
     resolve_root_arg,
+    strip_generational_suffix,
 )
 
 import yaml
@@ -442,9 +443,28 @@ def _parse_gedcom_name(raw: str) -> tuple[str, str, str]:
     """GEDCOM `Given /Surname/ suffix` → (display name, given slot, surname slot).
 
     Inverts the exporter's `_gedcom_name`. Display drops the slashes and joins
-    the pieces in order; the slots feed the stub filename grammar. A name with
-    no slash form is best-effort split on the last whitespace token (the same
-    convention `fha stubs` uses)."""
+    the pieces in order; the slots feed the stub filename grammar.
+
+    A name with NO slash form - common in files written by hand or by an app
+    that never fills the surname markup - is split on the last whitespace
+    token, but only after a trailing generational suffix is set aside with
+    the shared `_lib.strip_generational_suffix`. Without that, an incoming
+    `1 NAME Roy Eugene Dodson Jr` filed as `jr__roy_eugene_dodson_P-….md`
+    and indexed with the surname "Jr" - issue #53/#78's defect, arriving
+    through the import on-ramp, and it poisons the export too (the next
+    `fha gedcom` reads "Jr" back out of the index as his surname). "Roy Jr"
+    keeps the same surname-less reading `stub_slug_name` gives it: the
+    suffix does not promote the one remaining token into a surname.
+
+    The suffix then rides at the END of the given slot, in both forms, so
+    the filename this feeds sorts directly under the un-suffixed one
+    (`dodson__roy_eugene_jr_P-….md` beside `dodson__roy_eugene_P-….md`) -
+    the same placement `stub_slug_name` gives it, which is what makes a
+    father and son legible side by side in a file browser.
+
+    A `2 NSFX` sub-tag is not read: every name form seen here already
+    carries the suffix as trailing text on the NAME line itself, and the
+    display name is what the record keeps."""
     raw = ' '.join((raw or '').split())
     if not raw:
         return '', '', ''
@@ -452,11 +472,16 @@ def _parse_gedcom_name(raw: str) -> tuple[str, str, str]:
     if m:
         given, surname, suffix = m.group(1).strip(), m.group(2).strip(), m.group(3).strip()
         display = ' '.join(p for p in (given, surname, suffix) if p)
-        return display, given or surname, surname
+        given_slot = ' '.join(p for p in (given, suffix) if p) or surname
+        return display, given_slot, surname
     parts = raw.split()
     if len(parts) == 1:
         return raw, parts[0], ''
-    return raw, ' '.join(parts[:-1]), parts[-1]
+    core, suffix = strip_generational_suffix(parts)
+    if len(core) < 2:
+        return raw, ' '.join(parts), ''
+    given_slot = ' '.join(core[:-1] + ([parts[-1]] if suffix else []))
+    return raw, given_slot, core[-1]
 
 
 def _person_filename(given: str, surname: str, pid: str) -> str:

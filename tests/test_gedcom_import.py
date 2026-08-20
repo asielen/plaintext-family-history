@@ -33,6 +33,7 @@ from _lib import (
     is_valid_edtf,
     load_fha_yaml,
     read_record,
+    stub_filename,
 )
 
 FIXTURES = ROOT / 'tests' / 'fixtures' / 'gedcom'
@@ -832,6 +833,69 @@ class ScaleSmokeTestCase(_ArchiveCase):
         self.assertIn('--plan-out', out)
         stubs = list((self.archive / 'people' / 'stubs').glob('*.md'))
         self.assertEqual(len(stubs), 1000)
+
+
+class ParseGedcomNameTests(unittest.TestCase):
+    """A generational suffix is never the surname on the way IN either
+    (issues #53/#78). The importer shares `_lib.strip_generational_suffix`
+    with every other site that splits a name, so the stub it files matches
+    the one `fha person new` would file for the same name."""
+
+    def _filename(self, raw):
+        _display, given, surname = gedcom_import._parse_gedcom_name(raw)
+        return gedcom_import._person_filename(given, surname, 'P-0000000001')
+
+    def test_a_slashless_name_never_files_the_suffix_as_the_surname(self):
+        # GUARD: a NAME line with no surname markup - what a hand-written
+        # or app-exported file routinely carries - was split on the last
+        # token, so 'Roy Eugene Dodson Jr' filed as
+        # `jr__roy_eugene_dodson_P-….md` and INDEXED with the surname
+        # "Jr", which the next `fha gedcom` then exported back out.
+        for suffix in ('Jr', 'Sr', 'II', 'III', 'IV', 'V'):
+            with self.subTest(suffix=suffix):
+                display, given, surname = gedcom_import._parse_gedcom_name(
+                    f'Roy Eugene Dodson {suffix}')
+                self.assertEqual(surname, 'Dodson')
+                self.assertEqual(given, f'Roy Eugene {suffix}')
+                self.assertEqual(display, f'Roy Eugene Dodson {suffix}')
+
+    def test_a_suffix_only_name_keeps_the_surname_less_reading(self):
+        # 'Roy Jr' has no more of a surname than 'Roy' alone; the suffix
+        # does not promote the one remaining token into one.
+        display, given, surname = gedcom_import._parse_gedcom_name('Roy Jr')
+        self.assertEqual((display, given, surname), ('Roy Jr', 'Roy Jr', ''))
+
+    def test_the_suffix_rides_in_the_given_slot_in_both_name_forms(self):
+        # The point of the placement (issue #53): the son's file sorts
+        # directly under the father's in a file browser.
+        self.assertEqual(
+            self._filename('Roy Eugene Dodson Jr'),
+            'dodson__roy_eugene_jr_P-0000000001.md')
+        self.assertEqual(
+            self._filename('Roy Eugene /Dodson/ Jr'),
+            'dodson__roy_eugene_jr_P-0000000001.md')
+
+    def test_unsuffixed_and_surname_less_names_are_untouched(self):
+        self.assertEqual(
+            gedcom_import._parse_gedcom_name('Roy Eugene Dodson'),
+            ('Roy Eugene Dodson', 'Roy Eugene', 'Dodson'))
+        self.assertEqual(
+            gedcom_import._parse_gedcom_name('Cher'), ('Cher', 'Cher', ''))
+        self.assertEqual(gedcom_import._parse_gedcom_name(''), ('', '', ''))
+        # A surname with no given name keeps its own deliberate fallback
+        # (`dodson__dodson`, not `dodson__unknown`).
+        self.assertEqual(self._filename('/Dodson/'), 'dodson__dodson_P-0000000001.md')
+
+    def test_it_files_a_person_the_way_the_shared_rule_does(self):
+        # Two-sided rule, two-sided test: import and `fha person new` must
+        # not drift apart again.
+        for raw in ('Roy Eugene Dodson Jr', 'Roy Eugene /Dodson/ Jr',
+                    'Roy Eugene Dodson', 'Cher', 'Roy Jr'):
+            with self.subTest(raw=raw):
+                display, _given, surname = gedcom_import._parse_gedcom_name(raw)
+                self.assertEqual(
+                    self._filename(raw),
+                    stub_filename(display, 'P-0000000001', surname=surname or None))
 
 
 if __name__ == '__main__':
