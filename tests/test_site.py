@@ -418,6 +418,34 @@ class PersonPageTests(_Base):
         self.assertNotIn('Secret hunch', standalone)             # dropped from the shared build
         self.assertNotIn('private -->', standalone)              # no raw marker leak
 
+    def test_cp1252_person_record_in_linked_mode_degrades_and_names_the_cause(self):
+        # Linked mode skips `prepare()`'s privacy pre-pass (standalone-only),
+        # so this is the one mode where the page-building reads themselves -
+        # `_person_prose` and `_person_header_meta` - are what meet a person
+        # record saved in another codepage. Both must degrade (no crash, no
+        # traceback) and both must say WHY in plain language, not raise
+        # `UnicodeDecodeError` up through the page build.
+        self._seed_person('p-aaaaaaaaaa', 'Margaret Hartley', surname='Hartley')
+        broken = self.archive_root / 'people' / 'hartley__test_p-aaaaaaaaaa.md'
+        broken.write_bytes(
+            ('---\nid: p-aaaaaaaaaa\nname: Margaret Hartley\n'
+             'name_at_birth: Margaret Cole\n---\n\n## Biography\n\nBorn in Kraków.\n')
+            .encode('cp1252'))
+        res = self._run(linked=True)
+        self.assertEqual(res['status'], 'ok')
+        self.assertTrue((self.out_dir / 'persons' / 'p-aaaaaaaaaa.html').exists())
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertNotIn('Born in', html)                 # prose withheld, not garbled
+        self.assertNotIn('Margaret Cole', html)            # alt name withheld too
+        messages = res['messages']
+        self.assertTrue(
+            any('hartley__test_p-aaaaaaaaaa.md' in m and "isn't saved as UTF-8 text" in m
+                and 'skipping its prose' in m for m in messages), messages)
+        self.assertTrue(
+            any('hartley__test_p-aaaaaaaaaa.md' in m and "isn't saved as UTF-8 text" in m
+                and 'alternate names and editorial tags' in m for m in messages), messages)
+        self.assertFalse(any('codec' in m for m in messages), messages)
+
 
 class PersonRedactionTests(_Base):
     def test_living_person_no_page_standalone(self):
@@ -597,6 +625,46 @@ class UnreadableRecordPrivacyTests(_Base):
             any('injected read failure' in m for m in res['messages']),
             res['messages'])
 
+    def test_a_person_record_saved_as_cp1252_is_withheld_with_a_plain_cause(self):
+        # #68's actual failure mode, not a mocked exception: a file saved in
+        # another codepage (cp1252, a Windows editor's default) raises
+        # UnicodeDecodeError out of `read_record` unless a caller opts in to
+        # `on_decode_error`. Before this fix the broad `except Exception`
+        # already caught it (so the person was already withheld, correctly -
+        # this is a wording fix, not a privacy fix), but the message showed
+        # the raw exception text (byte offsets, codec names). It must now
+        # name the real, fixable cause instead.
+        self._seed_trio()
+        broken = self.archive_root / 'people' / 'hollis__test_p-cccccccccc.md'
+        broken.write_bytes(
+            ('---\nid: p-cccccccccc\nname: Hidden Hollis\nrestricted: by-request\n'
+             '---\n\n## Biography\n\nBorn in Kraków.\n').encode('cp1252'))
+        res = self._run(linked=False)
+        self.assertFalse((self.out_dir / 'persons' / 'p-cccccccccc.html').exists())
+        self.assertNotIn('Hidden Hollis', self._all_output_text())
+        messages = res['messages']
+        self.assertTrue(
+            any('hollis__test_p-cccccccccc.md' in m and "isn't saved as UTF-8 text" in m
+                for m in messages), messages)
+        # The old wording (a raw UnicodeDecodeError's `str()`) must be gone.
+        self.assertFalse(any('codec' in m for m in messages), messages)
+
+    def test_a_source_record_saved_as_cp1252_is_withheld_with_a_plain_cause(self):
+        self._seed_person('p-aaaaaaaaaa', 'Public Pat', surname='Pat')
+        self._seed_source('s-1111111111', 'Sealed Adoption File',
+                          people=('p-aaaaaaaaaa',))
+        broken = self.archive_root / 'sources' / 'census' / 'src_s-1111111111.md'
+        broken.write_bytes(
+            ('---\nid: s-1111111111\ntitle: Sealed Adoption File\n'
+             'source_type: census\n---\n\n## Claims\n\nFound in Kraków.\n').encode('cp1252'))
+        res = self._run(linked=False)
+        self.assertFalse((self.out_dir / 'sources' / 's-1111111111.html').exists())
+        messages = res['messages']
+        self.assertTrue(
+            any('src_s-1111111111.md' in m and "isn't saved as UTF-8 text" in m
+                for m in messages), messages)
+        self.assertFalse(any('codec' in m for m in messages), messages)
+
     def test_malformed_person_frontmatter_is_withheld(self):
         # A hand-edit that breaks the YAML empties `meta` without raising,
         # which loses the marker just as completely as a deleted file.
@@ -660,6 +728,30 @@ class ResilienceTests(_Base):
         self.assertTrue((self.out_dir / 'sources' / 's-1111111111.html').exists())
         self.assertIn('Broken Source', self._read('sources/s-1111111111.html'))
         self.assertTrue((self.out_dir / 'sources' / 's-2222222222.html').exists())
+
+    def test_cp1252_source_record_falls_back_to_title_with_a_plain_cause(self):
+        # Linked mode skips the privacy pre-pass entirely (`_load_restriction_
+        # markers` is standalone-only), so this is the one mode where
+        # `build_source_page`'s own read - not `prepare()`'s - is what meets
+        # the bad decode. Before the fix the fallback still worked (a bare
+        # `except Exception` already caught `UnicodeDecodeError`), but named
+        # the raw codec exception instead of a fixable cause.
+        self._seed_source('s-1111111111', 'Broken Source')
+        broken = self.archive_root / 'sources' / 'census' / 'src_s-1111111111.md'
+        broken.write_bytes(
+            ('---\nid: s-1111111111\ntitle: Broken Source\nsource_type: census\n'
+             'citation: "Found in Kraków"\n---\n\n## Claims\n').encode('cp1252'))
+        res = self._run(linked=True)
+        self.assertEqual(res['status'], 'ok')
+        self.assertTrue((self.out_dir / 'sources' / 's-1111111111.html').exists())
+        html = self._read('sources/s-1111111111.html')
+        self.assertIn('Broken Source', html)              # index title still shown
+        self.assertNotIn('Found in Kraków', html)          # citation could not be read
+        messages = res['messages']
+        self.assertTrue(
+            any('src_s-1111111111.md' in m and "isn't saved as UTF-8 text" in m
+                and 'showing the title only' in m for m in messages), messages)
+        self.assertFalse(any('codec' in m for m in messages), messages)
 
     def test_dry_run_writes_nothing(self):
         self._seed_source('s-1111111111', 'A Source')
@@ -923,6 +1015,31 @@ class AssetTests(_Base):
             'roots:\n  photos: photos\n', encoding='utf-8')
         res = self._run(linked=True)
         self.assertIn('mystery.jpg', self._read('persons/p-aaaaaaaaaa.html'))
+
+    def test_cp1252_person_record_skips_profile_photo_with_a_warning(self):
+        # `_resolve_profile_photo` used to read `profile_photo:` through a
+        # bare `except Exception: return None` - safe (no crash) but
+        # perfectly silent, unlike every other miss this method already
+        # warns about ("matched no photo", "could not build a web image").
+        # Linked mode is needed so the read is reached at all - standalone's
+        # privacy pre-pass would withhold this person's page outright.
+        self._seed_person('p-aaaaaaaaaa', 'Jane Doe',
+                          frontmatter_extra='profile_photo: mystery.jpg')
+        broken = self.archive_root / 'people' / 'person__test_p-aaaaaaaaaa.md'
+        broken.write_bytes(
+            ('---\nid: p-aaaaaaaaaa\nname: Jane Doe\n'
+             'profile_photo: mystery.jpg\n---\n\n## Biography\n\nBorn in Kraków.\n')
+            .encode('cp1252'))
+        real = self.archive_root / 'photos' / '1890' / 'mystery.jpg'
+        real.parent.mkdir(parents=True, exist_ok=True)
+        real.write_bytes(b'not-a-real-image-but-exists')
+        res = self._run(linked=True)
+        self.assertNotIn('mystery.jpg', self._read('persons/p-aaaaaaaaaa.html'))
+        messages = res['messages']
+        self.assertTrue(
+            any('person__test_p-aaaaaaaaaa.md' in m and "isn't saved as UTF-8 text" in m
+                and 'profile photo' in m for m in messages), messages)
+        self.assertFalse(any('codec' in m for m in messages), messages)
 
     @unittest.skipUnless(site._PIL_AVAILABLE, 'Pillow not installed')
     def test_standalone_image_derivative(self):
@@ -1448,6 +1565,26 @@ class HomePageTests(_Base):
         self.assertIn('Dead Dan', home)
         self.assertNotIn('Living Larry', home)                   # living person omitted from index
         self.assertNotIn('persons/p-bbbbbbbbbb.html', home)
+
+    def test_cp1252_home_md_falls_back_to_the_default_intro(self):
+        # notes/home.md is read unconditionally (not gated by the privacy
+        # pre-pass), so a real decode failure here always reaches its own
+        # try/except - the guard `read_record(home_md)` had before this fix
+        # (no `on_decode_error`, `except Exception:` not even binding `e`),
+        # which fell back correctly but said nothing about why.
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley', surname='Hartley')
+        home_md = self.archive_root / 'notes' / 'home.md'
+        home_md.parent.mkdir(parents=True, exist_ok=True)
+        home_md.write_bytes('Welcome to the Kraków family archive.\n'.encode('cp1252'))
+        res = self._run(linked=False)
+        home = self._read('index.html')
+        self.assertIn('safe-to-share snapshot', home)      # default intro, not garbled text
+        self.assertNotIn('Kraków', home)
+        messages = res['messages']
+        self.assertTrue(
+            any('notes/home.md' in m and "isn't saved as UTF-8 text" in m
+                for m in messages), messages)
+        self.assertFalse(any('codec' in m for m in messages), messages)
 
 
 class StandaloneRedactionAuditTests(_Base):
@@ -2193,6 +2330,33 @@ class WorkbenchModeTests(_Base):
         self.conn.commit()
         r = site.run_site(self.archive_root, self.out_dir, linked=False, workbench=True)
         self.assertFalse(r.ok)
+
+    def test_cp1252_person_record_does_not_crash_workbench_extras(self):
+        # The workbench-only enrichment reads (`_provisional_vital`,
+        # `_person_hypothesis_ties`, `_hypothesis_parent_ids`,
+        # `_build_family_wings`'s hypothesis branch) already caught a bad
+        # decode through a bare `except Exception` before this fix - this
+        # proves the explicit `on_decode_error` wiring did not change that:
+        # the page still builds and the human still gets at least one
+        # readable, plain-language warning naming the file - never a raw
+        # UnicodeDecodeError traceback out of any of them.
+        self._seed_person('p-aaaaaaaaaa', 'Prov Person', tier='curated',
+                          frontmatter_extra='birth: 1923')
+        broken = self.archive_root / 'people' / 'person__test_p-aaaaaaaaaa.md'
+        broken.write_bytes(
+            ('---\nid: p-aaaaaaaaaa\nname: Prov Person\nbirth: 1923\n'
+             '---\n\n## Biography\n\nBorn in Kraków.\n').encode('cp1252'))
+        res = self._run_wb()
+        self.assertTrue(res.ok, res.messages)
+        self.assertTrue((self.out_dir / 'persons' / 'p-aaaaaaaaaa.html').exists())
+        wb = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertNotIn('estimate - unsourced', wb)   # provisional vital could not be read
+        messages = res['messages']
+        file_warnings = [m for m in messages if 'person__test_p-aaaaaaaaaa.md' in m]
+        self.assertTrue(file_warnings, messages)
+        self.assertTrue(all("isn't saved as UTF-8 text" in m for m in file_warnings),
+                        file_warnings)
+        self.assertFalse(any('codec' in m for m in messages), messages)
 
     def test_provisional_vital_shows_in_workbench_only(self):
         # A curated person with an unsourced birth: estimate and no birth claim.
