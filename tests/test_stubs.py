@@ -89,6 +89,25 @@ class StubSlugNameTests(unittest.TestCase):
         self.assertNotIn('-', given + surname)
         self.assertNotIn('.', given)
 
+    def test_punctuation_is_stripped_from_a_mononym_too(self) -> None:
+        # GUARD: the single-token path returned the token unslugged, so the
+        # `[a-z0-9_]` promise held for every name EXCEPT a one-word one.
+        # `Bob/Rob` filed as `__bob/rob_P-….md` - a path separator inside a
+        # filename, aiming the write at a folder that is not there - and a
+        # `?` or `:` produced a name Windows refuses outright.
+        self.assertEqual(stub_slug_name("O'Brien"), ('', 'obrien'))
+        self.assertEqual(stub_slug_name('Bob/Rob'), ('', 'bobrob'))
+        self.assertEqual(stub_slug_name('Ka:wehi'), ('', 'kawehi'))
+        self.assertEqual(stub_filename('Bob/Rob', 'P-0000000001'),
+                         '__bobrob_P-0000000001.md')
+
+    def test_a_mononym_that_sanitises_to_nothing_stays_surname_less(self) -> None:
+        # Still a mononym, just an unspellable one: the sort-name slot stays
+        # EMPTY (§13) and only the given slot falls back to 'unknown'.
+        self.assertEqual(stub_slug_name('?'), ('', 'unknown'))
+        self.assertEqual(stub_filename('?', 'P-0000000001'),
+                         '__unknown_P-0000000001.md')
+
     # -- Generational suffixes (issue #53) --------------------------------
     # "Roy Eugene Dodson Jr" used to file as `jr__roy_eugene_dodson_P-….md`,
     # sorting the son under a different letter than his father
@@ -397,11 +416,17 @@ class FromNamesGenerationalSuffixTests(unittest.TestCase):
             self.root, ['Roy Eugene Dodson', 'Roy Eugene Dodson Jr'])
         names = sorted(self._stub_names())
         self.assertEqual(len(names), 2)
-        prefixes = {n.split('__')[0] for n in names}
-        self.assertEqual(prefixes, {'dodson'})
-        suffixed = [n for n in names if 'jr' in n]
-        self.assertEqual(len(suffixed), 1)
-        self.assertTrue(suffixed[0].startswith('dodson__roy_eugene_jr_'), suffixed[0])
+        # Compared as whole name slots, never as a substring of the filename:
+        # the minted P-id is 10 random Crockford characters sitting in that
+        # same string, so `'jr' in name` also matched the FATHER whenever his
+        # id happened to contain those two letters next to each other (about
+        # one run in a hundred - `dodson__roy_eugene_p-xnq0gwdjr1.md` is a
+        # real CI failure). Substring where a token was meant is the defect
+        # this whole issue is about; the test should not repeat it.
+        self.assertEqual(
+            {n[:-len('.md')].rsplit('_', 1)[0] for n in names},
+            {'dodson__roy_eugene', 'dodson__roy_eugene_jr'},
+        )
 
     def test_period_suffix_from_the_reported_repro(self) -> None:
         # The issue's own confirmed reproduction: "Roy Dodson Jr." via

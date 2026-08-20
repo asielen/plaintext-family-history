@@ -5616,9 +5616,18 @@ def stub_slug_name(name: str, surname: str | None = None) -> tuple[str, str]:
     no-surname sort group - hence the empty surname slug here, not the
     literal 'unknown'. 'unknown' stays reserved for the genuinely nameless
     fallback below (a blank or whitespace-only display name), which is a
-    missing name, not a mononym. This exact single-token path is untouched by
-    the suffix fix above (same code, same output as before) precisely so
-    that contract holds.
+    missing name, not a mononym. The suffix fix above leaves that
+    surname-less contract exactly as it was.
+
+    That path used to return the token unslugged, which is the one place
+    the `[a-z0-9_]` promise at the top of this docstring was not kept: a
+    mononym carrying punctuation came back verbatim, so `Bob/Rob` filed as
+    `__bob/rob_P-….md` - a path separator inside a filename, pointing the
+    write at a folder that is not there - and `?` or a colon produced a
+    name Windows refuses outright. Every other return here sanitises; this
+    one now does too, and a token with nothing left after sanitising falls
+    back to 'unknown' in the given slot (`__unknown_P-….md`) while staying
+    surname-less, because a mononym nobody can spell is still a mononym.
 
     `surname`, when given, overrides the automatic split outright - the
     escape hatch for names no heuristic should be expected to get right:
@@ -5662,7 +5671,8 @@ def stub_slug_name(name: str, surname: str | None = None) -> tuple[str, str]:
         given_slug = re.sub(r'[^a-z0-9_]', '', '_'.join(p.lower() for p in given_tokens))
         return (surname_slug or 'unknown', given_slug or 'unknown')
     if len(parts) == 1:
-        return ('', parts[0].lower())
+        given = re.sub(r'[^a-z0-9_]', '', parts[0].lower())
+        return ('', given or 'unknown')
     core, suffix = strip_generational_suffix(parts)
     if len(core) == 1:
         given = core[0] if not suffix else f'{core[0]}_{suffix}'

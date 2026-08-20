@@ -52,6 +52,7 @@ CODE MAP
     _edtf_to_gedcom        - EDTF date string → GEDCOM 5.5.1 date phrase
     _gedcom_name           - (name, surname) → (GEDCOM `Given /Surname/ [Suffix]`, suffix)
     _escape                - collapse newlines for a single GEDCOM line value
+    _name_text             - drop `/` (the NAME line's surname delimiter) from name text
 
   Graph
     _RelIndex              - adjacency over the relationships table
@@ -87,6 +88,7 @@ from _lib import (
     configure_utf8_stdout,
     fmt_id_display,
     id_type_of,
+    is_placeholder_name,
     is_valid_id,
     normalize_id,
     open_index_db,
@@ -203,6 +205,23 @@ def _escape(value: str | None) -> str:
     return ' '.join(str(value).split())
 
 
+def _name_text(value: str) -> str:
+    """Strip GEDCOM's surname delimiter out of free NAME text.
+
+    `1 NAME` is the one line in 5.5.1 where `/` is grammar rather than
+    text: it delimits the surname, and NAME_TEXT excludes it for exactly
+    that reason. A slash anywhere in a person's `name:` field (or in the
+    indexed surname) therefore redraws the field. `Roy A/B Dodson` with an
+    indexed "Dodson" wrote `1 NAME Roy A/B /Dodson/`, which any reader -
+    this repo's own `fha gedcom import` included - reads back with the
+    surname "B": the same defect as issue #78, arriving by a different
+    road. Slashes become spaces rather than vanishing ("Anne/Anna" is two
+    readings of one name, not "AnneAnna"), and the result is re-collapsed
+    so the substitution cannot leave a double space behind.
+    """
+    return ' '.join(value.replace('/', ' ').split())
+
+
 def _gedcom_name(name: str, surname: str | None) -> tuple[str, str | None]:
     """Render a person name as GEDCOM `Given /Surname/` (+ NSFX suffix).
 
@@ -230,9 +249,36 @@ def _gedcom_name(name: str, surname: str | None) -> tuple[str, str | None]:
     ("Vandodson".endswith("dodson") is true with no "Dodson" token at
     all). Testing token equality against the suffix-stripped core fixes
     both.
+
+    When the indexed surname DOES match, the slash field carries the
+    name's own spelling of those tokens rather than the index's: the match
+    is case-insensitive, and `persons.surname` is a lowercase filename
+    slug that `fha index` re-capitalises with `str.title()`, so "McDonald"
+    comes back as "Mcdonald" and "van Dodson" as "Van Dodson". The two
+    spellings name the same surname; the human's is the one worth
+    exporting.
+
+    Both inputs run through `_name_text` first, so a `/` in either can
+    never redraw the slash field (see that function).
+
+    A placeholder is not a name, on either side, and this is a naming
+    surface like any other - so it asks `_lib.is_placeholder_name`, the
+    one home for "that string stands in for a name nobody recorded"
+    (`unknown`, `none`/`null` from a bare `name:` key, `unnamed`, `?`,
+    blank). `fha index` stores a record with no `name:` as "unknown" and
+    reads the surname out of an `unknown__unknown_P-….md` filename slug
+    as "Unknown", so a person nobody has named yet arrived here looking
+    like a person surnamed Unknown - and left as `1 NAME /Unknown/`, a
+    surname asserted in material that goes out to other people. The slug
+    also outlives the placeholder: a human who types a name into that
+    file before `fha lint --fix-ids` renames it got
+    `Roy Dodson /Unknown/`. Both slots drop it, leaving the `or 'Unknown'`
+    given-name placeholder below as the one place the word may appear.
     """
-    name = _escape(name) or 'Unknown'
-    parts = name.split()
+    name = _name_text(_escape(name))
+    if is_placeholder_name(name):
+        name = ''
+    parts = (name or 'Unknown').split()
     core, suffix = strip_generational_suffix(parts)
     raw_suffix = parts[-1] if suffix else None
 
@@ -240,14 +286,24 @@ def _gedcom_name(name: str, surname: str | None) -> tuple[str, str | None]:
         field = f'{given} /{sn_field}/'.strip()
         return f'{field} {raw_suffix}' if raw_suffix else field
 
-    sn = _escape(surname) if surname else ''
+    sn = _name_text(_escape(surname)) if surname else ''
+    if is_placeholder_name(sn):
+        sn = ''
     if sn:
         sn_tokens = sn.split()
         n = len(sn_tokens)
         core_lower = [p.lower() for p in core]
         if core_lower[-n:] == [t.lower() for t in sn_tokens]:
             given = ' '.join(core[:-n])
-            return compose(given, sn), raw_suffix
+            # The name's OWN spelling of those tokens wins over the index's.
+            # `persons.surname` is not authored text: it is the lowercase
+            # filename slug re-capitalised with `str.title()`, so a person
+            # filed as `mcdonald__john_P-….md` carries "Mcdonald" while his
+            # record says "McDonald" - and the export used to publish the
+            # machine's spelling. They differ only in case here (the match
+            # above is case-insensitive), so there is nothing to lose and a
+            # human's capitalisation to keep.
+            return compose(given, ' '.join(core[-n:])), raw_suffix
         # Indexed surname recorded but not present as a trailing token run
         # of the (suffix-stripped) name - an override this heuristic
         # cannot place. Keep the full suffix-stripped name as the given

@@ -48,7 +48,8 @@ of `fha process`/`fha stubs` (and a per-file inbox path would be wrong for a
 #  Field derivation
 #    gedcom_date_to_edtf       - GEDCOM date phrase → valid EDTF, or None
 #    _edtf_ymd                 - numeric ordering key for range sanity checks
-#    _parse_gedcom_name        - `Given /Surname/` → (display, given, surname)
+#    _parse_gedcom_name        - `Given /Surname/ Suffix` (+ `2 NSFX`) → (display, given, surname)
+#    _with_nsfx                - fold a `2 NSFX` value into a parsed name, once
 #    _oneline                  - CONT-folded HEAD value → one line (YAML-safe)
 #    living_flag_for_import    - THE living: heuristic (owner-flagged default)
 #    _birth_year_upper         - latest plausible birth year from an EDTF
@@ -108,6 +109,7 @@ from _lib import (
     read_record,
     resolve_path,
     resolve_root_arg,
+    strip_generational_suffix,
 )
 
 import yaml
@@ -438,32 +440,96 @@ def gedcom_date_to_edtf(raw: str) -> str | None:
 
 # ── Names ─────────────────────────────────────────────────────────────────────
 
-def _parse_gedcom_name(raw: str) -> tuple[str, str, str]:
+def _parse_gedcom_name(raw: str, nsfx: str = '') -> tuple[str, str, str]:
     """GEDCOM `Given /Surname/ suffix` → (display name, given slot, surname slot).
 
     Inverts the exporter's `_gedcom_name`. Display drops the slashes and joins
-    the pieces in order; the slots feed the stub filename grammar. A name with
-    no slash form is best-effort split on the last whitespace token (the same
-    convention `fha stubs` uses)."""
+    the pieces in order; the slots feed the stub filename grammar.
+
+    A name with NO slash form - common in files written by hand or by an app
+    that never fills the surname markup - is split on the last whitespace
+    token, but only after a trailing generational suffix is set aside with
+    the shared `_lib.strip_generational_suffix`. Without that, an incoming
+    `1 NAME Roy Eugene Dodson Jr` filed as `jr__roy_eugene_dodson_P-….md`
+    and indexed with the surname "Jr" - issue #53/#78's defect, arriving
+    through the import on-ramp, and it poisons the export too (the next
+    `fha gedcom` reads "Jr" back out of the index as his surname). "Roy Jr"
+    keeps the same surname-less reading `stub_slug_name` gives it: the
+    suffix does not promote the one remaining token into a surname.
+
+    The suffix then rides at the END of the given slot, in both forms, so
+    the filename this feeds sorts directly under the un-suffixed one
+    (`dodson__roy_eugene_jr_P-….md` beside `dodson__roy_eugene_P-….md`) -
+    the same placement `stub_slug_name` gives it, which is what makes a
+    father and son legible side by side in a file browser.
+
+    `nsfx` is the `2 NAME`-subordinate `NSFX` value when the file carries
+    one. 5.5.1 makes NSFX a proper sub-tag of the name structure, and a
+    great many apps put the suffix THERE and nowhere else - `1 NAME Roy
+    Eugene /Dodson/` with `2 NSFX Jr` under it. Reading only the NAME line
+    dropped that "Jr" out of the archive entirely: the same generational
+    suffix this function exists to place correctly, lost rather than
+    misfiled. It is appended to the display name and to the given slot -
+    the placement the rest of this function uses - and only when the NAME
+    text does not already end with it, so the form THIS repo exports
+    (suffix on the NAME line AND an `NSFX` sub-tag naming it again) is not
+    doubled into "Roy Eugene Dodson Jr Jr". Appending happens after the
+    surname split, so a non-generational NSFX ("Esq", "PhD") can never
+    land in the surname slot either."""
     raw = ' '.join((raw or '').split())
+    nsfx = ' '.join((nsfx or '').split())
     if not raw:
         return '', '', ''
     m = re.match(r'^(.*?)\s*/([^/]*)/\s*(.*)$', raw)
     if m:
         given, surname, suffix = m.group(1).strip(), m.group(2).strip(), m.group(3).strip()
         display = ' '.join(p for p in (given, surname, suffix) if p)
-        return display, given or surname, surname
+        # No `or surname` here: a NAME line that carries only a surname
+        # (`1 NAME /Dodson/`) has no given name, and repeating the surname
+        # in the given slot would invent one - `dodson__dodson_P-….md`,
+        # the `cher__cher` defect this same change fixed in
+        # `convert_mining`. `_person_filename` already answers an empty
+        # given slot with 'unknown', which is what `_lib.stub_filename`
+        # answers for the same name.
+        given_slot = ' '.join(p for p in (given, suffix) if p)
+        return _with_nsfx(display, given_slot, surname, nsfx)
     parts = raw.split()
     if len(parts) == 1:
-        return raw, parts[0], ''
-    return raw, ' '.join(parts[:-1]), parts[-1]
+        return _with_nsfx(raw, parts[0], '', nsfx)
+    core, suffix = strip_generational_suffix(parts)
+    if len(core) < 2:
+        return _with_nsfx(raw, ' '.join(parts), '', nsfx)
+    given_slot = ' '.join(core[:-1] + ([parts[-1]] if suffix else []))
+    return _with_nsfx(raw, given_slot, core[-1], nsfx)
+
+
+def _with_nsfx(display: str, given_slot: str, surname: str,
+               nsfx: str) -> tuple[str, str, str]:
+    """Fold a `2 NSFX` value into a parsed name, unless it is already there.
+
+    Split out so every return path of `_parse_gedcom_name` folds it the same
+    way (see that function for why the sub-tag is read at all). "Already
+    there" is a trailing-token match on the display name, period-insensitive
+    so `2 NSFX Jr` under `1 NAME Roy /Dodson/ Jr.` is recognised as the same
+    suffix rather than appended a second time."""
+    if not nsfx:
+        return display, given_slot, surname
+    tail = display.split()[-1:]
+    if tail and tail[0].rstrip('.').lower() == nsfx.rstrip('.').lower():
+        return display, given_slot, surname
+    return (f'{display} {nsfx}'.strip(),
+            f'{given_slot} {nsfx}'.strip(),
+            surname)
 
 
 def _person_filename(given: str, surname: str, pid: str) -> str:
     """`{surname}__{given}_{P-id}.md` per the stub grammar (stubs.py, SPEC §13).
 
     A surname-less person leads with the double underscore (`__caesar_P-….md`);
-    a person with no NAME at all files as `unknown__unknown_{P-id}.md`."""
+    a person with no NAME at all files as `unknown__unknown_{P-id}.md`; and a
+    person with a surname but no given name (`1 NAME /Dodson/`) takes
+    'unknown' in the given slot rather than a second copy of the surname -
+    the same answer `_lib.stub_filename` gives for that name."""
     if not given and not surname:
         return f'unknown__unknown_{pid}.md'
     surname_slot = _name_slot(surname) if surname else ''
@@ -642,12 +708,20 @@ def _map_individual(
     names = indi.children_tagged('NAME')
     for n in names:
         consumed.add(id(n))
+        # The suffix sub-tag IS read (see `_parse_gedcom_name`), so it is
+        # marked consumed and never counted in the not-read tally. Its
+        # siblings (GIVN/SURN/SPFX/NPFX) genuinely are not read, and stay
+        # in that tally where the human can see them.
+        nsfx_node = n.child('NSFX')
+        if nsfx_node:
+            consumed.add(id(nsfx_node))
     display, given, surname = ('', '', '')
     variants: list[str] = []
     if names:
-        display, given, surname = _parse_gedcom_name(names[0].value)
+        display, given, surname = _parse_gedcom_name(
+            names[0].value, names[0].child_value('NSFX'))
         for extra in names[1:]:
-            v = _parse_gedcom_name(extra.value)[0]
+            v = _parse_gedcom_name(extra.value, extra.child_value('NSFX'))[0]
             if v and v != display:
                 variants.append(v)
 

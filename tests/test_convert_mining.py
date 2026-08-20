@@ -29,6 +29,7 @@ from _lib import (
     EXIT_WARNINGS,
     load_fha_yaml,
     read_record,
+    stub_filename,
 )
 
 FIXTURE = ROOT / 'tests' / 'fixtures' / 'legacy-export'
@@ -69,7 +70,9 @@ class ConvertMiningTestCase(unittest.TestCase):
         self.assertEqual(stub_meta['tier'], 'stub')
         self.assertEqual(stub_meta['living'], 'unknown')
 
-        mary = next(p for p in sources if 'mary' in p.name)
+        # Matched on the slug half only - the minted S-id in the same string
+        # is random, so a substring test can hit the wrong file.
+        mary = next(p for p in sources if 'mary' in p.name.split('_S-')[0])
         rec = read_record(mary)
         self.assertEqual(rec['parse_errors'], [])
         self.assertEqual(rec['meta']['source_type'], 'interview')
@@ -204,7 +207,7 @@ class ConvertMiningTestCase(unittest.TestCase):
         self.assertEqual(rc, EXIT_WARNINGS)
         mary_copy = next(p for p in sorted(
             (self.archive / 'documents' / 'interviews').glob('*_S-*.txt'))
-            if 'mary' in p.name)
+            if 'mary' in p.name.split('_S-')[0])
         self.assertEqual(mary_copy.read_bytes(), raw)            # byte-identical copy
 
     def test_unattached_story_warns(self) -> None:
@@ -394,6 +397,73 @@ class ConvertMiningTestCase(unittest.TestCase):
             plan.sources.append(mock.Mock(transcript_src=Path('/nonexistent')))
             with self.assertRaises(convert_mining.ConvertError):
                 convert_mining._preflight_apply(plan)
+
+
+class PersonFilenameTests(unittest.TestCase):
+    """The migration files a person the way every other stub-writing path
+    does - `_lib.stub_filename`, the one home for the SPEC §13 grammar -
+    rather than the private copy of "the last word is the surname" it
+    used to carry (issues #53/#78)."""
+
+    def test_a_generational_suffix_is_never_the_surname_slot(self):
+        # GUARD: the private copy filed this as `jr__roy-eugene-dodson_…`,
+        # exactly the #53/#78 defect, in a path that WRITES records.
+        for suffix in ('Jr', 'Sr', 'II', 'III', 'IV', 'V'):
+            with self.subTest(suffix=suffix):
+                self.assertEqual(
+                    convert_mining._person_filename(
+                        f'Roy Eugene Dodson {suffix}', 'P-0000000001'),
+                    f'dodson__roy_eugene_{suffix.lower()}_P-0000000001.md',
+                )
+
+    def test_a_mononym_files_surname_less_per_spec_13(self):
+        # GUARD: `cher__cher_P-….md` invented a surname for someone who
+        # has none; §13 leads with the double underscore instead.
+        self.assertEqual(
+            convert_mining._person_filename('Cher', 'P-0000000001'),
+            '__cher_P-0000000001.md',
+        )
+
+    def test_given_names_join_with_underscores_like_every_other_path(self):
+        # GUARD: the private copy slugged with hyphens
+        # (`dodson__roy-eugene_…`), so a migrated person did not look like
+        # a person `fha person new` had filed.
+        self.assertEqual(
+            convert_mining._person_filename('Roy Eugene Dodson', 'P-0000000001'),
+            'dodson__roy_eugene_P-0000000001.md',
+        )
+
+    def test_a_punctuated_mononym_is_still_a_safe_filename(self):
+        # The private copy this now delegates to slugged with `_slugify`,
+        # so switching to the shared rule had to not LOSE that: a mononym
+        # is the one name `stub_slug_name` used to hand back unslugged, and
+        # `Bob/Rob` would have written `__bob/rob_P-….md` - a path
+        # separator inside a filename.
+        self.assertEqual(
+            convert_mining._person_filename('Bob/Rob', 'P-0000000001'),
+            '__bobrob_P-0000000001.md',
+        )
+        self.assertEqual(
+            convert_mining._person_filename("O'Brien", 'P-0000000001'),
+            '__obrien_P-0000000001.md',
+        )
+
+    def test_a_nameless_person_still_gets_the_unknown_form(self):
+        self.assertEqual(
+            convert_mining._person_filename('', 'P-0000000001'),
+            'unknown__unknown_P-0000000001.md',
+        )
+
+    def test_it_agrees_with_the_shared_rule_by_construction(self):
+        # Two-sided rule, two-sided test: if `stub_filename` ever changes,
+        # this migration changes with it rather than drifting again.
+        for name in ('Roy Eugene Dodson Jr', 'Cher', 'Anne-Marie de Vries', '',
+                     "O'Brien", 'Bob/Rob'):
+            with self.subTest(name=name):
+                self.assertEqual(
+                    convert_mining._person_filename(name, 'P-0000000001'),
+                    stub_filename(name, 'P-0000000001'),
+                )
 
 
 if __name__ == '__main__':
