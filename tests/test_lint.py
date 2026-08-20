@@ -711,6 +711,20 @@ class ResearchHypothesisE004Tests(unittest.TestCase):
         e004 = [f for f in findings if f.code == 'E004' and 'h-9999999999' in f.message]
         self.assertTrue(e004)
 
+    def test_dangling_hypothesis_e004_names_the_right_fix(self) -> None:
+        # Issue #56's own complaint: the generic E004 orphan message suggests
+        # `fha stubs` - a PERSON-record minting command - for what is plainly
+        # an H- reference. There is no hypothesis-minting tool at all; a
+        # hypothesis is defined by hand in some person's ## Hypotheses
+        # section (SPEC §16), so the hint should say that instead.
+        self._write_profile('Working theory: [[H-9999999999]] covers the arrival.')
+        self._write_research('## Hypotheses\n\n*(none yet)*\n')
+        findings, _ = lint._run_lint_core(self.root, {})
+        e004 = [f for f in findings if f.code == 'E004' and 'h-9999999999' in f.message]
+        self.assertTrue(e004)
+        self.assertIn('## Hypotheses', e004[0].message)
+        self.assertNotIn('fha stubs', e004[0].message)
+
     def test_citation_in_research_body_is_not_a_definition(self) -> None:
         # A [[H-…]] reference OUTSIDE the ## Hypotheses entries (a research-log
         # question, prose) is a cite, not a record - it must not self-resolve.
@@ -1401,6 +1415,31 @@ class ClaimsFenceFixTests(_SurgeryBase):
             '  status: suggested\n  confidence: low\n'))
         result = lint.run_lint(self.root, {}, fix_claims_fence=True)
         self.assertIn(str(self.src), result.changed)
+        findings, _ = lint._run_lint_core(self.root, {})
+        self.assertEqual([f for f in findings if f.code == 'W114'], [])
+
+    def test_bare_fence_both_ends_no_yaml_tag_is_repaired(self) -> None:
+        # A fifth shape the #52 fix itself introduced a new way to get wrong:
+        # a hand-typed ``` on BOTH the opening and closing line, with no
+        # `yaml` language tag on either. CLAIMS_RE requires the literal
+        # ```yaml opener, so this never reads as fenced and W114 fires - but
+        # the boundary scan (language tag optional on both ends) recognises
+        # BOTH lines as markers, which the first version of the #52 fix
+        # treated as proof the file must already be fenced (an assumed-
+        # unreachable case) and silently returned "nothing to wrap" for -
+        # W114 kept firing forever with --fix-claims-fence reporting nothing
+        # at all, the exact silent-refusal failure #52 was filed over.
+        self._write_src(self._unfenced(
+            '```\n- value: farmer\n  type: note\n  persons: [P-1111111111]\n'
+            '  status: suggested\n  confidence: low\n```\n'))
+        self.assertEqual(len(read_record(self.src)['claims']), 1)
+        result = lint.run_lint(self.root, {}, fix_claims_fence=True)
+        self.assertIn(str(self.src), result.changed)
+        rec = read_record(self.src)
+        self.assertEqual(rec['parse_errors'], [])
+        self.assertEqual(len(rec['claims']), 1)
+        self.assertEqual(rec['claims'][0]['value'], 'farmer')
+        self.assertFalse(rec['unfenced_claims'])
         findings, _ = lint._run_lint_core(self.root, {})
         self.assertEqual([f for f in findings if f.code == 'W114'], [])
 

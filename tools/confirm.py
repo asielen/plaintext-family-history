@@ -27,8 +27,9 @@ THE SEVEN WRITE-BACKS
                `contradicts:` claim_links into both claims' source records. A
                contradiction also spawns a templated open question in
                `notes/questions.md` (`origin: tool`, both C-ids referenced) so
-               lint E009 ("contradicts: with no open question") stays satisfied -
-               the same machinery `fha lint --spawn-questions` uses.
+               lint E009 ("contradicts: with no open question") stays satisfied,
+               worded via the same `_lib.contradiction_question_heading` helper
+               `fha lint --spawn-questions` uses for the identical situation.
   cooccur    - confirm an `fha cooccur` person-pair: mint a `relationship` claim
                (`subtype: friend|associate|neighbor`, the confirming source
                cited) into that source's `## Claims` block. Minted `suggested`
@@ -156,6 +157,7 @@ from _lib import (
     claim_item_key_indent,
     claims_edit_problem,
     configure_utf8_stdout,
+    contradiction_question_heading,
     find_person_record_path,
     find_source_record_path,
     fmt_id_display,
@@ -673,7 +675,7 @@ def run_confirm_xref(
         # unwritable questions.md, disk full), roll the source edits back so we
         # never leave dangling contradicts: links without their question.
         try:
-            q_path = _spawn_contradiction_question(archive_root, ca, cb)
+            q_path = _spawn_contradiction_question(archive_root, ca, path_a, cb, path_b)
         except OSError as e:
             _rollback_xref()
             return _fail(result, 'failed',
@@ -691,20 +693,46 @@ def run_confirm_xref(
     return result
 
 
-def _spawn_contradiction_question(archive_root: Path, ca: str, cb: str) -> Path:
+def _claim_value_by_id(path: Path, cid: str) -> str | None:
+    """The `value:` text of claim `cid` inside the source record at `path`, or
+    None when the file can't be read or the id isn't found there.
+
+    A thin lookup, not a scan: the caller already knows which source holds
+    this claim (`_find_source_path_for_claim` did that work), so this just
+    re-reads that one file rather than re-scanning `sources/`.
+    """
+    try:
+        claims = read_record(path).get('claims') or []
+    except Exception:  # noqa: BLE001 - a bad record just yields no value text
+        return None
+    for claim in claims:
+        if isinstance(claim, dict) and normalize_id(str(claim.get('id', ''))) == cid:
+            return str(claim.get('value', '')) or None
+    return None
+
+
+def _spawn_contradiction_question(archive_root: Path, ca: str, path_a: Path,
+                                   cb: str, path_b: Path) -> Path:
     """Append an `origin: tool` open question naming both C-ids (satisfies E009).
 
-    Mirrors `fha lint --spawn-questions`' template: a `## Q:` block whose text
-    references both claim IDs in one block, which is exactly what lint's E009
-    co-occurrence check looks for. `refs:` carries both ids for tooling.
+    Worded via the shared `_lib.contradiction_question_heading` - the same
+    value:-quoting heading `fha lint --spawn-questions` writes for the
+    identical situation (issue #55), so the two spawners can never drift back
+    into disagreeing about what a good question heading looks like. `path_a`/
+    `path_b` are the source records the caller already resolved for `ca`/`cb`
+    (`_find_source_path_for_claim`), passed in rather than re-found so this
+    doesn't re-scan `sources/` a second time. `refs:` carries both ids for
+    tooling (`fha find --related`, `fha report`'s question section).
     """
     notes_dir = archive_root / 'notes'
     notes_dir.mkdir(parents=True, exist_ok=True)
     q_path = notes_dir / 'questions.md'
     existing = read_text_exact(q_path) if q_path.exists() else ''
     a_disp, b_disp = fmt_id_display(ca), fmt_id_display(cb)
+    heading = contradiction_question_heading(
+        ca, _claim_value_by_id(path_a, ca), cb, _claim_value_by_id(path_b, cb))
     block = (
-        f'\n## Q: Contradiction: {a_disp} contradicts {b_disp}\n'
+        f'\n## Q: {heading}\n'
         f'- origin: tool\n- status: open\n- refs: [{a_disp}, {b_disp}]\n'
         f'- context:\n  - (tool, {_today()}) Confirmed via `fha confirm xref`; '
         'resolve which claim stands.\n'

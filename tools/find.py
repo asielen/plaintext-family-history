@@ -604,9 +604,13 @@ def _find_hypothesis(
         (hid,)
     ).fetchone()
     if row is None:
-        # Hypothesis indexing is deferred - the index builder never populates the
-        # `hypotheses` table - so a structured miss is expected. Fall back to a
-        # tree scan so real H-ids documented in research files are still located.
+        # A missing row is not proof there is no such hypothesis: the index
+        # builder populates `hypotheses` from any person file's own
+        # `## Hypotheses` section (issue #56 - profile, stub, or research
+        # companion alike, whichever actually carries it) on its last `fha
+        # index`/`fha views` run, so a stale index misses one just as easily
+        # as a genuinely undefined H-id does. Fall back to a tree scan so a
+        # real H-id is still located either way.
         return _find_by_scan(hid, archive_root)
 
     print(f'{hid}')
@@ -1949,12 +1953,13 @@ def _related_hypothesis(hid: str, conn: sqlite3.Connection) -> int:
     Print an H-id's neighborhood: the person it concerns, claims referencing
     it (claims.hypothesis = hid), and the verifying claim if one is set.
 
-    The `hypotheses` table itself is never populated by the index builder
-    (research-file hypothesis entries aren't parsed into rows - see
-    _find_hypothesis's matching note above) - only claims.hypothesis is. So
-    a missing hypotheses row is the expected case, not a failure: this falls
-    back to deriving the neighborhood entirely from claims.hypothesis and the
-    persons named on those claims.
+    The `hypotheses` table is populated from any person file's own
+    `## Hypotheses` section (issue #56 - see _find_hypothesis's matching note
+    above), so a missing row usually means the index is stale rather than
+    that this H-id is unindexable. claims.hypothesis is indexed
+    independently of that table, so this still falls back to deriving the
+    neighborhood entirely from claims.hypothesis and the persons named on
+    those claims when the row is absent.
     """
     row = conn.execute(
         'SELECT id, person_id, status, verified_claim FROM hypotheses WHERE id = ?', (hid,)
@@ -1967,7 +1972,7 @@ def _related_hypothesis(hid: str, conn: sqlite3.Connection) -> int:
     names = {r['id']: r['name'] for r in conn.execute('SELECT id, name FROM persons')}
 
     if row is None:
-        print('  (no hypotheses-table row - hypothesis indexing is deferred; '
+        print('  (no hypotheses-table row - the index may be stale, run `fha index`; '
               'deriving the neighborhood from claims.hypothesis instead)')
         person_ids: set[str] = set()
         for c in claim_rows:
