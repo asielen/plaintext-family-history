@@ -1750,8 +1750,12 @@ def _packet_payload(
         # gives him `packet_dodson_….zip`; a person with neither still
         # lands on the `or 'person'` default.
         _core, _ = strip_generational_suffix((person_name or '').split())
-        indexed = '' if is_placeholder_name(person['surname']) else person['surname']
-        fallback = '' if _core and is_placeholder_name(_core[-1]) else (_core[-1] if _core else '')
+        indexed = person['surname'] or ''
+        fallback = _core[-1] if _core else ''
+        if is_placeholder_name(indexed):
+            indexed = ''
+        if is_placeholder_name(fallback):
+            fallback = ''
         surname = indexed or fallback
         slug_surname = ''.join(c for c in surname.lower() if c.isalnum()) or 'person'
         packet_name = f'packet_{slug_surname}_{fmt_id_display(pid)}_{_today()}'

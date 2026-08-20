@@ -227,7 +227,7 @@ class GedcomNameTests(unittest.TestCase):
         self.assertEqual(gedcom._gedcom_name('/', None), ('Unknown //', None))
         self.assertEqual(gedcom._gedcom_name(' // ', 'Dodson'), ('Unknown /Dodson/', None))
 
-    # ── `unknown` is the machine's placeholder, not somebody's name ──
+    # ── a placeholder is not somebody's name ──
 
     def test_the_unknown_placeholder_is_never_exported_as_a_surname(self):
         # GUARD: `fha index` stores a record with no `name:` as the string
@@ -235,9 +235,13 @@ class GedcomNameTests(unittest.TestCase):
         # filename slug, so a person nobody has named yet exported as
         # '1 NAME /Unknown/' - a surname asserted in material that leaves
         # the archive. Both slots drop it; the given-name placeholder the
-        # exporter already had is the one place the word may appear.
+        # exporter already had is the one place the word may appear. The
+        # guard is the shared `_lib.is_placeholder_name`, so the whole set
+        # is covered, not just "unknown" - a bare `name:` key reaches the
+        # index as the string "None".
         for name, indexed in (('unknown', 'Unknown'), ('unknown', None),
-                              ('Unknown', 'Unknown')):
+                              ('Unknown', 'Unknown'), ('None', 'Unknown'),
+                              ('?', None), ('unnamed', 'None')):
             with self.subTest(name=name, indexed=indexed):
                 self.assertEqual(gedcom._gedcom_name(name, indexed), ('Unknown //', None))
 
