@@ -63,6 +63,7 @@ from _lib import (
     FhaConfigError,
     Message,
     Result,
+    archive_relative,
     carries_person_record_fields,
     edtf_bounds,
     extract_wikilinks,
@@ -2136,14 +2137,12 @@ def build_index(archive_root: Path, fha_config: dict, verbose: bool = False) -> 
 def _archive_relative(path: Path, archive_root: Path) -> str:
     """A folder's name as the human filed it - 'people/003 Hartley', not /Users/….
 
-    Index output can end up in a committed report, so it never carries a local
-    absolute path. A folder somehow outside the archive keeps its own spelling
-    (forward-slashed): naming it wrongly is worse than naming it long.
+    Thin alias for the shared `_lib.archive_relative`, kept because this
+    module's own call sites (and their tests) name it this way. The rule it
+    keeps is the shared one: index output can end up in a committed report, so
+    it never carries a local absolute path.
     """
-    try:
-        return Path(path).relative_to(archive_root).as_posix()
-    except ValueError:
-        return str(path).replace('\\', '/')
+    return archive_relative(path, archive_root)
 
 
 def _find_source_file(archive_root: Path, sid: str) -> Path | None:

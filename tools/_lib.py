@@ -5203,6 +5203,48 @@ def read_text_or_report(path: str | Path, on_decode_error=None) -> str | None:
         return None
 
 
+def answer_undecodable(path: Path) -> None:
+    """The `on_decode_error` for a caller that reports the file ITSELF.
+
+    Passing this to `read_record` opts that one read into the answering
+    contract - `undecodable: True` instead of a raised `UnicodeDecodeError` -
+    for a caller who then says his own piece about the file he was handed:
+    `fha process`'s sidecar and refile refusals name the one file the human
+    typed, `fha views draft-queue` names the one profile it skipped. There is
+    no list to collect and nothing to de-duplicate, which is the whole
+    difference from `undecodable_file_recorder` (a whole-archive walk, one
+    aggregated report, many files).
+
+    It exists because the bare `lambda p: None` these sites used to pass reads
+    like "ignore the decode error", which is the OPPOSITE of what supplying it
+    does: omit the callback and the read raises; supply one and it answers. A
+    name is the only place that distinction can live at the call site.
+    """
+    return None
+
+
+def archive_relative(path: str | Path, archive_root: str | Path) -> str:
+    """A path as the human filed it - `people/003 Hartley/ann_P-….md`, never
+    `/Users/…` or `C:\\Users\\…`.
+
+    The one authority for naming a file in a report. Every warning that names a
+    file the tools could not read (`fha index`'s undecodable-files note, `fha
+    lint`'s W128, `fha stubs`' and `fha normalize-links`' skip reports, `fha
+    views`' per-person skips) has to spell that file the same way, and a report
+    can end up committed to the archive, mailed to a cousin, or pasted into an
+    issue - so it never carries a local absolute path.
+
+    A path somehow OUTSIDE the archive keeps its own spelling, forward-slashed:
+    naming it wrongly is worse than naming it long. Purely textual - the
+    filesystem is never consulted, so this answers for a path that no longer
+    exists just as well as for one that does.
+    """
+    try:
+        return Path(path).relative_to(archive_root).as_posix()
+    except ValueError:
+        return str(path).replace('\\', '/')
+
+
 def undecodable_file_recorder(into: list):
     """Build a `read_text_or_report` `on_decode_error` callback that records
     the files it failed to decode as UTF-8.
@@ -6267,10 +6309,7 @@ def promote_person_record(
 
     # ── The plain-words plan (previews print these verbatim) ─────────────────
     def _rel(p: Path) -> str:
-        try:
-            return p.relative_to(archive_root).as_posix()
-        except ValueError:
-            return str(p)
+        return archive_relative(p, archive_root)
 
     steps: list[str] = []
     if needs_flip:

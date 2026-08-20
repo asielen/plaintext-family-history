@@ -77,6 +77,7 @@ from _lib import (
     Finding,
     Result,
     alias_clashes,
+    archive_relative,
     build_alias_map,
     claim_item_key_indent,
     claims_edit_problem,
@@ -3001,10 +3002,7 @@ def _check_undecodable_files(registry: Registry, findings: list[Finding]) -> Non
             # de-duplication keeps for one file read by two passes.
             continue
         registry.undecodable_reported.add(path)
-        try:
-            shown = path.relative_to(registry.archive_root).as_posix()
-        except ValueError:
-            shown = str(path).replace('\\', '/')
+        shown = archive_relative(path, registry.archive_root)
         findings.append(Finding(
             'W', 'W128', path,
             f'This file is not saved as UTF-8 text, so nothing in this report '

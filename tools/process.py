@@ -177,6 +177,7 @@ from _lib import (
     FhaConfigError,
     OriginalBackup,
     ParsedName,
+    answer_undecodable,
     append_paragraph_to_section,
     claims_edit_problem,
     configure_utf8_stdout,
@@ -838,7 +839,7 @@ def _read_sidecar(sidecar: Path) -> tuple[dict, str]:
     and "not valid UTF-8" is a different fix (re-save the file) than
     "malformed frontmatter" (fix the YAML), so it gets its own message.
     """
-    rec = read_record(sidecar, on_decode_error=lambda p: None)
+    rec = read_record(sidecar, on_decode_error=answer_undecodable)
     if rec['undecodable']:
         raise ProcessError(
             f'{sidecar.name} is not saved as UTF-8 text, so its hints could not '
@@ -3043,7 +3044,7 @@ def process_refile(
               f'with `fha find {sid}`.', file=sys.stderr)
         return EXIT_WARNINGS
 
-    rec = read_record(record_path, on_decode_error=lambda p: None)
+    rec = read_record(record_path, on_decode_error=answer_undecodable)
     if rec['undecodable']:
         raise ProcessError(
             f'{record_path.name} is not saved as UTF-8 text, so its files: '

@@ -145,8 +145,15 @@ class NormalizeLinksUndecodableTests(unittest.TestCase):
     people/ and sources/ record. A file saved in another encoding (cp1252, a
     Windows editor's default) must not crash the whole `fha normalize-links`
     run - both loops (people/, sources/) share this one test class because
-    they are the same shape: skip the bad file, keep scanning, report once
-    via the Result the engine returns."""
+    they are the same shape: skip the bad file, keep scanning, report once via
+    the Result the engine returns.
+
+    And then the second half, which is what a skip actually costs here: the
+    scan feeds `alias_clashes` as well as the resolve map, so a record it could
+    not read cannot collide with anything, and a name two records really share
+    reads as unambiguous. A preview is free to run (it writes nothing); a
+    `--write` is not, and refuses - guessing which of two same-named people a
+    citation meant is the one thing this verb promises never to do."""
 
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
@@ -165,6 +172,7 @@ class NormalizeLinksUndecodableTests(unittest.TestCase):
         (self.archive / 'sources' / 'other' / 'krakow_S-2222222222.md').write_bytes((
             '---\nid: S-2222222222\ntitle: Kraków deed\n---\n\nBorn in Kraków.\n'
         ).encode('cp1252'))
+        self.before = self.record.read_bytes()
 
     def tearDown(self) -> None:
         self._tmp.cleanup()
@@ -183,11 +191,65 @@ class NormalizeLinksUndecodableTests(unittest.TestCase):
         self.assertNotIn('p-2222222222', ids)  # the bad person was skipped
         self.assertNotIn('s-2222222222', ids)  # the bad source was skipped
 
-    def test_run_normalize_links_does_not_crash_and_still_rewrites(self) -> None:
-        result = normalize_links.run_normalize_links(self.archive, {}, write=True)
+    def test_preview_does_not_crash_and_still_computes_the_rewrite(self) -> None:
+        # A preview writes nothing, so it runs: the good record's rewrite is
+        # still computed and shown. Pre-fix this raised UnicodeDecodeError out
+        # of the walk and there was no preview at all.
+        result = normalize_links.run_normalize_links(self.archive, {})
         self.assertEqual(result.exit_code, EXIT_WARNINGS)
-        text = self.record.read_text(encoding='utf-8')
-        self.assertIn(f'[[{SOURCE_ID}]]', text)   # the good record still normalized
+        self.assertEqual(result.data['files_changed'], 1)
+        self.assertEqual(self.record.read_bytes(), self.before)   # nothing written
+
+    def test_write_refuses_while_the_resolve_map_has_a_hole_in_it(self) -> None:
+        # THE guard for the adversarial finding: an unreadable person/source
+        # record is absent from `alias_clashes` too, so a name two records
+        # really share reads as unambiguous and `--write` would pin it to
+        # whichever one decoded. Refusing is the only honest answer - there is
+        # nothing inside the run that can tell which names went wrong.
+        result = normalize_links.run_normalize_links(self.archive, {}, write=True)
+        self.assertEqual(result.exit_code, EXIT_ERRORS)
+        self.assertFalse(result.ok)
+        self.assertEqual(result.changed, [])
+        self.assertFalse(result.data['written'])
+        self.assertEqual(self.record.read_bytes(), self.before)   # nothing written
+        errors = ' '.join(m.text for m in result.messages if m.level == 'error')
+        self.assertNotIn('Traceback', errors)
+        self.assertIn('Nothing was written', errors)
+        self.assertIn('muller__anne_P-2222222222.md', errors)
+
+    def test_a_shared_name_is_never_guessed_because_of_an_unreadable_twin(self) -> None:
+        # The failure the refusal exists to prevent, spelled out end to end:
+        # two John Smiths, one of them unreadable. Pre-refusal, `--write`
+        # rewrote the human's `[[John Smith]]` to the readable one's P-id.
+        (self.archive / 'people' / 'smith__john_P-3333333333.md').write_text(
+            '---\nid: P-3333333333\nname: John Smith\n---\n', encoding='utf-8')
+        (self.archive / 'people' / 'smith__john_P-4444444444.md').write_bytes(
+            b'---\nid: P-4444444444\nname: John Smith\nnote: M\xe9nard\n---\n')
+        (self.archive / 'notes').mkdir(exist_ok=True)
+        note = self.archive / 'notes' / 'family.md'
+        note.write_text('We think [[John Smith]] was the one.\n', encoding='utf-8')
+
+        result = normalize_links.run_normalize_links(self.archive, {}, write=True)
+
+        self.assertEqual(result.exit_code, EXIT_ERRORS)
+        self.assertEqual(note.read_text(encoding='utf-8'),
+                         'We think [[John Smith]] was the one.\n')
+
+    def test_a_file_only_the_rewrite_walk_could_not_read_still_writes(self) -> None:
+        # The other half of the rule: a `notes/` file that will not decode is
+        # not in the resolve map to begin with, so it costs nothing but its own
+        # rewrite. It is reported, and the write goes ahead.
+        good = _make_archive(Path(self._tmp.name) / 'second')
+        record = good / 'sources' / 'other' / f'family-album_{SOURCE_ID}.md'
+        (good / 'notes').mkdir()
+        (good / 'notes' / 'bad.md').write_bytes(b'A note about M\xe9nard.\n')
+
+        result = normalize_links.run_normalize_links(good, {}, write=True)
+
+        self.assertEqual(result.exit_code, EXIT_WARNINGS)
+        self.assertTrue(result.data['written'])
+        self.assertIn(f'[[{SOURCE_ID}]]', record.read_text(encoding='utf-8'))
+        self.assertEqual(result.data['unreadable'], ['notes/bad.md'])
 
     def test_result_names_both_skipped_files(self) -> None:
         result = normalize_links.run_normalize_links(self.archive, {})
@@ -197,6 +259,78 @@ class NormalizeLinksUndecodableTests(unittest.TestCase):
         self.assertIn('muller__anne_P-2222222222.md', warnings)
         self.assertIn('krakow_S-2222222222.md', warnings)
         self.assertIn('not saved as UTF-8', warnings)
+        # Archive-relative, never a local absolute path (_lib.archive_relative).
+        self.assertEqual(
+            sorted(result.data['unreadable']),
+            ['people/muller__anne_P-2222222222.md',
+             'sources/other/krakow_S-2222222222.md'])
+
+    def test_preview_does_not_offer_a_write_it_knows_will_refuse(self) -> None:
+        # A printed `next:` is a command to be copied, so the preview must not
+        # hand out `--write` while it already knows `--write` refuses.
+        result = normalize_links.run_normalize_links(self.archive, {})
+        steps = [m.next_step for m in result.messages if m.next_step]
+        self.assertNotIn('fha normalize-links --write', steps)
+
+
+class NormalizeLinksUnreadablePlacesTests(unittest.TestCase):
+    """#68, widest form: `places.yaml` is not a record and has no `read_record`
+    seam, so one unreadable or unparseable file drops the archive's ENTIRE
+    place layer out of the resolve map. Silently, before this guard - and a
+    person and a town that share a name (Florence) stop colliding, so the
+    citation is rewritten to the person."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.archive = _make_archive(Path(self._tmp.name))
+        (self.archive / 'people').mkdir(parents=True)
+        (self.archive / 'people' / 'florence__ann_P-1111111111.md').write_text(
+            '---\nid: P-1111111111\nname: Ann Florence\naliases: [Florence]\n---\n',
+            encoding='utf-8')
+        (self.archive / 'places').mkdir(parents=True)
+        self.places = self.archive / 'places' / 'places.yaml'
+        (self.archive / 'notes').mkdir(parents=True)
+        self.note = self.archive / 'notes' / 'family.md'
+        self.note.write_text('They sailed from [[Florence]] in 1901.\n', encoding='utf-8')
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_readable_places_make_the_shared_name_ambiguous(self) -> None:
+        # The baseline the broken case has to match: with places.yaml read,
+        # 'Florence' names two records and is left exactly as written.
+        self.places.write_text(
+            '- id: L-1111111111\n  name: Florence\n  country: Italy\n', encoding='utf-8')
+        result = normalize_links.run_normalize_links(self.archive, {}, write=True)
+        self.assertEqual(result.exit_code, EXIT_WARNINGS)   # ambiguous, not written
+        self.assertIn('[[Florence]]', self.note.read_text(encoding='utf-8'))
+
+    def test_undecodable_places_refuses_instead_of_guessing(self) -> None:
+        self.places.write_bytes(
+            b'- id: L-1111111111\n  name: Florence\n  note: M\xe9nard\n')
+        result = normalize_links.run_normalize_links(self.archive, {}, write=True)
+        self.assertEqual(result.exit_code, EXIT_ERRORS)
+        self.assertIn('[[Florence]]', self.note.read_text(encoding='utf-8'))
+        errors = ' '.join(m.text for m in result.messages if m.level == 'error')
+        self.assertIn('places/places.yaml', errors)
+        self.assertIn('EVERY place', errors)
+
+    def test_unparseable_places_refuses_too(self) -> None:
+        # Not every way to lose the place layer is a decoding problem: broken
+        # YAML empties it just as completely, and used to do so in silence.
+        self.places.write_text('- id: L-1\n   bad: [unclosed\n', encoding='utf-8')
+        result = normalize_links.run_normalize_links(self.archive, {}, write=True)
+        self.assertEqual(result.exit_code, EXIT_ERRORS)
+        self.assertIn('[[Florence]]', self.note.read_text(encoding='utf-8'))
+        errors = ' '.join(m.text for m in result.messages if m.level == 'error')
+        self.assertIn('would not parse', errors)
+
+    def test_a_readable_places_file_reports_nothing(self) -> None:
+        # No false alarm: the guard fires on a real gap only.
+        self.places.write_text(
+            '- id: L-1111111111\n  name: Firenze\n  country: Italy\n', encoding='utf-8')
+        result = normalize_links.run_normalize_links(self.archive, {})
+        self.assertEqual(result.data['unreadable'], [])
 
 
 if __name__ == '__main__':

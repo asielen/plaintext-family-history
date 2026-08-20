@@ -21,7 +21,10 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
     EXIT_CLEAN,
+    EXIT_ERRORS,
     EXIT_FAILURE,
+    EXIT_WARNINGS,
+    archive_relative,
     archive_root_missing_message,
     find_archive_root,
     id_type_of,
@@ -30,6 +33,7 @@ from _lib import (
     load_fha_yaml,
     mint_ids,
     normalize_id,
+    parse_filename,
     read_record,
     render_stub_content,
     stub_filename,
@@ -37,14 +41,6 @@ from _lib import (
     undecodable_file_recorder,
     write_text_exact_atomic,
 )
-
-
-def _rel(path: Path, archive_root: Path) -> str:
-    """A path as the human filed it (archive-relative), never a local absolute one."""
-    try:
-        return path.relative_to(archive_root).as_posix()
-    except ValueError:
-        return str(path).replace('\\', '/')
 
 
 # The slugging/filename/content rendering below now lives in `_lib.py`
@@ -65,7 +61,13 @@ def _stub_content(pid: str, name: str | None) -> str:
     return render_stub_content(pid, name)
 
 
-def _collect_unresolved_persons(archive_root: Path) -> dict[str, str | None]:
+def _collect_unresolved_persons(
+    archive_root: Path,
+    *,
+    unread_people: list | None = None,
+    unread_sources: list | None = None,
+    unidentified_people: list | None = None,
+) -> dict[str, str | None]:
     """
     Scan source claims for P-ids that have no person record.
     Returns {pid: name_guess | None}.
@@ -80,19 +82,47 @@ def _collect_unresolved_persons(archive_root: Path) -> dict[str, str | None]:
     This is a whole-archive scan, so a single file saved in another encoding
     (cp1252, a Windows editor's default) must not blind it to every other file
     (#68): each loop skips an undecodable file rather than letting
-    `read_record`'s default `UnicodeDecodeError` take the whole command down,
-    and both loops share one `undecodable` list (one `on_decode_error`
-    callback, built once) so a file touched by both passes - unlikely here
-    since people/ and sources/ do not overlap, but cheap to guarantee - earns
-    one warning, not two. The warning is printed once at the end, after both
-    loops, naming what a skip actually costs: a stub might get (re-)minted for
-    someone who already has a record (the people/ loop never saw their id), or
-    a real reference inside that file's claims goes unseen this run (the
-    sources/ loop never read them) - matching `fha index`'s own aggregated
-    undecodable-files warning in tone.
+    `read_record`'s default `UnicodeDecodeError` take the whole command down.
+
+    The two loops' skips are recorded SEPARATELY, into `unread_people` and
+    `unread_sources`, because they do not cost the same thing:
+
+      - a **sources/** file skipped means a P-id referenced only inside it goes
+        unseen this run. The scan under-collects, so a stub that was owed is
+        not minted. Nothing wrong is written; the run is merely incomplete.
+      - a **people/** file skipped would mean an existing person's id is
+        missing from `known_pids`, so every claim naming them reads as
+        unresolved and `create_stubs` writes a SECOND record for a P-id that
+        already has one - the precise corruption `_lib.read_record`'s docstring
+        names as worse than the traceback it replaced ("`fha stubs` mints a
+        second record for a P-id that already has one").
+
+    So the people/ loop does what `lint._register_unread_record_id` does with
+    the same problem: SPEC §13 puts the id in the filename as well as the
+    frontmatter, and the filename is bytes this pass can read. A skipped
+    person file's id comes off its name and counts as filed, which is the only
+    true thing available about it and exactly enough for this scan's one
+    question ("who already has a record?"). No content is borrowed - the name
+    hint stays absent, as it is for every unresolved id here.
+
+    A skipped person file whose NAME carries no P-id either is the one case
+    nothing can answer, and it goes to `unidentified_people`: the caller
+    refuses to mint at all rather than minting from a picture of the archive
+    it knows is missing someone.
+
+    Reporting belongs to the caller, not here: `_run_stubs` is the layer with
+    somewhere to put a report AND the authority to refuse, and a collector that
+    printed its own warning while the caller printed the refusal would say the
+    same thing twice. Every list is fed through `undecodable_file_recorder`,
+    so a file somehow read twice is recorded once.
     """
-    undecodable: list[Path] = []
-    on_decode_error = undecodable_file_recorder(undecodable)
+    unread_people = [] if unread_people is None else unread_people
+    unread_sources = [] if unread_sources is None else unread_sources
+    unidentified_people = ([] if unidentified_people is None
+                           else unidentified_people)
+    note_person = undecodable_file_recorder(unread_people)
+    note_source = undecodable_file_recorder(unread_sources)
+    note_unidentified = undecodable_file_recorder(unidentified_people)
 
     # Collect all known P-ids from existing person files
     known_pids: set[str] = set()
@@ -101,8 +131,16 @@ def _collect_unresolved_persons(archive_root: Path) -> dict[str, str | None]:
         for path in people_root.rglob('*.md'):
             if is_template_file(path):
                 continue   # `_TEMPLATE.*` placeholder ids are not real records
-            rec = read_record(path, on_decode_error=on_decode_error)
+            rec = read_record(path, on_decode_error=note_person)
             if rec['undecodable']:
+                # Its id off its filename (SPEC §13), the same recovery
+                # `lint._register_unread_record_id` makes for the same reason.
+                parsed = parse_filename(path)
+                named = normalize_id(str(parsed.get('id_str', ''))) if parsed else ''
+                if named.startswith('p-'):
+                    known_pids.add(named)
+                else:
+                    note_unidentified(path)
                 continue
             pid = normalize_id(str(rec['meta'].get('id', '')))
             if pid and pid.startswith('p-'):
@@ -121,7 +159,7 @@ def _collect_unresolved_persons(archive_root: Path) -> dict[str, str | None]:
         for path in sources_root.rglob('*.md'):
             if is_template_file(path):
                 continue   # template claims carry teaching placeholders only
-            rec = read_record(path, on_decode_error=on_decode_error)
+            rec = read_record(path, on_decode_error=note_source)
             if rec['undecodable']:
                 continue
             for claim in rec['claims']:
@@ -133,22 +171,6 @@ def _collect_unresolved_persons(archive_root: Path) -> dict[str, str | None]:
                     ppid = normalize_id(ref)
                     if ppid not in known_pids and ppid not in unresolved:
                         unresolved[ppid] = None   # name extracted by TODO above
-
-    if undecodable:
-        shown = ', '.join(_rel(p, archive_root) for p in undecodable[:5])
-        if len(undecodable) > 5:
-            shown += f' and {len(undecodable) - 5} more'
-        print(
-            f'WARNING: {len(undecodable)} file(s) are not saved as UTF-8 text and '
-            f'were skipped rather than crashing this scan: {shown}. A stub might '
-            'now be (re-)minted for someone who already has a record, or a real '
-            "cross-reference inside that file's claims may be missed, because this "
-            "run could not read it. The file itself is fine and nothing was "
-            'changed - it is only saved in an older encoding (a Windows editor '
-            'defaults to one, commonly cp1252). Open it and save it again '
-            'choosing UTF-8 (in Notepad: Save As, then pick UTF-8 from the '
-            'Encoding menu), then run `fha stubs` again.',
-            file=sys.stderr)
 
     return unresolved
 
@@ -254,6 +276,28 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     p.set_defaults(func=_run_stubs)
 
 
+def _unread_message(paths: list, archive_root: Path) -> str:
+    """The opening sentence both undecodable reports below share.
+
+    Names up to five files the way the human filed them and says what is true
+    of every one of them - the file is fine, only its encoding is wrong - so
+    each caller adds only the part that differs: what the skip cost, and
+    whether the run could go on. Same shape and same remedy wording as
+    `fha index`'s undecodable-files warning and `fha lint`'s W128, because it
+    is the same condition seen from a third command.
+    """
+    shown = ', '.join(archive_relative(p, archive_root) for p in paths[:5])
+    if len(paths) > 5:
+        shown += f' and {len(paths) - 5} more'
+    return (
+        f'{len(paths)} file(s) are not saved as UTF-8 text, so this run could '
+        f'not read them: {shown}. The file itself is fine and nothing about it '
+        'was changed - it is only saved in an older encoding (a Windows editor '
+        'defaults to one, commonly cp1252). Open it and save it again choosing '
+        'UTF-8 (in Notepad: Save As, then pick UTF-8 from the Encoding menu).'
+    )
+
+
 def _run_stubs(args: argparse.Namespace) -> int:
     root = getattr(args, 'root', None)
     if root:
@@ -273,17 +317,73 @@ def _run_stubs(args: argparse.Namespace) -> int:
         return EXIT_CLEAN
 
     # Default: scan for unresolved P-ids in claims
-    unresolved = _collect_unresolved_persons(archive_root)
+    unread_people: list[Path] = []
+    unread_sources: list[Path] = []
+    unidentified_people: list[Path] = []
+    unresolved = _collect_unresolved_persons(
+        archive_root,
+        unread_people=unread_people,
+        unread_sources=unread_sources,
+        unidentified_people=unidentified_people,
+    )
+
+    # A person file that could not be read AND whose filename carries no P-id
+    # leaves a hole in the ONE question this command asks - "who already has a
+    # record?" - and nothing else in the archive can fill it. Minting anyway
+    # writes a second record for a P-id that already has one (#68; see
+    # `_collect_unresolved_persons`), so it refuses instead: before any write,
+    # and in `--dry-run` too, since a preview drawn from a picture known to be
+    # missing someone would promise stubs a real run must not create.
+    if unidentified_people:
+        print(f'ERROR: {_unread_message(unidentified_people, archive_root)} Their '
+              'filenames carry no P-id either, so this run cannot tell whether '
+              'the people they hold already have records - and a person whose '
+              'record cannot be found looks unfiled, which is how `fha stubs` '
+              'would come to write a SECOND record for a P-id that already has '
+              'one. Nothing was minted. Re-save the file(s) as UTF-8, then run '
+              '`fha stubs` again. (`fha lint` reports the same files as W128.)',
+              file=sys.stderr)
+        return EXIT_ERRORS
+
+    # A person file that could not be read but IS named for its P-id (SPEC §13,
+    # every record the tools write) costs nothing this command needs: its id
+    # counted as filed, so no duplicate is minted. Still an incomplete read of
+    # the archive, and still worth saying - the human wants to know before the
+    # next command needs that file's contents.
+    if unread_people:
+        print(f'WARNING: {_unread_message(unread_people, archive_root)} Their ids '
+              'were read from their filenames instead (SPEC §13), so nobody was '
+              'stubbed twice on their account - but nothing inside those records '
+              'was read this run. Re-save the file(s) as UTF-8. (`fha lint` '
+              'reports the same files as W128.)', file=sys.stderr)
+
+    # A source record that could not be read costs the opposite thing: a P-id
+    # referenced only in there goes unseen, so a stub that was owed is simply
+    # not minted this run. Nothing wrong is written, so the run proceeds - but
+    # it did not see the whole archive, and exit 1 (warnings) is what says so.
+    if unread_sources:
+        print(f'WARNING: {_unread_message(unread_sources, archive_root)} A person '
+              'referenced only inside those file(s) was not seen this run, so a '
+              'stub they were owed has not been minted. Re-save the file(s) as '
+              'UTF-8 and run `fha stubs` again to pick them up. (`fha lint` '
+              'reports the same files as W128.)', file=sys.stderr)
+
+    # Exit 1 whenever this run did NOT see the whole archive (TOOLING §1:
+    # "warnings only"). The stubs it minted are right; the set is not
+    # certified complete, and a harness reading only the exit code has to be
+    # able to tell the difference.
+    incomplete = bool(unread_people or unread_sources)
+
     if not unresolved:
         print('No unresolved person references found.')
-        return EXIT_CLEAN
+        return EXIT_WARNINGS if incomplete else EXIT_CLEAN
 
     count = create_stubs(archive_root, unresolved, dry_run=dry_run)
     if dry_run:
         print(f'[dry-run] Would create {count} stub(s).')
     else:
         print(f'Created {count} stub(s).')
-    return EXIT_CLEAN
+    return EXIT_WARNINGS if incomplete else EXIT_CLEAN
 
 
 # ── Standalone ────────────────────────────────────────────────────────────────

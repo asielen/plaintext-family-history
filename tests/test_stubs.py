@@ -17,6 +17,7 @@ load-bearing guarantees this file checks:
     order (the shared `_lib.stub_filename` takes (name, pid) instead).
 """
 
+import argparse
 import contextlib
 import datetime
 import io
@@ -31,6 +32,9 @@ sys.path.insert(0, str(ROOT / 'tools'))
 
 import stubs
 from _lib import (
+    EXIT_CLEAN,
+    EXIT_ERRORS,
+    EXIT_WARNINGS,
     PERSON_SEX_VALUES,
     read_record,
     render_stub_content,
@@ -503,9 +507,22 @@ class UndecodableFileScanTests(unittest.TestCase):
     """#68: `_collect_unresolved_persons` scans every people/ and sources/
     file to build known-pid and unresolved-pid sets - a whole-archive walk,
     so one file saved in another encoding (cp1252, a Windows editor's
-    default) must not crash the whole `fha stubs` run. Both loops (people/
-    at line ~78, sources/ at line ~96) share this one test class because
-    they are the same shape: skip the bad file, keep scanning, report once.
+    default) must not crash the whole `fha stubs` run.
+
+    The two loops skip the same way but do NOT cost the same thing, and that
+    is what these tests pin down:
+
+      - a skipped **sources/** file under-collects (a stub that was owed is
+        not minted): nothing wrong is written, so the run goes on and says so
+        with exit 1;
+      - a skipped **people/** file would over-collect (an existing person
+        looks unfiled), and minting then writes a SECOND record for a P-id
+        that already has one - `_lib.read_record`'s docstring names exactly
+        this as worse than the traceback it replaced. Its id comes off its
+        filename instead (SPEC §13, the same recovery
+        `lint._register_unread_record_id` makes), so it still counts as
+        filed; only a skipped file whose NAME carries no P-id either is
+        unanswerable, and there the run refuses, writes nothing, exits 2.
     """
 
     def setUp(self) -> None:
@@ -550,16 +567,125 @@ class UndecodableFileScanTests(unittest.TestCase):
         # would be minted for someone who already has a record.
         self.assertNotIn('p-1111111111', unresolved)
 
-    def test_aggregated_warning_names_both_skipped_files(self) -> None:
-        stderr = io.StringIO()
-        with contextlib.redirect_stderr(stderr):
-            stubs._collect_unresolved_persons(self.root)
-        text = stderr.getvalue()
-        self.assertNotIn('Traceback', text)
-        self.assertIn('2 file(s)', text)
-        self.assertIn('muller__anne_P-2222222222.md', text)
-        self.assertIn('krakow_S-2222222222.md', text)
-        self.assertIn('not saved as UTF-8', text)
+    def test_the_two_skips_are_reported_to_the_caller_separately(self) -> None:
+        # The collector reports UP rather than printing: only `_run_stubs` can
+        # act on the difference between the two, and only it can refuse.
+        unread_people: list = []
+        unread_sources: list = []
+        unidentified: list = []
+        stubs._collect_unresolved_persons(
+            self.root, unread_people=unread_people, unread_sources=unread_sources,
+            unidentified_people=unidentified)
+        self.assertEqual([p.name for p in unread_people],
+                         ['muller__anne_P-2222222222.md'])
+        self.assertEqual([p.name for p in unread_sources],
+                         ['krakow_S-2222222222.md'])
+        # Named for its P-id, so it is not the unanswerable case.
+        self.assertEqual(unidentified, [])
+
+    def test_a_skipped_person_file_with_no_id_in_its_name_is_flagged(self) -> None:
+        (self.root / 'people' / 'grandmas notes.md').write_bytes(
+            '---\nid: P-5555555555\nname: Anne Müller\n---\n'.encode('cp1252'))
+        unidentified: list = []
+        stubs._collect_unresolved_persons(
+            self.root, unidentified_people=unidentified)
+        self.assertEqual([p.name for p in unidentified], ['grandmas notes.md'])
+
+    def _run(self, dry_run: bool = False):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = stubs._run_stubs(argparse.Namespace(
+                root=str(self.root), from_names=None, dry_run=dry_run))
+        return rc, out.getvalue(), err.getvalue()
+
+    def _cite(self, sid: str, cid: str, pid: str) -> None:
+        """A source whose one claim names `pid` - the input that makes this
+        command want to mint a stub for that person."""
+        (self.root / 'sources' / f'ref_{sid}.md').write_text(
+            f'---\nid: {sid}\ntitle: Ref\nsource_type: other\n---\n\n'
+            f'## Claims\n```yaml\n- id: {cid}\n  type: birth\n'
+            f'  persons: ["[[{pid}|Anne]]"]\n  value: born 1880\n'
+            '  status: accepted\n  confidence: high\n```\n', encoding='utf-8')
+
+    def test_an_unreadable_person_is_still_counted_as_filed(self) -> None:
+        # THE guard for the adversarial finding. P-2222222222 has a real
+        # record; this run cannot read its bytes, so without the filename
+        # recovery every claim naming them reads as unresolved and
+        # `create_stubs` files a SECOND record for that same P-id.
+        self._cite('S-3333333333', 'C-4444444444', 'P-2222222222')
+
+        rc, out, err = self._run()
+
+        self.assertNotIn('Traceback', err)
+        self.assertNotIn('unknown__unknown_p-2222222222.md', out)
+        self.assertFalse(
+            (self.root / 'people' / 'stubs' / 'unknown__unknown_p-2222222222.md').exists())
+        # Read but not certified: the run did not see inside that record.
+        self.assertEqual(rc, EXIT_WARNINGS)
+        self.assertIn('muller__anne_P-2222222222.md', err)
+        self.assertIn('read from their filenames', err)
+
+    def test_an_unreadable_person_file_with_no_id_in_its_name_refuses(self) -> None:
+        # The residual case the filename cannot answer: nothing in the archive
+        # says who is in this file, so minting from what is left would be
+        # minting from a picture known to be missing someone.
+        (self.root / 'people' / 'muller__anne_P-2222222222.md').unlink()
+        (self.root / 'people' / 'grandmas notes.md').write_bytes(
+            '---\nid: P-2222222222\nname: Anne Müller\n---\n'.encode('cp1252'))
+        self._cite('S-3333333333', 'C-4444444444', 'P-2222222222')
+
+        rc, out, err = self._run()
+
+        self.assertEqual(rc, EXIT_ERRORS)
+        self.assertIn('grandmas notes.md', err)
+        self.assertIn('carry no P-id', err)
+        self.assertNotIn('Created', out)
+        self.assertFalse((self.root / 'people' / 'stubs').exists())
+
+    def test_that_refusal_holds_under_dry_run_too(self) -> None:
+        # A preview drawn from a picture known to be missing someone would
+        # promise stubs a real run must not create.
+        (self.root / 'people' / 'muller__anne_P-2222222222.md').unlink()
+        (self.root / 'people' / 'grandmas notes.md').write_bytes(
+            '---\nid: P-2222222222\nname: Anne Müller\n---\n'.encode('cp1252'))
+
+        rc, out, err = self._run(dry_run=True)
+
+        self.assertEqual(rc, EXIT_ERRORS)
+        self.assertNotIn('[dry-run] Would create', out)
+
+    def test_only_a_source_skip_still_mints_but_never_reports_clean(self) -> None:
+        # With people/ fully readable the mint is safe: a source this run could
+        # not read only means a stub that was owed is not minted. That is an
+        # incomplete run, not a wrong one - exit 1, and it says what it missed.
+        (self.root / 'people' / 'muller__anne_P-2222222222.md').write_text(
+            '---\nid: P-2222222222\nname: Anne Muller\nliving: false\n---\n',
+            encoding='utf-8')
+
+        rc, out, err = self._run()
+
+        self.assertEqual(rc, EXIT_WARNINGS)
+        self.assertIn('krakow_S-2222222222.md', err)
+        self.assertIn('has not been minted', err)
+        # The stub the READABLE source asked for is still minted.
+        self.assertIn('Created', out)
+        self.assertTrue(
+            (self.root / 'people' / 'stubs' / 'unknown__unknown_p-9999999999.md').exists())
+
+    def test_a_fully_readable_archive_still_exits_clean(self) -> None:
+        # No false alarm: the honest exit codes above must not leak into the
+        # ordinary run.
+        (self.root / 'people' / 'muller__anne_P-2222222222.md').write_text(
+            '---\nid: P-2222222222\nname: Anne Muller\nliving: false\n---\n',
+            encoding='utf-8')
+        (self.root / 'sources' / 'krakow_S-2222222222.md').write_text(
+            '---\nid: S-2222222222\ntitle: Krakow deed\nsource_type: other\n---\n',
+            encoding='utf-8')
+
+        rc, out, err = self._run()
+
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertNotIn('not saved as UTF-8', err)
 
 
 if __name__ == '__main__':

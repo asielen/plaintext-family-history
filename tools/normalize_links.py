@@ -56,6 +56,7 @@ from _lib import (
     FhaConfigError,
     Result,
     alias_clashes,
+    archive_relative,
     build_alias_map,
     fmt_id_display,
     format_yaml_dependency_error,
@@ -91,6 +92,7 @@ def _scan_records(
     archive_root: Path,
     *,
     on_decode_error=None,
+    on_places_error=None,
 ) -> list[dict]:
     """Collect the identity + alias surface of every record, for the resolve map
     and clash check: persons (id/name/variants/stems), sources (id/stems), and
@@ -99,13 +101,30 @@ def _scan_records(
     A whole-archive scan, same shape as `stubs.py`'s unresolved-reference walk:
     a file saved in another encoding (cp1252, a Windows editor's default) must
     not blind the rest of the scan (#68). `on_decode_error`, when given, is
-    handed to every `read_record` call here (people and sources both - the
-    same `undecodable_file_recorder` callback for both loops, so one file
-    touched by more than one pass earns one report, not two) and the file is
-    skipped rather than crashed on; the caller (`run_normalize_links`) is the
-    one with somewhere to put the aggregated report, so it owns the list this
-    callback feeds. Omitted, the old crash-on-decode behaviour is unchanged -
-    matching `read_record`'s own opt-in contract."""
+    handed to every `read_record` call here (people and sources both) and the
+    file is skipped rather than crashed on; the caller
+    (`run_normalize_links`) is the one with somewhere to put the aggregated
+    report, so it owns the list this callback feeds. Omitted, the old
+    crash-on-decode behaviour is unchanged - matching `read_record`'s own
+    opt-in contract.
+
+    **What a skip here costs, and why the caller must be told.** This function
+    does not merely feed the resolve map; it feeds `alias_clashes` too, and a
+    clash is what STOPS a rewrite. A record missing from this scan cannot
+    collide with anything, so a name that two records really share reads as
+    belonging to exactly one - and `--write` then pins the human's
+    `[[John Smith]]` to whichever John Smith happened to decode. That is the
+    one thing this verb promises never to do ("an AMBIGUOUS name is never
+    guessed", SPEC §7), and unlike a crash it is silent and on disk. So every
+    gap in this scan is reported UP, and `run_normalize_links` refuses to
+    write while any remains.
+
+    `on_places_error` is the same channel for `places.yaml`, which is not a
+    record and so has no `read_record` seam: one unreadable or unparseable
+    file drops the archive's ENTIRE place layer out of the map at once, which
+    is the same clash-losing hole in its widest form (a person and a town both
+    called Florence stop colliding). Called with `(path, reason)`. Omitted, the
+    old silent `except Exception` behaviour is unchanged."""
     records: list[dict] = []
 
     people_root = archive_root / 'people'
@@ -142,10 +161,24 @@ def _scan_records(
 
     places_path = archive_root / 'places' / 'places.yaml'
     if places_path.exists() and yaml is not None:
+        places = None
         try:
             places = yaml.safe_load(places_path.read_text(encoding='utf-8'))
+        except UnicodeDecodeError:
+            if on_places_error is not None:
+                on_places_error(places_path, 'it is not saved as UTF-8 text')
+        except OSError as e:
+            if on_places_error is not None:
+                on_places_error(places_path, f'it could not be opened ({e.strerror or e})')
         except Exception:
-            places = None
+            # Deliberately not the parser's own message: it is a stack-shaped
+            # note about flow sequences, and `fha lint` already reports this
+            # file's parse error as E010 with the line. What matters HERE is
+            # only that the place layer is missing, which is what the caller
+            # reports.
+            if on_places_error is not None:
+                on_places_error(places_path, 'its YAML would not parse '
+                                             '(`fha lint` names the line, E010)')
         for place in places or []:
             if not isinstance(place, dict):
                 continue
@@ -302,12 +335,60 @@ def run_normalize_links(
 ) -> Result:
     """Compute (and, with write=True, apply) the citation normalization, returning
     a Result. `data` carries `files_changed`, `edits`, the per-file unified
-    `diffs`, and the `ambiguous` names that were left for a human to pin."""
-    undecodable: list[Path] = []
-    on_decode_error = undecodable_file_recorder(undecodable)
-    records = _scan_records(archive_root, on_decode_error=on_decode_error)
+    `diffs`, the `ambiguous` names that were left for a human to pin, and
+    `unreadable` - the archive-relative files this run could not read.
+
+    **The resolve map has to be complete before anything is written.** A record
+    the scan could not read is absent from `alias_clashes` too, so a name that
+    two records really share looks unambiguous, and `--write` pins the human's
+    `[[John Smith]]` to whichever John Smith happened to decode (see
+    `_scan_records`). That is the one thing this verb promises never to do -
+    "an AMBIGUOUS name is never guessed" - and unlike a crash it is silent and
+    on disk. Nothing inside this run can tell WHICH names went wrong, because
+    the record that would have said so is the missing one, so `--write` refuses
+    outright while any gap remains: exit 2, nothing touched.
+
+    The preview still runs and still prints its diff - it writes nothing, and
+    seeing the shape of the problem is how the human decides what to fix - but
+    it says plainly that what it shows cannot be trusted until the named files
+    can be read. This is the same reasoning `_lib.read_record`'s docstring
+    gives for keeping the whole report opt-in: an unreadable record answered as
+    an empty one is worse than a loud stop, and this verb WRITES.
+
+    A file skipped only by the REWRITE walk (a `notes/` file, say) is the
+    harmless case and never blocks the write: it is left exactly as written,
+    like any other file with nothing to change.
+    """
+    # Two lists, because they answer two different questions. `unreadable` is
+    # "what should this run tell the human about?" - every file, either pass,
+    # de-duplicated, since a people/ record is walked by BOTH the alias scan
+    # and the rewrite walk and must earn one report, not two. `map_gaps` is
+    # "may this run write at all?", and only the alias scan feeds it.
+    unreadable: list[Path] = []
+    map_gaps: list[Path] = []
+    places_gaps: list[tuple[Path, str]] = []
+    note_unreadable = undecodable_file_recorder(unreadable)
+    note_map_gap = undecodable_file_recorder(map_gaps)
+
+    def on_scan_decode_error(path: Path) -> None:
+        note_unreadable(path)
+        note_map_gap(path)
+
+    def on_places_error(path: Path, reason: str) -> None:
+        note_unreadable(path)
+        if not any(p == path for p, _ in places_gaps):
+            places_gaps.append((path, reason))
+
+    records = _scan_records(
+        archive_root,
+        on_decode_error=on_scan_decode_error,
+        on_places_error=on_places_error,
+    )
     alias_map = build_alias_map(records)
     clashes = alias_clashes(records)
+
+    if write and (map_gaps or places_gaps):
+        return _refuse_incomplete_map(archive_root, map_gaps, places_gaps)
 
     result = Result()
     result.data['diffs'] = {}
@@ -326,21 +407,25 @@ def run_normalize_links(
         except OSError:
             continue
         except UnicodeDecodeError:
-            # A second #68 site beyond the two `_scan_records` was built for
-            # (found while testing this fix, not in the original two-site
-            # list): `_record_files` walks people/, sources/ AND notes/ for
-            # the actual rewrite, wider than `_scan_records`'s alias-map scan
+            # A third #68 site beyond the two `_scan_records` was built for:
+            # `_record_files` walks people/, sources/ AND notes/ for the
+            # actual rewrite, wider than `_scan_records`'s alias-map scan
             # (people/sources only). `read_text_exact` has no
             # `on_decode_error` seam (it is byte-preserving, not the
-            # frontmatter parser), so the decode is caught here directly and
-            # fed the SAME recorder `_scan_records` used above - a file that
-            # both scans touch (any people/sources record) earns one report,
-            # not two, matching the shared-recorder contract `undecodable_
-            # file_recorder` documents.
-            on_decode_error(path)
+            # frontmatter parser), so the decode is caught here directly.
+            #
+            # It feeds `note_unreadable` and NOT `note_map_gap`, and the
+            # difference is the whole point: a file this walk cannot read is
+            # simply left as its author wrote it, which is the same outcome as
+            # a file with nothing to normalize - harmless, and no reason to
+            # refuse the write. A file the ALIAS scan could not read is the
+            # dangerous one, because it silently unmakes a clash. Sharing the
+            # `unreadable` recorder still means a people/ or sources/ record
+            # both passes touch earns one report, not two.
+            note_unreadable(path)
             continue
         new_text, edits, ambiguous = normalize_text(original, alias_map, clashes)
-        rel = str(path.relative_to(archive_root)).replace('\\', '/')
+        rel = archive_relative(path, archive_root)
 
         for name in ambiguous:
             if name.lower() not in ambiguous_seen:
@@ -373,39 +458,153 @@ def run_normalize_links(
     result.data['files_changed'] = files_changed
     result.data['edits'] = total_edits
     result.data['written'] = write
+    # The docstring has always promised `ambiguous`; now it is actually there,
+    # so a headless consumer can read the names a human still has to pin
+    # without scraping the warning lines. `unreadable` is the same courtesy for
+    # the files below.
+    result.data['ambiguous'] = sorted(ambiguous_seen)
+    result.data['unreadable'] = [archive_relative(p, archive_root) for p in unreadable]
 
     if files_changed == 0:
         result.add('info', 'All citations are already in canonical form - nothing to normalize.')
     elif write:
         result.add('info', f'Normalized {total_edits} citation(s) across {files_changed} file(s).')
+    elif map_gaps or places_gaps:
+        # The same count, without the `--write` invitation: the warning below
+        # explains that `--write` refuses while the map has a hole in it, and a
+        # printed `next:` is a command to be copied (TOOLING §2), so it must
+        # never be one this run already knows will refuse.
+        result.add('info',
+                   f'{total_edits} citation(s) across {files_changed} file(s) look '
+                   'normalizable, but see the warning below before trusting that.')
     else:
         result.add('info',
                    f'{total_edits} citation(s) across {files_changed} file(s) can be normalized. '
                    'Re-run with --write to apply.',
                    next_step='fha normalize-links --write')
 
-    if undecodable:
-        shown = ', '.join(
-            str(p.relative_to(archive_root)).replace('\\', '/') for p in undecodable[:5])
-        if len(undecodable) > 5:
-            shown += f' and {len(undecodable) - 5} more'
+    if unreadable:
+        # Reached only on a preview (a `--write` with a map gap has already
+        # refused above), or on a write whose only unreadable files were in the
+        # rewrite walk. Both halves are stated, because they are what the
+        # human's next command depends on.
         result.add(
             'warning',
-            f'{len(undecodable)} file(s) are not saved as UTF-8 text, so they were '
-            f'skipped rather than crashing this run: {shown}. A person or source '
-            "record's aliases in that file will not be considered for normalization, "
-            'so a citation that should resolve through it may be reported as '
-            'unrecognized/ambiguous instead - and if the file itself has citations to '
-            'normalize, they are left exactly as written this run, same as any other '
-            'skipped file. The file itself is fine and nothing was changed - it is '
-            'only saved in an older encoding (a Windows editor defaults to one, '
-            'commonly cp1252). Open it and save it again choosing UTF-8 (in Notepad: '
-            'Save As, then pick UTF-8 from the Encoding menu), '
-            'then run `fha normalize-links` again.')
+            f'{_name_files(unreadable, archive_root)} Each was skipped rather '
+            'than stopping the run. Anything written in one of them is left '
+            'exactly as it was; nothing about the file was changed. It is only '
+            'saved in an older encoding (a Windows editor defaults to one, '
+            'commonly cp1252) - open it and save it again choosing UTF-8 (in '
+            'Notepad: Save As, then pick UTF-8 from the Encoding menu), then '
+            'run `fha normalize-links` again. (`fha lint` reports the same '
+            'files as W128.)')
 
-    if ambiguous_seen or undecodable:
+    if map_gaps or places_gaps:
+        # A preview: say why it cannot be trusted, and that `--write` will
+        # refuse, BEFORE the human reads a diff and reaches for it. The cause
+        # ("not saved as UTF-8") is already in the warning above, so this one
+        # states only the consequence.
+        result.add(
+            'warning',
+            f'{_map_gap_reason(archive_root, map_gaps, places_gaps, with_cause=False)} '
+            'Two people who really share a name stop looking like two people, '
+            'so this preview may show a name being pinned to an ID that is only '
+            'the one that happened to be readable. `--write` refuses until '
+            'those file(s) can be read - fix them first, then preview again.',
+            next_step='fha lint')
+
+    if ambiguous_seen or unreadable:
         result.ok = False
         result.exit_code = EXIT_WARNINGS
+    return result
+
+
+def _name_files(paths: list, archive_root: Path) -> str:
+    """"N file(s) are not saved as UTF-8 text ...: a, b, c." - up to five names.
+
+    The one sentence every report below opens with, spelled the way `fha index`
+    and `fha lint`'s W128 spell it, so the same condition reads the same from
+    whichever command the human happened to run.
+    """
+    shown = ', '.join(archive_relative(p, archive_root) for p in paths[:5])
+    if len(paths) > 5:
+        shown += f' and {len(paths) - 5} more'
+    return (f'{len(paths)} file(s) are not saved as UTF-8 text, so this run '
+            f'could not read them: {shown}.')
+
+
+def _map_gap_reason(
+    archive_root: Path,
+    map_gaps: list,
+    places_gaps: list,
+    *,
+    with_cause: bool = True,
+) -> str:
+    """Why the resolve map is known to be incomplete, in the human's terms.
+
+    Records and `places.yaml` are named separately because the remedies differ
+    (re-save a record's encoding vs. repair a file whose problem may not be a
+    decoding one at all), and a `places.yaml` failure is the wider hole: it
+    takes every place out of the map at once.
+
+    `with_cause=False` drops the "N file(s) are not saved as UTF-8 text" half
+    for the preview warning, which follows a message that has already said it -
+    one condition, said once, however many messages it earns.
+    """
+    parts: list[str] = []
+    if map_gaps:
+        if with_cause:
+            parts.append(
+                f'{_name_files(map_gaps, archive_root)} What those records call '
+                'themselves - their names, aliases and stems - is missing from '
+                'the resolve map this run built.')
+        else:
+            named = ', '.join(archive_relative(p, archive_root) for p in map_gaps[:5])
+            if len(map_gaps) > 5:
+                named += f' and {len(map_gaps) - 5} more'
+            parts.append(
+                f'What the record(s) in {named} call themselves - their names, '
+                'aliases and stems - is missing from the resolve map this run '
+                'built.')
+    for path, reason in places_gaps:
+        parts.append(
+            f'{archive_relative(path, archive_root)} was not read because '
+            f'{reason}, so EVERY place is missing from the resolve map this '
+            'run built.')
+    return ' '.join(parts)
+
+
+def _refuse_incomplete_map(
+    archive_root: Path,
+    map_gaps: list,
+    places_gaps: list,
+) -> Result:
+    """The `--write` refusal when the resolve map is known to be incomplete.
+
+    An error, not a warning (TOOLING §1: exit 2 is "errors found"), and it
+    returns before a single file is opened for rewriting - so `changed` is
+    empty and `written` is False, which is exactly what happened.
+    """
+    result = Result(ok=False, exit_code=EXIT_ERRORS)
+    result.data.update({
+        'diffs': {}, 'files_changed': 0, 'edits': 0, 'written': False,
+        'ambiguous': [],
+        'unreadable': (
+            [archive_relative(p, archive_root) for p in map_gaps]
+            + [archive_relative(p, archive_root) for p, _ in places_gaps]),
+    })
+    result.add(
+        'error',
+        f'{_map_gap_reason(archive_root, map_gaps, places_gaps)} A name two '
+        'records really share would look like it belongs to just one, and this '
+        'command would pin your `[[Name]]` to whichever record it could read - '
+        'exactly the guess it exists not to make. Nothing was written. Fix the '
+        'file(s) above - a record saved in an older encoding (commonly cp1252 '
+        'from a Windows editor) is re-saved as UTF-8: open it, Save As, pick '
+        'UTF-8 - then run `fha normalize-links` to preview again. `fha lint` '
+        'names the same files (W128), and `fha normalize-links` on its own '
+        'previews without writing anything, so it is safe to run meanwhile.',
+        next_step='fha lint')
     return result
 
 

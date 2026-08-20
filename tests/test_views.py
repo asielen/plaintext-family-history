@@ -94,6 +94,15 @@ class DraftQueueUndecodableProfileTests(unittest.TestCase):
         text = err.getvalue()
         self.assertIn(self.profile.name, text)
         self.assertIn('not saved as UTF-8', text)
+        # Named the way the human filed it, never a local absolute path: this
+        # line is one of many in a batch, and two people in different couple
+        # folders can carry look-alike filenames (_lib.archive_relative).
+        self.assertIn('people/040 Test Couple/', text)
+        self.assertNotIn(str(self.root), text)
+        # No specific verb in the re-run advice: the same skip is reached from
+        # `draft-queue <P-id>`, `--all-curated`, and `fha views refresh`, so
+        # naming one of them would be wrong for the other two.
+        self.assertNotIn('fha views draft-queue', text)
         # Same idiom as the missing-profile case: a plain "WARNING: ... -
         # skipped." line, not a bare "malformed" claim (a decode failure is
         # not a YAML problem) and not the missing-profile wording (the

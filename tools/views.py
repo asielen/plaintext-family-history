@@ -100,6 +100,8 @@ from _lib import (
     Result,               # the structured-result contract every run_* returns,
     SOCIAL_PARENT_SUBTYPES,  # natures never numbered into the pedigree (SPEC §12.2),
     ahnentafel_generation,   # Ahnentafel position → generation depth (--generations cap),
+    answer_undecodable,   # read_record's 'answer, do not raise' opt-in for a one-file caller,
+    archive_relative,     # a path named as the human filed it, never a local absolute one,
     archive_title,        # masthead/page title from fha.yaml site.archive_name,
     build_ahnentafel_map,    # index BFS {P-id → position}; shared with fha person promote,
     couple_folder_dirs,   # digit-prefixed dirs under people/ (not stubs/connections),
@@ -1297,12 +1299,22 @@ def _generate_draft_queue(
     # Windows editor's default). The cause named here is deliberately
     # different from "no profile found" - the fix is re-saving the file's
     # encoding, not filing a profile that is already there.
-    rec = read_record(profile_p, on_decode_error=lambda p: None)
+    rec = read_record(profile_p, on_decode_error=answer_undecodable)
     if rec['undecodable']:
-        print(f'WARNING: {profile_p.name} is not saved as UTF-8 text - skipped. '
-              'Open it and save it again choosing UTF-8 (in Notepad: Save As, '
-              'then pick UTF-8 from the Encoding menu), then run '
-              '`fha views draft-queue` again.', file=sys.stderr)
+        # Named archive-relative, not by bare filename: this line is one of
+        # many in a `--all-curated` / `refresh` batch, two people in different
+        # couple folders can have look-alike filenames, and a printed report
+        # never carries a local absolute path (`_lib.archive_relative`).
+        # No specific verb in the "then re-run" either - the same skip is
+        # reached from `fha views draft-queue`, `--all-curated`, and
+        # `fha views refresh`, and naming one of them would be wrong for the
+        # other two; the batch's own closing line already says to re-run for
+        # the people that were skipped.
+        print(f'WARNING: {archive_relative(profile_p, archive_root)} is not saved '
+              'as UTF-8 text - skipped. Open it and save it again choosing UTF-8 '
+              '(in Notepad: Save As, then pick UTF-8 from the Encoding menu), '
+              'then re-run. (`fha lint` reports the same file as W128.)',
+              file=sys.stderr)
         return None
     body = rec['body']
     # Citation tokens (new `[[S-…]]` or legacy `[S-…]`); filter to S- sources.
