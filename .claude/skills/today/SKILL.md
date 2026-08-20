@@ -63,17 +63,34 @@ shortcut for this skill, where one exists. It is safe to run anytime — it only
    - **§8 Possible connections** — co-occurrence leads, clearly flagged as *leads, never facts*.
    - Mention §1b (worth a second look — parked claims and thin facts to revisit when a new record
      surfaces; frame as "someday" leads, never chores), §2 (new since last time), §5b (answerable
-     questions), §6b (place candidates), §7 (hypotheses / draft queues), §7b (promotion candidates —
-     people who've earned a real page: a direct-line ancestor still a stub, or a stub that keeps
-     turning up in accepted facts; frame as someday-leads — *"Frank keeps showing up — nine accepted
+     questions), §6b (place candidates — a large one here is a genuine contender for step 4's one next
+     action, not just a passing mention; see step 4), §7 (hypotheses / draft queues), §7b (promotion
+     candidates — people who've earned a real page: a direct-line ancestor still a stub, or a stub that
+     keeps turning up in accepted facts; frame as someday-leads — *"Frank keeps showing up — nine accepted
      facts and still a stub"*. For a direct-line person the graduation is `fha person promote`, run
      only on the human's say-so; a non-direct claim-heavy stub just stays a stub for now — the report
      says so itself) only when they hold something worth acting on. Don't read empty sections aloud.
 
-4. **Offer exactly one next action.** End by naming the single best next step and offering to start it —
-   usually a `review-claims` session on the oldest backlog, or `process-source` on the inbox:
-   *"Want to start with the 1880 census review? I'll walk you through each drafted fact one at a time."*
-   Then hand off to that skill if he says yes.
+4. **Offer exactly one next action — weigh §6b honestly instead of defaulting past it.** The single best
+   next step is usually a `review-claims` session on the oldest backlog, or `process-source` on the inbox
+   — but don't reach for that by default before comparing what the report actually shows: if §6b's
+   largest **unlinked** place-text cluster **carries more claims than §1's oldest backlog has suggested
+   ones** (or §1 is empty), that cluster is the bigger opportunity sitting in front of you this
+   run, and it wins the slot instead — *"'San Diego, California' turns up in 22 claims with no place link
+   — want to sort that out before the next review?"*, handing off to `place-research` on a
+   yes — at its **step 3**, the unlinked-cluster arm, since a cluster has no `L-id` yet for step 1's
+   neighborhood pull — same as any other next-action hand-off (this skill still writes nothing itself —
+   see Guardrails). Say **unlinked**, not "unregistered": §6b reports claims carrying no `place:`, which
+   is not the same as a town missing from `places.yaml`, and this skill runs no registry lookup to tell
+   the two apart — `place-research` does that on the other side of the hand-off.
+   Compare like with like: a §6b place line counts a cluster's **`accepted`/`needs-review`** claims (a
+   `suggested` draft never enters that section at all), and §6b's *GPS* lines count photos, not claims —
+   they are a different lead and not this comparison's business.
+   This is a comparison of the two counts the briefing already printed, not a fixed number to clear —
+   a genuinely large review backlog still rightly beats a middling place cluster, and an archive with no
+   place candidates at all just gets the ordinary offer. Whichever wins, name it plainly and offer to
+   start it: *"Want to start with the 1880 census review? I'll walk you through each drafted fact one at a
+   time."* Then hand off to that skill if he says yes.
 
 5. **Log a win only if asked.** If the human points at a §0 discovery and says to record it, and only
    then:
@@ -139,5 +156,12 @@ shortcut for this skill, where one exists. It is safe to run anytime — it only
 - When the human answers a narrated connection ("yes, neighbors" / "no, drop it"), the skill echoes
   the exact `fha confirm cooccur`/`dismiss` command with `--dry-run`, applies only on his confirmation,
   and mints `suggested` unless he explicitly treated the answer as the review.
+- When §6b's largest unlinked **place-text** cluster outsizes §1's oldest review backlog (or the
+  backlog is empty), it — not the review queue — wins the one next-action slot, and the offer hands off to
+  `place-research` rather than writing anything itself; the comparison is between whatever counts this
+  run's `fha report` actually printed — a cluster's claim count against the backlog's suggested-claim
+  count, never a GPS line's photo count and never a number hardcoded for one archive. The offer says the
+  cluster is **unlinked**, which is what §6b reports; whether the town is registered at all is a registry
+  question this read-only skill never asks.
 - `fha lint --root example-archive` still exits 1 with only the documented baseline warnings
   (`_STANDARD.md` §9) — the skill introduced nothing new.

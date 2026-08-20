@@ -6,7 +6,7 @@
     {
       "path": ".claude/skills/README.md",
       "category": "operating",
-      "sha256": "7b8cde3e869dd5b9f063a164e0e43769f4eceeb1ff29cd440354a735558ab239",
+      "sha256": "8b5f6e2eb6f95ab2dca0344146176f69e7ef3f97fce358f301ef2c304a87cf96",
       "spec_version": "1.2"
     },
     {
@@ -90,7 +90,7 @@
     {
       "path": ".claude/skills/process-source/SKILL.md",
       "category": "operating",
-      "sha256": "47875eb65c38439ead7f35c4ecb17ea5cc5c59a1ee6d6bcc5ff98f9299e9c533",
+      "sha256": "20147af72d592f61a5018d26851969718209432c6c99e87af9266f1a19fc9711",
       "spec_version": "1.2"
     },
     {
@@ -108,7 +108,7 @@
     {
       "path": ".claude/skills/review-claims/SKILL.md",
       "category": "operating",
-      "sha256": "7a884a647497e7dade2164dd05cd2733bf16be6b809d5f7e8c1c4cce093ddd47",
+      "sha256": "e624764e5b843215bddc848903412c30b52dd340ecd772b88c450c51a4cdc7e4",
       "spec_version": "1.2"
     },
     {
@@ -120,7 +120,7 @@
     {
       "path": ".claude/skills/today/SKILL.md",
       "category": "operating",
-      "sha256": "5b2968c7e037f0ad1132b3e052e8a35279a9854d1901d98198e5ae2196dce352",
+      "sha256": "fb18850f3ae1e3d4969fe398ed4952d3db87376b2da130aaa52d9c34275e1563",
       "spec_version": "1.2"
     },
     {
