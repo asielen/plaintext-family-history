@@ -77,6 +77,7 @@ import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from _lib import (
+    configure_utf8_stdout,
     EXIT_FAILURE,
     EXIT_WARNINGS,
     FhaConfigError,
@@ -98,6 +99,8 @@ from _lib import (
 )
 
 import photoindex
+
+configure_utf8_stdout()
 
 
 def _record_filename_sid(rec_path: Path) -> str | None:

@@ -49,6 +49,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
+    configure_utf8_stdout,
     SIGNIFICANCE,
     CLAIM_TYPES,
     CACHE_SCHEMA_KEY,
@@ -95,6 +96,8 @@ from _lib import (
 )
 
 import yaml
+
+configure_utf8_stdout()
 
 # ── CODE MAP ──────────────────────────────────────────────────────────────────
 #

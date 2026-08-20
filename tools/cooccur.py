@@ -63,6 +63,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
+    configure_utf8_stdout,
     EXIT_CLEAN,
     EXIT_FAILURE,
     Result,
@@ -72,6 +73,8 @@ from _lib import (
     open_index_db,
     resolve_root_arg,
 )
+
+configure_utf8_stdout()
 
 _ORG_CLAIM_TYPES = {'occupation', 'military', 'event', 'note'}
 _DIRECT_ORG_TYPES = {'occupation', 'military'}

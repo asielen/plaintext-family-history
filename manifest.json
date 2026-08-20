@@ -498,7 +498,7 @@
     {
       "path": ".fha/tools/cooccur.py",
       "category": "operating",
-      "sha256": "b4b27ae37c3346cf6a3f49044ca419009b131cec7805c437333cac1feaed6a16",
+      "sha256": "9039bc32585d1e81e70a40aa24bab82715489dae87a75d343e07143bb0af9a90",
       "spec_version": "1.2",
       "src": "tools/cooccur.py"
     },
@@ -512,7 +512,7 @@
     {
       "path": ".fha/tools/fha.py",
       "category": "operating",
-      "sha256": "d59f734af7a663cc99931263923509afa76a029f1bee3a435ee6948fba15d828",
+      "sha256": "ee1236512f4b4f2bc14e13621e10214c8755e3a7b0a175c09ba79ab0657c38da",
       "spec_version": "1.2",
       "src": "tools/fha.py"
     },
@@ -540,21 +540,21 @@
     {
       "path": ".fha/tools/id.py",
       "category": "operating",
-      "sha256": "ecd66535c3ea896404c322ab34c7f3915efe3f9e8532daac5a8a9e822caf3629",
+      "sha256": "0e95e59bde45c76ce5851b63a8eaf8b5dbe7e8158132f7744a7cc1525659b1cf",
       "spec_version": "1.2",
       "src": "tools/id.py"
     },
     {
       "path": ".fha/tools/index.py",
       "category": "operating",
-      "sha256": "a849274f50650ab2221b26d9f60c0af9ee2e7891bff7d83a366f97fdad5ae894",
+      "sha256": "39c90d36f4f59f0ce0199ed28649c0dec2c0ae41812e2d09fa252ccd28ca816f",
       "spec_version": "1.2",
       "src": "tools/index.py"
     },
     {
       "path": ".fha/tools/lint.py",
       "category": "operating",
-      "sha256": "8c3a652a6d117185938bc82f30bac31b7f00f6bfbe8a405b4baee0a323536174",
+      "sha256": "bffecd93840b9ce30d3767b47c573ba73c560a7f93cbc5b6de584129c4c5ce55",
       "spec_version": "1.2",
       "src": "tools/lint.py"
     },
@@ -589,7 +589,7 @@
     {
       "path": ".fha/tools/places.py",
       "category": "operating",
-      "sha256": "9fc71e91d44ce1188eaeccf265fd86551643c0260273b6ac0140d22949aaf17e",
+      "sha256": "c454c89a1b006713f3295e78cf76744417000d52373de08723e5f7447a611fdc",
       "spec_version": "1.2",
       "src": "tools/places.py"
     },
@@ -603,21 +603,21 @@
     {
       "path": ".fha/tools/reconcile.py",
       "category": "operating",
-      "sha256": "aab72effd44db0dfc89c552cddf02dc83c76844a781f5c3958626e0d3181d1d0",
+      "sha256": "aa7f395fe7372eb113598e3f1819d884bd23d6196eed9197bd1758c86ecedba5",
       "spec_version": "1.2",
       "src": "tools/reconcile.py"
     },
     {
       "path": ".fha/tools/relate.py",
       "category": "operating",
-      "sha256": "9c498de3f6befd0a01cad3bf497e4ccf356bab41c61df462e6acb4e6253e4742",
+      "sha256": "a778a4b94245eaaed840172e4e7881d761882815bc0b0417bd08e0b9d0d0b190",
       "spec_version": "1.2",
       "src": "tools/relate.py"
     },
     {
       "path": ".fha/tools/report.py",
       "category": "operating",
-      "sha256": "d060f9e45d9cda79c94ae4e359ff7e62275ac06e0f0730f3c3f14c2f6156e7c9",
+      "sha256": "3feabecbc45376eeaee6325fd9a29649c6f5d49442c60b49da92f2986a2c8858",
       "spec_version": "1.2",
       "src": "tools/report.py"
     },
@@ -638,7 +638,7 @@
     {
       "path": ".fha/tools/serve.py",
       "category": "operating",
-      "sha256": "e394025043630cccbe4f2876e1547f75853c3db731c88105c653480502e24403",
+      "sha256": "5fed8b538c2972d0631c4716b22e4270e3c2076e05cf27c95cb0fa8e080f8296",
       "spec_version": "1.2",
       "src": "tools/serve.py"
     },
@@ -813,7 +813,7 @@
     {
       "path": ".fha/tools/xref.py",
       "category": "operating",
-      "sha256": "464c465b1d254ae4a432cf954a5d84bad8890a05e94c841b06b9ca41f7fc94e6",
+      "sha256": "c3a3c029f816406bae44eade108952259f3f61195d2c9be332ec57917eed9632",
       "spec_version": "1.2",
       "src": "tools/xref.py"
     },

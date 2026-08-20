@@ -35,6 +35,7 @@ import datetime
 import io
 import os
 import re
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -3042,6 +3043,87 @@ class UndecodableFileReportingTests(unittest.TestCase):
         (self.root / 'notes' / 'fine.md').write_text('# Fine\n\nwords\n', encoding='utf-8')
         result = lint.run_lint(self.root, {})
         self.assertNotIn('W128', [m.code for m in result.messages])
+
+
+class LintStdoutIsValidUtf8Tests(unittest.TestCase):
+    """Issue #64: `fha lint`'s stdout must be valid UTF-8 even when the
+    interpreter's default stdout encoding is the Windows locale codepage
+    (cp1252), the way an unmodified console/redirect defaults on Windows.
+
+    `lint.py` never called `_lib.configure_utf8_stdout()` (every other tool
+    that prints non-ASCII does - doctor.py, process.py, ...), so on a cp1252
+    machine `fha lint --root . > out.txt` wrote mojibake into the file: the
+    issue's own repro is W125's message text, which embeds a literal
+    ellipsis in the fixed string `` `spouse: [P-…, P-…]` `` - cp1252 encodes
+    U+2026 as the single byte 0x85, which is not valid UTF-8 on its own, so
+    a downstream UTF-8 reader (this whole toolchain) chokes or mojibakes.
+
+    This spawns a REAL subprocess rather than asserting in-process, because
+    the bug is about the encoding the interpreter binds to `sys.stdout` at
+    startup - something no in-process capture (`redirect_stdout`, a StringIO
+    swap) can reproduce. `PYTHONIOENCODING=cp1252` pins that startup
+    encoding portably (this suite need not run on Windows to prove the
+    issue), and `configure_utf8_stdout()`'s job is to override it before any
+    output happens.
+    """
+
+    def _build_archive_with_w125(self) -> Path:
+        """A marriage claim naming 3 distinct people with no `roles:` map -
+        the unconditional shape that fires W125 (see
+        UnscopedCoupleClaimW125Tests above), so the ellipsis-bearing message
+        is guaranteed to print, not merely possible."""
+        root = Path(tempfile.mkdtemp())
+        (root / 'people').mkdir(parents=True)
+        (root / 'sources' / 'notes').mkdir(parents=True)
+        (root / 'fha.yaml').write_text('roots:\n  documents: documents\n',
+                                        encoding='utf-8')
+        people = ['P-h1h1h1h1h1', 'P-w2w2w2w2w2', 'P-f3f3f3f3f3']
+        for n, pid in enumerate(people):
+            (root / 'people' / f'x__p{n}_{pid}.md').write_text(
+                f'---\nid: {pid}\nname: Person {n}\nsex: U\nliving: false\n'
+                f'tier: stub\n---\n\n# Person {n}\n', encoding='utf-8')
+        claim = (
+            '- value: "a marriage"\n'
+            '  id: C-1111111111\n'
+            '  type: marriage\n'
+            f'  persons: [{", ".join(people)}]\n'
+            '  status: accepted\n  reviewed: 2026-01-01\n'
+            '  confidence: high\n  date: 1890\n'
+            '  information: primary\n  evidence: direct\n'
+            '  notes: x.\n'
+        )
+        (root / 'sources' / 'notes' / 'rec_s-7777777777.md').write_text(
+            '---\nid: S-7777777777\ntitle: Rec\nsource_type: vital-record\n---\n\n'
+            f'## Claims\n```yaml\n{claim}```\n', encoding='utf-8')
+        return root
+
+    def test_w125_ellipsis_survives_redirected_stdout_as_valid_utf8(self) -> None:
+        root = self._build_archive_with_w125()
+        env = dict(os.environ)
+        env['PYTHONIOENCODING'] = 'cp1252'  # the Windows-default this bug needs
+        proc = subprocess.run(
+            [sys.executable, str(ROOT / 'tools' / 'lint.py'), '--root', str(root)],
+            capture_output=True, check=False, env=env,
+        )
+
+        # Sanity: the fixture actually reaches the W125 code path (decode
+        # loosely here just to read the sanity check itself).
+        stdout_lossy = proc.stdout.decode('cp1252')
+        self.assertIn('W125', stdout_lossy, 'fixture did not fire W125 - '
+                       f'nothing to reproduce the issue with.\n{stdout_lossy}')
+
+        try:
+            decoded = proc.stdout.decode('utf-8')
+        except UnicodeDecodeError as e:
+            self.fail(
+                'lint stdout was not valid UTF-8 under a cp1252 default '
+                f'stdout encoding (issue #64): {e}. Raw bytes near the '
+                f'failure: {proc.stdout[max(0, e.start - 8):e.start + 8]!r} '
+                '- byte 0x85 there is cp1252\'s ellipsis, mis-emitted '
+                'instead of the UTF-8 encoding of U+2026.'
+            )
+        else:
+            self.assertIn('…', decoded)  # the ellipsis survived intact
 
 
 if __name__ == '__main__':
