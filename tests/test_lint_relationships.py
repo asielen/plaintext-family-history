@@ -610,5 +610,79 @@ class BirthClaimBacksAParentEntryTests(unittest.TestCase):
         self.assertEqual(len(_codes(findings, 'W126')), 1)
 
 
+class NegatedClaimReconciliationTests(unittest.TestCase):
+    """A `negated: true` claim is on neither side of the W115 ledger (SPEC §8.6).
+
+    It is an accepted finding, but the finding is that the bond is ABSENT -
+    "we researched and they did not marry". `fha index` mints no edge from it,
+    so W115 must not demand a `relationships:` entry for it (the repair would
+    write a phantom edge into the person doc, and the warning could never
+    clear because the indexer would still derive nothing), and it must not
+    silently satisfy an entry that claims the bond is real.
+    """
+
+    def _negated_files(self, *, child_block: str = '') -> dict:
+        files = {}
+        fname, text = _person(CHILD, 'kid', 'ann', relationships=child_block)
+        files[fname] = text
+        fname, text = _person(PARENT, 'kid', 'bob')
+        files[fname] = text
+        text = (
+            f'---\nid: {SOURCE}\ntitle: Negative finding\n'
+            'source_type: other\n---\n\n## Claims\n\n```yaml\n'
+            '- value: "not the child of bob"\n'
+            f'  id: {CLAIM}\n'
+            '  type: relationship\n'
+            '  subtype: biological\n'
+            f'  persons: [{CHILD}, {PARENT}]\n'
+            '  roles:\n'
+            f'    child: {CHILD}\n'
+            f'    parent: {PARENT}\n'
+            '  status: accepted\n'
+            '  negated: true\n'
+            '  reviewed: 2026-01-01\n'
+            '  confidence: high\n'
+            '  information: primary\n'
+            '  evidence: negative\n'
+            '  notes: The parish register rules him out.\n'
+            '```\n'
+        )
+        files[f'sources/notes/{SOURCE.lower()}.md'] = text
+        return files
+
+    def test_an_opted_in_block_need_not_apply_a_negated_claim(self) -> None:
+        # Ann has a block (an unrelated, unsourced belief keeps it opted in),
+        # and the only accepted claim naming her denies a parent. Asking her
+        # record to apply it would be asking her to write down the very bond
+        # the research removed.
+        child_block = '\n'.join([
+            'relationships:',
+            f'  - to: "[[{OTHERKID}|Cara Kid]]"',
+            '    type: sibling',
+            '    status: hypothesis',
+        ])
+        files = self._negated_files(child_block=child_block)
+        fname, text = _person(OTHERKID, 'kid', 'cara')
+        files[fname] = text
+        findings, _reg = lint._run_lint_core(_build(files), {})
+        self.assertEqual(
+            [f.message for f in _codes(findings, 'W115')
+             if CLAIM.lower() in f.message.lower()], [])
+
+    def test_an_entry_citing_a_negated_claim_is_told_why(self) -> None:
+        # The other direction: the entry says the bond is real and cites a
+        # claim that says it is not. That IS drift - but the generic wording
+        # ("check its persons and roles") would send the human to inspect a
+        # claim that is written perfectly well, so the message names the
+        # negation instead.
+        child_block = _parent_entry(PARENT, 'Bob Kid')
+        findings, _reg = lint._run_lint_core(
+            _build(self._negated_files(child_block=child_block)), {})
+        w115 = _codes(findings, 'W115')
+        self.assertEqual(len(w115), 1)
+        self.assertIn('negated: true', w115[0].message)
+        self.assertIn('ABSENCE', w115[0].message)
+
+
 if __name__ == '__main__':
     unittest.main()
