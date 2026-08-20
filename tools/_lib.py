@@ -5540,7 +5540,7 @@ def stub_slug_name(name: str, surname: str | None = None) -> tuple[str, str]:
         given_slug = re.sub(r'[^a-z0-9_]', '', '_'.join(p.lower() for p in given_tokens))
         return (surname_slug or 'unknown', given_slug or 'unknown')
     if len(parts) == 1:
-        given = re.sub(r'[^a-z0-9_]', '', parts[0].lower().replace(' ', '_'))
+        given = re.sub(r'[^a-z0-9_]', '', parts[0].lower())
         return ('', given or 'unknown')
     core, suffix = strip_generational_suffix(parts)
     if len(core) == 1:
