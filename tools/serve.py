@@ -993,13 +993,17 @@ def _verb_claim_review(state, kw, dry_run):
             status=kw.get('status'), value=kw.get('value'), date=kw.get('date'),
             claim_type=kw.get('claim_type'), place=kw.get('place'),
             place_text=kw.get('place_text'), persons=kw.get('persons'),
-            confidence=kw.get('confidence'), dry_run=dry_run)
+            confidence=kw.get('confidence'), information=kw.get('information'),
+            evidence=kw.get('evidence'), anchor=kw.get('anchor'), notes=kw.get('notes'),
+            dry_run=dry_run)
     return claim.run_claim(
         state.archive_root, claim_id=kw.get('claim_id', ''),
         status=kw.get('status'), value=kw.get('value'), date=kw.get('date'),
         claim_type=kw.get('claim_type'), place=kw.get('place'),
         place_text=kw.get('place_text'), persons=kw.get('persons'),
-        confidence=kw.get('confidence'), dry_run=dry_run)
+        confidence=kw.get('confidence'), information=kw.get('information'),
+        evidence=kw.get('evidence'), anchor=kw.get('anchor'), notes=kw.get('notes'),
+        dry_run=dry_run)
 
 
 def _echo_claim_review(kw):
@@ -1025,6 +1029,14 @@ def _echo_claim_review(kw):
         parts += ['--persons', ','.join(kw['persons'])]
     if kw.get('confidence'):
         parts += ['--confidence', kw['confidence']]
+    if kw.get('information'):
+        parts += ['--information', kw['information']]
+    if kw.get('evidence'):
+        parts += ['--evidence', kw['evidence']]
+    if kw.get('anchor'):
+        parts += ['--anchor', _q(kw['anchor'])]
+    if kw.get('notes'):
+        parts += ['--notes', _q(kw['notes'])]
     return ' '.join(parts)
 
 
@@ -1035,6 +1047,8 @@ def _verb_claim_new(state, kw, dry_run):
         date=kw.get('date'), place=kw.get('place'), place_text=kw.get('place_text'),
         persons=kw.get('persons'), subtype=kw.get('subtype'),
         status=kw.get('status') or 'accepted', confidence=kw.get('confidence'),
+        information=kw.get('information'), evidence=kw.get('evidence'),
+        anchor=kw.get('anchor'), notes=kw.get('notes'),
         # A confirmed absence (SPEC 8.6): the browser front door must reach the
         # same `--negated` authoring path the CLI does, or the workbench can
         # advertise "record a confirmed absence" yet be physically unable to
@@ -1068,6 +1082,14 @@ def _echo_claim_new(kw):
         parts += ['--status', kw['status']]
     if kw.get('confidence'):
         parts += ['--confidence', kw['confidence']]
+    if kw.get('information'):
+        parts += ['--information', kw['information']]
+    if kw.get('evidence'):
+        parts += ['--evidence', kw['evidence']]
+    if kw.get('anchor'):
+        parts += ['--anchor', _q(kw['anchor'])]
+    if kw.get('notes'):
+        parts += ['--notes', _q(kw['notes'])]
     # `--negated` is a bare flag on the CLI, so the echo shows it only when set -
     # the workbench's "this button is exactly:" line must match the command the
     # verb will actually run, including the confirmed-absence flag.
@@ -1678,12 +1700,15 @@ VERBS: dict[str, dict] = {
     'claim.review': {'schema': {'claim_id': 'str', 'claim_ids': 'list', 'status': 'str',
                                'value': 'str', 'date': 'str', 'claim_type': 'str',
                                'place': 'str', 'place_text': 'str', 'persons': 'list',
-                               'confidence': 'str'},
+                               'confidence': 'str', 'information': 'str', 'evidence': 'str',
+                               'anchor': 'str', 'notes': 'str'},
                      'run': _verb_claim_review, 'echo': _echo_claim_review, 'reindex': 'source'},
     'claim.new': {'schema': {'source_id': 'str', 'claim_type': 'str', 'value': 'str',
                             'date': 'str', 'place': 'str', 'place_text': 'str',
                             'persons': 'list', 'subtype': 'str', 'status': 'str',
-                            'confidence': 'str', 'negated': 'bool', 'claim_id': 'str'},
+                            'confidence': 'str', 'negated': 'bool', 'claim_id': 'str',
+                            'information': 'str', 'evidence': 'str', 'anchor': 'str',
+                            'notes': 'str'},
                   'run': _verb_claim_new, 'echo': _echo_claim_new, 'reindex': 'source'},
     'confirm.xref': {'schema': {'claim_a': 'str', 'claim_b': 'str', 'relation': 'str'},
                      'run': _verb_xref, 'echo': _echo_xref, 'reindex': 'full'},

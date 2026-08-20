@@ -603,6 +603,46 @@ class ApiRunTests(_ServeCase):
         self.assertIn('negated: true', text)
         self.assertIn('evidence: negative', text)
 
+    def test_claim_review_information_evidence_anchor_notes_reach_the_engine(self):
+        # Issue #50's four new claim.py flags, threaded through _verb_claim_review,
+        # must also be whitelisted in the claim.review verb's _coerce schema -
+        # the exact gap PR #69/12c5f46 found and fixed for person.new's
+        # --surname (a field reachable from the CLI but silently 400'd through
+        # the JSON API because nobody added it to the schema dict).
+        row = self.a_suggested_claim()
+        cid = row[0]
+        args = {'claim_id': cid, 'information': 'primary', 'evidence': 'direct',
+                'anchor': '00:14:32', 'notes': 'Written through the workbench API.'}
+        s, d, _h = self.post_run('claim.review', args, False)
+        self.assertEqual(s, 200)
+        payload = json.loads(d)
+        self.assertTrue(payload['ok'], payload)
+        matches = [f for f in (self.root / 'sources').rglob('*.md')
+                   if 'Written through the workbench API.' in f.read_text(encoding='utf-8')]
+        self.assertEqual(len(matches), 1, matches)
+        text = matches[0].read_text(encoding='utf-8')
+        self.assertIn('information: primary', text)
+        self.assertIn('evidence: direct', text)
+        self.assertIn('anchor:', text)
+
+    def test_claim_new_information_evidence_anchor_notes_reach_the_engine(self):
+        row = self.a_suggested_claim()
+        sid = row[1]
+        args = {'source_id': sid, 'claim_type': 'occupation',
+                'value': 'Mills fields via the API', 'information': 'secondary',
+                'evidence': 'indirect', 'anchor': 'p. 9', 'notes': 'Minted through the API.'}
+        s, d, _h = self.post_run('claim.new', args, False)
+        self.assertEqual(s, 200)
+        payload = json.loads(d)
+        self.assertTrue(payload['ok'], payload)
+        matches = [f for f in (self.root / 'sources').rglob('*.md')
+                   if 'Mills fields via the API' in f.read_text(encoding='utf-8')]
+        self.assertEqual(len(matches), 1, matches)
+        text = matches[0].read_text(encoding='utf-8')
+        self.assertIn('information: secondary', text)
+        self.assertIn('evidence: indirect', text)
+        self.assertIn('notes: Minted through the API.', text)
+
     def test_process_file_apply_reuses_the_previewed_minted_source_id(self):
         # P2 codex finding (round 7, PR #30): same preview/apply mismatch as
         # person.new/claim.new above, for `process.file` - the dry-run

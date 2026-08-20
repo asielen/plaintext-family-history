@@ -1783,5 +1783,350 @@ class ClaimBatchCliRoutingTests(unittest.TestCase):
         self.assertTrue(any(c['value'] == 'still intercepted' for c in claims))
 
 
+# ── Issue #50: --information/--evidence/--anchor/--notes ───────────────────────
+
+class MillsFieldEditTests(unittest.TestCase):
+    """The edit verb's new --information/--evidence/--anchor/--notes flags."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.source = _write_source(self.root)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _claims(self) -> dict:
+        return {c['id']: c for c in read_record(self.source)['claims']}
+
+    def test_information_evidence_anchor_notes_round_trip(self) -> None:
+        result = claim.run_claim(
+            self.root, claim_id='C-aa11bb22cc', information='secondary',
+            evidence='indirect', anchor='p. 12', notes='Correlated against the marriage record.')
+        self.assertEqual(result.exit_code, EXIT_CLEAN, result.messages)
+        rec = self._claims()['C-aa11bb22cc']
+        self.assertEqual(rec['information'], 'secondary')
+        self.assertEqual(rec['evidence'], 'indirect')
+        self.assertEqual(rec['anchor'], 'p. 12')
+        self.assertEqual(rec['notes'], 'Correlated against the marriage record.')
+        # Sibling claim and every other field on this one untouched.
+        self.assertEqual(self._claims()['C-bb22cc33dd']['value'], 'Anna Smith died 1950')
+        self.assertEqual(rec['value'], 'Anna Smith born 1880, Fairview')
+        self.assertEqual(rec['status'], 'suggested')   # --status not given
+
+    def test_invalid_information_refused_naming_valid_list(self) -> None:
+        before = self.source.read_text(encoding='utf-8')
+        result = claim.run_claim(self.root, claim_id='C-aa11bb22cc', information='nope')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        text = ' '.join(m.text for m in result.messages)
+        self.assertIn('primary', text)
+        self.assertIn('secondary', text)
+        self.assertIn('undetermined', text)
+        self.assertEqual(self.source.read_text(encoding='utf-8'), before)
+
+    def test_invalid_evidence_refused_naming_valid_list(self) -> None:
+        before = self.source.read_text(encoding='utf-8')
+        result = claim.run_claim(self.root, claim_id='C-aa11bb22cc', evidence='nope')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        text = ' '.join(m.text for m in result.messages)
+        self.assertIn('direct', text)
+        self.assertIn('indirect', text)
+        self.assertIn('negative', text)
+        self.assertEqual(self.source.read_text(encoding='utf-8'), before)
+
+    def test_notes_alone_is_enough_to_avoid_the_no_op_refusal(self) -> None:
+        result = claim.run_claim(self.root, claim_id='C-aa11bb22cc', notes='Just a note.')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertEqual(self._claims()['C-aa11bb22cc']['notes'], 'Just a note.')
+
+    def test_notes_replaces_an_existing_multiline_block_scalar_cleanly(self) -> None:
+        # SPEC §8.4's own illustrative claim uses `notes: >`; --value refuses
+        # on a block-scalar (a deliberate, narrower conservatism kept as-is),
+        # but --notes must NOT share that refusal - correcting notes on an
+        # already-reviewed claim is exactly issue #50's use case. Round-trips
+        # at both dash indents the block-scalar repro fixture covers.
+        for pad in (1, 3):
+            with self.subTest(pad=pad):
+                text = _notes_repro_block(pad, place_text='Fairview, as written')
+                new, changed = claim._apply_claim_review(
+                    text, 'C-aa11bb22cc', notes='Replaced in one shot.')
+                self.assertTrue(changed)
+                claims = read_record_from_text(new)
+                self.assertEqual(len(claims), 1)
+                c = claims[0]
+                self.assertEqual(c['notes'], 'Replaced in one shot.')
+                # Nothing else on the claim was disturbed by the block collapse.
+                self.assertEqual(c['place_text'], 'Fairview, as written')
+                self.assertEqual(c['type'], 'birth')
+                self.assertEqual(str(c['persons']), "['P-aaaaaaaaaa']")
+
+    def test_batch_refuses_each_new_field_flag_with_more_than_one_id(self) -> None:
+        for flag, kwargs in (
+            ('--information', {'information': 'primary'}),
+            ('--evidence', {'evidence': 'direct'}),
+            ('--anchor', {'anchor': '00:14:32'}),
+            ('--notes', {'notes': 'x'}),
+        ):
+            with self.subTest(flag=flag):
+                before = self.source.read_text(encoding='utf-8')
+                result = claim.run_claim_batch(
+                    self.root, claim_ids=['C-aa11bb22cc', 'C-bb22cc33dd'],
+                    status='accepted', **kwargs)
+                self.assertEqual(result.exit_code, EXIT_FAILURE)
+                self.assertEqual(result.data['status'], 'refused')
+                self.assertIn(flag, result.messages[-1].text)
+                self.assertEqual(self.source.read_text(encoding='utf-8'), before)
+
+    def test_single_id_through_batch_front_door_still_takes_new_fields(self) -> None:
+        # The existing single-claim-only guard must still pass a lone id
+        # through untouched, new flags included (per the batch's own
+        # "delegates straight to run_claim" contract).
+        result = claim.run_claim_batch(
+            self.root, claim_ids=['C-aa11bb22cc'], evidence='direct', anchor='p. 3')
+        self.assertEqual(result.exit_code, EXIT_CLEAN, result.messages)
+        rec = read_record(self.source)['claims'][0]
+        self.assertEqual(rec['evidence'], 'direct')
+        self.assertEqual(rec['anchor'], 'p. 3')
+
+
+class MillsFieldCliTests(unittest.TestCase):
+    """CLI wiring for --information/--evidence/--anchor/--notes."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        # resolve_root_arg (the CLI-layer path _cmd_claim/_cmd_claim_new use,
+        # unlike run_claim/run_claim_new called directly) requires fha.yaml.
+        (self.root / 'fha.yaml').write_text(
+            'roots:\n  photos: photos\n  documents: documents\n', encoding='utf-8')
+        self.source = _write_source(self.root)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_cli_edit_verb_writes_all_four(self) -> None:
+        import fha
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            rc = fha.main(['claim', 'C-aa11bb22cc', '--information', 'primary',
+                           '--evidence', 'direct', '--anchor', '00:01:00',
+                           '--notes', 'CLI-written note.', '--root', str(self.root)])
+        self.assertEqual(rc, 0)
+        rec = read_record(self.source)['claims'][0]
+        self.assertEqual(rec['information'], 'primary')
+        self.assertEqual(rec['evidence'], 'direct')
+        self.assertEqual(rec['anchor'], '00:01:00')
+        self.assertEqual(rec['notes'], 'CLI-written note.')
+
+    def test_cli_new_verb_mints_all_four(self) -> None:
+        import fha
+        _write_person(self.root, 'P-aaaaaaaaaa', 'Anna Smith')
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            rc = fha.main([
+                'claim', 'new', '--source', 'S-1111111111', '--type', 'occupation',
+                '--value', 'Bookkeeper', '--persons', 'P-aaaaaaaaaa',
+                '--information', 'primary', '--evidence', 'direct',
+                '--anchor', 'p. 4', '--notes', 'Listed in the 1874 directory.',
+                '--root', str(self.root)])
+        self.assertEqual(rc, 0)
+        claims = read_record(self.source)['claims']
+        minted = next(c for c in claims if c['value'] == 'Bookkeeper')
+        self.assertEqual(minted['information'], 'primary')
+        self.assertEqual(minted['evidence'], 'direct')
+        self.assertEqual(minted['anchor'], 'p. 4')
+        self.assertEqual(minted['notes'], 'Listed in the 1874 directory.')
+
+
+class NewMillsFieldsLintCleanTests(unittest.TestCase):
+    """A `claim new` with the full #50 field set must pass `fha lint` clean -
+    the issue's own regression-test requirement (a claim minted WITHOUT these
+    fields trips W106/W109; one minted WITH them should not)."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        # lint.run_lint refuses outright (E010) with no fha.yaml at all.
+        (self.root / 'fha.yaml').write_text(
+            'roots:\n  photos: photos\n  documents: documents\n', encoding='utf-8')
+        self.source = _write_source(self.root)
+        _write_person(self.root, 'P-aaaaaaaaaa', 'Anna Smith')
+        import lint
+        self.lint = lint
+        self.config = load_fha_yaml(self.root)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _findings_for(self, cid: str) -> set:
+        result = self.lint.run_lint(self.root, self.config)
+        return {m.code for m in result.messages if cid.lower() in m.text.lower()}
+
+    def test_full_field_set_produces_no_w106_or_w109_on_this_claim(self) -> None:
+        result = claim.run_claim_new(
+            self.root, source_id='S-1111111111', claim_type='occupation',
+            value='Bookkeeper, Plains Junction Railroad', persons=['P-aaaaaaaaaa'],
+            date='1874', status='accepted', confidence='high',
+            information='primary', evidence='direct', anchor='p. 4',
+            notes='Listed as book-keeper for the Plains Junction RR in the 1874 directory.')
+        self.assertEqual(result.exit_code, EXIT_CLEAN, result.messages)
+        codes = self._findings_for(result.data['claim_id'])
+        self.assertNotIn('W106', codes)
+        self.assertNotIn('W109', codes)
+
+    def test_missing_field_set_does_trip_w106_control(self) -> None:
+        # Control: the SAME mint, minus information/evidence/notes, DOES trip
+        # W106 (missing Mills fields) - proves the clean result above is the
+        # fields' doing, not a fluke of the fixture/lint pass.
+        result = claim.run_claim_new(
+            self.root, source_id='S-1111111111', claim_type='occupation',
+            value='Bookkeeper, Plains Junction Railroad', persons=['P-aaaaaaaaaa'],
+            date='1874', status='accepted', confidence='high')
+        self.assertEqual(result.exit_code, EXIT_CLEAN, result.messages)
+        codes = self._findings_for(result.data['claim_id'])
+        self.assertIn('W106', codes)
+
+
+# ── Issue #50: --negated / --evidence conflict on claim new ────────────────────
+
+class NegatedEvidenceConflictTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.source = _write_source(self.root)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_negated_with_contradicting_evidence_refused(self) -> None:
+        before = self.source.read_text(encoding='utf-8')
+        result = claim.run_claim_new(
+            self.root, source_id='S-1111111111', claim_type='marriage',
+            value='no marriage found', negated=True, evidence='direct')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertEqual(result.data['status'], 'refused')
+        self.assertIn('negative', result.messages[-1].text)
+        self.assertEqual(self.source.read_text(encoding='utf-8'), before)
+
+    def test_negated_with_agreeing_evidence_negative_is_fine(self) -> None:
+        result = claim.run_claim_new(
+            self.root, source_id='S-1111111111', claim_type='marriage',
+            value='no marriage found', negated=True, evidence='negative')
+        self.assertEqual(result.exit_code, EXIT_CLEAN, result.messages)
+        claims = read_record(self.source)['claims']
+        minted = next(c for c in claims if c['value'] == 'no marriage found')
+        self.assertEqual(minted['evidence'], 'negative')
+        # read_record coerces YAML booleans to 'true'/'false' strings
+        # (_lib._coerce_yaml) - matching test_negated_mints_confirmed_absence_
+        # with_evidence_pairing's own convention elsewhere in this file.
+        self.assertEqual(str(minted.get('negated')), 'true')
+
+
+# ── Issue #54: echo the written value on success ────────────────────────────
+
+class EchoOnSuccessTests(unittest.TestCase):
+    """The exact PowerShell single-quote de-quoting repro from issue #54:
+    `Robert Justin "Bob" Knipscheer` arrives at the tool as
+    `Robert Justin Bob Knipscheer` (embedded double quotes lost before this
+    tool ever sees the argument). Guard-proven: before this fix, the two
+    runs below produced byte-IDENTICAL success messages ('Set C-…: value
+    updated') - captured against `tools/claim.py` as of the branch point
+    (2026-07 baseline, pre-#54): both a correctly-quoted and a de-quoted
+    --value landed with the message
+    'Set C-aa11bb22cc: value updated | Reminder: ...', so a human (or a
+    script) reading the CLI's own output had no way to tell the write was
+    wrong. This class pins the fixed behavior: the actual written value now
+    appears in the message either way, so the corruption is visible."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.source = _write_source(self.root)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_value_success_message_now_shows_the_written_value(self) -> None:
+        correct = 'Robert Justin "Bob" Knipscheer'
+        result = claim.run_claim(self.root, claim_id='C-aa11bb22cc', value=correct)
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        all_text = ' '.join(m.text for m in result.messages)
+        self.assertIn(correct, all_text)
+
+    def test_a_mangled_value_is_now_visibly_different_from_a_correct_one(self) -> None:
+        # The corrupted write LOOKS different in the output now - that is
+        # the whole fix. The source is re-seeded between the two writes so
+        # both start from the exact same claim state and are comparable.
+        correct = 'Robert Justin "Bob" Knipscheer'
+        mangled = 'Robert Justin Bob Knipscheer'   # what PowerShell 5.1 delivers
+        r_correct = claim.run_claim(self.root, claim_id='C-aa11bb22cc', value=correct)
+        self.source.write_text(_CLAIM_BLOCK, encoding='utf-8')
+        r_mangled = claim.run_claim(self.root, claim_id='C-aa11bb22cc', value=mangled)
+        text_correct = ' '.join(m.text for m in r_correct.messages)
+        text_mangled = ' '.join(m.text for m in r_mangled.messages)
+        self.assertNotEqual(text_correct, text_mangled)
+        self.assertIn(correct, text_correct)
+        self.assertIn(mangled, text_mangled)
+        self.assertNotIn(correct, text_mangled)
+
+    def test_place_text_success_message_also_echoes(self) -> None:
+        # place_text was the other field this fix covers (said "place_text
+        # updated" before, same blind spot as value).
+        value = 'Fairview City, Breton Co., Kansas'
+        result = claim.run_claim(self.root, claim_id='C-aa11bb22cc', place_text=value)
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        all_text = ' '.join(m.text for m in result.messages)
+        self.assertIn(value, all_text)
+
+    def test_anchor_and_notes_echo_on_success(self) -> None:
+        result = claim.run_claim(self.root, claim_id='C-aa11bb22cc',
+                                 anchor='00:14:32', notes='Context that must be visible.')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        all_text = ' '.join(m.text for m in result.messages)
+        self.assertIn('00:14:32', all_text)
+        self.assertIn('Context that must be visible.', all_text)
+
+    def test_dry_run_still_shows_the_full_diff_no_duplicate_echo_needed(self) -> None:
+        # --dry-run already reveals the exact written bytes via its diff -
+        # the extra echo line is a live-write-only addition (dry-run was
+        # never the blind spot the issue reported).
+        result = claim.run_claim(self.root, claim_id='C-aa11bb22cc',
+                                 value='Preview Value', dry_run=True)
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        all_text = '\n'.join(m.text for m in result.messages)
+        self.assertIn('Preview Value', all_text)
+        self.assertIn('[dry-run]', all_text)
+
+    def test_claim_new_live_mint_also_echoes_value(self) -> None:
+        # Extended per the same principle to the mint path (`fha claim new`)
+        # - a live mint's summary line never showed the value it just wrote
+        # either, the identical blind spot one level over.
+        _write_person(self.root, 'P-aaaaaaaaaa', 'Anna Smith')
+        value = 'Robert Justin "Bob" Knipscheer, laborer'
+        result = claim.run_claim_new(
+            self.root, source_id='S-1111111111', claim_type='occupation',
+            value=value, persons=['P-aaaaaaaaaa'])
+        self.assertEqual(result.exit_code, EXIT_CLEAN, result.messages)
+        all_text = ' '.join(m.text for m in result.messages)
+        self.assertIn(value, all_text)
+
+    def test_claim_new_live_mint_also_shows_information_and_evidence(self) -> None:
+        # `run_claim`'s edit verb already named --information/--evidence
+        # inline in its summary; `run_claim_new`'s own summary line omitted
+        # both entirely (unlike --value/--place-text/--anchor/--notes, which
+        # got the explicit echo line) - the same issue #54 blind spot on the
+        # mint path, just for the two closed-vocabulary Mills fields instead
+        # of a free-text one.
+        _write_person(self.root, 'P-aaaaaaaaaa', 'Anna Smith')
+        result = claim.run_claim_new(
+            self.root, source_id='S-1111111111', claim_type='occupation',
+            value='Bookkeeper', persons=['P-aaaaaaaaaa'],
+            information='primary', evidence='direct')
+        self.assertEqual(result.exit_code, EXIT_CLEAN, result.messages)
+        all_text = ' '.join(m.text for m in result.messages)
+        self.assertIn('information -> primary', all_text)
+        self.assertIn('evidence -> direct', all_text)
+
+
 if __name__ == '__main__':
     unittest.main()

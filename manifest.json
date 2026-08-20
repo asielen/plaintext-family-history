@@ -407,14 +407,14 @@
     {
       "path": ".fha/tools/README.md",
       "category": "operating",
-      "sha256": "8d59b5e0fcc23ebd25ebd31e7b7f06b4bdd245b3da30ea4f7d0c2ef4ac0e9e53",
+      "sha256": "20add039e436a58cc17b52aab8461b6b87c93d95ed5ea219934d37d6f14892a4",
       "spec_version": "1.2",
       "src": "tools/README.md"
     },
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "781d8788ecfabfc41bb9d12c94d974a3e95d85a9902fcbfee085d579a0c5623b",
+      "sha256": "8d615d1ae5d45727b450e0a4498fc5ed9b5f488c29bf3983375202a581859bda",
       "spec_version": "1.2",
       "src": "tools/_lib.py"
     },
@@ -477,7 +477,7 @@
     {
       "path": ".fha/tools/claim.py",
       "category": "operating",
-      "sha256": "bbdeff0d2148ac89647f1c6fcb14fb84038093e347cfb3e6d916f431442ce9e1",
+      "sha256": "5edaefe377e94eae3154c1c8a3cbd591541c86f1e96c2e1701a15380974ec9d2",
       "spec_version": "1.2",
       "src": "tools/claim.py"
     },
@@ -582,7 +582,7 @@
     {
       "path": ".fha/tools/person.py",
       "category": "operating",
-      "sha256": "08ff94ec3323cc137d4f851163eb62971a3371484e7a835de44295383478af98",
+      "sha256": "8228b98d934c2ca4df4f32ab8051a69ff80b9ad9c663f5d11e74fc2fc3890410",
       "spec_version": "1.2",
       "src": "tools/person.py"
     },
@@ -645,7 +645,7 @@
     {
       "path": ".fha/tools/serve.py",
       "category": "operating",
-      "sha256": "5fed8b538c2972d0631c4716b22e4270e3c2076e05cf27c95cb0fa8e080f8296",
+      "sha256": "eb9357cd8a45ce06cf8c46dc0ce28c059241a704822e4a4443f92d839c4a5b16",
       "spec_version": "1.2",
       "src": "tools/serve.py"
     },
@@ -841,7 +841,7 @@
     {
       "path": "AGENTS.md",
       "category": "operating",
-      "sha256": "386e69b4a823150f5004cd26ced08dd1ab0da8bf5eb007b83acbed1251fe6a97",
+      "sha256": "02d8df986a8b2939c30fb8e4b092dd5c4b5a7022f9fc960a46aaabbac5e74853",
       "spec_version": "1.2"
     },
     {
@@ -871,7 +871,7 @@
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "124b3c1b8b718631fc31ed36fca54a346538d0fe01e34e1834780223bfb1f3c5",
+      "sha256": "c20ed2d5a533a88ee9526aa5819db4afc3d1086bb44d882b65ad68dde2b21b58",
       "spec_version": "1.2"
     },
     {
