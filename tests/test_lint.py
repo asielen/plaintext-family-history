@@ -2220,5 +2220,158 @@ class UnscopedCoupleClaimW125Tests(unittest.TestCase):
         self.assertEqual(len(w), 1)
 
 
+class BirthClaimWithoutParentageW126Tests(unittest.TestCase):
+    """W126: an accepted birth claim that names other people but says nothing
+    about which of them are the parents.
+
+    A birth record is where an archive states parentage most plainly - "born to
+    X and Y" - but only the `roles:` map says which entry is the child and which
+    are the parents. Without one the indexer derives NO parent edge rather than
+    reading the persons: order as a contract (index.py `_derive_relationships`,
+    `_lib.parentage_parties`). That refusal is right - a false parent is read
+    back as fact by `fha relate`, the tree views, `fha report` and the GEDCOM
+    export - but on its own it just moves a silently-wrong archive to a
+    silently-inert one. This warning is the other half of the fix (issue #71),
+    exactly as W125 is for couple claims.
+    """
+
+    CHILD = 'P-c1c1c1c1c1'
+    FATHER = 'P-f2f2f2f2f2'
+    MOTHER = 'P-m3m3m3m3m3'
+    SID = 'S-7777777777'
+
+    def _build(self, *, ctype: str = 'birth', persons=None,
+               roles_block: str = '', status: str = 'accepted',
+               negated: bool = False) -> Path:
+        root = Path(tempfile.mkdtemp())
+        (root / 'people').mkdir(parents=True)
+        (root / 'sources' / 'notes').mkdir(parents=True)
+        (root / 'fha.yaml').write_text('roots:\n  documents: documents\n',
+                                       encoding='utf-8')
+        everyone = [self.CHILD, self.FATHER, self.MOTHER]
+        for n, pid in enumerate(everyone):
+            (root / 'people' / f'x__p{n}_{pid}.md').write_text(
+                f'---\nid: {pid}\nname: Person {n}\nsex: U\nliving: false\n'
+                f'tier: stub\n---\n\n# Person {n}\n', encoding='utf-8')
+        named = everyone if persons is None else persons
+        claim = (f'- value: "a {ctype}"\n'
+                 f'  id: C-1111111111\n'
+                 f'  type: {ctype}\n'
+                 f'  persons: [{", ".join(named)}]\n'
+                 f'  status: {status}\n  reviewed: 2026-01-01\n'
+                 f'  confidence: high\n  date: 1902-04-17\n'
+                 + ('  negated: true\n  evidence: negative\n' if negated
+                    else '  information: primary\n  evidence: direct\n')
+                 + '  notes: x.\n'
+                 + roles_block)
+        (root / 'sources' / 'notes' / f'rec_{self.SID.lower()}.md').write_text(
+            f'---\nid: {self.SID}\ntitle: Rec\nsource_type: vital-record\n---\n\n'
+            f'## Claims\n```yaml\n{claim}```\n', encoding='utf-8')
+        return root
+
+    def _w126(self, root: Path) -> list:
+        from _lib import load_fha_yaml
+        findings, _reg = lint._run_lint_core(root, load_fha_yaml(root))
+        return [f for f in findings if f.code == 'W126']
+
+    def test_three_person_birth_without_roles_warns(self) -> None:
+        # The reporter's shape: a certificate of live birth naming the child
+        # and both parents, accepted, and contributing nothing to the pedigree.
+        w = self._w126(self._build())
+        self.assertEqual(len(w), 1)
+        f = w[0]
+        self.assertEqual(f.severity, 'W')
+        # Says what is wrong, what it costs, and the concrete repair.
+        self.assertIn('names 3 people', f.message)
+        self.assertIn('fha relate', f.message)
+        self.assertIn('child: [P-', f.message)
+        self.assertIn('parent: [P-', f.message)
+        # The repair must never be "delete the parents from persons:".
+        self.assertIn('Leave everyone in persons:', f.message)
+
+    def test_two_person_birth_without_roles_warns(self) -> None:
+        # Two people is not a couple-style free pass here: parentage is
+        # directed, so the indexer cannot tell the child from the other person
+        # and derives nothing. The silence still has to be visible.
+        w = self._w126(self._build(persons=[self.CHILD, self.MOTHER]))
+        self.assertEqual(len(w), 1)
+        self.assertIn('names 2 people', w[0].message)
+
+    def test_roles_map_naming_child_and_parent_is_clean(self) -> None:
+        roles = (f'  roles:\n    child: [{self.CHILD}]\n'
+                 f'    parent: [{self.FATHER}, {self.MOTHER}]\n')
+        self.assertEqual(self._w126(self._build(roles_block=roles)), [])
+
+    def test_single_person_birth_claim_is_clean(self) -> None:
+        # The overwhelmingly common birth claim: one person, born. There is no
+        # parentage in it to lose, so there is nothing to say.
+        self.assertEqual(self._w126(self._build(persons=[self.CHILD])), [])
+
+    def test_child_role_alone_warns_and_asks_for_the_parents(self) -> None:
+        roles = f'  roles:\n    child: [{self.CHILD}]\n'
+        w = self._w126(self._build(roles_block=roles))
+        self.assertEqual(len(w), 1)
+        msg = w[0].message
+        # The wording has to fit THIS shape: the claim HAS said who was born.
+        self.assertIn('says who was born', msg)
+        self.assertIn('parent: [P-', msg)
+
+    def test_parent_role_alone_warns_and_asks_who_was_born(self) -> None:
+        roles = f'  roles:\n    parent: [{self.FATHER}, {self.MOTHER}]\n'
+        w = self._w126(self._build(roles_block=roles))
+        self.assertEqual(len(w), 1)
+        msg = w[0].message
+        self.assertIn('does not say who was born', msg)
+        self.assertIn('child: [P-', msg)
+
+    def test_suggested_claim_does_not_warn(self) -> None:
+        # Derivation reads accepted claims only, so a suggested claim has cost
+        # the tree nothing yet; the repair there is review, which W102 tracks.
+        self.assertEqual(self._w126(self._build(status='suggested')), [])
+
+    def test_needs_review_claim_does_not_warn(self) -> None:
+        self.assertEqual(self._w126(self._build(status='needs-review')), [])
+
+    def test_negated_claim_does_not_warn(self) -> None:
+        # "We researched it and this child was not born to them" (SPEC §8.6).
+        # Asking for a roles: map so the tree can record the parentage would be
+        # asking the claim to assert what it exists to deny.
+        self.assertEqual(self._w126(self._build(negated=True)), [])
+
+    def test_a_marriage_claim_never_draws_this_warning(self) -> None:
+        # The false positive this rule must not have: couple claims are W125's
+        # business, and a certificate naming six people must not collect a
+        # second warning telling it to name a child.
+        self.assertEqual(self._w126(self._build(ctype='marriage')), [])
+
+    def test_a_relationship_claim_never_draws_this_warning(self) -> None:
+        # A relationship claim missing its roles: map is E015's business - the
+        # map is REQUIRED there (SPEC §8.3), which is a different conversation
+        # from a birth record that merely could have carried one.
+        self.assertEqual(self._w126(self._build(ctype='relationship')), [])
+
+    def test_duplicate_persons_entry_does_not_warn(self) -> None:
+        # A bare P-id and a name-link for one child are two entries and one
+        # person. There is no parentage to ask about, and counting entries
+        # instead of people would demand a parent from a claim naming one baby.
+        self.assertEqual(
+            self._w126(self._build(persons=[self.CHILD, '"[[Person 0]]"'])), [])
+
+    def test_list_form_roles_does_not_crash_lint(self) -> None:
+        # `roles: [child, parent]` names nobody. It cannot scope the parentage
+        # (W126 still fires), but it must never raise: a traceback on the
+        # human's screen is always a defect (AGENTS.md - "Who you serve").
+        w = self._w126(self._build(roles_block='  roles: [child, parent]\n'))
+        self.assertEqual(len(w), 1)
+
+    def test_the_message_carries_no_absolute_path(self) -> None:
+        # Lint output is quoted into issues and committed reports; a local
+        # absolute path has no business in either.
+        root = self._build()
+        w = self._w126(root)
+        self.assertEqual(len(w), 1)
+        self.assertNotIn(str(root), w[0].message)
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -2404,3 +2404,308 @@ class UndecodableFileBuildTests(unittest.TestCase):
         (self.root / 'notes' / 'fine.md').write_text('# Fine\n\nwords\n', encoding='utf-8')
         result = index.build_index(self.root, {'roots': {'documents': 'documents'}})
         self.assertEqual(0, result.exit_code, 'no new noise on a clean archive')
+
+
+# ── Birth-claim parentage (issue #71) ────────────────────────────────────────
+#
+# A birth record is the most natural place an archive ever states parentage:
+# "born to X and Y". `_derive_relationships` did not read `type: birth` at all,
+# so that parentage never reached the pedigree - the child had no parents in
+# the tree, the Ahnentafel walk saw nothing, and no warning was raised.
+#
+# The rule these tests pin (TOOLING §197, `_lib.parentage_parties`):
+#   - `roles:` naming a child and a parent derives the edge pair, exactly as an
+#     equivalent `relationship` claim does - reciprocal, one row per claim;
+#   - NO usable `roles:` map derives NOTHING, at any person count. Unlike
+#     marriage there is no safe two-person fallback: parentage is directed, so
+#     `[P-a, P-b]` never says which of them was born, and the second person on
+#     a birth record is as often an informant as a parent;
+#   - only `accepted`, non-negated claims derive, like every other type.
+# Nothing here is silent in the archive: `fha lint` W126 reports every birth
+# claim this rule leaves without an edge (tests/test_lint.py).
+
+_BIRTH_CHILD = 'P-c1c1c1c1c1'
+_BIRTH_FATHER = 'P-f2f2f2f2f2'
+_BIRTH_MOTHER = 'P-m3m3m3m3m3'
+_BIRTH_OTHER = 'P-p4p4p4p4p4'
+
+_BIRTH_NAMES = {
+    _BIRTH_CHILD: 'Sam Rivera',
+    _BIRTH_FATHER: 'Luis Rivera',
+    _BIRTH_MOTHER: 'Ana Rivera',
+    _BIRTH_OTHER: 'Doctor Pike',
+}
+
+
+class BirthClaimParentageTests(unittest.TestCase):
+    """Parentage stated on a `birth` claim's `roles:` map becomes a pedigree
+    edge; parentage merely implied by the `persons:` list never does."""
+
+    SID = 'S-8888888888'
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        for pid, name in _BIRTH_NAMES.items():
+            _write(self.root / 'people' / f'p_{pid}.md',
+                   f'---\nid: {pid}\nname: {name}\nliving: false\n'
+                   f'aliases: [{pid}, {name}]\n---\n\n# {name}\n')
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _source_path(self) -> Path:
+        return self.root / 'sources' / f'birth_{self.SID.lower()}.md'
+
+    def _write_claims(self, claims: str) -> None:
+        _write(self._source_path(),
+               f'---\nid: {self.SID}\ntitle: Certificate of live birth\n'
+               'source_type: vital-record\n---\n\n'
+               f'## Claims\n```yaml\n{claims}```\n')
+
+    @staticmethod
+    def _claim(cid: str, ctype: str, persons: list, roles: str = '',
+               status: str = 'accepted', negated: bool = False) -> str:
+        return (f'- value: "born 17 April 1902"\n'
+                f'  id: {cid}\n'
+                f'  type: {ctype}\n'
+                f'  persons: [{", ".join(persons)}]\n'
+                f'  status: {status}\n'
+                f'  reviewed: 2026-01-01\n'
+                f'  confidence: high\n'
+                f'  date: 1902-04-17\n'
+                + ('  negated: true\n' if negated else '')
+                + roles)
+
+    def _edges(self) -> set:
+        """Every parent/child edge in the built index, as (person, rel, other)."""
+        return {(p, r, o) for p, r, o, _cid in self._edge_rows()}
+
+    def _edge_rows(self) -> list:
+        conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
+        try:
+            return [
+                tuple(r) for r in conn.execute(
+                    "SELECT person_id, rel, other_id, claim_id FROM relationships "
+                    "WHERE rel IN ('parent', 'child') ORDER BY 1, 2, 3, 4")
+            ]
+        finally:
+            conn.close()
+
+    # ── the case the issue is about ──────────────────────────────────────
+
+    def test_roles_map_derives_both_directed_edges(self) -> None:
+        # The whole point: "born to X and Y", written the way SPEC §8.3 says to
+        # write it, must reach the pedigree - and reach it in BOTH directions,
+        # because the child's parent list and the parents' child list are read
+        # by different consumers (the bracket lists read `child`, the
+        # Ahnentafel walk reads `parent`).
+        roles = (f'  roles:\n    child: [{_BIRTH_CHILD}]\n'
+                 f'    parent: [{_BIRTH_FATHER}, {_BIRTH_MOTHER}]\n')
+        self._write_claims(self._claim(
+            'C-1111111111', 'birth',
+            [_BIRTH_CHILD, _BIRTH_FATHER, _BIRTH_MOTHER], roles))
+        index.build_index(self.root, {})
+        c, f, m = (_BIRTH_CHILD.lower(), _BIRTH_FATHER.lower(),
+                   _BIRTH_MOTHER.lower())
+        self.assertEqual(
+            self._edges(),
+            {(c, 'parent', f), (f, 'child', c),
+             (c, 'parent', m), (m, 'child', c)},
+            'a birth claim naming a child and two parents must derive four '
+            'directed edges - two parents, each with its reciprocal')
+
+    def test_a_scalar_roles_value_derives_the_same_edges(self) -> None:
+        # SPEC §8.4 writes `child: P-…` unwrapped in its own example, so the
+        # single-value shape is not an exotic hand-edit - it is the documented
+        # one, and it must derive identically to the list form.
+        roles = (f'  roles:\n    child: {_BIRTH_CHILD}\n'
+                 f'    parent: {_BIRTH_FATHER}\n')
+        self._write_claims(self._claim(
+            'C-1111111111', 'birth', [_BIRTH_CHILD, _BIRTH_FATHER], roles))
+        index.build_index(self.root, {})
+        c, f = _BIRTH_CHILD.lower(), _BIRTH_FATHER.lower()
+        self.assertEqual(self._edges(), {(c, 'parent', f), (f, 'child', c)})
+
+    def test_a_name_linked_roles_entry_derives_the_edge(self) -> None:
+        # The quickstart's hand-authored form: people written by name, resolved
+        # through the alias map. If roles: only worked for bare P-ids, the
+        # archives most likely to state parentage on a birth record - the
+        # hand-written ones - would be exactly the ones it never reached.
+        roles = ('  roles:\n    child: "[[Sam Rivera]]"\n'
+                 '    parent: "[[Ana Rivera]]"\n')
+        self._write_claims(self._claim(
+            'C-1111111111', 'birth', ['"[[Sam Rivera]]"', '"[[Ana Rivera]]"'],
+            roles))
+        index.build_index(self.root, {})
+        c, m = _BIRTH_CHILD.lower(), _BIRTH_MOTHER.lower()
+        self.assertEqual(self._edges(), {(c, 'parent', m), (m, 'child', c)})
+
+    # ── what must stay inert ─────────────────────────────────────────────
+
+    def test_three_people_without_roles_derive_nothing(self) -> None:
+        # The reporter's own claim shape. `persons: [child, father, mother]` is
+        # a convention, not a contract - order is not data, and nothing in the
+        # claim says which entry is the child. Guessing here mints a false
+        # parent, which `fha relate`, the tree views, `fha report` and the
+        # GEDCOM export all read back as fact. W126 makes the silence visible.
+        self._write_claims(self._claim(
+            'C-1111111111', 'birth',
+            [_BIRTH_CHILD, _BIRTH_FATHER, _BIRTH_MOTHER]))
+        index.build_index(self.root, {})
+        self.assertEqual(self._edges(), set(),
+                         'a birth claim with no roles: map must derive no '
+                         'parent edge, whatever its persons: order suggests')
+
+    def test_two_people_without_roles_derive_nothing(self) -> None:
+        # The one place this rule is STRICTER than the marriage rule, and the
+        # reason it has to be: marriage is symmetric, so two people admit
+        # exactly one answer. Parentage is directed - `[P-a, P-b]` does not say
+        # which of them was born - and the second person on a birth record is
+        # as often an informant, a midwife or the attending physician as a
+        # parent. There is no safe fallback to fall back to.
+        self._write_claims(self._claim(
+            'C-1111111111', 'birth', [_BIRTH_CHILD, _BIRTH_OTHER]))
+        index.build_index(self.root, {})
+        self.assertEqual(self._edges(), set(),
+                         'two people on a birth claim is not a parent/child '
+                         'pair - there is no two-person fallback here')
+
+    def test_one_person_derives_nothing(self) -> None:
+        # The ordinary birth claim, by far the commonest shape. Nothing to
+        # derive and nothing wrong with it.
+        self._write_claims(self._claim('C-1111111111', 'birth', [_BIRTH_CHILD]))
+        index.build_index(self.root, {})
+        self.assertEqual(self._edges(), set())
+
+    def test_a_child_role_alone_derives_nothing(self) -> None:
+        # A half-written map has not answered the question: it says who was
+        # born and leaves the others unplaced. Treating "everyone else" as a
+        # parent is the guess this rule exists to refuse.
+        roles = f'  roles:\n    child: [{_BIRTH_CHILD}]\n'
+        self._write_claims(self._claim(
+            'C-1111111111', 'birth',
+            [_BIRTH_CHILD, _BIRTH_FATHER, _BIRTH_MOTHER], roles))
+        index.build_index(self.root, {})
+        self.assertEqual(self._edges(), set())
+
+    def test_a_parent_role_alone_derives_nothing(self) -> None:
+        # The mirror: the parents are named and nobody is marked as born. The
+        # subject of a birth claim is not positional either.
+        roles = f'  roles:\n    parent: [{_BIRTH_FATHER}, {_BIRTH_MOTHER}]\n'
+        self._write_claims(self._claim(
+            'C-1111111111', 'birth',
+            [_BIRTH_CHILD, _BIRTH_FATHER, _BIRTH_MOTHER], roles))
+        index.build_index(self.root, {})
+        self.assertEqual(self._edges(), set())
+
+    def test_nobody_is_their_own_parent(self) -> None:
+        # A typo'd map that puts one person in both roles must not mint a
+        # self-edge: an edge from a person to themselves is invisible to lint
+        # (W126 needs two distinct people to speak) and every consumer reads it
+        # back as fact - the same belt-and-braces guard the spouse loops carry.
+        roles = (f'  roles:\n    child: [{_BIRTH_CHILD}]\n'
+                 f'    parent: [{_BIRTH_CHILD}]\n')
+        self._write_claims(self._claim(
+            'C-1111111111', 'birth', [_BIRTH_CHILD], roles))
+        index.build_index(self.root, {})
+        self.assertEqual(self._edges(), set())
+
+    def test_a_suggested_birth_claim_derives_nothing(self) -> None:
+        # Only the human's acceptance puts an edge in the tree (SPEC §8.1).
+        roles = (f'  roles:\n    child: [{_BIRTH_CHILD}]\n'
+                 f'    parent: [{_BIRTH_FATHER}]\n')
+        self._write_claims(self._claim(
+            'C-1111111111', 'birth', [_BIRTH_CHILD, _BIRTH_FATHER], roles,
+            status='suggested'))
+        index.build_index(self.root, {})
+        self.assertEqual(self._edges(), set())
+
+    def test_a_negated_birth_claim_derives_nothing(self) -> None:
+        # A negated claim is a researched absence (SPEC §8.6) - "we looked, and
+        # this child was not born to them". Deriving the very edge it denies
+        # would be backwards.
+        roles = (f'  roles:\n    child: [{_BIRTH_CHILD}]\n'
+                 f'    parent: [{_BIRTH_FATHER}]\n')
+        self._write_claims(self._claim(
+            'C-1111111111', 'birth', [_BIRTH_CHILD, _BIRTH_FATHER], roles,
+            negated=True))
+        index.build_index(self.root, {})
+        self.assertEqual(self._edges(), set())
+
+    # ── agreement with the relationship branch, and double derivation ────
+
+    def test_a_birth_claim_derives_what_the_relationship_branch_does(self) -> None:
+        # Two ways of writing the same fact must reach the tree as the same
+        # edges. A rule implemented twice drifts, and the two disagreeing is
+        # worse than either being wrong alone (_lib.parentage_parties).
+        roles = (f'  roles:\n    child: [{_BIRTH_CHILD}]\n'
+                 f'    parent: [{_BIRTH_FATHER}, {_BIRTH_MOTHER}]\n')
+        people = [_BIRTH_CHILD, _BIRTH_FATHER, _BIRTH_MOTHER]
+
+        self._write_claims(self._claim('C-1111111111', 'birth', people, roles))
+        index.build_index(self.root, {})
+        from_birth = self._edges()
+
+        self._write_claims(self._claim(
+            'C-1111111111', 'relationship', people, roles))
+        index.build_index(self.root, {})
+        from_relationship = self._edges()
+
+        self.assertEqual(from_birth, from_relationship)
+        self.assertTrue(from_birth, 'both branches must derive something')
+
+    def test_two_claims_for_one_parentage_keep_their_own_claim_ids(self) -> None:
+        # Both a birth certificate and a separate relationship claim can record
+        # the same bond, and both are real evidence. The edge is keyed on the
+        # claim (relationships UNIQUE includes claim_id), so each supporting
+        # claim keeps its own row and no row loses its provenance to the other.
+        # `fha find` groups by (rel, other_id) and counts distinct sources, so
+        # the human sees one relationship backed by the evidence there is.
+        roles = (f'  roles:\n    child: [{_BIRTH_CHILD}]\n'
+                 f'    parent: [{_BIRTH_FATHER}]\n')
+        people = [_BIRTH_CHILD, _BIRTH_FATHER]
+        self._write_claims(
+            self._claim('C-1111111111', 'birth', people, roles)
+            + self._claim('C-2222222222', 'relationship', people, roles))
+        index.build_index(self.root, {})
+        c, f = _BIRTH_CHILD.lower(), _BIRTH_FATHER.lower()
+        self.assertEqual(
+            self._edge_rows(),
+            [(c, 'parent', f, 'c-1111111111'),
+             (c, 'parent', f, 'c-2222222222'),
+             (f, 'child', c, 'c-1111111111'),
+             (f, 'child', c, 'c-2222222222')],
+            'each claim keeps its own edge row and its own claim_id')
+
+    def test_one_claim_naming_a_person_twice_derives_one_edge(self) -> None:
+        # `persons: [P-a, "[[Sam Rivera]]"]` is one child written two ways, and
+        # claim_persons stores a row per entry with no UNIQUE constraint. The
+        # people are folded together before deriving, so the duplicate cannot
+        # double the edge.
+        roles = (f'  roles:\n    child: [{_BIRTH_CHILD}]\n'
+                 f'    parent: [{_BIRTH_FATHER}]\n')
+        self._write_claims(self._claim(
+            'C-1111111111', 'birth',
+            [_BIRTH_CHILD, '"[[Sam Rivera]]"', _BIRTH_FATHER], roles))
+        index.build_index(self.root, {})
+        c, f = _BIRTH_CHILD.lower(), _BIRTH_FATHER.lower()
+        self.assertEqual(
+            self._edge_rows(),
+            [(c, 'parent', f, 'c-1111111111'), (f, 'child', c, 'c-1111111111')])
+
+    def test_the_incremental_upsert_derives_the_same_edges(self) -> None:
+        # Full rebuild and incremental upsert must agree, or an archive that
+        # only ever runs the fast path never gets the parentage.
+        roles = (f'  roles:\n    child: [{_BIRTH_CHILD}]\n'
+                 f'    parent: [{_BIRTH_FATHER}]\n')
+        self._write_claims(self._claim('C-1111111111', 'birth', [_BIRTH_CHILD]))
+        index.build_index(self.root, {})
+        self.assertEqual(self._edges(), set())
+
+        self._write_claims(self._claim(
+            'C-1111111111', 'birth', [_BIRTH_CHILD, _BIRTH_FATHER], roles))
+        self.assertEqual(
+            index.upsert_source(self.root, {}, self.SID), 'indexed')
+        c, f = _BIRTH_CHILD.lower(), _BIRTH_FATHER.lower()
+        self.assertEqual(self._edges(), {(c, 'parent', f), (f, 'child', c)})

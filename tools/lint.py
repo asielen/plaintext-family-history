@@ -86,6 +86,7 @@ from _lib import (
     format_bracket_child,
     is_genetic_parent_subtype,
     nonbirth_bracket_label,
+    parentage_parties,
     photos_ignore_matcher,
     photos_ignore_patterns,
     spouse_extended_base,
@@ -1939,15 +1940,46 @@ def _claim_spouse_pids(
     return set(spouse_parties((pid, by_person.get(pid)) for pid in named))
 
 
+def _claim_parentage_pids(
+    claim: dict, alias_map: dict[str, str] | None = None,
+) -> tuple[set[str], set[str]]:
+    """Who a claim says was born and to whom, read the way the index reads it.
+
+    Returns `(children, parents)`, both empty unless the claim answered both
+    halves - `_lib.parentage_parties` is the rule, shared with `fha index` so
+    W126 can never report a silence the indexer does not actually keep, nor
+    stay quiet about one it does. This wrapper only hands that rule the claim's
+    people paired with their roles, resolved through the alias map so a
+    name-linked entry counts like a bare P-id.
+
+    Only people actually named in `persons:` can carry a role, matching how the
+    index builds `claim_persons`: a `roles:` entry naming somebody left out of
+    `persons:` is a broken map, not a secret extra parent.
+    """
+    named = _claim_person_ids(claim, alias_map)
+    by_person = _claim_roles_by_person(claim, alias_map)
+    children, parents = parentage_parties(
+        (pid, by_person.get(pid)) for pid in named)
+    return set(children), set(parents)
+
+
 def _claim_backs_edge(
     claim: dict, owner_pid: str, other_pid: str | None, role: str,
     alias_map: dict[str, str] | None = None,
 ) -> bool:
-    """True if `claim` is an accepted relationship/marriage claim that records the
-    edge a person-doc entry asserts. When `other_pid` is None (the `to:` name has
-    no minted record yet) only the owner's side is checked, so a forgiving name
-    never produces a false reconciliation failure. `alias_map` lets name-linked
-    persons:/roles: entries back an edge the same as bare P-ids."""
+    """True if `claim` is an accepted relationship/marriage/birth claim that
+    records the edge a person-doc entry asserts. When `other_pid` is None (the
+    `to:` name has no minted record yet) only the owner's side is checked, so a
+    forgiving name never produces a false reconciliation failure. `alias_map`
+    lets name-linked persons:/roles: entries back an edge the same as bare
+    P-ids.
+
+    Lint reads the same claim types the indexer derives edges from, or it
+    contradicts the tools: a birth claim whose `roles:` map names a child and a
+    parent now puts that bond in the tree (#71), so a person-doc entry citing
+    it is reconciled, not drifting. Telling the human their correctly-written
+    record disagrees with a claim the archive itself is reading would send them
+    to repair something that is not broken."""
     if str(claim.get('status', '')) != 'accepted':
         return False
     ctype = str(claim.get('type', ''))
@@ -1956,6 +1988,18 @@ def _claim_backs_edge(
         # claim's roles: map scopes the couple (_claim_spouse_pids).
         persons = _claim_spouse_pids(claim, alias_map)
         return owner_pid in persons and (other_pid is None or other_pid in persons)
+    if role in ('parent', 'child') and ctype == 'birth':
+        # Scoped by the derivation rule, not by the presence of a roles: key -
+        # a birth claim the indexer derives nothing from backs nothing here.
+        children, parents = _claim_parentage_pids(claim, alias_map)
+        if not (children and parents):
+            return False
+        # An entry of `type: parent` says the owner HAS a parent, so the owner
+        # is the child on the claim - the same inversion _EDGE_ROLE_MAP encodes.
+        owner_side, other_side = ((children, parents) if role == 'parent'
+                                  else (parents, children))
+        return (owner_pid in owner_side
+                and (other_pid is None or other_pid in other_side))
     pair = _EDGE_ROLE_MAP.get(role)
     if ctype != 'relationship' or not pair:
         return False
@@ -1978,6 +2022,20 @@ def _person_reconcilable_role_label(
         # Only the couple the claim marries owes a spouse entry - a parent
         # named on the certificate owes nothing (_claim_spouse_pids).
         return 'spouse' if pid in _claim_spouse_pids(claim, alias_map) else None
+    if ctype == 'birth':
+        # The mirror of the forward check: a birth claim that derives parentage
+        # is a kin claim, so an opted-in block that omits it is incomplete for
+        # the same reason it would be if the bond were written as a
+        # relationship claim. A birth claim the indexer derives nothing from
+        # owes nothing - only the child and the parents it actually named do.
+        children, parents = _claim_parentage_pids(claim, alias_map)
+        if not (children and parents):
+            return None
+        if pid in children:
+            return 'parent'     # the person was born → their entry names a parent
+        if pid in parents:
+            return 'child'
+        return None
     if ctype != 'relationship':
         return None
     if pid in _role_pids(claim, 'child', alias_map):
@@ -2043,7 +2101,13 @@ def _check_relationships_reconciliation(
     backing claim must exist and record this edge (else W115), its nature must
     match (else W115), and the other person should mirror it (else W116). The
     reverse direction (an accepted kin claim naming this person but absent from
-    their block) is also W115, so an opted-in block stays complete."""
+    their block) is also W115, so an opted-in block stays complete.
+
+    A kin claim here is whatever the indexer derives a kin edge from: a
+    `relationship` claim, a `marriage` claim, and - since #71 - a `birth` claim
+    whose `roles:` map names a child and a parent. Both directions read the
+    same list, so an entry citing a birth claim reconciles and a birth claim
+    the block omits is reported, exactly as for the other two."""
     for pid in sorted(registry.person_meta):
         block = registry.person_meta[pid].get('relationships')
         if not isinstance(block, list) or not block:
@@ -2106,7 +2170,7 @@ def _check_relationships_reconciliation(
             for claim in claims:
                 if not isinstance(claim, dict) or str(claim.get('status', '')) != 'accepted':
                     continue
-                if str(claim.get('type', '')) not in ('relationship', 'marriage'):
+                if str(claim.get('type', '')) not in ('relationship', 'marriage', 'birth'):
                     continue
                 cid = normalize_id(str(claim.get('id', '')))
                 if not cid or cid in referenced_cids:
@@ -2308,6 +2372,87 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
                             'If these two were the couple, name them both - `roles:` then '
                             'an indented `spouse: [P-…, P-…]` line. If they were not, the '
                             'couple is missing from persons: - add them there.'))
+
+            # W126: an accepted birth claim that names other people and gets no
+            # parentage into the tree (issue #71). A birth record is where an
+            # archive states parentage most plainly - "born to X and Y" - and
+            # `persons: [child, father, mother]` is the habit everyone writes.
+            # But that order is a habit, not a contract (SPEC §8.3: positional
+            # convention alone is too fragile), and the extra person on a birth
+            # register is as often an informant or the attending physician as a
+            # parent. So the indexer derives a parent edge from the roles: map
+            # or from nothing at all (_lib.parentage_parties) - and without
+            # this warning, primary parentage evidence would sit accepted in
+            # the archive contributing exactly nothing, which is the state the
+            # issue was filed about wearing a different hat.
+            # The condition IS the derivation rule, as in W125: two or more
+            # distinct persons named, and no parent edge derived. That covers
+            # every shape the silence takes - no roles: map, a map naming a
+            # child and no parent, a map naming parents and nobody born, and a
+            # map whose role words are outside the SPEC vocabulary (`mother:`,
+            # `father:`), which is the shape a person-count test would miss and
+            # the one most likely to look correct to whoever wrote it.
+            # Distinct PERSONS, not persons: entries: a bare P-id and a
+            # name-link for one baby are two entries and one person, and one
+            # person is not a parentage to ask about.
+            # Only accepted, non-negated claims derive edges, so only those can
+            # lose one: a suggested claim's repair is review (W102 tracks that
+            # backlog) and a negated birth claim (SPEC §8.6) exists to deny the
+            # very bond this would ask it to record.
+            # Scoped to `birth` alone. A `relationship` claim missing its map
+            # is E015's business - `roles:` is REQUIRED there - and couple
+            # claims are W125's, so no claim collects two warnings for one map.
+            if claim_type == 'birth' and derives_edges:
+                named = _claim_person_ids(claim, alias_map)
+                distinct = {pid: None for pid in named}   # ordered, deduplicated
+                children, parents = _claim_parentage_pids(claim, alias_map)
+                if len(distinct) >= 2 and not (children and parents):
+                    where_it_goes = (
+                        ' - the parents will be missing from the family tree, '
+                        'from `fha relate`, and from the charts on their pages. ')
+                    head = (f'Claim {claim.get("id","?")} (type: birth) names '
+                            f'{len(distinct)} people')
+                    by_person = _claim_roles_by_person(claim, alias_map)
+                    role_children = [pid for pid in distinct
+                                     if by_person.get(pid) == 'child']
+                    role_parents = [pid for pid in distinct
+                                    if by_person.get(pid) == 'parent']
+                    if role_children:
+                        # Half a map: it says who was born and leaves everyone
+                        # else unplaced. Reading "everyone else" as the parents
+                        # is precisely the guess the indexer refuses.
+                        findings.append(Finding('W', 'W126', src_path,
+                            f'{head} and says who was born, but marks none of the '
+                            f'others as a parent, so no parent link is recorded'
+                            f'{where_it_goes}'
+                            'If the others are the parents, add them to the roles: '
+                            'map - an indented `parent: [P-…, P-…]` line beside the '
+                            '`child:` one. If they are not (an informant, a doctor, '
+                            'a witness), nothing is missing and this note is safe '
+                            'to leave.'))
+                    elif role_parents:
+                        # The mirror: the parents are marked and nobody is
+                        # marked as born. The subject is not positional either.
+                        marked = (f'marks one of them as a parent'
+                                  if len(role_parents) == 1 else
+                                  f'marks {len(role_parents)} of them as parents')
+                        findings.append(Finding('W', 'W126', src_path,
+                            f'{head} and {marked}, but does not say who was born, '
+                            f'so no parent link is recorded{where_it_goes}'
+                            'Add an indented `child: [P-…]` line to the roles: map '
+                            'naming the person this record is the birth of.'))
+                    else:
+                        # The reporter's shape: a certificate of live birth,
+                        # accepted, naming the child and both parents, and
+                        # contributing nothing to the pedigree.
+                        findings.append(Finding('W', 'W126', src_path,
+                            f'{head} but does not say which of them was born and '
+                            f'which are the parents, so no parent link is recorded'
+                            f'{where_it_goes}'
+                            'Leave everyone in persons: (a birth record names the '
+                            'parents too, and that is right) and add a roles: map - '
+                            '`roles:` then indented `child: [P-…]` and '
+                            '`parent: [P-…, P-…]` lines.'))
 
             # place reference - forgiving (PR 05): never reject a place the human
             # typed.  A well-formed L-id (bare or [[wrapped]]) that doesn't

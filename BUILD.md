@@ -247,7 +247,9 @@ and `notes_fts` rows for the source path before `sources`. Reversing order leave
 
 **Relationship derivation** (after claims load, in both full-rebuild and incremental mode):
 for each `accepted` claim - `relationship subtype: child-of` → `(child, 'parent', father)` +
-reciprocal; `marriage` or `relationship subtype: spouse-of` → reciprocal `spouse` edges with
+reciprocal; `birth` with a `roles:` map naming a child and a parent → the same pair, through
+the same writer (#71; roles only, no positional fallback - see TOOLING §197); `marriage` or
+`relationship subtype: spouse-of` → reciprocal `spouse` edges with
 `date_start`/`date_end`; social subtypes → `friend`/`associate`/`neighbor` edges. Edges are
 pure cache, re-derived from claims on every build - never hand-edited.
 

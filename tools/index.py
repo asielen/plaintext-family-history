@@ -74,6 +74,7 @@ from _lib import (
     link_field_refs,
     load_fha_yaml,
     normalize_id,
+    parentage_parties,
     parse_filename,
     person_file_kind,
     read_record,
@@ -126,6 +127,7 @@ import yaml
 #    _index_research_log_block - ## Research Log entries → search_log rows
 #
 #  Derived tables
+#    _insert_parent_edges    - one claim's parent/child pairs → both directions
 #    _derive_relationships   - accepted claims → relationships adjacency list
 #
 #  Top-level build functions
@@ -1638,6 +1640,42 @@ def _register_cited_claim_aliases(conn: sqlite3.Connection, cited_cids: set[str]
             )
 
 
+def _insert_parent_edges(
+    conn: sqlite3.Connection, child_ids: list[str], parent_ids: list[str],
+    cid: str, dmin: str | None, dmax: str | None,
+) -> None:
+    """Write one claim's parent/child edges, both directions, for every pair.
+
+    Two branches of `_derive_relationships` mint parentage - a `relationship`
+    claim and a `birth` claim - and they must produce byte-identical rows, or
+    the same fact written two ways would reach the tree as two different
+    shapes. One writer, so they cannot drift.
+
+    Both directions always: the child's parent list and the parents' child list
+    are read by different consumers (the Ahnentafel walk follows `parent`, the
+    couple-folder bracket lists follow `child`), so an edge written one way
+    only is half-invisible rather than merely wrong.
+
+    The self-edge guard is belt and braces, the same one the spouse loops
+    carry: `roles: {child: [P-a], parent: [P-a]}` is a typo, but nobody is
+    their own parent, and a self-edge is exactly the shape lint cannot see
+    (W126 needs two distinct people to speak) while every consumer reads it
+    back as fact.
+    """
+    for child_id in child_ids:
+        for parent_id in parent_ids:
+            if child_id == parent_id:
+                continue
+            conn.execute(
+                'INSERT OR IGNORE INTO relationships(person_id, rel, other_id, claim_id, date_start, date_end) VALUES (?,?,?,?,?,?)',
+                (child_id, 'parent', parent_id, cid, dmin, dmax),
+            )
+            conn.execute(
+                'INSERT OR IGNORE INTO relationships(person_id, rel, other_id, claim_id, date_start, date_end) VALUES (?,?,?,?,?,?)',
+                (parent_id, 'child', child_id, cid, dmin, dmax),
+            )
+
+
 def _derive_relationships(conn: sqlite3.Connection) -> None:
     """
     Materialise relationship edges from accepted claims into the relationships table.
@@ -1655,6 +1693,14 @@ def _derive_relationships(conn: sqlite3.Connection) -> None:
     bond (biological, adoptive, …; SPEC §8.2), and every parent edge is recorded
     regardless of nature. Legacy `subtype: child-of`/`spouse-of` claims still
     derive correctly since they carry the same roles.
+
+    `birth` is in the claim types read here for the same reason `death` is: a
+    vital record is evidence about the family graph, not only about one person.
+    A birth record is in fact the plainest statement of parentage an archive
+    ever holds - "born to X and Y" - and until issue #71 it contributed nothing
+    to the pedigree even when its `roles:` map said so in as many words. It
+    derives on `roles:` alone (`_lib.parentage_parties`); the `persons:` order
+    of an unroled birth claim is never read as a parent list.
     """
     conn.execute('DELETE FROM relationships')
 
@@ -1669,7 +1715,7 @@ def _derive_relationships(conn: sqlite3.Connection) -> None:
            FROM claims c
            WHERE c.status = 'accepted'
              AND COALESCE(c.negated, 0) = 0
-             AND c.type IN ('relationship', 'marriage', 'divorce', 'death')
+             AND c.type IN ('relationship', 'birth', 'marriage', 'divorce', 'death')
            ORDER BY CASE c.type WHEN 'divorce' THEN 1 WHEN 'death' THEN 1 ELSE 0 END'''
     ).fetchall()
 
@@ -1699,21 +1745,11 @@ def _derive_relationships(conn: sqlite3.Connection) -> None:
             # its nature; legacy `subtype: child-of` claims still match because
             # they carry the same roles, and legacy `spouse-of` is caught by the
             # subtype fallback below.
-            child_ids = [p for p, r in all_persons if r == 'child']
-            parent_ids = [p for p, r in all_persons if r == 'parent']
+            child_ids, parent_ids = parentage_parties(all_persons)
             spouse_ids = [p for p, r in all_persons if r == 'spouse']
 
             if child_ids and parent_ids:
-                for child_id in child_ids:
-                    for parent_id in parent_ids:
-                        conn.execute(
-                            'INSERT OR IGNORE INTO relationships(person_id, rel, other_id, claim_id, date_start, date_end) VALUES (?,?,?,?,?,?)',
-                            (child_id, 'parent', parent_id, cid, dmin, dmax),
-                        )
-                        conn.execute(
-                            'INSERT OR IGNORE INTO relationships(person_id, rel, other_id, claim_id, date_start, date_end) VALUES (?,?,?,?,?,?)',
-                            (parent_id, 'child', child_id, cid, dmin, dmax),
-                        )
+                _insert_parent_edges(conn, child_ids, parent_ids, cid, dmin, dmax)
             elif spouse_ids or subtype == 'spouse-of':
                 # A relationship claim naming spouses (or a legacy spouse-of
                 # subtype) yields reciprocal spouse edges, like a marriage claim
@@ -1769,6 +1805,23 @@ def _derive_relationships(conn: sqlite3.Connection) -> None:
                                 'INSERT OR IGNORE INTO relationships VALUES (?,?,?,?,?,?)',
                                 (pb, edge_b, pa, cid, dmin, dmax),
                             )
+        elif ctype == 'birth':
+            # "Born to X and Y" - the plainest parentage evidence an archive
+            # ever holds, and the natural place to write it down. It reaches
+            # the pedigree exactly when the claim's roles: map says who was
+            # born and to whom, through the same rule and the same writer the
+            # relationship branch uses, so one fact written two ways cannot
+            # arrive as two different shapes.
+            #
+            # Roles only, deliberately (_lib.parentage_parties). There is no
+            # two-person fallback here as there is for marriage: parentage is
+            # directed, `persons: [P-a, P-b]` does not say which of them was
+            # born, and the second person on a birth register is as often an
+            # informant or the attending physician as a parent. An unroled
+            # birth claim therefore derives NOTHING - `fha lint` W126 reports
+            # every one of them, so the silence is never the end of the story.
+            child_ids, parent_ids = parentage_parties(all_persons)
+            _insert_parent_edges(conn, child_ids, parent_ids, cid, dmin, dmax)
         elif ctype == 'marriage':
             # Only the people the claim calls spouses married each other. A
             # marriage certificate ordinarily names the couple AND both sets of
