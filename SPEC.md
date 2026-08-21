@@ -541,6 +541,8 @@ The ID-in-filename is the **formalized** form, maintained by tools. A record a p
 
 The deliberate style difference - person files underscored, source files hyphenated - instantly distinguishes record kinds in search results.
 
+*Decision log:* an earlier revision of this section named the three generated companion kinds `{primary_sort_name}__{given_names}_{kind}_{P-id}.md`, with nothing between the given names and the kind word. Changed 2026-08 (#77) - the kind word alone decided sort order, so the disposable `draft-queue` cache sorted ahead of the person's own profile in every folder listing; the `view_` marker fixes the order without touching the profile or `research` filenames.
+
 ## 14. The source record `LOCKED`
 
 **One source = one file**: `sources/{type}/{slug}_{S-id}.md`.
@@ -719,6 +721,8 @@ Multi-person/locality searches log to `notes/research-log.md` with the same form
 Structure per hypothesis: `id:` (`H-` per §10), `hypothesis:` (the belief), `basis:` (reasoning/context), `verify:` (what evidence would settle it), `origin:` (`human` | `agent`), `status:` (`open` · `verified → C-xxxx` · `abandoned`).
 On verification, the found source yields a real claim and the hypothesis records the pointer - the guess's life preserved.
 Sources sections are never hand-maintained; they are generated from cited claims.
+
+*Decision log:* the three generated rows in the table above changed 2026-08 (#77) alongside §13's filename grammar - same fix, same reason: a `view_` marker so the three generated companions sort together, below the profile and the research file, instead of the disposable draft-queue cache sorting first.
 
 ## 17. Notes (general research) `LOCKED`
 
