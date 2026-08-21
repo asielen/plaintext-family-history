@@ -50,6 +50,9 @@ re-entry into step 3 alone, not a repeat of steps 1-2.
 - **Respect privacy** (_STANDARD.md §3): his immediate family is almost always living people, and
   `living:` defaults to `unknown` on a fresh stub - this skill sets it explicitly (true/false/unknown)
   for everyone it touches, because his own household is exactly the case he can state with certainty.
+  `sex:` gets the same treatment for the same reason (#72): set explicitly for everyone this skill
+  touches, not only the newly minted - a `P-id` resolved via `fha find` rather than freshly minted never
+  ran `fha person new`, so it never got `--sex` either, and needs its own `fha person set-sex` call.
 - **`root_person`/`root_generation` are written straight into `fha.yaml`**, which is documented as a
   plain, hand-editable file (SPEC §12.4) - unlike `places.yaml` or the index, nothing here needs a
   dedicated verb to edit it, only a shown preview before the write.
@@ -74,11 +77,18 @@ but optional.
   ```
   (`--surname` overrides the filename's surname split when the automatic split would get it wrong -
   Spanish double surnames, particles, surname-first conventions.)
-- He is, definitionally, in the room: set `living: true` without asking a strange "are you alive"
-  question.
+- **Set `sex:`/`living:`/a given birth year explicitly on the resolved `P-id`, whether it was just
+  minted above or reused from a clear match.** A fresh mint took `--sex`/`--birth` at `fha person new`
+  time, but a reused `P-id` never ran that command, so neither reached it - run these unconditionally so
+  the reuse branch isn't left with the same gap #72 found on the owner himself. He is, definitionally,
+  in the room, so `living: true` needs no "are you alive" question.
   ```
+  fha person set-sex <P-id> <M|F|intersex|unknown>
   fha person set-living <P-id> true
+  fha person estimate <P-id> --birth "<rough year, if given>"
   ```
+  (skip the `estimate` line if he gave no year - it requires at least one of `--birth`/`--death`/
+  `--birth-place`/`--death-place`.)
 
 ### 2. How do you want to be numbered?
 
@@ -96,8 +106,10 @@ and it works even before any child is on record. Either way is a legitimate, per
 
 One thing this setting does **not** do, so as not to overpromise: it numbers `root_person`'s *own*
 ancestor line only. A spouse's parents are never assigned an Ahnentafel position by this tool, under
-either setting - they still get real person records and a sourced parent-child claim from this
-interview (so they're findable and correctly linked), just not a folder number.
+either setting - and this interview does not ask about them either: step 3 below covers only *his*
+parents, spouse(s), and children. If a spouse's parents are already on file (as stubs from other work,
+say), they stay stubs after this pass; tying them to her with a sourced claim is a separate, later
+research session, not something this interview does.
 
 - "Just me" / "position 1" → `root_generation: self` - the default; **do not write the key**, matching
   `fha.yaml`'s own convention of leaving defaults unset.
@@ -105,8 +117,10 @@ interview (so they're findable and correctly linked), just not a folder number.
 - Either way, `root_person: <his P-id>` gets written.
 
 Show him the exact two lines before writing them (this is a plain text-file edit, previewed the same
-way any other write here is), then add them to the **Active configuration** section of `fha.yaml`,
-beside `roots:`:
+way any other write here is), then write them into `fha.yaml` near the top, where the template already
+explains both keys in comments (`archive-template/fha.yaml`'s `# root_person:` / `# root_generation:`
+block) - not down in the `roots:`/`photos_ignore:` configuration further below, which never mentions
+either key:
 ```yaml
 root_person: P-xxxxxxxxxx   # <His Name> - set from the setup interview, <date>
 root_generation: children   # only if he chose that
@@ -131,8 +145,17 @@ adopted me at three") - translate that into the right `subtype:` (`adoptive`, `s
    ```
    fha person new "<Name>" [--surname <override>] --sex <M|F|intersex|unknown> --birth "<rough>" --dry-run
    fha person new "<Name>" [--surname <override>] --sex <M|F|intersex|unknown> --birth "<rough>"
-   fha person set-living <P-id> true|false|unknown
    ```
+   Then, **for every person on the list - newly minted here or already found in step 1's resolve pass**,
+   set `sex:`/`living:`/a given birth year explicitly. A resolved match never ran `fha person new`, so
+   it never got `--sex`/`--birth`; this is the same gap step 1 closes for the researcher himself, closed
+   here for everyone else named:
+   ```
+   fha person set-sex <P-id> <M|F|intersex|unknown>
+   fha person set-living <P-id> true|false|unknown
+   fha person estimate <P-id> --birth "<rough, if given>"
+   ```
+   (skip the `estimate` line for anyone he gave no year for.)
 3. **Write up what he told you** as a plain dated note - this is the evidence file, not a hint wrapper,
    so it is a bare `.md`, not a `*.notes.md` sidecar. Organize it under short headings (Who I am / My
    parents / My spouse / My children) so the claim-drafting step below can cite a section by name:
@@ -235,6 +258,11 @@ lint` all belong to that hand-off, not to this skill.
   duplicate of an existing stub or curated record.
 - `living:` is set explicitly for every person this skill touches, not left at the `unknown` default -
   his own household is exactly the case he can state with certainty.
+- `sex:` is set explicitly for every person this skill touches too, via its own `fha person set-sex`
+  call - not only the newly minted. A `P-id` resolved through `fha find` rather than freshly minted
+  never ran `fha person new`, so a mint-time `--sex` never reaches it.
+- A given birth year gets the same treatment, via `fha person estimate --birth` on the resolved `P-id`
+  - not only the newly minted, for the same reason `sex:` needs its own call.
 - `root_person`/`root_generation` are hand-edited into `fha.yaml` (a plain, documented-editable file) -
   never into `places.yaml` or `.cache/`, which stay off-limits to hand-editing.
 - `root_generation: children` is written only when he actually chooses it; the unset default (`self`)
