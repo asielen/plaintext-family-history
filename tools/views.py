@@ -25,11 +25,15 @@ lint rule W105 checks that generated companion files carry this exact header
 so accidental hand-edits are caught on the next lint run.
 
 Output files are "companion" files - they live alongside the profile they
-describe and share its naming prefix:
-    hartley__thomas_edward_P-de957bcda1.md          ← profile (hand-edited)
-    hartley__thomas_edward_timeline_P-de957bcda1.md ← generated companion
-    hartley__thomas_edward_sources-index_P-de957bcda1.md
-    hartley__thomas_edward_draft-queue_P-de957bcda1.md
+describe and share its naming prefix, with a `view_` marker (#77) inserted
+right before the kind word so the three generated companions sort together
+and AFTER the profile and the research file, instead of the disposable
+draft-queue cache sorting first in the folder:
+    hartley__thomas_edward_P-de957bcda1.md               ← profile (hand-edited)
+    hartley__thomas_edward_research_P-de957bcda1.md      ← research (hand-edited)
+    hartley__thomas_edward_view_timeline_P-de957bcda1.md ← generated companion
+    hartley__thomas_edward_view_sources-index_P-de957bcda1.md
+    hartley__thomas_edward_view_draft-queue_P-de957bcda1.md
 
 The couple-folder sources-index is the one exception: it has no P-id because
 it describes a whole couple folder, not a single person (TOOLING §7).
@@ -648,19 +652,26 @@ def _out_path_for(profile_path: Path, kind: str, person_id: str) -> Path:
 
     Companion files sit in the same directory as the profile and share its
     name prefix so they sort together in file explorers and travel together
-    in git diffs:
+    in git diffs - but "together" alone let the disposable draft-queue cache
+    sort AHEAD of the person's own record, since the kind word decided the
+    order and 'd' (draft-queue) sorts before 'p' (the bare P-id profile)
+    (#77). A `view_` marker immediately before the kind word fixes that
+    without touching the profile or the research file: `view` sorts after
+    both the bare `p-{id}` profile and `research`, so the three generated
+    companions land together, below the two human-facing files:
 
-        hartley__thomas_edward_P-de957bcda1.md          ← profile
-        hartley__thomas_edward_timeline_P-de957bcda1.md ← this function's output
+        hartley__thomas_edward_P-de957bcda1.md               ← profile
+        hartley__thomas_edward_research_P-de957bcda1.md      ← research file
+        hartley__thomas_edward_view_timeline_P-de957bcda1.md ← this function's output
 
-    The transformation: strip the trailing _{P-id}, append _{kind}_{P-id}.
+    The transformation: strip the trailing _{P-id}, append _view_{kind}_{P-id}.
     Nothing else is stripped - and deliberately so.
 
     A profile stem CAN already end in a kind word, because SPEC §13's kind slot
     and the last given-name segment are the same slot: Marie Timeline Hartley's
     record is `hartley__marie_timeline_P-…`, and her timeline comes out
-    `hartley__marie_timeline_timeline_P-…`. The doubled word looks like a bug
-    and is not one. Removing it would be: the only way to tell a "prior-
+    `hartley__marie_timeline_view_timeline_P-…`. The doubled word looks like a
+    bug and is not one. Removing it would be: the only way to tell a "prior-
     generation kind token" from a given name is to read the profile's own
     frontmatter, and the file this function is handed IS the profile (its path
     comes from the `kind = 'profile'` row), so stripping the word would aim the
@@ -671,12 +682,21 @@ def _out_path_for(profile_path: Path, kind: str, person_id: str) -> Path:
     So the doubled name is left alone here, and the ambiguity that produced it
     is reported where a human can settle it: `fha lint`'s W122 names this exact
     filename when it offers the rename that ends the confusion.
+
+    The `view_` marker is inserted unconditionally, with no kind check, because
+    this function has exactly one job: it is called only for the three
+    GENERATED kinds (`fha views timeline|sources-index|draft-queue`). The
+    research companion is written by a different path entirely (SPEC §16) that
+    never calls this function, so `research` filenames are untouched by this
+    change without needing a branch to exclude them here.
     """
     stem = profile_path.stem   # e.g. hartley__thomas_edward_P-de957bcda1
     # Strip trailing _{P-id} suffix (Crockford Base32 alphabet, case-insensitive)
     base = re.sub(r'_[PSCLH]-[0-9a-hjkmnp-tv-z]{10}$', '', stem, flags=re.I)
-    # Filename convention: P-id uses uppercase type prefix
-    return profile_path.parent / f'{base}_{kind}_{fmt_id_display(person_id)}.md'
+    # Filename convention: P-id uses uppercase type prefix. `view_` (#77) sorts
+    # after both the bare profile and `_research_`, so the three generated
+    # companions sort together, below the two human-facing files.
+    return profile_path.parent / f'{base}_view_{kind}_{fmt_id_display(person_id)}.md'
 
 
 def _format_sid(source_id: str) -> str:
