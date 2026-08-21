@@ -302,8 +302,8 @@ immediate family - parents, spouse(s), children. It writes one `source_class: au
 source and drafts `relationship` claims with explicit `roles:` maps for parentage (never `birth` claims
 - issue #71) plus a `marriage` claim per spouse, every claim `status: suggested`, then hands off to
 `review-claims` - the interview proposes, it never self-accepts. `fha install`'s "Next steps" gained one
-line pointing here. Session check pending, like the other layers. **Hard dependency:** references
-`root_generation` (issue #72, `feat-72-root-generation`) - needs that field built to take effect.
+line pointing here. Session check pending, like the other layers. Built directly against `root_generation`
+(issue #72, MI-equivalent `#102`, merged into master the same session) - no longer a forward dependency.
 
 **Orchestrates:** `fha person new`, `fha person set-sex`, `fha person set-living`, `fha process`,
 hand-drafted claims (the same Stage-B judgment `process-source` already performs), `review-claims` -

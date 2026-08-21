@@ -83,13 +83,21 @@ but optional.
 ### 2. How do you want to be numbered?
 
 Ask in plain words - this is the owner's own framing, verbatim: *"Should you be position #1 in your
-family tree, or should that spot belong to your children, together, one generation in from you? Most
-people who have kids in the archive pick the second - it's the shape the numbering is designed around,
-and it's the only way your spouse's own parents get numbered too, not just yours."* (Without it, a
-`root_person` who has children in the archive numbers every ancestor one generation high, invisibly -
-SPEC §12.2, W127 - and a spouse's side never enters the Ahnentafel walk at all unless the tree is
-anchored one generation down.) If he has no children yet, or isn't sure, `self` (the default) is the
-right answer for now - `root_generation` is a plain `fha.yaml` line and can change later.
+family tree, or should that spot belong to your children, together, one generation in from you?"* If he
+has no children on record (yet, or ever), `self` (the default) is the simple right answer - he anchors
+the tree exactly as position #1. If he *does* have children in the archive, `children` is usually what
+he wants: without it, a `root_person` with a child on record numbers every ancestor one generation high,
+invisibly (SPEC §12.2, W127) - the old workaround was pointing `root_person` at one of his own children
+instead of himself, which broke the moment there was more than one child (one became #1 arbitrarily, the
+rest went unnumbered) and had no answer at all for a childless researcher. `root_generation: children`
+anchors the archive at *him* while still numbering *his own* parents, grandparents and so on correctly -
+and it works even before any child is on record. Either way is a legitimate, permanent choice, and
+`root_generation` is a plain `fha.yaml` line he can change later if he's not sure now.
+
+One thing this setting does **not** do, so as not to overpromise: it numbers `root_person`'s *own*
+ancestor line only. A spouse's parents are never assigned an Ahnentafel position by this tool, under
+either setting - they still get real person records and a sourced parent-child claim from this
+interview (so they're findable and correctly linked), just not a folder number.
 
 - "Just me" / "position 1" → `root_generation: self` - the default; **do not write the key**, matching
   `fha.yaml`'s own convention of leaving defaults unset.

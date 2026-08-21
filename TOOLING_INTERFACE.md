@@ -124,10 +124,9 @@ The split is the one `fha xref` already uses, and it is why this is a skill and 
 
 One skill, added after a real archive was found - ~13 months and ~290 people in - still missing its
 *own owner's* father (the parent edge existed only as `status: hypothesis`), one of his two children (no
-record at all), `sex:` on himself/his spouse/his son, and his spouse's place in the pedigree (her parents
-sat unnumbered in the archive as stubs, because nothing had ever anchored her side into the Ahnentafel
-walk). None of it was hard to know - all of it was *only* knowable from him, and `fha install` had never
-asked.
+record at all), `sex:` on himself/his spouse/his son, and his spouse's own parents - sitting in the
+archive as stubs with no claim ever tying them to her at all. None of it was hard to know - all of it was
+*only* knowable from him, and `fha install` had never asked.
 
 The fix is not a new verb: `fha install` already stamps an archive and prints "Next steps"; this skill is
 the step it now names. It is a conversation, not a form - the researcher describing his own parents,
