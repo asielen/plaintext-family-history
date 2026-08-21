@@ -21,6 +21,13 @@ write-back itself is mechanical, so it lives here as a real CLI any front door
 the read-only contract the detection tools advertise (a detector that also wrote
 would be two owners for one surface).
 
+One narrow, deliberate exception (#48): `fha cooccur` will migrate a legacy
+`.cache/cooccur_dismissed.json` to its durable home the first time it reads it
+(`_lib.load_cooccur_dismissed`), same as `dismiss` below does on write. That is
+a one-time carry-forward of bytes a human already decided, not a new judgment
+`fha cooccur` is making - it does not add a second owner for WHICH pairs get
+dismissed, only a second caller of the same idempotent housekeeping move.
+
 THE SEVEN WRITE-BACKS
 ---------------------
   xref       - confirm an `fha xref` pair: write reciprocal `corroborates:`/
@@ -39,9 +46,12 @@ THE SEVEN WRITE-BACKS
                the only place "the human accepts" lives. `--accept` is the
                escape hatch for a human who is treating this confirm *as* the
                review (it stamps `reviewed:` like `fha claim` does).
-  dismiss    - record a co-occurrence pair in `.cache/cooccur_dismissed.json`,
+  dismiss    - record a co-occurrence pair in `notes/cooccur_dismissed.json`,
                the tombstone `fha cooccur` reads to stop re-proposing a pair.
-               Nothing else writes this file; this is its writer.
+               Nothing else writes NEW dismissals to this file; this is its
+               writer (though `fha cooccur` may also carry an older archive's
+               `.cache/cooccur_dismissed.json` forward to this location on
+               read - see #48 above and `_lib.load_cooccur_dismissed`).
   place      - register a place-text cluster: mint a new `L-id` place in
                `places/places.yaml` (or merge into an existing one via `--into`)
                and relink the named claims' `place:` to it, so the cluster stops
@@ -158,6 +168,7 @@ from _lib import (
     claims_edit_problem,
     configure_utf8_stdout,
     contradiction_question_heading,
+    cooccur_dismissed_paths,
     find_person_record_path,
     find_source_record_path,
     fmt_id_display,
@@ -169,6 +180,7 @@ from _lib import (
     is_merged_meta,
     is_valid_id,
     link_field_refs,
+    load_cooccur_dismissed,
     mint_ids,
     normalize_id,
     parse_filename,
@@ -1051,12 +1063,24 @@ def _relationship_claim_lines(
 def run_dismiss(
     archive_root: Path, *, person_a: str, person_b: str, dry_run: bool = False,
 ) -> Result:
-    """Record a person-pair in `.cache/cooccur_dismissed.json` so it isn't re-proposed.
+    """Record a person-pair in `notes/cooccur_dismissed.json` so it isn't re-proposed.
 
     `data` is {'status', 'person_a', 'person_b', 'total'}. The tombstone is the
     exact `{"pairs": [[id, id], …]}` shape `fha cooccur._load_dismissed` reads
     (lowercased ids, deduped by unordered pair). `fha cooccur` reads this file
     directly, so no re-index is needed.
+
+    The tombstone moved out of `.cache/` in #48: these are a human's "stop
+    suggesting this" decisions, not derived data, so a `.cache/` wipe must
+    never be able to forget them. Existing pairs are loaded through
+    `_lib.load_cooccur_dismissed(archive_root, migrate=not dry_run)`, which
+    also carries an older archive's `.cache/cooccur_dismissed.json` forward
+    to the new location - `migrate=False` on a dry run so a preview still
+    reports accurate counts without writing anything (a dry run must write
+    NOTHING, migration included). When that carry-forward actually happens,
+    it is reported (`result.changed` + an info message) regardless of what
+    this call's own answer turns out to be - including the `already`
+    no-op below, so a legacy file quietly disappearing is never a surprise.
     """
     result = Result(data={'status': None, 'person_a': None, 'person_b': None, 'total': 0})
 
@@ -1071,29 +1095,31 @@ def run_dismiss(
     result.data['person_a'] = fmt_id_display(pa)
     result.data['person_b'] = fmt_id_display(pb)
 
-    cache_dir = archive_root / '.cache'
-    path = cache_dir / 'cooccur_dismissed.json'
+    new_path, old_path = cooccur_dismissed_paths(archive_root)
+    # A corrupt or unreadable copy of either file is disposable, not archive
+    # truth (same posture the old inline reader took) - load_cooccur_dismissed
+    # degrades to treating it as absent rather than refusing the dismissal.
+    pairs, migrated = load_cooccur_dismissed(archive_root, migrate=not dry_run)
+    seen = {frozenset(pair) for pair in pairs}
 
-    pairs: list[list[str]] = []
-    seen: set[frozenset[str]] = set()
-    if path.exists():
-        try:
-            data = json.loads(path.read_text(encoding='utf-8'))
-            for pair in (data.get('pairs') or []):
-                if isinstance(pair, list) and len(pair) == 2:
-                    norm = [normalize_id(str(pair[0])), normalize_id(str(pair[1]))]
-                    key = frozenset(norm)
-                    if key not in seen:
-                        seen.add(key)
-                        pairs.append(norm)
-        except (OSError, json.JSONDecodeError):
-            # A corrupt tombstone is disposable cache, not archive truth - start
-            # fresh rather than refuse the dismissal.
-            pairs, seen = [], set()
+    # `migrated` is true the moment `load_cooccur_dismissed` above physically
+    # moved a legacy file, regardless of what this call goes on to do with
+    # the pair it was asked about - an "already dismissed" no-op still
+    # performs (and must still report) that housekeeping move, so the human
+    # is never left wondering why `.cache/cooccur_dismissed.json` vanished.
+    migration_note = (
+        'Also moved this archive\'s earlier dismissed pairs to their new, '
+        f'permanent home ({new_path.relative_to(archive_root).as_posix()}) - '
+        'a one-time tidy-up, nothing to do on your end.'
+    )
 
     if frozenset((pa, pb)) in seen:
         result.data['status'] = 'already'
         result.data['total'] = len(pairs)
+        if migrated:
+            result.note_changed(new_path)
+            result.note_changed(old_path)
+            result.add('info', migration_note)
         result.add('info',
                    f'{fmt_id_display(pa)} <-> {fmt_id_display(pb)} is already dismissed. '
                    'Nothing to do.')
@@ -1109,17 +1135,20 @@ def run_dismiss(
                    f'({len(pairs)} pair(s) total). No file written.')
         return result
 
-    cache_dir.mkdir(parents=True, exist_ok=True)
     try:
-        path.write_text(json.dumps({'pairs': pairs}, indent=2) + '\n', encoding='utf-8')
+        new_path.parent.mkdir(parents=True, exist_ok=True)
+        write_text_exact_atomic(new_path, json.dumps({'pairs': pairs}, indent=2) + '\n')
     except OSError as e:
-        return _fail(result, 'failed', f'cannot write {path}: {e}')
+        return _fail(result, 'failed', f'cannot write {new_path}: {e}')
 
     result.data['status'] = 'ok'
-    result.note_changed(path)
+    result.note_changed(new_path)
+    if migrated:
+        result.note_changed(old_path)
+        result.add('info', migration_note)
     result.add('info',
                f'Dismissed {fmt_id_display(pa)} <-> {fmt_id_display(pb)}. '
-               f'`fha cooccur` will no longer propose this pair.', path=path)
+               f'`fha cooccur` will no longer propose this pair.', path=new_path)
     return result
 
 

@@ -26,7 +26,11 @@ shortcut for this skill, where one exists. It is safe to run anytime — it only
 
 - **Read-only by default.** The skill computes nothing and writes nothing on its own. `fha report` does
   its own refresh (incremental photoindex + index rebuild + lint) as step one — you do **not** re-run
-  those.
+  those. One narrow exception lives inside that refresh (#48): if the archive still has an
+  un-migrated `.cache/cooccur_dismissed.json`, §8's `fha cooccur` call carries it forward to its
+  durable home (`notes/cooccur_dismissed.json`) the first time it reads it — a housekeeping move of a
+  decision the human already made, not a new one, and the report always names it in §8 when it
+  happens, so it is never a surprise.
 - **The only writes it can make** are the human acting on the briefing, each through its deterministic
   verb and never by hand: "yes, log that win" → `fha confirm discovery`; "yes, connect those two" →
   `fha confirm cooccur` (minted `suggested` unless his answer is the review — see step 6); "stop
@@ -151,8 +155,10 @@ shortcut for this skill, where one exists. It is safe to run anytime — it only
 
 - In a session on `example-archive`, invoking this skill (e.g. "what should I work on?") runs `fha report`, narrates
   sections 0–8 **discoveries-first**, and offers one concrete next action in plain language.
-- It makes **zero** archive writes unless the human confirms one; a confirmed discovery lands via
-  `fha confirm discovery`, never by hand-editing `notes/discoveries.md`.
+- It makes **zero** archive writes unless the human confirms one — a confirmed discovery lands via
+  `fha confirm discovery`, never by hand-editing `notes/discoveries.md` — except the one narrow,
+  idempotent §8 housekeeping move above (#48), which needs no confirmation because it decides
+  nothing, and which the report always names when it happens.
 - When the human answers a narrated connection ("yes, neighbors" / "no, drop it"), the skill echoes
   the exact `fha confirm cooccur`/`dismiss` command with `--dry-run`, applies only on his confirmation,
   and mints `suggested` unless he explicitly treated the answer as the review.

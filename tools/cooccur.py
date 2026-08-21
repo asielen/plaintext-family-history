@@ -10,7 +10,20 @@ consumed through `fha report`. Never writes to the archive: confirming a
 person-pair mints a `relationship` claim and dismissing one records a
 tombstone, but both of those writes belong to `fha confirm` (TOOLING §14a3)
 and the today skill's reaction flow, not this tool. This tool only reads
-`.cache/cooccur_dismissed.json`; it never writes it.
+`notes/cooccur_dismissed.json`; it never adds or removes a dismissal.
+
+One narrow exception (#48): the dismissal tombstone used to live at
+`.cache/cooccur_dismissed.json`, which is disposable by design, and a human's
+"stop suggesting this" decisions cannot be. `_load_dismissed` calls
+`_lib.load_cooccur_dismissed`, which carries an older archive's legacy file
+forward to the durable location the first time anything reads or writes it -
+a one-time, idempotent housekeeping move, not a judgment this tool is making
+about which pairs to dismiss. It is never a SILENT write, though: `run_cooccur`
+reports it in `Result.data['migrated_legacy_dismissed']`, `_cmd_cooccur` prints
+it, and `fha report` §8 narrates it - so a "read-only" run never modifies the
+archive without the human seeing that it happened. See
+`_lib.load_cooccur_dismissed`'s docstring for the full reasoning and its one
+honest residual gap.
 
 THREE OUTPUTS (TOOLING §690)
 ----------------------------
@@ -34,7 +47,8 @@ CODE MAP
 --------
   DB / root / tombstone helpers
     open_index_db, resolve_root_arg - shared via _lib.py
-    _load_dismissed                - tombstone reader (unique to cooccur; see below)
+    _load_dismissed                - tombstone reader (thin wrapper over
+                                  _lib.load_cooccur_dismissed; see below)
 
   Person co-occurrence
     _person_cooccurrence       - pair candidates ranked by source count + variety
@@ -54,7 +68,6 @@ CODE MAP
 from __future__ import annotations
 
 import argparse
-import json
 import sqlite3
 import sys
 from itertools import combinations
@@ -69,6 +82,7 @@ from _lib import (
     Result,
     edtf_bounds,
     fmt_id_display,
+    load_cooccur_dismissed,
     normalize_place_text,
     open_index_db,
     resolve_root_arg,
@@ -82,24 +96,23 @@ _DIRECT_ORG_TYPES = {'occupation', 'military'}
 _REQUIRED_TABLES = ('persons', 'claims', 'sources', 'claim_persons', 'source_people', 'relationships')
 
 
-def _load_dismissed(archive_root: Path) -> set[frozenset[str]]:
+def _load_dismissed(archive_root: Path) -> tuple[set[frozenset[str]], bool]:
     """
-    Read the dismissed-pairs tombstone. Missing file = empty set, not an error
-    - the skill layer writes this file; this tool only ever reads it.
+    Read the dismissed-pairs tombstone. Missing file(s) = empty set, not an
+    error - `fha confirm dismiss` is the only tool that ever adds a pair; this
+    one only reads. `_lib.load_cooccur_dismissed` also carries a legacy
+    `.cache/cooccur_dismissed.json` forward to its durable home the first
+    time it is called (see that function and the module docstring above,
+    #48) - a housekeeping move, not a judgment this tool makes.
+
+    Returns `(dismissed, migrated)` - `migrated` is true only when this call
+    just performed that carry-forward, so `run_cooccur` can report it rather
+    than leaving a "read-only" tool making an unannounced write (this tool's
+    own CLI help, and the `today` skill that runs it through `fha report`,
+    both promise zero writes without it).
     """
-    path = archive_root / '.cache' / 'cooccur_dismissed.json'
-    if not path.exists():
-        return set()
-    try:
-        data = json.loads(path.read_text(encoding='utf-8'))
-    except (OSError, json.JSONDecodeError):
-        return set()
-    pairs = data.get('pairs') or []
-    out = set()
-    for pair in pairs:
-        if isinstance(pair, list) and len(pair) == 2:
-            out.add(frozenset(p.strip().lower() for p in pair))
-    return out
+    pairs, migrated = load_cooccur_dismissed(archive_root)
+    return {frozenset(pair) for pair in pairs}, migrated
 
 
 # ── Person co-occurrence ─────────────────────────────────────────────────────
@@ -400,17 +413,29 @@ def run_cooccur(archive_root: Path, threshold: int = 2) -> Result:
     Detect connection candidates from the index.
 
     Returns a `Result` whose `data` is {'status': 'ok'|'failed', 'person_pairs':
-    [...], 'place_pairs': [...], 'org_groups': [...]}.  Result exposes dict-style
-    access (_lib.py), so callers keep reading `result['person_pairs']` unchanged.
+    [...], 'place_pairs': [...], 'org_groups': [...], 'migrated_legacy_dismissed':
+    bool}.  Result exposes dict-style access (_lib.py), so callers keep reading
+    `result['person_pairs']` unchanged.
+
+    `migrated_legacy_dismissed` is true exactly when this call carried an older
+    archive's `.cache/cooccur_dismissed.json` forward to its durable home
+    (#48, `_lib.load_cooccur_dismissed`) - the one write this otherwise
+    read-only detector can make. It is a `Result` field, not a side note,
+    because a caller MUST surface it rather than let the write pass silently:
+    `_cmd_cooccur` prints it, and `report._section_possible_connections`
+    (§8) narrates it, so `fha report`/the `today` skill's "read-only, zero
+    writes without confirmation" promise stays true in spirit - the human
+    always sees it happen, even though it needs no judgment call to confirm.
     """
     conn = open_index_db(archive_root, _REQUIRED_TABLES)
     if conn is None:
         return Result(ok=False, exit_code=EXIT_FAILURE, data={
             'status': 'failed', 'person_pairs': [], 'place_pairs': [], 'org_groups': [],
+            'migrated_legacy_dismissed': False,
         })
 
     try:
-        dismissed = _load_dismissed(archive_root)
+        dismissed, migrated_legacy_dismissed = _load_dismissed(archive_root)
         person_pairs = _person_cooccurrence(conn, threshold, dismissed)
         place_pairs = _place_cooccurrence(conn, dismissed)
         org_groups = _org_recurrence(conn, threshold)
@@ -422,6 +447,7 @@ def run_cooccur(archive_root: Path, threshold: int = 2) -> Result:
         )
         return Result(ok=False, exit_code=EXIT_FAILURE, data={
             'status': 'failed', 'person_pairs': [], 'place_pairs': [], 'org_groups': [],
+            'migrated_legacy_dismissed': False,
         })
     finally:
         conn.close()
@@ -431,6 +457,7 @@ def run_cooccur(archive_root: Path, threshold: int = 2) -> Result:
         'person_pairs': person_pairs,
         'place_pairs': place_pairs,
         'org_groups': org_groups,
+        'migrated_legacy_dismissed': migrated_legacy_dismissed,
     })
 
 
@@ -451,6 +478,14 @@ def _cmd_cooccur(args: argparse.Namespace) -> int:
     result = run_cooccur(archive_root, threshold=threshold)
     if result['status'] == 'failed':
         return EXIT_FAILURE
+
+    if result['migrated_legacy_dismissed']:
+        print(
+            'Note: moved this archive\'s earlier dismissed-pairs file from '
+            '.cache/cooccur_dismissed.json to its durable home '
+            '(notes/cooccur_dismissed.json) - a one-time housekeeping move, '
+            'nothing to do on your end.\n'
+        )
 
     pairs = result['person_pairs']
     if pairs:
