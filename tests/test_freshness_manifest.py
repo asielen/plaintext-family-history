@@ -44,6 +44,7 @@ import io
 import json
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -66,6 +67,7 @@ from _lib import (
     photoindex_status,
     read_path_manifest,
     record_manifest_is_stale,
+    resync_person_profile_rows,
 )
 
 
@@ -504,6 +506,62 @@ class UpsertSourceManifestTests(unittest.TestCase):
         manifest = read_path_manifest(index_manifest_path(self.root))
         self.assertNotIn(old_rel, manifest)
         self.assertIn(new_path.relative_to(self.root).as_posix(), manifest)
+
+
+class ResyncPersonProfileRowsManifestTests(unittest.TestCase):
+    """#106 review finding: `_lib.resync_person_profile_rows` (the #76
+    `## Sources`-in-profile mtime-bump mechanism) got a #48 manifest patch
+    for the same reason `upsert_source`/`relocate_person_in_index` did - an
+    in-place profile edit changes a path the manifest tracks, and leaving it
+    unpatched would read the profile as permanently "modified" on every
+    later check. That patch had no test proving it actually happens on the
+    success path (only the read-failure path, in
+    tests/test_views_index_sync.py::ResyncProfileReadFailureTests, was
+    covered) - added here, symmetric with UpsertSourceManifestTests above."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        (self.root / 'fha.yaml').write_text('roots:\n  documents: documents\n', encoding='utf-8')
+        (self.root / 'sources' / 'other').mkdir(parents=True)
+        (self.root / 'people').mkdir(parents=True)
+        self.profile_path = self.root / 'people' / 'hartley__margaret_P-aaaaaaaaaa.md'
+        self.profile_path.write_text(
+            '---\nid: P-aaaaaaaaaa\nname: Margaret Hartley\nliving: false\ntier: curated\n'
+            '---\n\n## Biography\n\nOriginal text.\n', encoding='utf-8')
+        self.fha_config = load_fha_yaml(self.root)
+        index_mod.build_index(self.root, self.fha_config)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_resync_after_an_in_place_edit_stays_fresh(self) -> None:
+        # Simulates what run_sources_index does: rewrite the profile's body
+        # in place (the mtime watermark already catches this - the point
+        # here is that the MANIFEST agrees too), then resync.
+        time.sleep(0.01)
+        self.profile_path.write_text(
+            '---\nid: P-aaaaaaaaaa\nname: Margaret Hartley\nliving: false\ntier: curated\n'
+            '---\n\n## Biography\n\nRewritten text.\n', encoding='utf-8')
+        status = resync_person_profile_rows(self.root, [self.profile_path])
+        self.assertEqual(status, 'indexed')
+        self.assertFalse(record_manifest_is_stale(self.root))
+        manifest = read_path_manifest(index_manifest_path(self.root))
+        rel = self.profile_path.relative_to(self.root).as_posix()
+        self.assertAlmostEqual(manifest[rel], self.profile_path.stat().st_mtime, places=3)
+
+    def test_guard_an_unpatched_manifest_would_read_stale(self) -> None:
+        # Regression baseline: without the patch, the OLD manifest entry
+        # (from build_index, before the edit) would disagree with the
+        # profile's new mtime, reading the archive as permanently "modified"
+        # - proving there is something real for the patch to fix.
+        time.sleep(0.01)
+        stale_manifest_before_patch = read_path_manifest(index_manifest_path(self.root))
+        self.profile_path.write_text(
+            '---\nid: P-aaaaaaaaaa\nname: Margaret Hartley\nliving: false\ntier: curated\n'
+            '---\n\n## Biography\n\nRewritten text.\n', encoding='utf-8')
+        current = person_profile_path_manifest(self.root)
+        self.assertTrue(manifest_has_changed(manifest_diff(stale_manifest_before_patch, current)))
 
 
 class ManifestDiffPrimitiveTests(unittest.TestCase):

@@ -420,7 +420,7 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "85c5cebde7673e8d268e7d4a82c4415dc9dd3560ee66f9a5a9607eeb7df64b8a",
+      "sha256": "e8b41540b47a59210d0df24d26a2fcc3508a14fd24603f7ec97c94de7622de5f",
       "spec_version": "1.2",
       "src": "tools/_lib.py"
     },
@@ -595,7 +595,7 @@
     {
       "path": ".fha/tools/photoindex.py",
       "category": "operating",
-      "sha256": "d1011378a7bacf804078480374076c11acaf7b366b410f9ba333becf4735806d",
+      "sha256": "a44cd4d0436961a1d4cc6ea894529f4f5aa54a2d8efd9b58121468c614266570",
       "spec_version": "1.2",
       "src": "tools/photoindex.py"
     },
