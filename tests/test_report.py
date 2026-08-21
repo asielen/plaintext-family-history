@@ -10,6 +10,7 @@ hand-built .cache/index.sqlite.
 
 import datetime
 import json
+import shlex
 import sys
 import tempfile
 import unittest
@@ -22,6 +23,7 @@ sys.path.insert(0, str(ROOT / 'tools'))
 
 import lint
 import report
+from _lib import shell_quote
 
 
 _PERSON_MD = '''---
@@ -182,6 +184,75 @@ _QUESTIONS_PARTIAL_VITALS_MD = '''# Open Questions (general)
   - (human, 2026-01-01) Birth date still needs confirmation.
 '''
 
+# Three claims sharing one place_text and carrying no place_id - the
+# smallest cluster that clears run_candidates()'s default threshold (3),
+# for the §6b call-to-action test (issue #79 point 1).
+_SOURCE_PLACE_CLUSTER_MD = '''---
+id: S-6666666666
+title: Source Six
+source_type: vital-record
+---
+
+## Claims
+```yaml
+- id: C-6666666661
+  type: residence
+  persons: [P-aaaaaaaaaa]
+  value: Lived in Topeka
+  place_text: "Topeka, Kansas"
+  status: accepted
+  reviewed: 2026-01-01
+- id: C-6666666662
+  type: residence
+  persons: [P-aaaaaaaaaa]
+  value: Lived in Topeka
+  place_text: "Topeka, Kansas"
+  status: accepted
+  reviewed: 2026-01-01
+- id: C-6666666663
+  type: residence
+  persons: [P-aaaaaaaaaa]
+  value: Lived in Topeka
+  place_text: "Topeka, Kansas"
+  status: needs-review
+```
+'''
+
+# A place_text carrying a double quote and a comma - plausible free text
+# lifted straight off a record (a building name quoted on a deed). Single-
+# quoted YAML scalar so the embedded `"` needs no escaping in the fixture
+# itself. Exercises the §6b command's shell-quoting (issue #79 point 1).
+_SOURCE_PLACE_CLUSTER_QUOTED_MD = '''---
+id: S-7777777777
+title: Source Seven
+source_type: vital-record
+---
+
+## Claims
+```yaml
+- id: C-7777777771
+  type: residence
+  persons: [P-aaaaaaaaaa]
+  value: Lived at the old manse
+  place_text: 'The "Old Manse", Springfield'
+  status: accepted
+  reviewed: 2026-01-01
+- id: C-7777777772
+  type: residence
+  persons: [P-aaaaaaaaaa]
+  value: Lived at the old manse
+  place_text: 'The "Old Manse", Springfield'
+  status: accepted
+  reviewed: 2026-01-01
+- id: C-7777777773
+  type: residence
+  persons: [P-aaaaaaaaaa]
+  value: Lived at the old manse
+  place_text: 'The "Old Manse", Springfield'
+  status: needs-review
+```
+'''
+
 
 class ReportTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -312,6 +383,70 @@ class ReportTests(unittest.TestCase):
         self.assertNotIn('BUILD.md M6.2', md)
         self.assertIn('No recurring unlinked place-text or GPS clusters found.', md)
 
+    def test_place_candidates_section_names_the_confirm_command(self) -> None:
+        # Issue #79 point 1: §6b must not just describe a cluster, it must
+        # name the exact `fha confirm place` command that resolves it - every
+        # claim id in the cluster, and the same majority-vote name
+        # `fha places candidates` itself would print.
+        (self.archive_root / 'sources' / 'sourcesix_S-6666666666.md').write_text(
+            _SOURCE_PLACE_CLUSTER_MD, encoding='utf-8'
+        )
+        result = report.run_report(self.archive_root, {}, full=True, section='place-candidates')
+        md = result['markdown']
+        self.assertIn('Topeka, Kansas - 3 claim(s)', md)
+        # Built via the same shell_quote() the production code calls, not a
+        # hardcoded literal - shell_quote deliberately produces different
+        # quoting per platform (single-quote POSIX shlex vs. double-quote
+        # Windows list2cmdline), so a fixed string here would be right on
+        # only one of them.
+        self.assertIn(
+            'fha confirm place C-6666666661 C-6666666662 C-6666666663 '
+            f'--name={shell_quote("Topeka, Kansas")}',
+            md,
+        )
+
+    def test_place_candidates_below_threshold_gets_no_command(self) -> None:
+        # Two claims never clear run_candidates()'s default threshold (3) -
+        # no cluster line, so no command should be invented for it either.
+        below_threshold = _SOURCE_PLACE_CLUSTER_MD.replace(
+            '- id: C-6666666663\n'
+            '  type: residence\n'
+            '  persons: [P-aaaaaaaaaa]\n'
+            '  value: Lived in Topeka\n'
+            '  place_text: "Topeka, Kansas"\n'
+            '  status: needs-review\n',
+            '',
+        )
+        (self.archive_root / 'sources' / 'sourcesix_S-6666666666.md').write_text(
+            below_threshold, encoding='utf-8'
+        )
+        result = report.run_report(self.archive_root, {}, full=True, section='place-candidates')
+        md = result['markdown']
+        self.assertNotIn('fha confirm place', md)
+        self.assertIn('No recurring unlinked place-text or GPS clusters found.', md)
+
+    def test_place_candidates_command_is_shell_safe_for_quoted_names(self) -> None:
+        # A place_text carrying a `"` (e.g. a building name quoted straight
+        # off a deed) must not be spliced unescaped into `--name "..."` -
+        # that breaks the printed command's own quoting and would corrupt or
+        # misdirect it if pasted into a shell. The generated line must
+        # round-trip through a real shell split back to the exact name.
+        (self.archive_root / 'sources' / 'sourceseven_S-7777777777.md').write_text(
+            _SOURCE_PLACE_CLUSTER_QUOTED_MD, encoding='utf-8'
+        )
+        result = report.run_report(self.archive_root, {}, full=True, section='place-candidates')
+        md = result['markdown']
+
+        line = next(l for l in md.splitlines() if 'fha confirm place' in l)
+        command = line.split('`')[1]
+        argv = shlex.split(command)
+        self.assertEqual(
+            argv[:5],
+            ['fha', 'confirm', 'place', 'C-7777777771', 'C-7777777772'],
+        )
+        name_arg = next(a for a in argv if a.startswith('--name='))
+        self.assertEqual(name_arg, '--name=The "Old Manse", Springfield')
+
     def test_photo_triage_section_reports_absent_index(self) -> None:
         result = report.run_report(self.archive_root, {}, full=True)
         self.assertIn('Photo index absent', result['markdown'])
@@ -432,6 +567,26 @@ class ReportTests(unittest.TestCase):
         self.assertNotIn('MISSING:', md)
         self.assertNotIn('fha process', md)
         self.assertIn('fha photoindex reconcile --with-exif', md)
+
+    def test_triage_suggested_command_is_shell_safe_for_spaced_paths(self) -> None:
+        # A real photo filename can hold a space ("Family Reunion 1962.jpg")
+        # - unquoted, the shell splits `fha process` onto two arguments and
+        # sends it a path that does not exist. Same defect class as §6b's
+        # `fha confirm place --name` command.
+        triage = report.Result(data={
+            'status': 'fresh',
+            'candidates': [
+                {'path': 'photos/1962/Family Reunion 1962.jpg', 'score': 3,
+                 'signals': ['caption']},
+            ],
+        })
+        with unittest.mock.patch.object(report.photoindex, 'run_triage', return_value=triage):
+            result = report.run_report(self.archive_root, {}, full=True, section='photo-triage')
+        md = result['markdown']
+        line = next(l for l in md.splitlines() if 'suggested: fha process' in l)
+        command = line.split('suggested: ', 1)[1]
+        argv = shlex.split(command)
+        self.assertEqual(argv, ['fha', 'process', 'photos/1962/Family Reunion 1962.jpg'])
 
     def test_answerable_questions_skips_marriage_for_no_known_marriages_person(self) -> None:
         # lint.py's W101 rule never requires a marriage claim for a person

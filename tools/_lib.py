@@ -55,6 +55,7 @@ import secrets
 import shutil
 import sqlite3
 import shlex
+import subprocess
 import sys
 import tempfile
 import time
@@ -7136,6 +7137,30 @@ def result_fail(
 VENDOR_DIR_NAME = '.fha'
 
 
+def shell_quote(word: str) -> str:
+    """Quote one value so it survives as a SINGLE argument in a printed,
+    copy-pasteable command - `pip_command`'s original concern, generalized
+    for any other command this codebase prints for a human to paste (e.g.
+    `fha report`'s §6b place-cluster command, which carries a place name
+    straight off a claim's free-text `place_text`).
+
+    POSIX shells take `shlex.quote`'s single-quote wrapping as-is. cmd.exe
+    and PowerShell do not understand single quotes, so Windows gets double
+    ones - but a naive `f'"{word}"'` wrap is not enough once `word` can itself
+    carry a literal `"` (a free-text field can; a `sys.executable` path
+    cannot). `claim.py` (issue #54) hit exactly that shape of bug from the
+    other direction: Windows PowerShell 5.1 silently dropped the embedded
+    `"` from `Robert Justin "Bob" Knipscheer` before the tool ever saw the
+    argument. `subprocess.list2cmdline` implements the MSVCRT argv-escaping
+    algorithm Python itself relies on to launch a Windows subprocess
+    correctly (backslash-escaping embedded quotes rather than dropping
+    them), so reusing it here beats hand-rolling the same escaper worse.
+    """
+    if os.name == 'nt':
+        return subprocess.list2cmdline([word])
+    return shlex.quote(word)
+
+
 def pip_command(target: str) -> str:
     """Return a `pip install` command that targets the RUNNING interpreter.
 
@@ -7151,27 +7176,21 @@ def pip_command(target: str) -> str:
     the one missing the import, so `-m pip` against it always lands where it
     needs to.
 
-    Quoted, because that path is not guaranteed to be shell-safe: a virtualenv
-    under `~/Family Tools/` or a Windows profile with a space in the name yields
-    a command the shell splits at the space, so the fix we advertise fails before
-    Python even starts - and it fails in a way that reads as "these instructions
-    are wrong" rather than "add quotes". POSIX shells take shlex quoting; cmd.exe
-    and PowerShell do not understand single quotes, so Windows gets double ones.
+    Quoted (via `shell_quote`), because that path is not guaranteed to be
+    shell-safe: a virtualenv under `~/Family Tools/` or a Windows profile with
+    a space in the name yields a command the shell splits at the space, so the
+    fix we advertise fails before Python even starts - and it fails in a way
+    that reads as "these instructions are wrong" rather than "add quotes".
     """
-    def _q(word: str) -> str:
-        if os.name == 'nt':
-            return f'"{word}"' if ' ' in word else word
-        return shlex.quote(word)
-
     # Both halves need it, not just the executable. `-r <path>` carries an
     # archive path, and "Family Archive" is an ordinary folder name - quoting the
     # interpreter while leaving the requirements file bare just moves the split
     # one argument to the right.
-    exe = _q(sys.executable)
+    exe = shell_quote(sys.executable)
     if target.startswith('-r '):
-        arg = f'-r {_q(target[3:])}'
+        arg = f'-r {shell_quote(target[3:])}'
     else:
-        arg = _q(target)
+        arg = shell_quote(target)
     return f'{exe} -m pip install {arg}'
 
 
