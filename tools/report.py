@@ -1331,6 +1331,20 @@ def _section_possible_connections(archive_root: Path) -> list[str]:
 
     lines: list[str] = []
 
+    if result['migrated_legacy_dismissed']:
+        # The one write `fha cooccur` (and so this report) can make on its
+        # own (#48) - a housekeeping carry-forward of a human's earlier
+        # decision, not a new one. Named here so a `today`-skill run never
+        # narrates it as silent: the report promises no write without the
+        # human seeing it, and this is the one exception that needs no
+        # confirmation but still needs to be seen.
+        lines.append(
+            "_Moved this archive's earlier dismissed-pairs file from "
+            '`.cache/cooccur_dismissed.json` to its durable home '
+            '(`notes/cooccur_dismissed.json`) - a one-time housekeeping '
+            'move, nothing to do on your end._'
+        )
+
     pairs = result['person_pairs'][:10]
     if pairs:
         lines.append('**Person co-occurrence:**')

@@ -16,7 +16,12 @@ Guardrails restated (plan 17):
   - Not a daemon: foreground, 127.0.0.1 only, no auth, no network, no watching.
   - Human gate: every write is dry-run-preview -> explicit confirm, through the
     Result engines. The server defaults dry_run to true unless a POST explicitly
-    says {"dry_run": false} (defense in depth behind the JS two-step).
+    says {"dry_run": false} (defense in depth behind the JS two-step). One
+    exception rides in through `gather_review`'s own `cooccur.run_cooccur` call
+    (#48): carrying an older archive's `.cache/cooccur_dismissed.json` forward
+    to its durable home needs no confirm (it decides nothing a human has not
+    already decided), but it is never silent either - it prints to this
+    foreground server's own console the moment it happens.
   - Mechanical/generative boundary: serve never reads evidence to draft anything.
     Stage B stays with the AI skills.
 
@@ -737,6 +742,20 @@ def gather_review(state: ServeState) -> dict:
     # Co-occurrence candidates.
     try:
         co = cooccur.run_cooccur(root, threshold=2)
+        if co.get('migrated_legacy_dismissed'):
+            # The one write `fha cooccur` can make on its own (#48) - a
+            # housekeeping carry-forward of a human's earlier dismissal, not
+            # a new one, so it needs no confirm step. But this module's own
+            # "human gate: every write is dry-run-preview -> explicit
+            # confirm" line is about writes serve.py originates, not this -
+            # so the one place left to surface it is the console this
+            # foreground, human-started server already prints its banner to.
+            print(
+                'fha serve: moved this archive\'s earlier dismissed-pairs file from '
+                '.cache/cooccur_dismissed.json to its durable home '
+                '(notes/cooccur_dismissed.json) - a one-time housekeeping move, '
+                'nothing to do.', file=sys.stderr,
+            )
         if co.get('status') == 'ok':
             for c in co.get('person_pairs', [])[:25]:
                 pa, pb = c['person_a'], c['person_b']
