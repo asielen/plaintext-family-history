@@ -65,13 +65,19 @@ Research produces four kinds of paper, and each has a home:
 - **Something someone asserted** - "Aunt Mary said the farm burned in 1922" - is *evidence*. It
   goes in the pile (`inbox/`), gets filed as a source, and its assertions become claims you can
   review. Even a half-page of jotted memories counts; the note itself is the document.
-- **Something to find out** - "check the 1901 census for this branch" - is an *open question*. If
-  it's about one person, it goes on that person's research sheet; only truly general questions go
-  on the shared question log (`notes/questions.md`). That split is what keeps the question log
-  readable even at hundreds of open questions.
+- **Something to find out** - "check the 1901 census for this branch" - is an *open question*. Note
+  the free-form Research Notes section right on a person's own page does NOT hold these - it is a
+  scratchpad the assistant never re-checks. An open question needs its own heading (`## Q:`) so it's
+  found again: if the person already has a separate research sheet, it goes there; otherwise it goes
+  on the shared question log (`notes/questions.md`), still fully findable, just not filed under their
+  name. (A person whose research outgrows a page's worth of questions can get a separate research
+  sheet of their own at that point - an escape valve for when there's a lot to say, not the default
+  starting home.)
 - **Something you believe but can't prove yet** - "maybe this is the same John as the 1881
-  census" - is a *hypothesis*: a pencil note on the person's research sheet, with a line about
-  what evidence would settle it.
+  census" - is a *hypothesis*: unlike an open question, this one CAN go right on the person's own
+  page, under its own `## Hypotheses` heading (not the free-form Research Notes section) - or their
+  separate research sheet if they already have one, to keep it grouped with other research on them -
+  with a line about what evidence would settle it.
 - **A search you already ran** - even one that found nothing - goes in the *research log*, so you
   (and the assistant) never re-run it blind.
 

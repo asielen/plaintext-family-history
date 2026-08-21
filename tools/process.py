@@ -172,6 +172,7 @@ from _lib import (
     EXIT_WARNINGS,
     Result,
     PHOTO_EXTENSIONS,
+    SOURCE_PURPOSE_BLOCK,
     SOURCE_TYPES,
     BackupRefused,
     FhaConfigError,
@@ -575,6 +576,10 @@ def _scaffold_text(
     the source was known by before it had an ID - the inbox basename or a notes
     hint) is preserved as a second alias so old `[[stem]]` references keep
     resolving after processing.
+
+    The body opens with `_lib.SOURCE_PURPOSE_BLOCK` (SPEC §16a, #75) - the
+    same visible "who writes this" blockquote every scaffolded record gets,
+    right after the frontmatter and before `## Claims`.
     """
     aliases = [s_id]
     if stem:
@@ -624,6 +629,8 @@ def _scaffold_text(
     lines += [
         f'created: {_today()}',
         '---',
+        '',
+        SOURCE_PURPOSE_BLOCK,
         '',
         '## Claims',
         '```yaml',

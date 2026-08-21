@@ -12,8 +12,14 @@ Two guarantees are exercised here, both of which a truncating write breaks:
      step fails partway. The old code set each `wrote_*` flag only AFTER the
      write returned, so a write that died mid-stream skipped its own rollback -
      leaving a truncated SOLE person record while reporting "nothing was left
-     half-promoted." With atomic writes the flag-after-write is now safe, and
-     the companion write leaves no untracked partial file.
+     half-promoted." With atomic writes the flag-after-write is now safe.
+
+Since #76, `promote_person_record`'s default flow writes the profile ONCE
+(tier flip + body-section backfill together) then moves it - there is no
+auto-scaffolded research companion any more to fail a THIRD write on, so the
+rollback scenarios here fail the MOVE instead (and, for the move-back-also-
+fails case, add a hand-written companion so a later step still exists to
+fail against) - see PromotionRollbackTests for the adapted windows.
 """
 
 import os
@@ -143,29 +149,30 @@ class AtomicWriteTests(unittest.TestCase):
 
 
 class PromotionRollbackTests(unittest.TestCase):
-    def test_failed_companion_write_restores_stub_and_leaves_no_partial(self) -> None:
+    def test_failed_move_restores_flipped_profile_and_leaves_no_partial(self) -> None:
+        # #76: promotion no longer auto-scaffolds a research companion, so the
+        # profile's own write (tier flip + body-section backfill) and the
+        # record MOVE are the only two steps in the default flow. Fail the
+        # move, AFTER the profile write has already landed - the exact window
+        # the old flag-after-write bug mishandled (a write that died mid-
+        # stream skipped its own rollback, leaving a truncated SOLE record).
         root, record_path, dest = _archive()
+        real_move = _lib.shutil.move
 
-        # Fail only the research-companion write, and only after the tier flip
-        # and the move have already succeeded - the exact window the old
-        # flag-after-write bug mishandled.
-        real_atomic = _lib.write_text_exact_atomic
+        def failing_move(src, dst):
+            raise OSError('simulated failure moving the record')
 
-        def failing_atomic(path, text):
-            if '_research' in Path(path).name:
-                raise OSError('simulated disk full during companion write')
-            return real_atomic(path, text)
-
-        _lib.write_text_exact_atomic = failing_atomic
+        _lib.shutil.move = failing_move
         try:
             with self.assertRaises(PromotionError):
                 promote_person_record(root, KID, record_path, dest)
         finally:
-            _lib.write_text_exact_atomic = real_atomic
+            _lib.shutil.move = real_move
 
-        # The record is back in stubs/, restored to its original stub bytes -
-        # the tier flip was rolled back, not left curated or truncated.
-        self.assertTrue(record_path.exists(), 'record must be moved back')
+        # The record is back at its original path, restored to its original
+        # stub bytes byte-for-byte - the tier flip AND the body backfill were
+        # both rolled back, not left half-applied or truncated.
+        self.assertTrue(record_path.exists(), 'record must stay/return at its own path')
         self.assertEqual(record_path.read_text(encoding='utf-8'), STUB_RECORD)
 
         # No record was left in the destination folder.
@@ -173,43 +180,44 @@ class PromotionRollbackTests(unittest.TestCase):
             [p.name for p in dest.iterdir()], [],
             'destination folder must be empty after rollback')
 
-        # No partial research companion anywhere under people/.
-        companions = list((root / 'people').rglob('*_research_*.md'))
-        self.assertEqual(companions, [], f'stray companion: {companions}')
-
     def test_failed_moveback_never_creates_duplicate_record(self) -> None:
-        # The flip and move succeed, a later step fails, and during rollback the
-        # move-BACK itself fails (a re-locked destination). The tier-flip undo
-        # must then target where the profile actually IS - not blindly recreate
-        # the old path, which (because the atomic writer creates a missing target)
-        # would leave the curated profile in the destination AND a second stub
-        # with the same P-id at the vacated old path.
+        # The flip+backfill and the record move succeed; a LATER step (the
+        # hand-written companion's move) fails, and during rollback the
+        # record's move-BACK itself ALSO fails (a re-locked destination). The
+        # tier-flip undo must then target where the profile actually IS - not
+        # blindly recreate the old path, which (because the atomic writer
+        # creates a missing target) would leave the curated profile in the
+        # destination AND a second stub with the same P-id at the vacated old
+        # path.
         root, record_path, dest = _archive()
+        companion = record_path.parent / f'kid__ann_research_{KID}.md'
+        companion.write_text('KEEP ME HERE', encoding='utf-8')
         real_move = _lib.shutil.move
-        real_atomic = _lib.write_text_exact_atomic
-
-        def failing_atomic(path, text):
-            if '_research' in Path(path).name:
-                raise OSError('simulated disk full during companion write')
-            return real_atomic(path, text)
+        calls = {'n': 0}
 
         def failing_move(src, dst):
-            # Fail only the rollback move-BACK (out of the destination folder).
+            calls['n'] += 1
+            if calls['n'] == 2:
+                # The companion move (the record's own move is call 1, and it
+                # must succeed for this scenario) - fails to trigger rollback.
+                raise OSError('simulated failure moving companion')
             if Path(src).parent == dest:
+                # The rollback's own move-BACK of the record.
                 raise OSError('simulated locked destination during move-back')
             return real_move(src, dst)
 
-        _lib.write_text_exact_atomic = failing_atomic
         _lib.shutil.move = failing_move
         try:
             with self.assertRaises(PromotionError):
                 promote_person_record(root, KID, record_path, dest)
         finally:
-            _lib.write_text_exact_atomic = real_atomic
             _lib.shutil.move = real_move
 
-        # Exactly ONE record for this P-id survives - never a duplicate.
-        records = list((root / 'people').rglob(f'*{KID}*.md'))
+        # Exactly ONE *profile* for this P-id survives - never a duplicate.
+        # (The stranded companion, checked separately below, also carries the
+        # P-id in its name, so the research-named file is excluded here.)
+        records = [p for p in (root / 'people').rglob(f'*{KID}*.md')
+                  if '_research_' not in p.name]
         self.assertEqual(len(records), 1, f'expected one record, got {records}')
         # It is the profile still stranded in the destination (move-back failed),
         # with the tier flip undone in place (old stub bytes), and the old path
@@ -217,6 +225,9 @@ class PromotionRollbackTests(unittest.TestCase):
         self.assertEqual(records[0].parent, dest)
         self.assertIn('tier: stub', records[0].read_text(encoding='utf-8'))
         self.assertFalse(record_path.exists(), 'no duplicate stub at the old path')
+        # The companion never left - its own move failed before it could.
+        self.assertTrue(companion.exists())
+        self.assertEqual(companion.read_text(encoding='utf-8'), 'KEEP ME HERE')
 
     def test_clean_promotion_still_succeeds(self) -> None:
         # Guardrail: the atomic rewrite did not break the happy path.
@@ -227,8 +238,11 @@ class PromotionRollbackTests(unittest.TestCase):
         self.assertTrue(moved.exists())
         self.assertIn('tier: curated', moved.read_text(encoding='utf-8'))
         self.assertFalse(record_path.exists(), 'original stub path is vacated')
+        # #76: no research companion auto-scaffolded; the body's own missing
+        # sections are backfilled in the same write instead.
         companions = list(dest.glob('*_research_*.md'))
-        self.assertEqual(len(companions), 1, 'companion scaffolded once')
+        self.assertEqual(companions, [], 'no companion auto-created')
+        self.assertIn('## Sources', moved.read_text(encoding='utf-8'))
 
 
 class ExistingCompanionMoveTests(unittest.TestCase):
@@ -384,12 +398,16 @@ class TwoCompanionConflictTests(unittest.TestCase):
                          'TRAVELING NOTES')
 
     def test_no_companion_creates(self) -> None:
-        # CREATE: none anywhere -> a fresh blank companion is scaffolded once.
+        # #76: none anywhere -> none is scaffolded. The separate research
+        # companion is an opt-in escape valve now, never a promotion default -
+        # the profile's own body gets the missing sections instead.
         root, record_path, dest = _archive()
         plan = promote_person_record(root, KID, record_path, dest)
         self.assertFalse(plan['research_move'])
-        self.assertTrue(plan['research_create'])
-        self.assertEqual(len(list(dest.glob('*_research_*.md'))), 1)
+        self.assertFalse(plan['research_create'])
+        self.assertEqual(len(list(dest.glob('*_research_*.md'))), 0)
+        moved = dest / record_path.name
+        self.assertIn('## Sources', moved.read_text(encoding='utf-8'))
 
 
 if __name__ == '__main__':

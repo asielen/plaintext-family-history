@@ -372,20 +372,31 @@ class SyncFailureIsAWarningTests(_SyncBase):
     """
 
     def _with_locked_sync(self, fn, *args, **kwargs):
-        """Run `fn` with the row sync's write connection locked.
+        """Run `fn` with EVERY row-sync mechanism's write connection locked.
 
-        The real `sync_generated_view_rows` runs - only its second SQLite
-        connection is refused - so this exercises the tool's own error branch
-        rather than asserting against a stubbed return value.
+        Two DIFFERENT syncs exist since #76 - `sync_generated_view_rows` for
+        a COMPANION write (timeline, draft-queue) and `resync_person_profile_
+        rows` for a per-person sources-index write (a profile edit, not a
+        companion - see that function's own docstring for why it is not the
+        same mechanism). Both real functions run - only their SECOND SQLite
+        connection (the write) is refused - so this exercises each tool's own
+        error branch rather than asserting against a stubbed return value.
         """
         real_sync = views.sync_generated_view_rows
+        real_resync = views.resync_person_profile_rows
 
         def sync_against_a_locked_db(*a, **kw):
             with mock.patch.object(_lib.sqlite3, 'connect', _LockedOnWrite()):
                 return real_sync(*a, **kw)
 
+        def resync_against_a_locked_db(*a, **kw):
+            with mock.patch.object(_lib.sqlite3, 'connect', _LockedOnWrite()):
+                return real_resync(*a, **kw)
+
         with mock.patch.object(views, 'sync_generated_view_rows',
-                               sync_against_a_locked_db):
+                               sync_against_a_locked_db), \
+             mock.patch.object(views, 'resync_person_profile_rows',
+                               resync_against_a_locked_db):
             return self._quiet(fn, *args, **kwargs)
 
     def test_refresh_reports_a_failed_row_sync_as_a_warning(self) -> None:
@@ -404,8 +415,20 @@ class SyncFailureIsAWarningTests(_SyncBase):
         # The same condition on one person and on a batch must read the same:
         # a batch that quietly exits 0 where the single-person run exits 1 is
         # the gap `_batch_view_result` was added to close.
-        for runner in (views.run_timeline, views.run_sources_index,
-                       views.run_draft_queue):
+        #
+        # run_sources_index is deliberately NOT in this loop (see
+        # test_sources_index_batch_and_single_agree_independently below):
+        # unlike timeline/draft-queue, its write lands in a PROFILE, which the
+        # freshness watermark always counts (#37 excludes only companions).
+        # When the surgical resync fails - exactly what this test simulates -
+        # the index is left GENUINELY stale (the profile changed, nothing
+        # bumped index.sqlite's mtime to match), so chaining a second locked
+        # call straight afterward, on the SAME already-desynced archive, hits
+        # the ordinary "index is stale" refusal (exit 3) rather than a second
+        # clean sync-failure warning - correct behavior for a real repeated
+        # failure with no `fha index` run in between, but not what this
+        # specific back-to-back assertion is testing for timeline/draft-queue.
+        for runner in (views.run_timeline, views.run_draft_queue):
             single, _out, _err = self._with_locked_sync(
                 runner, self.root, person_id=PID)
             batch, _out2, _err2 = self._with_locked_sync(
@@ -414,6 +437,23 @@ class SyncFailureIsAWarningTests(_SyncBase):
             self.assertEqual(batch.exit_code, EXIT_WARNINGS, runner.__name__)
             self.assertTrue(single.data.get('index_stale'), runner.__name__)
             self.assertTrue(batch.data.get('index_stale'), runner.__name__)
+
+    def test_sources_index_batch_and_single_agree_independently(self) -> None:
+        # The sources-index half of the symmetry above, each tested against a
+        # FRESH (truly current) index rather than chained back-to-back - the
+        # realistic shape of "the same condition, once for one person and
+        # once for a batch," since a real failure would be followed by a
+        # human running `fha index`, not by a second attempt against an
+        # archive the first attempt already left stale.
+        single, _out, _err = self._with_locked_sync(
+            views.run_sources_index, self.root, person_id=PID)
+        self.assertEqual(single.exit_code, EXIT_WARNINGS)
+        self.assertTrue(single.data.get('index_stale'))
+        self._reindex()
+        batch, _out2, _err2 = self._with_locked_sync(
+            views.run_sources_index, self.root, all_curated=True)
+        self.assertEqual(batch.exit_code, EXIT_WARNINGS)
+        self.assertTrue(batch.data.get('index_stale'))
 
     def test_clean_reports_a_failed_row_sync_as_a_warning(self) -> None:
         self._quiet(views.run_refresh, self.root)
@@ -529,6 +569,41 @@ class SyncHelperTests(_SyncBase):
             self._rows_for('person_files',
                            str(Path('people') / FOLDER / profile.name)),
             before)
+
+
+class ResyncProfileReadFailureTests(_SyncBase):
+    """A profile `resync_person_profile_rows` cannot RE-READ must not be
+    silently reported as re-indexed with its search text quietly emptied.
+
+    Unlike `sync_generated_view_rows`'s own `_written_row` (which treats an
+    unreadable file as a low-risk "filesystem oddity" because the process
+    just wrote it seconds ago), a profile this function re-syncs can be years
+    old and was never guaranteed to be UTF-8-clean. `read_record` deliberately
+    RAISES on a bad decode rather than answering an empty record precisely so
+    a caller cannot mistake "could not read this" for "this is blank" - this
+    function must honor that rather than catching the exception and wiping
+    the row.
+    """
+
+    def test_undecodable_profile_reports_index_error_and_keeps_its_old_row(self) -> None:
+        profile = self.folder / f'hartley__cur_{PID}.md'
+        rel = str(Path('people') / FOLDER / profile.name)
+        # setUp's _reindex() already put the original 'x' Biography text into
+        # notes_fts - confirm the starting point before corrupting the file.
+        self.assertIn(rel, self._fts_rows('x'))
+
+        # Corrupt the file on disk with bytes that are not valid UTF-8 -
+        # read_record raises UnicodeDecodeError on this, by design.
+        profile.write_bytes(b'---\nid: ' + PID.encode() + b'\nname: Cur Hartley\n'
+                             b'living: false\ntier: curated\n---\n\n'
+                             b'# Cur Hartley\n\n## Biography\n\n\xff\xfe not utf-8\n')
+
+        status = _lib.resync_person_profile_rows(self.root, [profile])
+        self.assertEqual(status, 'index_error')
+        # The OLD row must survive untouched - not deleted, not replaced with
+        # empty content. A caller that ignored the 'index_error' status and
+        # searched anyway still finds the last-known-good text, not nothing.
+        self.assertIn(rel, self._fts_rows('x'))
 
 
 if __name__ == '__main__':

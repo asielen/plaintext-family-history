@@ -138,7 +138,7 @@ photos/{year}/          originals - read-only to you (except spec'd keyword writ
                         photos/ or documents/ path through fha.yaml roots first
 documents/{type}/       originals - read-only to you (same exception)
 sources/{type}/         one .md per source: frontmatter + ## Claims (yaml) + ## Notes
-people/NNN .../         Ahnentafel couple folders; person + research files
+people/NNN .../         Ahnentafel couple folders; person files (+ an optional research file)
 people/connections/     non-direct people (FAN club), ordinary §13 person files;
                         the anchor couple is derived from claims, not the filename
 people/stubs/           unplaced person stubs
@@ -230,8 +230,10 @@ fha confirm <verb> …         act on a detection candidate, report prompt, or c
                             decision (xref/cooccur/dismiss/place/discovery/draft/merge)
 fha person new "Name" …      mint a brand-new person stub from nothing (provisional vitals)
 fha person promote <P-id> [--into FOLDER]   graduate a direct-line stub to curated: tier flip,
-                            couple-folder filing, research-file scaffold; always explicit, never
-                            automatic; non-direct people keep their stub (a legitimate state)
+                            couple-folder filing, backfill any record section a pre-#76 stub is
+                            still missing (never a research file - that stays opt-in, SPEC §16b);
+                            always explicit, never automatic; non-direct people keep their stub
+                            (a legitimate state)
 fha person rename <P-id> "New Name" [--keep-variant]   correct a name: frontmatter, profile +
                             research filenames, stale generated companions (regenerate via
                             `fha views …`), and - when unambiguous - the couple folder text

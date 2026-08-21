@@ -262,7 +262,8 @@ window and pick up in the assistant exactly where you left off.
 
 You don't need the assistant or the tools to add to your archive - the copy-paste templates let
 you write a record in any text editor. Every record folder in your archive ships one: open
-`people/_TEMPLATE.person.md`, `people/stubs/_TEMPLATE.stub.md`, `sources/_TEMPLATE.source.md`,
+`people/_TEMPLATE.person.md` (one template for a person either way - a bare reference or a fully
+written-up profile; it defaults to `tier: stub`), `sources/_TEMPLATE.source.md`,
 `inbox/_TEMPLATE.notes.md`, or the commented `_TEMPLATE` entry at the top of
 `places/places.yaml`, copy it, and fill it in.
 

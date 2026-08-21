@@ -116,9 +116,14 @@ choice.
 ## 7. Sessions are an interface, not memory
 
 Anything worth keeping is written into archive records in SPEC formats **before the skill hands back** —
-claims into source files, hypotheses into research files, discoveries via `fha confirm discovery`,
-searches into the research log. Never rely on conversation history as a store of record; the human should
-never have to re-explain himself next session.
+claims into source files, hypotheses into a person's own `## Hypotheses` heading (on their profile
+directly, or their separate research file if they already have one - SPEC §16b: most people never need a
+separate file, so a hypothesis lands on the profile itself far more often now), open questions into
+`notes/questions.md` or a person's separate research file specifically (a profile-resident `## Open
+Questions` is not scanned - unlike hypotheses, that one genuinely needs the separate file or the general
+log), discoveries via `fha confirm discovery`, searches into the research log. Never
+rely on conversation history as a store of record; the human should never have to re-explain himself next
+session.
 
 ## 8. Execution hygiene (AGENTS.md §"Tools")
 

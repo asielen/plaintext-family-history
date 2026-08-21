@@ -3325,5 +3325,91 @@ class LintStdoutIsValidUtf8Tests(unittest.TestCase):
             self.assertIn('…', decoded)  # the ellipsis survived intact
 
 
+class MissingSectionW130Tests(unittest.TestCase):
+    """W130 (#75/#76): a CURATED person record missing one of SPEC §16's four
+    hand-written sections. Curated-tier only (a stub's sections are a
+    legitimate research backlog, SPEC §4 - not a defect); the GENERATED
+    `## Sources` region is never checked (no other generated companion's
+    presence is lint-mandated either)."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        (self.root / 'fha.yaml').write_text('roots: {}\n', encoding='utf-8')
+        (self.root / 'people').mkdir(parents=True)
+        (self.root / 'sources').mkdir()
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _person(self, tier: str, body: str) -> Path:
+        path = self.root / 'people' / 'rivera__sam_P-1111111111.md'
+        path.write_text(
+            f'---\nid: P-1111111111\nname: Sam Rivera\ntier: {tier}\n'
+            f'living: false\n---\n\n# Sam Rivera\n\n{body}', encoding='utf-8')
+        return path
+
+    _FULL_BODY = (
+        '## Biography\nx\n\n## Stories\n*(none yet)*\n\n'
+        '## Research Notes\nx\n\n## Friends & Family\n*(none yet)*\n'
+    )
+
+    def test_curated_missing_one_section_fires_naming_it(self) -> None:
+        body = self._FULL_BODY.replace('## Research Notes\nx\n\n', '')
+        self._person('curated', body)
+        findings, _ = lint._run_lint_core(self.root, {})
+        w130 = [f for f in findings if f.code == 'W130']
+        self.assertEqual(len(w130), 1, findings)
+        self.assertIn('Research Notes', w130[0].message)
+        self.assertNotIn('Biography', w130[0].message)
+
+    def test_curated_missing_several_sections_names_all(self) -> None:
+        self._person('curated', '## Biography\nx\n')
+        findings, _ = lint._run_lint_core(self.root, {})
+        w130 = [f for f in findings if f.code == 'W130']
+        self.assertEqual(len(w130), 1, findings)
+        for heading in ('Stories', 'Research Notes', 'Friends & Family'):
+            self.assertIn(heading, w130[0].message)
+        self.assertNotIn('Biography,', w130[0].message)
+
+    def test_curated_with_all_four_sections_is_silent(self) -> None:
+        self._person('curated', self._FULL_BODY)
+        findings, _ = lint._run_lint_core(self.root, {})
+        self.assertEqual([f for f in findings if f.code == 'W130'], [])
+
+    def test_stub_missing_every_section_is_silent(self) -> None:
+        # A stub's sections are a legitimate research backlog (SPEC §4), not
+        # a lint-worthy gap - checking every stub would turn this into noise
+        # across an archive's whole stub population.
+        self._person('stub', '')
+        findings, _ = lint._run_lint_core(self.root, {})
+        self.assertEqual([f for f in findings if f.code == 'W130'], [])
+
+    def test_missing_sources_region_is_never_flagged(self) -> None:
+        # The GENERATED ## Sources region's absence just means nobody has run
+        # `fha views sources-index` yet - not a defect this check reports.
+        self._person('curated', self._FULL_BODY)   # no ## Sources anywhere
+        findings, _ = lint._run_lint_core(self.root, {})
+        self.assertEqual([f for f in findings if f.code == 'W130'], [])
+
+    def test_research_notes_in_a_separate_companion_does_not_mask_the_profile_gap(self) -> None:
+        # Regression guard: registry.person_bodies CONCATENATES the profile
+        # with a separate _research companion's body (by design, for E009's
+        # hypothesis search) - a companion carrying its OWN ## Research Notes
+        # heading must not silently satisfy this check for a PROFILE that
+        # never got one. The check must read the profile file directly.
+        body = self._FULL_BODY.replace('## Research Notes\nx\n\n', '')
+        self._person('curated', body)
+        (self.root / 'people' / 'rivera__sam_research_P-1111111111.md').write_text(
+            '---\nid: P-1111111111\n---\n\n## Research Notes\n\n'
+            '*(working notes)*\n\n## Open Questions\n\n*(none yet)*\n\n'
+            '## Hypotheses\n\n*(none yet)*\n\n## Research Log\n\n*(none yet)*\n',
+            encoding='utf-8')
+        findings, _ = lint._run_lint_core(self.root, {})
+        w130 = [f for f in findings if f.code == 'W130']
+        self.assertEqual(len(w130), 1, findings)
+        self.assertIn('Research Notes', w130[0].message)
+
+
 if __name__ == '__main__':
     unittest.main()

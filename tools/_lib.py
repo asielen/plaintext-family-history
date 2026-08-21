@@ -161,6 +161,11 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    section_bounds            - locate one `## Heading` prose section's line span
 #    lines_end_with_newline    - did this split('\n') list end in the EOF sentinel?
 #    create_section_at_eof     - shared "heading missing, append it at EOF" tail
+#    append_block_at_eof       - the same tail for a non-'## Heading' fragment (a title, a
+#                                 purpose block)
+#    replace_section_content   - REPLACE (not append) a `## Heading` section's whole
+#                                 content, or create it - shared by person.py's whole-
+#                                 section edit and write_generated_region below
 #    append_paragraph_to_section - add a paragraph at a `## Heading`'s end (shared by
 #                                 person edit/note + source note; CRLF-safe, bounded)
 #    split_log_entries         - an append-log section's entries (paragraph runs)
@@ -214,6 +219,31 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    stub_filename             - {surname}__{given}_{P-id}.md, the stub naming grammar
 #    render_stub_content       - the stub frontmatter text `fha stubs`/`fha person new` write
 #
+#  Purpose blocks (SPEC §16a, #75) - the visible "what is this file" blockquote
+#    PERSON_PURPOSE_BLOCK, SOURCE_PURPOSE_BLOCK, RESEARCH_PURPOSE_BLOCK,
+#    VIEW_PURPOSE_BLOCKS - the wording, one per record/view kind (RESEARCH_
+#                                 PURPOSE_BLOCK is folded into the research
+#                                 template/fallback below, not stamped by a
+#                                 renderer here - see research_template_text)
+#
+#  Person record body scaffold (SPEC §16, #75/#76)
+#    PERSON_SOURCES_PLACEHOLDER - the `## Sources` pre-refresh placeholder text
+#    PERSON_BODY_SECTIONS_TEXT - the four hand-written sections' opening text, VERBATIM
+#                                 from the template (nothing parameterized - not rendered)
+#    _split_body_sections, PERSON_BODY_SECTIONS - the same text parsed into per-heading
+#                                 (heading, content) pairs, for the additive backfill below
+#    render_person_body_scaffold - full body for a BRAND-NEW record (`fha person new`/`fha stubs`)
+#    ensure_person_body_sections - ADDITIVELY backfill a pre-#76 record's missing pieces
+#                                 (`fha person promote`); never touches what is already there
+#
+#  GENERATED-BEGIN/END regions (SPEC §21b, #76) - a section-scoped sibling of the
+#  whole-file GENERATED header below; see the block comment above these for how the two
+#  (and the AI-DRAFT/AI-ACCEPTED pair) are three deliberately different conventions
+#    generated_region_markers  - (begin_line, end_line) for one named region
+#    render_generated_region   - one region's full text: markers + a visible notice + body
+#    write_generated_region    - rewrite a `## Heading` section as one region, in place
+#                                 or newly created (views.py's inline `## Sources` writer)
+#
 #  Ahnentafel derivation + stub promotion (the shared promote engine)
 #    resolve_root_generation   - validate fha.yaml root_generation: 'self'|'children' (#72)
 #    root_generation_seed_position - 'self'|'children' → the seed position (1 or 2)
@@ -226,12 +256,16 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    research_template_text / render_research_content - the SPEC §16 research scaffold
 #    research_companion_filename - {slug}_{P-id}.md → {slug}_research_{P-id}.md
 #    PromotionError            - promotion refused/failed (rolled back), plain message
-#    promote_person_record     - the ONE engine: tier flip + move + research scaffold,
-#                                 transactional, shared by person promote and
-#                                 views brackets --fix-promote
+#    promote_person_record     - the ONE engine: tier flip + body-section backfill + move
+#                                 + (optional) research-companion move, transactional,
+#                                 shared by person promote and views brackets --fix-promote
 #    relocate_person_in_index  - rewrite every path-keyed index row after a record move
 #    sync_generated_view_rows  - keep notes_fts/person_files in step with the
 #                                 companion views `fha views` writes and deletes
+#    resync_person_profile_rows - the profile-content twin of the above: keep
+#                                 notes_fts current after a surgical in-place
+#                                 profile edit (the ## Sources region, #76)
+#                                 without staling the freshness watermark
 #    extract_tokens            - (id, display, fragment, span) per citation token
 #    extract_token_ids         - the IDs of all citation tokens in a text block
 #    extract_bare_ids          - all bare IDs from a text block
@@ -3243,6 +3277,114 @@ def create_section_at_eof(
     return base
 
 
+def append_block_at_eof(lines: list[str], block_text: str, cr: str) -> list[str]:
+    """EOF-append a block that is NOT a `## Heading` section - an H1 title, a
+    purpose blockquote (SPEC §16a, #75) - with the same spacing rule
+    `create_section_at_eof` uses for a section (exactly one blank-line
+    separator from whatever came before, the file's own trailing-newline
+    convention restored afterward). Generalizes that function past its
+    `## {heading_text}` assumption so a non-section fragment gets the same
+    safe EOF-append instead of a second, slightly different copy of the
+    spacing logic living beside it."""
+    ends_nl = lines_end_with_newline(lines)
+    base = list(lines[:-1]) if ends_nl else list(lines)
+    if base and base[-1].strip() != '':
+        base.append(cr)
+    base.extend(f'{ln}{cr}' for ln in block_text.split('\n'))
+    if ends_nl:
+        base.append('')
+    return base
+
+
+# A level-2 (`## `) heading line, ONLY - deliberately NOT the module-level
+# `_SECTION_HEADING_RE` name (redefined further down this file for an
+# unrelated `#{1,2}` - H1-or-H2 - purpose; the later assignment wins at call
+# time for every reader of that name, `section_bounds` included, so nothing
+# here may rely on it meaning "## only"). Using that name here would treat
+# the body's own H1 title as if it were the first `## ` section, splicing a
+# new section in ABOVE the title instead of below it.
+_LEVEL2_HEADING_ONLY_RE = re.compile(r'^##\s+\S')
+
+
+def _create_section_before_first_heading(
+    lines: list[str], body_start: int, heading_text: str, body_text: str, cr: str,
+) -> list[str]:
+    """Insert a NEW `## {heading_text}` section as the body's FIRST level-2
+    heading - spliced in right before whatever `## ` section currently comes
+    first - or at EOF (`create_section_at_eof`) when the body carries no
+    `## ` heading at all yet, where "first" and "EOF" are the same place.
+
+    Used for a GENERATED-BEGIN/END region whose position SPEC fixes (§16:
+    `## Sources` sits first among the profile's `##` headings, right after
+    the H1/summary block) rather than "wherever a human happened to leave
+    room" - unlike an ordinary hand-edited section (`fha person edit`),
+    which has no positional requirement and belongs at EOF when it must be
+    created. Without this, a pre-#76 curated profile - Biography/Stories/etc.
+    already on disk, no `## Sources` heading yet - gets its first-ever
+    `## Sources` region bolted onto the very end of the file instead of onto
+    the top, on the very first `fha views sources-index` run."""
+    insert_at = None
+    for i in range(body_start, len(lines)):
+        if _LEVEL2_HEADING_ONLY_RE.match(lines[i]):
+            insert_at = i
+            break
+    if insert_at is None:
+        return create_section_at_eof(lines, heading_text, body_text, cr)
+    before = list(lines[:insert_at])
+    if before and before[-1].strip() != '':
+        before.append(cr)
+    block = [f'## {heading_text}{cr}']
+    block.extend(f'{ln}{cr}' for ln in body_text.split('\n'))
+    block.append(cr)   # blank-line separator before the heading that follows
+    return before + block + lines[insert_at:]
+
+
+def replace_section_content(
+    lines: list[str], body_start: int, heading_text: str, new_text: str, cr: str,
+    *, position: str = 'eof',
+) -> tuple[list[str], bool, str]:
+    """Replace a `## {heading_text}` section's ENTIRE content with `new_text`,
+    or create the heading when it does not exist yet - the shared REPLACE-mode
+    engine behind `person.py`'s `_replace_section` (a human's `fha person
+    edit` whole-section replace) and `write_generated_region` below (a
+    machine-owned section like `## Sources`, rewritten wholesale on every
+    view refresh). Returns `(new_lines, created, old_content)` in the same
+    shape as `append_paragraph_to_section` - `created` is True when the
+    heading had to be appended; `old_content` is the section's PRIOR text.
+    Unlike append, nothing about the prior content survives: REPLACE means
+    replace, which is exactly what a regenerated region needs (the caller
+    decides whether replacing is safe to do at all - a human prose section
+    vs. a machine-owned region - this function only knows how).
+
+    `position` decides WHERE a missing heading is created: `'eof'` (default,
+    what `_replace_section` wants - an arbitrary hand-edited section has no
+    fixed position) or `'first'` (what `write_generated_region` wants for
+    `## Sources` - see `_create_section_before_first_heading`). Only matters
+    when the heading does not already exist; replacing an existing section
+    never moves it."""
+    located = section_bounds(lines, body_start, heading_text)
+    body_text = new_text.strip('\n')
+    if located is None:
+        if position == 'first':
+            new_lines = _create_section_before_first_heading(
+                lines, body_start, heading_text, body_text, cr)
+        else:
+            new_lines = create_section_at_eof(lines, heading_text, body_text, cr)
+        return new_lines, True, ''
+
+    _, content_start, content_end = located
+    old_content = '\n'.join(lines[content_start:content_end])
+    has_next = content_end < len(lines)
+    new_lines = list(lines[:content_start])
+    new_lines.extend(f'{ln}{cr}' for ln in body_text.split('\n'))
+    if has_next:
+        new_lines.append(cr)             # a real blank-line separator - more follows
+    elif lines_end_with_newline(lines):
+        new_lines.append('')             # the file's own end-of-file sentinel, restored
+    new_lines.extend(lines[content_end:])
+    return new_lines, False, old_content
+
+
 def append_paragraph_to_section(
     lines: list[str], body_start: int, heading_text: str, paragraph: str, cr: str,
 ) -> tuple[list[str], bool, str]:
@@ -5139,6 +5281,108 @@ def write_generated_file(
     return out_path
 
 
+# ── GENERATED-BEGIN/END regions (SPEC §21b, #76) ──────────────────────────────
+# A SECOND, deliberately different generated-content convention from the
+# whole-file `<!-- GENERATED ... -->` header above. Read this block before
+# touching either - the two look similar (both start `<!-- GENERATED`) but
+# answer different questions and must not be confused:
+#
+#   - The whole-file header (GENERATED_PREFIX, is_generated_text,
+#     write_generated_file) marks an ENTIRE companion FILE as tool-owned -
+#     `fha views clean` may delete the whole thing, because nothing else in
+#     it is anyone's.
+#   - A GENERATED-BEGIN/END region instead marks ONE SECTION inside an
+#     otherwise human-owned file - a curated person's `## Sources` list is
+#     derived (every source with >=1 claim naming them), so it has to live
+#     inside their profile as a region, not a whole file, if it is going to
+#     live inside the profile at all (#76). The region is rewritten in place
+#     on every refresh and is NEVER deleted - deleting it would take the
+#     rest of the human's file with it, so `views clean`'s file-level sweep
+#     must never even consider a profile a candidate (it naturally does not:
+#     ownership there is judged by the FILE's first line, which for a
+#     profile is always its frontmatter fence, never a region marker).
+#
+# It is also unrelated to the AI-DRAFT/AI-ACCEPTED marker pair (SPEC §6,
+# `strip_unaccepted_drafts` above): that ONE marker sits at the END of the
+# prose span it covers (back to the previous boundary - an earlier marker,
+# or a `#`/`##` heading) and marks AI-DRAFTED PROSE awaiting human review,
+# stripped before publication once accepted or dropped if never accepted. A
+# GENERATED-BEGIN/END region is an explicit BEGIN/END pair (not one marker
+# implying a span backwards), marks MACHINE-DERIVED DATA that is never
+# "reviewed" or "accepted" the way a draft is (there is nothing to accept -
+# it is a citation index, not an assertion), and is never stripped: it is
+# always present once a section has been through one refresh. Three
+# conventions, three different jobs - do not reach for one to do another's.
+
+def generated_region_markers(region_name: str, subcommand: str, date: str) -> tuple[str, str]:
+    """(begin_line, end_line) for one GENERATED-BEGIN/END region.
+
+    `region_name` is the region's own name (today: only 'sources-index'),
+    distinct from `subcommand` (the `fha` command that rebuilt it) so a
+    future region kind rebuilt by more than one command still names itself
+    consistently. Both are plain words, never re-parsed by tooling - a
+    region is found by ITS HEADING (`section_bounds`), the same way any
+    other `## ` section is, so nothing here needs to survive a regex
+    round-trip; the marker text is for a human reading the raw file."""
+    return (
+        f'<!-- GENERATED-BEGIN {region_name} by {subcommand} on {date} -->',
+        f'<!-- GENERATED-END {region_name} -->',
+    )
+
+
+def render_generated_region(region_name: str, subcommand: str, body: str) -> str:
+    """Render one region's full text: BEGIN marker, a VISIBLE one-line notice,
+    the body, END marker.
+
+    The visible notice exists for the same reason #75 exists at all: the
+    HTML-comment markers are invisible in Obsidian preview, the generated
+    site, or GitHub - exactly where a reader would need the warning most.
+    Introducing a brand-new generated-content convention that repeated that
+    exact mistake would be perverse, so the notice is real markdown text
+    inside the region, not just a comment framing it.
+    """
+    begin, end = generated_region_markers(
+        region_name, subcommand, datetime.date.today().isoformat())
+    notice = f'*(Generated by `{subcommand}` - do not edit; regenerate instead.)*'
+    parts = [begin, '', notice]
+    body = body.strip('\n')
+    if body:
+        parts += ['', body]
+    parts += ['', end]
+    return '\n'.join(parts)
+
+
+def write_generated_region(
+    text: str, *, heading: str, region_name: str, subcommand: str, body: str,
+) -> tuple[str, bool]:
+    """Rewrite a `## {heading}` section as one GENERATED-BEGIN/END region -
+    in place if the heading already exists (whatever else was in that
+    section is replaced outright: this section's ENTIRE content IS the
+    region, by construction - nothing else is ever meant to live there), or
+    inserted as the body's FIRST `## ` heading if it is missing (an old
+    record from before this section existed, or a hand-made one) -
+    `position='first'` (see `replace_section_content`), not EOF: SPEC §16
+    places `## Sources` first among a profile's `##` headings, right after
+    the H1/summary block, so a pre-#76 curated record - Biography/Stories/
+    etc. already on disk, no `## Sources` heading yet - gets it inserted at
+    the top on its first `fha views sources-index` run, not bolted onto the
+    very end behind everything a human already wrote.
+
+    Uses `replace_section_content` (REPLACE mode, not append): a region is
+    rewritten wholesale every time, never accumulated onto. Returns
+    `(new_text, created)` - `created` is True only when the heading itself
+    had to be inserted, not merely when the region's content changed.
+    """
+    lines = text.split('\n')
+    bounds = frontmatter_fence_span(lines)
+    body_start = (bounds[1] + 1) if bounds else 0
+    cr = '\r' if lines and lines[0].endswith('\r') else ''
+    region_text = render_generated_region(region_name, subcommand, body)
+    new_lines, created, _old = replace_section_content(
+        lines, body_start, heading, region_text, cr, position='first')
+    return '\n'.join(new_lines), created
+
+
 # ── Single-file HTML rendering (views companions + photoindex gallery) ─────────
 # The standalone-page shell is shared by `fha views --format html` and `fha
 # photoindex gallery`: both inline the same design/view.css subset, both load a
@@ -5974,6 +6218,329 @@ def render_stub_content(
     return '\n'.join(lines) + '\n'
 
 
+# ── Purpose blocks (SPEC §16a, #75) ────────────────────────────────────────────
+# A short VISIBLE blockquote - real markdown, not an HTML comment - opening
+# every document `fha` writes or scaffolds, answering three things: what this
+# file is, who writes it, what to do instead if that isn't you. The problem
+# it fixes: the whole-file `<!-- GENERATED ... -->` header (above) and the
+# `<!-- private -->` fence are both HTML comments, invisible in Obsidian
+# preview, the generated site, or GitHub - exactly where a reader who most
+# needs the warning will not see it. A human-written file carried no marker
+# at all. This block is ADDITIONAL, never a replacement: the GENERATED header
+# stays exactly where it is (it is what `fha views clean` reads - a
+# machine-readable ownership signal has to survive a human rewording the
+# visible prose beside it), and every publication path (`fha site`, `fha
+# packet`) strips this block before output - it is scaffolding for the
+# working archive, not content meant for the family (see `packet.py`'s
+# `_strip_scaffolding_blocks`, the sibling of its existing AI-DRAFT stripper).
+
+SOURCE_PURPOSE_BLOCK = (
+    "> **This source's record - yours to write.** The citation and claims for "
+    "one piece\n"
+    "> of evidence. `fha process` scaffolded this file; everything below is "
+    "yours to\n"
+    "> correct and add to."
+)
+
+# #75's stated scope names the `_research` companion explicitly alongside
+# person/source records - it is optional (#76: no longer auto-created), but
+# when one does exist it is scaffolding for the working archive exactly like
+# the other two, so it gets the same visible blockquote. Folded into
+# `RESEARCH_TEMPLATE_FALLBACK`/`_TEMPLATE.research.md`'s body below, not a
+# separate insertion point, since `render_research_content` already reads
+# whichever of those two supplies the body text.
+RESEARCH_PURPOSE_BLOCK = (
+    "> **This person's research workspace - yours to write.** An OPTIONAL "
+    "companion\n"
+    "> file for notes that outgrow the `## Research Notes` section on the "
+    "person's own\n"
+    "> record - most people never need one. Open questions, leads, and "
+    "half-proven\n"
+    "> hunches belong here; nothing in this file is a claim until it is "
+    "cited on a\n"
+    "> source record."
+)
+
+# keyed by the `fha views` subcommand that rebuilds each kind - `_gen_header`
+# already takes the same string, so the two stay parallel. `sources-index`
+# here is the COUPLE-FOLDER form only (`--couple-folders`): the per-person
+# form no longer writes a separate file at all (#76 - see `write_generated_
+# region`/PERSON_SOURCES_PLACEHOLDER above), so it needs no block of its own.
+VIEW_PURPOSE_BLOCKS: dict[str, str] = {
+    'timeline': (
+        "> **Generated view - do not edit.** A timeline of accepted claims "
+        "naming this\n"
+        "> person, rebuilt by `fha views timeline`. Your edits are overwritten "
+        "on the next\n"
+        "> refresh; to change what appears, edit the claim on its source "
+        "record or the\n"
+        "> person's own record."
+    ),
+    'draft-queue': (
+        "> **Generated view - do not edit.** The accepted sources not yet "
+        "cited in this\n"
+        "> person's profile, rebuilt by `fha views draft-queue`. Your edits "
+        "are overwritten\n"
+        "> on the next refresh; write the citation into the profile to clear "
+        "an entry."
+    ),
+    'sources-index': (
+        "> **Generated view - do not edit.** Every source touching someone in "
+        "this couple's\n"
+        "> folder, rebuilt by `fha views sources-index --couple-folders`. "
+        "Your edits are\n"
+        "> overwritten on the next refresh; the list follows the underlying "
+        "claims\n"
+        "> automatically."
+    ),
+}
+
+
+# ── Person record body scaffold (SPEC §16, #75/#76) ────────────────────────────
+# Every person record - stub or curated alike, per #76's "one shape at every
+# tier" - is scaffolded with the same full body: a visible purpose block
+# (#75), the machine-owned `## Sources` section, then the four hand-written
+# sections `_TEMPLATE.person.md` already teaches. A stub's sections open
+# EMPTY; a human fills them in as they research - the sections never change
+# shape between tiers, only their content does.
+#
+# The four hand-written sections' opening text never varies per person - it
+# is identical boilerplate every time, nothing parameterized - so unlike the
+# frontmatter (`render_stub_content`, real substitution: id/name/dates) there
+# is no renderer for it to drift from a hand-authored copy of the same
+# wording: `PERSON_BODY_SECTIONS_TEXT` below simply IS that text, byte for
+# byte the template's own `## Biography` onward (owner simplification,
+# 2026-08). `render_person_body_scaffold` is the assembler for a BRAND-NEW
+# record (`fha person new`, `fha stubs`) - purpose block + `## Sources`
+# placeholder + this constant, nothing rendered. `ensure_person_body_sections`
+# is the ADDITIVE backfill `fha person promote` runs so a record promoted
+# from a pre-#76 stub (or one built by hand) ends up with the same shape a
+# new one already has, without touching a byte of anything the human already
+# wrote - it needs each section's text ADDRESSABLE on its own (to check "is
+# THIS one already there"), so `_split_body_sections` parses the same flat
+# constant into that shape once, at import time: one source of truth
+# (PERSON_BODY_SECTIONS_TEXT), never two hand-kept copies to drift apart.
+# `tests/test_templates.py` checks PERSON_BODY_SECTIONS_TEXT against
+# `_TEMPLATE.person.md` for exact equality (not just matching headings), so
+# it cannot silently drift from the template either - the same discipline
+# `render_stub_content` and `process._scaffold_text` keep with their own
+# templates, applied here with the text itself as the shared source instead
+# of a renderer.
+
+PERSON_PURPOSE_BLOCK = (
+    "> **This person's record - yours to write.** The main page for this person: "
+    "summary,\n"
+    "> biography, relationships. The `## Sources` list below is generated - "
+    "regenerate it\n"
+    "> with `fha views sources-index`, never edit it by hand. Everything else here "
+    "is\n"
+    "> yours; working notes go in `## Research Notes` below, or in a separate "
+    "`_research`\n"
+    "> file if this person's research grows large enough to want one of its own."
+)
+
+# The `## Sources` heading's content before the first `fha views sources-index`
+# refresh has ever run - plain placeholder text, not a region: writing a fake
+# region here (with today's date, an empty body) would claim a refresh already
+# happened when none has. `write_generated_region` replaces this outright the
+# first time a real refresh runs, the same way any other placeholder section
+# content is replaced (SPEC's `*(none yet)*` convention, matched exactly so
+# `_extract_section`/`append_paragraph_to_section` read it as empty too).
+PERSON_SOURCES_PLACEHOLDER = (
+    '*(none yet - regenerate with `fha views sources-index`.)*'
+)
+
+# The four hand-written sections' opening text, VERBATIM from
+# `_TEMPLATE.person.md` (`## Biography` through EOF) - adapted only where the
+# template's OWN wording assumed a human was hand-copying the file (e.g.
+# "delete this line as you add your own" reads fine either way, so it is
+# kept verbatim, unchanged from before this constant existed). Cross-checked
+# for byte equality against the template by `tests/test_templates.py`.
+PERSON_BODY_SECTIONS_TEXT = '''## Biography
+Write their story in plain sentences. Uncited prose is welcome - it's story and
+context, never treated as proven fact. Mark anything you mean to back up later
+with `(TODO: import source)` and a tool will keep it on a gentle to-do list.
+
+## Stories
+*(none yet)*
+
+## Research Notes
+Open questions, hunches, and brick walls - where to look next. (Delete this line
+as you add your own.) This section is public by default; to keep a single note out
+of a shared copy, wrap it in a private fence like the example below.
+
+<!-- private -->
+A hunch you're not ready to publish - say, a possible tie to a living relative.
+This block stays in your local `--linked` preview but is dropped from the shared
+(standalone) site.
+<!-- /private -->
+
+## Friends & Family
+People connected to them who aren't blood relatives - neighbors, business
+partners, the family they boarded with. Type [[ and pick a name to link.
+'''
+
+_BODY_SECTION_HEADING_RE = re.compile(r'^## (.+)$')
+
+
+def _split_body_sections(text: str) -> tuple[tuple[str, str], ...]:
+    """Split back-to-back `## Heading` sections into (heading, content)
+    pairs, each content stripped of its separating blank line(s).
+
+    The mechanical reader for `PERSON_BODY_SECTIONS_TEXT`: run once at
+    import time (below) so `ensure_person_body_sections` gets a per-heading
+    view of that same flat constant without a second, hand-kept copy of the
+    same wording to drift out of step with it. Not `section_bounds` - that
+    one is built to find ONE named heading inside a much bigger file (a
+    whole person record, searched from `body_start`); this walks every
+    heading in a small, self-contained, already-`## `-only text in one
+    pass."""
+    lines = text.split('\n')
+    starts = [i for i, ln in enumerate(lines) if _BODY_SECTION_HEADING_RE.match(ln)]
+    pairs = []
+    for idx, i in enumerate(starts):
+        heading = _BODY_SECTION_HEADING_RE.match(lines[i]).group(1).strip()
+        end = starts[idx + 1] if idx + 1 < len(starts) else len(lines)
+        content = '\n'.join(lines[i + 1:end]).strip('\n')
+        pairs.append((heading, content))
+    return tuple(pairs)
+
+
+# heading -> the placeholder body text a fresh section opens with - DERIVED
+# from PERSON_BODY_SECTIONS_TEXT above, not a second hand-authored copy of it.
+PERSON_BODY_SECTIONS: tuple[tuple[str, str], ...] = _split_body_sections(PERSON_BODY_SECTIONS_TEXT)
+
+# The stable substring `ensure_person_body_sections` greps for to decide
+# whether a record already carries the purpose block - short and specific
+# enough that a human's own unrelated blockquote will not false-positive,
+# without requiring an exact byte-for-byte match against PERSON_PURPOSE_BLOCK
+# (which would false-NEGATIVE on a block a human lightly reworded, and insert
+# a confusing duplicate).
+_PERSON_PURPOSE_SIGNATURE = "This person's record"
+
+
+def render_person_body_scaffold(name: str) -> str:
+    """The full body for a BRAND-NEW person record - title through Friends &
+    Family - nothing assumed to exist yet. `fha person new` and `fha stubs`
+    append this straight onto `render_stub_content`'s frontmatter, so a fresh
+    stub carries the complete #76 shape from the moment it is minted, not
+    just once someone promotes it.
+
+    Only the title and the purpose block are actually assembled here - the
+    four hand-written sections are `PERSON_BODY_SECTIONS_TEXT` concatenated
+    straight on, unchanged, since nothing in them is parameterized (owner
+    simplification, 2026-08)."""
+    header = (f'# {name}\n\n{PERSON_PURPOSE_BLOCK}\n\n'
+              f'## Sources\n{PERSON_SOURCES_PLACEHOLDER}\n\n')
+    return header + PERSON_BODY_SECTIONS_TEXT
+
+
+_TITLE_LINE_RE = re.compile(r'^#[ \t]\S')
+
+
+def _find_title_line_index(lines: list[str], body_start: int) -> int | None:
+    """The line index of the body's H1 title (`# ...`, never `## ...`), or
+    None if it has none - the per-line twin of the `re.search(r'^#[ \\t]\\S',
+    ...)` substring test `ensure_person_body_sections` used to run against
+    the whole joined body; needed as a line index (not a boolean) once that
+    function has to say WHERE to insert relative to the title, not just
+    whether one exists."""
+    for i in range(body_start, len(lines)):
+        if _TITLE_LINE_RE.match(lines[i]):
+            return i
+    return None
+
+
+def _insert_block_at_line(lines: list[str], at: int, block_text: str, cr: str) -> list[str]:
+    """Splice `block_text` in as new lines at line index `at`, adding exactly
+    one blank-line separator on either side wherever content already touches
+    that point - the non-heading counterpart to `create_section_at_eof`
+    (which always lands at EOF): used to insert a title or purpose block at a
+    fixed point INSIDE the body, since neither one is a `## ` section
+    `section_bounds` can locate or `create_section_at_eof` can append after
+    without risking it landing inside whatever section currently happens to
+    be last on disk."""
+    before = list(lines[:at])
+    after = lines[at:]
+    if before and before[-1].strip() != '':
+        before.append(cr)
+    block = [f'{ln}{cr}' for ln in block_text.split('\n')]
+    if after and after[0].strip() != '':
+        block.append(cr)
+    return before + block + after
+
+
+def ensure_person_body_sections(text: str, name: str) -> tuple[str, list[str]]:
+    """Additively bring an EXISTING person record's body up to the same full
+    shape `render_person_body_scaffold` gives a brand-new one.
+
+    Used by `fha person promote`: a stub minted before #76 (or one a human
+    started by hand) may carry no body at all, or only some of it - a
+    Biography written before promotion, say. This appends whatever piece is
+    MISSING, and never touches a byte of anything already there: presence is
+    checked per piece (`section_bounds` for the four `##` sections and `##
+    Sources`; a plain substring test for the title and the purpose block,
+    which are not `## ` sections) rather than assumed from the record's age,
+    so a record that already has everything comes back byte-identical - a
+    true no-op, not a rewrite that happens to look the same.
+
+    The title and the purpose block are INSERTED at a fixed point (the very
+    top of the body; right after the title, respectively) rather than
+    appended at EOF like the four hand-written sections below: unlike those,
+    neither one carries a `## ` heading of its own to bound it, so appending
+    either at EOF - wherever that currently is - would land it with no
+    heading marking it off, silently merging into the CONTENT of whatever
+    section already happens to be last on disk (a purpose block appended
+    after an existing `## Biography` reads, to `section_bounds`/`fha site`/
+    the very `fha packet` stripper meant to remove it, as more Biography
+    prose - exactly the scaffolding-leaks-into-publication failure #75/§21b
+    exists to prevent). `## Sources` gets the equivalent fix via
+    `_create_section_before_first_heading` - SPEC §16 places it first among
+    the profile's `##` headings, not merely "somewhere."
+
+    One deliberate consequence remains, for the four hand-written sections
+    only: if `## Biography` (say) already exists but `## Stories` does not,
+    `## Stories` is appended at EOF - AFTER whatever survived in place - so
+    the result is not always in the canonical top-to-bottom order
+    `render_person_body_scaffold` would produce from scratch. That is
+    accepted on purpose: reordering a human's existing prose to fix cosmetic
+    ordering is a worse trade than a section landing lower than it ideally
+    would (unlike the title/purpose-block/Sources case above, a missing `##`
+    section landing late is still its OWN clearly-headed section, never
+    silently absorbed into another one's content).
+
+    Returns `(new_text, added)` - `added` names which pieces were appended
+    (for a promote-time message), empty when nothing was missing.
+    """
+    lines = text.split('\n')
+    bounds = frontmatter_fence_span(lines)
+    body_start = (bounds[1] + 1) if bounds else 0
+    cr = '\r' if lines and lines[0].endswith('\r') else ''
+    added: list[str] = []
+
+    def _body_text() -> str:
+        return '\n'.join(lines[body_start:])
+
+    if _find_title_line_index(lines, body_start) is None:
+        lines = _insert_block_at_line(lines, body_start, f'# {name}', cr)
+        added.append('title')
+    if _PERSON_PURPOSE_SIGNATURE not in _body_text():
+        title_idx = _find_title_line_index(lines, body_start)
+        insert_at = title_idx + 1 if title_idx is not None else body_start
+        lines = _insert_block_at_line(lines, insert_at, PERSON_PURPOSE_BLOCK, cr)
+        added.append('purpose block')
+    if section_bounds(lines, body_start, 'Sources') is None:
+        lines = _create_section_before_first_heading(
+            lines, body_start, 'Sources', PERSON_SOURCES_PLACEHOLDER, cr)
+        added.append('Sources')
+    for heading, placeholder in PERSON_BODY_SECTIONS:
+        if section_bounds(lines, body_start, heading) is None:
+            lines = create_section_at_eof(lines, heading, placeholder, cr)
+            added.append(heading)
+
+    return '\n'.join(lines), added
+
+
 # ── Ahnentafel derivation + stub promotion (the shared promote engine) ────────
 #
 # The Ahnentafel walk (SPEC §12.2) and the "graduate a stub to curated"
@@ -6266,12 +6833,15 @@ def couple_folder_for_prefix(archive_root: str | Path, prefix: int) -> Path | No
 
 # The built-in research scaffold, used when no _TEMPLATE.research.md is found
 # (an archive installed before the template shipped). Kept in step with
-# archive-template/people/_TEMPLATE.research.md by tests/test_person.py; the
-# section set is SPEC §16's research-file body verbatim.
-RESEARCH_TEMPLATE_FALLBACK = '''---
+# archive-template/people/_TEMPLATE.research.md by tests/test_templates.py
+# (ScaffoldParityTests); the section set is SPEC §16's research-file body
+# verbatim, now including RESEARCH_PURPOSE_BLOCK (#75).
+RESEARCH_TEMPLATE_FALLBACK = f'''---
 id: P-__________
 created: 2026-01-01
 ---
+
+{RESEARCH_PURPOSE_BLOCK}
 
 ## Research Notes
 
@@ -6318,12 +6888,20 @@ def render_research_content(pid: str, archive_root: str | Path) -> str:
     hand-instruction comments stripped.
 
     The template doubles as a hand-copy seed (its `#` comment lines teach a
-    human what the file is for) and the machine scaffold `fha person promote`
-    writes; the machine copy substitutes the `P-__________` placeholder and
-    the `created:` date and drops the frontmatter's full-line comments, so a
-    scaffolded file starts clean while the template stays instructive.
-    Comment-stripping is bounded to the frontmatter on purpose: in the body a
-    leading `#` is a markdown heading, not a comment."""
+    human what the file is for) and a machine scaffold; the machine copy
+    substitutes the `P-__________` placeholder and the `created:` date and
+    drops the frontmatter's full-line comments, so a scaffolded file starts
+    clean while the template stays instructive. Comment-stripping is bounded
+    to the frontmatter on purpose: in the body a leading `#` is a markdown
+    heading, not a comment.
+
+    Not called by `fha person promote`'s default path since #76 - the
+    separate research file is now an OPTIONAL escape valve (SPEC §16), not
+    something every promotion scaffolds - but kept as the one correct
+    renderer for anyone who does want one: a human copies
+    `_TEMPLATE.research.md` by hand exactly as before, and this function
+    stays available for a future opt-in path to use rather than reinventing
+    the same substitution."""
     text = research_template_text(archive_root)
     text = re.sub(r'^id:.*$', f'id: {fmt_id_display(pid)}', text, count=1, flags=re.M)
     text = re.sub(r'^created:.*$', f'created: {datetime.date.today().isoformat()}',
@@ -6375,18 +6953,27 @@ def promote_person_record(
     """Promote one stub person record to curated - the ONE mutation engine
     behind `fha person promote` and `fha views brackets --fix-promote`.
 
-    Three writes, applied together or not at all:
+    Up to four writes, applied together or not at all:
       1. flip the record's `tier:` to curated (surgical single-line edit,
          vetted by `frontmatter_edit_problem` before anything is written);
-      2. move the record file into `dest_folder` when it currently sits in a
+      2. backfill the record's BODY with any of the #76 §16 sections it is
+         still missing (`ensure_person_body_sections` - purely additive,
+         never touches frontmatter or anything already written; see its own
+         docstring). A stub minted since #76 already carries every section,
+         so this is a no-op for it; a pre-#76 (or hand-made) stub gets the
+         same full shape a freshly-minted one already has;
+      3. move the record file into `dest_folder` when it currently sits in a
          reserved folder (people/stubs/ or people/connections/) or loose under
          people/ - the one sanctioned tool move out of stubs/ (TOOLING §5's
          carve-out); a record already inside `dest_folder` is left in place;
-      3. settle the `_research` companion (SPEC §16): if a hand-written one
-         already sits beside the SOURCE record and the record is moving, MOVE
-         it to the destination so its notes travel with the record; if one
-         already sits at the destination, leave it; otherwise scaffold a fresh
-         blank one from the `_TEMPLATE.research.md` grammar.
+      4. settle the OPTIONAL `_research` companion (SPEC §16): if a hand-
+         written one already sits beside the SOURCE record and the record is
+         moving, MOVE it to the destination so its notes travel with the
+         record; if one already sits at the destination, leave it. **Never
+         auto-created** (#76 - the separate research file is an escape valve
+         for a person's research outgrowing their `## Research Notes`
+         section, not a default every promotion scaffolds; a human who wants
+         one still copies `_TEMPLATE.research.md` by hand, exactly as today).
 
     Steps already satisfied are skipped, so the engine is idempotent and also
     FINISHES a half-promotion (a record hand-flipped to curated but still
@@ -6394,18 +6981,24 @@ def promote_person_record(
 
     WHY ROLLBACK-BY-HAND rather than a temp-dir dance: the writes touch a
     handful of paths, all inside people/, and each has an exact inverse
-    (rewrite old bytes / move the record back / move the companion back or
-    delete the fresh scaffold / remove the folder this run created). On any
-    OSError the inverses run in reverse order and PromotionError is raised -
-    the archive is never left mid-move.
+    (rewrite old bytes / move the record back / move the companion back /
+    remove the folder this run created). On any OSError the inverses run in
+    reverse order and PromotionError is raised - the archive is never left
+    mid-move. Steps 1 and 2 are folded into ONE write to the profile (both
+    are text edits to the same file), so `text` - captured once, before
+    anything - is what a rollback restores either way, whether the run
+    changed the tier, the body, or both.
 
     The caller owns the DECISION layer: deriving/validating `dest_folder`
     (Ahnentafel, --into), the merged-tombstone and already-curated refusals,
     and every human-facing Result/preview. This function owns the WRITE.
     Returns {'status', 'tier_flip', 'move', 'old_path', 'new_path',
     'research_path', 'research_source_path', 'research_create', 'research_move',
-    'folder_create', 'steps'} - `steps` is the plain-words list a preview
-    prints verbatim. `dry_run` computes the identical plan and writes nothing.
+    'body_sections_added', 'folder_create', 'steps'} - `steps` is the
+    plain-words list a preview prints verbatim; `body_sections_added` names
+    which body pieces this run appended (empty when the record already had
+    them all - see `ensure_person_body_sections`). `dry_run` computes the
+    identical plan and writes nothing.
     """
     pid = normalize_id(pid)
 
@@ -6487,6 +7080,15 @@ def promote_person_record(
                 f'corrupt the record. Open {record_path} and set tier: curated '
                 'by hand, then run `fha lint`. Nothing was written.')
 
+    # ── Plan step 1b: backfill any missing #76 body sections ─────────────────
+    # Additive only (see ensure_person_body_sections's own docstring) and
+    # frontmatter-blind, so it cannot trip the tier-flip guard above and needs
+    # none of its own - there is no "wrong value" to detect, only "missing or
+    # not". Applied to new_text (the post-flip text, or the original text
+    # unchanged when tier was already curated) so both edits land in ONE write.
+    new_text, body_sections_added = ensure_person_body_sections(new_text, name)
+    needs_body_backfill = bool(body_sections_added)
+
     # ── Plan step 2: the move ────────────────────────────────────────────────
     needs_move = record_path.parent.resolve() != dest_folder.resolve()
     new_record_path = (dest_folder / record_path.name) if needs_move else record_path
@@ -6526,18 +7128,19 @@ def promote_person_record(
             'keep the destination file and strand the stub one - with its '
             'notes - under people/stubs/. Merge the notes into one of these two '
             'files, delete the other, then retry. Nothing was written.')
-    # Three mutually exclusive fates for the companion:
-    #   MOVE   - a hand-written companion already sits beside the SOURCE record
-    #            (people/stubs/) and the record is moving. It must travel WITH
-    #            the record; otherwise promotion scaffolds a blank one at the
-    #            destination and strands the populated notes in stubs/, which
-    #            reads as "the notes were lost" and splits the person's files.
-    #   SKIP   - a companion already sits at the DESTINATION (an idempotent
-    #            re-run, or a promote-in-place): leave it exactly as it is.
-    #   CREATE - no companion anywhere: scaffold a fresh blank one.
+    # Two mutually exclusive fates for the companion (#76 - CREATE retired,
+    # the separate research file is opt-in now, never a promotion default):
+    #   MOVE - a hand-written companion already sits beside the SOURCE record
+    #          (people/stubs/) and the record is moving. It must travel WITH
+    #          the record; leaving it behind would read as "the notes were
+    #          lost" and split the person's files across two folders.
+    #   SKIP - a companion already sits at the DESTINATION (an idempotent
+    #          re-run, or a promote-in-place), or there is no companion
+    #          anywhere: either way, nothing to do - the file is left exactly
+    #          as it is (present or absent).
     research_move = (needs_move and source_research_path.exists()
                      and not research_path.exists())
-    research_create = not research_path.exists() and not research_move
+    research_create = False   # #76: never auto-scaffolded; SPEC §16's optional escape valve
 
     # ── The plain-words plan (previews print these verbatim) ─────────────────
     def _rel(p: Path) -> str:
@@ -6549,6 +7152,10 @@ def promote_person_record(
     steps: list[str] = []
     if needs_flip:
         steps.append(f'set tier: stub -> curated in {record_path.name}')
+    if body_sections_added:
+        steps.append(
+            f'add the missing body section(s) to {record_path.name}: '
+            + ', '.join(body_sections_added))
     if needs_move:
         suffix = ' (creating the folder)' if folder_create else ''
         steps.append(f'move {_rel(record_path)} -> {_rel(new_record_path)}{suffix}')
@@ -6556,10 +7163,13 @@ def promote_person_record(
         steps.append(
             f'move the research companion {_rel(source_research_path)} -> '
             f'{_rel(research_path)} (your notes travel with the record)')
-    elif research_create:
-        steps.append(f'create the research companion {_rel(research_path)}')
-    else:
+    elif research_path.exists():
         steps.append(f'research companion already exists ({_rel(research_path)}) - left as is')
+    else:
+        steps.append(
+            'no research companion created - it is optional now (SPEC §16); '
+            'copy people/_TEMPLATE.research.md by hand if this person\'s '
+            'research grows large enough to want one')
 
     plan = {
         'status': 'dry-run' if dry_run else 'ok',
@@ -6571,6 +7181,7 @@ def promote_person_record(
         'research_source_path': source_research_path,
         'research_create': research_create,
         'research_move': research_move,
+        'body_sections_added': body_sections_added,
         'folder_create': folder_create,
         'steps': steps,
     }
@@ -6584,12 +7195,16 @@ def promote_person_record(
     # AFTER the call returns: a raise means the step did not happen, so the
     # rollback correctly skips undoing it - no truncated sole record, no
     # untracked half-written companion file.
-    wrote_flip = moved = wrote_research = made_folder = moved_research = False
+    wrote_flip = moved = made_folder = moved_research = False
     try:
         if folder_create:
             dest_folder.mkdir(parents=True)
             made_folder = True
-        if needs_flip:
+        if needs_flip or needs_body_backfill:
+            # One write covers both edits (see step 1b above) - `wrote_flip`
+            # names "the profile's CONTENT changed", not "the tier changed"
+            # specifically, so the rollback below restores `text` (the
+            # original bytes) whichever - or both - of the two it was.
             write_text_exact_atomic(record_path, reapply_newline(new_text, text))
             wrote_flip = True
         if needs_move:
@@ -6600,10 +7215,6 @@ def promote_person_record(
             # of being re-scaffolded (its inverse restores it to the source dir).
             shutil.move(str(source_research_path), str(research_path))
             moved_research = True
-        elif research_create:
-            write_text_exact_atomic(
-                research_path, render_research_content(pid, archive_root))
-            wrote_research = True
     except OSError as e:
         # Undo in reverse order; best-effort (a rollback failure is reported
         # inside the raised message rather than swallowed). The restore write is
@@ -6619,11 +7230,9 @@ def promote_person_record(
         # curated profile at new_record_path AND a second stub with the same P-id
         # at the old path.
         profile_path = new_record_path if moved else record_path
-        for action in ('research', 'research_move', 'move', 'flip', 'folder'):
+        for action in ('research_move', 'move', 'flip', 'folder'):
             try:
-                if action == 'research' and wrote_research:
-                    research_path.unlink()
-                elif action == 'research_move' and moved_research:
+                if action == 'research_move' and moved_research:
                     shutil.move(str(research_path), str(source_research_path))
                 elif action == 'move' and moved:
                     shutil.move(str(new_record_path), str(record_path))
@@ -6951,6 +7560,96 @@ def sync_generated_view_rows(
     except sqlite3.Error:
         return 'index_error'
     return 'indexed'
+
+
+def resync_person_profile_rows(
+    archive_root: Path, paths: list[Path] | tuple[Path, ...],
+) -> str:
+    """Refresh `notes_fts` for one or more person PROFILES after a surgical
+    in-place content edit - the profile-row twin of `sync_generated_view_rows`
+    (which only ever handles a COMPANION path - `_companion_row` filters on
+    `GENERATED_COMPANION_KINDS`, which a profile's own `kind` is never in) and
+    of `relocate_person_in_index` (which only ever handles a MOVE, not a
+    same-path content change).
+
+    WHY THIS EXISTS: `fha views sources-index <P-id>` (#76) rewrites the `##
+    Sources` region INSIDE the profile - a real content edit to a file the
+    mtime watermark ALWAYS counts (#37 excludes only companions, never
+    profiles). Left alone, that edit correctly stales the index - and then
+    the very next `fha views` call in the same close-out sequence (a
+    `timeline`/`draft-queue` refresh right after, exactly what `review-claims`
+    chains) would refuse on "index is stale" before a human ever gets to run
+    `fha index` by hand. That is a real regression this function closes: a
+    `## Sources` refresh is generated-view content in substance, whatever
+    file it happens to live inside, so it should cost nothing more than a
+    companion write costs - which is exactly the freshness-neutral trade
+    `sync_generated_view_rows` already makes, extended to this one path shape
+    it cannot reach. Rewriting `notes_fts` in place lets the write's own
+    mtime bump `index.sqlite` past the profile's new mtime (the same
+    mechanism `sync_generated_view_rows` relies on), so the freshness check
+    reads 'fresh' immediately afterward - correctly, because the index's
+    STRUCTURED rows (persons, claims, relationships, ...) never changed; only
+    a person record's free-text body did, and that is exactly what
+    `notes_fts` holds.
+
+    Deliberately narrow: only `notes_fts` is touched. `person_files` needs no
+    update (the profile's path and kind never change - only its body did),
+    and `persons` holds structured frontmatter fields this edit never
+    touches. Returns 'indexed', 'index_absent' (no usable index to update -
+    the caller advises `fha index`), or 'index_error' (index present but the
+    write failed, OR a profile's body could not be re-read - see below - so
+    the row is now the stale one, and the caller must say so).
+    """
+    paths = [Path(p) for p in paths]
+    if not paths:
+        return 'indexed'
+    db_path = Path(archive_root) / '.cache' / 'index.sqlite'
+    status, _detail = sqlite_cache_schema_status(
+        db_path, INDEX_SCHEMA_VERSION, ('persons', 'sources', 'claims'))
+    if status != 'fresh' and status != 'stale':
+        return 'index_absent'
+    had_read_error = False
+    try:
+        conn = sqlite3.connect(str(db_path))
+        try:
+            with conn:
+                for path in paths:
+                    try:
+                        rel = str(path.relative_to(archive_root))
+                    except ValueError:
+                        continue   # an external/unresolvable path - nothing to key on
+                    try:
+                        body = read_record(path).get('body') or ''
+                    except Exception:
+                        # A profile can be years old and was never guaranteed
+                        # UTF-8-clean the way a file this process just wrote
+                        # itself is (contrast `sync_generated_view_rows`'s
+                        # `_written_row`, which treats the same shape of
+                        # failure as a low-risk "index it as empty" - that
+                        # precedent does NOT apply here). `read_record`
+                        # deliberately RAISES on a decode error rather than
+                        # returning empty content, specifically so a caller
+                        # cannot silently proceed as if the file were blank
+                        # (see its own docstring) - so this path's EXISTING
+                        # notes_fts row is left untouched rather than wiped,
+                        # and the failure is surfaced (`index_error`) instead
+                        # of reporting a clean success that quietly dropped
+                        # this profile from full-text search.
+                        had_read_error = True
+                        continue
+                    # Delete before rewrite: notes_fts is an FTS5 table with no
+                    # unique key, so a plain insert would stack a second body
+                    # row for the same path on every refresh.
+                    conn.execute('DELETE FROM notes_fts WHERE path=?', (rel,))
+                    if body.strip():
+                        conn.execute(
+                            'INSERT INTO notes_fts(path, content) VALUES (?,?)',
+                            (rel, body))
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return 'index_error'
+    return 'index_error' if had_read_error else 'indexed'
 
 
 # ── Output helpers ────────────────────────────────────────────────────────────

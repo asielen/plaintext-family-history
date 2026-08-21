@@ -292,7 +292,11 @@ Claims live in a fenced ` ```yaml ` block - not because the parser needs the fen
 
 ## 9. Persons `LOCKED`
 
-Two tiers (§4): **stub** - frontmatter only, script-mintable in bulk, a permanent legitimate state - and **curated** - the full file set of §16. **Rule:** every `P-id` referenced anywhere must resolve to at least a stub.
+Two tiers (§4): **stub** - script-mintable in bulk, a permanent legitimate state - and **curated** - actively researched, the full file set of §16. **Rule:** every `P-id` referenced anywhere must resolve to at least a stub.
+
+Stub and curated are the same file shape (§16) - the same frontmatter, the same scaffolded body sections, present from the moment a record is minted. Only the `tier:` flag, the couple-folder placement, and how much of the body a human has actually written distinguish one from the other; promoting a stub to curated never creates a section that was not already there, only moves the file, flips the flag, and fills in whatever the stub had left empty.
+
+*Decision log:* an earlier revision of this section described a stub as "frontmatter only." Changed 2026-08 (#76) - a stub and a curated person became one shape, scaffolded in full at creation (§16), so promotion has nothing structural left to build; it only relocates the file and fills in prose.
 
 **Merging and separating identities.** When two person records prove to be one human: choose a survivor; the other record gains `status: merged`, `merged_into: P-survivor`, `merge_reason:`, `merged_date:` - and its file **persists forever, renamed with a `MERGED-INTO-P-survivor__` prefix** (e.g. `MERGED-INTO-P-de957bcda1__hartley__thomas_P-old.md`) so the tombstone is obvious on disk; IDs never die and every old reference still resolves through the pointer.
 Name variants and external IDs fold into the survivor.
@@ -544,11 +548,13 @@ The ID-in-filename is the **formalized** form, maintained by tools. A record a p
 
 - **Source records:** `{slug}_{S-id}.md` - slug lowercase hyphenated, mutable; ID immutable.
 - **Source files (documents root):** `{slug}[-{copy}][-{role}]_{S-id}.{ext}` - the *source's* ID, shared by all versions. **Photos-root files are never renamed *by us*** (§12.1) - but another system (eg Lightroom, a cleanup pass) may rename or move them, so the filename is **not** a reliable identifier for photos. The durable identity is the embedded `SOURCE:` keyword; the record inventory stores the last-known path as a hint, reconciled by `fha photoindex reconcile` (§ tooling) when files move. **Refile exception (§12.1):** when `fha process refile` carries a file across the roots, the rename happens **at the crossing**, before the file becomes a file of its destination root - a document entering the photos root sheds its `_{S-id}` name (the recorded `original_filename` restored when known), the last legal rename it will ever get; a photo entering the documents root is renamed **into** this grammar at the same moment. Neither case renames a file within its root. Roles: `front`, `back`, `page-N`, `clipping`, `recording`, `transcript`, `translation`… Copies: `b`, `c`, `negative`… Derivative views: `-crop` stacks on any other suffix (`front-crop`, `back-crop`, `negative-crop`) marking supplementary detail images, never independent sources. Note: `-negative` is mutually exclusive with `-front`, `-back`, and `-pageN` - it is the physical film or glass-plate source material for the root image. Suffix parsing priority order: `-crop` stripped first, then part-kind (`-negative` before `-back`/`-front`/`-pageN`), then trailing variant letter; remaining stem = base id (see `TOOLING.md` §6 for the full algorithm). Rarely more than ~3 versions; skimmable by design. (The photo pipeline propagates text between versions - "text from alternate version" tags - so any copy reveals the others.)
-- **Person files:** `{primary_sort_name}__{given_names}[_{kind}]_{P-id}.md` - **double underscore** after the sort name (families sort together), underscores within given names. The **primary sort name** is the birth surname when there is one (keeping women findable under the name in their early records; matching WikiTree practice); where a person has no surname - a mononym, an enslaved ancestor recorded by given name, a patronymic, a foundling - the slot is empty and the filename **leads with the double underscore** (`__caesar_P-….md`, `__jon_thorsson_P-….md`), a distinct no-surname sort group. Two-surname systems put the paternal (or chosen sort) surname in the slot and the full `Apellido1 Apellido2` form in `name`; surname-first cultures sort by the surname slot and display in cultural order via `name`. The full cultural name always lives in `name` / `name_variants` (§9); the filename is only a sort handle. `kind` ∈ `research` | `timeline` | `sources-index` | `draft-queue`. The three **generated** kinds (`timeline`, `sources-index`, `draft-queue`) additionally carry a `view_` marker immediately before the kind word - `{primary_sort_name}__{given_names}_view_{kind}_{P-id}.md`, e.g. `hartley__thomas_edward_view_timeline_P-de957bcda1.md` - chosen because `view` sorts after both the bare profile filename and `research` (#77): without it, the kind word alone decided the sort order and let the disposable `draft-queue` cache land ahead of the person's own record. A folder listing then reads profile, then `research`, then the three generated companions together, below both. `research` carries no marker - it is hand-authored, not generated, and its position is unaffected.
+- **Person files:** `{primary_sort_name}__{given_names}[_{kind}]_{P-id}.md` - **double underscore** after the sort name (families sort together), underscores within given names. The **primary sort name** is the birth surname when there is one (keeping women findable under the name in their early records; matching WikiTree practice); where a person has no surname - a mononym, an enslaved ancestor recorded by given name, a patronymic, a foundling - the slot is empty and the filename **leads with the double underscore** (`__caesar_P-….md`, `__jon_thorsson_P-….md`), a distinct no-surname sort group. Two-surname systems put the paternal (or chosen sort) surname in the slot and the full `Apellido1 Apellido2` form in `name`; surname-first cultures sort by the surname slot and display in cultural order via `name`. The full cultural name always lives in `name` / `name_variants` (§9); the filename is only a sort handle. `kind` ∈ `research` | `timeline` | `draft-queue`. The two **generated** kinds (`timeline`, `draft-queue`) additionally carry a `view_` marker immediately before the kind word - `{primary_sort_name}__{given_names}_view_{kind}_{P-id}.md`, e.g. `hartley__thomas_edward_view_timeline_P-de957bcda1.md` - chosen because `view` sorts after both the bare profile filename and `research` (#77): without it, the kind word alone decided the sort order and let the disposable `draft-queue` cache land ahead of the person's own record. A folder listing then reads profile, then `research`, then the generated companions together, below both. `research` carries no marker - it is hand-authored, not generated, and its position is unaffected. `research` is also the sole OPTIONAL member of this grammar (§16): most people never have one on disk at all.
 
 The deliberate style difference - person files underscored, source files hyphenated - instantly distinguishes record kinds in search results.
 
 *Decision log:* an earlier revision of this section named the three generated companion kinds `{primary_sort_name}__{given_names}_{kind}_{P-id}.md`, with nothing between the given names and the kind word. Changed 2026-08 (#77) - the kind word alone decided sort order, so the disposable `draft-queue` cache sorted ahead of the person's own profile in every folder listing; the `view_` marker fixes the order without touching the profile or `research` filenames.
+
+*Decision log:* `sources-index` was a third generated `kind` here, naming one file per person (`..._view_sources-index_P-xxxx.md`). Retired 2026-08 (#76) - a per-person sources list is now a `## Sources` region generated *inside* the profile itself (a different mechanic, §16/§21b), not a companion file, so it needs no filename of its own. A pre-#76 archive may still carry leftover files in this shape; `fha views clean` still recognizes and removes them by their `GENERATED` header (no backfill/migration tooling touches them otherwise). The couple-folder `sources-index.md` (no `P-id`, one per folder, covering everyone in it) is a different, unaffected mechanism and was never an instance of this per-person grammar.
 
 ## 14. The source record `LOCKED`
 
@@ -602,6 +608,10 @@ files:                        # inventory: roles + provenance
     derived: true             # a derivative, an original in its own right
 created: 2026-06-10
 ---
+
+> Purpose block (§16a, #75): a short visible blockquote, not an HTML comment,
+> stating what this file is and who writes it. Every tool-scaffolded document
+> opens with one.
 
 ## Claims
 (fenced YAML block - §8.4 schema)
@@ -674,14 +684,13 @@ A micro-place earns an L-record by the processing path like everything else: whe
 
 ## 16. The curated person files `LOCKED`
 
-Per the filename grammars of §13, a curated person has, in their couple folder:
+Per the filename grammars of §13, a person - stub or curated alike (§9) - has, in their folder:
 
 | File (`{surname}__{given}…`) | Nature |
 |---|---|
-| `…_P-xxxx.md` | **Curated profile** - the "hand this to grandma" document. |
-| `…_research_P-xxxx.md` | **Working file** - Research Notes, Open Questions, Hypotheses. |
+| `…_P-xxxx.md` | **Profile** - the "hand this to grandma" document. One shape at either tier: a stub and a curated profile scaffold the same sections (§9); only the folder and the `tier:` flag differ, and how much of the body a human has filled in. |
+| `…_research_P-xxxx.md` | **OPTIONAL working file** - Open Questions, Hypotheses, Research Log, plus a `## Research Notes` of its own. An escape valve (§16b) for when the profile's own `## Research Notes` section outgrows itself; most people never have one on disk. |
 | `…_view_timeline_P-xxxx.md` | **Generated** from claims, EDTF-sorted. Never hand-edited. |
-| `…_view_sources-index_P-xxxx.md` | **Generated** list of sources mentioning this person. |
 | `…_view_draft-queue_P-xxxx.md` | **Generated** uncited-claim backlog; consumed by write-biography. Never hand-edited. |
 
 **Profile structure** - frontmatter (§9), then:
@@ -689,17 +698,27 @@ Per the filename grammars of §13, a curated person has, in their couple folder:
 ```markdown
 # Thomas Edward Hartley (1840-1941)
 
+> **This person's record - yours to write.** The main page for this person:
+> summary, biography, relationships. The `## Sources` list below is
+> generated; everything else here is yours.
+
 **Born:** 3 Mar 1840 - Easton, Carrow Co., New York [[S-xxxx]]
 **Died:** 19 Jan 1941 - Riverton, California [[S-xxxx]]
 **Married:** [[P-cd795c61e0|Margaret A. Cole]] - Feb/Mar 1871, Fairview, Kansas [[S-ea61339378]]
 **Parents:** [[P-075114a0f8|Caleb Comstock Hartley]] · [[P-d00c678c1a|Chastina Augusta Reed]]
 **Children:** [[P-c4b26bb4bc|Ethel]] · [[P-83e768cacb|Frances]] · [[P-fa7541e871|Calvin]] · [[P-4b9d197ee4|Edward]]
 
+## Sources
+(generated region, §21b - every source touching this person, from cited claims)
+
 ## Biography
 (chaptered by era/place)
 
 ## Stories
 (the incidental long tail, each linking its source)
+
+## Research Notes
+(open questions, leads, brick walls - see §16b)
 
 ## Friends & Family
 (non-relative connections and context - the FAN club)
@@ -711,7 +730,15 @@ In the body sections, factual statements should carry **all relevant citations**
 
 The summary block is hand-curated denormalization of claims: every line cites; cross-links use `[[P-xxxx]]` links (zero-hop - person filenames carry IDs, so searching the link's ID finds the person). **Tooling cross-checks the block against accepted claims and flags drift.**
 
-The research file body: `## Research Notes`, `## Open Questions`, `## Hypotheses`, `## Research Log`.
+### 16a. The purpose block
+
+Every document a tool writes or scaffolds - a profile, a source record, a generated view, the optional research file - opens its body with a short, **visible** purpose blockquote: real markdown, never an HTML comment, stating what the file is, who writes it, and where to work instead if it isn't the reader. It answers the question a `<!-- GENERATED … -->` header cannot, because an HTML comment is invisible in Obsidian preview, the generated site, and GitHub - exactly where the warning is most needed. The block is scaffolding for the working archive, not content for the family: `fha site` and `fha packet` strip it from anything they render or copy (§21b).
+
+### 16b. `## Research Notes` and the optional research file
+
+Every profile carries its own `## Research Notes` section (above) - open questions, hunches, and brick walls, the lightweight default home for working notes on this person. Most people never need more than that section gives them, so `fha person new`, `fha stubs`, and `fha person promote` no longer create a separate research file by default; it is an **optional escape valve**; a human copies `archive-template/people/_TEMPLATE.research.md` by hand (or a future opt-in tool path) once a person's research genuinely outgrows one section's worth of room.
+
+When a research file does exist, its body is: `## Research Notes`, `## Open Questions`, `## Hypotheses`, `## Research Log` - the overflow desk, not a duplicate of the profile's section. A person with both keeps the profile's `## Research Notes` as the short version and moves active working notes into the research file as they grow; the profile section is never required to stay empty, and tooling never reconciles the two against each other.
 
 **The research log** records searches performed - including empty ones - so no collection is fruitlessly re-searched, and so "reasonably exhaustive" is demonstrable.
 Entries are **dated** (collections grow; a nil from 2024 is worth re-running in 2027) and **primarily tool-fed**: the capture flow, mining passes, and executed `research-next` plans log themselves; manual entries are welcome but never a required ritual.
@@ -727,9 +754,11 @@ Format:
 Multi-person/locality searches log to `notes/research-log.md` with the same format. `research-next` and the report **check the log first** - "already searched (date)" is surfaced before any lead is proposed. **Hypotheses are where unsourced placeholder beliefs live** - a guess is never a claim (claims require sources by definition).
 Structure per hypothesis: `id:` (`H-` per §10), `hypothesis:` (the belief), `basis:` (reasoning/context), `verify:` (what evidence would settle it), `origin:` (`human` | `agent`), `status:` (`open` · `verified → C-xxxx` · `abandoned`).
 On verification, the found source yields a real claim and the hypothesis records the pointer - the guess's life preserved.
-Sources sections are never hand-maintained; they are generated from cited claims.
+The `## Sources` section is never hand-maintained; it is generated from cited claims (§21b).
 
-*Decision log:* the three generated rows in the table above changed 2026-08 (#77) alongside §13's filename grammar - same fix, same reason: a `view_` marker so the three generated companions sort together, below the profile and the research file, instead of the disposable draft-queue cache sorting first.
+*Decision log:* the two generated rows in the table above changed 2026-08 (#77) alongside §13's filename grammar - same fix, same reason: a `view_` marker so the generated companions sort together, below the profile and the research file, instead of the disposable draft-queue cache sorting first.
+
+*Decision log:* changed 2026-08 (#75/#76). Three changes, one PR: (1) the research file dropped from an always-scaffolded companion to the OPTIONAL escape valve described in §16b - `fha person promote` no longer creates one by default; (2) a stub and a curated profile became one shape (§9) - both get every section in "Profile structure" above, scaffolded empty at creation, so promotion only relocates the file, flips `tier:`, and backfills whatever an older stub was missing, never creates a section that was not already there; (3) the per-person `…_view_sources-index_P-xxxx.md` companion file was retired - the same list is now a `## Sources` region generated *inside* the profile (§13, §21b) - and every scaffolded document gained the visible purpose blockquote described above. No migration tooling was written: existing records are never rewritten to the new shape, only records newly created or promoted from this point on.
 
 ## 17. Notes (general research) `LOCKED`
 
@@ -809,8 +838,8 @@ Generated output that leaves the archive falls into two categories with differen
 
 **Site generation freshness contract:**
 - `fha site` reads structured data (claims, vitals, relationships, sources) from `.cache/index.sqlite` - it is as live as the last `fha index` run.
-- Biography prose and Stories sections are read from the curated person `.md` file directly.
-- The generated `.md` views (timeline, sources-index, draft-queue) are research artifacts for the agent; `fha site` does not read them.
+- Biography, Stories, and Research Notes prose are read from the curated person `.md` file directly. Friends & Family, by contrast, is *not* read as prose: that page section is independently derived from relationship claims (§9), the same as every other structured-data section - a human's own free text under the profile's `## Friends & Family` heading is for the working archive, not the site.
+- The generated `.md` views (timeline, draft-queue), and the couple-folder `sources-index.md`, are research artifacts for the agent; `fha site` does not read them - nor does it read a profile's own inline `## Sources` region (§21b): the per-person source list on a site page is built independently from the index, like every other structured section.
 - The site snapshot is frozen at generation time. Regenerating is idempotent; an old snapshot remains a valid frozen view as the archive moves on.
 
 **View maintenance (`fha views clean` / `fha views refresh`):**
@@ -819,13 +848,22 @@ Generated output that leaves the archive falls into two categories with differen
 - `fha views refresh` is the counterpart: regenerate all content views in one pass after `fha index`. It is the recommended post-index step for bulk regeneration (a fresh copy, a reset after `views clean`); a review session instead refreshes just the touched persons' views (TOOLING §17), so untouched views keep their generation dates.
 - Deleting generated views reduces archive size for sharing but does not affect archive correctness; all views are rebuildable from the index.
 
+### 21b. Purpose blocks and generated regions in publication
+
+Two #75/#76 conventions sit *inside* an otherwise human-owned file rather than replacing it, and neither is publication content:
+
+- **The purpose block** (§16a) is the first thing in the body of every document `fha` writes or scaffolds: a visible blockquote, distinct from the whole-file `GENERATED` header above and not consumed by `fha views clean`. `fha site` never reaches it - every prose section it publishes is read by a specific `## Heading` match that starts capturing strictly after that heading line, and the purpose block always sits before the first `##` heading, right after the H1. `fha packet` reaches the block structurally (a profile or source record is read as one string before it is copied), so it strips the block explicitly before any copy ships.
+- **A GENERATED-BEGIN/END region** - a profile's own `## Sources` section is the first instance (§16) - is a third generated-content convention, distinct from both the whole-file header and the purpose block: paired `<!-- GENERATED-BEGIN name by cmd on date -->` / `<!-- GENERATED-END name -->` markers rewrite one named section of an otherwise human-owned file in place, never the whole file. `fha views clean` never touches it (there is no whole file to delete); the view command that owns it rewrites it in place instead (`fha views sources-index`). `fha site` never reads it, per the freshness contract above. `fha packet` drops it entirely from a shipped profile copy rather than including it verbatim - it names sources by archive-relative path and carries none of the packet's own privacy filtering, so the copy ships without a substitute rather than with a stale or unfiltered one.
+
+Neither convention changes what "generated" means for §5's disposability rule: both are fully rebuildable, and deleting either loses nothing durable.
+
 ---
 
 # Part IV - Tooling requirements
 
 This part states **what** every tool must do - the binding requirements. **How** each is built (schemas, algorithms, CLI design, libraries, error handling) is specified in **`TOOLING.md`**, which is part of this spec for governance purposes: tooling design changes are logged decisions.
 
-Invariants for all tools: generated artifacts are disposable caches; tools report by default and modify only on explicit command; every tool is regenerable from the two documents; generated `.md` views written into the tree carry a `GENERATED - do not edit` header.
+Invariants for all tools: generated artifacts are disposable caches; tools report by default and modify only on explicit command; every tool is regenerable from the two documents; generated `.md` views written into the tree carry a `GENERATED - do not edit` header (a generated *region* inside an otherwise human-owned file - e.g. a profile's `## Sources`, §21b - carries the equivalent paired marker instead, since there is no whole file to header).
 
 | Tool | Requirement (the *what*) |
 |---|---|
@@ -834,7 +872,7 @@ Invariants for all tools: generated artifacts are disposable caches; tools repor
 | **ID mint** | Generate spec-conformant IDs with existence checking; batch capable. |
 | **Stub minter** | Create person stubs in bulk from claims that reference unresolved people. |
 | **Processing assistant** | Given a file or folder: mint S-id, mark identity (documents: rename; photos: keyword only - never rename under Lightroom), scaffold the source record; folder mode triages candidates first. |
-| **View generators** | Per-person timelines; per-person and per-couple-folder sources-indexes; refreshed folder bracket lists; **relationship views** - ancestor / descendant / FAN trees for any person - all derived from accepted claims, never stored. |
+| **View generators** | Per-person timelines; each person's own inline `## Sources` region plus a per-couple-folder `sources-index.md`; refreshed folder bracket lists; **relationship views** - ancestor / descendant / FAN trees for any person - all derived from accepted claims, never stored. |
 | **Relationship calculator** | For any two persons, derive both the **blood relationship** (the cousin/removal/great-grandparent name, via lowest common ancestor over genetic edges) and the **shortest social path** (a readable chain of role-named hops over all relationship edges) - at query time, from accepted `relationship` claims, never stored. Returns a structured result; the text form renders the sentence. |
 | **GEDCOM exporter** | Derive a standard GEDCOM (relationships + vitals) for a person or the whole tree, at export time, from relationship/vital claims. For exchange with genealogy apps only - never the corpus, never re-imported as truth. |
 | **GEDCOM importer** | File a *foreign* GEDCOM (an Ancestry download, another program's export) as ONE source record whose every assertion enters as a `suggested` claim with a line anchor, plus a person stub per individual (provisional vitals, safe `living:` defaults). Plan-then-apply with a one-shot re-run guard and full rollback; the archive's own export is refused (one-way bridge, no round-trip); duplicates are reported, never auto-merged. Writes only forms §8/§9/§14 already define - no schema additions. |

@@ -181,8 +181,11 @@ class FixPromoteTests(BracketsPromoteBase):
             rec = self.root / 'people' / FOLDER / f'deep__{slug}_{pid}.md'
             self.assertTrue(rec.exists(), rec)
             self.assertEqual(str(read_record(rec)['meta'].get('tier')), 'curated')
-            self.assertTrue(
+            # #76: no auto-created research companion; the profile's own body
+            # is backfilled with the full section set instead.
+            self.assertFalse(
                 (self.root / 'people' / FOLDER / f'deep__{slug}_research_{pid}.md').exists())
+            self.assertIn('## Sources', rec.read_text(encoding='utf-8'))
         gpa_rec = self.root / 'people' / '004 Gpa Deep' / f'deep__gpa_{GPA}.md'
         self.assertTrue(gpa_rec.exists())
         # The index cache was dropped (moves are mtime-invisible) and the

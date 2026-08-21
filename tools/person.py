@@ -50,10 +50,13 @@ DESIGN RULES (why the code looks the way it does)
   record through `_locate_person`; `new` is the one entry point that creates
   a record from nothing, and it is the parity command behind every "+ add
   person" button (plan 17 BUILD §3.3 option b). It shares
-  `_lib.render_stub_content`/`stub_filename`/`mint_ids` with `fha stubs`, so
-  a human deliberately typing a name here and an automatic scan finding an
-  unresolved reference in `fha stubs` produce byte-identical stub records -
-  this module invents no parallel rendering logic. Every input (name, sex,
+  `_lib.render_stub_content`/`render_person_body_scaffold`/`stub_filename`/
+  `mint_ids` with `fha stubs`, so a human deliberately typing a name here and
+  an automatic scan finding an unresolved reference in `fha stubs` produce
+  byte-identical stub records - this module invents no parallel rendering
+  logic. The record's full body (purpose block, `## Sources` placeholder,
+  the four hand-written sections) is scaffolded from the start (#75/#76) -
+  a stub is no longer frontmatter-only. Every input (name, sex,
   birth/death) is validated BEFORE `mint_ids` draws an ID, so a bad flag
   never burns one; `--dry-run` still draws a real ID via `mint_ids` (the same
   contract `fha stubs --from-names --dry-run` uses) so the preview's filename
@@ -118,11 +121,13 @@ DESIGN RULES (why the code looks the way it does)
   guessed) from root_person via `_lib.build_ahnentafel_map`, which makes this
   the one verb that hard-requires a fresh index; a person with no derived
   position is refused plainly (curating non-direct people is an open design
-  decision - their stub is a legitimate permanent state). The three writes
-  (tier flip, move, research scaffold) live in `_lib.promote_person_record`,
-  transactional with rollback, so the single verb and the batch fix cannot
-  drift. The word matters: the DEPRECATED top-level spelling of `fha process`
-  must never be written; the subcommand form `fha person promote` is the name.
+  decision - their stub is a legitimate permanent state). The writes (tier
+  flip, #76 body-section backfill, move, and carrying an EXISTING research
+  companion along if there is one - never scaffolding a fresh one) live in
+  `_lib.promote_person_record`, transactional with rollback, so the single
+  verb and the batch fix cannot drift. The word matters: the DEPRECATED
+  top-level spelling of `fha process` must never be written; the subcommand
+  form `fha person promote` is the name.
 - **`relate` records a belief, not a claim.** Every entry it writes carries
   `status: hypothesis` - unconditionally, no `--status` flag. A sourced edge
   only ever arrives the way SPEC §9 describes: an accepted `relationship`
@@ -276,13 +281,16 @@ from _lib import (
     read_text_exact,
     reapply_newline,
     relocate_person_in_index,
+    render_person_body_scaffold,
     render_stub_content,
     replace_paragraph_in_section,
+    replace_section_content,
     research_companion_filename,
     resolve_root_arg,
     resolve_root_generation,
     root_generation_seed_position,
     result_fail,
+    resync_person_profile_rows,
     section_bounds,
     sqlite_cache_schema_status,
     stub_filename,
@@ -1209,8 +1217,10 @@ def run_new(
     references already sitting unresolved in claims or a `--from-names` list;
     this one mints a stub a human is DELIBERATELY starting from nothing, with
     whatever they already know. Both end up calling the exact same
-    `_lib.render_stub_content`/`stub_filename` renderers, so a stub reads
-    identically no matter which tool wrote it.
+    `_lib.render_stub_content`/`render_person_body_scaffold`/`stub_filename`
+    renderers, so a stub reads identically no matter which tool wrote it -
+    frontmatter AND the full #75/#76 body (purpose block, `## Sources`
+    placeholder, the four hand-written sections), not frontmatter alone.
 
     Every input is validated BEFORE `mint_ids` is ever called - a bad `--sex`
     or an unreadable date must never burn a freshly-drawn ID on a write that
@@ -1323,6 +1333,16 @@ def run_new(
         # "born in Kansas, no idea when") - places are free text, unvalidated.
         birth_place=(str(birth_place).strip() or None) if birth_place else None,
         death_place=(str(death_place).strip() or None) if death_place else None)
+    # #75/#76: every record - stub or curated - gets the full SPEC §16 body
+    # from the moment it is minted: the purpose block, the (not-yet-
+    # generated) ## Sources placeholder, and the four hand-written sections.
+    # A stub is no longer "an ID and a name" on disk; it is the same shape a
+    # curated record has, just with everything still to fill in.
+    # `render_stub_content` ends in a single '\n' after the closing fence (its
+    # own byte-identical contract - tests/test_stubs.py pins this); the extra
+    # '\n' here is the blank-line separator `_TEMPLATE.person.md` (and every
+    # other scaffolded record) carries between the frontmatter and the H1.
+    content += '\n' + render_person_body_scaffold(clean_name)
 
     def _add_new_messages() -> None:
         for field, note in gloss.items():
@@ -1436,8 +1456,10 @@ def run_promote(
     archive_root: Path, person_id: str, into: str | None = None,
     dry_run: bool = False,
 ) -> Result:
-    """Graduate one stub to curated: flip the tier, file the record in its
-    Ahnentafel couple folder, scaffold the research companion; return a Result.
+    """Graduate one stub to curated: flip the tier, backfill any missing
+    #76 body sections, file the record in its Ahnentafel couple folder, and
+    carry along an EXISTING research companion if the stub already had one
+    (never scaffolds a fresh one - SPEC §16, #76); return a Result.
 
     The curiosity-driven graduation SPEC §4 describes, made a single explicit
     command - and the one sanctioned tool move of a record out of
@@ -1473,10 +1495,16 @@ def run_promote(
     rolls back every completed step) and shared verbatim with
     `--fix-promote`, so a batch promotion and this verb cannot drift.
     After a live move the index is updated IN PLACE (`_lib.relocate_person_in_index`:
-    every path-keyed row swapped to the new path, the tier flip applied, a fresh
-    research companion indexed) rather than removed - a moved file is invisible
-    to the mtime staleness check, and dropping the cache made the next promote
-    in a batch fail (#37).
+    every path-keyed row swapped to the new path, the tier flip applied) rather
+    than removed - a moved file is invisible to the mtime staleness check, and
+    dropping the cache made the next promote in a batch fail (#37). A move
+    also hides the body backfill from that same watermark (it lands in the
+    same write as the move, so the file's mtime tells the watermark nothing
+    new), so `_lib.resync_person_profile_rows` re-syncs the profile's
+    `notes_fts` content right after the relocate succeeds - the same
+    freshness-neutral trade `views.py` makes for its own in-place `##
+    Sources` edit (TOOLING's D9 addendum) - rather than leaving it to the
+    ordinary mtime watermark, which cannot see this particular change.
 
     `data` is {'status': 'ok'|'already'|'dry-run'|'not-found'|'merged'|
     'refused', 'person_id', 'path', 'new_path', 'position', 'folder',
@@ -1488,6 +1516,7 @@ def run_promote(
     result = Result(data={
         'status': None, 'person_id': None, 'path': None, 'new_path': None,
         'position': None, 'folder': None, 'research_path': None,
+        'body_sections_added': [],
     })
 
     located = _locate_person(archive_root, person_id, result)
@@ -1648,6 +1677,7 @@ def run_promote(
         return _refuse_result(result, 'refused', str(e))
     result.data['new_path'] = str(plan['new_path'])
     result.data['research_path'] = str(plan['research_path'])
+    result.data['body_sections_added'] = plan.get('body_sections_added', [])
 
     if dry_run:
         result.data['status'] = 'dry-run'
@@ -1667,40 +1697,62 @@ def run_promote(
     result.add('info',
                f'{label} is now curated (Ahnentafel {pos}) - record filed in '
                f'people/{dest_folder.name}/.', path=applied['new_path'])
+    result.data['body_sections_added'] = applied.get('body_sections_added', [])
+    if applied.get('body_sections_added'):
+        result.add('info',
+                   'Added the missing record section(s): '
+                   + ', '.join(applied['body_sections_added']) + '.')
     if applied.get('research_move'):
         result.note_changed(applied['research_path'])
         result.add('info',
                    f'Moved the research companion {applied["research_path"].name} '
                    'into the couple folder with the record - your existing '
                    'notes travelled with it, nothing was lost.')
-    elif applied['research_create']:
-        result.note_changed(applied['research_path'])
-        result.add('info',
-                   f'Created the research companion {applied["research_path"].name} '
-                   '- Research Notes, Open Questions, Hypotheses, and a '
-                   'Research Log, ready to fill in.')
-    else:
+    elif applied['research_path'].exists():
         result.add('info', 'Research companion already exists - left as is.')
+    else:
+        result.add('info',
+                   'No research companion created - it is optional now (SPEC '
+                   '§16): copy people/_TEMPLATE.research.md by hand if this '
+                   "person's research grows large enough to want one.")
 
     # Keep the index correct in place rather than deleting it (#37). A move
     # keeps the record's mtime, so the staleness check cannot see it - the
     # old answer was to drop the cache, which made the NEXT promote fail with
     # a message that read like corruption (or sent the human to fix
     # root_person and run `fha stubs`, when only the cache was absent). The
-    # relocation rewrites every path-keyed row, applies the tier flip, and
-    # indexes a fresh research companion, so a batch of promotes needs no
-    # rebuild between them.
+    # relocation rewrites every path-keyed row and applies the tier flip, so
+    # a batch of promotes needs no rebuild between them. `new_research` is
+    # always None here now (#76: promotion never creates a fresh research
+    # companion) - kept as a call-site argument rather than dropped from
+    # `relocate_person_in_index`'s signature, since a hand-created companion
+    # that travels via `research_move` is already covered by `moves` below,
+    # and the parameter stays available if a future opt-in creation path
+    # needs it.
     moves: list[tuple[Path, Path]] = []
     if applied['move']:
         moves.append((applied['old_path'], applied['new_path']))
     if applied.get('research_move'):
         moves.append((applied['research_source_path'], applied['research_path']))
-    new_files = [applied['research_path']] if applied.get('research_create') else []
     db_path = archive_root / '.cache' / 'index.sqlite'
     try:
         outcome = relocate_person_in_index(
-            archive_root, pid, moves, tier='curated',
-            new_research=new_files[0] if new_files else None)
+            archive_root, pid, moves, tier='curated', new_research=None)
+        if outcome == 'indexed':
+            # `relocate_person_in_index` only swaps path-keyed rows - it
+            # never re-reads content. `ensure_person_body_sections` (above)
+            # may have just changed this profile's BODY TEXT (a pre-#76
+            # stub's backfill: purpose block, ## Sources placeholder, the
+            # four hand-written sections) in the same write, and a move
+            # keeps the file's mtime out of the staleness watermark's count
+            # (#37) - so without this, notes_fts would keep serving the
+            # pre-backfill body forever, with nothing ever prompting a
+            # reindex to fix it (`fha find --text` would silently miss the
+            # newly-added sections). Mirrors `views.py`'s own
+            # `resync_person_profile_rows` call after its in-place ##
+            # Sources edit (TOOLING's D9 addendum) - the same freshness-
+            # neutral trade, extended to this other in-place profile edit.
+            outcome = resync_person_profile_rows(archive_root, [applied['new_path']])
     except (sqlite3.Error, OSError) as exc:
         # The record has ALREADY moved on disk - that archive mutation is
         # done and irreversible; only the in-place index update failed (a
@@ -1720,6 +1772,21 @@ def run_promote(
             'rebuild it.',
             exit_code=EXIT_WARNINGS, level='warning',
             next_step='fha index')
+    if outcome == 'index_error':
+        # The move and the body backfill both landed on disk; only the
+        # notes_fts content resync failed (a locked or read-only cache) -
+        # same shape of partial failure as the exception above, just from a
+        # function that reports failure by return value instead of raising.
+        return result_fail(
+            result, 'ok-index-stale',
+            f'{label} was promoted (Ahnentafel {pos}) and the record is '
+            f'filed in people/{dest_folder.name}/ - that part worked. But '
+            'the search index could not fully update in place (the '
+            f'backfilled body text could not be re-synced): {db_path}. '
+            'Searches may quietly miss the newly-added sections until you '
+            'rebuild it. Run `fha index` to rebuild it.',
+            exit_code=EXIT_WARNINGS, level='warning',
+            next_step='fha index')
     if outcome == 'indexed':
         result.note_changed(db_path)
         result.add('info',
@@ -1731,9 +1798,10 @@ def run_promote(
                    '(no index cache exists yet).',
                    next_step='fha index')
     result.add('info',
-               'Then generate their companion views: '
+               'Then generate their views: '
                f'`fha views timeline {fmt_id_display(pid)}`, '
-               f'`fha views sources-index {fmt_id_display(pid)}`, '
+               f'`fha views sources-index {fmt_id_display(pid)}` (fills in '
+               'the ## Sources section on their own page), '
                f'`fha views draft-queue {fmt_id_display(pid)}` '
                '(or `fha views refresh` for everyone).')
     return result
@@ -2014,7 +2082,10 @@ def run_rename(
          record exactly like `fha person promote` already does for its own
          file move.
       4. Any GENERATED companion still sitting at the OLD filename (timeline,
-         sources-index, draft-queue - identified by the shared
+         draft-queue, and - for a record old enough to still have one, #76 -
+         a leftover PER-PERSON sources-index file; a new record's `## Sources`
+         is an inline region that travels with the profile rename for free,
+         nothing separate to clean up - identified by the shared
          `is_generated_file` header check, never by name-guessing) is
          DELETED, never renamed - see the module comment above this section
          for why regenerating via `fha views …` is the correct fix rather
@@ -2302,7 +2373,8 @@ def run_rename(
         result.add('info',
                    'Regenerate the deleted companions under the new name: '
                    f'`fha views timeline {fmt_id_display(pid)}`, '
-                   f'`fha views sources-index {fmt_id_display(pid)}`, '
+                   f'`fha views sources-index {fmt_id_display(pid)}` (fills '
+                   'in the ## Sources section on their own page), '
                    f'`fha views draft-queue {fmt_id_display(pid)}` '
                    '(or `fha views refresh` for everyone).')
 
@@ -2996,33 +3068,13 @@ def _create_section_at_eof(
 def _replace_section(
     lines: list[str], body_start: int, heading_text: str, new_text: str, cr: str,
 ) -> tuple[list[str], bool, str]:
-    """Return `(new_lines, created, old_content)` - replace mode.
-
-    `created` is True when the heading did not exist and had to be added
-    (appended at EOF, per the task spec, with one blank-line separator from
-    whatever came before). When the heading already existed, its ENTIRE
-    content span (heading to next `## ` heading, or EOF) is replaced with
-    `new_text` - this is the "bounded" edit: nothing outside that span is
-    touched, and a single blank line separates the new prose from a
-    following heading (normalizing whatever spacing was there before, which
-    is within bounds since that spacing WAS part of the replaced span).
-    """
-    located = _locate_section(lines, body_start, heading_text)
-    body_text = new_text.strip('\n')
-    if located is None:
-        return _create_section_at_eof(lines, heading_text, body_text, cr), True, ''
-
-    _, content_start, content_end = located
-    old_content = '\n'.join(lines[content_start:content_end])
-    has_next = content_end < len(lines)
-    new_lines = list(lines[:content_start])
-    new_lines.extend(f'{ln}{cr}' for ln in body_text.split('\n'))
-    if has_next:
-        new_lines.append(cr)             # a real blank-line separator - more follows
-    elif _ends_with_newline(lines):
-        new_lines.append('')             # the file's own end-of-file sentinel, restored
-    new_lines.extend(lines[content_end:])
-    return new_lines, False, old_content
+    """Thin wrapper over `_lib.replace_section_content` (kept for this file's
+    callers) - replace mode: `created` is True when the heading did not exist
+    and had to be added (appended at EOF, with one blank-line separator from
+    whatever came before); otherwise the heading's ENTIRE content span
+    (heading to next `## ` heading, or EOF) is replaced with `new_text` - the
+    "bounded" edit nothing outside that span is touched by."""
+    return replace_section_content(lines, body_start, heading_text, new_text, cr)
 
 
 def _append_to_section(
@@ -3763,9 +3815,11 @@ Rewrites name: (and, with --keep-variant, files the OLD name into
 name_variants: rather than losing it), renames the profile and research
 files to match (SPEC §13's filename grammar, the same deriver `fha person
 new` uses), deletes any stale-named GENERATED companion (timeline,
-sources-index, draft-queue - regenerate them under the new name with `fha
-views timeline|sources-index|draft-queue <P-id>` or `fha views refresh`),
-and - only when the OLD name appears as exactly one unambiguous partner-name
+draft-queue, and a per-person sources-index file if this record still has
+one from before #76 - regenerate with `fha views timeline|sources-index|
+draft-queue <P-id>` or `fha views refresh`; a current record's ## Sources
+is an inline region that travels with the rename automatically), and -
+only when the OLD name appears as exactly one unambiguous partner-name
 segment of the couple folder's own text - renames that folder to match too.
 The couple-folder step is the one part that can fail on its own (a program
 sitting inside the folder blocks a Windows rename); everything else has

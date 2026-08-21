@@ -12,7 +12,7 @@
     {
       "path": ".claude/skills/_STANDARD.md",
       "category": "operating",
-      "sha256": "ad4841eeaee643f7c1d3bcc2678dabc4c6b4835ca4fe293781ac3ac04649e22f",
+      "sha256": "758a653c65337c2d847c25956cd907504f883690afcab0f5239702fb11c4a21d",
       "spec_version": "1.2"
     },
     {
@@ -24,7 +24,7 @@
     {
       "path": ".claude/skills/import-notes/SKILL.md",
       "category": "operating",
-      "sha256": "b50dfdd1afb9b79a9f6303a8beb105e5965f140fde67d98509aeee3df39d1709",
+      "sha256": "5543075c998933c5c0bf4d06b5873112d27b82a132b149da9cf998da6b601bc3",
       "spec_version": "1.2"
     },
     {
@@ -60,7 +60,7 @@
     {
       "path": ".claude/skills/merge-identities/SKILL.md",
       "category": "operating",
-      "sha256": "2297da95c340fc5f781072c8b658868a5d0dceb82c93b05ac64fb4a42be22172",
+      "sha256": "be37deb7d77db0abdad4edd61671503cf035242022c3def2c2d558dbc5807469",
       "spec_version": "1.2"
     },
     {
@@ -102,13 +102,13 @@
     {
       "path": ".claude/skills/research-next/SKILL.md",
       "category": "operating",
-      "sha256": "c5e74eaa88fd4eeafb5d121e88dd1ccd688c7167e5772d7bea0924c24713da90",
+      "sha256": "86becaa673812b919c5614d8f0e642963d9d6450a02ccec3fcf862d9bd4bd7b5",
       "spec_version": "1.2"
     },
     {
       "path": ".claude/skills/review-claims/SKILL.md",
       "category": "operating",
-      "sha256": "e624764e5b843215bddc848903412c30b52dd340ecd772b88c450c51a4cdc7e4",
+      "sha256": "6ecb9ee4b30ed46f8a52f4f6133144e2def6253fe7101fc35f14efd629ac9fab",
       "spec_version": "1.2"
     },
     {
@@ -162,7 +162,7 @@
     {
       "path": ".claude/skills/write-biography/SKILL.md",
       "category": "operating",
-      "sha256": "38372dabf88ae4c0b2392d3fd0f4aaed60f1dc4c1d66d1d547fff672c07be7a0",
+      "sha256": "baf0b886a2732b05dd8f4f9cdceb9151970b691eacf7935ca33a6e3a52817120",
       "spec_version": "1.2"
     },
     {
@@ -413,14 +413,14 @@
     {
       "path": ".fha/tools/README.md",
       "category": "operating",
-      "sha256": "23969fb0f328a9c799a48d06667ea9ac72fbae9879d7266744b8f8d7ee2c0c67",
+      "sha256": "692a623bbd76fc2008e1f7ba603020f5203aa6edac01f879aae023236b9152e3",
       "spec_version": "1.2",
       "src": "tools/README.md"
     },
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "91a399c6fcbcf36550991e8ef14032ba518c71761bd0eea96cb9c7e89220099e",
+      "sha256": "d449c751bd5376a38c3066b1473a997aff779e138dceda9d802ecd189396f3e0",
       "spec_version": "1.2",
       "src": "tools/_lib.py"
     },
@@ -560,7 +560,7 @@
     {
       "path": ".fha/tools/lint.py",
       "category": "operating",
-      "sha256": "99f81e91a799b8e26607ea77bf9914f125afdd7b15751f2da0525da13a5375a7",
+      "sha256": "200e7d74342a1080e80b0a41288156fba4e415fe005a096e4863ab40a51a8d64",
       "spec_version": "1.2",
       "src": "tools/lint.py"
     },
@@ -581,14 +581,14 @@
     {
       "path": ".fha/tools/packet.py",
       "category": "operating",
-      "sha256": "aaba629ea633bfe5e314c74bc75e1b13b7ac06a3f616117d772b3e148f829606",
+      "sha256": "66b080606099b6f5b37c0e051c60caf821da7e44fae4aa09d107976381099cda",
       "spec_version": "1.2",
       "src": "tools/packet.py"
     },
     {
       "path": ".fha/tools/person.py",
       "category": "operating",
-      "sha256": "8dfdf555057f60db9de1a09b872f5d35da6977ed6b196f8389ac4fd63661f7de",
+      "sha256": "6d94f19c4133f57be2a3faa9fcbcfa28916df5c4aeba55298b39ce728f00e5f6",
       "spec_version": "1.2",
       "src": "tools/person.py"
     },
@@ -609,7 +609,7 @@
     {
       "path": ".fha/tools/process.py",
       "category": "operating",
-      "sha256": "df487c8cd84e17438016ffa93143b90f0ebd883d780ca57d90e8703e70fdfc14",
+      "sha256": "19aae6a08ac55d84f83abced1cb30ec218abd86c4a88664ec877a8ed748c7a61",
       "spec_version": "1.2",
       "src": "tools/process.py"
     },
@@ -672,7 +672,7 @@
     {
       "path": ".fha/tools/stubs.py",
       "category": "operating",
-      "sha256": "d4447a683ae94155d5a845bb70708713bc68bd92286c61b94c2ebdcdb2a679c3",
+      "sha256": "e56f016cc8119c3f424033197350f591851a6b70bdcfaeee7e2f7600f915b98a",
       "spec_version": "1.2",
       "src": "tools/stubs.py"
     },
@@ -798,7 +798,7 @@
     {
       "path": ".fha/tools/views.py",
       "category": "operating",
-      "sha256": "ea6d3173b2eeb8f1b9a87fdcf730b5c76352b13d1200c2b67521f2826170df2b",
+      "sha256": "29ecdf38cb95c95559299a211ca0c6b79d21e2e15b02bf80ee47112486682162",
       "spec_version": "1.2",
       "src": "tools/views.py"
     },
@@ -847,7 +847,7 @@
     {
       "path": "AGENTS.md",
       "category": "operating",
-      "sha256": "82b6bf546a91b5dc39c91f0d6ee1e6748d67225eb1ffafe371613d51498cd5c5",
+      "sha256": "cf09dc6034feef7b4c09e456243dae3eded8c2524bbbc5a0ab8d0f4984febaa0",
       "spec_version": "1.2"
     },
     {
@@ -865,19 +865,19 @@
     {
       "path": "GETTING_STARTED.md",
       "category": "operating",
-      "sha256": "9e762dc1341c0ce9552f5c8f460f83725186ce58add57b40d60e560a7ab4064f",
+      "sha256": "e2715c9d629ae8c15f7ead989e2d6da1d73967a712cd711d9b36dfd9abaad49f",
       "spec_version": "1.2"
     },
     {
       "path": "SPEC.md",
       "category": "operating",
-      "sha256": "88598502c5ee6c72e32c7f739cfa64d7f99c5a7b407f3513760ad0647ff3ef4c",
+      "sha256": "6adc4bae5ef4cd37e0f4edafd5b91db03a3c9c7c7c60cf996e085c176913eb93",
       "spec_version": "1.2"
     },
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "06241c579b5417b10ed06fa3c598a968af10d5a206e2b2e79bc455f9e199a1aa",
+      "sha256": "d79ef3263b7011d0eb6d90d23f24df3be22e7779aef84b91cd3ef12fad4c51bf",
       "spec_version": "1.2"
     },
     {
@@ -901,13 +901,13 @@
     {
       "path": "docs/FILING_CABINET.md",
       "category": "operating",
-      "sha256": "e2d30d861a456cfe3a935867862fcb51f5594d6d0efc3b6873311e24a814c317",
+      "sha256": "d9f9d6843e4578a8a856589e74bc060d8f06f2adb56b580a6e21639205328551",
       "spec_version": "1.2"
     },
     {
       "path": "docs/GLOSSARY.md",
       "category": "operating",
-      "sha256": "bfd834ee675424ea687ab35eaf2a0b037e49462899ffd905ec658c1b05401e3f",
+      "sha256": "20657cc7558c350b72eed1aef02b5d71aa2d1455a0aacb814f9588f7be8c0a60",
       "spec_version": "1.2"
     },
     {
@@ -1011,14 +1011,14 @@
     {
       "path": "people/_TEMPLATE.person.md",
       "category": "skeleton",
-      "sha256": "5966e5b17360cfa6f19635ef656d372c0ba94d20ef4a61cd0d3ae779702cdaf6",
+      "sha256": "d43388eb889a1beb188706880a933b00b2a24a93714a29cac201df492738fd79",
       "spec_version": "1.2",
       "src": "archive-template/people/_TEMPLATE.person.md"
     },
     {
       "path": "people/_TEMPLATE.research.md",
       "category": "skeleton",
-      "sha256": "8cdadc10602edb3a28ebbc30e668809107d47f411db6ed374cc1e04bbea51d90",
+      "sha256": "35871a5b1e656da9101224a01c0a9756814f1b307fb781774a0cb57abaf07db1",
       "spec_version": "1.2",
       "src": "archive-template/people/_TEMPLATE.research.md"
     },
@@ -1039,7 +1039,7 @@
     {
       "path": "people/stubs/_TEMPLATE.stub.md",
       "category": "skeleton",
-      "sha256": "5c2814d68f337840e7f82381d9d0d1678f4617cd947a48b68e654e51f3306849",
+      "sha256": "005e6c6499fa9f46620de020f31d0c883d081bae956cba424a77ee97d56996ae",
       "spec_version": "1.2",
       "src": "archive-template/people/stubs/_TEMPLATE.stub.md"
     },
@@ -1073,7 +1073,7 @@
     {
       "path": "sources/_TEMPLATE.source.md",
       "category": "skeleton",
-      "sha256": "d2252a2583f6eac9853c072e1d85e3bdf4a87cf11a80b7952a4b021535646710",
+      "sha256": "4aa8fdecd3da6ff70a5efa65996fcc153150ae95c3a108aa17220ed9274ba7ae",
       "spec_version": "1.2",
       "src": "archive-template/sources/_TEMPLATE.source.md"
     }

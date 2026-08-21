@@ -2873,6 +2873,44 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
             findings.append(Finding('W', 'W101', profile_path,
                 f'Curated person {pid} missing vital(s): {", ".join(missing_vitals)}'))
 
+    # W130: curated profile missing one of the four SPEC §16 hand-written
+    # sections. Curated-tier only (a stub's sections are legitimately still
+    # empty or absent - SPEC §4 - so checking every stub would turn a research
+    # backlog signal into noise across an archive's whole stub population,
+    # exactly the outcome W119 is careful to avoid for tier itself). The
+    # GENERATED ## Sources region is deliberately NOT checked here: no other
+    # generated companion's existence is lint-mandated either (a missing
+    # timeline/draft-queue is not a finding), and this section is no
+    # different - its absence just means nobody has run `fha views
+    # sources-index` yet, not a defect in the record.
+    for pid in registry.person_profile_paths:
+        meta = registry.person_meta.get(pid, {})
+        if str(meta.get('tier', '')) != 'curated':
+            continue
+        profile_path = registry.person_profile_paths[pid][0]
+        # NOT registry.person_bodies: that bucket deliberately CONCATENATES
+        # every file sharing this P-id (profile + a separate _research
+        # companion, when one exists - see the Pass 1 walk, `person_bodies[pid]
+        # = person_bodies.get(pid, '') + '\n' + rec['body']`) for the §16-
+        # unrelated TODO-source backlog (`_needs_sourcing_backlog`, which
+        # wants every `(TODO: import source)` marker regardless of which file
+        # it lives in). A research companion's OWN `## Research Notes`
+        # heading would silently satisfy THIS check for a PROFILE that never
+        # got one if it read that same concatenated bucket - this check is
+        # about the profile specifically, so it reads the profile's body
+        # directly instead.
+        body = read_record(profile_path)['body']
+        missing_sections = [
+            heading for heading in
+            ('Biography', 'Stories', 'Research Notes', 'Friends & Family')
+            if not re.search(rf'^##\s+{re.escape(heading)}\s*\r?$', body, re.M)
+        ]
+        if missing_sections:
+            findings.append(Finding('W', 'W130', profile_path,
+                f'Curated person {pid} missing section(s): {", ".join(missing_sections)} '
+                '- SPEC §16 gives every curated record the same section set; add the '
+                'heading(s) by hand (or with `fha person edit --section ...`) when ready.'))
+
     # W106: accepted claims missing Mills analysis fields
     for sid, claims in registry.source_claims.items():
         src_path = registry.source_paths.get(sid, Path(sid))
