@@ -1,7 +1,7 @@
 {
   "manifest_version": "1",
   "spec_version": "1.2",
-  "generated": "2026-08-20",
+  "generated": "2026-08-21",
   "files": [
     {
       "path": ".claude/skills/README.md",
@@ -889,7 +889,7 @@
     {
       "path": "docs/FAQ.md",
       "category": "operating",
-      "sha256": "7d6ac6416017f6f38cfbbe88a58e77deb29f51be7bfadc53fc754af90ee33f0a",
+      "sha256": "b6afd0b5ba2683a678a611423da2c1addc85911e9264c15e71c65242f46bfefb",
       "spec_version": "1.2"
     },
     {
@@ -956,7 +956,7 @@
     {
       "path": "fha.yaml",
       "category": "skeleton",
-      "sha256": "f04af500e7848605dab773e8c0cba1868fb35de86acf84439bd29e5c06403521",
+      "sha256": "d658320cca175533d0a4056af9494900860a56088aa570dd9f8f92cd1ed7b2ca",
       "spec_version": "1.2",
       "src": "archive-template/fha.yaml"
     },
