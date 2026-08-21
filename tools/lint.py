@@ -2825,7 +2825,7 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
             findings.append(Finding('W', 'W101', profile_path,
                 f'Curated person {pid} missing vital(s): {", ".join(missing_vitals)}'))
 
-    # W129: curated profile missing one of the four SPEC §16 hand-written
+    # W130: curated profile missing one of the four SPEC §16 hand-written
     # sections. Curated-tier only (a stub's sections are legitimately still
     # empty or absent - SPEC §4 - so checking every stub would turn a research
     # backlog signal into noise across an archive's whole stub population,
@@ -2856,7 +2856,7 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
             if not re.search(rf'^##\s+{re.escape(heading)}\s*\r?$', body, re.M)
         ]
         if missing_sections:
-            findings.append(Finding('W', 'W129', profile_path,
+            findings.append(Finding('W', 'W130', profile_path,
                 f'Curated person {pid} missing section(s): {", ".join(missing_sections)} '
                 '- SPEC §16 gives every curated record the same section set; add the '
                 'heading(s) by hand (or with `fha person edit --section ...`) when ready.'))

@@ -3325,8 +3325,8 @@ class LintStdoutIsValidUtf8Tests(unittest.TestCase):
             self.assertIn('…', decoded)  # the ellipsis survived intact
 
 
-class MissingSectionW129Tests(unittest.TestCase):
-    """W129 (#75/#76): a CURATED person record missing one of SPEC §16's four
+class MissingSectionW130Tests(unittest.TestCase):
+    """W130 (#75/#76): a CURATED person record missing one of SPEC §16's four
     hand-written sections. Curated-tier only (a stub's sections are a
     legitimate research backlog, SPEC §4 - not a defect); the GENERATED
     `## Sources` region is never checked (no other generated companion's
@@ -3358,24 +3358,24 @@ class MissingSectionW129Tests(unittest.TestCase):
         body = self._FULL_BODY.replace('## Research Notes\nx\n\n', '')
         self._person('curated', body)
         findings, _ = lint._run_lint_core(self.root, {})
-        w129 = [f for f in findings if f.code == 'W129']
-        self.assertEqual(len(w129), 1, findings)
-        self.assertIn('Research Notes', w129[0].message)
-        self.assertNotIn('Biography', w129[0].message)
+        w130 = [f for f in findings if f.code == 'W130']
+        self.assertEqual(len(w130), 1, findings)
+        self.assertIn('Research Notes', w130[0].message)
+        self.assertNotIn('Biography', w130[0].message)
 
     def test_curated_missing_several_sections_names_all(self) -> None:
         self._person('curated', '## Biography\nx\n')
         findings, _ = lint._run_lint_core(self.root, {})
-        w129 = [f for f in findings if f.code == 'W129']
-        self.assertEqual(len(w129), 1, findings)
+        w130 = [f for f in findings if f.code == 'W130']
+        self.assertEqual(len(w130), 1, findings)
         for heading in ('Stories', 'Research Notes', 'Friends & Family'):
-            self.assertIn(heading, w129[0].message)
-        self.assertNotIn('Biography,', w129[0].message)
+            self.assertIn(heading, w130[0].message)
+        self.assertNotIn('Biography,', w130[0].message)
 
     def test_curated_with_all_four_sections_is_silent(self) -> None:
         self._person('curated', self._FULL_BODY)
         findings, _ = lint._run_lint_core(self.root, {})
-        self.assertEqual([f for f in findings if f.code == 'W129'], [])
+        self.assertEqual([f for f in findings if f.code == 'W130'], [])
 
     def test_stub_missing_every_section_is_silent(self) -> None:
         # A stub's sections are a legitimate research backlog (SPEC §4), not
@@ -3383,14 +3383,14 @@ class MissingSectionW129Tests(unittest.TestCase):
         # across an archive's whole stub population.
         self._person('stub', '')
         findings, _ = lint._run_lint_core(self.root, {})
-        self.assertEqual([f for f in findings if f.code == 'W129'], [])
+        self.assertEqual([f for f in findings if f.code == 'W130'], [])
 
     def test_missing_sources_region_is_never_flagged(self) -> None:
         # The GENERATED ## Sources region's absence just means nobody has run
         # `fha views sources-index` yet - not a defect this check reports.
         self._person('curated', self._FULL_BODY)   # no ## Sources anywhere
         findings, _ = lint._run_lint_core(self.root, {})
-        self.assertEqual([f for f in findings if f.code == 'W129'], [])
+        self.assertEqual([f for f in findings if f.code == 'W130'], [])
 
     def test_research_notes_in_a_separate_companion_does_not_mask_the_profile_gap(self) -> None:
         # Regression guard: registry.person_bodies CONCATENATES the profile
@@ -3406,9 +3406,9 @@ class MissingSectionW129Tests(unittest.TestCase):
             '## Hypotheses\n\n*(none yet)*\n\n## Research Log\n\n*(none yet)*\n',
             encoding='utf-8')
         findings, _ = lint._run_lint_core(self.root, {})
-        w129 = [f for f in findings if f.code == 'W129']
-        self.assertEqual(len(w129), 1, findings)
-        self.assertIn('Research Notes', w129[0].message)
+        w130 = [f for f in findings if f.code == 'W130']
+        self.assertEqual(len(w130), 1, findings)
+        self.assertIn('Research Notes', w130[0].message)
 
 
 if __name__ == '__main__':
