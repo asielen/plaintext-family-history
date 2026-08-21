@@ -244,6 +244,7 @@ from _lib import (
     normalize_id,
     parse_media_filename,
     path_to_alias,
+    person_profile_manifest_keys,
     person_profile_path_manifest,
     photo_date_markers_to_edtf as _keyword_to_edtf,
     photo_date_pattern_to_edtf as _placeholder_to_edtf,
@@ -813,12 +814,17 @@ def _index_is_fresh(archive_root: Path) -> bool:
     #48: ORs a path-manifest check onto the mtime watermark below - a DELETED
     person profile never raises any remaining file's mtime, so the watermark
     alone would keep trusting person_face_tags/person_variants rows for a
-    person who no longer has a record. Scoped to just the people/ portion of
-    the shared index manifest (filtered by the 'people/' key prefix every
-    entry there carries - see `_manifest_relpath`/`record_path_manifest`),
+    person who no longer has a record. Scoped to just the person PROFILE
+    portion of the shared index manifest (`_lib.person_profile_manifest_keys`),
     matching `newest_person_record_mtime`'s own narrower scope: a deleted
     SOURCE or NOTES file has nothing to do with face-tag resolution and must
-    not make this read stale when the person data itself is untouched.
+    not make this read stale when the person data itself is untouched. A bare
+    'people/' prefix filter is NOT this scope - a person's `research`
+    companion is human-authored, not generated, so it is also tracked under
+    'people/' in the shared manifest; filtering by prefix alone would leave
+    it in the stored side with no counterpart in a profile-only current
+    listing, reading as a permanent phantom deletion on any archive that
+    uses the research-file feature at all.
     """
     db_path = archive_root / '.cache' / 'index.sqlite'
     mtime = db_mtime(db_path)
@@ -843,8 +849,7 @@ def _index_is_fresh(archive_root: Path) -> bool:
         return False
     stored = read_path_manifest(index_manifest_path(archive_root))
     stored_people = (
-        {k: v for k, v in stored.items() if k.startswith('people/')}
-        if stored is not None else None
+        person_profile_manifest_keys(stored) if stored is not None else None
     )
     current_people = person_profile_path_manifest(archive_root)
     return not manifest_has_changed(manifest_diff(stored_people, current_people))

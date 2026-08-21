@@ -1879,6 +1879,35 @@ class SnapshotDeletionFreshnessTests(_ServeCase):
             self.state._manifest_memo = None
         self.assertFalse(serve.snapshot_is_stale(self.state))
 
+    def test_deleting_fha_yaml_marks_the_snapshot_stale(self):
+        # #106 review finding: deleting a plain file under sources/ already
+        # bumps that file's PARENT DIRECTORY's own mtime (unlink touches the
+        # directory entry), so the pre-existing mtime-only watermark above
+        # already catches that specific case on its own - the manifest fix
+        # is untested by it. fha.yaml is one of the three SINGLETON files
+        # `_newest_input_mtime`/`_snapshot_input_manifest` stat directly (no
+        # parent-directory walk at all): deleting it changes no other file's
+        # mtime, so only the #48 manifest half can see it go missing.
+        self.assertFalse(serve.snapshot_is_stale(self.state))
+        (self.root / 'fha.yaml').unlink()
+        with self.state._memo_lock:
+            self.state._mtime_memo = None
+            self.state._manifest_memo = None
+        self.assertTrue(serve.snapshot_is_stale(self.state))
+
+    def test_removing_a_whole_tracked_directory_marks_the_snapshot_stale(self):
+        # A directory that vanishes ENTIRELY makes `_newest_mtime_under`
+        # return 0.0 for it (base.exists() is False) - that can only LOWER
+        # the watermark's running max, never raise it, so the mtime-only
+        # check structurally cannot flag this. Only the #48 manifest (every
+        # file that WAS under notes/ now missing from a fresh listing) can.
+        self.assertFalse(serve.snapshot_is_stale(self.state))
+        shutil.rmtree(self.root / 'notes')
+        with self.state._memo_lock:
+            self.state._mtime_memo = None
+            self.state._manifest_memo = None
+        self.assertTrue(serve.snapshot_is_stale(self.state))
+
 
 class CountsPipelineTests(_ServeCase):
     """Cleanup task 2: gather_review/gather_inbox (full index queries plus

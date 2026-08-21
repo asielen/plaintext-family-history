@@ -6079,6 +6079,25 @@ def person_profile_path_manifest(archive_root: str | Path) -> dict[str, float]:
     return {_manifest_relpath(p, archive_root): m for p, m in files}
 
 
+def person_profile_manifest_keys(manifest: dict[str, float]) -> dict[str, float]:
+    """Restrict an already-loaded #48 path manifest to person PROFILE keys.
+
+    The same predicate `person_profile_path_manifest` applies to a fresh
+    walk (`_is_person_profile_path`), applied here to a STORED manifest dict
+    instead - for a caller that needs to scope down the shared index
+    manifest (which also carries source/notes/research-companion keys under
+    `people/`) to just the profile subset `newest_person_record_mtime`
+    actually watches. A bare `'people/'` prefix filter is NOT equivalent: a
+    person's `research` companion is human-authored, not generated
+    (`GENERATED_COMPANION_KINDS` excludes it), so `record_path_manifest`
+    tracks it too - filtering the stored side by prefix alone leaves it in
+    `stored_people` with no counterpart in a profile-only `current_people`,
+    reading as a permanent phantom deletion on every archive that uses the
+    research-file feature at all.
+    """
+    return {k: v for k, v in manifest.items() if _is_person_profile_path(Path(k))}
+
+
 def source_record_path_manifest(
     archive_root: str | Path, subdir: str | None = None,
 ) -> dict[str, float]:
@@ -6134,6 +6153,14 @@ def read_path_manifest(manifest_path: str | Path) -> dict[str, float] | None:
     except (OSError, ValueError):
         return None
     if not isinstance(raw, dict):
+        return None
+    # A schema_version this build does not recognize is exactly as unusable
+    # as a missing file - `write_path_manifest` stamps one for the same
+    # reason `sqlite_cache_schema_status` gates every .sqlite cache read, and
+    # this check was the one place that stamp was never actually enforced.
+    # Fail the same direction as everything else here: rebuild, not "trust
+    # an unrecognized shape because parsing happened to succeed."
+    if raw.get('schema_version') != _MANIFEST_SCHEMA_VERSION:
         return None
     paths = raw.get('paths')
     if not isinstance(paths, dict):

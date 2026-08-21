@@ -41,6 +41,7 @@ Synthetic tmp archives only - the real archive is never a test bed.
 
 import contextlib
 import io
+import json
 import sys
 import tempfile
 import unittest
@@ -56,8 +57,11 @@ import photoindex
 from _lib import (
     index_manifest_path,
     load_fha_yaml,
+    manifest_diff,
+    manifest_has_changed,
     newest_record_mtime,
     open_index_db,
+    person_profile_path_manifest,
     photoindex_manifest_path,
     photoindex_status,
     read_path_manifest,
@@ -235,6 +239,17 @@ class BootstrapMissingManifestTests(unittest.TestCase):
         index_manifest_path(self.root).write_text('not valid json', encoding='utf-8')
         self.assertTrue(record_manifest_is_stale(self.root))
 
+    def test_wrong_schema_version_reads_stale_not_fresh(self) -> None:
+        # write_path_manifest stamps schema_version for the same reason
+        # sqlite_cache_schema_status gates every .sqlite cache - a manifest
+        # written by a future/incompatible build must fail the same
+        # direction as a corrupt one, not be trusted just because its JSON
+        # happens to parse and its 'paths' dict happens to look shaped right.
+        raw = json.loads(index_manifest_path(self.root).read_text(encoding='utf-8'))
+        raw['schema_version'] = raw['schema_version'] + 1
+        index_manifest_path(self.root).write_text(json.dumps(raw), encoding='utf-8')
+        self.assertTrue(record_manifest_is_stale(self.root))
+
     def test_missing_manifest_index_absent_case_is_unaffected(self) -> None:
         # A genuinely absent index.sqlite must still take the pre-existing,
         # unrelated "run fha index first" path - the manifest bootstrapping
@@ -301,6 +316,19 @@ class PhotoindexDeletionTests(unittest.TestCase):
         self.source_path.unlink()
         self.assertEqual(photoindex_status(self.root, self.cfg)[0], 'stale')
 
+    def test_doctor_reports_the_photoindex_check_stale_too(self) -> None:
+        # `_photoindex_freshness` is pure delegation to `photoindex_status`
+        # (no duplicated logic) - this is the doctor-level integration proof
+        # for that delegation, mirroring ElevenSignalsAgreeTests' proof for
+        # the index half: `fha doctor`'s user-facing 'photoindex' check must
+        # agree with the direct `photoindex_status` call above, not just in
+        # principle but in what a human actually sees running `fha doctor`.
+        self.person_path.unlink()
+        result = doctor.run_doctor(self.root, self.cfg)
+        check = next(c for c in result.data['checks'] if c['id'] == 'photoindex')
+        self.assertEqual(check['status'], 'warn')
+        self.assertIsNotNone(check['next_step'])
+
     def test_missing_photoindex_manifest_reads_stale(self) -> None:
         photoindex_manifest_path(self.root).unlink()
         self.assertEqual(photoindex_status(self.root, self.cfg)[0], 'stale')
@@ -310,6 +338,70 @@ class PhotoindexDeletionTests(unittest.TestCase):
         self.assertEqual(photoindex_status(self.root, self.cfg)[0], 'stale')
         photoindex.run_scan(self.root, self.cfg)
         self.assertEqual(photoindex_status(self.root, self.cfg)[0], 'fresh')
+
+
+class PhotoindexIndexIsFreshResearchCompanionTests(unittest.TestCase):
+    """#106 review finding (P1, found reviewing this PR): `photoindex.
+    _index_is_fresh`'s manifest check scoped the STORED side of the
+    comparison by a bare 'people/' key prefix, not by the same person-
+    PROFILE predicate the CURRENT side uses (`_lib.
+    person_profile_path_manifest`). A person's `research` companion is
+    human-authored, not generated (`GENERATED_COMPANION_KINDS` excludes it),
+    so `record_path_manifest` tracks it under people/ same as a profile -
+    the bare prefix filter left it in the stored side with no counterpart in
+    a profile-only current listing, reading as a permanent phantom deletion.
+    Any archive using the research-file feature at all had weak
+    face-tag/name-variant photo resolution silently and permanently
+    disabled, even immediately after a clean `fha index`."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        (self.root / 'fha.yaml').write_text('roots:\n  photos: photos\n', encoding='utf-8')
+        (self.root / 'people').mkdir()
+        self.profile_path = self.root / 'people' / 'hartley__john_P-aaaaaaaaaa.md'
+        self.profile_path.write_text(
+            '---\nid: P-aaaaaaaaaa\nname: John Hartley\nliving: false\ntier: curated\n'
+            '---\n\n', encoding='utf-8')
+        # A research companion: human-authored, never GENERATED, so it is
+        # tracked by record_path_manifest exactly like the profile is.
+        self.research_path = (
+            self.root / 'people' / 'hartley__john_research_P-aaaaaaaaaa.md')
+        self.research_path.write_text(
+            '---\nid: P-aaaaaaaaaa\n---\n\n## Research Notes\n', encoding='utf-8')
+        self.fha_config = load_fha_yaml(self.root)
+        index_mod.build_index(self.root, self.fha_config)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_guard_the_old_bare_prefix_scope_reproduces_the_bug(self) -> None:
+        # Pins the pre-fix bug as a regression baseline: a bare 'people/'
+        # prefix filter on the STORED manifest (instead of the same
+        # profile-only predicate the current side uses) disagrees with a
+        # profile-only current listing purely because of the research
+        # companion - nothing was ever deleted.
+        stored = read_path_manifest(index_manifest_path(self.root))
+        old_buggy_stored_people = {k: v for k, v in stored.items() if k.startswith('people/')}
+        current_people = person_profile_path_manifest(self.root)
+        self.assertTrue(
+            manifest_has_changed(manifest_diff(old_buggy_stored_people, current_people)),
+            'guard: the old bare-prefix scope must reproduce the bug pre-fix')
+
+    def test_index_is_fresh_right_after_a_clean_build(self) -> None:
+        self.assertTrue(photoindex._index_is_fresh(self.root))
+
+    def test_deleting_the_profile_is_still_detected_as_stale(self) -> None:
+        self.profile_path.unlink()
+        self.assertFalse(photoindex._index_is_fresh(self.root))
+
+    def test_editing_the_research_companion_does_not_go_stale(self) -> None:
+        # The research companion voting in record_path_manifest must not
+        # make this narrower, profile-only check flap on every edit to it -
+        # only a change to the PROFILE itself (or its absence) is in scope.
+        self.research_path.write_text(
+            '---\nid: P-aaaaaaaaaa\n---\n\n## Research Notes\nUpdated.\n', encoding='utf-8')
+        self.assertTrue(photoindex._index_is_fresh(self.root))
 
 
 class UpsertSourceManifestTests(unittest.TestCase):
@@ -372,6 +464,29 @@ class UpsertSourceManifestTests(unittest.TestCase):
         self.assertEqual(status, 'indexed')
         self.assertTrue(record_manifest_is_stale(self.root))
 
+    def test_upserting_a_brand_new_source_adds_its_manifest_entry(self) -> None:
+        # The third upsert_source case the PR description names (add, edit,
+        # rename) alongside the two above - a source that did not exist at
+        # the last full build, upserted for the first time. The manifest
+        # patch must add its key, not just leave the two pre-existing ones
+        # alone.
+        new_sid = 's-cccccccccc'
+        new_path = self.root / 'sources' / 'other' / f'brand-new_{new_sid}.md'
+        new_path.write_text(
+            f'---\nid: {new_sid}\ntitle: Brand new\nsource_type: other\n---\n\n'
+            '## Claims\n', encoding='utf-8')
+        rel = new_path.relative_to(self.root).as_posix()
+        manifest_before = read_path_manifest(index_manifest_path(self.root))
+        self.assertNotIn(rel, manifest_before)
+
+        status = index_mod.upsert_source(self.root, self.fha_config, new_sid)
+
+        self.assertEqual(status, 'indexed')
+        self.assertFalse(record_manifest_is_stale(self.root))
+        manifest_after = read_path_manifest(index_manifest_path(self.root))
+        self.assertIn(rel, manifest_after)
+        self.assertAlmostEqual(manifest_after[rel], new_path.stat().st_mtime, places=3)
+
     def test_upsert_after_a_rename_drops_the_stale_old_key(self) -> None:
         # A rename (same S-id, new filename/folder) must not leave a phantom
         # "deleted" entry in the manifest forever - upsert_source reads the
@@ -389,6 +504,65 @@ class UpsertSourceManifestTests(unittest.TestCase):
         manifest = read_path_manifest(index_manifest_path(self.root))
         self.assertNotIn(old_rel, manifest)
         self.assertIn(new_path.relative_to(self.root).as_posix(), manifest)
+
+
+class ManifestDiffPrimitiveTests(unittest.TestCase):
+    """`manifest_diff`/`manifest_has_changed` pinned directly against plain
+    dicts, no filesystem or index involved - every entry-point test above
+    exercises them indirectly through a real archive, but the exact
+    'modified path set, same total count' shape (a plain rename with no
+    upsert_source involved) is only pinned at this primitive level."""
+
+    def test_pure_addition(self) -> None:
+        diff = manifest_diff({'a': 1.0}, {'a': 1.0, 'b': 2.0})
+        self.assertEqual(diff, {'added': ['b'], 'removed': [], 'modified': []})
+        self.assertTrue(manifest_has_changed(diff))
+
+    def test_pure_removal(self) -> None:
+        diff = manifest_diff({'a': 1.0, 'b': 2.0}, {'a': 1.0})
+        self.assertEqual(diff, {'added': [], 'removed': ['b'], 'modified': []})
+        self.assertTrue(manifest_has_changed(diff))
+
+    def test_pure_modification(self) -> None:
+        diff = manifest_diff({'a': 1.0}, {'a': 2.0})
+        self.assertEqual(diff, {'added': [], 'removed': [], 'modified': ['a']})
+        self.assertTrue(manifest_has_changed(diff))
+
+    def test_no_change_is_not_flagged(self) -> None:
+        diff = manifest_diff({'a': 1.0, 'b': 2.0}, {'a': 1.0, 'b': 2.0})
+        self.assertEqual(diff, {'added': [], 'removed': [], 'modified': []})
+        self.assertFalse(manifest_has_changed(diff))
+
+    def test_a_plain_rename_is_one_removed_and_one_added_same_total_count(self) -> None:
+        # The exact shape a rename on disk produces at this primitive level,
+        # with no upsert_source or index rebuild involved at all: the old
+        # key vanishes, a new key with the SAME mtime appears elsewhere -
+        # total key count is unchanged, so a naive len()-based staleness
+        # check would miss it. manifest_diff must not.
+        stored = {'sources/old-name_S-aaaaaaaaaa.md': 100.0, 'sources/other_S-bbbbbbbbbb.md': 200.0}
+        current = {'sources/new-name_S-aaaaaaaaaa.md': 100.0, 'sources/other_S-bbbbbbbbbb.md': 200.0}
+        diff = manifest_diff(stored, current)
+        self.assertEqual(diff, {
+            'added': ['sources/new-name_S-aaaaaaaaaa.md'],
+            'removed': ['sources/old-name_S-aaaaaaaaaa.md'],
+            'modified': [],
+        })
+        self.assertEqual(len(stored), len(current))   # the len()-alone trap
+        self.assertTrue(manifest_has_changed(diff))
+
+    def test_bootstrapping_reports_every_current_path_as_added(self) -> None:
+        diff = manifest_diff(None, {'a': 1.0, 'b': 2.0})
+        self.assertEqual(diff, {'added': ['a', 'b'], 'removed': [], 'modified': []})
+        self.assertTrue(manifest_has_changed(diff))
+
+    def test_bootstrapping_an_empty_current_listing_is_not_flagged(self) -> None:
+        # A missing manifest against an empty CURRENT listing (nothing on
+        # disk to report as 'added') must not be a false alarm - this is the
+        # exact shape a photoindex scope with no matching records at all
+        # produces (PhotoindexIndexIsFreshResearchCompanionTests-adjacent).
+        diff = manifest_diff(None, {})
+        self.assertEqual(diff, {'added': [], 'removed': [], 'modified': []})
+        self.assertFalse(manifest_has_changed(diff))
 
 
 if __name__ == '__main__':

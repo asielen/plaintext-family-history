@@ -429,6 +429,35 @@ class WriteErrorHandlingTests(_ViewsHtmlBase):
             self.assertEqual(res.exit_code, EXIT_FAILURE, kind)
             self.assertFalse(folder.exists(), kind)
 
+    def test_all_curated_batch_refuses_upfront_on_a_deleted_record(self):
+        # #106 review finding: test_a_record_deleted_since_the_last_index_build_
+        # refuses_upfront (tests/test_views_brackets_promote.py) pins this exact
+        # #48 upfront-whole-batch-refusal behavior for --fix-promote, and
+        # test_stale_index_does_not_recreate_deleted_person_folder just above
+        # pins it for the single-person path - but nothing exercised the
+        # all_curated=True BATCH path the PR description names alongside
+        # --fix-promote as the other caller of this shared gate
+        # (_open_index_or_explain / open_index_db(strict=True)). Two curated
+        # people, one deleted since the last `fha index`: the whole batch must
+        # refuse before writing anyone, not just skip the deleted one.
+        pid2 = 'P-cccccccccc'
+        folder2 = self.root / 'people' / '050 Second Person'
+        folder2.mkdir(parents=True)
+        (folder2 / f'second__person_{pid2}.md').write_text(
+            _person(pid2, 'Second Person', 'curated'), encoding='utf-8')
+        self._reindex()
+
+        shutil.rmtree(self.profile.parent)   # PID's record vanishes post-index
+
+        for runner, kind in self._runners():
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                res = runner(self.root, all_curated=True)
+            self.assertEqual(res.exit_code, EXIT_FAILURE, kind)
+            self.assertFalse(res.changed, kind)   # nothing written - not even Second Person
+            self.assertIn('index is stale', err.getvalue(), kind)
+            self.assertIn('fha index', err.getvalue(), kind)
+
     def test_write_oserror_reports_plain_error_not_traceback(self):
         orig = views.write_generated_file
 
