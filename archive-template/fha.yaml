@@ -11,11 +11,11 @@
 #   Omit to disable those checks.
 #
 # root_generation: self
-#   Which Ahnentafel slot root_person occupies - see root_generation: below
-#   for the two settings. Getting this right matters: root_person anchored
-#   at a generation that is not the youngest, with root_generation left at
-#   self, numbers every ancestor folder one generation high. (`fha lint` and
-#   `fha views brackets` say so if it happens - W127.)
+#   Which Ahnentafel slot root_person occupies - two settings, below. Getting
+#   this right matters: root_person anchored at a generation that is not the
+#   youngest, with root_generation left at self, numbers every ancestor
+#   folder one generation high. (`fha lint` and `fha views brackets` say so
+#   if it happens - W127.)
 #     self (default) - root_person is Ahnentafel #1, the tree's usual
 #       starting point (father #2, mother #3, grandparents #4-7, …). Use
 #       this when root_person is the YOUNGEST person on the direct line -

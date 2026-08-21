@@ -12,13 +12,15 @@ which Ahnentafel slot that person occupies:
 
 Covers: `_lib.resolve_root_generation` / `root_generation_seed_position`
 directly; self-mode back-compat (implicit and explicit); children-mode's
-exact-doubling relationship to self-mode (derived from the walk's own 2n /
-2n+1 recursion, not just pinned output); an invalid value rejected with a
-clear message at every call site (lint, views brackets, person promote,
-report) rather than silently read as 'self'; W127 firing under self and
-falling silent under children for the identical fixture (the crux of #72);
-and `fha views brackets --realign` correctly renumbering and re-filing an
-already-promoted tree after a root_generation change.
+exact shift from self-mode (every position comes out at `self_position +
+2**generation_depth` - derived from the walk's own 2n / 2n+1 recursion, not
+just pinned output - see `ChildrenModeShiftTests` for the derivation); an
+invalid value rejected with a clear message at every call site (lint, views
+brackets, person promote, report) rather than silently read as 'self'; W127
+firing under self and falling silent under children for the identical
+fixture (the crux of #72); and `fha views brackets --realign` correctly
+renumbering and re-filing an already-promoted tree after a root_generation
+change.
 
 Both backends - lint's in-memory registry and views'/`_lib`'s SQLite-backed
 walk - are exercised throughout, matching the twin-testing convention
