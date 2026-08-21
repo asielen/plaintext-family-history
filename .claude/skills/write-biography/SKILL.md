@@ -89,6 +89,11 @@ it — a profile half chronicle, half narrative reads as two authors fighting.
      machine; narrative adds cited or clearly-flagged texture, never invention.
    - **Every factual sentence carries its source** as a `[[S-…]]` link: *"He worked as a bookkeeper for
      the Plains Junction Railroad by 1880 [[S-4f5f215e60]]."*
+   - **That is a citation rule, not a layout rule — write paragraphs, not lines.** Flowing paragraphs,
+     hard-wrapped at ~85 columns, a blank line between them; several cited sentences share a paragraph
+     whenever they share a subject, era, or episode (typically 3-6 sentences) — never one sentence per
+     line. The Biography section is already "chaptered by era/place" (SPEC §16); the paragraph is that
+     chaptering's working unit, not a wrapper around a single citation.
    - The **summary block** (the vitals line at the top) takes one citation per fact-line; the **body**
      takes all relevant citations.
    - Anything you can't cite to an accepted claim must read explicitly as context or story ("Family
@@ -150,6 +155,11 @@ it — a profile half chronicle, half narrative reads as two authors fighting.
 - **The citation contract is style-invariant.** Narrative style never invents scenes, dialogue,
   weather, or interior states — its color is cited claims or clearly-flagged period context, nothing
   else. A style choice changes the voice, never what counts as a fact.
+- **Layout is style-invariant too — paragraphs, not lines.** Chronicle and narrative both read as
+  flowing paragraphs, blank-line separated, hard-wrapped at ~85 columns — never one sentence per line.
+  These are plain-text records a human reads directly in an editor, forever; semantic linefeeds read as
+  a list of assertions rather than a life, and they are the clearest tell that a block was drafted, not
+  written.
 - New prose stays AI-DRAFT until `fha confirm draft`; acceptance is the human's gesture, not a hand-edit.
 - Uncited prose reads as context/story, never as fact.
 - **AI-DRAFT prose never publishes until accepted.** `fha site` and `fha wikitree` both exclude a
