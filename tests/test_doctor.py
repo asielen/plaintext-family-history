@@ -42,7 +42,10 @@ sys.path.insert(0, str(ROOT / 'tools'))
 import capture
 import doctor
 import index
-from _lib import EXIT_ERRORS, EXIT_WARNINGS
+from _lib import (
+    EXIT_ERRORS, EXIT_WARNINGS, index_manifest_path, record_path_manifest,
+    write_path_manifest,
+)
 
 
 _PERSON = '''---
@@ -150,6 +153,17 @@ class StaleIndexCauseTests(unittest.TestCase):
             if q.is_file() and '.cache' not in q.parts:
                 os.utime(q, (now - 600, now - 600))
         os.utime(self.root / '.cache' / 'index.sqlite', (now - 300, now - 300))
+        # #48: the #48 path manifest build_index wrote captured each record's
+        # mtime BEFORE this loop rewound it, so every record now reads as
+        # "modified" against that stale snapshot - a real staleness signal in
+        # general (the file's mtime genuinely no longer matches what the
+        # cache last saw), but not the one this test class is about. Resync
+        # the manifest to the now-aged mtimes, exactly as an archive that had
+        # legitimately settled into this state (aged records, an index built
+        # after them) would have on disk - `newest_record_mtime` is a max, so
+        # bumping every file down together does not need a real rebuild to
+        # stay internally consistent, only the manifest catching up to it.
+        write_path_manifest(index_manifest_path(self.root), record_path_manifest(self.root))
 
     def tearDown(self) -> None:
         self._tmp.cleanup()

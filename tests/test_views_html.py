@@ -38,6 +38,7 @@ from _lib import (
     EXIT_CLEAN,
     EXIT_FAILURE,
     EXIT_WARNINGS,
+    GeneratedFileParentMissing,
     is_generated_text,
     load_fha_yaml,
     open_index_db,
@@ -420,12 +421,27 @@ class WriteErrorHandlingTests(_ViewsHtmlBase):
         self.assertEqual(res.exit_code, EXIT_FAILURE)
 
     def test_all_curated_batch_continues_past_one_missing_folder(self):
-        # A stale index pointing at one curated person's moved/deleted folder
-        # must not abort the whole --all-curated batch: before this fix,
-        # GeneratedFileParentMissing hit the same top-level except as the
-        # rare GeneratedFileRefused case and discarded every file already
-        # written this run, including a second curated person's, which
-        # never had anything wrong with it.
+        # #48 changed how this scenario has to be TRIGGERED, not what it
+        # tests. The original trigger - shutil.rmtree(self.profile.parent)
+        # with no reindex - deletes a tracked record file (PID's profile),
+        # which is now exactly the deletion #48 exists to catch: the shared
+        # `_open_index_or_explain` gate (open_index_db(strict=True)) refuses
+        # the WHOLE batch upfront, before it ever reaches the per-item loop
+        # this test is actually about - see
+        # test_stale_index_does_not_recreate_deleted_person_folder, which
+        # pins exactly that upfront refusal for the single-person case.
+        #
+        # This test's real subject - GeneratedFileParentMissing hitting the
+        # same top-level except as the rare GeneratedFileRefused case and
+        # discarding every file already written this run - is a narrower
+        # race the freshness gate cannot see by construction: the index and
+        # every record file are genuinely untouched and correctly read
+        # fresh; only the WRITE into PID's folder fails (a folder deleted or
+        # unmounted in the instant between this run's own index check and
+        # its own write, which #48 has no watermark or manifest entry that
+        # could ever see coming). Reproduced directly instead: a real second
+        # person, an untouched index, and a write_generated_file that fails
+        # only for PID.
         pid2 = 'P-cccccccccc'
         folder2 = self.root / 'people' / '050 Second Person'
         folder2.mkdir(parents=True)
@@ -433,11 +449,20 @@ class WriteErrorHandlingTests(_ViewsHtmlBase):
             _person(pid2, 'Second Person', 'curated'), encoding='utf-8')
         self._reindex()
 
-        shutil.rmtree(self.profile.parent)   # PID's folder vanishes; pid2's survives
+        orig_write = views.write_generated_file
 
-        err = io.StringIO()
-        with contextlib.redirect_stderr(err):
-            res = views.run_timeline(self.root, all_curated=True)
+        def fail_only_for_pid(out_path, *args, **kwargs):
+            if PID in str(out_path):
+                raise GeneratedFileParentMissing(out_path)
+            return orig_write(out_path, *args, **kwargs)
+
+        views.write_generated_file = fail_only_for_pid
+        try:
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                res = views.run_timeline(self.root, all_curated=True)
+        finally:
+            views.write_generated_file = orig_write
 
         self.assertEqual(res.data['count'], 1)
         self.assertEqual(len(res.changed), 1)

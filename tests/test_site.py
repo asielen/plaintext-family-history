@@ -31,6 +31,10 @@ sys.path.insert(0, str(ROOT / 'tools'))
 
 from index import _DDL as INDEX_DDL
 from photoindex import _DDL as PHOTOS_DDL
+from _lib import (
+    index_manifest_path, path_to_alias, photoindex_manifest_path,
+    photoindex_record_manifest, record_path_manifest, write_path_manifest,
+)
 
 _spec = importlib.util.spec_from_file_location('fha_site', ROOT / 'tools' / 'site.py')
 site = importlib.util.module_from_spec(_spec)
@@ -141,6 +145,16 @@ class _Base(unittest.TestCase):
         self.conn.commit()
         future = time.time() + 5
         os.utime(self.archive_root / '.cache' / 'index.sqlite', (future, future))
+        # #48: this synthetic index.sqlite is hand-built via raw DDL/INSERTs,
+        # bypassing build_index/upsert_source - the only two places that
+        # write the #48 path manifest - so without this, open_index_db's
+        # additive manifest check finds no manifest at all and (correctly,
+        # per the bootstrapping rule) reads every real file _seed_person/
+        # _seed_source already wrote as newly "added", i.e. stale. Called
+        # here, right before every call to run_site, so the manifest always
+        # matches whatever real files that test actually created.
+        write_path_manifest(
+            index_manifest_path(self.archive_root), record_path_manifest(self.archive_root))
         return site.run_site(self.archive_root, self.out_dir, linked=linked, dry_run=dry_run,
                              workbench=workbench)
 
@@ -837,6 +851,20 @@ class AssetTests(_Base):
     def _make_photos_fresh(self):
         far_future = time.time() + 10_000
         os.utime(self.archive_root / '.cache' / 'photos.sqlite', (far_future, far_future))
+        # #48: this synthetic photos.sqlite is hand-built via raw DDL,
+        # bypassing run_scan - the only place that writes the #48 photo
+        # manifest - so without this, photoindex_status's additive manifest
+        # check finds no manifest at all and (correctly, per the
+        # bootstrapping rule) reads any real photo file already written to
+        # `photos/`, plus any real person/sources-photos file _seed_person
+        # already wrote, as newly "added", i.e. stale.
+        photos_dir = self.archive_root / 'photos'
+        manifest = {
+            path_to_alias(p, 'photos', {}, self.archive_root): p.stat().st_mtime
+            for p in (photos_dir.rglob('*') if photos_dir.is_dir() else []) if p.is_file()
+        }
+        manifest.update(photoindex_record_manifest(self.archive_root))
+        write_path_manifest(photoindex_manifest_path(self.archive_root), manifest)
 
     def test_linked_photo_strip(self):
         self._seed_person('p-aaaaaaaaaa', 'Jane Doe')
@@ -1194,6 +1222,15 @@ class LivingPhotoCheckUnavailableTests(_Base):
         pconn.close()
         far_future = time.time() + 10_000
         os.utime(self.archive_root / '.cache' / 'photos.sqlite', (far_future, far_future))
+        # #48: hand-built via raw DDL, bypassing run_scan - see AssetTests.
+        # _make_photos_fresh's matching comment. The real photo file this
+        # test wrote via _seed_photo_source needs a manifest entry too, or
+        # the "no alarm" this test is about never gets exercised.
+        photo = self.archive_root / 'photos' / '1880' / 'pic.png'
+        write_path_manifest(
+            photoindex_manifest_path(self.archive_root),
+            {path_to_alias(photo, 'photos', {}, self.archive_root): photo.stat().st_mtime,
+             **photoindex_record_manifest(self.archive_root)})
         res = self._run(linked=False)
         self.assertEqual(self._warnings(res), [], res['messages'])
 
@@ -1261,6 +1298,12 @@ class LivingPhotoCheckUnavailableTests(_Base):
         self.conn.commit()
         future = time.time() + 5
         os.utime(self.archive_root / '.cache' / 'index.sqlite', (future, future))
+        # #48: hand-built index, no manifest written yet - see _Base._run's
+        # matching comment. This test calls site._cmd_site directly instead
+        # of _run, so it needs its own copy of the same resync (fha.yaml,
+        # just written above, is a real file the manifest must know about).
+        write_path_manifest(
+            index_manifest_path(self.archive_root), record_path_manifest(self.archive_root))
         args = argparse.Namespace(root=str(self.archive_root), out=str(self.out_dir),
                                   linked=False, dry_run=False)
         err = io.StringIO()

@@ -86,13 +86,17 @@ from _lib import (
     resolve_typed_ref,
     roots_change_orphans,
     format_roots_orphan_warning,
+    index_manifest_path,
+    record_path_manifest,
     spouse_parties,
     sqlite_cache_schema_status,
     strip_generational_suffix,
     strip_link_wrapper,
     undecodable_file_recorder,
     unreadable_dir_recorder,
+    update_path_manifest,
     walk_files,
+    write_path_manifest,
 )
 
 import yaml
@@ -2060,6 +2064,20 @@ def build_index(archive_root: Path, fha_config: dict, verbose: bool = False) -> 
         size_kb = db_path.stat().st_size // 1024
         print(f'Done. Index at {db_path} ({size_kb} KB)')
 
+    # #48: snapshot the path manifest this build actually saw, so a later
+    # DELETION (of a source/person/notes record) is detectable even though
+    # nothing else's mtime moves when a file disappears - see _lib.py's
+    # "Freshness manifests" section. A full write, not an incremental patch:
+    # this build already paid for a complete fresh listing (record_
+    # path_manifest walks the same sources/people/notes tree the build just
+    # walked), so there is nothing from the old manifest worth preserving.
+    # An unreadable folder during THIS build already holds the index stale
+    # via newest_record_mtime's own 'now' fail-closed rule regardless of what
+    # the manifest records, so no special-casing is needed here for that case
+    # - it self-heals the same way the watermark does, on the next full
+    # rebuild that can see the folder.
+    write_path_manifest(index_manifest_path(archive_root), record_path_manifest(archive_root))
+
     # `fha index` is the one command every workflow runs right after editing
     # fha.yaml, so it is the earliest place a roots: change that orphaned
     # filed assets can be caught (#36) - before the next lint's wall of E011.
@@ -2350,6 +2368,28 @@ def upsert_source(
         # connection, and a leaked handle blocks later deletion/replacement
         # of the .sqlite file (most visibly on Windows).
         conn.close()
+
+    # #48: patch the manifest for exactly the one file this upsert touched,
+    # instead of a full re-walk of sources/people/notes for a one-source
+    # change - see _lib.py's "Freshness manifests" section and
+    # update_path_manifest's docstring for why an incremental writer patches
+    # rather than replaces. `source_path` (read above, before the deletes) is
+    # the OLD stored path; index.py stores it with whatever slash convention
+    # `str(Path)` gives on this platform, never `.as_posix()`'d, so it is
+    # normalized before use as a manifest key. A rename (same S-id, new
+    # filename or folder) drops the stale old key - left in place, it would
+    # read as a phantom deletion forever, since nothing else ever removes it.
+    new_key = Path(found).relative_to(archive_root).as_posix()
+    updates: dict[str, float | None] = {}
+    try:
+        updates[new_key] = found.stat().st_mtime
+    except OSError:
+        pass   # vanished between the read above and here; next full rebuild heals it
+    if source_path:
+        old_key = source_path.replace('\\', '/')
+        if old_key != new_key:
+            updates[old_key] = None
+    update_path_manifest(index_manifest_path(archive_root), updates)
     return 'indexed'
 
 

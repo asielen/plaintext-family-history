@@ -11,6 +11,7 @@ sys.path.insert(0, str(ROOT / 'tools'))
 
 import xref
 from index import _DDL
+from _lib import index_manifest_path, record_path_manifest, write_path_manifest
 
 
 def _make_index(archive_root: Path) -> sqlite3.Connection:
@@ -779,6 +780,15 @@ class XrefStdoutIsValidUtf8Tests(unittest.TestCase):
         conn.commit()
         conn.close()
         (root / 'fha.yaml').write_text('roots: {}\n', encoding='utf-8')
+        # #48: this synthetic index.sqlite is hand-built via raw DDL,
+        # bypassing build_index/upsert_source - the only two places that
+        # write the #48 path manifest - so without this, open_index_db's
+        # additive manifest check finds no manifest at all and (correctly,
+        # per the bootstrapping rule) reads fha.yaml, just written above, as
+        # newly "added", i.e. stale - a spurious "index may be stale"
+        # warning on a subprocess run this test does not otherwise expect
+        # one from.
+        write_path_manifest(index_manifest_path(root), record_path_manifest(root))
         return root
 
     def test_accented_place_survives_redirected_stdout_as_valid_utf8(self) -> None:

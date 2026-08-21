@@ -1844,6 +1844,42 @@ class StalenessMemoTests(_ServeCase):
         self.assertIsNone(self.state._mtime_memo)
 
 
+class SnapshotDeletionFreshnessTests(_ServeCase):
+    """#48: a DELETED record is invisible to the mtime watermark above -
+    removing a file raises no OTHER file's mtime, so `_newest_input_mtime`
+    alone would keep reading the snapshot as current over a source that no
+    longer exists. `snapshot_is_stale` ORs a path-manifest check on top of it
+    (`_snapshot_input_manifest_cached` vs `state._snapshot_manifest`,
+    captured the moment `ensure_snapshot` last rebuilt) to catch exactly
+    that, the same additive design as `open_index_db`/`photoindex_status`."""
+
+    def test_deleting_a_source_marks_the_snapshot_stale(self):
+        self.assertFalse(serve.snapshot_is_stale(self.state))
+        target = next((self.root / 'sources').rglob('*.md'))
+        target.unlink()
+        # Both TTL memos (the mtime watermark and the #48 manifest) are still
+        # within their window from the assertFalse above - reset them
+        # explicitly, matching the human-timescale gap a real delete-then-
+        # reload would have, rather than sleep in a test.
+        with self.state._memo_lock:
+            self.state._mtime_memo = None
+            self.state._manifest_memo = None
+        self.assertTrue(serve.snapshot_is_stale(self.state))
+
+    def test_a_rebuild_clears_the_staleness(self):
+        target = next((self.root / 'sources').rglob('*.md'))
+        target.unlink()
+        with self.state._memo_lock:
+            self.state._mtime_memo = None
+            self.state._manifest_memo = None
+        self.assertTrue(serve.snapshot_is_stale(self.state))
+        serve.ensure_snapshot(self.state)
+        with self.state._memo_lock:
+            self.state._mtime_memo = None
+            self.state._manifest_memo = None
+        self.assertFalse(serve.snapshot_is_stale(self.state))
+
+
 class CountsPipelineTests(_ServeCase):
     """Cleanup task 2: gather_review/gather_inbox (full index queries plus
     xref/cooccur detection) used to run 2-3x per /review or /inbox request -

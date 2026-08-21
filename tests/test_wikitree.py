@@ -26,9 +26,20 @@ def _make_index(archive_root: Path) -> sqlite3.Connection:
 def _freshen_index(archive_root: Path) -> None:
     """Stamp the index newer than every record so the strict freshness check
     passes after a test edits fixture files (same pattern as
-    test_privacy_restricted's _Archive.fresh())."""
+    test_privacy_restricted's _Archive.fresh()).
+
+    #48: also (re)writes `.cache/index_manifest.json` to match whatever real
+    files exist right now. This index is hand-built via raw DDL, bypassing
+    build_index/upsert_source - the only two places that write the #48 path
+    manifest - so without this, open_index_db's additive manifest check
+    finds no manifest at all and (correctly, per the bootstrapping rule)
+    reads every real record file this fixture wrote as newly "added", i.e.
+    stale, regardless of the mtime stamp above.
+    """
     future = time.time() + 5
     os.utime(archive_root / '.cache' / 'index.sqlite', (future, future))
+    _lib.write_path_manifest(
+        _lib.index_manifest_path(archive_root), _lib.record_path_manifest(archive_root))
 
 
 def _add_person(conn, pid, name, tier='curated', living='false', path=None, surname=None):
@@ -139,6 +150,7 @@ class WikitreeRenderTests(unittest.TestCase):
                    date_edtf='1875', place_text='Boston', source_id='s-0000000001')
         conn.commit()
         conn.close()
+        _freshen_index(self.root)
 
     def tearDown(self):
         self._tmp.cleanup()
@@ -530,6 +542,7 @@ class WikitreeRenderTests(unittest.TestCase):
         )
         conn.commit()
         conn.close()
+        _freshen_index(self.root)
 
         r = wikitree.run_wikitree(self.root, 'p-0000000001')
 
@@ -589,6 +602,7 @@ class WikitreeRenderTests(unittest.TestCase):
                      ('mary jones', 'p-0000000002', 'name'))
         conn.commit()
         conn.close()
+        _freshen_index(self.root)
 
         r = wikitree.run_wikitree(self.root, 'p-0000000001')
 
@@ -726,6 +740,7 @@ class WikitreeRenderTests(unittest.TestCase):
         _add_source(conn, 's-0000000003', 'Private source', 'sources/private.md', restricted=1)
         conn.commit()
         conn.close()
+        _freshen_index(self.root)
 
         r = wikitree.run_wikitree(self.root, 'p-0000000001')
 
@@ -747,6 +762,7 @@ class WikitreeRenderTests(unittest.TestCase):
         )
         conn.commit()
         conn.close()
+        _freshen_index(self.root)
 
         r = wikitree.run_wikitree(self.root, 'p-0000000001')
 

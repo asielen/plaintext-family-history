@@ -44,6 +44,7 @@ import os
 import shutil
 import sqlite3
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -84,6 +85,7 @@ from _lib import (
     pip_command,
     probe_sqlite,
     read_record,
+    record_manifest_is_stale,
     resolve_path,
     resolve_root_arg,
     Result,
@@ -199,6 +201,16 @@ def _index_freshness(archive_root: Path) -> tuple[str, str]:
       'fresh'  → detail = ''
       'stale'  → detail = human-readable lag (e.g. '5m32s')
       'absent' → detail = ''
+
+    #48: ORs a path-manifest check onto the mtime watermark below - a
+    DELETED source/person/notes file never raises any remaining file's
+    mtime, so the watermark alone would keep reading 'fresh' over a record
+    it lost (this is the eleven-signals-disagreeing bug: `fha doctor` and
+    `fha find`/`open_index_db` must agree on the same archive state, and
+    before this fix only the watermark half was shared between them).
+    A manifest-only deletion has no later mtime to measure a lag against, so
+    its detail reports the catalog's own age instead - the same shape
+    `photoindex_status` already uses for its config-drift case.
     """
     db_path = archive_root / '.cache' / 'index.sqlite'
     mtime = db_mtime(db_path)
@@ -214,11 +226,11 @@ def _index_freshness(archive_root: Path) -> tuple[str, str]:
         return (schema_status, schema_detail)
 
     record_mtime = newest_record_mtime(archive_root)
-    if record_mtime == 0.0:
-        return ('fresh', '')   # no records yet - trivially up-to-date
-
-    if mtime < record_mtime:
+    if record_mtime != 0.0 and mtime < record_mtime:
         return ('stale', _fmt_delta(record_mtime - mtime))
+
+    if record_manifest_is_stale(archive_root):
+        return ('stale', _fmt_delta(max(0.0, time.time() - mtime)))
 
     return ('fresh', '')
 

@@ -16,16 +16,36 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
 
 import find
-from _lib import EXIT_CLEAN, EXIT_ERRORS, EXIT_FAILURE, EXIT_WARNINGS
+from _lib import (
+    EXIT_CLEAN, EXIT_ERRORS, EXIT_FAILURE, EXIT_WARNINGS,
+    index_manifest_path, record_path_manifest, write_path_manifest,
+)
 from index import _DDL
 
 
 def _make_index(archive_root: Path) -> sqlite3.Connection:
+    """Hand-build `.cache/index.sqlite` from the real schema, without paying
+    for a full `index.build_index` run over real record files - this test
+    file's rows come from `_add_person`/`_add_source`/`_add_claim` etc.
+    calling `conn.execute` directly, not from files on disk.
+
+    Also stamps the #48 path manifest (`record_path_manifest` - matching
+    whatever real files this fixture already created, typically just
+    `fha.yaml`) as `build_index` would have, at this same moment. Without
+    it, `open_index_db`'s freshness check finds no manifest at all and - by
+    the correct bootstrapping rule (#48: missing manifest fails the same way
+    a missing index.sqlite does, never "assume fresh") - reads any real file
+    already on disk as newly added, i.e. stale, which every caller of this
+    helper wants to be silent about. Call this AFTER creating any real fixture
+    files (fha.yaml, ...) and BEFORE creating more - nothing in this file does
+    the latter, but a future test that does would need to re-stamp.
+    """
     cache = archive_root / '.cache'
     cache.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(cache / 'index.sqlite'))
     conn.executescript(_DDL)
     conn.row_factory = sqlite3.Row
+    write_path_manifest(index_manifest_path(archive_root), record_path_manifest(archive_root))
     return conn
 
 
