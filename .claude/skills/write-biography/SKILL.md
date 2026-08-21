@@ -180,5 +180,8 @@ it — a profile half chronicle, half narrative reads as two authors fighting.
   sentence cited) and the lint baseline; the AI-DRAFT marker and the AI-pass task both name the style
   used, and with no session ask and no `fha.yaml` `biography:` block the voice is `chronicle` —
   byte-for-byte the skill's old default behavior.
+- The drafted `## Biography` prose reads as flowing, blank-line-separated paragraphs, hard-wrapped at
+  ~85 columns — no run of consecutive lines each ending on a sentence boundary with its own `[[S-…]]`,
+  in either named style.
 - `fha lint --root example-archive` still exits 1 with only the documented baseline warnings
   (`_STANDARD.md` §9).

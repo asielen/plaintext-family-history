@@ -368,7 +368,11 @@ frontmatter (SPEC §14) → draft claims (`suggested`) with `anchor:`s → `fha 
 - **Review claims with the human:** take one source's `suggested` list; for each, show
 the claim plus its anchor context and its source file link (the anchored asset or record path first, the `[[S-id]]` token after) so he can open the evidence alongside; record the human's decision with `fha claim` (which moves the status and stamps `reviewed:` - directing the tool *is* the human's accept; a grouped same-status decision is one batch write, `fha claim C-a C-b … --status X` - grouping is presentation and capture, each claim still gets its own stated decision); confirm any resulting corroboration/contradiction with `fha confirm xref`; finish with `fha index`, a `fha views timeline`/`draft-queue` refresh for the curated people touched, and `fha lint`.
 - **Write or extend a biography:** facts only from `accepted` claims; cite every factual
-sentence (summary block: one citation per line; body: all relevant citations); anything uncited must read as story/context; cross-link people with `[[P-…]]` links verified to exist.
+sentence (summary block: one citation per line; body: all relevant citations) - a citation rule, not
+a layout rule: the body is flowing paragraphs, hard-wrapped at ~85 columns, several cited sentences
+to a paragraph, never one sentence per line (these are plain-text files a human reads directly in an
+editor, forever - semantic linefeeds are the clearest tell that a block was drafted, not written);
+anything uncited must read as story/context; cross-link people with `[[P-…]]` links verified to exist.
 Voice follows the archive's biography style - the human's in-session ask, else `fha.yaml`'s
 `biography: style:` (`chronicle` fact-forward, the default | `narrative` story-driven), else
 chronicle; extending existing prose keeps its register. Narrative texture comes only from cited
