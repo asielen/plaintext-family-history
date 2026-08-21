@@ -121,6 +121,7 @@ from _lib import (
     read_record,
     is_working_copy,
     resolve_root_arg,
+    shell_quote,
 )
 
 import cooccur
@@ -1006,8 +1007,15 @@ def _section_photo_triage(
                 '`fha photoindex reconcile --with-exif` before processing it.'
             )
             continue
+        # `c['path']` is a real on-disk filename, not a controlled value - it
+        # can carry a space ("Family Reunion 1962.jpg") or worse, so it needs
+        # the same shell-safe quoting as §6b's `fha confirm place` command
+        # (see that section's docstring); unquoted, the shell would split it
+        # into multiple arguments and `fha process` would see a path that
+        # does not exist.
         lines.append(
-            f"- {c['path']}  score={c['score']:+d}  [{signals}] - suggested: fha process {c['path']}"
+            f"- {c['path']}  score={c['score']:+d}  [{signals}] - "
+            f"suggested: fha process {shell_quote(c['path'])}"
         )
     return lines
 
@@ -1037,6 +1045,19 @@ def _section_place_candidates(archive_root: Path, fha_config: dict) -> list[str]
     not claims, so there is nothing for `fha confirm place` to relink - a
     fabricated verb for them would be the escalation/first-run-flow work
     issue #79 explicitly defers (points 2-4), not this one.
+
+    `label` is a claim's free-text `place_text`, not a controlled value like
+    §7b's person id or a claim/place id elsewhere in this file, so it can
+    legitimately contain a `"`, a leading `-`, or a literal space. Splicing
+    it into `--name "{label}"` breaks the printed command's quoting (or
+    worse, is unsafe to paste into a shell) exactly when the record text is
+    quoting something itself, e.g. a place named off a deed as `The "Old
+    Manse"`. `--name=` plus `_lib.shell_quote` keeps
+    the value a single argv token no matter its contents - including a
+    leading `-` that would otherwise make argparse mistake the value for
+    another flag - on POSIX and on Windows alike (see `shell_quote`'s own
+    docstring: a plain double-quote wrap is not enough there, per the
+    `claim.py`/issue #54 precedent of this exact bug shape).
     """
     try:
         import places as _places_tool   # noqa: PLC0415 - optional embed, see docstring
@@ -1075,7 +1096,7 @@ def _section_place_candidates(archive_root: Path, fha_config: dict) -> list[str]
         ids = ' '.join(fmt_id_display(cid) for cid in g['claim_ids'])
         lines.append(
             f"- {name} - {g['claim_count']} claim(s), {spread} - "
-            f'register with `fha confirm place {ids} --name "{name}"`'
+            f'register with `fha confirm place {ids} --name={shell_quote(name)}`'
         )
     for c in gps_clusters:
         lines.append(

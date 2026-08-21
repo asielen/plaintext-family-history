@@ -9,6 +9,7 @@ hand-built .cache/index.sqlite.
 """
 
 import datetime
+import shlex
 import sys
 import tempfile
 import unittest
@@ -215,6 +216,41 @@ source_type: vital-record
 ```
 '''
 
+# A place_text carrying a double quote and a comma - plausible free text
+# lifted straight off a record (a building name quoted on a deed). Single-
+# quoted YAML scalar so the embedded `"` needs no escaping in the fixture
+# itself. Exercises the §6b command's shell-quoting (issue #79 point 1).
+_SOURCE_PLACE_CLUSTER_QUOTED_MD = '''---
+id: S-7777777777
+title: Source Seven
+source_type: vital-record
+---
+
+## Claims
+```yaml
+- id: C-7777777771
+  type: residence
+  persons: [P-aaaaaaaaaa]
+  value: Lived at the old manse
+  place_text: 'The "Old Manse", Springfield'
+  status: accepted
+  reviewed: 2026-01-01
+- id: C-7777777772
+  type: residence
+  persons: [P-aaaaaaaaaa]
+  value: Lived at the old manse
+  place_text: 'The "Old Manse", Springfield'
+  status: accepted
+  reviewed: 2026-01-01
+- id: C-7777777773
+  type: residence
+  persons: [P-aaaaaaaaaa]
+  value: Lived at the old manse
+  place_text: 'The "Old Manse", Springfield'
+  status: needs-review
+```
+'''
+
 
 class ReportTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -333,7 +369,7 @@ class ReportTests(unittest.TestCase):
         self.assertIn('Topeka, Kansas - 3 claim(s)', md)
         self.assertIn(
             'fha confirm place C-6666666661 C-6666666662 C-6666666663 '
-            '--name "Topeka, Kansas"',
+            "--name='Topeka, Kansas'",
             md,
         )
 
@@ -356,6 +392,28 @@ class ReportTests(unittest.TestCase):
         md = result['markdown']
         self.assertNotIn('fha confirm place', md)
         self.assertIn('No recurring unlinked place-text or GPS clusters found.', md)
+
+    def test_place_candidates_command_is_shell_safe_for_quoted_names(self) -> None:
+        # A place_text carrying a `"` (e.g. a building name quoted straight
+        # off a deed) must not be spliced unescaped into `--name "..."` -
+        # that breaks the printed command's own quoting and would corrupt or
+        # misdirect it if pasted into a shell. The generated line must
+        # round-trip through a real shell split back to the exact name.
+        (self.archive_root / 'sources' / 'sourceseven_S-7777777777.md').write_text(
+            _SOURCE_PLACE_CLUSTER_QUOTED_MD, encoding='utf-8'
+        )
+        result = report.run_report(self.archive_root, {}, full=True, section='place-candidates')
+        md = result['markdown']
+
+        line = next(l for l in md.splitlines() if 'fha confirm place' in l)
+        command = line.split('`')[1]
+        argv = shlex.split(command)
+        self.assertEqual(
+            argv[:5],
+            ['fha', 'confirm', 'place', 'C-7777777771', 'C-7777777772'],
+        )
+        name_arg = next(a for a in argv if a.startswith('--name='))
+        self.assertEqual(name_arg, '--name=The "Old Manse", Springfield')
 
     def test_photo_triage_section_reports_absent_index(self) -> None:
         result = report.run_report(self.archive_root, {}, full=True)
@@ -477,6 +535,26 @@ class ReportTests(unittest.TestCase):
         self.assertNotIn('MISSING:', md)
         self.assertNotIn('fha process', md)
         self.assertIn('fha photoindex reconcile --with-exif', md)
+
+    def test_triage_suggested_command_is_shell_safe_for_spaced_paths(self) -> None:
+        # A real photo filename can hold a space ("Family Reunion 1962.jpg")
+        # - unquoted, the shell splits `fha process` onto two arguments and
+        # sends it a path that does not exist. Same defect class as §6b's
+        # `fha confirm place --name` command.
+        triage = report.Result(data={
+            'status': 'fresh',
+            'candidates': [
+                {'path': 'photos/1962/Family Reunion 1962.jpg', 'score': 3,
+                 'signals': ['caption']},
+            ],
+        })
+        with unittest.mock.patch.object(report.photoindex, 'run_triage', return_value=triage):
+            result = report.run_report(self.archive_root, {}, full=True, section='photo-triage')
+        md = result['markdown']
+        line = next(l for l in md.splitlines() if 'suggested: fha process' in l)
+        command = line.split('suggested: ', 1)[1]
+        argv = shlex.split(command)
+        self.assertEqual(argv, ['fha', 'process', 'photos/1962/Family Reunion 1962.jpg'])
 
     def test_answerable_questions_skips_marriage_for_no_known_marriages_person(self) -> None:
         # lint.py's W101 rule never requires a marriage claim for a person
