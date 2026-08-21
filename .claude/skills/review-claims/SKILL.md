@@ -121,11 +121,22 @@ its claims to the people asked about and leave the rest for later sessions.
        several - e.g. `- refs: [C-abc1234def, C-...]`; the `[[C-…]]` double-bracket form is for
        PROSE links only, and in this structured field the report's question parser stops at the
        first `]` and normalizes it to an invalid ref); a dated context line noting what was
-       parked and why — into the person's `_research` file when the question is person-specific, else
-       `notes/questions.md`. If a same-question block already exists, **append a context line to it**
-       rather than writing a twin;
+       parked and why. **Not the profile's own `## Research Notes` section** — `## Open Questions`
+       is scanned ONLY in `notes/questions.md` and a person's SEPARATE research file (`report.py`'s
+       `_parse_questions`, lint's E009 registry — both read a profile's own `## Open Questions` as
+       out of scope by design, so one written there would silently never surface again). Into the
+       person's separate research file if they already have one; if they don't, into
+       `notes/questions.md` instead (still fully discoverable, just not filed under their name) —
+       or, if this person's research clearly justifies a file of their own now, offer to create one
+       (copy `_TEMPLATE.research.md`) rather than defaulting to one silently. If a same-question
+       block already exists, **append a context line to it** rather than writing a twin;
      - or, when what he voiced is a testable belief rather than a question, a **hypothesis** with a
-       `verify:` line ("what evidence would settle it") in the person's research file.
+       `verify:` line ("what evidence would settle it") — this one CAN go straight on the profile,
+       under its own `## Hypotheses` heading (added if not already there): unlike Open Questions,
+       hypotheses are indexed content-first from any person file, profile included (issue #56's
+       widening). Prefer the person's separate research file when they already have one, to keep
+       hypotheses grouped with their other research; the profile is the fallback, not a lesser
+       option.
      No yes, no write — a parked claim with no note is a fine outcome too.
    - **A manual addition** he dictates is drafted into the source's `## Claims` as a new `status: suggested`
      claim — write the **full claim shape** `process-source` uses, not just an id: a fresh `id:`
@@ -168,11 +179,16 @@ its claims to the people asked about and leave the rest for later sessions.
 6. **Refresh the touched people's views — quietly, without asking.** The session just changed exactly
    what the generated views show: an accepted claim leaves the timeline's "unreviewed" tail and joins the
    draft-queue's writing backlog. For every **curated** person named in a claim decided this session
-   (stubs carry no companion views — SPEC §16 — skip them):
+   (stubs carry no timeline/draft-queue companion views — SPEC §16 — skip them for these two):
    ```
    fha views timeline <P-id>
-   fha views sources-index <P-id>   # the source list gains the just-reviewed source's evidence
    fha views draft-queue <P-id>
+   ```
+   For **every** person named in a claim decided this session — curated or still a stub — also refresh
+   their own `## Sources` section (#76: the per-person form works on a stub on purpose, so their sources
+   list is already current the moment they later graduate, instead of needing a rebuild right after):
+   ```
+   fha views sources-index <P-id>   # the source list gains the just-reviewed source's evidence
    ```
    Refresh only the people touched — never `fha views refresh` here: it regenerates *every* curated
    person's views and churns their dated GENERATED headers into git noise. (A successful view write
@@ -310,8 +326,8 @@ its claims to the people asked about and leave the rest for later sessions.
   decision per claim** and the matching writes: **one `fha claim` write per individual decision, one
   batch `fha claim C-a C-b … --status X` write per grouped same-status decision** (field edits always
   one call per claim), a reindex (full `fha index` when the pass minted new people, else `--source`), an
-  `fha xref` pass, a `fha views timeline` + `sources-index` + `draft-queue` refresh for each curated
-  person touched, and a final `fha lint`.
+  `fha xref` pass, a `fha views timeline` + `draft-queue` refresh for each curated person touched, a `fha
+  views sources-index` refresh for every person touched (curated or stub), and a final `fha lint`.
 - **Every claim presented carried its source link** — the anchored file path first, the `[[S-id]]` token
   in parentheses — in whichever review style the session used.
 - **No** claim reaches `accepted` without an explicit human decision in the transcript; every accepted

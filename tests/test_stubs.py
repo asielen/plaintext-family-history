@@ -33,6 +33,7 @@ import stubs
 from _lib import (
     PERSON_SEX_VALUES,
     read_record,
+    render_person_body_scaffold,
     render_stub_content,
     stub_filename,
     stub_slug_name,
@@ -467,11 +468,32 @@ class StubsModuleWrapperTests(unittest.TestCase):
             'doe__jane_P-aaaaaaaaaa.md',
         )
 
-    def test_stub_content_wrapper_delegates_byte_identical(self) -> None:
+    def test_stub_content_wrapper_is_frontmatter_plus_full_body(self) -> None:
+        # #75/#76: a stub is no longer frontmatter-only - _stub_content is
+        # render_stub_content's frontmatter with render_person_body_scaffold's
+        # full body (purpose block, ## Sources placeholder, the four
+        # hand-written sections) appended, so `fha stubs` and `fha person new`
+        # mint byte-identical records.
         self.assertEqual(
             stubs._stub_content('P-aaaaaaaaaa', 'Jane Doe'),
-            render_stub_content('P-aaaaaaaaaa', 'Jane Doe'),
+            render_stub_content('P-aaaaaaaaaa', 'Jane Doe')
+            + render_person_body_scaffold('Jane Doe'),
         )
+
+    def test_stub_content_body_carries_the_76_sections(self) -> None:
+        content = stubs._stub_content('P-aaaaaaaaaa', 'Jane Doe')
+        for heading in ('## Sources', '## Biography', '## Stories',
+                        '## Research Notes', '## Friends & Family'):
+            self.assertIn(heading, content)
+        self.assertIn('# Jane Doe', content)
+        self.assertIn("record - yours to write", content)
+
+    def test_stub_content_falls_back_to_unknown_name_for_body_h1(self) -> None:
+        # render_stub_content already writes `name: unknown` when name is
+        # None (the common auto-minted-from-a-reference case); the body's
+        # own H1/purpose block must not crash or silently omit a title.
+        content = stubs._stub_content('P-aaaaaaaaaa', None)
+        self.assertIn('# unknown', content)
 
 
 _GOOD_PERSON = '''---

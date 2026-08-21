@@ -2238,23 +2238,32 @@ class PromoteTests(unittest.TestCase):
         self.assertTrue(new_path.exists())
         rec = read_record(new_path)
         self.assertEqual(str(rec['meta'].get('tier')), 'curated')
-        # Only the tier line changed - name/sex/living survive byte-faithfully.
-        self.assertIn('name: Pa Line', new_path.read_text(encoding='utf-8'))
-        # The research companion exists, scaffolded from the template grammar.
+        text = new_path.read_text(encoding='utf-8')
+        # name/sex/living survive - the tier flip and #76 body backfill are
+        # the only changes.
+        self.assertIn('name: Pa Line', text)
+        # #76: promotion backfills the body's missing sections in place -
+        # NEVER a separate research companion any more (SPEC §16, optional).
         research = self.root / 'people' / PROMOTE_FOLDER / f'line__pa_research_{P_PA}.md'
-        self.assertTrue(research.exists())
-        text = research.read_text(encoding='utf-8')
-        self.assertIn(f'id: {P_PA}', text)
-        for heading in ('## Research Notes', '## Open Questions',
-                        '## Hypotheses', '## Research Log'):
+        self.assertFalse(research.exists())
+        for heading in ('## Sources', '## Biography', '## Stories',
+                        '## Research Notes', '## Friends & Family'):
             self.assertIn(heading, text)
-        self.assertNotIn('P-__________', text)
-        # Follow-ups name the three views; the index was updated IN PLACE
-        # (#37) - it still exists, is fresh, and already knows the new path
-        # and tier, so the next promote needs no rebuild between them.
+        self.assertIn("record - yours to write", text)   # the purpose block
+        # The fixture's own Biography content ("x") survives byte-faithfully -
+        # backfill is additive, never a rewrite of what was already there.
+        self.assertIn('## Biography\n\nx\n', text)
+        self.assertEqual(res.data['body_sections_added'],
+                         ['purpose block', 'Sources', 'Stories',
+                          'Research Notes', 'Friends & Family'])
+        # Follow-ups name the remaining views and the optional research file;
+        # the index was updated IN PLACE (#37) - it still exists, is fresh,
+        # and already knows the new path and tier, so the next promote needs
+        # no rebuild between them.
         all_text = ' '.join(m.text for m in res.messages)
         for follow in ('fha views timeline', 'fha views sources-index',
-                       'fha views draft-queue', 'updated in place'):
+                       'fha views draft-queue', 'updated in place',
+                       'optional now'):
             self.assertIn(follow, all_text)
         db = self.root / '.cache' / 'index.sqlite'
         self.assertTrue(db.exists())
@@ -2267,13 +2276,32 @@ class PromoteTests(unittest.TestCase):
             files = dict(conn.execute(
                 'SELECT kind, path FROM person_files WHERE person_id=?', (P_PA.lower(),)).fetchall())
             self.assertEqual(Path(files['profile']), new_path.relative_to(self.root))
-            self.assertEqual(Path(files['research']), research.relative_to(self.root))
+            self.assertNotIn('research', files)
             self.assertFalse(any('stubs' in Path(v).parts for v in files.values()))
         finally:
             conn.close()
         # And the freshness check agrees: no reader sees it as stale.
         from _lib import newest_record_mtime
         self.assertGreaterEqual(db.stat().st_mtime, newest_record_mtime(self.root))
+
+    def test_promoting_a_post_76_stub_is_a_true_body_no_op(self) -> None:
+        # A stub already carrying the full #76 shape (minted by the current
+        # `fha person new`/`fha stubs`) must come out of promotion with its
+        # body BYTE-IDENTICAL apart from the tier line - ensure_person_body_
+        # sections finds nothing missing, so body_sections_added is empty.
+        from _lib import render_person_body_scaffold
+        full_text = (f'---\nid: {P_GPA}\nname: Gpa Line\nsex: M\nliving: false\n'
+                    f'tier: stub\n---\n\n') + render_person_body_scaffold('Gpa Line')
+        stub_path = self.root / 'people' / 'stubs' / f'line__gpa_{P_GPA}.md'
+        stub_path.write_text(full_text, encoding='utf-8')
+        self._reindex()
+        before_body = full_text.split('---\n', 2)[2]
+        res = person.run_promote(self.root, P_GPA)
+        self.assertEqual(res.exit_code, EXIT_CLEAN)
+        self.assertEqual(res.data['body_sections_added'], [])
+        new_path = self.root / 'people' / '004 Gpa Line' / f'line__gpa_{P_GPA}.md'
+        after_body = new_path.read_text(encoding='utf-8').split('---\n', 2)[2]
+        self.assertEqual(after_body, before_body)
 
     def test_two_promotes_back_to_back_need_no_reindex(self) -> None:
         # The #37 batch: promote deleted the cache, so the SECOND promote died
@@ -2318,7 +2346,9 @@ class PromoteTests(unittest.TestCase):
         self.assertEqual(res.data['position'], 4)
         folder = self.root / 'people' / '004 Gpa Line'
         self.assertTrue((folder / f'line__gpa_{P_GPA}.md').exists())
-        self.assertTrue((folder / f'line__gpa_research_{P_GPA}.md').exists())
+        # #76: no auto-created research companion - the folder is created for
+        # the profile alone.
+        self.assertFalse((folder / f'line__gpa_research_{P_GPA}.md').exists())
 
     def test_dry_run_writes_nothing(self) -> None:
         before = self._tree_snapshot()
@@ -2331,6 +2361,11 @@ class PromoteTests(unittest.TestCase):
         preview = ' '.join(m.text for m in res.messages)
         self.assertIn('tier: stub -> curated', preview)
         self.assertIn('research companion', preview)
+        self.assertIn('optional now', preview)
+        # #76: the body-section backfill previews too - the fixture's stub
+        # already has an H1 and ## Biography, so only the rest is listed.
+        self.assertIn('add the missing body section(s)', preview)
+        self.assertIn('Sources', preview)
 
     def test_rolls_back_when_the_move_fails(self) -> None:
         before = self._tree_snapshot()
@@ -2435,8 +2470,8 @@ class PromoteTests(unittest.TestCase):
             (self.root / 'people' / PROMOTE_FOLDER / f'line__pa_{P_PA}.md').exists())
 
     def test_promote_in_place_when_already_in_a_couple_folder(self) -> None:
-        # A stub-tier record already filed in a couple folder: flip + scaffold
-        # beside it, no move (folder disagreements stay W110's job).
+        # A stub-tier record already filed in a couple folder: flip + backfill
+        # its body in place, no move (folder disagreements stay W110's job).
         misfiled = self.root / 'people' / PROMOTE_FOLDER / f'line__ma_{P_MA}.md'
         (self.root / 'people' / 'stubs' / f'line__ma_{P_MA}.md').rename(misfiled)
         self._reindex()
@@ -2444,8 +2479,10 @@ class PromoteTests(unittest.TestCase):
         self.assertEqual(res.exit_code, EXIT_CLEAN)
         self.assertTrue(misfiled.exists())
         self.assertEqual(str(read_record(misfiled)['meta'].get('tier')), 'curated')
-        self.assertTrue(
+        # #76: no auto-created research companion.
+        self.assertFalse(
             (self.root / 'people' / PROMOTE_FOLDER / f'line__ma_research_{P_MA}.md').exists())
+        self.assertIn('## Sources', misfiled.read_text(encoding='utf-8'))
 
     def test_ambiguous_couple_folder_refused_names_both(self) -> None:
         # Two folders share prefix 002 (a hand-organization mistake). Promotion

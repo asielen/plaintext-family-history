@@ -66,12 +66,14 @@ Research produces four kinds of paper, and each has a home:
   goes in the pile (`inbox/`), gets filed as a source, and its assertions become claims you can
   review. Even a half-page of jotted memories counts; the note itself is the document.
 - **Something to find out** - "check the 1901 census for this branch" - is an *open question*. If
-  it's about one person, it goes on that person's research sheet; only truly general questions go
-  on the shared question log (`notes/questions.md`). That split is what keeps the question log
-  readable even at hundreds of open questions.
+  it's about one person, it goes in the Research Notes section right on that person's own page;
+  only truly general questions go on the shared question log (`notes/questions.md`). That split is
+  what keeps the question log readable even at hundreds of open questions. (A person whose research
+  outgrows that one section can get a separate research sheet of their own - an escape valve for
+  when there's a lot to say, not the default starting home.)
 - **Something you believe but can't prove yet** - "maybe this is the same John as the 1881
-  census" - is a *hypothesis*: a pencil note on the person's research sheet, with a line about
-  what evidence would settle it.
+  census" - is a *hypothesis*: a pencil note in that same Research Notes section (or the separate
+  research sheet, for a person who has outgrown it), with a line about what evidence would settle it.
 - **A search you already ran** - even one that found nothing - goes in the *research log*, so you
   (and the assistant) never re-run it blind.
 

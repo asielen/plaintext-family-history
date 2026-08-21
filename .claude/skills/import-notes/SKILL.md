@@ -82,11 +82,16 @@ is worked file by file.
    - **Something someone asserted** — "Aunt Mary said the farm burned in 1922" — is *evidence*: it
      goes to the inbox and becomes a source.
    - **Something to find out** — "check the 1901 census for this branch" — is an *open question*:
-     the person's research file when it is about one person who has one; otherwise
-     `notes/questions.md` with `[[P-…]]` refs.
+     the person's SEPARATE research file when it is about one person who already has one (most
+     people don't, SPEC §16b — a profile-resident `## Open Questions` is never scanned for one, so
+     this is not a fallback to reach for); otherwise `notes/questions.md` with `[[P-…]]` refs.
    - **Something believed but unproven** — "I think this is the same John as the 1881 census" — is
-     a *hypothesis*, on the person's research file.
-   - **A search already run** — even one that found nothing — is a *research-log* entry.
+     a *hypothesis*, under `## Hypotheses` — on the person's own profile directly (added if not
+     already there; a hypothesis IS indexed content-first from any person file, issue #56, unlike
+     an open question) or their separate research file when they already have one.
+   - **A search already run** — even one that found nothing — is a *research-log* entry, same rule
+     as an open question: the person's separate research file when they have one, else
+     `notes/research-log.md`.
    - **Everything else** — strategy, multi-person musings, draft write-ups — goes to
      `notes/research/`.
 
@@ -107,8 +112,9 @@ is worked file by file.
      document (FILING_CABINET: "the note itself is the document"), so never `asset_elsewhere:
      true` — that flag means the asset lives somewhere else, and it doesn't. Related evidence
      about one informant or topic shares one inbox item.
-   - **Open question:** a `## Q:` block in its home file — in a research file, placed under
-     `## Open Questions`:
+   - **Open question:** a `## Q:` block under `## Open Questions`, in its step-3 home file (the
+     person's separate research file when they have one, else `notes/questions.md` — never the bare
+     profile; a profile-resident `## Open Questions` is not scanned for one):
      ```markdown
      ## Q: Did the Cole farm burn in 1922?
      - origin: human
@@ -121,13 +127,16 @@ is worked file by file.
      first: if the same question already exists there, append a dated `context:` line to the
      existing block instead of writing a twin (two identical `## Q:` headings in one file shadow
      each other).
-   - **Hypothesis:** under `## Hypotheses` in the person's research file — `fha id mint H` for the
-     id, `hypothesis:` in his words, `basis:` / `verify:` from what the note gives, `origin: human`
-     (an imported belief is his, not the machine's), `status: open`. IDs inside `basis:`/`verify:`
-     are `[[ ]]`-wrapped. If an equivalent hypothesis is already open, append a dated
-     `**Update (YYYY-MM-DD):**` paragraph under it instead of writing a twin.
-   - **Research log:** the standard entry under `## Research Log` in the person's research file
-     (or `notes/research-log.md` for multi-person searches). Date it from the note itself when it
+   - **Hypothesis:** under `## Hypotheses` — on the person's own profile directly (adding the
+     heading if it isn't there yet), or their separate research file when they already have one —
+     `fha id mint H` for the id, `hypothesis:` in his words, `basis:` / `verify:` from what the note
+     gives, `origin: human` (an imported belief is his, not the machine's), `status: open`. IDs
+     inside `basis:`/`verify:` are `[[ ]]`-wrapped. If an equivalent hypothesis is already open,
+     append a dated `**Update (YYYY-MM-DD):**` paragraph under it instead of writing a twin.
+   - **Research log:** the standard entry under `## Research Log`, in the person's separate research
+     file when they have one, else `notes/research-log.md` (also the home for a genuinely
+     multi-person search) — never the bare profile, same reason as the open question above. Date it
+     from the note itself when it
      names one; otherwise today's date with the uncertainty said in the entry ("imported; original
      search date unknown"). A logged nil is a result, not a failure — it is exactly what stops the
      next session from re-running the same dead end.

@@ -67,6 +67,14 @@ PRIVACY RULES (TOOLING §8 - apply at gather time, not as a post-filter):
     longer be told from accepted prose, and the centerpiece cannot ship
     verbatim). Research copies stay byte copies by the documented round-2
     scope decision; one carrying a draft marker gets a README caution line.
+  - #75's visible purpose block, and (for a profile) #76's `## Sources`
+    region, never reach a shipped copy either (`_strip_scaffolding_blocks`) -
+    they are instructions for whoever works in the *archive*, and the
+    `## Sources` region names every source that touches this person by
+    archive-relative path without the packet's own privacy filtering, so it
+    is dropped rather than shipped verbatim. Nothing replaces it: the
+    included source records/files carry the same information already
+    privacy-filtered.
   - Excluded sources are still named (ID + reason, no title) in the README so
     the human knows material exists but was withheld, not silently dropped -
     and the reason distinguishes restricted / DNA / could-not-be-read, because
@@ -143,6 +151,8 @@ CODE MAP
     _flatten_alias_strings        - strings inside a nested-list alias entry
     _redact_profile_text          - drop withheld name variants + their alias mirrors
     _strip_profile_drafts         - withhold unaccepted AI-draft prose from the profile copy
+    _strip_scaffolding_blocks     - drop #75's purpose block (+ #76's `## Sources`
+                                     region, for a profile) before a copy ships
     _source_copy_plan             - per-source copy mode (byte/redact/unsafe) + timeline excludes
 
   Photo gathering
@@ -164,6 +174,9 @@ CODE MAP
     _plural_note                  - one plain "left out for privacy" README line
     _draft_note                   - one plain "draft awaiting your review left out" README line
     _copy_redacted_source         - like _copy_into, but with the withheld claims cut out
+    _copy_source_with_scaffolding_stripped - like _copy_into, but with #75's purpose
+                                     block cut out (the ordinary-source sibling of
+                                     _copy_redacted_source, for when no claim needs cutting)
     _write_readme                 - manifest + disclaimer + privacy captions
     _zip_directory                - zip the finished packet directory
 
@@ -681,6 +694,61 @@ def _strip_profile_drafts(text: str) -> tuple[str, int, str | None]:
     if problem is not None:
         return '', 0, problem
     return text[:body_start] + stripped, len(_AI_DRAFT_MARK_RE.findall(body)), None
+
+
+# A purpose block (SPEC §16a, #75) is a blockquote whose every line starts
+# `> ` (a hand-authored `>` reply-quote elsewhere in prose is not this shape -
+# it would need to be a WHOLE paragraph of consecutive `> `-prefixed lines to
+# match, and the only place `fha` itself ever writes that shape is this
+# block). Matches the block plus the one blank line that always follows it,
+# so removing it never leaves a stray gap.
+_PURPOSE_BLOCK_RE = re.compile(r'^(?:>[^\n]*\n)+\n?', re.M)
+
+# The ## Sources GENERATED-BEGIN/END region (#76), matched by its OWN heading
+# to the next `## ` heading or EOF - the same span `_lib.section_bounds`
+# would return, reimplemented as one regex here rather than importing that
+# helper for a single narrow use.
+_SOURCES_REGION_RE = re.compile(r'^## Sources\r?\n.*?(?=^## |\Z)', re.M | re.S)
+
+
+def _strip_scaffolding_blocks(text: str, *, drop_sources_region: bool) -> str:
+    """Remove #75's visible purpose block - and, for a person profile,
+    #76's `## Sources` region - from a copy about to leave the archive.
+
+    Scaffolding for the WORKING archive, not content for the family (the
+    same principle `_strip_profile_drafts`/`strip_unaccepted_drafts` already
+    apply to unaccepted AI-DRAFT prose): a packet recipient does not need to
+    be told which parts of the file are machine-owned, because the file
+    itself is now a static copy nobody is meant to edit.
+
+    The `## Sources` region is dropped ENTIRELY, not just its markers: it
+    lists every source touching the person by ARCHIVE-RELATIVE path
+    (meaningless once copied out of the archive), and is not privacy-filtered
+    the way the packet's own file-gathering already is - a source excluded
+    from this packet for a restricted/DNA/living reason would otherwise still
+    be NAMED in a raw copy of that list. No substitute is generated either -
+    the packet does not rebuild a privacy-safe sources listing, the same
+    choice `_build_timeline_text` already makes for the timeline (a fresh,
+    filtered build, never a copy of the archive's own view file); the shipped
+    source RECORDS and FILES (already privacy-filtered elsewhere in the
+    build) are what a recipient reads instead.
+
+    Only person profiles carry `## Sources` (`drop_sources_region=True`);
+    source records never do, so packet's source-record copy passes False.
+
+    Bounded to the BODY (never the frontmatter) the same way `_strip_profile_
+    drafts` bounds itself, and the purpose-block match is `count=1` (the
+    first run of `>`-prefixed lines only) - the block is always the first
+    thing in the body, right after the title, so this can never reach past
+    it into a human's own blockquote written later in their Biography.
+    """
+    fm = FRONT_RE.match(text)
+    body_start = fm.end() if fm else 0
+    body = text[body_start:]
+    if drop_sources_region:
+        body = _SOURCES_REGION_RE.sub('', body)
+    body = _PURPOSE_BLOCK_RE.sub('', body, count=1)
+    return text[:body_start] + body
 
 
 _REQUIRED_TABLES = (
@@ -1368,6 +1436,11 @@ def _copy_redacted_source(
         )
         return None
     new_text, removed = redacted
+    # #75: strip the visible purpose block before this copy leaves the
+    # archive - scaffolding for the working archive, not content for the
+    # family. Source records never carry #76's `## Sources` region (only
+    # person profiles do), so drop_sources_region=False here.
+    new_text = _strip_scaffolding_blocks(new_text, drop_sources_region=False)
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest = _unique_dest_path(dest_dir, src.name)
     try:
@@ -1388,6 +1461,51 @@ def _copy_redacted_source(
         return None
     if removed:
         redaction_notes.append(_plural_note(removed, 'fact', dest.name))
+    return dest
+
+
+def _copy_source_with_scaffolding_stripped(
+    src: Path, dest_dir: Path, *, messages: list[str] | None = None,
+) -> Path | None:
+    """Copy a source record that needs no claim redaction, minus #75's
+    purpose block - the byte-copy sibling of `_copy_redacted_source`.
+
+    `_source_copy_plan` only routes a source through `_copy_redacted_source`
+    when at least one of its claims is actually withheld under the active
+    flags; every other included source (no claims, or claims but nothing
+    restricted - the ordinary case) used to go straight to `_copy_into`
+    untouched. That byte copy is still exactly right for the claims - there
+    is nothing to cut - but it must not also ship the purpose block, so this
+    is the same "read, strip, write only if it changed" shape
+    `_strip_scaffolding_blocks`'s other two callers already use, not a
+    reason to route this source through the claims redactor: `_redact_
+    source_record_text` fails CLOSED (leaves the record out entirely) on a
+    Claims block that is missing its ```yaml fence or absent altogether -
+    a normal, lint-clean state for a source with nothing to claim yet - so
+    sending every ordinary source through it would wrongly drop them from
+    the packet instead of shipping them (minus one blockquote).
+
+    Falls back to a plain `_copy_into` when the text cannot be read (a race
+    or permission problem, not a routing bug - `src.exists()` already
+    passed at the call site) or when nothing needed stripping at all, which
+    is the common case for a record untouched since before #75: no
+    backfill/migration tooling means this is the ordinary shape for any
+    pre-existing archive, not an edge case."""
+    try:
+        text = read_text_exact(src)
+    except (OSError, UnicodeError):
+        return _copy_into(src, dest_dir, messages=messages)
+    new_text = _strip_scaffolding_blocks(text, drop_sources_region=False)
+    if new_text == text:
+        return _copy_into(src, dest_dir, messages=messages)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = _unique_dest_path(dest_dir, src.name)
+    try:
+        write_text_exact_atomic(dest, new_text)
+    except OSError as e:
+        if messages is not None:
+            messages.append(f'WARNING: could not copy {src}: {e}')
+        return None
     return dest
 
 
@@ -1832,6 +1950,14 @@ def _packet_payload(
                     'Repair the marker (usually: add the missing "-->"), or remove '
                     'the draft text, then rebuild the packet.'
                 )
+            # #75/#76: the purpose block and the `## Sources` region are
+            # scaffolding for the working archive, not content for the
+            # family - strip them the same way the draft markers just above
+            # are stripped, before deciding whether this copy differs from
+            # the original at all.
+            profile_out_text = _strip_scaffolding_blocks(
+                profile_out_text, drop_sources_region=True
+            )
             if profile_out_text != profile_text:
                 # An OSError here raises into the cleanup handler at the bottom
                 # of the build, which rmtree's the whole packet - so atomicity
@@ -1888,9 +2014,10 @@ def _packet_payload(
             # sources/ + files/ - a source whose Claims block holds withheld
             # claims gets a redacted copy; one whose claims could not be read
             # safely is left out entirely (fail closed); everything else is a
-            # byte copy. An 'unsafe' source's asset files still ship: they
-            # carry no claim YAML, and the source itself passed the
-            # source-level privacy gate.
+            # copy with #75's purpose block stripped (a byte copy if there
+            # was none to strip). An 'unsafe' source's asset files still
+            # ship: they carry no claim YAML, and the source itself passed
+            # the source-level privacy gate.
             sources_dir = packet_dir / 'sources'
             files_dir = packet_dir / 'files'
             for row in included_rows:
@@ -1919,7 +2046,11 @@ def _packet_payload(
                             messages=messages, redaction_notes=redaction_notes,
                         )
                     else:
-                        _copy_into(src_record, sources_dir, messages=messages)
+                        # No claim here needs withholding, but #75's purpose
+                        # block still does not belong in a shipped copy.
+                        _copy_source_with_scaffolding_stripped(
+                            src_record, sources_dir, messages=messages,
+                        )
                 else:
                     messages.append(f'WARNING: source record not found on disk: {src_record}')
                 for asset_path in files_by_source.get(row['id'], []):

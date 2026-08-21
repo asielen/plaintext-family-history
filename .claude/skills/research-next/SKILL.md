@@ -24,7 +24,9 @@ now?", "any leads on Margaret's parents?"
 
 - **Leads and hypotheses only — never claims.** A claim requires a source by definition; this skill has no
   source, so it produces research *directions*, not facts. Any belief it records is a hypothesis record with
-  `status: open` and `origin: agent`, written to a research file. (SPEC §16 hypothesis-record statuses are
+  `status: open` and `origin: agent`, written under `## Hypotheses` on the person's own profile (or their
+  separate research file, when they already have one — SPEC §16b: most people never need a separate file
+  now, and a hypothesis is indexed content-first from either, issue #56). (SPEC §16 hypothesis-record statuses are
   `open` / `verified → C-…` / `abandoned`, and `fha report` lists open hypotheses with `WHERE status='open'`,
   so a new hypothesis must be `status: open` to surface next session — `status: hypothesis` is a different
   value, reserved for *unsourced `relationships:` entries* per §8.6, and would never appear in the report.)
@@ -34,7 +36,8 @@ now?", "any leads on Margaret's parents?"
 - **Log executed searches back.** When the human actually runs a lead you proposed, write the research-log
   entry (date, repository, collection, terms, result including nil).
 - **Sessions are an interface, not memory** (_STANDARD.md §7): the plan and any hypothesis are written
-  into research files, not left in the chat.
+  into the archive — the person's own `## Hypotheses` heading or their research file — not left in the
+  chat.
 
 ## Flow
 
@@ -53,7 +56,9 @@ now?", "any leads on Margaret's parents?"
    ask, also pull their neighborhood and their research file:
    ```
    fha find --related <P-id>          # the person's world: sources, places, associated people
-   fha find <P-id>                    # locate their _research file (## Research Log, ## Open Questions, ## Hypotheses)
+   fha find <P-id>                    # the person's own record, and their separate research file if
+                                       # they have one (## Research Log, ## Open Questions, ## Hypotheses -
+                                       # most people don't have this file at all now, SPEC §16b)
    ```
 
 2. **Surface "already searched" before proposing anything.** For each gap you're about to address, state
@@ -78,9 +83,12 @@ now?", "any leads on Margaret's parents?"
      that implies a passenger list. Rank leads by payoff (closes a vital gap / answers an open question)
      and by ease (is the collection online, indexed, nearby?).
 
-4. **Optionally draft hypotheses — into research files, tagged `origin: agent`.** When the evidence
-   suggests a testable belief, record it under `## Hypotheses` in the person's `_research` file (mint the
-   ID with `fha id mint H`):
+4. **Optionally draft hypotheses — tagged `origin: agent`.** When the evidence
+   suggests a testable belief, record it under `## Hypotheses` — on the person's own profile (add the
+   heading directly if it isn't there yet; a hypothesis is indexed content-first from any person file,
+   profile included, issue #56 — unlike an open question, this one does NOT need a separate research
+   file to be found), or their separate research file if they already have one, to keep it grouped with
+   other research on them (mint the ID with `fha id mint H`):
    ```yaml
    ## Hypotheses
    - id: H-…
@@ -109,7 +117,12 @@ now?", "any leads on Margaret's parents?"
    first, each with its record set / repository / terms / why. End with the single best next move.
 
 6. **Log any executed search back.** If the human runs a lead (now or reports back that he did), append
-   the entry under `## Research Log` in the relevant `_research` file:
+   the entry under `## Research Log`. Unlike a hypothesis, a research-log entry is discovered ONLY in
+   `notes/research-log.md` or a person's SEPARATE research file (`fha index`/the report read it there
+   specifically) — a person's own profile is never scanned for one, so log a person-specific search to
+   their research file when they already have one; when they don't, log it to `notes/research-log.md`
+   instead (still fully discoverable, "already searched (date)" keeps working) rather than starting a
+   research file just to hold one entry:
    ```yaml
    ## Research Log
    - date: 2026-07-01
@@ -126,15 +139,15 @@ now?", "any leads on Margaret's parents?"
 - Leads and hypotheses only — **never** a claim (no source ⇒ no claim).
 - Log-aware: no lead duplicates a recent logged nil (within the 18-month horizon); state "already searched
   (date)" before proposing.
-- Hypotheses are `origin: agent`, `status: open`, written to a research file — never mixed
-  into a source's `## Claims`.
+- Hypotheses are `origin: agent`, `status: open`, written under `## Hypotheses` on the profile or the
+  research file — never mixed into a source's `## Claims`.
 - Executed searches are logged (including nils); the log is the memory, not the chat.
 
 ## Done when
 
 - "Where should I look for X?" in a session on `example-archive` produces concrete, **ranked** leads with
   "already searched (date)" annotations present, and **no** lead duplicates a recent logged nil.
-- Any drafted hypothesis is `origin: agent` / `status: open`, written to a research file — never a
-  claim.
+- Any drafted hypothesis is `origin: agent` / `status: open`, written under `## Hypotheses` on the
+  profile or the research file — never a claim.
 - `fha lint --root example-archive` still exits 1 with only the documented baseline warnings
   (`_STANDARD.md` §9).

@@ -88,9 +88,9 @@ AI output always starts at `suggested`.
 `needs-review` is both a waypoint and a legitimate resting place: where a drafted fact waits for your look, *and* the verdict you give when you've looked and can't settle it yet ("possible - but I want a second record before I ink it"). A parked claim stays active and keeps matching against new evidence, and its review date shows when you last weighed it. `disputed` is different - it marks a claim your sources actively contradict.
 *Example: the assistant's guess at a birthplace sits at `needs-review` until you say "yes" - then, and only then, it becomes `accepted`. Or you look at it, stay unsure, and deliberately leave it parked at `needs-review` - a recorded "not proven yet," not a forgotten one.*
 
-**Stub (person)** - a person record with frontmatter only (an ID and a name).
-A permanent, legitimate state for people referenced but not yet researched.
-*Example: "Uncle Pat," named in a letter, gets a `P-…` record with just his name - fleshed out later, or never, and that's fine.*
+**Stub (person)** - a person record for someone referenced but not yet researched. Same shape as a curated record - an ID, a name, and every section (Sources, Biography, Stories, Research Notes, Friends & Family) scaffolded from the start - just with little or nothing filled in yet, and filed in `people/stubs/` instead of a couple folder until it earns one.
+A permanent, legitimate state, not a backlog.
+*Example: "Uncle Pat," named in a letter, gets a `P-…` record with just his name and empty sections - fleshed out later, or never, and that's fine.*
 
 **Translation** - an English (or any-language) rendering of a non-English source, filed right beside the original as its own kind of file. The original stays untouched and verbatim; the translation is a helper a tool can keep track of, with the language of each file noted so nothing is mistaken for the original wording.
 *Example: a German baptism record keeps its scan and a word-for-word transcription in German, plus an English translation filed alongside - all three under the same source.*

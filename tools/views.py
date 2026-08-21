@@ -13,8 +13,8 @@ views.py - fha views: generate view files from the index.
 ARCHITECTURE OVERVIEW
 ---------------------
 Three content views (timeline, sources-index, draft-queue) are read-only
-projections derived from the index - they add no new facts.  Each follows
-the same pipeline:
+projections derived from the index - they add no new facts.  Timeline and
+draft-queue follow the same pipeline they always have:
 
   1. Open .cache/index.sqlite  (built by `fha index`; views never write it)
   2. Query claims / sources / persons tables
@@ -26,17 +26,34 @@ so accidental hand-edits are caught on the next lint run.
 
 Output files are "companion" files - they live alongside the profile they
 describe and share its naming prefix, with a `view_` marker (#77) inserted
-right before the kind word so the three generated companions sort together
-and AFTER the profile and the research file, instead of the disposable
+right before the kind word so the generated companions sort together and
+AFTER the profile and the research file, instead of the disposable
 draft-queue cache sorting first in the folder:
     hartley__thomas_edward_P-de957bcda1.md               ← profile (hand-edited)
-    hartley__thomas_edward_research_P-de957bcda1.md      ← research (hand-edited)
+    hartley__thomas_edward_research_P-de957bcda1.md      ← research (hand-edited, optional)
     hartley__thomas_edward_view_timeline_P-de957bcda1.md ← generated companion
-    hartley__thomas_edward_view_sources-index_P-de957bcda1.md
     hartley__thomas_edward_view_draft-queue_P-de957bcda1.md
 
-The couple-folder sources-index is the one exception: it has no P-id because
-it describes a whole couple folder, not a single person (TOOLING §7).
+**Sources-index is different (#76).** The PER-PERSON form no longer writes a
+separate companion file at all - it rewrites the `## Sources` section INSIDE
+the person's own profile, as a GENERATED-BEGIN/END region (`_lib.
+write_generated_region`), a section-scoped sibling of the whole-file GENERATED
+header used above: same "machine-owned, do not hand-edit" contract, but
+covering one section of an otherwise human-owned file instead of a whole
+file. See `_lib.py`'s "GENERATED-BEGIN/END regions" block comment for exactly
+how the two conventions differ and why a region is not a smaller version of a
+companion file. The COUPLE-FOLDER form (`--couple-folders`, no P-id - it
+describes a whole folder, not one person) is UNCHANGED: still a separate
+`sources-index.md` written the old pipeline's way, still gets an HTML twin.
+Per-person sources-index has no HTML twin any more - there is nothing left to
+render standalone once the content lives inside the profile; `--format html`
+on a bare P-id refuses, naming the couple-folder form and `fha site` instead.
+One more difference from timeline/draft-queue: sources-index works on a STUB
+person too (`_generate_sources_index_person` skips the curated-only guard the
+other two views keep), because #76's whole point is that a stub's `##
+Sources` should already be populated by the time someone promotes it - not
+regenerated from scratch afterward. `--all-curated` stays curated-only by its
+own name; a single explicit `<P-id>` is not.
 
 Each content view also renders as a standalone single-file HTML page
 (`--format html`), written under generated/views/ from the SAME queries and
@@ -57,6 +74,16 @@ single-file artifact (the photo gallery inherits them; TOOLING §7 D11):
     links - a standalone file has nothing durable to link to;
   - writes under generated/ touch nothing the indexer scans, so HTML runs
     never stale the index (exit 0 clean, no reindex advice).
+
+**Purpose blocks (SPEC §16a, #75).** Every file this module writes - the two
+remaining companion kinds, the couple-folder sources-index, and both HTML
+twins - opens with a short VISIBLE blockquote (`_lib.VIEW_PURPOSE_BLOCKS`)
+right after its title, in addition to (never instead of) the GENERATED
+header: the header is the machine-readable signal `fha views clean` reads;
+the blockquote is for a human reading the file in Obsidian preview or on
+GitHub, where an HTML comment is invisible. `fha site`/`fha packet` strip it
+before publication (see `packet.py`'s scaffolding stripper) - it is
+scaffolding for the working archive, not content for the family.
 
 `fha views brackets` is a maintenance view, not a content view.  It reads
 the index to derive expected bracket lists and Ahnentafel positions, then
@@ -103,6 +130,7 @@ from _lib import (
     PromotionError,       # a --fix-promote promotion refused/failed (rolled back),
     Result,               # the structured-result contract every run_* returns,
     SOCIAL_PARENT_SUBTYPES,  # natures never numbered into the pedigree (SPEC §12.2),
+    VIEW_PURPOSE_BLOCKS,  # the visible "do not edit" blockquote per view kind (SPEC §16a, #75),
     ahnentafel_generation,   # Ahnentafel position → generation depth (--generations cap),
     archive_title,        # masthead/page title from fha.yaml site.archive_name,
     build_ahnentafel_map,    # index BFS {P-id → position}; shared with fha person promote,
@@ -122,9 +150,14 @@ from _lib import (
     nonbirth_bracket_label,  # 'adopted'/'step'/… mark for a non-birth child,
     normalize_id,         # lower-cases IDs for consistent set/dict keying,
     open_index_db,        # open .cache/index.sqlite with freshness check + table probe,
-    promote_person_record,   # the ONE promote engine (tier flip + move + research scaffold),
+    promote_person_record,   # the ONE promote engine (tier flip + body-section backfill + move),
     read_record,          # parses YAML front-matter + body from a .md file,
+    read_text_exact,      # newline-exact record read (no CRLF/LF translation),
+    reapply_newline,      # restore a record's CRLF/LF convention after a text edit,
     render_template,      # load + render a tools/templates/ Jinja2 template (shared),
+    resync_person_profile_rows,  # keep notes_fts current after an in-place ## Sources
+                             # edit without staling the freshness watermark (#76),
+    section_bounds,       # locate one `## Heading` prose section's line span,
     pip_command,
     requirements_hint,
     resolve_root_arg,      # --root flag, else find_archive_root(), shared error message,
@@ -133,6 +166,9 @@ from _lib import (
     unreadable_dir_recorder,  # os.walk error seam - a shut folder is not an empty one,
     walk_files,           # rglob replacement that HAS that error seam,
     write_generated_file,    # marker-guarded write shared with photoindex gallery,
+    write_generated_region,  # rewrite a `## Heading` section as one GENERATED-BEGIN/END
+                             # region, in place or newly created (SPEC §21b, #76),
+    write_text_exact_atomic,  # atomic record writer: temp file + fsync + os.replace,
 )
 
 
@@ -188,9 +224,16 @@ def _views_result(
 #
 #  Sources-index view  (_generate_sources_index_*)
 #    _source_ids_for_persons      - collect all source IDs linked to a person set
-#    _write_sources_index         - shared writer (person and couple-folder both call this)
-#    _generate_sources_index_person        - per-person sources-index
-#    _generate_sources_index_couple_folder - couple-folder sources-index.md
+#    _source_rows_by_type         - the shared query: source rows for a set of ids,
+#                                 grouped by source_type - both forms below render from this
+#    _sources_index_region_body   - the grouped listing rendered for the per-person REGION
+#                                 (nested under an existing ## Sources heading, so plain
+#                                 bold labels, not a second level of ## headings)
+#    _write_sources_index         - couple-folder writer: a whole GENERATED .md/.html file
+#    _generate_sources_index_person        - per-person: rewrites the profile's own
+#                                 `## Sources` GENERATED-BEGIN/END region in place (#76) -
+#                                 no separate file, works on a stub as well as a curated person
+#    _generate_sources_index_couple_folder - couple-folder sources-index.md (unaffected by #76)
 #
 #  Draft-queue view  (_generate_draft_queue)
 #    _generate_draft_queue        - diff accepted sources against cited tokens
@@ -274,6 +317,42 @@ def _gen_header(subcommand: str) -> str:
         f'{_GEN_MARKER} {subcommand} on {_today()}'
         ' - do not edit; regenerate instead -->\n\n'
     )
+
+
+# A view's purpose block carries exactly one **bold** lead-in (SPEC §16a,
+# #75's own wording, e.g. "**Generated view - do not edit.**") - fixed
+# wording this module controls, not arbitrary user prose, so a tiny
+# dedicated conversion is enough; stretching `_md_inline_to_html`'s
+# [[ID]]-only contract to also understand markdown bold would risk it firing
+# on a claim value or title that happens to contain a literal `**`.
+_BOLD_MD_RE = re.compile(r'\*\*(.+?)\*\*')
+
+
+def _purpose_block_md(subcommand: str) -> str:
+    """The visible purpose blockquote (SPEC §16a, #75) for one view kind, as
+    markdown ready to drop right after an H1 that ends in a single '\\n'.
+
+    Supplies its OWN leading blank line (so the caller's H1 chunk never has
+    to know whether a block follows) and ends in exactly one '\\n' - matching
+    this file's existing convention of each appended chunk supplying its own
+    leading separator (see `_generate_timeline`'s decade loop), so whatever
+    content chunk follows next needs no adjustment either. Empty string when
+    the kind carries no block (keeps every call site unconditional rather
+    than branching on presence).
+    """
+    block = VIEW_PURPOSE_BLOCKS.get(subcommand)
+    return f'\n{block}\n' if block else ''
+
+
+def _purpose_block_html(subcommand: str) -> str:
+    """The same purpose block, escaped and wrapped as a `<blockquote>` for a
+    standalone HTML view - the doctype-safe sibling of `_purpose_block_md`."""
+    block = VIEW_PURPOSE_BLOCKS.get(subcommand)
+    if not block:
+        return ''
+    text = ' '.join(ln.lstrip('>').strip() for ln in block.split('\n') if ln.strip())
+    bolded = _BOLD_MD_RE.sub(r'<strong>\1</strong>', html_escape(text))
+    return f'<blockquote>{bolded}</blockquote>\n'
 
 
 def _write_view_file(out_path: Path, content: str) -> Path:
@@ -684,11 +763,15 @@ def _out_path_for(profile_path: Path, kind: str, person_id: str) -> Path:
     filename when it offers the rename that ends the confusion.
 
     The `view_` marker is inserted unconditionally, with no kind check, because
-    this function has exactly one job: it is called only for the three
-    GENERATED kinds (`fha views timeline|sources-index|draft-queue`). The
-    research companion is written by a different path entirely (SPEC §16) that
-    never calls this function, so `research` filenames are untouched by this
-    change without needing a branch to exclude them here.
+    this function has exactly one job: it is called only for the two remaining
+    GENERATED companion kinds (`fha views timeline|draft-queue`) - sources-index
+    stopped calling this function at all when its per-person form became an
+    inline `## Sources` region rather than a companion file (#76); the
+    couple-folder form was never routed through it either (it writes the bare
+    `sources-index.md` name directly - see `_generate_sources_index_couple_
+    folder`). The research companion is written by a different path entirely
+    (SPEC §16) that never calls this function, so `research` filenames are
+    untouched by this change without needing a branch to exclude them here.
     """
     stem = profile_path.stem   # e.g. hartley__thomas_edward_P-de957bcda1
     # Strip trailing _{P-id} suffix (Crockford Base32 alphabet, case-insensitive)
@@ -805,8 +888,8 @@ def _skip_stub_person(
     """True when pid must not get a companion view - a non-curated (stub) person,
     or any record still parked under people/stubs/ - with a plain note either way.
 
-    Companion views (timeline, sources-index, draft-queue) are curated-person
-    files (SPEC §16); they are written *beside the profile* (`_out_path_for`), so a
+    Companion views (timeline, draft-queue) are curated-person files (SPEC
+    §16); they are written *beside the profile* (`_out_path_for`), so a
     curated person's views only stay in a maintained location when the profile
     lives in a couple folder. Two states must be refused:
       - a non-curated (stub/connection) person - a companion file is meaningless;
@@ -816,6 +899,13 @@ def _skip_stub_person(
     Guarding on tier *and* location keeps the rule enforced here, not remembered by
     every caller. An unknown pid returns False - the generator's own "no profile
     found" warning covers that case.
+
+    NOT called for per-person sources-index (#76): that form rewrites a
+    section INSIDE the profile wherever it already lives, so neither of the
+    two states above applies to it - a stub has just as legitimate a `##
+    Sources` section as a curated person (see `run_sources_index`'s
+    docstring), and there is no "wrong folder for a GENERATED file" risk
+    when nothing new is being created beside anything.
     """
     row = conn.execute('SELECT tier, name FROM persons WHERE id = ?', (pid,)).fetchone()
     if row is None:
@@ -1074,14 +1164,16 @@ def _generate_timeline(
         sections.append((current_decade if current_decade != 'UNSET' else None, current_rows))
 
     if fmt == 'html':
-        body = _timeline_body_html(conn, sections, suggested_rows)
+        body = _purpose_block_html('timeline') + _timeline_body_html(conn, sections, suggested_rows)
         return _write_view_file(
             _html_out_path(archive_root, out_path),
             _render_view_html(
                 archive_root, 'timeline', f'Timeline: {person_name}', body),
         )
 
-    parts: list[str] = [_gen_header('timeline'), f'# Timeline: {person_name}\n']
+    parts: list[str] = [
+        _gen_header('timeline'), f'# Timeline: {person_name}\n', _purpose_block_md('timeline'),
+    ]
 
     for decade_hdr, rows in sections:
         if not rows:
@@ -1134,6 +1226,32 @@ def _source_ids_for_persons(conn: sqlite3.Connection, person_ids: list[str]) -> 
     return [r[0] for r in rows]
 
 
+def _source_rows_by_type(
+    conn: sqlite3.Connection, source_ids: list[str],
+) -> dict[str, list[sqlite3.Row]]:
+    """Source rows for `source_ids`, grouped by `source_type` (falling back to
+    'other') and sorted alphabetically within each group - the one query both
+    the couple-folder whole file and the per-person region render from, so
+    neither can drift on which sources count or how they are grouped."""
+    if not source_ids:
+        return {}
+    placeholders = ','.join('?' * len(source_ids))
+    rows = conn.execute(
+        f"""
+        SELECT id, title, source_type, path
+        FROM sources
+        WHERE id IN ({placeholders})
+        ORDER BY source_type, title
+        """,
+        source_ids,
+    ).fetchall()
+    by_type: dict[str, list[sqlite3.Row]] = {}
+    for row in rows:
+        st = row['source_type'] or 'other'
+        by_type.setdefault(st, []).append(row)
+    return by_type
+
+
 def _write_sources_index(
     conn: sqlite3.Connection,
     source_ids: list[str],
@@ -1145,18 +1263,17 @@ def _write_sources_index(
     html_stem: str | None = None,
 ) -> Path:
     """
-    Write a sources-index file for the given source IDs; return the path written.
+    Write the COUPLE-FOLDER sources-index file (`--couple-folders`) for the
+    given source IDs; return the path written. A whole GENERATED .md/.html
+    file, unaffected by #76 - a couple folder is not one profile a region can
+    live inside, so it keeps the pre-#76 pipeline the per-person form used to
+    share with it (`_generate_sources_index_person` diverged from this
+    function entirely; see that function's own docstring).
 
-    Shared by both the per-person and couple-folder generators so the output
-    format stays identical regardless of scope.  Callers supply the title and
-    output path; everything else is derived from the index.
-    Sources are grouped by source_type (census, newspaper, other, …) and sorted
-    alphabetically within each group.
-
-    One query, two serializers: `fmt='html'` renders the SAME grouped rows as a
-    ledger table in the standalone page shell (D11) - `archive_root` is
-    required then, and `html_stem` overrides the output stem for the
-    couple-folder index (whose .md stem repeats in every folder).
+    One query (`_source_rows_by_type`), two serializers: `fmt='html'` renders
+    the SAME grouped rows as a ledger table in the standalone page shell
+    (D11) - `archive_root` is required then, and `html_stem` overrides the
+    output stem (the couple-folder index's .md stem repeats in every folder).
     """
     if fmt == 'html':
         html_path = _html_out_path(archive_root, out_path, stem=html_stem)
@@ -1167,33 +1284,20 @@ def _write_sources_index(
                 html_path,
                 _render_view_html(
                     archive_root, subcommand, title,
-                    '<p class="empty">(No sources found.)</p>\n'),
+                    _purpose_block_html(subcommand)
+                    + '<p class="empty">(No sources found.)</p>\n'),
             )
         _write_view_file(
             out_path,
-            _gen_header(subcommand) + f'# {title}\n\n*(No sources found.)*\n',
+            _gen_header(subcommand) + f'# {title}\n'
+            + _purpose_block_md(subcommand) + '\n*(No sources found.)*\n',
         )
         return out_path
 
-    placeholders = ','.join('?' * len(source_ids))
-    rows = conn.execute(
-        f"""
-        SELECT id, title, source_type, path
-        FROM sources
-        WHERE id IN ({placeholders})
-        ORDER BY source_type, title
-        """,
-        source_ids,
-    ).fetchall()
-
-    # Group by source_type
-    by_type: dict[str, list[sqlite3.Row]] = {}
-    for row in rows:
-        st = row['source_type'] or 'other'
-        by_type.setdefault(st, []).append(row)
+    by_type = _source_rows_by_type(conn, source_ids)
 
     if fmt == 'html':
-        parts: list[str] = []
+        parts: list[str] = [_purpose_block_html(subcommand)]
         for source_type in sorted(by_type.keys()):
             parts.append(f'<h2>{html_escape(source_type)}</h2>')
             parts.append('<table class="claims">')
@@ -1213,7 +1317,7 @@ def _write_sources_index(
             _render_view_html(archive_root, subcommand, title, '\n'.join(parts) + '\n'),
         )
 
-    lines: list[str] = [_gen_header(subcommand), f'# {title}\n']
+    lines: list[str] = [_gen_header(subcommand), f'# {title}\n', _purpose_block_md(subcommand)]
 
     for source_type in sorted(by_type.keys()):
         lines.append(f'\n## {source_type}\n')
@@ -1227,24 +1331,68 @@ def _write_sources_index(
     return out_path
 
 
+def _sources_index_region_body(by_type: dict[str, list[sqlite3.Row]]) -> str:
+    """Render grouped source rows for the per-person `## Sources` REGION -
+    nested under an existing `## Sources` heading, so groups are bold labels
+    rather than a second level of `## ` headings (which would misparse as a
+    sibling profile section - `section_bounds` reads `## ` as a boundary)."""
+    if not by_type:
+        return '*(No sources found.)*'
+    parts: list[str] = []
+    for source_type in sorted(by_type.keys()):
+        parts.append(f'**{source_type}**\n')
+        for row in by_type[source_type]:
+            sid_token = _format_sid(row['id'])
+            path_text = row['path'].replace('\\', '/')
+            parts.append(f'- {row["title"]} {sid_token} - {path_text}')
+    return '\n'.join(parts)
+
+
 def _generate_sources_index_person(
     conn: sqlite3.Connection, person_id: str, archive_root: Path, fmt: str = 'md'
 ) -> Path | None:
-    """Generate the per-person sources-index. Returns the path written, or None."""
+    """Refresh the person's OWN `## Sources` GENERATED-BEGIN/END region in
+    place; return the profile path written, or None.
+
+    #76 retired the separate per-person companion file entirely - what used
+    to be `_out_path_for(profile_p, 'sources-index', person_id)` is now a
+    surgical rewrite of one section INSIDE the profile (`_lib.
+    write_generated_region`), so there is no output path to construct and no
+    whole-file GENERATED-header write (`_write_view_file`) to reach for. This
+    is also the one content view that works on a STUB: SPEC §16's whole point
+    for a stub carrying this section is that its sources are already listed
+    by the time someone promotes it, not regenerated from scratch afterward -
+    so, unlike timeline/draft-queue, this function does NOT gate on curated
+    tier (callers decide whether to call it for a stub; the single-person CLI
+    path does, the `--all-curated` batch path does not, by that flag's own
+    name - see `run_sources_index`).
+
+    `fmt='html'` is refused by the caller before this is ever reached (no
+    separate file means no HTML twin to build) - this function only ever
+    writes `.md` (the profile IS markdown either way).
+    """
     profile_p = _profile_path_for(conn, person_id, archive_root)
     if not profile_p:
         print(f'WARNING: no profile found for {person_id} - skipped.', file=sys.stderr)
         return None
 
-    name_row = conn.execute('SELECT name FROM persons WHERE id = ?', (person_id,)).fetchone()
-    person_name = name_row['name'] if name_row else person_id
-
     source_ids = _source_ids_for_persons(conn, [person_id])
-    out_path = _out_path_for(profile_p, 'sources-index', person_id)
-    return _write_sources_index(
-        conn, source_ids, out_path, f'Sources: {person_name}',
-        fmt=fmt, archive_root=archive_root,
-    )
+    by_type = _source_rows_by_type(conn, source_ids)
+    body = _sources_index_region_body(by_type)
+
+    try:
+        text = read_text_exact(profile_p)
+    except OSError as e:
+        print(f'WARNING: could not read {profile_p} ({e.strerror or e}) - skipped.',
+              file=sys.stderr)
+        return None
+    new_text, _created = write_generated_region(
+        text, heading='Sources', region_name='sources-index',
+        subcommand='sources-index', body=body)
+    if new_text == text:
+        return profile_p   # already current - nothing to write, still a success
+    write_text_exact_atomic(profile_p, reapply_newline(new_text, text))
+    return profile_p
 
 
 def _generate_sources_index_couple_folder(
@@ -1271,6 +1419,28 @@ def _generate_sources_index_couple_folder(
 
 
 # ── Draft-queue ───────────────────────────────────────────────────────────────
+
+def _body_excluding_sources_region(body: str) -> str:
+    """The profile body with its `## Sources` GENERATED region cut out - the
+    guard `_generate_draft_queue` runs before scanning for citation tokens.
+
+    Every source touching a person is ALWAYS listed in that region once it
+    has been refreshed once (#76) - so scanning the WHOLE body for `[[S-…]]`
+    tokens (draft-queue's existing, unchanged rule: "if an S-id token appears
+    ANYWHERE in the body, that source is considered cited") would read every
+    one of those listings as a citation and permanently empty the queue the
+    moment a profile's Sources section is first generated, even though not
+    one of them was actually woven into the biography. Only tokens the human
+    wrote into their OWN prose - the summary block, Biography, Stories,
+    Friends & Family - should count; this is what makes that true again.
+    """
+    lines = body.split('\n')
+    bounds = section_bounds(lines, 0, 'Sources')
+    if bounds is None:
+        return body
+    _, content_start, content_end = bounds
+    return '\n'.join(lines[:content_start] + lines[content_end:])
+
 
 def _generate_draft_queue(
     conn: sqlite3.Connection, person_id: str, archive_root: Path, fmt: str = 'md'
@@ -1326,8 +1496,13 @@ def _generate_draft_queue(
         return None
     body = rec['body']
     # Citation tokens (new `[[S-…]]` or legacy `[S-…]`); filter to S- sources.
+    # Scanned with the ## Sources GENERATED region cut out first (#76) - see
+    # _body_excluding_sources_region's own docstring for why: that region
+    # always lists every source touching this person, so leaving it in would
+    # read every listing as a citation and empty the queue on sight.
     cited_sids: set[str] = {
-        tid for tid in extract_token_ids(body) if tid.startswith('s-')
+        tid for tid in extract_token_ids(_body_excluding_sources_region(body))
+        if tid.startswith('s-')
     }
 
     accepted_rows = conn.execute(
@@ -1346,7 +1521,10 @@ def _generate_draft_queue(
 
     out_path = _out_path_for(profile_p, 'draft-queue', person_id)
 
-    lines: list[str] = [_gen_header('draft-queue'), f'# Draft Queue: {person_name}\n']
+    lines: list[str] = [
+        _gen_header('draft-queue'), f'# Draft Queue: {person_name}\n',
+        _purpose_block_md('draft-queue'),
+    ]
 
     if not uncited_sids:
         if fmt == 'html':
@@ -1354,7 +1532,8 @@ def _generate_draft_queue(
                 _html_out_path(archive_root, out_path),
                 _render_view_html(
                     archive_root, 'draft-queue', f'Draft Queue: {person_name}',
-                    '<p>All accepted claims are cited in the profile.</p>\n'),
+                    _purpose_block_html('draft-queue')
+                    + '<p>All accepted claims are cited in the profile.</p>\n'),
             )
         lines.append('\nAll accepted claims are cited in the profile.\n')
         return _write_view_file(out_path, ''.join(lines))
@@ -1380,8 +1559,9 @@ def _generate_draft_queue(
 
     if fmt == 'html':
         parts: list[str] = [
+            _purpose_block_html('draft-queue'),
             f'<p>{len(uncited_sids)} source(s) with accepted claims '
-            f'not yet cited in the profile:</p>'
+            f'not yet cited in the profile:</p>',
         ]
         for src in source_rows:
             sid = normalize_id(src['id'])
@@ -1727,15 +1907,18 @@ def _companion_files_in_folder(folder: Path, pid: str) -> list[Path]:
 
     Matches files whose stem ends with _{pid} (case-insensitive, e.g.
     'hartley__thomas_P-de957bcda1.md').  This catches profile, research,
-    timeline, sources-index, and draft-queue files regardless of whether they
-    are in the SQLite index (generated files carry no frontmatter id and are
-    therefore absent from person_files).
+    timeline, and draft-queue files regardless of whether they are in the
+    SQLite index (generated files carry no frontmatter id and are therefore
+    absent from person_files) - and, for a record old enough to still have
+    one, a leftover PER-PERSON sources-index file from before #76 (its
+    `## Sources` section now travels WITH the profile automatically, since it
+    lives inside it - nothing extra to move for a current record).
 
-    WHY DISK SCAN: generated view files (timeline, sources-index, draft-queue)
-    lack a frontmatter `id:` field so index.py does not add them to
-    person_files.  Querying person_files alone would leave them behind when a
-    W110 file-move fix is applied.  Scanning disk is the only reliable way to
-    move all of a person's companion files atomically.
+    WHY DISK SCAN: generated view files (timeline, draft-queue) lack a
+    frontmatter `id:` field so index.py does not add them to person_files.
+    Querying person_files alone would leave them behind when a W110 file-move
+    fix is applied.  Scanning disk is the only reliable way to move all of a
+    person's companion files atomically.
     """
     suffix = f'_{pid}'.upper()
     return sorted(
@@ -2627,8 +2810,9 @@ def run_brackets(
       2. W110 check 2 - rename couple folders whose numeric prefix disagrees
                          with the Ahnentafel-derived number.  (Requires root_person.)
       3. W110 check 3 - move all companion files (profile, research, timeline,
-                         sources-index, draft-queue) to the correct folder.
-                         (Requires root_person.)
+                         draft-queue, and a per-person sources-index file if
+                         one still exists from before #76) to the correct
+                         folder. (Requires root_person.)
       4. W119 - direct-line ancestors (derived position >= 2) still filed as
                  stubs (`tier: stub`, or a record under people/stubs/).
                  (Requires root_person.  `generations` caps the depth.)
@@ -2977,8 +3161,8 @@ def run_brackets(
                 print(
                     f'\nPromoted {applied} of {len(w119)}. Run `fha index` to '
                     'rebuild the index, then `fha views refresh` to generate '
-                    'the new curated people\'s companion views (timeline, '
-                    'sources-index, draft-queue).'
+                    'the new curated people\'s timeline and draft-queue '
+                    '(and refresh their ## Sources sections).'
                 )
             if failures:
                 print(f'{failures} promotion(s) not applied - see stderr.')
@@ -3572,9 +3756,21 @@ def run_sources_index(
     """Generate sources-index companion/couple-folder file(s); return a Result.
 
     Progress narration stays inline (byte-identical); written files land in
-    `changed`.  `fmt='html'` writes standalone twins under generated/views/
-    (couple folders as `{folder}_sources-index.html`); HTML writes never stale
-    the index, so the reindex advice stays md-only.
+    `changed`.  `fmt='html'` writes standalone twins under generated/views/ for
+    the couple-folder form only (`{folder}_sources-index.html`); HTML writes
+    never stale the index, so the reindex advice stays md-only.
+
+    #76: the PER-PERSON form no longer writes a separate file - it rewrites
+    the profile's own `## Sources` region in place (`_generate_sources_index_
+    person`), so there is no HTML twin for it any more (refused below, naming
+    the alternative) and its index row needs the DIFFERENT sync `_lib.
+    resync_person_profile_rows` performs, not `_sync_written_views` (which is
+    for the companion files #37 excludes from the freshness watermark - a
+    profile was never excluded, so without this surgical sync the edit would
+    correctly stale the index and break the very next `fha views` call in
+    the same close-out sequence; see that function's own docstring). It also
+    works on a STUB (no `_skip_stub_person` gate) - see the module docstring
+    for why.
 
     A batch that skipped anything exits 1 with `data['skipped']` (see
     `_batch_view_result`).
@@ -3582,6 +3778,23 @@ def run_sources_index(
     precheck = _format_precheck(fmt, ('md', 'html'))
     if precheck is not None:
         return precheck
+    if fmt == 'html' and person_id:
+        print(
+            'ERROR: --format html has no per-person sources-index to build - '
+            "#76 folded it into the person's own ## Sources section (refresh "
+            'it with `fha views sources-index <P-id>`, no --format flag). Use '
+            '`fha views sources-index --couple-folders --format html` for the '
+            "couple-folder listing, or `fha site` to publish the person's page.",
+            file=sys.stderr)
+        return _views_result(EXIT_FAILURE)
+    if fmt == 'html' and all_curated and not couple_folders_only:
+        print(
+            'ERROR: --all-curated --format html has nothing to build - the '
+            'per-person sources-index is now part of each profile (#76), with '
+            'no separate HTML view. Add --couple-folders for the couple-folder '
+            'HTML listing, or drop --format html to refresh the inline section.',
+            file=sys.stderr)
+        return _views_result(EXIT_FAILURE)
     conn = _open_index_or_explain(archive_root)
     if conn is None:
         return _views_result(EXIT_FAILURE)
@@ -3591,8 +3804,13 @@ def run_sources_index(
         if all_curated or couple_folders_only:
             count = 0
             skipped = 0
-            if all_curated:
-                # Per-person files for all curated persons
+            profiles_touched: list[Path] = []
+            if all_curated and fmt != 'html':
+                # Per-person: refresh every curated profile's own ## Sources
+                # region. --all-curated stays curated-tier-only by its own
+                # name, matching timeline/draft-queue's batch scope; a stub's
+                # region is refreshed one at a time (fha views sources-index
+                # <P-id>), not in this bulk sweep.
                 for pid in _view_eligible_curated_ids(conn, archive_root):
                     out = _generate_or_warn(
                         f'sources-index for {pid}', _generate_sources_index_person,
@@ -3601,6 +3819,7 @@ def run_sources_index(
                     if out:
                         print(f'  sources-index ->{out.relative_to(archive_root)}')
                         changed.append(str(out))
+                        profiles_touched.append(out)
                         count += 1
                     else:
                         skipped += 1
@@ -3620,15 +3839,23 @@ def run_sources_index(
 
             print(f'Generated {count} sources-index file(s).')
             if count:
-                # A companion write does NOT stale the index (#37: generated
-                # views are excluded from the freshness watermark - they are
-                # written FROM it), so the index's own rows for these files are
-                # brought up to date here instead. Only when that cannot happen
-                # is a rebuild worth advising.
+                # Two DIFFERENT row-sync mechanisms, one per path shape: the
+                # couple-folder .md write is a companion excluded from the
+                # freshness watermark (#37), synced by `_sync_written_views`;
+                # a refreshed PROFILE is not excluded (#37 only ever excluded
+                # companions) - `resync_person_profile_rows` keeps it
+                # freshness-neutral the same way (see that function's
+                # docstring for why this matters: without it, the very next
+                # `fha views` call in the same close-out sequence would
+                # refuse on "index is stale").
                 sync = 'indexed'
-                if fmt == 'md':
-                    sync = _sync_written_views(
-                        archive_root, conn, [Path(c) for c in changed], 'file(s)')
+                companion_writes = [Path(c) for c in changed if Path(c) not in profiles_touched]
+                if fmt == 'md' and companion_writes:
+                    sync = _sync_written_views(archive_root, conn, companion_writes, 'file(s)')
+                if fmt == 'md' and profiles_touched:
+                    profile_sync = resync_person_profile_rows(archive_root, profiles_touched)
+                    if profile_sync != 'indexed' and sync == 'indexed':
+                        sync = profile_sync
                 return _batch_view_result(
                     count, skipped, changed, 'sources-index', sync)
             if all_curated and not changed and not skipped:
@@ -3644,15 +3871,16 @@ def run_sources_index(
             print('ERROR: provide a P-id, --all-curated, or --couple-folders.', file=sys.stderr)
             return _views_result(EXIT_FAILURE)
 
+        # No _skip_stub_person gate here (unlike timeline/draft-queue): #76
+        # wants a stub's ## Sources populated BEFORE promotion, not just after
+        # - see the module docstring. A merged tombstone or unknown pid still
+        # resolves to "no profile found" below, same as it always did.
         pid = normalize_id(person_id)
-        if _skip_stub_person(conn, pid, 'sources-index', archive_root):
-            return _views_result(EXIT_WARNINGS, data={'count': 0})
         out = _generate_sources_index_person(conn, pid, archive_root, fmt=fmt)
         if out:
             print(f'  sources-index ->{out.relative_to(archive_root)}')
-            sync = ('indexed' if fmt != 'md' else
-                    _sync_written_views(archive_root, conn, [out], 'file'))
             changed.append(str(out))
+            sync = resync_person_profile_rows(archive_root, [out])
             return _single_view_result(sync, changed)
         return _views_result(EXIT_WARNINGS, data={'count': 0})
 
@@ -3802,6 +4030,18 @@ def run_clean(archive_root: Path, dry_run: bool = False) -> Result:
     Hand-authored files are never touched in either place.  Removed paths are
     recorded in `changed`; under --dry-run nothing is deleted, both sweeps are
     listed, and `changed` stays empty.
+
+    TWO OWNERSHIP MODELS SINCE #76, ONE SWEEP. A file is either WHOLLY owned
+    (a companion: first line is the marker, the whole file is disposable) or
+    PARTIALLY owned (a profile carrying a `## Sources` GENERATED-BEGIN/END
+    region: one section is machine-derived, the rest is the human's). This
+    function only ever deletes the first kind - `_owned_by_views` tests a
+    FILE's first non-blank line, and a profile's first line is always its
+    frontmatter fence, never a region marker, so a profile is never even a
+    candidate here no matter what it contains further down. Nothing below
+    special-cases this; it falls out of the existing test by construction -
+    see `tests/test_views_companion_view_marker.py` for the regression proof
+    (a profile with a region survives a sweep that still removes a companion).
 
     Exit codes: 0 clean. A people/-tree companion carries index rows
     (person_files, and its body in notes_fts), and those are deleted in the
@@ -3971,7 +4211,14 @@ def run_refresh(archive_root: Path, fmt: str = 'md') -> Result:
     always; 'html' the standalone generated/views/ set only; 'both' the two
     sets in one pass (owner decision 7-Q2).  The reindex advice prints only
     when .md companions were written, and only when their index rows could not
-    be updated in place - HTML never stales the index either way.
+    be updated in place - HTML never stales the index either way. Per-person
+    sources-index (#76) is a partial exception: it is refreshed once per
+    person regardless of `fmt` (there is no html twin for it any more - it
+    rewrites the profile's own `## Sources` region), and its index row is
+    kept current by the DIFFERENT surgical sync `_lib.resync_person_profile_
+    rows` performs (a profile was never excluded from the freshness
+    watermark the way a companion is, so without it this edit would stale
+    the index on its own).
 
     A refresh that skipped anything exits 1 with `data['skipped']` (see
     `_batch_view_result`): regenerating every view is the point of the verb, so
@@ -3994,10 +4241,10 @@ def run_refresh(archive_root: Path, fmt: str = 'md') -> Result:
         _per_person = [
             (_generate_timeline,             'timeline      '),
             (_generate_draft_queue,          'draft-queue   '),
-            (_generate_sources_index_person, 'sources-index '),
         ]
         count = 0
         skipped = 0
+        profiles_touched: list[Path] = []
         for pid in person_ids:
             for fn, label in _per_person:
                 for fmt_pass in fmt_passes:
@@ -4010,6 +4257,24 @@ def run_refresh(archive_root: Path, fmt: str = 'md') -> Result:
                         count += 1
                     else:
                         skipped += 1
+            # Sources-index (#76): the per-person form is a region INSIDE the
+            # profile now, not a companion file, so it has no html twin -
+            # refresh it once per person, only on the 'md' pass, never once
+            # per fmt_pass (an 'html'/'both' pass would otherwise call this
+            # again for no reason, bumping the region's date without anything
+            # about it actually changing).
+            if 'md' in fmt_passes:
+                out = _generate_or_warn(
+                    f'sources-index for {pid}', _generate_sources_index_person,
+                    conn, pid, archive_root, fmt='md',
+                )
+                if out:
+                    print(f'  sources-index ->{out.relative_to(archive_root)}')
+                    changed.append(str(out))
+                    profiles_touched.append(out)
+                    count += 1
+                else:
+                    skipped += 1
 
         for folder_path, pids_in_folder in _couple_folders(conn, archive_root):
             for fmt_pass in fmt_passes:
@@ -4026,15 +4291,25 @@ def run_refresh(archive_root: Path, fmt: str = 'md') -> Result:
 
         print(f'Generated {count} view file(s).')
         sync = 'indexed'
-        if count and 'md' in fmt_passes:
-            # Refresh writes new/updated companion files. That does NOT stale
-            # the index (#37: generated views are excluded from the freshness
-            # watermark), so their index rows - the searchable body in
-            # notes_fts and the person_files entry - are rewritten here rather
-            # than waiting for a rebuild nothing would prompt. The advice is
-            # printed only when that could not happen.
-            sync = _sync_written_views(
-                archive_root, conn, [Path(c) for c in changed], 'files')
+        # Refresh writes new/updated COMPANION files. That does NOT stale the
+        # index (#37: generated views are excluded from the freshness
+        # watermark), so their index rows - the searchable body in notes_fts
+        # and the person_files entry - are rewritten here rather than waiting
+        # for a rebuild nothing would prompt. `profiles_touched` (#76's
+        # per-person ## Sources rewrites) needs the DIFFERENT sync
+        # `resync_person_profile_rows` performs - a profile is not a
+        # companion, so #37's exclusion never covered it, but the edit is
+        # generated-view content in substance and must be just as freshness-
+        # neutral (see that function's docstring for why leaving it to the
+        # ordinary reindex reminder would break the very next `fha views`
+        # call in the same session).
+        companion_writes = [Path(c) for c in changed if Path(c) not in profiles_touched]
+        if count and 'md' in fmt_passes and companion_writes:
+            sync = _sync_written_views(archive_root, conn, companion_writes, 'files')
+        if count and 'md' in fmt_passes and profiles_touched:
+            profile_sync = resync_person_profile_rows(archive_root, profiles_touched)
+            if profile_sync != 'indexed' and sync == 'indexed':
+                sync = profile_sync
         return _batch_view_result(count, skipped, changed, 'view', sync)
 
     except GeneratedFileRefused as e:
@@ -4134,21 +4409,26 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
     # ── sources-index ─────────────────────────────────────────────────────────
     si = vsubs.add_parser(
         'sources-index',
-        help='Generate per-person (and optionally couple-folder) sources-index view.',
+        help="Refresh a person's own ## Sources section (and/or the couple-folder view).",
         description=(
-            'Generate {name}_sources-index_{P-id}.md per person, and/or\n'
-            'sources-index.md per curated couple folder.\n'
+            'Rewrite the ## Sources GENERATED region inside a person\'s own\n'
+            'profile (works on a stub too, so it can be populated before\n'
+            'promotion - #76), and/or sources-index.md per curated couple\n'
+            'folder. The per-person form has no --format html twin any more -\n'
+            'the content lives inside the profile now, not a separate file.\n'
             'Requires a fresh .cache/index.sqlite (run `fha index` first).'
         ),
     )
     si.add_argument('person_id', nargs='?', metavar='P-id',
-                    help='Person to generate for.')
+                    help="Person whose ## Sources section to refresh (stub or curated).")
     si.add_argument('--all-curated', action='store_true',
-                    help='Generate per-person and couple-folder files for all curated persons.')
+                    help='Refresh every curated profile\'s ## Sources section, and (with '
+                         '--couple-folders) every couple-folder file too.')
     si.add_argument('--couple-folders', action='store_true',
                     help='Generate sources-index.md in every curated couple folder.')
     si.add_argument('--format', choices=['md', 'html'], default='md', dest='format',
-                    help=_FORMAT_HELP)
+                    help=_FORMAT_HELP + ' (html applies to --couple-folders only - the '
+                         'per-person section has no separate HTML view.)')
     si.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
     si.set_defaults(func=_cmd_sources_index)
 
@@ -4240,10 +4520,15 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
              'they regenerate with `fha views refresh`.',
         description=(
             'Delete all GENERATED-headed view files: companion .md files (timeline,\n'
-            'sources-index, draft-queue) from the people/ tree, and single-file HTML\n'
-            'views under generated/views/. Uses the <!-- GENERATED … --> header as\n'
-            'the sole signal, file by file; never touches profiles or manually\n'
-            'authored files. --dry-run lists what would be removed without writing.'
+            'draft-queue, couple-folder sources-index.md) from the people/ tree, and\n'
+            'single-file HTML views under generated/views/. Uses the <!-- GENERATED\n'
+            '… --> whole-file header as the sole signal, file by file; never touches\n'
+            'profiles or manually authored files - including a profile whose own\n'
+            '## Sources section is a GENERATED-BEGIN/END region (#76): that region is\n'
+            'rewritten in place by `fha views sources-index`, never deleted by this\n'
+            'command, because ownership here is judged by a FILE\'s first line, and a\n'
+            "profile's first line is always its frontmatter fence, never a region\n"
+            'marker. --dry-run lists what would be removed without writing.'
         ),
     )
     cl.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
@@ -4256,8 +4541,9 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
         'refresh',
         help='Regenerate all content views for every curated person and couple folder.',
         description=(
-            'Regenerate timeline, draft-queue, and sources-index for every curated\n'
-            'person, plus sources-index.md for every curated couple folder.\n'
+            'Regenerate timeline and draft-queue for every curated person, refresh\n'
+            'every curated person\'s own ## Sources section, plus sources-index.md\n'
+            'for every curated couple folder.\n'
             '--format html regenerates the standalone generated/views/ pages\n'
             'instead; --format both writes the two sets in one pass.\n'
             'Requires a fresh .cache/index.sqlite (run `fha index` first).'
@@ -4302,7 +4588,7 @@ def register_standalone(subs: argparse._SubParsersAction) -> None:
     """Register subcommands directly (for standalone python tools/views.py invocation)."""
     for name, help_text, func, extra in [
         ('timeline',      'Generate per-person timeline view.',      _cmd_timeline,      _add_person_curated_args),
-        ('sources-index', 'Generate per-person sources-index view.', _cmd_sources_index, _add_si_args),
+        ('sources-index', "Refresh a person's ## Sources section (and/or couple-folder view).", _cmd_sources_index, _add_si_args),
         ('draft-queue',   'Generate per-person draft-queue view.',   _cmd_draft_queue,   _add_person_curated_args),
     ]:
         p = subs.add_parser(name, help=help_text)

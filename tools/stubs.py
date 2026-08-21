@@ -31,6 +31,7 @@ from _lib import (
     mint_ids,
     normalize_id,
     read_record,
+    render_person_body_scaffold,
     render_stub_content,
     stub_filename,
     stub_slug_name,
@@ -62,7 +63,11 @@ def _stub_filename(pid: str, name: str | None) -> str:
 
 
 def _stub_content(pid: str, name: str | None) -> str:
-    return render_stub_content(pid, name)
+    """Frontmatter plus the full #75/#76 body (purpose block, the not-yet-
+    generated `## Sources` placeholder, and the four hand-written sections) -
+    the same shape `fha person new` writes, so a stub reads identically no
+    matter which tool minted it."""
+    return render_stub_content(pid, name) + render_person_body_scaffold(name or 'unknown')
 
 
 def _collect_unresolved_persons(archive_root: Path) -> dict[str, str | None]:
