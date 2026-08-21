@@ -624,7 +624,7 @@
     {
       "path": ".fha/tools/report.py",
       "category": "operating",
-      "sha256": "3feabecbc45376eeaee6325fd9a29649c6f5d49442c60b49da92f2986a2c8858",
+      "sha256": "41e8a341ae0cccee7b94508d358e1bb2e666a3c6aa26274b1010b227cac70fff",
       "spec_version": "1.2",
       "src": "tools/report.py"
     },

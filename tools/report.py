@@ -75,7 +75,9 @@ CODE MAP
     _live_alias, _is_missing_key - reconcile's 'MISSING:' catalog key, read/tested
     _photo_scan_notes            - §6: what this session's photo scan could NOT see
     _section_photo_triage        - §6: photoindex.run_triage embed
-    _section_place_candidates    - §6b: places.run_candidates() embed
+    _section_place_candidates    - §6b: places.run_candidates() embed, each
+                                    place-text cluster line carrying its own
+                                    `fha confirm place` command (issue #79)
     _section_hypotheses          - §7: open hypotheses + draft-queue backlog
     _section_promotion_candidates - §7b: direct-line stubs + claim-heavy stubs
                                     (the fha person promote surface; stateless)
@@ -1018,6 +1020,23 @@ def _section_place_candidates(archive_root: Path, fha_config: dict) -> list[str]
     guards stay in place as a defensive fallback rather than a hard
     dependency - every other optional embed in this file (photoindex,
     cooccur) degrades the same way instead of raising.
+
+    Issue #79 point 1: every place-text cluster line now grows a ready-to-run
+    `fha confirm place` command instead of just describing the cluster - this
+    section was the one place in the report that named a problem and stopped,
+    unlike its siblings (§7b's `fha person promote`, §8's confirm/dismiss
+    affordances). The claim ids and the proposed name come straight off
+    `place_text_groups` - the same majority-vote `label` and `claim_ids` that
+    `fha places candidates` itself prints - reused rather than re-derived, so
+    this line can never disagree with what running that command by hand would
+    show. Every claim id in the cluster goes into the command (not a sample),
+    so copying the line clears the whole cluster in one run instead of
+    leaving a shrunken candidate to surface again next session.
+
+    GPS clusters keep their plain descriptive line: they are photo groups,
+    not claims, so there is nothing for `fha confirm place` to relink - a
+    fabricated verb for them would be the escalation/first-run-flow work
+    issue #79 explicitly defers (points 2-4), not this one.
     """
     try:
         import places as _places_tool   # noqa: PLC0415 - optional embed, see docstring
@@ -1031,10 +1050,39 @@ def _section_place_candidates(archive_root: Path, fha_config: dict) -> list[str]
         return ['`fha places` is out of date (no candidates engine) - section skipped. '
                 'Run `fha update-tools` to refresh the tools.']
 
-    groups = result.get('groups') or []
-    if not groups:
+    place_text_groups = result.get('place_text_groups')
+    gps_clusters = result.get('gps_clusters')
+    if place_text_groups is None and gps_clusters is None:
+        # A places.py old enough to predate the structured keys (only the
+        # flat pre-formatted `groups` list existed before) - same
+        # degrade-not-crash posture as the ImportError/AttributeError guards
+        # above: an out-of-date tool loses the call-to-action line instead of
+        # crashing the report.
+        groups = result.get('groups') or []
+        if not groups:
+            return ['No recurring unlinked place-text or GPS clusters found.']
+        return [f"- {g}" for g in groups]
+
+    place_text_groups = place_text_groups or []
+    gps_clusters = gps_clusters or []
+    if not place_text_groups and not gps_clusters:
         return ['No recurring unlinked place-text or GPS clusters found.']
-    return [f"- {g}" for g in groups]
+
+    lines: list[str] = []
+    for g in place_text_groups:
+        spread = f"{g['date_min']}/{g['date_max']}" if g['date_min'] or g['date_max'] else 'no dates'
+        name = g['label']
+        ids = ' '.join(fmt_id_display(cid) for cid in g['claim_ids'])
+        lines.append(
+            f"- {name} - {g['claim_count']} claim(s), {spread} - "
+            f'register with `fha confirm place {ids} --name "{name}"`'
+        )
+    for c in gps_clusters:
+        lines.append(
+            f"- GPS cluster near {c['lat']:.4f},{c['lon']:.4f} - "
+            f"{c['photo_count']} photo(s), no known place nearby"
+        )
+    return lines
 
 
 # ── Section 7: Hypotheses & draft queues ──────────────────────────────────────

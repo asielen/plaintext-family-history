@@ -181,6 +181,40 @@ _QUESTIONS_PARTIAL_VITALS_MD = '''# Open Questions (general)
   - (human, 2026-01-01) Birth date still needs confirmation.
 '''
 
+# Three claims sharing one place_text and carrying no place_id - the
+# smallest cluster that clears run_candidates()'s default threshold (3),
+# for the §6b call-to-action test (issue #79 point 1).
+_SOURCE_PLACE_CLUSTER_MD = '''---
+id: S-6666666666
+title: Source Six
+source_type: vital-record
+---
+
+## Claims
+```yaml
+- id: C-6666666661
+  type: residence
+  persons: [P-aaaaaaaaaa]
+  value: Lived in Topeka
+  place_text: "Topeka, Kansas"
+  status: accepted
+  reviewed: 2026-01-01
+- id: C-6666666662
+  type: residence
+  persons: [P-aaaaaaaaaa]
+  value: Lived in Topeka
+  place_text: "Topeka, Kansas"
+  status: accepted
+  reviewed: 2026-01-01
+- id: C-6666666663
+  type: residence
+  persons: [P-aaaaaaaaaa]
+  value: Lived in Topeka
+  place_text: "Topeka, Kansas"
+  status: needs-review
+```
+'''
+
 
 class ReportTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -284,6 +318,43 @@ class ReportTests(unittest.TestCase):
         result = report.run_report(self.archive_root, {}, full=True)
         md = result['markdown']
         self.assertNotIn('BUILD.md M6.2', md)
+        self.assertIn('No recurring unlinked place-text or GPS clusters found.', md)
+
+    def test_place_candidates_section_names_the_confirm_command(self) -> None:
+        # Issue #79 point 1: §6b must not just describe a cluster, it must
+        # name the exact `fha confirm place` command that resolves it - every
+        # claim id in the cluster, and the same majority-vote name
+        # `fha places candidates` itself would print.
+        (self.archive_root / 'sources' / 'sourcesix_S-6666666666.md').write_text(
+            _SOURCE_PLACE_CLUSTER_MD, encoding='utf-8'
+        )
+        result = report.run_report(self.archive_root, {}, full=True, section='place-candidates')
+        md = result['markdown']
+        self.assertIn('Topeka, Kansas - 3 claim(s)', md)
+        self.assertIn(
+            'fha confirm place C-6666666661 C-6666666662 C-6666666663 '
+            '--name "Topeka, Kansas"',
+            md,
+        )
+
+    def test_place_candidates_below_threshold_gets_no_command(self) -> None:
+        # Two claims never clear run_candidates()'s default threshold (3) -
+        # no cluster line, so no command should be invented for it either.
+        below_threshold = _SOURCE_PLACE_CLUSTER_MD.replace(
+            '- id: C-6666666663\n'
+            '  type: residence\n'
+            '  persons: [P-aaaaaaaaaa]\n'
+            '  value: Lived in Topeka\n'
+            '  place_text: "Topeka, Kansas"\n'
+            '  status: needs-review\n',
+            '',
+        )
+        (self.archive_root / 'sources' / 'sourcesix_S-6666666666.md').write_text(
+            below_threshold, encoding='utf-8'
+        )
+        result = report.run_report(self.archive_root, {}, full=True, section='place-candidates')
+        md = result['markdown']
+        self.assertNotIn('fha confirm place', md)
         self.assertIn('No recurring unlinked place-text or GPS clusters found.', md)
 
     def test_photo_triage_section_reports_absent_index(self) -> None:
