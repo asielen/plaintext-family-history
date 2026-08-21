@@ -234,6 +234,27 @@ folder entirely - bring it back, or note in the record that it's lost.
 
 ---
 
+## A change I made (or the assistant made) seems to have vanished
+
+**What happened.** Nothing in the tools takes a lock, so they assume one editor at a time - you,
+or an assistant acting for you, but never both at once. If your archive folder syncs continuously
+(Dropbox, iCloud Drive, OneDrive) and a sync happened mid-save, or an assistant was working the
+archive at the same moment you were hand-editing the same files, whichever write landed last quietly
+overwrote the other - with no warning from either side. Nothing is corrupted (it's still plain text
+you can open and read), but the earlier edit itself is gone. This is unlikely with just you at one
+keyboard, and far more likely the moment a syncing folder or a second, concurrent editor is in the
+picture.
+
+**Fix.** Restore the missing edit from your most recent `fha backup` zip, or from git history if you
+use it (see "I don't have git - how do I undo?" and the git note below), then redo it. Going forward,
+avoid the collision rather than the cleanup: finish one session - yours or the assistant's - before
+starting the next against the same archive, and if the folder lives in Dropbox/iCloud/OneDrive, pause
+syncing (or don't open the folder on a second device) while work is actively happening. There is no
+daemon watching for this and warning you, by design (`TOOLING.md`'s "no daemons, watchers, or
+schedulers" principle) - the fix is procedural, not a setting to turn on.
+
+---
+
 ## "I don't have git - how do I undo?"
 
 **What happened.** You don't use GitHub, so there's no commit history to roll back to - but you can

@@ -794,6 +794,12 @@ class ConfirmArchiveTests(unittest.TestCase):
         self.assertEqual(r['status'], 'failed')
 
     # dismiss ------------------------------------------------------------------
+    #
+    # #48: the tombstone lives at notes/cooccur_dismissed.json, not
+    # .cache/cooccur_dismissed.json - it holds a human decision, not derived
+    # data, so it must survive a `.cache/` wipe. The tests below cover both
+    # the new location's own round-trip and the migration of an archive that
+    # still has dismissals only at the pre-#48 `.cache/` path.
 
     def test_dismiss_excludes_from_next_cooccur(self) -> None:
         # PERSON_1/PERSON_3 co-occur in the example; dismiss removes them.
@@ -806,8 +812,12 @@ class ConfirmArchiveTests(unittest.TestCase):
 
         result = confirm.run_dismiss(self.root, person_a=PERSON_1, person_b=PERSON_3)
         self.assertEqual(result.exit_code, EXIT_CLEAN)
-        data = json.loads((self.root / '.cache' / 'cooccur_dismissed.json').read_text(encoding='utf-8'))
+        new_path = self.root / 'notes' / 'cooccur_dismissed.json'
+        data = json.loads(new_path.read_text(encoding='utf-8'))
         self.assertIn([PERSON_1.lower(), PERSON_3.lower()], data['pairs'])
+        self.assertIn(str(new_path), [str(p) for p in result.changed])
+        # Nothing put it back at the old location.
+        self.assertFalse((self.root / '.cache' / 'cooccur_dismissed.json').exists())
 
         after = cooccur.run_cooccur(self.root)
         still = any(
@@ -818,7 +828,63 @@ class ConfirmArchiveTests(unittest.TestCase):
     def test_dismiss_dry_run_writes_nothing(self) -> None:
         result = confirm.run_dismiss(self.root, person_a=PERSON_1, person_b=PERSON_3, dry_run=True)
         self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertFalse((self.root / 'notes' / 'cooccur_dismissed.json').exists())
         self.assertFalse((self.root / '.cache' / 'cooccur_dismissed.json').exists())
+
+    def test_dismiss_migrates_legacy_tombstone(self) -> None:
+        # An archive upgraded from before #48 still has an earlier dismissal
+        # sitting only at the old .cache/ location.
+        legacy_path = self.root / '.cache' / 'cooccur_dismissed.json'
+        legacy_path.parent.mkdir(parents=True, exist_ok=True)
+        legacy_path.write_text(
+            json.dumps({'pairs': [[PERSON_1.lower(), PERSON_2.lower()]]}), encoding='utf-8')
+
+        result = confirm.run_dismiss(self.root, person_a=PERSON_1, person_b=PERSON_3)
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertEqual(result['status'], 'ok')
+
+        # Both the earlier (migrated) pair and the newly dismissed one now
+        # live at the durable location, nothing lost in the move.
+        new_path = self.root / 'notes' / 'cooccur_dismissed.json'
+        data = json.loads(new_path.read_text(encoding='utf-8'))
+        self.assertIn([PERSON_1.lower(), PERSON_2.lower()], data['pairs'])
+        self.assertIn([PERSON_1.lower(), PERSON_3.lower()], data['pairs'])
+        self.assertEqual(result['total'], 2)
+
+        # The legacy copy is gone - a `.cache/` wipe from here on loses nothing.
+        self.assertFalse(legacy_path.exists())
+        self.assertIn(str(legacy_path), [str(p) for p in result.changed])
+
+    def test_dismiss_already_dismissed_via_legacy_location(self) -> None:
+        # A pair dismissed before the upgrade must read as already-dismissed
+        # even though it has never been written to the new location yet.
+        legacy_path = self.root / '.cache' / 'cooccur_dismissed.json'
+        legacy_path.parent.mkdir(parents=True, exist_ok=True)
+        legacy_path.write_text(
+            json.dumps({'pairs': [[PERSON_1.lower(), PERSON_3.lower()]]}), encoding='utf-8')
+
+        result = confirm.run_dismiss(self.root, person_a=PERSON_1, person_b=PERSON_3)
+        self.assertEqual(result['status'], 'already')
+
+    def test_dismiss_dry_run_does_not_migrate_legacy_tombstone(self) -> None:
+        # A --dry-run preview must write NOTHING, including the migration -
+        # a dry run that quietly relocated the legacy file would itself be
+        # a smaller version of the #48 bug (a write the human did not ask for).
+        legacy_path = self.root / '.cache' / 'cooccur_dismissed.json'
+        legacy_path.parent.mkdir(parents=True, exist_ok=True)
+        legacy_text = json.dumps({'pairs': [[PERSON_1.lower(), PERSON_2.lower()]]})
+        legacy_path.write_text(legacy_text, encoding='utf-8')
+
+        result = confirm.run_dismiss(
+            self.root, person_a=PERSON_1, person_b=PERSON_3, dry_run=True)
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        # The preview still reports the merged total (1 legacy + 1 new).
+        self.assertEqual(result['total'], 2)
+
+        new_path = self.root / 'notes' / 'cooccur_dismissed.json'
+        self.assertFalse(new_path.exists(), 'dry-run must not migrate the legacy file')
+        self.assertEqual(legacy_path.read_text(encoding='utf-8'), legacy_text,
+                          'dry-run must not modify the legacy file either')
 
     def test_dismiss_already(self) -> None:
         confirm.run_dismiss(self.root, person_a=PERSON_1, person_b=PERSON_3)

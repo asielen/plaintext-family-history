@@ -927,9 +927,11 @@ archive - output candidates only. Requires fresh index; exit 3 if absent (TOOLIN
 
 *Person co-occurrence:* join `source_people` (∪ `claim_persons` participants) on shared
 `source_id`; group by person-pair; count distinct sources; exclude pairs with existing
-`relationships` row; load and exclude `.cache/cooccur_dismissed.json`
-(`{"pairs": [["P-id1","P-id2"]], "generated":"…"}`); rank by count then source-type variety
-(different `source_type`s weigh more).
+`relationships` row; load and exclude `notes/cooccur_dismissed.json`
+(`{"pairs": [["P-id1","P-id2"]], "generated":"…"}` - moved out of `.cache/` in #48, since
+these are a human's decisions, not derived data; `_lib.load_cooccur_dismissed` also carries
+a legacy `.cache/cooccur_dismissed.json` forward the first time it is read); rank by count
+then source-type variety (different `source_type`s weigh more).
 
 *Shared-place co-occurrence (TOOLING §690b):* accepted/needs-review claims of different,
 unlinked people sharing a place (`place_id` if both have one, else normalized `place_text`)
@@ -999,7 +1001,8 @@ are read-only by contract - they print candidates a human judges. `fha confirm` 
 write floor: once the human has picked, the write-back is mechanical, so it lives in one tool any
 front door (chat now, a click later) can drive. Keeping the writes here is what lets each detector
 advertise a clean read-only surface - a detector that also wrote would be two owners for one
-surface.
+surface. (One later, narrow exception: `fha cooccur` migrates a legacy dismissed-pairs tombstone
+forward on read, #48 below - a housekeeping move of decisions already made, not a new one.)
 
 **The six original verbs** (a seventh, `confirm merge`, ships in M4.4a below; each surgical,
 each `--dry-run`, each returns a `Result` whose `changed[]` lists files written; records
@@ -1009,7 +1012,7 @@ located by scanning `sources/`/`people/` directly so a stale or absent index is 
 |---|---|
 | `confirm xref <C-a> <C-b> --as corroborates\|contradicts` | Reciprocal `corroborates:`/`contradicts:` link into both source records; a contradiction also spawns the `origin: tool` open question (E009-satisfying, same template as `lint --spawn-questions`). |
 | `confirm cooccur <P-a> <P-b> --source S --subtype friend\|associate\|neighbor [--accept]` | Mint a `relationship` claim (source cited), `suggested` by default - acceptance into a derived edge still goes through `fha claim` (M1.9), since `_derive_relationships` is accepted-only. `--accept` is the escape hatch (stamps `reviewed:`). |
-| `confirm dismiss <P-a> <P-b>` | Write the `.cache/cooccur_dismissed.json` tombstone `fha cooccur` reads. |
+| `confirm dismiss <P-a> <P-b>` | Write the `notes/cooccur_dismissed.json` tombstone `fha cooccur` reads (durable, not `.cache/` - #48). Also carries a legacy `.cache/cooccur_dismissed.json` forward the first time it runs on an archive that has not migrated yet; `--dry-run` never migrates. |
 | `confirm place <C-id> … (--name N [--hierarchy H] \| --into <L-id>)` | Mint/merge an `L-id` in `places/places.yaml` and relink the named claims' `place:` (pairs with `fha places candidates`, M6.2). |
 | `confirm discovery "<text>" [--refs …]` | Append a dated, ref-tagged entry to `notes/discoveries.md` (the log `fha report` §0 leads with, M5). |
 | `confirm draft <P-id>` | Flip a profile's `<!-- AI-DRAFT … -->` markers to `<!-- AI-ACCEPTED … (accepted DATE) -->`, preserving the original date/model (the `write-biography` accept gesture). |

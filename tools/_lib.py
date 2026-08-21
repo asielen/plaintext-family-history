@@ -121,6 +121,11 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    photoindex_config_drift   - plain words for how those settings changed since
 #    photoindex_status         - classify .cache/photos.sqlite freshness for find/doctor
 #
+#  Co-occurrence dismissal tombstone (#48 - durable, lives outside .cache/)
+#    cooccur_dismissed_paths   - current (notes/) path + legacy (.cache/) path
+#    load_cooccur_dismissed    - read + union both; migrates the legacy file
+#                                 forward the first time either owner calls it
+#
 #  Safety copies of originals (`originals_backup:`, TOOLING §13f)
 #    BackupRefused             - "no safety copy, so do not write" (carries the sentence)
 #    originals_backup_dir      - fha.yaml originals_backup: -> resolved folder, or None
@@ -1815,6 +1820,101 @@ def photoindex_status(archive_root: str | Path, fha_config: dict) -> tuple[str, 
     if max_mtime == 0.0 or mtime >= max_mtime:
         return ('fresh', 0.0)          # empty root, or db newer than newest photo/index
     return ('stale', max_mtime - mtime)
+
+
+# ── Co-occurrence dismissal tombstone (#48 - durable, lives outside .cache/) ──
+#
+# `fha confirm dismiss` records a person-pair a human has said "stop
+# suggesting this" about; `fha cooccur` reads the same file to skip proposing
+# it again. Unlike everything else under `.cache/`, this file cannot be
+# rebuilt if lost - it holds a decision only a human could make, not derived
+# data - so it lives at `notes/cooccur_dismissed.json`, beside
+# `notes/discoveries.md` (the durable log its sibling verb `fha confirm
+# discovery` already writes there). Both owning tools call the helpers below
+# so the read/migrate logic exists in exactly one place.
+
+def cooccur_dismissed_paths(archive_root: str | Path) -> tuple[Path, Path]:
+    """Current and legacy paths for the co-occurrence dismissal tombstone.
+
+    Current: `notes/cooccur_dismissed.json` - git-versioned and backed up
+    with the rest of the records, so it survives a `.cache/` wipe. Legacy:
+    the pre-#48 location, `.cache/cooccur_dismissed.json` - kept only so an
+    archive that has not yet migrated does not lose what is still sitting
+    there.
+    """
+    root = Path(archive_root)
+    return (root / 'notes' / 'cooccur_dismissed.json',
+            root / '.cache' / 'cooccur_dismissed.json')
+
+
+def load_cooccur_dismissed(archive_root: str | Path, *, migrate: bool = True) -> list[list[str]]:
+    """Read the dismissed co-occurrence pairs, migrating the legacy file forward.
+
+    Reads BOTH the current and legacy locations (`cooccur_dismissed_paths`)
+    and unions their pairs (normalized with `normalize_id`), so a pair
+    dismissed before an archive upgraded is visible immediately - even
+    before migration has physically happened, and even if it never
+    completes cleanly (a read-only filesystem, a permissions error). When
+    `migrate` is true (the default) and a legacy file is found, the merged
+    result is written to the current location - atomically, via
+    `write_text_exact_atomic`, because this is no longer disposable cache
+    and a torn write would cost a real decision - and the legacy file is
+    removed, so the two copies can never silently drift apart and a later
+    `.cache/` wipe has nothing left to lose.
+
+    `migrate=False` is for a caller that must not write anything yet: a
+    `--dry-run` preview still needs an accurate pair count and
+    already-dismissed check before it decides whether to write at all.
+
+    Both owners of this file call this - `cooccur._load_dismissed` (the
+    reader; a detection tool that is otherwise read-only by design, TOOLING
+    §14a2/§14a3, but this one narrow, idempotent carry-forward does not
+    decide anything a human has not already decided, so it does not blur
+    the line the way a detector minting a claim or writing a NEW dismissal
+    would) and `confirm.run_dismiss` (the writer) - so whichever runs first
+    after an upgrade finishes the move. The residual gap: an archive that
+    has done neither since upgrading and has its `.cache/` folder deleted in
+    the meantime. That is the same window every disposable-cache convenience
+    already asks a human to accept, just now bounded to one file that used
+    to live inside it instead of the whole folder.
+
+    A read or write failure on either file degrades to treating it as
+    absent/unwritable rather than raising - the same posture `fha confirm
+    dismiss` has always taken toward a corrupt tombstone (disposable, never
+    archive truth), now extended to a migration that could not complete
+    this time; the next call simply tries again.
+    """
+    new_path, old_path = cooccur_dismissed_paths(archive_root)
+
+    def _read(path: Path) -> list[list[str]]:
+        if not path.exists():
+            return []
+        try:
+            data = json.loads(path.read_text(encoding='utf-8'))
+        except (OSError, json.JSONDecodeError):
+            return []
+        return [
+            [normalize_id(str(pair[0])), normalize_id(str(pair[1]))]
+            for pair in (data.get('pairs') or [])
+            if isinstance(pair, list) and len(pair) == 2
+        ]
+
+    seen: set[frozenset[str]] = set()
+    merged: list[list[str]] = []
+    for pair in _read(new_path) + _read(old_path):
+        key = frozenset(pair)
+        if key not in seen:
+            seen.add(key)
+            merged.append(pair)
+
+    if migrate and old_path.exists():
+        try:
+            new_path.parent.mkdir(parents=True, exist_ok=True)
+            write_text_exact_atomic(new_path, json.dumps({'pairs': merged}, indent=2) + '\n')
+            old_path.unlink()
+        except OSError:
+            pass  # opportunistic: nothing is lost, the next call tries again
+    return merged
 
 
 # ── Safety copies of originals (`originals_backup:`, TOOLING §13f) ────────────

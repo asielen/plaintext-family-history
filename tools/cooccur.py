@@ -10,7 +10,16 @@ consumed through `fha report`. Never writes to the archive: confirming a
 person-pair mints a `relationship` claim and dismissing one records a
 tombstone, but both of those writes belong to `fha confirm` (TOOLING §14a3)
 and the today skill's reaction flow, not this tool. This tool only reads
-`.cache/cooccur_dismissed.json`; it never writes it.
+`notes/cooccur_dismissed.json`; it never adds or removes a dismissal.
+
+One narrow exception (#48): the dismissal tombstone used to live at
+`.cache/cooccur_dismissed.json`, which is disposable by design, and a human's
+"stop suggesting this" decisions cannot be. `_load_dismissed` calls
+`_lib.load_cooccur_dismissed`, which carries an older archive's legacy file
+forward to the durable location the first time anything reads or writes it -
+a one-time, idempotent housekeeping move, not a judgment this tool is making
+about which pairs to dismiss. See `_lib.load_cooccur_dismissed`'s docstring
+for the full reasoning and its one honest residual gap.
 
 THREE OUTPUTS (TOOLING §690)
 ----------------------------
@@ -34,7 +43,8 @@ CODE MAP
 --------
   DB / root / tombstone helpers
     open_index_db, resolve_root_arg - shared via _lib.py
-    _load_dismissed                - tombstone reader (unique to cooccur; see below)
+    _load_dismissed                - tombstone reader (thin wrapper over
+                                  _lib.load_cooccur_dismissed; see below)
 
   Person co-occurrence
     _person_cooccurrence       - pair candidates ranked by source count + variety
@@ -54,7 +64,6 @@ CODE MAP
 from __future__ import annotations
 
 import argparse
-import json
 import sqlite3
 import sys
 from itertools import combinations
@@ -69,6 +78,7 @@ from _lib import (
     Result,
     edtf_bounds,
     fmt_id_display,
+    load_cooccur_dismissed,
     normalize_place_text,
     open_index_db,
     resolve_root_arg,
@@ -84,22 +94,14 @@ _REQUIRED_TABLES = ('persons', 'claims', 'sources', 'claim_persons', 'source_peo
 
 def _load_dismissed(archive_root: Path) -> set[frozenset[str]]:
     """
-    Read the dismissed-pairs tombstone. Missing file = empty set, not an error
-    - the skill layer writes this file; this tool only ever reads it.
+    Read the dismissed-pairs tombstone. Missing file(s) = empty set, not an
+    error - `fha confirm dismiss` is the only tool that ever adds a pair; this
+    one only reads. `_lib.load_cooccur_dismissed` also carries a legacy
+    `.cache/cooccur_dismissed.json` forward to its durable home the first
+    time it is called (see that function and the module docstring above,
+    #48) - a housekeeping move, not a judgment this tool makes.
     """
-    path = archive_root / '.cache' / 'cooccur_dismissed.json'
-    if not path.exists():
-        return set()
-    try:
-        data = json.loads(path.read_text(encoding='utf-8'))
-    except (OSError, json.JSONDecodeError):
-        return set()
-    pairs = data.get('pairs') or []
-    out = set()
-    for pair in pairs:
-        if isinstance(pair, list) and len(pair) == 2:
-            out.add(frozenset(p.strip().lower() for p in pair))
-    return out
+    return {frozenset(pair) for pair in load_cooccur_dismissed(archive_root)}
 
 
 # ── Person co-occurrence ─────────────────────────────────────────────────────
