@@ -226,7 +226,7 @@ class HtmlFormatMatrixTests(_ViewsHtmlBase):
             self.assertEqual(len(res.changed), 1, kind)
             out = Path(res.changed[0])
             self.assertEqual(out.parent, self._gen_dir(), kind)
-            self.assertEqual(out.name, f'hartley__cur_{kind}_{PID}.html', kind)
+            self.assertEqual(out.name, f'hartley__cur_view_{kind}_{PID}.html', kind)
             text = out.read_text(encoding='utf-8')
             lines = text.splitlines()
             # Convention 1: marker is line 1, doctype comes after it.
@@ -317,7 +317,7 @@ class MarkerGuardTests(_ViewsHtmlBase):
     def test_handwritten_html_at_target_is_refused_untouched(self):
         target_dir = self._gen_dir()
         target_dir.mkdir(parents=True)
-        target = target_dir / f'hartley__cur_timeline_{PID}.html'
+        target = target_dir / f'hartley__cur_view_timeline_{PID}.html'
         target.write_text('<p>my hand-made page</p>', encoding='utf-8')
         res = views.run_timeline(self.root, person_id=PID, fmt='html')
         self.assertEqual(res.exit_code, EXIT_FAILURE)
@@ -388,7 +388,7 @@ class WriteErrorHandlingTests(_ViewsHtmlBase):
 
         self.assertEqual(res.data['count'], 1)
         self.assertEqual(len(res.changed), 1)
-        self.assertTrue(Path(res.changed[0]).name.startswith('second__person_timeline'))
+        self.assertTrue(Path(res.changed[0]).name.startswith('second__person_view_timeline'))
         self.assertIn('WARNING', err.getvalue())
         self.assertIn(PID, err.getvalue())
         # ...and the batch says so in its exit code: nine of ten files written
@@ -465,20 +465,20 @@ class RefreshFormatTests(_ViewsHtmlBase):
         gen_names = sorted(p.name for p in self._gen_dir().iterdir())
         self.assertEqual(gen_names, [
             f'{COUPLE_DIR}_sources-index.html',
-            f'hartley__cur_draft-queue_{PID}.html',
-            f'hartley__cur_sources-index_{PID}.html',
-            f'hartley__cur_timeline_{PID}.html',
+            f'hartley__cur_view_draft-queue_{PID}.html',
+            f'hartley__cur_view_sources-index_{PID}.html',
+            f'hartley__cur_view_timeline_{PID}.html',
         ])
         self.assertTrue((self.profile.parent / 'sources-index.md').exists())
         self.assertTrue(
-            (self.profile.parent / f'hartley__cur_timeline_{PID}.md').exists())
+            (self.profile.parent / f'hartley__cur_view_timeline_{PID}.md').exists())
 
     def test_refresh_html_writes_only_html(self):
         res = views.run_refresh(self.root, fmt='html')
         self.assertEqual(res.exit_code, EXIT_CLEAN)
         self.assertEqual(res.data.get('count'), 4)
         self.assertFalse(
-            (self.profile.parent / f'hartley__cur_timeline_{PID}.md').exists())
+            (self.profile.parent / f'hartley__cur_view_timeline_{PID}.md').exists())
         self.assertFalse((self.profile.parent / 'sources-index.md').exists())
         self.assertEqual(len(list(self._gen_dir().iterdir())), 4)
 

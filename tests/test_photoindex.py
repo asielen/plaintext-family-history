@@ -732,11 +732,18 @@ class PhotoindexTests(unittest.TestCase):
             self.assertEqual(baseline, 1.0)
 
             for companion_path in (
+                # Legacy shape (pre-#77): still a companion forever, since
+                # `parse_filename`'s kind detection is a suffix match and an
+                # old archive may carry these names indefinitely.
                 people_dir / 'hartley__thomas_edward_timeline_P-de957bcda1.md',
                 people_dir / 'hartley__thomas_edward_research_P-de957bcda1.md',
                 people_dir / 'hartley__thomas_edward_sources-index_P-de957bcda1.md',
                 people_dir / 'hartley__thomas_edward_draft-queue_P-de957bcda1.md',
                 people_dir / 'sources-index.md',
+                # Current shape (#77): the `view_` marker sits before the kind
+                # word, so the suffix match (and this watermark exclusion)
+                # must keep working unchanged.
+                people_dir / 'hartley__thomas_edward_view_timeline_P-de957bcda1.md',
             ):
                 companion_path.write_text('GENERATED\n', encoding='utf-8')
                 os.utime(companion_path, (baseline + 100, baseline + 100))

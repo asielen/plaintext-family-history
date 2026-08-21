@@ -105,7 +105,7 @@ class DraftQueueUndecodableProfileTests(unittest.TestCase):
         views.run_draft_queue(self.root, person_id=PID)
         companion = (
             self.root / 'people' / '040 Test Couple'
-            / f'hartley__ann_draft-queue_{PID}.md')
+            / f'hartley__ann_view_draft-queue_{PID}.md')
         self.assertFalse(companion.exists())
 
 

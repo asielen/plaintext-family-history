@@ -192,5 +192,62 @@ class FindPersonRecordPathTests(unittest.TestCase):
         self.assertEqual(find_person_record_path(self.root, PID), profile)
 
 
+class ViewMarkerCompanionParsingTests(unittest.TestCase):
+    """#77: the three GENERATED companion kinds now carry a `view_` marker
+    immediately before the kind word (`_out_path_for` in views.py), so a
+    folder listing sorts the profile and the research file first and the
+    three generated companions together after them, instead of a kind word
+    alone deciding the order (`draft-queue` used to sort ahead of the
+    person's own record because 'd' < 'p').
+
+    `parse_filename` detects the kind with a suffix test -
+    `before_id.endswith(f'_{kind}')` - which only looks at the tail, so it is
+    satisfied whether the text right before the kind word is nothing (the
+    old shape) or `_view` (the new one). That is what makes the issue's
+    migration story ("clean, then regenerate") complete with no parser
+    change: an old-style leftover file left on disk after an update keeps
+    parsing exactly as it always did, forever.
+    """
+
+    def test_new_style_timeline_companion_parses_correctly(self) -> None:
+        parsed = parse_filename('hartley__thomas_edward_view_timeline_P-de957bcda1.md')
+        self.assertEqual(parsed['kind'], 'timeline')
+        self.assertTrue(parsed['is_companion'])
+        self.assertTrue(parsed['kind_ambiguous'])
+
+    def test_new_style_sources_index_and_draft_queue_also_parse(self) -> None:
+        for kind in ('sources-index', 'draft-queue'):
+            with self.subTest(kind=kind):
+                parsed = parse_filename(
+                    f'hartley__thomas_edward_view_{kind}_P-de957bcda1.md')
+                self.assertEqual(parsed['kind'], kind)
+                self.assertTrue(parsed['is_companion'])
+
+    def test_old_style_leftover_still_parses_exactly_as_before(self) -> None:
+        # A pre-#77 file left on disk after an archive updates its tools
+        # (before `fha views clean` + regenerate migrates it away) must keep
+        # reading as the companion it always was - the issue's migration
+        # promise, pinned here at the parser level.
+        parsed = parse_filename('hartley__thomas_edward_timeline_P-de957bcda1.md')
+        self.assertEqual(parsed['kind'], 'timeline')
+        self.assertTrue(parsed['is_companion'])
+
+    def test_new_style_content_still_promotes_to_a_profile(self) -> None:
+        # Content-first still applies with the marker present: a real person
+        # record parked at a `_view_`-shaped name is read as her own record,
+        # not a companion - the same rule KindAmbiguousTests/PersonFileKindTests
+        # pin for the old shape, extended to the new one.
+        self.assertEqual(
+            person_file_kind(
+                'hartley__marie_view_timeline_P-de957bcda1.md', PERSON_META),
+            'profile')
+
+    def test_new_style_generated_companion_stays_a_companion(self) -> None:
+        self.assertEqual(
+            person_file_kind(
+                'hartley__marie_view_timeline_P-de957bcda1.md', GENERATED_META),
+            'timeline')
+
+
 if __name__ == '__main__':
     unittest.main()
