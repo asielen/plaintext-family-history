@@ -292,6 +292,19 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    newest_record_mtime       - max mtime of sources/people/notes .md + places.yaml
 #    newest_source_record_mtime - max mtime of source .md records only
 #    newest_person_record_mtime - max mtime of people/*.md only
+#
+#  Freshness manifests (#48) - path-SET tracking, so a DELETION (invisible to
+#  a single "newest mtime" watermark) is detectable; additive to everything above
+#    record_path_manifest      - {path: mtime} counterpart to newest_record_mtime
+#    person_profile_path_manifest - {path: mtime} counterpart to newest_person_record_mtime
+#    source_record_path_manifest - {path: mtime} counterpart to newest_source_record_mtime
+#    photoindex_record_manifest - the people/ + sources/photos/ half of the photo manifest
+#    read_path_manifest / write_path_manifest - load/store (JSON beside the cache file)
+#    update_path_manifest      - incremental patch (upsert_source, reconcile, tag-person, set-summary)
+#    manifest_diff / manifest_has_changed - stored vs current -> added/removed/modified
+#    record_manifest_is_stale  - the one-line additive check index.sqlite readers OR in
+#    index_manifest_path / photoindex_manifest_path - where each manifest lives
+#
 #    configure_utf8_stdout     - reconfigure stdout to UTF-8 (Windows cp1252 compat)
 #
 #  Output helpers
@@ -1516,7 +1529,16 @@ def open_index_db(
         return None
 
     mtime = db_mtime(db_path)
-    stale = mtime is not None and newest_record_mtime(archive_root) > mtime
+    # #48: OR the path-manifest check onto the existing mtime watermark - a
+    # DELETED source/person/notes file never raises any remaining file's
+    # mtime, so the watermark half alone reads 'fresh' over a record it lost.
+    # The manifest half catches exactly that case (a stored path missing from
+    # a fresh listing) without disturbing what the watermark already caught
+    # (a modified or newly-added file) - see record_manifest_is_stale.
+    stale = mtime is not None and (
+        newest_record_mtime(archive_root) > mtime
+        or record_manifest_is_stale(archive_root)
+    )
     if stale:
         if strict:
             print(
@@ -1526,7 +1548,7 @@ def open_index_db(
             return None
         print(
             'WARNING: index may be stale - a record file is newer than '
-            '.cache/index.sqlite. Run `fha index` to refresh.',
+            '.cache/index.sqlite (or one was deleted). Run `fha index` to refresh.',
             file=sys.stderr,
         )
 
@@ -1721,13 +1743,26 @@ def photoindex_status(archive_root: str | Path, fha_config: dict) -> tuple[str, 
     Returns (status, lag_seconds):
       'absent'     → no photos.sqlite               (lag 0.0)
       'unreadable' → exists but fails a basic schema query - corrupt/incompatible (lag 0.0)
-      'stale'      → older than the newest file in the photos root (lag = seconds behind)
-      'fresh'      → schema OK and not older than the photos root (lag 0.0)
+      'stale'      → older than the newest file in the photos root, OR the #48
+                     path manifest disagrees with a fresh listing (lag = seconds
+                     behind when there is a meaningful watermark to measure
+                     against; a manifest-only deletion has no later mtime to
+                     measure, so it reports the catalog's own age instead)
+      'fresh'      → schema OK, not older than the photos root, and the #48
+                     manifest agrees with a fresh listing (lag 0.0)
 
     The schema is probed *before* the empty/missing-photo-root short-circuit, so a
     corrupt database is never reported fresh just because there are no photos to
     compare against.  Shared by `find --text` (caption search gating) and
     `doctor` (freshness report) so both agree on whether photos.sqlite is usable.
+
+    #48: the mtime watermark below (photos root + person/source records) is
+    ADDITIVE with a path-manifest check, never replaced by it - see the
+    "Freshness manifests" section above `photoindex_record_manifest`. The
+    watermark alone cannot see a DELETED photo, person record, or
+    sources/photos record (nothing else gets newer when a file disappears);
+    the manifest half catches exactly that, without disturbing anything the
+    watermark already caught correctly.
 
     `photos_ignore:` prunes this walk exactly as it prunes the scan (#35).
     Both halves of that matter: an ignored file is not in the catalog and can
@@ -1797,6 +1832,11 @@ def photoindex_status(archive_root: str | Path, fha_config: dict) -> tuple[str, 
         max_mtime = source_mtime
 
     photos_root = resolve_path('photos', fha_config, archive_root)
+    # #48: the photos-root half of the path manifest, built as a byproduct of
+    # the walk just below rather than a second pass over a root that can hold
+    # tens of thousands of files (#35/#41) - see photoindex_record_manifest's
+    # docstring for why the people/sources-photos half lives separately.
+    current_photo_manifest: dict[str, float] = {}
     if photos_root.is_dir():
         try:
             patterns = photos_ignore_patterns(fha_config)
@@ -1844,7 +1884,17 @@ def photoindex_status(archive_root: str | Path, fha_config: dict) -> tuple[str, 
                 except OSError:
                     # A dangling symlink or a file that vanished mid-walk is
                     # not a freshness signal we can read; skip it.
-                    pass
+                    continue
+                # #48: the same stat, kept as a (alias, mtime) pair instead of
+                # folded into the running max, so a deletion since the last
+                # scan is visible below even on a filesystem/sync tool that
+                # does not reliably bump the parent directory's mtime on
+                # unlink (the one case the directory-mtime trick above cannot
+                # promise). Files only - a directory candidate has no alias
+                # identity worth tracking here, only its mtime, already
+                # folded into max_mtime just above.
+                if p != Path(dirpath):
+                    current_photo_manifest[path_to_alias(p, 'photos', fha_config, archive_root)] = m
 
         if unreadable_dirs:
             # Fail closed. There is no honest watermark for a folder nobody
@@ -1857,8 +1907,30 @@ def photoindex_status(archive_root: str | Path, fha_config: dict) -> tuple[str, 
             max_mtime = max(max_mtime, time.time())
 
     if max_mtime == 0.0 or mtime >= max_mtime:
-        return ('fresh', 0.0)          # empty root, or db newer than newest photo/index
-    return ('stale', max_mtime - mtime)
+        watermark_status: tuple[str, float] = ('fresh', 0.0)
+    else:
+        watermark_status = ('stale', max_mtime - mtime)
+
+    if watermark_status[0] == 'stale':
+        # Already stale on the mtime watermark alone - the manifest check
+        # below can only agree (it never OVER-rules a watermark finding, only
+        # adds a case the watermark cannot see), so skip the extra walk of
+        # people/ + sources/photos/ it would otherwise pay for on every call.
+        return watermark_status
+
+    # #48: additive manifest check - catches a DELETED photo, person profile,
+    # or sources/photos record that the mtime watermark above cannot see
+    # (nothing gets newer when a file disappears). A missing stored manifest
+    # counts as changed (manifest_diff's bootstrapping rule), so a catalog
+    # built before this existed reads stale exactly once, is rescanned, and
+    # arms itself - the same "first run after upgrade" shape as
+    # photoindex_config_drift just above.
+    current_manifest = dict(current_photo_manifest)
+    current_manifest.update(photoindex_record_manifest(archive_root))
+    stored_manifest = read_path_manifest(photoindex_manifest_path(archive_root))
+    if manifest_has_changed(manifest_diff(stored_manifest, current_manifest)):
+        return ('stale', max(0.0, time.time() - mtime))
+    return watermark_status
 
 
 # ── Co-occurrence dismissal tombstone (#48 - durable, lives outside .cache/) ──
@@ -5724,12 +5796,52 @@ def _is_generated_companion(path: Path, archive_root: Path) -> bool:
     return is_generated_file(path)
 
 
+def _md_file_mtimes(dirs, keep=None) -> tuple[list[tuple[Path, float]], bool]:
+    """Collect (path, mtime) for every `.md` file under `dirs` that `keep`
+    allows, plus whether any folder in `dirs` could not be listed this walk.
+
+    The one walk behind `_newest_md_mtime` (reduces this to a single running
+    max, its behaviour from before #48, unchanged) and every #48
+    path-manifest builder further down (keeps the full set instead, so a
+    DELETION shows up as a missing key rather than vanishing into a max that
+    only ever moves forward). Sharing one walk means the file-selection rule
+    (`keep`) and the fail-closed 'folder would not open' signal can never
+    drift between the two ways of asking the same question - before the
+    three watermarks below shared a walk at all, that exact kind of drift is
+    how #37 (generated companions busting the watermark) happened: three
+    separate `rglob` calls, three chances to diverge.
+
+    `keep(path)` filters which files vote; a file whose mtime cannot be read
+    (a dangling symlink, a file deleted mid-walk) simply does not vote.
+    `unreadable=True` means at least one folder in `dirs` would not list, so
+    ANY answer derived from the returned pairs is a partial picture - the
+    caller must fail closed on that fact itself, not just on what the pairs
+    happen to contain (see `_newest_md_mtime`'s 'now' rule, preserved below).
+    """
+    unreadable: list[Path] = []
+    on_error = unreadable_dir_recorder(unreadable)
+    out: list[tuple[Path, float]] = []
+    for d in dirs:
+        for p in walk_files(Path(d), suffix='.md', on_error=on_error):
+            if keep is not None and not keep(p):
+                continue
+            try:
+                mtime = p.stat().st_mtime
+            except OSError:
+                continue
+            out.append((p, mtime))
+    return out, bool(unreadable)
+
+
 def _newest_md_mtime(dirs, keep=None) -> float:
     """Max mtime across the `.md` files under `dirs` - or 'now' if any folder shut.
 
     The one walk behind all three record watermarks below, so that a fix to
     the fail-closed rule lands in every one of them at once (before this, each
-    had its own `rglob` and the rule had three places to be forgotten).
+    had its own `rglob` and the rule had three places to be forgotten). Now a
+    thin reduction over `_md_file_mtimes` - see that function for the shared
+    walk, and the #48 path-manifest builders that read the same (path, mtime)
+    pairs without reducing them to one number.
 
     `keep(path)` filters which files vote; a file whose mtime cannot be read
     (a dangling symlink, a file deleted mid-walk) simply does not vote.
@@ -5741,19 +5853,8 @@ def _newest_md_mtime(dirs, keep=None) -> float:
     honest answer - every cache reads stale until the folder opens again - and
     it is self-clearing, needing no state anywhere.
     """
-    unreadable: list[Path] = []
-    on_error = unreadable_dir_recorder(unreadable)
-    max_mtime = 0.0
-    for d in dirs:
-        for p in walk_files(Path(d), suffix='.md', on_error=on_error):
-            if keep is not None and not keep(p):
-                continue
-            try:
-                mtime = p.stat().st_mtime
-            except OSError:
-                continue
-            if mtime > max_mtime:
-                max_mtime = mtime
+    files, unreadable = _md_file_mtimes(dirs, keep=keep)
+    max_mtime = max((mtime for _p, mtime in files), default=0.0)
     if unreadable:
         return max(max_mtime, time.time())
     return max_mtime
@@ -5826,6 +5927,18 @@ def newest_source_record_mtime(archive_root: Path, subdir: str | None = None) ->
     return _newest_md_mtime([sources_dir])
 
 
+def _is_person_profile_path(p: Path) -> bool:
+    """True when `p` is a person PROFILE record, not a companion file.
+
+    The `keep` predicate `newest_person_record_mtime` and its #48 path-set
+    counterpart `person_profile_path_manifest` both use, pulled to module
+    level so the two can never disagree about which files under people/ vote.
+    """
+    parsed = parse_filename(p)
+    return (parsed is not None
+            and parsed['id_type'] == 'P' and parsed['kind'] == 'profile')
+
+
 def newest_person_record_mtime(archive_root: Path) -> float:
     """Max mtime (epoch seconds) across person *profile* records only.
 
@@ -5841,12 +5954,337 @@ def newest_person_record_mtime(archive_root: Path) -> float:
     photo catalog read `fresh` while face-tag and name-variant edits it never
     saw sat in the records - and `photo_people` kept serving the old matches.
     """
-    def _is_profile(p: Path) -> bool:
-        parsed = parse_filename(p)
-        return (parsed is not None
-                and parsed['id_type'] == 'P' and parsed['kind'] == 'profile')
+    return _newest_md_mtime([archive_root / 'people'], keep=_is_person_profile_path)
 
-    return _newest_md_mtime([archive_root / 'people'], keep=_is_profile)
+
+# ── Freshness manifests (#48) ─────────────────────────────────────────────────
+#
+# A single "newest mtime" number can only ever move FORWARD: deleting a file
+# makes nothing else newer, so a watermark alone cannot see a deletion (#48 -
+# "the archive can believe it is up to date when it is not"). The fix tracks
+# the SET of paths a cache was built from, each with its own mtime, and
+# compares a fresh listing against that stored set:
+#
+#   - a path in the stored set, absent from disk  -> DELETION (the bug #48
+#     reports - a duplicate source filed twice, deleted in Finder, silently
+#     still "found" for weeks)
+#   - a path in both, mtime differs                -> modification (already
+#     detected by the watermark functions above; unchanged)
+#   - a path on disk, absent from the stored set    -> addition (already
+#     detected by the watermark functions above; unchanged)
+#
+# Content hashing is explicitly OUT of scope (#48 decision): path+mtime fixes
+# the reported bug at a cost that stays cheap even on a large photo library.
+#
+# This section is ADDITIVE, not a replacement. Every existing mtime-watermark
+# check (`newest_record_mtime`, `photoindex_status`'s own walk, serve.py's
+# `_newest_input_mtime`, ...) keeps working completely unchanged, and each
+# caller ORs a manifest check on top of it - never instead of it. That keeps
+# the unreadable-folder fail-closed rule, the #37 generated-companion
+# exclusion, and the scan/reconcile stale-hold mechanics (`_hold_cache_stale`)
+# all working exactly as they do today; a manifest only adds the one thing a
+# watermark structurally cannot do.
+#
+# One manifest file per subsystem cache (beside `index.sqlite`, beside
+# `photos.sqlite`), because the index, the photo catalog, and `fha serve`'s
+# in-memory snapshot genuinely watch different file sets - but every one of
+# them calls the SAME comparison primitives here (`read_path_manifest` /
+# `write_path_manifest` / `manifest_diff`), so "eleven ad-hoc checks" becomes
+# one shared algorithm, not one file. Still disposable cache: a missing or
+# corrupt manifest is never treated as "nothing to compare, assume fresh"
+# (that would silently reintroduce a worse version of #48 on an archive's
+# very first run after upgrading) - it fails the same direction a missing
+# `index.sqlite` already does, treated as "everything changed" (see
+# `manifest_diff`'s `stored=None` case). Deleting `.cache/` deletes the
+# manifests along with the caches they describe, and the next build starts
+# clean, same as today.
+
+_MANIFEST_SCHEMA_VERSION = 1
+
+
+def index_manifest_path(archive_root: str | Path) -> Path:
+    """Where the #48 path manifest for `.cache/index.sqlite` lives.
+
+    A small JSON file, not a table inside index.sqlite itself: the manifest
+    has to be legible (and writable) independently of whatever schema version
+    the index happens to be at, and it needs to survive exactly as long as
+    the cache it describes - both of which "one more table" would complicate
+    for no benefit, since nothing ever queries it with SQL.
+    """
+    return Path(archive_root) / '.cache' / 'index_manifest.json'
+
+
+def photoindex_manifest_path(archive_root: str | Path) -> Path:
+    """Where the #48 path manifest for `.cache/photos.sqlite` lives. See
+    `index_manifest_path` for why this is a sibling JSON file, not a table."""
+    return Path(archive_root) / '.cache' / 'photos_manifest.json'
+
+
+def _manifest_relpath(path: Path, archive_root: Path) -> str:
+    """Archive-relative POSIX path for a manifest key ('sources/x_S-....md').
+
+    Falls back to an absolute forward-slash spelling for anything somehow
+    outside archive_root, mirroring every other "plain words about a path"
+    helper in this codebase (`index.py`'s `_archive_relative`, `doctor.py`'s
+    `_unreadable_record_dirs`) - a manifest key is disposable cache, never
+    shown to the human, but keeping the same convention means a person who
+    opens `.cache/index_manifest.json` directly still recognizes the paths.
+    """
+    try:
+        return Path(path).relative_to(archive_root).as_posix()
+    except ValueError:
+        return str(path).replace('\\', '/')
+
+
+def record_path_manifest(archive_root: str | Path) -> dict[str, float]:
+    """The #48 path-set counterpart to `newest_record_mtime`: the SAME file
+    selection (sources/people/notes `.md` minus generated companions, plus
+    `places.yaml` and `fha.yaml`) as `{path: mtime}` instead of one max, so a
+    deleted record shows up as a missing key rather than disappearing into a
+    watermark that only ever moves forward.
+
+    Does not itself decide fresh/stale, and does not persist anything - see
+    `manifest_diff` for the comparison and `write_path_manifest` for storage.
+    Pays for its own walk independently of `newest_record_mtime` (both are
+    recomputed fresh on every call, no caching - matching how this codebase
+    has always answered this question) rather than trying to share one walk
+    across the two: the record tree is small enough on a family archive
+    (hundreds to low thousands of files) that doubling a walk already redone
+    on every single freshness check is not a cost worth the coupling.
+    Contrast `photoindex_status`, where the photos root can be tens of
+    thousands of files (#35/#41) and the manifest there is built as a
+    byproduct of the walk that function already does, not a second one.
+    """
+    archive_root = Path(archive_root)
+    dirs = [archive_root / d for d in ('sources', 'people', 'notes')]
+    files, _unreadable = _md_file_mtimes(
+        dirs, keep=lambda p: not _is_generated_companion(p, archive_root))
+    manifest = {_manifest_relpath(p, archive_root): m for p, m in files}
+    for extra in (archive_root / 'places' / 'places.yaml', archive_root / 'fha.yaml'):
+        try:
+            manifest[_manifest_relpath(extra, archive_root)] = extra.stat().st_mtime
+        except OSError:
+            pass
+    return manifest
+
+
+def person_profile_path_manifest(archive_root: str | Path) -> dict[str, float]:
+    """The #48 path-set counterpart to `newest_person_record_mtime`: person
+    PROFILE records only (`_is_person_profile_path`), as `{path: mtime}`
+    instead of one max.
+    """
+    archive_root = Path(archive_root)
+    files, _unreadable = _md_file_mtimes(
+        [archive_root / 'people'], keep=_is_person_profile_path)
+    return {_manifest_relpath(p, archive_root): m for p, m in files}
+
+
+def person_profile_manifest_keys(manifest: dict[str, float]) -> dict[str, float]:
+    """Restrict an already-loaded #48 path manifest to person PROFILE keys.
+
+    The same predicate `person_profile_path_manifest` applies to a fresh
+    walk (`_is_person_profile_path`), applied here to a STORED manifest dict
+    instead - for a caller that needs to scope down the shared index
+    manifest (which also carries source/notes/research-companion keys under
+    `people/`) to just the profile subset `newest_person_record_mtime`
+    actually watches. A bare `'people/'` prefix filter is NOT equivalent: a
+    person's `research` companion is human-authored, not generated
+    (`GENERATED_COMPANION_KINDS` excludes it), so `record_path_manifest`
+    tracks it too - filtering the stored side by prefix alone leaves it in
+    `stored_people` with no counterpart in a profile-only `current_people`,
+    reading as a permanent phantom deletion on every archive that uses the
+    research-file feature at all.
+    """
+    return {k: v for k, v in manifest.items() if _is_person_profile_path(Path(k))}
+
+
+def source_record_path_manifest(
+    archive_root: str | Path, subdir: str | None = None,
+) -> dict[str, float]:
+    """The #48 path-set counterpart to `newest_source_record_mtime`: the same
+    scope (all of sources/, or just sources/<subdir>/ when given), as
+    `{path: mtime}` instead of one max.
+    """
+    archive_root = Path(archive_root)
+    sources_dir = archive_root / 'sources'
+    if subdir:
+        sources_dir = sources_dir / subdir
+    files, _unreadable = _md_file_mtimes([sources_dir])
+    return {_manifest_relpath(p, archive_root): m for p, m in files}
+
+
+def photoindex_record_manifest(archive_root: str | Path) -> dict[str, float]:
+    """The people/ + sources/photos/ portion of the #48 photoindex manifest.
+
+    `photoindex_status` stales the photo catalog on a person-record edit
+    (face_tags/name_variants) AND a sources/photos edit (the source-people
+    tier) even when no photo file itself changed - see its docstring. A
+    deletion in either place needs the same path-set treatment a deleted
+    photo gets, or this manifest would fix only the file-count-heavy half of
+    the bug and leave the record-driven half exactly as blind as before.
+
+    Deliberately does NOT include the photos-root portion: that walk can be
+    tens of thousands of files (#35/#41), and every writer that already pays
+    for a fresh on-disk listing of the photos root for its own purposes
+    (`photoindex.run_scan`'s `alias_by_path`, `run_reconcile`'s `on_disk`)
+    folds that listing straight into the manifest instead of this function
+    re-walking it a second time - see `run_scan`/`run_reconcile`.
+    """
+    archive_root = Path(archive_root)
+    manifest = person_profile_path_manifest(archive_root)
+    manifest.update(source_record_path_manifest(archive_root, subdir='photos'))
+    return manifest
+
+
+def read_path_manifest(manifest_path: str | Path) -> dict[str, float] | None:
+    """Read a stored #48 path manifest, or None on missing/corrupt/malformed.
+
+    Callers MUST treat None as "everything changed", never as "nothing to
+    compare, assume fresh" - see `manifest_diff`'s `stored=None` case. A
+    manifest that cannot be read is exactly as informative as a missing
+    `index.sqlite`, and has to fail the same direction: rebuild, not "trust
+    it because there is nothing to disagree with" (the bootstrapping
+    requirement #48 is explicit about - getting this backwards would
+    silently reintroduce a worse version of the reported bug on every
+    archive's first run after upgrading).
+    """
+    try:
+        raw = json.loads(Path(manifest_path).read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(raw, dict):
+        return None
+    # A schema_version this build does not recognize is exactly as unusable
+    # as a missing file - `write_path_manifest` stamps one for the same
+    # reason `sqlite_cache_schema_status` gates every .sqlite cache read, and
+    # this check was the one place that stamp was never actually enforced.
+    # Fail the same direction as everything else here: rebuild, not "trust
+    # an unrecognized shape because parsing happened to succeed."
+    if raw.get('schema_version') != _MANIFEST_SCHEMA_VERSION:
+        return None
+    paths = raw.get('paths')
+    if not isinstance(paths, dict):
+        return None
+    out: dict[str, float] = {}
+    for key, value in paths.items():
+        if not isinstance(key, str):
+            return None
+        try:
+            out[key] = float(value)
+        except (TypeError, ValueError):
+            return None
+    return out
+
+
+def write_path_manifest(manifest_path: str | Path, paths: dict[str, float]) -> None:
+    """Write a #48 path manifest atomically, replacing it in full.
+
+    Used by a FULL rebuild (`index.build_index`, `photoindex.run_scan`),
+    which already paid for a complete fresh listing, so there is nothing to
+    preserve from the old file. An INCREMENTAL writer (`upsert_source`,
+    photo reconcile/tag-person/set-summary) should use `update_path_manifest`
+    instead - it patches the existing file rather than discarding everything
+    the last full build recorded.
+
+    `write_text_exact_atomic` (temp file + fsync + os.replace) means a crash
+    mid-write leaves the OLD manifest in place, never a torn one - not that
+    it would matter much either way, since a torn or corrupt manifest already
+    fails closed through `read_path_manifest` returning None, but there is no
+    reason to manufacture a corrupt file when the atomic write is free.
+    """
+    manifest_path = Path(manifest_path)
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps(
+        {'schema_version': _MANIFEST_SCHEMA_VERSION, 'paths': paths},
+        sort_keys=True,
+    )
+    write_text_exact_atomic(manifest_path, payload)
+
+
+def update_path_manifest(
+    manifest_path: str | Path, updates: dict[str, float | None],
+) -> None:
+    """Patch a stored #48 path manifest in place: a float sets/overwrites
+    that path's recorded mtime, `None` REMOVES the path (the manifest
+    counterpart to a delete, or the old key half of a rename).
+
+    A missing or corrupt stored manifest is treated as an empty one here,
+    deliberately different from `read_path_manifest`'s contract for a
+    freshness CHECK (where missing/corrupt must mean "everything changed").
+    Writing is not checking: "no manifest yet" is the ordinary state right
+    after an archive is created or `.cache/` is wiped, and an incremental
+    writer (one source re-indexed, one photo re-tagged) has no business
+    refusing to record what it just did just because the file that holds
+    last session's full picture has not been written yet this session. The
+    very next full rebuild (`fha index`, `fha photoindex`) replaces this
+    patched-up partial file with a complete one via `write_path_manifest`
+    regardless.
+
+    This is how every INCREMENTAL mutator (`index.upsert_source`,
+    `photoindex`'s tag-person/set-summary) keeps its manifest exactly as
+    current as the cache row it just wrote, at the cost of only the paths it
+    actually touched - never a full re-walk of a potentially large tree.
+    """
+    manifest_path = Path(manifest_path)
+    manifest = read_path_manifest(manifest_path) or {}
+    for path, mtime in updates.items():
+        if mtime is None:
+            manifest.pop(path, None)
+        else:
+            manifest[path] = mtime
+    write_path_manifest(manifest_path, manifest)
+
+
+def manifest_diff(
+    stored: dict[str, float] | None, current: dict[str, float],
+) -> dict[str, list[str]]:
+    """Compare a stored #48 manifest against a fresh listing.
+
+    Returns {'added': [...], 'removed': [...], 'modified': [...]}, each
+    sorted. 'removed' is the #48 headline capability: a path the stored
+    manifest had that the fresh listing does not - the deletion a single
+    "newest mtime" watermark can never see, because removing a file makes
+    nothing else newer.
+
+    `stored=None` (a missing or corrupt manifest) reports every current path
+    as 'added' - the bootstrapping rule: a manifest that cannot be read must
+    fail exactly like a missing `index.sqlite` does (rebuild), never the
+    opposite way (assume fresh because there is nothing to disagree with).
+    """
+    if stored is None:
+        return {'added': sorted(current), 'removed': [], 'modified': []}
+    stored_keys = set(stored)
+    current_keys = set(current)
+    return {
+        'added': sorted(current_keys - stored_keys),
+        'removed': sorted(stored_keys - current_keys),
+        'modified': sorted(
+            p for p in (stored_keys & current_keys) if stored[p] != current[p]
+        ),
+    }
+
+
+def manifest_has_changed(diff: dict[str, list[str]]) -> bool:
+    """True when a `manifest_diff` result shows any add/remove/modify."""
+    return bool(diff['added'] or diff['removed'] or diff['modified'])
+
+
+def record_manifest_is_stale(archive_root: str | Path) -> bool:
+    """The #48 additive freshness check every `index.sqlite` reader ORs onto
+    its existing mtime-watermark comparison (`open_index_db`,
+    `find._index_is_fresh`, `doctor._index_freshness`): True when the stored
+    index manifest is missing, or disagrees with a fresh listing of the same
+    file set `newest_record_mtime` watches.
+
+    Deliberately narrow: this answers ONLY "did the path set change since the
+    manifest was written", not "is the index otherwise usable" (schema,
+    corruption, ...) - callers already have their own checks for that and
+    this must not duplicate or reorder them.
+    """
+    archive_root = Path(archive_root)
+    stored = read_path_manifest(index_manifest_path(archive_root))
+    current = record_path_manifest(archive_root)
+    return manifest_has_changed(manifest_diff(stored, current))
 
 
 def scan_person_record_ids(archive_root: str | Path) -> set[str]:
@@ -7373,6 +7811,16 @@ def relocate_person_in_index(
     sqlite write also bumps index.sqlite's own mtime past the record's, so
     the freshness check reads 'fresh' - correctly, because it is.
 
+    #48: the same relocation also patches `.cache/index_manifest.json`
+    (`_lib.update_path_manifest`) - a move preserves the file's mtime, so
+    nothing about the path SET changing would ever self-correct otherwise:
+    the OLD path would sit in the manifest forever reading as a phantom
+    deletion (nothing else ever removes it), while the record's true current
+    location is a path the manifest has never heard of. Both the profile
+    move and an accompanying research move/create get the same treatment as
+    the `path`-keyed SQL rows just above - drop the stale old key, record the
+    new one at its real mtime.
+
     Returns 'indexed', or 'index_absent' when there is no usable full index
     to update (the caller then just says 'run fha index', as before).
     """
@@ -7383,6 +7831,7 @@ def relocate_person_in_index(
         return 'index_absent'
     pid = normalize_id(pid)
     conn = sqlite3.connect(str(db_path))
+    manifest_updates: dict[str, float | None] = {}
     try:
         with conn:
             tables = _index_tables_with_path_column(conn)
@@ -7394,6 +7843,12 @@ def relocate_person_in_index(
                 for table in tables:
                     conn.execute(
                         f'UPDATE "{table}" SET path=? WHERE path=?', (new_rel, old_rel))
+                manifest_updates[Path(old).relative_to(archive_root).as_posix()] = None
+                try:
+                    manifest_updates[Path(new).relative_to(archive_root).as_posix()] = (
+                        Path(new).stat().st_mtime)
+                except OSError:
+                    pass   # vanished between the move and here; next full rebuild heals it
             if tier is not None:
                 conn.execute('UPDATE persons SET tier=? WHERE id=?', (tier, pid))
             if new_research is not None:
@@ -7409,8 +7864,18 @@ def relocate_person_in_index(
                 if body.strip():
                     conn.execute(
                         'INSERT INTO notes_fts(path, content) VALUES (?,?)', (rel, body))
+                # A freshly scaffolded research companion is a new real file
+                # the manifest has never seen either - same treatment as a
+                # move's new path, just with no old key to retire.
+                try:
+                    manifest_updates[Path(new_research).relative_to(archive_root).as_posix()] = (
+                        Path(new_research).stat().st_mtime)
+                except OSError:
+                    pass
     finally:
         conn.close()
+    if manifest_updates:
+        update_path_manifest(index_manifest_path(archive_root), manifest_updates)
     return 'indexed'
 
 
@@ -7609,6 +8074,17 @@ def resync_person_profile_rows(
     if status != 'fresh' and status != 'stale':
         return 'index_absent'
     had_read_error = False
+    # #48: this in-place edit changes the profile's own mtime (a real content
+    # change, not a companion write - see the docstring), so the #48 manifest
+    # entry for it is now stale too, exactly like the SQL rows this function
+    # exists to fix - it just has a different mechanism for going stale. Left
+    # alone, the manifest would keep the OLD mtime forever and read this
+    # profile as "modified" on every future check, silently undoing the very
+    # freshness win this function's mtime-bump trick is for. Patched only for
+    # paths that were actually re-read successfully below, mirroring notes_fts:
+    # a path whose read failed keeps its OLD manifest entry too, so both stay
+    # honestly stale together until the read error is fixed.
+    resynced_mtimes: dict[str, float] = {}
     try:
         conn = sqlite3.connect(str(db_path))
         try:
@@ -7645,10 +8121,16 @@ def resync_person_profile_rows(
                         conn.execute(
                             'INSERT INTO notes_fts(path, content) VALUES (?,?)',
                             (rel, body))
+                    try:
+                        resynced_mtimes[Path(rel).as_posix()] = path.stat().st_mtime
+                    except OSError:
+                        pass   # vanished between the read above and here; next full rebuild heals it
         finally:
             conn.close()
     except sqlite3.Error:
         return 'index_error'
+    if resynced_mtimes:
+        update_path_manifest(index_manifest_path(archive_root), resynced_mtimes)
     return 'index_error' if had_read_error else 'indexed'
 
 

@@ -100,6 +100,7 @@ from _lib import (
     PHOTO_EXTENSIONS,
     photoindex_status,
     read_record,
+    record_manifest_is_stale,
     resolve_path,
     resolve_root_arg,
     transcript_text_is_unchecked,
@@ -203,7 +204,15 @@ _NO_RELATED = object()
 # ── Index freshness ───────────────────────────────────────────────────────────
 
 def _index_is_fresh(archive_root: Path) -> bool:
-    """Return True if .cache/index.sqlite exists and is not stale vs record files."""
+    """Return True if .cache/index.sqlite exists and is not stale vs record files.
+
+    #48: ORs the path-manifest check onto the mtime watermark below - a
+    DELETED source/person/notes file never raises any remaining file's
+    mtime, so the watermark alone would keep reading 'fresh' over a record
+    it lost (the reported bug: `fha find` still "finding" a source whose
+    file is gone). record_manifest_is_stale catches exactly that, without
+    touching what the watermark already caught (a modified or added file).
+    """
     db_path = archive_root / '.cache' / 'index.sqlite'
     if not db_path.exists():
         return False
@@ -212,9 +221,9 @@ def _index_is_fresh(archive_root: Path) -> bool:
     except OSError:
         return False
     record_mtime = newest_record_mtime(archive_root)
-    if record_mtime == 0.0:
-        return True   # no records yet - trivially current
-    return db_mtime >= record_mtime
+    if record_mtime != 0.0 and db_mtime < record_mtime:
+        return False
+    return not record_manifest_is_stale(archive_root)
 
 
 def _open_index(archive_root: Path) -> sqlite3.Connection | None:

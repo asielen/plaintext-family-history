@@ -36,7 +36,9 @@ import packet
 import gedcom
 import wikitree
 import lint
-from _lib import read_record
+from _lib import (
+    index_manifest_path, read_record, record_path_manifest, write_path_manifest,
+)
 from index import _DDL as INDEX_DDL
 
 # site.py's module stem collides with the stdlib `site`; load it by path.
@@ -76,10 +78,21 @@ class _Archive:
 
     def fresh(self):
         """Commit and stamp the index newer than every record so freshness
-        checks pass (the exporters refuse a stale index)."""
+        checks pass (the exporters refuse a stale index).
+
+        #48: also (re)writes `.cache/index_manifest.json` to match whatever
+        real record files exist right now. This index is hand-built via raw
+        DDL, bypassing build_index/upsert_source - the only two places that
+        write the #48 path manifest - so without this, open_index_db's
+        additive manifest check finds no manifest at all and (correctly,
+        per the bootstrapping rule) reads every real record file `.person`/
+        `.source` already wrote as newly "added", i.e. stale, regardless of
+        the mtime stamp above.
+        """
         self.conn.commit()
         future = time.time() + 5
         os.utime(self.root / '.cache' / 'index.sqlite', (future, future))
+        write_path_manifest(index_manifest_path(self.root), record_path_manifest(self.root))
 
     def person(self, pid, name='Test Person', *, living='false', tier='curated',
                surname='Person', sex='M', restricted=None, name_variants=None,

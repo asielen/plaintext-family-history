@@ -26,11 +26,17 @@ from _lib import (
     EXIT_FAILURE,
     EXIT_WARNINGS,
     find_source_record,
+    index_manifest_path,
     newest_person_record_mtime,
     newest_source_record_mtime,
     parse_media_filename,
+    path_to_alias,
+    photoindex_manifest_path,
+    photoindex_record_manifest,
     photoindex_status,
+    record_path_manifest,
     resolve_path,
+    write_path_manifest,
 )
 
 
@@ -1011,6 +1017,17 @@ class PhotoindexTests(unittest.TestCase):
                 conn.close()
 
             os.utime(index_db, None)
+            # #48: this synthetic index.sqlite was hand-built via raw SQL,
+            # bypassing build_index/upsert_source - the only two places that
+            # write the #48 path manifest - so without this the manifest
+            # would be missing, and the bootstrapping rule (missing manifest
+            # = treat as changed) would correctly, but unhelpfully for this
+            # test, read every person record as newly "added" and refuse
+            # weak resolution regardless of the mtime check above. Write the
+            # manifest a real `fha index` run would have produced for the
+            # person records as they stand right now, matching what the
+            # hand-built index above claims to represent.
+            write_path_manifest(index_manifest_path(archive), record_path_manifest(archive))
 
             second_summary = photoindex.run_scan(archive, {'roots': {'photos': 'photos'}})
 
@@ -1073,6 +1090,17 @@ class PhotoindexTests(unittest.TestCase):
             finally:
                 conn.close()
             os.utime(index_db, None)
+            # #48: this synthetic index.sqlite was hand-built via raw SQL,
+            # bypassing build_index/upsert_source - the only two places that
+            # write the #48 path manifest - so without this the manifest
+            # would be missing, and the bootstrapping rule (missing manifest
+            # = treat as changed) would correctly, but unhelpfully for this
+            # test, read every person record as newly "added" and refuse
+            # weak resolution regardless of the mtime check above. Write the
+            # manifest a real `fha index` run would have produced for the
+            # person records as they stand right now, matching what the
+            # hand-built index above claims to represent.
+            write_path_manifest(index_manifest_path(archive), record_path_manifest(archive))
 
             # Fresh index -> family_reunion.jpg picks up the weak face-tag match.
             photoindex.run_scan(archive, {'roots': {'photos': 'photos'}})
@@ -1164,6 +1192,17 @@ class PhotoindexTests(unittest.TestCase):
             finally:
                 conn.close()
             os.utime(index_db, None)
+            # #48: this synthetic index.sqlite was hand-built via raw SQL,
+            # bypassing build_index/upsert_source - the only two places that
+            # write the #48 path manifest - so without this the manifest
+            # would be missing, and the bootstrapping rule (missing manifest
+            # = treat as changed) would correctly, but unhelpfully for this
+            # test, read every person record as newly "added" and refuse
+            # weak resolution regardless of the mtime check above. Write the
+            # manifest a real `fha index` run would have produced for the
+            # person records as they stand right now, matching what the
+            # hand-built index above claims to represent.
+            write_path_manifest(index_manifest_path(archive), record_path_manifest(archive))
 
             photoindex.run_scan(archive, {'roots': {'photos': 'photos'}})
 
@@ -4675,6 +4714,20 @@ class UnreadableFreshnessTests(unittest.TestCase):
             os.utime(archive / sub, (old, old))
         recent = time.time() - 60
         os.utime(archive / '.cache' / 'photos.sqlite', (recent, recent))
+        # #48: the scan above wrote the path manifest with each file's mtime
+        # BEFORE this loop backdated everything, so every path would now read
+        # as "modified" against that stale snapshot - a real signal in
+        # general, but not the one this test class is about (it wants the
+        # unreadable-folder case isolated). Resync the manifest to the now-
+        # backdated mtimes, matching what a catalog that had genuinely
+        # settled into this aged state would have on disk.
+        cfg = {'roots': {'photos': 'photos'}}
+        photo_manifest = {
+            path_to_alias(p, 'photos', cfg, archive): p.stat().st_mtime
+            for p in (archive / 'photos').rglob('*') if p.is_file()
+        }
+        photo_manifest.update(photoindex_record_manifest(archive))
+        write_path_manifest(photoindex_manifest_path(archive), photo_manifest)
         return archive
 
     def test_status_is_stale_when_a_photo_folder_will_not_open(self) -> None:

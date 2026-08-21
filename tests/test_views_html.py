@@ -38,6 +38,7 @@ from _lib import (
     EXIT_CLEAN,
     EXIT_FAILURE,
     EXIT_WARNINGS,
+    GeneratedFileParentMissing,
     is_generated_text,
     load_fha_yaml,
     open_index_db,
@@ -354,16 +355,51 @@ class SourcesIndexHtmlTests(_ViewsHtmlBase):
         self.assertEqual(len(res.changed), 1)   # the couple-folder file only
         self.assertTrue(Path(res.changed[0]).name.startswith(COUPLE_DIR))
 
-    def test_deleted_person_folder_is_handled_gracefully(self):
-        # The profile-editing path's own version of WriteErrorHandlingTests'
-        # deleted-folder check: _generate_sources_index_person reads the
-        # profile through the ordinary read_text_exact/OSError path (there is
-        # no separate output path or parent folder to "recreate"), so this
-        # proves it degrades to a plain warning rather than a traceback.
+    def test_deleted_person_folder_refuses_upfront(self):
+        # #48 changed how this scenario has to be TRIGGERED. Deleting the
+        # profile's folder with no reindex deletes a tracked record file
+        # (PID's profile), which is now exactly the deletion #48 exists to
+        # catch: run_sources_index calls the same `_open_index_or_explain`
+        # (open_index_db(strict=True)) gate as run_timeline/run_draft_queue,
+        # and refuses the whole call upfront - matching
+        # WriteErrorHandlingTests.test_stale_index_does_not_recreate_deleted_
+        # person_folder's existing EXIT_FAILURE expectation for the sibling
+        # functions that test covers (run_sources_index itself is
+        # deliberately excluded from that test's `_runners()` matrix per
+        # #76, since it has no HTML twin - this is its own equivalent case).
         shutil.rmtree(self.profile.parent)
         res = views.run_sources_index(self.root, person_id=PID)
+        self.assertEqual(res.exit_code, EXIT_FAILURE)
+        self.assertFalse(res.changed)
+
+    def test_profile_unreadable_mid_run_is_handled_gracefully(self):
+        # The race #48's fix does NOT (and should not) catch:
+        # _generate_sources_index_person's own read_text_exact/OSError
+        # handling protects against the profile becoming unreadable AFTER
+        # the upfront freshness gate above already passed - a permissions
+        # change or a removable drive going away mid-run, not a deletion
+        # #48's manifest check would have caught. Reproduced directly with a
+        # mock instead of a real delete, so the scenario is isolated from the
+        # (now-correct) freshness gate: the index and every record file stay
+        # genuinely untouched and correctly read fresh.
+        orig_read = views.read_text_exact
+
+        def unreadable_for_profile(path, *args, **kwargs):
+            if Path(path) == self.profile:
+                raise OSError(13, 'Permission denied')
+            return orig_read(path, *args, **kwargs)
+
+        views.read_text_exact = unreadable_for_profile
+        try:
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                res = views.run_sources_index(self.root, person_id=PID)
+        finally:
+            views.read_text_exact = orig_read
         self.assertEqual(res.exit_code, EXIT_WARNINGS)
         self.assertFalse(res.changed)
+        self.assertIn('WARNING', err.getvalue())
+        self.assertIn(PID, err.getvalue())
 
 
 class MarkerGuardTests(_ViewsHtmlBase):
@@ -393,6 +429,35 @@ class WriteErrorHandlingTests(_ViewsHtmlBase):
             self.assertEqual(res.exit_code, EXIT_FAILURE, kind)
             self.assertFalse(folder.exists(), kind)
 
+    def test_all_curated_batch_refuses_upfront_on_a_deleted_record(self):
+        # #106 review finding: test_a_record_deleted_since_the_last_index_build_
+        # refuses_upfront (tests/test_views_brackets_promote.py) pins this exact
+        # #48 upfront-whole-batch-refusal behavior for --fix-promote, and
+        # test_stale_index_does_not_recreate_deleted_person_folder just above
+        # pins it for the single-person path - but nothing exercised the
+        # all_curated=True BATCH path the PR description names alongside
+        # --fix-promote as the other caller of this shared gate
+        # (_open_index_or_explain / open_index_db(strict=True)). Two curated
+        # people, one deleted since the last `fha index`: the whole batch must
+        # refuse before writing anyone, not just skip the deleted one.
+        pid2 = 'P-cccccccccc'
+        folder2 = self.root / 'people' / '050 Second Person'
+        folder2.mkdir(parents=True)
+        (folder2 / f'second__person_{pid2}.md').write_text(
+            _person(pid2, 'Second Person', 'curated'), encoding='utf-8')
+        self._reindex()
+
+        shutil.rmtree(self.profile.parent)   # PID's record vanishes post-index
+
+        for runner, kind in self._runners():
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                res = runner(self.root, all_curated=True)
+            self.assertEqual(res.exit_code, EXIT_FAILURE, kind)
+            self.assertFalse(res.changed, kind)   # nothing written - not even Second Person
+            self.assertIn('index is stale', err.getvalue(), kind)
+            self.assertIn('fha index', err.getvalue(), kind)
+
     def test_write_oserror_reports_plain_error_not_traceback(self):
         orig = views.write_generated_file
 
@@ -420,12 +485,27 @@ class WriteErrorHandlingTests(_ViewsHtmlBase):
         self.assertEqual(res.exit_code, EXIT_FAILURE)
 
     def test_all_curated_batch_continues_past_one_missing_folder(self):
-        # A stale index pointing at one curated person's moved/deleted folder
-        # must not abort the whole --all-curated batch: before this fix,
-        # GeneratedFileParentMissing hit the same top-level except as the
-        # rare GeneratedFileRefused case and discarded every file already
-        # written this run, including a second curated person's, which
-        # never had anything wrong with it.
+        # #48 changed how this scenario has to be TRIGGERED, not what it
+        # tests. The original trigger - shutil.rmtree(self.profile.parent)
+        # with no reindex - deletes a tracked record file (PID's profile),
+        # which is now exactly the deletion #48 exists to catch: the shared
+        # `_open_index_or_explain` gate (open_index_db(strict=True)) refuses
+        # the WHOLE batch upfront, before it ever reaches the per-item loop
+        # this test is actually about - see
+        # test_stale_index_does_not_recreate_deleted_person_folder, which
+        # pins exactly that upfront refusal for the single-person case.
+        #
+        # This test's real subject - GeneratedFileParentMissing hitting the
+        # same top-level except as the rare GeneratedFileRefused case and
+        # discarding every file already written this run - is a narrower
+        # race the freshness gate cannot see by construction: the index and
+        # every record file are genuinely untouched and correctly read
+        # fresh; only the WRITE into PID's folder fails (a folder deleted or
+        # unmounted in the instant between this run's own index check and
+        # its own write, which #48 has no watermark or manifest entry that
+        # could ever see coming). Reproduced directly instead: a real second
+        # person, an untouched index, and a write_generated_file that fails
+        # only for PID.
         pid2 = 'P-cccccccccc'
         folder2 = self.root / 'people' / '050 Second Person'
         folder2.mkdir(parents=True)
@@ -433,11 +513,20 @@ class WriteErrorHandlingTests(_ViewsHtmlBase):
             _person(pid2, 'Second Person', 'curated'), encoding='utf-8')
         self._reindex()
 
-        shutil.rmtree(self.profile.parent)   # PID's folder vanishes; pid2's survives
+        orig_write = views.write_generated_file
 
-        err = io.StringIO()
-        with contextlib.redirect_stderr(err):
-            res = views.run_timeline(self.root, all_curated=True)
+        def fail_only_for_pid(out_path, *args, **kwargs):
+            if PID in str(out_path):
+                raise GeneratedFileParentMissing(out_path)
+            return orig_write(out_path, *args, **kwargs)
+
+        views.write_generated_file = fail_only_for_pid
+        try:
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                res = views.run_timeline(self.root, all_curated=True)
+        finally:
+            views.write_generated_file = orig_write
 
         self.assertEqual(res.data['count'], 1)
         self.assertEqual(len(res.changed), 1)

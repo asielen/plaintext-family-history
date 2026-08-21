@@ -1844,6 +1844,71 @@ class StalenessMemoTests(_ServeCase):
         self.assertIsNone(self.state._mtime_memo)
 
 
+class SnapshotDeletionFreshnessTests(_ServeCase):
+    """#48: a DELETED record is invisible to the mtime watermark above -
+    removing a file raises no OTHER file's mtime, so `_newest_input_mtime`
+    alone would keep reading the snapshot as current over a source that no
+    longer exists. `snapshot_is_stale` ORs a path-manifest check on top of it
+    (`_snapshot_input_manifest_cached` vs `state._snapshot_manifest`,
+    captured the moment `ensure_snapshot` last rebuilt) to catch exactly
+    that, the same additive design as `open_index_db`/`photoindex_status`."""
+
+    def test_deleting_a_source_marks_the_snapshot_stale(self):
+        self.assertFalse(serve.snapshot_is_stale(self.state))
+        target = next((self.root / 'sources').rglob('*.md'))
+        target.unlink()
+        # Both TTL memos (the mtime watermark and the #48 manifest) are still
+        # within their window from the assertFalse above - reset them
+        # explicitly, matching the human-timescale gap a real delete-then-
+        # reload would have, rather than sleep in a test.
+        with self.state._memo_lock:
+            self.state._mtime_memo = None
+            self.state._manifest_memo = None
+        self.assertTrue(serve.snapshot_is_stale(self.state))
+
+    def test_a_rebuild_clears_the_staleness(self):
+        target = next((self.root / 'sources').rglob('*.md'))
+        target.unlink()
+        with self.state._memo_lock:
+            self.state._mtime_memo = None
+            self.state._manifest_memo = None
+        self.assertTrue(serve.snapshot_is_stale(self.state))
+        serve.ensure_snapshot(self.state)
+        with self.state._memo_lock:
+            self.state._mtime_memo = None
+            self.state._manifest_memo = None
+        self.assertFalse(serve.snapshot_is_stale(self.state))
+
+    def test_deleting_fha_yaml_marks_the_snapshot_stale(self):
+        # #106 review finding: deleting a plain file under sources/ already
+        # bumps that file's PARENT DIRECTORY's own mtime (unlink touches the
+        # directory entry), so the pre-existing mtime-only watermark above
+        # already catches that specific case on its own - the manifest fix
+        # is untested by it. fha.yaml is one of the three SINGLETON files
+        # `_newest_input_mtime`/`_snapshot_input_manifest` stat directly (no
+        # parent-directory walk at all): deleting it changes no other file's
+        # mtime, so only the #48 manifest half can see it go missing.
+        self.assertFalse(serve.snapshot_is_stale(self.state))
+        (self.root / 'fha.yaml').unlink()
+        with self.state._memo_lock:
+            self.state._mtime_memo = None
+            self.state._manifest_memo = None
+        self.assertTrue(serve.snapshot_is_stale(self.state))
+
+    def test_removing_a_whole_tracked_directory_marks_the_snapshot_stale(self):
+        # A directory that vanishes ENTIRELY makes `_newest_mtime_under`
+        # return 0.0 for it (base.exists() is False) - that can only LOWER
+        # the watermark's running max, never raise it, so the mtime-only
+        # check structurally cannot flag this. Only the #48 manifest (every
+        # file that WAS under notes/ now missing from a fresh listing) can.
+        self.assertFalse(serve.snapshot_is_stale(self.state))
+        shutil.rmtree(self.root / 'notes')
+        with self.state._memo_lock:
+            self.state._mtime_memo = None
+            self.state._manifest_memo = None
+        self.assertTrue(serve.snapshot_is_stale(self.state))
+
+
 class CountsPipelineTests(_ServeCase):
     """Cleanup task 2: gather_review/gather_inbox (full index queries plus
     xref/cooccur detection) used to run 2-3x per /review or /inbox request -

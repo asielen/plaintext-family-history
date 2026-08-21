@@ -194,17 +194,58 @@ class FixPromoteTests(BracketsPromoteBase):
         self.assertIn('fha index', out)
         self.assertIn('fha views refresh', out)
 
-    def test_partial_failure_reports_and_exits_warnings(self) -> None:
-        # One record vanishes between the index build and the apply - the
-        # batch must promote the others, count the failure, and exit 1.
+    def test_a_record_deleted_since_the_last_index_build_refuses_upfront(self) -> None:
+        # #48: a record vanishing since `fha index` last ran is exactly the
+        # staleness the freshness manifest exists to catch (deleting a file
+        # raises no other file's mtime, so before #48 this was invisible and
+        # the batch proceeded on an index it should not have trusted). A
+        # mutating, generating command like --fix-promote asks for a STRICT
+        # index (`open_index_db(..., strict=True)`, a pre-#48 contract:
+        # "generating/mutating commands can't safely act on stale data") -
+        # so this now refuses the whole batch up front, before promoting
+        # anyone, rather than discovering the gap mid-apply. Nothing is
+        # half-done: the human reindexes and re-runs, exactly as the error
+        # names.
         (self.root / 'people' / 'stubs' / f'deep__ma_{MA}.md').unlink()
         with mock.patch('builtins.input', return_value='y'):
+            res, _out, err = self._run(fix_promote=True)
+        self.assertEqual(res.exit_code, EXIT_FAILURE)
+        self.assertIn('index is stale', err)
+        self.assertIn('fha index', err)
+        # Nothing promoted - the refusal is upfront, not partial. (MA's own
+        # file is genuinely gone, by this test's own unlink() above; PA and
+        # GPA staying put is what proves the batch never got to apply.)
+        self.assertIn(f'deep__pa_{PA}.md', self._stub_names())
+        self.assertIn(f'deep__gpa_{GPA}.md', self._stub_names())
+
+    def test_a_record_that_vanishes_mid_apply_is_skipped_not_fatal(self) -> None:
+        # The race #48's fix does NOT (and should not) catch: a record still
+        # present at the freshness check moments ago, but gone by the time
+        # THIS run's own apply loop reaches it (a human deletes it while
+        # --fix-promote is mid-batch). _apply_promotions re-checks each
+        # candidate against disk via find_person_record_path for exactly this
+        # reason - the batch must still promote everyone else and report one
+        # failure, not abort or silently skip the count.
+        real_lookup = views.find_person_record_path
+
+        def vanished_for_ma(archive_root, pid, unreadable=None):
+            if normalize_id(pid) == normalize_id(MA):
+                return None
+            return real_lookup(archive_root, pid, unreadable=unreadable)
+
+        with mock.patch('views.find_person_record_path', side_effect=vanished_for_ma), \
+             mock.patch('builtins.input', return_value='y'):
             res, _out, err = self._run(fix_promote=True)
         self.assertEqual(res.exit_code, EXIT_WARNINGS)
         self.assertEqual(res.data.get('failures'), 1)
         self.assertIn('ERROR', err)
+        self.assertIn('Ma Deep', err)
+        # PA and GPA still promoted; MA's file never moved (the mock only
+        # hides it from the lookup, it is never actually deleted).
         self.assertTrue(
             (self.root / 'people' / FOLDER / f'deep__pa_{PA}.md').exists())
+        self.assertTrue(
+            (self.root / 'people' / 'stubs' / f'deep__ma_{MA}.md').exists())
 
     def test_plain_fix_does_not_promote(self) -> None:
         # --fix owns W103/W110 only; with only W119 present it says so plainly.

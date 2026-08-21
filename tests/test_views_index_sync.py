@@ -626,6 +626,15 @@ class UnreadableFolderTests(_SyncBase):
             if q.is_file() and '.cache' not in q.parts:
                 os.utime(q, (now - 600, now - 600))
         os.utime(self.root / '.cache' / 'index.sqlite', (now - 300, now - 300))
+        # #48: the #48 path manifest build_index wrote captured each record's
+        # mtime BEFORE this loop rewound it, so every record would otherwise
+        # read as "modified" against that stale snapshot - a real signal in
+        # general, but not the one this test is about (it isolates the
+        # unreadable-folder case). Resync the manifest to the now-aged
+        # mtimes, matching what an archive that had genuinely settled into
+        # this state would have on disk.
+        _lib.write_path_manifest(
+            _lib.index_manifest_path(self.root), _lib.record_path_manifest(self.root))
 
     def test_the_stale_refusal_names_the_folder_holding_it_stale(self) -> None:
         self._age_the_tree()

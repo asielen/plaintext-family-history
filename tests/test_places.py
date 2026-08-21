@@ -12,6 +12,7 @@ sys.path.insert(0, str(ROOT / 'tools'))
 
 import places
 from index import _DDL
+from _lib import index_manifest_path, record_path_manifest, write_path_manifest
 
 
 def _make_index(archive_root: Path) -> sqlite3.Connection:
@@ -530,6 +531,14 @@ class GeocodeRunTests(unittest.TestCase):
     def _fresh_index(self):
         import os
         os.utime(self.root / '.cache' / 'index.sqlite')
+        # #48: this synthetic index.sqlite is hand-built via raw DDL,
+        # bypassing build_index/upsert_source - the only two places that
+        # write the #48 path manifest - so without this, open_index_db's
+        # additive manifest check finds no manifest at all and (correctly,
+        # per the bootstrapping rule) reads places/places.yaml (written by
+        # tests in this class) as newly "added", i.e. stale.
+        write_path_manifest(
+            index_manifest_path(self.root), record_path_manifest(self.root))
 
     def _write_gazetteer(self, rows):
         gdir = self.root / '.cache' / 'geonames'

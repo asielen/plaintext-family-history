@@ -99,6 +99,8 @@ from _lib import (  # noqa: E402
     is_working_copy,
     load_fha_yaml,
     load_site_module,
+    manifest_diff,
+    manifest_has_changed,
     normalize_id,
     open_index_db,
     pip_command,
@@ -279,6 +281,15 @@ class ServeState:
         self._mtime_memo: tuple[float, float] | None = None
         self._review_count_memo: tuple[float, int] | None = None
         self._inbox_count_memo: tuple[float, int] | None = None
+        # #48: the path-set snapshot inputs were built from, captured right
+        # after a successful rebuild (see `ensure_snapshot`) so `snapshot_is_
+        # stale` can detect a DELETED record - nothing else's mtime moves
+        # when a file disappears, so `_mtime_memo` alone cannot see one. None
+        # until the first rebuild; `snapshot_is_stale` already treats a
+        # missing `.built` marker as unconditionally stale before this is
+        # ever consulted, so None here never needs its own special case.
+        self._snapshot_manifest: dict[str, float] | None = None
+        self._manifest_memo: tuple[float, dict] | None = None
         # Guards the native file-picker dialog (/api/pickfile): one at a time,
         # never under the mutation `lock` - a dialog can sit open for minutes
         # and must not block writes or page renders while it does.
@@ -357,6 +368,62 @@ def _newest_input_mtime(state: ServeState) -> float:
     return newest
 
 
+def _path_manifest_under(base: Path, root: Path) -> dict[str, float]:
+    """{path: mtime} for every file under `base`, keyed relative to `root`.
+
+    The #48 path-set counterpart to `_newest_mtime_under`, which reduces the
+    same walk to a single running max - so a DELETED record is detectable
+    even though removing a file raises no other file's mtime (nothing this
+    process's own snapshot-input walk can see, unlike the archive's shared
+    `.cache/index_manifest.json`/`.cache/photos_manifest.json`: serve's
+    snapshot is an in-memory-only third scope, per #48's design, with no
+    cache file of its own to persist a manifest beside).
+    """
+    manifest: dict[str, float] = {}
+    if not base.exists():
+        return manifest
+    for dirpath, _dirs, files in os.walk(base):
+        for f in files:
+            p = Path(dirpath) / f
+            try:
+                mtime = p.stat().st_mtime
+            except OSError:
+                continue
+            try:
+                key = p.relative_to(root).as_posix()
+            except ValueError:
+                key = str(p).replace('\\', '/')
+            manifest[key] = mtime
+    return manifest
+
+
+def _snapshot_input_manifest(state: ServeState) -> dict[str, float]:
+    """The #48 path-set counterpart to `_newest_input_mtime`: the SAME input
+    set (record trees + design/ + fha.yaml + the index + the photo catalog)
+    as {path: mtime} instead of one max. Called both right after a rebuild
+    (to capture what the new snapshot was built from, on `state.
+    _snapshot_manifest`) and on every staleness check (to compare a fresh
+    listing against that capture) - see `snapshot_is_stale`.
+    """
+    root = state.archive_root
+    manifest: dict[str, float] = {}
+    for name in _SNAPSHOT_INPUTS:
+        manifest.update(_path_manifest_under(root / name, root))
+    manifest.update(_path_manifest_under(root / 'design', root))
+    manifest.update(_path_manifest_under(root / VENDOR_DIR / 'design', root))
+    for extra in (root / 'fha.yaml', root / '.cache' / 'index.sqlite',
+                  root / '.cache' / 'photos.sqlite'):
+        try:
+            key = extra.relative_to(root).as_posix()
+        except ValueError:
+            key = str(extra).replace('\\', '/')
+        try:
+            manifest[key] = extra.stat().st_mtime
+        except OSError:
+            pass
+    return manifest
+
+
 # TTL for the small render-time memos below (staleness probe + both queue
 # counts). A page GET can land seconds after a hand-edit made outside serve
 # (a text editor save, a git checkout) - the memo trades that gap for
@@ -410,13 +477,31 @@ def _newest_input_mtime_cached(state: ServeState) -> float:
     return _memoized(state, '_mtime_memo', lambda: _newest_input_mtime(state))
 
 
+def _snapshot_input_manifest_cached(state: ServeState) -> dict[str, float]:
+    """Memoized `_snapshot_input_manifest` (see `_memoized`/`_MEMO_TTL`) - the
+    #48 counterpart to `_newest_input_mtime_cached`, same TTL-collapsing
+    reason: without it `snapshot_is_stale` would pay for a second full walk
+    of the record trees on every page GET, on top of the one
+    `_newest_input_mtime_cached` already does."""
+    return _memoized(state, '_manifest_memo', lambda: _snapshot_input_manifest(state))
+
+
 def snapshot_is_stale(state: ServeState) -> bool:
     """True when the snapshot is missing, older than the newest record input,
-    or built by a DIFFERENT serve process. The last check matters because the
-    per-process CSRF token is baked into the snapshot's pages: a restarted
-    serve mints a new token, so a snapshot left by the previous session would
-    403 every Apply until something else invalidated it. The marker records
-    which session built it; a marker from another session is always stale."""
+    built by a DIFFERENT serve process, or the #48 path manifest disagrees
+    with a fresh listing. The session check matters because the per-process
+    CSRF token is baked into the snapshot's pages: a restarted serve mints a
+    new token, so a snapshot left by the previous session would 403 every
+    Apply until something else invalidated it. The marker records which
+    session built it; a marker from another session is always stale.
+
+    #48: the mtime watermark (`_newest_input_mtime_cached`) is ADDITIVE with
+    the manifest check, never replaced by it - a DELETED record never raises
+    any remaining file's mtime, so the watermark alone would keep serving a
+    snapshot built from a source that no longer exists. `state.
+    _snapshot_manifest` is None only before the very first rebuild, when
+    `state.marker.exists()` is already False and this never gets that far.
+    """
     if not state.marker.exists():
         return True
     try:
@@ -426,13 +511,16 @@ def snapshot_is_stale(state: ServeState) -> bool:
         return True
     if marker_session != state.csrf_token:
         return True
-    return _newest_input_mtime_cached(state) > built
+    if _newest_input_mtime_cached(state) > built:
+        return True
+    current_manifest = _snapshot_input_manifest_cached(state)
+    return manifest_has_changed(manifest_diff(state._snapshot_manifest, current_manifest))
 
 
 def invalidate_snapshot(state: ServeState) -> None:
     """Delete the build marker so the next page GET rebuilds, and drop every
-    render-time memo (the staleness probe + both queue counts). Caller holds
-    the lock.
+    render-time memo (the staleness probe, the #48 manifest probe, and both
+    queue counts). Caller holds the lock.
 
     Dropping the memos here (rather than letting the TTL expire on its own)
     matters for a write SERVE ITSELF just made: the record is already on disk
@@ -445,6 +533,7 @@ def invalidate_snapshot(state: ServeState) -> None:
         pass
     with state._memo_lock:
         state._mtime_memo = None
+        state._manifest_memo = None
         state._review_count_memo = None
         state._inbox_count_memo = None
 
@@ -511,6 +600,13 @@ def ensure_snapshot(state: ServeState) -> Result | None:
             # First line: the building session's token (see snapshot_is_stale);
             # second: a human-readable build time for anyone poking at .cache.
             state.marker.write_text(f'{state.csrf_token}\n{time.time()}\n', encoding='utf-8')
+            # #48: capture what this rebuild actually saw, so the NEXT
+            # staleness check can catch a deletion (see snapshot_is_stale /
+            # _snapshot_input_manifest). In-memory only - serve's snapshot is
+            # a third freshness scope with no cache file of its own to keep a
+            # manifest beside (unlike index.sqlite/photos.sqlite), and it is
+            # rebuilt from scratch every process start regardless.
+            state._snapshot_manifest = _snapshot_input_manifest(state)
         return result
 
 

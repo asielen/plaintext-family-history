@@ -230,25 +230,33 @@ from _lib import (
     format_exiftool_error,
     grouping_stem as _grouping_stem,
     id_type_of,
+    index_manifest_path,
     is_nonspec_photo_date_keyword as _is_nonspec_date_keyword,
     is_valid_edtf,
     is_valid_id,
     is_working_copy,
     load_fha_yaml,
     load_view_css,
+    manifest_diff,
+    manifest_has_changed,
     newest_person_record_mtime,
     normalize_date,
     normalize_id,
     parse_media_filename,
     path_to_alias,
+    person_profile_manifest_keys,
+    person_profile_path_manifest,
     photo_date_markers_to_edtf as _keyword_to_edtf,
     photo_date_pattern_to_edtf as _placeholder_to_edtf,
     photoindex_config_drift,
     photoindex_config_fingerprint,
+    photoindex_manifest_path,
+    photoindex_record_manifest,
     photoindex_status,
     photos_ignore_matcher,
     photos_ignore_patterns as _photos_ignore_patterns,
     probe_sqlite,
+    read_path_manifest,
     render_template,
     pip_command,
     requirements_hint,
@@ -259,9 +267,11 @@ from _lib import (
     select_variation_primary,
     sqlite_cache_schema_status,
     unreadable_dir_hold_mtimes,
+    update_path_manifest,
     variant_role as _variant_role,
     write_cache_meta,
     write_generated_file,
+    write_path_manifest,
 )
 
 configure_utf8_stdout()
@@ -800,6 +810,21 @@ def _index_is_fresh(archive_root: Path) -> bool:
     plausible-looking `photo_people` rows from old names/tags after a person
     record changed, so photoindex treats stale, absent, corrupt, and old-schema
     indexes the same way: skip weak resolution and keep scanning photos.
+
+    #48: ORs a path-manifest check onto the mtime watermark below - a DELETED
+    person profile never raises any remaining file's mtime, so the watermark
+    alone would keep trusting person_face_tags/person_variants rows for a
+    person who no longer has a record. Scoped to just the person PROFILE
+    portion of the shared index manifest (`_lib.person_profile_manifest_keys`),
+    matching `newest_person_record_mtime`'s own narrower scope: a deleted
+    SOURCE or NOTES file has nothing to do with face-tag resolution and must
+    not make this read stale when the person data itself is untouched. A bare
+    'people/' prefix filter is NOT this scope - a person's `research`
+    companion is human-authored, not generated, so it is also tracked under
+    'people/' in the shared manifest; filtering by prefix alone would leave
+    it in the stored side with no counterpart in a profile-only current
+    listing, reading as a permanent phantom deletion on any archive that
+    uses the research-file feature at all.
     """
     db_path = archive_root / '.cache' / 'index.sqlite'
     mtime = db_mtime(db_path)
@@ -820,7 +845,14 @@ def _index_is_fresh(archive_root: Path) -> bool:
         if not probe_sqlite(db_path, probe):
             return False
     record_mtime = newest_person_record_mtime(archive_root)
-    return record_mtime == 0.0 or mtime >= record_mtime
+    if record_mtime != 0.0 and mtime < record_mtime:
+        return False
+    stored = read_path_manifest(index_manifest_path(archive_root))
+    stored_people = (
+        person_profile_manifest_keys(stored) if stored is not None else None
+    )
+    current_people = person_profile_path_manifest(archive_root)
+    return not manifest_has_changed(manifest_diff(stored_people, current_people))
 
 
 def _load_face_tag_index(archive_root: Path) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
@@ -3193,6 +3225,34 @@ def run_reconcile(
     finally:
         conn.close()
 
+    if not dry_run:
+        # #48: patch just the paths this reconcile actually touched, rather
+        # than re-stating the whole photos root - reconcile's whole point is
+        # avoiding a full rescan, and a second full stat pass here (on top of
+        # the walk `_on_disk_aliases` already paid for) would undo that. A
+        # rematch drops the stale old alias and records the new one at its
+        # real current mtime; a file newly flagged MISSING: drops its old
+        # (live) alias outright - the manifest tracks what is genuinely ON
+        # DISK, and a MISSING: key is reconcile's own bookkeeping, never a
+        # disk path. Untracked files and folders held back as unverified are
+        # correctly left untouched here: `_hold_cache_stale` below already
+        # keeps the catalog reading stale for exactly those cases regardless
+        # of what the manifest says - the additive-OR design (_lib.py's
+        # "Freshness manifests" section) means this file does not have to
+        # replicate that fail-closed logic to stay correct.
+        manifest_updates: dict[str, float | None] = {}
+        for (old_path, new_path), abs_path in zip(rematched, rematched_paths):
+            manifest_updates[old_path] = None
+            try:
+                manifest_updates[new_path] = abs_path.stat().st_mtime
+            except OSError:
+                pass   # vanished between the rematch and here; next scan heals it
+        for old_path in missing:
+            if not _is_missing_key(old_path):
+                manifest_updates[old_path] = None
+        if manifest_updates:
+            update_path_manifest(photoindex_manifest_path(archive_root), manifest_updates)
+
     stale_hold_failed = False
     if not dry_run and (untracked or rematched_paths or unreadable_dirs):
         # Cover both still-untracked files (never scraped) and files just
@@ -3532,6 +3592,27 @@ def apply_tag_person(
             ) from e
     finally:
         conn.close()
+
+    if tagged:
+        # #48: patch the manifest for exactly the photos this call rewrote.
+        # exiftool just changed their bytes (and so their real on-disk
+        # mtime), but the `photos.mtime` COLUMN in photos.sqlite is NOT
+        # updated by this command (only photo_keywords/photo_people are) -
+        # deriving the manifest from that column would record the file's OLD
+        # mtime and read as a 'modified' path on the very next freshness
+        # check, a false stale this command would have caused on its own.
+        # Stat the just-written files directly instead; `abs_paths` already
+        # holds their resolved paths, in the same order as `candidates`.
+        abs_by_candidate = dict(zip(candidates, abs_paths))
+        manifest_updates: dict[str, float] = {}
+        for path in tagged:
+            try:
+                manifest_updates[path] = abs_by_candidate[path].stat().st_mtime
+            except OSError:
+                pass   # vanished right after the write; next scan heals it
+        if manifest_updates:
+            update_path_manifest(photoindex_manifest_path(archive_root), manifest_updates)
+
     result = Result(
         ok=(not failed),
         exit_code=(EXIT_FAILURE if failed else EXIT_CLEAN),
@@ -3961,6 +4042,24 @@ def run_set_summary(
             ) from e
     finally:
         conn.close()
+
+    if written:
+        # #48: patch the manifest for exactly the photos this call rewrote -
+        # see apply_tag_person's matching comment: exiftool just changed
+        # their real on-disk mtime, but `photos.mtime` is not one of the
+        # columns this command updates, so deriving the manifest from that
+        # column would record the OLD mtime and read as a false 'modified'
+        # on the very next freshness check. `abs_by_candidate` already holds
+        # each candidate's resolved path.
+        manifest_updates: dict[str, float] = {}
+        for path in written:
+            try:
+                manifest_updates[path] = abs_by_candidate[path].stat().st_mtime
+            except OSError:
+                pass   # vanished right after the write; next scan heals it
+        if manifest_updates:
+            update_path_manifest(photoindex_manifest_path(archive_root), manifest_updates)
+
     result = Result(
         ok=(not failed),
         exit_code=(EXIT_FAILURE if failed else EXIT_CLEAN),
@@ -4332,6 +4431,25 @@ def run_scan(archive_root: Path, fha_config: dict, full: bool = False) -> Result
         conn.commit()
     finally:
         conn.close()
+
+    # #48: snapshot the photoindex path manifest this scan actually saw, so a
+    # later DELETION (a photo, a person profile, a sources/photos record) is
+    # detectable even though nothing else's mtime moves when a file
+    # disappears - see _lib.py's "Freshness manifests" section. A full
+    # replace, not an incremental patch: this scan already walked the whole
+    # photos root (on_disk/alias_by_path cover every live file it found,
+    # ignore-pruned) and just recomputed photo_people from a fresh read of
+    # person/source records, so there is nothing in the old manifest worth
+    # preserving - unlike run_reconcile just below, which only re-verifies
+    # the few paths it actually touched and patches those incrementally
+    # (`update_path_manifest`) rather than re-stating the whole root. An
+    # unreadable folder THIS scan hit already holds the catalog stale via
+    # `_hold_cache_stale`'s mtime pullback below regardless of what this
+    # manifest records, so no special-casing is needed here for that case
+    # either - same reasoning as `build_index`'s manifest write.
+    photo_manifest = {alias_by_path[p]: on_disk[p][0] for p in on_disk}
+    photo_manifest.update(photoindex_record_manifest(archive_root))
+    write_path_manifest(photoindex_manifest_path(archive_root), photo_manifest)
 
     # A file the scan could not read is a file whose current metadata never
     # reached the catalog. Committing above just stamped photos.sqlite with

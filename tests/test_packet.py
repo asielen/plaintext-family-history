@@ -33,6 +33,10 @@ sys.path.insert(0, str(ROOT / 'tools'))
 import packet
 from index import _DDL as INDEX_DDL
 from photoindex import _DDL as PHOTOS_DDL
+from _lib import (
+    index_manifest_path, path_to_alias, photoindex_manifest_path,
+    photoindex_record_manifest, record_path_manifest, write_path_manifest,
+)
 
 
 def _make_index(archive_root: Path) -> sqlite3.Connection:
@@ -88,6 +92,41 @@ class PacketTests(unittest.TestCase):
         self.conn.commit()
         future = time.time() + 5
         os.utime(self.archive_root / '.cache' / 'index.sqlite', (future, future))
+        # #48: this synthetic index.sqlite is hand-built via raw DDL/INSERTs,
+        # bypassing build_index/upsert_source - the only two places that
+        # write the #48 path manifest - so without this, open_index_db's
+        # additive manifest check finds no manifest at all and (correctly,
+        # per the bootstrapping rule) reads every real file _seed_person/
+        # _seed_source already wrote as newly "added", i.e. stale. Called
+        # here, after every seed call in a test has run (every test that
+        # wants a fresh index calls this last), so the manifest always
+        # matches whatever real files that test actually created.
+        write_path_manifest(
+            index_manifest_path(self.archive_root), record_path_manifest(self.archive_root))
+
+    def _commit_photos_fresh(self, pconn) -> None:
+        """The photos.sqlite counterpart to `_commit_fresh` - same #48 reason:
+        a synthetic photos.sqlite, hand-built and committed after
+        `_seed_person`/`_seed_source` (and sometimes a real photo file
+        written straight to `photos/` before this call) already put real
+        files on disk, needs a matching `.cache/photos_manifest.json` or
+        `photoindex_status`'s additive manifest check reads those real files
+        as newly "added" (no manifest = bootstrap-stale) and reports
+        `no-photoindex` regardless of what the synthetic photo rows say.
+        Covers both halves `photoindex_status` checks: the photos-root walk
+        (only the real files a test actually wrote under `photos/`, if any -
+        the synthetic rows above reference paths that mostly do not exist on
+        disk and must not be manifested as if they did) and
+        `photoindex_record_manifest` (people/sources-photos).
+        """
+        pconn.commit()
+        photos_dir = self.archive_root / 'photos'
+        manifest = {
+            path_to_alias(p, 'photos', {}, self.archive_root): p.stat().st_mtime
+            for p in (photos_dir.rglob('*') if photos_dir.is_dir() else []) if p.is_file()
+        }
+        manifest.update(photoindex_record_manifest(self.archive_root))
+        write_path_manifest(photoindex_manifest_path(self.archive_root), manifest)
 
     def _seed_person(self, pid='p-aaaaaaaaaa', name='Test Person', living='false',
                      tier='curated', surname='Person', status='active', merged_into=None):
@@ -524,7 +563,7 @@ class PacketTests(unittest.TestCase):
             "INSERT INTO photo_people(path, person_ref, via) VALUES "
             "('photos/portrait.jpg', 'p-aaaaaaaaaa', 'pid-keyword')"
         )
-        pconn.commit()
+        self._commit_photos_fresh(pconn)
         pconn.close()
         future = time.time() + 5
         os.utime(self.archive_root / '.cache' / 'photos.sqlite', (future, future))
@@ -574,7 +613,7 @@ class PacketTests(unittest.TestCase):
             "INSERT INTO photo_people(path, person_ref, via) VALUES "
             "('photos/ghost.jpg', 'p-aaaaaaaaaa', 'pid-keyword')"
         )
-        pconn.commit()
+        self._commit_photos_fresh(pconn)
         pconn.close()
         future = time.time() + 5
         os.utime(self.archive_root / '.cache' / 'photos.sqlite', (future, future))
@@ -608,7 +647,7 @@ class PacketTests(unittest.TestCase):
             "INSERT INTO photo_people(path, person_ref, via) VALUES "
             "('MISSING:photos/portrait.jpg', 'p-aaaaaaaaaa', 'pid-keyword')"
         )
-        pconn.commit()
+        self._commit_photos_fresh(pconn)
         pconn.close()
         future = time.time() + 5
         os.utime(self.archive_root / '.cache' / 'photos.sqlite', (future, future))
@@ -643,7 +682,7 @@ class PacketTests(unittest.TestCase):
             "INSERT INTO photo_people(path, person_ref, via) VALUES "
             "('MISSING:photos/guess.jpg', 'p-aaaaaaaaaa', 'name-match')"
         )
-        pconn.commit()
+        self._commit_photos_fresh(pconn)
         pconn.close()
         future = time.time() + 5
         os.utime(self.archive_root / '.cache' / 'photos.sqlite', (future, future))
@@ -675,7 +714,7 @@ class PacketTests(unittest.TestCase):
             "INSERT INTO photo_people(path, person_ref, via) VALUES "
             "('MISSING:photos/guess.jpg', 'p-aaaaaaaaaa', 'name-match')"
         )
-        pconn.commit()
+        self._commit_photos_fresh(pconn)
         pconn.close()
         future = time.time() + 5
         os.utime(self.archive_root / '.cache' / 'photos.sqlite', (future, future))
@@ -706,7 +745,7 @@ class PacketTests(unittest.TestCase):
             "('photos/sure-front.jpg', 'p-aaaaaaaaaa', 'pid-keyword'), "
             "('photos/sure-back.jpg', 'p-aaaaaaaaaa', 'name-match')"
         )
-        pconn.commit()
+        self._commit_photos_fresh(pconn)
         pconn.close()
         future = time.time() + 5
         os.utime(self.archive_root / '.cache' / 'photos.sqlite', (future, future))
@@ -739,7 +778,7 @@ class PacketTests(unittest.TestCase):
             "('photos/group-back.jpg', 'p-aaaaaaaaaa', 'pid-keyword'), "
             "('MISSING:photos/group.jpg', 'p-bbbbbbbbbb', 'pid-keyword')"
         )
-        pconn.commit()
+        self._commit_photos_fresh(pconn)
         pconn.close()
         future = time.time() + 5
         os.utime(self.archive_root / '.cache' / 'photos.sqlite', (future, future))
@@ -768,7 +807,7 @@ class PacketTests(unittest.TestCase):
             "('MISSING:photos/gone.jpg', 'p-aaaaaaaaaa', 'pid-keyword'), "
             "('MISSING:photos/gone.jpg', 'p-bbbbbbbbbb', 'pid-keyword')"
         )
-        pconn.commit()
+        self._commit_photos_fresh(pconn)
         pconn.close()
         future = time.time() + 5
         os.utime(self.archive_root / '.cache' / 'photos.sqlite', (future, future))
@@ -897,7 +936,7 @@ class PacketTests(unittest.TestCase):
         pconn = _make_photos_db(self.archive_root)
         pconn.execute("INSERT INTO photos(path, group_id) VALUES ('photos/scan-front.jpg', 'g1')")
         pconn.execute("INSERT INTO photos(path, group_id) VALUES ('photos/scan-back.jpg', 'g1')")
-        pconn.commit()
+        self._commit_photos_fresh(pconn)
         pconn.close()
         future = time.time() + 5
         os.utime(self.archive_root / '.cache' / 'photos.sqlite', (future, future))
@@ -928,7 +967,7 @@ class PacketTests(unittest.TestCase):
             "INSERT INTO photo_people(path, person_ref, via) VALUES "
             "('photos/group.jpg', 'p-bbbbbbbbbb', 'face-tag')"
         )
-        pconn.commit()
+        self._commit_photos_fresh(pconn)
         pconn.close()
         future = time.time() + 5
         os.utime(self.archive_root / '.cache' / 'photos.sqlite', (future, future))
@@ -960,7 +999,7 @@ class PacketTests(unittest.TestCase):
         self._seed_person()
         self._commit_fresh()
         pconn = _make_photos_db(self.archive_root)
-        pconn.commit()
+        self._commit_photos_fresh(pconn)
         pconn.close()
         photos_dir = self.archive_root / 'photos'
         photos_dir.mkdir()
