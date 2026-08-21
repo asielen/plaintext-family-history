@@ -194,6 +194,19 @@ nothing. Add `--apply` and every person in your tree becomes a record, every ass
 Nothing imported is treated as proven: your tree's statements wait in the same review queue as
 everything else, and you review them family by family, whenever you like - never all at once.
 
+### Tell it about your own family first (two minutes, recommended)
+
+Before you file anything else, it's worth telling your assistant about your own immediate family. You
+are the one person the archive is guaranteed to have firsthand knowledge about, and nothing else will
+ever ask:
+
+> "Let's do the setup interview."
+
+It asks who you are (so it can number the family tree correctly), then your parents, spouse, and
+children - names, roughly when they were born, nothing more. What you say becomes a real, citable
+source and a handful of *suggested* facts, exactly like everything else in this archive - reviewed and
+accepted the same way, never taken as settled just because you're the one who said it.
+
 ---
 
 ## Part 3 - File your first document (five minutes)

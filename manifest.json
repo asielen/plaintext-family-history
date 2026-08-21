@@ -1,18 +1,18 @@
 {
   "manifest_version": "1",
   "spec_version": "1.2",
-  "generated": "2026-08-21",
+  "generated": "2026-08-20",
   "files": [
     {
       "path": ".claude/skills/README.md",
       "category": "operating",
-      "sha256": "5beb92e26460b43d4e896d2cd4cc1924c2f66fa0e7476cbdbd5ecbe55d9580d5",
+      "sha256": "b65b3b4517f6eab284ccb5c59eaaa0057fc9b159f64307f2ddb15ca748d5e227",
       "spec_version": "1.2"
     },
     {
       "path": ".claude/skills/_STANDARD.md",
       "category": "operating",
-      "sha256": "172fb2992e6d3cbb5e14b4b194427c4c3df199b322e01e51f53c02e4edada4e3",
+      "sha256": "ad4841eeaee643f7c1d3bcc2678dabc4c6b4835ca4fe293781ac3ac04649e22f",
       "spec_version": "1.2"
     },
     {
@@ -109,6 +109,12 @@
       "path": ".claude/skills/review-claims/SKILL.md",
       "category": "operating",
       "sha256": "e624764e5b843215bddc848903412c30b52dd340ecd772b88c450c51a4cdc7e4",
+      "spec_version": "1.2"
+    },
+    {
+      "path": ".claude/skills/setup-interview/SKILL.md",
+      "category": "operating",
+      "sha256": "d74d61c74d8e0e8988afe179f3d3d3ad475109d210c3d73551342854efdcb3e2",
       "spec_version": "1.2"
     },
     {
@@ -638,7 +644,7 @@
     {
       "path": ".fha/tools/scaffold.py",
       "category": "operating",
-      "sha256": "43ebc8a48aee43074afe0620fcfcd0c6d1c486e3b73c16f5d4f8e1db24ef1220",
+      "sha256": "e915049dac9eabc38f65caa93f83e7a1fcdc69b9afeb0e297835920e804882ec",
       "spec_version": "1.2",
       "src": "tools/scaffold.py"
     },
@@ -841,7 +847,7 @@
     {
       "path": "AGENTS.md",
       "category": "operating",
-      "sha256": "85e90ca1c9bca3224030d88511ad88970377c5439984dd266e4260d72d24adc3",
+      "sha256": "82b6bf546a91b5dc39c91f0d6ee1e6748d67225eb1ffafe371613d51498cd5c5",
       "spec_version": "1.2"
     },
     {
@@ -853,13 +859,13 @@
     {
       "path": "CLAUDE.md",
       "category": "operating",
-      "sha256": "eb89ebffc21126ec501aa7ff13f57015124da995fd82658066b742346183e7ac",
+      "sha256": "9cee855a6a72af77de4a581084c0423b373782be2b85e61312d8c90ff618e941",
       "spec_version": "1.2"
     },
     {
       "path": "GETTING_STARTED.md",
       "category": "operating",
-      "sha256": "bf44b6b71875efdd96d1e42aebbdf8d36898b69a45e51aeae8069c7937e0a246",
+      "sha256": "9e762dc1341c0ce9552f5c8f460f83725186ce58add57b40d60e560a7ab4064f",
       "spec_version": "1.2"
     },
     {
@@ -871,7 +877,7 @@
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "be85c810e4a04075884a2ee05f67f20c8c537657a58debf49f8e9cbd42b3f730",
+      "sha256": "06241c579b5417b10ed06fa3c598a968af10d5a206e2b2e79bc455f9e199a1aa",
       "spec_version": "1.2"
     },
     {

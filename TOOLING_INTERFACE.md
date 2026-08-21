@@ -120,11 +120,46 @@ The split is the one `fha xref` already uses, and it is why this is a skill and 
 - **The unreviewed-transcript marker contract.** So a consumer can tell a machine reading nobody has checked from one a human has verified, the skill reuses the archive's existing marker pair rather than inventing a third convention: `<!-- AI-DRAFT … -->` / `<!-- AI-ACCEPTED … -->`, same grammar as `write-biography`'s and `fha confirm draft`'s. It applies to a *text companion* - a `files:` entry whose `role:` is `transcript`/`transcription`/`extracted-text` and whose file is `.md`/`.txt`, exactly the set `fha index` loads into `transcripts_fts`, so the state is decidable from indexed content with no extra file reads. Four states on the companion's full text: **unreviewed** (contains a complete AI-DRAFT marker), **verified** (contains AI-ACCEPTED and no AI-DRAFT), **unmarked** (neither - a human typed it, or `fha source extract` dumped it mechanically), **damaged** (either marker word outside a complete marker). *unreviewed* outranks *verified*; *damaged* is treated as unreviewed, failing closed exactly as `_lib.strip_unaccepted_drafts` does. Placement is load-bearing, not decoration: exactly one marker, as the **last non-blank line**, with no `#`/`##` heading below the title, because `strip_unaccepted_drafts` treats a marker as sitting at the *end* of the span it covers and a `#`/`##` heading as a block boundary - a marker at the end of a heading-free file withholds the whole unchecked transcript from any publication path that ever runs that function, while a top-of-file marker publishes all of it. The source's `## AI Passes` entry mirrors the state (`human_reviewed:`), but **the file's marker wins**: the file travels, and must state its own status without its record.
 - **One gap, blocked not enacted** (`_STANDARD.md` §6): nothing flips that marker. `fha confirm draft` takes a `<P-id>` and edits a person profile; there is no verb reaching a source's companion file, and a skill never hand-edits a marker. So every AI transcript stays *unreviewed*, which is at least true, and the wanted verb (`fha confirm transcript <S-id>`, preserving date/model and flipping `human_reviewed:` in the same write) is recorded in [`transcribe-source/GAP.md`](.claude/skills/transcribe-source/GAP.md).
 
+### 2.7 The researcher's own family (2026-08, issue #74)
+
+One skill, added after a real archive was found - ~13 months and ~290 people in - still missing its
+*own owner's* father (the parent edge existed only as `status: hypothesis`), one of his two children (no
+record at all), `sex:` on himself/his spouse/his son, and his spouse's place in the pedigree (her parents
+sat unnumbered in the archive as stubs, because nothing had ever anchored her side into the Ahnentafel
+walk). None of it was hard to know - all of it was *only* knowable from him, and `fha install` had never
+asked.
+
+The fix is not a new verb: `fha install` already stamps an archive and prints "Next steps"; this skill is
+the step it now names. It is a conversation, not a form - the researcher describing his own parents,
+spouse and children is firsthand testimony from a participant (`information: primary`, `evidence:
+direct`), and it earns a real source record with a real citation like any other evidence, not a config
+value typed into `fha.yaml` by hand.
+
+- `setup-interview` - asks, once: **who are you** (mints his own person record, gets `sex:` set -
+  #72's own comment thread found this missing and load-bearing for the whole tree's numbering);
+  **how do you want to be numbered** (`root_generation: self | children`, #72 - asked in plain words,
+  "should position #1 be you, or your children's generation?", and written straight into `fha.yaml`,
+  which is documented as plain and hand-editable, needing no dedicated verb); and **immediate family** -
+  parents, spouse(s), children, names/sexes/rough dates, nothing more. Writes one `source_class:
+  authored` interview source and drafts `relationship` claims with explicit `roles:` maps for every
+  parent-child edge (deliberately **not** `birth` claims - #71's reasoning: a birth claim's second person
+  is often an informant or a doctor, not a parent, and only a `roles:` map says who is what
+  unambiguously) plus a `marriage` claim per spouse (`roles: spouse:`, SPEC's own vital-significance type
+  for a couple). Every claim lands `status: suggested` and hands off to `review-claims` - the interview
+  proposes, it never self-accepts, so the researcher's own review pass is still the gate. Person-record
+  minting and the `sex:`/`living:` writes are not claims and carry no status; they are the same
+  direct, confirmed-in-conversation writes `fha person new`/`set-sex`/`set-living` make everywhere else,
+  gated by asking him plainly rather than by `fha claim`.
+- No new tool work: `fha person new`, `fha person set-sex`, `fha person set-living`, `fha process`, and
+  hand-drafted claims (the same Stage-B judgment `process-source` already performs - there is no `fha
+  claim new --type relationship`, since a `roles:` map is too structured for a single-claim CLI mint)
+  are all that's orchestrated. `fha install`'s "Next steps" gained one line pointing here.
+
 ---
 
 ## 3. Build status & milestones
 
-The workflow skills are authored - `.claude/skills/` holds `_STANDARD.md` (the authoring contract) plus all sixteen SKILL.md files, including the 2026-07 usability-review wave (`find-photos`, `share-and-export`, `photo-context`), the `reconcile-site-edits` escape hatch and the `import-notes` legacy-notes on-ramp (§2.5), the 2026-08 recordings pair (`import-recordings`, `transcribe-audio`, with the `mine-transcript` two-transcript extension), and the image-only on-ramp `transcribe-source` (§2.6). Authoritative build status lives in [`BUILD_INTERFACE.md`](BUILD_INTERFACE.md); this document is the design it implements against, exactly as TOOLING.md is to BUILD.md and TOOLING_INGESTION.md is to BUILD_INGESTION.md.
+The workflow skills are authored - `.claude/skills/` holds `_STANDARD.md` (the authoring contract) plus all seventeen SKILL.md files, including the 2026-07 usability-review wave (`find-photos`, `share-and-export`, `photo-context`), the `reconcile-site-edits` escape hatch and the `import-notes` legacy-notes on-ramp (§2.5), the 2026-08 recordings pair (`import-recordings`, `transcribe-audio`, with the `mine-transcript` two-transcript extension), the image-only on-ramp `transcribe-source` (§2.6), and the first-run on-ramp `setup-interview` (§2.7). Authoritative build status lives in [`BUILD_INTERFACE.md`](BUILD_INTERFACE.md); this document is the design it implements against, exactly as TOOLING.md is to BUILD.md and TOOLING_INGESTION.md is to BUILD_INGESTION.md.
 
 The workbench harness configuration (§1) is not "built" in the tool-suite sense - it is documentation plus a few committed conventions (`AGENTS.md`, `CLAUDE.md`, the `--add-dir` launch script). Its "build" is keeping those conventions accurate as the harness landscape changes.
 

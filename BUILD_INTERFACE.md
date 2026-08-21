@@ -4,7 +4,7 @@
 
 This file is the build guide for the **interface layer** - the `.claude/skills/` workflow skills and the harness conventions around them. It is the sibling of [`BUILD.md`](BUILD.md) (core `fha` tools) and [`BUILD_INGESTION.md`](BUILD_INGESTION.md) (capture / inbox on-ramp). Design rationale lives in [`TOOLING_INTERFACE.md`](TOOLING_INTERFACE.md); this file tells you the sequence and how to verify it.
 
-**Status: all layers authored (I1-I8; the 2026-07 usability-review wave shipped `photo-context`, `find-photos`, `share-and-export`, and the `today` connection-reaction extension; the 2026-08 recordings wave shipped `import-recordings`, `transcribe-audio`, and the `mine-transcript` two-transcript extension; Layer I8 shipped `transcribe-source` and the `process-source` Stage A½ extension).** The `.claude/skills/` directory now holds `_STANDARD.md` (the authoring contract) and sixteen SKILL.md files: `today`, `review-claims`, `process-source`, `mine-transcript`, `write-biography`, `research-next`, `place-research`, `merge-identities`, `reconcile-site-edits`, `photo-context`, `find-photos`, `share-and-export`, `import-notes`, `import-recordings`, `transcribe-audio`, and `transcribe-source` - one per milestone entry below, `reconcile-site-edits` and `import-notes` under Layer I7. Each SKILL.md was authored against the shipped tools (every `fha` command it invokes was verified to exist) and against `AGENTS.md` / `_STANDARD.md`; the lint invariant holds (`fha lint --root example-archive` still exits 1 on the pre-existing baseline, unchanged by the skill prose). The remaining acceptance gate for each is the **behavioral session check** (run it against `example-archive`, capture the transcript) - marked per-milestone below. Building surfaced **two core-tool gaps**, both closed at the verb level and now at the skill level: MI3.1's merge verb (`fha confirm merge` shipped and the skill's interim hand-edit was retired) and MI4's UserComment write (`fha photoindex set-summary` shipped; `photo-context/SKILL.md` landed with the usability-review wave).
+**Status: all layers authored (I1-I8; the 2026-07 usability-review wave shipped `photo-context`, `find-photos`, `share-and-export`, and the `today` connection-reaction extension; the 2026-08 recordings wave shipped `import-recordings`, `transcribe-audio`, and the `mine-transcript` two-transcript extension; Layer I8 shipped `transcribe-source` and the `process-source` Stage A½ extension; `setup-interview` shipped under Layer I7, issue #74).** The `.claude/skills/` directory now holds `_STANDARD.md` (the authoring contract) and seventeen SKILL.md files: `today`, `review-claims`, `process-source`, `mine-transcript`, `write-biography`, `research-next`, `place-research`, `merge-identities`, `reconcile-site-edits`, `photo-context`, `find-photos`, `share-and-export`, `import-notes`, `import-recordings`, `transcribe-audio`, `transcribe-source`, and `setup-interview` - one per milestone entry below, `reconcile-site-edits`, `import-notes` and `setup-interview` under Layer I7. Each SKILL.md was authored against the shipped tools (every `fha` command it invokes was verified to exist) and against `AGENTS.md` / `_STANDARD.md`; the lint invariant holds (`fha lint --root example-archive` still exits 1 on the pre-existing baseline, unchanged by the skill prose). The remaining acceptance gate for each is the **behavioral session check** (run it against `example-archive`, capture the transcript) - marked per-milestone below. Building surfaced **two core-tool gaps**, both closed at the verb level and now at the skill level: MI3.1's merge verb (`fha confirm merge` shipped and the skill's interim hand-edit was retired) and MI4's UserComment write (`fha photoindex set-summary` shipped; `photo-context/SKILL.md` landed with the usability-review wave).
 
 ---
 
@@ -258,10 +258,11 @@ python -m unittest tests.test_transcribe_audio -v   # atomic publish, portable h
 
 ## Layer I7 - Skills authored outside the layered waves (Milestone I7 - authored)
 
-Two skills landed with the work they serve rather than with a numbered skill wave, so they had no
+Three skills landed with the work they serve rather than with a numbered skill wave, so they had no
 milestone entry here while the header above already counted them. They are recorded here so every
-one of the sixteen shipped SKILL.md files has a status line in this doc, which is the authoritative
-build-status record for the interface layer. Design: TOOLING_INTERFACE.md §2.5.
+one of the seventeen shipped SKILL.md files has a status line in this doc, which is the authoritative
+build-status record for the interface layer. Design: TOOLING_INTERFACE.md §2.5 (MI7.1-MI7.2) and §2.7
+(MI7.3).
 
 ### MI7.1 - `reconcile-site-edits` skill
 
@@ -287,6 +288,26 @@ confirmation. It drafts no claims - evidence earns those later through `process-
 
 **Orchestrates:** `fha process` (via the inbox hand-off to `process-source`), `fha find` for name
 resolution, plain writes into `notes/questions.md` and `notes/research/` - no new verb.
+
+### MI7.3 - `setup-interview` skill
+
+**Status: authored** (`.claude/skills/setup-interview/SKILL.md`). The first-run on-ramp (issue #74):
+`fha install` stamps a brand-new archive and asks the new owner nothing, so the one family it is
+guaranteed to have authoritative information on - his own - starts the archive's life unrecorded. A real
+archive was found ~13 months and ~290 people in still missing the owner's own father, one of his two
+children, `sex:` on himself/his spouse/his son, and his spouse's place in the pedigree. The skill asks
+him, once, right after install: who he is (mints his own person record, `sex:` set); how he wants the
+tree numbered (`root_generation: self | children`, issue #72, written into `fha.yaml`); and his
+immediate family - parents, spouse(s), children. It writes one `source_class: authored` interview
+source and drafts `relationship` claims with explicit `roles:` maps for parentage (never `birth` claims
+- issue #71) plus a `marriage` claim per spouse, every claim `status: suggested`, then hands off to
+`review-claims` - the interview proposes, it never self-accepts. `fha install`'s "Next steps" gained one
+line pointing here. Session check pending, like the other layers. **Hard dependency:** references
+`root_generation` (issue #72, `feat-72-root-generation`) - needs that field built to take effect.
+
+**Orchestrates:** `fha person new`, `fha person set-sex`, `fha person set-living`, `fha process`,
+hand-drafted claims (the same Stage-B judgment `process-source` already performs), `review-claims` -
+no new verb.
 
 ---
 
