@@ -280,6 +280,8 @@ from _lib import (
     replace_paragraph_in_section,
     research_companion_filename,
     resolve_root_arg,
+    resolve_root_generation,
+    root_generation_seed_position,
     result_fail,
     section_bounds,
     sqlite_cache_schema_status,
@@ -1448,7 +1450,12 @@ def run_promote(
     (fha.yaml) by walking accepted genetic relationship claims through the
     index (`_lib.build_ahnentafel_map` - the same derivation `fha views
     brackets` uses, shared through _lib because tools never import tools).
-    A person with no derived position is refused with a plain message:
+    `root_generation` (fha.yaml, #72) says which slot root_person occupies -
+    #1 by default (`self`), or #2 when `root_generation: children` anchors
+    the archive at root_person's own generation instead of a named child's;
+    an invalid value refuses outright rather than filing anyone from a
+    silently-wrong guess. A person with no derived position is refused with a
+    plain message:
     curating non-direct people (FAN club, connections) is an open design
     decision - a curated record in people/connections/ is currently a dead
     end (companion views refuse it), and their stub is a legitimate permanent
@@ -1542,6 +1549,15 @@ def run_promote(
             '- the person whose ancestors the numbered folders follow - to '
             'fha.yaml, run `fha index`, then retry. Nothing was written.')
     root_pid = normalize_id(str(root_person_raw))
+    # root_generation (#72) picks which Ahnentafel slot root_person occupies -
+    # 'self' (default) is #1, 'children' is #2. A mutating verb refuses
+    # outright on an invalid value rather than guessing 'self' and filing a
+    # person into the wrong couple folder from a silently-wrong assumption.
+    try:
+        root_generation = resolve_root_generation(fha_cfg)
+    except FhaConfigError as e:
+        return _refuse_result(result, 'refused', str(e))
+    root_position = root_generation_seed_position(root_generation)
 
     conn = open_index_db(
         archive_root, ('persons', 'relationships', 'claims'), strict=True)
@@ -1572,7 +1588,7 @@ def run_promote(
                 'person record in the index, so the direct line cannot be '
                 'derived. Fix root_person in fha.yaml or run `fha stubs`, then '
                 '`fha index`, and retry. Nothing was written.')
-        pid_to_pos = build_ahnentafel_map(conn, root_pid)
+        pid_to_pos = build_ahnentafel_map(conn, root_pid, root_position=root_position)
     finally:
         conn.close()
 

@@ -124,6 +124,8 @@ from _lib import (
     reapply_newline,
     resolve_path,
     resolve_root_arg,
+    resolve_root_generation,
+    root_generation_seed_position,
     roots_change_orphans,
     sex_slot_is_defaulted,
     undecodable_file_recorder,
@@ -170,16 +172,21 @@ configure_utf8_stdout()
 #                                   (returns the record it read; content decides the kind)
 #    _process_source_file        - index one source file + file-level checks + claims
 #
-#  Bracket / Ahnentafel checks (W103, W110, W119, W120, W127)
+#  Bracket / Ahnentafel checks (W103, W110, W119, W120, W127, W129)
 #    _build_child_edges          - parent → {child → {nature,…}} from the accepted,
 #                                   non-negated relationship/birth claims the indexer
 #                                   derives parent edges from (lint's twin of it)
 #    _build_children_of          - parent → {children}; genetic_only filters numbering
 #    _check_bracket_lists        - W103: stale bracket lists + missing `+ spouse` half
-#    _build_ahnentafel_lint      - BFS from root_person using in-memory registry
+#    _build_ahnentafel_lint      - BFS from root_person using in-memory registry;
+#                                   root_position seeds it at #1 ('self') or #2
+#                                   ('children' - root_generation:, issue #72)
 #    _check_ahnentafel_placement - W110: person file in wrong Ahnentafel folder;
 #                                   also emits W127 (root_person anchored a generation
-#                                   too high) and W120 (slot defaulted, sex: unrecorded)
+#                                   too high - silent when root_generation: children
+#                                   says that is deliberate), W120 (slot defaulted,
+#                                   sex: unrecorded), and W129 (root_generation: is
+#                                   set to neither self nor children)
 #    _check_direct_line_stubs    - W119: direct-line ancestor still filed as a stub
 #                                   (report-only lead; brackets --fix-promote applies)
 #
@@ -1614,6 +1621,7 @@ def _check_bracket_lists(registry: Registry, findings: list[Finding]) -> None:
 def _build_ahnentafel_lint(
     root_pid: str, children_of: dict[str, set[str]], registry: Registry,
     sex_gaps: list[dict] | None = None,
+    root_position: int = 1,
 ) -> dict[str, int]:
     """BFS from root_pid → {person_id: Ahnentafel position} using in-memory data.
 
@@ -1621,6 +1629,14 @@ def _build_ahnentafel_lint(
     in-memory registry rather than the SQLite relationships table.  Parents are
     determined by inverting children_of: a person P is a parent of Q if Q is
     in children_of[P].
+
+    `root_position` mirrors `_lib.build_ahnentafel_map`'s parameter of the same
+    name: where root_pid itself lands (1 for `root_generation: self`, the
+    default; 2 for `root_generation: children` - SPEC §12.2/§12.4, issue #72).
+    Everything past the seed is unchanged - root_pid's own parents are still
+    found by inverting children_of and still land at 2*root_position and
+    2*root_position+1, so this must stay in step with `_lib.build_ahnentafel_map`
+    exactly as the rest of this function already does.
 
     `sex_gaps`, when a list is passed, collects the W120 set exactly as
     `_lib.build_ahnentafel_map` does: single-resolved-parent placements where
@@ -1641,8 +1657,8 @@ def _build_ahnentafel_lint(
         for cpid in cset:
             parents_of.setdefault(cpid, set()).add(ppid)
 
-    pid_to_pos: dict[str, int] = {root_pid: 1}
-    queue: list[tuple[str, int]] = [(root_pid, 1)]
+    pid_to_pos: dict[str, int] = {root_pid: root_position}
+    queue: list[tuple[str, int]] = [(root_pid, root_position)]
 
     while queue:
         pid, n = queue.pop(0)
@@ -1700,15 +1716,26 @@ def _check_ahnentafel_placement(registry: Registry, findings: list[Finding]) -> 
     live in the couple folder whose numeric prefix equals their expected position
     (or position−1 if they hold the odd/mother slot).
 
-    Also emits W127 and W120, the two findings about the derivation itself
-    rather than about the folders - both live here because both are read off
-    the same walk this function runs, and neither can be checked by comparing
-    folders to numbers:
+    Also emits W129, W127 and W120, the findings about the derivation itself
+    rather than about the folders - all three live here because all three are
+    read off the same walk this function runs, and none can be checked by
+    comparing folders to numbers:
 
-    - W127 (#70): `root_person` has a genetic child on record, so the walk
-      starts one generation too high and every couple folder below it is
-      numbered one generation high with it. Emitted before the walk, off the
-      same `children_of` map the walk is about to use.
+    - W129 (#72): fha.yaml's `root_generation` is set to something other than
+      `self` or `children`. Checked before the walk - an unresolvable
+      configuration is never guessed at, so the whole Ahnentafel pass (W110,
+      W119, W127) is skipped exactly as it already is for an unresolvable
+      `root_person`.
+    - W127 (#70): `root_person` has a genetic child on record and
+      `root_generation` is NOT `children`, so the walk starts one generation
+      too high and every couple folder below it is numbered one generation
+      high with it. Silent when `root_generation: children` is set, because
+      that field says in as many words that root_person having a child on
+      record is deliberate (SPEC §12.2's "#1 = the children, collectively") -
+      W127 exists to catch the ACCIDENTAL version of this same setup, and
+      `root_generation: children` is now the sanctioned way to have it on
+      purpose (#72). Emitted before the walk, off the same `children_of` map
+      the walk is about to use.
     - W120: a placement the map builder made by DEFAULT rather than derivation
       - a lone linked parent with no recorded `sex:` silently takes the father
       (even) slot, so the folder numbers above them look confirmed while being
@@ -1717,8 +1744,9 @@ def _check_ahnentafel_placement(registry: Registry, findings: list[Finding]) -> 
     Skips persons in people/connections/ or people/stubs/.
 
     Returns the derived {P-id: position} map (empty when root_person is absent
-    or unresolvable) so the W119 direct-line-stub check right after it reads
-    the same derivation instead of running the BFS twice.
+    or unresolvable, or `root_generation` is invalid) so the W119 direct-line-
+    stub check right after it reads the same derivation instead of running the
+    BFS twice.
     """
     root_person_raw = registry.fha_config.get('root_person')
     if not root_person_raw:
@@ -1731,6 +1759,21 @@ def _check_ahnentafel_placement(registry: Registry, findings: list[Finding]) -> 
             'Ahnentafel placement checks (W110) skipped; '
             'fix root_person in fha.yaml or run fha stubs'))
         return {}
+
+    # W129 (#72): root_generation must be 'self' or unset (the default) or
+    # 'children' - anything else is rejected here rather than silently read
+    # as 'self', because a typo would otherwise renumber the whole tree with
+    # no explanation. Checked before children_of: an unusable config value
+    # means the whole Ahnentafel pass below has nothing safe to derive.
+    try:
+        root_generation = resolve_root_generation(registry.fha_config)
+    except FhaConfigError as e:
+        findings.append(Finding('W', 'W129', registry.archive_root / 'fha.yaml',
+            f'{e} Ahnentafel placement checks (W110/W119/W127) are skipped '
+            'until it is fixed.'))
+        return {}
+    root_position = root_generation_seed_position(root_generation)
+
     # Ahnentafel numbering follows only the genetic pedigree (SPEC §12.2); social
     # and legal parent edges are shown in the bracket list but never numbered.
     children_of = _build_children_of(registry, genetic_only=True)
@@ -1748,9 +1791,11 @@ def _check_ahnentafel_placement(registry: Registry, findings: list[Finding]) -> 
     # BFS from root_pid with, so this check sees exactly the edges that would
     # number the tree wrong and nothing else - a suggested-only, disputed,
     # negated, or purely social/legal (adoptive, step, …) child claim is silent
-    # here for the same reason it is silent in the walk itself.
+    # here for the same reason it is silent in the walk itself. Silent too when
+    # `root_generation: children` is set (#72): a child on record is then the
+    # EXPECTED shape, not the accidental one this warning exists to catch.
     root_children = sorted(children_of.get(root_pid, set()))
-    if root_children:
+    if root_generation != 'children' and root_children:
         extra = '' if len(root_children) == 1 else f' (and {len(root_children) - 1} more)'
         findings.append(Finding('W', 'W127', registry.archive_root / 'fha.yaml',
             f'root_person {_person_label(registry, root_pid)} has a child on record - '
@@ -1758,13 +1803,16 @@ def _check_ahnentafel_placement(registry: Registry, findings: list[Finding]) -> 
             'the youngest generation, so this numbers every couple folder one '
             'generation high - and nothing else can tell you, because W110, W119 and '
             '`fha views brackets` only check that the folders match the numbers this '
-            'same walk derives. Re-anchor root_person to a child in fha.yaml, then run '
+            'same walk derives. Fix it by adding `root_generation: children` to fha.yaml '
+            '(root_person stays who it is; their children become #1, collectively, SPEC '
+            '§12.2) - or by re-anchoring root_person to a child directly - then run '
             '`fha index` and `fha views brackets --realign` to realign the '
-            'already-promoted folders - or leave this as-is if anchoring at yourself '
-            'is deliberate.'))
+            'already-promoted folders. Leave this as-is if anchoring at yourself with '
+            "today's numbering is deliberate."))
 
     sex_gaps: list[dict] = []
-    pid_to_pos = _build_ahnentafel_lint(root_pid, children_of, registry, sex_gaps)
+    pid_to_pos = _build_ahnentafel_lint(root_pid, children_of, registry, sex_gaps,
+                                         root_position=root_position)
 
     # W120: a lone linked parent with no recorded sex took the father (even)
     # slot by DEFAULT - a normal early-research state (SPEC never requires

@@ -208,6 +208,8 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    render_stub_content       - the stub frontmatter text `fha stubs`/`fha person new` write
 #
 #  Ahnentafel derivation + stub promotion (the shared promote engine)
+#    resolve_root_generation   - validate fha.yaml root_generation: 'self'|'children' (#72)
+#    root_generation_seed_position - 'self'|'children' → the seed position (1 or 2)
 #    build_ahnentafel_map      - index BFS: {P-id → Ahnentafel position} (SPEC §12.2)
 #    ahnentafel_generation     - position → generation depth (the --generations cap)
 #    couple_folder_prefix      - position → the even couple-folder number
@@ -5873,17 +5875,104 @@ def render_stub_content(
 # claim (SPEC §4: hand-labor scales with curiosity; TOOLING §5's
 # placement-is-a-human-act rule carves out exactly this engine).
 
+ROOT_GENERATIONS = ('self', 'children')
+
+
+def resolve_root_generation(fha_config: dict) -> str:
+    """Read and validate fha.yaml's optional `root_generation:` (SPEC §12.2 /
+    §12.4, issue #72). Returns 'self' or 'children'; never anything else.
+
+    `root_person` names WHO the archive is centred on; `root_generation` says
+    which Ahnentafel slot that person occupies:
+      - 'self' (default, and what an absent key means) - root_person IS
+        position #1. Byte-for-byte the walk this codebase has always run;
+        an archive that never sets the key is unaffected.
+      - 'children' - root_person is one generation ABOVE #1. SPEC §12.2's own
+        model puts #1 at "the children, collectively" - a fiction that lets
+        any full sibling stand in for the anchor, not a real database row -
+        so a researcher who IS the anchor but wants their own children's
+        generation (real or not yet born) to hold #1 could previously only
+        get there by naming one of those children `root_person`, which
+        misstates who the archive is about and has no answer at all for a
+        childless researcher. `root_generation: children` says the true
+        thing directly: root_person is #2, and their own ancestors are
+        derived exactly as before, just one rung further out.
+
+    Raises FhaConfigError - never silently falls back to 'self' - for
+    anything else, including a present-but-empty value: a typo
+    (`root_generation: child`) must be caught, not quietly numbered as
+    though the researcher were still their own #1. The message is written to
+    stand alone (it lands in a lint Finding, a CLI refusal, and a report
+    note, none of which add their own explanation).
+
+    A caller that can proceed with no `root_person` at all (Ahnentafel
+    tooling disabled, SPEC §12.4) never needs to call this - only the code
+    paths that are about to resolve `root_person` and walk the pedigree
+    should, mirroring how an unresolvable `root_person` is already handled
+    at each of those call sites (views/lint/person/report) rather than in
+    one central gate.
+    """
+    raw = fha_config.get('root_generation')
+    if raw is None:
+        return 'self'
+    value = str(raw).strip().lower()
+    if value in ROOT_GENERATIONS:
+        return value
+    raise FhaConfigError(
+        f"fha.yaml's root_generation is {raw!r}, but it must be self or "
+        "children:\n"
+        "  root_generation: self       # root_person is #1 (the default - "
+        "or just remove the line)\n"
+        "  root_generation: children   # root_person is #2; root_person's "
+        "children are #1, collectively\n"
+        'Fix the value in fha.yaml, then retry.'
+    )
+
+
+def root_generation_seed_position(root_generation: str) -> int:
+    """The Ahnentafel position `root_person` itself occupies, given an
+    already-validated `root_generation` ('self' or 'children' - the return
+    value of `resolve_root_generation`).
+
+    A one-line lookup, split out from `resolve_root_generation` so a caller
+    that already has a validated value in hand (e.g. after deciding whether
+    W127 applies) does not need to re-derive it, and so the position numbers
+    themselves - the one fact `build_ahnentafel_map`'s seed actually needs -
+    live beside each other instead of inside a string comparison at every
+    call site.
+    """
+    return 2 if root_generation == 'children' else 1
+
+
 def build_ahnentafel_map(
     conn: sqlite3.Connection, root_pid: str,
     sex_gaps: list[dict] | None = None,
+    root_position: int = 1,
 ) -> dict[str, int]:
     """BFS from root_pid to build {person_id -> Ahnentafel position} from the index.
 
-    Seed: root_pid -> 1.  Parents of person at position N:
+    Seed: root_pid -> root_position (default 1).  Parents of person at position N:
       sex='M' -> 2N (father's slot), sex='F' -> 2N+1 (mother's slot).
       Same-sex or sex='U' pairs: lexicographically-first P-id -> 2N (deterministic).
     Terminates when no accepted parent edges remain (the relationships table is
     derived from accepted claims only - see index.py).
+
+    `root_position` is where `root_pid` itself lands - the seed this whole walk
+    hangs from - and it is the one thing `root_generation` (SPEC §12.2/§12.4,
+    issue #72; `resolve_root_generation` validates the fha.yaml value and
+    `root_generation_seed_position` turns it into this number) changes: 1 for
+    'self' (the default - root_pid IS #1, exactly today's behavior, so an
+    archive that never sets `root_generation` gets byte-identical positions),
+    2 for 'children' (root_pid is #2; position #1 - "the children,
+    collectively", SPEC §12.2 - is a fiction with no database row, so it is
+    simply never seeded or visited). Everything past the seed is unchanged:
+    root_pid's own parents are still found by the identical query below and
+    still land at 2*root_position / 2*root_position+1, so root_pid's ancestors
+    come out exactly one generation further out than they would at position 1.
+    Nothing here derives root_pid's SPOUSE (the position-1 fiction's other
+    parent) - this walk only ever climbs root_pid's own parent edges, and a
+    spouse is not one of those; they surface in the couple folder the same
+    add-only way any second partner does (`_lib.spouse_extended_base`).
 
     `sex_gaps`, when a list is passed, collects the W120 set: every placement
     made by the single-resolved-parent branch where that parent's `sex:` is not
@@ -5911,8 +6000,8 @@ def build_ahnentafel_map(
     # one surviving genetic edge.
     social = sorted(SOCIAL_PARENT_SUBTYPES)
     social_ph = ','.join('?' * len(social))
-    pid_to_pos: dict[str, int] = {root_pid: 1}
-    queue: deque[tuple[str, int]] = deque([(root_pid, 1)])
+    pid_to_pos: dict[str, int] = {root_pid: root_position}
+    queue: deque[tuple[str, int]] = deque([(root_pid, root_position)])
 
     while queue:
         pid, n = queue.popleft()
