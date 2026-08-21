@@ -355,16 +355,51 @@ class SourcesIndexHtmlTests(_ViewsHtmlBase):
         self.assertEqual(len(res.changed), 1)   # the couple-folder file only
         self.assertTrue(Path(res.changed[0]).name.startswith(COUPLE_DIR))
 
-    def test_deleted_person_folder_is_handled_gracefully(self):
-        # The profile-editing path's own version of WriteErrorHandlingTests'
-        # deleted-folder check: _generate_sources_index_person reads the
-        # profile through the ordinary read_text_exact/OSError path (there is
-        # no separate output path or parent folder to "recreate"), so this
-        # proves it degrades to a plain warning rather than a traceback.
+    def test_deleted_person_folder_refuses_upfront(self):
+        # #48 changed how this scenario has to be TRIGGERED. Deleting the
+        # profile's folder with no reindex deletes a tracked record file
+        # (PID's profile), which is now exactly the deletion #48 exists to
+        # catch: run_sources_index calls the same `_open_index_or_explain`
+        # (open_index_db(strict=True)) gate as run_timeline/run_draft_queue,
+        # and refuses the whole call upfront - matching
+        # WriteErrorHandlingTests.test_stale_index_does_not_recreate_deleted_
+        # person_folder's existing EXIT_FAILURE expectation for the sibling
+        # functions that test covers (run_sources_index itself is
+        # deliberately excluded from that test's `_runners()` matrix per
+        # #76, since it has no HTML twin - this is its own equivalent case).
         shutil.rmtree(self.profile.parent)
         res = views.run_sources_index(self.root, person_id=PID)
+        self.assertEqual(res.exit_code, EXIT_FAILURE)
+        self.assertFalse(res.changed)
+
+    def test_profile_unreadable_mid_run_is_handled_gracefully(self):
+        # The race #48's fix does NOT (and should not) catch:
+        # _generate_sources_index_person's own read_text_exact/OSError
+        # handling protects against the profile becoming unreadable AFTER
+        # the upfront freshness gate above already passed - a permissions
+        # change or a removable drive going away mid-run, not a deletion
+        # #48's manifest check would have caught. Reproduced directly with a
+        # mock instead of a real delete, so the scenario is isolated from the
+        # (now-correct) freshness gate: the index and every record file stay
+        # genuinely untouched and correctly read fresh.
+        orig_read = views.read_text_exact
+
+        def unreadable_for_profile(path, *args, **kwargs):
+            if Path(path) == self.profile:
+                raise OSError(13, 'Permission denied')
+            return orig_read(path, *args, **kwargs)
+
+        views.read_text_exact = unreadable_for_profile
+        try:
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                res = views.run_sources_index(self.root, person_id=PID)
+        finally:
+            views.read_text_exact = orig_read
         self.assertEqual(res.exit_code, EXIT_WARNINGS)
         self.assertFalse(res.changed)
+        self.assertIn('WARNING', err.getvalue())
+        self.assertIn(PID, err.getvalue())
 
 
 class MarkerGuardTests(_ViewsHtmlBase):
