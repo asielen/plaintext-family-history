@@ -1195,7 +1195,9 @@ def run_install(
     print('\nNext steps:')
     print(f'  1. Edit {archive_path / "fha.yaml"} to point at your photos and documents.')
     print(f'  2. Open the archive in your AI agent and start filing inbox/ items.')
-    print(f'  3. Run `fha doctor` from inside the archive to check everything is set up.')
+    print(f'  3. Tell your AI agent you\'d like to do the setup interview, so it can learn who '
+          f'you are and number the tree correctly.')
+    print(f'  4. Run `fha doctor` from inside the archive to check everything is set up.')
     for m in advisories:
         print(f'\nNote: {m}')
     return Result(exit_code=EXIT_CLEAN, changed=changed,
