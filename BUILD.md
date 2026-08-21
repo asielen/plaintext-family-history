@@ -1002,7 +1002,8 @@ write floor: once the human has picked, the write-back is mechanical, so it live
 front door (chat now, a click later) can drive. Keeping the writes here is what lets each detector
 advertise a clean read-only surface - a detector that also wrote would be two owners for one
 surface. (One later, narrow exception: `fha cooccur` migrates a legacy dismissed-pairs tombstone
-forward on read, #48 below - a housekeeping move of decisions already made, not a new one.)
+forward on read, #48 below - a housekeeping move of decisions already made, not a new one - and
+it is always reported (`Result.data`, the CLI, `fha report` §8), never silent.)
 
 **The six original verbs** (a seventh, `confirm merge`, ships in M4.4a below; each surgical,
 each `--dry-run`, each returns a `Result` whose `changed[]` lists files written; records

@@ -9,6 +9,7 @@ hand-built .cache/index.sqlite.
 """
 
 import datetime
+import json
 import sys
 import tempfile
 import unittest
@@ -277,6 +278,31 @@ class ReportTests(unittest.TestCase):
     def test_unknown_section_raises(self) -> None:
         with self.assertRaises(ValueError):
             report.run_report(self.archive_root, {}, section='not-a-real-section')
+
+    def test_possible_connections_narrates_legacy_dismissed_migration(self) -> None:
+        # #48: `fha cooccur`'s one self-permitted write - carrying an older
+        # archive's `.cache/cooccur_dismissed.json` forward to its durable
+        # home - must never be silent. `fha report` (and the `today` skill
+        # that reads it) promise the human sees every write; this is the
+        # section that has to say so.
+        legacy_path = self.archive_root / '.cache' / 'cooccur_dismissed.json'
+        legacy_path.parent.mkdir(parents=True, exist_ok=True)
+        legacy_path.write_text(
+            json.dumps({'pairs': [['p-aaaaaaaaaa', 'p-bbbbbbbbbb']]}), encoding='utf-8')
+
+        result = report.run_report(self.archive_root, {}, full=True,
+                                    section='possible-connections')
+        md = result['markdown']
+        self.assertIn('.cache/cooccur_dismissed.json', md)
+        self.assertIn('notes/cooccur_dismissed.json', md)
+        new_path = self.archive_root / 'notes' / 'cooccur_dismissed.json'
+        self.assertTrue(new_path.exists())
+        self.assertFalse(legacy_path.exists())
+
+    def test_possible_connections_silent_when_nothing_to_migrate(self) -> None:
+        result = report.run_report(self.archive_root, {}, full=True,
+                                    section='possible-connections')
+        self.assertNotIn('housekeeping', result['markdown'])
 
     def test_place_candidates_section_uses_live_places_tool(self) -> None:
         # places.py now exists (BUILD.md M6.2), so the section calls

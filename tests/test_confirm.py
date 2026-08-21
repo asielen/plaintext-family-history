@@ -866,6 +866,18 @@ class ConfirmArchiveTests(unittest.TestCase):
         result = confirm.run_dismiss(self.root, person_a=PERSON_1, person_b=PERSON_3)
         self.assertEqual(result['status'], 'already')
 
+        # The "already dismissed" no-op still carries the legacy file forward
+        # (whichever owner reads it first finishes the move) - and that move
+        # must not be a SILENT side effect on what looks like a read-only
+        # check: it belongs in `changed` and in an info message, exactly as
+        # it does on the path that actually dismisses a new pair.
+        new_path = self.root / 'notes' / 'cooccur_dismissed.json'
+        self.assertFalse(legacy_path.exists())
+        self.assertTrue(new_path.exists())
+        self.assertIn(str(new_path), [str(p) for p in result.changed])
+        self.assertIn(str(legacy_path), [str(p) for p in result.changed])
+        self.assertTrue(any('moved' in m.text.lower() for m in result.messages))
+
     def test_dismiss_dry_run_does_not_migrate_legacy_tombstone(self) -> None:
         # A --dry-run preview must write NOTHING, including the migration -
         # a dry run that quietly relocated the legacy file would itself be

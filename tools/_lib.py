@@ -124,7 +124,9 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #  Co-occurrence dismissal tombstone (#48 - durable, lives outside .cache/)
 #    cooccur_dismissed_paths   - current (notes/) path + legacy (.cache/) path
 #    load_cooccur_dismissed    - read + union both; migrates the legacy file
-#                                 forward the first time either owner calls it
+#                                 forward the first time either owner calls it,
+#                                 returning (pairs, migrated) so a caller that
+#                                 would otherwise look silent can report it
 #
 #  Safety copies of originals (`originals_backup:`, TOOLING §13f)
 #    BackupRefused             - "no safety copy, so do not write" (carries the sentence)
@@ -1847,7 +1849,9 @@ def cooccur_dismissed_paths(archive_root: str | Path) -> tuple[Path, Path]:
             root / '.cache' / 'cooccur_dismissed.json')
 
 
-def load_cooccur_dismissed(archive_root: str | Path, *, migrate: bool = True) -> list[list[str]]:
+def load_cooccur_dismissed(
+    archive_root: str | Path, *, migrate: bool = True,
+) -> tuple[list[list[str]], bool]:
     """Read the dismissed co-occurrence pairs, migrating the legacy file forward.
 
     Reads BOTH the current and legacy locations (`cooccur_dismissed_paths`)
@@ -1865,6 +1869,12 @@ def load_cooccur_dismissed(archive_root: str | Path, *, migrate: bool = True) ->
     `migrate=False` is for a caller that must not write anything yet: a
     `--dry-run` preview still needs an accurate pair count and
     already-dismissed check before it decides whether to write at all.
+
+    Returns `(pairs, migrated)`. `migrated` is true only when this call
+    physically moved the legacy file just now - callers that can otherwise
+    look silent (a read-only detector, a report section) MUST surface it to
+    the human when true, rather than letting a housekeeping write pass
+    unmentioned; see `cooccur._load_dismissed` and `confirm.run_dismiss`.
 
     Both owners of this file call this - `cooccur._load_dismissed` (the
     reader; a detection tool that is otherwise read-only by design, TOOLING
@@ -1907,14 +1917,16 @@ def load_cooccur_dismissed(archive_root: str | Path, *, migrate: bool = True) ->
             seen.add(key)
             merged.append(pair)
 
+    migrated = False
     if migrate and old_path.exists():
         try:
             new_path.parent.mkdir(parents=True, exist_ok=True)
             write_text_exact_atomic(new_path, json.dumps({'pairs': merged}, indent=2) + '\n')
             old_path.unlink()
+            migrated = True
         except OSError:
             pass  # opportunistic: nothing is lost, the next call tries again
-    return merged
+    return merged, migrated
 
 
 # ── Safety copies of originals (`originals_backup:`, TOOLING §13f) ────────────

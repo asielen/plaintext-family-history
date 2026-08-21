@@ -95,6 +95,8 @@ class CooccurPersonTests(unittest.TestCase):
 
         result = cooccur.run_cooccur(self.archive_root, threshold=2)
         self.assertEqual(result['person_pairs'], [])
+        # No legacy file sitting around - nothing to migrate, nothing to report.
+        self.assertFalse(result['migrated_legacy_dismissed'])
 
     def test_legacy_location_tombstone_still_excludes_pair(self) -> None:
         # An archive that has not yet migrated (#48) still has its
@@ -117,7 +119,10 @@ class CooccurPersonTests(unittest.TestCase):
         # The read is also the migration trigger: by the time `fha cooccur`
         # answers, the pair must already live at the durable location and
         # the legacy copy must be gone, so a later `.cache/` wipe (documented
-        # as safe) can no longer forget it.
+        # as safe) can no longer forget it. The migration must also be
+        # REPORTED, not just performed - this is otherwise a "read-only"
+        # detector (its own CLI help says so), and `fha report`/the `today`
+        # skill promise the human sees every write, confirmed or not (#48).
         _link_source_people(self.conn, 's-1111111111', 'p-aaaaaaaaaa', 'p-bbbbbbbbbb')
         _link_source_people(self.conn, 's-2222222222', 'p-aaaaaaaaaa', 'p-bbbbbbbbbb')
         self.conn.commit()
@@ -128,12 +133,13 @@ class CooccurPersonTests(unittest.TestCase):
         new_path = self.archive_root / 'notes' / 'cooccur_dismissed.json'
         self.assertFalse(new_path.exists())
 
-        cooccur.run_cooccur(self.archive_root, threshold=2)
+        result = cooccur.run_cooccur(self.archive_root, threshold=2)
 
         self.assertTrue(new_path.exists())
         migrated = json.loads(new_path.read_text(encoding='utf-8'))
         self.assertIn(['p-aaaaaaaaaa', 'p-bbbbbbbbbb'], migrated['pairs'])
         self.assertFalse(legacy_path.exists())
+        self.assertTrue(result['migrated_legacy_dismissed'])
 
     def test_corrupt_legacy_tombstone_is_not_an_error(self) -> None:
         # A corrupt tombstone is disposable, same posture as a corrupt cache
@@ -148,6 +154,10 @@ class CooccurPersonTests(unittest.TestCase):
         result = cooccur.run_cooccur(self.archive_root, threshold=2)
         self.assertEqual(result['status'], 'ok')
         self.assertEqual(len(result['person_pairs']), 1)
+        # The corrupt file still gets cleared out from under `.cache/` - and
+        # that clear-out is still reported, even though it carried nothing.
+        self.assertTrue(result['migrated_legacy_dismissed'])
+        self.assertFalse(legacy_path.exists())
 
     def test_missing_tombstone_is_not_an_error(self) -> None:
         _link_source_people(self.conn, 's-1111111111', 'p-aaaaaaaaaa', 'p-bbbbbbbbbb')
@@ -159,6 +169,7 @@ class CooccurPersonTests(unittest.TestCase):
         result = cooccur.run_cooccur(self.archive_root, threshold=2)
         self.assertEqual(result['status'], 'ok')
         self.assertEqual(len(result['person_pairs']), 1)
+        self.assertFalse(result['migrated_legacy_dismissed'])
 
     def test_claim_participants_without_source_people_still_pair(self) -> None:
         # Two people named only via claim_persons (no source_people frontmatter
