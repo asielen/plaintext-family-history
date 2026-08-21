@@ -6,16 +6,29 @@
 # your setup and edit the path.
 #
 # root_person: P-xxxxxxxxxx
-#   Set to the P-id of your direct-line descendant at Ahnentafel position #1 -
-#   the YOUNGEST generation in the tree. If you have children in the archive,
-#   point this at one of them, not at yourself: every ancestor folder is
-#   numbered outward from here, so starting one generation up numbers the whole
-#   tree one generation high. (`fha lint` and `fha views brackets` say so if it
-#   happens - W127.) Anchoring at yourself is fine when it is deliberate.
-#   Any full sibling works - siblings share one ancestor tree.
-#   Enables Ahnentafel folder-number verification and person placement via
-#   `fha views brackets`. Omit to disable those checks.
+#   The P-id of the person this archive is centred on. Enables Ahnentafel
+#   folder-number verification and person placement via `fha views brackets`.
+#   Omit to disable those checks.
 #
+# root_generation: self
+#   Which Ahnentafel slot root_person occupies - two settings, below. Getting
+#   this right matters: root_person anchored at a generation that is not the
+#   youngest, with root_generation left at self, numbers every ancestor
+#   folder one generation high. (`fha lint` and `fha views brackets` say so
+#   if it happens - W127.)
+#     self (default) - root_person is Ahnentafel #1, the tree's usual
+#       starting point (father #2, mother #3, grandparents #4-7, …). Use
+#       this when root_person is the YOUNGEST person on the direct line -
+#       any full sibling works, since siblings share one ancestor tree.
+#     children - root_person is #2; root_person's own children are #1,
+#       collectively (SPEC §12.2 - a full sibling group all stand in for the
+#       anchor equally, so no single child has to be named). Use this to
+#       anchor the archive at yourself (or anyone not the youngest) while
+#       still numbering your own parents #4/#5 and up correctly - and it
+#       works even with no children on record yet, unlike naming a child as
+#       root_person. After changing this, run `fha index` then
+#       `fha views brackets --realign` to renumber the already-promoted
+#       folders.
 # Root aliases: record paths like "photos/1880/…" resolve their first segment here.
 # Use an absolute path to keep a library outside the archive.
 #
