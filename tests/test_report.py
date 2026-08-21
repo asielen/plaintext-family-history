@@ -22,6 +22,7 @@ sys.path.insert(0, str(ROOT / 'tools'))
 
 import lint
 import report
+from _lib import shell_quote
 
 
 _PERSON_MD = '''---
@@ -367,9 +368,14 @@ class ReportTests(unittest.TestCase):
         result = report.run_report(self.archive_root, {}, full=True, section='place-candidates')
         md = result['markdown']
         self.assertIn('Topeka, Kansas - 3 claim(s)', md)
+        # Built via the same shell_quote() the production code calls, not a
+        # hardcoded literal - shell_quote deliberately produces different
+        # quoting per platform (single-quote POSIX shlex vs. double-quote
+        # Windows list2cmdline), so a fixed string here would be right on
+        # only one of them.
         self.assertIn(
             'fha confirm place C-6666666661 C-6666666662 C-6666666663 '
-            "--name='Topeka, Kansas'",
+            f'--name={shell_quote("Topeka, Kansas")}',
             md,
         )
 
