@@ -121,6 +121,8 @@ from _lib import (
     read_record,
     is_working_copy,
     resolve_root_arg,
+    resolve_root_generation,
+    root_generation_seed_position,
     shell_quote,
 )
 
@@ -1206,7 +1208,8 @@ def _section_promotion_candidates(conn, fha_config: dict) -> list[str]:
       (a) the W119 set - direct-line ancestors (derived Ahnentafel position
           >= 2, via the shared `_lib.build_ahnentafel_map` over accepted
           relationship claims from `root_person`, exactly how brackets
-          computes it) whose record is still a stub; closest generations
+          computes it - seeded at `root_person`'s fha.yaml `root_generation`
+          position, #72) whose record is still a stub; closest generations
           first, each offering the promote verb;
       (b) any stub whose accepted-claim count has reached the threshold -
           the "Frank keeps turning up" signal that a person has earned
@@ -1262,7 +1265,19 @@ def _section_promotion_candidates(conn, fha_config: dict) -> list[str]:
     if root_person_raw:
         root_pid = normalize_id(str(root_person_raw))
         if conn.execute('SELECT id FROM persons WHERE id=?', (root_pid,)).fetchone():
-            pid_to_pos = build_ahnentafel_map(conn, root_pid)
+            # root_generation (#72): which Ahnentafel slot root_person occupies
+            # - #1 by default ('self'), #2 under 'children'. Degrades the same
+            # way the claims_threshold fallback above does: a bad fha.yaml
+            # value never crashes a report, but it is never silent either.
+            try:
+                root_generation = resolve_root_generation(fha_config)
+            except FhaConfigError as e:
+                lines.append(
+                    f'({e} Direct-line stub leads are skipped until it is fixed.)')
+            else:
+                root_position = root_generation_seed_position(root_generation)
+                pid_to_pos = build_ahnentafel_map(
+                    conn, root_pid, root_position=root_position)
     direct = sorted(
         ((pid, pos) for pid, pos in pid_to_pos.items()
          if pos >= 2 and pid in stubs),
@@ -1315,6 +1330,20 @@ def _section_possible_connections(archive_root: Path) -> list[str]:
         return ['`fha cooccur` could not run - check .cache/index.sqlite.']
 
     lines: list[str] = []
+
+    if result['migrated_legacy_dismissed']:
+        # The one write `fha cooccur` (and so this report) can make on its
+        # own (#48) - a housekeeping carry-forward of a human's earlier
+        # decision, not a new one. Named here so a `today`-skill run never
+        # narrates it as silent: the report promises no write without the
+        # human seeing it, and this is the one exception that needs no
+        # confirmation but still needs to be seen.
+        lines.append(
+            "_Moved this archive's earlier dismissed-pairs file from "
+            '`.cache/cooccur_dismissed.json` to its durable home '
+            '(`notes/cooccur_dismissed.json`) - a one-time housekeeping '
+            'move, nothing to do on your end._'
+        )
 
     pairs = result['person_pairs'][:10]
     if pairs:

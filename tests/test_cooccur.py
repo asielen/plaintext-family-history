@@ -81,6 +81,27 @@ class CooccurPersonTests(unittest.TestCase):
         self.assertEqual(result['person_pairs'], [])
 
     def test_dismissed_tombstone_excludes_pair(self) -> None:
+        # #48: notes/cooccur_dismissed.json is the durable, current location.
+        _link_source_people(self.conn, 's-1111111111', 'p-aaaaaaaaaa', 'p-bbbbbbbbbb')
+        _link_source_people(self.conn, 's-2222222222', 'p-aaaaaaaaaa', 'p-bbbbbbbbbb')
+        self.conn.commit()
+
+        dismissed_path = self.archive_root / 'notes' / 'cooccur_dismissed.json'
+        dismissed_path.parent.mkdir(parents=True, exist_ok=True)
+        dismissed_path.write_text(json.dumps({
+            'pairs': [['p-aaaaaaaaaa', 'p-bbbbbbbbbb']],
+            'generated': '2026-06-19',
+        }), encoding='utf-8')
+
+        result = cooccur.run_cooccur(self.archive_root, threshold=2)
+        self.assertEqual(result['person_pairs'], [])
+        # No legacy file sitting around - nothing to migrate, nothing to report.
+        self.assertFalse(result['migrated_legacy_dismissed'])
+
+    def test_legacy_location_tombstone_still_excludes_pair(self) -> None:
+        # An archive that has not yet migrated (#48) still has its
+        # dismissals only at the pre-fix `.cache/` location; `fha cooccur`
+        # must honor them immediately, not just after a migration runs.
         _link_source_people(self.conn, 's-1111111111', 'p-aaaaaaaaaa', 'p-bbbbbbbbbb')
         _link_source_people(self.conn, 's-2222222222', 'p-aaaaaaaaaa', 'p-bbbbbbbbbb')
         self.conn.commit()
@@ -94,15 +115,61 @@ class CooccurPersonTests(unittest.TestCase):
         result = cooccur.run_cooccur(self.archive_root, threshold=2)
         self.assertEqual(result['person_pairs'], [])
 
+    def test_legacy_location_tombstone_is_migrated_on_read(self) -> None:
+        # The read is also the migration trigger: by the time `fha cooccur`
+        # answers, the pair must already live at the durable location and
+        # the legacy copy must be gone, so a later `.cache/` wipe (documented
+        # as safe) can no longer forget it. The migration must also be
+        # REPORTED, not just performed - this is otherwise a "read-only"
+        # detector (its own CLI help says so), and `fha report`/the `today`
+        # skill promise the human sees every write, confirmed or not (#48).
+        _link_source_people(self.conn, 's-1111111111', 'p-aaaaaaaaaa', 'p-bbbbbbbbbb')
+        _link_source_people(self.conn, 's-2222222222', 'p-aaaaaaaaaa', 'p-bbbbbbbbbb')
+        self.conn.commit()
+
+        legacy_path = self.archive_root / '.cache' / 'cooccur_dismissed.json'
+        legacy_path.write_text(json.dumps({'pairs': [['p-aaaaaaaaaa', 'p-bbbbbbbbbb']]}),
+                                encoding='utf-8')
+        new_path = self.archive_root / 'notes' / 'cooccur_dismissed.json'
+        self.assertFalse(new_path.exists())
+
+        result = cooccur.run_cooccur(self.archive_root, threshold=2)
+
+        self.assertTrue(new_path.exists())
+        migrated = json.loads(new_path.read_text(encoding='utf-8'))
+        self.assertIn(['p-aaaaaaaaaa', 'p-bbbbbbbbbb'], migrated['pairs'])
+        self.assertFalse(legacy_path.exists())
+        self.assertTrue(result['migrated_legacy_dismissed'])
+
+    def test_corrupt_legacy_tombstone_is_not_an_error(self) -> None:
+        # A corrupt tombstone is disposable, same posture as a corrupt cache
+        # file anywhere else in the archive - never a reason to refuse.
+        _link_source_people(self.conn, 's-1111111111', 'p-aaaaaaaaaa', 'p-bbbbbbbbbb')
+        _link_source_people(self.conn, 's-2222222222', 'p-aaaaaaaaaa', 'p-bbbbbbbbbb')
+        self.conn.commit()
+
+        legacy_path = self.archive_root / '.cache' / 'cooccur_dismissed.json'
+        legacy_path.write_text('{not valid json', encoding='utf-8')
+
+        result = cooccur.run_cooccur(self.archive_root, threshold=2)
+        self.assertEqual(result['status'], 'ok')
+        self.assertEqual(len(result['person_pairs']), 1)
+        # The corrupt file still gets cleared out from under `.cache/` - and
+        # that clear-out is still reported, even though it carried nothing.
+        self.assertTrue(result['migrated_legacy_dismissed'])
+        self.assertFalse(legacy_path.exists())
+
     def test_missing_tombstone_is_not_an_error(self) -> None:
         _link_source_people(self.conn, 's-1111111111', 'p-aaaaaaaaaa', 'p-bbbbbbbbbb')
         _link_source_people(self.conn, 's-2222222222', 'p-aaaaaaaaaa', 'p-bbbbbbbbbb')
         self.conn.commit()
 
+        self.assertFalse((self.archive_root / 'notes' / 'cooccur_dismissed.json').exists())
         self.assertFalse((self.archive_root / '.cache' / 'cooccur_dismissed.json').exists())
         result = cooccur.run_cooccur(self.archive_root, threshold=2)
         self.assertEqual(result['status'], 'ok')
         self.assertEqual(len(result['person_pairs']), 1)
+        self.assertFalse(result['migrated_legacy_dismissed'])
 
     def test_claim_participants_without_source_people_still_pair(self) -> None:
         # Two people named only via claim_persons (no source_people frontmatter
@@ -231,13 +298,19 @@ class CooccurPlaceTests(unittest.TestCase):
         self.assertEqual(result['place_pairs'], [])
 
     def test_dismissed_tombstone_excludes_place_pair(self) -> None:
+        # #48: notes/cooccur_dismissed.json is the durable, current location
+        # (dismissed pairs are shared between person and place co-occurrence
+        # through the one `_load_dismissed` set - the migration itself is
+        # covered once, on the person-pair tests above, since it does not
+        # vary by which detector consumes the result).
         self._insert_claim('c-aaaaaaaaaa', 's-1111111111', ['p-aaaaaaaaaa'],
                             place_text='Topeka, Kansas', date_edtf='1880')
         self._insert_claim('c-bbbbbbbbbb', 's-2222222222', ['p-bbbbbbbbbb'],
                             place_text='Topeka, Kansas', date_edtf='1880')
         self.conn.commit()
 
-        dismissed_path = self.archive_root / '.cache' / 'cooccur_dismissed.json'
+        dismissed_path = self.archive_root / 'notes' / 'cooccur_dismissed.json'
+        dismissed_path.parent.mkdir(parents=True, exist_ok=True)
         dismissed_path.write_text(json.dumps({
             'pairs': [['p-aaaaaaaaaa', 'p-bbbbbbbbbb']],
             'generated': '2026-06-19',

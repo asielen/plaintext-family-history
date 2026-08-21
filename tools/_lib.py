@@ -122,6 +122,13 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    photoindex_config_drift   - plain words for how those settings changed since
 #    photoindex_status         - classify .cache/photos.sqlite freshness for find/doctor
 #
+#  Co-occurrence dismissal tombstone (#48 - durable, lives outside .cache/)
+#    cooccur_dismissed_paths   - current (notes/) path + legacy (.cache/) path
+#    load_cooccur_dismissed    - read + union both; migrates the legacy file
+#                                 forward the first time either owner calls it,
+#                                 returning (pairs, migrated) so a caller that
+#                                 would otherwise look silent can report it
+#
 #  Safety copies of originals (`originals_backup:`, TOOLING §13f)
 #    BackupRefused             - "no safety copy, so do not write" (carries the sentence)
 #    originals_backup_dir      - fha.yaml originals_backup: -> resolved folder, or None
@@ -238,6 +245,8 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #                                 or newly created (views.py's inline `## Sources` writer)
 #
 #  Ahnentafel derivation + stub promotion (the shared promote engine)
+#    resolve_root_generation   - validate fha.yaml root_generation: 'self'|'children' (#72)
+#    root_generation_seed_position - 'self'|'children' → the seed position (1 or 2)
 #    build_ahnentafel_map      - index BFS: {P-id → Ahnentafel position} (SPEC §12.2)
 #    ahnentafel_generation     - position → generation depth (the --generations cap)
 #    couple_folder_prefix      - position → the even couple-folder number
@@ -1850,6 +1859,111 @@ def photoindex_status(archive_root: str | Path, fha_config: dict) -> tuple[str, 
     if max_mtime == 0.0 or mtime >= max_mtime:
         return ('fresh', 0.0)          # empty root, or db newer than newest photo/index
     return ('stale', max_mtime - mtime)
+
+
+# ── Co-occurrence dismissal tombstone (#48 - durable, lives outside .cache/) ──
+#
+# `fha confirm dismiss` records a person-pair a human has said "stop
+# suggesting this" about; `fha cooccur` reads the same file to skip proposing
+# it again. Unlike everything else under `.cache/`, this file cannot be
+# rebuilt if lost - it holds a decision only a human could make, not derived
+# data - so it lives at `notes/cooccur_dismissed.json`, beside
+# `notes/discoveries.md` (the durable log its sibling verb `fha confirm
+# discovery` already writes there). Both owning tools call the helpers below
+# so the read/migrate logic exists in exactly one place.
+
+def cooccur_dismissed_paths(archive_root: str | Path) -> tuple[Path, Path]:
+    """Current and legacy paths for the co-occurrence dismissal tombstone.
+
+    Current: `notes/cooccur_dismissed.json` - git-versioned and backed up
+    with the rest of the records, so it survives a `.cache/` wipe. Legacy:
+    the pre-#48 location, `.cache/cooccur_dismissed.json` - kept only so an
+    archive that has not yet migrated does not lose what is still sitting
+    there.
+    """
+    root = Path(archive_root)
+    return (root / 'notes' / 'cooccur_dismissed.json',
+            root / '.cache' / 'cooccur_dismissed.json')
+
+
+def load_cooccur_dismissed(
+    archive_root: str | Path, *, migrate: bool = True,
+) -> tuple[list[list[str]], bool]:
+    """Read the dismissed co-occurrence pairs, migrating the legacy file forward.
+
+    Reads BOTH the current and legacy locations (`cooccur_dismissed_paths`)
+    and unions their pairs (normalized with `normalize_id`), so a pair
+    dismissed before an archive upgraded is visible immediately - even
+    before migration has physically happened, and even if it never
+    completes cleanly (a read-only filesystem, a permissions error). When
+    `migrate` is true (the default) and a legacy file is found, the merged
+    result is written to the current location - atomically, via
+    `write_text_exact_atomic`, because this is no longer disposable cache
+    and a torn write would cost a real decision - and the legacy file is
+    removed, so the two copies can never silently drift apart and a later
+    `.cache/` wipe has nothing left to lose.
+
+    `migrate=False` is for a caller that must not write anything yet: a
+    `--dry-run` preview still needs an accurate pair count and
+    already-dismissed check before it decides whether to write at all.
+
+    Returns `(pairs, migrated)`. `migrated` is true only when this call
+    physically moved the legacy file just now - callers that can otherwise
+    look silent (a read-only detector, a report section) MUST surface it to
+    the human when true, rather than letting a housekeeping write pass
+    unmentioned; see `cooccur._load_dismissed` and `confirm.run_dismiss`.
+
+    Both owners of this file call this - `cooccur._load_dismissed` (the
+    reader; a detection tool that is otherwise read-only by design, TOOLING
+    §14a2/§14a3, but this one narrow, idempotent carry-forward does not
+    decide anything a human has not already decided, so it does not blur
+    the line the way a detector minting a claim or writing a NEW dismissal
+    would) and `confirm.run_dismiss` (the writer) - so whichever runs first
+    after an upgrade finishes the move. The residual gap: an archive that
+    has done neither since upgrading and has its `.cache/` folder deleted in
+    the meantime. That is the same window every disposable-cache convenience
+    already asks a human to accept, just now bounded to one file that used
+    to live inside it instead of the whole folder.
+
+    A read or write failure on either file degrades to treating it as
+    absent/unwritable rather than raising - the same posture `fha confirm
+    dismiss` has always taken toward a corrupt tombstone (disposable, never
+    archive truth), now extended to a migration that could not complete
+    this time; the next call simply tries again.
+    """
+    new_path, old_path = cooccur_dismissed_paths(archive_root)
+
+    def _read(path: Path) -> list[list[str]]:
+        if not path.exists():
+            return []
+        try:
+            data = json.loads(path.read_text(encoding='utf-8'))
+        except (OSError, json.JSONDecodeError):
+            return []
+        return [
+            [normalize_id(str(pair[0])), normalize_id(str(pair[1]))]
+            for pair in (data.get('pairs') or [])
+            if isinstance(pair, list) and len(pair) == 2
+        ]
+
+    seen: set[frozenset[str]] = set()
+    merged: list[list[str]] = []
+    for pair in _read(new_path) + _read(old_path):
+        key = frozenset(pair)
+        if key not in seen:
+            seen.add(key)
+            merged.append(pair)
+
+    migrated = False
+    if migrate and old_path.exists():
+        try:
+            new_path.parent.mkdir(parents=True, exist_ok=True)
+            write_text_exact_atomic(new_path, json.dumps({'pairs': merged}, indent=2) + '\n')
+            old_path.unlink()
+            migrated = True
+        except OSError:
+            pass  # opportunistic: nothing is lost, the next call tries again
+    return merged, migrated
 
 
 # ── Safety copies of originals (`originals_backup:`, TOOLING §13f) ────────────
@@ -6440,17 +6554,104 @@ def ensure_person_body_sections(text: str, name: str) -> tuple[str, list[str]]:
 # claim (SPEC §4: hand-labor scales with curiosity; TOOLING §5's
 # placement-is-a-human-act rule carves out exactly this engine).
 
+ROOT_GENERATIONS = ('self', 'children')
+
+
+def resolve_root_generation(fha_config: dict) -> str:
+    """Read and validate fha.yaml's optional `root_generation:` (SPEC §12.2 /
+    §12.4, issue #72). Returns 'self' or 'children'; never anything else.
+
+    `root_person` names WHO the archive is centred on; `root_generation` says
+    which Ahnentafel slot that person occupies:
+      - 'self' (default, and what an absent key means) - root_person IS
+        position #1. Byte-for-byte the walk this codebase has always run;
+        an archive that never sets the key is unaffected.
+      - 'children' - root_person is one generation ABOVE #1. SPEC §12.2's own
+        model puts #1 at "the children, collectively" - a fiction that lets
+        any full sibling stand in for the anchor, not a real database row -
+        so a researcher who IS the anchor but wants their own children's
+        generation (real or not yet born) to hold #1 could previously only
+        get there by naming one of those children `root_person`, which
+        misstates who the archive is about and has no answer at all for a
+        childless researcher. `root_generation: children` says the true
+        thing directly: root_person is #2, and their own ancestors are
+        derived exactly as before, just one rung further out.
+
+    Raises FhaConfigError - never silently falls back to 'self' - for
+    anything else, including a present-but-empty value: a typo
+    (`root_generation: child`) must be caught, not quietly numbered as
+    though the researcher were still their own #1. The message is written to
+    stand alone (it lands in a lint Finding, a CLI refusal, and a report
+    note, none of which add their own explanation).
+
+    A caller that can proceed with no `root_person` at all (Ahnentafel
+    tooling disabled, SPEC §12.4) never needs to call this - only the code
+    paths that are about to resolve `root_person` and walk the pedigree
+    should, mirroring how an unresolvable `root_person` is already handled
+    at each of those call sites (views/lint/person/report) rather than in
+    one central gate.
+    """
+    raw = fha_config.get('root_generation')
+    if raw is None:
+        return 'self'
+    value = str(raw).strip().lower()
+    if value in ROOT_GENERATIONS:
+        return value
+    raise FhaConfigError(
+        f"fha.yaml's root_generation is {raw!r}, but it must be self or "
+        "children:\n"
+        "  root_generation: self       # root_person is #1 (the default - "
+        "or just remove the line)\n"
+        "  root_generation: children   # root_person is #2; root_person's "
+        "children are #1, collectively\n"
+        'Fix the value in fha.yaml, then retry.'
+    )
+
+
+def root_generation_seed_position(root_generation: str) -> int:
+    """The Ahnentafel position `root_person` itself occupies, given an
+    already-validated `root_generation` ('self' or 'children' - the return
+    value of `resolve_root_generation`).
+
+    A one-line lookup, split out from `resolve_root_generation` so a caller
+    that already has a validated value in hand (e.g. after deciding whether
+    W127 applies) does not need to re-derive it, and so the position numbers
+    themselves - the one fact `build_ahnentafel_map`'s seed actually needs -
+    live beside each other instead of inside a string comparison at every
+    call site.
+    """
+    return 2 if root_generation == 'children' else 1
+
+
 def build_ahnentafel_map(
     conn: sqlite3.Connection, root_pid: str,
     sex_gaps: list[dict] | None = None,
+    root_position: int = 1,
 ) -> dict[str, int]:
     """BFS from root_pid to build {person_id -> Ahnentafel position} from the index.
 
-    Seed: root_pid -> 1.  Parents of person at position N:
+    Seed: root_pid -> root_position (default 1).  Parents of person at position N:
       sex='M' -> 2N (father's slot), sex='F' -> 2N+1 (mother's slot).
       Same-sex or sex='U' pairs: lexicographically-first P-id -> 2N (deterministic).
     Terminates when no accepted parent edges remain (the relationships table is
     derived from accepted claims only - see index.py).
+
+    `root_position` is where `root_pid` itself lands - the seed this whole walk
+    hangs from - and it is the one thing `root_generation` (SPEC §12.2/§12.4,
+    issue #72; `resolve_root_generation` validates the fha.yaml value and
+    `root_generation_seed_position` turns it into this number) changes: 1 for
+    'self' (the default - root_pid IS #1, exactly today's behavior, so an
+    archive that never sets `root_generation` gets byte-identical positions),
+    2 for 'children' (root_pid is #2; position #1 - "the children,
+    collectively", SPEC §12.2 - is a fiction with no database row, so it is
+    simply never seeded or visited). Everything past the seed is unchanged:
+    root_pid's own parents are still found by the identical query below and
+    still land at 2*root_position / 2*root_position+1, so root_pid's ancestors
+    come out exactly one generation further out than they would at position 1.
+    Nothing here derives root_pid's SPOUSE (the position-1 fiction's other
+    parent) - this walk only ever climbs root_pid's own parent edges, and a
+    spouse is not one of those; they surface in the couple folder the same
+    add-only way any second partner does (`_lib.spouse_extended_base`).
 
     `sex_gaps`, when a list is passed, collects the W120 set: every placement
     made by the single-resolved-parent branch where that parent's `sex:` is not
@@ -6478,8 +6679,8 @@ def build_ahnentafel_map(
     # one surviving genetic edge.
     social = sorted(SOCIAL_PARENT_SUBTYPES)
     social_ph = ','.join('?' * len(social))
-    pid_to_pos: dict[str, int] = {root_pid: 1}
-    queue: deque[tuple[str, int]] = deque([(root_pid, 1)])
+    pid_to_pos: dict[str, int] = {root_pid: root_position}
+    queue: deque[tuple[str, int]] = deque([(root_pid, root_position)])
 
     while queue:
         pid, n = queue.popleft()

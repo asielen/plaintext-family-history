@@ -9,6 +9,7 @@ hand-built .cache/index.sqlite.
 """
 
 import datetime
+import json
 import shlex
 import sys
 import tempfile
@@ -22,6 +23,7 @@ sys.path.insert(0, str(ROOT / 'tools'))
 
 import lint
 import report
+from _lib import shell_quote
 
 
 _PERSON_MD = '''---
@@ -348,6 +350,31 @@ class ReportTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             report.run_report(self.archive_root, {}, section='not-a-real-section')
 
+    def test_possible_connections_narrates_legacy_dismissed_migration(self) -> None:
+        # #48: `fha cooccur`'s one self-permitted write - carrying an older
+        # archive's `.cache/cooccur_dismissed.json` forward to its durable
+        # home - must never be silent. `fha report` (and the `today` skill
+        # that reads it) promise the human sees every write; this is the
+        # section that has to say so.
+        legacy_path = self.archive_root / '.cache' / 'cooccur_dismissed.json'
+        legacy_path.parent.mkdir(parents=True, exist_ok=True)
+        legacy_path.write_text(
+            json.dumps({'pairs': [['p-aaaaaaaaaa', 'p-bbbbbbbbbb']]}), encoding='utf-8')
+
+        result = report.run_report(self.archive_root, {}, full=True,
+                                    section='possible-connections')
+        md = result['markdown']
+        self.assertIn('.cache/cooccur_dismissed.json', md)
+        self.assertIn('notes/cooccur_dismissed.json', md)
+        new_path = self.archive_root / 'notes' / 'cooccur_dismissed.json'
+        self.assertTrue(new_path.exists())
+        self.assertFalse(legacy_path.exists())
+
+    def test_possible_connections_silent_when_nothing_to_migrate(self) -> None:
+        result = report.run_report(self.archive_root, {}, full=True,
+                                    section='possible-connections')
+        self.assertNotIn('housekeeping', result['markdown'])
+
     def test_place_candidates_section_uses_live_places_tool(self) -> None:
         # places.py now exists (BUILD.md M6.2), so the section calls
         # places.run_candidates() instead of printing the deferral stub.
@@ -367,9 +394,14 @@ class ReportTests(unittest.TestCase):
         result = report.run_report(self.archive_root, {}, full=True, section='place-candidates')
         md = result['markdown']
         self.assertIn('Topeka, Kansas - 3 claim(s)', md)
+        # Built via the same shell_quote() the production code calls, not a
+        # hardcoded literal - shell_quote deliberately produces different
+        # quoting per platform (single-quote POSIX shlex vs. double-quote
+        # Windows list2cmdline), so a fixed string here would be right on
+        # only one of them.
         self.assertIn(
             'fha confirm place C-6666666661 C-6666666662 C-6666666663 '
-            "--name='Topeka, Kansas'",
+            f'--name={shell_quote("Topeka, Kansas")}',
             md,
         )
 

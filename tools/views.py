@@ -161,6 +161,8 @@ from _lib import (
     pip_command,
     requirements_hint,
     resolve_root_arg,      # --root flag, else find_archive_root(), shared error message,
+    resolve_root_generation,   # validate fha.yaml root_generation: 'self'|'children' (#72),
+    root_generation_seed_position,  # 'self'|'children' -> the Ahnentafel seed position,
     spouse_extended_base,    # add-only `+ second spouse` folder-name rule - shared with lint W103,
     sync_generated_view_rows,   # keep notes_fts/person_files in step with view writes/deletes,
     unreadable_dir_recorder,  # os.walk error seam - a shut folder is not an empty one,
@@ -245,10 +247,14 @@ def _views_result(
 #    _couple_folder_dirs          - list digit-prefixed dirs under people/
 #    _persons_in_folder           - person_ids whose profile files live in a folder
 #    _build_ahnentafel_map        - BFS from root_person → {pid: int position}
-#                                    (+ W120 sex-gap collection via _lib)
+#                                    (+ W120 sex-gap collection via _lib);
+#                                    root_position seeds #1 ('self') or #2
+#                                    ('children' - root_generation:, issue #72)
 #    _person_label_from_db        - `Ada Hartley (P-…)`, or the ID alone if nameless
 #    _check_w127_root_anchor      - W127: root_person has a child, so the walk starts
-#                                    a generation too high (lint twin: lint.py)
+#                                    a generation too high (lint twin: lint.py);
+#                                    caller skips this entirely when
+#                                    root_generation: children says that is deliberate
 #    _check_w103_brackets         - derive expected bracket lists + the missing
 #                                    `+ spouse` half, find mismatches
 #    _person_couple_folder        - locate a person's current couple folder via index
@@ -1657,6 +1663,7 @@ def _persons_in_folder(conn: sqlite3.Connection, folder: Path) -> list[str]:
 def _build_ahnentafel_map(
     conn: sqlite3.Connection, root_pid: str,
     sex_gaps: list[dict] | None = None,
+    root_position: int = 1,
 ) -> dict[str, int]:
     """BFS from root_pid to build {person_id → Ahnentafel position}.
 
@@ -1665,9 +1672,12 @@ def _build_ahnentafel_map(
     without importing views (tools never import tools). Behavior is identical;
     the docstring and algorithm live with the shared function. `sex_gaps`
     collects the W120 set (single-parent placements defaulted for lack of a
-    recorded `sex:`) when a list is passed.
+    recorded `sex:`) when a list is passed. `root_position` is where root_pid
+    itself lands - 1 for `root_generation: self` (the default), 2 for
+    `root_generation: children` (SPEC §12.2/§12.4, issue #72); see
+    `_lib.resolve_root_generation`.
     """
-    return build_ahnentafel_map(conn, root_pid, sex_gaps)
+    return build_ahnentafel_map(conn, root_pid, sex_gaps, root_position=root_position)
 
 
 def _person_label_from_db(conn: sqlite3.Connection, pid: str) -> str:
@@ -1708,6 +1718,12 @@ def _check_w127_root_anchor(
 
     Report-only, one finding, and never a rename: the repair is one line in
     `fha.yaml`, which no tool may write on a guess.
+
+    The caller skips calling this entirely when `root_generation: children`
+    is set (SPEC §12.2/§12.4, issue #72): that field says outright that
+    root_person having a child on record is deliberate - their children are
+    #1, collectively - so there is nothing here for this function to see
+    that isn't already the intended shape.
     """
     social = sorted(SOCIAL_PARENT_SUBTYPES)
     social_ph = ','.join('?' * len(social))
@@ -1734,8 +1750,10 @@ def _check_w127_root_anchor(
             f'child on record - {_person_label_from_db(conn, rows[0]["pid"])}{extra}. '
             'SPEC §12.2 anchors #1 at the youngest generation, so every couple folder '
             'below derives one generation high - including anything `--fix` or '
-            '`--realign` writes from here. Re-anchor root_person to a child in '
-            'fha.yaml, then run `fha index` and `fha views brackets --realign` - or '
+            '`--realign` writes from here. Fix it by adding `root_generation: children` '
+            'to fha.yaml (root_person stays who it is; their children become #1, '
+            'collectively, SPEC §12.2) - or by re-anchoring root_person to a child '
+            'directly - then run `fha index` and `fha views brackets --realign` - or '
             'leave this as-is if anchoring at yourself is deliberate.'
         ),
     }]
@@ -2923,54 +2941,73 @@ def run_brackets(
                     file=sys.stderr,
                 )
             else:
-                # W127 before the walk, because it is about where the walk
-                # STARTS: everything below numbers correctly relative to a
-                # root that may itself be a generation too high (#70).
-                w127 = _check_w127_root_anchor(conn, root_pid)
-                sex_gaps: list[dict] = []
-                pid_to_pos = _build_ahnentafel_map(conn, root_pid, sex_gaps)
-                # W120: a slot the derivation DEFAULTED rather than derived - a
-                # lone linked parent with no recorded sex: takes the father
-                # (even) slot, and W110 can never catch a wrong outcome because
-                # the folders match their own flawed derivation. Report-only:
-                # the fix is a fact about a person only the human can record.
-                for gap in sex_gaps:
-                    gap_name = _person_name_from_db(conn, gap['pid'])
-                    row = conn.execute(
-                        'SELECT path FROM persons WHERE id = ?',
-                        (gap['pid'],)).fetchone()
-                    where = (row['path'] or 'fha.yaml') if row else 'fha.yaml'
-                    w120.append({
-                        'code': 'W120',
-                        'pid': gap['pid'],
-                        'pos': gap['pos'],
-                        'msg': (
-                            f'W120 {where}: ' + format_w120_message(
-                                gap_name, gap['pos'], gap.get('sex'),
-                                '`fha views brackets` (or `--realign`)')
-                        ),
-                    })
-                w110 = _check_w110_ahnentafel(conn, archive_root, pid_to_pos)
                 try:
-                    w119 = _check_w119_direct_line_stubs(
-                        conn, archive_root, pid_to_pos, generations)
-                except AmbiguousCoupleFolderError as e:
-                    # Two folders share one couple prefix (e.g. '002 Father' and
-                    # '002 Mother'), so the direct-line destinations cannot be
-                    # derived without guessing which folder is the couple's.
-                    # Refuse the whole run rather than file records arbitrarily.
+                    # root_generation (#72) must be 'self' (default) or
+                    # 'children' - anything else is rejected here rather than
+                    # silently read as 'self', mirroring the
+                    # unresolvable-root_person case just above: a broken
+                    # config value gets nothing guessed from it.
+                    root_generation = resolve_root_generation(fha_cfg)
+                except FhaConfigError as e:
                     print(
-                        f'ERROR: two couple folders share the prefix '
-                        f'{e.prefix:03d} - {" and ".join(e.folders)}. Direct-line '
-                        'stubs cannot be filed without guessing which one is the '
-                        'couple\'s folder, so the Ahnentafel checks are refused. '
-                        'Rename one so the numeric prefixes are unique (a '
-                        'non-ancestral marriage takes a letter suffix, e.g. '
-                        f'"{e.prefix:03d}b …"; SPEC §12.2), run `fha index`, then '
-                        'retry.',
+                        f'WARNING: {e} Ahnentafel checks (W110/W119/W127) skipped.',
                         file=sys.stderr,
                     )
-                    return _views_result(EXIT_FAILURE)
+                else:
+                    root_position = root_generation_seed_position(root_generation)
+                    # W127 before the walk, because it is about where the walk
+                    # STARTS: everything below numbers correctly relative to a
+                    # root that may itself be a generation too high (#70).
+                    # Skipped entirely under root_generation: children (#72) -
+                    # that field says a child on record is deliberate, so
+                    # there is nothing accidental here for W127 to catch.
+                    w127 = (_check_w127_root_anchor(conn, root_pid)
+                            if root_generation != 'children' else [])
+                    sex_gaps: list[dict] = []
+                    pid_to_pos = _build_ahnentafel_map(
+                        conn, root_pid, sex_gaps, root_position=root_position)
+                    # W120: a slot the derivation DEFAULTED rather than derived - a
+                    # lone linked parent with no recorded sex: takes the father
+                    # (even) slot, and W110 can never catch a wrong outcome because
+                    # the folders match their own flawed derivation. Report-only:
+                    # the fix is a fact about a person only the human can record.
+                    for gap in sex_gaps:
+                        gap_name = _person_name_from_db(conn, gap['pid'])
+                        row = conn.execute(
+                            'SELECT path FROM persons WHERE id = ?',
+                            (gap['pid'],)).fetchone()
+                        where = (row['path'] or 'fha.yaml') if row else 'fha.yaml'
+                        w120.append({
+                            'code': 'W120',
+                            'pid': gap['pid'],
+                            'pos': gap['pos'],
+                            'msg': (
+                                f'W120 {where}: ' + format_w120_message(
+                                    gap_name, gap['pos'], gap.get('sex'),
+                                    '`fha views brackets` (or `--realign`)')
+                            ),
+                        })
+                    w110 = _check_w110_ahnentafel(conn, archive_root, pid_to_pos)
+                    try:
+                        w119 = _check_w119_direct_line_stubs(
+                            conn, archive_root, pid_to_pos, generations)
+                    except AmbiguousCoupleFolderError as e:
+                        # Two folders share one couple prefix (e.g. '002 Father' and
+                        # '002 Mother'), so the direct-line destinations cannot be
+                        # derived without guessing which folder is the couple's.
+                        # Refuse the whole run rather than file records arbitrarily.
+                        print(
+                            f'ERROR: two couple folders share the prefix '
+                            f'{e.prefix:03d} - {" and ".join(e.folders)}. Direct-line '
+                            'stubs cannot be filed without guessing which one is the '
+                            'couple\'s folder, so the Ahnentafel checks are refused. '
+                            'Rename one so the numeric prefixes are unique (a '
+                            'non-ancestral marriage takes a letter suffix, e.g. '
+                            f'"{e.prefix:03d}b …"; SPEC §12.2), run `fha index`, then '
+                            'retry.',
+                            file=sys.stderr,
+                        )
+                        return _views_result(EXIT_FAILURE)
         else:
             print(
                 'INFO: root_person not set in fha.yaml - '

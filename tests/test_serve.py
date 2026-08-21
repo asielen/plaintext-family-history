@@ -140,6 +140,27 @@ class HomeAndChromeTests(_ServeCase):
         self.assertNotIn('src="../../', txt)
         self.assertNotIn('src="..\\', txt)
 
+    def test_review_gathers_migrates_legacy_dismissed_and_logs_it(self) -> None:
+        # #48: `gather_review` calls `cooccur.run_cooccur`, which can migrate
+        # a legacy `.cache/cooccur_dismissed.json` forward on its own - the
+        # one write this "human gate: every write is preview -> confirm"
+        # module allows without a confirm step. It must never be silent:
+        # this asserts the console note serve.py's own foreground terminal
+        # (the human's actual gate here) prints when it happens.
+        legacy_path = self.root / '.cache' / 'cooccur_dismissed.json'
+        legacy_path.write_text(json.dumps({'pairs': [['p-nonexistent1', 'p-nonexistent2']]}),
+                                encoding='utf-8')
+        new_path = self.root / 'notes' / 'cooccur_dismissed.json'
+        self.assertFalse(new_path.exists())
+
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            serve.gather_review(self.state)
+
+        self.assertTrue(new_path.exists())
+        self.assertFalse(legacy_path.exists())
+        self.assertIn('notes/cooccur_dismissed.json', stderr.getvalue())
+
     def test_review_and_inbox_render(self):
         # 'Review'/'Inbox' appear in the servebar nav on every page, so those
         # words alone cannot tell a working queue render from a broken one -
