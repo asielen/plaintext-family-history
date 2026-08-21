@@ -473,6 +473,14 @@ class ExitCodeTests(_ViewsHtmlBase):
 class CleanSweepTests(_ViewsHtmlBase):
     def test_clean_sweeps_generated_views_marker_per_file(self):
         views.run_refresh(self.root, fmt='both')
+        # #76: the profile itself now carries a `## Sources` GENERATED-BEGIN/
+        # END region from that refresh - "TWO OWNERSHIP MODELS SINCE #76, ONE
+        # SWEEP" (run_clean's own docstring) claims this survives a sweep
+        # byte-for-byte, never touched as a companion would be; pin that down
+        # directly rather than only inferring it from the profile filename
+        # still being present afterward.
+        profile_before = self.profile.read_text(encoding='utf-8')
+        self.assertIn('GENERATED-BEGIN sources-index', profile_before)
         hand = self._gen_dir() / 'keep-me.html'
         hand.write_text('<p>mine</p>', encoding='utf-8')
         gen_before = sorted(p.name for p in self._gen_dir().iterdir())
@@ -501,6 +509,10 @@ class CleanSweepTests(_ViewsHtmlBase):
                          ['keep-me.html'])
         left = sorted(p.name for p in self.profile.parent.iterdir())
         self.assertEqual(left, [f'hartley__cur_{PID}.md'])
+        # The regression proof itself: not just "the profile survived as a
+        # file" but "its region survived byte-for-byte" - clean's sweep never
+        # even partially rewrites a profile the way it deletes a companion.
+        self.assertEqual(self.profile.read_text(encoding='utf-8'), profile_before)
 
     def test_html_only_clean_exits_zero(self):
         # Removing only generated/views/ files leaves no stale index rows -

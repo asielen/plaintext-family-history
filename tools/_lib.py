@@ -3182,25 +3182,81 @@ def append_block_at_eof(lines: list[str], block_text: str, cr: str) -> list[str]
     return base
 
 
+# A level-2 (`## `) heading line, ONLY - deliberately NOT the module-level
+# `_SECTION_HEADING_RE` name (redefined further down this file for an
+# unrelated `#{1,2}` - H1-or-H2 - purpose; the later assignment wins at call
+# time for every reader of that name, `section_bounds` included, so nothing
+# here may rely on it meaning "## only"). Using that name here would treat
+# the body's own H1 title as if it were the first `## ` section, splicing a
+# new section in ABOVE the title instead of below it.
+_LEVEL2_HEADING_ONLY_RE = re.compile(r'^##\s+\S')
+
+
+def _create_section_before_first_heading(
+    lines: list[str], body_start: int, heading_text: str, body_text: str, cr: str,
+) -> list[str]:
+    """Insert a NEW `## {heading_text}` section as the body's FIRST level-2
+    heading - spliced in right before whatever `## ` section currently comes
+    first - or at EOF (`create_section_at_eof`) when the body carries no
+    `## ` heading at all yet, where "first" and "EOF" are the same place.
+
+    Used for a GENERATED-BEGIN/END region whose position SPEC fixes (§16:
+    `## Sources` sits first among the profile's `##` headings, right after
+    the H1/summary block) rather than "wherever a human happened to leave
+    room" - unlike an ordinary hand-edited section (`fha person edit`),
+    which has no positional requirement and belongs at EOF when it must be
+    created. Without this, a pre-#76 curated profile - Biography/Stories/etc.
+    already on disk, no `## Sources` heading yet - gets its first-ever
+    `## Sources` region bolted onto the very end of the file instead of onto
+    the top, on the very first `fha views sources-index` run."""
+    insert_at = None
+    for i in range(body_start, len(lines)):
+        if _LEVEL2_HEADING_ONLY_RE.match(lines[i]):
+            insert_at = i
+            break
+    if insert_at is None:
+        return create_section_at_eof(lines, heading_text, body_text, cr)
+    before = list(lines[:insert_at])
+    if before and before[-1].strip() != '':
+        before.append(cr)
+    block = [f'## {heading_text}{cr}']
+    block.extend(f'{ln}{cr}' for ln in body_text.split('\n'))
+    block.append(cr)   # blank-line separator before the heading that follows
+    return before + block + lines[insert_at:]
+
+
 def replace_section_content(
     lines: list[str], body_start: int, heading_text: str, new_text: str, cr: str,
+    *, position: str = 'eof',
 ) -> tuple[list[str], bool, str]:
     """Replace a `## {heading_text}` section's ENTIRE content with `new_text`,
-    or create the heading at EOF when it does not exist yet - the shared
-    REPLACE-mode engine behind `person.py`'s `_replace_section` (a human's
-    `fha person edit` whole-section replace) and `write_generated_region`
-    below (a machine-owned section like `## Sources`, rewritten wholesale on
-    every view refresh). Returns `(new_lines, created, old_content)` in the
-    same shape as `append_paragraph_to_section` - `created` is True when the
+    or create the heading when it does not exist yet - the shared REPLACE-mode
+    engine behind `person.py`'s `_replace_section` (a human's `fha person
+    edit` whole-section replace) and `write_generated_region` below (a
+    machine-owned section like `## Sources`, rewritten wholesale on every
+    view refresh). Returns `(new_lines, created, old_content)` in the same
+    shape as `append_paragraph_to_section` - `created` is True when the
     heading had to be appended; `old_content` is the section's PRIOR text.
     Unlike append, nothing about the prior content survives: REPLACE means
     replace, which is exactly what a regenerated region needs (the caller
     decides whether replacing is safe to do at all - a human prose section
-    vs. a machine-owned region - this function only knows how)."""
+    vs. a machine-owned region - this function only knows how).
+
+    `position` decides WHERE a missing heading is created: `'eof'` (default,
+    what `_replace_section` wants - an arbitrary hand-edited section has no
+    fixed position) or `'first'` (what `write_generated_region` wants for
+    `## Sources` - see `_create_section_before_first_heading`). Only matters
+    when the heading does not already exist; replacing an existing section
+    never moves it."""
     located = section_bounds(lines, body_start, heading_text)
     body_text = new_text.strip('\n')
     if located is None:
-        return create_section_at_eof(lines, heading_text, body_text, cr), True, ''
+        if position == 'first':
+            new_lines = _create_section_before_first_heading(
+                lines, body_start, heading_text, body_text, cr)
+        else:
+            new_lines = create_section_at_eof(lines, heading_text, body_text, cr)
+        return new_lines, True, ''
 
     _, content_start, content_end = located
     old_content = '\n'.join(lines[content_start:content_end])
@@ -5189,14 +5245,19 @@ def write_generated_region(
     in place if the heading already exists (whatever else was in that
     section is replaced outright: this section's ENTIRE content IS the
     region, by construction - nothing else is ever meant to live there), or
-    created at EOF if the heading is missing (an old record from before this
-    section existed, or a hand-made one) - mirroring how `fha person edit`
-    creates a missing prose section rather than refusing.
+    inserted as the body's FIRST `## ` heading if it is missing (an old
+    record from before this section existed, or a hand-made one) -
+    `position='first'` (see `replace_section_content`), not EOF: SPEC §16
+    places `## Sources` first among a profile's `##` headings, right after
+    the H1/summary block, so a pre-#76 curated record - Biography/Stories/
+    etc. already on disk, no `## Sources` heading yet - gets it inserted at
+    the top on its first `fha views sources-index` run, not bolted onto the
+    very end behind everything a human already wrote.
 
     Uses `replace_section_content` (REPLACE mode, not append): a region is
     rewritten wholesale every time, never accumulated onto. Returns
     `(new_text, created)` - `created` is True only when the heading itself
-    had to be appended, not merely when the region's content changed.
+    had to be inserted, not merely when the region's content changed.
     """
     lines = text.split('\n')
     bounds = frontmatter_fence_span(lines)
@@ -5204,7 +5265,7 @@ def write_generated_region(
     cr = '\r' if lines and lines[0].endswith('\r') else ''
     region_text = render_generated_region(region_name, subcommand, body)
     new_lines, created, _old = replace_section_content(
-        lines, body_start, heading, region_text, cr)
+        lines, body_start, heading, region_text, cr, position='first')
     return '\n'.join(new_lines), created
 
 
@@ -6260,6 +6321,41 @@ def render_person_body_scaffold(name: str) -> str:
     return header + PERSON_BODY_SECTIONS_TEXT
 
 
+_TITLE_LINE_RE = re.compile(r'^#[ \t]\S')
+
+
+def _find_title_line_index(lines: list[str], body_start: int) -> int | None:
+    """The line index of the body's H1 title (`# ...`, never `## ...`), or
+    None if it has none - the per-line twin of the `re.search(r'^#[ \\t]\\S',
+    ...)` substring test `ensure_person_body_sections` used to run against
+    the whole joined body; needed as a line index (not a boolean) once that
+    function has to say WHERE to insert relative to the title, not just
+    whether one exists."""
+    for i in range(body_start, len(lines)):
+        if _TITLE_LINE_RE.match(lines[i]):
+            return i
+    return None
+
+
+def _insert_block_at_line(lines: list[str], at: int, block_text: str, cr: str) -> list[str]:
+    """Splice `block_text` in as new lines at line index `at`, adding exactly
+    one blank-line separator on either side wherever content already touches
+    that point - the non-heading counterpart to `create_section_at_eof`
+    (which always lands at EOF): used to insert a title or purpose block at a
+    fixed point INSIDE the body, since neither one is a `## ` section
+    `section_bounds` can locate or `create_section_at_eof` can append after
+    without risking it landing inside whatever section currently happens to
+    be last on disk."""
+    before = list(lines[:at])
+    after = lines[at:]
+    if before and before[-1].strip() != '':
+        before.append(cr)
+    block = [f'{ln}{cr}' for ln in block_text.split('\n')]
+    if after and after[0].strip() != '':
+        block.append(cr)
+    return before + block + after
+
+
 def ensure_person_body_sections(text: str, name: str) -> tuple[str, list[str]]:
     """Additively bring an EXISTING person record's body up to the same full
     shape `render_person_body_scaffold` gives a brand-new one.
@@ -6267,21 +6363,37 @@ def ensure_person_body_sections(text: str, name: str) -> tuple[str, list[str]]:
     Used by `fha person promote`: a stub minted before #76 (or one a human
     started by hand) may carry no body at all, or only some of it - a
     Biography written before promotion, say. This appends whatever piece is
-    MISSING, in canonical order, and never touches a byte of anything already
-    there: presence is checked per piece (`section_bounds` for the four `##`
-    sections and `## Sources`; a plain substring test for the title and the
-    purpose block, which are not `## ` sections) rather than assumed from the
-    record's age, so a record that already has everything comes back
-    byte-identical - a true no-op, not a rewrite that happens to look the same.
+    MISSING, and never touches a byte of anything already there: presence is
+    checked per piece (`section_bounds` for the four `##` sections and `##
+    Sources`; a plain substring test for the title and the purpose block,
+    which are not `## ` sections) rather than assumed from the record's age,
+    so a record that already has everything comes back byte-identical - a
+    true no-op, not a rewrite that happens to look the same.
 
-    One deliberate consequence of "never touch what's already there": if a
-    section already exists somewhere in the file but earlier pieces (the
-    purpose block, `## Sources`) do not, the missing pieces are appended at
-    EOF - AFTER the section that survived in place - so the result is not
-    always in the canonical top-to-bottom order `render_person_body_scaffold`
-    would produce from scratch. That is accepted on purpose: reordering a
-    human's existing prose to fix cosmetic ordering is a worse trade than a
-    section landing lower in the file than it ideally would.
+    The title and the purpose block are INSERTED at a fixed point (the very
+    top of the body; right after the title, respectively) rather than
+    appended at EOF like the four hand-written sections below: unlike those,
+    neither one carries a `## ` heading of its own to bound it, so appending
+    either at EOF - wherever that currently is - would land it with no
+    heading marking it off, silently merging into the CONTENT of whatever
+    section already happens to be last on disk (a purpose block appended
+    after an existing `## Biography` reads, to `section_bounds`/`fha site`/
+    the very `fha packet` stripper meant to remove it, as more Biography
+    prose - exactly the scaffolding-leaks-into-publication failure #75/§21b
+    exists to prevent). `## Sources` gets the equivalent fix via
+    `_create_section_before_first_heading` - SPEC §16 places it first among
+    the profile's `##` headings, not merely "somewhere."
+
+    One deliberate consequence remains, for the four hand-written sections
+    only: if `## Biography` (say) already exists but `## Stories` does not,
+    `## Stories` is appended at EOF - AFTER whatever survived in place - so
+    the result is not always in the canonical top-to-bottom order
+    `render_person_body_scaffold` would produce from scratch. That is
+    accepted on purpose: reordering a human's existing prose to fix cosmetic
+    ordering is a worse trade than a section landing lower than it ideally
+    would (unlike the title/purpose-block/Sources case above, a missing `##`
+    section landing late is still its OWN clearly-headed section, never
+    silently absorbed into another one's content).
 
     Returns `(new_text, added)` - `added` names which pieces were appended
     (for a promote-time message), empty when nothing was missing.
@@ -6295,14 +6407,17 @@ def ensure_person_body_sections(text: str, name: str) -> tuple[str, list[str]]:
     def _body_text() -> str:
         return '\n'.join(lines[body_start:])
 
-    if not re.search(r'^#[ \t]\S', _body_text(), re.M):
-        lines = append_block_at_eof(lines, f'# {name}', cr)
+    if _find_title_line_index(lines, body_start) is None:
+        lines = _insert_block_at_line(lines, body_start, f'# {name}', cr)
         added.append('title')
     if _PERSON_PURPOSE_SIGNATURE not in _body_text():
-        lines = append_block_at_eof(lines, PERSON_PURPOSE_BLOCK, cr)
+        title_idx = _find_title_line_index(lines, body_start)
+        insert_at = title_idx + 1 if title_idx is not None else body_start
+        lines = _insert_block_at_line(lines, insert_at, PERSON_PURPOSE_BLOCK, cr)
         added.append('purpose block')
     if section_bounds(lines, body_start, 'Sources') is None:
-        lines = create_section_at_eof(lines, 'Sources', PERSON_SOURCES_PLACEHOLDER, cr)
+        lines = _create_section_before_first_heading(
+            lines, body_start, 'Sources', PERSON_SOURCES_PLACEHOLDER, cr)
         added.append('Sources')
     for heading, placeholder in PERSON_BODY_SECTIONS:
         if section_bounds(lines, body_start, heading) is None:
@@ -7281,7 +7396,8 @@ def resync_person_profile_rows(
     and `persons` holds structured frontmatter fields this edit never
     touches. Returns 'indexed', 'index_absent' (no usable index to update -
     the caller advises `fha index`), or 'index_error' (index present but the
-    write failed - the row is now the stale one, and the caller must say so).
+    write failed, OR a profile's body could not be re-read - see below - so
+    the row is now the stale one, and the caller must say so).
     """
     paths = [Path(p) for p in paths]
     if not paths:
@@ -7291,6 +7407,7 @@ def resync_person_profile_rows(
         db_path, INDEX_SCHEMA_VERSION, ('persons', 'sources', 'claims'))
     if status != 'fresh' and status != 'stale':
         return 'index_absent'
+    had_read_error = False
     try:
         conn = sqlite3.connect(str(db_path))
         try:
@@ -7303,7 +7420,22 @@ def resync_person_profile_rows(
                     try:
                         body = read_record(path).get('body') or ''
                     except Exception:
-                        body = ''
+                        # A profile can be years old and was never guaranteed
+                        # UTF-8-clean the way a file this process just wrote
+                        # itself is (contrast `sync_generated_view_rows`'s
+                        # `_written_row`, which treats the same shape of
+                        # failure as a low-risk "index it as empty" - that
+                        # precedent does NOT apply here). `read_record`
+                        # deliberately RAISES on a decode error rather than
+                        # returning empty content, specifically so a caller
+                        # cannot silently proceed as if the file were blank
+                        # (see its own docstring) - so this path's EXISTING
+                        # notes_fts row is left untouched rather than wiped,
+                        # and the failure is surfaced (`index_error`) instead
+                        # of reporting a clean success that quietly dropped
+                        # this profile from full-text search.
+                        had_read_error = True
+                        continue
                     # Delete before rewrite: notes_fts is an FTS5 table with no
                     # unique key, so a plain insert would stack a second body
                     # row for the same path on every refresh.
@@ -7316,7 +7448,7 @@ def resync_person_profile_rows(
             conn.close()
     except sqlite3.Error:
         return 'index_error'
-    return 'indexed'
+    return 'index_error' if had_read_error else 'indexed'
 
 
 # ── Output helpers ────────────────────────────────────────────────────────────

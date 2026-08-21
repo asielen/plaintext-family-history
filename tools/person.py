@@ -288,6 +288,7 @@ from _lib import (
     research_companion_filename,
     resolve_root_arg,
     result_fail,
+    resync_person_profile_rows,
     section_bounds,
     sqlite_cache_schema_status,
     stub_filename,
@@ -1335,7 +1336,11 @@ def run_new(
     # generated) ## Sources placeholder, and the four hand-written sections.
     # A stub is no longer "an ID and a name" on disk; it is the same shape a
     # curated record has, just with everything still to fill in.
-    content += render_person_body_scaffold(clean_name)
+    # `render_stub_content` ends in a single '\n' after the closing fence (its
+    # own byte-identical contract - tests/test_stubs.py pins this); the extra
+    # '\n' here is the blank-line separator `_TEMPLATE.person.md` (and every
+    # other scaffolded record) carries between the frontmatter and the H1.
+    content += '\n' + render_person_body_scaffold(clean_name)
 
     def _add_new_messages() -> None:
         for field, note in gloss.items():
@@ -1485,10 +1490,14 @@ def run_promote(
     After a live move the index is updated IN PLACE (`_lib.relocate_person_in_index`:
     every path-keyed row swapped to the new path, the tier flip applied) rather
     than removed - a moved file is invisible to the mtime staleness check, and
-    dropping the cache made the next promote in a batch fail (#37). The body
-    backfill, like any other content edit in this module, is covered by the
-    ordinary mtime watermark instead (it changes the file's mtime, unlike a
-    move) - the closing "run `fha index`" reminder below is what picks it up.
+    dropping the cache made the next promote in a batch fail (#37). A move
+    also hides the body backfill from that same watermark (it lands in the
+    same write as the move, so the file's mtime tells the watermark nothing
+    new), so `_lib.resync_person_profile_rows` re-syncs the profile's
+    `notes_fts` content right after the relocate succeeds - the same
+    freshness-neutral trade `views.py` makes for its own in-place `##
+    Sources` edit (TOOLING's D9 addendum) - rather than leaving it to the
+    ordinary mtime watermark, which cannot see this particular change.
 
     `data` is {'status': 'ok'|'already'|'dry-run'|'not-found'|'merged'|
     'refused', 'person_id', 'path', 'new_path', 'position', 'folder',
@@ -1713,6 +1722,21 @@ def run_promote(
     try:
         outcome = relocate_person_in_index(
             archive_root, pid, moves, tier='curated', new_research=None)
+        if outcome == 'indexed':
+            # `relocate_person_in_index` only swaps path-keyed rows - it
+            # never re-reads content. `ensure_person_body_sections` (above)
+            # may have just changed this profile's BODY TEXT (a pre-#76
+            # stub's backfill: purpose block, ## Sources placeholder, the
+            # four hand-written sections) in the same write, and a move
+            # keeps the file's mtime out of the staleness watermark's count
+            # (#37) - so without this, notes_fts would keep serving the
+            # pre-backfill body forever, with nothing ever prompting a
+            # reindex to fix it (`fha find --text` would silently miss the
+            # newly-added sections). Mirrors `views.py`'s own
+            # `resync_person_profile_rows` call after its in-place ##
+            # Sources edit (TOOLING's D9 addendum) - the same freshness-
+            # neutral trade, extended to this other in-place profile edit.
+            outcome = resync_person_profile_rows(archive_root, [applied['new_path']])
     except (sqlite3.Error, OSError) as exc:
         # The record has ALREADY moved on disk - that archive mutation is
         # done and irreversible; only the in-place index update failed (a
@@ -1730,6 +1754,21 @@ def run_promote(
             'old location and can look up to date, which means searches may '
             'quietly go stale until you rebuild it. Run `fha index` to '
             'rebuild it.',
+            exit_code=EXIT_WARNINGS, level='warning',
+            next_step='fha index')
+    if outcome == 'index_error':
+        # The move and the body backfill both landed on disk; only the
+        # notes_fts content resync failed (a locked or read-only cache) -
+        # same shape of partial failure as the exception above, just from a
+        # function that reports failure by return value instead of raising.
+        return result_fail(
+            result, 'ok-index-stale',
+            f'{label} was promoted (Ahnentafel {pos}) and the record is '
+            f'filed in people/{dest_folder.name}/ - that part worked. But '
+            'the search index could not fully update in place (the '
+            f'backfilled body text could not be re-synced): {db_path}. '
+            'Searches may quietly miss the newly-added sections until you '
+            'rebuild it. Run `fha index` to rebuild it.',
             exit_code=EXIT_WARNINGS, level='warning',
             next_step='fha index')
     if outcome == 'indexed':

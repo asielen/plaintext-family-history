@@ -66,8 +66,15 @@ def _stub_content(pid: str, name: str | None) -> str:
     """Frontmatter plus the full #75/#76 body (purpose block, the not-yet-
     generated `## Sources` placeholder, and the four hand-written sections) -
     the same shape `fha person new` writes, so a stub reads identically no
-    matter which tool minted it."""
-    return render_stub_content(pid, name) + render_person_body_scaffold(name or 'unknown')
+    matter which tool minted it.
+
+    The extra `'\\n'` between the two renderers is the blank-line separator
+    `_TEMPLATE.person.md` (and every other scaffolded record) carries between
+    the frontmatter's closing fence and the H1 - `render_stub_content` ends
+    in only a single `'\\n'` (its own byte-identical contract; see
+    `tests/test_stubs.py`), so without it the H1 would land on the very next
+    line with no breathing room."""
+    return render_stub_content(pid, name) + '\n' + render_person_body_scaffold(name or 'unknown')
 
 
 def _collect_unresolved_persons(archive_root: Path) -> dict[str, str | None]:

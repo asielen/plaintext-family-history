@@ -1150,6 +1150,30 @@ class PacketTests(unittest.TestCase):
         self.assertIn('living or restricted', readme)
         self.assertNotIn('unreviewed draft text', readme)  # no draft marker present
 
+    def test_research_copy_strips_the_purpose_block(self):
+        # #75/§16a: a research file carries its own visible purpose block
+        # (_lib.RESEARCH_PURPOSE_BLOCK) exactly like a profile or a source
+        # record - scaffolding for the working archive, not content for the
+        # family - so --include-research must not ship it verbatim, the same
+        # way the profile and source copies already strip theirs. Everything
+        # else about the research copy (byte-for-byte, unredacted) is
+        # unchanged - only the purpose block goes.
+        self._seed_person()
+        self._seed_research(
+            '# Research\n\n'
+            "> **This person's research workspace - yours to write.** Open "
+            'questions,\n> hunches, and searches performed live here.\n\n'
+            '## Research Notes\nClean notes naming a cousin.\n')
+        self._commit_fresh()
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir,
+                                   no_photos=True, include_research=True)
+        self.assertEqual(result['status'], 'ok')
+        copied = (result['packet_dir'] / 'profile' / 'research_p-aaaaaaaaaa.md').read_text(
+            encoding='utf-8')
+        self.assertNotIn('research workspace - yours to write', copied)
+        self.assertIn('Clean notes naming a cousin.', copied)   # the real content survives
+
     def test_a_packet_folder_it_cannot_read_fails_instead_of_shipping_short(self):
         """A packet zip that could not read part of itself is not handed over.
 

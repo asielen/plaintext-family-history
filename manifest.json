@@ -1,7 +1,7 @@
 {
   "manifest_version": "1",
   "spec_version": "1.2",
-  "generated": "2026-08-20",
+  "generated": "2026-08-21",
   "files": [
     {
       "path": ".claude/skills/README.md",
@@ -60,7 +60,7 @@
     {
       "path": ".claude/skills/merge-identities/SKILL.md",
       "category": "operating",
-      "sha256": "48cf325740b9dc407b321368f9b9e8f1299d7966b506f2609897cfd2e7fa1e7d",
+      "sha256": "be37deb7d77db0abdad4edd61671503cf035242022c3def2c2d558dbc5807469",
       "spec_version": "1.2"
     },
     {
@@ -414,7 +414,7 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "f5174da093478461ce929680e5b04a87b0761fe6fcdf4195eabeb566f3e24690",
+      "sha256": "18b2628c30d3a8c26f0c20bcd15a5d8d36527eb162bff27238306b44c67b3517",
       "spec_version": "1.2",
       "src": "tools/_lib.py"
     },
@@ -554,7 +554,7 @@
     {
       "path": ".fha/tools/lint.py",
       "category": "operating",
-      "sha256": "5ae90bcdf554c3ad19e52f1f5dc1ab247521ec0f1193e91d3519dafbd3e63461",
+      "sha256": "5a12e01b060b6503185f06a2083a7066f5a1ffc6de3ecd1448d1000b39e14187",
       "spec_version": "1.2",
       "src": "tools/lint.py"
     },
@@ -575,14 +575,14 @@
     {
       "path": ".fha/tools/packet.py",
       "category": "operating",
-      "sha256": "cba281757004d7be912236fe3208e2d81954331ab9575f1c34084c97b2fa16e3",
+      "sha256": "66b080606099b6f5b37c0e051c60caf821da7e44fae4aa09d107976381099cda",
       "spec_version": "1.2",
       "src": "tools/packet.py"
     },
     {
       "path": ".fha/tools/person.py",
       "category": "operating",
-      "sha256": "95fff0130c704ec33a92c38d4a980d87c752195e9d5345597a55cf884b236d32",
+      "sha256": "6627385353f16732a0de94603adb72feb4001a46c466c2a02c11f44080c444b9",
       "spec_version": "1.2",
       "src": "tools/person.py"
     },
@@ -666,7 +666,7 @@
     {
       "path": ".fha/tools/stubs.py",
       "category": "operating",
-      "sha256": "7183a8ecb207ae93ba37315881a4fd6240d647499104f70451bef35e1883ccde",
+      "sha256": "e56f016cc8119c3f424033197350f591851a6b70bdcfaeee7e2f7600f915b98a",
       "spec_version": "1.2",
       "src": "tools/stubs.py"
     },
@@ -792,7 +792,7 @@
     {
       "path": ".fha/tools/views.py",
       "category": "operating",
-      "sha256": "ea21dc67dab424cc341773c05e886388d7fcf7b30f7697c47b45ec9f309d62c5",
+      "sha256": "cecc263ec246cdb517957ca0b4e139f54ac0e43b682277869eae6c14bd0d8731",
       "spec_version": "1.2",
       "src": "tools/views.py"
     },
@@ -895,7 +895,7 @@
     {
       "path": "docs/FILING_CABINET.md",
       "category": "operating",
-      "sha256": "882a3cbf60623a698c23454c61823fc80f8a51908e79ef1662c6f94cd0d83841",
+      "sha256": "d9f9d6843e4578a8a856589e74bc060d8f06f2adb56b580a6e21639205328551",
       "spec_version": "1.2"
     },
     {

@@ -2843,12 +2843,14 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
         # NOT registry.person_bodies: that bucket deliberately CONCATENATES
         # every file sharing this P-id (profile + a separate _research
         # companion, when one exists - see the Pass 1 walk, `person_bodies[pid]
-        # = person_bodies.get(pid, '') + '\n' + rec['body']`), so E009's
-        # hypothesis/question search can see a hypothesis written in either
-        # place. A research companion's OWN `## Research Notes` heading would
-        # then silently satisfy this check for a PROFILE that never got one -
-        # this check is about the profile specifically, so it reads the
-        # profile's body directly instead.
+        # = person_bodies.get(pid, '') + '\n' + rec['body']`) for the §16-
+        # unrelated TODO-source backlog (`_needs_sourcing_backlog`, which
+        # wants every `(TODO: import source)` marker regardless of which file
+        # it lives in). A research companion's OWN `## Research Notes`
+        # heading would silently satisfy THIS check for a PROFILE that never
+        # got one if it read that same concatenated bucket - this check is
+        # about the profile specifically, so it reads the profile's body
+        # directly instead.
         body = read_record(profile_path)['body']
         missing_sections = [
             heading for heading in

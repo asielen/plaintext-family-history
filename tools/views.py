@@ -4040,8 +4040,10 @@ def run_clean(archive_root: Path, dry_run: bool = False) -> Result:
     frontmatter fence, never a region marker, so a profile is never even a
     candidate here no matter what it contains further down. Nothing below
     special-cases this; it falls out of the existing test by construction -
-    see `tests/test_views_companion_view_marker.py` for the regression proof
-    (a profile with a region survives a sweep that still removes a companion).
+    see `tests/test_views_html.py::CleanSweepTests::
+    test_clean_sweeps_generated_views_marker_per_file` for the regression
+    proof (a profile with a region survives a sweep that still removes a
+    companion, byte-for-byte, not just by filename).
 
     Exit codes: 0 clean. A people/-tree companion carries index rows
     (person_files, and its body in notes_fts), and those are deleted in the

@@ -697,12 +697,42 @@ def _strip_profile_drafts(text: str) -> tuple[str, int, str | None]:
 
 
 # A purpose block (SPEC §16a, #75) is a blockquote whose every line starts
-# `> ` (a hand-authored `>` reply-quote elsewhere in prose is not this shape -
-# it would need to be a WHOLE paragraph of consecutive `> `-prefixed lines to
-# match, and the only place `fha` itself ever writes that shape is this
-# block). Matches the block plus the one blank line that always follows it,
-# so removing it never leaves a stray gap.
+# `> ` - but a hand-authored `>` reply-quote is the SAME shape (a whole
+# paragraph of consecutive `>`-prefixed lines), so this can only be told
+# apart from one by POSITION, never by shape alone: the purpose block is
+# always the very first thing in the body - straight after the frontmatter
+# for a source record (no H1), or straight after the H1 for a person/
+# research record (SPEC §16a/§21b). `_purpose_block_prefix_end` finds that
+# position; the match below is anchored there via `pos`, never a bare
+# `re.search`/`sub(count=1)` over the whole body, so a human's own
+# blockquote written later - quoting an obituary in `## Biography`, say - is
+# never mistaken for this one. Matches the block plus the one blank line
+# that always follows it, so removing it never leaves a stray gap.
 _PURPOSE_BLOCK_RE = re.compile(r'^(?:>[^\n]*\n)+\n?', re.M)
+
+
+def _purpose_block_prefix_end(body: str) -> int:
+    """Return the index in `body` (already past the frontmatter) where a
+    purpose block would begin if this record has one.
+
+    Skips any leading blank lines (a source record's body opens directly
+    with a blank line then the block; a person/research record's opens with
+    a blank line, the H1, then another blank line before the block - and a
+    record that happens to be missing one of those blank lines must still
+    resolve to the same spot) then, if what follows is an H1 line (`# `,
+    never `## `), skips past it and any blank lines after it too. Whatever
+    position remains is where `_PURPOSE_BLOCK_RE` is anchored - not searched
+    for - next."""
+    i, n = 0, len(body)
+    while i < n and body[i] in '\r\n':
+        i += 1
+    if body[i:i + 2] == '# ':
+        nl = body.find('\n', i)
+        i = n if nl == -1 else nl + 1
+        while i < n and body[i] in '\r\n':
+            i += 1
+    return i
+
 
 # The ## Sources GENERATED-BEGIN/END region (#76), matched by its OWN heading
 # to the next `## ` heading or EOF - the same span `_lib.section_bounds`
@@ -737,17 +767,24 @@ def _strip_scaffolding_blocks(text: str, *, drop_sources_region: bool) -> str:
     source records never do, so packet's source-record copy passes False.
 
     Bounded to the BODY (never the frontmatter) the same way `_strip_profile_
-    drafts` bounds itself, and the purpose-block match is `count=1` (the
-    first run of `>`-prefixed lines only) - the block is always the first
-    thing in the body, right after the title, so this can never reach past
-    it into a human's own blockquote written later in their Biography.
+    drafts` bounds itself. The purpose-block match is POSITION-anchored, not
+    a bare first-match `sub(count=1)` over the whole body: it only ever
+    strips a blockquote run sitting immediately after the H1 (person/
+    research) or immediately after the frontmatter (source, which has no
+    H1) - never one found merely by searching forward, which would also
+    match - and silently eat - a human's own blockquote written later in
+    their Biography (a quoted obituary, letter, or inscription is common
+    genealogical prose, and looks identical in shape to this block).
     """
     fm = FRONT_RE.match(text)
     body_start = fm.end() if fm else 0
     body = text[body_start:]
     if drop_sources_region:
         body = _SOURCES_REGION_RE.sub('', body)
-    body = _PURPOSE_BLOCK_RE.sub('', body, count=1)
+    prefix_end = _purpose_block_prefix_end(body)
+    block = _PURPOSE_BLOCK_RE.match(body, prefix_end)
+    if block:
+        body = body[:prefix_end] + body[block.end():]
     return text[:body_start] + body
 
 
@@ -1981,7 +2018,18 @@ def _packet_payload(
             if include_research:
                 research_path = archive_root / research_row['path'] if research_row else None
                 if research_path is not None and research_path.exists():
-                    research_included = _copy_into(research_path, profile_dir, messages=messages) is not None
+                    # #75: a research file carries its own purpose block
+                    # (`_lib.RESEARCH_PURPOSE_BLOCK`) exactly like a profile
+                    # or a source record - scaffolding for the working
+                    # archive, not content for the family - so it must be
+                    # stripped here too. `_copy_source_with_scaffolding_
+                    # stripped` already does exactly that (strip the purpose
+                    # block only, plain byte-copy otherwise) with no claims
+                    # redaction and no `## Sources` region to drop, which is
+                    # exactly what a research file needs (still an
+                    # UNREDACTED copy otherwise - see the caution below).
+                    research_included = _copy_source_with_scaffolding_stripped(
+                        research_path, profile_dir, messages=messages) is not None
                     if research_included:
                         # Research stays a byte copy (round-2 scope decision:
                         # working notes, not publication prose), so a draft

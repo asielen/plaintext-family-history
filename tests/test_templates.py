@@ -213,6 +213,36 @@ class ScaffoldParityTests(unittest.TestCase):
             r'^## (.+)$', render_person_body_scaffold('Jane Doe'), re.M))
         self.assertEqual(backfilled_headings, scaffold_headings)
 
+    def test_ensure_person_body_sections_never_merges_the_purpose_block_into_existing_prose(self):
+        # A pre-#76 stub that already has SOME body (a Biography written
+        # before promotion, say) but no title/purpose block/Sources yet is
+        # exactly the fixture `PromoteTests` uses. The title and purpose
+        # block carry no `##` heading of their own, so appending them at
+        # EOF - wherever that currently is - would land them with nothing
+        # bounding them off, silently merging into the CONTENT of whatever
+        # section happens to be last on disk: `section_bounds`/`fha site`
+        # would then read the purpose block as more Biography prose, and
+        # `fha packet`'s purpose-block stripper (anchored to right after the
+        # H1) would never find it there to strip it - exactly the
+        # scaffolding-leaks-into-publication failure #75/SPEC §21b exists to
+        # prevent. They must land at the TOP of the body instead, in
+        # canonical order, before the section that survived in place.
+        pre76_stub = '---\nid: P-de957bcda1\nname: Jane Doe\n---\n\n## Biography\n\nx\n'
+        backfilled, added = ensure_person_body_sections(pre76_stub, 'Jane Doe')
+        self.assertEqual(added, ['title', 'purpose block', 'Sources', 'Stories',
+                                  'Research Notes', 'Friends & Family'])
+        idx_title = backfilled.index('# Jane Doe')
+        idx_purpose = backfilled.index("This person's record")
+        idx_sources = backfilled.index('## Sources')
+        idx_biography = backfilled.index('## Biography')
+        idx_x = backfilled.index('\nx\n')
+        self.assertLess(idx_title, idx_purpose)
+        self.assertLess(idx_purpose, idx_sources)
+        self.assertLess(idx_sources, idx_biography)
+        # And the human's existing prose is truly untouched, not swallowed.
+        self.assertGreater(idx_x, idx_biography)
+        self.assertIn('\n## Biography\n\nx\n', backfilled)
+
     def test_source_scaffold_fields_present_in_template(self):
         import os
         fd, p = tempfile.mkstemp(suffix='.md'); os.close(fd)

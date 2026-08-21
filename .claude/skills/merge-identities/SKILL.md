@@ -110,7 +110,9 @@ Thomas Hartley and Thos. Hartley get entered twice?"
                                           # so the relinked claims/sources surface only after a refresh
    fha lint
    ```
-   (Skip the view refresh if the survivor is a stub — stubs carry no companion views, SPEC §16.)
+   (If the survivor is a stub, skip `timeline`/`draft-queue` — stubs carry no companion views for
+   those, SPEC §16 — but still run `sources-index`: #76 deliberately works on a stub too, so the
+   relinked sources show up in its `## Sources` section right away rather than waiting on promotion.)
    Confirm **no new E016** (no claim references the merged person directly as a fresh write), **no new
    W107 regression** beyond the expected gradual-cleanup list, and **no new W115** (a `relationships:`
    entry stranded on the tombstone, or a folded kin edge missing from the survivor's block). Report plainly ("merged the duplicate stub

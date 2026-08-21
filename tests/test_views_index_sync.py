@@ -571,6 +571,41 @@ class SyncHelperTests(_SyncBase):
             before)
 
 
+class ResyncProfileReadFailureTests(_SyncBase):
+    """A profile `resync_person_profile_rows` cannot RE-READ must not be
+    silently reported as re-indexed with its search text quietly emptied.
+
+    Unlike `sync_generated_view_rows`'s own `_written_row` (which treats an
+    unreadable file as a low-risk "filesystem oddity" because the process
+    just wrote it seconds ago), a profile this function re-syncs can be years
+    old and was never guaranteed to be UTF-8-clean. `read_record` deliberately
+    RAISES on a bad decode rather than answering an empty record precisely so
+    a caller cannot mistake "could not read this" for "this is blank" - this
+    function must honor that rather than catching the exception and wiping
+    the row.
+    """
+
+    def test_undecodable_profile_reports_index_error_and_keeps_its_old_row(self) -> None:
+        profile = self.folder / f'hartley__cur_{PID}.md'
+        rel = str(Path('people') / FOLDER / profile.name)
+        # setUp's _reindex() already put the original 'x' Biography text into
+        # notes_fts - confirm the starting point before corrupting the file.
+        self.assertIn(rel, self._fts_rows('x'))
+
+        # Corrupt the file on disk with bytes that are not valid UTF-8 -
+        # read_record raises UnicodeDecodeError on this, by design.
+        profile.write_bytes(b'---\nid: ' + PID.encode() + b'\nname: Cur Hartley\n'
+                             b'living: false\ntier: curated\n---\n\n'
+                             b'# Cur Hartley\n\n## Biography\n\n\xff\xfe not utf-8\n')
+
+        status = _lib.resync_person_profile_rows(self.root, [profile])
+        self.assertEqual(status, 'index_error')
+        # The OLD row must survive untouched - not deleted, not replaced with
+        # empty content. A caller that ignored the 'index_error' status and
+        # searched anyway still finds the last-known-good text, not nothing.
+        self.assertIn(rel, self._fts_rows('x'))
+
+
 if __name__ == '__main__':
     unittest.main()
 

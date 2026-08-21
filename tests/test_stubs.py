@@ -473,12 +473,23 @@ class StubsModuleWrapperTests(unittest.TestCase):
         # render_stub_content's frontmatter with render_person_body_scaffold's
         # full body (purpose block, ## Sources placeholder, the four
         # hand-written sections) appended, so `fha stubs` and `fha person new`
-        # mint byte-identical records.
+        # mint byte-identical records. The extra blank line between them
+        # matches the template's own frontmatter-then-H1 spacing convention -
+        # render_stub_content ends in only a single '\n' on its own.
         self.assertEqual(
             stubs._stub_content('P-aaaaaaaaaa', 'Jane Doe'),
-            render_stub_content('P-aaaaaaaaaa', 'Jane Doe')
+            render_stub_content('P-aaaaaaaaaa', 'Jane Doe') + '\n'
             + render_person_body_scaffold('Jane Doe'),
         )
+
+    def test_stub_content_has_blank_line_after_frontmatter(self) -> None:
+        # A regression guard for the blank line itself (not just the
+        # wrapper's own arithmetic, which the test above already pins): a
+        # freshly-minted stub must match archive-template/people/
+        # _TEMPLATE.person.md's own frontmatter-then-H1 spacing, not run the
+        # closing fence and the title together on adjacent lines.
+        content = stubs._stub_content('P-aaaaaaaaaa', 'Jane Doe')
+        self.assertIn('\n---\n\n# Jane Doe\n', content)
 
     def test_stub_content_body_carries_the_76_sections(self) -> None:
         content = stubs._stub_content('P-aaaaaaaaaa', 'Jane Doe')

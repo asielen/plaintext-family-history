@@ -206,7 +206,32 @@ class SourcesIndexWorksOnStubsTests(unittest.TestCase):
         self.assertEqual(
             sorted(p.name for p in (self.root / 'people' / 'stubs').iterdir()),
             [f'hartley__promoted_{PROMOTED}.md', f'hartley__stub_{STUB}.md'])
-        self.assertIn('## Sources', stub_path.read_text(encoding='utf-8'))
+        text = stub_path.read_text(encoding='utf-8')
+        self.assertIn('## Sources', text)
+        # SPEC §16 places `## Sources` FIRST among the profile's `##`
+        # headings, right after the H1 - not wherever there happened to be
+        # room. This fixture's `## Biography` already existed on disk with
+        # no `## Sources` heading yet (the ordinary pre-#76-touched shape),
+        # so a positional regression would bolt the new region onto the very
+        # end of the file instead of inserting it at the top.
+        self.assertLess(text.index('## Sources'), text.index('## Biography'))
+
+    def test_stub_sources_section_lands_before_biography_not_at_eof(self) -> None:
+        # The direct regression test for the positioning bug: a pre-#76-
+        # shaped stub with a Biography already on disk, no `## Sources`
+        # heading, must get the new region inserted BEFORE the existing
+        # section, never appended after it.
+        stub_path = self.root / 'people' / 'stubs' / f'hartley__stub_{STUB}.md'
+        res = views.run_sources_index(self.root, person_id=STUB)
+        self.assertEqual(res.exit_code, EXIT_CLEAN)
+        text = stub_path.read_text(encoding='utf-8')
+        idx_title = text.index(f'# Stub Hartley')
+        idx_sources = text.index('## Sources')
+        idx_biography = text.index('## Biography')
+        idx_x = text.index('\nx\n')
+        self.assertLess(idx_title, idx_sources)
+        self.assertLess(idx_sources, idx_biography)
+        self.assertGreater(idx_x, idx_biography)   # the human's prose survives untouched
 
     def test_curated_record_left_in_stubs_also_gets_its_section_refreshed(self) -> None:
         promoted_path = self.root / 'people' / 'stubs' / f'hartley__promoted_{PROMOTED}.md'

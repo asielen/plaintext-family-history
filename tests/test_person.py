@@ -918,6 +918,16 @@ class NewTests(unittest.TestCase):
         self.assertEqual(str(meta['living']), 'unknown')
         self.assertEqual(str(meta['id']).lower(), result.data['person_id'].lower())
 
+    def test_new_stub_body_matches_the_template_spacing(self) -> None:
+        # #75/#76: run_new's content is `render_stub_content(...) + '\n' +
+        # render_person_body_scaffold(...)` - a plain concatenation that, if
+        # the '\n' separator regresses, silently loses the blank line
+        # archive-template/people/_TEMPLATE.person.md carries between the
+        # frontmatter's closing fence and the H1.
+        result = person.run_new(self.root, 'Jane Doe')
+        text = Path(result.data['path']).read_text(encoding='utf-8')
+        self.assertIn('\n---\n\n# Jane Doe\n', text)
+
     def test_each_option_individually(self) -> None:
         cases = [
             ({'sex': 'F'}, {'sex': 'F'}),
