@@ -517,7 +517,13 @@ class RealignAfterRootGenerationChangeTests(unittest.TestCase):
         self.assertEqual(len(new_x_dirs), 1, list((root / 'people').iterdir()))
         x_names = {p.name for p in new_x_dirs[0].glob('*.md')}
         self.assertTrue(any(X in n for n in x_names), x_names)
-        moved_x = next(p for p in new_x_dirs[0].glob('*.md') if X in p.name)
+        # The promoted PROFILE keeps its original basename (promotion moves,
+        # never renames) - matched exactly, not by an `X in name` substring
+        # search, because promotion also scaffolds a `..._research_{X}.md`
+        # companion into the same folder, whose name contains the identical
+        # P-id substring and whose glob() iteration order is not guaranteed.
+        moved_x = new_x_dirs[0] / f'x__kid_{X}.md'
+        self.assertTrue(moved_x.exists(), x_names)
         from _lib import read_record
         rec = read_record(moved_x)
         self.assertEqual(str(rec['meta'].get('tier')), 'curated')
