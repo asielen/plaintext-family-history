@@ -3013,5 +3013,166 @@ class WorkbenchModeTests(_Base):
         self._read('sources/s-1111111111.html')
 
 
+_FAN_LABEL_RE = re.compile(
+    r'<text class="fan-label" font-size="([0-9.]+)"><textPath[^>]*>([^<]*)</textPath>')
+
+# Largest label size each ring is allowed (site.py `fs_max`, indexed by
+# generation) and the readable floor below which a name is shortened instead of
+# shrunk further. Written down here so the tests below state the contract the
+# renderer's docstring describes rather than echoing whatever it happens to emit.
+_RING_MAX_FS = {1: 13.0, 2: 12.0, 3: 11.0}
+_FS_FLOOR = 8.0
+
+
+def _fan_labels(svg):
+    """[(font_size, shown_text)] for every ancestor label in a fan SVG, in
+    document order (the subject's hub label is a different class and excluded)."""
+    return [(float(fs), text) for fs, text in _FAN_LABEL_RE.findall(svg)]
+
+
+class FanChartLabelTests(_Base):
+    """Issue #116: `_render_fan_svg` sizes each label to fit its own arc and
+    writes that size as an SVG font-size presentation attribute. Presentation
+    attributes carry zero specificity, so `.fan-label { font-size: 11px }` beat
+    every computed size - each label was laid out for one size and drawn at
+    another, and the long outer names ran off the end of their textPath. The
+    stylesheet now keeps its default on the container instead, where it is
+    inherited and so yields to a label's own attribute."""
+
+    def _fan(self, num_to_name):
+        """Fan SVG for {Ahnentafel number: name}, drawn to the same depth person
+        pages use (site._FAN_GENERATIONS) so the arcs are the real ones."""
+        labels = {1: {'name': 'Subject', 'url': None}}
+        for num, nm in num_to_name.items():
+            labels[num] = {'name': nm, 'url': None}
+        return site._render_fan_svg(labels, site._FAN_GENERATIONS)
+
+    def test_every_label_carries_its_own_font_size(self):
+        # The stylesheet no longer sizes .fan-label, so the attribute is now
+        # load-bearing: a label emitted without one would inherit the fallback
+        # and lose its fit entirely.
+        svg = self._fan({2: 'Calvin George Hartley', 3: 'Ada', 6: 'Harriet Frances Webb'})
+        self.assertEqual(svg.count('class="fan-label"'), len(_fan_labels(svg)))
+        self.assertEqual(len(_fan_labels(svg)), 3)
+
+    def test_labels_are_sized_per_arc_not_one_flat_size(self):
+        # The point of the auto-shrink: a long name and a short one on the same
+        # ring get different sizes. One flat size for both is the #116 symptom.
+        svg = self._fan({2: 'Bo', 3: 'Chastina Augusta Reed'})
+        sizes = {fs for fs, _ in _fan_labels(svg)}
+        self.assertEqual(len(sizes), 2, f'expected two distinct label sizes, got {sizes}')
+
+    def test_a_name_the_shrink_can_fit_is_never_shortened(self):
+        # 'Chastina Augusta Reed' is 21 characters: the shrink picks a size at
+        # which the whole name fits, so shortening it is a contradiction. The
+        # character budget used to be derived back out of that size, and float
+        # rounding turned "exactly 21 fit" into 20 - an ellipsis on a name the
+        # renderer had just made room for.
+        for name in ('Chastina Augusta Reed', 'Caleb Comstock Hartley',
+                     'Wilhelmina Cartwright'):
+            for num in (2, 4, 8):
+                svg = self._fan({num: name})
+                fs, shown = _fan_labels(svg)[0]
+                if fs > _FS_FLOOR:
+                    self.assertEqual(shown, name,
+                                     f'{name!r} shortened at {fs}px, above the {_FS_FLOOR}px floor')
+
+    def test_a_short_name_keeps_its_rings_full_size(self):
+        # The fix must not shrink the common case: a name with room to spare
+        # renders at its ring's ceiling, not at some universally reduced size.
+        for num, gen in ((2, 1), (4, 2), (8, 3)):
+            svg = self._fan({num: 'Ada'})
+            fs, shown = _fan_labels(svg)[0]
+            self.assertEqual(shown, 'Ada')
+            self.assertEqual(fs, _RING_MAX_FS[gen])
+
+    def test_a_name_past_the_floor_is_shortened_and_kept_in_the_tooltip(self):
+        # Below the readable floor the renderer stops shrinking and shortens
+        # instead - never lossily, because the whole name rides a <title>.
+        long_name = 'Maximilian Bartholomew Fitzwilliam Cholmondeley'
+        svg = self._fan({8: long_name})
+        fs, shown = _fan_labels(svg)[0]
+        self.assertEqual(fs, _FS_FLOOR)
+        self.assertTrue(shown.endswith('…'), shown)
+        self.assertLess(len(shown), len(long_name))
+        self.assertIn(f'<title>{long_name}</title>', svg)
+
+    def test_a_label_is_shown_whole_or_sized_at_the_floor(self):
+        # The renderer's contract in one line: shrink to fit, and shorten only
+        # once shrinking has bottomed out. Swept across name lengths and rings
+        # because the failure was a float edge that hit only some lengths.
+        for num, gen in ((2, 1), (4, 2), (8, 3)):
+            for length in range(1, 41):
+                name = 'M' * length
+                fs, shown = _fan_labels(self._fan({num: name}))[0]
+                self.assertGreaterEqual(fs, _FS_FLOOR)
+                self.assertLessEqual(fs, _RING_MAX_FS[gen])
+                if shown != name:
+                    self.assertEqual(fs, _FS_FLOOR,
+                                     f'{length}-char name shortened at {fs}px on ring {gen}')
+
+    def test_person_page_carries_the_computed_label_sizes(self):
+        # End to end: the per-label size has to survive the site build into the
+        # published HTML, not just exist inside the renderer.
+        self._seed_person('p-aaaaaaaaaa', 'Ada Jane Hartley', surname='Hartley')
+        self._seed_person('p-bbbbbbbbbb', 'Bo Ford', surname='Ford')
+        self._seed_person('p-cccccccccc', 'Chastina Augusta Reed', surname='Reed')
+        self._seed_rel('p-aaaaaaaaaa', 'parent', 'p-bbbbbbbbbb')
+        self._seed_rel('p-aaaaaaaaaa', 'parent', 'p-cccccccccc')
+        self._run(linked=True)
+        page = self._read('persons/p-aaaaaaaaaa.html')
+        labels = {text: fs for fs, text in _fan_labels(page)}
+        self.assertEqual(set(labels), {'Bo Ford', 'Chastina Augusta Reed'})
+        self.assertGreater(labels['Bo Ford'], labels['Chastina Augusta Reed'])
+
+
+class FanChartStyleTests(unittest.TestCase):
+    def test_fan_label_has_no_fixed_font_size(self):
+        # Issue #116: _render_fan_svg() computes a per-label auto-shrink
+        # font-size and writes it as an SVG presentation attribute; a CSS
+        # font-size rule on .fan-label silently overrides that computed
+        # value (SVG presentation attributes lose to any CSS rule, even a
+        # plain class selector). Guard against reintroducing a fixed size.
+        css = (ROOT / 'design' / 'styles.css').read_text(encoding='utf-8')
+        # Anchored to the start of a line so a selector quoted inside one of
+        # the surrounding comments cannot stand in for the rule itself.
+        m = re.search(r'^\.fan-label\s*\{([^}]*)\}', css, re.M)
+        self.assertIsNotNone(m, '.fan-label rule not found in design/styles.css')
+        self.assertNotIn('font-size', m.group(1))
+
+    def test_fan_chart_container_supplies_the_fallback_size(self):
+        # Deleting the .fan-label size alone would leave a label with no
+        # attribute inheriting the 1.05rem body text - a worse clip than the
+        # 11px it replaced. The default belongs on the container, where it is
+        # inherited and therefore loses to a label's own attribute.
+        css = (ROOT / 'design' / 'styles.css').read_text(encoding='utf-8')
+        m = re.search(r'^\.fan-chart\s*\{([^}]*)\}', css, re.M)
+        self.assertIsNotNone(m, '.fan-chart rule not found in design/styles.css')
+        self.assertIn('font-size', m.group(1))
+
+
+class CommittedShowcaseAssetTests(unittest.TestCase):
+    """`_copy_assets` copies design/styles.css verbatim into every build's
+    assets/, and the two example sites under example-archive/generated/ are
+    committed as browsable showcases. A stylesheet fix that stops at design/
+    therefore still ships the old bug to anyone reading those - which is how
+    the #116 fix first landed."""
+
+    def test_committed_showcase_stylesheets_match_the_design_package(self):
+        design = (ROOT / 'design' / 'styles.css').read_text(encoding='utf-8')
+        for rel in ('example-archive/generated/site/assets/styles.css',
+                    'example-archive/generated/site-workbench/assets/styles.css'):
+            with self.subTest(rel):
+                self.assertEqual(
+                    (ROOT / rel).read_text(encoding='utf-8'), design,
+                    f'{rel} is stale. Rebuild the standalone showcase with\n'
+                    '  python3 tools/fha.py index --root example-archive\n'
+                    '  python3 tools/fha.py site --root example-archive --standalone '
+                    '--out generated/site\n'
+                    'and copy design/styles.css over the site-workbench snapshot '
+                    '(that one is built by `fha serve` and cannot be rebuilt '
+                    'reproducibly - it embeds a per-process CSRF token).')
+
+
 if __name__ == '__main__':
     unittest.main()
