@@ -404,6 +404,79 @@ class PersonPageTests(_Base):
         self.assertIn('1840', html[born_idx:married_idx])
         self.assertNotIn('1871', html[born_idx:married_idx])
 
+    def _legend(self, html):
+        """The date-notation legend paragraph on a built page, tag to tag.
+
+        Sliced exactly, rather than by a fixed character window, so a longer
+        legend cannot quietly push a notation out of what the assertions can
+        see - and so an assertion can never pass on text that belongs to some
+        other part of the footer.
+        """
+        self.assertIn('<p class="date-notation-note">', html)
+        start = html.index('<p class="date-notation-note">')
+        # Exactly one legend per page: it lives in base.html's shared footer.
+        self.assertNotIn('<p class="date-notation-note">', html[start + 1:])
+        return html[start:html.index('</p>', start)]
+
+    def test_date_notation_legend_reachable_from_person_page(self):
+        # #131: a person page that actually shows the shorthand (~ / X / /)
+        # must sit on a page that also explains it - the legend lives in the
+        # shared footer (base.html), so every page that extends it carries
+        # the explanation regardless of which notation that particular page
+        # happens to use.
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley')
+        self._seed_source('s-1111111111', 'Record', people=('p-aaaaaaaaaa',))
+        self._seed_claim('c-1111111111', 's-1111111111', 'death', 'Died',
+                         status='accepted', date_edtf='1891~', persons=('p-aaaaaaaaaa',))
+        self._run(linked=True)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('1891~', html)          # the notation really is on this page, as written
+        legend = self._legend(html)
+        self.assertIn('~', legend)
+        self.assertIn('193X', legend)         # the decade form, shown by example
+        self.assertIn('decade', legend)
+        self.assertIn('range', legend)
+
+    def test_date_notation_legend_covers_every_spec_11_notation(self):
+        # SPEC.md 11 is the list of date forms a record may hold, and `fha site`
+        # prints date_edtf exactly as stored - so every mark in that table is a
+        # mark a visitor can meet on a page. Derived from the table, not from
+        # the legend's current wording: a notation the archive can store and the
+        # legend cannot explain is the bug #131 reported, one form later.
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley')
+        self._seed_source('s-1111111111', 'Record', people=('p-aaaaaaaaaa',))
+        # One claim per SPEC 11 row that carries a mark a reader must decode.
+        for n, (cid, edtf) in enumerate((
+                ('c-1111111111', '1850~'),            # Circa
+                ('c-2222222222', '1850?'),            # Uncertain
+                ('c-3333333333', '185X'),             # Decade
+                ('c-4444444444', '[..1920]'),         # Before
+                ('c-5555555555', '1871-02/1871-03'),  # Interval
+        )):
+            self._seed_claim(cid, 's-1111111111', 'event', f'Event {n}',
+                             status='accepted', date_edtf=edtf, persons=('p-aaaaaaaaaa',))
+        self._run(linked=True)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        legend = self._legend(html)
+        for edtf, mark in (('1850~', '~'), ('1850?', '?'), ('185X', 'X'),
+                           ('[..1920]', '[..'), ('1871-02/1871-03', '/')):
+            # The page shows the stored form as written ...
+            self.assertIn(edtf, html, f'{edtf} is not rendered on the page')
+            # ... so the legend has to account for its mark.
+            self.assertIn(mark, legend, f'the legend never explains {mark!r} ({edtf})')
+        # The two hedges mean different things (SPEC 11 lists Circa and
+        # Uncertain as separate rows); the legend must not collapse them.
+        self.assertIn('confirmed', legend)
+        self.assertIn('before', legend)
+
+    def test_date_notation_legend_also_reaches_source_and_home_pages(self):
+        # The legend is shared footer markup (base.html), not a person-page
+        # special case - it travels to every page that extends base.html.
+        self._seed_source('s-1111111111', 'A Source')
+        self._run(linked=True)
+        self._legend(self._read('sources/s-1111111111.html'))
+        self._legend(self._read('index.html'))
+
     def test_alt_names_and_tags_in_header(self):
         self._seed_person(
             'p-aaaaaaaaaa', 'Margaret Hartley', surname='Hartley',
@@ -887,6 +960,34 @@ class AssetTests(_Base):
         self.assertIn('Photographs', html)
         self.assertIn('Jane in 1880', html)
         self.assertIn('jane.jpg', html)
+
+    def test_photo_strip_link_opens_in_new_tab(self):
+        # #122: the Photographs strip opens the real photo file, not another
+        # page on this site - it must not replace the person page a visitor
+        # was reading.
+        self._seed_person('p-aaaaaaaaaa', 'Jane Doe')
+        img = self.archive_root / 'photos' / '1880' / 'jane.jpg'
+        img.parent.mkdir(parents=True, exist_ok=True)
+        img.write_bytes(b'not-a-real-image-but-exists')
+        pconn = self._make_photos_db()
+        pconn.execute(
+            'INSERT INTO photos(path, group_id, is_primary, caption) VALUES (?,?,?,?)',
+            ('photos/1880/jane.jpg', 'g1', 1, 'Jane in 1880'))
+        pconn.execute(
+            'INSERT INTO photo_people(path, person_ref, via) VALUES (?,?,?)',
+            ('photos/1880/jane.jpg', 'p-aaaaaaaaaa', 'pid-keyword'))
+        pconn.commit()
+        pconn.close()
+        self._make_photos_fresh()
+        self._run(linked=True)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        # Just the strip: slicing to the end of the document would let any
+        # target="_blank" further down the page satisfy the assertion.
+        strip_start = html.index('class="photo-strip"')
+        strip = html[strip_start:html.index('</figure>', strip_start)]
+        self.assertIn('jane.jpg', strip)
+        self.assertIn('target="_blank"', strip)
+        self.assertIn('rel="noopener"', strip)
 
     def test_missing_photo_row_does_not_hide_its_live_variant(self):
         # `fha photoindex reconcile` re-keys a vanished photo 'MISSING:…' and
@@ -1430,6 +1531,197 @@ class SourcePortraitTests(_Base):
         html = self._read('sources/s-1111111111.html')
         self.assertNotIn('class="source-portrait"', html)
         self.assertIn('Pillow not installed', html)
+
+
+class FileOpeningLinkTargetTests(_Base):
+    """#122: links that open an actual scan/photo/document file must carry
+    target="_blank" rel="noopener" (open in a new tab, no window.opener leak
+    back to this page) - same-site navigation links must NOT, so a visitor
+    reading a person or source page never loses their place to a file open.
+    Two-sided by design (AGENTS_TOOLING.md - "two-sided rules get two-sided
+    tests"): every assertion below is paired with a negative one proving the
+    attribute was not sprayed everywhere."""
+
+    def test_source_portrait_links_open_in_new_tab(self):
+        self._seed_source('s-1111111111', 'Photo Source', source_type='photo')
+        img = self.archive_root / 'photos' / '1880' / 'pic.jpg'
+        img.parent.mkdir(parents=True, exist_ok=True)
+        img.write_bytes(b'not-a-real-image-but-exists')
+        self.conn.execute(
+            'INSERT INTO source_files(source_id, path, role) VALUES (?,?,?)',
+            ('s-1111111111', 'photos/1880/pic.jpg', 'front'))
+        self._run(linked=True)
+        html = self._read('sources/s-1111111111.html')
+        self.assertIn('class="source-portrait"', html)
+        # Both the image wrapper and the caption link the same full_href.
+        portrait_block = html[html.index('class="source-portrait"'):]
+        figure_end = portrait_block.index('</figure>')
+        figure_html = portrait_block[:figure_end]
+        self.assertEqual(figure_html.count('target="_blank"'), 2)
+        self.assertEqual(figure_html.count('rel="noopener"'), 2)
+
+    def test_source_files_image_links_open_in_new_tab(self):
+        self._seed_source('s-1111111111', 'Photo Source', source_type='photo')
+        img = self.archive_root / 'photos' / '1880' / 'pic.jpg'
+        img.parent.mkdir(parents=True, exist_ok=True)
+        img.write_bytes(b'not-a-real-image-but-exists')
+        self.conn.execute(
+            'INSERT INTO source_files(source_id, path, role) VALUES (?,?,?)',
+            ('s-1111111111', 'photos/1880/pic.jpg', 'front'))
+        self._run(linked=True)
+        html = self._read('sources/s-1111111111.html')
+        files_block = html[html.index('<h2>Files</h2>'):html.index('</ul>', html.index('<h2>Files</h2>'))]
+        self.assertIn('pic.jpg', files_block)
+        # thumbnail link + "full size" link, both new-tab.
+        self.assertEqual(files_block.count('target="_blank"'), 2)
+        self.assertEqual(files_block.count('rel="noopener"'), 2)
+        self.assertIn('full-size-link', files_block)
+
+    def test_source_files_nonimage_link_opens_in_new_tab(self):
+        self._seed_source('s-1111111111', 'Doc Source', source_type='letter')
+        doc = self.archive_root / 'documents' / 'letters' / 'note_s-1111111111.txt'
+        doc.parent.mkdir(parents=True, exist_ok=True)
+        doc.write_text('a letter', encoding='utf-8')
+        self.conn.execute(
+            'INSERT INTO source_files(source_id, path, role) VALUES (?,?,?)',
+            ('s-1111111111', 'documents/letters/note_s-1111111111.txt', 'transcript'))
+        self._run(linked=True)
+        html = self._read('sources/s-1111111111.html')
+        files_block = html[html.index('<h2>Files</h2>'):html.index('</ul>', html.index('<h2>Files</h2>'))]
+        self.assertIn('note_s-1111111111.txt', files_block)
+        self.assertIn('target="_blank"', files_block)
+        self.assertIn('rel="noopener"', files_block)
+
+    def test_internal_navigation_links_stay_in_same_tab(self):
+        # Negative half of the pair above: same-site links (the header nav,
+        # a citation's person cross-link, the source's own record-open link)
+        # must never pick up target="_blank" - only file-opening anchors do.
+        self._seed_person('p-aaaaaaaaaa', 'Jane Doe')
+        self._seed_source('s-1111111111', '1880 Census', people=('p-aaaaaaaaaa',))
+        self._seed_claim('c-1111111111', 's-1111111111', 'residence', 'Lived in Kansas',
+                         status='accepted', persons=('p-aaaaaaaaaa',))
+        self._run(linked=True)
+        html = self._read('sources/s-1111111111.html')
+        # The header nav (from base.html) never opens a new tab.
+        self.assertIn('<a href="../index.html">Home</a>', html)
+        nav_block = html[html.index('site-nav'):html.index('</nav>')]
+        self.assertNotIn('target="_blank"', nav_block)
+        # The claim's person cross-link is same-site navigation, not a file.
+        self.assertIn('../persons/p-aaaaaaaaaa.html', html)
+        person_link_idx = html.index('../persons/p-aaaaaaaaaa.html')
+        # Look at just that one anchor tag (up to its closing '>').
+        tag_end = html.index('>', person_link_idx)
+        self.assertNotIn('target="_blank"', html[person_link_idx:tag_end])
+
+    # - the whole-site invariant -
+
+    def _seed_a_page_of_every_kind(self):
+        """Seed enough archive that a build emits all four link shapes at once:
+        site navigation, person/source/place cross-links, an image file and a
+        non-image file. One seeding used by both halves of the sweep below."""
+        self._seed_person('p-aaaaaaaaaa', 'Jane Doe')
+        self._seed_source('s-1111111111', 'Photo Source', source_type='photo',
+                          people=('p-aaaaaaaaaa',))
+        self._seed_claim('c-1111111111', 's-1111111111', 'residence', 'Lived in Kansas',
+                         status='accepted', date_edtf='1880', persons=('p-aaaaaaaaaa',))
+        img = self.archive_root / 'photos' / '1880' / 'pic.jpg'
+        img.parent.mkdir(parents=True, exist_ok=True)
+        img.write_bytes(b'not-a-real-image-but-exists')
+        doc = self.archive_root / 'documents' / 'letters' / 'note_s-1111111111.txt'
+        doc.parent.mkdir(parents=True, exist_ok=True)
+        doc.write_text('a letter', encoding='utf-8')
+        for rel, role in (('photos/1880/pic.jpg', 'front'),
+                          ('documents/letters/note_s-1111111111.txt', 'transcript')):
+            self.conn.execute(
+                'INSERT INTO source_files(source_id, path, role) VALUES (?,?,?)',
+                ('s-1111111111', rel, role))
+
+    def _site_anchors(self):
+        """Every anchor in every built page as (page, href, tag).
+
+        A per-template assertion only ever guards the templates someone
+        remembered to write one for - and #122 was one template's attribute
+        missing from four places at once. This sweeps the built output instead,
+        so a new template, or a new link in an old one, is covered the day it
+        lands rather than the day someone notices."""
+        anchors = []
+        for page in sorted(self.out_dir.rglob('*.html')):
+            page_html = page.read_text(encoding='utf-8')
+            for tag in re.findall(r'<a\b[^>]*>', page_html, re.I):
+                href = re.search(r'href="([^"]*)"', tag)
+                anchors.append((page.relative_to(self.out_dir).as_posix(),
+                                href.group(1) if href else '', tag))
+        return anchors
+
+    @staticmethod
+    def _link_kind(href):
+        """'page', 'external' or 'file' for one href.
+
+        'page' covers same-site navigation and in-page fragments (including the
+        workbench's `href="#"` stubs, which JavaScript intercepts). 'external'
+        is an absolute http/https/mailto URL - the place page's "View on
+        OpenStreetMap" link is the only one the site emits today, and #122
+        explicitly scoped itself to file links, so this sweep records its shape
+        without ruling on it. Everything else is a path to a real file on disk.
+        """
+        target = href.split('#')[0]
+        if target.lower().startswith(('http://', 'https://', 'mailto:')):
+            return 'external'
+        if target == '' or target.endswith('.html'):
+            return 'page'
+        return 'file'
+
+    def test_no_site_page_link_opens_in_a_new_tab(self):
+        # Spraying target="_blank" across the templates would "fix" #122 and
+        # break the reading experience it protects: navigating the tree must
+        # never litter a visitor's browser with tabs.
+        self._seed_a_page_of_every_kind()
+        self._run(linked=True)
+        anchors = self._site_anchors()
+        self.assertTrue(anchors, 'the build emitted no anchors to check')
+        for page, href, tag in anchors:
+            if self._link_kind(href) == 'page':
+                self.assertNotIn('target="_blank"', tag,
+                                 f'{page}: same-site link {href!r} opens a new tab')
+
+    def test_every_file_link_in_the_built_site_opens_in_a_new_tab(self):
+        # Positive half, swept over the whole build rather than named template
+        # by named template - the shape of the miss #122 reported.
+        self._seed_a_page_of_every_kind()
+        self._run(linked=True)
+        file_links = [(p, h, t) for p, h, t in self._site_anchors()
+                      if self._link_kind(h) == 'file']
+        self.assertTrue(file_links, 'the build emitted no file links to check')
+        for page, href, tag in file_links:
+            self.assertIn('target="_blank"', tag,
+                          f'{page}: file link {href!r} replaces the page instead of opening a tab')
+            self.assertIn('rel="noopener"', tag,
+                          f'{page}: file link {href!r} opens a new tab without rel="noopener"')
+
+    @unittest.skipUnless(site._PIL_AVAILABLE, 'Pillow not installed')
+    def test_standalone_build_keeps_the_same_two_sided_rule(self):
+        # --standalone links at EXIF-stripped derivatives under media/ instead
+        # of the originals: different hrefs, same two-sided rule. The published
+        # snapshot is the build a visitor actually receives, so it gets its own
+        # pass rather than inheriting --linked's.
+        from PIL import Image
+        self._seed_a_page_of_every_kind()
+        # A real image this time: standalone omits anything Pillow cannot open,
+        # and an omitted image emits no link at all - nothing to assert on.
+        Image.new('RGB', (60, 40), (10, 20, 30)).save(
+            self.archive_root / 'photos' / '1880' / 'pic.jpg')
+        self._run(linked=False)
+        checked = 0
+        for page, href, tag in self._site_anchors():
+            kind = self._link_kind(href)
+            if kind == 'page':
+                self.assertNotIn('target="_blank"', tag,
+                                 f'{page}: same-site link {href!r} opens a new tab')
+            elif kind == 'file':
+                checked += 1
+                self.assertIn('target="_blank"', tag, f'{page}: file link {href!r}')
+                self.assertIn('rel="noopener"', tag, f'{page}: file link {href!r}')
+        self.assertTrue(checked, 'the standalone build emitted no file links to check')
 
 
 class PlacePageTests(_Base):

@@ -686,7 +686,7 @@
     {
       "path": ".fha/tools/templates/base.html",
       "category": "operating",
-      "sha256": "7cfccf8d6c44bea1ed4178da533c1fec8e2fdd94455fba7bb60d324a4b05898b",
+      "sha256": "e8f6d58073666e91792c3239594edd50d78d6fe433a54ceadece0f62c4eee446",
       "spec_version": "1.2",
       "src": "tools/templates/base.html"
     },
@@ -700,7 +700,7 @@
     {
       "path": ".fha/tools/templates/gallery.html",
       "category": "operating",
-      "sha256": "03389f68a4a843edf755682dcebb678af861d2aea0f56eba4aaef861389a667c",
+      "sha256": "837512f0ea323d615db4ab11da3cbd8cb838c41c130a3fb653780e69e18fe22b",
       "spec_version": "1.2",
       "src": "tools/templates/gallery.html"
     },
@@ -721,7 +721,7 @@
     {
       "path": ".fha/tools/templates/person.html",
       "category": "operating",
-      "sha256": "d489a2e7ea95cb1c154281325ad57513e7dbefe56849bf77f492508c69db8f72",
+      "sha256": "0d92837387d5defebe08f0ddddc13b886aa07510c2268e2dfa07263afc09c89e",
       "spec_version": "1.2",
       "src": "tools/templates/person.html"
     },
@@ -742,7 +742,7 @@
     {
       "path": ".fha/tools/templates/source.html",
       "category": "operating",
-      "sha256": "fc1b04e82369fca3668e071332cc5a85f5475fc8bc5ff827fba0911778dc60d6",
+      "sha256": "e5bd7564a0a8ed912230f675fc42cbfc3207af8f80483dad30775f8ce5a0784a",
       "spec_version": "1.2",
       "src": "tools/templates/source.html"
     },
