@@ -43,6 +43,7 @@ import process
 import stubs
 from _lib import (
     EXIT_ERRORS,
+    PERSON_BODY_SECTIONS,
     PERSON_BODY_SECTIONS_TEXT,
     RESEARCH_TEMPLATE_FALLBACK,
     ensure_person_body_sections,
@@ -325,6 +326,34 @@ class PersonSectionIsUnfilledTests(unittest.TestCase):
                 r'^## ([^\n]+)\n(.*?)(?=\n## |\Z)', PERSON_BODY_SECTIONS_TEXT, re.M | re.S):
             with self.subTest(heading=heading):
                 self.assertTrue(person_section_is_unfilled(heading, placeholder.strip()))
+
+    def test_crlf_placeholder_is_still_unfilled(self):
+        # A person record is a plain file, and the archive owner's editor may
+        # well be Notepad (or git with autocrlf on) - both write CRLF where
+        # the scaffold constant has LF. `fha packet` reads the profile with
+        # the newline-PRESERVING read_text_exact, so the check meets those
+        # `\r`s intact. A byte-for-byte comparison would call this untouched
+        # placeholder "real content" and publish the instructions again.
+        for heading, placeholder in PERSON_BODY_SECTIONS:
+            with self.subTest(heading=heading):
+                self.assertTrue(person_section_is_unfilled(
+                    heading, placeholder.replace('\n', '\r\n')))
+
+    def test_trailing_whitespace_placeholder_is_still_unfilled(self):
+        # Plenty of editors add (or leave) a trailing space on a line when
+        # the file is saved. It changes no word of what the section says, so
+        # it must not decide whether the section publishes.
+        placeholder = dict(PERSON_BODY_SECTIONS)['Biography']
+        spaced = '\n'.join(line + '  ' for line in placeholder.split('\n'))
+        self.assertTrue(person_section_is_unfilled('Biography', spaced))
+
+    def test_reworded_placeholder_is_treated_as_written(self):
+        # The other half of the same rule: tolerance stops at whitespace.
+        # A human who actually changed a WORD has written something, and
+        # dropping his text would be the worse failure of the two.
+        placeholder = dict(PERSON_BODY_SECTIONS)['Biography']
+        self.assertFalse(person_section_is_unfilled(
+            'Biography', placeholder.replace('their story', 'his story')))
 
 
 class TemplateHygieneTests(unittest.TestCase):

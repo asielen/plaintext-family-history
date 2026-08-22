@@ -2384,6 +2384,26 @@ class UnfilledPlaceholderSectionTests(_Base):
         self.assertNotIn('<h2>Research Notes</h2>', html)
         self.assertNotIn('Open questions, hunches, and brick walls', html)
 
+    def test_placeholder_saved_by_a_windows_editor_is_still_omitted(self):
+        # The whole-path version of test_templates' CRLF/trailing-space unit
+        # tests. The archive owner is a non-technical genealogist editing
+        # plain files in whatever editor he has; Notepad writes CRLF and
+        # plenty of editors leave a trailing space behind. Neither changes a
+        # word of what the section says, so neither may put the authoring
+        # instructions back on the published page - which a byte-for-byte
+        # comparison against the scaffold constant would do.
+        body = render_person_body_scaffold('Thomas Hartley')
+        body = '\n'.join(line + ' ' if line.strip() else line
+                         for line in body.split('\n')).replace('\n', '\r\n')
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley', body=body)
+        res = self._run(linked=False)
+        self.assertEqual(res['status'], 'ok')
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertNotIn('Write their story in plain sentences', html)
+        self.assertNotIn('Open questions, hunches, and brick walls', html)
+        self.assertNotIn('<h2>Biography</h2>', html)
+        self.assertNotIn('<h2>Research Notes</h2>', html)
+
 
 class LinkSchemeTests(unittest.TestCase):
     """Markdown-link URLs allowlist http/https/mailto; a javascript:/data:

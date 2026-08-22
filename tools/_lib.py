@@ -6850,10 +6850,37 @@ def _split_body_sections(text: str) -> tuple[tuple[str, str], ...]:
 # from PERSON_BODY_SECTIONS_TEXT above, not a second hand-authored copy of it.
 PERSON_BODY_SECTIONS: tuple[tuple[str, str], ...] = _split_body_sections(PERSON_BODY_SECTIONS_TEXT)
 
-# heading -> its scaffold placeholder text, for person_section_is_unfilled below.
-# A plain dict (not PERSON_BODY_SECTIONS itself) so a heading lookup is O(1) at
-# every call site instead of a linear scan of the tuple.
-_PERSON_BODY_PLACEHOLDER_BY_HEADING: dict[str, str] = dict(PERSON_BODY_SECTIONS)
+
+def _normalized_section_text(text: str) -> str:
+    """One §16 section's body reduced to what a comparison should actually
+    care about: line endings unified to `\\n`, every line's trailing
+    whitespace dropped, and the whole thing stripped.
+
+    A person record is a plain file a human edits in whatever editor he
+    already has, and three things routinely rewrite those bytes without
+    changing one word of what the section SAYS: Notepad (and git's
+    `autocrlf`) write CRLF where the scaffold constant has LF; many editors
+    trim - or add - a trailing space on save; a `read_text_exact` caller
+    (`fha packet`) deliberately preserves whatever endings it found rather
+    than normalizing them the way `read_record` does. A byte-for-byte `==`
+    against the scaffold constant would let any one of those turn an
+    untouched placeholder back into "real content" and republish the
+    authoring instructions #125 exists to hide - the original bug again,
+    reachable from an ordinary Windows save. This is the ONLY tolerance
+    applied: nothing here reflows, lowercases, or otherwise fuzzes the
+    words, so a human who actually rewrote the section still publishes."""
+    unified = text.replace('\r\n', '\n').replace('\r', '\n')
+    return '\n'.join(line.rstrip() for line in unified.split('\n')).strip()
+
+
+# heading -> its scaffold placeholder text, already normalized (the same
+# normalization every candidate gets before comparison), for
+# person_section_is_unfilled below. A plain dict (not PERSON_BODY_SECTIONS
+# itself) so a heading lookup is O(1) at every call site instead of a linear
+# scan of the tuple.
+_PERSON_BODY_PLACEHOLDER_BY_HEADING: dict[str, str] = {
+    heading: _normalized_section_text(content) for heading, content in PERSON_BODY_SECTIONS
+}
 
 
 def person_section_is_unfilled(heading: str, content: str) -> bool:
@@ -6883,9 +6910,14 @@ def person_section_is_unfilled(heading: str, content: str) -> bool:
     published. Compares against PERSON_BODY_SECTIONS - parsed from
     PERSON_BODY_SECTIONS_TEXT, the exact text the two scaffolding functions
     above write - so a future wording change to the template can never drift
-    this check out of step with what actually gets scaffolded."""
+    this check out of step with what actually gets scaffolded.
+
+    Exact on the WORDS, not on the bytes: both sides go through
+    `_normalized_section_text` first, so a record saved with CRLF endings or
+    with a trailing space an editor added still matches its own placeholder.
+    See that function for why byte equality alone would reopen #125."""
     placeholder = _PERSON_BODY_PLACEHOLDER_BY_HEADING.get(heading)
-    return placeholder is not None and content.strip() == placeholder
+    return placeholder is not None and _normalized_section_text(content) == placeholder
 
 
 # The stable substring `ensure_person_body_sections` greps for to decide
