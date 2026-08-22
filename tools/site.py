@@ -82,7 +82,7 @@ CODE MAP
 
   Places
     _place_mention_span        - where a claim's own sentence already names its
-                                 place (so the timeline prints it only once)
+                                 place (so the timeline prints it once, linked)
 
   Image derivatives
     _PIL_AVAILABLE             - is Pillow importable?
@@ -598,6 +598,10 @@ def _place_mention_span(value: str, place_label: str) -> tuple[int, int] | None:
     to Millbrook", place "Millbrook, Dutchess County, New York") is not
     redundant - the rest of the label is information the reader does not have
     yet - so the timeline still prints the fuller place after the sentence.
+
+    Returning the span rather than a bare yes/no is what lets the caller hang
+    the place-page link on the words already in the sentence instead of
+    losing that link along with the repeated place name.
     """
     words = re.findall(r'\w+', place_label or '')
     if not words or not value:
@@ -1690,6 +1694,29 @@ class _SiteBuilder:
             return self._markup(f'<a href="{href}">{_escape(label)}</a>')
         return self._markup(_escape(label))
 
+    def _timeline_value_html(self, value: str, mention: tuple[int, int] | None,
+                             place_id: str | None, page_dir: Path):
+        """A timeline sentence as HTML, with the place it already names linked.
+
+        #127 stops the timeline repeating a place the sentence has already
+        stated, but that trailing place was also the only thing linking the
+        place's page from a person page - the link symmetry `_place_html`
+        exists for, and it would go missing for exactly the claims most
+        likely to carry a registered place ("Thomas Hartley born ... in
+        Fairview, Breton County, Kansas"). So when the sentence carries the
+        mention, the mention carries the link: the place page stays one click
+        away and its name is still printed only once.
+
+        Escaping happens here at the leaves (the same rule as every other
+        `_markup` caller in this file), since the returned Markup goes to the
+        template with autoescape already satisfied."""
+        if mention is None or not place_id or place_id not in self.place_pages:
+            return self._markup(_escape(value))
+        start, end = mention
+        href = html.escape(_rel_href(self.places_dir / _page_filename(place_id), page_dir), quote=True)
+        return self._markup(f'{_escape(value[:start])}<a href="{href}">'
+                            f'{_escape(value[start:end])}</a>{_escape(value[end:])}')
+
     # - assets -
 
     def _asset_href(self, resolved: Path, page_dir: Path) -> str:
@@ -2474,7 +2501,9 @@ class _SiteBuilder:
             words, loose punctuation - not a bare substring test). The
             template only appends a trailing place mention when this is
             false, so a place already stated in the sentence is never doubled
-            up as a bare "@ Place" tag.
+            up as a bare "@ Place" tag. When it IS stated in the sentence,
+            `_timeline_value_html` moves the place-page link onto those
+            words, so suppressing the repeat never costs the reader the link.
           - #128: the SQL sorts rows by `date_min` (a widened, sortable value)
             but decade grouping reads `date_edtf` via `_decade_header` - a
             DIFFERENT field, deliberately (see that function's docstring): an
@@ -2533,7 +2562,8 @@ class _SiteBuilder:
             value_text = r['value'] or ''
             mention = _place_mention_span(value_text, place_label)
             entries.append({
-                'date': r['date_edtf'] or '(undated)', 'type': r['type'], 'value': r['value'],
+                'date': r['date_edtf'] or '(undated)', 'type': r['type'],
+                'value': self._timeline_value_html(value_text, mention, r['place_id'], page_dir),
                 'place': self._place_html(r['place_text'], r['place_id'], page_dir),
                 'place_redundant': mention is not None,
                 'source_html': self._markup(self._source_link(r['source_id'], page_dir)) if r['source_id'] else '',

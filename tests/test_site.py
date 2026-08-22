@@ -1597,13 +1597,13 @@ class PlacePageTests(_Base):
     def test_claim_place_column_links_to_place_page(self):
         # Symmetry fix: a claim's place cell links to the place page when the
         # claim carries a registered place_id (not just prose [L-id] tokens).
-        # #127 note: the value deliberately does NOT already name "Fairview" -
-        # the person timeline now omits the trailing place mention (and so
-        # its link) when the sentence already states the place in plain text
-        # (see test_timeline_place_tag_omitted_when_sentence_already_states_it);
-        # this test exercises the still-linked, non-redundant case, which the
-        # source page's claims table (unaffected by #127 - it is not prose)
-        # always shows regardless.
+        # #127 note: the value deliberately does NOT already name "Fairview",
+        # so this pins the plain case - a trailing place mention, linked. When
+        # the sentence does name the place the timeline moves that link into
+        # the sentence instead (see
+        # test_timeline_keeps_place_link_on_the_words_the_sentence_uses); the
+        # source page's claims table is a table cell, not prose, so it is
+        # unaffected either way.
         self._seed_person('p-aaaaaaaaaa', 'Jane')
         self._seed_source('s-1111111111', 'Census', people=('p-aaaaaaaaaa',))
         self._seed_place('l-1111111111', 'Fairview')
@@ -1614,15 +1614,14 @@ class PlacePageTests(_Base):
         self.assertIn('../places/l-1111111111.html', self._read('sources/s-1111111111.html'))
         self.assertIn('../places/l-1111111111.html', self._read('persons/p-aaaaaaaaaa.html'))
 
-    def test_timeline_omits_place_link_too_when_sentence_already_names_it(self):
-        # #127 trade-off, pinned deliberately: when the claim's own sentence
-        # already states the place in plain text, the person timeline drops
-        # the trailing mention entirely - even when the place carries a
-        # registered, linkable place_id. The source page's claims table still
-        # links it (a table cell, not prose - see
-        # test_claim_place_column_links_to_place_page), so the place stays
-        # reachable; this just keeps the timeline sentence from reading as
-        # "Lived in Fairview at Fairview".
+    def test_timeline_keeps_place_link_on_the_words_the_sentence_uses(self):
+        # #127 must not cost the reader the place-page link. When the claim's
+        # own sentence already states the place, the timeline prints that
+        # place once - and the words already in the sentence carry the link,
+        # so the place page is still one click from the person page (the
+        # symmetry _place_html was added for). Dropping the trailing tag AND
+        # its link would have left this person page with no route to the
+        # place at all.
         self._seed_person('p-aaaaaaaaaa', 'Jane')
         self._seed_source('s-1111111111', 'Census', people=('p-aaaaaaaaaa',))
         self._seed_place('l-1111111111', 'Fairview')
@@ -1630,8 +1629,9 @@ class PlacePageTests(_Base):
                                   'Lived in Fairview', ('p-aaaaaaaaaa',))
         self._run(linked=True)
         person_html = self._read('persons/p-aaaaaaaaaa.html')
-        self.assertIn('Lived in Fairview', person_html)
-        self.assertNotIn('../places/l-1111111111.html', person_html)   # link dropped, not doubled
+        self.assertIn('Lived in <a href="../places/l-1111111111.html">Fairview</a>', person_html)
+        self.assertEqual(person_html.count('Fairview'), 1)          # named once, not doubled
+        self.assertNotIn(' at <a href="../places/l-1111111111.html">', person_html)
 
     def test_timeline_place_name_inside_a_longer_word_still_renders(self):
         # #127's suppression is whole-word: "Hampton" sits inside
