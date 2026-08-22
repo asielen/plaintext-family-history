@@ -404,6 +404,41 @@ class PersonPageTests(_Base):
         self.assertIn('1840', html[born_idx:married_idx])
         self.assertNotIn('1871', html[born_idx:married_idx])
 
+    def test_date_notation_legend_reachable_from_person_page(self):
+        # #131: a person page that actually shows the shorthand (~ / X / /)
+        # must sit on a page that also explains it - the legend lives in the
+        # shared footer (base.html), so every page that extends it carries
+        # the explanation regardless of which notation that particular page
+        # happens to use.
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley')
+        self._seed_source('s-1111111111', 'Record', people=('p-aaaaaaaaaa',))
+        self._seed_claim('c-1111111111', 's-1111111111', 'death', 'Died',
+                         status='accepted', date_edtf='1891~', persons=('p-aaaaaaaaaa',))
+        self._run(linked=True)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('1891~', html)                       # the notation is actually on this page
+        self.assertIn('date-notation-note', html)           # the legend block is present
+        # Plain-language coverage of all three marks the issue reported, without
+        # inventing anything SPEC.md 11 doesn't already say.
+        self.assertIn('~', html.split('date-notation-note')[1][:400])
+        self.assertIn('approximate', html.split('date-notation-note')[1][:400])
+        self.assertIn('decade', html.split('date-notation-note')[1][:400])
+        self.assertIn('193X', html)
+        self.assertIn('range', html.split('date-notation-note')[1][:400])
+        # Sensible, well-formed markup: the legend paragraph opens and closes once.
+        legend_start = html.index('<p class="date-notation-note">')
+        legend_close = html.index('</p>', legend_start)
+        self.assertGreater(legend_close, legend_start)
+        self.assertNotIn('<p class="date-notation-note">', html[legend_start + 1:])
+
+    def test_date_notation_legend_also_reaches_source_and_home_pages(self):
+        # The legend is shared footer markup (base.html), not a person-page
+        # special case - it travels to every page that extends base.html.
+        self._seed_source('s-1111111111', 'A Source')
+        self._run(linked=True)
+        self.assertIn('date-notation-note', self._read('sources/s-1111111111.html'))
+        self.assertIn('date-notation-note', self._read('index.html'))
+
     def test_alt_names_and_tags_in_header(self):
         self._seed_person(
             'p-aaaaaaaaaa', 'Margaret Hartley', surname='Hartley',
@@ -887,6 +922,31 @@ class AssetTests(_Base):
         self.assertIn('Photographs', html)
         self.assertIn('Jane in 1880', html)
         self.assertIn('jane.jpg', html)
+
+    def test_photo_strip_link_opens_in_new_tab(self):
+        # #122: the Photographs strip opens the real photo file, not another
+        # page on this site - it must not replace the person page a visitor
+        # was reading.
+        self._seed_person('p-aaaaaaaaaa', 'Jane Doe')
+        img = self.archive_root / 'photos' / '1880' / 'jane.jpg'
+        img.parent.mkdir(parents=True, exist_ok=True)
+        img.write_bytes(b'not-a-real-image-but-exists')
+        pconn = self._make_photos_db()
+        pconn.execute(
+            'INSERT INTO photos(path, group_id, is_primary, caption) VALUES (?,?,?,?)',
+            ('photos/1880/jane.jpg', 'g1', 1, 'Jane in 1880'))
+        pconn.execute(
+            'INSERT INTO photo_people(path, person_ref, via) VALUES (?,?,?)',
+            ('photos/1880/jane.jpg', 'p-aaaaaaaaaa', 'pid-keyword'))
+        pconn.commit()
+        pconn.close()
+        self._make_photos_fresh()
+        self._run(linked=True)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        strip = html[html.index('class="photo-strip"'):]
+        self.assertIn('jane.jpg', strip)
+        self.assertIn('target="_blank"', strip)
+        self.assertIn('rel="noopener"', strip)
 
     def test_missing_photo_row_does_not_hide_its_live_variant(self):
         # `fha photoindex reconcile` re-keys a vanished photo 'MISSING:…' and
@@ -1430,6 +1490,88 @@ class SourcePortraitTests(_Base):
         html = self._read('sources/s-1111111111.html')
         self.assertNotIn('class="source-portrait"', html)
         self.assertIn('Pillow not installed', html)
+
+
+class FileOpeningLinkTargetTests(_Base):
+    """#122: links that open an actual scan/photo/document file must carry
+    target="_blank" rel="noopener" (open in a new tab, no window.opener leak
+    back to this page) - same-site navigation links must NOT, so a visitor
+    reading a person or source page never loses their place to a file open.
+    Two-sided by design (AGENTS_TOOLING.md - "two-sided rules get two-sided
+    tests"): every assertion below is paired with a negative one proving the
+    attribute was not sprayed everywhere."""
+
+    def test_source_portrait_links_open_in_new_tab(self):
+        self._seed_source('s-1111111111', 'Photo Source', source_type='photo')
+        img = self.archive_root / 'photos' / '1880' / 'pic.jpg'
+        img.parent.mkdir(parents=True, exist_ok=True)
+        img.write_bytes(b'not-a-real-image-but-exists')
+        self.conn.execute(
+            'INSERT INTO source_files(source_id, path, role) VALUES (?,?,?)',
+            ('s-1111111111', 'photos/1880/pic.jpg', 'front'))
+        self._run(linked=True)
+        html = self._read('sources/s-1111111111.html')
+        self.assertIn('class="source-portrait"', html)
+        # Both the image wrapper and the caption link the same full_href.
+        portrait_block = html[html.index('class="source-portrait"'):]
+        figure_end = portrait_block.index('</figure>')
+        figure_html = portrait_block[:figure_end]
+        self.assertEqual(figure_html.count('target="_blank"'), 2)
+        self.assertEqual(figure_html.count('rel="noopener"'), 2)
+
+    def test_source_files_image_links_open_in_new_tab(self):
+        self._seed_source('s-1111111111', 'Photo Source', source_type='photo')
+        img = self.archive_root / 'photos' / '1880' / 'pic.jpg'
+        img.parent.mkdir(parents=True, exist_ok=True)
+        img.write_bytes(b'not-a-real-image-but-exists')
+        self.conn.execute(
+            'INSERT INTO source_files(source_id, path, role) VALUES (?,?,?)',
+            ('s-1111111111', 'photos/1880/pic.jpg', 'front'))
+        self._run(linked=True)
+        html = self._read('sources/s-1111111111.html')
+        files_block = html[html.index('<h2>Files</h2>'):html.index('</ul>', html.index('<h2>Files</h2>'))]
+        self.assertIn('pic.jpg', files_block)
+        # thumbnail link + "full size" link, both new-tab.
+        self.assertEqual(files_block.count('target="_blank"'), 2)
+        self.assertEqual(files_block.count('rel="noopener"'), 2)
+        self.assertIn('full-size-link', files_block)
+
+    def test_source_files_nonimage_link_opens_in_new_tab(self):
+        self._seed_source('s-1111111111', 'Doc Source', source_type='letter')
+        doc = self.archive_root / 'documents' / 'letters' / 'note_s-1111111111.txt'
+        doc.parent.mkdir(parents=True, exist_ok=True)
+        doc.write_text('a letter', encoding='utf-8')
+        self.conn.execute(
+            'INSERT INTO source_files(source_id, path, role) VALUES (?,?,?)',
+            ('s-1111111111', 'documents/letters/note_s-1111111111.txt', 'transcript'))
+        self._run(linked=True)
+        html = self._read('sources/s-1111111111.html')
+        files_block = html[html.index('<h2>Files</h2>'):html.index('</ul>', html.index('<h2>Files</h2>'))]
+        self.assertIn('note_s-1111111111.txt', files_block)
+        self.assertIn('target="_blank"', files_block)
+        self.assertIn('rel="noopener"', files_block)
+
+    def test_internal_navigation_links_stay_in_same_tab(self):
+        # Negative half of the pair above: same-site links (the header nav,
+        # a citation's person cross-link, the source's own record-open link)
+        # must never pick up target="_blank" - only file-opening anchors do.
+        self._seed_person('p-aaaaaaaaaa', 'Jane Doe')
+        self._seed_source('s-1111111111', '1880 Census', people=('p-aaaaaaaaaa',))
+        self._seed_claim('c-1111111111', 's-1111111111', 'residence', 'Lived in Kansas',
+                         status='accepted', persons=('p-aaaaaaaaaa',))
+        self._run(linked=True)
+        html = self._read('sources/s-1111111111.html')
+        # The header nav (from base.html) never opens a new tab.
+        self.assertIn('<a href="../index.html">Home</a>', html)
+        self.assertNotIn('<a href="../index.html">Home</a>'.replace('>', ' target="_blank">'), html)
+        nav_block = html[html.index('site-nav'):html.index('</nav>')]
+        self.assertNotIn('target="_blank"', nav_block)
+        # The claim's person cross-link is same-site navigation, not a file.
+        self.assertIn('../persons/p-aaaaaaaaaa.html', html)
+        person_link_idx = html.index('../persons/p-aaaaaaaaaa.html')
+        # Look at just that one anchor tag (up to its closing '>').
+        tag_end = html.index('>', person_link_idx)
+        self.assertNotIn('target="_blank"', html[person_link_idx:tag_end])
 
 
 class PlacePageTests(_Base):
