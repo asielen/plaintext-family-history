@@ -2345,7 +2345,11 @@ class _SiteBuilder:
         # Research Notes placeholder embeds a `<!-- private -->` example
         # block - checking post-fence text would never match it in either
         # build mode, once that block has been dropped (standalone) or
-        # unwrapped (linked).
+        # unwrapped (linked). The workbench per-entry edit rows further down
+        # reuse this same capture rather than re-reading the section: two
+        # reads of one string is two things to keep in step, and the later
+        # one sat AFTER `apply_private_fence` had already run on `body`,
+        # which is exactly the ordering hazard this capture exists to avoid.
         research_as_written = (_extract_section(body, 'Research Notes') or '').strip()
         dp = not self.linked
         if body:
@@ -2404,7 +2408,6 @@ class _SiteBuilder:
         research_entries: list[dict] = []
         if self.workbench:
             stories_as_written = (rec['stories'] or '')
-            research_as_written = (_extract_section(rec['body'], 'Research Notes') or '')
             stories_entries = self._log_entries_with_raw(
                 stories or '', stories_as_written, render, embed, dp)
             research_entries = self._log_entries_with_raw(
