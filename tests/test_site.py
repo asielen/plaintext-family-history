@@ -474,6 +474,59 @@ class PersonPageTests(_Base):
         self.assertLess(timeline_html.index('<h3>1930s</h3>'), timeline_html.index('<h3>Undated</h3>'))
         self.assertLess(timeline_html.index('<h3>Undated</h3>'), timeline_html.index('Worked as a farmer'))
 
+    def test_timeline_collects_every_undated_entry_under_one_heading(self):
+        # The other half of #128, and the one #129's heading made visible: a
+        # claim whose date the archive cannot read ('circa 1870' - the loose
+        # hand-edit AGENTS.md says the tools must tolerate) has no decade but
+        # DOES have a date_min, so it sorted with the 1870s while a genuinely
+        # undated claim sorted last. The linear pass then opened an undated
+        # group, closed it for the 1930s, and opened a second one - two
+        # "Undated" headings on one page. Every dateless entry belongs to one
+        # group, at the end.
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley')
+        self._seed_source('s-1111111111', 'Record', people=('p-aaaaaaaaaa',))
+        self._seed_claim('c-1111111111', 's-1111111111', 'occupation', 'Unreadable date entry',
+                         status='accepted', date_edtf='circa 1870', date_min='1870-01-01',
+                         persons=('p-aaaaaaaaaa',))
+        self._seed_claim('c-2222222222', 's-1111111111', 'residence', 'Dated entry',
+                         status='accepted', date_edtf='1930', persons=('p-aaaaaaaaaa',))
+        self._seed_claim('c-3333333333', 's-1111111111', 'note', 'No date at all',
+                         status='accepted', date_edtf=None, persons=('p-aaaaaaaaaa',))
+        self._run(linked=True)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        start = html.index('<div class="timeline">')
+        timeline_html = html[start:html.index('</div>', start)]
+        self.assertEqual(re.findall(r'<h3>([^<]*)</h3>', timeline_html), ['1930s', 'Undated'])
+        self.assertLess(timeline_html.index('<h3>Undated</h3>'),
+                        timeline_html.index('Unreadable date entry'))
+        self.assertLess(timeline_html.index('<h3>Undated</h3>'),
+                        timeline_html.index('No date at all'))
+
+    def test_timeline_keeps_date_order_within_a_decade(self):
+        # #128 sorts a copy of the rows by decade before grouping; the sort
+        # must be STABLE or it would trade a heading bug for an ordering bug.
+        # Within one decade the rows keep the SQL's date_min order (January
+        # before June), and an interval date groups by the decade it starts
+        # in.
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley')
+        self._seed_source('s-1111111111', 'Record', people=('p-aaaaaaaaaa',))
+        self._seed_claim('c-1111111111', 's-1111111111', 'note', 'June entry',
+                         status='accepted', date_edtf='1923-06', date_min='1923-06-01',
+                         persons=('p-aaaaaaaaaa',))
+        self._seed_claim('c-2222222222', 's-1111111111', 'note', 'January entry',
+                         status='accepted', date_edtf='1923-01', date_min='1923-01-01',
+                         persons=('p-aaaaaaaaaa',))
+        self._seed_claim('c-3333333333', 's-1111111111', 'note', 'Interval entry',
+                         status='accepted', date_edtf='1852/1883', date_min='1852-01-01',
+                         persons=('p-aaaaaaaaaa',))
+        self._run(linked=True)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        start = html.index('<div class="timeline">')
+        timeline_html = html[start:html.index('</div>', start)]
+        self.assertEqual(re.findall(r'<h3>([^<]*)</h3>', timeline_html), ['1850s', '1920s'])
+        self.assertLess(timeline_html.index('Interval entry'), timeline_html.index('<h3>1920s</h3>'))
+        self.assertLess(timeline_html.index('January entry'), timeline_html.index('June entry'))
+
     def test_family_and_source_footnotes(self):
         self._setup_thomas()
         self._run(linked=True)
