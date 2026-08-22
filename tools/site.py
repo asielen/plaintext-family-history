@@ -80,6 +80,10 @@ CODE MAP
   Dates
     _decade_header             - EDTF date → "1880s" decade label (timeline grouping)
 
+  Places
+    _place_mention_span        - where a claim's own sentence already names its
+                                 place (so the timeline prints it only once)
+
   Image derivatives
     _PIL_AVAILABLE             - is Pillow importable?
     _make_derivative           - resized, EXIF-stripped JPEG/PNG copy (standalone)
@@ -570,6 +574,37 @@ def _decade_header(date_edtf: str | None) -> str | None:
         return f'{(int(edtf[:4]) // 10) * 10}s'
     except (ValueError, IndexError):
         return None
+
+
+# ── Places ──────────────────────────────────────────────────────────────────
+
+def _place_mention_span(value: str, place_label: str) -> tuple[int, int] | None:
+    """Where `value` already names `place_label` in its own words, or None.
+
+    The person timeline prints the claim's sentence and then the claim's
+    place, so a sentence that already says where it happened ("moved to
+    Millbrook to farm") used to read "... to farm @ Millbrook" (#127).
+    Deciding that needs more than `label in value`:
+
+      - Whole words only. "Hampton" is a substring of "Southampton", and a
+        plain containment test would read "married at Southampton" as already
+        naming the place Hampton and drop a real, different place from the
+        page. Losing a fact is worse than repeating one.
+      - Punctuation and spacing between the words are matched loosely,
+        because one place gets written both ways in practice: the registry
+        says "Millbrook, NY" and the sentence says "Millbrook NY".
+
+    The whole label has to appear. A sentence naming only part of it ("moved
+    to Millbrook", place "Millbrook, Dutchess County, New York") is not
+    redundant - the rest of the label is information the reader does not have
+    yet - so the timeline still prints the fuller place after the sentence.
+    """
+    words = re.findall(r'\w+', place_label or '')
+    if not words or not value:
+        return None
+    pattern = r'\b' + r'\W+'.join(re.escape(w) for w in words) + r'\b'
+    match = re.search(pattern, value, re.IGNORECASE)
+    return match.span() if match else None
 
 
 # ── Image derivatives ─────────────────────────────────────────────────────────
@@ -2435,9 +2470,11 @@ class _SiteBuilder:
         see person.html):
           - #127: each entry carries `place_redundant` - true when the claim's
             own value text already names the place naturally ("moved to
-            Millbrook to farm"). The template only appends a trailing place
-            mention when this is false, so a place already stated in the
-            sentence is never doubled up as a bare "@ Place" tag.
+            Millbrook to farm"), decided by `_place_mention_span` (whole
+            words, loose punctuation - not a bare substring test). The
+            template only appends a trailing place mention when this is
+            false, so a place already stated in the sentence is never doubled
+            up as a bare "@ Place" tag.
           - #128: the SQL sorts rows by `date_min` (a widened, sortable value)
             but decade grouping reads `date_edtf` via `_decade_header` - a
             DIFFERENT field, deliberately (see that function's docstring): an
@@ -2494,10 +2531,11 @@ class _SiteBuilder:
                 entries = []
             place_label = self._place_label(r['place_text'], r['place_id'])
             value_text = r['value'] or ''
+            mention = _place_mention_span(value_text, place_label)
             entries.append({
                 'date': r['date_edtf'] or '(undated)', 'type': r['type'], 'value': r['value'],
                 'place': self._place_html(r['place_text'], r['place_id'], page_dir),
-                'place_redundant': bool(place_label) and place_label.lower() in value_text.lower(),
+                'place_redundant': mention is not None,
                 'source_html': self._markup(self._source_link(r['source_id'], page_dir)) if r['source_id'] else '',
                 'status': r['status'], 'confidence': r['confidence'] or '',
                 'parked': r['reviewed'] or '',

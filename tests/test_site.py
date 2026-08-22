@@ -402,6 +402,22 @@ class PersonPageTests(_Base):
         self.assertIn('at Lexington, Missouri', html)
         self.assertNotIn('@ Lexington, Missouri', html)
 
+    def test_timeline_place_tag_omitted_when_only_punctuation_differs(self):
+        # #127 again, the shape the archive actually produces: the registry
+        # writes "Millbrook, NY" and the sentence writes "Millbrook NY". The
+        # place is the same one said twice, so the trailing mention still has
+        # to go - the comma is not a second fact.
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley')
+        self._seed_source('s-1111111111', 'Record', people=('p-aaaaaaaaaa',))
+        self._seed_claim('c-1111111111', 's-1111111111', 'residence',
+                         'Moved to Millbrook NY to farm', status='accepted',
+                         date_edtf='1900', place_text='Millbrook, NY',
+                         persons=('p-aaaaaaaaaa',))
+        self._run(linked=True)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('Moved to Millbrook NY to farm', html)
+        self.assertNotIn('at Millbrook, NY', html)
+
     def test_timeline_decades_stay_contiguous_despite_date_min_divergence(self):
         # #128: decade grouping reads the DISPLAY date (date_edtf, via
         # _decade_header), but sort order reads date_min - a different,
@@ -1616,6 +1632,38 @@ class PlacePageTests(_Base):
         person_html = self._read('persons/p-aaaaaaaaaa.html')
         self.assertIn('Lived in Fairview', person_html)
         self.assertNotIn('../places/l-1111111111.html', person_html)   # link dropped, not doubled
+
+    def test_timeline_place_name_inside_a_longer_word_still_renders(self):
+        # #127's suppression is whole-word: "Hampton" sits inside
+        # "Southampton", and a plain substring test read the sentence as
+        # already naming the place - silently dropping a real, different
+        # place (and its link) off the page. Losing a fact is worse than
+        # repeating one, so this claim keeps its trailing place.
+        self._seed_person('p-aaaaaaaaaa', 'Jane')
+        self._seed_source('s-1111111111', 'Census', people=('p-aaaaaaaaaa',))
+        self._seed_place('l-1111111111', 'Hampton')
+        self._seed_claim_at_place('c-1111111111', 's-1111111111', 'l-1111111111',
+                                  'Married at Southampton', ('p-aaaaaaaaaa',))
+        self._run(linked=True)
+        person_html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('Married at Southampton at '
+                      '<a href="../places/l-1111111111.html">Hampton</a>', person_html)
+
+    def test_timeline_place_partly_named_by_the_sentence_still_renders_in_full(self):
+        # The suppression is conservative on purpose: a sentence naming only
+        # the town ("Moved to Millbrook") does not make the registry's fuller
+        # "Millbrook, Dutchess County, New York" redundant - the county and
+        # state are information the reader does not have yet - so the full
+        # place still follows the sentence, linked.
+        self._seed_person('p-aaaaaaaaaa', 'Jane')
+        self._seed_source('s-1111111111', 'Census', people=('p-aaaaaaaaaa',))
+        self._seed_place('l-1111111111', 'Millbrook, Dutchess County, New York')
+        self._seed_claim_at_place('c-1111111111', 's-1111111111', 'l-1111111111',
+                                  'Moved to Millbrook', ('p-aaaaaaaaaa',))
+        self._run(linked=True)
+        person_html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('Moved to Millbrook at <a href="../places/l-1111111111.html">'
+                      'Millbrook, Dutchess County, New York</a>', person_html)
 
     def test_freetext_place_without_id_is_not_linked(self):
         self._seed_person('p-aaaaaaaaaa', 'Jane')
