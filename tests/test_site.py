@@ -981,7 +981,10 @@ class AssetTests(_Base):
         self._make_photos_fresh()
         self._run(linked=True)
         html = self._read('persons/p-aaaaaaaaaa.html')
-        strip = html[html.index('class="photo-strip"'):]
+        # Just the strip: slicing to the end of the document would let any
+        # target="_blank" further down the page satisfy the assertion.
+        strip_start = html.index('class="photo-strip"')
+        strip = html[strip_start:html.index('</figure>', strip_start)]
         self.assertIn('jane.jpg', strip)
         self.assertIn('target="_blank"', strip)
         self.assertIn('rel="noopener"', strip)
@@ -1601,7 +1604,6 @@ class FileOpeningLinkTargetTests(_Base):
         html = self._read('sources/s-1111111111.html')
         # The header nav (from base.html) never opens a new tab.
         self.assertIn('<a href="../index.html">Home</a>', html)
-        self.assertNotIn('<a href="../index.html">Home</a>'.replace('>', ' target="_blank">'), html)
         nav_block = html[html.index('site-nav'):html.index('</nav>')]
         self.assertNotIn('target="_blank"', nav_block)
         # The claim's person cross-link is same-site navigation, not a file.
@@ -1610,6 +1612,116 @@ class FileOpeningLinkTargetTests(_Base):
         # Look at just that one anchor tag (up to its closing '>').
         tag_end = html.index('>', person_link_idx)
         self.assertNotIn('target="_blank"', html[person_link_idx:tag_end])
+
+    # - the whole-site invariant -
+
+    def _seed_a_page_of_every_kind(self):
+        """Seed enough archive that a build emits all four link shapes at once:
+        site navigation, person/source/place cross-links, an image file and a
+        non-image file. One seeding used by both halves of the sweep below."""
+        self._seed_person('p-aaaaaaaaaa', 'Jane Doe')
+        self._seed_source('s-1111111111', 'Photo Source', source_type='photo',
+                          people=('p-aaaaaaaaaa',))
+        self._seed_claim('c-1111111111', 's-1111111111', 'residence', 'Lived in Kansas',
+                         status='accepted', date_edtf='1880', persons=('p-aaaaaaaaaa',))
+        img = self.archive_root / 'photos' / '1880' / 'pic.jpg'
+        img.parent.mkdir(parents=True, exist_ok=True)
+        img.write_bytes(b'not-a-real-image-but-exists')
+        doc = self.archive_root / 'documents' / 'letters' / 'note_s-1111111111.txt'
+        doc.parent.mkdir(parents=True, exist_ok=True)
+        doc.write_text('a letter', encoding='utf-8')
+        for rel, role in (('photos/1880/pic.jpg', 'front'),
+                          ('documents/letters/note_s-1111111111.txt', 'transcript')):
+            self.conn.execute(
+                'INSERT INTO source_files(source_id, path, role) VALUES (?,?,?)',
+                ('s-1111111111', rel, role))
+
+    def _site_anchors(self):
+        """Every anchor in every built page as (page, href, tag).
+
+        A per-template assertion only ever guards the templates someone
+        remembered to write one for - and #122 was one template's attribute
+        missing from four places at once. This sweeps the built output instead,
+        so a new template, or a new link in an old one, is covered the day it
+        lands rather than the day someone notices."""
+        anchors = []
+        for page in sorted(self.out_dir.rglob('*.html')):
+            page_html = page.read_text(encoding='utf-8')
+            for tag in re.findall(r'<a\b[^>]*>', page_html, re.I):
+                href = re.search(r'href="([^"]*)"', tag)
+                anchors.append((page.relative_to(self.out_dir).as_posix(),
+                                href.group(1) if href else '', tag))
+        return anchors
+
+    @staticmethod
+    def _link_kind(href):
+        """'page', 'external' or 'file' for one href.
+
+        'page' covers same-site navigation and in-page fragments (including the
+        workbench's `href="#"` stubs, which JavaScript intercepts). 'external'
+        is an absolute http/https/mailto URL - the place page's "View on
+        OpenStreetMap" link is the only one the site emits today, and #122
+        explicitly scoped itself to file links, so this sweep records its shape
+        without ruling on it. Everything else is a path to a real file on disk.
+        """
+        target = href.split('#')[0]
+        if target.lower().startswith(('http://', 'https://', 'mailto:')):
+            return 'external'
+        if target == '' or target.endswith('.html'):
+            return 'page'
+        return 'file'
+
+    def test_no_site_page_link_opens_in_a_new_tab(self):
+        # Spraying target="_blank" across the templates would "fix" #122 and
+        # break the reading experience it protects: navigating the tree must
+        # never litter a visitor's browser with tabs.
+        self._seed_a_page_of_every_kind()
+        self._run(linked=True)
+        anchors = self._site_anchors()
+        self.assertTrue(anchors, 'the build emitted no anchors to check')
+        for page, href, tag in anchors:
+            if self._link_kind(href) == 'page':
+                self.assertNotIn('target="_blank"', tag,
+                                 f'{page}: same-site link {href!r} opens a new tab')
+
+    def test_every_file_link_in_the_built_site_opens_in_a_new_tab(self):
+        # Positive half, swept over the whole build rather than named template
+        # by named template - the shape of the miss #122 reported.
+        self._seed_a_page_of_every_kind()
+        self._run(linked=True)
+        file_links = [(p, h, t) for p, h, t in self._site_anchors()
+                      if self._link_kind(h) == 'file']
+        self.assertTrue(file_links, 'the build emitted no file links to check')
+        for page, href, tag in file_links:
+            self.assertIn('target="_blank"', tag,
+                          f'{page}: file link {href!r} replaces the page instead of opening a tab')
+            self.assertIn('rel="noopener"', tag,
+                          f'{page}: file link {href!r} opens a new tab without rel="noopener"')
+
+    @unittest.skipUnless(site._PIL_AVAILABLE, 'Pillow not installed')
+    def test_standalone_build_keeps_the_same_two_sided_rule(self):
+        # --standalone links at EXIF-stripped derivatives under media/ instead
+        # of the originals: different hrefs, same two-sided rule. The published
+        # snapshot is the build a visitor actually receives, so it gets its own
+        # pass rather than inheriting --linked's.
+        from PIL import Image
+        self._seed_a_page_of_every_kind()
+        # A real image this time: standalone omits anything Pillow cannot open,
+        # and an omitted image emits no link at all - nothing to assert on.
+        Image.new('RGB', (60, 40), (10, 20, 30)).save(
+            self.archive_root / 'photos' / '1880' / 'pic.jpg')
+        self._run(linked=False)
+        checked = 0
+        for page, href, tag in self._site_anchors():
+            kind = self._link_kind(href)
+            if kind == 'page':
+                self.assertNotIn('target="_blank"', tag,
+                                 f'{page}: same-site link {href!r} opens a new tab')
+            elif kind == 'file':
+                checked += 1
+                self.assertIn('target="_blank"', tag, f'{page}: file link {href!r}')
+                self.assertIn('rel="noopener"', tag, f'{page}: file link {href!r}')
+        self.assertTrue(checked, 'the standalone build emitted no file links to check')
 
 
 class PlacePageTests(_Base):
