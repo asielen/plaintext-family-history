@@ -33,7 +33,8 @@ from index import _DDL as INDEX_DDL
 from photoindex import _DDL as PHOTOS_DDL
 from _lib import (
     index_manifest_path, path_to_alias, photoindex_manifest_path,
-    photoindex_record_manifest, record_path_manifest, write_path_manifest,
+    photoindex_record_manifest, record_path_manifest, render_person_body_scaffold,
+    write_path_manifest,
 )
 
 _spec = importlib.util.spec_from_file_location('fha_site', ROOT / 'tools' / 'site.py')
@@ -2292,6 +2293,96 @@ class ScaffoldingBlockExclusionTests(_Base):
         html = self._read('sources/s-1111111111.html')
         self.assertNotIn('yours to write', html)
         self.assertIn('A citation you can check.', html)   # page still built normally
+
+
+class UnfilledPlaceholderSectionTests(_Base):
+    """#125: a freshly-scaffolded person's Biography/Research Notes sections
+    hold nothing but the record template's own authoring instructions until
+    a human replaces them (`render_person_body_scaffold` /
+    `ensure_person_body_sections`, SPEC §16). Before this fix, `_person_prose`
+    only recognised `*(none yet)*` as "still empty" - so that placeholder
+    text rendered on the generated page verbatim, as if it were the
+    person's real, finished biography and research notes. It must be
+    treated exactly like an actually-empty section: heading and all omitted."""
+
+    def test_freshly_scaffolded_placeholders_omitted_standalone(self):
+        # The exact shape `fha person new`/`fha stubs` write for a person
+        # nobody has edited yet - built from the SAME renderer the scaffold
+        # itself calls, not a hand-typed copy of its wording, so this test
+        # cannot drift from what is actually scaffolded.
+        body = render_person_body_scaffold('Thomas Hartley')
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley', body=body)
+        res = self._run(linked=False)
+        self.assertEqual(res['status'], 'ok')
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertNotIn('Write their story in plain sentences', html)
+        self.assertNotIn('gentle to-do list', html)
+        self.assertNotIn('Open questions, hunches, and brick walls', html)
+        self.assertNotIn('Delete this line', html)
+        self.assertNotIn('<h2>Biography</h2>', html)
+        self.assertNotIn('<h2>Research Notes</h2>', html)
+        # No stray literal markdown punctuation either (the issue's second
+        # symptom - raw backticks reads as broken output even standalone
+        # from the "is this real content" question).
+        self.assertNotIn('`(TODO: import source)`', html)
+
+    def test_freshly_scaffolded_placeholders_omitted_linked(self):
+        # The Research Notes placeholder embeds a `<!-- private -->` example
+        # block, which `apply_private_fence` treats differently per build
+        # mode (unwrapped here, dropped in standalone) - so this must be
+        # checked in ITS OWN test, not assumed to follow from the standalone
+        # case above.
+        body = render_person_body_scaffold('Thomas Hartley')
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley', body=body)
+        res = self._run(linked=True)
+        self.assertEqual(res['status'], 'ok')
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertNotIn('Write their story in plain sentences', html)
+        self.assertNotIn('Open questions, hunches, and brick walls', html)
+        self.assertNotIn('This block stays in your local', html)  # the private-fence example
+        self.assertNotIn('<h2>Biography</h2>', html)
+        self.assertNotIn('<h2>Research Notes</h2>', html)
+
+    def test_real_biography_content_still_publishes(self):
+        # The positive case: genuine prose that happens to share a few words
+        # with the placeholder must NOT be mistaken for it - only an exact,
+        # whole-section match is treated as unfilled.
+        body = ('# Thomas Hartley\n\n'
+                '## Biography\n'
+                'Write their story? He already lived one worth telling: born '
+                'in 1840 in New York, Thomas crossed the plains twice before '
+                'he turned thirty.\n\n'
+                '## Research Notes\n'
+                'Open questions remain about his first wife - keep looking '
+                'in the Carrow County probate index.\n')
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley', body=body)
+        res = self._run(linked=False)
+        self.assertEqual(res['status'], 'ok')
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('<h2>Biography</h2>', html)
+        self.assertIn('crossed the plains twice', html)
+        self.assertIn('<h2>Research Notes</h2>', html)
+        self.assertIn('Carrow County probate index', html)
+
+    def test_one_section_filled_other_still_placeholder(self):
+        # The two sections are independent: filling in one must not affect
+        # whether the other (still untouched) publishes.
+        body = render_person_body_scaffold('Thomas Hartley').replace(
+            "## Biography\nWrite their story in plain sentences. Uncited prose is welcome - "
+            "it's story and\ncontext, never treated as proven fact. Mark anything you mean to "
+            "back up later\nwith `(TODO: import source)` and a tool will keep it on a gentle "
+            "to-do list.\n",
+            '## Biography\nBorn in 1840 in New York, Thomas grew up on his '
+            "father's farm.\n",
+        )
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley', body=body)
+        res = self._run(linked=False)
+        self.assertEqual(res['status'], 'ok')
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('<h2>Biography</h2>', html)
+        self.assertIn("father's farm", html)
+        self.assertNotIn('<h2>Research Notes</h2>', html)
+        self.assertNotIn('Open questions, hunches, and brick walls', html)
 
 
 class LinkSchemeTests(unittest.TestCase):

@@ -48,6 +48,7 @@ from _lib import (
     ensure_person_body_sections,
     is_template_file,
     mint_ids,
+    person_section_is_unfilled,
     read_record,
     render_person_body_scaffold,
     render_stub_content,
@@ -273,6 +274,57 @@ class ScaffoldParityTests(unittest.TestCase):
         self.assertEqual(fallback_headings, tmpl_headings)
         self.assertIn("research workspace - yours to write", tmpl_text)
         self.assertIn("research workspace - yours to write", RESEARCH_TEMPLATE_FALLBACK)
+
+
+class PersonSectionIsUnfilledTests(unittest.TestCase):
+    """#125: the shared placeholder-detection check `fha site` (and any
+    future exporter) uses to tell a scaffolded-but-never-written §16 section
+    apart from one a human actually filled in."""
+
+    def test_exact_placeholder_is_unfilled(self):
+        self.assertTrue(person_section_is_unfilled(
+            'Biography',
+            "Write their story in plain sentences. Uncited prose is welcome - it's story and\n"
+            "context, never treated as proven fact. Mark anything you mean to back up later\n"
+            "with `(TODO: import source)` and a tool will keep it on a gentle to-do list."))
+
+    def test_placeholder_tolerates_surrounding_whitespace(self):
+        # content is read via _extract_section, which already strips - but
+        # this check must not itself demand a caller pre-strip perfectly.
+        self.assertTrue(person_section_is_unfilled(
+            'Stories', '\n\n*(none yet)*\n\n'))
+
+    def test_real_content_sharing_words_is_not_unfilled(self):
+        # The exact-match design point (issue #125's suggested fix): a human
+        # rewrite that keeps a few of the scaffold's own words must still
+        # count as written, never silently dropped from the page.
+        self.assertFalse(person_section_is_unfilled(
+            'Biography',
+            "Write their story? He already lived one worth telling: born in "
+            "1840 in New York."))
+
+    def test_empty_content_is_not_unfilled(self):
+        # An actually-empty section is a DIFFERENT case (`_extract_section`
+        # already returns None for it before this check ever runs) - this
+        # function only answers "is this the scaffold's own text", so an
+        # empty string is correctly False here, not True.
+        self.assertFalse(person_section_is_unfilled('Biography', ''))
+
+    def test_unknown_heading_is_never_unfilled(self):
+        self.assertFalse(person_section_is_unfilled('Not A Real Heading', 'anything'))
+
+    def test_every_scaffolded_heading_recognises_its_own_placeholder(self):
+        # Cross-checks person_section_is_unfilled against the SAME
+        # PERSON_BODY_SECTIONS pairs ensure_person_body_sections/
+        # render_person_body_scaffold write, so the two can never drift:
+        # whatever the scaffold writes, this check must recognise as unfilled.
+        headings = set(re.findall(r'^## (.+)$', PERSON_BODY_SECTIONS_TEXT, re.M))
+        self.assertEqual(
+            headings, {'Biography', 'Stories', 'Research Notes', 'Friends & Family'})
+        for heading, placeholder in re.findall(
+                r'^## ([^\n]+)\n(.*?)(?=\n## |\Z)', PERSON_BODY_SECTIONS_TEXT, re.M | re.S):
+            with self.subTest(heading=heading):
+                self.assertTrue(person_section_is_unfilled(heading, placeholder.strip()))
 
 
 class TemplateHygieneTests(unittest.TestCase):

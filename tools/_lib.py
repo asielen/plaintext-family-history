@@ -232,6 +232,8 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #                                 from the template (nothing parameterized - not rendered)
 #    _split_body_sections, PERSON_BODY_SECTIONS - the same text parsed into per-heading
 #                                 (heading, content) pairs, for the additive backfill below
+#    person_section_is_unfilled - a §16 section holds ONLY its scaffold placeholder text,
+#                                 never actually written (#125) - the site/export publish check
 #    render_person_body_scaffold - full body for a BRAND-NEW record (`fha person new`/`fha stubs`)
 #    ensure_person_body_sections - ADDITIVELY backfill a pre-#76 record's missing pieces
 #                                 (`fha person promote`); never touches what is already there
@@ -6847,6 +6849,44 @@ def _split_body_sections(text: str) -> tuple[tuple[str, str], ...]:
 # heading -> the placeholder body text a fresh section opens with - DERIVED
 # from PERSON_BODY_SECTIONS_TEXT above, not a second hand-authored copy of it.
 PERSON_BODY_SECTIONS: tuple[tuple[str, str], ...] = _split_body_sections(PERSON_BODY_SECTIONS_TEXT)
+
+# heading -> its scaffold placeholder text, for person_section_is_unfilled below.
+# A plain dict (not PERSON_BODY_SECTIONS itself) so a heading lookup is O(1) at
+# every call site instead of a linear scan of the tuple.
+_PERSON_BODY_PLACEHOLDER_BY_HEADING: dict[str, str] = dict(PERSON_BODY_SECTIONS)
+
+
+def person_section_is_unfilled(heading: str, content: str) -> bool:
+    """True when a person profile's `## {heading}` section holds NOTHING but
+    the scaffold's own placeholder text for that heading - i.e. the section
+    was scaffolded (by `render_person_body_scaffold` or
+    `ensure_person_body_sections`) and never actually written by a human
+    (#125: a fresh Biography/Research Notes section rendered its own
+    authoring instructions verbatim on the generated site, as if they were
+    the person's real story).
+
+    `content` MUST be the section body exactly AS WRITTEN on disk - the
+    stripped text `_extract_section` would return, read BEFORE the
+    private-fence pass (`apply_private_fence`) or AI-DRAFT stripping touch
+    it. This matters concretely for Research Notes: its placeholder embeds a
+    `<!-- private -->...<!-- /private -->` example block, so a build that
+    already dropped (standalone) or unwrapped (linked) that block before
+    calling this would never see the untouched wording match and the
+    placeholder would leak through in exactly one of the two modes. Every
+    OTHER placeholder here (Biography, Stories, Friends & Family) carries no
+    fence, so pre- or post-fence content is identical for them - reading
+    pre-fence uniformly is the one rule that is correct for all four without
+    a per-heading special case.
+
+    Exact-match only (no fuzzy/substring test): a human who keeps a few of
+    the scaffold's words while writing real content must still see it
+    published. Compares against PERSON_BODY_SECTIONS - parsed from
+    PERSON_BODY_SECTIONS_TEXT, the exact text the two scaffolding functions
+    above write - so a future wording change to the template can never drift
+    this check out of step with what actually gets scaffolded."""
+    placeholder = _PERSON_BODY_PLACEHOLDER_BY_HEADING.get(heading)
+    return placeholder is not None and content.strip() == placeholder
+
 
 # The stable substring `ensure_person_body_sections` greps for to decide
 # whether a record already carries the purpose block - short and specific
