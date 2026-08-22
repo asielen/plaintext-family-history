@@ -824,6 +824,10 @@ def _render_pedigree_svg(labels: dict, spouses: list[dict] | None = None,
             continue
         lab = labels.get(slot)
         render[slot] = ('person', lab) if (lab and lab.get('name')) else ('empty', None)
+    # Deepest generation actually PLACED in `render` - used below to size the
+    # reserved ancestor band, and again for the overall width - so the two
+    # can never drift apart (see `ancestor_band` below, #119).
+    max_gen = max((k.bit_length() - 1 for k in render), default=0)
 
     subject_row = 1.5
     spouse_rows = [subject_row + 1 + i for i in range(len(spouses))]     # stack below the subject
@@ -841,15 +845,23 @@ def _render_pedigree_svg(labels: dict, spouses: list[dict] | None = None,
 
     # The ancestor band has always been rendered at a fixed size (rows 0-3,
     # the full grandparent grid) whenever any ancestor slot beyond the
-    # subject has data - regardless of how many of those slots are actually
-    # filled - preserved here so an ancestors-only chart's canvas is
-    # unchanged. A family-only chart (spouse/children but zero known
-    # ancestors) has no reason to reserve that band, so it starts tight
-    # around the subject's own row instead. Spouse/children rows then extend
-    # whichever starting band only when they actually reach beyond it (extra
-    # spouses stacking past row 3, a wide brood of children reaching above
-    # row 0).
-    ancestor_band = [0.0, 3.0] if len(labels) > 1 else [subject_row]
+    # subject is PLACED - regardless of whether that slot has a known name or
+    # is a faint 'Unknown' placeholder - preserved here so an ancestors-only
+    # chart's canvas is unchanged. This used to be sized off `len(labels)`
+    # (the count of KNOWN ancestors) on the theory that a chart with no
+    # ancestors "has no reason to reserve that band" - but an unresolved
+    # parent never shows up in `labels` at all (it lives only in
+    # `missing_parent_of`), while `render` above always adds an empty slot 2
+    # and slot 3 the moment the subject draws (i.e. always). So a person with
+    # zero known parents still gets two 'Unknown' cards at their normal offset
+    # rows, and the old check collapsed the band down to the subject's own
+    # row anyway - clipping both cards outside the computed viewBox (#119).
+    # `max_gen` (computed above from `render`, not `labels`) is what actually
+    # decides which rows get cards, so basing the band on it keeps the two in
+    # lockstep. Spouse/children rows then extend the band only when they
+    # reach beyond it (extra spouses stacking past row 3, a wide brood of
+    # children reaching above row 0).
+    ancestor_band = [0.0, 3.0] if max_gen >= 1 else [subject_row]
     all_rows = ancestor_band + spouse_rows + children_rows
     min_row, max_row = min(all_rows), max(all_rows)
     base = PAD + CH / 2 - min_row * ROW
@@ -857,7 +869,6 @@ def _render_pedigree_svg(labels: dict, spouses: list[dict] | None = None,
     def y_center(row: float) -> float:
         return base + row * ROW
 
-    max_gen = max((k.bit_length() - 1 for k in render), default=0)
     W = 2 * PAD + (max_gen - min_gen + 1) * CW + (max_gen - min_gen) * COL_GAP
     H = 2 * PAD + CH + (max_row - min_row) * ROW
 
@@ -975,10 +986,21 @@ def _render_pedigree_svg(labels: dict, spouses: list[dict] | None = None,
             # it emanated from the previous spouse; (b) a later bracket
             # retracing the first one's horizontal out of the subject card
             # read as one line that forks, so later brackets attach a few px
-            # lower (clamped inside the card edge).
+            # lower (clamped inside the card edge). That same stagger used to
+            # be indexed on `i` alone, which never accounts for a
+            # subject-alone lane (drawn just above, when `child_groups[0]` is
+            # non-empty) already sitting AT the subject's raw row: spouse 0's
+            # stagger evaluates to zero, so its bracket left the subject card
+            # on the exact row the subject-alone lane's own horizontal
+            # segment already occupies - a true collinear overlap between two
+            # lanes (#120). Bumping every spouse's stagger index by one
+            # notch whenever a subject-alone lane was drawn keeps spouse 0
+            # off that row without moving anything when there is no
+            # subject-alone lane to collide with.
             later = i > 0
             cls = 'ped-link ped-link-later' if later else 'ped-link'
-            attach_y = min(subj_y + 6 * i, subj_y + CH / 2 - 4)
+            stagger = i + (1 if child_groups[0] else 0)
+            attach_y = min(subj_y + 6 * stagger, subj_y + CH / 2 - 4)
             # The couple bracket: subject and spouse join at the junction...
             links.append(f'<path class="{cls}" d="M{subj_x:.0f},{attach_y:.0f} '
                          f'H{junction_x:.0f} V{spouse_y:.0f} H{subj_x:.0f}"/>')
