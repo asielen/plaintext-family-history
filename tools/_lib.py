@@ -234,6 +234,8 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #                                 (heading, content) pairs, for the additive backfill below
 #    person_section_is_unfilled - a §16 section holds ONLY its scaffold placeholder text,
 #                                 never actually written (#125) - the site/export publish check
+#    strip_unfilled_person_sections - cut every such section (heading and all) out of a
+#                                 profile body about to be published (`fha wikitree`/`fha packet`)
 #    render_person_body_scaffold - full body for a BRAND-NEW record (`fha person new`/`fha stubs`)
 #    ensure_person_body_sections - ADDITIVELY backfill a pre-#76 record's missing pieces
 #                                 (`fha person promote`); never touches what is already there
@@ -6918,6 +6920,73 @@ def person_section_is_unfilled(heading: str, content: str) -> bool:
     See that function for why byte equality alone would reopen #125."""
     placeholder = _PERSON_BODY_PLACEHOLDER_BY_HEADING.get(heading)
     return placeholder is not None and _normalized_section_text(content) == placeholder
+
+
+def strip_unfilled_person_sections(body: str) -> str:
+    """Cut every §16 section that holds nothing a human wrote - heading and
+    all - out of a person profile body about to leave the archive.
+
+    The publication-path twin of `person_section_is_unfilled`, for the two
+    exports that ship (or convert) the profile body WHOLE rather than
+    reading one named section out of it: `fha wikitree` walks it line by
+    line, `fha packet` copies it as a file. Neither can use the
+    section-by-section check `fha site` uses, which is why #125 was fixed on
+    the site first and left standing in both exports - a public WikiTree
+    profile reading "Write their story in plain sentences..." under
+    `== Biography ==`, and a packet handed to a relative saying the same, are
+    the same defect on worse surfaces. This is the shared drop-in that was
+    missing.
+
+    "Nothing a human wrote" is two cases, both dropped: the section is EMPTY,
+    or it holds only its own scaffold placeholder text
+    (`person_section_is_unfilled`). The heading goes with the content because
+    a bare `== Stories ==` over nothing is scaffolding too - a promise of
+    content the record does not have - and because that is exactly what
+    `fha site` already renders for the same record (the template's `{% if %}`
+    guard skips the whole block).
+
+    Only the four scaffolded §16 headings are ever touched. `## Sources`,
+    `## Claims`, and anything a human invented are left exactly where they
+    are, however empty: this function decides "was this section written",
+    never "is this section wanted".
+
+    Line endings are preserved rather than normalized (each line keeps its
+    own trailing `\\r`, and the join is on `\\n`), because `fha packet` reads
+    and writes the profile with the newline-preserving `read_text_exact` /
+    `write_text_exact_atomic` pair - a copy that silently flipped CRLF to LF
+    would show up as a whole-file diff to anyone comparing it against the
+    original."""
+    lines = body.split('\n')
+    kept: list[str] = []
+    i = 0
+    while i < len(lines):
+        match = _BODY_SECTION_HEADING_RE.match(lines[i].rstrip('\r'))
+        if match is None:
+            kept.append(lines[i])
+            i += 1
+            continue
+        heading = match.group(1).strip()
+        end = i + 1
+        while end < len(lines) and not _BODY_SECTION_HEADING_RE.match(lines[end].rstrip('\r')):
+            end += 1
+        content = '\n'.join(lines[i + 1:end])
+        scaffolded = heading in _PERSON_BODY_PLACEHOLDER_BY_HEADING
+        if scaffolded and (not content.strip() or person_section_is_unfilled(heading, content)):
+            i = end          # drop the heading, its body, and its trailing blank line
+            continue
+        kept.extend(lines[i:end])
+        i = end
+    if len(kept) != len(lines):
+        # Dropping the LAST section takes its trailing blank separator with
+        # it, and on a CRLF record that separator line is `'\r'` - joining it
+        # back on would end the file with a lone carriage return instead of a
+        # proper line ending. Collapse whatever blank tail is left to one
+        # empty element, which the join turns into a single terminator in
+        # whichever style the last surviving line already carries.
+        while kept and not kept[-1].strip():
+            kept.pop()
+        kept.append('')
+    return '\n'.join(kept)
 
 
 # The stable substring `ensure_person_body_sections` greps for to decide

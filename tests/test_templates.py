@@ -53,6 +53,7 @@ from _lib import (
     read_record,
     render_person_body_scaffold,
     render_stub_content,
+    strip_unfilled_person_sections,
 )
 
 
@@ -354,6 +355,78 @@ class PersonSectionIsUnfilledTests(unittest.TestCase):
         placeholder = dict(PERSON_BODY_SECTIONS)['Biography']
         self.assertFalse(person_section_is_unfilled(
             'Biography', placeholder.replace('their story', 'his story')))
+
+
+class StripUnfilledPersonSectionsTests(unittest.TestCase):
+    """#125 on the two paths that ship the profile body WHOLE rather than
+    reading one named section out of it - `fha wikitree` (line by line) and
+    `fha packet` (as a file copy). Both need the section cut out at the
+    source, which `person_section_is_unfilled` alone cannot do."""
+
+    def test_freshly_scaffolded_body_keeps_only_what_was_written(self):
+        # Built from the SAME renderer the scaffold calls, so this can never
+        # drift from what a brand-new record actually holds.
+        out = strip_unfilled_person_sections(render_person_body_scaffold('Thomas Hartley'))
+        self.assertNotIn('Write their story in plain sentences', out)
+        self.assertNotIn('Open questions, hunches, and brick walls', out)
+        self.assertNotIn("aren't blood relatives", out)
+        # Headings are matched as whole LINES, not as substrings: the purpose
+        # block's own prose names `## Research Notes` and `## Sources` while
+        # telling the owner where things live, and that mention is not a
+        # heading.
+        headings = re.findall(r'^## (.+)$', out, re.M)
+        # Machine-owned and human-authored structure is NOT this function's
+        # business: `## Sources` stays exactly where it was.
+        self.assertEqual(headings, ['Sources'])
+        self.assertIn('# Thomas Hartley', out)
+
+    def test_written_sections_survive_beside_unfilled_ones(self):
+        body = ('# Thomas Hartley\n\n'
+                '## Biography\n'
+                'Born in 1840 in New York, Thomas crossed the plains twice.\n\n'
+                '## Stories\n*(none yet)*\n\n'
+                '## Research Notes\n'
+                'Keep looking in the Carrow County probate index.\n')
+        out = strip_unfilled_person_sections(body)
+        self.assertIn('## Biography', out)
+        self.assertIn('crossed the plains twice', out)
+        self.assertIn('## Research Notes', out)
+        self.assertIn('Carrow County probate index', out)
+        self.assertNotIn('## Stories', out)
+        self.assertNotIn('none yet', out)
+
+    def test_empty_section_is_dropped_with_its_heading(self):
+        # A bare heading over nothing promises content the record does not
+        # have - the same thing the placeholder does, minus the words.
+        body = '# X\n\n## Biography\n   \n\n## Stories\nA tale worth keeping.\n'
+        self.assertEqual(
+            strip_unfilled_person_sections(body),
+            '# X\n\n## Stories\nA tale worth keeping.\n')
+
+    def test_unknown_headings_are_never_touched(self):
+        # This function decides "was this section written", never "is this
+        # section wanted" - a heading the human invented stays put, empty or
+        # not, and so does a `## Claims` block.
+        body = '# X\n\n## Gravestone Photos\n\n## Claims\n```yaml\n```\n'
+        self.assertEqual(strip_unfilled_person_sections(body), body)
+
+    def test_nothing_to_strip_is_a_byte_for_byte_no_op(self):
+        body = '# X\n\n## Biography\n\nAn old-shape record.\n'
+        self.assertEqual(strip_unfilled_person_sections(body), body)
+
+    def test_crlf_endings_are_preserved(self):
+        # `fha packet` copies the profile with read_text_exact /
+        # write_text_exact_atomic precisely so line endings survive the trip.
+        # Flipping CRLF to LF here would show up as a whole-file diff to
+        # anyone comparing the packet copy against the original - and the
+        # dropped last section must not leave a lone `\r` behind either.
+        body = ('# X\r\n\r\n## Biography\r\nReal prose.\r\n\r\n'
+                '## Stories\r\n*(none yet)*\r\n')
+        out = strip_unfilled_person_sections(body)
+        self.assertEqual(out, '# X\r\n\r\n## Biography\r\nReal prose.\r\n')
+
+    def test_empty_body_does_not_crash(self):
+        self.assertEqual(strip_unfilled_person_sections(''), '')
 
 
 class TemplateHygieneTests(unittest.TestCase):

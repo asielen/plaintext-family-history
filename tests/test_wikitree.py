@@ -939,5 +939,83 @@ class WikitreeDraftExclusionTests(unittest.TestCase):
         self.assertIsNone(r['text'])
 
 
+class WikitreeUnfilledSectionTests(unittest.TestCase):
+    """#125 on the public-publication path. A §16 section nobody has written
+    yet still holds the record template's own authoring instructions, and
+    `fha wikitree` used to convert them straight into the exported markup -
+    so a public profile read "Write their story in plain sentences..." under
+    `== Biography ==`, as if that were what the family had to say about this
+    person. Worse than the site symptom the fix started from: a wiki page is
+    published outward and edited by strangers."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        (self.root / 'people').mkdir()
+        conn = _make_index(self.root)
+        _add_person(conn, 'p-0000000001', 'John Smith', path='people/subject.md',
+                    surname='Smith')
+        conn.commit()
+        conn.close()
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _write_profile(self, body):
+        (self.root / 'people' / 'subject.md').write_text(
+            '---\nid: P-0000000001\nname: John Smith\ntier: curated\nliving: false\n---\n\n'
+            + body,
+            encoding='utf-8',
+        )
+        _freshen_index(self.root)
+
+    def test_freshly_scaffolded_person_exports_no_placeholder_text(self):
+        # Built from the SAME renderer `fha person new`/`fha stubs` call, so
+        # this cannot drift from what a brand-new record actually holds.
+        self._write_profile(_lib.render_person_body_scaffold('John Smith'))
+        r = wikitree.run_wikitree(self.root, 'p-0000000001')
+        self.assertEqual(r['status'], 'ok')
+        text = r['text']
+        self.assertNotIn('Write their story in plain sentences', text)
+        self.assertNotIn('Open questions, hunches, and brick walls', text)
+        self.assertNotIn("aren't blood relatives", text)
+        self.assertNotIn('== Biography ==', text)
+        self.assertNotIn('== Research Notes ==', text)
+        self.assertNotIn('== Friends & Family ==', text)
+        # `*(none yet)*` was already dropped line-by-line, which left a bare
+        # `== Stories ==` heading standing over nothing - scaffolding too.
+        self.assertNotIn('== Stories ==', text)
+
+    def test_research_notes_placeholder_private_example_never_published(self):
+        # The Research Notes placeholder embeds a `<!-- private -->` example
+        # block whose TEXT sits between the markers, not inside a comment -
+        # so it published verbatim. Dropping the whole unwritten section is
+        # what keeps it off the wiki.
+        self._write_profile(_lib.render_person_body_scaffold('John Smith'))
+        r = wikitree.run_wikitree(self.root, 'p-0000000001')
+        self.assertEqual(r['status'], 'ok')
+        self.assertNotIn("A hunch you're not ready to publish", r['text'])
+        self.assertNotIn('possible tie to a living relative', r['text'])
+
+    def test_written_sections_still_export(self):
+        # The other half of the rule: a section a human actually wrote goes
+        # out untouched, even when it reuses a few of the scaffold's words.
+        self._write_profile(
+            '# John Smith\n\n'
+            '## Biography\n'
+            'Write their story? He already lived one: born in 1875 in Boston.\n\n'
+            '## Stories\n*(none yet)*\n\n'
+            '## Research Notes\n'
+            'Open questions remain about his first wife.\n')
+        r = wikitree.run_wikitree(self.root, 'p-0000000001')
+        self.assertEqual(r['status'], 'ok')
+        text = r['text']
+        self.assertIn('== Biography ==', text)
+        self.assertIn('born in 1875 in Boston', text)
+        self.assertIn('== Research Notes ==', text)
+        self.assertIn('Open questions remain about his first wife', text)
+        self.assertNotIn('== Stories ==', text)
+
+
 if __name__ == '__main__':
     unittest.main()
