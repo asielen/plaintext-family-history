@@ -461,15 +461,22 @@ ul.leaders .ct  { font-variant-numeric: tabular-nums lining-nums; color: var(--m
 
 /* Ancestor fan chart (static, print-friendly). Each segment's fill is a branch
    colour lightened by generation - both set inline as --seg-color / --gen-fade,
-   composed here, so custom.css can retint the whole chart by changing tokens. */
-.fan-chart { display: block; max-width: 100%; height: auto; margin: var(--space-5) auto; }
+   composed here, so custom.css can retint the whole chart by changing tokens.
+
+   The label font-size default sits on the container below and deliberately not
+   on the labels: _render_fan_svg() sizes each label to fit its own arc and
+   writes that size as an SVG presentation attribute, which carries no
+   specificity, so a font-size declared on the label class won the cascade and
+   flattened every label back to one size - laid out for one size, drawn at
+   another, and the long outer names ran off their arc (issue #116). An
+   INHERITED size loses to the label's own attribute, so this default applies
+   only to a label that carries none. */
+.fan-chart { display: block; max-width: 100%; height: auto; margin: var(--space-5) auto;
+             font-size: 11px; }
 .fan-seg { fill: color-mix(in srgb, var(--seg-color, var(--surface-sunken))
                  calc(100% - var(--gen-fade, 0%)), var(--paper));
            stroke: var(--paper); stroke-width: 1; }
 .fan-seg-subject { fill: var(--surface-sunken); stroke: var(--rule-strong); }
-/* No fixed font-size here: _render_fan_svg() computes a per-label auto-shrink
-   size and writes it as an SVG presentation attribute (issue #116) - a CSS
-   font-size rule on .fan-label would silently override that computed value. */
 .fan-label { font-family: var(--font-serif); fill: var(--ink);
              text-anchor: middle; dominant-baseline: middle; }
 .fan-label-subject { font-family: var(--font-display); font-weight: 600; font-size: 15px;
