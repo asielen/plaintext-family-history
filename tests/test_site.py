@@ -1686,6 +1686,24 @@ class PlacePageTests(_Base):
         self.assertEqual(person_html.count('Fairview'), 1)          # named once, not doubled
         self.assertNotIn(' at <a href="../places/l-1111111111.html">', person_html)
 
+    def test_timeline_value_is_escaped_around_the_place_link(self):
+        # Linking the place inside the sentence moved the timeline value's
+        # escaping out of Jinja's autoescape and into site.py, which is worth
+        # a guard of its own: the value is split into three pieces around the
+        # place name and every piece has to be escaped, or a claim someone
+        # typed with angle brackets in it becomes markup.
+        self._seed_person('p-aaaaaaaaaa', 'Jane')
+        self._seed_source('s-1111111111', 'Census', people=('p-aaaaaaaaaa',))
+        self._seed_place('l-1111111111', 'Fairview')
+        self._seed_claim_at_place('c-1111111111', 's-1111111111', 'l-1111111111',
+                                  '<b>Lived</b> in Fairview & <i>farmed</i>',
+                                  ('p-aaaaaaaaaa',))
+        self._run(linked=True)
+        person_html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('&lt;b&gt;Lived&lt;/b&gt; in '
+                      '<a href="../places/l-1111111111.html">Fairview</a> '
+                      '&amp; &lt;i&gt;farmed&lt;/i&gt;', person_html)
+
     def test_timeline_place_name_inside_a_longer_word_still_renders(self):
         # #127's suppression is whole-word: "Hampton" sits inside
         # "Southampton", and a plain substring test read the sentence as
