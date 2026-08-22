@@ -613,10 +613,11 @@ def parentage_parties(
 
 # The role a claim's OWN SUBJECT carries, per vital claim type. `birth` and
 # `baptism` name the person the record is about as the `child`; `marriage` and
-# `divorce` name them as `spouse`. `death` and `burial` are absent on purpose:
-# SPEC §8.3's role vocabulary has no word for the deceased, so a death claim can
-# only say who the OTHER people are (the widow, the children, the informant),
-# and the subject is the one the claim left unroled.
+# `divorce` name them as `spouse` (and on those two, `spouse_parties` answers
+# first - see `vital_subjects` case 2). `death` and `burial` are absent on
+# purpose: SPEC §8.3's role vocabulary has no word for the deceased, so a death
+# claim can only say who the OTHER people are (the widow, the children, the
+# informant), and the subject is the one the claim left unroled.
 VITAL_SUBJECT_ROLES: dict[str, str] = {
     'birth': 'child',
     'baptism': 'child',
@@ -660,41 +661,56 @@ def vital_subjects(
          written before `roles:` was expected on vitals, and the whole
          back-compatibility bargain: a rule that silently emptied those
          archives' summary boxes would be a worse bug than the one it fixes.
-      2. The people named under this type's **subject role** (`VITAL_SUBJECT_ROLES`
+      2. On a **couple claim** (`marriage`/`divorce`), whoever
+         `spouse_parties` says married each other. That rule - not this one -
+         is the archive's single answer to "who married whom": the index mints
+         the spouse edge from it, `fha gedcom` picks the FAM from it, and
+         `fha lint` W115/W125 read it. Deciding the question a second way here
+         made the two disagree on the claim `spouse_parties` documents as its
+         typo case (`roles: {spouse: [P-a]}` with the partner left unroled, from
+         a mistyped id or a name that stopped resolving): the index recorded the
+         marriage while the partner's own summary box and WikiTree profile
+         quietly dropped it. One rule, one home.
+      3. The people named under this type's **subject role** (`VITAL_SUBJECT_ROLES`
          - `child` for birth/baptism, `spouse` for marriage/divorce) when the
-         claim names any. The claim said outright who it is about.
-      3. Otherwise the people the claim left **unroled**. This is the ordinary
+         claim names any. The claim said outright who it is about. On a couple
+         claim this is reached only where `spouse_parties` found no couple -
+         `roles: {spouse: [P-a], parent: [P-b]}`, which names P-a's own
+         marriage while refusing to marry him to P-b.
+      4. Otherwise the people the claim left **unroled**. This is the ordinary
          death record (`roles: {spouse: [widow], child: [informant]}` - nobody
          can be marked "deceased", so the deceased is the one with no part to
          play) and the birth claim written `roles: {parent: [mother, father]}`
          with the baby unmarked.
-      4. Which can be **empty**, and that is an answer too: every person named
+      5. Which can be **empty**, and that is an answer too: every person named
          was named as somebody else on the record, so it is nobody's own vital.
          An empty list is exactly the mother-on-her-son's-birth-certificate
          case, and returning her son's date for her is the bug.
 
-    Note the one place this is stricter than `spouse_parties`: a marriage claim
-    naming ONE spouse and one unroled person yields that one spouse here, while
-    `spouse_parties` pairs them (its documented typo tolerance - a pairing needs
-    two names, a subject does not). The couple still gets its spouse edge and
-    still appears on the family chart; only the unroled person's `Married:`
-    summary row is withheld, and withholding a row the claim never asserted is
-    the conservative half of that disagreement.
+    Case 5 is deliberately silent rather than falling back to "everyone named":
+    a death claim whose `roles:` map casts every person it names as somebody
+    else yields no death date at all, and the archive's bargain throughout this
+    file is that a missing fact is recoverable where a false one is not.
     """
     first_role: dict[str, str] = {}
     for pid, role in persons_with_roles:
         if pid not in first_role:
             first_role[pid] = str(role or '').strip().lower()
+    pairs = list(first_role.items())
 
-    if not any(role for role in first_role.values()):
+    if not any(role for _pid, role in pairs):
         return None
 
     subject_role = VITAL_SUBJECT_ROLES.get(str(claim_type or '').strip().lower())
+    if subject_role == 'spouse':
+        couple = spouse_parties(pairs)
+        if couple:
+            return couple
     if subject_role:
-        named = [pid for pid, role in first_role.items() if role == subject_role]
+        named = [pid for pid, role in pairs if role == subject_role]
         if named:
             return named
-    return [pid for pid, role in first_role.items() if not role]
+    return [pid for pid, role in pairs if not role]
 
 
 def claim_is_own_vital(
@@ -711,25 +727,27 @@ def claim_is_own_vital(
     answered four ways drifts, which is how the archive came to disagree with
     its own export about who married whom (#58). One rule, one home.
 
-    `cache`, when given, memoizes the answer per claim id: a person named on
-    twenty records would otherwise re-read the same rows twenty times, and a
-    whole-site build asks this once per vital claim per person.
+    `cache`, when given, memoizes the CLAIM's subject list - never the yes/no
+    answer, which is per person. A person named on twenty records would
+    otherwise re-read the same rows twenty times, and a whole-site build asks
+    this once per vital claim per person; keyed on the claim alone, one cache
+    is safely shared across every person in a build.
 
     True for a claim whose `roles:` map says nothing (`vital_subjects` returns
     None) - the legacy claim, where the caller keeps the behaviour it has
     always had.
     """
-    if cache is None or claim_id not in cache:
+    if cache is not None and claim_id in cache:
+        subjects = cache[claim_id]
+    else:
         rows = conn.execute(
             'SELECT person_id, role FROM claim_persons WHERE claim_id = ? '
             'ORDER BY position', (claim_id,)).fetchall()
         subjects = vital_subjects(
             claim_type,
             [(normalize_id(str(r[0])), r[1]) for r in rows])
-        if cache is None:
-            return subjects is None or normalize_id(str(person_id)) in subjects
-        cache[claim_id] = subjects
-    subjects = cache[claim_id]
+        if cache is not None:
+            cache[claim_id] = subjects
     return subjects is None or normalize_id(str(person_id)) in subjects
 
 

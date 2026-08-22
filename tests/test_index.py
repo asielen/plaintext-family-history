@@ -34,7 +34,8 @@ sys.path.insert(0, str(ROOT / 'tools'))
 
 import index
 from _lib import (
-    EXIT_CLEAN, EXIT_FAILURE, EXIT_WARNINGS, social_parties, vital_subjects,
+    EXIT_CLEAN, EXIT_FAILURE, EXIT_WARNINGS, claim_is_own_vital,
+    social_parties, spouse_parties, vital_subjects,
 )
 
 
@@ -2917,6 +2918,35 @@ class VitalSubjectsRuleTests(unittest.TestCase):
         self.assertEqual(
             vital_subjects('burial', [('p-a', None), ('p-b', 'spouse')]), ['p-a'])
 
+    def test_a_couple_claim_answers_with_the_same_couple_spouse_parties_does(self) -> None:
+        # `spouse_parties` is the archive's one rule for who married whom - the
+        # index mints the spouse edge from it, gedcom picks the FAM from it,
+        # lint W115/W125 read it. Its documented typo case is `roles: {spouse:
+        # [P-a]}` with the partner left unroled (a mistyped id, a name that
+        # stopped resolving), which it still reads as a couple. Answering the
+        # question a second way here left the index recording the marriage
+        # while the partner's own summary box quietly dropped it.
+        pairs = [('p-a', 'spouse'), ('p-b', None)]
+        self.assertEqual(spouse_parties(pairs), ['p-a', 'p-b'])
+        self.assertEqual(vital_subjects('marriage', pairs), ['p-a', 'p-b'])
+
+    def test_a_couple_claim_that_names_the_partner_as_something_else_scopes_down(self) -> None:
+        # `roles: {spouse: [P-a], parent: [P-b]}` names P-a's own marriage
+        # while refusing to marry him to P-b, so `spouse_parties` finds no
+        # couple and the subject-role pass answers instead.
+        pairs = [('p-a', 'spouse'), ('p-b', 'parent')]
+        self.assertEqual(spouse_parties(pairs), [])
+        self.assertEqual(vital_subjects('marriage', pairs), ['p-a'])
+
+    def test_a_couple_claim_with_only_the_parents_roled_reads_the_unroled_pair(self) -> None:
+        # The marriage certificate written `roles: {parent: [both sets]}` with
+        # the bride and groom unmarked: they are the two the claim left with no
+        # other part to play.
+        self.assertEqual(
+            vital_subjects('marriage', [('p-a', None), ('p-b', None),
+                                        ('p-c', 'parent'), ('p-d', 'parent')]),
+            ['p-a', 'p-b'])
+
 
 class SocialPartiesRuleTests(unittest.TestCase):
     """`_lib.social_parties` directly (#118)."""
@@ -2966,6 +2996,51 @@ class SocialPartiesRuleTests(unittest.TestCase):
             social_parties([('p-a', 'friend'), ('p-a', 'friend'), ('p-b', 'friend')],
                            'friend'),
             ['p-a', 'p-b'])
+
+
+class ClaimIsOwnVitalCacheTests(unittest.TestCase):
+    """`_lib.claim_is_own_vital`'s optional cache holds the CLAIM's subject
+    list, never one person's yes/no answer.
+
+    Every consumer shares one cache across a whole build - the site builder
+    keeps a single dict for every person page it writes - so a cache that
+    stored the boolean would answer the second person with the first person's
+    result and hand a bystander somebody else's birthday. This asserts the
+    scoping directly, because a cache bug of that shape is invisible in any
+    test that asks about one person."""
+
+    def setUp(self) -> None:
+        self.conn = sqlite3.connect(':memory:')
+        self.conn.execute(
+            'CREATE TABLE claim_persons(claim_id TEXT, person_id TEXT, '
+            'position INTEGER, role TEXT)')
+        for pos, (pid, role) in enumerate(
+                (('p-son', 'child'), ('p-mom', 'parent'))):
+            self.conn.execute(
+                'INSERT INTO claim_persons VALUES (?,?,?,?)',
+                ('c-birth', pid, pos, role))
+
+    def tearDown(self) -> None:
+        self.conn.close()
+
+    def test_one_shared_cache_answers_each_person_separately(self) -> None:
+        cache: dict = {}
+        self.assertTrue(
+            claim_is_own_vital(self.conn, 'p-son', 'c-birth', 'birth', cache))
+        self.assertFalse(
+            claim_is_own_vital(self.conn, 'p-mom', 'c-birth', 'birth', cache),
+            'a cache shared across people must not carry the first person\'s '
+            'answer over to the second')
+        # And back again, now that the entry is warm.
+        self.assertTrue(
+            claim_is_own_vital(self.conn, 'p-son', 'c-birth', 'birth', cache))
+        self.assertEqual(list(cache), ['c-birth'])
+
+    def test_the_cached_and_uncached_paths_agree(self) -> None:
+        for pid in ('p-son', 'p-mom'):
+            self.assertEqual(
+                claim_is_own_vital(self.conn, pid, 'c-birth', 'birth'),
+                claim_is_own_vital(self.conn, pid, 'c-birth', 'birth', {}))
 
 
 # ── Social relationship scoping (#118) ────────────────────────────────────────

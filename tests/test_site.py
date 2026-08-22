@@ -3124,6 +3124,29 @@ class VitalSubjectScopingTests(_Base):
         self.assertNotIn('<dt>Married</dt>', self._read(f'persons/{self.MOM}.html'))
         self.assertIn('<dt>Married</dt>', self._read(f'persons/{self.SON}.html'))
 
+    def test_both_halves_of_a_couple_keep_married_when_only_one_is_roled(self):
+        # `roles: {spouse: [P-a]}` with the partner left unroled is the typo
+        # case `_lib.spouse_parties` documents - a mistyped id, a name that
+        # stopped resolving - and that rule still reads the two as a couple, so
+        # `fha index` mints the spouse edge and `fha gedcom` writes the MARR.
+        # The summary block has to agree: dropping the partner's Married row
+        # here would leave her page denying a marriage the rest of the archive
+        # asserts about her.
+        self._seed_person(self.SON, 'Peter Marr')
+        self._seed_person('p-wwwwwwwwww', 'Ada Finch')
+        self._seed_source('s-4444444444', 'Marriage record',
+                          source_type='vital-record')
+        self._seed_claim('c-4444444444', 's-4444444444', 'marriage',
+                         'Married at Riverton', status='accepted', date_edtf='1910',
+                         persons=(self.SON, 'p-wwwwwwwwww'),
+                         roles={self.SON: 'spouse'})
+        self._run(linked=True)
+        self.assertIn('<dt>Married</dt>', self._read(f'persons/{self.SON}.html'))
+        self.assertIn(
+            '<dt>Married</dt>', self._read('persons/p-wwwwwwwwww.html'),
+            'the partner a couple claim leaves unroled is still half of the '
+            'couple `spouse_parties` derives, so her own Married row stands')
+
 
 if __name__ == '__main__':
     unittest.main()
