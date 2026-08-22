@@ -88,6 +88,8 @@ from _lib import (
     format_roots_orphan_warning,
     index_manifest_path,
     record_path_manifest,
+    social_parties,
+    SOCIAL_TIE_SUBTYPES,
     spouse_parties,
     sqlite_cache_schema_status,
     strip_generational_suffix,
@@ -95,6 +97,7 @@ from _lib import (
     undecodable_file_recorder,
     unreadable_dir_recorder,
     update_path_manifest,
+    vital_subjects,
     walk_files,
     write_path_manifest,
 )
@@ -383,7 +386,12 @@ CREATE VIRTUAL TABLE IF NOT EXISTS transcripts_fts
   USING fts5(source_id, path, content);
 """
 
-_RELATIONSHIPS_SOCIAL_SUBTYPES = {'friend', 'associate', 'neighbor'}
+# One home for the vocabulary: `_lib.SOCIAL_TIE_SUBTYPES` is both the set of
+# subtypes that derive a social edge here and the set of `roles:` keys
+# `_lib.social_parties` reads to scope one (#118). A local copy of the words
+# would let the branch that MINTS an edge and the rule that SCOPES it drift
+# apart, which is precisely the failure this fix is repairing elsewhere.
+_RELATIONSHIPS_SOCIAL_SUBTYPES = SOCIAL_TIE_SUBTYPES
 
 # _lib.TEXT_COMPANION_ROLES holds the files: roles whose body belongs in
 # transcripts_fts: `extracted-text` (what `fha source extract` stamps on a PDF's
@@ -1747,6 +1755,16 @@ def _derive_relationships(conn: sqlite3.Connection) -> None:
     to the pedigree even when its `roles:` map said so in as many words. It
     derives on `roles:` alone (`_lib.parentage_parties`); the `persons:` order
     of an unroled birth claim is never read as a parent list.
+
+    Every branch below asks the same question - "which of the people this claim
+    NAMES is it actually about?" - and every branch answers it from `roles:`,
+    through one of the three shared rules in `_lib`: `parentage_parties`,
+    `spouse_parties`, `social_parties` (friend/associate/neighbor, #118) and
+    `vital_subjects` (who died, #126). `persons:` is the index of who a claim
+    involves, never the list of its parties (SPEC §8.3), and each time a branch
+    read it as one it produced an edge nobody can tell from a real one: a man
+    married to his father-in-law, a bystander filed as somebody's friend, a
+    son's marriage ended on the day his father died.
     """
     conn.execute('DELETE FROM relationships')
 
@@ -1820,8 +1838,21 @@ def _derive_relationships(conn: sqlite3.Connection) -> None:
                             (p2, 'spouse', p1, cid, dmin, None),
                         )
             elif subtype in _RELATIONSHIPS_SOCIAL_SUBTYPES:
-                for i, p1 in enumerate(pids):
-                    for p2 in pids[i+1:]:
+                # Only the people the claim calls friends were friends. Same
+                # scoping rule as the couple branches above, same reason
+                # (_lib.social_parties, issue #118): a friend claim can name a
+                # third person the anecdote merely runs through, and pairing
+                # every name mutually made that person a friend of both. Since
+                # they are separately - and correctly - somebody's parent, the
+                # page then showed one pair as parent AND friend at once, with
+                # nothing to tell the reader which edge the archive has
+                # evidence for. A claim with no roles: entry for its subtype
+                # still pairs everyone named, so legacy claims are untouched.
+                social_pids = social_parties(all_persons, subtype)
+                for i, p1 in enumerate(social_pids):
+                    for p2 in social_pids[i+1:]:
+                        if p1 == p2:
+                            continue   # nobody is their own friend
                         rel = subtype or 'associate'
                         conn.execute(
                             'INSERT OR IGNORE INTO relationships VALUES (?,?,?,?,?,?)',
@@ -1920,7 +1951,22 @@ def _derive_relationships(conn: sqlite3.Connection) -> None:
                         (dmin, p2, p1, dmin),
                     )
         elif ctype == 'death':
-            for deceased_id in pids:
+            # Only the person who DIED loses their marriage. A death
+            # certificate names more than the deceased - the surviving spouse,
+            # the parents, and the married son who reported the death - and
+            # closing a spouse edge for each of them recorded that son's own
+            # marriage as ending on his father's death date. Same failure the
+            # divorce branch guards against, reached through a different
+            # question: nothing here mints an edge, so an unscoped loop cannot
+            # invent a marriage, only end real ones belonging to other people.
+            #
+            # SPEC §8.3's role vocabulary has no word for the deceased, so
+            # `_lib.vital_subjects` reads the claim the only way it can be
+            # written: whoever the roles: map did NOT cast as somebody else.
+            # A claim with no roles: map at all has not said, and keeps the
+            # behaviour it always had (None -> every person named).
+            subjects = vital_subjects('death', all_persons)
+            for deceased_id in (pids if subjects is None else subjects):
                 conn.execute(
                     '''UPDATE relationships SET date_end = ?
                        WHERE rel = 'spouse' AND (person_id = ? OR other_id = ?)

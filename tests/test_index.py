@@ -33,7 +33,9 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
 
 import index
-from _lib import EXIT_CLEAN, EXIT_FAILURE, EXIT_WARNINGS
+from _lib import (
+    EXIT_CLEAN, EXIT_FAILURE, EXIT_WARNINGS, social_parties, vital_subjects,
+)
 
 
 _RESEARCH_MD_WELL_FORMED = '''---
@@ -2872,3 +2874,304 @@ class UpsertUndecodableSourceTests(unittest.TestCase):
     def test_a_decodable_source_still_upserts(self) -> None:
         self.assertEqual(
             index.upsert_source(self.archive_root, {}, self.SID), 'indexed')
+
+
+class VitalSubjectsRuleTests(unittest.TestCase):
+    """`_lib.vital_subjects` directly - the edge cases that are awkward to
+    reach through a whole index build. Expected values come from SPEC §8.3
+    (`persons:` is who a claim involves; `roles:` is who plays what), not from
+    what the implementation happens to return."""
+
+    def test_no_roles_at_all_returns_none_meaning_the_claim_never_said(self) -> None:
+        self.assertIsNone(vital_subjects('birth', [('p-a', None), ('p-b', '')]))
+
+    def test_the_subject_role_wins_when_the_claim_names_it(self) -> None:
+        self.assertEqual(
+            vital_subjects('birth', [('p-a', 'child'), ('p-b', 'parent')]), ['p-a'])
+
+    def test_the_unroled_person_is_the_subject_when_no_subject_role_is_named(self) -> None:
+        # The ordinary death record: SPEC §8.3 has no word for the deceased, so
+        # the claim can only say who the others were.
+        self.assertEqual(
+            vital_subjects('death', [('p-a', None), ('p-b', 'child')]), ['p-a'])
+
+    def test_everyone_named_as_somebody_else_yields_nobody(self) -> None:
+        # A birth certificate whose roles: map calls both people parents is
+        # nobody's own birth record. This is the mother's `Born: 1888` bug.
+        self.assertEqual(
+            vital_subjects('birth', [('p-a', 'parent'), ('p-b', 'parent')]), [])
+
+    def test_a_person_named_twice_is_counted_once(self) -> None:
+        # `persons: [P-a, "[[Alice Smith]]"]` is one person written two ways and
+        # claim_persons stores a row per entry, with no UNIQUE constraint.
+        self.assertEqual(
+            vital_subjects('birth', [('p-a', 'child'), ('p-a', 'child')]), ['p-a'])
+
+    def test_role_matching_ignores_case_and_surrounding_space(self) -> None:
+        # Hand-edited YAML: ` Child ` must mean the same as `child`.
+        self.assertEqual(
+            vital_subjects('birth', [('p-a', ' Child '), ('p-b', 'parent')]), ['p-a'])
+
+    def test_an_unknown_claim_type_falls_back_to_the_unroled_people(self) -> None:
+        # No subject role is defined for `burial`, so the rule is the death one.
+        self.assertEqual(
+            vital_subjects('burial', [('p-a', None), ('p-b', 'spouse')]), ['p-a'])
+
+
+class SocialPartiesRuleTests(unittest.TestCase):
+    """`_lib.social_parties` directly (#118)."""
+
+    def test_two_or_more_named_under_the_subtype_win(self) -> None:
+        self.assertEqual(
+            social_parties([('p-a', 'friend'), ('p-b', 'friend'), ('p-c', None)],
+                           'friend'),
+            ['p-a', 'p-b'])
+
+    def test_no_roles_at_all_pairs_everyone_named(self) -> None:
+        self.assertEqual(
+            social_parties([('p-a', None), ('p-b', None), ('p-c', '')], 'neighbor'),
+            ['p-a', 'p-b', 'p-c'])
+
+    def test_one_named_friend_and_no_contradicting_role_pairs_everyone(self) -> None:
+        # A typo'd id or an alias that stopped resolving leaves one name, and
+        # one name is no answer to "who knew whom" - so nothing has been said
+        # about the others, and the legacy reading stands.
+        self.assertEqual(
+            social_parties([('p-a', 'friend'), ('p-b', None)], 'friend'),
+            ['p-a', 'p-b'])
+
+    def test_the_generic_associate_key_scopes_a_friend_claim(self) -> None:
+        # `associate` is the generic party key an author reaches for. A claim
+        # that plainly named its two parties must not lose its edges over which
+        # of three near-synonyms it used for the key.
+        self.assertEqual(
+            social_parties([('p-a', 'associate'), ('p-b', 'associate'), ('p-c', None)],
+                           'friend'),
+            ['p-a', 'p-b'])
+
+    def test_the_exact_subtype_key_is_preferred_over_the_generic_one(self) -> None:
+        # A claim that DID draw the distinction is read as it was written.
+        self.assertEqual(
+            social_parties([('p-a', 'friend'), ('p-b', 'friend'),
+                            ('p-c', 'neighbor'), ('p-d', 'neighbor')], 'friend'),
+            ['p-a', 'p-b'])
+
+    def test_a_contradicting_role_yields_nobody(self) -> None:
+        # The claim answered and said no: P-b is a parent on this record.
+        self.assertEqual(
+            social_parties([('p-a', 'friend'), ('p-b', 'parent')], 'friend'), [])
+
+    def test_a_person_named_twice_is_counted_once(self) -> None:
+        self.assertEqual(
+            social_parties([('p-a', 'friend'), ('p-a', 'friend'), ('p-b', 'friend')],
+                           'friend'),
+            ['p-a', 'p-b'])
+
+
+# ── Social relationship scoping (#118) ────────────────────────────────────────
+#
+# The same defect #58 found in marriage pairing, one branch further down the
+# same function. A `subtype: friend` claim can legitimately name more people in
+# `persons:` than it has friends - the anecdote runs through somebody's child -
+# and `roles: {friend: […]}` is what says who the friends actually were.
+# Pairing every name mutually made that third person a friend of both adults,
+# and since they are separately (and correctly) somebody's parent, the person
+# page then showed the same pair as parent AND friend, both as fact.
+
+_SOC_A = 'P-aa11aa11aa'
+_SOC_B = 'P-bb22bb22bb'
+_SOC_C = 'P-cc33cc33cc'
+
+_SOC_NAMES = {_SOC_A: 'Ada Finch', _SOC_B: 'Bram Toller', _SOC_C: 'Cora Toller'}
+
+
+def _soc_person(pid: str) -> str:
+    name = _SOC_NAMES[pid]
+    return (f'---\nid: {pid}\nname: {name}\nliving: false\n'
+            f'aliases: [{pid}, {name}]\n---\n\n# {name}\n')
+
+
+class SocialRelationshipRoleScopingTests(unittest.TestCase):
+    """A friend/associate/neighbor claim derives edges between the people its
+    `roles:` map names as such - not between everyone it happens to mention."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        for pid in (_SOC_A, _SOC_B, _SOC_C):
+            _write(self.root / 'people' / f'p_{pid}.md', _soc_person(pid))
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _write_source(self, claims: str) -> None:
+        _write(self.root / 'sources' / 'letter_S-8888888888.md',
+               '---\nid: S-8888888888\ntitle: A letter\n'
+               'source_type: correspondence\n---\n\n'
+               f'## Claims\n```yaml\n{claims}```\n')
+
+    def _soc_claim(self, subtype: str, persons: list,
+                   roles: dict | None = None) -> str:
+        text = ('- id: C-9999999999\n'
+                f'  value: "{subtype}s from the old street"\n'
+                '  type: relationship\n'
+                f'  subtype: {subtype}\n'
+                f'  persons: [{", ".join(persons)}]\n'
+                '  status: accepted\n'
+                '  reviewed: 2026-01-01\n'
+                '  date: 1912\n')
+        if roles:
+            text += '  roles:\n'
+            for role_name, who in roles.items():
+                text += f'    {role_name}: [{", ".join(who)}]\n'
+        return text
+
+    def _edges(self, rel: str) -> set:
+        conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
+        try:
+            return {
+                (p, o) for p, o in conn.execute(
+                    'SELECT person_id, other_id FROM relationships WHERE rel = ?',
+                    (rel,))
+            }
+        finally:
+            conn.close()
+
+    def test_bystander_named_only_in_persons_gets_no_friend_edge(self) -> None:
+        # The reporter's shape: two real friends, plus one person the anecdote
+        # merely runs through. roles: names the two; the third must stay out.
+        self._write_source(self._soc_claim(
+            'friend', [_SOC_A, _SOC_B, _SOC_C],
+            roles={'friend': [_SOC_A, _SOC_B]}))
+        index.build_index(self.root, {})
+        self.assertEqual(
+            self._edges('friend'),
+            {(_SOC_A.lower(), _SOC_B.lower()), (_SOC_B.lower(), _SOC_A.lower())},
+            'a friend claim must pair the people named under roles: friend:, '
+            'never every person it happens to name')
+
+    def test_the_two_people_roles_names_do_get_their_edge(self) -> None:
+        # The other half of the two-sided rule: scoping must not cost the edge
+        # the claim actually asserts.
+        self._write_source(self._soc_claim(
+            'neighbor', [_SOC_A, _SOC_B, _SOC_C],
+            roles={'neighbor': [_SOC_A, _SOC_C]}))
+        index.build_index(self.root, {})
+        self.assertEqual(
+            self._edges('neighbor'),
+            {(_SOC_A.lower(), _SOC_C.lower()), (_SOC_C.lower(), _SOC_A.lower())})
+
+    def test_three_named_neighbours_all_pair_when_roles_names_all_three(self) -> None:
+        # Unlike a marriage, three IS an ordinary shape here: one claim can
+        # record that three neighbours all knew one another.
+        self._write_source(self._soc_claim(
+            'neighbor', [_SOC_A, _SOC_B, _SOC_C],
+            roles={'neighbor': [_SOC_A, _SOC_B, _SOC_C]}))
+        index.build_index(self.root, {})
+        self.assertEqual(len(self._edges('neighbor')), 6)
+
+    def test_legacy_claim_with_no_roles_map_still_pairs_everyone(self) -> None:
+        # Back-compatibility bargain: these claims were written before roles:
+        # was expected on them, and must keep deriving exactly as they did.
+        self._write_source(self._soc_claim(
+            'associate', [_SOC_A, _SOC_B, _SOC_C]))
+        index.build_index(self.root, {})
+        self.assertEqual(len(self._edges('associate')), 6)
+
+    def test_a_person_named_as_something_else_is_never_made_a_friend(self) -> None:
+        # The claim answered the question and said no: it calls this person a
+        # parent, so pairing them as friends contradicts the claim in its own
+        # words.
+        self._write_source(self._soc_claim(
+            'friend', [_SOC_A, _SOC_B, _SOC_C],
+            roles={'friend': [_SOC_A], 'parent': [_SOC_C]}))
+        index.build_index(self.root, {})
+        self.assertEqual(self._edges('friend'), set())
+
+
+# ── A death claim ends only the deceased's marriage (#126, same root cause) ───
+#
+# `death` closes the spouse edges of everyone the claim names, and a death
+# certificate names more than the deceased - the surviving spouse, and the
+# married son who reported the death. That son's OWN marriage was then recorded
+# as ending on his father's death date.
+
+_DTH_DEAD = 'P-dd11dd11dd'
+_DTH_SON = 'P-ss22ss22ss'
+_DTH_WIFE = 'P-ww33ww33ww'
+
+_DTH_NAMES = {_DTH_DEAD: 'Elias Marr', _DTH_SON: 'Peter Marr',
+              _DTH_WIFE: 'Iris Marr'}
+
+
+class DeathClaimRoleScopingTests(unittest.TestCase):
+    """A death claim ends the marriage of the person who died, not of the
+    relatives who signed the certificate."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        for pid, name in _DTH_NAMES.items():
+            _write(self.root / 'people' / f'p_{pid}.md',
+                   f'---\nid: {pid}\nname: {name}\nliving: false\n'
+                   f'aliases: [{pid}, {name}]\n---\n\n# {name}\n')
+        # The son's own marriage, twenty years before his father's death.
+        _write(self.root / 'sources' / 'wedding_S-6666666666.md',
+               '---\nid: S-6666666666\ntitle: Marriage record\n'
+               'source_type: vital-record\n---\n\n## Claims\n```yaml\n'
+               '- id: C-5555555555\n'
+               '  value: "married"\n'
+               '  type: marriage\n'
+               f'  persons: [{_DTH_SON}, {_DTH_WIFE}]\n'
+               '  status: accepted\n'
+               '  reviewed: 2026-01-01\n'
+               '  date: 1900\n'
+               '```\n')
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _write_death(self, roles: dict | None) -> None:
+        text = ('- id: C-4444444444\n'
+                '  value: "died"\n'
+                '  type: death\n'
+                f'  persons: [{_DTH_DEAD}, {_DTH_SON}]\n'
+                '  status: accepted\n'
+                '  reviewed: 2026-01-01\n'
+                '  date: 1920\n')
+        if roles:
+            text += '  roles:\n'
+            for role_name, who in roles.items():
+                text += f'    {role_name}: [{", ".join(who)}]\n'
+        _write(self.root / 'sources' / 'death_S-7777777777.md',
+               '---\nid: S-7777777777\ntitle: Death record\n'
+               'source_type: vital-record\n---\n\n'
+               f'## Claims\n```yaml\n{text}```\n')
+
+    def _son_marriage_end(self):
+        conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
+        try:
+            row = conn.execute(
+                "SELECT date_end FROM relationships WHERE rel = 'spouse' "
+                'AND person_id = ? AND other_id = ?',
+                (_DTH_SON.lower(), _DTH_WIFE.lower())).fetchone()
+            return row[0] if row else 'NO EDGE'
+        finally:
+            conn.close()
+
+    def test_the_informant_sons_own_marriage_is_not_ended(self) -> None:
+        # roles: calls the son a child of the deceased. He is on the record
+        # because he reported the death, not because he died.
+        self._write_death(roles={'child': [_DTH_SON]})
+        index.build_index(self.root, {})
+        self.assertIsNone(
+            self._son_marriage_end(),
+            'a death claim must not close the marriage of a relative it names; '
+            "only the deceased's spouse edges end")
+
+    def test_a_legacy_death_claim_with_no_roles_still_ends_marriages(self) -> None:
+        # No roles: map, so the claim never said who died. The old behaviour
+        # stands rather than silently losing every legacy date_end.
+        self._write_death(roles=None)
+        index.build_index(self.root, {})
+        self.assertEqual(self._son_marriage_end(), '1920-01-01')

@@ -105,6 +105,7 @@ CODE MAP
     _apex_ancestor             - deepest ancestor of root_person (home-tree seed)
     _build_tree_data           - BFS relationships → neutral tree JSON + url + redaction
     _tree_node, _person_vitals - one redacted node; its birth/death labels
+                                 (scoped to the person's OWN vitals, #126)
     _chart_entry               - one redacted {name,url,dates} node; shared by the
                                  Ahnentafel walk and the family-wings walk below
     _build_ahnentafel          - parent-edge walk → Ahnentafel map (fan + pedigree)
@@ -115,6 +116,9 @@ CODE MAP
   Builder
     _SiteBuilder               - holds conn, mode, maps, page sets, jinja env
       .prepare                 - load persons/sources, decide which pages exist
+      ._claim_is_own_vital     - is this vital claim a record OF this person,
+                                 or of a relative it also names? (roles:, #126)
+      ._person_summary         - the Born/Died/Married infobox, own vitals only
       .render_token            - one [ID] token → HTML (link / redaction / mark)
       .build_source_page       - M8.1 source page
       .build_person_page       - M8.2 person page
@@ -149,6 +153,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from _lib import (
     apply_private_fence,
     ASSET_ROOT_ALIASES,
+    claim_is_own_vital,
     configure_utf8_stdout,
     EXIT_CLEAN,
     EXIT_FAILURE,
@@ -1118,6 +1123,11 @@ class _SiteBuilder:
         # person's facts would publish through a redacted citation.
         self.restricted_person_sources: set[str] = set()
         self.restricted_claims: set[str] = set()         # claim ids withheld
+        # Whose OWN vital each vital claim supplies (`_lib.vital_subjects`),
+        # memoized per claim: the summary block and every chart node ask it,
+        # so a person named on twenty records would otherwise re-read the same
+        # claim_persons rows twenty times. None means the claim never said.
+        self._vital_subjects: dict[str, list[str] | None] = {}
         self.restricted_names: dict[str, set[str]] = {}   # pid → lowercased restricted variant values
         # Opened once in prepare() when the photo index is fresh, reused across
         # every person page, closed by run_site - so the photos-root freshness
@@ -2125,6 +2135,29 @@ class _SiteBuilder:
                 else [raw.strip()] if isinstance(raw, str) and raw.strip() else [])
         return alts, tags
 
+    def _claim_is_own_vital(self, pid: str, claim_id: str, claim_type: str) -> bool:
+        """Is this vital claim a record of THIS person, or of somebody else it
+        also names?
+
+        A birth certificate names the baby, both parents and the informant; a
+        death certificate names the deceased, the widow and the child who
+        reported it; a marriage licence names the couple and both sets of
+        parents. Listing all of them in `persons:` is correct - `persons:` is
+        the index of who a claim is about (SPEC §8.3) - so "which claims name
+        this person" is the wrong question to ask when filling in his own
+        Born/Died/Married. Asking it put a son's birth date in his mother's
+        summary box and printed it under her name on the family chart (#126).
+
+        `_lib.claim_is_own_vital` is the shared rule - the same one the GEDCOM
+        writer, the WikiTree infoboxes and `fha views tree` read, so a person's
+        page and their export cannot disagree about whose birthday it is. It
+        says yes for a claim whose `roles:` map says nothing at all: the legacy
+        claim, where the honest answer is that the archive does not know, and
+        the honest rendering is the one this build has always produced.
+        """
+        return claim_is_own_vital(
+            self.conn, pid, claim_id, claim_type, self._vital_subjects)
+
     def _person_summary(self, pid: str, page_dir: Path) -> list[dict]:
         """Accepted vital claims as the summary block (birth/death/marriage/…).
 
@@ -2141,6 +2174,13 @@ class _SiteBuilder:
         settled headline fact, and rendering it as `Born 1900` would assert the
         very thing the claim denies. Same posture as wikitree's spacetime and
         template exclusions.
+
+        Claims of somebody ELSE's vital are excluded too (`_claim_is_own_vital`,
+        #126). The SQL still gathers every accepted vital NAMING the person -
+        it has to, since only the claim's whole `roles:` map can answer the
+        question - and the filter runs over the result, before the
+        first-of-each-type pick, so a relative's record cannot win the slot and
+        thereby suppress the person's own.
         """
         living_filter = (
             '' if self.linked else
@@ -2159,6 +2199,7 @@ class _SiteBuilder:
             "ORDER BY c.id",
             (pid,),
         ).fetchall()
+        rows = [r for r in rows if self._claim_is_own_vital(pid, r['id'], r['type'])]
         claim_persons: dict[str, str] = {}
         if self.workbench:
             # Raw person lists per claim, for the sourced-row edit affordance's
@@ -3598,14 +3639,25 @@ class _SiteBuilder:
 
         Negated claims are excluded (COALESCE(c.negated, 0) = 0): a negated
         birth/death is a confirmed absence, not a date to label a pedigree node
-        with. Same posture as `_person_summary`."""
+        with. Same posture as `_person_summary`.
+
+        So are claims that are a record of somebody else the claim also names
+        (`_claim_is_own_vital`, #126). A chart node's life dates are the
+        shortest, most quotable fact on the page, and reading them off any
+        birth/death claim naming the person is what produced nodes labelled
+        `1955-1916` and great-grandparents charted with their own child's birth
+        year. `ORDER BY c.id` makes the surviving pick deterministic, as it
+        does in `_person_summary` - without it the committed example fixtures
+        churn between rebuilds on sqlite's rowid order."""
         vitals = {'birth': None, 'death': None}
         for r in self.conn.execute(
             "SELECT c.id, c.type, c.date_edtf, c.source_id FROM claims c JOIN claim_persons cp ON c.id = cp.claim_id "
             "WHERE cp.person_id = ? AND c.type IN ('birth','death') AND c.status = 'accepted' "
-            "AND COALESCE(c.negated, 0) = 0",
+            "AND COALESCE(c.negated, 0) = 0 ORDER BY c.id",
             (pid,),
         ):
+            if not self._claim_is_own_vital(pid, r['id'], r['type']):
+                continue
             # Standalone: show a (deceased) person's date even when its source is
             # merely withheld - the node carries no citation to redact, and only
             # living people are redacted outright. Drop only a restricted claim or a

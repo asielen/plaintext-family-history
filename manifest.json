@@ -1,7 +1,7 @@
 {
   "manifest_version": "1",
   "spec_version": "1.2",
-  "generated": "2026-08-21",
+  "generated": "2026-08-22",
   "files": [
     {
       "path": ".claude/skills/README.md",
@@ -420,7 +420,7 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "e8b41540b47a59210d0df24d26a2fcc3508a14fd24603f7ec97c94de7622de5f",
+      "sha256": "d2a1f55b6d7c211a7105d7563d59ef3d43647d9ce3bddbc4691bea134440de6d",
       "spec_version": "1.2",
       "src": "tools/_lib.py"
     },
@@ -532,7 +532,7 @@
     {
       "path": ".fha/tools/gedcom.py",
       "category": "operating",
-      "sha256": "899aca17d5a7b74fea636fc6a993ef0879a3d6346e0f11855f0ee30516b44c26",
+      "sha256": "f30bf40d72a91fff4fded11ef2b860dce9cf3d437d35cdb2d484ef9fc95a10f3",
       "spec_version": "1.2",
       "src": "tools/gedcom.py"
     },
@@ -553,7 +553,7 @@
     {
       "path": ".fha/tools/index.py",
       "category": "operating",
-      "sha256": "d0c1d778eb5e2b16f5a5019cdbf552ef237f31def683a96da6310984d8a65a30",
+      "sha256": "96ac1a2c45e605bf54550d1432f787be8233e07f6376abf06d7ad42ae82d1836",
       "spec_version": "1.2",
       "src": "tools/index.py"
     },
@@ -588,7 +588,7 @@
     {
       "path": ".fha/tools/person.py",
       "category": "operating",
-      "sha256": "6d94f19c4133f57be2a3faa9fcbcfa28916df5c4aeba55298b39ce728f00e5f6",
+      "sha256": "43caa640700dae9565faad774f6398f46cc7675a40e1d4748769134bfc3d1b59",
       "spec_version": "1.2",
       "src": "tools/person.py"
     },
@@ -658,7 +658,7 @@
     {
       "path": ".fha/tools/site.py",
       "category": "operating",
-      "sha256": "fd2ab5362dc27efc92b1fb4f745c3b8eb142302d66a6faa618ac0f3676d77b0d",
+      "sha256": "39773d995d2abd43a11a9f2ab386d57f798cead900b999b8f413d14b923f412a",
       "spec_version": "1.2",
       "src": "tools/site.py"
     },
@@ -798,14 +798,14 @@
     {
       "path": ".fha/tools/views.py",
       "category": "operating",
-      "sha256": "29ecdf38cb95c95559299a211ca0c6b79d21e2e15b02bf80ee47112486682162",
+      "sha256": "999f910fb9028de54f07e5d1e5d408574cfbf19631aaee55a69044b469d8d266",
       "spec_version": "1.2",
       "src": "tools/views.py"
     },
     {
       "path": ".fha/tools/wikitree.py",
       "category": "operating",
-      "sha256": "5bbcbc0b85ac4d75b3b0ebf9ac19bf674b0efde3965373c629bb27b8c95120b3",
+      "sha256": "f31bdcdcd754eeb0ce56ab078a5b3997913c6a43ed98f3db1d922cd9360178f3",
       "spec_version": "1.2",
       "src": "tools/wikitree.py"
     },
