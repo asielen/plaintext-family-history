@@ -686,7 +686,7 @@
     {
       "path": ".fha/tools/templates/base.html",
       "category": "operating",
-      "sha256": "9218a7822bafd601d45309f3335aeb62fae3a14e8339ce5c9ba909403c46365c",
+      "sha256": "e8f6d58073666e91792c3239594edd50d78d6fe433a54ceadece0f62c4eee446",
       "spec_version": "1.2",
       "src": "tools/templates/base.html"
     },

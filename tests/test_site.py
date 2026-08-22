@@ -404,6 +404,20 @@ class PersonPageTests(_Base):
         self.assertIn('1840', html[born_idx:married_idx])
         self.assertNotIn('1871', html[born_idx:married_idx])
 
+    def _legend(self, html):
+        """The date-notation legend paragraph on a built page, tag to tag.
+
+        Sliced exactly, rather than by a fixed character window, so a longer
+        legend cannot quietly push a notation out of what the assertions can
+        see - and so an assertion can never pass on text that belongs to some
+        other part of the footer.
+        """
+        self.assertIn('<p class="date-notation-note">', html)
+        start = html.index('<p class="date-notation-note">')
+        # Exactly one legend per page: it lives in base.html's shared footer.
+        self.assertNotIn('<p class="date-notation-note">', html[start + 1:])
+        return html[start:html.index('</p>', start)]
+
     def test_date_notation_legend_reachable_from_person_page(self):
         # #131: a person page that actually shows the shorthand (~ / X / /)
         # must sit on a page that also explains it - the legend lives in the
@@ -416,28 +430,52 @@ class PersonPageTests(_Base):
                          status='accepted', date_edtf='1891~', persons=('p-aaaaaaaaaa',))
         self._run(linked=True)
         html = self._read('persons/p-aaaaaaaaaa.html')
-        self.assertIn('1891~', html)                       # the notation is actually on this page
-        self.assertIn('date-notation-note', html)           # the legend block is present
-        # Plain-language coverage of all three marks the issue reported, without
-        # inventing anything SPEC.md 11 doesn't already say.
-        self.assertIn('~', html.split('date-notation-note')[1][:400])
-        self.assertIn('approximate', html.split('date-notation-note')[1][:400])
-        self.assertIn('decade', html.split('date-notation-note')[1][:400])
-        self.assertIn('193X', html)
-        self.assertIn('range', html.split('date-notation-note')[1][:400])
-        # Sensible, well-formed markup: the legend paragraph opens and closes once.
-        legend_start = html.index('<p class="date-notation-note">')
-        legend_close = html.index('</p>', legend_start)
-        self.assertGreater(legend_close, legend_start)
-        self.assertNotIn('<p class="date-notation-note">', html[legend_start + 1:])
+        self.assertIn('1891~', html)          # the notation really is on this page, as written
+        legend = self._legend(html)
+        self.assertIn('~', legend)
+        self.assertIn('193X', legend)         # the decade form, shown by example
+        self.assertIn('decade', legend)
+        self.assertIn('range', legend)
+
+    def test_date_notation_legend_covers_every_spec_11_notation(self):
+        # SPEC.md 11 is the list of date forms a record may hold, and `fha site`
+        # prints date_edtf exactly as stored - so every mark in that table is a
+        # mark a visitor can meet on a page. Derived from the table, not from
+        # the legend's current wording: a notation the archive can store and the
+        # legend cannot explain is the bug #131 reported, one form later.
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley')
+        self._seed_source('s-1111111111', 'Record', people=('p-aaaaaaaaaa',))
+        # One claim per SPEC 11 row that carries a mark a reader must decode.
+        for n, (cid, edtf) in enumerate((
+                ('c-1111111111', '1850~'),            # Circa
+                ('c-2222222222', '1850?'),            # Uncertain
+                ('c-3333333333', '185X'),             # Decade
+                ('c-4444444444', '[..1920]'),         # Before
+                ('c-5555555555', '1871-02/1871-03'),  # Interval
+        )):
+            self._seed_claim(cid, 's-1111111111', 'event', f'Event {n}',
+                             status='accepted', date_edtf=edtf, persons=('p-aaaaaaaaaa',))
+        self._run(linked=True)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        legend = self._legend(html)
+        for edtf, mark in (('1850~', '~'), ('1850?', '?'), ('185X', 'X'),
+                           ('[..1920]', '[..'), ('1871-02/1871-03', '/')):
+            # The page shows the stored form as written ...
+            self.assertIn(edtf, html, f'{edtf} is not rendered on the page')
+            # ... so the legend has to account for its mark.
+            self.assertIn(mark, legend, f'the legend never explains {mark!r} ({edtf})')
+        # The two hedges mean different things (SPEC 11 lists Circa and
+        # Uncertain as separate rows); the legend must not collapse them.
+        self.assertIn('confirmed', legend)
+        self.assertIn('before', legend)
 
     def test_date_notation_legend_also_reaches_source_and_home_pages(self):
         # The legend is shared footer markup (base.html), not a person-page
         # special case - it travels to every page that extends base.html.
         self._seed_source('s-1111111111', 'A Source')
         self._run(linked=True)
-        self.assertIn('date-notation-note', self._read('sources/s-1111111111.html'))
-        self.assertIn('date-notation-note', self._read('index.html'))
+        self._legend(self._read('sources/s-1111111111.html'))
+        self._legend(self._read('index.html'))
 
     def test_alt_names_and_tags_in_header(self):
         self._seed_person(
