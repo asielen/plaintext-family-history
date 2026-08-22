@@ -467,7 +467,10 @@ ul.leaders .ct  { font-variant-numeric: tabular-nums lining-nums; color: var(--m
                  calc(100% - var(--gen-fade, 0%)), var(--paper));
            stroke: var(--paper); stroke-width: 1; }
 .fan-seg-subject { fill: var(--surface-sunken); stroke: var(--rule-strong); }
-.fan-label { font-family: var(--font-serif); font-size: 11px; fill: var(--ink);
+/* No fixed font-size here: _render_fan_svg() computes a per-label auto-shrink
+   size and writes it as an SVG presentation attribute (issue #116) - a CSS
+   font-size rule on .fan-label would silently override that computed value. */
+.fan-label { font-family: var(--font-serif); fill: var(--ink);
              text-anchor: middle; dominant-baseline: middle; }
 .fan-label-subject { font-family: var(--font-display); font-weight: 600; font-size: 15px;
              fill: var(--ink); text-anchor: middle; dominant-baseline: middle; }

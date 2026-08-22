@@ -3013,5 +3013,18 @@ class WorkbenchModeTests(_Base):
         self._read('sources/s-1111111111.html')
 
 
+class FanChartStyleTests(unittest.TestCase):
+    def test_fan_label_has_no_fixed_font_size(self):
+        # Issue #116: _render_fan_svg() computes a per-label auto-shrink
+        # font-size and writes it as an SVG presentation attribute; a CSS
+        # font-size rule on .fan-label silently overrides that computed
+        # value (SVG presentation attributes lose to any CSS rule, even a
+        # plain class selector). Guard against reintroducing a fixed size.
+        css = (ROOT / 'design' / 'styles.css').read_text(encoding='utf-8')
+        m = re.search(r'\.fan-label\s*\{([^}]*)\}', css)
+        self.assertIsNotNone(m, '.fan-label rule not found in design/styles.css')
+        self.assertNotIn('font-size', m.group(1))
+
+
 if __name__ == '__main__':
     unittest.main()

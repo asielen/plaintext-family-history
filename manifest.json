@@ -1,7 +1,7 @@
 {
   "manifest_version": "1",
   "spec_version": "1.2",
-  "generated": "2026-08-21",
+  "generated": "2026-08-22",
   "files": [
     {
       "path": ".claude/skills/README.md",
@@ -385,7 +385,7 @@
     {
       "path": ".fha/design/styles.css",
       "category": "operating",
-      "sha256": "8eb3083fdc0df2434d93e97991c8335ffb6983a0ce556759f916f3ab4dd46ab0",
+      "sha256": "c1065c5a048aaaa66419e5380a715a3b7e8fadb5593612487885c09c7ed8b538",
       "spec_version": "1.2",
       "src": "design/styles.css"
     },
