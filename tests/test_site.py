@@ -124,12 +124,19 @@ class _Base(unittest.TestCase):
                 'INSERT INTO source_people(source_id, person_id) VALUES (?,?)', (sid, pid))
 
     def _seed_claim(self, cid, sid, ctype, value, *, status='accepted', date_edtf=None,
-                    place_text=None, persons=(), confidence=None, reviewed=None, negated=0):
+                    place_text=None, persons=(), confidence=None, reviewed=None, negated=0,
+                    date_min=None):
+        # date_min defaults to the naive January-1 widening of date_edtf (matches
+        # what real claims carry for a plain year), but a test can override it to
+        # construct the #128 shape - an uncertain/ranged date_edtf whose widened
+        # date_min lands in a different decade than the display date reads as.
+        if date_min is None:
+            date_min = (date_edtf or '')[:4] + '-01-01' if date_edtf else None
         self.conn.execute(
             'INSERT INTO claims(id, source_id, type, value, status, date_edtf, date_min, place_text, '
             'confidence, reviewed, negated) '
             'VALUES (?,?,?,?,?,?,?,?,?,?,?)',
-            (cid, sid, ctype, value, status, date_edtf, (date_edtf or '')[:4] + '-01-01' if date_edtf else None, place_text,
+            (cid, sid, ctype, value, status, date_edtf, date_min, place_text,
              confidence, reviewed, negated),
         )
         for pos, pid in enumerate(persons):
@@ -359,6 +366,97 @@ class PersonPageTests(_Base):
         self.assertNotIn('flag-unconfirmed', html)
         self.assertIn('Perhaps a miller', html)                  # accepted-low publishes
         self.assertIn('flag-low', html)                          # ...flagged
+
+    def test_timeline_place_tag_omitted_when_sentence_already_states_it(self):
+        # #127: the timeline was appending a bare "@ Place" tag even when the
+        # claim's own sentence already named that place naturally moments
+        # earlier ("moved to Millbrook to farm @ Millbrook"). Only append the
+        # tag when the sentence does NOT already contain the place text.
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley')
+        self._seed_source('s-1111111111', 'Record', people=('p-aaaaaaaaaa',))
+        self._seed_claim('c-1111111111', 's-1111111111', 'residence',
+                         'Moved to Millbrook to farm', status='accepted',
+                         date_edtf='1900', place_text='Millbrook',
+                         persons=('p-aaaaaaaaaa',))
+        self._run(linked=True)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('Moved to Millbrook to farm', html)
+        self.assertNotIn('@ Millbrook', html)
+        # Not duplicated as a second, separate mention either.
+        self.assertEqual(html.count('Millbrook'), 1)
+
+    def test_timeline_place_tag_rendered_as_prose_when_not_already_stated(self):
+        # A place that genuinely differs from what the sentence already says
+        # still needs to render (it may be a real field-selection bug worth
+        # its own follow-up, but the timeline should still show it) - just as
+        # natural prose ("at Placename"), not a bare "@ Placename" suffix.
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley')
+        self._seed_source('s-1111111111', 'Record', people=('p-aaaaaaaaaa',))
+        self._seed_claim('c-1111111111', 's-1111111111', 'death',
+                         'Died at Fairview, Illinois, on 5 July 1891',
+                         status='accepted', date_edtf='1891',
+                         place_text='Lexington, Missouri', persons=('p-aaaaaaaaaa',))
+        self._run(linked=True)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('Died at Fairview, Illinois, on 5 July 1891', html)
+        self.assertIn('at Lexington, Missouri', html)
+        self.assertNotIn('@ Lexington, Missouri', html)
+
+    def test_timeline_decades_stay_contiguous_despite_date_min_divergence(self):
+        # #128: decade grouping reads the DISPLAY date (date_edtf, via
+        # _decade_header), but sort order reads date_min - a different,
+        # widened field (site.py:559's documented reason: an approximate date
+        # would otherwise sort into the wrong decade). An uncertain date_edtf
+        # ('193X') can widen to a date_min that sorts far from its own
+        # decade's other entries, which used to split one decade into two
+        # non-contiguous groups with another decade's heading between them.
+        # Here date_min order is 1930, 1945, 1950 but decade order is
+        # 1930s, 1940s, 1930s - exactly that shape.
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley')
+        self._seed_source('s-1111111111', 'Record', people=('p-aaaaaaaaaa',))
+        self._seed_claim('c-1111111111', 's-1111111111', 'residence', 'Lived in Millbrook',
+                         status='accepted', date_edtf='1930', date_min='1930-01-01',
+                         persons=('p-aaaaaaaaaa',))
+        self._seed_claim('c-2222222222', 's-1111111111', 'occupation', 'Worked as a clerk',
+                         status='accepted', date_edtf='1945', date_min='1945-01-01',
+                         persons=('p-aaaaaaaaaa',))
+        self._seed_claim('c-3333333333', 's-1111111111', 'residence', 'Lived in Fairview',
+                         status='accepted', date_edtf='193X', date_min='1950-01-01',
+                         persons=('p-aaaaaaaaaa',))
+        self._run(linked=True)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        start = html.index('<div class="timeline">')
+        end = html.index('</div>', start)
+        timeline_html = html[start:end]
+        headings = re.findall(r'<h3>([^<]*)</h3>', timeline_html)
+        self.assertEqual(headings, ['1930s', '1940s'])   # each decade heading exactly once
+        # Both 1930s entries land in the one 1930s block, ahead of the 1940s block.
+        self.assertLess(timeline_html.index('Lived in Millbrook'), timeline_html.index('Lived in Fairview'))
+        self.assertLess(timeline_html.index('Lived in Fairview'), timeline_html.index('<h3>1940s</h3>'))
+        self.assertLess(timeline_html.index('<h3>1940s</h3>'), timeline_html.index('Worked as a clerk'))
+
+    def test_timeline_undated_entries_get_their_own_heading(self):
+        # #129: undated entries rendered directly beneath the most recent
+        # decade heading with no heading of their own, so a reader scanning
+        # by decade could mistake one for belonging to that decade. The
+        # Python grouping already tags an undated group `decade: None`
+        # (verified separately) - the gap is template-side: give that group
+        # its own explicit "Undated" heading.
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley')
+        self._seed_source('s-1111111111', 'Record', people=('p-aaaaaaaaaa',))
+        self._seed_claim('c-1111111111', 's-1111111111', 'residence', 'Lived in Millbrook',
+                         status='accepted', date_edtf='1930', persons=('p-aaaaaaaaaa',))
+        self._seed_claim('c-2222222222', 's-1111111111', 'occupation', 'Worked as a farmer',
+                         status='accepted', date_edtf=None, persons=('p-aaaaaaaaaa',))
+        self._run(linked=True)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        start = html.index('<div class="timeline">')
+        end = html.index('</div>', start)
+        timeline_html = html[start:end]
+        self.assertIn('<h3>1930s</h3>', timeline_html)
+        self.assertIn('<h3>Undated</h3>', timeline_html)
+        self.assertLess(timeline_html.index('<h3>1930s</h3>'), timeline_html.index('<h3>Undated</h3>'))
+        self.assertLess(timeline_html.index('<h3>Undated</h3>'), timeline_html.index('Worked as a farmer'))
 
     def test_family_and_source_footnotes(self):
         self._setup_thomas()
@@ -1483,15 +1581,41 @@ class PlacePageTests(_Base):
     def test_claim_place_column_links_to_place_page(self):
         # Symmetry fix: a claim's place cell links to the place page when the
         # claim carries a registered place_id (not just prose [L-id] tokens).
+        # #127 note: the value deliberately does NOT already name "Fairview" -
+        # the person timeline now omits the trailing place mention (and so
+        # its link) when the sentence already states the place in plain text
+        # (see test_timeline_place_tag_omitted_when_sentence_already_states_it);
+        # this test exercises the still-linked, non-redundant case, which the
+        # source page's claims table (unaffected by #127 - it is not prose)
+        # always shows regardless.
+        self._seed_person('p-aaaaaaaaaa', 'Jane')
+        self._seed_source('s-1111111111', 'Census', people=('p-aaaaaaaaaa',))
+        self._seed_place('l-1111111111', 'Fairview')
+        self._seed_claim_at_place('c-1111111111', 's-1111111111', 'l-1111111111',
+                                  'Lived with her family', ('p-aaaaaaaaaa',))
+        self._run(linked=True)
+        # Source page claims table and the person timeline both link the place.
+        self.assertIn('../places/l-1111111111.html', self._read('sources/s-1111111111.html'))
+        self.assertIn('../places/l-1111111111.html', self._read('persons/p-aaaaaaaaaa.html'))
+
+    def test_timeline_omits_place_link_too_when_sentence_already_names_it(self):
+        # #127 trade-off, pinned deliberately: when the claim's own sentence
+        # already states the place in plain text, the person timeline drops
+        # the trailing mention entirely - even when the place carries a
+        # registered, linkable place_id. The source page's claims table still
+        # links it (a table cell, not prose - see
+        # test_claim_place_column_links_to_place_page), so the place stays
+        # reachable; this just keeps the timeline sentence from reading as
+        # "Lived in Fairview at Fairview".
         self._seed_person('p-aaaaaaaaaa', 'Jane')
         self._seed_source('s-1111111111', 'Census', people=('p-aaaaaaaaaa',))
         self._seed_place('l-1111111111', 'Fairview')
         self._seed_claim_at_place('c-1111111111', 's-1111111111', 'l-1111111111',
                                   'Lived in Fairview', ('p-aaaaaaaaaa',))
         self._run(linked=True)
-        # Source page claims table and the person timeline both link the place.
-        self.assertIn('../places/l-1111111111.html', self._read('sources/s-1111111111.html'))
-        self.assertIn('../places/l-1111111111.html', self._read('persons/p-aaaaaaaaaa.html'))
+        person_html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('Lived in Fairview', person_html)
+        self.assertNotIn('../places/l-1111111111.html', person_html)   # link dropped, not doubled
 
     def test_freetext_place_without_id_is_not_linked(self):
         self._seed_person('p-aaaaaaaaaa', 'Jane')

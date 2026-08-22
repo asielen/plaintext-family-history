@@ -2429,7 +2429,27 @@ class _SiteBuilder:
         unconfirmed. Suggested claims never render here in any mode. (`fha
         views timeline`, the private research artifact, keeps needs-review
         with the same wording - the divergence is public-vs-working surface,
-        not two rules.)"""
+        not two rules.)
+
+        Two rendering fixes live here (#127, #128; #129's fix is template-only,
+        see person.html):
+          - #127: each entry carries `place_redundant` - true when the claim's
+            own value text already names the place naturally ("moved to
+            Millbrook to farm"). The template only appends a trailing place
+            mention when this is false, so a place already stated in the
+            sentence is never doubled up as a bare "@ Place" tag.
+          - #128: the SQL sorts rows by `date_min` (a widened, sortable value)
+            but decade grouping reads `date_edtf` via `_decade_header` - a
+            DIFFERENT field, deliberately (see that function's docstring): an
+            approximate '1840~' widens date_min to '1839-01-01' and would
+            group into the wrong decade if grouping used date_min too. Those
+            two fields can disagree for an uncertain/ranged date, so a
+            straight linear pass over date_min order can split one decade's
+            entries into two non-contiguous groups with another decade's
+            heading between them. The fix sorts a COPY of the rows by decade
+            before grouping; Python's sort is stable, so date_min order
+            survives as the within-decade tiebreak.
+        """
         status_filter = ("c.status IN ('accepted','needs-review')" if self.linked
                          else "c.status = 'accepted'")
         living_filter = (
@@ -2455,19 +2475,29 @@ class _SiteBuilder:
             rows = [r for r in rows
                     if normalize_id(str(r['id'])) not in self.restricted_claims
                     and not self._source_hard_restricted(r['source_id'])]
+        def _decade_sort_key(decade: str | None) -> tuple[int, int]:
+            if decade is None:
+                return (1, 0)   # undated sorts after every dated decade
+            return (0, int(decade[:-1]))   # '1930s' -> 1930
+
+        rows_with_decade = [(r, _decade_header(r['date_edtf'])) for r in rows]
+        rows_with_decade.sort(key=lambda item: _decade_sort_key(item[1]))
+
         groups: list[dict] = []
         current: str | None = '\x00'   # sentinel distinct from None (undated)
         entries: list[dict] = []
-        for r in rows:
-            decade = _decade_header(r['date_edtf'])
+        for r, decade in rows_with_decade:
             if decade != current:
                 if entries:
                     groups.append({'decade': None if current == '\x00' else current, 'entries': entries})
                 current = decade
                 entries = []
+            place_label = self._place_label(r['place_text'], r['place_id'])
+            value_text = r['value'] or ''
             entries.append({
                 'date': r['date_edtf'] or '(undated)', 'type': r['type'], 'value': r['value'],
                 'place': self._place_html(r['place_text'], r['place_id'], page_dir),
+                'place_redundant': bool(place_label) and place_label.lower() in value_text.lower(),
                 'source_html': self._markup(self._source_link(r['source_id'], page_dir)) if r['source_id'] else '',
                 'status': r['status'], 'confidence': r['confidence'] or '',
                 'parked': r['reviewed'] or '',

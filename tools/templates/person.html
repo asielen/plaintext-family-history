@@ -91,10 +91,17 @@
   {% if person.timeline %}
   <div class="timeline">
     {% for group in person.timeline %}
-      {% if group.decade %}<h3>{{ group.decade }}</h3>{% endif %}
+      {#- #129: an undated group (decade is None) still gets its own explicit
+          heading, so it never reads as belonging to the decade printed just
+          above it. -#}
+      <h3>{{ group.decade or 'Undated' }}</h3>
       <ul>
         {% for e in group.entries %}
-        <li>{{ e.date }} - {{ e.type }}: {{ e.value }}{% if e.place %} @ {{ e.place }}{% endif %} {{ e.source_html }}{% if e.status == 'needs-review' %} <span class="claim-flag flag-unconfirmed">unconfirmed{% if e.parked %} - parked {{ e.parked }}{% endif %}</span>{% elif e.confidence == 'low' %} <span class="claim-flag flag-low">low confidence</span>{% endif %}</li>
+        {#- #127: only add a trailing place mention when the claim's sentence
+            (e.value) does not already state that place naturally - and when
+            it must be added, phrase it as prose ("at Place"), not a bare
+            "@ Place" tag. -#}
+        <li>{{ e.date }} - {{ e.type }}: {{ e.value }}{% if e.place and not e.place_redundant %} at {{ e.place }}{% endif %} {{ e.source_html }}{% if e.status == 'needs-review' %} <span class="claim-flag flag-unconfirmed">unconfirmed{% if e.parked %} - parked {{ e.parked }}{% endif %}</span>{% elif e.confidence == 'low' %} <span class="claim-flag flag-low">low confidence</span>{% endif %}</li>
         {% endfor %}
       </ul>
     {% endfor %}
