@@ -4707,6 +4707,22 @@ class FanChartStyleTests(unittest.TestCase):
         self.assertIsNotNone(m, '.fan-label rule not found in design/styles.css')
         self.assertNotIn('font-size', m.group(1))
 
+    def test_ped_axis_label_uses_fill_not_color(self):
+        # #115 review finding: _render_pedigree_svg emits the orientation
+        # caption ('ancestors ->') as a raw SVG <text> element, not HTML in a
+        # foreignObject - SVG text paint is controlled by `fill`, not `color`,
+        # unless something bridges the two with `fill: currentColor` (nothing
+        # in this stylesheet does). A `color:` rule here silently renders the
+        # caption in the SVG default black instead of the intended muted
+        # meta-text gray. The working precedent a few lines away, .fan-label,
+        # correctly uses `fill` for its own raw SVG <text> - this rule must
+        # match it.
+        css = (ROOT / 'design' / 'styles.css').read_text(encoding='utf-8')
+        m = re.search(r'^\.ped-axis-label\s*\{([^}]*)\}', css, re.M | re.S)
+        self.assertIsNotNone(m, '.ped-axis-label rule not found in design/styles.css')
+        self.assertIn('fill:', m.group(1))
+        self.assertNotIn('color:', m.group(1))
+
     def test_fan_chart_container_supplies_the_fallback_size(self):
         # Deleting the .fan-label size alone would leave a label with no
         # attribute inheriting the 1.05rem body text - a worse clip than the

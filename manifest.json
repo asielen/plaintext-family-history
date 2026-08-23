@@ -385,7 +385,7 @@
     {
       "path": ".fha/design/styles.css",
       "category": "operating",
-      "sha256": "16bb74972709f8df772aaabcfa0dcc83511232bd15ca0629e84ad72d7debaae3",
+      "sha256": "02aca8c897c90abf7e8fec6ccf380df38764d06ba171a56fe2dd50c7f7ab0576",
       "spec_version": "1.2",
       "src": "design/styles.css"
     },
