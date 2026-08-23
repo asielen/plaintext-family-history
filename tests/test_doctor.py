@@ -735,6 +735,100 @@ class SourcesGitignoreTests(unittest.TestCase):
         self.assertNotIn('"', gi_line)
 
 
+class OrphanedBackPhotosTests(unittest.TestCase):
+    """#113: a `-back`/`_back` photo sibling sitting on disk but not listed
+    in its source's `files:` - the standing safety net for anything the
+    `fha process` import-time fix (its own back-sibling pull-in) didn't
+    catch: a photo filed before that fix existed, a variation set the human
+    answered "separate"/"skip" for, or anything filed by hand outside
+    `fha process` altogether."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        _write(self.root / 'fha.yaml',
+               'roots:\n  photos: photos\n  documents: documents\n')
+        (self.root / 'photos').mkdir()
+        (self.root / 'documents').mkdir()
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _fha_config(self) -> dict:
+        return {'roots': {'photos': 'photos', 'documents': 'documents'}}
+
+    def _finding(self, result):
+        return next(
+            (c for c in result.data['checks'] if c['id'] == 'orphaned_back_photos'),
+            None,
+        )
+
+    def test_unlisted_back_sibling_is_flagged(self) -> None:
+        (self.root / 'photos' / 'x-00100.jpg').write_bytes(b'front')
+        (self.root / 'photos' / 'x-00100-back.jpg').write_bytes(b'back')
+        _write(self.root / 'sources' / 'photos' / 'card_S-1111111111.md', _SOURCE.format(
+            sid='S-1111111111', title='Card',
+            line='files:\n  - file: photos/x-00100.jpg\n    role: primary\n'))
+
+        result = doctor.run_doctor(self.root, self._fha_config())
+        report = '\n'.join(result.data['lines'])
+
+        self.assertIn('orphaned back scan', report)
+        self.assertIn('photos/x-00100-back.jpg', report)
+        check = self._finding(result)
+        self.assertIsNotNone(check, 'doctor must report an orphaned_back_photos finding')
+        self.assertEqual(check['status'], 'warn')
+        self.assertGreaterEqual(result.exit_code, EXIT_WARNINGS)
+
+    def test_listed_back_is_clean(self) -> None:
+        (self.root / 'photos' / 'x-00100.jpg').write_bytes(b'front')
+        (self.root / 'photos' / 'x-00100-back.jpg').write_bytes(b'back')
+        _write(self.root / 'sources' / 'photos' / 'card_S-2222222222.md', _SOURCE.format(
+            sid='S-2222222222', title='Card',
+            line=('files:\n'
+                  '  - file: photos/x-00100.jpg\n    role: primary\n'
+                  '  - file: photos/x-00100-back.jpg\n    role: back\n')))
+
+        result = doctor.run_doctor(self.root, self._fha_config())
+        self.assertIsNone(self._finding(result))
+        self.assertNotIn('orphaned back scan', '\n'.join(result.data['lines']))
+
+    def test_no_back_sibling_on_disk_is_clean(self) -> None:
+        (self.root / 'photos' / 'x-00100.jpg').write_bytes(b'front')
+        _write(self.root / 'sources' / 'photos' / 'card_S-3333333333.md', _SOURCE.format(
+            sid='S-3333333333', title='Card',
+            line='files:\n  - file: photos/x-00100.jpg\n    role: primary\n'))
+
+        result = doctor.run_doctor(self.root, self._fha_config())
+        self.assertIsNone(self._finding(result))
+
+    def test_copy_letter_sibling_is_not_mistaken_for_a_missing_back(self) -> None:
+        # #113's own bare-letter shape: a second print of the same negative
+        # must not itself trip this check - it is a print/copy variant, not
+        # evidence of a missing back scan.
+        (self.root / 'photos' / 'x-00100.jpg').write_bytes(b'front')
+        (self.root / 'photos' / 'x-00100b.jpg').write_bytes(b'second print')
+        _write(self.root / 'sources' / 'photos' / 'card_S-4444444444.md', _SOURCE.format(
+            sid='S-4444444444', title='Card',
+            line='files:\n  - file: photos/x-00100.jpg\n    role: primary\n'))
+
+        result = doctor.run_doctor(self.root, self._fha_config())
+        self.assertIsNone(self._finding(result))
+
+    def test_documents_root_entries_are_out_of_scope(self) -> None:
+        # A documents-root entry never reaches this check - the file was
+        # RENAMED on import, so there is no filename-comparable sibling left
+        # to check against on disk (see the function's own docstring for why
+        # the document side of #113 is fixed at import time instead).
+        (self.root / 'documents' / 'letter-back.txt').write_text('x', encoding='utf-8')
+        _write(self.root / 'sources' / 'other' / 'letter_S-5555555555.md', _SOURCE.format(
+            sid='S-5555555555', title='Letter',
+            line='files:\n  - file: documents/letter_S-5555555555.txt\n    role: primary\n'))
+
+        result = doctor.run_doctor(self.root, self._fha_config())
+        self.assertIsNone(self._finding(result))
+
+
 class RenderTests(unittest.TestCase):
     """_cmd_doctor renders data['lines'] verbatim and returns the exit code."""
 

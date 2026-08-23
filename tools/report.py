@@ -56,7 +56,8 @@ CODE MAP
 
   Snapshot
     _load_snapshot / _write_snapshot  - .cache/last_report.json read/write
-    _parse_questions            - questions.md + research files -> {file :: heading: {...}}
+    (parse_questions            - questions.md + research files -> {file :: heading: {...}} -
+                                 lives in _lib, shared with site.py, issue #117)
     _vitals_gap_pids            - W101 findings -> sorted P-id list (via registry paths)
     _build_snapshot             - current-state snapshot dict from the just-refreshed index
 
@@ -78,6 +79,10 @@ CODE MAP
     _section_place_candidates    - §6b: places.run_candidates() embed, each
                                     place-text cluster line carrying its own
                                     `fha confirm place` command (issue #79)
+    _place_text_escalations      - oversized (20+ claim) place-text clusters,
+                                    promoted above every section (issue #79
+                                    point 2) - same clusters §6b lists, never
+                                    re-derived
     _section_hypotheses          - §7: open hypotheses + draft-queue backlog
     _section_promotion_candidates - §7b: direct-line stubs + claim-heavy stubs
                                     (the fha person promote surface; stateless)
@@ -114,10 +119,10 @@ from _lib import (
     FhaConfigError,
     Result,
     fmt_id_display,
-    is_person_file_kind,
     load_fha_yaml,
     normalize_id,
     open_index_db,
+    parse_questions,
     read_record,
     is_working_copy,
     resolve_root_arg,
@@ -176,102 +181,13 @@ def _write_snapshot(archive_root: Path, snapshot: dict) -> None:
     path.write_text(json.dumps(snapshot, indent=2, sort_keys=True), encoding='utf-8')
 
 
-_QUESTION_HEADING_RE = re.compile(r'^## Q:\s*(.+)$', re.M)
-_QUESTION_STATUS_RE = re.compile(r'^- status:\s*(.+)$', re.M)
-_QUESTION_REFS_RE = re.compile(r'^- refs:\s*\[(.*?)\]', re.M)
-
-
-def _parse_question_blocks(text: str) -> dict[str, dict]:
-    """Parse one file's text into {heading: {'status', 'refs', 'block'}}."""
-    out: dict[str, dict] = {}
-    blocks = re.split(r'(?=^## Q:)', text, flags=re.M)
-    for block in blocks:
-        m = _QUESTION_HEADING_RE.match(block)
-        if not m:
-            continue
-        heading = m.group(1).strip()
-        status_m = _QUESTION_STATUS_RE.search(block)
-        refs_m = _QUESTION_REFS_RE.search(block)
-        refs = [
-            normalize_id(r.strip()) for r in (refs_m.group(1).split(',') if refs_m else [])
-            if r.strip()
-        ]
-        out[heading] = {
-            'status': status_m.group(1).strip() if status_m else '',
-            'refs': refs,
-            'block': block,
-        }
-    return out
-
-
-def _parse_questions(archive_root: Path) -> dict[str, dict]:
-    """
-    Parse notes/questions.md AND every person research file's
-    `## Open Questions` block into {key: {'status', 'refs', 'block',
-    'heading', 'file'}}, keyed by '{relative file path} :: {heading}'.
-
-    Mirrors `fha lint`'s E009 question-scanning scope exactly: lint.py's
-    `_has_question_for` checks both `registry.questions_content`
-    (notes/questions.md) and `registry.research_content` (every person
-    research file collected in `_walk_archive` via
-    `is_person_file_kind(path, 'research', meta)`, under `people/`). The report's
-    answerable-questions/discoveries sections must see the same question set
-    lint does, or a question logged only in a person's research file would
-    never get a closure proposal here - and one this side read as research
-    would get a closure proposal lint never saw. Both halves are why the two
-    call the same helper rather than restating the rule.
-
-    Keys are namespaced by file because the same heading text easily recurs
-    across files once questions number in the hundreds ("When was he born?"
-    on two research sheets), and a plain-heading dict would silently shadow
-    one question with the other. The display text lives in each entry's
-    'heading' field. A duplicate heading *within* one file still collides
-    (last one wins) - acceptable, since a single file's headings sit side by
-    side where the human edits them.
-    """
-    out: dict[str, dict] = {}
-
-    def _merge(qpath: Path, text: str) -> None:
-        try:
-            rel = qpath.relative_to(archive_root).as_posix()
-        except ValueError:
-            rel = qpath.as_posix()
-        for heading, info in _parse_question_blocks(text).items():
-            out[f'{rel} :: {heading}'] = {**info, 'heading': heading, 'file': rel}
-
-    path = archive_root / 'notes' / 'questions.md'
-    if path.exists():
-        try:
-            _merge(path, path.read_text(encoding='utf-8'))
-        except OSError:
-            pass
-
-    people_root = archive_root / 'people'
-    if people_root.exists():
-        for rpath in sorted(people_root.rglob('*.md')):
-            # Two passes on purpose. The filename can only ever NARROW this set
-            # (nothing outside SPEC §13's kind slot is a research file), so the
-            # record is read only for the handful of files that could be one -
-            # and then content settles it, exactly as lint does. That second
-            # half matters: the kind slot is also a legal last given name, so
-            # `smith__anne_research_P-….md` may be Anne Research Smith's own
-            # record, and a profile's `## Open Questions` block belongs to no
-            # question scope (SPEC §16 homes it in the research companion).
-            if not is_person_file_kind(rpath, 'research'):
-                continue
-            try:
-                meta = read_record(rpath)['meta']
-            except Exception:
-                meta = {}
-            if not is_person_file_kind(rpath, 'research', meta):
-                continue
-            try:
-                text = rpath.read_text(encoding='utf-8')
-            except OSError:
-                continue
-            _merge(rpath, text)
-
-    return out
+# The `## Q:` block grammar (heading/status/refs regexes) and the two parse
+# functions that used to live here (`_parse_question_blocks`/`_parse_questions`)
+# moved to `_lib.py` as `parse_question_blocks`/`parse_questions` (issue #117):
+# `fha site` needed the same parse to surface a person's open questions on
+# their page, and `site.py` cannot import `report.py` (tools never import
+# tools - this module is the documented exception, not a precedent to copy).
+# Imported above; every call site below kept its old behavior unchanged.
 
 
 def _vitals_gap_pids(findings: list, registry) -> list[str]:
@@ -352,7 +268,7 @@ def _build_snapshot(conn, archive_root: Path, findings: list, registry) -> dict:
     relationships = sorted(
         {tuple(r) for r in conn.execute('SELECT person_id, rel, other_id FROM relationships')}
     )
-    questions = _parse_questions(archive_root)
+    questions = parse_questions(archive_root)
     # E009 contradiction messages, so a resolution that adds an open question
     # (refs both claim-ids, no claim_links change) without changing claim
     # status still shows up as "resolved" in section 0 -- a pure claim_links
@@ -419,7 +335,7 @@ def _section_discoveries(conn, prev: dict, current: dict) -> list[str]:
     cur_q = current['question_status_by_heading']
 
     def _q_prev_status(key: str) -> str:
-        # Keys are '{file} :: {heading}' (see _parse_questions); a snapshot
+        # Keys are '{file} :: {heading}' (see parse_questions); a snapshot
         # written before the namespacing keyed by bare heading, so fall back
         # to it - otherwise every already-answered question would re-announce
         # as "newly answered" once after a tools update.
@@ -795,7 +711,7 @@ def _section_answerable_questions(conn, archive_root: Path) -> list[str]:
     referenced C-id changed status - proposed only, never executed (TOOLING
     §15a: closing requires human confirmation).
     """
-    questions = _parse_questions(archive_root)
+    questions = parse_questions(archive_root)
     open_qs = {h: info for h, info in questions.items() if info['status'] == 'open'}
     if not open_qs:
         return ['No open questions.']
@@ -1024,6 +940,26 @@ def _section_photo_triage(
 
 # ── Section 6b: Place candidates ──────────────────────────────────────────────
 
+def _place_text_group_line(g: dict) -> str:
+    """
+    One place-text cluster's report line: label, claim count, date spread,
+    and the exact `fha confirm place` command that clears it (issue #79
+    point 1) - every claim id in `g['claim_ids']`, not a sample, so running
+    the line once clears the whole cluster. Extracted so `_section_place_
+    candidates` (§6b's own listing) and `_place_text_escalations` (the
+    oversight-threshold notice, issue #79 point 2) render the identical line
+    for the identical cluster - the two can never disagree about what a
+    cluster is called or what command resolves it.
+    """
+    spread = f"{g['date_min']}/{g['date_max']}" if g['date_min'] or g['date_max'] else 'no dates'
+    name = g['label']
+    ids = ' '.join(fmt_id_display(cid) for cid in g['claim_ids'])
+    return (
+        f"{name} - {g['claim_count']} claim(s), {spread} - "
+        f'register with `fha confirm place {ids} --name={shell_quote(name)}`'
+    )
+
+
 def _section_place_candidates(archive_root: Path, fha_config: dict) -> list[str]:
     """
     Calls `places.run_candidates()` (BUILD.md M6.2). The import/attribute
@@ -1045,8 +981,10 @@ def _section_place_candidates(archive_root: Path, fha_config: dict) -> list[str]
 
     GPS clusters keep their plain descriptive line: they are photo groups,
     not claims, so there is nothing for `fha confirm place` to relink - a
-    fabricated verb for them would be the escalation/first-run-flow work
-    issue #79 explicitly defers (points 2-4), not this one.
+    fabricated verb for them would be the claim-write-time-resolution/
+    first-run-flow work issue #79 explicitly defers (points 3-4), not this
+    one. (Point 2, escalation on threshold, is `_place_text_escalations`
+    below - no longer deferred.)
 
     `label` is a claim's free-text `place_text`, not a controlled value like
     §7b's person id or a claim/place id elsewhere in this file, so it can
@@ -1093,19 +1031,62 @@ def _section_place_candidates(archive_root: Path, fha_config: dict) -> list[str]
 
     lines: list[str] = []
     for g in place_text_groups:
-        spread = f"{g['date_min']}/{g['date_max']}" if g['date_min'] or g['date_max'] else 'no dates'
-        name = g['label']
-        ids = ' '.join(fmt_id_display(cid) for cid in g['claim_ids'])
-        lines.append(
-            f"- {name} - {g['claim_count']} claim(s), {spread} - "
-            f'register with `fha confirm place {ids} --name={shell_quote(name)}`'
-        )
+        lines.append(f'- {_place_text_group_line(g)}')
     for c in gps_clusters:
         lines.append(
             f"- GPS cluster near {c['lat']:.4f},{c['lon']:.4f} - "
             f"{c['photo_count']} photo(s), no known place nearby"
         )
     return lines
+
+
+# ── Escalation: oversized place-text clusters (issue #79 point 2) ────────────
+
+_PLACE_ESCALATION_THRESHOLD = 20
+# The issue's own suggested cutoff (#79: "a cluster with 20+ claims is not a
+# candidate, it is an oversight"). No other claims-per-cluster threshold
+# exists in this codebase to weigh it against - `_PROMOTION_DEFAULT_THRESHOLD`
+# (5) is the nearest analog but counts accepted claims piling up on ONE stub
+# PERSON, a different scale of signal than claims sharing one unlinked place
+# text across possibly many people - so the issue's own number stands; a
+# human reviewer can always tune it in review.
+
+
+def _place_text_escalations(archive_root: Path, fha_config: dict) -> list[dict]:
+    """
+    §6b place-text clusters (`places.run_candidates()`'s `place_text_groups`)
+    that have reached oversight scale.
+
+    Issue #79's motivating case was a 13-month-old archive with 359 of 762
+    claims (47%) carrying `place_text` and ZERO registered places - #6b lists
+    every recurring cluster as a "maybe register this" candidate, but a
+    cluster this large was never a judgment call competing for attention
+    with the rest of that list; it is a standing gap someone already meant
+    to close. This reads the exact same `place_text_groups` §6b lists from
+    (never re-derives cluster membership - same discipline as the point-1
+    fix, #79/#100) and narrows to the ones at or past
+    `_PLACE_ESCALATION_THRESHOLD`, so an escalation can never name a cluster
+    §6b itself would not also list.
+
+    A second, independent `places.run_candidates()` fetch rather than a
+    shared one with `_section_place_candidates` - deliberately: the two
+    callers want different behavior on failure. §6b explains exactly why
+    places.py could not run (missing, out of date, or a schema that predates
+    the structured keys); this notice is a bonus call-out riding on top of
+    that section, so on any of those same failures it degrades silently to
+    `[]` instead of repeating the explanation a second time in different
+    words at the top of the report.
+    """
+    try:
+        import places as _places_tool   # noqa: PLC0415 - optional embed, see _section_place_candidates
+    except ImportError:
+        return []
+    try:
+        result = _places_tool.run_candidates(archive_root, fha_config)
+    except AttributeError:
+        return []
+    groups = result.get('place_text_groups') or []
+    return [g for g in groups if g['claim_count'] >= _PLACE_ESCALATION_THRESHOLD]
 
 
 # ── Section 7: Hypotheses & draft queues ──────────────────────────────────────
@@ -1385,6 +1366,7 @@ def _render_report(
     bodies: dict[str, list[str]],
     section_filter: str | None,
     archive_notes: list[str] | None = None,
+    place_escalations: list[dict] | None = None,
 ) -> str:
     """Assemble the report markdown: title, archive notes (when any), sections.
 
@@ -1398,11 +1380,30 @@ def _render_report(
     because the report IS the session-start path: a warning that only exists
     on the discarded Result is invisible exactly where the human looks first
     (round-2 finding 16). They print on section-filtered runs too - narrowing
-    the view should never hide that a line of the archive was skipped."""
+    the view should never hide that a line of the archive was skipped.
+
+    `place_escalations` (issue #79 point 2, `_place_text_escalations`) are
+    §6b place-text clusters that crossed the oversight-scale threshold - the
+    same above-every-section position as `archive_notes` and for the same
+    reason: a cluster this large is not one more candidate that can afford
+    to lose the "what should I do this session" contest by sitting quietly
+    at position 10 of 13. Also printed on section-filtered runs, matching
+    `archive_notes`' own rule - and the full cluster is still listed at its
+    normal spot in §6b below, so nothing here shrinks that section's own
+    listing."""
     lines = [f'# fha report - {generated}', '']
     if archive_notes:
         lines.append('**Archive notes from this refresh:**')
         lines.extend(f'- {note}' for note in archive_notes)
+        lines.append('')
+    if place_escalations:
+        lines.append(
+            f'**{len(place_escalations)} place-text cluster(s) past the '
+            f'{_PLACE_ESCALATION_THRESHOLD}-claim oversight threshold, no place '
+            'registered - this is not a candidate to weigh, it is an oversight '
+            'to close (see the Place candidates section below for every cluster):**'
+        )
+        lines.extend(f'- {_place_text_group_line(g)}' for g in place_escalations)
         lines.append('')
     for key, number, title in SECTIONS:
         if section_filter and key != section_filter:
@@ -1510,11 +1511,15 @@ def run_report(
             'possible-connections': _section_possible_connections(archive_root),
         }
 
+        place_escalations = _place_text_escalations(archive_root, fha_config)
+
         generated = datetime.date.today().isoformat()
         full_md = _render_report(generated, bodies, section_filter=None,
-                                 archive_notes=archive_notes)
+                                 archive_notes=archive_notes,
+                                 place_escalations=place_escalations)
         printed_md = full_md if not section else _render_report(
-            generated, bodies, section_filter=section, archive_notes=archive_notes)
+            generated, bodies, section_filter=section, archive_notes=archive_notes,
+            place_escalations=place_escalations)
 
         cache_dir = archive_root / '.cache'
         cache_dir.mkdir(parents=True, exist_ok=True)

@@ -28,6 +28,10 @@ Checks (in order):
                          also matches `sources/photos/`, silently untracking
                          SOURCE RECORDS, not the binary asset it was meant for;
                          asks `git check-ignore`, never a hand-rolled parser)
+ 14. Orphaned back-scan photos (#113: a `-back`/`_back` sibling sitting on
+                         disk beside a photo a source already lists, but not
+                         itself listed - often the only surviving caption or
+                         provenance note for that print)
 
 Exit codes: 0 = all pass; 1 = warnings only; 2 = errors.  TOOLING §3a.
 """
@@ -74,12 +78,15 @@ from _lib import (
     FhaConfigError,
     format_roots_orphan_warning,
     get_roots,
+    grouping_stem,
     INDEX_SCHEMA_VERSION,
     is_fixture_path,
     is_working_copy,
     load_fha_yaml,
     newest_record_mtime,
     parse_filename,
+    parse_media_filename,
+    path_to_alias,
     PHOTOINDEX_SCHEMA_VERSION,
     photoindex_status,
     pip_command,
@@ -117,6 +124,10 @@ configure_utf8_stdout()
 #                               nested / .git/info/exclude / global), since
 #                               the remedy that works differs by location
 #                               (PR #60 review, finding 1)
+#
+#  Orphaned back-scan check (#113)
+#    _check_orphaned_back_photos - an unlisted -back/_back sibling on disk
+#                               beside a photo a source DOES list
 #
 #  Top-level
 #    run_doctor                - orchestrate all checks; return a Result (no printing)
@@ -542,6 +553,106 @@ def _classify_gitignore_source(gi_file: str) -> str:
     if posix == '.gitignore':
         return 'root'
     return 'nested'
+
+
+# ── Orphaned back-scan check (#113) ─────────────────────────────────────────
+
+def _check_orphaned_back_photos(archive_root: Path, fha_config: dict,
+                                 lines: list[str], checks: list[dict]) -> int:
+    """#113: flag a `-back`/`_back` photo sibling sitting on disk, unlisted,
+    beside a photo a source's `files:` DOES list.
+
+    A real migration found this happen for real: a role-inference mistake (or
+    a human simply overlooking it) filed a print's front but never noticed
+    its back scan sitting right beside it - the back is frequently the ONLY
+    surviving caption or provenance note for that item, so an unlisted one is
+    not cosmetic. `fha process`'s own import now pulls an unambiguous back
+    sibling in automatically for a plain document scan (#113's companion
+    fix), but that guards only the moment of import; this check is the
+    standing safety net - for photos filed before the fix existed, for a
+    photo variation SET where the human answered "separate" or "skip" to the
+    one/separate/skip prompt (leaving the back its own ordinary, unmentioned
+    file), and for anything hand-filed outside `fha process` altogether.
+
+    Photos are never renamed (SPEC §12.1), so the check is a plain filename
+    comparison, never an exiftool call: for every photo file a source DOES
+    list, compute its `base_id` (`_lib.grouping_stem` - the same key `fha
+    process`'s own variation grouping uses) and look beside it on disk for
+    `{base_id}-back{ext}` / `{base_id}_back{ext}`. A source that already
+    lists a `role: back` file for that base_id is skipped entirely - checked
+    by the RECORDED role, not by re-deriving one from the back file's own
+    name, since a human may have filed a back scan under a slightly
+    different name than the grammar would predict.
+
+    Scoped to the photos root only. A documents-root file is RENAMED on
+    import (`{slug}_{S-id}.ext`), so its original folder no longer holds a
+    filename-comparable sibling once processed - there is no reliable
+    after-the-fact filename check for a document the way there is for a
+    photo, which is exactly why the document side of #113 is fixed at
+    IMPORT time instead (`process_document`'s own back-sibling pull-in).
+    """
+    sources_dir = archive_root / 'sources'
+    if not sources_dir.is_dir():
+        return EXIT_CLEAN
+    try:
+        resolve_path('photos', fha_config, archive_root)
+    except FhaConfigError:
+        return EXIT_CLEAN          # no usable photos root: nothing to check
+
+    findings: list[str] = []
+    for record_path in sorted(sources_dir.rglob('*.md')):
+        rec = read_record(record_path, on_decode_error=lambda p: None)
+        if rec.get('undecodable') or rec.get('parse_errors'):
+            continue                # unreadable/malformed - not this check's job
+        entries = (rec.get('meta') or {}).get('files')
+        if not isinstance(entries, list) or not entries:
+            continue
+
+        listed: set[str] = set()
+        sample_path: dict[str, Path] = {}   # base_id -> one on-disk Path sharing it
+        has_back: set[str] = set()          # base_ids the record already lists a back for
+        for item in entries:
+            if not isinstance(item, dict):
+                continue
+            file_alias = item.get('file')
+            if not file_alias or not str(file_alias).startswith('photos/'):
+                continue               # a documents-root entry: not this check's job
+            listed.add(str(file_alias))
+            try:
+                on_disk = resolve_path(str(file_alias), fha_config, archive_root)
+            except FhaConfigError:
+                continue
+            base_id = grouping_stem(parse_media_filename(on_disk.stem))
+            sample_path.setdefault(base_id, on_disk)
+            if str(item.get('role') or '').strip().lower() == 'back':
+                has_back.add(base_id)
+
+        for base_id, disk_path in sample_path.items():
+            if base_id in has_back:
+                continue
+            for sep in ('-', '_'):
+                candidate = disk_path.with_name(f'{base_id}{sep}back{disk_path.suffix}')
+                if not candidate.is_file():
+                    continue
+                candidate_alias = path_to_alias(candidate, 'photos', fha_config, archive_root)
+                if candidate_alias not in listed:
+                    findings.append(
+                        f'orphaned back scan: {candidate_alias} sits on disk but is not '
+                        f'listed in {record_path.name}\'s files:  next: attach it - '
+                        f'`{_LAUNCHER} process <that source\'s primary file> --more '
+                        f'{candidate_alias} back --root "{archive_root}"`'
+                    )
+                break
+
+    if not findings:
+        return EXIT_CLEAN
+    lines.extend(findings)
+    checks.append({
+        'id': 'orphaned_back_photos', 'status': 'warn',
+        'detail': f'{len(findings)} back scan(s) on disk but unlisted',
+        'next_step': 'attach each with `fha process <primary> --more <back file> back`',
+    })
+    return EXIT_WARNINGS
 
 
 # ── Tools-version check (fha install / fha update-tools, BUILD.md M9) ───────────
@@ -1020,6 +1131,10 @@ def run_doctor(archive_root: Path, fha_config: dict) -> Result:
     # the archive is nested.
     if isinstance(roots, dict):
         worst = max(worst, _check_sources_gitignore(archive_root, roots, lines, checks))
+
+    # #113: a -back/_back photo sibling sitting on disk but not in its
+    # source's files: - see _check_orphaned_back_photos for the full case.
+    worst = max(worst, _check_orphaned_back_photos(archive_root, fha_config, lines, checks))
 
     if wc_mode:
         lines.append(

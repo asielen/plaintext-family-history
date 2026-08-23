@@ -3,10 +3,11 @@ name: today
 description: >
   Run at session start, or when the human asks "what should I work on?" / "where do things stand?" (some
   harnesses surface this as a /today shortcut). Reads `fha report`, narrates it discoveries-first in plain
-  language, then offers one concrete next action. Read-only — it writes nothing on its own; the only writes
-  are the human's explicit say-so acting on the briefing: a win via `fha confirm discovery`, or a narrated
-  connection candidate answered ("yes, they were neighbors" / "no, stop suggesting that pair") via
-  `fha confirm cooccur` / `fha confirm dismiss`.
+  language, then offers one concrete next action — and, once, if §0 has a real win to show, asks whether
+  to log it. Read-only — it writes nothing on its own; the only writes are the human's explicit say-so
+  acting on the briefing: a win via `fha confirm discovery`, or a narrated connection candidate answered
+  ("yes, they were neighbors" / "no, stop suggesting that pair") via `fha confirm cooccur` / `fha confirm
+  dismiss`.
 ---
 
 # today
@@ -55,6 +56,17 @@ shortcut for this skill, where one exists. It is safe to run anytime — it only
    confirmed connection. Say these as wins, in plain words: *"Since last time: Margaret's birth year is
    now backed by a second source — the 1871 marriage notice lines up with the census."*
 
+   **Then offer to log one, once (issue #121).** When §0 lists at least one real item (not the "No
+   discoveries since last session" placeholder), close the narration with a direct offer: *"Want me to
+   log any of these as a discovery?"* §0 itself is not durable — it recomputes fresh from this session's
+   diff every run (TOOLING §15a), so a win narrated here and not logged is gone the moment the next
+   report advances the snapshot. `notes/discoveries.md` (step 5) is the only thing that survives past
+   this one session, and it's the only thing `fha site`'s discoveries page and home-page teaser have to
+   show — so before this change the write path existed but nothing ever actively pointed at it, and on a
+   real archive with 100+ commits of research that produced zero logged discoveries. Ask the offer once,
+   right after narrating §0, then move on to step 3 regardless of the answer — a "no" or no answer at all
+   means don't log anything and don't ask again this run (see Guardrails).
+
 3. **Summarize the working state, briefly and in plain language.** Pull the few things that matter and
    skip the rest:
    - **§1 Review queue** — suggested claims waiting on the human, oldest source first. *"Three sources
@@ -97,14 +109,17 @@ shortcut for this skill, where one exists. It is safe to run anytime — it only
    start it: *"Want to start with the 1880 census review? I'll walk you through each drafted fact one at a
    time."* Then hand off to that skill if he says yes.
 
-5. **Log a win only if asked.** If the human points at a §0 discovery and says to record it, and only
-   then:
+5. **Log a win when he says yes** — an answer to step 2's offer, or a request that comes up unprompted
+   later in the session; either way, only on his explicit go-ahead:
    ```
    fha confirm discovery "Margaret Cole's 1849 birth year corroborated by the 1871 marriage notice" \
      --refs S-ea61339378,P-cd795c61e0 --dry-run
    ```
    Show him the previewed entry, then run it without `--dry-run`. This appends a dated line (with
-   `[[S-…]]`/`[[P-…]]` refs) to `notes/discoveries.md` — the durable log the report's §0 reads next time.
+   `[[S-…]]`/`[[P-…]]` refs) to `notes/discoveries.md` — the durable log of research wins (TOOLING §15a).
+   It's a one-way write: `fha report` never reads it back — §0 recomputes its own diff fresh every run
+   (step 2) — so this file is genuinely the only place a session's win outlives that session. `fha site`'s
+   discoveries page and the home-page teaser are what read it back, the next time the site is built.
 
 6. **Act on a connection only when the human answers one.** When the briefing's §8 leads draw a
    reaction — "yes, they were neighbors", "those two were friends", "no, ignore that pair" —
@@ -143,6 +158,10 @@ shortcut for this skill, where one exists. It is safe to run anytime — it only
   skill owns `fha confirm cooccur` / `fha confirm dismiss`** (steps 5–6 are the whole exception list).
 - **Never** confirm or dismiss a pair the human didn't explicitly rule on — silence, a topic change, or
   "interesting" is not a decision. Never use `--accept` for a hedged answer.
+- The step 2 discovery offer is asked **once per run**, right after narrating §0 — never once per item,
+  never repeated if he already declined or ignored it earlier in the same conversation. Silence on the
+  offer is the same as silence on a §8 candidate above: not a decision, and never grounds to write
+  anything.
 - **Never** hand-edit `notes/discoveries.md`; the only write path is `fha confirm discovery`, and only on
   an explicit human decision.
 - Don't recompute what `fha report` already computed — the report refreshes the index and runs lint, so no
@@ -156,6 +175,10 @@ shortcut for this skill, where one exists. It is safe to run anytime — it only
 
 - In a session on `example-archive`, invoking this skill (e.g. "what should I work on?") runs `fha report`, narrates
   sections 0–8 **discoveries-first**, and offers one concrete next action in plain language.
+- When §0 lists at least one real item, the discoveries narration ends with one offer to log it (*"Want
+  me to log any of these as a discovery?"*) — asked once per run, never per item, never repeated once
+  he's answered. When §0 is empty (*"No discoveries since last session."*), no offer is made this run
+  (issue #121).
 - It makes **zero** archive writes unless the human confirms one — a confirmed discovery lands via
   `fha confirm discovery`, never by hand-editing `notes/discoveries.md` — except the one narrow,
   idempotent §8 housekeeping move above (#48), which needs no confirmation because it decides

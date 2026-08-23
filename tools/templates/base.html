@@ -22,6 +22,11 @@
     <a href="{{ root_prefix }}/index.html#people">People</a>
     <a href="{{ root_prefix }}/index.html#places">Places</a>
     <a href="{{ root_prefix }}/index.html#sources">Sources</a>
+    {#- Issue #121: discoveries.html always builds (build_discoveries_page runs
+        unconditionally), but with zero entries the home teaser that used to be
+        its only inbound link renders nothing at all - so this persistent nav
+        link is the page's sole route in on a fresh or quiet archive. #}
+    <a href="{{ root_prefix }}/discoveries.html">Discoveries</a>
   </nav>
 </header>
 <main>

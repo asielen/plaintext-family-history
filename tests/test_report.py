@@ -821,6 +821,93 @@ class ReportArchiveNotesTests(unittest.TestCase):
         self.assertIn('Archive notes', result['markdown'])
 
 
+class PlaceTextEscalationTests(unittest.TestCase):
+    """Issue #79 point 2: a place-text cluster large enough to be an
+    oversight, not a candidate someone still needs to weigh, is promoted
+    above every section (the `archive_notes` position) instead of sitting
+    only at §6b, position 10 of 13 - where a 47%-unlinked, 13-month-old
+    archive proved nobody was reliably reaching it (the issue's own
+    motivating case)."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.archive_root = Path(self._tmp.name)
+        (self.archive_root / 'people').mkdir(parents=True)
+        (self.archive_root / 'sources').mkdir(parents=True)
+        (self.archive_root / 'people' / 'test__person_P-aaaaaaaaaa.md').write_text(
+            _PERSON_MD, encoding='utf-8')
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _write_cluster_source(self, sid: str, place_text: str, count: int) -> None:
+        # One source carrying `count` residence claims that all share
+        # `place_text` and no `place_id` - exactly what
+        # `places._place_text_candidates` clusters on. Claim ids are a
+        # digit-only counter seeded from the source id's own trailing digits
+        # (Crockford-valid; digits carry no ambiguous-letter exclusions) so
+        # two clusters in the same fixture never mint the same claim id.
+        seed = int(sid[-1]) * 100
+        claims = ''.join(
+            f'- id: C-9{seed + i:09d}\n  type: residence\n  persons: [P-aaaaaaaaaa]\n'
+            f'  value: Lived there\n  place_text: "{place_text}"\n'
+            '  status: accepted\n  reviewed: 2026-01-01\n'
+            for i in range(count)
+        )
+        body = (
+            f'---\nid: {sid}\ntitle: Cluster source\nsource_type: vital-record\n---\n\n'
+            f'## Claims\n```yaml\n{claims}```\n'
+        )
+        fname = sid.lower().replace('-', '_') + '.md'
+        (self.archive_root / 'sources' / fname).write_text(body, encoding='utf-8')
+
+    def test_cluster_below_threshold_produces_no_escalation(self) -> None:
+        # 19 claims: one short of the 20-claim escalation threshold. Still
+        # an ordinary §6b candidate (well past run_candidates()'s own
+        # default threshold of 3) - just not promoted above every section.
+        self._write_cluster_source('S-9000000001', 'Warsaw, Poland', 19)
+        result = report.run_report(self.archive_root, {}, full=True)
+        md = result['markdown']
+        self.assertNotIn('oversight to close', md)
+        self.assertNotIn('place-text cluster(s) past the', md)
+        self.assertIn('Warsaw, Poland - 19 claim(s)', md)   # still listed in §6b itself
+
+    def test_cluster_at_threshold_escalates_above_every_section(self) -> None:
+        self._write_cluster_source('S-9000000002', 'Warsaw, Poland', 20)
+        result = report.run_report(self.archive_root, {}, full=True)
+        md = result['markdown']
+        self.assertIn(
+            '1 place-text cluster(s) past the 20-claim oversight threshold, '
+            'no place registered', md)
+        self.assertIn('oversight to close', md)
+        self.assertIn('Warsaw, Poland - 20 claim(s)', md)
+        self.assertIn('fha confirm place', md)
+        # Above every section, same position as archive_notes - not just
+        # repeated at its usual spot in §6b.
+        self.assertLess(
+            md.index('place-text cluster(s) past the'), md.index('## 0.'))
+
+    def test_only_the_oversized_cluster_escalates_the_smaller_one_stays_in_6b_only(self) -> None:
+        self._write_cluster_source('S-9000000003', 'Warsaw, Poland', 20)
+        self._write_cluster_source('S-9000000004', 'Berlin, Germany', 5)
+        result = report.run_report(self.archive_root, {}, full=True)
+        md = result['markdown']
+        banner = md[:md.index('## 0.')]
+        self.assertIn('Warsaw, Poland', banner)
+        self.assertNotIn('Berlin, Germany', banner)
+        # §6b itself still lists both clusters in full.
+        self.assertIn('Warsaw, Poland - 20 claim(s)', md)
+        self.assertIn('Berlin, Germany - 5 claim(s)', md)
+
+    def test_section_filtered_run_still_shows_the_escalation(self) -> None:
+        # Narrowing the view must never hide the one thing this feature
+        # exists to make impossible to miss - same rule as archive_notes.
+        self._write_cluster_source('S-9000000005', 'Warsaw, Poland', 20)
+        result = report.run_report(
+            self.archive_root, {}, full=True, section='review-queue')
+        self.assertIn('place-text cluster(s) past the', result['markdown'])
+
+
 _RESEARCH_SAME_HEADING_MD = '''# Research - Test Person
 
 ## Open Questions
@@ -834,7 +921,7 @@ _RESEARCH_SAME_HEADING_MD = '''# Research - Test Person
 
 class QuestionNamespacingTests(unittest.TestCase):
     """
-    The same `## Q:` heading in two files must not shadow.  _parse_questions
+    The same `## Q:` heading in two files must not shadow.  parse_questions
     keys by '{file} :: {heading}' so a heading that recurs across
     notes/questions.md and a person research file (easy at hundreds of
     questions) keeps both entries; display and old-snapshot comparison use
@@ -857,7 +944,7 @@ class QuestionNamespacingTests(unittest.TestCase):
         (self.archive_root / 'people' / 'test__person_research_P-aaaaaaaaaa.md').write_text(
             _RESEARCH_SAME_HEADING_MD, encoding='utf-8'
         )
-        questions = report._parse_questions(self.archive_root)
+        questions = report.parse_questions(self.archive_root)
         same_heading = [
             info for info in questions.values()
             if info['heading'] == 'When was Test Person born?'
@@ -881,7 +968,7 @@ class QuestionNamespacingTests(unittest.TestCase):
         (self.archive_root / 'people' / 'smith__anne_research_P-bbbbbbbbbb.md').write_text(
             _RESEARCH_SAME_HEADING_MD, encoding='utf-8'
         )
-        questions = report._parse_questions(self.archive_root)
+        questions = report.parse_questions(self.archive_root)
         self.assertEqual(
             sorted({info['file'] for info in questions.values()}),
             ['people/smith__anne_research_P-bbbbbbbbbb.md'],
@@ -899,7 +986,7 @@ class QuestionNamespacingTests(unittest.TestCase):
             + _RESEARCH_SAME_HEADING_MD,
             encoding='utf-8',
         )
-        questions = report._parse_questions(self.archive_root)
+        questions = report.parse_questions(self.archive_root)
         self.assertEqual(questions, {})
 
     def test_discoveries_show_plain_heading_and_accept_old_snapshot_keys(self) -> None:

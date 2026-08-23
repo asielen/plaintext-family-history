@@ -260,6 +260,31 @@ class SourcePageTests(_Base):
         html = self._read('sources/s-1111111111.html')
         self.assertIn('file not available', html)
 
+    def test_file_entry_note_adds_copy_letter_when_present(self):
+        # #123: a multi-file bundle (four newspaper clippings, say) reads as
+        # indistinguishable when every entry's note is the bare 'role:
+        # clipping'. Once the indexer stops dropping `copy:` on the floor
+        # (the source_files.copy fix, same issue), the site's file-list note
+        # names the variant too - 'role: clipping · copy: b' - so same-role
+        # files in one bundle are told apart without needing per-file dates.
+        self._seed_source('s-1111111111', 'Clippings Bundle', source_type='newspaper')
+        clip_dir = self.archive_root / 'documents' / 'newspaper'
+        clip_dir.mkdir(parents=True, exist_ok=True)
+        (clip_dir / 'clipping-a.pdf').write_bytes(b'not a real pdf')
+        (clip_dir / 'clipping-b.pdf').write_bytes(b'not a real pdf')
+        self.conn.execute(
+            'INSERT INTO source_files(source_id, path, role, copy) VALUES (?,?,?,?)',
+            ('s-1111111111', 'documents/newspaper/clipping-a.pdf', 'clipping', None))
+        self.conn.execute(
+            'INSERT INTO source_files(source_id, path, role, copy) VALUES (?,?,?,?)',
+            ('s-1111111111', 'documents/newspaper/clipping-b.pdf', 'clipping', 'b'))
+        self._run(linked=True)
+        html = self._read('sources/s-1111111111.html')
+        self.assertIn('role: clipping · copy: b', html)
+        # The un-lettered sibling keeps the original, shorter note - no
+        # 'copy: None' leaking through, and the two entries stay distinct.
+        self.assertIn('role: clipping</span>', html)
+
 
 class SourceRedactionTests(_Base):
     def _setup_redactable(self):
@@ -353,6 +378,32 @@ class PersonPageTests(_Base):
         self.assertIn('Margaret Cole', html)                     # [P-id] -> name (stub, no link)
         self.assertNotIn('9999999999', html)                     # unresolved source id hidden, never shown raw
 
+    def test_biography_strips_bare_claim_id_parenthetical(self):
+        # #140: a bare `(C-xxxxxxxxxx)` parenthetical is an internal claim id
+        # - meaningless and unlinked for a reader, and not the sanctioned
+        # `[[C-xxxx]]` citation form - so it must never reach rendered prose.
+        bio = ('# Thomas\n## Biography\n'
+               'This session corroborates her birth on 9 September 1899 '
+               '(C-4kx9m2p7qr); the family, then in Krakow, later emigrated.\n')
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley', body=bio)
+        self._run(linked=True)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('corroborates her birth on 9 September 1899', html)
+        self.assertNotIn('C-4kx9m2p7qr', html)
+
+    def test_biography_translates_before_date_bracket_in_prose(self):
+        # #140: a raw `[..YYYY]` "before" bracket (SPEC §11) embedded mid-
+        # sentence in a claim/biography's free text must render as the same
+        # plain phrase the footer legend already uses for it (#131), not the
+        # bracket/dot encoding verbatim.
+        bio = ('# Thomas\n## Biography\n'
+               'The family had emigrated [..1905], settling near Fairview.\n')
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley', body=bio)
+        self._run(linked=True)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('before 1905', html)
+        self.assertNotIn('[..1905]', html)
+
     def test_timeline_excludes_suggested_includes_needs_review(self):
         # Linked/workbench timelines keep needs-review claims - clearly marked
         # as unconfirmed (owner decision 2026-07-22).
@@ -430,6 +481,36 @@ class PersonPageTests(_Base):
         html = self._read('persons/p-aaaaaaaaaa.html')
         self.assertIn('Moved to Millbrook NY to farm', html)
         self.assertNotIn('at Millbrook, NY', html)
+
+    def test_timeline_strips_bare_claim_id_parenthetical(self):
+        # #140: same rendering bug as the Biography case, on the Timeline's
+        # separate render path (_timeline_value_html) - a bare `(C-xxxxxxxxxx)`
+        # parenthetical in a claim's value text must not reach the page.
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley')
+        self._seed_source('s-1111111111', 'Record', people=('p-aaaaaaaaaa',))
+        self._seed_claim('c-1111111111', 's-1111111111', 'birth',
+                         'Disputes her birth on 9 September 1899 (C-4kx9m2p7qr); '
+                         'the family then in Krakow.', status='accepted',
+                         date_edtf='1899', persons=('p-aaaaaaaaaa',))
+        self._run(linked=True)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('Disputes her birth on 9 September 1899', html)
+        self.assertNotIn('C-4kx9m2p7qr', html)
+
+    def test_timeline_translates_before_date_bracket_in_prose(self):
+        # #140: same bracket-translation bug as the Biography case, on the
+        # Timeline's separate render path - a raw `[..YYYY]` "before" bracket
+        # in a claim's value text must render as plain English, matching the
+        # footer legend's own wording (#131), not the bracket/dot encoding.
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley')
+        self._seed_source('s-1111111111', 'Record', people=('p-aaaaaaaaaa',))
+        self._seed_claim('c-1111111111', 's-1111111111', 'immigration',
+                         'The family had emigrated [..1905], settling near Fairview.',
+                         status='accepted', date_edtf='1900', persons=('p-aaaaaaaaaa',))
+        self._run(linked=True)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('before 1905', html)
+        self.assertNotIn('[..1905]', html)
 
     def test_timeline_decades_stay_contiguous_despite_date_min_divergence(self):
         # #128: decade grouping reads the DISPLAY date (date_edtf, via
@@ -2094,6 +2175,22 @@ class DiscoveriesTests(_Base):
         self.assertIn('No discoveries', self._read('discoveries.html'))
         self.assertNotIn('Recent discoveries', self._read('index.html'))
 
+    def test_discoveries_nav_link_present_with_zero_entries(self):
+        # Issue #121: build_discoveries_page() always builds discoveries.html,
+        # but with zero entries the home teaser above (its only other inbound
+        # link) renders nothing at all - so the persistent site nav is the
+        # page's sole route in on a fresh or quiet archive. Check it from both
+        # a top-level page (home) and a nested one (a person page), since the
+        # two use different root_prefix values.
+        self._seed_person('p-aaaaaaaaaa', 'Jane Doe')
+        self._run(linked=True)
+        self.assertTrue((self.out_dir / 'discoveries.html').is_file())
+        for relpath, prefix in (('index.html', '.'), ('persons/p-aaaaaaaaaa.html', '..')):
+            html = self._read(relpath)
+            nav_block = html[html.index('site-nav'):html.index('</nav>')]
+            self.assertIn(f'href="{prefix}/discoveries.html"', nav_block, relpath)
+            self.assertIn('Discoveries', nav_block, relpath)
+
     def test_cp1252_discoveries_file_reports_instead_of_crashing(self):
         # #68 in the one place in site.py that never went through
         # `read_record`: this file was read with a plain `read_text` guarded by
@@ -3728,6 +3825,132 @@ class WorkbenchModeTests(_Base):
         r = self._run_wb()
         self.assertTrue(r.ok, r.messages)
         self._read('sources/s-1111111111.html')
+
+
+class OpenQuestionsSectionTests(_Base):
+    """Issue #117: a person referenced by a `## Q:` block's `refs:` sees that
+    question on their own page. Workbench-only (same gate `open_review_count`
+    uses) until `## Q:` blocks carry their own `restricted:` field - a
+    question's `context:` can hold sensitive detail about a living third
+    party that nothing here has vetted, so this stays off the public AND
+    plain `--linked` builds for now, not just the standalone one."""
+
+    def _write_questions_md(self, text: str) -> None:
+        path = self.archive_root / 'notes' / 'questions.md'
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding='utf-8')
+
+    def test_open_question_shows_in_workbench_only(self):
+        self._seed_person('p-aaaaaaaaaa', 'Jane Doe', tier='curated')
+        self._write_questions_md(
+            '# Open Questions\n\n'
+            '## Q: When did Jane arrive in Kansas?\n'
+            '- origin: human\n'
+            '- status: open\n'
+            '- refs: [P-aaaaaaaaaa]\n'
+            '- context:\n'
+            '  - (human, 2026-06-01) Census says 1880, no earlier record found.\n'
+        )
+        wb = self._run(linked=True, workbench=True)
+        self.assertTrue(wb.ok, wb.messages)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('Open Questions', html)
+        self.assertIn('When did Jane arrive in Kansas?', html)
+        self.assertIn('Census says 1880', html)
+        self.assertIn('notes/questions.md', html)   # provenance caption
+
+        # Standalone (public) build of the SAME archive: none of it.
+        import shutil as _sh
+        _sh.rmtree(self.out_dir, ignore_errors=True)
+        std = self._run(linked=False)
+        self.assertTrue(std.ok, std.messages)
+        std_html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertNotIn('When did Jane arrive in Kansas?', std_html)
+        self.assertNotIn('Census says 1880', std_html)
+
+        # Plain `--linked` (no workbench): also none of it - the safe
+        # default this PR ships stays narrower than "any unredacted build",
+        # matching the one existing workbench-only count/section precedent
+        # (`open_review_count`) rather than a new `linked`-only gate.
+        _sh.rmtree(self.out_dir, ignore_errors=True)
+        lo = self._run(linked=True, workbench=False)
+        self.assertTrue(lo.ok, lo.messages)
+        lo_html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertNotIn('When did Jane arrive in Kansas?', lo_html)
+
+    def test_a_ref_naming_the_same_person_twice_does_not_double_render(self):
+        # A `refs:` list is free-text-typed by a human; `refs: [P-x, P-x]` is
+        # a plausible copy-paste slip. That must not render the SAME question
+        # twice on P-x's own page - unlike a question legitimately naming
+        # several different people, which correctly appears on each of them.
+        self._seed_person('p-aaaaaaaaaa', 'Jane Doe', tier='curated')
+        self._write_questions_md(
+            '## Q: Repeated ref question\n'
+            '- status: open\n'
+            '- refs: [P-aaaaaaaaaa, P-aaaaaaaaaa]\n'
+            '- context:\n'
+            '  - (human, 2026-06-01) One question, one person, named twice.\n'
+        )
+        wb = self._run(linked=True, workbench=True)
+        self.assertTrue(wb.ok, wb.messages)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertEqual(html.count('Repeated ref question'), 1)
+
+    def test_answered_question_is_not_surfaced(self):
+        # Only OPEN questions are a live pointer; an answered/closed one is
+        # settled research, not something a page should keep raising.
+        self._seed_person('p-aaaaaaaaaa', 'Jane Doe', tier='curated')
+        self._write_questions_md(
+            '# Open Questions\n\n'
+            '## Q: When did Jane arrive in Kansas?\n'
+            '- origin: human\n'
+            '- status: answered [[S-1111111111]]\n'
+            '- refs: [P-aaaaaaaaaa]\n'
+            '- context:\n'
+            '  - (human, 2026-06-01) 1880 census confirms arrival.\n'
+        )
+        wb = self._run(linked=True, workbench=True)
+        self.assertTrue(wb.ok, wb.messages)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertNotIn('When did Jane arrive in Kansas?', html)
+
+    def test_question_in_a_different_persons_research_file_surfaces_here_too(self):
+        # The issue's own open design question: does a question logged in
+        # Person B's research file, but `refs:`-ing Person A, show on Person
+        # A's page too? Implemented answer: yes - inherited for free from
+        # `_lib.parse_questions` reading every person's research file, not a
+        # new decision made in site.py. This was a live open question in the
+        # issue, not a settled contract - flagged again in the PR body.
+        self._seed_person('p-aaaaaaaaaa', 'Jane Doe', tier='curated')
+        self._seed_person('p-bbbbbbbbbb', 'Bob Roe', tier='curated', surname='Roe')
+        research_path = self.archive_root / 'people' / 'roe__test_research_p-bbbbbbbbbb.md'
+        research_path.write_text(
+            '---\nid: p-bbbbbbbbbb\ncreated: 2026-06-01\n---\n\n'
+            '## Open Questions\n\n'
+            '## Q: Are Jane and Bob related?\n'
+            '- origin: human\n'
+            '- status: open\n'
+            '- refs: [P-aaaaaaaaaa, P-bbbbbbbbbb]\n'
+            '- context:\n'
+            '  - (human, 2026-06-01) Both lived in the same county in 1880.\n'
+            '\n## Hypotheses\n\n*(none yet)*\n\n## Research Log\n\n*(none yet)*\n',
+            encoding='utf-8')
+        wb = self._run(linked=True, workbench=True)
+        self.assertTrue(wb.ok, wb.messages)
+        for pid in ('p-aaaaaaaaaa', 'p-bbbbbbbbbb'):
+            html = self._read(f'persons/{pid}.html')
+            self.assertIn('Are Jane and Bob related?', html, pid)
+            self.assertIn('Both lived in the same county', html, pid)
+            # #117 block-scoping guard: `_lib.parse_question_blocks` splits
+            # purely on `## Q:` boundaries, so the raw block for the LAST
+            # question in a file runs through to end-of-file - the sibling
+            # `## Hypotheses`/`## Research Log` sections that follow it here
+            # would leak onto the page as if part of the question without
+            # site.py's own trim (`_question_block_body`). Neither heading
+            # word appears anywhere else on a person page (no template ever
+            # emits it), so its presence at all means the trim regressed.
+            self.assertNotIn('Hypotheses', html, pid)
+            self.assertNotIn('Research Log', html, pid)
 
 
 # ── A person's vitals are their OWN, not their relatives' (#126) ─────────────

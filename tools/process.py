@@ -96,6 +96,9 @@ are found the user is asked whether they are *one* source (shared S-id) or
 #
 #  exiftool seams (monkeypatched in tests - process never imports photoindex)
 #    _run_exiftool_read_keywords - read embedded Keywords/Subject of one file
+#    _clear_read_only            - make a file writable before exiftool touches it (#110)
+#    _cleanup_exiftool_tmp       - delete a stray <file>_exiftool_tmp left by a failed write (#110)
+#    _format_exiftool_tmp_error  - name the real fix if a tmp-file collision still surfaces (#110)
 #    _run_exiftool_embed_source  - write `SOURCE: {S-id}` into one file
 #    _run_exiftool_remove_source - remove a just-written `SOURCE: {S-id}`
 #    _open_backup                - the run's safety-copy policy, announced (TOOLING §13f)
@@ -110,6 +113,8 @@ are found the user is asked whether they are *one* source (shared S-id) or
 #
 #  Source-stub sidecar (*.notes.md) + bundle notes.md
 #    _find_sidecar             - the {stem}.notes.md beside an asset, if any
+#    _find_back_sibling        - an unambiguous {base_id}-back sibling beside a plain
+#                                 scan, pulled in automatically rather than left behind (#113)
 #    _companion_for_sidecar    - resolve direct sidecar input to its asset
 #    _read_sidecar             - its hint frontmatter + prose body
 #    _bundle_file_hints        - bundle notes per-file role/copy/primary hints
@@ -129,7 +134,9 @@ are found the user is asked whether they are *one* source (shared S-id) or
 #    process_photo_group       - M7.3: one S-id over a variation set (transactional)
 #    process_folder            - M7.3: triage a folder, process selected groups
 #    process_bundle            - M7.4: dissolve a notes.md bundle into one source
-#    attach_more               - M7.2: attach a file to an existing source
+#    attach_more               - M7.2: relocate --more's file out of inbox/ if needed (#111),
+#                                 then hand off to the engine below
+#    _attach_more_engine       - the attach logic proper: identity-mark + files: entry
 #
 #  Refile (the sanctioned cross-root correction move)
 #    _stdin_is_interactive     - tty seam for the photo-catalog confirm (tests patch it)
@@ -157,6 +164,7 @@ import datetime
 import json
 import re
 import shutil
+import stat
 import subprocess
 import sys
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -394,6 +402,78 @@ def _run_exiftool_read_keywords(file_path: Path) -> list[str]:
     return out
 
 
+# The literal suffix exiftool's `-overwrite_original_in_place` appends to the
+# temp file it writes through before swapping it in for the real one - no dot,
+# no configurability, verified against the issue's own reproduction (#110).
+_EXIFTOOL_TMP_SUFFIX = '_exiftool_tmp'
+_EXIFTOOL_TMP_EXISTS_RE = re.compile(r'temporary file already exists', re.I)
+
+
+def _clear_read_only(file_path: Path) -> None:
+    """Make `file_path` writable before exiftool's own write, best-effort (#110).
+
+    `_relocate_from_inbox` is a plain move/rename, which preserves whatever
+    permission bits a file already had - an inbox-staged original that
+    arrived read-only (common: copied off read-only media, or a personal
+    "protect this" habit) reaches the embed step still locked, and exiftool
+    then fails with a write-permission error that names no fix. Nothing in
+    this archive's design requires a filed original to stay read-only for
+    fha's own subsequent keyword write, so this clears the bit unconditionally
+    before every embed/remove attempt. Best-effort and silent on failure: if
+    clearing it does not work either, exiftool's own error still surfaces
+    exactly as it did before this existed - this is not a new failure mode,
+    only a chance to avoid the old one.
+    """
+    try:
+        mode = file_path.stat().st_mode
+        file_path.chmod(mode | stat.S_IWRITE)
+    except OSError:
+        pass
+
+
+def _cleanup_exiftool_tmp(file_path: Path) -> None:
+    """Delete a stray `<file>_exiftool_tmp` left beside `file_path` (#110).
+
+    exiftool's `-overwrite_original_in_place` writes through a temp file
+    named literally `<path>_exiftool_tmp` and renames it over the original
+    only on success; a write that fails part-way (e.g. the destination was
+    read-only) leaves that temp file behind. A later attempt against the same
+    destination then trips exiftool's OWN "temporary file already exists"
+    guard - a second, different-looking error that names the wrong cause and
+    masks that the real one (e.g. read-only) may already be fixed. Called
+    both before an embed/remove attempt (clears a stale file left by an
+    EARLIER failed run) and after one fails (clears whatever THIS attempt
+    left), so a retry only ever meets the real, current cause. Best-effort:
+    the rare case a locked temp file cannot be deleted still surfaces via
+    `_format_exiftool_tmp_error` naming the manual fix.
+    """
+    tmp_path = file_path.with_name(file_path.name + _EXIFTOOL_TMP_SUFFIX)
+    try:
+        tmp_path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def _format_exiftool_tmp_error(stderr_text: str, file_path: Path) -> str:
+    """Rewrite exiftool's "temp file already exists" stderr to name the fix (#110).
+
+    `_cleanup_exiftool_tmp` runs before every embed/remove attempt, so this
+    text should be rare - it only reaches a user if the stray temp file could
+    not be deleted (e.g. locked by another process). When it does, the raw
+    exiftool text alone reads as an unrelated new failure rather than the
+    leftover of a previous one; naming the exact file and the delete-then-
+    retry fix keeps the next step honest (AGENTS.md: every error names the
+    fix, not just the symptom).
+    """
+    if not _EXIFTOOL_TMP_EXISTS_RE.search(stderr_text):
+        return stderr_text
+    tmp_path = file_path.with_name(file_path.name + _EXIFTOOL_TMP_SUFFIX)
+    return (
+        f'{stderr_text} - this is a stray file left by a previous failed attempt, '
+        f'not a new problem; delete {tmp_path} and try again'
+    )
+
+
 def _run_exiftool_embed_source(
     file_path: Path, s_id: str, extra_keywords: list[str] | None = None,
     *, backup: OriginalBackup,
@@ -416,11 +496,19 @@ def _run_exiftool_embed_source(
 
     Returns None on success, the stderr text on a per-file failure; raises
     RuntimeError only when exiftool itself is absent.
+
+    Before writing: clears any read-only bit on `file_path` and any stray
+    `_exiftool_tmp` left beside it by an earlier failed attempt (#110) - both
+    are cheap, best-effort, and mean an ordinary retry after fixing the real
+    cause (e.g. clearing read-only by hand) just works, instead of tripping a
+    second, differently-worded failure that hides the first one was fixed.
     """
     try:
         backup.ensure(file_path)
     except BackupRefused as e:
         return str(e)
+    _clear_read_only(file_path)
+    _cleanup_exiftool_tmp(file_path)
     keywords = [f'SOURCE: {s_id}'] + (extra_keywords or [])
     kw_args = [f'-keywords+={kw}' for kw in keywords]
     cmd = ['exiftool'] + kw_args + ['-overwrite_original_in_place', str(file_path)]
@@ -428,7 +516,10 @@ def _run_exiftool_embed_source(
         proc = subprocess.run(cmd, check=False, capture_output=True, text=True, encoding='utf-8')
     except FileNotFoundError as e:
         raise RuntimeError(format_exiftool_error('fha process')) from e
-    return None if proc.returncode == 0 else proc.stderr.strip()
+    if proc.returncode == 0:
+        return None
+    _cleanup_exiftool_tmp(file_path)
+    return _format_exiftool_tmp_error(proc.stderr.strip(), file_path)
 
 
 def _run_exiftool_remove_source(
@@ -450,11 +541,19 @@ def _run_exiftool_remove_source(
     already there - the forward write made it, or refused and left nothing to
     roll back - so this call costs one `exists()` check and can only refuse in
     the case where the forward write would have refused too.
+
+    Shares the same read-only-clear / stray-tmp-cleanup discipline as
+    `_run_exiftool_embed_source` (#110) - the forward write already clears
+    both, so in practice this is a no-op here, but the rollback is its own
+    exiftool invocation and can fail for the identical reason if something
+    else re-locked the file mid-run.
     """
     try:
         backup.ensure(file_path)
     except BackupRefused as e:
         return str(e)
+    _clear_read_only(file_path)
+    _cleanup_exiftool_tmp(file_path)
     keywords = [f'SOURCE: {s_id}'] + (extra_keywords or [])
     kw_args = [f'-keywords-={kw}' for kw in keywords]
     cmd = ['exiftool'] + kw_args + ['-overwrite_original_in_place', str(file_path)]
@@ -462,7 +561,10 @@ def _run_exiftool_remove_source(
         proc = subprocess.run(cmd, check=False, capture_output=True, text=True, encoding='utf-8')
     except FileNotFoundError as e:
         raise RuntimeError(format_exiftool_error('fha process')) from e
-    return None if proc.returncode == 0 else proc.stderr.strip()
+    if proc.returncode == 0:
+        return None
+    _cleanup_exiftool_tmp(file_path)
+    return _format_exiftool_tmp_error(proc.stderr.strip(), file_path)
 
 
 def _open_backup(
@@ -698,6 +800,39 @@ def _find_sidecar(file_path: Path) -> Path | None:
 def _is_sidecar_path(file_path: Path) -> bool:
     """True when `file_path` is a source-stub sidecar (`{stem}.notes.md`)."""
     return file_path.name.lower().endswith('.notes.md')
+
+
+def _find_back_sibling(file_path: Path) -> Path | None:
+    """Return the unambiguous `{base_id}-back`/`_back` sibling beside a plain
+    scan, if one exists on disk - or None (#113).
+
+    A trailing copy letter ('portrait_1880b') names a SEPARATE print of the
+    same picture (TOOLING §6) - never a back, and never auto-attached here;
+    which member of a set is "the" primary is exactly the judgment call the
+    photo variation-set prompt exists for (`_process_variation_set`). An
+    explicit `-back`/`_back` suffix is different in kind: it names no other
+    physical item, so there is no ambiguity to ask a human about, and no
+    prompt-driven grouping flow watches for it when `file_path` is a
+    DOCUMENT (`process_document` has no sibling awareness at all otherwise).
+    Left unattached, a document's back scan - often the only surviving
+    caption or provenance note - simply sits on disk, unrecorded and
+    unmentioned, until someone happens to notice a name that no longer has a
+    record (#113's actual reported case).
+
+    Restricted to `file_path` itself being a PLAIN scan (no variant letter,
+    no recognised part-kind, no crop) - the same "plain" test
+    `select_variation_primary` uses for its default pick - so processing a
+    copy-letter print or a crop on its own never reaches for a shared back
+    scan that conceptually belongs with the group's primary, not with it.
+    """
+    parsed = parse_media_filename(file_path.stem)
+    if parsed.variant_id is not None or parsed.part_kind != 'none' or parsed.is_crop:
+        return None
+    for sep in ('-', '_'):
+        candidate = file_path.with_name(f'{file_path.stem}{sep}back{file_path.suffix}')
+        if candidate.is_file():
+            return candidate
+    return None
 
 
 def _companion_for_sidecar(sidecar: Path) -> Path | None:
@@ -1260,6 +1395,7 @@ def process_document(
     real_path: Path | None = None,
     source_id: str | None = None,
     report: dict | None = None,
+    back_sibling: Path | None = None,
 ) -> int:
     """M7.1: rename a documents-root original and scaffold its source record.
 
@@ -1280,6 +1416,15 @@ def process_document(
     (`fha serve`'s process.file verb) to read back - the id used is reported
     on BOTH a dry-run preview and a live apply, so the two can be compared or
     threaded together, the same round-trip person.new/claim.new already have.
+
+    `back_sibling` (#113) is an already-resolved `-back`/`_back` companion the
+    CALLER found and relocated (`_run_process` runs the same inbox-relocation
+    dance on it that it runs on the primary, since the back scan may be
+    sitting in the same inbox folder the primary came from). Left `None`
+    (direct callers, tests, the `--more`/photo paths that never pass it), this
+    function falls back to its own same-folder discovery via
+    `_find_back_sibling` - covering the common case of a back scan already
+    co-located with its primary, just without inbox-awareness.
     """
     if existing := _filename_has_source_id(file_path):
         raise ProcessError(
@@ -1312,6 +1457,16 @@ def process_document(
                     'Fix the sidecar, or pass --type with one of those values.'
                 )
             source_type = hinted
+
+    # An unambiguous `-back`/`_back` sibling beside a plain scan is pulled in
+    # automatically rather than left on disk unrecorded (#113) - see
+    # `_find_back_sibling`'s docstring for why this is safe without a human
+    # prompt (unlike a copy-letter print, a back names no other physical item).
+    # An explicit `back_sibling` (the CLI's own inbox-aware discovery) wins;
+    # otherwise fall back to the same-folder check against wherever this
+    # file's bytes actually are right now.
+    if back_sibling is None:
+        back_sibling = _find_back_sibling(real_path if real_path is not None else file_path)
 
     # DNA sources always carry restricted: true and must live under
     # documents/dna/ (SPEC §8.5.5, lint E017) - refuse before scaffolding a
@@ -1347,6 +1502,14 @@ def process_document(
     else:
         new_path = file_path.with_name(new_name)
 
+    # The back sibling (if any) is filed beside its primary, sharing the same
+    # slug/S-id with a `-back` role suffix - the same naming grammar `--more`
+    # uses for an attached companion (SPEC §12.1: `{slug}[-{role}]_{S-id}.ext`).
+    back_new_path = (
+        new_path.with_name(f'{final_slug}-back_{sid}{back_sibling.suffix}')
+        if back_sibling is not None else None
+    )
+
     # SPEC §14: proof-argument sources live under sources/proofs/, not a
     # sources/proof-argument/ directory matching the source_type literally.
     record_dir = archive_root / 'sources' / _record_subdir(source_type)
@@ -1355,16 +1518,23 @@ def process_document(
 
     if new_path.exists():
         raise ProcessError(f'destination file already exists: {new_path.name}')
+    if back_new_path is not None and back_new_path.exists():
+        raise ProcessError(f'destination file already exists: {back_new_path.name}')
     if record_path.exists():
         raise ProcessError(f'record already exists: {_rel(record_path, archive_root)}')
+
+    file_entries = [{'file': file_alias, 'role': 'primary', 'original_filename': file_path.name}]
+    if back_sibling is not None:
+        back_alias = path_to_alias(back_new_path, 'documents', fha_config, archive_root)
+        file_entries.append({'file': back_alias, 'role': 'back',
+                             'original_filename': back_sibling.name})
 
     # The original inbox basename is the human tag the source was known by; keep
     # it as an alias so any `[[old-name]]` reference still resolves once the file
     # is renamed to `{slug}_{S-id}`. _scaffold_text drops it when it matches the
     # slug the filename already carries (no redundant alias).
     text = _scaffold_text(
-        sid, final_title, source_type,
-        [{'file': file_alias, 'role': 'primary', 'original_filename': file_path.name}],
+        sid, final_title, source_type, file_entries,
         notes_body=notes_body,
         restricted=source_type == 'dna' or _sidecar_flag(sidecar_meta, 'restricted'),
         citation=_sidecar_str(sidecar_meta, 'citation'),
@@ -1382,6 +1552,11 @@ def process_document(
     if dry_run:
         print(f'[dry-run] Would mint {sid}')
         print(f'[dry-run] Would rename {file_path.name} -> {dest_display}')
+        if back_sibling is not None:
+            back_display = (back_new_path.name if back_new_path.parent == back_sibling.parent
+                            else _rel(back_new_path, archive_root))
+            print(f'[dry-run] Would also rename {back_sibling.name} -> {back_display} '
+                  f'(role: back - found beside {file_path.name})')
         print(f'[dry-run] Would scaffold {_rel(record_path, archive_root)}')
         if sidecar is not None:
             print(f'[dry-run] Would delete stub {sidecar.name} (its notes -> ## Notes)')
@@ -1396,6 +1571,12 @@ def process_document(
         file_path.rename(new_path)
         undo.append((f'move {new_path.name} back to {file_path.name}',
                      lambda: new_path.rename(file_path)))
+
+        if back_sibling is not None:
+            back_new_path.parent.mkdir(parents=True, exist_ok=True)
+            back_sibling.rename(back_new_path)
+            undo.append((f'move {back_new_path.name} back to {back_sibling.name}',
+                         lambda: back_new_path.rename(back_sibling)))
 
         record_dir.mkdir(parents=True, exist_ok=True)
         record_path.write_text(text, encoding='utf-8')
@@ -1419,6 +1600,11 @@ def process_document(
 
     print(f'Minted {sid}')
     print(f'Renamed {file_path.name} -> {dest_display}')
+    if back_sibling is not None:
+        back_display = (back_new_path.name if back_new_path.parent == back_sibling.parent
+                        else _rel(back_new_path, archive_root))
+        print(f'Also renamed {back_sibling.name} -> {back_display} (role: back - '
+              f'found beside {file_path.name} and attached automatically)')
     print(f'Scaffolded {_rel(record_path, archive_root)}')
     if sidecar is not None:
         print(f'Consumed stub {sidecar.name} (notes -> ## Notes)')
@@ -2417,7 +2603,67 @@ def attach_more(
     the keyword read below uses it; an inbox-staged primary is unprocessed, so
     the preview then refuses with the same "not a processed source" answer the
     live run gives, instead of a spurious read failure.
+
+    This is a thin wrapper: `--more`'s FILE argument is documented (and used,
+    per the CLI's own example) as a plain path into `inbox/`, but until #111
+    every downstream check assumed it was already filed - `process_photo`/
+    `process_document` get their own inbox-relocation from `_run_process`
+    before they are ever called, and `attach_more` had no equivalent at all.
+    Relocating `more_file` HERE, in the one function that owns its whole
+    lifecycle, mirrors that same dance (`_relocate_from_inbox`) rather than
+    threading it through the CLI dispatcher a second time. Any non-clean
+    result from the engine below - a refusal or a raised exception alike -
+    undoes the relocation, so a failed attach never leaves the file stranded
+    outside the inbox with nothing to show for it (the same "undo the move
+    too" rule `_run_process` already applies to the primary).
     """
+    pre_move_more = more_file
+    more_file, _, more_relocate_undo = _relocate_from_inbox(
+        archive_root, fha_config, more_file, None, dry_run=dry_run)
+    more_real_path = pre_move_more if dry_run and more_file != pre_move_more else None
+    try:
+        rc = _attach_more_engine(
+            archive_root, fha_config, primary_path, more_file, role, copy,
+            dry_run=dry_run, real_path=real_path, more_real_path=more_real_path,
+            backup=backup,
+        )
+    except Exception:
+        if more_relocate_undo is not None:
+            more_relocate_undo()
+        raise
+    if rc != EXIT_CLEAN and more_relocate_undo is not None:
+        more_relocate_undo()
+    return rc
+
+
+def _attach_more_engine(
+    archive_root: Path,
+    fha_config: dict,
+    primary_path: Path,
+    more_file: Path,
+    role: str,
+    copy: str | None,
+    *,
+    dry_run: bool,
+    real_path: Path | None,
+    more_real_path: Path | None,
+    backup: OriginalBackup | None,
+) -> int:
+    """The `--more` attach logic proper, run against `more_file`'s resolved
+    location (`attach_more`'s inbox-relocation wrapper has already moved it,
+    or confirmed it needs no move). Split out so that wrapper has a single
+    call site to undo the relocation on any non-clean result, rather than
+    threading the undo through every one of this function's several
+    raise/return points.
+
+    `more_real_path` is `more_file`'s pre-move location on a DRY-RUN
+    relocation (nothing moved, `more_file` names a destination that does not
+    exist yet) - the same `real_path` contract `process_photo` already uses
+    for the PRIMARY, extended to the `--more` file. Every on-disk read below
+    targets it; every destination-shaped use (alias, rename target, printed
+    path) keeps using `more_file`.
+    """
+    more_on_disk = more_real_path if more_real_path is not None else more_file
     # _source_id_of reads the primary's embedded SOURCE keyword via exiftool when
     # it's a photo. The documented dry-run contract is "no exiftool call" - a
     # machine without exiftool on PATH must still get a preview here, so only
@@ -2460,13 +2706,13 @@ def attach_more(
             )
         if dry_run:
             try:
-                more_existing = _read_source_keyword(more_file)
+                more_existing = _read_source_keyword(more_on_disk)
             except RuntimeError as e:
                 print(f'WARNING: could not read existing keywords from {more_file.name}: {e}',
                       file=sys.stderr)
                 more_existing = None
         else:
-            more_existing = _read_source_keyword(more_file)
+            more_existing = _read_source_keyword(more_on_disk)
         if more_existing:
             raise ProcessError(f'{more_file.name} already carries a SOURCE keyword.')
         new_alias = path_to_alias(more_file, _PHOTO_DIR, fha_config, archive_root)
@@ -2524,20 +2770,38 @@ def attach_more(
         print(f'Added files: entry (role: {role}) to {_rel(record_path, archive_root)}')
         return EXIT_CLEAN
 
-    # Document: rename to share the record's S-id with a -role suffix.
-    if _filename_has_source_id(more_file):
-        raise ProcessError(f'{more_file.name} already carries an S-id.')
+    # Document: rename to share the record's S-id with a -role suffix - unless
+    # the file already carries THIS source's S-id, which happens whenever it
+    # was named on the archive's own recommended companion convention
+    # (`<stem>-transcript_S-<id>.md`) before being attached (#108). The guard
+    # stays for anything else: a file already bearing a DIFFERENT S-id looks
+    # filed for another source, which is exactly the silent-re-processing
+    # case it exists to catch.
+    existing_doc_sid = _filename_has_source_id(more_file)
+    if existing_doc_sid is not None and existing_doc_sid != sid.lower():
+        raise ProcessError(
+            f'{more_file.name} already carries a different S-id '
+            f'({existing_doc_sid.upper()}, not {sid.upper()}); it looks filed for '
+            'another source. Attach it to that source, or rename it, before attaching it here.'
+        )
+    already_named = existing_doc_sid is not None
     documents_root = resolve_path('documents', fha_config, archive_root)
     if not _is_under(more_file, documents_root):
         raise ProcessError(
             f'{more_file.name} is not under the configured documents root '
             f'({_rel(documents_root, archive_root)}); file it there before attaching it.'
         )
-    base = _slugify(more_file.stem)
-    suffix = f'-{_slugify(role)}'
-    if copy:
-        suffix = f'-{_slugify(copy)}{suffix}'
-    new_name = f'{base}{suffix}_{sid}{more_file.suffix}'
+    if already_named:
+        # Already named exactly right (#108) - keep the name as-is rather than
+        # recomputing base+suffix+sid, which would either duplicate the role
+        # word already baked into the stem or double the S-id suffix.
+        new_name = more_file.name
+    else:
+        base = _slugify(more_file.stem)
+        suffix = f'-{_slugify(role)}'
+        if copy:
+            suffix = f'-{_slugify(copy)}{suffix}'
+        new_name = f'{base}{suffix}_{sid}{more_file.suffix}'
     # Same destination rule as process_document (M11.2): a pre-filed
     # attachment renames in place; one sitting at the documents root TOP
     # level files WITH its source - beside a document primary (honoring
@@ -2552,20 +2816,27 @@ def attach_more(
         new_path = dest_dir / new_name
     else:
         new_path = more_file.with_name(new_name)
+    # already_named may still need a MOVE (a file staged in inbox/ and
+    # relocated flat to documents/ root, then filed beside its primary) even
+    # though it needs no RENAME - the two are independent (#108 + #111).
+    needs_move = new_path.resolve() != more_file.resolve()
     new_alias = path_to_alias(new_path, 'documents', fha_config, archive_root)
     entry = [f'  - file: {_yaml_inline(new_alias)}', f'    role: {_yaml_inline(role)}']
     if copy:
         entry.append(f'    copy: {_yaml_inline(copy)}')
     entry.append(f'    original_filename: {_yaml_inline(more_file.name)}')
 
-    if new_path.exists():
+    if needs_move and new_path.exists():
         raise ProcessError(f'destination file already exists: {new_path.name}')
 
     more_dest_display = (new_name if new_path.parent == more_file.parent
                          else _rel(new_path, archive_root))
 
     if dry_run:
-        print(f'[dry-run] Would rename {more_file.name} -> {more_dest_display}')
+        if needs_move:
+            print(f'[dry-run] Would rename {more_file.name} -> {more_dest_display}')
+        else:
+            print(f"[dry-run] {more_file.name} already carries this source's S-id; keeping its name.")
         print(f'[dry-run] Would add files: entry (role: {role}) to '
               f'{_rel(record_path, archive_root)}')
         return EXIT_CLEAN
@@ -2577,10 +2848,11 @@ def attach_more(
         print(f'ERROR: could not read {_rel(record_path, archive_root)}: {e}', file=sys.stderr)
         return EXIT_FAILURE
     try:
-        new_path.parent.mkdir(parents=True, exist_ok=True)
-        more_file.rename(new_path)
-        undo.append((f'move {new_path.name} back to {more_file.name}',
-                     lambda: new_path.rename(more_file)))
+        if needs_move:
+            new_path.parent.mkdir(parents=True, exist_ok=True)
+            more_file.rename(new_path)
+            undo.append((f'move {new_path.name} back to {more_file.name}',
+                         lambda: new_path.rename(more_file)))
         new_text = _append_file_entry(old_text, entry)
         # Atomic for the same reason as the photos branch above: an existing
         # source record is being replaced, not created.
@@ -2605,7 +2877,10 @@ def attach_more(
         else:
             print(f'ERROR: attach failed, rolled back: {e}', file=sys.stderr)
         return EXIT_FAILURE
-    print(f'Renamed {more_file.name} -> {more_dest_display}')
+    if needs_move:
+        print(f'Renamed {more_file.name} -> {more_dest_display}')
+    else:
+        print(f'Kept {more_file.name} (already named for this source)')
     print(f'Added files: entry (role: {role}) to {_rel(record_path, archive_root)}')
     return EXIT_CLEAN
 
@@ -4069,6 +4344,17 @@ def _run_process(args: argparse.Namespace) -> int:
     # (the bytes really are at file_path now) and when no relocation happened.
     real_path = pre_move_path if dry_run and file_path != pre_move_path else None
 
+    # An unambiguous `-back`/`_back` sibling (#113) may still be sitting
+    # wherever the PRIMARY itself was found - its own inbox folder, if that is
+    # where it came from - so it needs the identical inbox-relocation dance
+    # the primary just got, run here rather than inside process_document,
+    # which has no way to know the primary's pre-move location once it has
+    # already been relocated. Set (and undone) alongside relocate_undo below;
+    # stays None whenever nothing is found (the common case, and every path
+    # other than a plain single document).
+    back_relocate_undo = None
+    back_sibling = None
+
     # The relocation above runs before process_document/process_photo's own
     # validation (e.g. dna's documents/dna/ requirement) and transactions, so
     # any non-clean outcome below - refusal or rollback alike - must undo the
@@ -4117,6 +4403,12 @@ def _run_process(args: argparse.Namespace) -> int:
                           file=sys.stderr)
                     rc = EXIT_ERRORS
                 else:
+                    back_src = _find_back_sibling(pre_move_path)
+                    if back_src is not None:
+                        back_sibling, _, back_relocate_undo = _relocate_from_inbox(
+                            archive_root, fha_config, back_src, None,
+                            source_type=source_type, dry_run=dry_run,
+                        )
                     rc = process_document(
                         archive_root, fha_config, file_path,
                         source_type=source_type or _DEFAULT_DOCUMENT_TYPE,
@@ -4124,20 +4416,27 @@ def _run_process(args: argparse.Namespace) -> int:
                         source_date=source_date, dry_run=dry_run,
                         real_path=real_path,
                         source_id=source_id_override, report=mint_report,
+                        back_sibling=back_sibling,
                     )
         if rc != EXIT_CLEAN and relocate_undo is not None:
             relocate_undo()
+        if rc != EXIT_CLEAN and back_relocate_undo is not None:
+            back_relocate_undo()
         args.result_source_id = mint_report.get('source_id')
         return rc
     except ProcessError as e:
         print(f'ERROR: {e}', file=sys.stderr)
         if relocate_undo is not None:
             relocate_undo()
+        if back_relocate_undo is not None:
+            back_relocate_undo()
         return EXIT_ERRORS
     except RuntimeError as e:
         print(f'ERROR: {e}', file=sys.stderr)
         if relocate_undo is not None:
             relocate_undo()
+        if back_relocate_undo is not None:
+            back_relocate_undo()
         return EXIT_FAILURE
 
 

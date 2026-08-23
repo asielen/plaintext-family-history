@@ -1323,6 +1323,11 @@ def _index_source(
             continue
         file_path = str(f.get('file', ''))
         role = str(f.get('role', ''))
+        # `copy: b`/`c`/`d` distinguishes same-day (or same-bundle, #123)
+        # file variants; a claim's `asset: b-back` (SPEC §8.4) pins to
+        # exactly this role/copy pair, so the column must carry whatever the
+        # record actually wrote, not a blanket NULL.
+        copy_letter = str(f.get('copy', '')).strip() or None
         derived = 1 if f.get('derived') in (True, 'true') else 0
         orig_name = str(f.get('original_filename', '')) or None
         file_status = str(f.get('status', ''))
@@ -1337,7 +1342,7 @@ def _index_source(
                (source_id, path, role, copy, derived, original_filename,
                 exists_on_disk, in_inventory)
                VALUES (?,?,?,?,?,?,?,1)''',
-            (sid, file_path, role, None, derived, orig_name, exists),
+            (sid, file_path, role, copy_letter, derived, orig_name, exists),
         )
 
         # Text companion (role: transcript / transcription / extracted-text):

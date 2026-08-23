@@ -163,6 +163,24 @@
   {%- elif person.research_html %}{{ person.research_html }}{% endif %}
   {% endif %}
 
+  {#- Workbench-only (issue #117): open questions naming this person, from
+      notes/questions.md and every person's own research file alike - read
+      here, never edited (a question is answered/closed through the
+      research log itself, not from a person page). Gated on `workbench`
+      the same way `open_review_count` above is: a '## Q:' block carries no
+      `restricted:` field of its own yet, so this stays off the public and
+      plain-linked builds until one exists. -#}
+  {% if workbench and person.open_questions %}
+  <h2>Open Questions</h2>
+  {% for q in person.open_questions %}
+  <div>
+    <h3>{{ q.heading }}</h3>
+    {{ q.html }}
+    <p class="wb-later">raised in {{ q.file }}</p>
+  </div>
+  {% endfor %}
+  {% endif %}
+
   {% if person.family %}
   <h2>Friends &amp; Family</h2>
   {% for group in person.family %}

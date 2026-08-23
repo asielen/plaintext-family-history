@@ -1302,6 +1302,74 @@ class SourceRestrictedTests(unittest.TestCase):
         self.assertEqual(self._restricted_column(), full)
 
 
+_COPY_SID = 'S-8c8c8c8c8c'
+_COPY_SOURCE = '''---
+id: {sid}
+title: Newspaper clippings, several dates
+source_type: newspaper
+files:
+  - file: documents/newspaper/clipping-a_{sid}.pdf
+    role: clipping
+  - file: documents/newspaper/clipping-b_{sid}.pdf
+    role: clipping
+    copy: b
+---
+
+## Notes
+Four clippings spanning months, one bundle (#123).
+'''
+
+
+class SourceFilesCopyColumnTests(unittest.TestCase):
+    """A `files:` entry may already set `copy: b`/`c`/`d` to distinguish
+    same-day (or, per #123, same-bundle) file variants - the claim `asset:
+    b-back` form (SPEC §8.4) pins a claim to exactly this role/copy pair, and
+    the `source_files.copy` column (TOOLING §2) exists to carry it into the
+    index. The file-inventory INSERT hard-coded that column to NULL instead
+    of reading `f.get('copy')` off the frontmatter entry, so a record that
+    correctly wrote `copy: b` still indexed as though it hadn't - the value
+    never round-tripped, and nothing downstream (the site's file list, a
+    workbench query) could tell the variants apart. Checked in both the full
+    rebuild and the incremental upsert, since both flow through
+    `_index_source` and must agree (TOOLING §2)."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        _write(
+            self.root / 'sources' / 'newspaper' / f'clippings_{_COPY_SID.lower()}.md',
+            _COPY_SOURCE.format(sid=_COPY_SID),
+        )
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _copy_column(self) -> dict:
+        conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
+        try:
+            return dict(conn.execute(
+                'SELECT path, copy FROM source_files WHERE source_id = ?',
+                (_COPY_SID.lower(),)))
+        finally:
+            conn.close()
+
+    def test_full_build_reads_copy_from_frontmatter(self) -> None:
+        index.build_index(self.root, {})
+        got = self._copy_column()
+        self.assertEqual(
+            got[f'documents/newspaper/clipping-b_{_COPY_SID}.pdf'], 'b')
+        # A file with no `copy:` line must stay NULL, not inherit its sibling's.
+        self.assertIsNone(
+            got[f'documents/newspaper/clipping-a_{_COPY_SID}.pdf'])
+
+    def test_upsert_matches_full_build(self) -> None:
+        index.build_index(self.root, {})
+        full = self._copy_column()
+        self.assertEqual(
+            index.upsert_source(self.root, {}, _COPY_SID.lower()), 'indexed')
+        self.assertEqual(self._copy_column(), full)
+
+
 _EXTRACT_SID = 'S-7a7a7a7a7a'
 _EXTRACT_SOURCE = '''---
 id: {sid}
