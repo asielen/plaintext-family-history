@@ -87,6 +87,18 @@ DESIGN RULES (why the code looks the way it does)
   follows - `fha process`'s SOURCE: embed, `fha photoindex tag-person`/
   `set-summary` - so a fifth call site does not quietly skip the one
   original-asset protection the other four share.
+- **The asset picked has to be verified, not just located (PR #147 review).**
+  A `files:` entry is a hand-editable trust boundary, so before any exiftool
+  call `run_source_clear_keyword` re-derives the documents root and refuses a
+  resolved target that lands outside it (a `..`/doubled-slash alias can
+  otherwise escape a naive prefix check), refuses a directory target (exiftool
+  happily writes into every file inside one), and refuses unless the file's
+  OWN filename embeds this same source's S-id (SPEC §13's `_{S-id}` suffix -
+  the same convention process.py's `_filename_has_source_id` checks) so
+  inventory drift never edits a different source's file under this one's
+  name. A missing asset also now reports `ok: False` (it used to leave the
+  default `True` standing next to `status: not-found`) - a headless caller
+  reading `Result.as_dict()` must never mistake that for success.
 
 CODE MAP
 --------
@@ -549,9 +561,10 @@ def run_source_clear_keyword(
 
     `data`: {'status': 'ok'|'dry-run'|'not-found'|'refused', 'source_id',
     'path', 'removed_from', 'added_to'}. Exit codes: 0 ok/dry-run · 1 record
-    or asset not found on disk · 3 refusals (bad id, blank --keyword, no/
-    ambiguous documents-root file, keyword not currently present, exiftool or
-    backup failure).
+    or asset not found on disk (or found but not a regular file) · 3 refusals
+    (bad id, blank --keyword, no/ambiguous documents-root file, a target
+    outside the documents root or belonging to a different source, keyword
+    not currently present, exiftool or backup failure).
     """
     result = Result(data={'status': None, 'source_id': None, 'path': None,
                           'removed_from': [], 'added_to': []})
@@ -644,14 +657,79 @@ def run_source_clear_keyword(
     alias = str(doc_entries[0].get('file'))
     abs_path = resolve_path(alias, fha_config, archive_root)
     result.data['path'] = alias
-    if not abs_path.exists():
-        result.data['status'] = 'not-found'
-        result.exit_code = EXIT_WARNINGS
-        result.add('warning',
-                   f'{alias} is not on disk - if it moved within the documents '
-                   'folder, `fha reconcile` re-ties it; if it lives on an '
-                   'external drive, plug it in.')
-        return result
+
+    # P1 (#147 review): the doc_entries filter above only checks that the
+    # alias STARTS WITH 'documents' as text - a hand-edited entry like
+    # 'documents/../../outside.tif' or 'documents//tmp/outside.tif' passes
+    # that check, but resolve_path joins the alias onto the configured
+    # documents root with plain path arithmetic and does not itself guard
+    # against a '..' or doubled separator carrying the result outside that
+    # root. Resolve both sides and refuse before touching the filesystem at
+    # all if the target does not actually land beneath the documents root -
+    # otherwise clear-keyword would read, back up, and rewrite an unrelated
+    # file the record never named.
+    documents_root = resolve_path('documents', fha_config, archive_root)
+    try:
+        resolved_target = abs_path.resolve()
+        resolved_documents_root = documents_root.resolve()
+    except OSError as e:
+        return _refuse(
+            'refused',
+            f'{alias} could not be resolved to a real path ({e}). Check the '
+            f'files: entry in {record_path.name} and try again.')
+    if (resolved_target != resolved_documents_root
+            and resolved_documents_root not in resolved_target.parents):
+        return _refuse(
+            'refused',
+            f'{alias} resolves outside the configured documents folder '
+            f'({resolved_documents_root}) - this looks like a hand-edited '
+            f'files: entry gone wrong (a `..` segment, or a doubled slash). '
+            f'Fix the entry in {record_path.name} by hand, then retry. '
+            'Nothing was read or changed.')
+
+    # P1 (#147 review): a files: entry can point at a folder rather than one
+    # file (e.g. 'documents/deeds'), and exiftool accepts a directory operand
+    # and applies its write arguments to every file inside it - especially
+    # dangerous with originals_backup unset, where nothing is copied first.
+    # Require a regular file before reading or writing any metadata.
+    if abs_path.is_dir():
+        return _refuse(
+            'refused',
+            f'{alias} is a folder, not a file - clear-keyword only edits one '
+            f"document's metadata at a time and refuses to touch every file "
+            f'inside a folder. Check the files: entry in {record_path.name}; '
+            'if it should name one specific file, fix it there and retry.')
+    if not abs_path.is_file():
+        return result_fail(
+            result, 'not-found',
+            f'{alias} is not on disk - if it moved within the documents '
+            'folder, `fha reconcile` re-ties it; if it lives on an external '
+            'drive, plug it in.',
+            exit_code=EXIT_WARNINGS, level='warning')
+
+    # P1 (#147 review): confirm the file this would edit actually IS the
+    # requested source's own asset before reading or writing anything.
+    # Inventory drift - a hand-edited files: entry that still points at a
+    # filename since reassigned to a different source, or a copy-pasted entry
+    # that never matched - can point one source's clear-keyword at a
+    # DIFFERENT source's file. The filename itself carries the answer: a
+    # processed documents-root file's name ends `_{S-id}` (SPEC §13, the same
+    # convention process.py's _filename_has_source_id checks, and the same
+    # pattern _SID_SUFFIX_RE below already parses for `extract`), so compare
+    # that embedded id against the source this command was actually asked to
+    # correct rather than trusting the record's own files: entry blindly.
+    filename_match = _SID_SUFFIX_RE.search(abs_path.stem)
+    filename_sid = normalize_id(filename_match.group(1)) if filename_match else None
+    if filename_sid != sid:
+        carried = fmt_id_display(filename_sid) if filename_sid else 'no source id at all'
+        return _refuse(
+            'refused',
+            f"{alias}'s own filename carries {carried}, not "
+            f'{fmt_id_display(sid)} - {record_path.name}\'s files: entry '
+            f'looks like inventory drift (it names a file that belongs to a '
+            f"different source), and editing it would change the WRONG "
+            'document\'s keywords. Run `fha reconcile` to re-tie sources to '
+            'their actual files, then retry.')
 
     try:
         fields = _run_exiftool_read_keyword_fields(abs_path)

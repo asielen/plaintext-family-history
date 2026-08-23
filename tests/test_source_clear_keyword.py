@@ -175,11 +175,75 @@ class SourceClearKeywordTests(unittest.TestCase):
         self.assertEqual(result['status'], 'not-found')
         self.assertIn('fha reconcile', result.messages[-1].text)
 
+    def test_asset_missing_on_disk_reports_ok_false(self) -> None:
+        # #147 review (P2): the missing-record branch a few lines above this
+        # one already routes through result_fail (ok=False); this branch used
+        # to leave Result.ok at its True default even though nothing was
+        # cleared - a headless caller reading Result.as_dict() would see a
+        # 'not-found' status sitting next to ok: true.
+        self.asset.unlink()
+        result = self._run(keyword='Margaret Hartley')
+        self.assertFalse(result.ok,
+                         'a missing asset must report ok=False, not the True default')
+
     def test_no_documents_root_file_refuses(self) -> None:
         self._write_record(files_block='files:\n  - file: photos/1900/deed.jpg\n    role: primary\n')
         result = self._run(keyword='Margaret Hartley')
         self.assertEqual(result['status'], 'refused')
         self.assertIn('documents-root', result.messages[-1].text)
+
+    def test_alias_escaping_the_documents_root_is_refused(self) -> None:
+        # #147 review (P1): the doc_entries filter only checks that the alias
+        # STARTS WITH 'documents' as text, so a hand-edited '..' segment
+        # passes it - but resolve_path would then land outside the
+        # configured documents root entirely. Must refuse before exiftool
+        # ever touches the resolved (wrong) target.
+        self._write_record(files_block=(
+            'files:\n  - file: documents/../../outside.tif\n    role: primary\n'))
+        result = self._run(keyword='Margaret Hartley')
+        self.assertEqual(result['status'], 'refused')
+        self.assertEqual(self.store.write_calls, [])
+        self.assertIn('outside the configured documents folder', result.messages[-1].text)
+
+    def test_doubled_slash_alias_escaping_the_root_is_refused(self) -> None:
+        self._write_record(files_block=(
+            'files:\n  - file: documents//../../outside.tif\n    role: primary\n'))
+        result = self._run(keyword='Margaret Hartley')
+        self.assertEqual(result['status'], 'refused')
+        self.assertEqual(self.store.write_calls, [])
+        self.assertIn('outside the configured documents folder', result.messages[-1].text)
+
+    def test_directory_target_is_refused_before_exiftool(self) -> None:
+        # #147 review (P1): a hand-edited files: entry can name a FOLDER
+        # ('documents/deeds' already exists in this fixture) rather than one
+        # file - exiftool accepts a directory operand and applies the write
+        # to every file inside it, so this must refuse before any exiftool
+        # call at all (originals_backup is unset here too - no safety copy).
+        self._write_record(files_block='files:\n  - file: documents/deeds\n    role: primary\n')
+        result = self._run(keyword='Margaret Hartley')
+        self.assertEqual(result['status'], 'refused')
+        self.assertEqual(self.store.write_calls, [])
+        self.assertIn('folder', result.messages[-1].text)
+
+    def test_files_entry_pointing_at_a_different_sources_file_is_refused(self) -> None:
+        # #147 review (P1): inventory drift - this source's own record still
+        # lists a file whose ACTUAL on-disk filename carries a DIFFERENT
+        # source's S-id. Following the record's files: entry blindly would
+        # edit the wrong document; the filename's own embedded id has to be
+        # checked against the source clear-keyword was actually asked to fix.
+        other_sid = 'S-9999999999'
+        drifted = self.root / 'documents' / 'deeds' / f'deed_{other_sid.lower()}.tif'
+        drifted.write_bytes(b'z')
+        self.store.seed(drifted, subject=['Margaret Hartley'])
+        self._write_record(files_block=(
+            f'files:\n  - file: documents/deeds/deed_{other_sid.lower()}.tif\n'
+            '    role: primary\n'))
+        result = self._run(keyword='Margaret Hartley')
+        self.assertEqual(result['status'], 'refused')
+        self.assertEqual(self.store.write_calls, [])
+        self.assertIn('fha reconcile', result.messages[-1].text)
+        # The drifted file itself must be untouched too.
+        self.assertEqual(self.store.read(drifted)['subject'], ['Margaret Hartley'])
 
     def test_multiple_documents_files_require_dash_dash_file(self) -> None:
         second = self.root / 'documents' / 'deeds' / f'deed-back_{SID.lower()}.tif'
