@@ -1229,6 +1229,70 @@ class ProcessTestCase(unittest.TestCase):
         self.assertEqual(rc, EXIT_ERRORS)
         self.assertTrue(other.exists())  # untouched, not renamed
 
+    # ── Codex review, PR #145, finding 2 ────────────────────────────────────────
+
+    def test_more_retry_of_already_attached_file_is_idempotent(self) -> None:
+        # Finding #2: retrying the identical --more command for a file that
+        # already carries this source's S-id AND is already listed in the
+        # record's own files: must be a clean no-op, never a second,
+        # duplicate files: entry for the same physical file.
+        page1 = self.archive / 'documents' / 'census' / 'convention4.txt'
+        page1.write_text('p1', encoding='utf-8')
+        self.assertEqual(self._run([str(page1), '--type', 'census']), EXIT_CLEAN)
+        renamed1 = next((self.archive / 'documents' / 'census').glob('*_S-*.txt'))
+        sid = renamed1.stem.split('_')[-1]
+
+        pre_named = self.archive / 'documents' / 'census' / f'convention4-transcript_{sid}.md'
+        pre_named.write_text('transcript text', encoding='utf-8')
+
+        rc1 = self._run([str(renamed1), '--more', str(pre_named), 'transcript'])
+        self.assertEqual(rc1, EXIT_CLEAN)
+        record = next((self.archive / 'sources' / 'census').glob('*_S-*.md'))
+        self.assertEqual(len(read_record(record)['meta']['files']), 2)
+
+        rc2 = self._run([str(renamed1), '--more', str(pre_named), 'transcript'])
+        self.assertEqual(rc2, EXIT_CLEAN)
+        files = read_record(record)['meta']['files']
+        self.assertEqual(len(files), 2)  # still 2 - no duplicate appended
+
+    def test_more_refuses_conflicting_role_for_already_listed_alias(self) -> None:
+        # Finding #2: the same physical file, already listed, requested
+        # again under a DIFFERENT role must refuse - never a silent second
+        # entry carrying a conflicting role for one file.
+        page1 = self.archive / 'documents' / 'census' / 'convention5.txt'
+        page1.write_text('p1', encoding='utf-8')
+        self.assertEqual(self._run([str(page1), '--type', 'census']), EXIT_CLEAN)
+        renamed1 = next((self.archive / 'documents' / 'census').glob('*_S-*.txt'))
+        sid = renamed1.stem.split('_')[-1]
+
+        pre_named = self.archive / 'documents' / 'census' / f'convention5-transcript_{sid}.md'
+        pre_named.write_text('transcript text', encoding='utf-8')
+
+        rc1 = self._run([str(renamed1), '--more', str(pre_named), 'transcript'])
+        self.assertEqual(rc1, EXIT_CLEAN)
+
+        rc2 = self._run([str(renamed1), '--more', str(pre_named), 'attachment'])
+        self.assertEqual(rc2, EXIT_ERRORS)
+        record = next((self.archive / 'sources' / 'census').glob('*_S-*.md'))
+        files = read_record(record)['meta']['files']
+        self.assertEqual(len(files), 2)  # unchanged - no second entry
+
+    def test_more_refuses_reattaching_the_primary_file_itself(self) -> None:
+        # Finding #2 (the primary-file variant named in the review):
+        # attaching a source's own already-processed primary file back to
+        # itself under a different role must refuse, not add a second
+        # files: entry for the primary.
+        page1 = self.archive / 'documents' / 'census' / 'convention6.txt'
+        page1.write_text('p1', encoding='utf-8')
+        self.assertEqual(self._run([str(page1), '--type', 'census']), EXIT_CLEAN)
+        renamed1 = next((self.archive / 'documents' / 'census').glob('*_S-*.txt'))
+
+        rc = self._run([str(renamed1), '--more', str(renamed1), 'attachment'])
+        self.assertEqual(rc, EXIT_ERRORS)
+        record = next((self.archive / 'sources' / 'census').glob('*_S-*.md'))
+        files = read_record(record)['meta']['files']
+        self.assertEqual(len(files), 1)
+
     # ── Codex review, PR #145, finding 5 ────────────────────────────────────────
 
     def test_more_honors_explicit_type_for_photo_extension_attachment(self) -> None:

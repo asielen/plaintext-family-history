@@ -2880,6 +2880,59 @@ def _attach_more_engine(
     # though it needs no RENAME - the two are independent (#108 + #111).
     needs_move = new_path.resolve() != more_file.resolve()
     new_alias = path_to_alias(new_path, 'documents', fha_config, archive_root)
+
+    # #2 fix: the no-rename path above (#108) accepts ANY file already
+    # carrying this source's own S-id - including one that is ALREADY listed
+    # in the record's own files: (an already-attached transcript, or even the
+    # primary file itself, re-offered under a different role spelling).
+    # Without this check, retrying the identical --more command exits clean
+    # while silently appending a DUPLICATE alias entry - or, worse, a second
+    # entry for the same physical file carrying a CONFLICTING role. Checked
+    # here (before any write, and before the dry-run branch below) so a
+    # dry-run preview and a live run agree on the outcome, and an idempotent
+    # retry never reaches the rename/move logic at all.
+    #
+    # Reads via read_text_exact + parse_frontmatter_strict (not read_record):
+    # the read failure needs the SAME plain "could not read the record" ->
+    # EXIT_FAILURE answer the live-write path below already gives (an
+    # unreadable record is an I/O problem, not a malformed-YAML one), and
+    # unparseable frontmatter here just means the duplicate check cannot say
+    # anything - fall through to the pre-existing append path rather than
+    # inventing a new refusal class this finding did not ask for.
+    try:
+        record_text_for_check = read_text_exact(record_path)
+    except (OSError, UnicodeDecodeError) as e:
+        print(f'ERROR: could not read {_rel(record_path, archive_root)}: {e}', file=sys.stderr)
+        return EXIT_FAILURE
+    meta_for_check = parse_frontmatter_strict(record_text_for_check) or {}
+    existing_entries = [e for e in (meta_for_check.get('files') or [])
+                        if isinstance(e, dict) and e.get('file')]
+    new_alias_norm = new_alias.replace('\\', '/')
+    existing_match = next(
+        (e for e in existing_entries
+         if str(e['file']).replace('\\', '/') == new_alias_norm),
+        None,
+    )
+    if existing_match is not None:
+        existing_role = str(existing_match.get('role') or '').strip() or 'attachment'
+        existing_copy = str(existing_match.get('copy') or '').strip() or None
+        requested_role = role.strip() or 'attachment'
+        requested_copy = (copy or '').strip() or None
+        if existing_role == requested_role and existing_copy == requested_copy:
+            print(f"{more_file.name} is already attached to "
+                  f"{_rel(record_path, archive_root)} as role '{existing_role}'"
+                  + (f' (copy: {existing_copy})' if existing_copy else '')
+                  + ' - nothing to do.')
+            return EXIT_CLEAN
+        raise ProcessError(
+            f'{new_alias} is already listed in {_rel(record_path, archive_root)} as '
+            f"role '{existing_role}'"
+            + (f' (copy: {existing_copy})' if existing_copy else '')
+            + f", which conflicts with the requested role '{requested_role}'"
+            + (f' (copy: {requested_copy})' if requested_copy else '')
+            + '. Edit the record by hand if this is intentional, or attach a different file.'
+        )
+
     entry = [f'  - file: {_yaml_inline(new_alias)}', f'    role: {_yaml_inline(role)}']
     if copy:
         entry.append(f'    copy: {_yaml_inline(copy)}')
