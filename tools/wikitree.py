@@ -51,6 +51,13 @@ prose, so the export refuses (status `broken-draft-marker`, same refusal
 family as the privacy scans) with the file and the fix named, rather than
 risk shipping unaccepted text.
 
+Unwritten sections: a §16 section that still holds only the record template's
+own authoring instructions - or nothing at all - is dropped with its heading
+(#125, `_lib.strip_unfilled_person_sections`). Those instructions are written
+to the archive owner, not to a wiki reader, and publishing them puts "Write
+their story in plain sentences..." on a public profile as if it were what the
+family had to say about this person.
+
 CODE MAP
 --------
   Source data
@@ -69,6 +76,8 @@ CODE MAP
   Rendering
     (strip_unaccepted_drafts         - drop `<!-- AI-DRAFT … -->` prose + AI markers,
                                        fail-closed on damaged markers - lives in _lib)
+    (strip_unfilled_person_sections  - drop §16 sections still holding only the record
+                                       template's authoring instructions - lives in _lib)
     _convert_heading                 - markdown ## / ### → == / ===
     _render_token, _transform_line, _split_sentences
     _render_templates                - infobox templates from the hooks file
@@ -95,6 +104,8 @@ from _lib import (
     EXIT_FAILURE,
     EXIT_WARNINGS,
     Result,
+    VITAL_TYPES,
+    claim_is_own_vital,
     configure_utf8_stdout,
     edtf_bounds,
     extract_token_ids,
@@ -107,6 +118,7 @@ from _lib import (
     read_record,
     resolve_root_arg,
     strip_unaccepted_drafts,
+    strip_unfilled_person_sections,
     undecodable_file_recorder,
 )
 
@@ -880,6 +892,14 @@ def _render_templates(
     `_spacetime_index`: an infobox template ({{Birth|place=...}}) is a
     structured machine-fact, so a negated claim - "not born in Topeka" -
     would emit the positive field the claim denies.
+
+    So is a VITAL claim that is a record of somebody else the claim also names
+    (`_lib.claim_is_own_vital`, #126). Same argument one step further along: a
+    birth certificate names the baby AND both parents, and {{Birth|place=...}}
+    published on the mother's profile asserts her birthplace, in a field
+    another site will read as data. Only birth/death/marriage/baptism/burial
+    are scoped - a `residence` or `census` claim naming a household is about
+    everyone in it, which is the whole point of listing them.
     """
     if not templates:
         return []
@@ -897,6 +917,10 @@ def _render_templates(
         """,
         (pid,),
     ).fetchall()
+    own_vital: dict[str, list[str] | None] = {}
+    rows = [r for r in rows
+            if r['type'] not in VITAL_TYPES
+            or claim_is_own_vital(conn, pid, r['id'], r['type'], own_vital)]
     if restricted_claims:
         rows = [r for r in rows if normalize_id(str(r['id'])) not in restricted_claims]
     person_cache: dict[str, bool] = {}
@@ -1160,6 +1184,19 @@ def _wikitree_payload(archive_root: Path, pid: str) -> dict:
                         'Fix the marker - usually by adding the missing "-->" - or remove '
                         'the draft text, then run the export again.'
                     ]}
+        # #125: a §16 section nobody has written yet still holds the record
+        # template's own authoring instructions ("Write their story in plain
+        # sentences...") - scaffolding for the archive owner, addressed to
+        # him, and meaningless on a public wiki profile where it reads as
+        # what the family had to say about this person. Cut those sections
+        # out entirely, exactly as `fha site` omits them from a page.
+        # Placed here, right after the draft exclusion and BEFORE the privacy
+        # scans below, for the same reason that exclusion is: text that will
+        # not be published must not be able to refuse the export of the text
+        # that will. It also runs after the stripper on purpose - a section
+        # holding nothing but an unaccepted draft is empty once that draft is
+        # gone, and an empty `== Biography ==` heading is scaffolding too.
+        body = strip_unfilled_person_sections(body)
 
         # A restricted subject (any value, including by-request) is refused
         # outright - WikiTree is public-facing, no opt-in (SPEC §21).

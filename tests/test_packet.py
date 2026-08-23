@@ -35,7 +35,8 @@ from index import _DDL as INDEX_DDL
 from photoindex import _DDL as PHOTOS_DDL
 from _lib import (
     index_manifest_path, path_to_alias, photoindex_manifest_path,
-    photoindex_record_manifest, record_path_manifest, write_path_manifest,
+    photoindex_record_manifest, record_path_manifest, render_person_body_scaffold,
+    write_path_manifest,
 )
 
 
@@ -1111,6 +1112,40 @@ class PacketTests(unittest.TestCase):
         self.assertIn('# Test Person', copied)
         self.assertIn('## Biography', copied)
         self.assertIn('Accepted paragraph about the farm.', copied)
+
+    def test_unfilled_sections_stripped_from_profile_copy(self):
+        # #125: a §16 section nobody has written yet holds only the record
+        # template's own authoring instructions. They are addressed to the
+        # archive owner; a relative opening this packet reads them as what
+        # the family had to say about the person, with no way to tell the
+        # difference. Same rule the purpose block and the `## Sources`
+        # region already follow, one level down.
+        profile_path = self._seed_person()
+        profile_path.write_text(
+            '---\nid: p-aaaaaaaaaa\nname: Test Person\n---\n'
+            + render_person_body_scaffold('Test Person').replace(
+                '## Biography\nWrite their story',
+                '## Biography\nHe kept bees behind the barn.\n\n## Zzz Kept\nWrite their story',
+            ),
+            encoding='utf-8',
+        )
+        self._commit_fresh()
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir, no_photos=True)
+        self.assertEqual(result['status'], 'ok')
+        copied = next((result['packet_dir'] / 'profile').glob('*.md')).read_text(encoding='utf-8')
+        self.assertNotIn('Open questions, hunches, and brick walls', copied)
+        self.assertNotIn("aren't blood relatives", copied)
+        self.assertNotIn("A hunch you're not ready to publish", copied)
+        self.assertNotIn('## Stories', copied)
+        self.assertNotIn('## Research Notes', copied)
+        self.assertNotIn('## Friends & Family', copied)
+        # What the human wrote ships; so does a heading he invented, whatever
+        # it holds - this strip answers "was it written", never "is it wanted".
+        self.assertIn('## Biography', copied)
+        self.assertIn('He kept bees behind the barn.', copied)
+        self.assertIn('## Zzz Kept', copied)
+        self.assertIn('Write their story in plain sentences', copied)
 
     def test_pre_75_profile_with_no_purpose_block_ships_unchanged(self):
         # No backfill/migration tooling (#75/#76 done-when): an

@@ -74,7 +74,10 @@ PRIVACY RULES (TOOLING §8 - apply at gather time, not as a post-filter):
     archive-relative path without the packet's own privacy filtering, so it
     is dropped rather than shipped verbatim. Nothing replaces it: the
     included source records/files carry the same information already
-    privacy-filtered.
+    privacy-filtered. A §16 section nobody has written yet goes with them
+    (#125): "Write their story in plain sentences..." under `## Biography`
+    is the template addressing the archive owner, and a relative reading the
+    packet has no way to tell it from what the family actually wrote.
   - Excluded sources are still named (ID + reason, no title) in the README so
     the human knows material exists but was withheld, not silently dropped -
     and the reason distinguishes restricted / DNA / could-not-be-read, because
@@ -152,7 +155,8 @@ CODE MAP
     _redact_profile_text          - drop withheld name variants + their alias mirrors
     _strip_profile_drafts         - withhold unaccepted AI-draft prose from the profile copy
     _strip_scaffolding_blocks     - drop #75's purpose block (+ #76's `## Sources`
-                                     region, for a profile) before a copy ships
+                                     region and #125's never-written §16 sections,
+                                     for a profile) before a copy ships
     _source_copy_plan             - per-source copy mode (byte/redact/unsafe) + timeline excludes
 
   Photo gathering
@@ -230,6 +234,7 @@ from _lib import (
     strip_generational_suffix,
     strip_link_wrapper,
     strip_unaccepted_drafts,
+    strip_unfilled_person_sections,
     unreadable_dir_recorder,
     walk_files,
     write_text_exact_atomic,
@@ -741,9 +746,11 @@ def _purpose_block_prefix_end(body: str) -> int:
 _SOURCES_REGION_RE = re.compile(r'^## Sources\r?\n.*?(?=^## |\Z)', re.M | re.S)
 
 
-def _strip_scaffolding_blocks(text: str, *, drop_sources_region: bool) -> str:
-    """Remove #75's visible purpose block - and, for a person profile,
-    #76's `## Sources` region - from a copy about to leave the archive.
+def _strip_scaffolding_blocks(text: str, *, is_person_profile: bool) -> str:
+    """Remove #75's visible purpose block - and, for a person profile, #76's
+    `## Sources` region plus any §16 section still holding only the record
+    template's own authoring instructions - from a copy about to leave the
+    archive.
 
     Scaffolding for the WORKING archive, not content for the family (the
     same principle `_strip_profile_drafts`/`strip_unaccepted_drafts` already
@@ -763,8 +770,20 @@ def _strip_scaffolding_blocks(text: str, *, drop_sources_region: bool) -> str:
     source RECORDS and FILES (already privacy-filtered elsewhere in the
     build) are what a recipient reads instead.
 
-    Only person profiles carry `## Sources` (`drop_sources_region=True`);
-    source records never do, so packet's source-record copy passes False.
+    An UNFILLED §16 section (#125) is the same kind of thing one level down:
+    `## Biography` holding nothing but "Write their story in plain
+    sentences..." is the template talking to the archive OWNER, and a
+    relative opening this packet reads it as what the family had to say
+    about the person. `fha site` already omits those sections from a page;
+    `_lib.strip_unfilled_person_sections` is the shared check, so the packet
+    and the site can never disagree about which sections were actually
+    written. An empty section goes too - a `## Stories` heading over nothing
+    promises content the record does not have.
+
+    Only person profiles carry `## Sources` and the §16 sections
+    (`is_person_profile=True`); source records and research companions carry
+    neither, so packet's other two callers pass False and get the purpose
+    block stripped and nothing else.
 
     Bounded to the BODY (never the frontmatter) the same way `_strip_profile_
     drafts` bounds itself. The purpose-block match is POSITION-anchored, not
@@ -779,8 +798,9 @@ def _strip_scaffolding_blocks(text: str, *, drop_sources_region: bool) -> str:
     fm = FRONT_RE.match(text)
     body_start = fm.end() if fm else 0
     body = text[body_start:]
-    if drop_sources_region:
+    if is_person_profile:
         body = _SOURCES_REGION_RE.sub('', body)
+        body = strip_unfilled_person_sections(body)
     prefix_end = _purpose_block_prefix_end(body)
     block = _PURPOSE_BLOCK_RE.match(body, prefix_end)
     if block:
@@ -1475,9 +1495,10 @@ def _copy_redacted_source(
     new_text, removed = redacted
     # #75: strip the visible purpose block before this copy leaves the
     # archive - scaffolding for the working archive, not content for the
-    # family. Source records never carry #76's `## Sources` region (only
-    # person profiles do), so drop_sources_region=False here.
-    new_text = _strip_scaffolding_blocks(new_text, drop_sources_region=False)
+    # family. Source records never carry #76's `## Sources` region or the
+    # §16 person sections (only person profiles do), so
+    # is_person_profile=False here.
+    new_text = _strip_scaffolding_blocks(new_text, is_person_profile=False)
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest = _unique_dest_path(dest_dir, src.name)
     try:
@@ -1532,7 +1553,7 @@ def _copy_source_with_scaffolding_stripped(
         text = read_text_exact(src)
     except (OSError, UnicodeError):
         return _copy_into(src, dest_dir, messages=messages)
-    new_text = _strip_scaffolding_blocks(text, drop_sources_region=False)
+    new_text = _strip_scaffolding_blocks(text, is_person_profile=False)
     if new_text == text:
         return _copy_into(src, dest_dir, messages=messages)
     dest_dir.mkdir(parents=True, exist_ok=True)
@@ -1993,7 +2014,7 @@ def _packet_payload(
             # are stripped, before deciding whether this copy differs from
             # the original at all.
             profile_out_text = _strip_scaffolding_blocks(
-                profile_out_text, drop_sources_region=True
+                profile_out_text, is_person_profile=True
             )
             if profile_out_text != profile_text:
                 # An OSError here raises into the cleanup handler at the bottom

@@ -43,14 +43,17 @@ import process
 import stubs
 from _lib import (
     EXIT_ERRORS,
+    PERSON_BODY_SECTIONS,
     PERSON_BODY_SECTIONS_TEXT,
     RESEARCH_TEMPLATE_FALLBACK,
     ensure_person_body_sections,
     is_template_file,
     mint_ids,
+    person_section_is_unfilled,
     read_record,
     render_person_body_scaffold,
     render_stub_content,
+    strip_unfilled_person_sections,
 )
 
 
@@ -273,6 +276,157 @@ class ScaffoldParityTests(unittest.TestCase):
         self.assertEqual(fallback_headings, tmpl_headings)
         self.assertIn("research workspace - yours to write", tmpl_text)
         self.assertIn("research workspace - yours to write", RESEARCH_TEMPLATE_FALLBACK)
+
+
+class PersonSectionIsUnfilledTests(unittest.TestCase):
+    """#125: the shared placeholder-detection check `fha site` (and any
+    future exporter) uses to tell a scaffolded-but-never-written §16 section
+    apart from one a human actually filled in."""
+
+    def test_exact_placeholder_is_unfilled(self):
+        self.assertTrue(person_section_is_unfilled(
+            'Biography',
+            "Write their story in plain sentences. Uncited prose is welcome - it's story and\n"
+            "context, never treated as proven fact. Mark anything you mean to back up later\n"
+            "with `(TODO: import source)` and a tool will keep it on a gentle to-do list."))
+
+    def test_placeholder_tolerates_surrounding_whitespace(self):
+        # content is read via _extract_section, which already strips - but
+        # this check must not itself demand a caller pre-strip perfectly.
+        self.assertTrue(person_section_is_unfilled(
+            'Stories', '\n\n*(none yet)*\n\n'))
+
+    def test_real_content_sharing_words_is_not_unfilled(self):
+        # The exact-match design point (issue #125's suggested fix): a human
+        # rewrite that keeps a few of the scaffold's own words must still
+        # count as written, never silently dropped from the page.
+        self.assertFalse(person_section_is_unfilled(
+            'Biography',
+            "Write their story? He already lived one worth telling: born in "
+            "1840 in New York."))
+
+    def test_empty_content_is_not_unfilled(self):
+        # An actually-empty section is a DIFFERENT case (`_extract_section`
+        # already returns None for it before this check ever runs) - this
+        # function only answers "is this the scaffold's own text", so an
+        # empty string is correctly False here, not True.
+        self.assertFalse(person_section_is_unfilled('Biography', ''))
+
+    def test_unknown_heading_is_never_unfilled(self):
+        self.assertFalse(person_section_is_unfilled('Not A Real Heading', 'anything'))
+
+    def test_every_scaffolded_heading_recognises_its_own_placeholder(self):
+        # Cross-checks person_section_is_unfilled against the SAME
+        # PERSON_BODY_SECTIONS pairs ensure_person_body_sections/
+        # render_person_body_scaffold write, so the two can never drift:
+        # whatever the scaffold writes, this check must recognise as unfilled.
+        headings = set(re.findall(r'^## (.+)$', PERSON_BODY_SECTIONS_TEXT, re.M))
+        self.assertEqual(
+            headings, {'Biography', 'Stories', 'Research Notes', 'Friends & Family'})
+        for heading, placeholder in re.findall(
+                r'^## ([^\n]+)\n(.*?)(?=\n## |\Z)', PERSON_BODY_SECTIONS_TEXT, re.M | re.S):
+            with self.subTest(heading=heading):
+                self.assertTrue(person_section_is_unfilled(heading, placeholder.strip()))
+
+    def test_crlf_placeholder_is_still_unfilled(self):
+        # A person record is a plain file, and the archive owner's editor may
+        # well be Notepad (or git with autocrlf on) - both write CRLF where
+        # the scaffold constant has LF. `fha packet` reads the profile with
+        # the newline-PRESERVING read_text_exact, so the check meets those
+        # `\r`s intact. A byte-for-byte comparison would call this untouched
+        # placeholder "real content" and publish the instructions again.
+        for heading, placeholder in PERSON_BODY_SECTIONS:
+            with self.subTest(heading=heading):
+                self.assertTrue(person_section_is_unfilled(
+                    heading, placeholder.replace('\n', '\r\n')))
+
+    def test_trailing_whitespace_placeholder_is_still_unfilled(self):
+        # Plenty of editors add (or leave) a trailing space on a line when
+        # the file is saved. It changes no word of what the section says, so
+        # it must not decide whether the section publishes.
+        placeholder = dict(PERSON_BODY_SECTIONS)['Biography']
+        spaced = '\n'.join(line + '  ' for line in placeholder.split('\n'))
+        self.assertTrue(person_section_is_unfilled('Biography', spaced))
+
+    def test_reworded_placeholder_is_treated_as_written(self):
+        # The other half of the same rule: tolerance stops at whitespace.
+        # A human who actually changed a WORD has written something, and
+        # dropping his text would be the worse failure of the two.
+        placeholder = dict(PERSON_BODY_SECTIONS)['Biography']
+        self.assertFalse(person_section_is_unfilled(
+            'Biography', placeholder.replace('their story', 'his story')))
+
+
+class StripUnfilledPersonSectionsTests(unittest.TestCase):
+    """#125 on the two paths that ship the profile body WHOLE rather than
+    reading one named section out of it - `fha wikitree` (line by line) and
+    `fha packet` (as a file copy). Both need the section cut out at the
+    source, which `person_section_is_unfilled` alone cannot do."""
+
+    def test_freshly_scaffolded_body_keeps_only_what_was_written(self):
+        # Built from the SAME renderer the scaffold calls, so this can never
+        # drift from what a brand-new record actually holds.
+        out = strip_unfilled_person_sections(render_person_body_scaffold('Thomas Hartley'))
+        self.assertNotIn('Write their story in plain sentences', out)
+        self.assertNotIn('Open questions, hunches, and brick walls', out)
+        self.assertNotIn("aren't blood relatives", out)
+        # Headings are matched as whole LINES, not as substrings: the purpose
+        # block's own prose names `## Research Notes` and `## Sources` while
+        # telling the owner where things live, and that mention is not a
+        # heading.
+        headings = re.findall(r'^## (.+)$', out, re.M)
+        # Machine-owned and human-authored structure is NOT this function's
+        # business: `## Sources` stays exactly where it was.
+        self.assertEqual(headings, ['Sources'])
+        self.assertIn('# Thomas Hartley', out)
+
+    def test_written_sections_survive_beside_unfilled_ones(self):
+        body = ('# Thomas Hartley\n\n'
+                '## Biography\n'
+                'Born in 1840 in New York, Thomas crossed the plains twice.\n\n'
+                '## Stories\n*(none yet)*\n\n'
+                '## Research Notes\n'
+                'Keep looking in the Carrow County probate index.\n')
+        out = strip_unfilled_person_sections(body)
+        self.assertIn('## Biography', out)
+        self.assertIn('crossed the plains twice', out)
+        self.assertIn('## Research Notes', out)
+        self.assertIn('Carrow County probate index', out)
+        self.assertNotIn('## Stories', out)
+        self.assertNotIn('none yet', out)
+
+    def test_empty_section_is_dropped_with_its_heading(self):
+        # A bare heading over nothing promises content the record does not
+        # have - the same thing the placeholder does, minus the words.
+        body = '# X\n\n## Biography\n   \n\n## Stories\nA tale worth keeping.\n'
+        self.assertEqual(
+            strip_unfilled_person_sections(body),
+            '# X\n\n## Stories\nA tale worth keeping.\n')
+
+    def test_unknown_headings_are_never_touched(self):
+        # This function decides "was this section written", never "is this
+        # section wanted" - a heading the human invented stays put, empty or
+        # not, and so does a `## Claims` block.
+        body = '# X\n\n## Gravestone Photos\n\n## Claims\n```yaml\n```\n'
+        self.assertEqual(strip_unfilled_person_sections(body), body)
+
+    def test_nothing_to_strip_is_a_byte_for_byte_no_op(self):
+        body = '# X\n\n## Biography\n\nAn old-shape record.\n'
+        self.assertEqual(strip_unfilled_person_sections(body), body)
+
+    def test_crlf_endings_are_preserved(self):
+        # `fha packet` copies the profile with read_text_exact /
+        # write_text_exact_atomic precisely so line endings survive the trip.
+        # Flipping CRLF to LF here would show up as a whole-file diff to
+        # anyone comparing the packet copy against the original - and the
+        # dropped last section must not leave a lone `\r` behind either.
+        body = ('# X\r\n\r\n## Biography\r\nReal prose.\r\n\r\n'
+                '## Stories\r\n*(none yet)*\r\n')
+        out = strip_unfilled_person_sections(body)
+        self.assertEqual(out, '# X\r\n\r\n## Biography\r\nReal prose.\r\n')
+
+    def test_empty_body_does_not_crash(self):
+        self.assertEqual(strip_unfilled_person_sections(''), '')
 
 
 class TemplateHygieneTests(unittest.TestCase):

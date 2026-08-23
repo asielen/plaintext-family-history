@@ -1614,10 +1614,15 @@ class EstimateTests(unittest.TestCase):
         self.assertNotIn('\n', after.replace('\r\n', ''))
         self.assertIn('birth: 1870\r\n', after)
 
-    def _build_fresh_index_with_accepted_birth_claim(self) -> None:
+    def _build_fresh_index_with_accepted_birth_claim(self, roles=None) -> None:
         """A minimal, schema-fresh index.sqlite carrying one accepted birth
-        claim for PID - just enough for `_accepted_vital_claim_exists` to
-        answer True without needing a full `fha index` build."""
+        claim naming PID - just enough for `_accepted_vital_claim_exists` to
+        answer without needing a full `fha index` build.
+
+        `roles` is {person_id: role}: the claim's `roles:` map, which says
+        which of the people it names the record is actually OF (SPEC §8.3).
+        `position`/`role` are carried because the real `claim_persons` has
+        them and the scoping read (#126) needs both."""
         cache_dir = self.root / '.cache'
         cache_dir.mkdir(exist_ok=True)
         conn = sqlite3.connect(cache_dir / 'index.sqlite')
@@ -1627,12 +1632,39 @@ class EstimateTests(unittest.TestCase):
                         (CACHE_SCHEMA_KEY, str(INDEX_SCHEMA_VERSION)))
             conn.execute(f'PRAGMA user_version = {INDEX_SCHEMA_VERSION}')
             conn.execute('CREATE TABLE claims(id TEXT PRIMARY KEY, type TEXT, status TEXT)')
-            conn.execute('CREATE TABLE claim_persons(claim_id TEXT, person_id TEXT)')
+            conn.execute('CREATE TABLE claim_persons('
+                         'claim_id TEXT, person_id TEXT, position INTEGER, role TEXT)')
             conn.execute("INSERT INTO claims VALUES ('c-xxxxxxxxxx', 'birth', 'accepted')")
-            conn.execute("INSERT INTO claim_persons VALUES ('c-xxxxxxxxxx', ?)", (PID.lower(),))
+            named = [PID.lower()] + [p for p in (roles or {}) if p != PID.lower()]
+            for pos, person_id in enumerate(named):
+                conn.execute(
+                    "INSERT INTO claim_persons VALUES ('c-xxxxxxxxxx', ?, ?, ?)",
+                    (person_id, pos, (roles or {}).get(person_id)))
             conn.commit()
         finally:
             conn.close()
+
+    def test_a_birth_claim_naming_her_as_a_parent_does_not_warn(self) -> None:
+        # #126: a birth certificate names the baby AND both parents. Asking
+        # "is there an accepted birth claim mentioning her?" told a woman with
+        # no birth record of her own that a sourced claim already supersedes
+        # her estimate - a warning about a fact that does not exist.
+        self._build_fresh_index_with_accepted_birth_claim(
+            roles={PID.lower(): 'parent', 'p-cccccccccc': 'child'})
+        result = person.run_estimate(self.root, PID, birth='1875')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertFalse(
+            [m for m in result.messages if m.level == 'warning'],
+            'a claim that names her only as a parent is not her own birth record')
+
+    def test_a_birth_claim_naming_her_as_the_child_still_warns(self) -> None:
+        # The other half: scoping must not silence the warning that is right.
+        self._build_fresh_index_with_accepted_birth_claim(
+            roles={PID.lower(): 'child', 'p-cccccccccc': 'parent'})
+        result = person.run_estimate(self.root, PID, birth='1875')
+        warnings = [m for m in result.messages if m.level == 'warning']
+        self.assertEqual(len(warnings), 1)
+        self.assertIn('accepted birth claim', warnings[0].text)
 
 
 class EditTests(unittest.TestCase):

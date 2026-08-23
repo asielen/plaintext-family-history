@@ -134,6 +134,7 @@ from _lib import (
     ahnentafel_generation,   # Ahnentafel position → generation depth (--generations cap),
     archive_title,        # masthead/page title from fha.yaml site.archive_name,
     build_ahnentafel_map,    # index BFS {P-id → position}; shared with fha person promote,
+    claim_is_own_vital,   # is this vital claim a record OF this person? (roles:, #126),
     couple_folder_dirs,   # digit-prefixed dirs under people/ (not stubs/connections),
     couple_folder_for_prefix,   # canonical on-disk couple folder for a number, or None,
     couple_folder_prefix,    # position → the even couple-folder number,
@@ -3319,8 +3320,19 @@ def _build_nodes_bulk(conn: sqlite3.Connection, pids: list[str]) -> dict[str, di
     order of the input list.  Falls back gracefully for pids absent from the index.
 
     TOOLING §7 D3: vitals carry the date_edtf from the first accepted birth/death
-    claim.  At most one accepted claim of each vital type per person is expected,
-    so no ordering guarantee is needed.
+    claim the person is the SUBJECT of - not merely one that names them
+    (`_lib.claim_is_own_vital`, #126). A birth certificate names the baby, both
+    parents and the informant; keyed on person_id alone this labelled the mother's
+    node with her son's birth year, and a chart label is the shortest, most
+    quotable fact a reader takes away. The site build asks the same question in
+    `site._person_vitals`, through the same rule, so the two renderers of one
+    tree cannot disagree. A claim with no `roles:` map has not said, and keeps
+    the behaviour it always had.
+
+    `ORDER BY c.id` with first-one-wins makes the pick deterministic. More than
+    one accepted claim of a vital type per person is not expected, but nothing
+    forbids it, and without an order sqlite's rowid order silently decided which
+    date the tree showed.
     """
     if not pids:
         return {}
@@ -3335,17 +3347,23 @@ def _build_nodes_bulk(conn: sqlite3.Connection, pids: list[str]) -> dict[str, di
     }
 
     vitals_map: dict[str, dict] = {p: {'birth': None, 'death': None} for p in pids}
+    subjects: dict[str, list[str] | None] = {}
     for row in conn.execute(
         f"""
-        SELECT cp.person_id, c.type, c.date_edtf
+        SELECT cp.person_id, c.id, c.type, c.date_edtf
         FROM claims c JOIN claim_persons cp ON c.id = cp.claim_id
         WHERE cp.person_id IN ({placeholders})
           AND c.type IN ('birth', 'death') AND c.status = 'accepted'
           AND COALESCE(c.negated, 0) = 0
+        ORDER BY c.id
         """,
         pids,
     ).fetchall():
-        vitals_map[row['person_id']][row['type']] = row['date_edtf'] or None
+        if not claim_is_own_vital(
+                conn, row['person_id'], row['id'], row['type'], subjects):
+            continue
+        if vitals_map[row['person_id']][row['type']] is None:
+            vitals_map[row['person_id']][row['type']] = row['date_edtf'] or None
 
     return {
         pid: {

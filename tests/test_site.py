@@ -33,7 +33,8 @@ from index import _DDL as INDEX_DDL
 from photoindex import _DDL as PHOTOS_DDL
 from _lib import (
     index_manifest_path, path_to_alias, photoindex_manifest_path,
-    photoindex_record_manifest, record_path_manifest, write_path_manifest,
+    photoindex_record_manifest, record_path_manifest, render_person_body_scaffold,
+    write_path_manifest,
 )
 
 _spec = importlib.util.spec_from_file_location('fha_site', ROOT / 'tools' / 'site.py')
@@ -124,17 +125,29 @@ class _Base(unittest.TestCase):
                 'INSERT INTO source_people(source_id, person_id) VALUES (?,?)', (sid, pid))
 
     def _seed_claim(self, cid, sid, ctype, value, *, status='accepted', date_edtf=None,
-                    place_text=None, persons=(), confidence=None, reviewed=None, negated=0):
+                    place_text=None, persons=(), confidence=None, reviewed=None, negated=0,
+                    roles=None, date_min=None):
+        """Seed one claim. `roles` is {person_id: role}, the `roles:` map as
+        `fha index` stores it - which of the people a claim names plays which
+        part (SPEC §8.3). Omit it for the legacy/unroled claim.
+
+        date_min defaults to the naive January-1 widening of date_edtf (matches
+        what real claims carry for a plain year), but a test can override it to
+        construct the #128 shape - an uncertain/ranged date_edtf whose widened
+        date_min lands in a different decade than the display date reads as."""
+        if date_min is None:
+            date_min = (date_edtf or '')[:4] + '-01-01' if date_edtf else None
         self.conn.execute(
             'INSERT INTO claims(id, source_id, type, value, status, date_edtf, date_min, place_text, '
             'confidence, reviewed, negated) '
             'VALUES (?,?,?,?,?,?,?,?,?,?,?)',
-            (cid, sid, ctype, value, status, date_edtf, (date_edtf or '')[:4] + '-01-01' if date_edtf else None, place_text,
+            (cid, sid, ctype, value, status, date_edtf, date_min, place_text,
              confidence, reviewed, negated),
         )
         for pos, pid in enumerate(persons):
             self.conn.execute(
-                'INSERT INTO claim_persons(claim_id, person_id, position) VALUES (?,?,?)', (cid, pid, pos))
+                'INSERT INTO claim_persons(claim_id, person_id, position, role) VALUES (?,?,?,?)',
+                (cid, pid, pos, (roles or {}).get(pid)))
 
     def _seed_rel(self, pid, rel, other):
         self.conn.execute(
@@ -360,6 +373,166 @@ class PersonPageTests(_Base):
         self.assertIn('Perhaps a miller', html)                  # accepted-low publishes
         self.assertIn('flag-low', html)                          # ...flagged
 
+    def test_timeline_place_tag_omitted_when_sentence_already_states_it(self):
+        # #127: the timeline was appending a bare "@ Place" tag even when the
+        # claim's own sentence already named that place naturally moments
+        # earlier ("moved to Millbrook to farm @ Millbrook"). Only append the
+        # tag when the sentence does NOT already contain the place text.
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley')
+        self._seed_source('s-1111111111', 'Record', people=('p-aaaaaaaaaa',))
+        self._seed_claim('c-1111111111', 's-1111111111', 'residence',
+                         'Moved to Millbrook to farm', status='accepted',
+                         date_edtf='1900', place_text='Millbrook',
+                         persons=('p-aaaaaaaaaa',))
+        self._run(linked=True)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('Moved to Millbrook to farm', html)
+        self.assertNotIn('@ Millbrook', html)
+        # Not duplicated as a second, separate mention either.
+        self.assertEqual(html.count('Millbrook'), 1)
+
+    def test_timeline_place_tag_rendered_as_prose_when_not_already_stated(self):
+        # A place that genuinely differs from what the sentence already says
+        # still needs to render (it may be a real field-selection bug worth
+        # its own follow-up, but the timeline should still show it) - just as
+        # natural prose ("at Placename"), not a bare "@ Placename" suffix.
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley')
+        self._seed_source('s-1111111111', 'Record', people=('p-aaaaaaaaaa',))
+        self._seed_claim('c-1111111111', 's-1111111111', 'death',
+                         'Died at Fairview, Illinois, on 5 July 1891',
+                         status='accepted', date_edtf='1891',
+                         place_text='Lexington, Missouri', persons=('p-aaaaaaaaaa',))
+        self._run(linked=True)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('Died at Fairview, Illinois, on 5 July 1891', html)
+        self.assertIn('at Lexington, Missouri', html)
+        self.assertNotIn('@ Lexington, Missouri', html)
+
+    def test_timeline_place_tag_omitted_when_only_punctuation_differs(self):
+        # #127 again, the shape the archive actually produces: the registry
+        # writes "Millbrook, NY" and the sentence writes "Millbrook NY". The
+        # place is the same one said twice, so the trailing mention still has
+        # to go - the comma is not a second fact.
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley')
+        self._seed_source('s-1111111111', 'Record', people=('p-aaaaaaaaaa',))
+        self._seed_claim('c-1111111111', 's-1111111111', 'residence',
+                         'Moved to Millbrook NY to farm', status='accepted',
+                         date_edtf='1900', place_text='Millbrook, NY',
+                         persons=('p-aaaaaaaaaa',))
+        self._run(linked=True)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('Moved to Millbrook NY to farm', html)
+        self.assertNotIn('at Millbrook, NY', html)
+
+    def test_timeline_decades_stay_contiguous_despite_date_min_divergence(self):
+        # #128: decade grouping reads the DISPLAY date (date_edtf, via
+        # _decade_header), but sort order reads date_min - a different,
+        # widened field (site.py:559's documented reason: an approximate date
+        # would otherwise sort into the wrong decade). An uncertain date_edtf
+        # ('193X') can widen to a date_min that sorts far from its own
+        # decade's other entries, which used to split one decade into two
+        # non-contiguous groups with another decade's heading between them.
+        # Here date_min order is 1930, 1945, 1950 but decade order is
+        # 1930s, 1940s, 1930s - exactly that shape.
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley')
+        self._seed_source('s-1111111111', 'Record', people=('p-aaaaaaaaaa',))
+        self._seed_claim('c-1111111111', 's-1111111111', 'residence', 'Lived in Millbrook',
+                         status='accepted', date_edtf='1930', date_min='1930-01-01',
+                         persons=('p-aaaaaaaaaa',))
+        self._seed_claim('c-2222222222', 's-1111111111', 'occupation', 'Worked as a clerk',
+                         status='accepted', date_edtf='1945', date_min='1945-01-01',
+                         persons=('p-aaaaaaaaaa',))
+        self._seed_claim('c-3333333333', 's-1111111111', 'residence', 'Lived in Fairview',
+                         status='accepted', date_edtf='193X', date_min='1950-01-01',
+                         persons=('p-aaaaaaaaaa',))
+        self._run(linked=True)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        start = html.index('<div class="timeline">')
+        end = html.index('</div>', start)
+        timeline_html = html[start:end]
+        headings = re.findall(r'<h3>([^<]*)</h3>', timeline_html)
+        self.assertEqual(headings, ['1930s', '1940s'])   # each decade heading exactly once
+        # Both 1930s entries land in the one 1930s block, ahead of the 1940s block.
+        self.assertLess(timeline_html.index('Lived in Millbrook'), timeline_html.index('Lived in Fairview'))
+        self.assertLess(timeline_html.index('Lived in Fairview'), timeline_html.index('<h3>1940s</h3>'))
+        self.assertLess(timeline_html.index('<h3>1940s</h3>'), timeline_html.index('Worked as a clerk'))
+
+    def test_timeline_undated_entries_get_their_own_heading(self):
+        # #129: undated entries rendered directly beneath the most recent
+        # decade heading with no heading of their own, so a reader scanning
+        # by decade could mistake one for belonging to that decade. The
+        # Python grouping already tags an undated group `decade: None`
+        # (verified separately) - the gap is template-side: give that group
+        # its own explicit "Undated" heading.
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley')
+        self._seed_source('s-1111111111', 'Record', people=('p-aaaaaaaaaa',))
+        self._seed_claim('c-1111111111', 's-1111111111', 'residence', 'Lived in Millbrook',
+                         status='accepted', date_edtf='1930', persons=('p-aaaaaaaaaa',))
+        self._seed_claim('c-2222222222', 's-1111111111', 'occupation', 'Worked as a farmer',
+                         status='accepted', date_edtf=None, persons=('p-aaaaaaaaaa',))
+        self._run(linked=True)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        start = html.index('<div class="timeline">')
+        end = html.index('</div>', start)
+        timeline_html = html[start:end]
+        self.assertIn('<h3>1930s</h3>', timeline_html)
+        self.assertIn('<h3>Undated</h3>', timeline_html)
+        self.assertLess(timeline_html.index('<h3>1930s</h3>'), timeline_html.index('<h3>Undated</h3>'))
+        self.assertLess(timeline_html.index('<h3>Undated</h3>'), timeline_html.index('Worked as a farmer'))
+
+    def test_timeline_collects_every_undated_entry_under_one_heading(self):
+        # The other half of #128, and the one #129's heading made visible: a
+        # claim whose date the archive cannot read ('circa 1870' - the loose
+        # hand-edit AGENTS.md says the tools must tolerate) has no decade but
+        # DOES have a date_min, so it sorted with the 1870s while a genuinely
+        # undated claim sorted last. The linear pass then opened an undated
+        # group, closed it for the 1930s, and opened a second one - two
+        # "Undated" headings on one page. Every dateless entry belongs to one
+        # group, at the end.
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley')
+        self._seed_source('s-1111111111', 'Record', people=('p-aaaaaaaaaa',))
+        self._seed_claim('c-1111111111', 's-1111111111', 'occupation', 'Unreadable date entry',
+                         status='accepted', date_edtf='circa 1870', date_min='1870-01-01',
+                         persons=('p-aaaaaaaaaa',))
+        self._seed_claim('c-2222222222', 's-1111111111', 'residence', 'Dated entry',
+                         status='accepted', date_edtf='1930', persons=('p-aaaaaaaaaa',))
+        self._seed_claim('c-3333333333', 's-1111111111', 'note', 'No date at all',
+                         status='accepted', date_edtf=None, persons=('p-aaaaaaaaaa',))
+        self._run(linked=True)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        start = html.index('<div class="timeline">')
+        timeline_html = html[start:html.index('</div>', start)]
+        self.assertEqual(re.findall(r'<h3>([^<]*)</h3>', timeline_html), ['1930s', 'Undated'])
+        self.assertLess(timeline_html.index('<h3>Undated</h3>'),
+                        timeline_html.index('Unreadable date entry'))
+        self.assertLess(timeline_html.index('<h3>Undated</h3>'),
+                        timeline_html.index('No date at all'))
+
+    def test_timeline_keeps_date_order_within_a_decade(self):
+        # #128 sorts a copy of the rows by decade before grouping; the sort
+        # must be STABLE or it would trade a heading bug for an ordering bug.
+        # Within one decade the rows keep the SQL's date_min order (January
+        # before June), and an interval date groups by the decade it starts
+        # in.
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley')
+        self._seed_source('s-1111111111', 'Record', people=('p-aaaaaaaaaa',))
+        self._seed_claim('c-1111111111', 's-1111111111', 'note', 'June entry',
+                         status='accepted', date_edtf='1923-06', date_min='1923-06-01',
+                         persons=('p-aaaaaaaaaa',))
+        self._seed_claim('c-2222222222', 's-1111111111', 'note', 'January entry',
+                         status='accepted', date_edtf='1923-01', date_min='1923-01-01',
+                         persons=('p-aaaaaaaaaa',))
+        self._seed_claim('c-3333333333', 's-1111111111', 'note', 'Interval entry',
+                         status='accepted', date_edtf='1852/1883', date_min='1852-01-01',
+                         persons=('p-aaaaaaaaaa',))
+        self._run(linked=True)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        start = html.index('<div class="timeline">')
+        timeline_html = html[start:html.index('</div>', start)]
+        self.assertEqual(re.findall(r'<h3>([^<]*)</h3>', timeline_html), ['1850s', '1920s'])
+        self.assertLess(timeline_html.index('Interval entry'), timeline_html.index('<h3>1920s</h3>'))
+        self.assertLess(timeline_html.index('January entry'), timeline_html.index('June entry'))
+
     def test_family_and_source_footnotes(self):
         self._setup_thomas()
         self._run(linked=True)
@@ -403,6 +576,79 @@ class PersonPageTests(_Base):
         # bleeds into the previous value, which would read as one run-on line.
         self.assertIn('1840', html[born_idx:married_idx])
         self.assertNotIn('1871', html[born_idx:married_idx])
+
+    def _legend(self, html):
+        """The date-notation legend paragraph on a built page, tag to tag.
+
+        Sliced exactly, rather than by a fixed character window, so a longer
+        legend cannot quietly push a notation out of what the assertions can
+        see - and so an assertion can never pass on text that belongs to some
+        other part of the footer.
+        """
+        self.assertIn('<p class="date-notation-note">', html)
+        start = html.index('<p class="date-notation-note">')
+        # Exactly one legend per page: it lives in base.html's shared footer.
+        self.assertNotIn('<p class="date-notation-note">', html[start + 1:])
+        return html[start:html.index('</p>', start)]
+
+    def test_date_notation_legend_reachable_from_person_page(self):
+        # #131: a person page that actually shows the shorthand (~ / X / /)
+        # must sit on a page that also explains it - the legend lives in the
+        # shared footer (base.html), so every page that extends it carries
+        # the explanation regardless of which notation that particular page
+        # happens to use.
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley')
+        self._seed_source('s-1111111111', 'Record', people=('p-aaaaaaaaaa',))
+        self._seed_claim('c-1111111111', 's-1111111111', 'death', 'Died',
+                         status='accepted', date_edtf='1891~', persons=('p-aaaaaaaaaa',))
+        self._run(linked=True)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('1891~', html)          # the notation really is on this page, as written
+        legend = self._legend(html)
+        self.assertIn('~', legend)
+        self.assertIn('193X', legend)         # the decade form, shown by example
+        self.assertIn('decade', legend)
+        self.assertIn('range', legend)
+
+    def test_date_notation_legend_covers_every_spec_11_notation(self):
+        # SPEC.md 11 is the list of date forms a record may hold, and `fha site`
+        # prints date_edtf exactly as stored - so every mark in that table is a
+        # mark a visitor can meet on a page. Derived from the table, not from
+        # the legend's current wording: a notation the archive can store and the
+        # legend cannot explain is the bug #131 reported, one form later.
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley')
+        self._seed_source('s-1111111111', 'Record', people=('p-aaaaaaaaaa',))
+        # One claim per SPEC 11 row that carries a mark a reader must decode.
+        for n, (cid, edtf) in enumerate((
+                ('c-1111111111', '1850~'),            # Circa
+                ('c-2222222222', '1850?'),            # Uncertain
+                ('c-3333333333', '185X'),             # Decade
+                ('c-4444444444', '[..1920]'),         # Before
+                ('c-5555555555', '1871-02/1871-03'),  # Interval
+        )):
+            self._seed_claim(cid, 's-1111111111', 'event', f'Event {n}',
+                             status='accepted', date_edtf=edtf, persons=('p-aaaaaaaaaa',))
+        self._run(linked=True)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        legend = self._legend(html)
+        for edtf, mark in (('1850~', '~'), ('1850?', '?'), ('185X', 'X'),
+                           ('[..1920]', '[..'), ('1871-02/1871-03', '/')):
+            # The page shows the stored form as written ...
+            self.assertIn(edtf, html, f'{edtf} is not rendered on the page')
+            # ... so the legend has to account for its mark.
+            self.assertIn(mark, legend, f'the legend never explains {mark!r} ({edtf})')
+        # The two hedges mean different things (SPEC 11 lists Circa and
+        # Uncertain as separate rows); the legend must not collapse them.
+        self.assertIn('confirmed', legend)
+        self.assertIn('before', legend)
+
+    def test_date_notation_legend_also_reaches_source_and_home_pages(self):
+        # The legend is shared footer markup (base.html), not a person-page
+        # special case - it travels to every page that extends base.html.
+        self._seed_source('s-1111111111', 'A Source')
+        self._run(linked=True)
+        self._legend(self._read('sources/s-1111111111.html'))
+        self._legend(self._read('index.html'))
 
     def test_alt_names_and_tags_in_header(self):
         self._seed_person(
@@ -887,6 +1133,34 @@ class AssetTests(_Base):
         self.assertIn('Photographs', html)
         self.assertIn('Jane in 1880', html)
         self.assertIn('jane.jpg', html)
+
+    def test_photo_strip_link_opens_in_new_tab(self):
+        # #122: the Photographs strip opens the real photo file, not another
+        # page on this site - it must not replace the person page a visitor
+        # was reading.
+        self._seed_person('p-aaaaaaaaaa', 'Jane Doe')
+        img = self.archive_root / 'photos' / '1880' / 'jane.jpg'
+        img.parent.mkdir(parents=True, exist_ok=True)
+        img.write_bytes(b'not-a-real-image-but-exists')
+        pconn = self._make_photos_db()
+        pconn.execute(
+            'INSERT INTO photos(path, group_id, is_primary, caption) VALUES (?,?,?,?)',
+            ('photos/1880/jane.jpg', 'g1', 1, 'Jane in 1880'))
+        pconn.execute(
+            'INSERT INTO photo_people(path, person_ref, via) VALUES (?,?,?)',
+            ('photos/1880/jane.jpg', 'p-aaaaaaaaaa', 'pid-keyword'))
+        pconn.commit()
+        pconn.close()
+        self._make_photos_fresh()
+        self._run(linked=True)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        # Just the strip: slicing to the end of the document would let any
+        # target="_blank" further down the page satisfy the assertion.
+        strip_start = html.index('class="photo-strip"')
+        strip = html[strip_start:html.index('</figure>', strip_start)]
+        self.assertIn('jane.jpg', strip)
+        self.assertIn('target="_blank"', strip)
+        self.assertIn('rel="noopener"', strip)
 
     def test_missing_photo_row_does_not_hide_its_live_variant(self):
         # `fha photoindex reconcile` re-keys a vanished photo 'MISSING:…' and
@@ -1432,6 +1706,197 @@ class SourcePortraitTests(_Base):
         self.assertIn('Pillow not installed', html)
 
 
+class FileOpeningLinkTargetTests(_Base):
+    """#122: links that open an actual scan/photo/document file must carry
+    target="_blank" rel="noopener" (open in a new tab, no window.opener leak
+    back to this page) - same-site navigation links must NOT, so a visitor
+    reading a person or source page never loses their place to a file open.
+    Two-sided by design (AGENTS_TOOLING.md - "two-sided rules get two-sided
+    tests"): every assertion below is paired with a negative one proving the
+    attribute was not sprayed everywhere."""
+
+    def test_source_portrait_links_open_in_new_tab(self):
+        self._seed_source('s-1111111111', 'Photo Source', source_type='photo')
+        img = self.archive_root / 'photos' / '1880' / 'pic.jpg'
+        img.parent.mkdir(parents=True, exist_ok=True)
+        img.write_bytes(b'not-a-real-image-but-exists')
+        self.conn.execute(
+            'INSERT INTO source_files(source_id, path, role) VALUES (?,?,?)',
+            ('s-1111111111', 'photos/1880/pic.jpg', 'front'))
+        self._run(linked=True)
+        html = self._read('sources/s-1111111111.html')
+        self.assertIn('class="source-portrait"', html)
+        # Both the image wrapper and the caption link the same full_href.
+        portrait_block = html[html.index('class="source-portrait"'):]
+        figure_end = portrait_block.index('</figure>')
+        figure_html = portrait_block[:figure_end]
+        self.assertEqual(figure_html.count('target="_blank"'), 2)
+        self.assertEqual(figure_html.count('rel="noopener"'), 2)
+
+    def test_source_files_image_links_open_in_new_tab(self):
+        self._seed_source('s-1111111111', 'Photo Source', source_type='photo')
+        img = self.archive_root / 'photos' / '1880' / 'pic.jpg'
+        img.parent.mkdir(parents=True, exist_ok=True)
+        img.write_bytes(b'not-a-real-image-but-exists')
+        self.conn.execute(
+            'INSERT INTO source_files(source_id, path, role) VALUES (?,?,?)',
+            ('s-1111111111', 'photos/1880/pic.jpg', 'front'))
+        self._run(linked=True)
+        html = self._read('sources/s-1111111111.html')
+        files_block = html[html.index('<h2>Files</h2>'):html.index('</ul>', html.index('<h2>Files</h2>'))]
+        self.assertIn('pic.jpg', files_block)
+        # thumbnail link + "full size" link, both new-tab.
+        self.assertEqual(files_block.count('target="_blank"'), 2)
+        self.assertEqual(files_block.count('rel="noopener"'), 2)
+        self.assertIn('full-size-link', files_block)
+
+    def test_source_files_nonimage_link_opens_in_new_tab(self):
+        self._seed_source('s-1111111111', 'Doc Source', source_type='letter')
+        doc = self.archive_root / 'documents' / 'letters' / 'note_s-1111111111.txt'
+        doc.parent.mkdir(parents=True, exist_ok=True)
+        doc.write_text('a letter', encoding='utf-8')
+        self.conn.execute(
+            'INSERT INTO source_files(source_id, path, role) VALUES (?,?,?)',
+            ('s-1111111111', 'documents/letters/note_s-1111111111.txt', 'transcript'))
+        self._run(linked=True)
+        html = self._read('sources/s-1111111111.html')
+        files_block = html[html.index('<h2>Files</h2>'):html.index('</ul>', html.index('<h2>Files</h2>'))]
+        self.assertIn('note_s-1111111111.txt', files_block)
+        self.assertIn('target="_blank"', files_block)
+        self.assertIn('rel="noopener"', files_block)
+
+    def test_internal_navigation_links_stay_in_same_tab(self):
+        # Negative half of the pair above: same-site links (the header nav,
+        # a citation's person cross-link, the source's own record-open link)
+        # must never pick up target="_blank" - only file-opening anchors do.
+        self._seed_person('p-aaaaaaaaaa', 'Jane Doe')
+        self._seed_source('s-1111111111', '1880 Census', people=('p-aaaaaaaaaa',))
+        self._seed_claim('c-1111111111', 's-1111111111', 'residence', 'Lived in Kansas',
+                         status='accepted', persons=('p-aaaaaaaaaa',))
+        self._run(linked=True)
+        html = self._read('sources/s-1111111111.html')
+        # The header nav (from base.html) never opens a new tab.
+        self.assertIn('<a href="../index.html">Home</a>', html)
+        nav_block = html[html.index('site-nav'):html.index('</nav>')]
+        self.assertNotIn('target="_blank"', nav_block)
+        # The claim's person cross-link is same-site navigation, not a file.
+        self.assertIn('../persons/p-aaaaaaaaaa.html', html)
+        person_link_idx = html.index('../persons/p-aaaaaaaaaa.html')
+        # Look at just that one anchor tag (up to its closing '>').
+        tag_end = html.index('>', person_link_idx)
+        self.assertNotIn('target="_blank"', html[person_link_idx:tag_end])
+
+    # - the whole-site invariant -
+
+    def _seed_a_page_of_every_kind(self):
+        """Seed enough archive that a build emits all four link shapes at once:
+        site navigation, person/source/place cross-links, an image file and a
+        non-image file. One seeding used by both halves of the sweep below."""
+        self._seed_person('p-aaaaaaaaaa', 'Jane Doe')
+        self._seed_source('s-1111111111', 'Photo Source', source_type='photo',
+                          people=('p-aaaaaaaaaa',))
+        self._seed_claim('c-1111111111', 's-1111111111', 'residence', 'Lived in Kansas',
+                         status='accepted', date_edtf='1880', persons=('p-aaaaaaaaaa',))
+        img = self.archive_root / 'photos' / '1880' / 'pic.jpg'
+        img.parent.mkdir(parents=True, exist_ok=True)
+        img.write_bytes(b'not-a-real-image-but-exists')
+        doc = self.archive_root / 'documents' / 'letters' / 'note_s-1111111111.txt'
+        doc.parent.mkdir(parents=True, exist_ok=True)
+        doc.write_text('a letter', encoding='utf-8')
+        for rel, role in (('photos/1880/pic.jpg', 'front'),
+                          ('documents/letters/note_s-1111111111.txt', 'transcript')):
+            self.conn.execute(
+                'INSERT INTO source_files(source_id, path, role) VALUES (?,?,?)',
+                ('s-1111111111', rel, role))
+
+    def _site_anchors(self):
+        """Every anchor in every built page as (page, href, tag).
+
+        A per-template assertion only ever guards the templates someone
+        remembered to write one for - and #122 was one template's attribute
+        missing from four places at once. This sweeps the built output instead,
+        so a new template, or a new link in an old one, is covered the day it
+        lands rather than the day someone notices."""
+        anchors = []
+        for page in sorted(self.out_dir.rglob('*.html')):
+            page_html = page.read_text(encoding='utf-8')
+            for tag in re.findall(r'<a\b[^>]*>', page_html, re.I):
+                href = re.search(r'href="([^"]*)"', tag)
+                anchors.append((page.relative_to(self.out_dir).as_posix(),
+                                href.group(1) if href else '', tag))
+        return anchors
+
+    @staticmethod
+    def _link_kind(href):
+        """'page', 'external' or 'file' for one href.
+
+        'page' covers same-site navigation and in-page fragments (including the
+        workbench's `href="#"` stubs, which JavaScript intercepts). 'external'
+        is an absolute http/https/mailto URL - the place page's "View on
+        OpenStreetMap" link is the only one the site emits today, and #122
+        explicitly scoped itself to file links, so this sweep records its shape
+        without ruling on it. Everything else is a path to a real file on disk.
+        """
+        target = href.split('#')[0]
+        if target.lower().startswith(('http://', 'https://', 'mailto:')):
+            return 'external'
+        if target == '' or target.endswith('.html'):
+            return 'page'
+        return 'file'
+
+    def test_no_site_page_link_opens_in_a_new_tab(self):
+        # Spraying target="_blank" across the templates would "fix" #122 and
+        # break the reading experience it protects: navigating the tree must
+        # never litter a visitor's browser with tabs.
+        self._seed_a_page_of_every_kind()
+        self._run(linked=True)
+        anchors = self._site_anchors()
+        self.assertTrue(anchors, 'the build emitted no anchors to check')
+        for page, href, tag in anchors:
+            if self._link_kind(href) == 'page':
+                self.assertNotIn('target="_blank"', tag,
+                                 f'{page}: same-site link {href!r} opens a new tab')
+
+    def test_every_file_link_in_the_built_site_opens_in_a_new_tab(self):
+        # Positive half, swept over the whole build rather than named template
+        # by named template - the shape of the miss #122 reported.
+        self._seed_a_page_of_every_kind()
+        self._run(linked=True)
+        file_links = [(p, h, t) for p, h, t in self._site_anchors()
+                      if self._link_kind(h) == 'file']
+        self.assertTrue(file_links, 'the build emitted no file links to check')
+        for page, href, tag in file_links:
+            self.assertIn('target="_blank"', tag,
+                          f'{page}: file link {href!r} replaces the page instead of opening a tab')
+            self.assertIn('rel="noopener"', tag,
+                          f'{page}: file link {href!r} opens a new tab without rel="noopener"')
+
+    @unittest.skipUnless(site._PIL_AVAILABLE, 'Pillow not installed')
+    def test_standalone_build_keeps_the_same_two_sided_rule(self):
+        # --standalone links at EXIF-stripped derivatives under media/ instead
+        # of the originals: different hrefs, same two-sided rule. The published
+        # snapshot is the build a visitor actually receives, so it gets its own
+        # pass rather than inheriting --linked's.
+        from PIL import Image
+        self._seed_a_page_of_every_kind()
+        # A real image this time: standalone omits anything Pillow cannot open,
+        # and an omitted image emits no link at all - nothing to assert on.
+        Image.new('RGB', (60, 40), (10, 20, 30)).save(
+            self.archive_root / 'photos' / '1880' / 'pic.jpg')
+        self._run(linked=False)
+        checked = 0
+        for page, href, tag in self._site_anchors():
+            kind = self._link_kind(href)
+            if kind == 'page':
+                self.assertNotIn('target="_blank"', tag,
+                                 f'{page}: same-site link {href!r} opens a new tab')
+            elif kind == 'file':
+                checked += 1
+                self.assertIn('target="_blank"', tag, f'{page}: file link {href!r}')
+                self.assertIn('rel="noopener"', tag, f'{page}: file link {href!r}')
+        self.assertTrue(checked, 'the standalone build emitted no file links to check')
+
+
 class PlacePageTests(_Base):
     def _seed_place(self, lid, name, *, hierarchy=None, within=None, lat=None, lon=None,
                     alt_names=(), history=()):
@@ -1483,15 +1948,91 @@ class PlacePageTests(_Base):
     def test_claim_place_column_links_to_place_page(self):
         # Symmetry fix: a claim's place cell links to the place page when the
         # claim carries a registered place_id (not just prose [L-id] tokens).
+        # #127 note: the value deliberately does NOT already name "Fairview",
+        # so this pins the plain case - a trailing place mention, linked. When
+        # the sentence does name the place the timeline moves that link into
+        # the sentence instead (see
+        # test_timeline_keeps_place_link_on_the_words_the_sentence_uses); the
+        # source page's claims table is a table cell, not prose, so it is
+        # unaffected either way.
+        self._seed_person('p-aaaaaaaaaa', 'Jane')
+        self._seed_source('s-1111111111', 'Census', people=('p-aaaaaaaaaa',))
+        self._seed_place('l-1111111111', 'Fairview')
+        self._seed_claim_at_place('c-1111111111', 's-1111111111', 'l-1111111111',
+                                  'Lived with her family', ('p-aaaaaaaaaa',))
+        self._run(linked=True)
+        # Source page claims table and the person timeline both link the place.
+        self.assertIn('../places/l-1111111111.html', self._read('sources/s-1111111111.html'))
+        self.assertIn('../places/l-1111111111.html', self._read('persons/p-aaaaaaaaaa.html'))
+
+    def test_timeline_keeps_place_link_on_the_words_the_sentence_uses(self):
+        # #127 must not cost the reader the place-page link. When the claim's
+        # own sentence already states the place, the timeline prints that
+        # place once - and the words already in the sentence carry the link,
+        # so the place page is still one click from the person page (the
+        # symmetry _place_html was added for). Dropping the trailing tag AND
+        # its link would have left this person page with no route to the
+        # place at all.
         self._seed_person('p-aaaaaaaaaa', 'Jane')
         self._seed_source('s-1111111111', 'Census', people=('p-aaaaaaaaaa',))
         self._seed_place('l-1111111111', 'Fairview')
         self._seed_claim_at_place('c-1111111111', 's-1111111111', 'l-1111111111',
                                   'Lived in Fairview', ('p-aaaaaaaaaa',))
         self._run(linked=True)
-        # Source page claims table and the person timeline both link the place.
-        self.assertIn('../places/l-1111111111.html', self._read('sources/s-1111111111.html'))
-        self.assertIn('../places/l-1111111111.html', self._read('persons/p-aaaaaaaaaa.html'))
+        person_html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('Lived in <a href="../places/l-1111111111.html">Fairview</a>', person_html)
+        self.assertEqual(person_html.count('Fairview'), 1)          # named once, not doubled
+        self.assertNotIn(' at <a href="../places/l-1111111111.html">', person_html)
+
+    def test_timeline_value_is_escaped_around_the_place_link(self):
+        # Linking the place inside the sentence moved the timeline value's
+        # escaping out of Jinja's autoescape and into site.py, which is worth
+        # a guard of its own: the value is split into three pieces around the
+        # place name and every piece has to be escaped, or a claim someone
+        # typed with angle brackets in it becomes markup.
+        self._seed_person('p-aaaaaaaaaa', 'Jane')
+        self._seed_source('s-1111111111', 'Census', people=('p-aaaaaaaaaa',))
+        self._seed_place('l-1111111111', 'Fairview')
+        self._seed_claim_at_place('c-1111111111', 's-1111111111', 'l-1111111111',
+                                  '<b>Lived</b> in Fairview & <i>farmed</i>',
+                                  ('p-aaaaaaaaaa',))
+        self._run(linked=True)
+        person_html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('&lt;b&gt;Lived&lt;/b&gt; in '
+                      '<a href="../places/l-1111111111.html">Fairview</a> '
+                      '&amp; &lt;i&gt;farmed&lt;/i&gt;', person_html)
+
+    def test_timeline_place_name_inside_a_longer_word_still_renders(self):
+        # #127's suppression is whole-word: "Hampton" sits inside
+        # "Southampton", and a plain substring test read the sentence as
+        # already naming the place - silently dropping a real, different
+        # place (and its link) off the page. Losing a fact is worse than
+        # repeating one, so this claim keeps its trailing place.
+        self._seed_person('p-aaaaaaaaaa', 'Jane')
+        self._seed_source('s-1111111111', 'Census', people=('p-aaaaaaaaaa',))
+        self._seed_place('l-1111111111', 'Hampton')
+        self._seed_claim_at_place('c-1111111111', 's-1111111111', 'l-1111111111',
+                                  'Married at Southampton', ('p-aaaaaaaaaa',))
+        self._run(linked=True)
+        person_html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('Married at Southampton at '
+                      '<a href="../places/l-1111111111.html">Hampton</a>', person_html)
+
+    def test_timeline_place_partly_named_by_the_sentence_still_renders_in_full(self):
+        # The suppression is conservative on purpose: a sentence naming only
+        # the town ("Moved to Millbrook") does not make the registry's fuller
+        # "Millbrook, Dutchess County, New York" redundant - the county and
+        # state are information the reader does not have yet - so the full
+        # place still follows the sentence, linked.
+        self._seed_person('p-aaaaaaaaaa', 'Jane')
+        self._seed_source('s-1111111111', 'Census', people=('p-aaaaaaaaaa',))
+        self._seed_place('l-1111111111', 'Millbrook, Dutchess County, New York')
+        self._seed_claim_at_place('c-1111111111', 's-1111111111', 'l-1111111111',
+                                  'Moved to Millbrook', ('p-aaaaaaaaaa',))
+        self._run(linked=True)
+        person_html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('Moved to Millbrook at <a href="../places/l-1111111111.html">'
+                      'Millbrook, Dutchess County, New York</a>', person_html)
 
     def test_freetext_place_without_id_is_not_linked(self):
         self._seed_person('p-aaaaaaaaaa', 'Jane')
@@ -2294,6 +2835,116 @@ class ScaffoldingBlockExclusionTests(_Base):
         self.assertIn('A citation you can check.', html)   # page still built normally
 
 
+class UnfilledPlaceholderSectionTests(_Base):
+    """#125: a freshly-scaffolded person's Biography/Research Notes sections
+    hold nothing but the record template's own authoring instructions until
+    a human replaces them (`render_person_body_scaffold` /
+    `ensure_person_body_sections`, SPEC §16). Before this fix, `_person_prose`
+    only recognised `*(none yet)*` as "still empty" - so that placeholder
+    text rendered on the generated page verbatim, as if it were the
+    person's real, finished biography and research notes. It must be
+    treated exactly like an actually-empty section: heading and all omitted."""
+
+    def test_freshly_scaffolded_placeholders_omitted_standalone(self):
+        # The exact shape `fha person new`/`fha stubs` write for a person
+        # nobody has edited yet - built from the SAME renderer the scaffold
+        # itself calls, not a hand-typed copy of its wording, so this test
+        # cannot drift from what is actually scaffolded.
+        body = render_person_body_scaffold('Thomas Hartley')
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley', body=body)
+        res = self._run(linked=False)
+        self.assertEqual(res['status'], 'ok')
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertNotIn('Write their story in plain sentences', html)
+        self.assertNotIn('gentle to-do list', html)
+        self.assertNotIn('Open questions, hunches, and brick walls', html)
+        self.assertNotIn('Delete this line', html)
+        self.assertNotIn('<h2>Biography</h2>', html)
+        self.assertNotIn('<h2>Research Notes</h2>', html)
+        # No stray literal markdown punctuation either (the issue's second
+        # symptom - raw backticks reads as broken output even standalone
+        # from the "is this real content" question).
+        self.assertNotIn('`(TODO: import source)`', html)
+
+    def test_freshly_scaffolded_placeholders_omitted_linked(self):
+        # The Research Notes placeholder embeds a `<!-- private -->` example
+        # block, which `apply_private_fence` treats differently per build
+        # mode (unwrapped here, dropped in standalone) - so this must be
+        # checked in ITS OWN test, not assumed to follow from the standalone
+        # case above.
+        body = render_person_body_scaffold('Thomas Hartley')
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley', body=body)
+        res = self._run(linked=True)
+        self.assertEqual(res['status'], 'ok')
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertNotIn('Write their story in plain sentences', html)
+        self.assertNotIn('Open questions, hunches, and brick walls', html)
+        self.assertNotIn('This block stays in your local', html)  # the private-fence example
+        self.assertNotIn('<h2>Biography</h2>', html)
+        self.assertNotIn('<h2>Research Notes</h2>', html)
+
+    def test_real_biography_content_still_publishes(self):
+        # The positive case: genuine prose that happens to share a few words
+        # with the placeholder must NOT be mistaken for it - only an exact,
+        # whole-section match is treated as unfilled.
+        body = ('# Thomas Hartley\n\n'
+                '## Biography\n'
+                'Write their story? He already lived one worth telling: born '
+                'in 1840 in New York, Thomas crossed the plains twice before '
+                'he turned thirty.\n\n'
+                '## Research Notes\n'
+                'Open questions remain about his first wife - keep looking '
+                'in the Carrow County probate index.\n')
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley', body=body)
+        res = self._run(linked=False)
+        self.assertEqual(res['status'], 'ok')
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('<h2>Biography</h2>', html)
+        self.assertIn('crossed the plains twice', html)
+        self.assertIn('<h2>Research Notes</h2>', html)
+        self.assertIn('Carrow County probate index', html)
+
+    def test_one_section_filled_other_still_placeholder(self):
+        # The two sections are independent: filling in one must not affect
+        # whether the other (still untouched) publishes.
+        body = render_person_body_scaffold('Thomas Hartley').replace(
+            "## Biography\nWrite their story in plain sentences. Uncited prose is welcome - "
+            "it's story and\ncontext, never treated as proven fact. Mark anything you mean to "
+            "back up later\nwith `(TODO: import source)` and a tool will keep it on a gentle "
+            "to-do list.\n",
+            '## Biography\nBorn in 1840 in New York, Thomas grew up on his '
+            "father's farm.\n",
+        )
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley', body=body)
+        res = self._run(linked=False)
+        self.assertEqual(res['status'], 'ok')
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('<h2>Biography</h2>', html)
+        self.assertIn("father's farm", html)
+        self.assertNotIn('<h2>Research Notes</h2>', html)
+        self.assertNotIn('Open questions, hunches, and brick walls', html)
+
+    def test_placeholder_saved_by_a_windows_editor_is_still_omitted(self):
+        # The whole-path version of test_templates' CRLF/trailing-space unit
+        # tests. The archive owner is a non-technical genealogist editing
+        # plain files in whatever editor he has; Notepad writes CRLF and
+        # plenty of editors leave a trailing space behind. Neither changes a
+        # word of what the section says, so neither may put the authoring
+        # instructions back on the published page - which a byte-for-byte
+        # comparison against the scaffold constant would do.
+        body = render_person_body_scaffold('Thomas Hartley')
+        body = '\n'.join(line + ' ' if line.strip() else line
+                         for line in body.split('\n')).replace('\n', '\r\n')
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley', body=body)
+        res = self._run(linked=False)
+        self.assertEqual(res['status'], 'ok')
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertNotIn('Write their story in plain sentences', html)
+        self.assertNotIn('Open questions, hunches, and brick walls', html)
+        self.assertNotIn('<h2>Biography</h2>', html)
+        self.assertNotIn('<h2>Research Notes</h2>', html)
+
+
 class LinkSchemeTests(unittest.TestCase):
     """Markdown-link URLs allowlist http/https/mailto; a javascript:/data:
     (or any other scheme-bearing) URL renders its label as plain text - the
@@ -3011,6 +3662,297 @@ class WorkbenchModeTests(_Base):
         r = self._run_wb()
         self.assertTrue(r.ok, r.messages)
         self._read('sources/s-1111111111.html')
+
+
+# ── A person's vitals are their OWN, not their relatives' (#126) ─────────────
+#
+# A vital record names more than the person it is a record OF: a birth
+# certificate names the baby, both parents, and the informant. Selecting a
+# person's Born/Died/Married by "any accepted vital claim that NAMES them" put
+# a son's birth date in his mother's summary box and on her chart node - a
+# plain factual error, and one a reader has no way to spot. Same defect as #58
+# (marriage pairing) and #118 (social edges), one query further on: the fix is
+# the same one, `roles:` says who a claim is about (SPEC §8.3).
+
+class VitalSubjectScopingTests(_Base):
+    MOM = 'p-mmmmmmmmmm'
+    SON = 'p-ssssssssss'
+
+    def _seed_birth_certificate(self, roles):
+        """The son's birth certificate, naming his mother as the parent."""
+        self._seed_person(self.SON, 'Peter Marr')
+        self._seed_person(self.MOM, 'Iris Marr')
+        self._seed_source('s-1111111111', 'Birth certificate',
+                          source_type='vital-record')
+        self._seed_claim('c-1111111111', 's-1111111111', 'birth',
+                         'Born at Riverton', status='accepted', date_edtf='1888',
+                         place_text='Riverton', persons=(self.SON, self.MOM),
+                         roles=roles)
+
+    def test_mother_named_as_parent_gets_no_born_row_of_her_own(self):
+        self._seed_birth_certificate({self.SON: 'child', self.MOM: 'parent'})
+        self._run(linked=True)
+        self.assertNotIn(
+            '<dt>Born</dt>', self._read(f'persons/{self.MOM}.html'),
+            "a mother named as `parent` on her son's birth certificate must "
+            'not have his birth date rendered as her own')
+
+    def test_the_child_the_claim_names_still_gets_his_born_row(self):
+        # The other half of the two-sided rule: scoping must not cost the
+        # person whose record it actually is their own summary line.
+        self._seed_birth_certificate({self.SON: 'child', self.MOM: 'parent'})
+        self._run(linked=True)
+        html = self._read(f'persons/{self.SON}.html')
+        self.assertIn('<dt>Born</dt>', html)
+        self.assertIn('1888', html)
+
+    def test_an_unroled_baby_is_still_read_as_the_subject(self):
+        # `roles: {parent: [mother]}` with the baby left unmarked is an
+        # ordinary way to write the claim. The claim said what the OTHER person
+        # was, so the one it left unroled is the one it is about.
+        self._seed_birth_certificate({self.MOM: 'parent'})
+        self._run(linked=True)
+        self.assertIn('<dt>Born</dt>', self._read(f'persons/{self.SON}.html'))
+        self.assertNotIn('<dt>Born</dt>', self._read(f'persons/{self.MOM}.html'))
+
+    def test_a_legacy_claim_with_no_roles_map_keeps_its_old_behaviour(self):
+        # Back-compatibility: a claim written before `roles:` was expected has
+        # not answered the question, so nothing is withheld. Emptying those
+        # archives' summary boxes would be a worse bug than the one being fixed.
+        self._seed_birth_certificate(None)
+        self._run(linked=True)
+        self.assertIn('<dt>Born</dt>', self._read(f'persons/{self.MOM}.html'))
+        self.assertIn('<dt>Born</dt>', self._read(f'persons/{self.SON}.html'))
+
+    def test_chart_node_shows_only_the_subjects_own_life_dates(self):
+        # The chart half of #126: `_person_vitals` labels every node, so the
+        # same blind join printed "b. 1888" under the mother's name too - a
+        # node whose dates belong to the person one row below it.
+        self._seed_birth_certificate({self.SON: 'child', self.MOM: 'parent'})
+        self._seed_rel(self.SON, 'parent', self.MOM)
+        self._seed_rel(self.MOM, 'child', self.SON)
+        self._run(linked=True)
+        html = self._read(f'persons/{self.SON}.html')
+        self.assertEqual(
+            html.count('<span class="ped-dates">b. 1888</span>'), 1,
+            'exactly one chart node - the son\'s own - may carry his birth '
+            'year; his mother\'s ancestor slot must not repeat it')
+
+    def test_a_relative_on_a_death_record_gets_no_died_row(self):
+        # SPEC §8.3 has no role word for the deceased, so a death claim can
+        # only say who the OTHERS were. The daughter who reported the death is
+        # named `child`; the unroled person is the one who died.
+        self._seed_person(self.SON, 'Peter Marr')
+        self._seed_person(self.MOM, 'Iris Marr')
+        self._seed_source('s-2222222222', 'Death certificate',
+                          source_type='vital-record')
+        self._seed_claim('c-2222222222', 's-2222222222', 'death',
+                         'Died at Riverton', status='accepted', date_edtf='1920',
+                         persons=(self.MOM, self.SON), roles={self.SON: 'child'})
+        self._run(linked=True)
+        self.assertNotIn('<dt>Died</dt>', self._read(f'persons/{self.SON}.html'))
+        self.assertIn('<dt>Died</dt>', self._read(f'persons/{self.MOM}.html'))
+
+    def test_a_parent_on_a_marriage_certificate_gets_no_married_row(self):
+        # A marriage certificate ordinarily names the couple AND both sets of
+        # parents; only `roles: spouse:` says which of them married.
+        self._seed_person(self.SON, 'Peter Marr')
+        self._seed_person(self.MOM, 'Iris Marr')
+        self._seed_person('p-wwwwwwwwww', 'Ada Finch')
+        self._seed_source('s-3333333333', 'Marriage record',
+                          source_type='vital-record')
+        self._seed_claim('c-3333333333', 's-3333333333', 'marriage',
+                         'Married at Riverton', status='accepted', date_edtf='1910',
+                         persons=(self.SON, 'p-wwwwwwwwww', self.MOM),
+                         roles={self.SON: 'spouse', 'p-wwwwwwwwww': 'spouse',
+                                self.MOM: 'parent'})
+        self._run(linked=True)
+        self.assertNotIn('<dt>Married</dt>', self._read(f'persons/{self.MOM}.html'))
+        self.assertIn('<dt>Married</dt>', self._read(f'persons/{self.SON}.html'))
+
+    def test_both_halves_of_a_couple_keep_married_when_only_one_is_roled(self):
+        # `roles: {spouse: [P-a]}` with the partner left unroled is the typo
+        # case `_lib.spouse_parties` documents - a mistyped id, a name that
+        # stopped resolving - and that rule still reads the two as a couple, so
+        # `fha index` mints the spouse edge and `fha gedcom` writes the MARR.
+        # The summary block has to agree: dropping the partner's Married row
+        # here would leave her page denying a marriage the rest of the archive
+        # asserts about her.
+        self._seed_person(self.SON, 'Peter Marr')
+        self._seed_person('p-wwwwwwwwww', 'Ada Finch')
+        self._seed_source('s-4444444444', 'Marriage record',
+                          source_type='vital-record')
+        self._seed_claim('c-4444444444', 's-4444444444', 'marriage',
+                         'Married at Riverton', status='accepted', date_edtf='1910',
+                         persons=(self.SON, 'p-wwwwwwwwww'),
+                         roles={self.SON: 'spouse'})
+        self._run(linked=True)
+        self.assertIn('<dt>Married</dt>', self._read(f'persons/{self.SON}.html'))
+        self.assertIn(
+            '<dt>Married</dt>', self._read('persons/p-wwwwwwwwww.html'),
+            'the partner a couple claim leaves unroled is still half of the '
+            'couple `spouse_parties` derives, so her own Married row stands')
+
+
+_FAN_LABEL_RE = re.compile(
+    r'<text class="fan-label" font-size="([0-9.]+)"><textPath[^>]*>([^<]*)</textPath>')
+
+# Largest label size each ring is allowed (site.py `fs_max`, indexed by
+# generation) and the readable floor below which a name is shortened instead of
+# shrunk further. Written down here so the tests below state the contract the
+# renderer's docstring describes rather than echoing whatever it happens to emit.
+_RING_MAX_FS = {1: 13.0, 2: 12.0, 3: 11.0}
+_FS_FLOOR = 8.0
+
+
+def _fan_labels(svg):
+    """[(font_size, shown_text)] for every ancestor label in a fan SVG, in
+    document order (the subject's hub label is a different class and excluded)."""
+    return [(float(fs), text) for fs, text in _FAN_LABEL_RE.findall(svg)]
+
+
+class FanChartLabelTests(_Base):
+    """Issue #116: `_render_fan_svg` sizes each label to fit its own arc and
+    writes that size as an SVG font-size presentation attribute. Presentation
+    attributes carry zero specificity, so `.fan-label { font-size: 11px }` beat
+    every computed size - each label was laid out for one size and drawn at
+    another, and the long outer names ran off the end of their textPath. The
+    stylesheet now keeps its default on the container instead, where it is
+    inherited and so yields to a label's own attribute."""
+
+    def _fan(self, num_to_name):
+        """Fan SVG for {Ahnentafel number: name}, drawn to the same depth person
+        pages use (site._FAN_GENERATIONS) so the arcs are the real ones."""
+        labels = {1: {'name': 'Subject', 'url': None}}
+        for num, nm in num_to_name.items():
+            labels[num] = {'name': nm, 'url': None}
+        return site._render_fan_svg(labels, site._FAN_GENERATIONS)
+
+    def test_every_label_carries_its_own_font_size(self):
+        # The stylesheet no longer sizes .fan-label, so the attribute is now
+        # load-bearing: a label emitted without one would inherit the fallback
+        # and lose its fit entirely.
+        svg = self._fan({2: 'Calvin George Hartley', 3: 'Ada', 6: 'Harriet Frances Webb'})
+        self.assertEqual(svg.count('class="fan-label"'), len(_fan_labels(svg)))
+        self.assertEqual(len(_fan_labels(svg)), 3)
+
+    def test_labels_are_sized_per_arc_not_one_flat_size(self):
+        # The point of the auto-shrink: a long name and a short one on the same
+        # ring get different sizes. One flat size for both is the #116 symptom.
+        svg = self._fan({2: 'Bo', 3: 'Chastina Augusta Reed'})
+        sizes = {fs for fs, _ in _fan_labels(svg)}
+        self.assertEqual(len(sizes), 2, f'expected two distinct label sizes, got {sizes}')
+
+    def test_a_name_the_shrink_can_fit_is_never_shortened(self):
+        # 'Chastina Augusta Reed' is 21 characters: the shrink picks a size at
+        # which the whole name fits, so shortening it is a contradiction. The
+        # character budget used to be derived back out of that size, and float
+        # rounding turned "exactly 21 fit" into 20 - an ellipsis on a name the
+        # renderer had just made room for.
+        for name in ('Chastina Augusta Reed', 'Caleb Comstock Hartley',
+                     'Wilhelmina Cartwright'):
+            for num in (2, 4, 8):
+                svg = self._fan({num: name})
+                fs, shown = _fan_labels(svg)[0]
+                if fs > _FS_FLOOR:
+                    self.assertEqual(shown, name,
+                                     f'{name!r} shortened at {fs}px, above the {_FS_FLOOR}px floor')
+
+    def test_a_short_name_keeps_its_rings_full_size(self):
+        # The fix must not shrink the common case: a name with room to spare
+        # renders at its ring's ceiling, not at some universally reduced size.
+        for num, gen in ((2, 1), (4, 2), (8, 3)):
+            svg = self._fan({num: 'Ada'})
+            fs, shown = _fan_labels(svg)[0]
+            self.assertEqual(shown, 'Ada')
+            self.assertEqual(fs, _RING_MAX_FS[gen])
+
+    def test_a_name_past_the_floor_is_shortened_and_kept_in_the_tooltip(self):
+        # Below the readable floor the renderer stops shrinking and shortens
+        # instead - never lossily, because the whole name rides a <title>.
+        long_name = 'Maximilian Bartholomew Fitzwilliam Cholmondeley'
+        svg = self._fan({8: long_name})
+        fs, shown = _fan_labels(svg)[0]
+        self.assertEqual(fs, _FS_FLOOR)
+        self.assertTrue(shown.endswith('…'), shown)
+        self.assertLess(len(shown), len(long_name))
+        self.assertIn(f'<title>{long_name}</title>', svg)
+
+    def test_a_label_is_shown_whole_or_sized_at_the_floor(self):
+        # The renderer's contract in one line: shrink to fit, and shorten only
+        # once shrinking has bottomed out. Swept across name lengths and rings
+        # because the failure was a float edge that hit only some lengths.
+        for num, gen in ((2, 1), (4, 2), (8, 3)):
+            for length in range(1, 41):
+                name = 'M' * length
+                fs, shown = _fan_labels(self._fan({num: name}))[0]
+                self.assertGreaterEqual(fs, _FS_FLOOR)
+                self.assertLessEqual(fs, _RING_MAX_FS[gen])
+                if shown != name:
+                    self.assertEqual(fs, _FS_FLOOR,
+                                     f'{length}-char name shortened at {fs}px on ring {gen}')
+
+    def test_person_page_carries_the_computed_label_sizes(self):
+        # End to end: the per-label size has to survive the site build into the
+        # published HTML, not just exist inside the renderer.
+        self._seed_person('p-aaaaaaaaaa', 'Ada Jane Hartley', surname='Hartley')
+        self._seed_person('p-bbbbbbbbbb', 'Bo Ford', surname='Ford')
+        self._seed_person('p-cccccccccc', 'Chastina Augusta Reed', surname='Reed')
+        self._seed_rel('p-aaaaaaaaaa', 'parent', 'p-bbbbbbbbbb')
+        self._seed_rel('p-aaaaaaaaaa', 'parent', 'p-cccccccccc')
+        self._run(linked=True)
+        page = self._read('persons/p-aaaaaaaaaa.html')
+        labels = {text: fs for fs, text in _fan_labels(page)}
+        self.assertEqual(set(labels), {'Bo Ford', 'Chastina Augusta Reed'})
+        self.assertGreater(labels['Bo Ford'], labels['Chastina Augusta Reed'])
+
+
+class FanChartStyleTests(unittest.TestCase):
+    def test_fan_label_has_no_fixed_font_size(self):
+        # Issue #116: _render_fan_svg() computes a per-label auto-shrink
+        # font-size and writes it as an SVG presentation attribute; a CSS
+        # font-size rule on .fan-label silently overrides that computed
+        # value (SVG presentation attributes lose to any CSS rule, even a
+        # plain class selector). Guard against reintroducing a fixed size.
+        css = (ROOT / 'design' / 'styles.css').read_text(encoding='utf-8')
+        # Anchored to the start of a line so a selector quoted inside one of
+        # the surrounding comments cannot stand in for the rule itself.
+        m = re.search(r'^\.fan-label\s*\{([^}]*)\}', css, re.M)
+        self.assertIsNotNone(m, '.fan-label rule not found in design/styles.css')
+        self.assertNotIn('font-size', m.group(1))
+
+    def test_fan_chart_container_supplies_the_fallback_size(self):
+        # Deleting the .fan-label size alone would leave a label with no
+        # attribute inheriting the 1.05rem body text - a worse clip than the
+        # 11px it replaced. The default belongs on the container, where it is
+        # inherited and therefore loses to a label's own attribute.
+        css = (ROOT / 'design' / 'styles.css').read_text(encoding='utf-8')
+        m = re.search(r'^\.fan-chart\s*\{([^}]*)\}', css, re.M)
+        self.assertIsNotNone(m, '.fan-chart rule not found in design/styles.css')
+        self.assertIn('font-size', m.group(1))
+
+
+class CommittedShowcaseAssetTests(unittest.TestCase):
+    """`_copy_assets` copies design/styles.css verbatim into every build's
+    assets/, and the two example sites under example-archive/generated/ are
+    committed as browsable showcases. A stylesheet fix that stops at design/
+    therefore still ships the old bug to anyone reading those - which is how
+    the #116 fix first landed."""
+
+    def test_committed_showcase_stylesheets_match_the_design_package(self):
+        design = (ROOT / 'design' / 'styles.css').read_text(encoding='utf-8')
+        for rel in ('example-archive/generated/site/assets/styles.css',
+                    'example-archive/generated/site-workbench/assets/styles.css'):
+            with self.subTest(rel):
+                self.assertEqual(
+                    (ROOT / rel).read_text(encoding='utf-8'), design,
+                    f'{rel} is stale. Rebuild the standalone showcase with\n'
+                    '  python3 tools/fha.py index --root example-archive\n'
+                    '  python3 tools/fha.py site --root example-archive --standalone '
+                    '--out generated/site\n'
+                    'and copy design/styles.css over the site-workbench snapshot '
+                    '(that one is built by `fha serve` and cannot be rebuilt '
+                    'reproducibly - it embeds a per-process CSRF token).')
 
 
 if __name__ == '__main__':
