@@ -1599,6 +1599,22 @@ fha site --root example-archive
 # library vendored; no CDN; works from file://
 ```
 
+**Amended 2026-08-22 (#115, #152):** the checklist above matches M8.5's
+original shape, since superseded on the home page - kept here as the
+historical record of what this milestone shipped, not as today's acceptance
+check. #115 replaced the home page's descendant tree with the
+**marriage-aware ancestor pedigree** (a server-rendered static SVG, seeded
+on `site.home_person`/`root_person`, depth controlled by
+`site.home_pedigree_generations`) as the home page's centerpiece; the
+interactive descendant explorer this section built is **not gone** - it
+moved to a per-person opt-in link on the **Person (curated)** page ("See
+descendants of {name} →", inside a closed-by-default `<details>`), seeded on
+THAT person rather than once from the root's apex. The vendored renderer,
+adapter, and neutral tree JSON contract this section built are all still the
+same pipeline, unchanged in shape - only where and how often it is seeded
+changed. See TOOLING §12 ("Pages: Home" / "Tree rendering") for the current
+shipped shape and `docs/SITE_PLAN.md` for the customization-layer view.
+
 ---
 
 ## Layer 9 - Scaffolding (Milestone 9)
