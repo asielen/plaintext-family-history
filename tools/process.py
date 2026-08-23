@@ -110,6 +110,8 @@ are found the user is asked whether they are *one* source (shared S-id) or
 #
 #  Source-stub sidecar (*.notes.md) + bundle notes.md
 #    _find_sidecar             - the {stem}.notes.md beside an asset, if any
+#    _find_back_sibling        - an unambiguous {base_id}-back sibling beside a plain
+#                                 scan, pulled in automatically rather than left behind (#113)
 #    _companion_for_sidecar    - resolve direct sidecar input to its asset
 #    _read_sidecar             - its hint frontmatter + prose body
 #    _bundle_file_hints        - bundle notes per-file role/copy/primary hints
@@ -700,6 +702,39 @@ def _is_sidecar_path(file_path: Path) -> bool:
     return file_path.name.lower().endswith('.notes.md')
 
 
+def _find_back_sibling(file_path: Path) -> Path | None:
+    """Return the unambiguous `{base_id}-back`/`_back` sibling beside a plain
+    scan, if one exists on disk - or None (#113).
+
+    A trailing copy letter ('portrait_1880b') names a SEPARATE print of the
+    same picture (TOOLING §6) - never a back, and never auto-attached here;
+    which member of a set is "the" primary is exactly the judgment call the
+    photo variation-set prompt exists for (`_process_variation_set`). An
+    explicit `-back`/`_back` suffix is different in kind: it names no other
+    physical item, so there is no ambiguity to ask a human about, and no
+    prompt-driven grouping flow watches for it when `file_path` is a
+    DOCUMENT (`process_document` has no sibling awareness at all otherwise).
+    Left unattached, a document's back scan - often the only surviving
+    caption or provenance note - simply sits on disk, unrecorded and
+    unmentioned, until someone happens to notice a name that no longer has a
+    record (#113's actual reported case).
+
+    Restricted to `file_path` itself being a PLAIN scan (no variant letter,
+    no recognised part-kind, no crop) - the same "plain" test
+    `select_variation_primary` uses for its default pick - so processing a
+    copy-letter print or a crop on its own never reaches for a shared back
+    scan that conceptually belongs with the group's primary, not with it.
+    """
+    parsed = parse_media_filename(file_path.stem)
+    if parsed.variant_id is not None or parsed.part_kind != 'none' or parsed.is_crop:
+        return None
+    for sep in ('-', '_'):
+        candidate = file_path.with_name(f'{file_path.stem}{sep}back{file_path.suffix}')
+        if candidate.is_file():
+            return candidate
+    return None
+
+
 def _companion_for_sidecar(sidecar: Path) -> Path | None:
     """Return the single same-stem asset paired with a source-stub sidecar.
 
@@ -1260,6 +1295,7 @@ def process_document(
     real_path: Path | None = None,
     source_id: str | None = None,
     report: dict | None = None,
+    back_sibling: Path | None = None,
 ) -> int:
     """M7.1: rename a documents-root original and scaffold its source record.
 
@@ -1280,6 +1316,15 @@ def process_document(
     (`fha serve`'s process.file verb) to read back - the id used is reported
     on BOTH a dry-run preview and a live apply, so the two can be compared or
     threaded together, the same round-trip person.new/claim.new already have.
+
+    `back_sibling` (#113) is an already-resolved `-back`/`_back` companion the
+    CALLER found and relocated (`_run_process` runs the same inbox-relocation
+    dance on it that it runs on the primary, since the back scan may be
+    sitting in the same inbox folder the primary came from). Left `None`
+    (direct callers, tests, the `--more`/photo paths that never pass it), this
+    function falls back to its own same-folder discovery via
+    `_find_back_sibling` - covering the common case of a back scan already
+    co-located with its primary, just without inbox-awareness.
     """
     if existing := _filename_has_source_id(file_path):
         raise ProcessError(
@@ -1312,6 +1357,16 @@ def process_document(
                     'Fix the sidecar, or pass --type with one of those values.'
                 )
             source_type = hinted
+
+    # An unambiguous `-back`/`_back` sibling beside a plain scan is pulled in
+    # automatically rather than left on disk unrecorded (#113) - see
+    # `_find_back_sibling`'s docstring for why this is safe without a human
+    # prompt (unlike a copy-letter print, a back names no other physical item).
+    # An explicit `back_sibling` (the CLI's own inbox-aware discovery) wins;
+    # otherwise fall back to the same-folder check against wherever this
+    # file's bytes actually are right now.
+    if back_sibling is None:
+        back_sibling = _find_back_sibling(real_path if real_path is not None else file_path)
 
     # DNA sources always carry restricted: true and must live under
     # documents/dna/ (SPEC §8.5.5, lint E017) - refuse before scaffolding a
@@ -1347,6 +1402,14 @@ def process_document(
     else:
         new_path = file_path.with_name(new_name)
 
+    # The back sibling (if any) is filed beside its primary, sharing the same
+    # slug/S-id with a `-back` role suffix - the same naming grammar `--more`
+    # uses for an attached companion (SPEC §12.1: `{slug}[-{role}]_{S-id}.ext`).
+    back_new_path = (
+        new_path.with_name(f'{final_slug}-back_{sid}{back_sibling.suffix}')
+        if back_sibling is not None else None
+    )
+
     # SPEC §14: proof-argument sources live under sources/proofs/, not a
     # sources/proof-argument/ directory matching the source_type literally.
     record_dir = archive_root / 'sources' / _record_subdir(source_type)
@@ -1355,16 +1418,23 @@ def process_document(
 
     if new_path.exists():
         raise ProcessError(f'destination file already exists: {new_path.name}')
+    if back_new_path is not None and back_new_path.exists():
+        raise ProcessError(f'destination file already exists: {back_new_path.name}')
     if record_path.exists():
         raise ProcessError(f'record already exists: {_rel(record_path, archive_root)}')
+
+    file_entries = [{'file': file_alias, 'role': 'primary', 'original_filename': file_path.name}]
+    if back_sibling is not None:
+        back_alias = path_to_alias(back_new_path, 'documents', fha_config, archive_root)
+        file_entries.append({'file': back_alias, 'role': 'back',
+                             'original_filename': back_sibling.name})
 
     # The original inbox basename is the human tag the source was known by; keep
     # it as an alias so any `[[old-name]]` reference still resolves once the file
     # is renamed to `{slug}_{S-id}`. _scaffold_text drops it when it matches the
     # slug the filename already carries (no redundant alias).
     text = _scaffold_text(
-        sid, final_title, source_type,
-        [{'file': file_alias, 'role': 'primary', 'original_filename': file_path.name}],
+        sid, final_title, source_type, file_entries,
         notes_body=notes_body,
         restricted=source_type == 'dna' or _sidecar_flag(sidecar_meta, 'restricted'),
         citation=_sidecar_str(sidecar_meta, 'citation'),
@@ -1382,6 +1452,11 @@ def process_document(
     if dry_run:
         print(f'[dry-run] Would mint {sid}')
         print(f'[dry-run] Would rename {file_path.name} -> {dest_display}')
+        if back_sibling is not None:
+            back_display = (back_new_path.name if back_new_path.parent == back_sibling.parent
+                            else _rel(back_new_path, archive_root))
+            print(f'[dry-run] Would also rename {back_sibling.name} -> {back_display} '
+                  f'(role: back - found beside {file_path.name})')
         print(f'[dry-run] Would scaffold {_rel(record_path, archive_root)}')
         if sidecar is not None:
             print(f'[dry-run] Would delete stub {sidecar.name} (its notes -> ## Notes)')
@@ -1396,6 +1471,12 @@ def process_document(
         file_path.rename(new_path)
         undo.append((f'move {new_path.name} back to {file_path.name}',
                      lambda: new_path.rename(file_path)))
+
+        if back_sibling is not None:
+            back_new_path.parent.mkdir(parents=True, exist_ok=True)
+            back_sibling.rename(back_new_path)
+            undo.append((f'move {back_new_path.name} back to {back_sibling.name}',
+                         lambda: back_new_path.rename(back_sibling)))
 
         record_dir.mkdir(parents=True, exist_ok=True)
         record_path.write_text(text, encoding='utf-8')
@@ -1419,6 +1500,11 @@ def process_document(
 
     print(f'Minted {sid}')
     print(f'Renamed {file_path.name} -> {dest_display}')
+    if back_sibling is not None:
+        back_display = (back_new_path.name if back_new_path.parent == back_sibling.parent
+                        else _rel(back_new_path, archive_root))
+        print(f'Also renamed {back_sibling.name} -> {back_display} (role: back - '
+              f'found beside {file_path.name} and attached automatically)')
     print(f'Scaffolded {_rel(record_path, archive_root)}')
     if sidecar is not None:
         print(f'Consumed stub {sidecar.name} (notes -> ## Notes)')
@@ -4069,6 +4155,17 @@ def _run_process(args: argparse.Namespace) -> int:
     # (the bytes really are at file_path now) and when no relocation happened.
     real_path = pre_move_path if dry_run and file_path != pre_move_path else None
 
+    # An unambiguous `-back`/`_back` sibling (#113) may still be sitting
+    # wherever the PRIMARY itself was found - its own inbox folder, if that is
+    # where it came from - so it needs the identical inbox-relocation dance
+    # the primary just got, run here rather than inside process_document,
+    # which has no way to know the primary's pre-move location once it has
+    # already been relocated. Set (and undone) alongside relocate_undo below;
+    # stays None whenever nothing is found (the common case, and every path
+    # other than a plain single document).
+    back_relocate_undo = None
+    back_sibling = None
+
     # The relocation above runs before process_document/process_photo's own
     # validation (e.g. dna's documents/dna/ requirement) and transactions, so
     # any non-clean outcome below - refusal or rollback alike - must undo the
@@ -4117,6 +4214,12 @@ def _run_process(args: argparse.Namespace) -> int:
                           file=sys.stderr)
                     rc = EXIT_ERRORS
                 else:
+                    back_src = _find_back_sibling(pre_move_path)
+                    if back_src is not None:
+                        back_sibling, _, back_relocate_undo = _relocate_from_inbox(
+                            archive_root, fha_config, back_src, None,
+                            source_type=source_type, dry_run=dry_run,
+                        )
                     rc = process_document(
                         archive_root, fha_config, file_path,
                         source_type=source_type or _DEFAULT_DOCUMENT_TYPE,
@@ -4124,20 +4227,27 @@ def _run_process(args: argparse.Namespace) -> int:
                         source_date=source_date, dry_run=dry_run,
                         real_path=real_path,
                         source_id=source_id_override, report=mint_report,
+                        back_sibling=back_sibling,
                     )
         if rc != EXIT_CLEAN and relocate_undo is not None:
             relocate_undo()
+        if rc != EXIT_CLEAN and back_relocate_undo is not None:
+            back_relocate_undo()
         args.result_source_id = mint_report.get('source_id')
         return rc
     except ProcessError as e:
         print(f'ERROR: {e}', file=sys.stderr)
         if relocate_undo is not None:
             relocate_undo()
+        if back_relocate_undo is not None:
+            back_relocate_undo()
         return EXIT_ERRORS
     except RuntimeError as e:
         print(f'ERROR: {e}', file=sys.stderr)
         if relocate_undo is not None:
             relocate_undo()
+        if back_relocate_undo is not None:
+            back_relocate_undo()
         return EXIT_FAILURE
 
 

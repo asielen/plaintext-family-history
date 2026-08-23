@@ -960,6 +960,107 @@ class ProcessTestCase(unittest.TestCase):
         self.assertEqual([p for p in (self.archive / 'documents').iterdir()
                           if p.is_file()], [])
 
+    # ── #113: a print/copy letter is never read as "back" ────────────────────
+
+    def test_bare_copy_letter_is_never_read_as_back(self) -> None:
+        # The reported bug's exact shape: a trailing letter directly after a
+        # sequence number ('item-04-01400b') names a SEPARATE print of the
+        # same negative - never the back of a print. Only an explicit
+        # -back/_back suffix means that.
+        letter = parse_media_filename('item-04-01400b')
+        self.assertNotEqual(letter.part_kind, 'back')
+        self.assertEqual(letter.variant_id, 'b')
+        self.assertEqual(letter.base_id, 'item-04-01400')
+
+        explicit_back = parse_media_filename('item-04-01400-back')
+        self.assertEqual(explicit_back.part_kind, 'back')
+        self.assertEqual(explicit_back.base_id, 'item-04-01400')
+
+    def test_photo_group_assigns_primary_back_and_copy_roles(self) -> None:
+        # #113's own fixture: a plain primary, its explicit -back, and a
+        # bare-letter second print of the same negative, processed together.
+        # Confirms the role-assignment half of #113 end-to-end (already
+        # correct in _lib's grammar - this locks it against regression).
+        self._install_photo_store()
+        self._install_prompt('one')
+        primary = self.archive / 'photos' / '1880' / 'x-00100.jpg'
+        primary.write_bytes(b'\xff\xd8\xff')
+        back = self.archive / 'photos' / '1880' / 'x-00100-back.jpg'
+        back.write_bytes(b'\xff\xd8\xff')
+        copy_print = self.archive / 'photos' / '1880' / 'x-00100b.jpg'
+        copy_print.write_bytes(b'\xff\xd8\xff')
+
+        rc = self._run([str(primary)])
+        self.assertEqual(rc, EXIT_CLEAN)
+
+        record = next((self.archive / 'sources' / 'photos').glob('*_S-*.md'))
+        files = {Path(f['file']).name: f for f in read_record(record)['meta']['files']}
+        self.assertEqual(len(files), 3)
+        self.assertEqual(files['x-00100.jpg']['role'], 'primary')
+        self.assertEqual(files['x-00100-back.jpg']['role'], 'back')
+        self.assertNotEqual(files['x-00100b.jpg']['role'], 'back')
+        self.assertEqual(files['x-00100b.jpg']['copy'], 'b')
+
+    def test_document_back_sibling_auto_attached_same_folder(self) -> None:
+        # #113: a document's -back scan is pulled in automatically at import
+        # time - unlike a copy-letter print, an explicit -back suffix names
+        # no other physical item, so there is nothing for a human to be
+        # asked about.
+        primary = self.archive / 'documents' / 'census' / 'x-00200.txt'
+        primary.write_text('front text', encoding='utf-8')
+        back = self.archive / 'documents' / 'census' / 'x-00200-back.txt'
+        back.write_text('handwritten caption', encoding='utf-8')
+
+        rc = self._run([str(primary), '--type', 'census'])
+        self.assertEqual(rc, EXIT_CLEAN)
+
+        self.assertFalse(primary.exists())
+        self.assertFalse(back.exists())  # not left on disk unrecorded
+        record = next((self.archive / 'sources' / 'census').glob('*_S-*.md'))
+        files = read_record(record)['meta']['files']
+        self.assertEqual(len(files), 2)
+        self.assertEqual(files[0]['role'], 'primary')
+        self.assertEqual(files[1]['role'], 'back')
+        self.assertEqual(files[1]['original_filename'], 'x-00200-back.txt')
+        attached_back = list((self.archive / 'documents' / 'census').glob('*-back_S-*.txt'))
+        self.assertEqual(len(attached_back), 1)
+
+    def test_document_back_sibling_auto_attached_from_inbox(self) -> None:
+        # Same as above, but both files staged together in inbox/ - the
+        # realistic bulk-migration shape #113 was actually found in.
+        (self.archive / 'inbox').mkdir()
+        primary = self.archive / 'inbox' / 'x-00300.txt'
+        primary.write_text('front text', encoding='utf-8')
+        back = self.archive / 'inbox' / 'x-00300-back.txt'
+        back.write_text('handwritten caption', encoding='utf-8')
+
+        rc = self._run([str(primary), '--type', 'census'])
+        self.assertEqual(rc, EXIT_CLEAN)
+
+        self.assertEqual(list((self.archive / 'inbox').iterdir()), [])
+        record = next((self.archive / 'sources' / 'census').glob('*_S-*.md'))
+        files = read_record(record)['meta']['files']
+        self.assertEqual(len(files), 2)
+        self.assertEqual(files[1]['role'], 'back')
+        self.assertEqual(files[1]['original_filename'], 'x-00300-back.txt')
+
+    def test_document_copy_letter_primary_does_not_pull_back(self) -> None:
+        # Scope guard: only a PLAIN scan auto-pulls a back sibling - a
+        # copy-letter print processed on its own must not reach for a back
+        # scan that conceptually belongs with the group's plain primary.
+        copy_print = self.archive / 'documents' / 'census' / 'x-00400b.txt'
+        copy_print.write_text('second print', encoding='utf-8')
+        back = self.archive / 'documents' / 'census' / 'x-00400-back.txt'
+        back.write_text('caption', encoding='utf-8')
+
+        rc = self._run([str(copy_print), '--type', 'census'])
+        self.assertEqual(rc, EXIT_CLEAN)
+
+        self.assertTrue(back.exists())  # left untouched, not auto-pulled
+        record = next((self.archive / 'sources' / 'census').glob('*_S-*.md'))
+        files = read_record(record)['meta']['files']
+        self.assertEqual(len(files), 1)
+
     # ── classification + slug units ──────────────────────────────────────────
 
     def test_classify_asset(self) -> None:
