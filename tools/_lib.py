@@ -299,10 +299,13 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #                                 clustering key `fha places candidates` groups
 #                                 unlinked place_text with (moved here from
 #                                 places.py so claim.py can reuse it - #79 pt.3)
-#    read_places_registry      - places/places.yaml parsed to a plain list of
-#                                 dicts, best-effort (never raises)
+#    read_places_registry      - places/places.yaml parsed to (rows, error);
+#                                 never raises - error is None on a clean read
+#                                 or a missing file, set only when the file
+#                                 EXISTS but could not be parsed (PR #150 review)
 #    match_place_text_to_registry - write-time place_text -> place_id lookup
-#                                 (exact/near/None tiers) - issue #79 point 3
+#                                 (exact/near/None tiers) - issue #79 point 3;
+#                                 forwards registry_error from the read above
 #
 #  Alias resolution / publication guards
 #    resolve_typed_ref         - structured-field ref → typed canonical ID (K4 shared home)
@@ -4956,36 +4959,48 @@ def place_text_cluster_key(text: str) -> str:
     return ' '.join(tokens)
 
 
-def read_places_registry(archive_root: str | Path) -> list[dict]:
+def read_places_registry(archive_root: str | Path) -> tuple[list[dict], str | None]:
     """
     Parse `places/places.yaml` into a plain list of place dicts (each at
     least carrying `id`; `name`/`alt_names` when the record has them).
 
-    Best-effort and read-only, the same posture claim.py's own
-    `_place_known_in_index` takes toward the SQLite index: a missing file,
-    an unreadable or unparseable YAML, a non-list top level, or a stray
-    non-mapping row all degrade to an empty registry rather than raising.
-    The one caller today (`match_place_text_to_registry`, issue #79 point 3)
-    treats "the registry could not be read right now" the same as "the
-    registry is empty" - a claim mint must never fail because a human
-    happened to be mid-hand-edit of places.yaml when it ran.
+    Returns `(rows, error)`. Best-effort and read-only, the same posture
+    claim.py's own `_place_known_in_index` takes toward the SQLite index -
+    but a missing file and a MALFORMED one are no longer the same outcome
+    (Codex review, PR #150): a fresh archive's not-yet-created
+    `places.yaml` is a normal empty registry (`error` stays `None`), while a
+    file that EXISTS but cannot be read as one - unreadable, unparseable
+    YAML, or a top level that isn't a list - is a distinguishable failure
+    (`rows` is `[]`, `error` names what went wrong in plain language). The
+    caller (`match_place_text_to_registry`, issue #79 point 3) forwards
+    `error` on so `claim.py`'s `_resolve_place_text_for_write` can warn with
+    a concrete repair command instead of silently proceeding as if the
+    registry had simply come up empty - a claim mint/edit must still
+    succeed either way, `place_text` unlinked, but the human deserves to
+    know WHY it wasn't linked when the reason is "your registry has a
+    problem" rather than "nothing matched".
+
+    A stray non-mapping row, or a row with no `id`, inside an otherwise
+    valid list is NOT a registry-level error - the file parsed fine as a
+    list of places, one entry is just junk - so those rows are quietly
+    skipped and `error` stays `None`.
     """
     if yaml is None:
-        return []
+        return [], None
     path = Path(archive_root) / 'places' / 'places.yaml'
     if not path.is_file():
-        return []
+        return [], None
     try:
         text = path.read_text(encoding='utf-8')
-    except OSError:
-        return []
+    except OSError as e:
+        return [], f'places/places.yaml could not be read: {e}'
     try:
         data = yaml.safe_load(text)
-    except yaml.YAMLError:
-        return []
+    except yaml.YAMLError as e:
+        return [], f'places/places.yaml has a YAML error: {e}'
     if not isinstance(data, list):
-        return []
-    return [row for row in data if isinstance(row, dict) and row.get('id')]
+        return [], 'places/places.yaml is not a list at the top level (see SPEC §15 for the registry shape)'
+    return [row for row in data if isinstance(row, dict) and row.get('id')], None
 
 
 def match_place_text_to_registry(archive_root: str | Path, place_text: str) -> dict:
@@ -5021,16 +5036,22 @@ def match_place_text_to_registry(archive_root: str | Path, place_text: str) -> d
 
     Returns `{'tier': 'exact'|'near'|None, 'place_id': str|None (display-
     cased, e.g. 'L-baba9801fa'), 'name': str|None (the registered name or
-    alt_name that matched)}`.
+    alt_name that matched), 'registry_error': str|None}`. `registry_error`
+    carries `read_places_registry`'s plain-language failure reason straight
+    through when `places/places.yaml` EXISTS but could not be parsed -
+    distinct from a genuine, error-free miss (Codex review, PR #150). The
+    caller (`claim.py`'s `_resolve_place_text_for_write`) surfaces it as a
+    warning instead of treating the lookup as an ordinary no-match.
     """
     key = normalize_place_text(place_text)
     if not key:
-        return {'tier': None, 'place_id': None, 'name': None}
+        return {'tier': None, 'place_id': None, 'name': None, 'registry_error': None}
     token_key = place_text_cluster_key(place_text)
 
     exact_hits: dict[str, str] = {}
     near_hits: dict[str, str] = {}
-    for place in read_places_registry(archive_root):
+    rows, registry_error = read_places_registry(archive_root)
+    for place in rows:
         pid = place.get('id')
         if not (isinstance(pid, str) and is_valid_id(pid) and id_type_of(pid) == 'L'):
             continue
@@ -5050,13 +5071,15 @@ def match_place_text_to_registry(archive_root: str | Path, place_text: str) -> d
     if exact_hits:
         if len(exact_hits) == 1:
             (pid_norm, name), = exact_hits.items()
-            return {'tier': 'exact', 'place_id': fmt_id_display(pid_norm), 'name': name}
-        return {'tier': None, 'place_id': None, 'name': None}
+            return {'tier': 'exact', 'place_id': fmt_id_display(pid_norm), 'name': name,
+                    'registry_error': registry_error}
+        return {'tier': None, 'place_id': None, 'name': None, 'registry_error': registry_error}
 
     if len(near_hits) == 1:
         (pid_norm, name), = near_hits.items()
-        return {'tier': 'near', 'place_id': fmt_id_display(pid_norm), 'name': name}
-    return {'tier': None, 'place_id': None, 'name': None}
+        return {'tier': 'near', 'place_id': fmt_id_display(pid_norm), 'name': name,
+                'registry_error': registry_error}
+    return {'tier': None, 'place_id': None, 'name': None, 'registry_error': registry_error}
 
 
 def scan_ids_in_tree(archive_root: str | Path) -> set[str]:

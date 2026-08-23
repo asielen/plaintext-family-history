@@ -389,9 +389,14 @@ def _resolve_place_text_for_write(
     Returns None when there is nothing to look up (a `place` was already
     given explicitly - never override an explicit choice - or there is no
     `place_text` to match). Otherwise returns the match dict
-    (`{'tier', 'place_id', 'name'}`); the caller decides what to DO with it
-    - only `run_claim`/`run_claim_new` know whether this is a brand-new
-    claim or a correction to one that may already carry its own `place:`.
+    (`{'tier', 'place_id', 'name', 'registry_error'}`); the caller decides
+    what to DO with it - only `run_claim`/`run_claim_new` know whether this
+    is a brand-new claim or a correction to one that may already carry its
+    own `place:`. `registry_error` (Codex review, PR #150) is set only when
+    `places/places.yaml` EXISTS but could not be parsed - the caller warns
+    with `_place_registry_error_note` instead of treating it as a silent
+    miss (`tier` is always `None` alongside a set `registry_error`, since a
+    malformed registry yields no rows to match against).
 
     Deliberately conservative: this only ever *proposes* an id for the
     caller to adopt when the tier is `'exact'`. A `'near'` tier is never
@@ -403,22 +408,30 @@ def _resolve_place_text_for_write(
     return match_place_text_to_registry(archive_root, place_text)
 
 
-def _place_match_note(cid_display: str, match: dict) -> str | None:
+def _place_match_note(cid_display: str, match: dict, *, dry_run: bool = False) -> str | None:
     """The human-facing line for a `_resolve_place_text_for_write` result,
     or None when the tier is neither `'exact'` nor `'near'` (nothing to say
     - a plain miss is silent, exactly as it was before this feature: an
     unlinked `place_text` is the normal case, not a shortfall).
 
-    `'exact'` reports what just happened (an automatic write) and how to
-    correct it if it's wrong; `'near'` reports what did NOT happen and why,
-    with the exact command that would link it on the human's own say-so -
-    the same `fha confirm place ... --into` arm `process-source`/`place-
-    research` already document for this merge case.
+    `'exact'` reports the automatic `place:` write - phrased as something
+    that ALREADY HAPPENED on a live run, or something that WOULD happen on
+    a `--dry-run` preview (`dry_run=True`). Before this distinction (Codex
+    review, PR #150), a `--dry-run` call said "attached place: automatically"
+    in the very same breath the dry-run trailer said nothing was written -
+    two directly contradictory mutation-status lines in one preview. `'near'`
+    reports what did NOT happen and why, with the exact command that would
+    link it on the human's own say-so - the same `fha confirm place ...
+    --into` arm `process-source`/`place-research` already document for this
+    merge case; that wording is accurate on both dry-run and live calls (a
+    near match is never auto-attached either way), so it needs no
+    dry_run-conditional form.
     """
     if match['tier'] == 'exact':
+        verb = 'would attach' if dry_run else 'attached'
         return (
             f"place_text matched the registered place {match['name']!r} "
-            f"({match['place_id']}) - attached place: automatically (issue #79 "
+            f"({match['place_id']}) - {verb} place: automatically (issue #79 "
             f"point 3: write-time place resolution). Wrong match? Correct it with "
             f"`fha claim {cid_display} --place L-...`.")
     if match['tier'] == 'near':
@@ -429,6 +442,22 @@ def _place_match_note(cid_display: str, match: dict) -> str | None:
             f"If this is the same place, link it with `fha confirm place {cid_display} "
             f"--into {match['place_id']}`.")
     return None
+
+
+def _place_registry_error_note(place_text: str, error: str) -> str:
+    """The human-facing warning for a `_resolve_place_text_for_write` result
+    whose `registry_error` is set (Codex review, PR #150) - `places.yaml`
+    exists but could not be parsed, so the write-time lookup never ran at
+    all. Deliberately a WARNING, not a refusal: the claim still mints/edits
+    successfully with `place_text` left unlinked (same as a genuine miss),
+    but the human deserves an honest reason instead of a silent no-op that
+    looks identical to "nothing in the registry matched".
+    """
+    return (
+        f'place_text {place_text!r} could not be checked against the place registry - '
+        f'places/places.yaml has a problem: {error}. Run `fha lint` to find and fix it; '
+        "until then, place_text won't auto-resolve to a registered place. The claim "
+        'was still written, with place_text left unlinked.')
 
 
 def _validate_field_args(
@@ -1035,8 +1064,14 @@ def run_claim(
 
     `place_text` given with no `place` and the claim not already carrying
     one is looked up against the registry (issue #79 point 3) - an exact
-    match auto-attaches `place:` (reported in the messages); a near match
-    is only noted, never attached; a miss changes nothing.
+    match auto-attaches `place:`, reported as ALREADY attached on a live
+    write, or as something that WOULD be attached under `--dry-run` (Codex
+    review, PR #150 - the two must never say contradictory things in one
+    preview); a near match is only noted, never attached; a miss changes
+    nothing. If `places/places.yaml` exists but could not be parsed, the
+    lookup cannot run at all - the edit still applies with `place_text`
+    unlinked, but a warning names the parse problem and points at `fha
+    lint`, rather than looking like an ordinary miss.
     """
     result = Result(data={
         'status': None, 'claim_id': None, 'before_status': None,
@@ -1255,7 +1290,9 @@ def run_claim(
     echo_lines = _echo_field_lines(value=value, place_text=place_text, anchor=anchor, notes=notes)
 
     if place_match is not None:
-        note = _place_match_note(fmt_id_display(cid), place_match)
+        if place_match.get('registry_error'):
+            result.add('warning', _place_registry_error_note(place_text, place_match['registry_error']))
+        note = _place_match_note(fmt_id_display(cid), place_match, dry_run=dry_run)
         if note is not None:
             result.add('info', note)
 
@@ -1708,9 +1745,15 @@ def run_claim_new(
 
     `place_text` given with no `place` is looked up against the registry
     before the claim is rendered (issue #79 point 3) - an exact match mints
-    the claim with `place:` already attached (reported in the messages); a
-    near match is only noted, never attached; a miss mints exactly as
-    before, `place_text:` alone.
+    the claim with `place:` already attached, reported as ALREADY attached
+    on a live write, or as something that WOULD be attached under
+    `--dry-run` (Codex review, PR #150 - the two must never say
+    contradictory things in one preview); a near match is only noted, never
+    attached; a miss mints exactly as before, `place_text:` alone. If
+    `places/places.yaml` exists but could not be parsed, the lookup cannot
+    run at all - the claim still mints with `place_text` unlinked, but a
+    warning names the parse problem and points at `fha lint`, rather than
+    looking like an ordinary miss.
     """
     result = Result(data={'status': None, 'claim_id': None, 'source_id': None})
 
@@ -1840,7 +1883,9 @@ def run_claim_new(
                    f'{fmt_id_display(cid)} has no persons: yet - `fha lint` will flag it until '
                    f'you link one: `fha claim {fmt_id_display(cid)} --persons P-id[,P-id...]`.')
     if place_match is not None:
-        note = _place_match_note(fmt_id_display(cid), place_match)
+        if place_match.get('registry_error'):
+            result.add('warning', _place_registry_error_note(place_text, place_match['registry_error']))
+        note = _place_match_note(fmt_id_display(cid), place_match, dry_run=dry_run)
         if note is not None:
             result.add('info', note)
     if place is not None and not _place_known_in_index(archive_root, place):

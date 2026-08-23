@@ -1090,6 +1090,25 @@ class RunClaimNewPlaceResolutionTests(unittest.TestCase):
         self.assertIn('matched the registered place', text)
         self.assertIn('attached place: automatically', text)
 
+    def test_dry_run_exact_match_says_would_attach_not_attached(self) -> None:
+        # Codex review, PR #150: a --dry-run preview used to say "attached
+        # place: automatically" (implying a write happened) in the same
+        # breath the dry-run trailer said nothing was written - directly
+        # contradictory mutation-status text in one preview. The dry-run
+        # phrasing must say what WOULD happen, never what already did, and
+        # nothing must actually be written.
+        before = self.source.read_text(encoding='utf-8')
+        result = claim.run_claim_new(
+            self.root, source_id='S-1111111111', claim_type='residence',
+            value='Lived in Topeka, Kansas', persons=['P-aaaaaaaaaa'],
+            place_text='Topeka, Kansas', dry_run=True)
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertEqual(self.source.read_text(encoding='utf-8'), before)
+        text = ' '.join(m.text for m in result.messages)
+        self.assertIn('would attach place: automatically', text)
+        self.assertNotIn('- attached place: automatically', text)
+        self.assertIn('No file written', text)
+
     def test_exact_match_on_alt_name_also_attaches(self) -> None:
         result = claim.run_claim_new(
             self.root, source_id='S-1111111111', claim_type='residence',
@@ -1160,6 +1179,27 @@ class RunClaimNewPlaceResolutionTests(unittest.TestCase):
         self.assertEqual(result.exit_code, EXIT_CLEAN)
         rec = self._claims()[result['claim_id']]
         self.assertNotIn('place', rec)
+
+    def test_malformed_registry_warns_instead_of_a_silent_miss(self) -> None:
+        # Codex review, PR #150: a malformed (as opposed to genuinely
+        # missing) places.yaml used to degrade to an empty list, which
+        # looked identical to "the registry has this place_text but nothing
+        # matched" - the human got no signal the lookup never actually ran.
+        # The mint must still succeed (place_text unlinked), but now with an
+        # honest warning naming the parse problem and the fix.
+        (self.root / 'places' / 'places.yaml').write_text(
+            'not_a_list: true\n', encoding='utf-8')
+        result = claim.run_claim_new(
+            self.root, source_id='S-1111111111', claim_type='residence',
+            value='Lived there', persons=['P-aaaaaaaaaa'],
+            place_text='Topeka, Kansas')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        rec = self._claims()[result['claim_id']]
+        self.assertNotIn('place', rec)
+        self.assertEqual(rec['place_text'], 'Topeka, Kansas')
+        warnings = [m.text for m in result.messages if m.level == 'warning']
+        self.assertTrue(any('places.yaml has a problem' in w for w in warnings))
+        self.assertTrue(any('fha lint' in w for w in warnings))
 
 
 # ── fha claim new: CLI routing (fha.main and the standalone parser) ─────────────
@@ -1582,6 +1622,38 @@ class RunClaimFieldEditPlaceResolutionTests(unittest.TestCase):
         self.assertEqual(rec['place_text'], 'Topeka, Kansas')
         text = ' '.join(m.text for m in result.messages)
         self.assertIn('matched the registered place', text)
+
+    def test_dry_run_exact_match_says_would_attach_not_attached(self) -> None:
+        # Codex review, PR #150: the edit verb had the identical ordering
+        # bug as run_claim_new - the "attached ... automatically" message
+        # was added before the dry_run branch, contradicting the dry-run
+        # trailer's "nothing was written" in the same preview.
+        before = self.source.read_text(encoding='utf-8')
+        result = claim.run_claim(
+            self.root, claim_id='C-aa11bb22cc', place_text='Topeka, Kansas', dry_run=True)
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertEqual(self.source.read_text(encoding='utf-8'), before)
+        text = ' '.join(m.text for m in result.messages)
+        self.assertIn('would attach place: automatically', text)
+        self.assertNotIn('- attached place: automatically', text)
+        self.assertIn('No file written', text)
+
+    def test_malformed_registry_warns_instead_of_a_silent_miss(self) -> None:
+        # Codex review, PR #150: the edit verb gets the same honest warning
+        # run_claim_new does when places.yaml exists but fails to parse -
+        # the edit must still succeed, place_text unlinked, with a warning
+        # naming the parse problem rather than a silent ordinary-miss look.
+        (self.root / 'places' / 'places.yaml').write_text(
+            'not_a_list: true\n', encoding='utf-8')
+        result = claim.run_claim(
+            self.root, claim_id='C-aa11bb22cc', place_text='Topeka, Kansas')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        rec = self._claims()['C-aa11bb22cc']
+        self.assertNotIn('place', rec)
+        self.assertEqual(rec['place_text'], 'Topeka, Kansas')
+        warnings = [m.text for m in result.messages if m.level == 'warning']
+        self.assertTrue(any('places.yaml has a problem' in w for w in warnings))
+        self.assertTrue(any('fha lint' in w for w in warnings))
 
     def test_near_match_is_not_auto_attached_on_edit_either(self) -> None:
         result = claim.run_claim(
