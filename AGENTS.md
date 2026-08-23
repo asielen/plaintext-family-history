@@ -255,6 +255,9 @@ fha source extract <S-id> [--pages A-B]           dump a source PDF's embedded t
                             a derived [Page N] companion to mine like a transcript (original
                             untouched; anchor claims to the PDF's own page numbers)
 fha source edit-note <S-id> --old-text … --text …  rewrite ONE existing ## Notes paragraph
+fha source clear-keyword <S-id> --keyword … [--replace-with …]   clear or correct one
+                            embedded Keywords/Subject value on a documents-root file
+                            (the fix for a stray keyword `fha lint --with-exif` finds)
 fha places set <L-id> --coords|--aka|--history …   human-directed place registry edit
                             (each field a full replace; dry-run diff first)
 fha places note <L-id> --text …                    append a dated research note to a place

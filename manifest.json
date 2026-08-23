@@ -1,7 +1,7 @@
 {
   "manifest_version": "1",
   "spec_version": "1.2",
-  "generated": "2026-08-23",
+  "generated": "2026-08-22",
   "files": [
     {
       "path": ".claude/skills/README.md",
@@ -413,14 +413,14 @@
     {
       "path": ".fha/tools/README.md",
       "category": "operating",
-      "sha256": "edf49c064a60269c86d678bb35de613770eec01864cdb7a9890e81e58845760f",
+      "sha256": "984649e0339d28547bf5042f65c6a8b902eaf5a1cec7c235b2ca0bcdb53be3eb",
       "spec_version": "1.2",
       "src": "tools/README.md"
     },
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "70dccec3f2a893c9489cde2ac19c5314f4d13fe24a8d1e759356408876f9d6cd",
+      "sha256": "534a127f12f19ce51fdb00c3dc672de8e6ada780e8e3268fb120bb0d53ff9fa1",
       "spec_version": "1.2",
       "src": "tools/_lib.py"
     },
@@ -560,7 +560,7 @@
     {
       "path": ".fha/tools/lint.py",
       "category": "operating",
-      "sha256": "200e7d74342a1080e80b0a41288156fba4e415fe005a096e4863ab40a51a8d64",
+      "sha256": "e36f88a0920bfad6c1f65b31bf3ec0b4f34ea18b453cbc8aea4e995914de74e6",
       "spec_version": "1.2",
       "src": "tools/lint.py"
     },
@@ -665,7 +665,7 @@
     {
       "path": ".fha/tools/source.py",
       "category": "operating",
-      "sha256": "c283b8257d09ac63769849c6832c022f321d3b5efab73dfda740943426677578",
+      "sha256": "42ee20bbd52a0f7168c39ab5b8de6f501f203d4807e2145610e655d945e39dd9",
       "spec_version": "1.2",
       "src": "tools/source.py"
     },
@@ -847,7 +847,7 @@
     {
       "path": "AGENTS.md",
       "category": "operating",
-      "sha256": "167164c950495b10d222c1dcc49e185db35c903492a807653656311c0ebec72b",
+      "sha256": "5e0f013334bfa26ce4c61f1e0768f74580ef36dd5452188261b30b6956d18069",
       "spec_version": "1.2"
     },
     {
@@ -877,7 +877,7 @@
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "ee02bde238721e4acf2c05f6cf8fdd235836c795c8b3429bba15d0c8ba6a3bcd",
+      "sha256": "deb8cfec60d377cfa4c9b09e8c24b7f7ce4a2f08ad37477a524f1694a3d5c5f5",
       "spec_version": "1.2"
     },
     {

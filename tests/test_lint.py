@@ -3411,5 +3411,125 @@ class MissingSectionW130Tests(unittest.TestCase):
         self.assertIn('Research Notes', w130[0].message)
 
 
+class StrayPersonKeywordW131Tests(unittest.TestCase):
+    """W131 (#112): a documents-root asset carries an embedded keyword that
+    names a known archive person absent from that source's own `people:`
+    list - the stray Lightroom-tag scenario. Guarded behind `--with-exif`
+    (`with_exif=True`), like E011/E012's photo-side checks it shares one
+    exiftool pass with; exiftool itself is never invoked for real - the
+    batched-read seam `lint._run_exiftool_keyword_rows` is monkeypatched.
+    """
+
+    LISTED = 'P-1111111111'      # in the source's people:
+    STRAY = 'P-2222222222'       # named by the keyword, NOT in people:
+    SID = 'S-3333333333'
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        (self.root / 'fha.yaml').write_text(
+            'roots:\n  photos: photos\n  documents: documents\n', encoding='utf-8')
+        (self.root / 'documents').mkdir(parents=True)
+        (self.root / 'photos').mkdir(parents=True)
+        (self.root / 'people').mkdir(parents=True)
+        (self.root / 'sources').mkdir(parents=True)
+
+        (self.root / 'people' / f'smith__ken_{self.LISTED}.md').write_text(
+            f'---\nid: {self.LISTED}\nname: Ken Smith\ntier: stub\n'
+            'living: false\n---\n\n# Ken Smith\n', encoding='utf-8')
+        (self.root / 'people' / f'hartley__margaret_{self.STRAY}.md').write_text(
+            f'---\nid: {self.STRAY}\nname: Margaret Hartley\ntier: stub\n'
+            'living: false\n---\n\n# Margaret Hartley\n', encoding='utf-8')
+
+        self.asset = self.root / 'documents' / f'deed_{self.SID.lower()}.tif'
+        self.asset.write_bytes(b'x')
+        (self.root / 'sources' / f'deed_{self.SID.lower()}.md').write_text(
+            f'---\nid: {self.SID}\ntitle: Deed\nsource_type: land-record\n'
+            f'people: [{self.LISTED}]\n'
+            f'files:\n  - file: documents/deed_{self.SID.lower()}.tif\n'
+            '    role: primary\n---\n\n## Notes\nA deed.\n', encoding='utf-8')
+
+        from _lib import load_fha_yaml
+        self.config = load_fha_yaml(self.root)
+        self._orig_rows = lint._run_exiftool_keyword_rows
+
+    def tearDown(self) -> None:
+        lint._run_exiftool_keyword_rows = self._orig_rows
+        self._tmp.cleanup()
+
+    def _fake_rows(self, keywords=None, subject=None):
+        keywords = keywords or []
+        subject = subject or []
+        def _rows(paths):
+            self._called_with = list(paths)
+            out = []
+            for p in paths:
+                row = {'SourceFile': str(p)}
+                if str(p).endswith('.tif'):
+                    row['Keywords'] = list(keywords)
+                    row['Subject'] = list(subject)
+                out.append(row)
+            return out
+        return _rows
+
+    def _w131(self, with_exif: bool = True):
+        lint._run_exiftool_keyword_rows = self._fake_rows(
+            subject=['Margaret Hartley', 'SOURCE: ' + self.SID])
+        findings, _reg = lint._run_lint_core(self.root, self.config, with_exif=with_exif)
+        return [f for f in findings if f.code == 'W131']
+
+    def test_stray_person_keyword_absent_from_people_list_warns(self) -> None:
+        w131 = self._w131()
+        self.assertEqual(len(w131), 1, w131)
+        msg = w131[0].message
+        self.assertIn('Margaret Hartley', msg)
+        self.assertIn(self.SID, msg)
+        self.assertIn('fha source clear-keyword', msg)
+
+    def test_keyword_naming_a_listed_person_is_silent(self) -> None:
+        lint._run_exiftool_keyword_rows = self._fake_rows(subject=['Ken Smith'])
+        findings, _reg = lint._run_lint_core(self.root, self.config, with_exif=True)
+        self.assertEqual([f for f in findings if f.code == 'W131'], [])
+
+    def test_unresolvable_keyword_text_is_silently_ignored(self) -> None:
+        # An ordinary caption word names no archive person at all.
+        lint._run_exiftool_keyword_rows = self._fake_rows(subject=['farm', 'reunion'])
+        findings, _reg = lint._run_lint_core(self.root, self.config, with_exif=True)
+        self.assertEqual([f for f in findings if f.code == 'W131'], [])
+
+    def test_source_marker_keyword_is_never_flagged(self) -> None:
+        lint._run_exiftool_keyword_rows = self._fake_rows(
+            keywords=['SOURCE: ' + self.SID])
+        findings, _reg = lint._run_lint_core(self.root, self.config, with_exif=True)
+        self.assertEqual([f for f in findings if f.code == 'W131'], [])
+
+    def test_photos_root_is_out_of_scope(self) -> None:
+        # The same stray-name pattern on a PHOTOS-root file must not trip
+        # W131 - scope is documents-root only (see lint.py's docstring for
+        # why: photos already have their own richer person-association
+        # system, tag-person/face_tags/pid-keywords). Only the PHOTO carries
+        # the stray text here (the documents-root .tif stays clean), so the
+        # only way this test could see a W131 is if scope leaked to photos.
+        photo = self.root / 'photos' / f'snap_{self.SID.lower()}.jpg'
+        photo.write_bytes(b'y')
+
+        def _rows(paths):
+            return [
+                {'SourceFile': str(p),
+                 'Subject': ['Margaret Hartley'] if str(p).endswith('.jpg') else []}
+                for p in paths
+            ]
+        lint._run_exiftool_keyword_rows = _rows
+        findings, _reg = lint._run_lint_core(self.root, self.config, with_exif=True)
+        self.assertEqual([f for f in findings if f.code == 'W131'], [])
+
+    def test_without_with_exif_the_check_never_runs(self) -> None:
+        lint._run_exiftool_keyword_rows = self._fake_rows(subject=['Margaret Hartley'])
+        findings, _reg = lint._run_lint_core(self.root, self.config, with_exif=False)
+        self.assertEqual([f for f in findings if f.code == 'W131'], [])
+        self.assertFalse(hasattr(self, '_called_with'),
+                         'exiftool must not be invoked at all without --with-exif')
+
+
 if __name__ == '__main__':
     unittest.main()
