@@ -4681,10 +4681,28 @@ class _SiteBuilder:
         two parent ids happened to sort with the non-public tie first -
         under-inclusion only (never a privacy leak: a candidate still needs
         at least one public tie and a clean redaction check to appear at
-        all), but a real completeness bug."""
+        all), but a real completeness bug.
+
+        A parent must be one the HUB is itself PUBLICLY tied to before it
+        contributes any sibling candidate at all (#152 review fix, P1,
+        privacy-adjacent). The candidate-side check below (a sibling's own
+        tie to the shared parent) is not enough on its own: it protects the
+        CANDIDATE's privacy, but says nothing about the HUB's. If the hub's
+        own parent-child claim to a parent is restricted (a sealed/DNA-only
+        source, say) while that SAME parent has a perfectly public tie to
+        some other child, the old code still walked that parent's children
+        and published the other child as the hub's sibling - which tells a
+        reader "the hub is tied to this parent" exactly as surely as
+        printing the parent's name on the hub's own card would, defeating
+        the restriction's whole point. A parent the hub is not publicly
+        tied to is therefore dropped BEFORE it is ever used as a source of
+        candidates - in standalone mode; `--linked` shows every edge, same
+        as everywhere else on this page."""
         parent_ids = [r['other_id'] for r in self.conn.execute(
             "SELECT DISTINCT other_id FROM relationships WHERE person_id = ? AND rel = 'parent'",
             (pid,))]
+        if not self.linked:
+            parent_ids = [p for p in parent_ids if self._has_public_claim(p, pid)]
         # other_id -> every shared parent_id tying them to the hub, in
         # first-discovered order (a plain dict preserves insertion order) -
         # collected in full before any candidate is gated, so a later

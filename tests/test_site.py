@@ -95,7 +95,7 @@ class _Base(unittest.TestCase):
     # - seeding -
 
     def _seed_person(self, pid, name='Test Person', *, living='false', tier='curated',
-                     surname='Person', body='# Test Person\n', frontmatter_extra=''):
+                     surname='Person', body='# Test Person\n', frontmatter_extra='', sex='M'):
         rel = f'people/{surname.lower()}__test_{pid}.md'
         path = self.archive_root / rel
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -111,7 +111,7 @@ class _Base(unittest.TestCase):
         self.conn.execute(
             'INSERT INTO persons(id, name, surname, sex, living, tier, status, path) '
             'VALUES (?,?,?,?,?,?,?,?)',
-            (pid, name, surname, 'M', living, tier, 'active', rel),
+            (pid, name, surname, sex, living, tier, 'active', rel),
         )
 
     def _seed_source(self, sid, title='A Source', *, source_type='census', restricted=0,
@@ -133,7 +133,7 @@ class _Base(unittest.TestCase):
 
     def _seed_claim(self, cid, sid, ctype, value, *, status='accepted', date_edtf=None,
                     place_text=None, persons=(), confidence=None, reviewed=None, negated=0,
-                    roles=None, date_min=None):
+                    roles=None, date_min=None, subtype=None):
         """Seed one claim. `roles` is {person_id: role}, the `roles:` map as
         `fha index` stores it - which of the people a claim names plays which
         part (SPEC §8.3). Omit it for the legacy/unroled claim.
@@ -141,14 +141,18 @@ class _Base(unittest.TestCase):
         date_min defaults to the naive January-1 widening of date_edtf (matches
         what real claims carry for a plain year), but a test can override it to
         construct the #128 shape - an uncertain/ranged date_edtf whose widened
-        date_min lands in a different decade than the display date reads as."""
+        date_min lands in a different decade than the display date reads as.
+
+        `subtype` is the relationship claim's nature (SPEC §8.2/§12.2 -
+        `adoptive`/`step`/`foster`/`guardian`/... for a non-genetic parent-
+        child edge, `biological` or unset for a genetic one)."""
         if date_min is None:
             date_min = (date_edtf or '')[:4] + '-01-01' if date_edtf else None
         self.conn.execute(
-            'INSERT INTO claims(id, source_id, type, value, status, date_edtf, date_min, place_text, '
-            'confidence, reviewed, negated) '
-            'VALUES (?,?,?,?,?,?,?,?,?,?,?)',
-            (cid, sid, ctype, value, status, date_edtf, date_min, place_text,
+            'INSERT INTO claims(id, source_id, type, subtype, value, status, date_edtf, date_min, '
+            'place_text, confidence, reviewed, negated) '
+            'VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+            (cid, sid, ctype, subtype, value, status, date_edtf, date_min, place_text,
              confidence, reviewed, negated),
         )
         for pos, pid in enumerate(persons):
@@ -156,10 +160,10 @@ class _Base(unittest.TestCase):
                 'INSERT INTO claim_persons(claim_id, person_id, position, role) VALUES (?,?,?,?)',
                 (cid, pid, pos, (roles or {}).get(pid)))
 
-    def _seed_rel(self, pid, rel, other):
+    def _seed_rel(self, pid, rel, other, *, claim_id='c-rrrrrrrrrr'):
         self.conn.execute(
             'INSERT INTO relationships(person_id, rel, other_id, claim_id) VALUES (?,?,?,?)',
-            (pid, rel, other, 'c-rrrrrrrrrr'))
+            (pid, rel, other, claim_id))
 
     def _run(self, *, linked=False, dry_run=False, workbench=False):
         self.conn.commit()
@@ -2918,6 +2922,44 @@ class HomePedigreeTests(_Base):
         self._run(linked=False)
         home = self._read('index.html')
         self.assertIn('Full Sibling', self._pedigree_section(home))
+
+    def test_restricted_hub_parent_tie_contributes_no_sibling_candidates(self):
+        # #152 review fix (P1, privacy-adjacent): `_hub_siblings` used to
+        # check ONLY the CANDIDATE's own tie to a shared parent
+        # (`_has_public_claim(parent, candidate)`), never the HUB's OWN tie
+        # to that same parent. So a parent the hub is tied to ONLY through a
+        # restricted/sealed claim still contributed sibling candidates - via
+        # those candidates' own PUBLIC ties to that same parent - which
+        # tells a reader "the hub is tied to this parent" just as surely as
+        # printing the parent's name on the hub's own card would, defeating
+        # the whole point of restricting the hub's own tie. A parent the hub
+        # is not itself publicly tied to must now contribute NO candidates
+        # at all, regardless of how public a candidate's own tie to that
+        # parent is.
+        self._seed_person('p-aaaaaaaaaa', 'Hub Person')
+        self._seed_person('p-bbbbbbbbbb', 'Shared Parent')
+        self._seed_person('p-cccccccccc', 'Other Child')
+        self._seed_rel('p-bbbbbbbbbb', 'child', 'p-aaaaaaaaaa')
+        self._seed_rel('p-aaaaaaaaaa', 'parent', 'p-bbbbbbbbbb')
+        self._seed_rel('p-bbbbbbbbbb', 'child', 'p-cccccccccc')
+        self._seed_rel('p-cccccccccc', 'parent', 'p-bbbbbbbbbb')
+        # The HUB's own tie to Shared Parent is backed only by a claim from
+        # a hard-restricted source - not public.
+        self._seed_source('s-1111111111', 'Restricted Source', restricted=1,
+                          people=('p-bbbbbbbbbb', 'p-aaaaaaaaaa'))
+        self._seed_claim('c-1111111111', 's-1111111111', 'relationship',
+                         'Hub is the child of Shared Parent', status='accepted',
+                         persons=('p-bbbbbbbbbb', 'p-aaaaaaaaaa'),
+                         roles={'p-bbbbbbbbbb': 'parent', 'p-aaaaaaaaaa': 'child'})
+        # Other Child's own tie to Shared Parent carries no claim at all - a
+        # bare relationships-table row, publicly tied per `_has_public_claim`.
+        self._seed_home()
+        self._run(linked=False)
+        home = self._read('index.html')
+        # Other Child is an ordinary curated person and legitimately appears
+        # in the home page's surname A-Z index regardless - the assertion
+        # must be scoped to the pedigree chart itself, not the whole page.
+        self.assertNotIn('Other Child', self._pedigree_section(home))
 
     def test_branch_coloring_on_home_page_not_on_person_page(self):
         # #115: branch coloring is opt-in (the `home=True`/`branch_color=True`
