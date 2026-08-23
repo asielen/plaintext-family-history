@@ -2839,6 +2839,31 @@ class HomePedigreeTests(_Base):
         self.assertTrue(any('home_pedigree_generations' in m and 'whole number' in m
                             for m in res['messages']))
 
+    def test_fractional_generations_warns_and_uses_default(self):
+        # #152 review fix (P2): `int(3.9)` truncates to 3 with no error -
+        # `int()` succeeding is not the same as "this was genuinely a whole
+        # number." A fractional YAML value must be rejected the same way a
+        # non-numeric string already is, not silently narrowed to a
+        # shallower chart than configured with no warning at all.
+        self._seed_person('p-aaaaaaaaaa', 'Hub Person')
+        self._seed_linear_ancestors('p-aaaaaaaaaa', 6)
+        self._seed_home(extra_yaml='  home_pedigree_generations: 3.9\n')
+        res = self._run(linked=True)
+        self.assertTrue(any('home_pedigree_generations' in m and 'whole number' in m
+                            for m in res['messages']))
+        ped = self._pedigree_section(self._read('index.html'))
+        self.assertIn('Ancestor Gen5', ped)      # the documented default (5) - not int(3.9)=3
+        self.assertNotIn('Ancestor Gen6', ped)
+
+    def test_boolean_generations_warns_and_uses_default(self):
+        # Same bug, different door: `bool` is an `int` subclass in Python, so
+        # `int(True) == 1` used to be silently accepted as a valid depth.
+        self._seed_person('p-aaaaaaaaaa', 'Hub Person')
+        self._seed_home(extra_yaml='  home_pedigree_generations: true\n')
+        res = self._run(linked=True)
+        self.assertTrue(any('home_pedigree_generations' in m and 'whole number' in m
+                            for m in res['messages']))
+
     def test_seeds_on_home_person_not_root_person(self):
         self._seed_person('p-aaaaaaaaaa', 'Root Person')
         self._seed_person('p-bbbbbbbbbb', 'Home Person')

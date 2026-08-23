@@ -4906,9 +4906,26 @@ class _SiteBuilder:
         `50` would try to lay out over a quadrillion slots. A malformed or
         out-of-range value degrades to the nearest sane default with a
         warning rather than failing the whole build - the home page is worth
-        finishing even when one setting is wrong."""
+        finishing even when one setting is wrong.
+
+        Genuinely-a-whole-number check (#152 review fix, P2): `int(raw)`
+        alone is not that check - it silently TRUNCATES a float instead of
+        raising (`int(3.9) == 3`), so a fractional YAML value degraded the
+        chart a generation or more shallower than configured with no warning
+        at all, and it accepts a YAML boolean as `1`/`0` (`bool` is an `int`
+        subclass in Python) even though a boolean was plainly never meant as
+        a generation count. Both are rejected up front, the same way a
+        non-numeric string already is - a whole number is an actual `int`
+        (never a `bool`) or a string that reads as one; anything else,
+        including a float that happens to be integral (`3.0`), takes the
+        warned default fallback rather than a silent, wrong-typed accept."""
         raw = site_cfg.get('home_pedigree_generations')
         if raw is None:
+            return _HOME_PEDIGREE_GENERATIONS_DEFAULT
+        if isinstance(raw, bool) or isinstance(raw, float):
+            self.messages.append(
+                f'WARNING: fha.yaml site.home_pedigree_generations {raw!r} is not a whole number; '
+                f'using the default of {_HOME_PEDIGREE_GENERATIONS_DEFAULT}.')
             return _HOME_PEDIGREE_GENERATIONS_DEFAULT
         try:
             n = int(raw)
