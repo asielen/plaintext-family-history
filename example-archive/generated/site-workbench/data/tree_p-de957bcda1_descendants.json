@@ -1,18 +1,7 @@
 {
-  "seed": "P-075114a0f8",
+  "seed": "P-de957bcda1",
   "mode": "descendants",
   "nodes": [
-    {
-      "p_id": "P-075114a0f8",
-      "name": "Caleb Comstock Hartley",
-      "sex": "M",
-      "vitals": {
-        "birth": null,
-        "death": null
-      },
-      "url": "p-075114a0f8.html",
-      "photo": "/root/photos/caleb-chastina-hartley.jpg"
-    },
     {
       "p_id": "P-de957bcda1",
       "name": "Thomas Edward Hartley",
@@ -114,19 +103,6 @@
     }
   ],
   "edges": [
-    {
-      "type": "child",
-      "from": "P-075114a0f8",
-      "to": "P-de957bcda1",
-      "claim_id": "C-2e6b1f9c45",
-      "subtype": "biological",
-      "genetic": true,
-      "kind": "genetic",
-      "dates": {
-        "start": null,
-        "end": null
-      }
-    },
     {
       "type": "child",
       "from": "P-de957bcda1",

@@ -1352,11 +1352,19 @@ def _render_pedigree_svg(labels: dict, spouses: list[dict] | None = None,
     # Orientation cue (#115): a short caption naming the direction the chart
     # reads, set once above the ancestor columns - never drawn when there is
     # no ancestor column (axis_pad is 0 in that case too, so there is no
-    # reserved space for it to sit in).
+    # reserved space for it to sit in). Centered (text-anchor: middle,
+    # design/styles.css) across the FULL span of ancestor columns actually
+    # drawn - col_x(1)'s left edge to col_x(max_gen)'s right edge - rather
+    # than left-anchored at col_x(1) alone (#152 review fix): at the
+    # person-page chart's fixed 2 generations that used to read as roughly
+    # centered by coincidence, but a deep home-page chart (5+ generations by
+    # default) left the caption labeling only the nearest column instead of
+    # the whole ancestor block beneath it.
     extra: list[str] = []
     if axis_label and axis_pad:
-        extra.append(f'<text class="ped-axis-label" x="{col_x(1):.0f}" y="{PAD + axis_pad - 6:.0f}">'
-                     f'{html.escape(axis_label)}</text>')
+        axis_center_x = (col_x(1) + col_x(max_gen) + CW) / 2
+        extra.append(f'<text class="ped-axis-label" x="{axis_center_x:.0f}" '
+                     f'y="{PAD + axis_pad - 6:.0f}">{html.escape(axis_label)}</text>')
 
     svg_cls = 'pedigree pedigree-family' if has_children_col else 'pedigree'
     if home:
@@ -4660,28 +4668,49 @@ class _SiteBuilder:
         since hub and sibling rarely share a claim naming them TOGETHER (each
         child's birth/baptism is usually its own separate record). Dropped
         outright, never a placeholder - like a redacted spouse/child, you
-        cannot show 'a sibling exists' without showing who."""
+        cannot show 'a sibling exists' without showing who.
+
+        A candidate is gated on its BEST tie, not its first-visited one
+        (#152 review fix): every shared-parent link is collected before any
+        inclusion decision is made, so a full sibling (sharing BOTH of the
+        hub's parents) whose tie to the first-visited shared parent happens
+        to be non-public still qualifies via the OTHER shared parent's tie,
+        if that one is public. The earlier version marked a candidate `seen`
+        the moment it was first reached and never revisited that decision,
+        so the exact same full sibling was silently excluded whenever the
+        two parent ids happened to sort with the non-public tie first -
+        under-inclusion only (never a privacy leak: a candidate still needs
+        at least one public tie and a clean redaction check to appear at
+        all), but a real completeness bug."""
         parent_ids = [r['other_id'] for r in self.conn.execute(
             "SELECT DISTINCT other_id FROM relationships WHERE person_id = ? AND rel = 'parent'",
             (pid,))]
-        seen: set[str] = {pid}
-        out: list[dict] = []
+        # other_id -> every shared parent_id tying them to the hub, in
+        # first-discovered order (a plain dict preserves insertion order) -
+        # collected in full before any candidate is gated, so a later
+        # parent's public tie can still qualify someone an earlier parent's
+        # non-public tie alone would have excluded.
+        ties: dict[str, list[str]] = {}
         for parent_id in sorted(parent_ids):
             for r in self.conn.execute(
                     "SELECT DISTINCT other_id FROM relationships "
                     "WHERE person_id = ? AND rel = 'child' ORDER BY other_id", (parent_id,)):
                 other = r['other_id']
-                if other in seen:
+                if other == pid:
                     continue
-                seen.add(other)
-                if not self.linked:
-                    ometa = self.person_meta.get(other)
-                    if (ometa is None or self._person_is_redacted(ometa)
-                            or not self._has_public_claim(parent_id, other)):
-                        continue
-                entry = self._chart_entry(other, page_dir)
-                entry['id'] = other
-                out.append(entry)
+                ties.setdefault(other, []).append(parent_id)
+
+        out: list[dict] = []
+        for other, via_parents in ties.items():
+            if not self.linked:
+                ometa = self.person_meta.get(other)
+                if ometa is None or self._person_is_redacted(ometa):
+                    continue
+                if not any(self._has_public_claim(par, other) for par in via_parents):
+                    continue
+            entry = self._chart_entry(other, page_dir)
+            entry['id'] = other
+            out.append(entry)
         return out
 
     def _make_tree_ctx(self, seed: str, mode: str, max_hops: int | None,

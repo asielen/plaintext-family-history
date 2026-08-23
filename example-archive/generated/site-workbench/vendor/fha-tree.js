@@ -20,6 +20,20 @@
  * Swapping in a richer engine later (e.g. family-chart) means rewriting THIS
  * file and the adapter; nothing else in the generated site changes - that is
  * the whole point of keeping the adapter as the single seam.
+ *
+ * wrapStatic(container, options) (#115) is a second, independent entry point:
+ * it wraps an ALREADY-DRAWN static SVG (the home page's server-rendered
+ * ancestor pedigree, tools/site.py's _render_pedigree_svg) in the same
+ * pan/zoom viewport - drag to pan, wheel/pinch/+/- to zoom, a Fit button -
+ * without running layout(), draw(), or anything else that assumes a
+ * collapsible node hierarchy. It duplicates the pan/zoom scaffold from
+ * render() below rather than sharing it, on purpose: render()'s scaffold is
+ * entangled with collapse state and node layout in ways that are not worth
+ * disentangling for this one extra caller, and this file has no other test
+ * harness protecting it from a refactor that quietly changes the tested
+ * collapsible-tree engine's behaviour. Both keep their own copy of the same
+ * small pan/zoom MATH (the MIN/MAX_SCALE, FIT_PAD, DRAG_SLOP, ZOOM_STEP
+ * constants above are shared); only the DOM wiring is duplicated.
  */
 (function (global) {
   'use strict';
@@ -477,5 +491,193 @@
     }
   }
 
-  global.FhaTree = { render: render };
+  // Wrap an already-drawn static SVG (#115) in the same pan/zoom viewport
+  // render() builds for the collapsible tree - drag to pan, wheel/pinch/+/-
+  // to zoom, a Fit button - with no layout pass of its own: the SVG's own
+  // viewBox (as server-rendered) IS the content size and starting view.
+  // `container` must already contain exactly one <svg> child (the static
+  // chart); a missing or malformed one is left alone rather than guessed at,
+  // so a broken wrap degrades to "the plain SVG stays visible, unscrolled" -
+  // never a blank box.
+  function wrapStatic(container, options) {
+    options = options || {};
+    var s = container.querySelector('svg');
+    if (!s) return;
+    var vb = (s.getAttribute('viewBox') || '').split(/\s+/).map(Number);
+    if (vb.length !== 4 || vb.some(function (n) { return !isFinite(n); })) return;
+    var vx0 = vb[0], vy0 = vb[1], contentW = vb[2], contentH = vb[3];
+    if (contentW <= 0 || contentH <= 0) return;
+
+    var viewport = document.createElement('div');
+    viewport.className = 'fha-tree-viewport';
+    viewport.style.position = 'relative';
+    viewport.style.overflow = 'hidden';
+    viewport.style.width = '100%';
+
+    var VH = Math.round(Math.min(620, Math.max(380, (global.innerHeight || 800) * 0.7)));
+    viewport.style.height = VH + 'px';
+
+    // Move the existing SVG into the new viewport wrapper, in place - no
+    // rebuild, so its already-drawn content (cards, links, the axis label)
+    // is untouched.
+    s.parentNode.insertBefore(viewport, s);
+    viewport.appendChild(s);
+    s.style.width = '100%';
+    s.style.height = VH + 'px';
+    s.style.display = 'block';
+    s.style.touchAction = 'none';   // we own touch drags (pan), not the page
+    s.style.cursor = 'grab';
+    s.style.userSelect = 'none';
+    s.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+
+    var controls = document.createElement('div');
+    controls.className = 'fha-tree-controls';
+    controls.style.position = 'absolute';
+    controls.style.top = '8px';
+    controls.style.right = '8px';
+    controls.style.display = 'flex';
+    controls.style.gap = '6px';
+    controls.style.zIndex = '2';
+
+    function mkBtn(label, aria, onClick) {
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'btn fha-tree-btn';
+      b.textContent = label;
+      b.setAttribute('aria-label', aria);
+      b.title = aria;
+      b.onclick = onClick;
+      b.style.padding = '2px 8px';
+      b.style.lineHeight = '1.4';
+      b.style.background = 'var(--surface, #f8f5ee)';
+      return b;
+    }
+    controls.appendChild(mkBtn('−', 'Zoom out', function () { zoomBy(1 / ZOOM_STEP); }));
+    controls.appendChild(mkBtn('Fit', 'Fit chart to view', function () { fit(); }));
+    controls.appendChild(mkBtn('+', 'Zoom in', function () { zoomBy(ZOOM_STEP); }));
+    viewport.appendChild(controls);
+
+    function viewportW() {
+      return Math.max(viewport.clientWidth || container.clientWidth || 900, 1);
+    }
+
+    var vx = vx0, vy = vy0, vw = contentW, vh = contentH;
+    var userInteracted = false;
+
+    function applyView() {
+      s.setAttribute('viewBox', vx + ' ' + vy + ' ' + vw + ' ' + vh);
+    }
+    function currentScale() { return VH / vh; }
+    function clampScale(sc) { return Math.max(MIN_SCALE, Math.min(MAX_SCALE, sc)); }
+
+    function fit() {
+      userInteracted = false;
+      var vpW = viewportW();
+      var sc = clampScale(Math.min(vpW / (contentW + FIT_PAD * 2),
+                                   VH / (contentH + FIT_PAD * 2)));
+      vw = vpW / sc; vh = VH / sc;
+      vx = vx0 + contentW / 2 - vw / 2;
+      vy = vy0 + contentH / 2 - vh / 2;
+      applyView();
+    }
+
+    function zoomAt(clientX, clientY, factor) {
+      var sc = currentScale();
+      var next = clampScale(sc * factor);
+      factor = next / sc;
+      if (factor === 1) return;
+      userInteracted = true;
+      var rect = s.getBoundingClientRect();
+      var fx = (clientX - rect.left) / rect.width;
+      var fy = (clientY - rect.top) / rect.height;
+      var ux = vx + fx * vw;
+      var uy = vy + fy * vh;
+      vw = vw / factor; vh = vh / factor;
+      vx = ux - fx * vw;
+      vy = uy - fy * vh;
+      applyView();
+    }
+    function zoomBy(factor) {
+      var rect = s.getBoundingClientRect();
+      zoomAt(rect.left + rect.width / 2, rect.top + rect.height / 2, factor);
+    }
+
+    s.addEventListener('wheel', function (e) {
+      e.preventDefault();
+      zoomAt(e.clientX, e.clientY, Math.pow(1.0015, -e.deltaY));
+    }, { passive: false });
+
+    var dragging = false, dragMoved = false;
+    var startX = 0, startY = 0, startVx = 0, startVy = 0, activeId = null;
+
+    s.addEventListener('pointerdown', function (e) {
+      if (e.button != null && e.button !== 0) return;
+      dragging = true; dragMoved = false;
+      startX = e.clientX; startY = e.clientY;
+      startVx = vx; startVy = vy;
+      activeId = e.pointerId;
+    });
+
+    s.addEventListener('pointermove', function (e) {
+      if (!dragging || e.pointerId !== activeId) return;
+      var dx = e.clientX - startX, dy = e.clientY - startY;
+      if (!dragMoved && (Math.abs(dx) > DRAG_SLOP || Math.abs(dy) > DRAG_SLOP)) {
+        dragMoved = true; userInteracted = true;
+        try { s.setPointerCapture(activeId); } catch (_) {}
+        s.style.cursor = 'grabbing';
+      }
+      if (!dragMoved) return;
+      var rect = s.getBoundingClientRect();
+      vx = startVx - dx / rect.width * vw;
+      vy = startVy - dy / rect.height * vh;
+      applyView();
+    });
+
+    function endDrag() {
+      if (!dragging) return;
+      dragging = false;
+      s.style.cursor = 'grab';
+      try { if (activeId != null) s.releasePointerCapture(activeId); } catch (_) {}
+      activeId = null;
+    }
+    s.addEventListener('pointerup', endDrag);
+    s.addEventListener('pointercancel', endDrag);
+
+    // A pan must not fire the name-link underneath it - same swallow-the-
+    // trailing-click rule render() uses.
+    s.addEventListener('click', function (e) {
+      if (dragMoved) { e.preventDefault(); e.stopPropagation(); dragMoved = false; }
+    }, true);
+
+    s.addEventListener('dblclick', function (e) {
+      e.preventDefault();
+      var rect = s.getBoundingClientRect();
+      var ux = vx + (e.clientX - rect.left) / rect.width * vw;
+      var uy = vy + (e.clientY - rect.top) / rect.height * vh;
+      zoomAt(e.clientX, e.clientY, 1.4);
+      vx = ux - vw / 2;
+      vy = uy - vh / 2;
+      applyView();
+    });
+
+    global.addEventListener('resize', function () {
+      var vpW = viewportW();
+      if (userInteracted) {
+        var sc = currentScale();
+        var cx = vx + vw / 2;
+        vw = vpW / sc;
+        vx = cx - vw / 2;
+        applyView();
+      } else {
+        fit();
+      }
+    });
+
+    fit();
+    if (global.requestAnimationFrame) {
+      global.requestAnimationFrame(function () { if (!userInteracted) fit(); });
+    }
+  }
+
+  global.FhaTree = { render: render, wrapStatic: wrapStatic };
 })(window);

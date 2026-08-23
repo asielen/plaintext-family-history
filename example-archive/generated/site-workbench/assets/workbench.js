@@ -150,6 +150,38 @@
     }
   }
 
+  /* The "confirmed absence" (negated) toggle for the add-a-claim modal.
+     It rides on the claim.new form so the browser can author a SPEC 8.6
+     negative fact - "we researched and it did not happen" - the same
+     `fha claim new ... --negated` the CLI already offers. collect() turns any
+     checkbox into a real boolean arg by name, so wiring is just this control:
+     checked sends negated:true (schema keeps it a bool, echo appends --negated
+     and run_claim_new writes `negated: true` + `evidence: negative`), unchecked
+     sends negated:false and mints an ordinary positive claim. Scoped to
+     tpl-add-claim so the milestone/add-event flows keep their own shape. */
+  function addNegatedToggle(modal, tpl) {
+    if (!tpl || tpl.id !== 'tpl-add-claim') return;
+    var step = modal.querySelector('.wb-step');
+    if (!step) return;
+    var field = document.createElement('div');
+    field.className = 'wb-field';
+    var label = document.createElement('label');
+    var box = document.createElement('input');
+    box.type = 'checkbox';
+    box.name = 'negated';
+    label.appendChild(box);
+    label.appendChild(document.createTextNode(' Confirmed absence (this did NOT happen, after research)'));
+    var hint = document.createElement('p');
+    hint.className = 'wb-hint';
+    hint.textContent = 'Records a negative fact - e.g. type "marriage" with this checked = '
+      + 'confirmed never married. Writes negated: true and evidence: negative.';
+    field.appendChild(label);
+    field.appendChild(hint);
+    var foot = step.querySelector('.wb-modal-foot');
+    if (foot) step.insertBefore(field, foot);
+    else step.appendChild(field);
+  }
+
   function openModal(btn, tplId) {
     var tpl = document.getElementById(tplId || btn.getAttribute('data-wb-open'));
     if (!tpl) return null;
@@ -162,6 +194,7 @@
     modal.setAttribute('role', 'dialog');
     modal.setAttribute('aria-modal', 'true');
     modal.appendChild(tpl.content.cloneNode(true));
+    addNegatedToggle(modal, tpl);
     overlay.appendChild(modal);
     document.body.appendChild(overlay);
     document.body.style.overflow = 'hidden';
@@ -684,7 +717,17 @@
            navigate to and no id worth inserting; render it as a plain note
            (wireframe: text hits are non-clickable snippets). */
         if (hit.type === 'text') {
-          return '<li><span class="note"><span class="wb-kind">text</span> ' +
+          /* `unchecked` (present only when true) means these words were read
+             off a picture by a machine and nobody has compared them to the
+             image (TOOLING §4a D15). The CLI writes "[unchecked AI transcript]"
+             on the result line; here the same fact is a chip beside the kind
+             chip, which is this UI's own idiom for a status word. */
+          var flag = hit.unchecked
+            ? ' <span class="wb-unchecked" title="A machine read these words off a picture.' +
+              ' Nobody has checked them against the image, and the image is the evidence.">' +
+              'unchecked AI transcript</span>'
+            : '';
+          return '<li><span class="note"><span class="wb-kind">text</span>' + flag + ' ' +
             esc(hit.label || '') + (hit.detail ? ' <span class="note">' + esc(hit.detail) + '</span>' : '') +
             '</span></li>';
         }
@@ -721,6 +764,18 @@
       /* The search BAR (no kind) gets the wireframe's CLI-parity footer:
          the search is exactly `fha find --text "<q>"`, said so and copyable. */
       if ((!opts || !opts.kind) && listEl.closest('.wb-search-results')) {
+        /* And it gets what that command would also have said: how many of this
+           archive's sources hold no text any search can read (TOOLING §4a
+           D14). It sits under the results and above the CLI echo, which on a
+           search that found NOTHING puts it directly under the "no matches"
+           line - the moment the #46 mistake gets made, where a null result is
+           read as "this name is in no source". Rendered only for the
+           whole-archive search bar: a person/place picker is asking "which
+           record do you mean", not "what does the archive say". */
+        if (j.coverage) {
+          listEl.innerHTML += '<li class="wb-coverage"><span class="note">' +
+            esc(j.coverage) + '</span></li>';
+        }
         listEl.innerHTML += '<li class="wb-search-echo"><code>fha find --text "' + esc(q) + '"</code>' +
           '<button type="button" class="btn btn-sm" data-wb-copy>copy</button></li>';
       }
