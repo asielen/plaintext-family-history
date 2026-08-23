@@ -10,7 +10,10 @@ description: >
   `living:`), writes one `source_class: authored` interview source, and drafts `relationship`/`marriage`
   claims from it naming everyone with explicit `roles:`, all `status: suggested`; hands off to
   `review-claims` so his own review pass is still the gate - the interview proposes, it never
-  self-accepts.
+  self-accepts. Before the family questions, also makes one silent, one-time check for an already-sitting
+  place-registration backlog (an archive with real imported/migrated history can reach this interview with
+  zero registered places and a real backlog already on file) and, only past an oversight-scale bar, offers
+  once to register the biggest clusters right then.
 ---
 
 # setup-interview
@@ -58,6 +61,55 @@ re-entry into step 3 alone, not a repeat of steps 1-2.
   dedicated verb to edit it, only a shown preview before the write.
 
 ## Flow
+
+### 0. One-time check: is there already a place backlog? (issue #79 point 4)
+
+Before the family questions below, run one cheap, silent check - independent of whether this is a
+brand-new archive or a return visit (`root_person` already set, "Normally once per archive" above). Most
+archives reach this interview with nothing to find here: a genuinely fresh install has no claims of any
+kind yet. But an archive that already carries imported or migrated material - a `fha gedcom import`
+someone ran before ever getting to the personal interview, a batch of sources already processed - can be
+sitting on exactly issue #79's case: zero registered places and a real backlog of unlinked `place_text`,
+with nobody ever having been offered the one pass that would fix it. Migration mode is explicitly a
+sanctioned thing to do before this interview (AGENTS.md: "prefer [`fha gedcom import`] over hand-migrating
+one"), so this is not a rare ordering.
+
+```
+fha index                 # cheap; keeps the check below from reading a stale or missing cache
+fha places candidates
+```
+
+- **`places/places.yaml` already has at least one `- id:` entry, or every cluster `fha places
+  candidates` finds is below 20 claims** → say nothing about this and move straight to step 1. A
+  20-claim bar is deliberate and higher than the 3-claim bar `fha places candidates` surfaces everything
+  past: the same "a cluster this large is an oversight, not a candidate to weigh" threshold `fha report`'s
+  own lead-in escalation notice uses (issue #79 point 2, `_PLACE_ESCALATION_THRESHOLD`) - a smaller
+  cluster is a normal, ongoing `review-claims`/`process-source` nudge (issue #81), not a one-time
+  interruption of the family interview for.
+- **The registry is empty AND at least one cluster is at or past 20 claims** → this is the moment: *"Before
+  we get to your own family - I noticed your records already mention '\<biggest cluster's label>' \<N>
+  times, and no places are registered yet in this archive. Want me to register the biggest one or two
+  right now? Takes a minute, and every claim mentioning them links up automatically."* One offer, once,
+  same explicit-yes rule as every offer in this archive (_STANDARD.md §5) - "not now" or silence means
+  drop it and move straight to step 1, never raised again this session.
+  - **On yes:** ask how many clusters to work through (all of them, just the top one or two, or "however
+    many are easy") rather than assuming - some archives have one dominant cluster, others have a dozen
+    modest ones. Register each chosen cluster exactly the way `process-source`/`place-research` do - never
+    hand-write `places.yaml`:
+    ```
+    fha confirm place <C-id> <C-id> … --name "<label>" --dry-run
+    fha confirm place <C-id> <C-id> … --name "<label>"
+    ```
+    The cluster's own `claim_ids`, printed by `fha places candidates`, are the ids to pass; its majority
+    `label` is the proposed `--name`. Work biggest-cluster-first (the list's own sort). After the chosen
+    clusters are registered:
+    ```
+    fha index                 # the write reaches past this session's own claims - reindex before continuing
+    fha places lint            # registry hygiene: orphan L-ids, duplicate names
+    ```
+  - **On no, or silence:** say nothing more about it this session and move straight to step 1 -
+    `fha places candidates`, `review-claims`'s own place nudge (issue #81), and `fha report`'s §6b/lead-in
+    escalation (issues #79 points 1-2) are all still there for it later.
 
 ### 1. Who are you?
 
@@ -272,6 +324,11 @@ lint` all belong to that hand-off, not to this skill.
   arguments (_STANDARD.md §11).
 - Runs once per archive in the ordinary case; if `root_person` is already set, this skill confirms with
   him before minting or writing anything else, rather than silently repeating itself.
+- The step 0 place-backlog offer fires at most **once per run**, only past the 20-claim oversight bar,
+  only on an explicit yes, and is never repeated once declined or ignored in the same session - the same
+  discipline `process-source`'s own place-registration offer uses (issue #81), extended to this skill's
+  one-time entry point. A registered cluster is written **only** via `fha confirm place`, exactly as
+  `process-source`/`place-research` write one - never a hand-edit of `places.yaml`.
 
 ## Done when
 
@@ -286,6 +343,12 @@ lint` all belong to that hand-off, not to this skill.
 - Nothing reaches `accepted` without the human's own pass through `review-claims`.
 - A loosely-answered question ("I don't really know my dad's exact birth year", "skip my mom's side for
   now") degrades gracefully - a skipped fact is simply omitted, never a stall or a refusal.
+- On an archive that already carries a 20-plus-claim unlinked place-text cluster and zero registered
+  places (e.g. a `fha gedcom import` run before this interview), step 0 makes exactly one offer to
+  register the biggest cluster(s), before the family questions begin; on yes, the chosen clusters are
+  registered via `fha confirm place` and `fha places lint` afterward shows no new orphan/duplicate
+  findings from it. On a fresh archive with no such backlog (the ordinary case), step 0 is silent and
+  nothing about it is said to him.
 - Run against a fresh scratch archive, `fha lint` afterward shows only the expected, self-explanatory
   backlog - `W102` for the newly-suggested claims, `W119` for any now-visible direct-line ancestors still
   filed as stubs, and (only if `root_generation` was left at `self` while a child was named) the `W127`
