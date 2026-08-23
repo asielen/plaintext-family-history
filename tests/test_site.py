@@ -3881,6 +3881,53 @@ class ProseConverterTests(unittest.TestCase):
         out2 = site._scrub_internal_encoding('The record (C-4kx9m2p7qr).')
         self.assertEqual(out2, 'The record.')
 
+    def test_before_bracket_with_invalid_day_left_unchanged(self):
+        # Finding 2: a syntactically-matching but calendrically impossible
+        # bound (February has no 31st) must not be translated to the
+        # nonsensical "before February 31, 1900", and must not be silently
+        # reduced to "before 1900" by dropping the bad groups either - the
+        # original text is left exactly as written.
+        out = site._scrub_internal_encoding('The land sold [..1900-02-31], records show.')
+        self.assertIn('[..1900-02-31]', out)
+        self.assertNotIn('before', out)
+
+    def test_before_bracket_with_invalid_month_left_unchanged(self):
+        # Finding 2, the other half: an invalid MONTH (13) must not be
+        # silently truncated to "before 1900" either.
+        out = site._scrub_internal_encoding('The land sold [..1900-13-01], records show.')
+        self.assertIn('[..1900-13-01]', out)
+        self.assertNotIn('before', out)
+
+    def test_before_bracket_with_valid_date_still_translates(self):
+        # Guards that finding 2's validation doesn't overreach: a real,
+        # valid calendar date still translates exactly as before.
+        out = site._scrub_internal_encoding('The land sold [..1900-02-28], records show.')
+        self.assertIn('before February 28, 1900', out)
+        self.assertNotIn('[..1900-02-28]', out)
+
+    def test_before_bracket_as_interval_start_left_whole_untouched(self):
+        # Finding 5: one bound of a two-sided EDTF interval must not be
+        # translated on its own - `[..1900]/1910` (uncertain start, certain
+        # end) translating only the bracketed half produces the broken
+        # hybrid "before 1900/1910", half English and half raw. The whole
+        # interval is left exactly as written instead.
+        out = site._scrub_internal_encoding('They lived there [..1900]/1910, per the deed.')
+        self.assertIn('[..1900]/1910', out)
+        self.assertNotIn('before', out)
+
+    def test_before_bracket_as_interval_end_left_whole_untouched(self):
+        # Finding 5, the mirrored shape: certain start, uncertain end.
+        out = site._scrub_internal_encoding('They lived there 1900/[..1910], per the deed.')
+        self.assertIn('1900/[..1910]', out)
+        self.assertNotIn('before', out)
+
+    def test_standalone_before_bracket_still_translates(self):
+        # Guards that the finding-5 interval fix doesn't overreach: a
+        # bracket that is NOT adjacent to a slash still translates normally.
+        out = site._scrub_internal_encoding('They emigrated [..1905], settling nearby.')
+        self.assertIn('before 1905', out)
+        self.assertNotIn('[..1905]', out)
+
 
 class WorkbenchModeTests(_Base):
     """Workbench mode (serve-only) adds editing chrome and provisional vitals,

@@ -194,6 +194,7 @@ from _lib import (
     fmt_id_display,
     id_type_of,
     is_genetic_parent_subtype,
+    is_valid_edtf,
     is_working_copy,
     load_fha_yaml,
     normalize_id,
@@ -567,11 +568,40 @@ def _translate_date_before(match: re.Match) -> str:
     """One `[..YYYY[-MM[-DD]]]` match -> the plain phrase base.html's date-
     notation legend already uses for this form ("before <date>"), so prose
     and the legend never teach the reader two different words for the same
-    mark."""
+    mark.
+
+    Two guards keep this from ever emitting a wrong or broken reading (#144
+    review findings 2 and 5):
+      - The matched year/month/day is validated as a real calendar date
+        (via `_lib.is_valid_edtf`, the same validator `process.py`/`claim.py`
+        use for `--date`) before any translation happens. A syntactically-
+        matching but impossible bound - `[..1900-02-31]` (no such day),
+        `[..1900-13-01]` (no such month) - is left exactly as written rather
+        than rendered as a nonsensical "before February 31, 1900" or
+        silently reduced to "before 1900" by just dropping the bad groups.
+      - A bracket sitting directly against a `/` (`[..1900]/1910` or
+        `1900/[..1910]`) is one bound of a two-sided EDTF interval, not a
+        standalone "before" date. Translating only the bracketed half would
+        leave the interval half English, half raw ("before 1900/1910") -
+        so the whole interval is left untouched instead; the regex only
+        ever matches a bracket that is NOT part of a `/` interval, one
+        component of which it doesn't understand.
+    """
+    text = match.string
+    start, end = match.start(), match.end()
+    if (start > 0 and text[start - 1] == '/') or (end < len(text) and text[end] == '/'):
+        return match.group(0)
     year, month, day = match.group(1), match.group(2), match.group(3)
-    if month and month.isdigit() and 1 <= int(month) <= 12:
+    bare = year
+    if month:
+        bare += f'-{month}'
+        if day:
+            bare += f'-{day}'
+    if not is_valid_edtf(bare):
+        return match.group(0)
+    if month:
         month_name = _MONTH_NAMES[int(month) - 1]
-        if day and day.isdigit():
+        if day:
             return f'before {month_name} {int(day)}, {year}'
         return f'before {month_name} {year}'
     return f'before {year}'
@@ -581,10 +611,11 @@ def _scrub_internal_encoding(text: str) -> str:
     """Remove/translate internal-only encoding that must never reach reader-
     facing prose (#140): a bare claim-id parenthetical is dropped outright
     (spacing preserved, #144 finding 1), and a raw `[..YYYY]`-shaped "before"
-    date is translated to plain English. Applied to raw value/notes/body text
-    BEFORE any HTML escaping, so callers doing their own index-based
-    substitutions afterward (e.g. the timeline's place-mention span) see only
-    the already-scrubbed text."""
+    date is translated to plain English when it validates as a real date and
+    stands alone (not one bound of a `/` interval - #144 findings 2 and 5).
+    Applied to raw value/notes/body text BEFORE any HTML escaping, so callers
+    doing their own index-based substitutions afterward (e.g. the timeline's
+    place-mention span) see only the already-scrubbed text."""
     if not text:
         return text
     text = _CLAIM_ID_PAREN_RE.sub(_strip_claim_id_paren, text)
