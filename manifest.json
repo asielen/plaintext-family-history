@@ -871,13 +871,13 @@
     {
       "path": "SPEC.md",
       "category": "operating",
-      "sha256": "6adc4bae5ef4cd37e0f4edafd5b91db03a3c9c7c7c60cf996e085c176913eb93",
+      "sha256": "23aa09f964efe6feab893dbad8b43ca7b3261b7121abea3baca114e1c267f07e",
       "spec_version": "1.2"
     },
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "deb8cfec60d377cfa4c9b09e8c24b7f7ce4a2f08ad37477a524f1694a3d5c5f5",
+      "sha256": "1b16eb71e745a74a392c1387ccf2feb3619a532c652fc9ce2d740806a45f9f5a",
       "spec_version": "1.2"
     },
     {
