@@ -47,6 +47,20 @@
   // Zoom is expressed as pixels-per-content-unit (1 = drawn 1:1). Fit for a
   // wide tree lands well below 1; the ceiling keeps a single card from filling
   // the whole viewport.
+  //
+  // MIN_SCALE bounds MANUAL zoom-out only (the "-" button, wheel, pinch - see
+  // clampScale() in render()/wrapStatic() below), not what fit() itself is
+  // allowed to compute (#152 review fix, P2). At the deep end of a
+  // configured home pedigree (home_pedigree_generations 7-8, the documented
+  // max) with a well-populated tree, the chart's drawn height can run
+  // several thousand content units tall; fitting that into the at-most-620px
+  // viewport needs a scale below 0.1. fit() used to run its computed scale
+  // through the same clampScale() as manual zoom, which floored it at 0.1 -
+  // so "Fit chart to view" could not actually show the whole pedigree, and
+  // there was no way to zoom out any further to see the rest. fit() now
+  // computes and uses whatever scale the content actually needs (still
+  // capped by MAX_SCALE, so a tiny tree does not over-zoom on Fit); only a
+  // deliberate manual zoom-out is still floored at MIN_SCALE.
   var MIN_SCALE = 0.1;
   var MAX_SCALE = 2.5;
   var FIT_PAD = 48;      // content-space breathing room around the tree on Fit
@@ -207,8 +221,10 @@
     function fit() {
       userInteracted = false;
       var vpW = viewportW();
-      var sc = clampScale(Math.min(vpW / (contentW + FIT_PAD * 2),
-                                   VH / (contentH + FIT_PAD * 2)));
+      // Not clampScale(): MIN_SCALE must not stop Fit from showing the whole
+      // tree (see the MIN_SCALE comment above) - only cap the ceiling here.
+      var sc = Math.min(MAX_SCALE, vpW / (contentW + FIT_PAD * 2),
+                                   VH / (contentH + FIT_PAD * 2));
       vw = vpW / sc; vh = VH / sc;
       vx = contentW / 2 - vw / 2;
       vy = contentH / 2 - vh / 2;
@@ -573,8 +589,10 @@
     function fit() {
       userInteracted = false;
       var vpW = viewportW();
-      var sc = clampScale(Math.min(vpW / (contentW + FIT_PAD * 2),
-                                   VH / (contentH + FIT_PAD * 2)));
+      // Not clampScale(): MIN_SCALE must not stop Fit from showing the whole
+      // chart (see the MIN_SCALE comment above) - only cap the ceiling here.
+      var sc = Math.min(MAX_SCALE, vpW / (contentW + FIT_PAD * 2),
+                                   VH / (contentH + FIT_PAD * 2));
       vw = vpW / sc; vh = VH / sc;
       vx = vx0 + contentW / 2 - vw / 2;
       vy = vy0 + contentH / 2 - vh / 2;

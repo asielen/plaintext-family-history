@@ -4966,6 +4966,48 @@ class FanChartLabelTests(_Base):
         self.assertGreater(labels['Bo Ford'], labels['Chastina Augusta Reed'])
 
 
+class TreeFitScaleTests(unittest.TestCase):
+    """#152 review fix (P2): `fha-tree.js`'s `fit()` (both the collapsible-
+    tree `render()` copy and the `wrapStatic()` copy for the static home
+    pedigree) must be able to compute a scale BELOW `MIN_SCALE` for a chart
+    tall/wide enough to need one - `MIN_SCALE` bounds manual zoom-out only
+    (the -/+ buttons, wheel, pinch), not what "Fit chart to view" is allowed
+    to compute. At the deep end of a configured home pedigree
+    (`home_pedigree_generations` 7-8, the documented max) with a
+    substantially-populated tree, the drawn chart can need a scale under 0.1
+    to fit the at-most-620px viewport - clamping fit()'s own computation
+    through `clampScale()` (as before this fix) left part of the chart
+    permanently out of view with no way to zoom out any further. A
+    regression here textually reintroduces exactly that clamp."""
+
+    def test_fit_does_not_clamp_through_min_scale(self):
+        js = (ROOT / 'tools' / 'templates' / 'vendor' / 'fha-tree.js').read_text(encoding='utf-8')
+        # The pre-fix shape, in both fit() copies: the whole Math.min(...)
+        # fit computation wrapped in clampScale(...), which floors it at
+        # MIN_SCALE. Must not appear anywhere in the file.
+        self.assertEqual(js.count('clampScale(Math.min(vpW / (contentW + FIT_PAD * 2)'), 0)
+        # The fixed shape: MAX_SCALE is still respected as a ceiling (so a
+        # tiny chart does not over-zoom on Fit), MIN_SCALE is not consulted
+        # at all - present once in render()'s fit() and once in
+        # wrapStatic()'s.
+        self.assertEqual(js.count('Math.min(MAX_SCALE, vpW / (contentW + FIT_PAD * 2)'), 2)
+
+    def test_committed_showcase_vendor_copies_match_the_template(self):
+        # The same staleness class #153 already fixed once for the
+        # workbench showcase's stylesheet (CommittedShowcaseAssetTests): the
+        # two example sites under example-archive/generated/ are committed,
+        # browsable snapshots, so a fix that only touches
+        # tools/templates/vendor/fha-tree.js still ships the old bug to
+        # anyone reading those unless the committed copies are synced too.
+        template = (ROOT / 'tools' / 'templates' / 'vendor' / 'fha-tree.js').read_text(encoding='utf-8')
+        for rel in ('example-archive/generated/site/vendor/fha-tree.js',
+                    'example-archive/generated/site-workbench/vendor/fha-tree.js'):
+            with self.subTest(rel):
+                self.assertEqual(
+                    (ROOT / rel).read_text(encoding='utf-8'), template,
+                    f'{rel} is stale - copy tools/templates/vendor/fha-tree.js over it verbatim.')
+
+
 class FanChartStyleTests(unittest.TestCase):
     def test_fan_label_has_no_fixed_font_size(self):
         # Issue #116: _render_fan_svg() computes a per-label auto-shrink
