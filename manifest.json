@@ -860,7 +860,7 @@
     {
       "path": "CHEATSHEET.md",
       "category": "operating",
-      "sha256": "8c97e235eb62bc342a9a1955800ca9ff59896ea4844ea69a0a37917f2f00c253",
+      "sha256": "77f2599e640bb38a46c8f8f7d324ce5286540447ab0a0f5b0d09d0b2c1d35932",
       "spec_version": "1.2"
     },
     {
@@ -878,7 +878,7 @@
     {
       "path": "SPEC.md",
       "category": "operating",
-      "sha256": "53ffb1557980f51ec033e3bf2b777051462972da6e49c9c523fc953efb75b717",
+      "sha256": "c689f005aeddae4a74f01a16dc4a4d150362b0e7ec07ad5efd2593ce9ddb0e0e",
       "spec_version": "1.2"
     },
     {
