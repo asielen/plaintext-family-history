@@ -74,9 +74,17 @@ with nobody ever having been offered the one pass that would fix it. Migration m
 sanctioned thing to do before this interview (AGENTS.md: "prefer [`fha gedcom import`] over hand-migrating
 one"), so this is not a rare ordering.
 
+`fha gedcom import` mints every claim it drafts at `status: suggested` - never `accepted`/`needs-review` -
+so a plain `fha places candidates` call (which deliberately excludes `suggested` claims everywhere else in
+this archive, since an unreviewed claim might still be disputed away) would see NOTHING from a fresh
+import and silently miss the exact backlog this check exists to catch (Codex review, PR #150). This one
+call is the sanctioned exception: pass `--include-suggested` to widen the scan for this one-time,
+informational purpose only - it is not a "confirmed data" report, so counting still-`suggested` claims
+here is correct in a way it would not be for `review-claims`, `fha report`, or any other everyday view.
+
 ```
-fha index                 # cheap; keeps the check below from reading a stale or missing cache
-fha places candidates
+fha index                             # cheap; keeps the check below from reading a stale or missing cache
+fha places candidates --include-suggested
 ```
 
 - **`places/places.yaml` already has at least one `- id:` entry, or every cluster `fha places
