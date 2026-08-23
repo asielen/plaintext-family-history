@@ -2667,6 +2667,43 @@ class PedigreeGeometryGuardTests(unittest.TestCase):
         self.assertNotIn('ped-axis-label', svg)    # nothing to caption - label withheld
         self.assertIn('Spouse', svg)               # family wing still draws
 
+    def test_shallow_known_tree_at_deep_configured_depth_stays_compact(self):
+        """Regression guard for the home-pedigree geometry bug: `ancestor_band`
+        (and, before this fix, `row_index`'s own row spacing) keyed height off
+        `max_ancestor_gen` - the full CONFIGURED depth a caller asked for
+        (`site.home_pedigree_generations`, default 5) - rather than `max_gen`,
+        the depth the walk actually PLACED cards at. A person with only two
+        known parents (grandparents unresearched, so slots 4-7 render as
+        'Unknown' but slots 8+ are never even placed - see the render loop)
+        reaches real data only 2 generations deep no matter how deep the
+        caller is willing to look, so asking for the default D=5 must produce
+        the exact SAME geometry as asking for D=2 with the same shape (proven
+        below against `test_two_generation_positions_match_the_pre_115_hardcoded_shape`'s
+        pinned 624x294 viewBox) - not a chart reserved for 2**5=32 leaf rows,
+        which is what the un-fixed code produced (viewBox 624x2310 - the
+        review's own synthetic repro number) and which, via the JS pan/zoom
+        viewport's fit-to-height calculation, shrank the whole chart below
+        legible text size on first paint."""
+        labels = {
+            1: {'name': 'Subject', 'url': None, 'redacted': False, 'dates': {}},
+            2: {'name': 'Father', 'url': None, 'redacted': False, 'dates': {}},
+            3: {'name': 'Mother', 'url': None, 'redacted': False, 'dates': {}},
+        }
+        svg = site._render_pedigree_svg(labels, ancestor_generations=5)
+        # Same exact viewBox as the fully-known D=2 shape - reserving no more
+        # (and no less) than the 2 generations this tree actually reached,
+        # regardless of the D=5 configured depth asked for.
+        self.assertIn('viewBox="0 0 624 294.0"', svg)
+        # Exactly the 4 grandparent 'Unknown' placeholders slots 4-7 need -
+        # not the dozens a D=5-deep walk would place if it kept going past
+        # the point where research actually stopped.
+        self.assertEqual(svg.count('ped-empty'), 4)
+        pos = self._positions(svg)
+        # Same row positions the D=2 pinned test expects (base=39, ROW=72).
+        self.assertEqual(pos['Subject'][1], 39 + 1.5 * 72)
+        self.assertEqual(pos['Father'][1], 39 + 0.5 * 72)
+        self.assertEqual(pos['Mother'][1], 39 + 2.5 * 72)
+
 
 class HomePedigreeTests(_Base):
     """#115: the home page's marriage-aware ancestor pedigree - seeding

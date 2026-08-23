@@ -981,14 +981,22 @@ def _render_pedigree_svg(labels: dict, spouses: list[dict] | None = None,
 
     GEOMETRY NOTE (`row_index`, generalized for #115): every rendered slot's row
     is `offset * span + (span - 1) / 2`, where `offset = num - 2**g` is the
-    slot's position within its own generation g and `span = 2**(D - g)` (D =
-    `ancestor_generations`). This is the closed form of "a slot's row is the
-    average of its two children's rows, and a leaf slot (g == D) occupies row
-    `offset`" - i.e. plain binary-tree centering, unrolled algebraically instead
-    of recursed. It reduces to the pre-#115 hardcoded constants exactly at D=2
-    (subject 1.5, parents 0.5/2.5, grandparents 0-3 - pinned by a regression
-    test), which is what makes it safe to trust at D=5: the formula is not new
-    math bolted on top of the old one, it is the old one's actual shape, named."""
+    slot's position within its own generation g and `span = 2**(D - g)`. D is
+    `max_gen` - the deepest generation actually PLACED in `render` (a real
+    ancestor or its still-unresearched 'Unknown' child slot) - NOT the full
+    CONFIGURED `ancestor_generations`/`max_ancestor_gen`, which only bounds how
+    far the walk below is allowed to look. This is the closed form of "a slot's
+    row is the average of its two children's rows, and a leaf slot (g == D)
+    occupies row `offset`" - i.e. plain binary-tree centering, unrolled
+    algebraically instead of recursed. It reduces to the pre-#115 hardcoded
+    constants exactly when a tree happens to reach 2 full generations (subject
+    1.5, parents 0.5/2.5, grandparents 0-3 - pinned by a regression test); a
+    shallower known tree centres against its OWN shallower depth instead of the
+    configured maximum, which is what keeps a sparsely-researched line's chart
+    compact even when `ancestor_generations` (`site.home_pedigree_generations`,
+    default 5) is configured much deeper - see the `ancestor_band` comment
+    below for why keying this off the configured depth instead was a real bug,
+    not just a theoretical waste."""
     spouses = spouses or []
     children = children or []
     siblings = siblings or []
@@ -1036,20 +1044,6 @@ def _render_pedigree_svg(labels: dict, spouses: list[dict] | None = None,
     def col_x(gen: int) -> float:
         return PAD + (gen - min_gen) * (CW + COL_GAP)
 
-    def row_index(num: int) -> float:
-        """Row position (in ROW units) for an Ahnentafel slot, centred against
-        `max_ancestor_gen` (D) generations of leaf rows - see the GEOMETRY NOTE
-        above for the derivation. Pure function of `num` and the closed-over D,
-        so spouse/children/sibling rows can be placed relative to the same
-        scale (`subject_row = row_index(1)` below, not a separate constant -
-        the two must never drift apart, or the subject card drawn by the
-        ancestor loop and the subject row every other column is measured
-        against would land on two different y's)."""
-        g = num.bit_length() - 1
-        offset = num - (1 << g)
-        span = 1 << (max_ancestor_gen - g)
-        return offset * span + (span - 1) / 2
-
     # Draw the subject always; an ancestor slot only when its child is a drawn person -
     # real ancestors as name cards, a known person's missing parent as a faint 'Unknown'.
     # Slots visit in increasing numeric order (2, 3, 4, 5, ... up to the deepest
@@ -1066,11 +1060,38 @@ def _render_pedigree_svg(labels: dict, spouses: list[dict] | None = None,
             continue
         lab = labels.get(slot)
         render[slot] = ('person', lab) if (lab and lab.get('name')) else ('empty', None)
-    # Deepest generation actually PLACED in `render` - used below for the
-    # overall width. May be shallower than `max_ancestor_gen` when every
-    # ancestor beyond some point is unresearched (an 'Unknown' slot's own
-    # kind is 'empty', so the loop above never places ITS children).
+    # Deepest generation actually PLACED in `render` - the depth research (or
+    # its still-unresearched 'Unknown' placeholders) actually reached, which
+    # may be far shallower than `max_ancestor_gen` (the full CONFIGURED depth
+    # a caller asked for) when every ancestor beyond some point is
+    # unresearched (an 'Unknown' slot's own kind is 'empty', so the loop above
+    # never places ITS children). Used below for BOTH the overall width (as
+    # before #115) and - critically - as the basis for `row_index`'s row
+    # spacing and the reserved `ancestor_band` height: a chart must centre and
+    # reserve space against the depth it actually drew, not the depth a
+    # caller was willing to look. Getting this wrong (keying height off
+    # `max_ancestor_gen` instead) is exactly the home-pedigree geometry bug
+    # fixed here - see the GEOMETRY NOTE and `ancestor_band` comments.
     max_gen = max((k.bit_length() - 1 for k in render), default=0)
+
+    def row_index(num: int) -> float:
+        """Row position (in ROW units) for an Ahnentafel slot, centred against
+        `max_gen` - the depth actually reached by `render` above, NOT the full
+        configured `ancestor_generations`/`max_ancestor_gen` - generations of
+        leaf rows; see the GEOMETRY NOTE above for the derivation. Pure
+        function of `num` and the closed-over `max_gen`, so spouse/children/
+        sibling rows can be placed relative to the same scale (`subject_row =
+        row_index(1)` below, not a separate constant - the two must never
+        drift apart, or the subject card drawn by the ancestor loop and the
+        subject row every other column is measured against would land on two
+        different y's). `render`/`max_gen` are computed just above, before
+        this closure's first call, precisely so this centres on data that was
+        actually drawn rather than on how deep the caller was willing to
+        look."""
+        g = num.bit_length() - 1
+        offset = num - (1 << g)
+        span = 1 << (max_gen - g)
+        return offset * span + (span - 1) / 2
 
     subject_row = row_index(1)
     spouse_rows = [subject_row + 1 + i for i in range(len(spouses))]     # stack below the subject
@@ -1095,13 +1116,16 @@ def _render_pedigree_svg(labels: dict, spouses: list[dict] | None = None,
     # Row of each child by its ORIGINAL index (cards and ticks look rows up here).
     child_row_of = {orig: children_rows[pos] for pos, orig in enumerate(ordered_children)}
 
-    # The ancestor band is always the full grandparent grid (rows 0-3): slot 1
-    # (the subject) is unconditionally `('person', ...)` above, so the render
-    # loop unconditionally places slots 2 and 3 too - as a known name or a
-    # faint 'Unknown' - the moment the subject draws (i.e. always). There is
-    # no input for which those two slots are placed but empty of a card, so a
-    # band that reserves anything less than rows 0-3 always undercounts the
-    # 'Unknown' cards that are about to draw there regardless.
+    # The ancestor band is always the full grandparent grid for the depth
+    # ACTUALLY reached (`max_gen`, computed above): slot 1 (the subject) is
+    # unconditionally `('person', ...)`, so the render loop unconditionally
+    # places slots 2 and 3 too - as a known name or a faint 'Unknown' - the
+    # moment the subject draws (i.e. always), and the walk keeps placing real-
+    # or-'Unknown' slots one generation deeper for as long as the previous
+    # generation actually resolved to a real person. There is no input for
+    # which the deepest PLACED slots (generation `max_gen`) are empty of a
+    # card, so a band shallower than `max_gen`'s own leaf-row range always
+    # undercounts the cards about to draw there.
     #
     # This used to be sized off `len(labels)` (the count of KNOWN ancestors)
     # on the theory that a chart with no ancestors "has no reason to reserve
@@ -1113,12 +1137,26 @@ def _render_pedigree_svg(labels: dict, spouses: list[dict] | None = None,
     # children rows then extend the band only when they reach beyond it
     # (extra spouses stacking past row 3, a wide brood of children reaching
     # above row 0).
-    # Generalized for #115: the reserved band is [0, 2**D - 1] (D =
-    # max_ancestor_gen), the row_index() leaf-row range for whatever depth was
-    # actually asked for - [0.0, 3.0] at the pre-#115 default D=2, [0.0, 0.0]
-    # (just the subject's own row) at D=0, the redaction-safe hub-only
-    # fallback with no ancestor columns at all.
-    ancestor_band = [0.0, float((1 << max_ancestor_gen) - 1)]
+    #
+    # Generalized for #115 as [0, 2**D - 1] with D = `max_ancestor_gen` (the
+    # full CONFIGURED depth, `ancestor_generations` /
+    # `site.home_pedigree_generations`, default 5) - then corrected here to
+    # key D off `max_gen` (the depth ACTUALLY reached) instead. Reserving the
+    # full configured depth's leaf-row band regardless of how far research
+    # actually got was harmless at the pre-#115 hardcoded D=2 (worst case 4
+    # reserved rows, ~294px), but a real bug once D defaults to 5 for the home
+    # pedigree: an archive that is not researched 5 generations deep on every
+    # line got a chart reserved for up to 32 leaf rows it never used, spacing
+    # the few real cards hundreds of px apart and - via the JS pan/zoom
+    # viewport's fit-to-height calculation - shrinking the WHOLE chart's
+    # initial render scale (name text included) well below legible size. The
+    # band is now [0.0, 3.0] when a tree happens to reach 2 full generations
+    # (the pre-#115 shape, unchanged), [0.0, 0.0] (just the subject's own row)
+    # when `max_gen` is 0 - the redaction-safe hub-only fallback with no
+    # ancestor columns at all - and scales with whatever depth the walk
+    # actually placed cards at in between, no matter how deep it was
+    # CONFIGURED to look.
+    ancestor_band = [0.0, float((1 << max_gen) - 1)]
     all_rows = ancestor_band + spouse_rows + children_rows + sib_rows
     min_row, max_row = min(all_rows), max(all_rows)
     # A small extra top margin reserves room for the axis-label caption
