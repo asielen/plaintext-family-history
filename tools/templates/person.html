@@ -81,6 +81,21 @@
   </details>
   {% endif %}
 
+  {% if person.descendants_tree %}
+  {#- #115: the interactive descendant explorer, demoted from the home page
+      to a per-person opt-in link - native <details> disclosure (works with
+      no script; the interactive chart inside still needs one, same as
+      before). A native <summary> click always toggles it open/closed even
+      with JS disabled - the arrow-styled affordance below just names what
+      opening it shows. -#}
+  <details class="chart">
+    <summary class="chart-title">See descendants of {{ person.name }} &rarr;</summary>
+    <div class="chart-body">
+      {% with tree = person.descendants_tree %}{% include "_tree.html" %}{% endwith %}
+    </div>
+  </details>
+  {% endif %}
+
   {% if person.biography_html or workbench %}
   <h2>Biography{% if workbench %}
     <a class="wb-fix" href="#" data-wb-open="tpl-edit-bio" data-wb-args='{{ {"person_id": person.display_id} | tojson }}' style="font-weight:400">edit&hellip;</a>{% endif %}</h2>

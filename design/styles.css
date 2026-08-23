@@ -494,7 +494,34 @@ a.fan-link, a.fan-link:hover { text-decoration: none; }
    to fit 620px - the chart itself already tightens its card/row spacing to
    compensate (site.py `_render_pedigree_svg`). */
 .pedigree.pedigree-family { max-width: 760px; }
+/* Home pedigree (#115): deeper by default (site.home_pedigree_generations,
+   5 generations) than a person-page chart, and always wrapped by the
+   pan/zoom viewport below rather than read at full natural size - so it gets
+   a much wider ceiling instead of the compact per-person caps above. */
+.pedigree.pedigree-home { max-width: 100%; }
+/* Holds the static pedigree SVG before/without the pan/zoom enhancement
+   (#115): the outer container fha-tree.js's wrapStatic() finds and builds
+   its own fixed-height .fha-tree-viewport inside. Bounded here on the ONE
+   axis that matters with no script at all - horizontal - so a very wide
+   chart scrolls sideways instead of blowing out the page layout; height is
+   left natural (the whole point of the no-JS path is a plain tall SVG a
+   reader scrolls past, not a cropped window). */
+.pedigree-home-wrap { max-width: 100%; overflow-x: auto; }
 .ped-link { fill: none; stroke: var(--rule-strong); stroke-width: 1.25; }
+/* Paternal (1) / maternal (2) branch tint (#115, home pedigree only) - the
+   same --branch-N tokens the fan chart and interactive tree already use,
+   recovered from Ahnentafel parity alone (site.py `_ancestor_branch`), so
+   two clicks into the archive still reads as one consistent colour system. */
+.ped-node.ped-branch-1 { border-left: 3px solid var(--branch-1); }
+.ped-node.ped-branch-2 { border-left: 3px solid var(--branch-2); }
+/* Sibling cards (#115 lost-relatives mitigation) - a lighter fill tells them
+   apart from the subject/spouse cards sharing their column, and their single
+   grouping bracket (ped-link-sibling) is a light dotted tick, distinct from
+   ped-link-later's dashed "a later marriage" vocabulary above. */
+.ped-node.ped-sibling { background: var(--surface-sunken); }
+.ped-link-sibling { stroke-dasharray: 1 4; stroke-linecap: round; }
+.ped-axis-label { font-family: var(--font-sans); font-size: var(--text-xs); font-weight: 600;
+                  text-transform: uppercase; letter-spacing: var(--tracking-caps); color: var(--muted); }
 /* A 2nd/3rd marriage's whole lane - couple bracket, trunk, child ticks -
    renders dotted so each family unit reads as one line style (owner decision,
    review 2026-07-17). Deliberately distinct from the interactive tree's dash

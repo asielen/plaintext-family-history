@@ -1,0 +1,21 @@
+{# Home pedigree partial (#115). Expects `pedigree` = {svg, caption, note} and
+   `root_prefix`. The chart itself is a complete, correct, static <svg> - it
+   needs no script at all. fha-tree.js's pan/zoom viewport (`wrapStatic`) is a
+   pure enhancement layered on top for a deep chart or a small screen: a bad
+   wrap (missing vendor file, malformed viewBox) must never blank the page, so
+   the script is wrapped in its own try/catch and simply leaves the plain SVG
+   in place on failure - the same "JS optional, never load-bearing" contract
+   `_tree.html` already follows for the interactive tree. #}
+{% if pedigree %}
+<div class="pedigree-home-wrap" id="fha-pedigree">{{ pedigree.svg }}</div>
+<p class="fha-tree-note">{{ pedigree.caption }}</p>
+{% if pedigree.note %}<p class="empty">{{ pedigree.note }}</p>{% endif %}
+<script src="{{ root_prefix }}/vendor/fha-tree.js"></script>
+<script>
+(function () {
+  var el = document.getElementById('fha-pedigree');
+  if (!el || !window.FhaTree || !window.FhaTree.wrapStatic) return;
+  try { window.FhaTree.wrapStatic(el, {}); } catch (e) { /* a bad wrap must never blank the page */ }
+})();
+</script>
+{% endif %}
