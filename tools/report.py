@@ -76,13 +76,26 @@ CODE MAP
     _live_alias, _is_missing_key - reconcile's 'MISSING:' catalog key, read/tested
     _photo_scan_notes            - §6: what this session's photo scan could NOT see
     _section_photo_triage        - §6: photoindex.run_triage embed
-    _section_place_candidates    - §6b: places.run_candidates() embed, each
-                                    place-text cluster line carrying its own
-                                    `fha confirm place` command (issue #79)
+    _fetch_place_candidates       - the one places.run_candidates() call per
+                                    report run, shared by both consumers below
+                                    (Codex review, PR #142 finding 2 - a
+                                    second independent fetch re-ran the whole
+                                    GPS photo-cluster pass and doubled any
+                                    stale-photo-index warning)
+    _place_text_group_line       - one place-text cluster's report line;
+                                    recommends `--into <L-id>` instead of
+                                    minting via `--name` when the cluster's
+                                    label already matches a registered place
+                                    (Codex review, PR #142 finding 1)
+    _section_place_candidates    - §6b: renders `_fetch_place_candidates`'s
+                                    result, each place-text cluster line
+                                    carrying its own `fha confirm place`
+                                    command (issue #79)
     _place_text_escalations      - oversized (20+ claim) place-text clusters,
                                     promoted above every section (issue #79
                                     point 2) - same clusters §6b lists, never
-                                    re-derived
+                                    re-derived; reads `_fetch_place_
+                                    candidates`'s shared result, never its own
     _section_hypotheses          - §7: open hypotheses + draft-queue backlog
     _section_promotion_candidates - §7b: direct-line stubs + claim-heavy stubs
                                     (the fha person promote surface; stateless)
@@ -120,6 +133,7 @@ from _lib import (
     Result,
     fmt_id_display,
     load_fha_yaml,
+    match_place_text_to_registry,
     normalize_id,
     open_index_db,
     parse_questions,
@@ -940,7 +954,7 @@ def _section_photo_triage(
 
 # ── Section 6b: Place candidates ──────────────────────────────────────────────
 
-def _place_text_group_line(g: dict) -> str:
+def _place_text_group_line(archive_root: Path, g: dict) -> str:
     """
     One place-text cluster's report line: label, claim count, date spread,
     and the exact `fha confirm place` command that clears it (issue #79
@@ -950,22 +964,81 @@ def _place_text_group_line(g: dict) -> str:
     oversight-threshold notice, issue #79 point 2) render the identical line
     for the identical cluster - the two can never disagree about what a
     cluster is called or what command resolves it.
+
+    Before recommending a mint, checks the cluster's label against the
+    ALREADY-registered places (`_lib.match_place_text_to_registry`, the same
+    exact/near normalization - `place_text_cluster_key`/`normalize_place_text`
+    - the claim-write-time resolver from issue #79 point 3 uses). A cluster
+    can legitimately still be unlinked even though its place IS registered:
+    point 3's auto-attach only runs at claim-write time and only on an
+    'exact' match, so (a) any claim drafted before that landed, and (b) any
+    'near' match (word order/abbreviation - point 3 deliberately never
+    auto-attaches those), both stay sitting on bare `place_text` forever. A
+    banner or listing that always suggests `--name` in that state walks the
+    human straight into minting a duplicate `L-id` for a place that already
+    has one (Codex review, PR #142 finding 1) - so a match here recommends
+    `fha confirm place ... --into <existing L-id>` instead, and `--name` is
+    offered only once no registered place matches at all.
     """
     spread = f"{g['date_min']}/{g['date_max']}" if g['date_min'] or g['date_max'] else 'no dates'
     name = g['label']
     ids = ' '.join(fmt_id_display(cid) for cid in g['claim_ids'])
+    match = match_place_text_to_registry(archive_root, name)
+    if match['tier'] and match['place_id']:
+        tier_word = 'matches' if match['tier'] == 'exact' else 'near-matches'
+        return (
+            f"{name} - {g['claim_count']} claim(s), {spread} - "
+            f"{tier_word} the already-registered {match['name']!r} "
+            f"({match['place_id']}) - link with "
+            f"`fha confirm place {ids} --into={match['place_id']}`"
+        )
     return (
         f"{name} - {g['claim_count']} claim(s), {spread} - "
         f'register with `fha confirm place {ids} --name={shell_quote(name)}`'
     )
 
 
-def _section_place_candidates(archive_root: Path, fha_config: dict) -> list[str]:
+def _fetch_place_candidates(archive_root: Path, fha_config: dict) -> tuple[dict | None, str | None]:
     """
-    Calls `places.run_candidates()` (BUILD.md M6.2). The import/attribute
-    guards stay in place as a defensive fallback rather than a hard
-    dependency - every other optional embed in this file (photoindex,
-    cooccur) degrades the same way instead of raising.
+    The one `places.run_candidates()` call a report run makes (BUILD.md
+    M6.2), shared by both `_section_place_candidates` (§6b's own listing)
+    and `_place_text_escalations` (the oversight-threshold banner, issue #79
+    point 2).
+
+    Before this existed, the two called `run_candidates()` independently -
+    on every report run with escalations enabled, that meant `_gps_clusters`'
+    full photo-index read and greedy-clustering pass ran TWICE for no reason
+    (the escalation feature only ever needs the place-text half), and any
+    stale-photo-index warning printed twice in the same report (Codex
+    review, PR #142 finding 2). One fetch, passed to both, fixes both.
+
+    Returns `(candidates_data, error_line)`: on success, `candidates_data`
+    is `run_candidates()`'s `.data` dict (`place_text_groups`/`gps_clusters`/
+    the legacy flat `groups`) and `error_line` is `None`; on a degraded
+    tools install, `candidates_data` is `None` and `error_line` is the exact
+    message §6b prints for that failure. The import/attribute guards stay in
+    place as a defensive fallback rather than a hard dependency - every
+    other optional embed in this file (photoindex, cooccur) degrades the
+    same way instead of raising.
+    """
+    try:
+        import places as _places_tool   # noqa: PLC0415 - optional embed, see docstring
+    except ImportError:
+        return None, ('`fha places` could not be loaded (tools/places.py missing or damaged) - '
+                       'section skipped. Run `fha update-tools` to restore it.')
+    try:
+        result = _places_tool.run_candidates(archive_root, fha_config)
+    except AttributeError:
+        return None, ('`fha places` is out of date (no candidates engine) - section skipped. '
+                       'Run `fha update-tools` to refresh the tools.')
+    return result.data, None
+
+
+def _section_place_candidates(
+    archive_root: Path, candidates: dict | None, error: str | None,
+) -> list[str]:
+    """
+    Renders `_fetch_place_candidates`'s result.
 
     Issue #79 point 1: every place-text cluster line now grows a ready-to-run
     `fha confirm place` command instead of just describing the cluster - this
@@ -982,7 +1055,7 @@ def _section_place_candidates(archive_root: Path, fha_config: dict) -> list[str]
     GPS clusters keep their plain descriptive line: they are photo groups,
     not claims, so there is nothing for `fha confirm place` to relink - a
     fabricated verb for them would be the claim-write-time-resolution/
-    first-run-flow work issue #79 explicitly defers (points 3-4), not this
+    first-run-flow work issue #79 explicitly defers (point 4), not this
     one. (Point 2, escalation on threshold, is `_place_text_escalations`
     below - no longer deferred.)
 
@@ -999,27 +1072,17 @@ def _section_place_candidates(archive_root: Path, fha_config: dict) -> list[str]
     docstring: a plain double-quote wrap is not enough there, per the
     `claim.py`/issue #54 precedent of this exact bug shape).
     """
-    try:
-        import places as _places_tool   # noqa: PLC0415 - optional embed, see docstring
-    except ImportError:
-        return ['`fha places` could not be loaded (tools/places.py missing or damaged) - '
-                'section skipped. Run `fha update-tools` to restore it.']
+    if error:
+        return [error]
 
-    try:
-        result = _places_tool.run_candidates(archive_root, fha_config)
-    except AttributeError:
-        return ['`fha places` is out of date (no candidates engine) - section skipped. '
-                'Run `fha update-tools` to refresh the tools.']
-
-    place_text_groups = result.get('place_text_groups')
-    gps_clusters = result.get('gps_clusters')
+    place_text_groups = candidates.get('place_text_groups')
+    gps_clusters = candidates.get('gps_clusters')
     if place_text_groups is None and gps_clusters is None:
         # A places.py old enough to predate the structured keys (only the
         # flat pre-formatted `groups` list existed before) - same
-        # degrade-not-crash posture as the ImportError/AttributeError guards
-        # above: an out-of-date tool loses the call-to-action line instead of
-        # crashing the report.
-        groups = result.get('groups') or []
+        # degrade-not-crash posture as the error guard above: an out-of-date
+        # tool loses the call-to-action line instead of crashing the report.
+        groups = candidates.get('groups') or []
         if not groups:
             return ['No recurring unlinked place-text or GPS clusters found.']
         return [f"- {g}" for g in groups]
@@ -1031,7 +1094,7 @@ def _section_place_candidates(archive_root: Path, fha_config: dict) -> list[str]
 
     lines: list[str] = []
     for g in place_text_groups:
-        lines.append(f'- {_place_text_group_line(g)}')
+        lines.append(f'- {_place_text_group_line(archive_root, g)}')
     for c in gps_clusters:
         lines.append(
             f"- GPS cluster near {c['lat']:.4f},{c['lon']:.4f} - "
@@ -1052,9 +1115,9 @@ _PLACE_ESCALATION_THRESHOLD = 20
 # human reviewer can always tune it in review.
 
 
-def _place_text_escalations(archive_root: Path, fha_config: dict) -> list[dict]:
+def _place_text_escalations(candidates: dict | None) -> list[dict]:
     """
-    §6b place-text clusters (`places.run_candidates()`'s `place_text_groups`)
+    §6b place-text clusters (`_fetch_place_candidates`'s `place_text_groups`)
     that have reached oversight scale.
 
     Issue #79's motivating case was a 13-month-old archive with 359 of 762
@@ -1068,24 +1131,17 @@ def _place_text_escalations(archive_root: Path, fha_config: dict) -> list[dict]:
     `_PLACE_ESCALATION_THRESHOLD`, so an escalation can never name a cluster
     §6b itself would not also list.
 
-    A second, independent `places.run_candidates()` fetch rather than a
-    shared one with `_section_place_candidates` - deliberately: the two
-    callers want different behavior on failure. §6b explains exactly why
-    places.py could not run (missing, out of date, or a schema that predates
-    the structured keys); this notice is a bonus call-out riding on top of
-    that section, so on any of those same failures it degrades silently to
-    `[]` instead of repeating the explanation a second time in different
-    words at the top of the report.
+    Takes `_fetch_place_candidates`'s already-computed result rather than
+    calling `places.run_candidates()` itself (that used to be a second,
+    independent fetch - Codex review, PR #142 finding 2) - degrades to `[]`
+    when `candidates` is `None` (the same tools-degraded states §6b already
+    explains via its own `error` line, so this bonus call-out does not
+    repeat that explanation a second time in different words at the top of
+    the report).
     """
-    try:
-        import places as _places_tool   # noqa: PLC0415 - optional embed, see _section_place_candidates
-    except ImportError:
+    if not candidates:
         return []
-    try:
-        result = _places_tool.run_candidates(archive_root, fha_config)
-    except AttributeError:
-        return []
-    groups = result.get('place_text_groups') or []
+    groups = candidates.get('place_text_groups') or []
     return [g for g in groups if g['claim_count'] >= _PLACE_ESCALATION_THRESHOLD]
 
 
@@ -1366,7 +1422,7 @@ def _render_report(
     bodies: dict[str, list[str]],
     section_filter: str | None,
     archive_notes: list[str] | None = None,
-    place_escalations: list[dict] | None = None,
+    place_escalation_lines: list[str] | None = None,
 ) -> str:
     """Assemble the report markdown: title, archive notes (when any), sections.
 
@@ -1382,28 +1438,31 @@ def _render_report(
     (round-2 finding 16). They print on section-filtered runs too - narrowing
     the view should never hide that a line of the archive was skipped.
 
-    `place_escalations` (issue #79 point 2, `_place_text_escalations`) are
-    §6b place-text clusters that crossed the oversight-scale threshold - the
-    same above-every-section position as `archive_notes` and for the same
-    reason: a cluster this large is not one more candidate that can afford
-    to lose the "what should I do this session" contest by sitting quietly
-    at position 10 of 13. Also printed on section-filtered runs, matching
-    `archive_notes`' own rule - and the full cluster is still listed at its
-    normal spot in §6b below, so nothing here shrinks that section's own
-    listing."""
+    `place_escalation_lines` (issue #79 point 2, `_place_text_escalations`)
+    are §6b place-text clusters that crossed the oversight-scale threshold -
+    already rendered by `_place_text_group_line` (the caller does this, not
+    here, because that render needs `archive_root` for the registry-match
+    check finding 1 added, and this function stays archive-agnostic) - shown
+    at the same above-every-section position as `archive_notes` and for the
+    same reason: a cluster this large is not one more candidate that can
+    afford to lose the "what should I do this session" contest by sitting
+    quietly at position 10 of 13. Also printed on section-filtered runs,
+    matching `archive_notes`' own rule - and the full cluster is still
+    listed at its normal spot in §6b below, so nothing here shrinks that
+    section's own listing."""
     lines = [f'# fha report - {generated}', '']
     if archive_notes:
         lines.append('**Archive notes from this refresh:**')
         lines.extend(f'- {note}' for note in archive_notes)
         lines.append('')
-    if place_escalations:
+    if place_escalation_lines:
         lines.append(
-            f'**{len(place_escalations)} place-text cluster(s) past the '
+            f'**{len(place_escalation_lines)} place-text cluster(s) past the '
             f'{_PLACE_ESCALATION_THRESHOLD}-claim oversight threshold, no place '
             'registered - this is not a candidate to weigh, it is an oversight '
             'to close (see the Place candidates section below for every cluster):**'
         )
-        lines.extend(f'- {_place_text_group_line(g)}' for g in place_escalations)
+        lines.extend(f'- {line}' for line in place_escalation_lines)
         lines.append('')
     for key, number, title in SECTIONS:
         if section_filter and key != section_filter:
@@ -1494,6 +1553,13 @@ def run_report(
         prev = {} if full else _load_snapshot(archive_root)
         current = _build_snapshot(conn, archive_root, findings, registry)
 
+        # One `places.run_candidates()` fetch, shared by §6b's own listing
+        # and the oversight-threshold escalation below it never re-derives
+        # (Codex review, PR #142 finding 2 - two independent fetches used to
+        # run the whole GPS photo-cluster pass, and any stale-photo-index
+        # warning, twice per report).
+        place_candidates, place_candidates_error = _fetch_place_candidates(archive_root, fha_config)
+
         bodies = {
             'discoveries': _section_discoveries(conn, prev, current),
             'review-queue': _section_review_queue(conn),
@@ -1505,21 +1571,25 @@ def run_report(
             'answerable-questions': _section_answerable_questions(conn, archive_root),
             'photo-triage': _section_photo_triage(
                 archive_root, fha_config, photo_scan_error, photo_scan_notes),
-            'place-candidates': _section_place_candidates(archive_root, fha_config),
+            'place-candidates': _section_place_candidates(
+                archive_root, place_candidates, place_candidates_error),
             'hypotheses': _section_hypotheses(conn, archive_root),
             'promotion-candidates': _section_promotion_candidates(conn, fha_config),
             'possible-connections': _section_possible_connections(archive_root),
         }
 
-        place_escalations = _place_text_escalations(archive_root, fha_config)
+        place_escalations = _place_text_escalations(place_candidates)
+        place_escalation_lines = [
+            _place_text_group_line(archive_root, g) for g in place_escalations
+        ]
 
         generated = datetime.date.today().isoformat()
         full_md = _render_report(generated, bodies, section_filter=None,
                                  archive_notes=archive_notes,
-                                 place_escalations=place_escalations)
+                                 place_escalation_lines=place_escalation_lines)
         printed_md = full_md if not section else _render_report(
             generated, bodies, section_filter=section, archive_notes=archive_notes,
-            place_escalations=place_escalations)
+            place_escalation_lines=place_escalation_lines)
 
         cache_dir = archive_root / '.cache'
         cache_dir.mkdir(parents=True, exist_ok=True)

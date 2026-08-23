@@ -907,6 +907,39 @@ class PlaceTextEscalationTests(unittest.TestCase):
             self.archive_root, {}, full=True, section='review-queue')
         self.assertIn('place-text cluster(s) past the', result['markdown'])
 
+    def test_escalation_recommends_linking_to_an_already_registered_place(self) -> None:
+        # Codex review, PR #142 finding 1: a cluster naming a place that is
+        # ALREADY in places/places.yaml (e.g. claims drafted before the
+        # write-time resolver landed, issue #79 point 3, or any 'near' match
+        # that resolver deliberately never auto-attaches) must not be told
+        # to mint a brand-new place - copying the banner's own suggested
+        # `--name` command would create a duplicate L-id for a place that
+        # already has one. It must recommend `--into <existing L-id>` instead.
+        (self.archive_root / 'places').mkdir(parents=True)
+        (self.archive_root / 'places' / 'places.yaml').write_text(
+            '- id: L-baba9801fa\n  name: Warsaw, Poland\n', encoding='utf-8')
+        self._write_cluster_source('S-9000000006', 'Warsaw, Poland', 20)
+        result = report.run_report(self.archive_root, {}, full=True)
+        md = result['markdown']
+        self.assertIn('--into=L-baba9801fa', md)
+        self.assertNotIn('--name=', md)
+
+    def test_place_candidates_run_only_once_per_report(self) -> None:
+        # Codex review, PR #142 finding 2: §6b's own listing and the
+        # escalation banner above it used to each make their own
+        # independent `places.run_candidates()` call - doubling the full
+        # GPS photo-cluster pass (`_gps_clusters`' photo-index read and
+        # greedy clustering) and any stale-photo-index warning on every
+        # report run that had an escalation. One `fha report` run must
+        # call it exactly once, whether or not an escalation fires.
+        self._write_cluster_source('S-9000000007', 'Warsaw, Poland', 20)
+        import places
+        with unittest.mock.patch.object(
+            places, 'run_candidates', wraps=places.run_candidates
+        ) as spy:
+            report.run_report(self.archive_root, {}, full=True)
+        self.assertEqual(spy.call_count, 1)
+
 
 _RESEARCH_SAME_HEADING_MD = '''# Research - Test Person
 
