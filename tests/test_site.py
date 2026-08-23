@@ -353,6 +353,32 @@ class PersonPageTests(_Base):
         self.assertIn('Margaret Cole', html)                     # [P-id] -> name (stub, no link)
         self.assertNotIn('9999999999', html)                     # unresolved source id hidden, never shown raw
 
+    def test_biography_strips_bare_claim_id_parenthetical(self):
+        # #140: a bare `(C-xxxxxxxxxx)` parenthetical is an internal claim id
+        # - meaningless and unlinked for a reader, and not the sanctioned
+        # `[[C-xxxx]]` citation form - so it must never reach rendered prose.
+        bio = ('# Thomas\n## Biography\n'
+               'This session corroborates her birth on 9 September 1899 '
+               '(C-4kx9m2p7qr); the family, then in Krakow, later emigrated.\n')
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley', body=bio)
+        self._run(linked=True)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('corroborates her birth on 9 September 1899', html)
+        self.assertNotIn('C-4kx9m2p7qr', html)
+
+    def test_biography_translates_before_date_bracket_in_prose(self):
+        # #140: a raw `[..YYYY]` "before" bracket (SPEC §11) embedded mid-
+        # sentence in a claim/biography's free text must render as the same
+        # plain phrase the footer legend already uses for it (#131), not the
+        # bracket/dot encoding verbatim.
+        bio = ('# Thomas\n## Biography\n'
+               'The family had emigrated [..1905], settling near Fairview.\n')
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley', body=bio)
+        self._run(linked=True)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('before 1905', html)
+        self.assertNotIn('[..1905]', html)
+
     def test_timeline_excludes_suggested_includes_needs_review(self):
         # Linked/workbench timelines keep needs-review claims - clearly marked
         # as unconfirmed (owner decision 2026-07-22).
@@ -430,6 +456,36 @@ class PersonPageTests(_Base):
         html = self._read('persons/p-aaaaaaaaaa.html')
         self.assertIn('Moved to Millbrook NY to farm', html)
         self.assertNotIn('at Millbrook, NY', html)
+
+    def test_timeline_strips_bare_claim_id_parenthetical(self):
+        # #140: same rendering bug as the Biography case, on the Timeline's
+        # separate render path (_timeline_value_html) - a bare `(C-xxxxxxxxxx)`
+        # parenthetical in a claim's value text must not reach the page.
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley')
+        self._seed_source('s-1111111111', 'Record', people=('p-aaaaaaaaaa',))
+        self._seed_claim('c-1111111111', 's-1111111111', 'birth',
+                         'Disputes her birth on 9 September 1899 (C-4kx9m2p7qr); '
+                         'the family then in Krakow.', status='accepted',
+                         date_edtf='1899', persons=('p-aaaaaaaaaa',))
+        self._run(linked=True)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('Disputes her birth on 9 September 1899', html)
+        self.assertNotIn('C-4kx9m2p7qr', html)
+
+    def test_timeline_translates_before_date_bracket_in_prose(self):
+        # #140: same bracket-translation bug as the Biography case, on the
+        # Timeline's separate render path - a raw `[..YYYY]` "before" bracket
+        # in a claim's value text must render as plain English, matching the
+        # footer legend's own wording (#131), not the bracket/dot encoding.
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley')
+        self._seed_source('s-1111111111', 'Record', people=('p-aaaaaaaaaa',))
+        self._seed_claim('c-1111111111', 's-1111111111', 'immigration',
+                         'The family had emigrated [..1905], settling near Fairview.',
+                         status='accepted', date_edtf='1900', persons=('p-aaaaaaaaaa',))
+        self._run(linked=True)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('before 1905', html)
+        self.assertNotIn('[..1905]', html)
 
     def test_timeline_decades_stay_contiguous_despite_date_min_divergence(self):
         # #128: decade grouping reads the DISPLAY date (date_edtf, via
