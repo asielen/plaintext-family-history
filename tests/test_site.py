@@ -314,6 +314,27 @@ class SourcePageTests(_Base):
         # files read as distinct on both axes at once.
         self.assertIn('3 June 1916 · role: clipping · copy: b</span>', html)
 
+    def test_file_entry_note_distinguishes_uncertain_date_from_approximate(self):
+        # Codex review on PR #149 (P2): a `date: 1916?` (uncertain - "not sure
+        # this is the right year") used to render through the same "about
+        # {year}" prefix as `date: 1916~` (approximate - "this is a rough
+        # guess"), misstating what the archive actually recorded on the
+        # source page. The two markers must read as the two different things
+        # they record - matching base.html's own date-notation legend, which
+        # already explains `~` as "about this year" and `?` as "the year is
+        # probably right but has not been confirmed".
+        self._seed_source('s-1111111111', 'Uncertain Date Source', source_type='newspaper')
+        clip_dir = self.archive_root / 'documents' / 'newspaper'
+        clip_dir.mkdir(parents=True, exist_ok=True)
+        (clip_dir / 'clipping-a.pdf').write_bytes(b'not a real pdf')
+        self.conn.execute(
+            'INSERT INTO source_files(source_id, path, role, date_edtf) VALUES (?,?,?,?)',
+            ('s-1111111111', 'documents/newspaper/clipping-a.pdf', 'clipping', '1916?'))
+        self._run(linked=True)
+        html = self._read('sources/s-1111111111.html')
+        self.assertIn('1916 (unconfirmed) · role: clipping</span>', html)
+        self.assertNotIn('about 1916', html)
+
 
 class SourceRedactionTests(_Base):
     def _setup_redactable(self):

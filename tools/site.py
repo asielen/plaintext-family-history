@@ -192,6 +192,7 @@ from _lib import (
     extract_bare_ids,
     FhaConfigError,
     fmt_id_display,
+    humanize_edtf as _humanize_edtf,
     id_type_of,
     is_genetic_parent_subtype,
     is_working_copy,
@@ -215,12 +216,6 @@ from _lib import (
     strip_unaccepted_drafts,
     unreadable_dir_recorder,
     walk_files,)
-
-# `_humanize_edtf` (EDTF -> plain-reading date, e.g. '26 February 1916') is
-# reused as-is for a per-file `date:` note (#123) rather than hand-rolled a
-# second time - same convention report.py/reconcile.py already follow for
-# borrowing photoindex.py's helpers.
-import photoindex
 
 configure_utf8_stdout()
 
@@ -1409,13 +1404,17 @@ def _role_note(role: str | None, copy: str | None, date_edtf: str | None = None)
     A, front/back copy B, four same-role newspaper clippings mailed months
     apart, …) gains the extra clauses that tell its files apart.
 
-    `date_edtf` is rendered through `photoindex._humanize_edtf` - the
-    existing EDTF -> plain-English helper (decades, `~`/`?` hedges, month/day
-    all handled there already) - rather than a second hand-rolled version of
-    the same formatting living in this module."""
+    `date_edtf` is rendered through `_lib.humanize_edtf` - the shared EDTF ->
+    plain-English helper (decades, month/day, and `~`/`?` hedges rendered as
+    the two different things they record - "about" for approximate, "
+    (unconfirmed)" for uncertain - all handled there already) - rather than a
+    second hand-rolled version of the same formatting living in this module.
+    Moved into `_lib.py` (#123 follow-up, Codex review on PR #149) so this
+    module no longer has to import the whole `photoindex` tool just to reach
+    one date formatter."""
     parts: list[str] = []
     if date_edtf:
-        parts.append(photoindex._humanize_edtf(date_edtf))
+        parts.append(_humanize_edtf(date_edtf))
     if role:
         parts.append(f'role: {role}')
     if copy:
