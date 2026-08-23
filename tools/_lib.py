@@ -1187,7 +1187,11 @@ GENERATED_COMPANION_KINDS: frozenset[str] = frozenset({'timeline', 'sources-inde
 # built on the column - so bump to force `fha index` to rebuild before
 # doctor/find/exporter queries trust it (same rationale as v2).
 # 6: places.notes column (place research notes rendered on place pages).
-INDEX_SCHEMA_VERSION = 6
+# 7: source_files.date_edtf column (optional per-file date, SPEC §14, #123).
+# A v6 index lacks it - every row would read NULL forever, indistinguishable
+# from a file that genuinely carries no per-file date:, until a rebuild -
+# so bump to force `fha index` to run (same rationale as v3/v4).
+INDEX_SCHEMA_VERSION = 7
 PHOTOINDEX_SCHEMA_VERSION = 1
 CACHE_SCHEMA_KEY = 'schema_version'
 

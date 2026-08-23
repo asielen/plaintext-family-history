@@ -285,6 +285,35 @@ class SourcePageTests(_Base):
         # 'copy: None' leaking through, and the two entries stay distinct.
         self.assertIn('role: clipping</span>', html)
 
+    def test_file_entry_note_includes_human_date_when_present(self):
+        # #123, the schema's own worked example: a source that legitimately
+        # bundles files from different dates (several newspaper clippings
+        # about one event, mailed months apart) can now give each `files:`
+        # entry its own `date:` (SPEC §14), distinct from the source's own
+        # `source_date:`. Once that value round-trips into source_files.
+        # date_edtf (tools/index.py), the site's file note renders it human-
+        # readable and FIRST - '26 February 1916 · role: clipping · copy: b'
+        # - so two same-role files in one bundle read as distinct by DATE,
+        # not just by an opaque copy letter.
+        self._seed_source('s-1111111111', 'Clippings Bundle', source_type='newspaper')
+        clip_dir = self.archive_root / 'documents' / 'newspaper'
+        clip_dir.mkdir(parents=True, exist_ok=True)
+        (clip_dir / 'clipping-a.pdf').write_bytes(b'not a real pdf')
+        (clip_dir / 'clipping-b.pdf').write_bytes(b'not a real pdf')
+        self.conn.execute(
+            'INSERT INTO source_files(source_id, path, role, copy, date_edtf) VALUES (?,?,?,?,?)',
+            ('s-1111111111', 'documents/newspaper/clipping-a.pdf', 'clipping', None, '1916-02-26'))
+        self.conn.execute(
+            'INSERT INTO source_files(source_id, path, role, copy, date_edtf) VALUES (?,?,?,?,?)',
+            ('s-1111111111', 'documents/newspaper/clipping-b.pdf', 'clipping', 'b', '1916-06-03'))
+        self._run(linked=True)
+        html = self._read('sources/s-1111111111.html')
+        # Undated-copy sibling: date first, no copy letter.
+        self.assertIn('26 February 1916 · role: clipping</span>', html)
+        # Dated + copy-lettered sibling: date, then role, then copy - the two
+        # files read as distinct on both axes at once.
+        self.assertIn('3 June 1916 · role: clipping · copy: b</span>', html)
+
 
 class SourceRedactionTests(_Base):
     def _setup_redactable(self):

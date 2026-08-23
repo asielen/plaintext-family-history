@@ -194,6 +194,12 @@ from _lib import (
     unreadable_dir_recorder,
     walk_files,)
 
+# `_humanize_edtf` (EDTF -> plain-reading date, e.g. '26 February 1916') is
+# reused as-is for a per-file `date:` note (#123) rather than hand-rolled a
+# second time - same convention report.py/reconcile.py already follow for
+# borrowing photoindex.py's helpers.
+import photoindex
+
 configure_utf8_stdout()
 
 try:  # Jinja2 is a required dependency for this tool (TOOLING §12); guard the
@@ -1190,17 +1196,27 @@ def _rel_href(target: Path, page_dir: Path) -> str:
         return target.resolve().as_uri()
 
 
-def _role_note(role: str | None, copy: str | None) -> str | None:
+def _role_note(role: str | None, copy: str | None, date_edtf: str | None = None) -> str | None:
     """Plain-language annotation for one source-page file entry: its `files:`
-    `role:` plus, when set, its `copy:` letter (SPEC §14's `copy: b`/`c`/`d`
-    same-day/same-bundle variant marker - #123 fixed the indexer landing that
-    value as NULL instead of reading it). Renders 'role: clipping · copy: b',
-    or just 'role: clipping' when there is no copy letter, so a source with
-    a single file per role keeps today's shorter label and only a bundle of
-    look-alike variants (front/back copy A, front/back copy B, four
-    same-role newspaper clippings, …) gains the extra clause that tells its
-    files apart."""
-    parts = [f'role: {role}'] if role else []
+    entry's optional per-file `date:` (SPEC §14, #123) first, then its
+    `role:`, then - when set - its `copy:` letter (SPEC §14's `copy: b`/`c`/`d`
+    same-day/same-bundle variant marker - #123 also fixed the indexer landing
+    that value as NULL instead of reading it). Renders '26 February 1916 ·
+    role: clipping · copy: b', or just 'role: clipping' when there is
+    neither, so a source with a single, undated file per role keeps today's
+    shorter label and only a bundle of look-alike variants (front/back copy
+    A, front/back copy B, four same-role newspaper clippings mailed months
+    apart, …) gains the extra clauses that tell its files apart.
+
+    `date_edtf` is rendered through `photoindex._humanize_edtf` - the
+    existing EDTF -> plain-English helper (decades, `~`/`?` hedges, month/day
+    all handled there already) - rather than a second hand-rolled version of
+    the same formatting living in this module."""
+    parts: list[str] = []
+    if date_edtf:
+        parts.append(photoindex._humanize_edtf(date_edtf))
+    if role:
+        parts.append(f'role: {role}')
     if copy:
         parts.append(f'copy: {copy}')
     return ' · '.join(parts) if parts else None
@@ -1963,7 +1979,7 @@ class _SiteBuilder:
             return f'/root/{alias}/{rel_posix}' if rel_posix != '.' else f'/root/{alias}'
         return None
 
-    def _file_entry(self, asset_rel: str, role: str | None, copy: str | None, page_dir: Path) -> dict | None:
+    def _file_entry(self, asset_rel: str, role: str | None, copy: str | None, date_edtf: str | None, page_dir: Path) -> dict | None:
         """Build one source-page file entry (thumbnail + link) for an asset.
 
         Returns None for an asset that should not appear at all. The resolved
@@ -1984,14 +2000,15 @@ class _SiteBuilder:
         NULL) rides along in the note so a bundle of same-day or same-source
         variants (front/back copy A, front/back copy B, …) reads as
         distinguishable entries instead of a wall of identical "role: front"
-        labels."""
+        labels. `date_edtf` (the entry's optional per-file `date:`, SPEC §14,
+        #123) rides along the same way, rendered human-readable and first."""
         label = Path(asset_rel).name
         try:
             resolved = resolve_path(asset_rel, self.fha_config, self.archive_root)
         except Exception:
             return {'label': label, 'note': 'asset path could not be resolved', 'link_href': None, 'thumb_href': None}
         is_image = resolved.suffix.lower() in _IMAGE_SUFFIXES
-        role_note = _role_note(role, copy)
+        role_note = _role_note(role, copy, date_edtf)
 
         if not resolved.exists():
             return {'label': label, 'note': 'file not available in this build', 'link_href': None, 'thumb_href': None}
@@ -2026,16 +2043,17 @@ class _SiteBuilder:
         digest = hashlib.sha1(norm.encode('utf-8')).hexdigest()[:8]
         return self.media_dir / subdir / f'{Path(norm).stem}_{digest}.jpg'
 
-    def _standalone_image_entry(self, sid: str, asset_rel: str, role: str | None, copy: str | None, page_dir: Path) -> dict:
+    def _standalone_image_entry(self, sid: str, asset_rel: str, role: str | None, copy: str | None, date_edtf: str | None, page_dir: Path) -> dict:
         """Create the media derivative for a standalone image asset and return
         its file entry. Split from `_file_entry` because it needs the source id
         for the media subfolder and may emit a warning into `self.messages`.
-        `copy` mirrors `_file_entry`'s parameter of the same name (SPEC §14)."""
+        `copy`/`date_edtf` mirror `_file_entry`'s parameters of the same name
+        (SPEC §14)."""
         resolved = resolve_path(asset_rel, self.fha_config, self.archive_root)
         dest = self._media_dest(asset_rel, normalize_id(sid))
         if _make_derivative(resolved, dest):
             href = _rel_href(dest, page_dir)
-            return {'label': Path(asset_rel).name, 'note': _role_note(role, copy),
+            return {'label': Path(asset_rel).name, 'note': _role_note(role, copy, date_edtf),
                     'link_href': href, 'thumb_href': href}
         self.messages.append(f'WARNING: could not build a web image for {asset_rel} (skipped, build continues)')
         return {'label': Path(asset_rel).name, 'note': 'image could not be processed', 'link_href': None, 'thumb_href': None}
@@ -2188,7 +2206,7 @@ class _SiteBuilder:
         entries: list[dict] = []
         candidates: list[tuple[bool, dict]] = []   # (is_front, entry) for resolvable images
         for f in self.conn.execute(
-            'SELECT path, role, copy FROM source_files WHERE source_id = ?', (sid,)
+            'SELECT path, role, copy, date_edtf FROM source_files WHERE source_id = ?', (sid,)
         ):
             if not f['path']:
                 continue
@@ -2202,9 +2220,10 @@ class _SiteBuilder:
                     'path': f['path'],
                 })
                 continue
-            entry = self._file_entry(f['path'], f['role'], f['copy'], page_dir)
+            entry = self._file_entry(f['path'], f['role'], f['copy'], f['date_edtf'], page_dir)
             if entry is None:   # standalone image needing a derivative
-                entry = self._standalone_image_entry(sid, f['path'], f['role'], f['copy'], page_dir)
+                entry = self._standalone_image_entry(
+                    sid, f['path'], f['role'], f['copy'], f['date_edtf'], page_dir)
             # Workbench: the archive-relative path drives the per-file 'open'
             # (OS editor via /api/open) affordance the wireframe specifies.
             entry['path'] = f['path']
