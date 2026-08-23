@@ -245,6 +245,36 @@ class SourceClearKeywordTests(unittest.TestCase):
         # The drifted file itself must be untouched too.
         self.assertEqual(self.store.read(drifted)['subject'], ['Margaret Hartley'])
 
+    def test_write_success_is_verified_by_rereading_not_trusted_from_exit_code(self) -> None:
+        # #147 review (P2): exiftool exiting 0 says the CALL succeeded, not
+        # that the field ended up in the requested state - simulate a race
+        # (something else touched the file between the pre-read and this
+        # write) where the wrapper reports success but nothing changed.
+        def _fake_write_no_op(path, *, remove, add, backup):
+            backup.ensure(path)
+            return None   # reports success without touching self.store at all
+        source_mod._run_exiftool_edit_keyword_fields = _fake_write_no_op
+        result = self._run(keyword='Margaret Hartley')
+        self.assertEqual(result['status'], 'refused')
+        self.assertFalse(result.ok)
+        self.assertIn('re-reading', result.messages[-1].text)
+        # Something DID write to the file (backup.ensure ran) even though the
+        # requested change did not land - the caller should still know it.
+        self.assertTrue(result.changed)
+
+    def test_addition_that_did_not_land_is_also_caught(self) -> None:
+        def _fake_write_only_removes(path, *, remove, add, backup):
+            backup.ensure(path)
+            f = self.store._fields(path)
+            for tag, value in remove:
+                f[tag] = [v for v in f[tag] if v != value]
+            return None   # 'add' is silently dropped, as if the write raced
+        source_mod._run_exiftool_edit_keyword_fields = _fake_write_only_removes
+        result = self._run(keyword='Margaret Hartley', replace_with='Margaret Cole')
+        self.assertEqual(result['status'], 'refused')
+        self.assertFalse(result.ok)
+        self.assertIn('is missing', result.messages[-1].text)
+
     def test_multiple_documents_files_require_dash_dash_file(self) -> None:
         second = self.root / 'documents' / 'deeds' / f'deed-back_{SID.lower()}.tif'
         second.write_bytes(b'y')

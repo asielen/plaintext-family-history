@@ -99,6 +99,13 @@ DESIGN RULES (why the code looks the way it does)
   name. A missing asset also now reports `ok: False` (it used to leave the
   default `True` standing next to `status: not-found`) - a headless caller
   reading `Result.as_dict()` must never mistake that for success.
+- **Exiftool exiting 0 is not proof the write landed (PR #147 review).**
+  After a successful-looking exiftool call, `run_source_clear_keyword`
+  re-reads the file's Keywords/Subject fields and confirms the removal and
+  any addition actually took, rather than declaring success from the exit
+  code alone - a race between the pre-write read and the write itself (e.g.
+  something else touching the same file) can otherwise leave exiftool
+  reporting success while nothing really changed.
 
 CODE MAP
 --------
@@ -564,7 +571,8 @@ def run_source_clear_keyword(
     or asset not found on disk (or found but not a regular file) · 3 refusals
     (bad id, blank --keyword, no/ambiguous documents-root file, a target
     outside the documents root or belonging to a different source, keyword
-    not currently present, exiftool or backup failure).
+    not currently present, exiftool or backup failure, or the post-write
+    verification finding the change did not actually take).
     """
     result = Result(data={'status': None, 'source_id': None, 'path': None,
                           'removed_from': [], 'added_to': []})
@@ -785,6 +793,52 @@ def run_source_clear_keyword(
         return _refuse(
             'refused',
             f'exiftool could not update {alias}: {error}. Nothing was changed.')
+
+    # P2 (#147 review): exiftool's exit code says the CALL succeeded, not that
+    # the field actually ended up in the state this command asked for - a
+    # race (something else touched the file's metadata between the read above
+    # and this write) can leave exiftool reporting success while a value it
+    # was told to remove is still there, or one it was told to add never
+    # landed. Re-read the fields and confirm both sides actually took before
+    # declaring success; a caller reading Result.as_dict() must never see
+    # ok: true for a write that did not really happen.
+    #
+    # Compared EXACTLY (stripped, not case-folded): a case-only correction
+    # removes one exact spelling and adds a DIFFERENT exact spelling that
+    # happens to be case-insensitively "the same word" (e.g. 'margaret
+    # hartley' -> 'Margaret Hartley') - a case-insensitive check here would
+    # see the freshly-added value as proof the old one was never removed and
+    # wrongly refuse a write that worked exactly as asked.
+    try:
+        after_fields = _run_exiftool_read_keyword_fields(abs_path)
+    except RuntimeError as e:
+        return _refuse(
+            'refused',
+            f'{alias} was written, but the change could not be verified ({e}). '
+            'Run `fha lint --with-exif` to check its current state by hand.')
+    not_removed = [
+        (tag, value) for tag, value in matches
+        if any(v.strip() == value.strip() for v in after_fields.get(tag, []))
+    ]
+    not_added = [
+        (tag, value) for tag, value in add
+        if not any(v.strip() == value.strip() for v in after_fields.get(tag, []))
+    ]
+    if not_removed or not_added:
+        result.note_changed(abs_path)  # exiftool did write SOMETHING to the file
+        problems = []
+        if not_removed:
+            problems.append('still carries ' + ', '.join(
+                f'{tag}: {value!r}' for tag, value in not_removed))
+        if not_added:
+            problems.append('is missing ' + ', '.join(
+                f'{tag}: {value!r}' for tag, value in not_added))
+        return _refuse(
+            'refused',
+            f'exiftool reported success, but re-reading {alias} shows it '
+            + ' and '.join(problems) + ' - something else may have changed '
+            'the file at the same moment. Run `fha lint --with-exif` to see '
+            'its current state, then retry.')
 
     result.data['status'] = 'ok'
     result.data['removed_from'] = sorted({tag for tag, _ in matches})
