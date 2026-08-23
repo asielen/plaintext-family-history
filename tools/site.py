@@ -80,6 +80,10 @@ CODE MAP
   Dates
     _decade_header             - EDTF date → "1880s" decade label (timeline grouping)
 
+  Places
+    _place_mention_span        - where a claim's own sentence already names its
+                                 place (so the timeline prints it once, linked)
+
   Image derivatives
     _PIL_AVAILABLE             - is Pillow importable?
     _make_derivative           - resized, EXIF-stripped JPEG/PNG copy (standalone)
@@ -105,6 +109,7 @@ CODE MAP
     _apex_ancestor             - deepest ancestor of root_person (home-tree seed)
     _build_tree_data           - BFS relationships → neutral tree JSON + url + redaction
     _tree_node, _person_vitals - one redacted node; its birth/death labels
+                                 (scoped to the person's OWN vitals, #126)
     _chart_entry               - one redacted {name,url,dates} node; shared by the
                                  Ahnentafel walk and the family-wings walk below
     _build_ahnentafel          - parent-edge walk → Ahnentafel map (fan + pedigree)
@@ -115,6 +120,9 @@ CODE MAP
   Builder
     _SiteBuilder               - holds conn, mode, maps, page sets, jinja env
       .prepare                 - load persons/sources, decide which pages exist
+      ._claim_is_own_vital     - is this vital claim a record OF this person,
+                                 or of a relative it also names? (roles:, #126)
+      ._person_summary         - the Born/Died/Married infobox, own vitals only
       .render_token            - one [ID] token → HTML (link / redaction / mark)
       .build_source_page       - M8.1 source page
       .build_person_page       - M8.2 person page
@@ -149,6 +157,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from _lib import (
     apply_private_fence,
     ASSET_ROOT_ALIASES,
+    claim_is_own_vital,
     configure_utf8_stdout,
     EXIT_CLEAN,
     EXIT_FAILURE,
@@ -162,6 +171,7 @@ from _lib import (
     load_fha_yaml,
     normalize_id,
     open_index_db,
+    person_section_is_unfilled,
     photoindex_status,
     photos_ignore_matcher,
     photos_ignore_patterns,
@@ -572,6 +582,41 @@ def _decade_header(date_edtf: str | None) -> str | None:
         return None
 
 
+# ── Places ──────────────────────────────────────────────────────────────────
+
+def _place_mention_span(value: str, place_label: str) -> tuple[int, int] | None:
+    """Where `value` already names `place_label` in its own words, or None.
+
+    The person timeline prints the claim's sentence and then the claim's
+    place, so a sentence that already says where it happened ("moved to
+    Millbrook to farm") used to read "... to farm @ Millbrook" (#127).
+    Deciding that needs more than `label in value`:
+
+      - Whole words only. "Hampton" is a substring of "Southampton", and a
+        plain containment test would read "married at Southampton" as already
+        naming the place Hampton and drop a real, different place from the
+        page. Losing a fact is worse than repeating one.
+      - Punctuation and spacing between the words are matched loosely,
+        because one place gets written both ways in practice: the registry
+        says "Millbrook, NY" and the sentence says "Millbrook NY".
+
+    The whole label has to appear. A sentence naming only part of it ("moved
+    to Millbrook", place "Millbrook, Dutchess County, New York") is not
+    redundant - the rest of the label is information the reader does not have
+    yet - so the timeline still prints the fuller place after the sentence.
+
+    Returning the span rather than a bare yes/no is what lets the caller hang
+    the place-page link on the words already in the sentence instead of
+    losing that link along with the repeated place name.
+    """
+    words = re.findall(r'\w+', place_label or '')
+    if not words or not value:
+        return None
+    pattern = r'\b' + r'\W+'.join(re.escape(w) for w in words) + r'\b'
+    match = re.search(pattern, value, re.IGNORECASE)
+    return match.span() if match else None
+
+
 # ── Image derivatives ─────────────────────────────────────────────────────────
 
 def _make_derivative(src: Path, dest: Path, max_px: int = _DERIVATIVE_MAX_PX) -> bool:
@@ -610,7 +655,11 @@ def _render_fan_svg(labels: dict, max_gen: int, r0: float = 54, ring: float = 60
     colour lightened by generation (set inline as CSS vars, composed by the
     stylesheet, so custom.css can retint the whole chart). Labels ride an SVG
     <textPath> - curved along the ring on the roomy inner generations, radial
-    (reading outward) on the narrow outer ones - and are truncated to fit.
+    (reading outward) on the narrow outer ones - each shrunk to fit its own arc
+    and shortened only once that shrink hits a readable floor. The chosen size
+    goes out as a font-size presentation attribute, so styles.css must not
+    declare a font-size on `.fan-label` itself: a rule matching the label beats
+    a presentation attribute and flattens every label back to one size (#116).
     Colour/type come from the design tokens; this function only lays out geometry."""
     # Size to the actual depth present, not the configured maximum, so a shallow
     # tree renders as a small tidy fan rather than a huge mostly-empty canvas.
@@ -676,9 +725,22 @@ def _render_fan_svg(labels: dict, max_gen: int, r0: float = 54, ring: float = 60
         # floor; only below the floor do we truncate (the roomy inner rings then
         # show full names, the tight outer rings shorten but keep it in the tooltip).
         _CW = 0.66                                    # approx glyph width in em for the serif
-        fs = max(8.0, min(fs_max, avail / (max(1, len(full)) * _CW)))
-        budget = max(3, int(avail / (fs * _CW)))
-        name = full if len(full) <= budget else full[:budget - 1].rstrip() + '…'
+        _FS_MIN = 8.0                                 # readable floor; below it we shorten instead
+        fs = min(fs_max, avail / (max(1, len(full)) * _CW))
+        # Round the size DOWN to the one decimal the attribute is written with,
+        # so the size drawn is never larger than the size the fit was measured
+        # at - the whole point of #116 is that computed and rendered agree.
+        fs = math.floor(fs * 10) / 10
+        if fs >= _FS_MIN:
+            # The size was picked so the whole name fits, so it fits. Deriving a
+            # character budget back out of `fs` here only reintroduced the float
+            # rounding it came from, and ellipsised names the shrink had already
+            # made room for ("Chastina Augusta Re…" at 9.5px on a 21-character arc).
+            name = full
+        else:
+            fs = _FS_MIN
+            budget = max(3, int(avail / (fs * _CW)))
+            name = full if len(full) <= budget else full[:budget - 1].rstrip() + '…'
         # The full name rides a <title> so a truncated arc label is never lossy:
         # hovering (or a screen reader) gives the whole name.
         title = f'<title>{html.escape(full)}</title>'
@@ -1139,6 +1201,11 @@ class _SiteBuilder:
         # person's facts would publish through a redacted citation.
         self.restricted_person_sources: set[str] = set()
         self.restricted_claims: set[str] = set()         # claim ids withheld
+        # Whose OWN vital each vital claim supplies (`_lib.vital_subjects`),
+        # memoized per claim: the summary block and every chart node ask it,
+        # so a person named on twenty records would otherwise re-read the same
+        # claim_persons rows twenty times. None means the claim never said.
+        self._vital_subjects: dict[str, list[str] | None] = {}
         self.restricted_names: dict[str, set[str]] = {}   # pid → lowercased restricted variant values
         # Opened once in prepare() when the photo index is fresh, reused across
         # every person page, closed by run_site - so the photos-root freshness
@@ -1676,6 +1743,29 @@ class _SiteBuilder:
             return self._markup(f'<a href="{href}">{_escape(label)}</a>')
         return self._markup(_escape(label))
 
+    def _timeline_value_html(self, value: str, mention: tuple[int, int] | None,
+                             place_id: str | None, page_dir: Path):
+        """A timeline sentence as HTML, with the place it already names linked.
+
+        #127 stops the timeline repeating a place the sentence has already
+        stated, but that trailing place was also the only thing linking the
+        place's page from a person page - the link symmetry `_place_html`
+        exists for, and it would go missing for exactly the claims most
+        likely to carry a registered place ("Thomas Hartley born ... in
+        Fairview, Breton County, Kansas"). So when the sentence carries the
+        mention, the mention carries the link: the place page stays one click
+        away and its name is still printed only once.
+
+        Escaping happens here at the leaves (the same rule as every other
+        `_markup` caller in this file), since the returned Markup goes to the
+        template with autoescape already satisfied."""
+        if mention is None or not place_id or place_id not in self.place_pages:
+            return self._markup(_escape(value))
+        start, end = mention
+        href = html.escape(_rel_href(self.places_dir / _page_filename(place_id), page_dir), quote=True)
+        return self._markup(f'{_escape(value[:start])}<a href="{href}">'
+                            f'{_escape(value[start:end])}</a>{_escape(value[end:])}')
+
     # - assets -
 
     def _asset_href(self, resolved: Path, page_dir: Path) -> str:
@@ -2146,6 +2236,29 @@ class _SiteBuilder:
                 else [raw.strip()] if isinstance(raw, str) and raw.strip() else [])
         return alts, tags
 
+    def _claim_is_own_vital(self, pid: str, claim_id: str, claim_type: str) -> bool:
+        """Is this vital claim a record of THIS person, or of somebody else it
+        also names?
+
+        A birth certificate names the baby, both parents and the informant; a
+        death certificate names the deceased, the widow and the child who
+        reported it; a marriage licence names the couple and both sets of
+        parents. Listing all of them in `persons:` is correct - `persons:` is
+        the index of who a claim is about (SPEC §8.3) - so "which claims name
+        this person" is the wrong question to ask when filling in his own
+        Born/Died/Married. Asking it put a son's birth date in his mother's
+        summary box and printed it under her name on the family chart (#126).
+
+        `_lib.claim_is_own_vital` is the shared rule - the same one the GEDCOM
+        writer, the WikiTree infoboxes and `fha views tree` read, so a person's
+        page and their export cannot disagree about whose birthday it is. It
+        says yes for a claim whose `roles:` map says nothing at all: the legacy
+        claim, where the honest answer is that the archive does not know, and
+        the honest rendering is the one this build has always produced.
+        """
+        return claim_is_own_vital(
+            self.conn, pid, claim_id, claim_type, self._vital_subjects)
+
     def _person_summary(self, pid: str, page_dir: Path) -> list[dict]:
         """Accepted vital claims as the summary block (birth/death/marriage/…).
 
@@ -2162,6 +2275,13 @@ class _SiteBuilder:
         settled headline fact, and rendering it as `Born 1900` would assert the
         very thing the claim denies. Same posture as wikitree's spacetime and
         template exclusions.
+
+        Claims of somebody ELSE's vital are excluded too (`_claim_is_own_vital`,
+        #126). The SQL still gathers every accepted vital NAMING the person -
+        it has to, since only the claim's whole `roles:` map can answer the
+        question - and the filter runs over the result, before the
+        first-of-each-type pick, so a relative's record cannot win the slot and
+        thereby suppress the person's own.
         """
         living_filter = (
             '' if self.linked else
@@ -2180,6 +2300,7 @@ class _SiteBuilder:
             "ORDER BY c.id",
             (pid,),
         ).fetchall()
+        rows = [r for r in rows if self._claim_is_own_vital(pid, r['id'], r['type'])]
         claim_persons: dict[str, str] = {}
         if self.workbench:
             # Raw person lists per claim, for the sourced-row edit affordance's
@@ -2358,13 +2479,39 @@ class _SiteBuilder:
         # build (P2 codex finding, round 7, PR #30 - the round-5 fix here
         # already protected a pending AI-DRAFT the same way).
         bio_as_written = (_extract_section(body, 'Biography') or '').strip()
+        # Research Notes' pre-fence content, captured for the SAME reason and
+        # at the SAME point as bio_as_written above, plus one more: the
+        # unfilled-placeholder check just below (person_section_is_unfilled)
+        # must run before apply_private_fence touches the body, because the
+        # Research Notes placeholder embeds a `<!-- private -->` example
+        # block - checking post-fence text would never match it in either
+        # build mode, once that block has been dropped (standalone) or
+        # unwrapped (linked). The workbench per-entry edit rows further down
+        # reuse this same capture rather than re-reading the section: two
+        # reads of one string is two things to keep in step, and the later
+        # one sat AFTER `apply_private_fence` had already run on `body`,
+        # which is exactly the ordering hazard this capture exists to avoid.
+        research_as_written = (_extract_section(body, 'Research Notes') or '').strip()
         dp = not self.linked
         if body:
             body = apply_private_fence(body, drop=dp)
         if stories:
             stories = apply_private_fence(stories, drop=dp)
-        bio = _extract_section(body, 'Biography')
-        research = _extract_section(body, 'Research Notes')
+        # A section that holds NOTHING but its own scaffold placeholder text
+        # was never actually filled in by a human - render it exactly like an
+        # empty section, not like real content (#125). Without this, a
+        # freshly-scaffolded person's Biography/Research Notes published the
+        # archive owner's own authoring instructions verbatim, as if they
+        # were the person's real story - the "unfilled" case `_extract_section`
+        # already treats an empty/`*(none yet)*` section as, extended to the
+        # OTHER placeholder wording the scaffold writes (see
+        # person_section_is_unfilled for why this cannot be a substring/fuzzy
+        # test: it must exact-match so real content sharing a few of the
+        # scaffold's words still publishes).
+        bio = (None if person_section_is_unfilled('Biography', bio_as_written)
+               else _extract_section(body, 'Biography'))
+        research = (None if person_section_is_unfilled('Research Notes', research_as_written)
+                    else _extract_section(body, 'Research Notes'))
         problem: str | None = None
         if bio:
             bio, problem = strip_unaccepted_drafts(bio)
@@ -2402,7 +2549,6 @@ class _SiteBuilder:
         research_entries: list[dict] = []
         if self.workbench:
             stories_as_written = (rec['stories'] or '')
-            research_as_written = (_extract_section(rec['body'], 'Research Notes') or '')
             stories_entries = self._log_entries_with_raw(
                 stories or '', stories_as_written, render, embed, dp)
             research_entries = self._log_entries_with_raw(
@@ -2450,7 +2596,31 @@ class _SiteBuilder:
         unconfirmed. Suggested claims never render here in any mode. (`fha
         views timeline`, the private research artifact, keeps needs-review
         with the same wording - the divergence is public-vs-working surface,
-        not two rules.)"""
+        not two rules.)
+
+        Two rendering fixes live here (#127, #128; #129's fix is template-only,
+        see person.html):
+          - #127: each entry carries `place_redundant` - true when the claim's
+            own value text already names the place naturally ("moved to
+            Millbrook to farm"), decided by `_place_mention_span` (whole
+            words, loose punctuation - not a bare substring test). The
+            template only appends a trailing place mention when this is
+            false, so a place already stated in the sentence is never doubled
+            up as a bare "@ Place" tag. When it IS stated in the sentence,
+            `_timeline_value_html` moves the place-page link onto those
+            words, so suppressing the repeat never costs the reader the link.
+          - #128: the SQL sorts rows by `date_min` (a widened, sortable value)
+            but decade grouping reads `date_edtf` via `_decade_header` - a
+            DIFFERENT field, deliberately (see that function's docstring): an
+            approximate '1840~' widens date_min to '1839-01-01' and would
+            group into the wrong decade if grouping used date_min too. Those
+            two fields can disagree for an uncertain/ranged date, so a
+            straight linear pass over date_min order can split one decade's
+            entries into two non-contiguous groups with another decade's
+            heading between them. The fix sorts a COPY of the rows by decade
+            before grouping; Python's sort is stable, so date_min order
+            survives as the within-decade tiebreak.
+        """
         status_filter = ("c.status IN ('accepted','needs-review')" if self.linked
                          else "c.status = 'accepted'")
         living_filter = (
@@ -2476,19 +2646,31 @@ class _SiteBuilder:
             rows = [r for r in rows
                     if normalize_id(str(r['id'])) not in self.restricted_claims
                     and not self._source_hard_restricted(r['source_id'])]
+        def _decade_sort_key(decade: str | None) -> tuple[int, int]:
+            if decade is None:
+                return (1, 0)   # undated sorts after every dated decade
+            return (0, int(decade[:-1]))   # '1930s' -> 1930
+
+        rows_with_decade = [(r, _decade_header(r['date_edtf'])) for r in rows]
+        rows_with_decade.sort(key=lambda item: _decade_sort_key(item[1]))
+
         groups: list[dict] = []
         current: str | None = '\x00'   # sentinel distinct from None (undated)
         entries: list[dict] = []
-        for r in rows:
-            decade = _decade_header(r['date_edtf'])
+        for r, decade in rows_with_decade:
             if decade != current:
                 if entries:
                     groups.append({'decade': None if current == '\x00' else current, 'entries': entries})
                 current = decade
                 entries = []
+            place_label = self._place_label(r['place_text'], r['place_id'])
+            value_text = r['value'] or ''
+            mention = _place_mention_span(value_text, place_label)
             entries.append({
-                'date': r['date_edtf'] or '(undated)', 'type': r['type'], 'value': r['value'],
+                'date': r['date_edtf'] or '(undated)', 'type': r['type'],
+                'value': self._timeline_value_html(value_text, mention, r['place_id'], page_dir),
                 'place': self._place_html(r['place_text'], r['place_id'], page_dir),
+                'place_redundant': mention is not None,
                 'source_html': self._markup(self._source_link(r['source_id'], page_dir)) if r['source_id'] else '',
                 'status': r['status'], 'confidence': r['confidence'] or '',
                 'parked': r['reviewed'] or '',
@@ -3619,14 +3801,25 @@ class _SiteBuilder:
 
         Negated claims are excluded (COALESCE(c.negated, 0) = 0): a negated
         birth/death is a confirmed absence, not a date to label a pedigree node
-        with. Same posture as `_person_summary`."""
+        with. Same posture as `_person_summary`.
+
+        So are claims that are a record of somebody else the claim also names
+        (`_claim_is_own_vital`, #126). A chart node's life dates are the
+        shortest, most quotable fact on the page, and reading them off any
+        birth/death claim naming the person is what produced nodes labelled
+        `1955-1916` and great-grandparents charted with their own child's birth
+        year. `ORDER BY c.id` makes the surviving pick deterministic, as it
+        does in `_person_summary` - without it the committed example fixtures
+        churn between rebuilds on sqlite's rowid order."""
         vitals = {'birth': None, 'death': None}
         for r in self.conn.execute(
             "SELECT c.id, c.type, c.date_edtf, c.source_id FROM claims c JOIN claim_persons cp ON c.id = cp.claim_id "
             "WHERE cp.person_id = ? AND c.type IN ('birth','death') AND c.status = 'accepted' "
-            "AND COALESCE(c.negated, 0) = 0",
+            "AND COALESCE(c.negated, 0) = 0 ORDER BY c.id",
             (pid,),
         ):
+            if not self._claim_is_own_vital(pid, r['id'], r['type']):
+                continue
             # Standalone: show a (deceased) person's date even when its source is
             # merely withheld - the node carries no citation to redact, and only
             # living people are redacted outright. Drop only a restricted claim or a

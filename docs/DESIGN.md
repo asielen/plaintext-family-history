@@ -195,7 +195,11 @@ reusable for any brand:
   line branch colour lightened outward by generation, set inline as `--seg-color` /
   `--gen-fade` and composed in the stylesheet so `custom.css` can retint the whole
   chart. Labels run tangentially on the roomy inner rings, radially on the outer.
-  Rendered server-side as inline SVG — no JavaScript, prints cleanly.
+  Each label is sized to fit its own arc, and that size ships as an SVG `font-size`
+  attribute on the label — so give `.fan-chart` your font-size if you want a
+  different default (it is inherited, and a label's own attribute still wins) and
+  never `.fan-label`, which would flatten every label back to one size and clip the
+  long names. Rendered server-side as inline SVG — no JavaScript, prints cleanly.
 
 Spend boldness here and keep everything else quiet so these read.
 

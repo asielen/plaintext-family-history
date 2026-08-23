@@ -57,7 +57,10 @@ def _add_source(conn, sid, title, path, *, source_type='vital-record', restricte
 
 
 def _add_claim(conn, cid, ctype, persons, date_edtf='', place_text=None,
-               source_id='s-0000000001', status='accepted', value='x', negated=0):
+               source_id='s-0000000001', status='accepted', value='x', negated=0,
+               roles=None):
+    """Seed one claim. `roles` is {person_id: role} - which of the people the
+    claim names plays which part on the record (SPEC §8.3)."""
     mn = ''
     if date_edtf:
         from _lib import edtf_bounds
@@ -70,7 +73,7 @@ def _add_claim(conn, cid, ctype, persons, date_edtf='', place_text=None,
     for pos, p in enumerate(persons):
         conn.execute(
             'INSERT INTO claim_persons(claim_id, person_id, position, role) VALUES (?,?,?,?)',
-            (cid, p, pos, None),
+            (cid, p, pos, (roles or {}).get(p)),
         )
 
 
@@ -489,6 +492,41 @@ class WikitreeRenderTests(unittest.TestCase):
         conn.close()
         self.assertIn('{{Residence|location=Boston}}', out)
         self.assertNotIn('{{Residence|location=Topeka}}', out)
+
+    def test_a_vital_of_a_relative_emits_no_infobox_for_this_person(self):
+        # #126: an infobox {{Birth|place=…}} is a structured machine-fact about
+        # the subject. A birth certificate names the baby AND both parents, so
+        # rendering one for every accepted birth claim NAMING the person put
+        # the son's birthplace in his mother's infobox. `roles:` says which of
+        # them the record is OF (SPEC §8.3).
+        conn = self._reopen()
+        _add_person(conn, 'p-0000000004', 'Peter Smith', tier='stub', surname='Smith')
+        _add_claim(conn, 'c-0000000013', 'birth', ['p-0000000004', 'p-0000000001'],
+                   place_text='Riverton', source_id='s-0000000001',
+                   status='accepted', value='born at Riverton',
+                   roles={'p-0000000004': 'child', 'p-0000000001': 'parent'})
+        conn.commit()
+        templates = {'birth': {'template': 'Birth', 'fields': {'place': 'place'}}}
+        parent = wikitree._render_templates(conn, self.root, 'p-0000000001', templates)
+        child = wikitree._render_templates(conn, self.root, 'p-0000000004', templates)
+        conn.close()
+        self.assertNotIn('{{Birth|place=Riverton}}', parent,
+                         "a mother named as `parent` on her son's birth record "
+                         'must not get his birthplace as her own infobox field')
+        self.assertIn('{{Birth|place=Riverton}}', child)
+
+    def test_a_legacy_vital_with_no_roles_map_still_emits_its_infobox(self):
+        # Back-compatibility: a claim that never said keeps rendering as it did.
+        conn = self._reopen()
+        _add_person(conn, 'p-0000000004', 'Peter Smith', tier='stub', surname='Smith')
+        _add_claim(conn, 'c-0000000014', 'birth', ['p-0000000004', 'p-0000000001'],
+                   place_text='Riverton', source_id='s-0000000001',
+                   status='accepted', value='born at Riverton')
+        conn.commit()
+        templates = {'birth': {'template': 'Birth', 'fields': {'place': 'place'}}}
+        out = wikitree._render_templates(conn, self.root, 'p-0000000001', templates)
+        conn.close()
+        self.assertIn('{{Birth|place=Riverton}}', out)
 
     def test_ancestry_template_in_reference(self):
         r = wikitree.run_wikitree(self.root, 'p-0000000001')
@@ -937,6 +975,84 @@ class WikitreeDraftExclusionTests(unittest.TestCase):
         r = wikitree.run_wikitree(self.root, 'p-0000000001')
         self.assertEqual(r['status'], 'broken-draft-marker')
         self.assertIsNone(r['text'])
+
+
+class WikitreeUnfilledSectionTests(unittest.TestCase):
+    """#125 on the public-publication path. A §16 section nobody has written
+    yet still holds the record template's own authoring instructions, and
+    `fha wikitree` used to convert them straight into the exported markup -
+    so a public profile read "Write their story in plain sentences..." under
+    `== Biography ==`, as if that were what the family had to say about this
+    person. Worse than the site symptom the fix started from: a wiki page is
+    published outward and edited by strangers."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        (self.root / 'people').mkdir()
+        conn = _make_index(self.root)
+        _add_person(conn, 'p-0000000001', 'John Smith', path='people/subject.md',
+                    surname='Smith')
+        conn.commit()
+        conn.close()
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _write_profile(self, body):
+        (self.root / 'people' / 'subject.md').write_text(
+            '---\nid: P-0000000001\nname: John Smith\ntier: curated\nliving: false\n---\n\n'
+            + body,
+            encoding='utf-8',
+        )
+        _freshen_index(self.root)
+
+    def test_freshly_scaffolded_person_exports_no_placeholder_text(self):
+        # Built from the SAME renderer `fha person new`/`fha stubs` call, so
+        # this cannot drift from what a brand-new record actually holds.
+        self._write_profile(_lib.render_person_body_scaffold('John Smith'))
+        r = wikitree.run_wikitree(self.root, 'p-0000000001')
+        self.assertEqual(r['status'], 'ok')
+        text = r['text']
+        self.assertNotIn('Write their story in plain sentences', text)
+        self.assertNotIn('Open questions, hunches, and brick walls', text)
+        self.assertNotIn("aren't blood relatives", text)
+        self.assertNotIn('== Biography ==', text)
+        self.assertNotIn('== Research Notes ==', text)
+        self.assertNotIn('== Friends & Family ==', text)
+        # `*(none yet)*` was already dropped line-by-line, which left a bare
+        # `== Stories ==` heading standing over nothing - scaffolding too.
+        self.assertNotIn('== Stories ==', text)
+
+    def test_research_notes_placeholder_private_example_never_published(self):
+        # The Research Notes placeholder embeds a `<!-- private -->` example
+        # block whose TEXT sits between the markers, not inside a comment -
+        # so it published verbatim. Dropping the whole unwritten section is
+        # what keeps it off the wiki.
+        self._write_profile(_lib.render_person_body_scaffold('John Smith'))
+        r = wikitree.run_wikitree(self.root, 'p-0000000001')
+        self.assertEqual(r['status'], 'ok')
+        self.assertNotIn("A hunch you're not ready to publish", r['text'])
+        self.assertNotIn('possible tie to a living relative', r['text'])
+
+    def test_written_sections_still_export(self):
+        # The other half of the rule: a section a human actually wrote goes
+        # out untouched, even when it reuses a few of the scaffold's words.
+        self._write_profile(
+            '# John Smith\n\n'
+            '## Biography\n'
+            'Write their story? He already lived one: born in 1875 in Boston.\n\n'
+            '## Stories\n*(none yet)*\n\n'
+            '## Research Notes\n'
+            'Open questions remain about his first wife.\n')
+        r = wikitree.run_wikitree(self.root, 'p-0000000001')
+        self.assertEqual(r['status'], 'ok')
+        text = r['text']
+        self.assertIn('== Biography ==', text)
+        self.assertIn('born in 1875 in Boston', text)
+        self.assertIn('== Research Notes ==', text)
+        self.assertIn('Open questions remain about his first wife', text)
+        self.assertNotIn('== Stories ==', text)
 
 
 if __name__ == '__main__':
