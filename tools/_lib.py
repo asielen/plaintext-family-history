@@ -6326,9 +6326,10 @@ def _is_generated_companion(path: Path, archive_root: Path) -> bool:
     return is_generated_file(path)
 
 
-def _md_file_mtimes(dirs, keep=None) -> tuple[list[tuple[Path, float]], bool]:
+def _md_file_mtimes(dirs, keep=None) -> tuple[list[tuple[Path, float]], list[Path]]:
     """Collect (path, mtime) for every `.md` file under `dirs` that `keep`
-    allows, plus whether any folder in `dirs` could not be listed this walk.
+    allows, plus which folder(s) in `dirs` (if any) could not be listed this
+    walk.
 
     The one walk behind `_newest_md_mtime` (reduces this to a single running
     max, its behaviour from before #48, unchanged) and every #48
@@ -6343,11 +6344,15 @@ def _md_file_mtimes(dirs, keep=None) -> tuple[list[tuple[Path, float]], bool]:
 
     `keep(path)` filters which files vote; a file whose mtime cannot be read
     (a dangling symlink, a file deleted mid-walk) simply does not vote.
-    `unreadable=True` means at least one folder in `dirs` would not list, so
-    ANY answer derived from the returned pairs is a partial picture - the
-    caller must fail closed on that fact itself, not just on what the pairs
-    happen to contain (see `_newest_md_mtime`'s 'now' rule, preserved below).
-    """
+    A non-empty second return value means at least one folder in `dirs`
+    would not list, so ANY answer derived from the returned pairs is a
+    partial picture - the caller must fail closed on that fact itself, not
+    just on what the pairs happen to contain (see `_newest_md_mtime`'s 'now'
+    rule, preserved below). Returning the actual folder list (not just a
+    bool) lets `newest_record_mtime_with_unreadable_dirs` hand it straight
+    to `fha doctor`'s stale-index diagnosis (audit finding: doctor used to
+    re-walk these same three trees a second time, from scratch, purely to
+    recover this list, which this one walk already builds)."""
     unreadable: list[Path] = []
     on_error = unreadable_dir_recorder(unreadable)
     out: list[tuple[Path, float]] = []
@@ -6360,7 +6365,7 @@ def _md_file_mtimes(dirs, keep=None) -> tuple[list[tuple[Path, float]], bool]:
             except OSError:
                 continue
             out.append((p, mtime))
-    return out, bool(unreadable)
+    return out, unreadable
 
 
 def _newest_md_mtime(dirs, keep=None) -> float:
@@ -6388,6 +6393,40 @@ def _newest_md_mtime(dirs, keep=None) -> float:
     if unreadable:
         return max(max_mtime, time.time())
     return max_mtime
+
+
+def newest_record_mtime_with_unreadable_dirs(archive_root: Path) -> tuple[float, list[Path]]:
+    """Same computation as `newest_record_mtime` (see its docstring for the
+    full rationale - generated-companion exclusion, fha.yaml/places.yaml
+    inclusion, the 'now' fail-closed rule) but also returns which of
+    sources/, people/, notes/ (if any) could not be listed this walk - the
+    SAME walk (`_md_file_mtimes`), so the mtime watermark and the "which
+    folder" diagnosis can never disagree about what happened.
+
+    `newest_record_mtime` is a thin wrapper over this function, discarding
+    the second element, so the two can never compute a different mtime.
+    Added so `fha doctor`'s stale-index diagnosis (audit finding) could stop
+    re-walking these same three trees a second time, from scratch, purely
+    to name the unreadable folder(s) - this one walk already builds that
+    list, and `newest_record_mtime` was discarding it down to a bare float.
+    """
+    dirs = [archive_root / d for d in ('sources', 'people', 'notes')]
+    files, unreadable_dirs = _md_file_mtimes(
+        dirs, keep=lambda p: not _is_generated_companion(p, archive_root))
+    max_mtime = max((mtime for _p, mtime in files), default=0.0)
+    if unreadable_dirs:
+        max_mtime = max(max_mtime, time.time())
+    for extra in (
+        archive_root / 'places' / 'places.yaml',
+        archive_root / 'fha.yaml',
+    ):
+        try:
+            mtime = extra.stat().st_mtime
+            if mtime > max_mtime:
+                max_mtime = mtime
+        except OSError:
+            pass
+    return max_mtime, unreadable_dirs
 
 
 def newest_record_mtime(archive_root: Path) -> float:
@@ -6418,19 +6457,7 @@ def newest_record_mtime(archive_root: Path) -> float:
     then treats the index as out of date, which is the truth: records it never
     read may have changed.
     """
-    dirs = [archive_root / d for d in ('sources', 'people', 'notes')]
-    max_mtime = _newest_md_mtime(
-        dirs, keep=lambda p: not _is_generated_companion(p, archive_root))
-    for extra in (
-        archive_root / 'places' / 'places.yaml',
-        archive_root / 'fha.yaml',
-    ):
-        try:
-            mtime = extra.stat().st_mtime
-            if mtime > max_mtime:
-                max_mtime = mtime
-        except OSError:
-            pass
+    max_mtime, _unreadable_dirs = newest_record_mtime_with_unreadable_dirs(archive_root)
     return max_mtime
 
 

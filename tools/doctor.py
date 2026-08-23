@@ -83,7 +83,7 @@ from _lib import (
     is_fixture_path,
     is_working_copy,
     load_fha_yaml,
-    newest_record_mtime,
+    newest_record_mtime_with_unreadable_dirs,
     parse_filename,
     parse_media_filename,
     path_to_alias,
@@ -99,17 +99,21 @@ from _lib import (
     roots_change_orphans,
     sqlite_cache_schema_status,
     undecodable_file_recorder,
-    unreadable_dir_recorder,
     VENDOR_DIR,
-    walk_files,)
+)
 
 configure_utf8_stdout()
 
 # ── CODE MAP ──────────────────────────────────────────────────────────────────
 #
-#  Freshness helpers (newest_record_mtime imported from _lib)
+#  Freshness helpers (newest_record_mtime/newest_record_mtime_with_unreadable_dirs
+#  imported from _lib)
 #    _fmt_delta                - format a timedelta as a readable lag string
-#    _unreadable_record_dirs   - WHICH record folder is holding the index stale
+#    _format_unreadable_dirs   - display-string formatting for WHICH record
+#                                folder is holding the index stale (the walk
+#                                itself lives in _lib's shared watermark walk -
+#                                audit finding: this used to re-walk
+#                                sources/people/notes a second time itself)
 #    _index_freshness          - .cache/index.sqlite age vs newest record
 #    _photoindex_freshness     - .cache/photos.sqlite age vs photos root
 #
@@ -174,7 +178,7 @@ def _fmt_delta(seconds: float) -> str:
     return f'{secs}s'
 
 
-def _unreadable_record_dirs(archive_root: Path) -> list[str]:
+def _format_unreadable_dirs(unreadable: list[Path], archive_root: Path) -> list[str]:
     """Record folders this machine cannot list, named as the human filed them.
 
     `newest_record_mtime` holds the index behind a folder it could not open -
@@ -182,19 +186,18 @@ def _unreadable_record_dirs(archive_root: Path) -> list[str]:
     number and cannot say which folder. That leaves `fha doctor` printing
     "index is stale, run fha index" for a staleness `fha index` cannot clear:
     the human runs it, it stays stale, and the tool that exists to explain the
-    archive to him has nothing more to say. So doctor asks the same question
-    itself and names the folders.
+    archive to him has nothing more to say. So doctor names the folders.
 
-    Deliberately walked only when something already looks wrong (see
-    `run_doctor`) - this is a diagnosis, not a routine cost - and it reads
-    exactly the three record trees the watermark reads, so the two agree about
-    what "a record folder" means.
+    Pure formatting only - `unreadable` is `_index_freshness`'s own walk's
+    already-collected list (via `newest_record_mtime_with_unreadable_dirs`),
+    not a fresh walk of its own. This used to re-walk sources/people/notes a
+    SECOND time from scratch just to recover this list (audit finding: the
+    same duplicate-expensive-walk shape already fixed once in report.py's
+    places.run_candidates() history) - the one walk `_index_freshness`
+    already makes is exactly the three record trees the watermark reads, so
+    reusing its result cannot disagree about what "a record folder" means
+    either.
     """
-    unreadable: list[Path] = []
-    on_error = unreadable_dir_recorder(unreadable)
-    for name in ('sources', 'people', 'notes'):
-        for _ in walk_files(archive_root / name, suffix='.md', on_error=on_error):
-            pass
     shown = []
     for path in unreadable:
         try:
@@ -204,14 +207,16 @@ def _unreadable_record_dirs(archive_root: Path) -> list[str]:
     return sorted(shown)
 
 
-def _index_freshness(archive_root: Path) -> tuple[str, str]:
+def _index_freshness(archive_root: Path) -> tuple[str, str, list[str]]:
     """
     Check .cache/index.sqlite against the newest record mtime.
 
-    Returns (status, detail):
-      'fresh'  → detail = ''
-      'stale'  → detail = human-readable lag (e.g. '5m32s')
-      'absent' → detail = ''
+    Returns (status, detail, unreadable_dirs):
+      'fresh'  → detail = '', unreadable_dirs = []
+      'stale'  → detail = human-readable lag (e.g. '5m32s'), unreadable_dirs
+                 names any sources/people/notes folder that would not list
+                 this walk (usually empty; see `_format_unreadable_dirs`)
+      'absent' → detail = '', unreadable_dirs = []
 
     #48: ORs a path-manifest check onto the mtime watermark below - a
     DELETED source/person/notes file never raises any remaining file's
@@ -226,7 +231,7 @@ def _index_freshness(archive_root: Path) -> tuple[str, str]:
     db_path = archive_root / '.cache' / 'index.sqlite'
     mtime = db_mtime(db_path)
     if mtime is None:
-        return ('absent', '')
+        return ('absent', '', [])
 
     schema_status, schema_detail = sqlite_cache_schema_status(
         db_path,
@@ -234,16 +239,17 @@ def _index_freshness(archive_root: Path) -> tuple[str, str]:
         ('persons', 'sources', 'claims'),
     )
     if schema_status in {'unreadable', 'old-schema'}:
-        return (schema_status, schema_detail)
+        return (schema_status, schema_detail, [])
 
-    record_mtime = newest_record_mtime(archive_root)
+    record_mtime, unreadable = newest_record_mtime_with_unreadable_dirs(archive_root)
+    unreadable_dirs = _format_unreadable_dirs(unreadable, archive_root)
     if record_mtime != 0.0 and mtime < record_mtime:
-        return ('stale', _fmt_delta(record_mtime - mtime))
+        return ('stale', _fmt_delta(record_mtime - mtime), unreadable_dirs)
 
     if record_manifest_is_stale(archive_root):
-        return ('stale', _fmt_delta(max(0.0, time.time() - mtime)))
+        return ('stale', _fmt_delta(max(0.0, time.time() - mtime)), unreadable_dirs)
 
-    return ('fresh', '')
+    return ('fresh', '', [])
 
 
 def _photoindex_freshness(archive_root: Path, fha_config: dict) -> tuple[str, str]:
@@ -886,7 +892,7 @@ def _legacy_doctor_report_before_next_step_audit(archive_root: Path, fha_config:
     print()
 
     # ── 5. Index freshness ──────────────────────────────────────────────────
-    idx_status, idx_delta = _index_freshness(archive_root)
+    idx_status, idx_delta, _idx_unreadable = _index_freshness(archive_root)
     if idx_status == 'fresh':
         print(f'index: {_OK} fresh')
     elif idx_status == 'stale':
@@ -1304,15 +1310,18 @@ def run_doctor(archive_root: Path, fha_config: dict) -> Result:
                        'next_step': pip_command('av')})
     lines.append('')
 
-    idx_status, idx_delta = _index_freshness(archive_root)
-    idx_path = archive_root / '.cache' / 'index.sqlite'
+    # `unreadable_dirs` rides along on `_index_freshness`'s own walk (audit
+    # finding: this used to call `_unreadable_record_dirs`, a second,
+    # independent walk of the exact same sources/people/notes trees, purely
+    # to recover which folder would not list - `_index_freshness` already
+    # had that answer from computing the watermark and was discarding it).
     # A record folder that will not list holds the index at 'stale' forever
     # (`_lib.newest_record_mtime` reports 'now' rather than a watermark it
     # cannot stand behind), so "run fha index" alone would be an instruction
-    # to loop. Asked only on the failure path: when the index reads fresh,
-    # that same rule guarantees every record folder opened.
-    unreadable_dirs = (
-        [] if idx_status == 'fresh' else _unreadable_record_dirs(archive_root))
+    # to loop; when the index reads fresh, that same rule guarantees every
+    # record folder opened, so `unreadable_dirs` is always `[]` there.
+    idx_status, idx_delta, unreadable_dirs = _index_freshness(archive_root)
+    idx_path = archive_root / '.cache' / 'index.sqlite'
     unreadable_cause = ''
     if unreadable_dirs:
         listed = ', '.join(unreadable_dirs[:5])
