@@ -1220,10 +1220,9 @@ def _section_promotion_candidates(conn, fha_config: dict) -> list[str]:
                 claims_threshold: 5
 
           A non-numeric value falls back to the default with a plain note.
-          A non-direct claim-heavy stub stays a stub for now - curating
-          people beyond the direct line is an open design decision (a
-          curated record in people/connections/ is a dead end the views
-          refuse) - so its line says that instead of offering the verb.
+          A non-direct claim-heavy stub is now offered the verb too (#80):
+          `fha person promote <P-id> --into connections/` (SPEC §12.3), files
+          them flat with no numbering - rather than the old dead-end note.
 
     Leads, never defects (§14a alarm-blindness): counts plus the top few,
     no flood, and nothing here writes or proposes an automatic write -
@@ -1309,11 +1308,13 @@ def _section_promotion_candidates(conn, fha_config: dict) -> list[str]:
         for pid, n in heavy[:_PROMOTION_SHOWN]:
             # Direct-line stubs were routed to bucket (a) above, so everyone
             # here is off the line (or the line is underivable - no
-            # root_person): the honest note is that they stay a stub for now.
+            # root_person, in which case the command below still names the
+            # right verb; `fha person promote` gives its own plain refusal
+            # if root_person needs fixing first). #80: offer the verb.
             lines.append(f'- {_person_label(conn, pid)} has {n} accepted claims '
-                         'and no curated profile - stays a stub for now '
-                         '(curating people beyond the direct line is a future '
-                         'decision)')
+                         'and no curated profile - promote with '
+                         f'`fha person promote {fmt_id_display(pid)} --into '
+                         'connections/` (SPEC §12.3)')
         if len(heavy) > _PROMOTION_SHOWN:
             lines.append(f'- … and {len(heavy) - _PROMOTION_SHOWN} more')
 

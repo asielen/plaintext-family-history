@@ -775,5 +775,60 @@ class SplitCoupleRenameTests(BracketsPromoteBase):
         self.assertFalse([d for d in dirs if d.startswith('002')])
 
 
+class ConnectionsFileMoveTests(BracketsPromoteBase):
+    """A direct-line person's record sitting in people/connections/ instead of
+    their derived couple folder must be caught by W110, not silently missed.
+
+    people/connections/ (#80) is a legitimate permanent home for a curated
+    NON-direct person - but a person filed there can later turn out to be
+    direct-line (a parent link discovered afterwards, or a hand edit). The
+    promote engine's own docstring calls that case "a couple-folder mismatch,
+    left to lint (W110)": `_couple_folder_dirs` deliberately excludes
+    connections/ (it is never a rename/derivation candidate), so W110's stray-
+    file scan must still look inside it as an EXTRA source, or this exact case
+    - the one the design doc names - would be invisible to lint forever.
+
+    Fixture: GPA (derived prefix 004, PA's father) is curated but filed in
+    people/connections/ instead of his couple folder; an already-existing
+    (empty) '004 Gpa Deep' gives W110 a destination to derive without needing
+    GPA's own (absent, since he is not in a couple folder) profile_folder.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        (self.root / 'people' / 'connections').mkdir()
+        (self.root / 'people' / '004 Gpa Deep').mkdir()
+        src = self.root / 'people' / 'stubs' / f'deep__gpa_{GPA}.md'
+        (self.root / 'people' / 'connections' / src.name).write_text(
+            src.read_text(encoding='utf-8').replace('tier: stub', 'tier: curated'),
+            encoding='utf-8')
+        src.unlink()
+        self._reindex()
+
+    def test_report_flags_the_stray_connections_file(self) -> None:
+        res, out, _err = self._run()
+        self.assertEqual(res.data['w110'], 1)
+        self.assertIn('W110', out)
+        self.assertIn('people/connections/', out)
+        self.assertIn('Gpa Deep', out)
+        self.assertIn('Ahnentafel 4', out)
+        # GPA is curated now, so W119 (still-a-stub) must stay silent for him -
+        # this is squarely W110's case, not W119's.
+        self.assertEqual(res.data['w119'], 2)   # PA, MA only
+
+    def test_fix_moves_it_into_the_derived_folder_without_touching_connections(self) -> None:
+        with mock.patch('builtins.input', return_value='y'):
+            res, _out, err = self._run(fix=True)
+        self.assertEqual(res.exit_code, EXIT_CLEAN)
+        self.assertNotIn('Traceback', err)
+        moved = self.root / 'people' / '004 Gpa Deep' / f'deep__gpa_{GPA}.md'
+        self.assertTrue(moved.exists())
+        self.assertIn('tier: curated', moved.read_text(encoding='utf-8'))
+        self.assertFalse(
+            (self.root / 'people' / 'connections' / f'deep__gpa_{GPA}.md').exists())
+        # connections/ itself is never removed - only GPA's own file left it.
+        self.assertTrue((self.root / 'people' / 'connections').is_dir())
+
+
 if __name__ == '__main__':
     unittest.main()

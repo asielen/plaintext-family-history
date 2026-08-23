@@ -155,10 +155,11 @@ class StubGuardTests(unittest.TestCase):
             self.assertEqual(res.exit_code, EXIT_WARNINGS)
             self.assertFalse(res.changed)
 
-    def test_curated_record_in_connections_is_ineligible(self) -> None:
-        # connections/ is a reserved non-couple folder like stubs/; a curated
-        # record parked there must be refused by both the per-person and bulk
-        # paths (nothing GENERATED written into connections/).
+    def test_curated_record_in_connections_is_eligible(self) -> None:
+        # #80: connections/ is no longer a reserved non-couple folder like
+        # stubs/ - a curated record filed there (via `fha person promote
+        # --into connections/`, SPEC §12.3) gets its per-person companion
+        # views exactly like one in a couple folder.
         root = Path(tempfile.mkdtemp())
         (root / 'people' / 'connections').mkdir(parents=True)
         (root / 'people' / '060 Real Couple').mkdir(parents=True)
@@ -172,11 +173,17 @@ class StubGuardTests(unittest.TestCase):
             _person(conn_pid, 'Conn Cur', 'curated'), encoding='utf-8')
         index_mod.build_index(root, load_fha_yaml(root))
         res = views.run_timeline(root, person_id=conn_pid)
-        self.assertEqual(res.exit_code, EXIT_WARNINGS)
-        self.assertFalse(res.changed)
+        self.assertEqual(res.exit_code, EXIT_CLEAN)
+        self.assertTrue(res.changed)
         views.run_refresh(root)
         conn_dir = sorted(p.name for p in (root / 'people' / 'connections').iterdir())
-        self.assertEqual(conn_dir, [f'hartley__conn_{conn_pid}.md'])
+        self.assertIn(f'hartley__conn_{conn_pid}.md', conn_dir)
+        self.assertTrue(
+            any('_timeline_' in n for n in conn_dir),
+            f'expected a GENERATED timeline companion in connections/, got {conn_dir}')
+        # The couple-LEVEL sources-index has no home in connections/ - there
+        # is no couple, no bracket list to hang one on (SPEC §12.3).
+        self.assertNotIn('sources-index.md', conn_dir)
 
 
 class SourcesIndexWorksOnStubsTests(unittest.TestCase):

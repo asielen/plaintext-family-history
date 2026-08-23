@@ -76,11 +76,13 @@ it — a profile half chronicle, half narrative reads as two authors fighting.
    ```
    If the target person is still a **stub** (`tier: stub`, or their record sits in `people/stubs/` —
    the draft-queue view refuses them either way), offer `fha person promote <P-id>` first: a biography
-   belongs on a curated profile in its couple folder. Run it only on the human's yes (preview with
+   belongs on a curated profile, in its couple folder for a direct-line person or flat in
+   `people/connections/` for anyone else (SPEC §12.3). Run it only on the human's yes (preview with
    `--dry-run`), then `fha index` and continue. If promote refuses because the person is **not on the
-   direct line**, say so plainly — curating non-direct people is a pending design decision, so their
-   facts stay in claims and `## Stories` for now — and stop here rather than drafting a bio the views
-   can't carry.
+   direct line**, offer the connections form instead — `fha person promote <P-id> --into connections/`
+   — same tier flip and body backfill, no numbering; only if the human declines that too do the
+   facts stay in claims and `## Stories` for now, and you stop here rather than drafting a bio the
+   views can't carry.
    Read the person `.md`: note the existing biography prose (human and any prior AI-DRAFT) so you draft
    around it, not over it. The draft queue tells you which sources' accepted facts still need prose.
 

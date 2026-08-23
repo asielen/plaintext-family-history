@@ -108,7 +108,7 @@
     {
       "path": ".claude/skills/review-claims/SKILL.md",
       "category": "operating",
-      "sha256": "6ecb9ee4b30ed46f8a52f4f6133144e2def6253fe7101fc35f14efd629ac9fab",
+      "sha256": "38baa88e0ed68f2de996a8d5a237b0d0cf9f365b84ce560d6b51a8d9407fb00b",
       "spec_version": "1.2"
     },
     {
@@ -126,7 +126,7 @@
     {
       "path": ".claude/skills/today/SKILL.md",
       "category": "operating",
-      "sha256": "ed13d7f60ef7a5cd36dff3b07259d74aad22e240f35dd724b84ffb90104076d5",
+      "sha256": "89eeac34e21778dbd02e4957eabea4594d839099241459956abb6068b24660cd",
       "spec_version": "1.2"
     },
     {
@@ -162,7 +162,7 @@
     {
       "path": ".claude/skills/write-biography/SKILL.md",
       "category": "operating",
-      "sha256": "baf0b886a2732b05dd8f4f9cdceb9151970b691eacf7935ca33a6e3a52817120",
+      "sha256": "dea12a568a5a28aa9ec52569ad3ea8fcf5f79b887aa08c9fac81438a5f44f070",
       "spec_version": "1.2"
     },
     {
@@ -413,7 +413,7 @@
     {
       "path": ".fha/tools/README.md",
       "category": "operating",
-      "sha256": "692a623bbd76fc2008e1f7ba603020f5203aa6edac01f879aae023236b9152e3",
+      "sha256": "edf49c064a60269c86d678bb35de613770eec01864cdb7a9890e81e58845760f",
       "spec_version": "1.2",
       "src": "tools/README.md"
     },
@@ -588,7 +588,7 @@
     {
       "path": ".fha/tools/person.py",
       "category": "operating",
-      "sha256": "43caa640700dae9565faad774f6398f46cc7675a40e1d4748769134bfc3d1b59",
+      "sha256": "8b756bf46b0f0688d5fdd9e585fef3377f261ba18ad69c03f33c47b2a8e519ea",
       "spec_version": "1.2",
       "src": "tools/person.py"
     },
@@ -630,7 +630,7 @@
     {
       "path": ".fha/tools/report.py",
       "category": "operating",
-      "sha256": "82d1ce7e5ccd6534b976b84bb0f7cc8717ae95c459429e8c787dace21785beae",
+      "sha256": "880f710b7c4daf0f95eb85602489f3a676dd9615f06c25fecf5d879f9acc7ef9",
       "spec_version": "1.2",
       "src": "tools/report.py"
     },
@@ -798,7 +798,7 @@
     {
       "path": ".fha/tools/views.py",
       "category": "operating",
-      "sha256": "999f910fb9028de54f07e5d1e5d408574cfbf19631aaee55a69044b469d8d266",
+      "sha256": "39d9b466626a188755ec0b1a88197ccead5d49443ea42daf38b8bff81165f198",
       "spec_version": "1.2",
       "src": "tools/views.py"
     },
@@ -847,7 +847,7 @@
     {
       "path": "AGENTS.md",
       "category": "operating",
-      "sha256": "cf09dc6034feef7b4c09e456243dae3eded8c2524bbbc5a0ab8d0f4984febaa0",
+      "sha256": "167164c950495b10d222c1dcc49e185db35c903492a807653656311c0ebec72b",
       "spec_version": "1.2"
     },
     {
@@ -877,7 +877,7 @@
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "3aab7fa38f565c64a9b65eb0becfbdb8ed1becc037a139582db0269b59c465b4",
+      "sha256": "ee02bde238721e4acf2c05f6cf8fdd235836c795c8b3429bba15d0c8ba6a3bcd",
       "spec_version": "1.2"
     },
     {

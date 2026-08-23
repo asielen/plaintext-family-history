@@ -823,15 +823,22 @@ def _curated_person_ids(conn: sqlite3.Connection) -> list[str]:
     return [r['id'] for r in rows]
 
 
-_RESERVED_VIEW_FOLDERS = ('stubs', 'connections')
+_RESERVED_VIEW_FOLDERS = ('stubs',)
 
 
 def _reserved_view_folder(profile_p: Path | None) -> str | None:
-    """The reserved non-couple folder a profile sits directly under, else None.
+    """The reserved folder a profile sits directly under, else None.
 
-    Companion views live beside curated profiles in couple folders; people/stubs/
-    and people/connections/ are the reserved non-couple folders (`_couple_folders`
-    excludes both), so a profile parked in either must not get a companion view.
+    Companion views live beside a curated profile wherever it is filed - a
+    couple folder or, since #80, people/connections/ (a flat, non-numbered
+    home for a curated person with no derived Ahnentafel position, SPEC
+    §12.3: their per-person timeline/sources-index/draft-queue work exactly
+    like a couple-folder person's, since those are written beside the
+    profile regardless of which folder that is; only the couple-LEVEL
+    sources-index stays couple-folder-only, since there is no couple or
+    bracket list to hang one on in connections/ - see `_lib.couple_folder_dirs`,
+    which still excludes connections/ for that reason). people/stubs/ is the
+    only folder a companion view still refuses to write beside.
     """
     if profile_p is not None and profile_p.parent.name.lower() in _RESERVED_VIEW_FOLDERS:
         return profile_p.parent.name.lower()
@@ -878,10 +885,11 @@ def _empty_curated_views_result(conn: sqlite3.Connection) -> Result:
     """
     if _curated_person_ids(conn):
         print(
-            'All curated persons are still under people/stubs/ or people/connections/ - '
-            'nothing was generated; promote them into their couple folders first '
-            '(`fha person promote <P-id>` per person, or `fha views brackets '
-            '--fix-promote` for the whole direct line).',
+            'All curated persons are still under people/stubs/ - nothing was '
+            'generated; promote them first (`fha person promote <P-id>` per '
+            'person, or `fha views brackets --fix-promote` for the whole direct '
+            'line; a non-direct person needs `--into connections/` by hand, '
+            'SPEC §12.3).',
             file=sys.stderr,
         )
         return _views_result(EXIT_WARNINGS, data={'count': 0})
@@ -928,12 +936,12 @@ def _skip_stub_person(
     )
     print(
         f"{pid} ({row['name']}) {reason} - companion views like the {view_name} "
-        f"belong to curated people in their couple folder (SPEC §16), so nothing "
-        f"was written. To generate one, promote the record first - "
-        f"`fha person promote {fmt_id_display(pid)}` does it in one step for a "
-        f"direct-line person (tier, couple-folder filing, research file); "
-        f"otherwise set `tier: curated` and move it out of people/stubs/ or "
-        f"people/connections/ by hand - then re-run.",
+        f"belong to a curated person filed in a couple folder or people/"
+        f"connections/ (SPEC §16), so nothing was written. To generate one, "
+        f"promote the record first - `fha person promote {fmt_id_display(pid)}` "
+        f"does it in one step for a direct-line person, or add `--into "
+        f"connections/` for anyone else (SPEC §12.3); otherwise set `tier: "
+        f"curated` and move it out of people/stubs/ by hand - then re-run.",
         file=sys.stderr,
     )
     return True
@@ -2064,6 +2072,17 @@ def _check_w110_ahnentafel(
         if m:
             folder_by_prefix[int(m.group(1))] = folder
 
+    # people/connections/ is a real, permanent home for a curated NON-direct
+    # person (#80) - but a person filed there can later turn out to be
+    # direct-line (a parent link discovered afterwards, or a hand edit): the
+    # promote engine's own docstring calls that "a couple-folder mismatch,
+    # left to lint (W110)", so this check must actually be able to see it.
+    # `all_couple_dirs` deliberately excludes connections/ (it is never a
+    # couple folder to rename), so it is scanned here as an ADDITIONAL stray-
+    # file source, never as a rename/derivation candidate.
+    connections_dir = archive_root / 'people' / 'connections'
+    stray_scan_dirs = all_couple_dirs + ([connections_dir] if connections_dir.is_dir() else [])
+
     # Also register pending W110 rename destinations so that file-move targets
     # resolve to the correct folder even when it doesn't yet exist on disk.
     for new_folder in folders_being_renamed.values():
@@ -2088,10 +2107,11 @@ def _check_w110_ahnentafel(
 
         person_name = _person_name_from_db(conn, pid)
 
-        # Scan ALL couple dirs for companion files that belong to this person but
-        # are not in the expected folder - catches strays even when the profile
-        # itself is already correctly placed.
-        for folder in all_couple_dirs:
+        # Scan couple dirs (plus connections/, added above) for companion files
+        # that belong to this person but are not in the expected folder -
+        # catches strays even when the profile itself is already correctly
+        # placed.
+        for folder in stray_scan_dirs:
             if folder == dest_folder:
                 continue
             # If this folder is about to be renamed to the correct prefix, the
@@ -2103,6 +2123,8 @@ def _check_w110_ahnentafel(
             for src_path in _companion_files_in_folder(folder, pid):
                 dst_path = dest_folder / src_path.name
                 actual_prefix = _folder_numeric_prefix(folder.name)
+                current_location = (f'folder prefix {actual_prefix}' if actual_prefix is not None
+                                     else f'people/{folder.name}/')
                 issues.append({
                     'code': 'W110',
                     'kind': 'file_move',
@@ -2112,8 +2134,8 @@ def _check_w110_ahnentafel(
                     'msg': (
                         f'W110 people/{folder.name}/{src_path.name}: '
                         f'{person_name} (Ahnentafel {pos}) '
-                        f'is in folder prefix {actual_prefix}, '
-                        f'expected {expected_prefix}'
+                        f'is in {current_location}, '
+                        f'expected prefix {expected_prefix}'
                     ),
                 })
 

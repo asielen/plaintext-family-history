@@ -1030,11 +1030,10 @@ class PromotionCandidatesTests(unittest.TestCase):
         self.assertIn('Direct-line ancestors still filed as stubs (1)', body)
         self.assertIn('Pa Person', body)
         self.assertIn(f'fha person promote {self.PA}', body)
-        # The claim-heavy non-direct stub is noted but stays a stub.
+        # #80: the claim-heavy non-direct stub is now offered the verb too.
         self.assertIn('Frank S. Woodbury', body)
         self.assertIn('6 accepted claims and no curated profile', body)
-        self.assertIn('stays a stub for now', body)
-        self.assertNotIn(f'fha person promote {self.FRIEND}', body)
+        self.assertIn(f'fha person promote {self.FRIEND} --into connections/', body)
 
     def test_threshold_reads_fha_yaml(self) -> None:
         cfg = self._build(
