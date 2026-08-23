@@ -5,6 +5,7 @@ source.py - fha source: deterministic source-record write-backs (TOOLING §3c si
   fha source note S-id --text TEXT [--dry-run] [--root PATH]
   fha source edit-note S-id --old-text TEXT --text TEXT [--dry-run] [--root PATH]
   fha source extract S-id [--pages RANGES] [--dry-run] [--root PATH]
+  fha source clear-keyword S-id --keyword TEXT [--replace-with TEXT] [--file NAME] [--dry-run] [--root PATH]
 
 A source's `## Notes` section is the human-written free-text channel SPEC §14
 reserves for "the story behind it, context, or where the original is kept" -
@@ -15,10 +16,12 @@ phone, on the porch, mid-research-session, and the tool finds the record,
 appends the sentence as its own paragraph, and touches nothing else.
 
 This module deliberately opens the `fha source` namespace - future
-source-field verbs would live here. Three verbs ship now: `note` (append),
+source-field verbs would live here. Four verbs ship now: `note` (append),
 `edit-note` (rewrite one existing paragraph - the workbench's per-entry edit
-button; see run_source_edit_note), and `extract` (dump a PDF's embedded text
-layer into a derived [Page N]-labeled companion - see run_source_extract).
+button; see run_source_edit_note), `extract` (dump a PDF's embedded text
+layer into a derived [Page N]-labeled companion - see run_source_extract),
+and `clear-keyword` (#112: correct a documents-root asset's embedded
+Keywords/Subject value - see run_source_clear_keyword).
 
 DESIGN RULES (why the code looks the way it does)
 -------------------------------------------------
@@ -64,6 +67,26 @@ DESIGN RULES (why the code looks the way it does)
 - **Success exits 0.** The "run `fha index` when convenient" reminder is
   advice text on a clean exit (source Notes text feeds `notes_fts`, SPEC
   §16/TOOLING §2), never a warning exit - a successful write is not a warning.
+- **`clear-keyword` is the tool-mediated fix for a stray embedded keyword
+  (#112).** AGENTS.md rule 3: the only allowed original-file changes are
+  the spec'd rename/refile and "embedded metadata writes performed through
+  fha tools" - never a hand edit. Before this verb there was a write path
+  for a documents-root file's keywords (`fha process` embeds `SOURCE:` on
+  first processing) but no CORRECTION path, so a keyword that turned out
+  wrong - most often a leftover tag from before the file entered the
+  archive - had no sanctioned way back out. `clear-keyword` finds the exact
+  on-file spelling of `--keyword` (exiftool's list `-=` removal is an exact
+  value match, so the text is read back off the file rather than trusted
+  from the command line), removes it from whichever of Keywords/Subject it
+  actually lives in, and - with `--replace-with` - adds the correction to
+  that SAME field, never a new one the file did not already carry. Scope is
+  documents-root only, matching lint's W131 (the check that finds these):
+  see that check's docstring in lint.py for why a photos-root twin is a
+  separate, undesigned decision. Uses the same `_lib.OriginalBackup` safety-
+  copy discipline (TOOLING §13f) every other embedded write in this codebase
+  follows - `fha process`'s SOURCE: embed, `fha photoindex tag-person`/
+  `set-summary` - so a fifth call site does not quietly skip the one
+  original-asset protection the other four share.
 
 CODE MAP
 --------
@@ -76,7 +99,14 @@ CODE MAP
   _parse_page_ranges          - '1-60,102' -> validated 1-based page numbers
   run_source_extract          - PDF text layer -> derived extracted-text companion
                                 (pypdf optional; original never touched; M11.5)
-  _emit / _cmd_source_note / _cmd_source_edit_note / _cmd_source_extract / _make_group_help
+  _run_exiftool_read_keyword_fields - {'keywords': […], 'subject': […]} raw read
+                                (own thin wrapper - tools never import tools)
+  _run_exiftool_edit_keyword_fields - remove/add exact (field, value) pairs in
+                                one exiftool call, through OriginalBackup
+  run_source_clear_keyword    - #112: clear/correct one documents-root asset
+                                keyword; returns a _lib.Result
+  _emit / _cmd_source_note / _cmd_source_edit_note / _cmd_source_extract /
+  _cmd_source_clear_keyword / _make_group_help
   register / _standalone_main
 """
 
@@ -84,7 +114,9 @@ from __future__ import annotations
 
 import argparse
 import difflib
+import json
 import re
+import subprocess
 import sys
 from pathlib import Path, PurePosixPath
 
@@ -95,6 +127,7 @@ import yaml
 from _lib import (
     append_file_entry_to_record,
     append_paragraph_to_section,
+    BackupRefused,
     claims_edit_problem,
     configure_utf8_stdout,
     EXIT_CLEAN,
@@ -103,6 +136,7 @@ from _lib import (
     FhaConfigError,
     find_source_record_path,
     fmt_id_display,
+    format_exiftool_error,
     FRONT_RE,
     frontmatter_fence_span,
     id_type_of,
@@ -110,6 +144,7 @@ from _lib import (
     is_working_copy,
     load_fha_yaml,
     normalize_id,
+    OriginalBackup,
     pip_command,
     read_record,
     read_text_exact,
@@ -402,6 +437,293 @@ def run_source_edit_note(
     return result
 
 
+# ── exiftool seams (#112) ────────────────────────────────────────────────────
+#
+# source.py keeps its own thin exiftool wrappers rather than importing
+# process.py's or photoindex.py's (tools never import tools - TOOLING §15).
+# Tests monkeypatch these two functions the same way test_process.py already
+# monkeypatches process._run_exiftool_read_keywords/_run_exiftool_embed_source.
+
+def _run_exiftool_read_keyword_fields(file_path: Path) -> dict[str, list[str]]:
+    """Return {'keywords': […], 'subject': […]} - each field's raw values,
+    kept SEPARATE rather than merged into one union.
+
+    `clear-keyword` has to know which field a value actually lives in: exiftool's
+    list `-=` removal operator needs both the exact value AND the exact tag, and
+    a correction (`--replace-with`) must land in the SAME field the stray value
+    came from rather than silently growing a field the file never carried.
+    Raises RuntimeError if exiftool is missing or its output cannot be parsed -
+    an environment problem the caller surfaces, distinct from "no such keyword".
+    """
+    cmd = ['exiftool', '-j', '-Keywords', '-Subject', str(file_path)]
+    try:
+        proc = subprocess.run(cmd, check=False, capture_output=True, text=True, encoding='utf-8')
+    except FileNotFoundError as e:
+        raise RuntimeError(format_exiftool_error('fha source clear-keyword')) from e
+    if proc.returncode != 0:
+        raise RuntimeError(f'exiftool failed reading {file_path.name}: {proc.stderr.strip()}')
+    try:
+        rows = json.loads(proc.stdout or '[]')
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f'exiftool returned invalid JSON: {e}') from e
+    out: dict[str, list[str]] = {'keywords': [], 'subject': []}
+    if not rows:
+        return out
+    row = rows[0]
+    for key, bucket in (('Keywords', 'keywords'), ('Subject', 'subject')):
+        val = row.get(key)
+        if val is None:
+            continue
+        for v in (val if isinstance(val, list) else [val]):
+            out[bucket].append(str(v))
+    return out
+
+
+def _run_exiftool_edit_keyword_fields(
+    file_path: Path, *, remove: list[tuple[str, str]], add: list[tuple[str, str]],
+    backup: OriginalBackup,
+) -> str | None:
+    """Remove/add exact (field, value) pairs on one file in a single exiftool call.
+
+    `remove`/`add` entries are `('keywords' | 'subject', exact_value)`. `-=` is
+    exiftool's exact-value list-remove (the same technique `fha process`'s
+    SOURCE: rollback uses); `+=` is the matching list-append. One call does
+    both so a remove+replace lands atomically - never a moment where the file
+    carries neither the old nor the new value because a second exiftool
+    invocation failed in between.
+
+    `backup` is the run's safety-copy policy (`_lib.OriginalBackup`, TOOLING
+    §13f) - the same discipline `fha process`'s SOURCE: embed and `fha
+    photoindex tag-person`/`set-summary` already follow for every other write
+    into an original asset. Returns None on success, the stderr text (or the
+    backup refusal text) on a per-file failure; raises RuntimeError only when
+    exiftool itself is absent.
+    """
+    try:
+        backup.ensure(file_path)
+    except BackupRefused as e:
+        return str(e)
+    args = ([f'-{tag}-={value}' for tag, value in remove]
+            + [f'-{tag}+={value}' for tag, value in add])
+    cmd = ['exiftool'] + args + ['-overwrite_original_in_place', str(file_path)]
+    try:
+        proc = subprocess.run(cmd, check=False, capture_output=True, text=True, encoding='utf-8')
+    except FileNotFoundError as e:
+        raise RuntimeError(format_exiftool_error('fha source clear-keyword')) from e
+    return None if proc.returncode == 0 else proc.stderr.strip()
+
+
+def run_source_clear_keyword(
+    archive_root: Path, fha_config: dict, source_id: str, *, keyword: str,
+    replace_with: str | None = None, file: str | None = None,
+    dry_run: bool = False, backup: OriginalBackup | None = None,
+) -> Result:
+    """Clear (or correct) one embedded Keywords/Subject value on a source's
+    documents-root asset; return a Result.
+
+    #112: a documents-root TIFF was found carrying a stray embedded `dc:subject`
+    keyword naming a person with no connection to the document - a leftover
+    from an earlier cataloguing pass (Lightroom, commonly) before the file
+    ever entered the archive. AGENTS.md rule 3 restricts original-file changes
+    to spec'd renames and "embedded metadata writes performed through fha
+    tools" - but until this verb there was no tool-mediated way to correct a
+    documents-root file's keyword once a wrong one turned up, so a stray tag
+    like that one had no sanctioned way back out short of a hand edit. This
+    is that correction path; `fha lint --with-exif` (W131) is what finds the
+    candidates in the first place.
+
+    The exact on-file spelling of `--keyword` is read back off the file
+    (case-insensitive match) rather than trusted from the command line,
+    because exiftool's `-=` list-remove needs an exact value: a keyword typed
+    slightly differently on the command line would otherwise silently fail to
+    remove anything while still reporting a plausible-looking command. A
+    `--replace-with` correction lands in the SAME Keywords/Subject field the
+    stray value was found in, never a new one the file did not already carry,
+    and is skipped (not duplicated) if that field already holds it.
+
+    Scope is documents-root only - the source must list a documents-root file
+    in `files:` (matching W131's own scope; see that check's docstring in
+    lint.py for why a photos-root twin is a separate, undesigned decision).
+    `--file NAME` picks among several; with exactly one documents-root file
+    listed, it is picked automatically.
+
+    `data`: {'status': 'ok'|'dry-run'|'not-found'|'refused', 'source_id',
+    'path', 'removed_from', 'added_to'}. Exit codes: 0 ok/dry-run · 1 record
+    or asset not found on disk · 3 refusals (bad id, blank --keyword, no/
+    ambiguous documents-root file, keyword not currently present, exiftool or
+    backup failure).
+    """
+    result = Result(data={'status': None, 'source_id': None, 'path': None,
+                          'removed_from': [], 'added_to': []})
+
+    def _refuse(status: str, message: str, *, next_step: str | None = None) -> Result:
+        return result_fail(result, status, message, next_step=next_step)
+
+    if not (is_valid_id(source_id) and id_type_of(source_id) == 'S'):
+        return _refuse(
+            'refused',
+            f'{source_id!r} is not a valid source ID. S-ids look like '
+            'S-2b3c4d5e6f - an S followed by a dash and 10 characters from '
+            'the archive alphabet.')
+    sid = normalize_id(source_id)
+    result.data['source_id'] = fmt_id_display(sid)
+
+    keyword_text = (keyword or '').strip()
+    if not keyword_text:
+        return _refuse(
+            'refused',
+            f'No keyword was given for {fmt_id_display(sid)} - nothing to clear. '
+            f'Run `fha source clear-keyword {fmt_id_display(sid)} --keyword '
+            '"the exact text"`.')
+    replacement = (replace_with or '').strip() or None
+
+    record_path = find_source_record_path(archive_root, sid)
+    if record_path is None:
+        return result_fail(
+            result, 'not-found',
+            f'No source record found for {fmt_id_display(sid)} under '
+            f'{archive_root / "sources"} - check the id with '
+            f'`fha find {fmt_id_display(sid)}`.',
+            exit_code=EXIT_WARNINGS, level='warning',
+            next_step='fha find ' + fmt_id_display(sid))
+
+    try:
+        rec = read_record(record_path)
+    except Exception:
+        return _refuse(
+            'refused',
+            f'{record_path.name} could not be parsed - run `fha lint` for the '
+            'specifics, fix the record, then retry.')
+    if rec.get('parse_errors'):
+        detail = '; '.join(msg for _, msg in rec['parse_errors'])
+        return _refuse(
+            'refused',
+            f'{record_path.name} has malformed YAML ({detail}) - run `fha lint` '
+            'for the exact spot, fix the record, then re-run.')
+    meta = rec.get('meta') or {}
+
+    entries = [e for e in (meta.get('files') or []) if isinstance(e, dict)]
+    doc_entries = [
+        e for e in entries
+        if str(e.get('file', '')).replace('\\', '/').split('/', 1)[0].lower() == 'documents'
+    ]
+    if file:
+        wanted = file.strip().lower()
+        doc_entries = [
+            e for e in doc_entries
+            # Normalize to forward slashes before taking .name - a Windows-
+            # authored alias ('documents\\deed_x.tif') has no separator
+            # `Path` recognizes on POSIX, so an un-normalized .name would
+            # return the whole string there and never match a bare filename
+            # (the same normalization `run_source_extract` applies to its
+            # own alias-directory arithmetic, for the identical reason).
+            if wanted in (str(e.get('file', '')).lower(),
+                         PurePosixPath(str(e.get('file', '')).replace('\\', '/')).name.lower())
+        ]
+        if not doc_entries:
+            return _refuse(
+                'refused',
+                f'--file {file!r} does not match any documents-root file listed '
+                f'on {fmt_id_display(sid)}. Run `fha find {fmt_id_display(sid)}` '
+                'to see its inventory.')
+    if not doc_entries:
+        return _refuse(
+            'refused',
+            f"{fmt_id_display(sid)} lists no documents-root file - clear-keyword "
+            "only corrects a documents-root asset's embedded keywords today. "
+            "(The photos root has its own tools for embedded keywords, "
+            "`fha photoindex`.)")
+    if len(doc_entries) > 1:
+        shown = ', '.join(str(e.get('file')) for e in doc_entries)
+        return _refuse(
+            'refused',
+            f'{fmt_id_display(sid)} lists more than one documents-root file '
+            f'({shown}) - clear-keyword cannot tell which one to correct. '
+            'Name one with --file NAME.')
+
+    alias = str(doc_entries[0].get('file'))
+    abs_path = resolve_path(alias, fha_config, archive_root)
+    result.data['path'] = alias
+    if not abs_path.exists():
+        result.data['status'] = 'not-found'
+        result.exit_code = EXIT_WARNINGS
+        result.add('warning',
+                   f'{alias} is not on disk - if it moved within the documents '
+                   'folder, `fha reconcile` re-ties it; if it lives on an '
+                   'external drive, plug it in.')
+        return result
+
+    try:
+        fields = _run_exiftool_read_keyword_fields(abs_path)
+    except RuntimeError as e:
+        return _refuse('refused', str(e))
+
+    matches: list[tuple[str, str]] = [
+        (tag, value)
+        for tag in ('keywords', 'subject')
+        for value in fields[tag]
+        if value.strip().lower() == keyword_text.lower()
+    ]
+    if not matches:
+        current = fields['keywords'] + fields['subject']
+        shown = ', '.join(repr(v) for v in current[:10]) if current else '(none)'
+        return _refuse(
+            'refused',
+            f'{alias} does not currently carry the keyword {keyword_text!r} - '
+            f'nothing to clear. Its embedded keywords right now: {shown}.')
+
+    add: list[tuple[str, str]] = []
+    if replacement:
+        tags_with_match = sorted({tag for tag, _ in matches})
+        for tag in tags_with_match:
+            if not any(v.strip().lower() == replacement.lower() for v in fields[tag]):
+                add.append((tag, replacement))
+
+    if dry_run:
+        result.data['status'] = 'dry-run'
+        removed_desc = ', '.join(f'{tag}: {value!r}' for tag, value in matches)
+        result.add('info', f'[dry-run] Would remove {removed_desc} from {alias}.')
+        if add:
+            added_desc = ', '.join(f'{tag}: {value!r}' for tag, value in add)
+            result.add('info', f'[dry-run] Would add {added_desc}.')
+        elif replacement:
+            result.add('info',
+                       f'[dry-run] {replacement!r} is already present where it '
+                       'would be added - nothing more to write.')
+        result.add('info', '[dry-run] No file written. Re-run without --dry-run to apply.')
+        return result
+
+    if backup is None:
+        backup = OriginalBackup(archive_root, fha_config)
+    backup.announce()
+    for level, text in backup.drain_messages():
+        result.add(level, text)
+
+    error = _run_exiftool_edit_keyword_fields(
+        abs_path, remove=matches, add=add, backup=backup)
+    for level, text in backup.drain_messages():
+        result.add(level, text)
+    if error is not None:
+        return _refuse(
+            'refused',
+            f'exiftool could not update {alias}: {error}. Nothing was changed.')
+
+    result.data['status'] = 'ok'
+    result.data['removed_from'] = sorted({tag for tag, _ in matches})
+    result.data['added_to'] = sorted({tag for tag, _ in add})
+    result.note_changed(abs_path)
+    removed_desc = ', '.join(f'{tag}: {value!r}' for tag, value in matches)
+    result.add('info', f'Removed {removed_desc} from {alias}.', path=abs_path)
+    if add:
+        added_desc = ', '.join(f'{tag}: {value!r}' for tag, value in add)
+        result.add('info', f'Added {added_desc}.')
+    result.add('info',
+               'Next: run `fha lint --with-exif` if you want to confirm the '
+               'warning is gone.',
+               next_step='fha lint --with-exif')
+    return result
+
+
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 def _emit(result: Result) -> int:
@@ -457,6 +779,69 @@ def _add_extract_arguments(sub: argparse._SubParsersAction) -> None:
     x.add_argument('--dry-run', action='store_true', dest='dry_run',
                    help='Preview the dump (page coverage, destination) without writing.')
     x.set_defaults(func=_cmd_source_extract)
+
+
+def _cmd_source_clear_keyword(args: argparse.Namespace) -> int:
+    archive_root = resolve_root_arg(args, command='fha source clear-keyword')
+    if archive_root is None:
+        return EXIT_FAILURE
+    # strict=True, matching extract above: this resolves a documents-root
+    # alias through the configured roots to find the file to write into, so a
+    # malformed fha.yaml must refuse rather than silently fall back to the
+    # internal documents/ skeleton and edit the wrong file's metadata.
+    try:
+        fha_config = load_fha_yaml(archive_root, strict=True)
+    except FhaConfigError as e:
+        print(f'ERROR: {e}', file=sys.stderr)
+        return EXIT_FAILURE
+    return _emit(run_source_clear_keyword(
+        archive_root, fha_config, source_id=args.source_id,
+        keyword=args.keyword, replace_with=getattr(args, 'replace_with', None),
+        file=getattr(args, 'file', None),
+        dry_run=bool(getattr(args, 'dry_run', False))))
+
+
+_CLEAR_KEYWORD_DESCRIPTION = """\
+Clear or correct one embedded keyword on a source's documents-root file.
+
+  fha source clear-keyword S-2b3c4d5e6f --keyword "Margaret Hartley"
+  fha source clear-keyword S-2b3c4d5e6f --keyword "Margaret Hartley" \\
+      --replace-with "Margaret Cole"
+
+Reads the file's own Keywords/Subject values, matches --keyword case-
+insensitively, and removes the EXACT on-file value from wherever it actually
+sits (IPTC Keywords or XMP dc:subject) - so a keyword typed slightly
+differently on the command line refuses instead of silently doing nothing.
+--replace-with corrects it in place, in the same field, rather than adding a
+new one. Documents-root only (`fha lint --with-exif` W131 finds candidates);
+--file NAME picks among several files listed on the source. Preview first
+with --dry-run."""
+
+
+def _add_clear_keyword_arguments(sub: argparse._SubParsersAction) -> None:
+    """Register the clear-keyword verb on a group subparser (shared by both mains)."""
+    ck = sub.add_parser(
+        'clear-keyword',
+        help="Clear or correct one embedded keyword on a source's documents-root file.",
+        description=_CLEAR_KEYWORD_DESCRIPTION,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    ck.add_argument('source_id', metavar='S-id',
+                    help='The source whose documents-root file to correct.')
+    ck.add_argument('--keyword', metavar='TEXT', required=True,
+                    help='The keyword to remove, exactly as it reads (matched '
+                         'case-insensitively against the file).')
+    ck.add_argument('--replace-with', metavar='TEXT', dest='replace_with',
+                    help='Add this keyword in place of the one removed, in the '
+                         'same field. Omit to just clear it.')
+    ck.add_argument('--file', metavar='NAME',
+                    help='Which documents-root file to correct, when the source '
+                         'lists more than one (a filename or its files: alias).')
+    ck.add_argument('--root', metavar='PATH', default=argparse.SUPPRESS,
+                    help='Archive root (auto-detected if omitted).')
+    ck.add_argument('--dry-run', action='store_true', dest='dry_run',
+                    help='Preview the change without writing.')
+    ck.set_defaults(func=_cmd_source_clear_keyword)
 
 
 def _cmd_source_note(args: argparse.Namespace) -> int:
@@ -917,12 +1302,15 @@ Update a source record directly - the deterministic source-field write-backs.
   fha source note S-2b3c4d5e6f --text "..."
   fha source edit-note S-2b3c4d5e6f --old-text "..." --text "..."
   fha source extract S-2b3c4d5e6f [--pages 1-60]
+  fha source clear-keyword S-2b3c4d5e6f --keyword "..." [--replace-with "..."]
 
 note appends a hand-written paragraph to a source's ## Notes section;
 edit-note rewrites one existing paragraph there (named by its exact current
 text) and leaves the rest untouched; extract dumps the source PDF's embedded
 text layer into a derived [Page N]-labeled companion file (needs the pypdf
-helper package)."""
+helper package); clear-keyword removes (or corrects) one embedded keyword on
+a documents-root file, the tool-mediated fix for a stray tag `fha lint
+--with-exif` (W131) finds."""
 
 _NOTE_DESCRIPTION = """\
 Add a note to a source - appended to the end of its ## Notes section.
@@ -992,7 +1380,7 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
     p = subs.add_parser(
         'source',
         help='Source-record write-backs: note (append), edit-note (rewrite one), '
-             'extract (PDF text layer)',
+             'extract (PDF text layer), clear-keyword (fix a stray keyword)',
         description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -1001,6 +1389,7 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
     _add_note_arguments(sub)
     _add_edit_note_arguments(sub)
     _add_extract_arguments(sub)
+    _add_clear_keyword_arguments(sub)
     p.set_defaults(func=_make_group_help(p))
     return p
 
@@ -1016,6 +1405,7 @@ def _standalone_main(argv: list[str] | None = None) -> int:
     _add_note_arguments(sub)
     _add_edit_note_arguments(sub)
     _add_extract_arguments(sub)
+    _add_clear_keyword_arguments(sub)
     parser.set_defaults(func=_make_group_help(parser))
     args = parser.parse_args(argv)
     return args.func(args) or 0

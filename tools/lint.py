@@ -3,7 +3,8 @@
 lint.py - fha lint: verify the archive against the spec.
 
   fha lint [--root PATH]             Walk and check the archive; report-only
-  fha lint --with-exif               Also verify embedded SOURCE: keywords (slow)
+  fha lint --with-exif               Also verify embedded SOURCE: keywords, and stray
+                                     documents-root person keywords (W131) (slow)
   fha lint --json                    Machine-readable JSON output
   fha lint --format-check            Check formatting without fixing
   fha lint --format-write            Apply conservative formatting fixes (frontmatter normalization deferred)
@@ -201,8 +202,18 @@ configure_utf8_stdout()
 #    _has_question_for           - E009: co-occurrence check across question blocks
 #    _get_person_accepted_claims - build accepted-claim list for one person
 #    _check_reverse_inventory    - E011: document files vs source inventory lists
-#    _check_embedded_source_keywords - E012: exiftool SOURCE: keyword vs inventory
-#    _read_source_keywords       - invoke exiftool; parse its JSON keyword output
+#    _check_embedded_source_keywords - E012: exiftool SOURCE: keyword vs inventory;
+#                                   also runs W131 off the same exiftool pass
+#    _run_exiftool_keyword_rows  - batched exiftool -j -Keywords -Subject read
+#                                   (monkeypatchable seam, mirrors photoindex.py's
+#                                   own _run_exiftool - tools never import tools)
+#    _read_raw_keywords          - _run_exiftool_keyword_rows -> {path: [raw values]},
+#                                   shared by _read_source_keywords (E011/E012) and
+#                                   _check_stray_person_keywords (W131) so --with-exif
+#                                   scans each file's metadata only once
+#    _read_source_keywords       - _read_raw_keywords, filtered to SOURCE: S-id values
+#    _check_stray_person_keywords - W131: documents-root keyword naming a known
+#                                   person absent from the source's own people: list
 #    _check_generated_headers    - W105: hand-edits below a GENERATED header
 #    _check_readme_age           - W108: README.md older than SPEC.md
 #    _check_agent_drift          - E018: deprecated commands in AGENTS.md
@@ -3199,7 +3210,11 @@ def _files_to_keyword_scan(alias: str, root: Path, registry: Registry):
 
 
 def _check_embedded_source_keywords(registry: Registry, findings: list[Finding]) -> None:
-    """E012 and photo-side E011 checks using exiftool keyword reads."""
+    """E012 and photo-side E011 checks using exiftool keyword reads; also runs
+    W131 (documents-root stray person keyword, #112) off the SAME exiftool
+    pass - `--with-exif` is already documented as slow, so a second scan
+    doubling that cost to check a second thing in the same field data would
+    be its own bug."""
     scan_paths: set[Path] = set()
     path_aliases: dict[Path, str] = {}
 
@@ -3217,10 +3232,12 @@ def _check_embedded_source_keywords(registry: Registry, findings: list[Finding])
         return
 
     try:
-        keyword_map = _read_source_keywords(sorted(scan_paths))
+        raw_keywords = _read_raw_keywords(sorted(scan_paths))
     except RuntimeError as e:
         findings.append(Finding('E', 'E012', registry.archive_root, str(e)))
         return
+
+    keyword_map = _filter_source_keywords(raw_keywords)
 
     inventory_by_alias: dict[str, str] = {}
     for sid, paths in registry.source_inventory.items():
@@ -3243,10 +3260,22 @@ def _check_embedded_source_keywords(registry: Registry, findings: list[Finding])
                     f'File carries embedded SOURCE {keyword_sid} but is absent from files: '
                     f'{alias_path or disk_path}'))
 
+    _check_stray_person_keywords(registry, findings, raw_keywords, path_aliases)
 
-def _read_source_keywords(paths: list[Path]) -> dict[Path, set[str]]:
-    """Read SOURCE: S-id keywords from files using exiftool JSON output."""
-    result: dict[Path, set[str]] = {}
+
+def _run_exiftool_keyword_rows(paths: list[Path]) -> list[dict]:
+    """Batched `exiftool -j -Keywords -Subject` read over every scanned asset.
+
+    A monkeypatchable seam (tests substitute canned JSON rows so `--with-exif`
+    is exercised with no real exiftool binary on PATH) - mirrors the same
+    split photoindex.py keeps for its own `_run_exiftool`. Kept separate from
+    `_read_raw_keywords`'s parsing so the batching/subprocess mechanics live
+    in exactly one place. Raises RuntimeError when exiftool itself is
+    missing, or when a batch's JSON cannot be parsed - both environment
+    problems the caller (`_check_embedded_source_keywords`) turns into one
+    E012 finding rather than crashing the whole lint run.
+    """
+    rows: list[dict] = []
     batch_size = 50
     for start in range(0, len(paths), batch_size):
         batch = paths[start:start + batch_size]
@@ -3264,22 +3293,148 @@ def _read_source_keywords(paths: list[Path]) -> dict[Path, set[str]]:
         if proc.returncode not in (0, 1):
             raise RuntimeError(f'exiftool failed while reading embedded metadata: {proc.stderr.strip()}')
         try:
-            rows = json.loads(proc.stdout or '[]')
+            rows.extend(json.loads(proc.stdout or '[]'))
         except json.JSONDecodeError as e:
             raise RuntimeError(f'exiftool returned invalid JSON: {e}') from e
-        for row in rows:
-            source_file = row.get('SourceFile')
-            if not source_file:
-                continue
-            keywords = _metadata_values(row.get('Keywords')) + _metadata_values(row.get('Subject'))
-            source_ids = {
-                normalize_id(m.group(1))
-                for value in keywords
-                for m in [_SOURCE_KEYWORD_RE.match(value.strip())]
-                if m
-            }
-            result[Path(source_file).resolve()] = source_ids
+    return rows
+
+
+def _read_raw_keywords(paths: list[Path]) -> dict[Path, list[str]]:
+    """Every embedded Keywords/Subject value per file (raw union, order-preserving).
+
+    The shared read behind both `_read_source_keywords` (E011/E012's SOURCE:
+    match) and `_check_stray_person_keywords` (W131) - one exiftool pass
+    answers for both checks, since `--with-exif` is already the slow flag and
+    scanning the same files twice to look at two different keyword shapes
+    would double that cost for no reason. A file exiftool has nothing to say
+    about (an unreadable or unsupported format) simply has no entry - callers
+    already treat an absent path as "nothing to check" (E012's `.items()`
+    loop, W131's `.get()` below), the same tolerance the original SOURCE:-only
+    reader had for a per-file exiftool error.
+    """
+    result: dict[Path, list[str]] = {}
+    for row in _run_exiftool_keyword_rows(paths):
+        source_file = row.get('SourceFile')
+        if not source_file:
+            continue
+        values: list[str] = []
+        for key in ('Keywords', 'Subject'):
+            for v in _metadata_values(row.get(key)):
+                if v not in values:
+                    values.append(v)
+        result[Path(source_file).resolve()] = values
     return result
+
+
+def _filter_source_keywords(raw_keywords: dict[Path, list[str]]) -> dict[Path, set[str]]:
+    """Narrow a raw-keyword map down to the `SOURCE: S-id` values (E011/E012)."""
+    return {
+        path: {
+            normalize_id(m.group(1))
+            for value in values
+            for m in [_SOURCE_KEYWORD_RE.match(value.strip())]
+            if m
+        }
+        for path, values in raw_keywords.items()
+    }
+
+
+def _read_source_keywords(paths: list[Path]) -> dict[Path, set[str]]:
+    """Read SOURCE: S-id keywords from files using exiftool JSON output.
+
+    Kept as its own entry point (rather than inlining `_filter_source_keywords`
+    at every call site) for API stability - it is the one exiftool-backed
+    function this module has always exposed by this name."""
+    return _filter_source_keywords(_read_raw_keywords(paths))
+
+
+def _check_stray_person_keywords(
+    registry: Registry,
+    findings: list[Finding],
+    raw_keywords: dict[Path, list[str]],
+    path_aliases: dict[Path, str],
+) -> None:
+    """W131 (#112): a documents-root asset carries an embedded keyword that
+    names a KNOWN archive person absent from that source's own `people:` list.
+
+    The motivating case: a documents-root TIFF turned up carrying an embedded
+    `dc:subject` (XMP) keyword naming a person with no connection to the
+    document at all - a leftover from an earlier, unrelated cataloguing pass
+    (Lightroom) before the file ever entered the archive. A keyword is a
+    person-association in this project (`fha photoindex` reads embedded
+    keywords the same way for photos), so a stray one silently ties the
+    asset to the wrong person and pollutes any desktop/photo-tool search over
+    the file - and nothing in this lint ever looked, because embedded
+    metadata on a documents-root file was invisible here before `--with-exif`
+    grew the E011/E012 SOURCE: check this shares its one exiftool pass with.
+
+    Scope is documents-root only (#112's own scope, and deliberately not
+    widened here): a photo's person association is already a settled, richer
+    system of its own - bare `P-id` keywords, `face_tags:`, `tag-person`'s
+    resolution flow (SPEC §20 rule 4) - and a second, cruder "does this name
+    a known person" check over the same field would either duplicate that
+    machinery or disagree with it. Whether photos need an equivalent
+    stray-keyword check is a real question, left for a human rather than
+    folded in here silently (see the PR notes).
+
+    A keyword only becomes a finding when it actually RESOLVES to a known
+    archive person through the SAME alias map every claim `persons:`
+    reference already resolves through (E004/E005, `registry.alias_map`) -
+    an ordinary caption word ("farm", "reunion", a place name) resolves to
+    nothing and is silently ignored, exactly like an unresolved plain-name
+    reference is inert elsewhere in this linter. Only a keyword that
+    unambiguously names someone in the archive, and is not itself that
+    source's own `SOURCE:` marker, is compared against the source's
+    `people:` list - and that list is resolved through the identical map, so
+    a name-form entry (`people: ["[[Ken Smith]]"]`) and an ID-form one
+    (`people: [P-...]`) are treated the same way. This compares the SAME two
+    things E005 already validated on the `people:` side, not a stricter
+    reading of it.
+
+    Read entirely from the archive's own records plus the raw keyword values
+    the shared exiftool pass already collected - no second read of any file.
+    """
+    for disk_path, keywords in raw_keywords.items():
+        alias_path = path_aliases.get(disk_path)
+        if not alias_path or not alias_path.startswith('documents/'):
+            continue   # scope: documents-root only, see docstring
+
+        parsed = parse_filename(disk_path)
+        if not parsed or parsed.get('id_type') != 'S':
+            continue   # not a processed, S-id-named document - nothing to check against
+        sid = normalize_id(parsed['id_str'])
+        if sid not in registry.source_paths:
+            continue
+
+        expected: set[str] = set()
+        for ref in registry.source_links.get(sid, {}).get('people', []):
+            resolved_ref = resolve_ref(ref, registry.alias_map)
+            if resolved_ref and id_type_of(resolved_ref) == 'P':
+                expected.add(resolved_ref)
+
+        already_flagged: set[str] = set()
+        for value in keywords:
+            text = value.strip()
+            if not text or _SOURCE_KEYWORD_RE.match(text):
+                continue   # this source's own identity carrier, not a person tag
+            resolved = resolve_ref(text, registry.alias_map)
+            if not resolved or id_type_of(resolved) != 'P':
+                continue   # not a resolvable person - ordinary caption/tag text
+            if resolved in expected or resolved in already_flagged:
+                continue
+            already_flagged.add(resolved)
+            source_path = registry.source_paths[sid]
+            findings.append(Finding('W', 'W131', source_path,
+                f'{alias_path} carries the embedded keyword {text!r}, which names '
+                f"{_person_label(registry, resolved)} - but {fmt_id_display(sid)}'s "
+                f'people: list does not include them. This usually means a leftover '
+                f'tag from before the file entered the archive (a photo-cataloguing '
+                f'pass, often), silently tying the document to someone it has nothing '
+                f'to do with - and any photo or desktop search over the file inherits '
+                f'the same wrong association. If the tag is wrong, clear it with '
+                f'`fha source clear-keyword {fmt_id_display(sid)} --keyword {text!r}`; '
+                f'if the person genuinely belongs on this source, add them to its '
+                f'people: list instead.'))
 
 
 def _metadata_values(value: object) -> list[str]:
@@ -5124,7 +5279,8 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     p.add_argument('--spec-root', metavar='PATH',
                    help='Spec docs root (when separate from archive root)')
     p.add_argument('--with-exif', action='store_true',
-                   help='Also verify embedded SOURCE: keywords via exiftool (slow)')
+                   help='Also verify embedded SOURCE: keywords and stray '
+                        'documents-root person keywords (W131) via exiftool (slow)')
     p.add_argument('--json', action='store_true', dest='use_json',
                    help='Machine-readable JSON output')
     p.add_argument('--format-check', action='store_true',

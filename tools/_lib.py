@@ -2279,18 +2279,20 @@ def load_cooccur_dismissed(
 
 # ── Safety copies of originals (`originals_backup:`, TOOLING §13f) ────────────
 #
-# Four places in the tools write embedded metadata into an original photo:
-# `fha process` (the SOURCE: keyword and its rollback) and `fha photoindex`
-# (tag-person's P-id keyword, set-summary's UserComment).  All four use
-# exiftool's `-overwrite_original_in_place`, which is deliberate - it edits the
-# file rather than replacing it, so an external photo library (Lightroom) does
-# not lose track of it - but it also means the only copy of a family photograph
-# is being rewritten with no copy anywhere.
+# Five places in the tools write embedded metadata into an original asset:
+# `fha process` (the SOURCE: keyword and its rollback), `fha photoindex`
+# (tag-person's P-id keyword, set-summary's UserComment), and `fha source
+# clear-keyword` (#112 - removing or correcting a stray documents-root
+# keyword). All five use exiftool's `-overwrite_original_in_place`, which is
+# deliberate - it edits the file rather than replacing it, so an external
+# photo library (Lightroom) does not lose track of it - but it also means the
+# only copy of a family photograph or document is being rewritten with no
+# copy anywhere.
 #
 # `originals_backup:` in fha.yaml names a folder outside the archive where ONE
 # pristine copy of each such file is kept before it is first written to.  The
-# rule lives here, not in the two tools, because a data-safety guard duplicated
-# four ways is a guard that drifts.
+# rule lives here, not in the tools themselves, because a data-safety guard
+# duplicated five ways is a guard that drifts.
 
 class BackupRefused(Exception):
     """The safety copy could not be made, so the write must not go ahead.
