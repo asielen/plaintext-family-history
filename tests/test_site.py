@@ -100,7 +100,14 @@ class _Base(unittest.TestCase):
         path = self.archive_root / rel
         path.parent.mkdir(parents=True, exist_ok=True)
         extra = f'{frontmatter_extra}\n' if frontmatter_extra else ''
-        path.write_text(f'---\nid: {pid}\nname: {name}\n{extra}---\n{body}', encoding='utf-8')
+        # newline='' - write the string's bytes exactly as given. Without it,
+        # Python's own universal-newline translation on Windows would
+        # re-translate a body that ALREADY contains literal '\r\n' (as the
+        # Windows-editor placeholder test below constructs) into '\r\r\n' -
+        # a corrupted sequence no real editor ever writes, and not what
+        # these fixtures mean to test.
+        path.write_text(f'---\nid: {pid}\nname: {name}\n{extra}---\n{body}',
+                         encoding='utf-8', newline='')
         self.conn.execute(
             'INSERT INTO persons(id, name, surname, sex, living, tier, status, path) '
             'VALUES (?,?,?,?,?,?,?,?)',
