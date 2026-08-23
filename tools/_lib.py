@@ -241,6 +241,10 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #                                 from the template (nothing parameterized - not rendered)
 #    _split_body_sections, PERSON_BODY_SECTIONS - the same text parsed into per-heading
 #                                 (heading, content) pairs, for the additive backfill below
+#    person_section_is_unfilled - a §16 section holds ONLY its scaffold placeholder text,
+#                                 never actually written (#125) - the site/export publish check
+#    strip_unfilled_person_sections - cut every such section (heading and all) out of a
+#                                 profile body about to be published (`fha wikitree`/`fha packet`)
 #    render_person_body_scaffold - full body for a BRAND-NEW record (`fha person new`/`fha stubs`)
 #    ensure_person_body_sections - ADDITIVELY backfill a pre-#76 record's missing pieces
 #                                 (`fha person promote`); never touches what is already there
@@ -7071,6 +7075,143 @@ def _split_body_sections(text: str) -> tuple[tuple[str, str], ...]:
 # heading -> the placeholder body text a fresh section opens with - DERIVED
 # from PERSON_BODY_SECTIONS_TEXT above, not a second hand-authored copy of it.
 PERSON_BODY_SECTIONS: tuple[tuple[str, str], ...] = _split_body_sections(PERSON_BODY_SECTIONS_TEXT)
+
+
+def _normalized_section_text(text: str) -> str:
+    """One §16 section's body reduced to what a comparison should actually
+    care about: line endings unified to `\\n`, every line's trailing
+    whitespace dropped, and the whole thing stripped.
+
+    A person record is a plain file a human edits in whatever editor he
+    already has, and three things routinely rewrite those bytes without
+    changing one word of what the section SAYS: Notepad (and git's
+    `autocrlf`) write CRLF where the scaffold constant has LF; many editors
+    trim - or add - a trailing space on save; a `read_text_exact` caller
+    (`fha packet`) deliberately preserves whatever endings it found rather
+    than normalizing them the way `read_record` does. A byte-for-byte `==`
+    against the scaffold constant would let any one of those turn an
+    untouched placeholder back into "real content" and republish the
+    authoring instructions #125 exists to hide - the original bug again,
+    reachable from an ordinary Windows save. This is the ONLY tolerance
+    applied: nothing here reflows, lowercases, or otherwise fuzzes the
+    words, so a human who actually rewrote the section still publishes."""
+    unified = text.replace('\r\n', '\n').replace('\r', '\n')
+    return '\n'.join(line.rstrip() for line in unified.split('\n')).strip()
+
+
+# heading -> its scaffold placeholder text, already normalized (the same
+# normalization every candidate gets before comparison), for
+# person_section_is_unfilled below. A plain dict (not PERSON_BODY_SECTIONS
+# itself) so a heading lookup is O(1) at every call site instead of a linear
+# scan of the tuple.
+_PERSON_BODY_PLACEHOLDER_BY_HEADING: dict[str, str] = {
+    heading: _normalized_section_text(content) for heading, content in PERSON_BODY_SECTIONS
+}
+
+
+def person_section_is_unfilled(heading: str, content: str) -> bool:
+    """True when a person profile's `## {heading}` section holds NOTHING but
+    the scaffold's own placeholder text for that heading - i.e. the section
+    was scaffolded (by `render_person_body_scaffold` or
+    `ensure_person_body_sections`) and never actually written by a human
+    (#125: a fresh Biography/Research Notes section rendered its own
+    authoring instructions verbatim on the generated site, as if they were
+    the person's real story).
+
+    `content` MUST be the section body exactly AS WRITTEN on disk - the
+    stripped text `_extract_section` would return, read BEFORE the
+    private-fence pass (`apply_private_fence`) or AI-DRAFT stripping touch
+    it. This matters concretely for Research Notes: its placeholder embeds a
+    `<!-- private -->...<!-- /private -->` example block, so a build that
+    already dropped (standalone) or unwrapped (linked) that block before
+    calling this would never see the untouched wording match and the
+    placeholder would leak through in exactly one of the two modes. Every
+    OTHER placeholder here (Biography, Stories, Friends & Family) carries no
+    fence, so pre- or post-fence content is identical for them - reading
+    pre-fence uniformly is the one rule that is correct for all four without
+    a per-heading special case.
+
+    Exact-match only (no fuzzy/substring test): a human who keeps a few of
+    the scaffold's words while writing real content must still see it
+    published. Compares against PERSON_BODY_SECTIONS - parsed from
+    PERSON_BODY_SECTIONS_TEXT, the exact text the two scaffolding functions
+    above write - so a future wording change to the template can never drift
+    this check out of step with what actually gets scaffolded.
+
+    Exact on the WORDS, not on the bytes: both sides go through
+    `_normalized_section_text` first, so a record saved with CRLF endings or
+    with a trailing space an editor added still matches its own placeholder.
+    See that function for why byte equality alone would reopen #125."""
+    placeholder = _PERSON_BODY_PLACEHOLDER_BY_HEADING.get(heading)
+    return placeholder is not None and _normalized_section_text(content) == placeholder
+
+
+def strip_unfilled_person_sections(body: str) -> str:
+    """Cut every §16 section that holds nothing a human wrote - heading and
+    all - out of a person profile body about to leave the archive.
+
+    The publication-path twin of `person_section_is_unfilled`, for the two
+    exports that ship (or convert) the profile body WHOLE rather than
+    reading one named section out of it: `fha wikitree` walks it line by
+    line, `fha packet` copies it as a file. Neither can use the
+    section-by-section check `fha site` uses, which is why #125 was fixed on
+    the site first and left standing in both exports - a public WikiTree
+    profile reading "Write their story in plain sentences..." under
+    `== Biography ==`, and a packet handed to a relative saying the same, are
+    the same defect on worse surfaces. This is the shared drop-in that was
+    missing.
+
+    "Nothing a human wrote" is two cases, both dropped: the section is EMPTY,
+    or it holds only its own scaffold placeholder text
+    (`person_section_is_unfilled`). The heading goes with the content because
+    a bare `== Stories ==` over nothing is scaffolding too - a promise of
+    content the record does not have - and because that is exactly what
+    `fha site` already renders for the same record (the template's `{% if %}`
+    guard skips the whole block).
+
+    Only the four scaffolded §16 headings are ever touched. `## Sources`,
+    `## Claims`, and anything a human invented are left exactly where they
+    are, however empty: this function decides "was this section written",
+    never "is this section wanted".
+
+    Line endings are preserved rather than normalized (each line keeps its
+    own trailing `\\r`, and the join is on `\\n`), because `fha packet` reads
+    and writes the profile with the newline-preserving `read_text_exact` /
+    `write_text_exact_atomic` pair - a copy that silently flipped CRLF to LF
+    would show up as a whole-file diff to anyone comparing it against the
+    original."""
+    lines = body.split('\n')
+    kept: list[str] = []
+    i = 0
+    while i < len(lines):
+        match = _BODY_SECTION_HEADING_RE.match(lines[i].rstrip('\r'))
+        if match is None:
+            kept.append(lines[i])
+            i += 1
+            continue
+        heading = match.group(1).strip()
+        end = i + 1
+        while end < len(lines) and not _BODY_SECTION_HEADING_RE.match(lines[end].rstrip('\r')):
+            end += 1
+        content = '\n'.join(lines[i + 1:end])
+        scaffolded = heading in _PERSON_BODY_PLACEHOLDER_BY_HEADING
+        if scaffolded and (not content.strip() or person_section_is_unfilled(heading, content)):
+            i = end          # drop the heading, its body, and its trailing blank line
+            continue
+        kept.extend(lines[i:end])
+        i = end
+    if len(kept) != len(lines):
+        # Dropping the LAST section takes its trailing blank separator with
+        # it, and on a CRLF record that separator line is `'\r'` - joining it
+        # back on would end the file with a lone carriage return instead of a
+        # proper line ending. Collapse whatever blank tail is left to one
+        # empty element, which the join turns into a single terminator in
+        # whichever style the last surviving line already carries.
+        while kept and not kept[-1].strip():
+            kept.pop()
+        kept.append('')
+    return '\n'.join(kept)
+
 
 # The stable substring `ensure_person_body_sections` greps for to decide
 # whether a record already carries the purpose block - short and specific

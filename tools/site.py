@@ -171,6 +171,7 @@ from _lib import (
     load_fha_yaml,
     normalize_id,
     open_index_db,
+    person_section_is_unfilled,
     photoindex_status,
     photos_ignore_matcher,
     photos_ignore_patterns,
@@ -2457,13 +2458,39 @@ class _SiteBuilder:
         # build (P2 codex finding, round 7, PR #30 - the round-5 fix here
         # already protected a pending AI-DRAFT the same way).
         bio_as_written = (_extract_section(body, 'Biography') or '').strip()
+        # Research Notes' pre-fence content, captured for the SAME reason and
+        # at the SAME point as bio_as_written above, plus one more: the
+        # unfilled-placeholder check just below (person_section_is_unfilled)
+        # must run before apply_private_fence touches the body, because the
+        # Research Notes placeholder embeds a `<!-- private -->` example
+        # block - checking post-fence text would never match it in either
+        # build mode, once that block has been dropped (standalone) or
+        # unwrapped (linked). The workbench per-entry edit rows further down
+        # reuse this same capture rather than re-reading the section: two
+        # reads of one string is two things to keep in step, and the later
+        # one sat AFTER `apply_private_fence` had already run on `body`,
+        # which is exactly the ordering hazard this capture exists to avoid.
+        research_as_written = (_extract_section(body, 'Research Notes') or '').strip()
         dp = not self.linked
         if body:
             body = apply_private_fence(body, drop=dp)
         if stories:
             stories = apply_private_fence(stories, drop=dp)
-        bio = _extract_section(body, 'Biography')
-        research = _extract_section(body, 'Research Notes')
+        # A section that holds NOTHING but its own scaffold placeholder text
+        # was never actually filled in by a human - render it exactly like an
+        # empty section, not like real content (#125). Without this, a
+        # freshly-scaffolded person's Biography/Research Notes published the
+        # archive owner's own authoring instructions verbatim, as if they
+        # were the person's real story - the "unfilled" case `_extract_section`
+        # already treats an empty/`*(none yet)*` section as, extended to the
+        # OTHER placeholder wording the scaffold writes (see
+        # person_section_is_unfilled for why this cannot be a substring/fuzzy
+        # test: it must exact-match so real content sharing a few of the
+        # scaffold's words still publishes).
+        bio = (None if person_section_is_unfilled('Biography', bio_as_written)
+               else _extract_section(body, 'Biography'))
+        research = (None if person_section_is_unfilled('Research Notes', research_as_written)
+                    else _extract_section(body, 'Research Notes'))
         problem: str | None = None
         if bio:
             bio, problem = strip_unaccepted_drafts(bio)
@@ -2501,7 +2528,6 @@ class _SiteBuilder:
         research_entries: list[dict] = []
         if self.workbench:
             stories_as_written = (rec['stories'] or '')
-            research_as_written = (_extract_section(rec['body'], 'Research Notes') or '')
             stories_entries = self._log_entries_with_raw(
                 stories or '', stories_as_written, render, embed, dp)
             research_entries = self._log_entries_with_raw(
