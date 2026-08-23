@@ -1,7 +1,7 @@
 {
   "manifest_version": "1",
   "spec_version": "1.2",
-  "generated": "2026-08-23",
+  "generated": "2026-08-22",
   "files": [
     {
       "path": ".claude/skills/README.md",
@@ -126,7 +126,7 @@
     {
       "path": ".claude/skills/today/SKILL.md",
       "category": "operating",
-      "sha256": "89eeac34e21778dbd02e4957eabea4594d839099241459956abb6068b24660cd",
+      "sha256": "f03c7a93ea45ad35f3b17d597ebdf47c186252f9b327e23a5369dd11403bcccf",
       "spec_version": "1.2"
     },
     {
@@ -686,7 +686,7 @@
     {
       "path": ".fha/tools/templates/base.html",
       "category": "operating",
-      "sha256": "e8f6d58073666e91792c3239594edd50d78d6fe433a54ceadece0f62c4eee446",
+      "sha256": "e8437fdffc6c4426cdcbac6474fb721101b3fedf2595eb1dc3c0900db696b983",
       "spec_version": "1.2",
       "src": "tools/templates/base.html"
     },

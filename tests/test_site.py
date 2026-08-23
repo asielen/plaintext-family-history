@@ -2094,6 +2094,22 @@ class DiscoveriesTests(_Base):
         self.assertIn('No discoveries', self._read('discoveries.html'))
         self.assertNotIn('Recent discoveries', self._read('index.html'))
 
+    def test_discoveries_nav_link_present_with_zero_entries(self):
+        # Issue #121: build_discoveries_page() always builds discoveries.html,
+        # but with zero entries the home teaser above (its only other inbound
+        # link) renders nothing at all - so the persistent site nav is the
+        # page's sole route in on a fresh or quiet archive. Check it from both
+        # a top-level page (home) and a nested one (a person page), since the
+        # two use different root_prefix values.
+        self._seed_person('p-aaaaaaaaaa', 'Jane Doe')
+        self._run(linked=True)
+        self.assertTrue((self.out_dir / 'discoveries.html').is_file())
+        for relpath, prefix in (('index.html', '.'), ('persons/p-aaaaaaaaaa.html', '..')):
+            html = self._read(relpath)
+            nav_block = html[html.index('site-nav'):html.index('</nav>')]
+            self.assertIn(f'href="{prefix}/discoveries.html"', nav_block, relpath)
+            self.assertIn('Discoveries', nav_block, relpath)
+
     def test_cp1252_discoveries_file_reports_instead_of_crashing(self):
         # #68 in the one place in site.py that never went through
         # `read_record`: this file was read with a plain `read_text` guarded by
