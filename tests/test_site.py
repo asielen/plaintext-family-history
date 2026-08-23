@@ -2922,13 +2922,22 @@ class HomePedigreeTests(_Base):
         self._run(linked=True)
         self.assertIn('Living Owner', self._read('index.html'))
 
-    def test_no_eligible_ancestor_renders_hub_only_with_a_note(self):
+    def test_no_eligible_ancestor_renders_a_blank_hub_with_a_note(self):
         # The hub is living and has NO recorded parents at all, so the
         # redaction-safe walk finds nobody eligible anywhere on the line -
-        # the decided fallback: the hub's own row (blank card - the hub is
-        # still living/redacted - plus any eligible spouse/children/
-        # siblings), zero ancestor columns, and a plain-language note
-        # instead of a chart mostly built of blank cards.
+        # the decided fallback: JUST the hub's own blank card (the hub is
+        # still living/redacted), zero ancestor columns, and a plain-language
+        # note instead of a chart mostly built of blank cards.
+        #
+        # Review fix (PR #152): a deceased spouse used to still draw on this
+        # blank card - real name, dates, and a working link, bracketed
+        # directly onto the living hub's own row - which outs a living
+        # person's specific close relative on the site's highest-traffic
+        # page. `_build_family_wings` now withholds ALL of the hub's own
+        # spouse/child/sibling entries once the hub itself is redacted (same
+        # "dropped outright, no placeholder" rule already applied to every
+        # OTHER redacted person), so the fallback shows nothing beside the
+        # blank card at all.
         self._seed_person('p-aaaaaaaaaa', 'Living Owner', living='true')
         self._seed_person('p-bbbbbbbbbb', 'Deceased Spouse')
         self._seed_rel('p-aaaaaaaaaa', 'spouse', 'p-bbbbbbbbbb')
@@ -2936,9 +2945,29 @@ class HomePedigreeTests(_Base):
         self._run(linked=False)
         home = self._read('index.html')
         self.assertNotIn('Living Owner', home)
-        self.assertIn('Deceased Spouse', home)      # the family row still draws
+        # Deceased Spouse is otherwise ordinary/curated, so - like Bob above -
+        # they still get their own page and a site-wide People-index entry;
+        # what must NOT happen is drawing on the blank hub's own pedigree row.
+        self.assertNotIn('Deceased Spouse', self._pedigree_section(home))
         self.assertNotIn('ped-axis-label', home)    # no ancestor columns to caption
         self.assertIn('No ancestor eligible to publish was found', home)
+        self.assertIn('cannot be shown here without naming a living person', home)
+        self.assertIn('cannot be shown here without naming a living person', home)
+
+    def test_linked_mode_still_shows_the_hub_family_row_with_no_eligible_ancestor(self):
+        # The silence rule above is standalone-only: `--linked`/workbench
+        # never substitutes or redacts the configured hub in the first
+        # place (`_build_home_pedigree`'s own contract), so the same shape -
+        # a living hub with no recorded parents - still draws its real
+        # spouse/child/sibling row in the local preview.
+        self._seed_person('p-aaaaaaaaaa', 'Living Owner', living='true')
+        self._seed_person('p-bbbbbbbbbb', 'Deceased Spouse')
+        self._seed_rel('p-aaaaaaaaaa', 'spouse', 'p-bbbbbbbbbb')
+        self._seed_home()
+        self._run(linked=True)
+        home = self._read('index.html')
+        self.assertIn('Living Owner', home)
+        self.assertIn('Deceased Spouse', home)
 
     def test_workbench_unknown_add_affordance_reaches_the_home_pedigree(self):
         # The existing 'Unknown - add' workbench affordance (missing_parent_of)

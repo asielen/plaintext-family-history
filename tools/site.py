@@ -4521,7 +4521,30 @@ class _SiteBuilder:
 
         The gate is identical to the ancestor one: standalone mode requires a
         meta row, a non-redacted person, and at least one public (non-hard-
-        restricted) claim behind the edge. `--linked` shows every edge."""
+        restricted) claim behind the edge. `--linked` shows every edge.
+
+        SUBJECT redaction (review fix, PR #152). Every check above protects
+        the OTHER person in each edge; ordinarily that is the whole story,
+        because `pid` here is always a page subject and a redacted person
+        never gets a page (`person_pages` excludes them under standalone) -
+        so `pid` itself was never redacted in practice, until #115 gave this
+        function one caller where that assumption breaks: the home
+        pedigree's hub-only fallback (`_build_home_pedigree`) can call this
+        with `pid` = the still-living/redacted seed itself, when no eligible
+        substitute ancestor was found. Showing that seed's real, dated,
+        linked spouse(s)/children/siblings bracketed directly onto their own
+        blank 'Living Person' card is the mirror image of the leak this
+        function already guards against above - a named close relative
+        wired to an otherwise-silent redacted person - so the same "dropped
+        outright, no placeholder" rule applies to the SUBJECT side too: when
+        `pid` is itself redacted (standalone only), every wing (including
+        `_hub_siblings`, which this short-circuit also skips calling) comes
+        back empty rather than naming who a living person's family is."""
+        if not self.linked:
+            pid_meta = self.person_meta.get(pid)
+            if pid_meta is None or self._person_is_redacted(pid_meta):
+                return ({'spouses': [], 'children': [], 'siblings': []} if include_siblings
+                        else {'spouses': [], 'children': []})
 
         def collect(rel: str) -> list[dict]:
             # Spouses arrive marriage-date-first: the renderer draws the FIRST
@@ -4784,12 +4807,24 @@ class _SiteBuilder:
         A non-redacted seed is used unchanged. A redacted seed hands off to
         `_apex_ancestor` (repurposed - see its own docstring) to find the
         CLOSEST eligible ancestor on the recorded line; when even that finds
-        nobody at all, the fallback is a hub-only render - `seed`'s own row
-        (spouse/children/siblings via `_build_family_wings`) with NO ancestor
-        columns (`ancestor_generations=0`) plus a plain-language `note` the
-        template shows instead of a chart, rather than a page mostly built of
-        blank/'Unknown' cards. `--linked`/workbench never substitutes - the
-        local preview always seeds on the real configured person.
+        nobody at all, the fallback is a blank hub-only render - just
+        `seed`'s own blank card, NO ancestor columns (`ancestor_generations=0`)
+        AND no spouse/children/siblings row either, plus a plain-language
+        `note` the template shows instead of a chart, rather than a page
+        mostly built of blank/'Unknown' cards.
+
+        Review fix (PR #152): this last case used to still draw `seed`'s own
+        family row - real, dated, linked spouse(s)/children/siblings
+        bracketed onto that same blank card - which outs a living person's
+        specific close relatives on the single highest-traffic page of the
+        site, the mirror image of the leak `_build_family_wings` already
+        guards against for every OTHER redacted person. `_build_family_wings`
+        now withholds all three lists outright (same function, same call
+        below) whenever its own subject is itself redacted, which in
+        practice is only ever true in this one fallback branch - see its
+        docstring. `--linked`/workbench never substitutes - the local
+        preview always seeds on the real configured person, and never hits
+        this branch's redaction checks at all.
 
         Returns the index.html template context: {'svg', 'caption', 'note'}.
         `note` is None on every ordinary build; it is set only in that last,
@@ -4805,8 +4840,9 @@ class _SiteBuilder:
                 else:
                     hub = seed
                     note = ("No ancestor eligible to publish was found on this person's recorded "
-                            "line, so the home page shows their own recorded family below instead "
-                            "of a full pedigree.")
+                            "line, and their own spouse, children, and siblings cannot be shown "
+                            "here without naming a living person, so no pedigree is shown on the "
+                            "home page.")
 
         hub_meta = self.person_meta.get(hub)
         if not self.linked and hub_meta and self._person_is_redacted(hub_meta):
@@ -4819,7 +4855,11 @@ class _SiteBuilder:
         depth = 0 if note else self._home_pedigree_depth(site_cfg)
         ahnen, missing_parent_of = self._build_ahnentafel(hub, depth, page_dir)
         wings = self._build_family_wings(hub, page_dir, include_siblings=True)
-        caption = (f"{hub_name}'s recorded family." if note else
+        # hub_name is always the blank _LIVING_LABEL here (`note` is only set
+        # when `seed`/`hub` is itself redacted), so a caption built from it
+        # ("Living Person's recorded family") would name nothing real - the
+        # explanatory `note` below already carries the actual message.
+        caption = ('No public pedigree is available for the home page.' if note else
                   f"{hub_name}'s family, tracing back through the generations →")
         axis_label = 'ancestors →' if depth else None
         svg = _render_pedigree_svg(
