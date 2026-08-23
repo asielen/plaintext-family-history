@@ -79,7 +79,6 @@ from _lib import (
     parse_filename,
     person_file_kind,
     read_record,
-    read_text_or_report,
     resolve_path,
     resolve_ref,
     resolve_root_arg,
@@ -1220,6 +1219,7 @@ def _index_source(
     alias_map: dict[str, str] | None = None,
     on_parse_error=None,
     on_decode_error=None,
+    rec: dict | None = None,
 ) -> None:
     """Index one source markdown file.
 
@@ -1237,10 +1237,20 @@ def _index_source(
     `on_decode_error` is the same seam one step earlier: a source file whose
     bytes will not decode as UTF-8 is skipped and reported, never indexed as
     an empty source (#68) - see `_index_person` for the full note.
+
+    `rec`, when supplied, is an ALREADY-PARSED `read_record(path, ...)`
+    result, used as-is instead of reading `path` again. `upsert_source`
+    (audit finding) used to read and UTF-8-decode this same file TWICE per
+    call - once via `read_text_or_report`, purely to check decodability
+    before its deletes, discarding the text, and again right here via a
+    fresh `read_record` - so it now does that one read itself and threads
+    the parse through. The full-build path passes nothing, reading the file
+    itself here exactly as before.
     """
     if is_template_file(path):
         return   # `_TEMPLATE.*` is a teaching template, not a record
-    rec = read_record(path, on_decode_error=on_decode_error)
+    if rec is None:
+        rec = read_record(path, on_decode_error=on_decode_error)
     if rec['undecodable']:
         return   # nothing was read; the build reports it (#68)
     meta = rec['meta']
@@ -2352,12 +2362,17 @@ def upsert_source(
 
     # Before any mutation (see the docstring): a file whose bytes will not
     # decode is a file with nothing to re-insert, and the upsert deletes
-    # first. Asked through `read_text_or_report` rather than `read_record`
-    # because the question here is only "do these bytes decode" - an OSError
-    # is a different answer (the file is gone or locked), and the walk below
-    # already reports that its own way.
+    # first. Read (and parsed) via `read_record` rather than a bare
+    # `read_text_or_report` decode check (audit finding: reading the file
+    # here just to check decodability, discarding the text, then having
+    # `_index_source` read and parse the SAME file again moments later was a
+    # genuine double read+decode of every upserted source) - `undecodable`
+    # answers "do these bytes decode" exactly as before (an `OSError` is a
+    # different, silent answer here, same as `read_text_or_report`; see
+    # `read_record`'s own docstring), and the parsed `rec` is threaded
+    # through to `_index_source` below instead of re-read there.
     _decode_failed: list[Path] = []
-    read_text_or_report(found, on_decode_error=_decode_failed.append)
+    rec = read_record(found, on_decode_error=_decode_failed.append)
     if _decode_failed:
         return 'undecodable'
 
@@ -2406,7 +2421,7 @@ def upsert_source(
             # row-for-row equivalence contract, round-2 finding 8).
             link_alias_map = _resolve_map_from_aliases(conn, record_types=('P', 'L'))
             _index_source(conn, found, archive_root, fha_config, link_alias_map,
-                          on_parse_error)
+                          on_parse_error, rec=rec)
             # Re-scan citations for the re-indexed source file (resolving stems),
             # with the map refreshed to include this source's reinserted stems.
             _index_citations_for_file(
