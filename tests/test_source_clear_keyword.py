@@ -275,6 +275,40 @@ class SourceClearKeywordTests(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertIn('is missing', result.messages[-1].text)
 
+    def test_keyword_matching_the_source_marker_is_refused(self) -> None:
+        # #147 review (P2): SPEC §20 rule 3's SOURCE: keyword is the third
+        # link tying a file to its record - clear-keyword must never remove
+        # it, even if the caller asks for it by its exact text.
+        result = self._run(keyword='SOURCE: ' + SID)
+        self.assertEqual(result['status'], 'refused')
+        self.assertEqual(self.store.write_calls, [])
+        self.assertIn('identity keyword', result.messages[-1].text)
+
+    def test_replace_with_matching_the_source_marker_is_refused(self) -> None:
+        result = self._run(keyword='Margaret Hartley', replace_with='SOURCE: S-9999999999')
+        self.assertEqual(result['status'], 'refused')
+        self.assertEqual(self.store.write_calls, [])
+        self.assertIn('identity keyword', result.messages[-1].text)
+
+    def test_case_only_replacement_does_not_delete_the_keyword(self) -> None:
+        # #147 review (P2): replacing 'margaret hartley' with 'Margaret
+        # Hartley' (same text, different case) used to be silently dropped -
+        # the duplicate-presence check saw the about-to-be-removed old value
+        # as "already there" and skipped adding the correction, while the
+        # removal still ran. Net effect: the keyword vanished and the command
+        # still reported success. The on-file spelling has to be genuinely
+        # WRONG-cased ('margaret hartley', all lowercase) for this to exercise
+        # the bug - correcting a value that already matched the replacement
+        # exactly would not have tripped it.
+        self.store.seed(self.asset, subject=['margaret hartley', 'SOURCE: ' + SID])
+        result = self._run(keyword='margaret hartley', replace_with='Margaret Hartley')
+        self.assertEqual(result['status'], 'ok')
+        self.assertEqual(result['removed_from'], ['subject'])
+        self.assertEqual(result['added_to'], ['subject'])
+        after = source_mod._run_exiftool_read_keyword_fields(self.asset)
+        self.assertNotIn('margaret hartley', after['subject'])
+        self.assertEqual(after['subject'].count('Margaret Hartley'), 1)
+
     def test_multiple_documents_files_require_dash_dash_file(self) -> None:
         second = self.root / 'documents' / 'deeds' / f'deed-back_{SID.lower()}.tif'
         second.write_bytes(b'y')

@@ -106,6 +106,17 @@ DESIGN RULES (why the code looks the way it does)
   code alone - a race between the pre-write read and the write itself (e.g.
   something else touching the same file) can otherwise leave exiftool
   reporting success while nothing really changed.
+- **`SOURCE:` is not an ordinary keyword, and case-only corrections must not
+  vanish (PR #147 review).** `clear-keyword` refuses a `--keyword`/
+  `--replace-with` value matching the SPEC §20 rule 3 SOURCE: shape - that
+  keyword is the third link tying a file to its record, not a stray tag this
+  verb corrects, and nothing downstream catches a pure removal of it.
+  Separately, the "is the replacement already present" duplicate check now
+  looks at each field's state AFTER this operation's own removal, not the
+  as-read state - otherwise a case-only correction ('margaret hartley' ->
+  'Margaret Hartley') sees its own about-to-be-removed old value as a
+  case-insensitive "match", skips adding the correction, and the keyword
+  vanishes entirely while the command still reports success.
 
 CODE MAP
 --------
@@ -183,6 +194,16 @@ configure_utf8_stdout()
 # line - see run_source_note). Used only for the duplicate-heading safety check;
 # the actual locate/append goes through the shared _lib section helpers.
 _NOTES_HEADING_RE = re.compile(r'^##\s+Notes\s*$')
+
+# The embedded `SOURCE: S-xxxx` identity keyword (SPEC §20 rule 3 - the third
+# redundant link tying a source to its file, alongside the filename's own
+# `_{S-id}` suffix and the record's files: entry). source.py keeps its own
+# copy rather than importing process.py's/lint.py's identical pattern (tools
+# never import tools - TOOLING §15); `clear-keyword` uses it to refuse
+# touching this specific keyword shape (#147 review) - it corrects an
+# ORDINARY stray tag, never the marker that makes a file findable as a source
+# in the first place.
+_SOURCE_KEYWORD_RE = re.compile(r'^SOURCE:\s*(S-[0-9a-hjkmnp-tv-z]{10})$', re.I)
 
 
 def _source_label(text: str, sid: str) -> str:
@@ -570,9 +591,10 @@ def run_source_clear_keyword(
     'path', 'removed_from', 'added_to'}. Exit codes: 0 ok/dry-run · 1 record
     or asset not found on disk (or found but not a regular file) · 3 refusals
     (bad id, blank --keyword, no/ambiguous documents-root file, a target
-    outside the documents root or belonging to a different source, keyword
-    not currently present, exiftool or backup failure, or the post-write
-    verification finding the change did not actually take).
+    outside the documents root or belonging to a different source, a
+    SOURCE: keyword named as --keyword/--replace-with, keyword not currently
+    present, exiftool or backup failure, or the post-write verification
+    finding the change did not actually take).
     """
     result = Result(data={'status': None, 'source_id': None, 'path': None,
                           'removed_from': [], 'added_to': []})
@@ -597,6 +619,29 @@ def run_source_clear_keyword(
             f'Run `fha source clear-keyword {fmt_id_display(sid)} --keyword '
             '"the exact text"`.')
     replacement = (replace_with or '').strip() or None
+
+    # P2 (#147 review): refuse before touching anything if either side of the
+    # edit is the source's own SOURCE: identity keyword (SPEC §20 rule 3) -
+    # removing it breaks the third link tying this file to its record, and
+    # writing one via --replace-with could tie the file to a DIFFERENT
+    # source. Nothing downstream catches a pure removal (the embedded-keyword
+    # lint only iterates markers that remain), so this has to refuse here.
+    if _SOURCE_KEYWORD_RE.match(keyword_text):
+        return _refuse(
+            'refused',
+            f'{keyword_text!r} is {fmt_id_display(sid)}\'s own SOURCE: '
+            'identity keyword - the link (SPEC §20) that ties this file to '
+            'its record. clear-keyword will not remove it; doing so would '
+            'break that tie. If the file actually carries the WRONG '
+            'SOURCE: id, that is a job for `fha reconcile`, not clear-keyword.')
+    if replacement and _SOURCE_KEYWORD_RE.match(replacement):
+        return _refuse(
+            'refused',
+            f'--replace-with {replacement!r} looks like a SOURCE: identity '
+            'keyword - clear-keyword will not write one in place of an '
+            f'ordinary keyword; that would tie this file to a different '
+            f'source than {fmt_id_display(sid)}. If the file is genuinely '
+            'misfiled, use `fha reconcile`, not clear-keyword.')
 
     record_path = find_source_record_path(archive_root, sid)
     if record_path is None:
@@ -758,11 +803,27 @@ def run_source_clear_keyword(
             f'{alias} does not currently carry the keyword {keyword_text!r} - '
             f'nothing to clear. Its embedded keywords right now: {shown}.')
 
+    # P2 (#147 review): the "is replacement already present" check must look
+    # at each field's state AFTER this operation's own removal, not the
+    # as-read state - otherwise a case-only correction (replacing 'margaret
+    # hartley' with 'Margaret Hartley') finds its own about-to-be-removed old
+    # value as a case-insensitive "match", concludes the replacement is
+    # already there, and skips adding it - while the removal below still
+    # takes the old value out. Net effect: the keyword vanishes entirely and
+    # the command still reports success. Excluding the exact values this call
+    # is about to remove from the "already present" check fixes that; a
+    # replacement equal to some OTHER, unrelated value in the field still
+    # correctly gets skipped as a real duplicate.
+    removed_by_tag: dict[str, set[str]] = {}
+    for tag, value in matches:
+        removed_by_tag.setdefault(tag, set()).add(value)
+
     add: list[tuple[str, str]] = []
     if replacement:
         tags_with_match = sorted({tag for tag, _ in matches})
         for tag in tags_with_match:
-            if not any(v.strip().lower() == replacement.lower() for v in fields[tag]):
+            remaining = [v for v in fields[tag] if v not in removed_by_tag.get(tag, set())]
+            if not any(v.strip().lower() == replacement.lower() for v in remaining):
                 add.append((tag, replacement))
 
     if dry_run:
