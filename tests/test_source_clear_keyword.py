@@ -290,6 +290,99 @@ class SourceClearKeywordTests(unittest.TestCase):
         self.assertEqual(self.store.write_calls, [])
         self.assertIn('identity keyword', result.messages[-1].text)
 
+    def test_wrong_source_marker_can_be_corrected_to_this_sources_own(self) -> None:
+        # #156 review (P2, finding 3): a correctly-named, correctly-filed
+        # document can still carry the WRONG source's SOURCE: marker (a
+        # copy-paste or batch-keywording mistake). `fha reconcile` cannot fix
+        # this - its _plan (reconcile.py) skips any files: entry whose
+        # target already exists on disk and never edits embedded document
+        # metadata at all - so naming the wrong marker as --keyword and
+        # THIS source's own correct marker as --replace-with is the one
+        # SOURCE: edit clear-keyword allows.
+        other_sid = 'S-9999999999'
+        self.store.seed(self.asset, subject=['Margaret Hartley', 'SOURCE: ' + other_sid])
+        result = self._run(keyword='SOURCE: ' + other_sid, replace_with='SOURCE: ' + SID)
+        self.assertEqual(result['status'], 'ok', result.messages[-1].text if result.messages else '')
+        after = source_mod._run_exiftool_read_keyword_fields(self.asset)
+        self.assertNotIn('SOURCE: ' + other_sid, after['subject'])
+        self.assertIn('SOURCE: ' + SID, after['subject'])
+
+    def test_wrong_source_marker_without_the_correcting_replace_with_stays_refused(self) -> None:
+        # Naming the wrong marker alone (no --replace-with, or one that is
+        # not THIS source's own correct marker) must still refuse - the
+        # narrow allowance is exactly the one-step correction, nothing more.
+        # The refusal must not send the user back to `fha reconcile` without
+        # qualification (it cannot fix this case) - it names the actual fix.
+        other_sid = 'S-9999999999'
+        self.store.seed(self.asset, subject=['Margaret Hartley', 'SOURCE: ' + other_sid])
+        result = self._run(keyword='SOURCE: ' + other_sid)
+        self.assertEqual(result['status'], 'refused')
+        self.assertEqual(self.store.write_calls, [])
+        self.assertIn('fha reconcile', result.messages[-1].text)
+        self.assertIn('--replace-with', result.messages[-1].text)
+
+        # A replacement that names yet another (still wrong) source's marker
+        # is refused the same way.
+        another_wrong = self._run(keyword='SOURCE: ' + other_sid,
+                                  replace_with='SOURCE: S-8888888888')
+        self.assertEqual(another_wrong['status'], 'refused')
+        self.assertEqual(self.store.write_calls, [])
+
+    def test_whitespace_only_difference_from_replacement_is_not_mistaken_for_a_leftover(self) -> None:
+        # #156 review (P2, finding 1): the on-file spelling carries a trailing
+        # space the command-line --keyword does not; --replace-with is the
+        # SAME word with no trailing space. A stripped post-write comparison
+        # treats the trimmed old and new spellings as "the same string" and
+        # wrongly concludes the old (whitespace-different) value is still
+        # there even though it was genuinely removed. Exact comparison must
+        # tell them apart.
+        self.store.seed(self.asset, subject=['Margaret Hartley ', 'SOURCE: ' + SID])
+        result = self._run(keyword='Margaret Hartley', replace_with='Margaret Hartley')
+        self.assertEqual(result['status'], 'ok', result.messages[-1].text if result.messages else '')
+        after = source_mod._run_exiftool_read_keyword_fields(self.asset)
+        self.assertNotIn('Margaret Hartley ', after['subject'])
+        self.assertEqual(after['subject'].count('Margaret Hartley'), 1)
+
+    def test_replacement_equal_to_one_of_several_matched_spellings_is_not_mistaken_for_a_leftover(self) -> None:
+        # #156 review (P2, finding 1): the field carries TWO case variants of
+        # the same word ('margaret hartley' and 'Margaret Hartley'), both
+        # matched case-insensitively and both removed, then 'Margaret
+        # Hartley' is added back once as the canonical spelling. Its
+        # presence after the write is BYTE-IDENTICAL to one of the values
+        # this call itself removed - no textual comparison can tell "removal
+        # failed" apart from "this is the intentional replacement" by
+        # looking at the string alone; the verification has to know it was
+        # also on this call's own `add` list.
+        self.store.seed(self.asset, subject=['margaret hartley', 'Margaret Hartley', 'SOURCE: ' + SID])
+        result = self._run(keyword='margaret hartley', replace_with='Margaret Hartley')
+        self.assertEqual(result['status'], 'ok', result.messages[-1].text if result.messages else '')
+        after = source_mod._run_exiftool_read_keyword_fields(self.asset)
+        self.assertNotIn('margaret hartley', after['subject'])
+        self.assertEqual(after['subject'].count('Margaret Hartley'), 1)
+
+    def test_verification_read_failure_still_records_the_write(self) -> None:
+        # #156 review (P2, finding 2): the exiftool WRITE already succeeded
+        # (returncode 0) before this re-read is attempted - if the re-read
+        # itself raises (a transient exiftool failure), the file on disk was
+        # still genuinely touched. A caller reading Result.as_dict() must
+        # never see changed: [] next to a refusal for a write that DID land.
+        calls = {'n': 0}
+        real_read = self.store.read
+
+        def _flaky_read(path):
+            calls['n'] += 1
+            if calls['n'] == 1:
+                return real_read(path)
+            raise RuntimeError('exiftool timed out')
+
+        source_mod._run_exiftool_read_keyword_fields = _flaky_read
+        result = self._run(keyword='Margaret Hartley')
+        self.assertEqual(result['status'], 'refused')
+        self.assertFalse(result.ok)
+        self.assertIn('could not be verified', result.messages[-1].text)
+        self.assertTrue(result.changed,
+                        'the write itself happened even though verification could not confirm it')
+
     def test_case_only_replacement_does_not_delete_the_keyword(self) -> None:
         # #147 review (P2): replacing 'margaret hartley' with 'Margaret
         # Hartley' (same text, different case) used to be silently dropped -

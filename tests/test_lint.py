@@ -3543,8 +3543,20 @@ class StrayPersonKeywordW131Tests(unittest.TestCase):
         w131 = self._w131()
         msg = w131[0].message
         text = 'Margaret Hartley'
-        self.assertIn(f'--keyword {shell_quote(text)}', msg)
-        self.assertNotIn(f'--keyword {text!r}', msg)
+        quoted = shell_quote(text)
+        self.assertIn(f'--keyword {quoted}', msg)
+        # #156 review (P1): on POSIX, shlex.quote('Margaret Hartley') and
+        # repr('Margaret Hartley') happen to produce the IDENTICAL
+        # single-quoted string - there is no way for a message to contain
+        # the shell-quoted form WITHOUT also containing that string, so the
+        # negative half of this check only has something real to prove on a
+        # platform where the two forms actually differ (Windows, where
+        # shell_quote switches to cmd.exe/PowerShell-style double quotes).
+        # Asserting both unconditionally made this test fail on Linux/macOS
+        # even though the underlying fix (use shell_quote, not repr()) is
+        # in place.
+        if quoted != repr(text):
+            self.assertNotIn(f'--keyword {text!r}', msg)
 
     def test_the_exiftool_scan_is_batched_not_read_in_one_call(self) -> None:
         # #147 review (P2): the pre-fix reader made ONE call to
