@@ -126,7 +126,7 @@
     {
       "path": ".claude/skills/today/SKILL.md",
       "category": "operating",
-      "sha256": "89eeac34e21778dbd02e4957eabea4594d839099241459956abb6068b24660cd",
+      "sha256": "f03c7a93ea45ad35f3b17d597ebdf47c186252f9b327e23a5369dd11403bcccf",
       "spec_version": "1.2"
     },
     {
@@ -553,7 +553,7 @@
     {
       "path": ".fha/tools/index.py",
       "category": "operating",
-      "sha256": "96ac1a2c45e605bf54550d1432f787be8233e07f6376abf06d7ad42ae82d1836",
+      "sha256": "8bded87196f000c51336d080e75cff9d76490c4f7b7fd55a49c8243ad8efcab9",
       "spec_version": "1.2",
       "src": "tools/index.py"
     },
@@ -630,7 +630,7 @@
     {
       "path": ".fha/tools/report.py",
       "category": "operating",
-      "sha256": "5c6e9d1e58754307cc0b43a4dc04705c93b1361c3216106d0a01314bec2e6f9d",
+      "sha256": "7b7895ebaf4bdf6d5d309251fa18c6311e20fb3891f68aedc2d686b18db9654b",
       "spec_version": "1.2",
       "src": "tools/report.py"
     },
@@ -658,7 +658,7 @@
     {
       "path": ".fha/tools/site.py",
       "category": "operating",
-      "sha256": "7656ed7a7bc8fd180bcab40db123d67a3fbdddb9704a9044de3cd59e3db40ef4",
+      "sha256": "9ee4cfbee1b3b1590adbfd381ddda6ea400b67e99b16669940d9a03dfc1f4468",
       "spec_version": "1.2",
       "src": "tools/site.py"
     },
@@ -686,7 +686,7 @@
     {
       "path": ".fha/tools/templates/base.html",
       "category": "operating",
-      "sha256": "e8f6d58073666e91792c3239594edd50d78d6fe433a54ceadece0f62c4eee446",
+      "sha256": "e8437fdffc6c4426cdcbac6474fb721101b3fedf2595eb1dc3c0900db696b983",
       "spec_version": "1.2",
       "src": "tools/templates/base.html"
     },
@@ -853,7 +853,7 @@
     {
       "path": "CHEATSHEET.md",
       "category": "operating",
-      "sha256": "40ae3ade243deb429e62f89e5b7cb99b733be40c6b350eb0bdb36c5fb46921c8",
+      "sha256": "8c97e235eb62bc342a9a1955800ca9ff59896ea4844ea69a0a37917f2f00c253",
       "spec_version": "1.2"
     },
     {
