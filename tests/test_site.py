@@ -260,6 +260,31 @@ class SourcePageTests(_Base):
         html = self._read('sources/s-1111111111.html')
         self.assertIn('file not available', html)
 
+    def test_file_entry_note_adds_copy_letter_when_present(self):
+        # #123: a multi-file bundle (four newspaper clippings, say) reads as
+        # indistinguishable when every entry's note is the bare 'role:
+        # clipping'. Once the indexer stops dropping `copy:` on the floor
+        # (the source_files.copy fix, same issue), the site's file-list note
+        # names the variant too - 'role: clipping · copy: b' - so same-role
+        # files in one bundle are told apart without needing per-file dates.
+        self._seed_source('s-1111111111', 'Clippings Bundle', source_type='newspaper')
+        clip_dir = self.archive_root / 'documents' / 'newspaper'
+        clip_dir.mkdir(parents=True, exist_ok=True)
+        (clip_dir / 'clipping-a.pdf').write_bytes(b'not a real pdf')
+        (clip_dir / 'clipping-b.pdf').write_bytes(b'not a real pdf')
+        self.conn.execute(
+            'INSERT INTO source_files(source_id, path, role, copy) VALUES (?,?,?,?)',
+            ('s-1111111111', 'documents/newspaper/clipping-a.pdf', 'clipping', None))
+        self.conn.execute(
+            'INSERT INTO source_files(source_id, path, role, copy) VALUES (?,?,?,?)',
+            ('s-1111111111', 'documents/newspaper/clipping-b.pdf', 'clipping', 'b'))
+        self._run(linked=True)
+        html = self._read('sources/s-1111111111.html')
+        self.assertIn('role: clipping · copy: b', html)
+        # The un-lettered sibling keeps the original, shorter note - no
+        # 'copy: None' leaking through, and the two entries stay distinct.
+        self.assertIn('role: clipping</span>', html)
+
 
 class SourceRedactionTests(_Base):
     def _setup_redactable(self):
@@ -2149,6 +2174,22 @@ class DiscoveriesTests(_Base):
         self.assertEqual(res['status'], 'ok')
         self.assertIn('No discoveries', self._read('discoveries.html'))
         self.assertNotIn('Recent discoveries', self._read('index.html'))
+
+    def test_discoveries_nav_link_present_with_zero_entries(self):
+        # Issue #121: build_discoveries_page() always builds discoveries.html,
+        # but with zero entries the home teaser above (its only other inbound
+        # link) renders nothing at all - so the persistent site nav is the
+        # page's sole route in on a fresh or quiet archive. Check it from both
+        # a top-level page (home) and a nested one (a person page), since the
+        # two use different root_prefix values.
+        self._seed_person('p-aaaaaaaaaa', 'Jane Doe')
+        self._run(linked=True)
+        self.assertTrue((self.out_dir / 'discoveries.html').is_file())
+        for relpath, prefix in (('index.html', '.'), ('persons/p-aaaaaaaaaa.html', '..')):
+            html = self._read(relpath)
+            nav_block = html[html.index('site-nav'):html.index('</nav>')]
+            self.assertIn(f'href="{prefix}/discoveries.html"', nav_block, relpath)
+            self.assertIn('Discoveries', nav_block, relpath)
 
     def test_cp1252_discoveries_file_reports_instead_of_crashing(self):
         # #68 in the one place in site.py that never went through
