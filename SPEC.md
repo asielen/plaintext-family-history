@@ -596,6 +596,8 @@ files:                        # inventory: roles + provenance
     role: front                                   #   identity = SOURCE: keyword + this inventory
     language: en              # optional; the language of THIS file
     digitized: "Scanned by Sam Rivera, 2025-05" # optional per-file digitization provenance
+    date: 1880-11~             # optional EDTF; THIS file's own date, for a source whose files
+                               #   weren't all created the same day (#123)
   - file: photos/1880/Hartley-6084-1-back.jpg
     role: back
   - file: documents/interviews/…-transcript_S-….md  # DOCUMENTS ROOT: renamed at processing
@@ -633,6 +635,7 @@ Each file may carry an optional `status:` - omitted means present; **`missing-fi
 For documents-root files the link has three carriers (filename, inventory, embedded keyword where supported); for photos-root files, two (inventory + keyword - filenames are sacred).
 Tooling verifies the carriers agree.
 A source may carry an optional `original_language:` (the language of the evidence), and each `files:` entry an optional `language:` (the language of that file); a translated rendering is filed as a `role: translation` derivative beside the original, the same way a corrected transcript is. Language codes follow BCP-47 / ISO-639 (`de`, `en`, `la`) and are informational, never hard-validated.
+Each `files:` entry may also carry an optional `date:` (EDTF) - that file's own date, distinct from the source's own `source_date:` - for a source that legitimately bundles files from different dates (several newspaper clippings about the same event, mailed months apart, filed as one evidence folder; #123). Omitted, a file is undated at the per-file level and the page falls back to `source_date:` alone; when a source's files carry genuinely different dates and `source_date:` is left as a single point value, giving it an EDTF interval (`1916-02/1916-06`) instead is the recommended zero-code fallback (CHEATSHEET.md) rather than leaving the page with no date signal at all. Optional, human-paced - never required, not even when a source has more than one dated file.
 
 The frontmatter `people:` / `places:` are the human cross-link surface: link-valued so an Obsidian-only editor can cross-link by name and draw the graph edges, hand-editable, normalized to the stable `[[P-…|Name]]` / `[[L-…|Name]]` form by the tools. The claims block (§8) instead requires **bare** IDs - `persons: [P-…]`, `place: L-…` - because it is structured data in a fenced block; links live in the frontmatter, not the claims (§8.7). `places:` is optional and may be hand-added or linter-synced from the claims' `place:` fields.
 

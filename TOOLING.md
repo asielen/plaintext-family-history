@@ -165,6 +165,7 @@ CREATE TABLE sources(
 CREATE TABLE source_files(
   source_id TEXT, path TEXT, role TEXT, copy TEXT,
   derived INTEGER DEFAULT 0, original_filename TEXT,
+  date_edtf TEXT,                                  -- optional per-file date (SPEC §14, #123)
   exists_on_disk INTEGER, in_inventory INTEGER);   -- reconciliation flags
 
 CREATE TABLE claims(
