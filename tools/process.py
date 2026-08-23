@@ -2672,20 +2672,38 @@ def _attach_more_engine(
         print(f'Added files: entry (role: {role}) to {_rel(record_path, archive_root)}')
         return EXIT_CLEAN
 
-    # Document: rename to share the record's S-id with a -role suffix.
-    if _filename_has_source_id(more_file):
-        raise ProcessError(f'{more_file.name} already carries an S-id.')
+    # Document: rename to share the record's S-id with a -role suffix - unless
+    # the file already carries THIS source's S-id, which happens whenever it
+    # was named on the archive's own recommended companion convention
+    # (`<stem>-transcript_S-<id>.md`) before being attached (#108). The guard
+    # stays for anything else: a file already bearing a DIFFERENT S-id looks
+    # filed for another source, which is exactly the silent-re-processing
+    # case it exists to catch.
+    existing_doc_sid = _filename_has_source_id(more_file)
+    if existing_doc_sid is not None and existing_doc_sid != sid.lower():
+        raise ProcessError(
+            f'{more_file.name} already carries a different S-id '
+            f'({existing_doc_sid.upper()}, not {sid.upper()}); it looks filed for '
+            'another source. Attach it to that source, or rename it, before attaching it here.'
+        )
+    already_named = existing_doc_sid is not None
     documents_root = resolve_path('documents', fha_config, archive_root)
     if not _is_under(more_file, documents_root):
         raise ProcessError(
             f'{more_file.name} is not under the configured documents root '
             f'({_rel(documents_root, archive_root)}); file it there before attaching it.'
         )
-    base = _slugify(more_file.stem)
-    suffix = f'-{_slugify(role)}'
-    if copy:
-        suffix = f'-{_slugify(copy)}{suffix}'
-    new_name = f'{base}{suffix}_{sid}{more_file.suffix}'
+    if already_named:
+        # Already named exactly right (#108) - keep the name as-is rather than
+        # recomputing base+suffix+sid, which would either duplicate the role
+        # word already baked into the stem or double the S-id suffix.
+        new_name = more_file.name
+    else:
+        base = _slugify(more_file.stem)
+        suffix = f'-{_slugify(role)}'
+        if copy:
+            suffix = f'-{_slugify(copy)}{suffix}'
+        new_name = f'{base}{suffix}_{sid}{more_file.suffix}'
     # Same destination rule as process_document (M11.2): a pre-filed
     # attachment renames in place; one sitting at the documents root TOP
     # level files WITH its source - beside a document primary (honoring
@@ -2700,20 +2718,27 @@ def _attach_more_engine(
         new_path = dest_dir / new_name
     else:
         new_path = more_file.with_name(new_name)
+    # already_named may still need a MOVE (a file staged in inbox/ and
+    # relocated flat to documents/ root, then filed beside its primary) even
+    # though it needs no RENAME - the two are independent (#108 + #111).
+    needs_move = new_path.resolve() != more_file.resolve()
     new_alias = path_to_alias(new_path, 'documents', fha_config, archive_root)
     entry = [f'  - file: {_yaml_inline(new_alias)}', f'    role: {_yaml_inline(role)}']
     if copy:
         entry.append(f'    copy: {_yaml_inline(copy)}')
     entry.append(f'    original_filename: {_yaml_inline(more_file.name)}')
 
-    if new_path.exists():
+    if needs_move and new_path.exists():
         raise ProcessError(f'destination file already exists: {new_path.name}')
 
     more_dest_display = (new_name if new_path.parent == more_file.parent
                          else _rel(new_path, archive_root))
 
     if dry_run:
-        print(f'[dry-run] Would rename {more_file.name} -> {more_dest_display}')
+        if needs_move:
+            print(f'[dry-run] Would rename {more_file.name} -> {more_dest_display}')
+        else:
+            print(f"[dry-run] {more_file.name} already carries this source's S-id; keeping its name.")
         print(f'[dry-run] Would add files: entry (role: {role}) to '
               f'{_rel(record_path, archive_root)}')
         return EXIT_CLEAN
@@ -2725,10 +2750,11 @@ def _attach_more_engine(
         print(f'ERROR: could not read {_rel(record_path, archive_root)}: {e}', file=sys.stderr)
         return EXIT_FAILURE
     try:
-        new_path.parent.mkdir(parents=True, exist_ok=True)
-        more_file.rename(new_path)
-        undo.append((f'move {new_path.name} back to {more_file.name}',
-                     lambda: new_path.rename(more_file)))
+        if needs_move:
+            new_path.parent.mkdir(parents=True, exist_ok=True)
+            more_file.rename(new_path)
+            undo.append((f'move {new_path.name} back to {more_file.name}',
+                         lambda: new_path.rename(more_file)))
         new_text = _append_file_entry(old_text, entry)
         # Atomic for the same reason as the photos branch above: an existing
         # source record is being replaced, not created.
@@ -2753,7 +2779,10 @@ def _attach_more_engine(
         else:
             print(f'ERROR: attach failed, rolled back: {e}', file=sys.stderr)
         return EXIT_FAILURE
-    print(f'Renamed {more_file.name} -> {more_dest_display}')
+    if needs_move:
+        print(f'Renamed {more_file.name} -> {more_dest_display}')
+    else:
+        print(f'Kept {more_file.name} (already named for this source)')
     print(f'Added files: entry (role: {role}) to {_rel(record_path, archive_root)}')
     return EXIT_CLEAN
 

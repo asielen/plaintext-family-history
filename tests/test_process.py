@@ -1131,6 +1131,41 @@ class ProcessTestCase(unittest.TestCase):
         self.assertTrue(page2.exists())  # relocation undone, back in inbox/
         self.assertEqual(list((self.archive / 'documents' / 'census').glob('*page-2*')), [])
 
+    # ── #108: --more accepts a file already matching this source's S-id ──────
+
+    def test_more_accepts_file_already_matching_this_sources_sid(self) -> None:
+        page1 = self.archive / 'documents' / 'census' / 'convention1.txt'
+        page1.write_text('p1', encoding='utf-8')
+        self.assertEqual(self._run([str(page1), '--type', 'census']), EXIT_CLEAN)
+        renamed1 = next((self.archive / 'documents' / 'census').glob('*_S-*.txt'))
+        sid = renamed1.stem.split('_')[-1]
+
+        # Named on the archive's own recommended companion convention BEFORE
+        # being attached - exactly what a transcript tool would produce.
+        pre_named = self.archive / 'documents' / 'census' / f'convention1-transcript_{sid}.md'
+        pre_named.write_text('transcript text', encoding='utf-8')
+
+        rc = self._run([str(renamed1), '--more', str(pre_named), 'transcript'])
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertTrue(pre_named.exists())  # no rename
+        record = next((self.archive / 'sources' / 'census').glob('*_S-*.md'))
+        files = read_record(record)['meta']['files']
+        self.assertEqual(len(files), 2)
+        self.assertEqual(files[1]['role'], 'transcript')
+        self.assertTrue(files[1]['file'].endswith(f'convention1-transcript_{sid}.md'))
+
+    def test_more_still_refuses_a_mismatched_sid(self) -> None:
+        page1 = self.archive / 'documents' / 'census' / 'convention2.txt'
+        page1.write_text('p1', encoding='utf-8')
+        self.assertEqual(self._run([str(page1), '--type', 'census']), EXIT_CLEAN)
+        renamed1 = next((self.archive / 'documents' / 'census').glob('*_S-*.txt'))
+
+        other = self.archive / 'documents' / 'census' / 'other-transcript_S-zzzzzzzzzz.md'
+        other.write_text('x', encoding='utf-8')
+        rc = self._run([str(renamed1), '--more', str(other), 'transcript'])
+        self.assertEqual(rc, EXIT_ERRORS)
+        self.assertTrue(other.exists())  # untouched, not renamed
+
     # ── classification + slug units ──────────────────────────────────────────
 
     def test_classify_asset(self) -> None:
