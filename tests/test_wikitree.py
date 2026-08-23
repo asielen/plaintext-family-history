@@ -57,7 +57,10 @@ def _add_source(conn, sid, title, path, *, source_type='vital-record', restricte
 
 
 def _add_claim(conn, cid, ctype, persons, date_edtf='', place_text=None,
-               source_id='s-0000000001', status='accepted', value='x', negated=0):
+               source_id='s-0000000001', status='accepted', value='x', negated=0,
+               roles=None):
+    """Seed one claim. `roles` is {person_id: role} - which of the people the
+    claim names plays which part on the record (SPEC §8.3)."""
     mn = ''
     if date_edtf:
         from _lib import edtf_bounds
@@ -70,7 +73,7 @@ def _add_claim(conn, cid, ctype, persons, date_edtf='', place_text=None,
     for pos, p in enumerate(persons):
         conn.execute(
             'INSERT INTO claim_persons(claim_id, person_id, position, role) VALUES (?,?,?,?)',
-            (cid, p, pos, None),
+            (cid, p, pos, (roles or {}).get(p)),
         )
 
 
@@ -489,6 +492,41 @@ class WikitreeRenderTests(unittest.TestCase):
         conn.close()
         self.assertIn('{{Residence|location=Boston}}', out)
         self.assertNotIn('{{Residence|location=Topeka}}', out)
+
+    def test_a_vital_of_a_relative_emits_no_infobox_for_this_person(self):
+        # #126: an infobox {{Birth|place=…}} is a structured machine-fact about
+        # the subject. A birth certificate names the baby AND both parents, so
+        # rendering one for every accepted birth claim NAMING the person put
+        # the son's birthplace in his mother's infobox. `roles:` says which of
+        # them the record is OF (SPEC §8.3).
+        conn = self._reopen()
+        _add_person(conn, 'p-0000000004', 'Peter Smith', tier='stub', surname='Smith')
+        _add_claim(conn, 'c-0000000013', 'birth', ['p-0000000004', 'p-0000000001'],
+                   place_text='Riverton', source_id='s-0000000001',
+                   status='accepted', value='born at Riverton',
+                   roles={'p-0000000004': 'child', 'p-0000000001': 'parent'})
+        conn.commit()
+        templates = {'birth': {'template': 'Birth', 'fields': {'place': 'place'}}}
+        parent = wikitree._render_templates(conn, self.root, 'p-0000000001', templates)
+        child = wikitree._render_templates(conn, self.root, 'p-0000000004', templates)
+        conn.close()
+        self.assertNotIn('{{Birth|place=Riverton}}', parent,
+                         "a mother named as `parent` on her son's birth record "
+                         'must not get his birthplace as her own infobox field')
+        self.assertIn('{{Birth|place=Riverton}}', child)
+
+    def test_a_legacy_vital_with_no_roles_map_still_emits_its_infobox(self):
+        # Back-compatibility: a claim that never said keeps rendering as it did.
+        conn = self._reopen()
+        _add_person(conn, 'p-0000000004', 'Peter Smith', tier='stub', surname='Smith')
+        _add_claim(conn, 'c-0000000014', 'birth', ['p-0000000004', 'p-0000000001'],
+                   place_text='Riverton', source_id='s-0000000001',
+                   status='accepted', value='born at Riverton')
+        conn.commit()
+        templates = {'birth': {'template': 'Birth', 'fields': {'place': 'place'}}}
+        out = wikitree._render_templates(conn, self.root, 'p-0000000001', templates)
+        conn.close()
+        self.assertIn('{{Birth|place=Riverton}}', out)
 
     def test_ancestry_template_in_reference(self):
         r = wikitree.run_wikitree(self.root, 'p-0000000001')

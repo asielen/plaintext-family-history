@@ -125,11 +125,15 @@ class _Base(unittest.TestCase):
 
     def _seed_claim(self, cid, sid, ctype, value, *, status='accepted', date_edtf=None,
                     place_text=None, persons=(), confidence=None, reviewed=None, negated=0,
-                    date_min=None):
-        # date_min defaults to the naive January-1 widening of date_edtf (matches
-        # what real claims carry for a plain year), but a test can override it to
-        # construct the #128 shape - an uncertain/ranged date_edtf whose widened
-        # date_min lands in a different decade than the display date reads as.
+                    roles=None, date_min=None):
+        """Seed one claim. `roles` is {person_id: role}, the `roles:` map as
+        `fha index` stores it - which of the people a claim names plays which
+        part (SPEC §8.3). Omit it for the legacy/unroled claim.
+
+        date_min defaults to the naive January-1 widening of date_edtf (matches
+        what real claims carry for a plain year), but a test can override it to
+        construct the #128 shape - an uncertain/ranged date_edtf whose widened
+        date_min lands in a different decade than the display date reads as."""
         if date_min is None:
             date_min = (date_edtf or '')[:4] + '-01-01' if date_edtf else None
         self.conn.execute(
@@ -141,7 +145,8 @@ class _Base(unittest.TestCase):
         )
         for pos, pid in enumerate(persons):
             self.conn.execute(
-                'INSERT INTO claim_persons(claim_id, person_id, position) VALUES (?,?,?)', (cid, pid, pos))
+                'INSERT INTO claim_persons(claim_id, person_id, position, role) VALUES (?,?,?,?)',
+                (cid, pid, pos, (roles or {}).get(pid)))
 
     def _seed_rel(self, pid, rel, other):
         self.conn.execute(
@@ -3546,6 +3551,136 @@ class WorkbenchModeTests(_Base):
         r = self._run_wb()
         self.assertTrue(r.ok, r.messages)
         self._read('sources/s-1111111111.html')
+
+
+# ── A person's vitals are their OWN, not their relatives' (#126) ─────────────
+#
+# A vital record names more than the person it is a record OF: a birth
+# certificate names the baby, both parents, and the informant. Selecting a
+# person's Born/Died/Married by "any accepted vital claim that NAMES them" put
+# a son's birth date in his mother's summary box and on her chart node - a
+# plain factual error, and one a reader has no way to spot. Same defect as #58
+# (marriage pairing) and #118 (social edges), one query further on: the fix is
+# the same one, `roles:` says who a claim is about (SPEC §8.3).
+
+class VitalSubjectScopingTests(_Base):
+    MOM = 'p-mmmmmmmmmm'
+    SON = 'p-ssssssssss'
+
+    def _seed_birth_certificate(self, roles):
+        """The son's birth certificate, naming his mother as the parent."""
+        self._seed_person(self.SON, 'Peter Marr')
+        self._seed_person(self.MOM, 'Iris Marr')
+        self._seed_source('s-1111111111', 'Birth certificate',
+                          source_type='vital-record')
+        self._seed_claim('c-1111111111', 's-1111111111', 'birth',
+                         'Born at Riverton', status='accepted', date_edtf='1888',
+                         place_text='Riverton', persons=(self.SON, self.MOM),
+                         roles=roles)
+
+    def test_mother_named_as_parent_gets_no_born_row_of_her_own(self):
+        self._seed_birth_certificate({self.SON: 'child', self.MOM: 'parent'})
+        self._run(linked=True)
+        self.assertNotIn(
+            '<dt>Born</dt>', self._read(f'persons/{self.MOM}.html'),
+            "a mother named as `parent` on her son's birth certificate must "
+            'not have his birth date rendered as her own')
+
+    def test_the_child_the_claim_names_still_gets_his_born_row(self):
+        # The other half of the two-sided rule: scoping must not cost the
+        # person whose record it actually is their own summary line.
+        self._seed_birth_certificate({self.SON: 'child', self.MOM: 'parent'})
+        self._run(linked=True)
+        html = self._read(f'persons/{self.SON}.html')
+        self.assertIn('<dt>Born</dt>', html)
+        self.assertIn('1888', html)
+
+    def test_an_unroled_baby_is_still_read_as_the_subject(self):
+        # `roles: {parent: [mother]}` with the baby left unmarked is an
+        # ordinary way to write the claim. The claim said what the OTHER person
+        # was, so the one it left unroled is the one it is about.
+        self._seed_birth_certificate({self.MOM: 'parent'})
+        self._run(linked=True)
+        self.assertIn('<dt>Born</dt>', self._read(f'persons/{self.SON}.html'))
+        self.assertNotIn('<dt>Born</dt>', self._read(f'persons/{self.MOM}.html'))
+
+    def test_a_legacy_claim_with_no_roles_map_keeps_its_old_behaviour(self):
+        # Back-compatibility: a claim written before `roles:` was expected has
+        # not answered the question, so nothing is withheld. Emptying those
+        # archives' summary boxes would be a worse bug than the one being fixed.
+        self._seed_birth_certificate(None)
+        self._run(linked=True)
+        self.assertIn('<dt>Born</dt>', self._read(f'persons/{self.MOM}.html'))
+        self.assertIn('<dt>Born</dt>', self._read(f'persons/{self.SON}.html'))
+
+    def test_chart_node_shows_only_the_subjects_own_life_dates(self):
+        # The chart half of #126: `_person_vitals` labels every node, so the
+        # same blind join printed "b. 1888" under the mother's name too - a
+        # node whose dates belong to the person one row below it.
+        self._seed_birth_certificate({self.SON: 'child', self.MOM: 'parent'})
+        self._seed_rel(self.SON, 'parent', self.MOM)
+        self._seed_rel(self.MOM, 'child', self.SON)
+        self._run(linked=True)
+        html = self._read(f'persons/{self.SON}.html')
+        self.assertEqual(
+            html.count('<span class="ped-dates">b. 1888</span>'), 1,
+            'exactly one chart node - the son\'s own - may carry his birth '
+            'year; his mother\'s ancestor slot must not repeat it')
+
+    def test_a_relative_on_a_death_record_gets_no_died_row(self):
+        # SPEC §8.3 has no role word for the deceased, so a death claim can
+        # only say who the OTHERS were. The daughter who reported the death is
+        # named `child`; the unroled person is the one who died.
+        self._seed_person(self.SON, 'Peter Marr')
+        self._seed_person(self.MOM, 'Iris Marr')
+        self._seed_source('s-2222222222', 'Death certificate',
+                          source_type='vital-record')
+        self._seed_claim('c-2222222222', 's-2222222222', 'death',
+                         'Died at Riverton', status='accepted', date_edtf='1920',
+                         persons=(self.MOM, self.SON), roles={self.SON: 'child'})
+        self._run(linked=True)
+        self.assertNotIn('<dt>Died</dt>', self._read(f'persons/{self.SON}.html'))
+        self.assertIn('<dt>Died</dt>', self._read(f'persons/{self.MOM}.html'))
+
+    def test_a_parent_on_a_marriage_certificate_gets_no_married_row(self):
+        # A marriage certificate ordinarily names the couple AND both sets of
+        # parents; only `roles: spouse:` says which of them married.
+        self._seed_person(self.SON, 'Peter Marr')
+        self._seed_person(self.MOM, 'Iris Marr')
+        self._seed_person('p-wwwwwwwwww', 'Ada Finch')
+        self._seed_source('s-3333333333', 'Marriage record',
+                          source_type='vital-record')
+        self._seed_claim('c-3333333333', 's-3333333333', 'marriage',
+                         'Married at Riverton', status='accepted', date_edtf='1910',
+                         persons=(self.SON, 'p-wwwwwwwwww', self.MOM),
+                         roles={self.SON: 'spouse', 'p-wwwwwwwwww': 'spouse',
+                                self.MOM: 'parent'})
+        self._run(linked=True)
+        self.assertNotIn('<dt>Married</dt>', self._read(f'persons/{self.MOM}.html'))
+        self.assertIn('<dt>Married</dt>', self._read(f'persons/{self.SON}.html'))
+
+    def test_both_halves_of_a_couple_keep_married_when_only_one_is_roled(self):
+        # `roles: {spouse: [P-a]}` with the partner left unroled is the typo
+        # case `_lib.spouse_parties` documents - a mistyped id, a name that
+        # stopped resolving - and that rule still reads the two as a couple, so
+        # `fha index` mints the spouse edge and `fha gedcom` writes the MARR.
+        # The summary block has to agree: dropping the partner's Married row
+        # here would leave her page denying a marriage the rest of the archive
+        # asserts about her.
+        self._seed_person(self.SON, 'Peter Marr')
+        self._seed_person('p-wwwwwwwwww', 'Ada Finch')
+        self._seed_source('s-4444444444', 'Marriage record',
+                          source_type='vital-record')
+        self._seed_claim('c-4444444444', 's-4444444444', 'marriage',
+                         'Married at Riverton', status='accepted', date_edtf='1910',
+                         persons=(self.SON, 'p-wwwwwwwwww'),
+                         roles={self.SON: 'spouse'})
+        self._run(linked=True)
+        self.assertIn('<dt>Married</dt>', self._read(f'persons/{self.SON}.html'))
+        self.assertIn(
+            '<dt>Married</dt>', self._read('persons/p-wwwwwwwwww.html'),
+            'the partner a couple claim leaves unroled is still half of the '
+            'couple `spouse_parties` derives, so her own Married row stands')
 
 
 _FAN_LABEL_RE = re.compile(
