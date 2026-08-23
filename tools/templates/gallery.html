@@ -54,7 +54,7 @@
 <body>
 {% macro photo_row(row) %}
 <article class="photo-row">
-  <a class="photo-tile" href="{{ row.href }}">
+  <a class="photo-tile" href="{{ row.href }}" target="_blank" rel="noopener">
   {% if row.renderable %}
     <img loading="lazy" src="{{ row.href }}" alt="{{ row.name }}">
   {% else %}
@@ -71,7 +71,7 @@
     <details class="photo-variants">
       <summary>{{ row.chips|length }} more file{{ 's' if row.chips|length != 1 else '' }}: {{ row.summary_text }}</summary>
       <ul>
-      {% for chip in row.chips %}<li><a href="{{ chip.href }}">{{ chip.label }}</a> <span class="path">{{ chip.alias }}</span></li>
+      {% for chip in row.chips %}<li><a href="{{ chip.href }}" target="_blank" rel="noopener">{{ chip.label }}</a> <span class="path">{{ chip.alias }}</span></li>
       {% endfor %}</ul>
     </details>
     {% endif %}

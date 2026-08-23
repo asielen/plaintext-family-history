@@ -115,7 +115,7 @@
   <div class="photo-strip">
     {% for p in person.photos %}
     <figure>
-      {% if p.href %}<a href="{{ p.full_href }}"><img class="thumb" src="{{ p.href }}" alt="{{ p.caption or person.name }}"></a>{% endif %}
+      {% if p.href %}<a href="{{ p.full_href }}" target="_blank" rel="noopener"><img class="thumb" src="{{ p.href }}" alt="{{ p.caption or person.name }}"></a>{% endif %}
       {% if p.caption %}<figcaption>{{ p.caption }}</figcaption>{% endif %}
     </figure>
     {% endfor %}
