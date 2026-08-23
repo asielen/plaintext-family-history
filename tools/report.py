@@ -78,6 +78,10 @@ CODE MAP
     _section_place_candidates    - §6b: places.run_candidates() embed, each
                                     place-text cluster line carrying its own
                                     `fha confirm place` command (issue #79)
+    _place_text_escalations      - oversized (20+ claim) place-text clusters,
+                                    promoted above every section (issue #79
+                                    point 2) - same clusters §6b lists, never
+                                    re-derived
     _section_hypotheses          - §7: open hypotheses + draft-queue backlog
     _section_promotion_candidates - §7b: direct-line stubs + claim-heavy stubs
                                     (the fha person promote surface; stateless)
@@ -1024,6 +1028,26 @@ def _section_photo_triage(
 
 # ── Section 6b: Place candidates ──────────────────────────────────────────────
 
+def _place_text_group_line(g: dict) -> str:
+    """
+    One place-text cluster's report line: label, claim count, date spread,
+    and the exact `fha confirm place` command that clears it (issue #79
+    point 1) - every claim id in `g['claim_ids']`, not a sample, so running
+    the line once clears the whole cluster. Extracted so `_section_place_
+    candidates` (§6b's own listing) and `_place_text_escalations` (the
+    oversight-threshold notice, issue #79 point 2) render the identical line
+    for the identical cluster - the two can never disagree about what a
+    cluster is called or what command resolves it.
+    """
+    spread = f"{g['date_min']}/{g['date_max']}" if g['date_min'] or g['date_max'] else 'no dates'
+    name = g['label']
+    ids = ' '.join(fmt_id_display(cid) for cid in g['claim_ids'])
+    return (
+        f"{name} - {g['claim_count']} claim(s), {spread} - "
+        f'register with `fha confirm place {ids} --name={shell_quote(name)}`'
+    )
+
+
 def _section_place_candidates(archive_root: Path, fha_config: dict) -> list[str]:
     """
     Calls `places.run_candidates()` (BUILD.md M6.2). The import/attribute
@@ -1045,8 +1069,10 @@ def _section_place_candidates(archive_root: Path, fha_config: dict) -> list[str]
 
     GPS clusters keep their plain descriptive line: they are photo groups,
     not claims, so there is nothing for `fha confirm place` to relink - a
-    fabricated verb for them would be the escalation/first-run-flow work
-    issue #79 explicitly defers (points 2-4), not this one.
+    fabricated verb for them would be the claim-write-time-resolution/
+    first-run-flow work issue #79 explicitly defers (points 3-4), not this
+    one. (Point 2, escalation on threshold, is `_place_text_escalations`
+    below - no longer deferred.)
 
     `label` is a claim's free-text `place_text`, not a controlled value like
     §7b's person id or a claim/place id elsewhere in this file, so it can
@@ -1093,19 +1119,62 @@ def _section_place_candidates(archive_root: Path, fha_config: dict) -> list[str]
 
     lines: list[str] = []
     for g in place_text_groups:
-        spread = f"{g['date_min']}/{g['date_max']}" if g['date_min'] or g['date_max'] else 'no dates'
-        name = g['label']
-        ids = ' '.join(fmt_id_display(cid) for cid in g['claim_ids'])
-        lines.append(
-            f"- {name} - {g['claim_count']} claim(s), {spread} - "
-            f'register with `fha confirm place {ids} --name={shell_quote(name)}`'
-        )
+        lines.append(f'- {_place_text_group_line(g)}')
     for c in gps_clusters:
         lines.append(
             f"- GPS cluster near {c['lat']:.4f},{c['lon']:.4f} - "
             f"{c['photo_count']} photo(s), no known place nearby"
         )
     return lines
+
+
+# ── Escalation: oversized place-text clusters (issue #79 point 2) ────────────
+
+_PLACE_ESCALATION_THRESHOLD = 20
+# The issue's own suggested cutoff (#79: "a cluster with 20+ claims is not a
+# candidate, it is an oversight"). No other claims-per-cluster threshold
+# exists in this codebase to weigh it against - `_PROMOTION_DEFAULT_THRESHOLD`
+# (5) is the nearest analog but counts accepted claims piling up on ONE stub
+# PERSON, a different scale of signal than claims sharing one unlinked place
+# text across possibly many people - so the issue's own number stands; a
+# human reviewer can always tune it in review.
+
+
+def _place_text_escalations(archive_root: Path, fha_config: dict) -> list[dict]:
+    """
+    §6b place-text clusters (`places.run_candidates()`'s `place_text_groups`)
+    that have reached oversight scale.
+
+    Issue #79's motivating case was a 13-month-old archive with 359 of 762
+    claims (47%) carrying `place_text` and ZERO registered places - #6b lists
+    every recurring cluster as a "maybe register this" candidate, but a
+    cluster this large was never a judgment call competing for attention
+    with the rest of that list; it is a standing gap someone already meant
+    to close. This reads the exact same `place_text_groups` §6b lists from
+    (never re-derives cluster membership - same discipline as the point-1
+    fix, #79/#100) and narrows to the ones at or past
+    `_PLACE_ESCALATION_THRESHOLD`, so an escalation can never name a cluster
+    §6b itself would not also list.
+
+    A second, independent `places.run_candidates()` fetch rather than a
+    shared one with `_section_place_candidates` - deliberately: the two
+    callers want different behavior on failure. §6b explains exactly why
+    places.py could not run (missing, out of date, or a schema that predates
+    the structured keys); this notice is a bonus call-out riding on top of
+    that section, so on any of those same failures it degrades silently to
+    `[]` instead of repeating the explanation a second time in different
+    words at the top of the report.
+    """
+    try:
+        import places as _places_tool   # noqa: PLC0415 - optional embed, see _section_place_candidates
+    except ImportError:
+        return []
+    try:
+        result = _places_tool.run_candidates(archive_root, fha_config)
+    except AttributeError:
+        return []
+    groups = result.get('place_text_groups') or []
+    return [g for g in groups if g['claim_count'] >= _PLACE_ESCALATION_THRESHOLD]
 
 
 # ── Section 7: Hypotheses & draft queues ──────────────────────────────────────
@@ -1385,6 +1454,7 @@ def _render_report(
     bodies: dict[str, list[str]],
     section_filter: str | None,
     archive_notes: list[str] | None = None,
+    place_escalations: list[dict] | None = None,
 ) -> str:
     """Assemble the report markdown: title, archive notes (when any), sections.
 
@@ -1398,11 +1468,30 @@ def _render_report(
     because the report IS the session-start path: a warning that only exists
     on the discarded Result is invisible exactly where the human looks first
     (round-2 finding 16). They print on section-filtered runs too - narrowing
-    the view should never hide that a line of the archive was skipped."""
+    the view should never hide that a line of the archive was skipped.
+
+    `place_escalations` (issue #79 point 2, `_place_text_escalations`) are
+    §6b place-text clusters that crossed the oversight-scale threshold - the
+    same above-every-section position as `archive_notes` and for the same
+    reason: a cluster this large is not one more candidate that can afford
+    to lose the "what should I do this session" contest by sitting quietly
+    at position 10 of 13. Also printed on section-filtered runs, matching
+    `archive_notes`' own rule - and the full cluster is still listed at its
+    normal spot in §6b below, so nothing here shrinks that section's own
+    listing."""
     lines = [f'# fha report - {generated}', '']
     if archive_notes:
         lines.append('**Archive notes from this refresh:**')
         lines.extend(f'- {note}' for note in archive_notes)
+        lines.append('')
+    if place_escalations:
+        lines.append(
+            f'**{len(place_escalations)} place-text cluster(s) past the '
+            f'{_PLACE_ESCALATION_THRESHOLD}-claim oversight threshold, no place '
+            'registered - this is not a candidate to weigh, it is an oversight '
+            'to close (see the Place candidates section below for every cluster):**'
+        )
+        lines.extend(f'- {_place_text_group_line(g)}' for g in place_escalations)
         lines.append('')
     for key, number, title in SECTIONS:
         if section_filter and key != section_filter:
@@ -1510,11 +1599,15 @@ def run_report(
             'possible-connections': _section_possible_connections(archive_root),
         }
 
+        place_escalations = _place_text_escalations(archive_root, fha_config)
+
         generated = datetime.date.today().isoformat()
         full_md = _render_report(generated, bodies, section_filter=None,
-                                 archive_notes=archive_notes)
+                                 archive_notes=archive_notes,
+                                 place_escalations=place_escalations)
         printed_md = full_md if not section else _render_report(
-            generated, bodies, section_filter=section, archive_notes=archive_notes)
+            generated, bodies, section_filter=section, archive_notes=archive_notes,
+            place_escalations=place_escalations)
 
         cache_dir = archive_root / '.cache'
         cache_dir.mkdir(parents=True, exist_ok=True)
