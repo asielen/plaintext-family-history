@@ -560,7 +560,7 @@
     {
       "path": ".fha/tools/lint.py",
       "category": "operating",
-      "sha256": "e36f88a0920bfad6c1f65b31bf3ec0b4f34ea18b453cbc8aea4e995914de74e6",
+      "sha256": "719c72cb218704bdc31f33646faaef0b6444409c1460e8b372f439dfe4de7699",
       "spec_version": "1.2",
       "src": "tools/lint.py"
     },

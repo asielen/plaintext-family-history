@@ -3530,6 +3530,125 @@ class StrayPersonKeywordW131Tests(unittest.TestCase):
         self.assertFalse(hasattr(self, '_called_with'),
                          'exiftool must not be invoked at all without --with-exif')
 
+    def test_the_suggested_command_is_shell_quoted_not_python_repr(self) -> None:
+        # #147 review (P2): the message used Python's repr() (always single
+        # quotes) to show the recovery command. cmd.exe does not treat single
+        # quotes as an argument delimiter, so on Windows Command Prompt,
+        # copying the suggested `fha source clear-keyword ... --keyword
+        # '...'` command splits into multiple arguments and argparse rejects
+        # it. _lib.shell_quote already solves this for the active shell (used
+        # elsewhere in lint.py/report.py for exactly this purpose) - the
+        # message must use it instead.
+        from _lib import shell_quote
+        w131 = self._w131()
+        msg = w131[0].message
+        text = 'Margaret Hartley'
+        self.assertIn(f'--keyword {shell_quote(text)}', msg)
+        self.assertNotIn(f'--keyword {text!r}', msg)
+
+    def test_the_exiftool_scan_is_batched_not_read_in_one_call(self) -> None:
+        # #147 review (P2): the pre-fix reader made ONE call to
+        # _run_exiftool_keyword_rows over the ENTIRE scan (that function did
+        # its own batching internally, invisible to a caller or a
+        # monkeypatch), so every batch's raw JSON rows - Keywords/Subject
+        # values included - sat in memory for the whole scan before any
+        # reduction happened. That is hundreds of MB, or a killed process, on
+        # an archive with tens of thousands of heavily-tagged photos. The fix
+        # moves batching to the caller (_read_exif_keywords), which calls
+        # _run_exiftool_keyword_rows once per <=50-file group and reduces
+        # each batch immediately. Create enough documents-root files to force
+        # more than one batch and confirm the seam is actually driven that way.
+        bulk_dir = self.root / 'documents' / 'bulk'
+        bulk_dir.mkdir(parents=True)
+        for i in range(60):
+            (bulk_dir / f'file{i:03d}.tif').write_bytes(b'x')
+
+        calls: list[list] = []
+
+        def _rows(paths):
+            calls.append(list(paths))
+            return [{'SourceFile': str(p)} for p in paths]
+
+        lint._run_exiftool_keyword_rows = _rows
+        lint._run_lint_core(self.root, self.config, with_exif=True)
+
+        self.assertGreater(len(calls), 1,
+                           'a 61-file scan must be read in more than one exiftool call')
+        for batch in calls:
+            self.assertLessEqual(len(batch), 50,
+                                 'each exiftool call must cover at most one batch')
+
+
+class ReadExifKeywordsMemoryScopeTests(unittest.TestCase):
+    """#147 review (P2): `_read_exif_keywords` (the shared exiftool-keyword
+    reducer behind E011/E012's SOURCE: check and W131) must retain a file's
+    full raw Keywords/Subject values ONLY for documents-root paths - a
+    photos-root file's raw keyword text is never read for anything but the
+    cheap SOURCE: S-id extraction, so keeping the rest around for tens of
+    thousands of heavily-tagged photos would be pure waste. Calls the
+    reducer directly (no archive fixture needed); `_run_exiftool_keyword_rows`
+    is monkeypatched the same way the W131 tests above patch it.
+    """
+
+    def setUp(self) -> None:
+        self._orig_rows = lint._run_exiftool_keyword_rows
+
+    def tearDown(self) -> None:
+        lint._run_exiftool_keyword_rows = self._orig_rows
+
+    def test_raw_values_are_kept_only_for_documents_root_paths(self) -> None:
+        doc_path = Path('documents/deed.tif').resolve()
+        photo_path = Path('photos/1900/snap.jpg').resolve()
+
+        def _rows(paths):
+            return [
+                {'SourceFile': str(doc_path), 'Subject': ['Margaret Hartley']},
+                {'SourceFile': str(photo_path),
+                 'Subject': ['a whole pile of unrelated Lightroom tags']},
+            ]
+        lint._run_exiftool_keyword_rows = _rows
+
+        _source_keywords, raw_keywords = lint._read_exif_keywords(
+            [doc_path, photo_path], {doc_path})
+
+        self.assertEqual(raw_keywords.get(doc_path), ['Margaret Hartley'])
+        self.assertNotIn(photo_path, raw_keywords,
+                         "a photos-root file's raw keyword values must never be retained")
+
+    def test_source_ids_are_extracted_for_every_scanned_file_regardless_of_root(self) -> None:
+        doc_path = Path('documents/deed.tif').resolve()
+        photo_path = Path('photos/1900/snap.jpg').resolve()
+        sid = 'S-2b3c4d5e6f'
+
+        def _rows(paths):
+            return [
+                {'SourceFile': str(doc_path), 'Keywords': [f'SOURCE: {sid}']},
+                {'SourceFile': str(photo_path), 'Keywords': [f'SOURCE: {sid}']},
+            ]
+        lint._run_exiftool_keyword_rows = _rows
+
+        source_keywords, raw_keywords = lint._read_exif_keywords(
+            [doc_path, photo_path], {doc_path})
+
+        self.assertEqual(source_keywords.get(doc_path), {sid.lower()})
+        self.assertEqual(source_keywords.get(photo_path), {sid.lower()})
+        self.assertNotIn(photo_path, raw_keywords)   # not a documents-root path
+
+    def test_batches_are_capped_at_the_batch_size(self) -> None:
+        paths = [Path(f'documents/f{i}.tif').resolve() for i in range(125)]
+        calls: list[list] = []
+
+        def _rows(batch):
+            calls.append(list(batch))
+            return [{'SourceFile': str(p)} for p in batch]
+
+        lint._run_exiftool_keyword_rows = _rows
+        lint._read_exif_keywords(paths, set(paths))
+
+        self.assertEqual(len(calls), 3)   # 125 files -> 50 + 50 + 25
+        for batch in calls:
+            self.assertLessEqual(len(batch), lint._KEYWORD_BATCH_SIZE)
+
 
 if __name__ == '__main__':
     unittest.main()
