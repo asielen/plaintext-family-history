@@ -406,14 +406,14 @@
     {
       "path": ".fha/docs/SITE_PLAN.md",
       "category": "operating",
-      "sha256": "9d4ace9ae2c538d4e6953b94ea35a31eb9a1fc02327324db6b8cbba20e09919e",
+      "sha256": "87609c57b7cef2bf09e0e360dd2500ff7d75fbd99543ce8cbd9a1bd0b98947b2",
       "spec_version": "1.2",
       "src": "docs/SITE_PLAN.md"
     },
     {
       "path": ".fha/tools/README.md",
       "category": "operating",
-      "sha256": "cb4adca87cdeda5ea432bb5ced364f11a36130a1bdb6683ebaafb09f2966c35d",
+      "sha256": "eb1ba91fe08027ac3fa172b4a84b0f1f0da1e8826bbf0e7b21c8f1cd2355301d",
       "spec_version": "1.2",
       "src": "tools/README.md"
     },
@@ -658,7 +658,7 @@
     {
       "path": ".fha/tools/site.py",
       "category": "operating",
-      "sha256": "69aa014639d15dcc8030d2efceb6872daea9acf2ccc9ca8386aecd77c54fe29d",
+      "sha256": "cb8e402a8cba9e054d704d719c9baf3dc7d8449068e16151a5fc30bc2fa382b6",
       "spec_version": "1.2",
       "src": "tools/site.py"
     },
@@ -686,7 +686,7 @@
     {
       "path": ".fha/tools/templates/_tree.html",
       "category": "operating",
-      "sha256": "8aa7a86ea345d92d6fed0c2d19179d5786b56ba743fe06ae16998c1966e11784",
+      "sha256": "c884e6b42e2f0bf36d79e0da9654de47f229c8164b94bf0bb5012f49847bc189",
       "spec_version": "1.2",
       "src": "tools/templates/_tree.html"
     },
@@ -756,7 +756,7 @@
     {
       "path": ".fha/tools/templates/vendor/fha-tree.js",
       "category": "operating",
-      "sha256": "d1cb3c912891166d2c93386018d469758fcc1475aabbeee6a6e397545b0784d2",
+      "sha256": "0d80fbd0a36823a42bf8f3f7b269aca8f20e77b13ad616532438f66f69d012df",
       "spec_version": "1.2",
       "src": "tools/templates/vendor/fha-tree.js"
     },
@@ -884,7 +884,7 @@
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "d39175382663b841ea019bec7d57e7d74ece7c357ea30605d101cf8966f71bc2",
+      "sha256": "cbaba28f534a158342d419f1e7199f8904a9722baeecfe09517812d628176201",
       "spec_version": "1.2"
     },
     {
@@ -896,7 +896,7 @@
     {
       "path": "docs/CUSTOMIZING_SITE.md",
       "category": "operating",
-      "sha256": "0d8d290025c35eaf4404cc9b1c07b7b4838db9be5d07a2aa97286d031f0a472f",
+      "sha256": "11c3e2a6060e8c80c6e3681f03edc200f0ebef9ae488bfb795688386aba99bdb",
       "spec_version": "1.2"
     },
     {
