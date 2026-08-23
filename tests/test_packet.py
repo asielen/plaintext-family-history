@@ -1391,6 +1391,42 @@ class PacketTests(unittest.TestCase):
 
         self.assertEqual(result['status'], 'restricted-subject')
 
+    def test_traversal_files_entry_excluded_not_bundled(self):
+        """A '..'-escaping files: entry must never be resolved and copied.
+
+        `source_files.path` is a straight copy of the source record's own
+        hand-editable `files:` entry (SPEC #14) - a hand-edited or corrupted
+        entry like 'documents/../../outside-secret.tif' resolves outside the
+        configured documents root. Before the fix, `_resolve_source_files`
+        trusted the resolved path outright and `_copy_into` would
+        `shutil.copy2` whatever it found there straight into the packet - a
+        bundle the archive owner hands to a family member, so this was a real
+        privacy leak of an arbitrary readable file, not just a data-integrity
+        issue. The asset must be reported excluded, and the file outside the
+        archive must never be touched or appear in the packet.
+        """
+        self._seed_person()
+        outside = self.archive_root.parent / 'outside-secret.tif'
+        outside.write_bytes(b'not part of the archive at all')
+        self.addCleanup(lambda: outside.unlink(missing_ok=True))
+        self._seed_source(
+            's-1111111111', 'Traversal Source',
+            asset_rel='documents/../../outside-secret.tif', create_asset=False,
+        )
+        self._commit_fresh()
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir, no_photos=True)
+
+        self.assertEqual(result['status'], 'ok')
+        files_dir = result['packet_dir'] / 'files'
+        if files_dir.exists():
+            self.assertNotIn('outside-secret.tif', [p.name for p in files_dir.rglob('*')])
+        readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
+        self.assertIn('outside-secret.tif', readme)
+        self.assertIn('resolves outside', readme)
+        self.assertTrue(outside.exists(), 'the file outside the archive must never be touched')
+        self.assertEqual(outside.read_bytes(), b'not part of the archive at all')
+
     def test_unreadable_source_is_left_out_with_its_files(self):
         """A source whose own record cannot be read takes its assets with it.
 
