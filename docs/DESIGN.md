@@ -200,6 +200,21 @@ reusable for any brand:
   different default (it is inherited, and a label's own attribute still wins) and
   never `.fan-label`, which would flatten every label back to one size and clip the
   long names. Rendered server-side as inline SVG — no JavaScript, prints cleanly.
+- **Pedigree / family chart** (`.pedigree`, `.ped-node`, `.ped-link`) — a static,
+  server-rendered SVG box chart (children | subject + spouse(s) | ancestor
+  generations, stepping right), the same engine on every curated person's own
+  page and — scaled to a deeper configurable depth, `.pedigree-home` — as the
+  home page's own centrepiece (#115). An unresearched ancestor slot with a known
+  child draws a faint dashed `.ped-empty` "Unknown" placeholder; a redacted
+  person anywhere draws blank (no name, no link) rather than a labelled chip.
+  The home chart additionally tints each ancestor card's left edge by paternal
+  (`.ped-branch-1`) / maternal (`.ped-branch-2`) line — the same `--branch-1`/
+  `--branch-2` tokens the fan chart and family tree use, recovered from
+  Ahnentafel parity with no extra data — and shows the hub's own siblings
+  (`.ped-sibling`) stacked above the subject in one lightly-dotted
+  `.ped-link-sibling` group. No JavaScript required; `fha-tree.js`'s
+  `wrapStatic()` layers the family tree's own pan/zoom viewport on top as a
+  pure enhancement for a deep chart.
 
 Spend boldness here and keep everything else quiet so these read.
 

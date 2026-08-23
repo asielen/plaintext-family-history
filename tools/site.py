@@ -36,9 +36,13 @@ Two build modes, one generator:
 This file ships the whole Layer 8 publication suite: M8.1 (foundations: query
 layer, Jinja2, source page), M8.2 (curated person page), M8.3 (place +
 discoveries pages), M8.4 (home page: surname A-Z + discoveries teaser, and the
-standalone link/page symmetry enforced by the page-set design below), and M8.5
+standalone link/page symmetry enforced by the page-set design below), M8.5
 (interactive trees - a vendored, dependency-free renderer fed the neutral tree
-JSON through a single adapter seam).
+JSON through a single adapter seam), and #115 (home page redesign: the home
+page's centrepiece is now a marriage-aware ancestor pedigree - the same static
+SVG engine the person page already used, scaled to a configurable depth and
+re-seeded per build mode - not the interactive descendant explorer, which
+moved to a per-person opt-in link; see `_SiteBuilder._build_home_pedigree`).
 
 Note what the page-set design is and is not. It guarantees that this site
 never LINKS to a page it did not build; it does not check whether a page
@@ -90,10 +94,14 @@ CODE MAP
     _PIL_AVAILABLE             - is Pillow importable?
     _make_derivative           - resized, EXIF-stripped JPEG/PNG copy (standalone)
 
-  Static charts (person page)
+  Static charts (person page + home page, #115)
     _render_fan_svg            - radial ancestor fan, self-contained SVG
-    _render_pedigree_svg       - horizontal family chart: children - subject/spouse(s)
-                                 - parents - grandparents, self-contained SVG
+    _ancestor_branch           - Ahnentafel slot → paternal(1)/maternal(2) line
+    _render_pedigree_svg       - horizontal family chart: siblings/children -
+                                 subject/spouse(s) - N ancestor generations,
+                                 self-contained SVG (person page: 2 generations,
+                                 no siblings; home page, #115: configurable
+                                 depth, siblings, branch coloring, axis label)
 
   Photo-catalog keys
     _live_alias                - the real path under a reconcile 'MISSING:' key
@@ -107,15 +115,23 @@ CODE MAP
     _page_filename             - id → 'p-xxx.html' / 's-xxx.html'
     _json_for_script           - JSON serialized safe for inline <script> embedding
 
-  Interactive tree (M8.5) + shared chart redaction
-    _apex_ancestor             - deepest ancestor of root_person (home-tree seed)
+  Interactive tree (M8.5, now per-person - #115) + shared chart redaction
+    _apex_ancestor             - #115: repurposed from "deepest ancestor of
+                                 root_person" (the old home-tree seed) to the
+                                 home pedigree's redaction-safe hub walk -
+                                 closest non-living/non-redacted ancestor
     _build_tree_data           - BFS relationships → neutral tree JSON + url + redaction
     _tree_node, _person_vitals - one redacted node; its birth/death labels
                                  (scoped to the person's OWN vitals, #126)
     _chart_entry               - one redacted {name,url,dates} node; shared by the
                                  Ahnentafel walk and the family-wings walk below
-    _build_ahnentafel          - parent-edge walk → Ahnentafel map (fan + pedigree)
-    _build_family_wings        - spouse/child edges → pedigree's family-chart columns
+    _build_ahnentafel          - parent-edge walk → Ahnentafel map (fan + pedigree),
+                                 already generation-agnostic (unchanged by #115)
+    _build_family_wings        - spouse/child edges → pedigree's family-chart
+                                 columns; `include_siblings` (#115) adds a third
+                                 list for the home pedigree hub only
+    _hub_siblings              - #115: the home pedigree hub's own siblings -
+                                 everyone else sharing one of its recorded parents
     _make_tree_ctx             - build a tree, write data/tree_*.json, return template ctx
     _copy_vendor               - copy the vendored renderer/adapter into the site
 
@@ -130,8 +146,14 @@ CODE MAP
       ._person_open_questions  - this person's open questions, rendered
       .render_token            - one [ID] token → HTML (link / redaction / mark)
       .build_source_page       - M8.1 source page
-      .build_person_page       - M8.2 person page
-      .build_index_page        - minimal people+sources landing page
+      .build_person_page       - M8.2 person page; also builds `descendants_tree`
+                                 (#115: the interactive explorer, demoted here
+                                 as a per-person opt-in link)
+      ._home_pedigree_depth    - #115: site.home_pedigree_generations, clamped
+      ._build_home_pedigree    - #115: resolve the redaction-safe hub, build
+                                 and render the home page's ancestor pedigree
+      .build_index_page        - home page: surname index, discoveries teaser,
+                                 sources/places nav, and the home pedigree (#115)
       .run                     - orchestrate: prepare, build all pages, write
 
   Core / CLI
@@ -309,10 +331,17 @@ _PROFILE_MAX_PX = 512
 # still renders small. One generation deeper than the person-page pedigree.
 _FAN_GENERATIONS = 3
 
-# Ancestor pedigree depth on person pages (M8.5: "3 generations default" =
-# subject + 2 parent hops). The home descendant explorer is uncapped (the
-# vendored renderer collapses large trees on demand).
-_PEDIGREE_GENERATIONS = 3
+# Home pedigree ancestor depth (#115), overridable via
+# `site.home_pedigree_generations`. DEFAULT is the decided answer to the
+# issue's open question #1 - deep enough (great-great-great-grandparents) to
+# read as a real pedigree chart; a deeper ancestor is one click away on their
+# own re-centered page (#115's "click-through, not infinite canvas" design),
+# not a config knob most owners need to touch. MAX guards the config knob
+# itself: each extra generation DOUBLES the ancestor-slot count
+# (2**(N+1) slots), so an unclamped typo could try to lay out an
+# astronomically large chart - see `_SiteBuilder._home_pedigree_depth`.
+_HOME_PEDIGREE_GENERATIONS_DEFAULT = 5
+_HOME_PEDIGREE_GENERATIONS_MAX = 8
 
 # Redaction display strings (M8 UX bar: redacted content is named, never a blank).
 _LIVING_LABEL = 'Living Person'
@@ -858,19 +887,47 @@ def _render_fan_svg(labels: dict, max_gen: int, r0: float = 54, ring: float = 60
     return '\n'.join(out)
 
 
+def _ancestor_branch(num: int) -> int:
+    """1 (paternal, through slot 2) or 2 (maternal, through slot 3) for an
+    Ahnentafel ancestor slot (#115 branch coloring, home pedigree only).
+
+    An ancestor's ultimate line is recoverable from its OWN slot number alone,
+    with no extra data or lookup: repeatedly halve the slot (integer floor
+    division, the same operation that walks a slot to its own parent) until it
+    lands on 2 or 3 - father's or mother's line. Only ever called for slot >= 2
+    (the subject, slot 1, has no line of its own to belong to)."""
+    while num > 3:
+        num //= 2
+    return 1 if num == 2 else 2
+
+
 def _render_pedigree_svg(labels: dict, spouses: list[dict] | None = None,
                           children: list[dict] | None = None,
                           missing_parent_of: dict[int, str] | None = None,
-                          workbench: bool = False) -> str:
+                          workbench: bool = False,
+                          siblings: list[dict] | None = None,
+                          ancestor_generations: int = 2,
+                          branch_color: bool = False,
+                          axis_label: str | None = None,
+                          home: bool = False) -> str:
     """Render a horizontal (left→right) family pedigree as a self-contained SVG.
 
     `labels` is an Ahnentafel map {number: {'name','url','redacted','dates'}} covering
-    two generations up - slot 1 the subject, 2/3 the parents, 4-7 the grandparents
-    (see `_build_ahnentafel`, called with max_gen=2). `spouses`/`children` are the
+    `ancestor_generations` generations up - slot 1 the subject, 2/3 the parents,
+    4-7 the grandparents, and so on for as many generations as the caller asks
+    for (see `_build_ahnentafel`, called with max_gen >= ancestor_generations).
+    The person-page caller keeps the original default of 2 (parents +
+    grandparents); the home pedigree (#115) calls with a deeper value (5 by
+    default - `site.home_pedigree_generations`). `spouses`/`children` are the
     win-1 family-chart extension: plain lists of the same {'name','url','dates'}
     shape (from `_build_family_wings`), never containing a redacted person - that
     filtering happens upstream, so unlike an ancestor slot a redacted spouse/child
     has no faint 'Unknown' placeholder to fall back on and is simply absent.
+    `siblings` (#115: the lost-aunts/uncles/cousins mitigation, home pedigree
+    only - see `_build_family_wings`'s `include_siblings` flag) is the same
+    shape again, drawn stacked above the subject in its own column with a
+    single grouping bracket; empty/omitted for the person page, which does not
+    ask for it.
 
     Layout, left to right: children (if any) - subject + spouse(s), stacked in one
     column - parents - grandparents. This is the ancestors-only chart's original
@@ -908,10 +965,47 @@ def _render_pedigree_svg(labels: dict, spouses: list[dict] | None = None,
     P-id of its known child, so that slot's 'Unknown' becomes a clickable
     'Unknown - add' that opens 'add family' scoped to the right person -
     never shown when `workbench` is false, matching every other workbench-only
-    affordance already gated the same way on this page."""
+    affordance already gated the same way on this page.
+
+    `branch_color` (#115, home pedigree only) tints each drawn ancestor card's
+    left edge by paternal/maternal line: an Ahnentafel slot's line is recoverable
+    from its own number alone (halve it repeatedly until it lands on 2 or 3 -
+    see `_ancestor_branch`), so this costs no extra data, just a slot-number
+    check per card. `axis_label` (#115) draws one small caption above the
+    ancestor columns ('ancestors of {name} ->'-style orientation text) - omitted
+    when there is no ancestor column to sit above (ancestor_generations == 0,
+    the redaction-safe hub-only fallback). `home` (#115) is purely a sizing
+    flag - the `pedigree-home` CSS modifier class, wider than the person-page
+    cap - kept independent of the other new parameters so each stays
+    individually testable rather than one flag silently implying another.
+
+    GEOMETRY NOTE (`row_index`, generalized for #115): every rendered slot's row
+    is `offset * span + (span - 1) / 2`, where `offset = num - 2**g` is the
+    slot's position within its own generation g and `span = 2**(D - g)`. D is
+    `max_gen` - the deepest generation actually PLACED in `render` (a real
+    ancestor or its still-unresearched 'Unknown' child slot) - NOT the full
+    CONFIGURED `ancestor_generations`/`max_ancestor_gen`, which only bounds how
+    far the walk below is allowed to look. This is the closed form of "a slot's
+    row is the average of its two children's rows, and a leaf slot (g == D)
+    occupies row `offset`" - i.e. plain binary-tree centering, unrolled
+    algebraically instead of recursed. It reduces to the pre-#115 hardcoded
+    constants exactly when a tree happens to reach 2 full generations (subject
+    1.5, parents 0.5/2.5, grandparents 0-3 - pinned by a regression test); a
+    shallower known tree centres against its OWN shallower depth instead of the
+    configured maximum, which is what keeps a sparsely-researched line's chart
+    compact even when `ancestor_generations` (`site.home_pedigree_generations`,
+    default 5) is configured much deeper - see the `ancestor_band` comment
+    below for why keying this off the configured depth instead was a real bug,
+    not just a theoretical waste."""
     spouses = spouses or []
     children = children or []
+    siblings = siblings or []
     has_children_col = bool(children)
+    # A caller passes 0 for the redaction-safe hub-only fallback (#115: no
+    # eligible ancestor was found at all) - negative is defensive only, no
+    # caller sends it. Never trust a raw negative into the row-centering math
+    # below (2**negative is a fraction, not "no ancestors").
+    max_ancestor_gen = max(0, ancestor_generations)
 
     # Group children by which drawn spouse is their other parent (the
     # `co_parents` ids `_build_family_wings` attaches): group 0 is the
@@ -950,31 +1044,66 @@ def _render_pedigree_svg(labels: dict, spouses: list[dict] | None = None,
     def col_x(gen: int) -> float:
         return PAD + (gen - min_gen) * (CW + COL_GAP)
 
-    def row_index(num: int) -> float:
-        """Row position (in ROW units, subject = 1.5) for an Ahnentafel slot -
-        the same numbers the pre-win-1 renderer used, kept as a pure function
-        so spouse/children rows can be placed relative to the same scale."""
-        g = num.bit_length() - 1
-        if g == 0:                                   # subject
-            return 1.5
-        if g == 1:                                   # parent: centred over its 2 grandparents
-            return 0.5 if num == 2 else 2.5
-        return float(num - 4)                         # grandparents: four stacked rows
-
     # Draw the subject always; an ancestor slot only when its child is a drawn person -
     # real ancestors as name cards, a known person's missing parent as a faint 'Unknown'.
+    # Slots visit in increasing numeric order (2, 3, 4, 5, ... up to the deepest
+    # generation asked for) - slot//2 (a slot's parent) is always a smaller
+    # number than the slot itself, so by the time any slot is checked its
+    # parent's render state is already decided. This is the #115
+    # generalization of the old literal `for slot in (2, 3, 4, 5, 6, 7)` (D=2)
+    # to any configured depth D, with no change to the walk order or the rule
+    # itself - see `_build_ahnentafel`, which already supported arbitrary
+    # depth (the fan chart has called it with max_gen=3 since win 1).
     render: dict[int, tuple] = {1: ('person', labels.get(1) or {'name': ''})}
-    for slot in (2, 3, 4, 5, 6, 7):
+    for slot in range(2, 1 << (max_ancestor_gen + 1)):
         if render.get(slot // 2, ('', None))[0] != 'person':
             continue
         lab = labels.get(slot)
         render[slot] = ('person', lab) if (lab and lab.get('name')) else ('empty', None)
-    # Deepest generation actually PLACED in `render` - used below for the
-    # overall width.
+    # Deepest generation actually PLACED in `render` - the depth research (or
+    # its still-unresearched 'Unknown' placeholders) actually reached, which
+    # may be far shallower than `max_ancestor_gen` (the full CONFIGURED depth
+    # a caller asked for) when every ancestor beyond some point is
+    # unresearched (an 'Unknown' slot's own kind is 'empty', so the loop above
+    # never places ITS children). Used below for BOTH the overall width (as
+    # before #115) and - critically - as the basis for `row_index`'s row
+    # spacing and the reserved `ancestor_band` height: a chart must centre and
+    # reserve space against the depth it actually drew, not the depth a
+    # caller was willing to look. Getting this wrong (keying height off
+    # `max_ancestor_gen` instead) is exactly the home-pedigree geometry bug
+    # fixed here - see the GEOMETRY NOTE and `ancestor_band` comments.
     max_gen = max((k.bit_length() - 1 for k in render), default=0)
 
-    subject_row = 1.5
+    def row_index(num: int) -> float:
+        """Row position (in ROW units) for an Ahnentafel slot, centred against
+        `max_gen` - the depth actually reached by `render` above, NOT the full
+        configured `ancestor_generations`/`max_ancestor_gen` - generations of
+        leaf rows; see the GEOMETRY NOTE above for the derivation. Pure
+        function of `num` and the closed-over `max_gen`, so spouse/children/
+        sibling rows can be placed relative to the same scale (`subject_row =
+        row_index(1)` below, not a separate constant - the two must never
+        drift apart, or the subject card drawn by the ancestor loop and the
+        subject row every other column is measured against would land on two
+        different y's). `render`/`max_gen` are computed just above, before
+        this closure's first call, precisely so this centres on data that was
+        actually drawn rather than on how deep the caller was willing to
+        look."""
+        g = num.bit_length() - 1
+        offset = num - (1 << g)
+        span = 1 << (max_gen - g)
+        return offset * span + (span - 1) / 2
+
+    subject_row = row_index(1)
     spouse_rows = [subject_row + 1 + i for i in range(len(spouses))]     # stack below the subject
+    # Siblings (#115 lost-relatives mitigation, home pedigree hub only - see
+    # `_build_family_wings`'s `include_siblings` flag) stack ABOVE the
+    # subject's own row, in the SAME column (col_x(0)) - the mirror of how
+    # spouses stack below - so they read as "beside the subject" rather than
+    # as another ancestor generation. A single bracket groups them (drawn
+    # below, alongside the spouse/children links) instead of each getting its
+    # own connector into an ancestor slot the sibling does not own on this
+    # chart (their shared parents are already drawn once, for the subject).
+    sib_rows = [subject_row - 1 - i for i in range(len(siblings))]
     # Children stack top-to-bottom in lane order - subject-only children
     # first (nearest the subject's row), then each couple's in spouse order -
     # so a lane's kids sit near its junction and trunks stay short. The
@@ -987,13 +1116,16 @@ def _render_pedigree_svg(labels: dict, spouses: list[dict] | None = None,
     # Row of each child by its ORIGINAL index (cards and ticks look rows up here).
     child_row_of = {orig: children_rows[pos] for pos, orig in enumerate(ordered_children)}
 
-    # The ancestor band is always the full grandparent grid (rows 0-3): slot 1
-    # (the subject) is unconditionally `('person', ...)` above, so the render
-    # loop unconditionally places slots 2 and 3 too - as a known name or a
-    # faint 'Unknown' - the moment the subject draws (i.e. always). There is
-    # no input for which those two slots are placed but empty of a card, so a
-    # band that reserves anything less than rows 0-3 always undercounts the
-    # 'Unknown' cards that are about to draw there regardless.
+    # The ancestor band is always the full grandparent grid for the depth
+    # ACTUALLY reached (`max_gen`, computed above): slot 1 (the subject) is
+    # unconditionally `('person', ...)`, so the render loop unconditionally
+    # places slots 2 and 3 too - as a known name or a faint 'Unknown' - the
+    # moment the subject draws (i.e. always), and the walk keeps placing real-
+    # or-'Unknown' slots one generation deeper for as long as the previous
+    # generation actually resolved to a real person. There is no input for
+    # which the deepest PLACED slots (generation `max_gen`) are empty of a
+    # card, so a band shallower than `max_gen`'s own leaf-row range always
+    # undercounts the cards about to draw there.
     #
     # This used to be sized off `len(labels)` (the count of KNOWN ancestors)
     # on the theory that a chart with no ancestors "has no reason to reserve
@@ -1005,22 +1137,48 @@ def _render_pedigree_svg(labels: dict, spouses: list[dict] | None = None,
     # children rows then extend the band only when they reach beyond it
     # (extra spouses stacking past row 3, a wide brood of children reaching
     # above row 0).
-    ancestor_band = [0.0, 3.0]
-    all_rows = ancestor_band + spouse_rows + children_rows
+    #
+    # Generalized for #115 as [0, 2**D - 1] with D = `max_ancestor_gen` (the
+    # full CONFIGURED depth, `ancestor_generations` /
+    # `site.home_pedigree_generations`, default 5) - then corrected here to
+    # key D off `max_gen` (the depth ACTUALLY reached) instead. Reserving the
+    # full configured depth's leaf-row band regardless of how far research
+    # actually got was harmless at the pre-#115 hardcoded D=2 (worst case 4
+    # reserved rows, ~294px), but a real bug once D defaults to 5 for the home
+    # pedigree: an archive that is not researched 5 generations deep on every
+    # line got a chart reserved for up to 32 leaf rows it never used, spacing
+    # the few real cards hundreds of px apart and - via the JS pan/zoom
+    # viewport's fit-to-height calculation - shrinking the WHOLE chart's
+    # initial render scale (name text included) well below legible size. The
+    # band is now [0.0, 3.0] when a tree happens to reach 2 full generations
+    # (the pre-#115 shape, unchanged), [0.0, 0.0] (just the subject's own row)
+    # when `max_gen` is 0 - the redaction-safe hub-only fallback with no
+    # ancestor columns at all - and scales with whatever depth the walk
+    # actually placed cards at in between, no matter how deep it was
+    # CONFIGURED to look.
+    ancestor_band = [0.0, float((1 << max_gen) - 1)]
+    all_rows = ancestor_band + spouse_rows + children_rows + sib_rows
     min_row, max_row = min(all_rows), max(all_rows)
-    base = PAD + CH / 2 - min_row * ROW
+    # A small extra top margin reserves room for the axis-label caption
+    # (#115) - only when there is an ancestor column for it to sit above; the
+    # hub-only fallback (max_gen == 0, no ancestor columns drawn) never asks
+    # for one, but a caller-supplied label with nothing to caption is still
+    # dropped defensively rather than floating unlabeled space at the top.
+    axis_pad = 22.0 if (axis_label and max_gen >= 1) else 0.0
+    base = PAD + axis_pad + CH / 2 - min_row * ROW
 
     def y_center(row: float) -> float:
         return base + row * ROW
 
     W = 2 * PAD + (max_gen - min_gen + 1) * CW + (max_gen - min_gen) * COL_GAP
-    H = 2 * PAD + CH + (max_row - min_row) * ROW
+    H = 2 * PAD + axis_pad + CH + (max_row - min_row) * ROW
 
     def yr(edtf) -> str:
         m = re.search(r'\d{4}', str(edtf)) if edtf else None
         return m.group(0) if m else ''
 
-    def card(x: float, yc: float, cls_extra: str, lab: dict | None, slot: int | None = None) -> str:
+    def card(x: float, yc: float, cls_extra: str, lab: dict | None, slot: int | None = None,
+             branch: int | None = None) -> str:
         div_attrs = ''
         if lab is None:
             child_pid = missing_parent_of.get(slot) if (workbench and missing_parent_of and slot is not None) else None
@@ -1044,6 +1202,11 @@ def _render_pedigree_svg(labels: dict, spouses: list[dict] | None = None,
                             'title="Create a stub for this ancestor" role="button" tabindex="0"')
         else:
             cls = 'ped-node' + cls_extra
+            if branch:
+                # #115: paternal/maternal tint (only for a real ancestor card -
+                # the subject's own '.ped-self' styling already carries a fixed
+                # accent, and an 'Unknown' placeholder has no line to name).
+                cls += f' ped-branch-{branch}'
             if lab.get('hypothesis'):
                 # Workbench-only (the builder only sets the flag there): an
                 # unsourced frontmatter tie fills the slot but is visibly not
@@ -1074,7 +1237,9 @@ def _render_pedigree_svg(labels: dict, spouses: list[dict] | None = None,
                 midx = (x + CW + x2) / 2
                 links.append(f'<path class="ped-link" d="M{x + CW:.0f},{yc:.0f} '
                              f'H{midx:.0f} V{y2:.0f} H{x2:.0f}"/>')
-        cards.append(card(x, yc, ' ped-self' if slot == 1 else '', None if kind == 'empty' else lab, slot))
+        branch = _ancestor_branch(slot) if (branch_color and slot != 1 and kind == 'person') else None
+        cards.append(card(x, yc, ' ped-self' if slot == 1 else '', None if kind == 'empty' else lab,
+                          slot, branch))
 
     subj_x = col_x(0)
     subj_y = y_center(subject_row)
@@ -1082,6 +1247,18 @@ def _render_pedigree_svg(labels: dict, spouses: list[dict] | None = None,
         cards.append(card(subj_x, y_center(spouse_rows[i]), '', lab))
     for i, lab in enumerate(children):
         cards.append(card(col_x(-1), y_center(child_row_of[i]), '', lab))
+    for i, lab in enumerate(siblings):
+        cards.append(card(subj_x, y_center(sib_rows[i]), ' ped-sibling', lab))
+    if siblings:
+        # One grouping bracket for the whole sibling stack - a straight line
+        # from the subject's own row up through the topmost sibling, drawn
+        # BEHIND the cards (links are emitted before cards below), the same
+        # "line passes through the column, cards sit on top" idiom the
+        # spouses-with-no-children bracket already uses just below.
+        sib_ys = [subj_y] + [y_center(r) for r in sib_rows]
+        if len(set(sib_ys)) > 1:
+            links.append(f'<path class="ped-link ped-link-sibling" d="M{subj_x:.0f},{min(sib_ys):.0f} '
+                         f'V{max(sib_ys):.0f}"/>')
 
     if children:
         # Couples-first routing (owner request, review 2026-07-17): the
@@ -1172,10 +1349,26 @@ def _render_pedigree_svg(labels: dict, spouses: list[dict] | None = None,
             links.append(f'<path class="ped-link" d="M{subj_x:.0f},{min(family_ys):.0f} '
                          f'V{max(family_ys):.0f}"/>')
 
+    # Orientation cue (#115): a short caption naming the direction the chart
+    # reads, set once above the ancestor columns - never drawn when there is
+    # no ancestor column (axis_pad is 0 in that case too, so there is no
+    # reserved space for it to sit in).
+    extra: list[str] = []
+    if axis_label and axis_pad:
+        extra.append(f'<text class="ped-axis-label" x="{col_x(1):.0f}" y="{PAD + axis_pad - 6:.0f}">'
+                     f'{html.escape(axis_label)}</text>')
+
     svg_cls = 'pedigree pedigree-family' if has_children_col else 'pedigree'
-    label = 'Family chart' if (spouses or children) else 'Ancestor pedigree'
+    if home:
+        # The home pedigree (#115) is deliberately wider than the person-page
+        # cap (design/styles.css) - the deeper default depth needs more room
+        # than a compact per-person chart, and it is always wrapped by the
+        # pan/zoom viewport (fha-tree.js's `wrapStatic`) rather than read at
+        # full natural size.
+        svg_cls += ' pedigree-home'
+    label = 'Family chart' if (spouses or children or siblings) else 'Ancestor pedigree'
     return (f'<svg class="{svg_cls}" viewBox="0 0 {W} {H}" preserveAspectRatio="xMidYMid meet" '
-            f'role="img" aria-label="{label}">' + ''.join(links) + ''.join(cards) + '</svg>')
+            f'role="img" aria-label="{label}">' + ''.join(links) + ''.join(cards) + ''.join(extra) + '</svg>')
 
 
 # ── Paths / hrefs ───────────────────────────────────────────────────────────
@@ -2286,6 +2479,16 @@ class _SiteBuilder:
         # the old unconditional 'Family'.
         chart_title = 'Family' if (wings['spouses'] or wings['children']) else 'Ancestors'
         fan = self._markup(_render_fan_svg(ahnen, _FAN_GENERATIONS)) if len(ahnen) > 1 else None
+        # Descendant explorer (#115): demoted from the home page (which now
+        # carries the marriage-aware ancestor pedigree instead) to a
+        # per-person opt-in link - the same `_build_tree_data`/fha-tree.js/
+        # tree-adapter.js pipeline UNCHANGED, just re-seeded on THIS person
+        # instead of the old apex-of-root_person. `_make_tree_ctx` already
+        # returns None for a person with no descendant edges at all, so the
+        # link/section simply does not render for a leaf of the tree - no
+        # extra check needed here.
+        descendants_tree = self._make_tree_ctx(
+            pid, 'descendants', None, page_dir, f'Descendants of {name}', initial_depth=4)
 
         ctx = {
             'display_id': fmt_id_display(pid), 'name': name,
@@ -2295,6 +2498,7 @@ class _SiteBuilder:
             'pedigree': pedigree,
             'chart_title': chart_title,
             'fan': fan,
+            'descendants_tree': descendants_tree,
             'summary': summary,
             'biography_html': self._markup(biography_html) if biography_html else None,
             'stories_html': self._markup(stories_html) if stories_html else None,
@@ -4043,37 +4247,82 @@ class _SiteBuilder:
                 vitals[r['type']] = r['date_edtf'] or None
         return vitals
 
-    def _apex_ancestor(self, root_pid: str) -> str:
-        """Walk `parent` edges up from root_pid and return the deepest ancestor.
+    def _apex_ancestor(self, root_pid: str) -> str | None:
+        """Walk `parent` edges up from `root_pid` and return the CLOSEST
+        non-living, non-redacted ancestor reached - the standalone home
+        pedigree's redaction-safe hub fallback (#115). Returns None when no
+        eligible ancestor exists at all (root_pid's whole recorded line is
+        living/unknown/restricted, or every tie to it is unpublishable, or
+        nothing is recorded above root_pid and root_pid is itself
+        ineligible) - the caller's cue to fall back to a blank hub-only
+        render (`_build_family_wings` also withholds root_pid's own spouse/
+        children/siblings once it is itself redacted - review fix, PR #152)
+        with an explanatory note, rather than a page with nothing on it.
 
-        BUILD M8.5 seeds the home tree from "the root person (descendants mode)";
-        TOOLING §12 frames the home hero as a "descendant explorer from a root
-        *ancestor*". The configured `root_person` is the Ahnentafel proband (the
-        youngest), which has no descendants - so a literal descendants-from-proband
-        tree would be a single node. Seeding from the apex of the proband's direct
-        line (its most distant ancestor) reconciles the two: the explorer fans
-        forward across the whole lineage, and it is still derived from the
-        configured root person. Ties (two equally-deep ancestors) break on the
-        lowest id for determinism; a proband with no recorded parents is its own
-        apex."""
-        depth = {root_pid: 0}
+        BFS explores nearer ancestors before farther ones (parents, then
+        grandparents, ...), one whole generation at a time, each generation's
+        candidates tie-broken by id for a stable, deterministic pick - so the
+        result is always the CLOSEST eligible ancestor to root_pid, not
+        necessarily that line's true apex (a nearer hub keeps more of the
+        pedigree - siblings, first cousins - inside the default rendering
+        depth than walking all the way to the most distant recorded ancestor
+        would). `root_pid` itself is checked first and returned unchanged when
+        it is already eligible - the common case, and the one where no walk
+        at all is needed.
+
+        Before #115 this walked ALL THE WAY to the single deepest recorded
+        ancestor (ties broken low-id) and was the home page's DESCENDANTS-mode
+        seed, fanning the old collapsible-tree explorer forward across the
+        whole line; that explorer moved to a per-person opt-in link (see
+        `build_person_page`'s `descendants_tree`), so this function lost its
+        only caller and is repurposed here rather than deleted, per #115's
+        design. The graph walk (BFS over `parent` edges) is UNCHANGED; only
+        the selection rule (closest-eligible instead of deepest-of-all) and
+        the redaction check are new.
+
+        EDGE eligibility (review fix, PR #152): a candidate is not just the
+        far end of SOME parent edge - it is the far end of a specific tie,
+        and that tie must itself be publishable, exactly like every other
+        ancestor/descendant walk in this file (`_build_ahnentafel`,
+        `_build_tree_data`) already requires via `_has_public_claim`. Without
+        this, a parent tie backed only by a restricted claim or a claim
+        sourced exclusively from a hard-restricted source (DNA/by-request/
+        publication_ok:false) - the exact case that mechanism exists to keep
+        off the public site - could still promote that ancestor to be the
+        home page's PUBLIC-FACING hub: their real name, dates, and a link to
+        their own page, once removed from a living seed by nothing sturdier
+        than the very tie the marker says not to publish. A non-public edge
+        is skipped outright (`continue` before `other` is ever added to
+        `seen`/the next level), so - like the other walks - it also cannot be
+        used to reach further ancestors THROUGH it: there is no public path
+        across an unpublishable tie, so nothing beyond it is reachable
+        either. `root_pid` itself needs no such check (it has no incoming
+        edge to cross to be considered)."""
+        if root_pid in self.person_meta and not self._person_is_redacted(self.person_meta[root_pid]):
+            return root_pid
+        seen = {root_pid}
         queue = deque([root_pid])
         while queue:
-            cur = queue.popleft()
-            for r in self.conn.execute(
-                "SELECT DISTINCT other_id FROM relationships WHERE person_id = ? AND rel = 'parent'",
-                (cur,),
-            ):
-                other = r['other_id']
-                if other not in depth:
-                    depth[other] = depth[cur] + 1
-                    queue.append(other)
-        # Deepest ancestor; ties broken by the lowest id so the seed is stable.
-        best = root_pid
-        for pid, d in depth.items():
-            if d > depth[best] or (d == depth[best] and pid < best):
-                best = pid
-        return best
+            level: list[str] = []
+            for _ in range(len(queue)):
+                cur = queue.popleft()
+                for r in self.conn.execute(
+                    "SELECT DISTINCT other_id FROM relationships WHERE person_id = ? AND rel = 'parent'",
+                    (cur,),
+                ):
+                    other = r['other_id']
+                    if other in seen:
+                        continue
+                    if not self.linked and not self._has_public_claim(cur, other):
+                        continue
+                    seen.add(other)
+                    level.append(other)
+            for pid in sorted(level):
+                meta = self.person_meta.get(pid)
+                if meta is not None and not self._person_is_redacted(meta):
+                    return pid
+            queue.extend(level)
+        return None
 
     def _tree_node(self, pid: str, page_dir: Path) -> dict:
         """One neutral-JSON tree node, with redaction and a `url` applied here
@@ -4244,10 +4493,19 @@ class _SiteBuilder:
                     queue.append((slot_num, ppid))
         return labels, missing_parent_of
 
-    def _build_family_wings(self, pid: str, page_dir: Path) -> dict:
+    def _build_family_wings(self, pid: str, page_dir: Path, *,
+                            include_siblings: bool = False) -> dict:
         """Spouse(s) and children for the person-page family chart (the win-1
         extension of the ancestor pedigree), as two lists of `_chart_entry`
         dicts, keyed 'spouses' / 'children'.
+
+        `include_siblings` (#115, home pedigree hub only - never set by
+        `build_person_page`) adds a third 'siblings' list, from `_hub_siblings`.
+        Kept opt-in rather than always-on so an ordinary person's own chart is
+        byte-for-byte unchanged: the "lost aunts/uncles/cousins" gap this
+        mitigates is specific to the home page's pedigree-only first screen,
+        not a defect in a person's own chart (which already links every
+        relative from Friends & Family).
 
         Unlike ancestor slots, a redacted spouse or child is not shown as a
         faint 'Unknown' placeholder - you cannot enumerate someone's unknown
@@ -4263,7 +4521,30 @@ class _SiteBuilder:
 
         The gate is identical to the ancestor one: standalone mode requires a
         meta row, a non-redacted person, and at least one public (non-hard-
-        restricted) claim behind the edge. `--linked` shows every edge."""
+        restricted) claim behind the edge. `--linked` shows every edge.
+
+        SUBJECT redaction (review fix, PR #152). Every check above protects
+        the OTHER person in each edge; ordinarily that is the whole story,
+        because `pid` here is always a page subject and a redacted person
+        never gets a page (`person_pages` excludes them under standalone) -
+        so `pid` itself was never redacted in practice, until #115 gave this
+        function one caller where that assumption breaks: the home
+        pedigree's hub-only fallback (`_build_home_pedigree`) can call this
+        with `pid` = the still-living/redacted seed itself, when no eligible
+        substitute ancestor was found. Showing that seed's real, dated,
+        linked spouse(s)/children/siblings bracketed directly onto their own
+        blank 'Living Person' card is the mirror image of the leak this
+        function already guards against above - a named close relative
+        wired to an otherwise-silent redacted person - so the same "dropped
+        outright, no placeholder" rule applies to the SUBJECT side too: when
+        `pid` is itself redacted (standalone only), every wing (including
+        `_hub_siblings`, which this short-circuit also skips calling) comes
+        back empty rather than naming who a living person's family is."""
+        if not self.linked:
+            pid_meta = self.person_meta.get(pid)
+            if pid_meta is None or self._person_is_redacted(pid_meta):
+                return ({'spouses': [], 'children': [], 'siblings': []} if include_siblings
+                        else {'spouses': [], 'children': []})
 
         def collect(rel: str) -> list[dict]:
             # Spouses arrive marriage-date-first: the renderer draws the FIRST
@@ -4354,7 +4635,54 @@ class _SiteBuilder:
                     "ORDER BY other_id", (ch['id'],))
                 if r['other_id'] != pid
             ]
-        return {'spouses': spouses, 'children': children}
+        result = {'spouses': spouses, 'children': children}
+        if include_siblings:
+            result['siblings'] = self._hub_siblings(pid, page_dir)
+        return result
+
+    def _hub_siblings(self, pid: str, page_dir: Path) -> list[dict]:
+        """The home pedigree hub's own siblings (#115 lost-relatives
+        mitigation): everyone else who shares at least one of the hub's own
+        recorded parents, found by re-querying the same `relationships` rows
+        the ancestor walk already reads for parent edges - no new edge type,
+        no dedicated 'sibling' relationship needed (none is derived by the
+        indexer - see `_FAMILY_GROUPS`'s comment). A half-sibling (one shared
+        parent) counts the same as a full sibling: genealogically both are
+        siblings, and the alternative (silently dropping half-siblings) has
+        no basis in the design decision, which just says 'the same two
+        parents' loosely.
+
+        Gated like an ancestor slot, not like a spouse/child: standalone mode
+        drops a candidate who is redacted (living/unknown/restricted), OR
+        whose OWN parent-child claim (linking them to the shared parent) is
+        hard-restricted - the same `_has_public_claim` check `_build_ahnentafel`
+        runs for a parent slot, applied here from the shared parent's side
+        since hub and sibling rarely share a claim naming them TOGETHER (each
+        child's birth/baptism is usually its own separate record). Dropped
+        outright, never a placeholder - like a redacted spouse/child, you
+        cannot show 'a sibling exists' without showing who."""
+        parent_ids = [r['other_id'] for r in self.conn.execute(
+            "SELECT DISTINCT other_id FROM relationships WHERE person_id = ? AND rel = 'parent'",
+            (pid,))]
+        seen: set[str] = {pid}
+        out: list[dict] = []
+        for parent_id in sorted(parent_ids):
+            for r in self.conn.execute(
+                    "SELECT DISTINCT other_id FROM relationships "
+                    "WHERE person_id = ? AND rel = 'child' ORDER BY other_id", (parent_id,)):
+                other = r['other_id']
+                if other in seen:
+                    continue
+                seen.add(other)
+                if not self.linked:
+                    ometa = self.person_meta.get(other)
+                    if (ometa is None or self._person_is_redacted(ometa)
+                            or not self._has_public_claim(parent_id, other)):
+                        continue
+                entry = self._chart_entry(other, page_dir)
+                entry['id'] = other
+                out.append(entry)
+        return out
 
     def _make_tree_ctx(self, seed: str, mode: str, max_hops: int | None,
                        page_dir: Path, caption: str, *, initial_depth: int | None = None,
@@ -4429,6 +4757,116 @@ class _SiteBuilder:
                         shutil.copy2(f, self.assets_dir / name)
         except OSError as e:
             self.messages.append(f'WARNING: could not copy the design assets into the site ({e}).')
+
+    # - home pedigree (#115) -
+
+    def _home_pedigree_depth(self, site_cfg: dict) -> int:
+        """`site.home_pedigree_generations` (#115), defaulting to
+        `_HOME_PEDIGREE_GENERATIONS_DEFAULT` (5) and clamped to
+        `_HOME_PEDIGREE_GENERATIONS_MAX` - "depth control, not an infinite
+        canvas" is the decided design: each extra generation DOUBLES the
+        ancestor-slot count (2**(N+1) slots total), so an unclamped typo like
+        `50` would try to lay out over a quadrillion slots. A malformed or
+        out-of-range value degrades to the nearest sane default with a
+        warning rather than failing the whole build - the home page is worth
+        finishing even when one setting is wrong."""
+        raw = site_cfg.get('home_pedigree_generations')
+        if raw is None:
+            return _HOME_PEDIGREE_GENERATIONS_DEFAULT
+        try:
+            n = int(raw)
+        except (TypeError, ValueError):
+            self.messages.append(
+                f'WARNING: fha.yaml site.home_pedigree_generations {raw!r} is not a whole number; '
+                f'using the default of {_HOME_PEDIGREE_GENERATIONS_DEFAULT}.')
+            return _HOME_PEDIGREE_GENERATIONS_DEFAULT
+        if n < 1:
+            self.messages.append(
+                'WARNING: fha.yaml site.home_pedigree_generations must be at least 1; using the '
+                f'default of {_HOME_PEDIGREE_GENERATIONS_DEFAULT}.')
+            return _HOME_PEDIGREE_GENERATIONS_DEFAULT
+        if n > _HOME_PEDIGREE_GENERATIONS_MAX:
+            self.messages.append(
+                f'WARNING: fha.yaml site.home_pedigree_generations {n} is above the maximum of '
+                f'{_HOME_PEDIGREE_GENERATIONS_MAX}; using {_HOME_PEDIGREE_GENERATIONS_MAX}.')
+            return _HOME_PEDIGREE_GENERATIONS_MAX
+        return n
+
+    def _build_home_pedigree(self, seed: str, page_dir: Path, site_cfg: dict) -> dict:
+        """Build the home page's marriage-aware ancestor pedigree (#115): the
+        static SVG that replaced the descendant explorer as the home page's
+        centrepiece. `seed` is the already-validated configured hub
+        (`site.home_person`, falling back to `root_person` - resolved and
+        checked against the index by the caller, `build_index_page`); this
+        method's own job is deciding whether that seed is safe to actually
+        SHOW as the hub and, when it is not, finding one that is.
+
+        REDACTION-SAFE HUB (standalone only). `seed` is typically the living
+        archive owner - a standalone/public build must not open on a hub card
+        reading blank ('Living Person') with an entire chart hanging off it.
+        A non-redacted seed is used unchanged. A redacted seed hands off to
+        `_apex_ancestor` (repurposed - see its own docstring) to find the
+        CLOSEST eligible ancestor on the recorded line; when even that finds
+        nobody at all, the fallback is a blank hub-only render - just
+        `seed`'s own blank card, NO ancestor columns (`ancestor_generations=0`)
+        AND no spouse/children/siblings row either, plus a plain-language
+        `note` the template shows instead of a chart, rather than a page
+        mostly built of blank/'Unknown' cards.
+
+        Review fix (PR #152): this last case used to still draw `seed`'s own
+        family row - real, dated, linked spouse(s)/children/siblings
+        bracketed onto that same blank card - which outs a living person's
+        specific close relatives on the single highest-traffic page of the
+        site, the mirror image of the leak `_build_family_wings` already
+        guards against for every OTHER redacted person. `_build_family_wings`
+        now withholds all three lists outright (same function, same call
+        below) whenever its own subject is itself redacted, which in
+        practice is only ever true in this one fallback branch - see its
+        docstring. `--linked`/workbench never substitutes - the local
+        preview always seeds on the real configured person, and never hits
+        this branch's redaction checks at all.
+
+        Returns the index.html template context: {'svg', 'caption', 'note'}.
+        `note` is None on every ordinary build; it is set only in that last,
+        rare case."""
+        hub = seed
+        note: str | None = None
+        if not self.linked:
+            meta = self.person_meta.get(seed)
+            if meta is None or self._person_is_redacted(meta):
+                found = self._apex_ancestor(seed)
+                if found is not None:
+                    hub = found
+                else:
+                    hub = seed
+                    note = ("No ancestor eligible to publish was found on this person's recorded "
+                            "line, and their own spouse, children, and siblings cannot be shown "
+                            "here without naming a living person, so no pedigree is shown on the "
+                            "home page.")
+
+        hub_meta = self.person_meta.get(hub)
+        if not self.linked and hub_meta and self._person_is_redacted(hub_meta):
+            hub_name = _LIVING_LABEL
+        elif hub_meta and hub_meta['name']:
+            hub_name = hub_meta['name']
+        else:
+            hub_name = fmt_id_display(hub)
+
+        depth = 0 if note else self._home_pedigree_depth(site_cfg)
+        ahnen, missing_parent_of = self._build_ahnentafel(hub, depth, page_dir)
+        wings = self._build_family_wings(hub, page_dir, include_siblings=True)
+        # hub_name is always the blank _LIVING_LABEL here (`note` is only set
+        # when `seed`/`hub` is itself redacted), so a caption built from it
+        # ("Living Person's recorded family") would name nothing real - the
+        # explanatory `note` below already carries the actual message.
+        caption = ('No public pedigree is available for the home page.' if note else
+                  f"{hub_name}'s family, tracing back through the generations →")
+        axis_label = 'ancestors →' if depth else None
+        svg = _render_pedigree_svg(
+            ahnen, wings['spouses'], wings['children'], missing_parent_of=missing_parent_of,
+            workbench=self.workbench, siblings=wings.get('siblings'),
+            ancestor_generations=depth, branch_color=bool(depth), axis_label=axis_label, home=True)
+        return {'svg': self._markup(svg), 'caption': caption, 'note': note}
 
     # - index / home page (M8.4) -
 
@@ -4571,43 +5009,47 @@ class _SiteBuilder:
         if hero_image or hero_title or hero_tagline:
             hero = {'image': hero_image, 'title': hero_title, 'tagline': hero_tagline}
 
-        # Descendant explorer (M8.5): seed from the apex of the configured
-        # root_person's line so the tree fans forward across the whole family.
-        tree = None
+        # Home pedigree (#115): the marriage-aware, static ancestor pedigree
+        # that replaced the interactive descendant explorer as the home
+        # page's centrepiece (that explorer is demoted, not deleted - see
+        # `build_person_page`'s `descendants_tree`, the same
+        # `_build_tree_data`/fha-tree.js/tree-adapter.js pipeline, now a
+        # per-person opt-in link instead of the app's front door). Seeded on
+        # `site.home_person`, falling back to `root_person` - the config key
+        # `home_person` used to exist only to steer the OLD tree's 'Home'
+        # button; it is now the pedigree's own seed, so a misconfigured value
+        # here is worth its own warning rather than silently reverting to
+        # root_person with no explanation.
+        pedigree = None
         root_person = normalize_id(str(self.fha_config.get('root_person', '')))
-        if root_person and root_person not in self.person_meta:
+        configured_home = normalize_id(str(site_cfg.get('home_person') or ''))
+        root_valid = bool(root_person) and root_person in self.person_meta
+        home_valid = bool(configured_home) and configured_home in self.person_meta
+
+        if configured_home and not home_valid:
+            self.messages.append(
+                f"WARNING: fha.yaml site.home_person {fmt_id_display(configured_home)} is not in "
+                "the index; falling back to root_person for the home pedigree. Check the id, or "
+                "run `fha index` if it was just added."
+            )
+        # root_person's own problem is only worth naming when it is the thing
+        # that actually cost the reader the pedigree - a broken root_person
+        # behind a WORKING home_person never reaches the page at all, and a
+        # warning claiming "the home pedigree was skipped" on a build that
+        # built it fine (from home_person) would blame the wrong cause.
+        if root_person and not root_valid and not home_valid:
             self.messages.append(
                 f"WARNING: fha.yaml root_person {fmt_id_display(root_person)} is not in the index; "
-                "the home family tree was skipped. Check the id, or run `fha index` if it was just added."
+                "the home pedigree was skipped. Check the id, or run `fha index` if it was just added."
             )
-        if root_person and root_person in self.person_meta:
-            apex = self._apex_ancestor(root_person)
-            apex_meta = self.person_meta.get(apex)
-            if not self.linked and apex_meta and self._person_is_redacted(apex_meta):
-                apex_name = _LIVING_LABEL
-            elif apex_meta and apex_meta['name']:
-                apex_name = apex_meta['name']
-            else:
-                apex_name = fmt_id_display(apex)
-            # Descendant explorer: keep the full lineage but render the first few
-            # generations up front so a large family doesn't paint thousands of
-            # nodes at once (the reader expands forward).
-            # The tree "Home" button centers on the configured home person, or
-            # the Ahnentafel root by default. In standalone mode a redacted
-            # target (living/unknown/restricted) is dropped so the button
-            # doesn't point at a suppressed node or leak its P-id.
-            home_person = normalize_id(str(site_cfg.get('home_person') or '')) or root_person
-            if not self.linked and home_person:
-                home_meta = self.person_meta.get(home_person)
-                if home_meta is None or self._person_is_redacted(home_meta):
-                    home_person = None
-            tree = self._make_tree_ctx(apex, 'descendants', None, page_dir,
-                                       f'Descendants of {apex_name}', initial_depth=4,
-                                       home_id=home_person)
+
+        hub_seed = configured_home if home_valid else (root_person if root_valid else '')
+        if hub_seed:
+            pedigree = self._build_home_pedigree(hub_seed, page_dir, site_cfg)
 
         self._write_page(self.out_dir / 'index.html', 'index.html', {
             'surnames': surnames, 'discoveries': discoveries, 'source_groups': source_groups,
-            'places': places, 'intro': intro, 'intro_raw': intro_raw, 'tree': tree,
+            'places': places, 'intro': intro, 'intro_raw': intro_raw, 'pedigree': pedigree,
             'hero': hero, 'root_prefix': '.',
         })
 

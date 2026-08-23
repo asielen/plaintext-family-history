@@ -54,11 +54,22 @@ site:
     title: "The Hartley Family"
     tagline: "Six generations in Breton County, Ohio — 1798 to today"
     image: S-ea61339378          # a photo to feature in the banner (by its source ID)
+  home_person: P-de957bcda1            # who the homepage family chart is centered on
+  home_pedigree_generations: 5         # how many generations of ancestors it shows
 ```
 
 - **`archive_name`** is the title on the masthead of every page.
 - **`hero`** is the big welcome banner on the homepage: a title, a one-line tagline, and
   an optional lead photo. Leave any of them out and the site uses a sensible default.
+- **`home_person`** chooses who the homepage's family chart is built around. Leave it out
+  and the site uses whoever you told it was the "root person" when you set up your
+  archive. If that person is still living, the shareable version of your site
+  automatically starts one generation further back instead — it never opens on a
+  card that just says "Living Person."
+- **`home_pedigree_generations`** controls how many generations of ancestors the
+  homepage chart reaches back through (5 by default — parents, grandparents,
+  great-grandparents, and two more). You can click any ancestor's own card to see
+  their chart centered on them and go back further from there.
 
 The photo you name in `image` is handled like every other photo on the site: a
 web-friendly copy is made, its hidden location/camera data is stripped, and if it happens

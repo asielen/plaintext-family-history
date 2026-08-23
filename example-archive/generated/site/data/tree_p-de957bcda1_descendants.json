@@ -1,18 +1,7 @@
 {
-  "seed": "P-075114a0f8",
+  "seed": "P-de957bcda1",
   "mode": "descendants",
   "nodes": [
-    {
-      "p_id": "P-075114a0f8",
-      "name": "Caleb Comstock Hartley",
-      "sex": "M",
-      "vitals": {
-        "birth": null,
-        "death": null
-      },
-      "url": null,
-      "photo": "media/profiles/caleb-chastina-hartley_012e298c.jpg"
-    },
     {
       "p_id": "P-de957bcda1",
       "name": "Thomas Edward Hartley",
@@ -21,8 +10,8 @@
         "birth": "1840~",
         "death": null
       },
-      "url": "persons/p-de957bcda1.html",
-      "photo": "media/profiles/thomas-hartley-portrait_0965165a.jpg"
+      "url": "p-de957bcda1.html",
+      "photo": "../media/profiles/thomas-hartley-portrait_0965165a.jpg"
     },
     {
       "p_id": "P-83e768cacb",
@@ -33,7 +22,7 @@
         "death": null
       },
       "url": null,
-      "photo": "media/profiles/frances-hartley-winter_391f4260.jpg"
+      "photo": "../media/profiles/frances-hartley-winter_391f4260.jpg"
     },
     {
       "p_id": "P-c4b26bb4bc",
@@ -44,7 +33,7 @@
         "death": null
       },
       "url": null,
-      "photo": "media/profiles/ethel-hartley-portrait_836aa0a5.jpg"
+      "photo": "../media/profiles/ethel-hartley-portrait_836aa0a5.jpg"
     },
     {
       "p_id": "P-fa7541e871",
@@ -55,7 +44,7 @@
         "death": null
       },
       "url": null,
-      "photo": "media/profiles/calvin-hartley-garden_60efc608.jpg"
+      "photo": "../media/profiles/calvin-hartley-garden_60efc608.jpg"
     },
     {
       "p_id": "P-6f7g8h9jka",
@@ -98,24 +87,11 @@
         "birth": "1955-03-15",
         "death": "2015-11-03"
       },
-      "url": "persons/p-2b3c4d5e6f.html",
+      "url": "p-2b3c4d5e6f.html",
       "photo": null
     }
   ],
   "edges": [
-    {
-      "type": "child",
-      "from": "P-075114a0f8",
-      "to": "P-de957bcda1",
-      "claim_id": "C-2e6b1f9c45",
-      "subtype": "biological",
-      "genetic": true,
-      "kind": "genetic",
-      "dates": {
-        "start": null,
-        "end": null
-      }
-    },
     {
       "type": "child",
       "from": "P-de957bcda1",

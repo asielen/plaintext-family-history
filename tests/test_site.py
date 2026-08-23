@@ -2388,9 +2388,12 @@ class StandaloneRedactionAuditTests(_Base):
 
 
 class TreeTests(_Base):
-    """M8.5: interactive trees - vendored renderer + adapter, build-time neutral
-    tree JSON (descendants from the root person's apex on the home page, ancestor
-    pedigree per curated person), redaction baked into the JSON."""
+    """M8.5, re-seeded by #115: interactive trees - vendored renderer +
+    adapter, build-time neutral tree JSON. The home page no longer carries
+    this renderer at all (see HomePedigreeTests for its #115 replacement,
+    the static ancestor pedigree); the descendant explorer moved to a
+    per-person opt-in link, seeded on that person rather than once on the
+    root's apex. Ancestor pedigree per curated person is unchanged."""
 
     def _seed_rels_chain(self):
         # Grandparent -> parent -> child (root_person). Edges both directions,
@@ -2422,10 +2425,14 @@ class TreeTests(_Base):
             self.assertNotIn('http://', text)
             self.assertNotIn('https://', text)
 
-    def test_home_descendant_tree_from_apex(self):
+    def test_person_page_descendant_tree_opt_in_link(self):
+        # #115: the descendant explorer is demoted from the home page to a
+        # per-person opt-in link, seeded on THAT person (not the root's
+        # apex) - Grandparent Gus has descendants (Pat, then Carl), so
+        # Gus's OWN page carries the link/section; the data artifact is now
+        # named for Gus, not for whatever the old apex-walk picked.
         self._seed_rels_chain()
         self._run(linked=True)
-        # Data artifact written for the apex (grandparent) in descendants mode.
         data = self.out_dir / 'data' / 'tree_p-cccccccccc_descendants.json'
         self.assertTrue(data.exists())
         tree = json.loads(data.read_text(encoding='utf-8'))
@@ -2433,11 +2440,26 @@ class TreeTests(_Base):
         self.assertEqual(tree['mode'], 'descendants')
         ids = {n['p_id'] for n in tree['nodes']}
         self.assertEqual(ids, {'P-aaaaaaaaaa', 'P-bbbbbbbbbb', 'P-cccccccccc'})  # whole line
-        # Home page embeds the tree data + includes both vendor scripts.
+        # Gus's own page embeds the tree data + includes both vendor scripts,
+        # behind the opt-in disclosure - the home page carries neither.
+        gus_page = self._read('persons/p-cccccccccc.html')
+        self.assertIn('fha-tree-data', gus_page)
+        self.assertIn('vendor/fha-tree.js', gus_page)
+        self.assertIn('vendor/tree-adapter.js', gus_page)
+        self.assertIn('See descendants of Grandparent Gus', gus_page)
         home = self._read('index.html')
-        self.assertIn('fha-tree-data', home)
-        self.assertIn('vendor/fha-tree.js', home)
-        self.assertIn('vendor/tree-adapter.js', home)
+        self.assertNotIn('fha-tree-data', home)
+        self.assertNotIn('vendor/tree-adapter.js', home)   # only the descendant pipeline needs the adapter
+
+    def test_person_page_no_descendant_link_for_a_leaf(self):
+        # Child Carl has no children in this fixture - no descendant edges at
+        # all, so `_make_tree_ctx` returns None and the section/link simply
+        # does not render (matches the pre-#115 "no edges -> no tree" rule).
+        self._seed_rels_chain()
+        self._run(linked=True)
+        carl_page = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertNotIn('fha-tree-data', carl_page)
+        self.assertNotIn('See descendants of', carl_page)
 
     def test_person_ancestor_pedigree(self):
         self._seed_rels_chain()
@@ -2451,16 +2473,36 @@ class TreeTests(_Base):
         self.assertNotIn('fha-tree-data', page)                        # no interactive tree here
         self.assertFalse((self.out_dir / 'data' / 'tree_p-aaaaaaaaaa_ancestors.json').exists())
 
-    def test_tree_redacts_living_and_links_only_existing_pages(self):
-        self._seed_rels_chain()
-        # Make the grandparent (apex) living → must be "Living Person", no url.
-        self.conn.execute("UPDATE persons SET living='true' WHERE id='p-cccccccccc'")
+    def test_tree_drops_a_living_node_and_everyone_below_it(self):
+        # #115: the descendants-mode tree pipeline now lives on the seed
+        # person's OWN page, and `build_person_page` only ever runs for a
+        # page-owning (so, in standalone, already non-redacted) person - a
+        # living SEED's tree is therefore never built at all now (no page,
+        # no call). A living node reached mid-tree, by contrast, is dropped
+        # OUTRIGHT per the existing `_build_tree_data` rule (never a 'Living
+        # Person' placeholder - only a tree's own seed bypasses that gate),
+        # and since the BFS only continues through nodes it enqueues, the
+        # whole line below a dropped node goes with it. A branching fixture
+        # (Gus has TWO children) keeps at least one edge alive so the tree
+        # still gets built at all (`_make_tree_ctx` returns None on zero
+        # edges) while proving the living branch (Pat, then Carl behind her)
+        # is severed and the other branch (Uncle Umberto) is untouched.
+        self._seed_person('p-cccccccccc', 'Grandparent Gus', surname='Gus')
+        self._seed_person('p-bbbbbbbbbb', 'Parent Pat', surname='Pat', living='true')
+        self._seed_person('p-aaaaaaaaaa', 'Child Carl', surname='Carl')
+        self._seed_person('p-dddddddddd', 'Uncle Umberto', surname='Umberto')
+        for parent, child in (('p-cccccccccc', 'p-bbbbbbbbbb'), ('p-bbbbbbbbbb', 'p-aaaaaaaaaa'),
+                              ('p-cccccccccc', 'p-dddddddddd')):
+            self._seed_rel(parent, 'child', child)
+            self._seed_rel(child, 'parent', parent)
+        (self.archive_root / 'fha.yaml').write_text(
+            'roots: {}\nroot_person: P-cccccccccc\n', encoding='utf-8')
         self._run(linked=False)
         tree = json.loads(
             (self.out_dir / 'data' / 'tree_p-cccccccccc_descendants.json').read_text(encoding='utf-8'))
-        by_id = {n['p_id']: n for n in tree['nodes']}
-        self.assertEqual(by_id['P-cccccccccc']['name'], site._LIVING_LABEL)   # living apex redacted
-        self.assertIsNone(by_id['P-cccccccccc']['url'])
+        ids = {n['p_id'] for n in tree['nodes']}
+        # Gus and Umberto survive; Pat (living) and Carl (behind her) do not.
+        self.assertEqual(ids, {'P-cccccccccc', 'P-dddddddddd'})
         # Every node url that is set must point to a generated person page.
         for n in tree['nodes']:
             if n['url']:
@@ -2469,23 +2511,30 @@ class TreeTests(_Base):
     def test_no_tree_without_root_person(self):
         self._seed_person('p-aaaaaaaaaa', 'Solo')   # no fha.yaml root_person, no edges
         self._run(linked=True)
-        self.assertNotIn('fha-tree-data', self._read('index.html'))
+        home = self._read('index.html')
+        self.assertNotIn('fha-tree-data', home)
+        self.assertNotIn('id="fha-pedigree"', home)   # #115: no home pedigree either
 
     def test_home_tree_bounds_initial_paint(self):
-        # P2-3: the home descendant explorer passes a bounded initialDepth to the
-        # renderer. The per-person page now shows a static pedigree (no interactive
-        # renderer), so it carries no initialDepth.
+        # #115: the bounded initialDepth belongs to the descendant explorer,
+        # which now lives on a person's own page (Gus has descendants), not
+        # on the home page (a static SVG pedigree - no interactive-renderer
+        # option of any kind, including initialDepth).
         self._seed_rels_chain()
         self._run(linked=True)
-        self.assertIn('initialDepth: 4', self._read('index.html'))
-        person = self._read('persons/p-aaaaaaaaaa.html')
-        self.assertNotIn('initialDepth', person)
-        self.assertIn('class="pedigree"', person)
+        home = self._read('index.html')
+        self.assertNotIn('initialDepth', home)
+        gus = self._read('persons/p-cccccccccc.html')
+        self.assertIn('initialDepth: 4', gus)
+        carl = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertNotIn('initialDepth', carl)          # a leaf: no descendants, no tree at all
+        self.assertIn('class="pedigree"', carl)          # the static ancestor chart is unaffected
 
     def test_relationship_cycle_terminates(self):
         # A cousin-marriage style cycle must not loop forever; the BFS visited
-        # set bounds it and the node set is deduplicated. Exercised now via the
-        # home descendant tree (the only interactive tree that remains).
+        # set bounds it and the node set is deduplicated. Exercised via a
+        # curated person's own descendant tree (#115: the home page no
+        # longer builds one at all).
         self._seed_person('p-aaaaaaaaaa', 'A')
         self._seed_person('p-bbbbbbbbbb', 'B')
         for a, b in (('p-aaaaaaaaaa', 'p-bbbbbbbbbb'), ('p-bbbbbbbbbb', 'p-aaaaaaaaaa')):
@@ -2511,7 +2560,426 @@ class TreeTests(_Base):
             'roots: {}\nroot_person: P-zzzzzzzzzz\n', encoding='utf-8')   # not in index
         res = self._run(linked=True)
         self.assertTrue(any('root_person' in m and 'not in the index' in m for m in res['messages']))
-        self.assertNotIn('fha-tree-data', self._read('index.html'))
+        home = self._read('index.html')
+        self.assertNotIn('fha-tree-data', home)
+        self.assertNotIn('id="fha-pedigree"', home)   # #115: no home pedigree either
+
+
+class PedigreeGeometryGuardTests(unittest.TestCase):
+    """#115: `row_index()`'s generalization from a hardcoded 2-generation
+    formula to an arbitrary-depth closed form is the single highest-risk
+    piece of this whole feature - this project's chart-geometry code has
+    shipped real off-by-one/collision defects before (#119/#120, in these
+    same functions). This class is the regression guard the issue asked
+    for: it pins the EXACT row positions the pre-#115 hardcoded row_index()
+    produced at the default 2-generation depth (subject 1.5, parents
+    0.5/2.5, grandparents 0/1/2/3, in ROW=72 units off base=PAD+CH/2=39 -
+    verified against the shipped pre-#115 source before this change
+    landed), then checks the SAME formula's binary-tree centering property
+    (a slot's row is the average of its two children's rows) holds at
+    3/4/5 generations too - proving depth 5 is trustworthy because it is
+    literally the same formula as depth 2, not new math that happens to
+    agree at one point."""
+
+    def _full_labels(self, max_slot: int) -> dict:
+        return {n: {'name': f'A{n}', 'url': None, 'redacted': False, 'dates': {}}
+                for n in range(1, max_slot + 1)}
+
+    def _positions(self, svg: str) -> dict[str, tuple[int, float]]:
+        """{name: (x, y_center)} read back from the rendered foreignObjects -
+        y_center undoes the `yc - CH/2` the renderer stores as `y`, so this
+        recovers the same `y_center(row_index(slot))` value site.py computed."""
+        out = {}
+        for x, y, w, h, inner in re.findall(
+                r'<foreignObject x="(-?\d+)" y="(-?\d+)" width="(\d+)" height="(\d+)">(.*?)</foreignObject>',
+                svg, re.S):
+            m = re.search(r'ped-name[^>]*>([^<]*)<', inner)
+            if m and m.group(1):
+                out[m.group(1)] = (int(x), int(y) + int(h) / 2)
+        return out
+
+    def test_two_generation_positions_match_the_pre_115_hardcoded_shape(self):
+        labels = {
+            1: {'name': 'Subject', 'url': None, 'redacted': False, 'dates': {}},
+            2: {'name': 'Father', 'url': None, 'redacted': False, 'dates': {}},
+            3: {'name': 'Mother', 'url': None, 'redacted': False, 'dates': {}},
+            4: {'name': 'PatGF', 'url': None, 'redacted': False, 'dates': {}},
+            5: {'name': 'PatGM', 'url': None, 'redacted': False, 'dates': {}},
+            6: {'name': 'MatGF', 'url': None, 'redacted': False, 'dates': {}},
+            7: {'name': 'MatGM', 'url': None, 'redacted': False, 'dates': {}},
+        }
+        svg = site._render_pedigree_svg(labels)   # ancestor_generations defaults to 2, unchanged
+        pos = self._positions(svg)
+        # Pre-#115: base = PAD + CH/2 - min_row*ROW = 8 + 31 - 0 = 39 (ancestors-only
+        # sizing: CH=62, ROW=72, PAD=8); y_center(row) = 39 + row*72.
+        expected_y = {'Subject': 39 + 1.5 * 72, 'Father': 39 + 0.5 * 72, 'Mother': 39 + 2.5 * 72,
+                     'PatGF': 39 + 0.0 * 72, 'PatGM': 39 + 1.0 * 72,
+                     'MatGF': 39 + 2.0 * 72, 'MatGM': 39 + 3.0 * 72}
+        for name, y in expected_y.items():
+            self.assertEqual(pos[name][1], y, name)
+        # Same x per generation (col_x is generation-only), stepping right.
+        self.assertEqual(pos['Father'][0], pos['Mother'][0])
+        self.assertEqual(pos['PatGF'][0], pos['MatGM'][0])
+        self.assertLess(pos['Subject'][0], pos['Father'][0])
+        self.assertLess(pos['Father'][0], pos['PatGF'][0])
+        # The exact legacy viewBox for this shape (proves W/H, not just rows,
+        # are unchanged): 624x294 - see the ancestors-only sizing constants.
+        self.assertIn('viewBox="0 0 624 294.0"', svg)
+
+    def test_centering_holds_at_three_four_and_five_generations(self):
+        # The defining property row_index() must have at ANY depth: every
+        # slot's row is the average of its two children's rows (this is what
+        # "centred over its ancestors" means). Checking it generically at
+        # several depths - rather than hardcoding more magic numbers per
+        # depth - is what actually proves the generalization is safe, not
+        # just that it happens to reduce to the old constants at D=2.
+        for depth in (2, 3, 4, 5):
+            with self.subTest(depth=depth):
+                max_slot = (1 << (depth + 1)) - 1
+                labels = self._full_labels(max_slot)
+                svg = site._render_pedigree_svg(labels, ancestor_generations=depth)
+                pos = self._positions(svg)
+                for slot in range(1, (1 << depth)):   # every non-leaf slot
+                    parent_y = pos[f'A{slot}'][1]
+                    left_y = pos[f'A{2 * slot}'][1]
+                    right_y = pos[f'A{2 * slot + 1}'][1]
+                    self.assertAlmostEqual(parent_y, (left_y + right_y) / 2, places=6,
+                                           msg=f'depth={depth} slot={slot}')
+                # Leaf generation rows are evenly spaced by exactly ROW (72,
+                # the ancestors-only row height) and strictly increasing in
+                # slot order - a real ladder, not a collapsed or overlapping one.
+                leaf_lo = 1 << depth
+                leaf_ys = [pos[f'A{n}'][1] for n in range(leaf_lo, max_slot + 1)]
+                diffs = [b - a for a, b in zip(leaf_ys, leaf_ys[1:])]
+                for d in diffs:
+                    self.assertAlmostEqual(d, 72.0, places=6, msg=f'depth={depth}')
+
+    def test_hub_only_fallback_depth_zero_draws_only_the_subject(self):
+        # #115: the redaction-safe hub fallback with no eligible ancestor at
+        # all calls with ancestor_generations=0 - no ancestor columns, no
+        # 'Unknown' placeholders, just the subject (blank, since this is the
+        # redacted-hub case) and whatever family wings are passed.
+        svg = site._render_pedigree_svg(
+            {1: {'name': '', 'url': None, 'redacted': True, 'dates': {}}},
+            spouses=[{'name': 'Spouse', 'id': 'p-bbbbbbbbbb', 'url': None, 'dates': {}}],
+            ancestor_generations=0, axis_label='ancestors →')
+        self.assertNotIn('ped-empty', svg)         # no Unknown placeholders at all
+        self.assertNotIn('ped-axis-label', svg)    # nothing to caption - label withheld
+        self.assertIn('Spouse', svg)               # family wing still draws
+
+    def test_shallow_known_tree_at_deep_configured_depth_stays_compact(self):
+        """Regression guard for the home-pedigree geometry bug: `ancestor_band`
+        (and, before this fix, `row_index`'s own row spacing) keyed height off
+        `max_ancestor_gen` - the full CONFIGURED depth a caller asked for
+        (`site.home_pedigree_generations`, default 5) - rather than `max_gen`,
+        the depth the walk actually PLACED cards at. A person with only two
+        known parents (grandparents unresearched, so slots 4-7 render as
+        'Unknown' but slots 8+ are never even placed - see the render loop)
+        reaches real data only 2 generations deep no matter how deep the
+        caller is willing to look, so asking for the default D=5 must produce
+        the exact SAME geometry as asking for D=2 with the same shape (proven
+        below against `test_two_generation_positions_match_the_pre_115_hardcoded_shape`'s
+        pinned 624x294 viewBox) - not a chart reserved for 2**5=32 leaf rows,
+        which is what the un-fixed code produced (viewBox 624x2310 - the
+        review's own synthetic repro number) and which, via the JS pan/zoom
+        viewport's fit-to-height calculation, shrank the whole chart below
+        legible text size on first paint."""
+        labels = {
+            1: {'name': 'Subject', 'url': None, 'redacted': False, 'dates': {}},
+            2: {'name': 'Father', 'url': None, 'redacted': False, 'dates': {}},
+            3: {'name': 'Mother', 'url': None, 'redacted': False, 'dates': {}},
+        }
+        svg = site._render_pedigree_svg(labels, ancestor_generations=5)
+        # Same exact viewBox as the fully-known D=2 shape - reserving no more
+        # (and no less) than the 2 generations this tree actually reached,
+        # regardless of the D=5 configured depth asked for.
+        self.assertIn('viewBox="0 0 624 294.0"', svg)
+        # Exactly the 4 grandparent 'Unknown' placeholders slots 4-7 need -
+        # not the dozens a D=5-deep walk would place if it kept going past
+        # the point where research actually stopped.
+        self.assertEqual(svg.count('ped-empty'), 4)
+        pos = self._positions(svg)
+        # Same row positions the D=2 pinned test expects (base=39, ROW=72).
+        self.assertEqual(pos['Subject'][1], 39 + 1.5 * 72)
+        self.assertEqual(pos['Father'][1], 39 + 0.5 * 72)
+        self.assertEqual(pos['Mother'][1], 39 + 2.5 * 72)
+
+
+class HomePedigreeTests(_Base):
+    """#115: the home page's marriage-aware ancestor pedigree - seeding
+    (site.home_person, falling back to root_person), configurable depth
+    (site.home_pedigree_generations), siblings on the hub row, branch
+    coloring, the orientation caption/axis label, the pan/zoom enhancement
+    script, and the redaction-safe hub fallback for a living seed."""
+
+    def _seed_linear_ancestors(self, seed_pid: str, generations: int) -> list[str]:
+        """Seed a single father-slot ancestor chain above `seed_pid`:
+        gen1 is seed_pid's own parent, gen2 is gen1's parent, and so on.
+        Every seeded person is 'M' (site._seed_person's fixed default), so
+        each always fills the father slot (2N) - a clean single line with no
+        branching, easy to reason about depth against. Returns the pids in
+        depth order (index 0 = gen1)."""
+        pids = []
+        prev = seed_pid
+        for g in range(1, generations + 1):
+            pid = f'p-anc{g}' + '0' * (10 - len(f'anc{g}'))
+            self._seed_person(pid, f'Ancestor Gen{g}', surname=f'Gen{g}')
+            self._seed_rel(prev, 'parent', pid)
+            self._seed_rel(pid, 'child', prev)
+            pids.append(pid)
+            prev = pid
+        return pids
+
+    def _seed_home(self, *, home_person: str | None = None, extra_yaml: str = '') -> None:
+        home_line = f'  home_person: {home_person}\n' if home_person else ''
+        (self.archive_root / 'fha.yaml').write_text(
+            f'roots: {{}}\nroot_person: P-aaaaaaaaaa\nsite:\n{home_line}{extra_yaml}',
+            encoding='utf-8')
+
+    def _pedigree_section(self, page: str) -> str:
+        """The home pedigree's own markup, cut out of the full page - the
+        surname index below it legitimately lists every curated person
+        regardless of how deep the chart itself drew, so a check like 'this
+        generation is absent' means 'absent from the CHART', not 'absent
+        anywhere on the page' (which the site-wide People index would give a
+        false positive/negative on)."""
+        m = re.search(r'<h2 id="pedigree">.*?(?=<h2 )', page, re.S)
+        self.assertIsNotNone(m, 'no home pedigree section found on the page')
+        return m.group(0)
+
+    def test_default_depth_is_five_generations(self):
+        self._seed_person('p-aaaaaaaaaa', 'Hub Person')
+        self._seed_linear_ancestors('p-aaaaaaaaaa', 6)
+        self._seed_home()
+        self._run(linked=True)
+        ped = self._pedigree_section(self._read('index.html'))
+        self.assertIn('Ancestor Gen5', ped)       # 5 generations back: drawn
+        self.assertNotIn('Ancestor Gen6', ped)     # a 6th generation: never queried, absent
+
+    def test_configured_generations_respected(self):
+        self._seed_person('p-aaaaaaaaaa', 'Hub Person')
+        self._seed_linear_ancestors('p-aaaaaaaaaa', 5)
+        self._seed_home(extra_yaml='  home_pedigree_generations: 3\n')
+        self._run(linked=True)
+        ped = self._pedigree_section(self._read('index.html'))
+        self.assertIn('Ancestor Gen3', ped)
+        self.assertNotIn('Ancestor Gen4', ped)
+
+    def test_generations_above_maximum_are_clamped_with_a_warning(self):
+        self._seed_person('p-aaaaaaaaaa', 'Hub Person')
+        self._seed_home(extra_yaml='  home_pedigree_generations: 50\n')
+        res = self._run(linked=True)
+        self.assertTrue(any('home_pedigree_generations' in m and 'maximum' in m
+                            for m in res['messages']))
+
+    def test_non_numeric_generations_warns_and_uses_default(self):
+        self._seed_person('p-aaaaaaaaaa', 'Hub Person')
+        self._seed_home(extra_yaml='  home_pedigree_generations: not-a-number\n')
+        res = self._run(linked=True)
+        self.assertTrue(any('home_pedigree_generations' in m and 'whole number' in m
+                            for m in res['messages']))
+
+    def test_seeds_on_home_person_not_root_person(self):
+        self._seed_person('p-aaaaaaaaaa', 'Root Person')
+        self._seed_person('p-bbbbbbbbbb', 'Home Person')
+        self._seed_home(home_person='P-bbbbbbbbbb')
+        self._run(linked=True)
+        ped = self._pedigree_section(self._read('index.html'))
+        self.assertIn('Home Person', ped)
+        self.assertNotIn('Root Person', ped)
+
+    def test_falls_back_to_root_person_when_home_person_unset(self):
+        self._seed_person('p-aaaaaaaaaa', 'Root Person')
+        self._seed_home()
+        self._run(linked=True)
+        self.assertIn('Root Person', self._read('index.html'))
+
+    def test_misconfigured_home_person_falls_back_to_root_person_with_warning(self):
+        self._seed_person('p-aaaaaaaaaa', 'Root Person')
+        self._seed_home(home_person='P-zzzzzzzzzz')   # not in the index
+        res = self._run(linked=True)
+        self.assertTrue(any('site.home_person' in m and 'not in' in m for m in res['messages']))
+        self.assertIn('Root Person', self._read('index.html'))
+
+    def test_misconfigured_root_person_does_not_warn_when_home_person_saves_the_page(self):
+        # A broken root_person behind a WORKING home_person never actually
+        # costs the reader anything - the pedigree still builds from
+        # home_person - so warning "the home pedigree was skipped" here
+        # would name the wrong cause for a page that built just fine.
+        self._seed_person('p-bbbbbbbbbb', 'Home Person')
+        (self.archive_root / 'fha.yaml').write_text(
+            'roots: {}\nroot_person: P-zzzzzzzzzz\nsite:\n  home_person: P-bbbbbbbbbb\n',
+            encoding='utf-8')
+        res = self._run(linked=True)
+        self.assertFalse(any('root_person' in m and 'not in the index' in m for m in res['messages']))
+        self.assertIn('Home Person', self._read('index.html'))
+
+    def test_siblings_shown_and_a_living_sibling_dropped(self):
+        self._seed_person('p-aaaaaaaaaa', 'Hub Person')
+        self._seed_person('p-bbbbbbbbbb', 'Shared Parent')
+        self._seed_person('p-cccccccccc', 'Deceased Sibling')
+        self._seed_person('p-dddddddddd', 'Living Sibling', living='true')
+        for kid in ('p-aaaaaaaaaa', 'p-cccccccccc', 'p-dddddddddd'):
+            self._seed_rel('p-bbbbbbbbbb', 'child', kid)
+            self._seed_rel(kid, 'parent', 'p-bbbbbbbbbb')
+        self._seed_home()
+        self._run(linked=False)
+        home = self._read('index.html')
+        ped = self._pedigree_section(home)
+        self.assertIn('Deceased Sibling', ped)
+        self.assertNotIn('Living Sibling', home)   # nowhere on the page at all - never gets a page
+        self.assertIn('ped-link-sibling', ped)
+
+    def test_branch_coloring_on_home_page_not_on_person_page(self):
+        # #115: branch coloring is opt-in (the `home=True`/`branch_color=True`
+        # pair `_build_home_pedigree` passes), so an ordinary person's own
+        # chart stays byte-for-byte what it was before this feature.
+        self._seed_person('p-aaaaaaaaaa', 'Hub Person')
+        self._seed_person('p-bbbbbbbbbb', 'Father Person')
+        self._seed_rel('p-aaaaaaaaaa', 'parent', 'p-bbbbbbbbbb')
+        self._seed_rel('p-bbbbbbbbbb', 'child', 'p-aaaaaaaaaa')
+        self._seed_home()
+        self._run(linked=True)
+        self.assertIn('ped-branch-1', self._read('index.html'))
+        self.assertNotIn('ped-branch-1', self._read('persons/p-aaaaaaaaaa.html'))
+        self.assertNotIn('ped-branch-2', self._read('persons/p-aaaaaaaaaa.html'))
+
+    def test_axis_label_and_caption_present(self):
+        self._seed_person('p-aaaaaaaaaa', 'Hub Person')
+        self._seed_home()
+        self._run(linked=True)
+        home = self._read('index.html')
+        self.assertIn('ped-axis-label', home)
+        self.assertIn("Hub Person&#39;s family, tracing back through the generations", home)
+
+    def test_wrap_static_enhancement_script_included(self):
+        self._seed_person('p-aaaaaaaaaa', 'Hub Person')
+        self._seed_home()
+        self._run(linked=True)
+        home = self._read('index.html')
+        self.assertIn('vendor/fha-tree.js', home)
+        self.assertIn('FhaTree.wrapStatic', home)
+        self.assertIn('id="fha-pedigree"', home)
+
+    def test_redaction_safe_hub_falls_back_to_closest_eligible_ancestor(self):
+        # The configured hub is living; standalone must not open on a card
+        # naming them - it substitutes the closest non-living ancestor on
+        # their recorded line instead (their own parent here).
+        self._seed_person('p-aaaaaaaaaa', 'Living Owner', living='true')
+        self._seed_person('p-bbbbbbbbbb', 'Deceased Parent')
+        self._seed_rel('p-aaaaaaaaaa', 'parent', 'p-bbbbbbbbbb')
+        self._seed_rel('p-bbbbbbbbbb', 'child', 'p-aaaaaaaaaa')
+        self._seed_home()
+        self._run(linked=False)
+        home = self._read('index.html')
+        self.assertIn('Deceased Parent', self._pedigree_section(home))
+        self.assertNotIn('Living Owner', home)   # nowhere on the page - never gets a page
+        self.assertIn("Deceased Parent&#39;s family", home)
+
+    def test_redaction_safe_hub_skips_a_parent_tie_backed_only_by_a_restricted_source(self):
+        # Blocker fix (PR #152): `_apex_ancestor` walked `parent` edges to
+        # find a publishable substitute hub but never checked whether the
+        # TIE crossed was itself public - unlike every other ancestor walk
+        # in this file. A living owner's only recorded parent, tied to them
+        # SOLELY by a claim sourced from a hard-restricted source, must not
+        # be promoted to be the site's public-facing hub just because the
+        # PARENT themselves happens to be deceased and otherwise
+        # unrestricted - the restricted source exists precisely to keep that
+        # tie off the public site. With no other path to an eligible
+        # ancestor, this must fall all the way through to the no-eligible-
+        # ancestor blank-hub fallback, exactly as if the parent were not
+        # recorded at all.
+        self._seed_person('p-aaaaaaaaaa', 'Alice Living', living='true')
+        self._seed_person('p-bbbbbbbbbb', 'Bob Restricted Parent')
+        self._seed_rel('p-aaaaaaaaaa', 'parent', 'p-bbbbbbbbbb')
+        self._seed_rel('p-bbbbbbbbbb', 'child', 'p-aaaaaaaaaa')
+        self._seed_source('s-2222222222', 'Restricted Source', restricted=1,
+                          people=('p-aaaaaaaaaa', 'p-bbbbbbbbbb'))
+        self._seed_claim('c-2222222222', 's-2222222222', 'relationship',
+                         'Bob Restricted Parent is the parent of Alice Living',
+                         status='accepted', persons=('p-aaaaaaaaaa', 'p-bbbbbbbbbb'),
+                         roles={'p-aaaaaaaaaa': 'child', 'p-bbbbbbbbbb': 'parent'})
+        self._seed_home()
+        self._run(linked=False)
+        home = self._read('index.html')
+        # Bob is otherwise an ordinary curated/deceased person, so he still
+        # gets his own page and a site-wide People-index entry - that part
+        # is correct and unrelated to this bug. What must NOT happen is Bob
+        # becoming the PEDIGREE HUB: no card, link, or "Bob's family..."
+        # caption inside the pedigree section itself.
+        ped = self._pedigree_section(home)
+        self.assertNotIn('Bob Restricted Parent', ped)
+        self.assertNotIn('persons/p-bbbbbbbbbb.html', ped)
+        self.assertNotIn('Alice Living', home)   # nowhere on the page - never gets a page
+        self.assertIn('No ancestor eligible to publish was found', home)
+
+    def test_linked_mode_never_substitutes_the_hub(self):
+        self._seed_person('p-aaaaaaaaaa', 'Living Owner', living='true')
+        self._seed_person('p-bbbbbbbbbb', 'Deceased Parent')
+        self._seed_rel('p-aaaaaaaaaa', 'parent', 'p-bbbbbbbbbb')
+        self._seed_rel('p-bbbbbbbbbb', 'child', 'p-aaaaaaaaaa')
+        self._seed_home()
+        self._run(linked=True)
+        self.assertIn('Living Owner', self._read('index.html'))
+
+    def test_no_eligible_ancestor_renders_a_blank_hub_with_a_note(self):
+        # The hub is living and has NO recorded parents at all, so the
+        # redaction-safe walk finds nobody eligible anywhere on the line -
+        # the decided fallback: JUST the hub's own blank card (the hub is
+        # still living/redacted), zero ancestor columns, and a plain-language
+        # note instead of a chart mostly built of blank cards.
+        #
+        # Review fix (PR #152): a deceased spouse used to still draw on this
+        # blank card - real name, dates, and a working link, bracketed
+        # directly onto the living hub's own row - which outs a living
+        # person's specific close relative on the site's highest-traffic
+        # page. `_build_family_wings` now withholds ALL of the hub's own
+        # spouse/child/sibling entries once the hub itself is redacted (same
+        # "dropped outright, no placeholder" rule already applied to every
+        # OTHER redacted person), so the fallback shows nothing beside the
+        # blank card at all.
+        self._seed_person('p-aaaaaaaaaa', 'Living Owner', living='true')
+        self._seed_person('p-bbbbbbbbbb', 'Deceased Spouse')
+        self._seed_rel('p-aaaaaaaaaa', 'spouse', 'p-bbbbbbbbbb')
+        self._seed_home()
+        self._run(linked=False)
+        home = self._read('index.html')
+        self.assertNotIn('Living Owner', home)
+        # Deceased Spouse is otherwise ordinary/curated, so - like Bob above -
+        # they still get their own page and a site-wide People-index entry;
+        # what must NOT happen is drawing on the blank hub's own pedigree row.
+        self.assertNotIn('Deceased Spouse', self._pedigree_section(home))
+        self.assertNotIn('ped-axis-label', home)    # no ancestor columns to caption
+        self.assertIn('No ancestor eligible to publish was found', home)
+        self.assertIn('cannot be shown here without naming a living person', home)
+        self.assertIn('cannot be shown here without naming a living person', home)
+
+    def test_linked_mode_still_shows_the_hub_family_row_with_no_eligible_ancestor(self):
+        # The silence rule above is standalone-only: `--linked`/workbench
+        # never substitutes or redacts the configured hub in the first
+        # place (`_build_home_pedigree`'s own contract), so the same shape -
+        # a living hub with no recorded parents - still draws its real
+        # spouse/child/sibling row in the local preview.
+        self._seed_person('p-aaaaaaaaaa', 'Living Owner', living='true')
+        self._seed_person('p-bbbbbbbbbb', 'Deceased Spouse')
+        self._seed_rel('p-aaaaaaaaaa', 'spouse', 'p-bbbbbbbbbb')
+        self._seed_home()
+        self._run(linked=True)
+        home = self._read('index.html')
+        self.assertIn('Living Owner', home)
+        self.assertIn('Deceased Spouse', home)
+
+    def test_workbench_unknown_add_affordance_reaches_the_home_pedigree(self):
+        # The existing 'Unknown - add' workbench affordance (missing_parent_of)
+        # is threaded through unchanged - a known person with an unresearched
+        # parent gets the clickable placeholder on the home pedigree too.
+        self._seed_person('p-aaaaaaaaaa', 'Hub Person')
+        self._seed_home()
+        res = self._run(linked=True, workbench=True)
+        self.assertEqual(res['status'], 'ok')
+        home = self._read('index.html')
+        self.assertIn('Unknown', home)
+        self.assertIn('data-wb-open="tpl-add-family"', home)
 
 
 class FamilyChartTests(_Base):
@@ -4238,6 +4706,22 @@ class FanChartStyleTests(unittest.TestCase):
         m = re.search(r'^\.fan-label\s*\{([^}]*)\}', css, re.M)
         self.assertIsNotNone(m, '.fan-label rule not found in design/styles.css')
         self.assertNotIn('font-size', m.group(1))
+
+    def test_ped_axis_label_uses_fill_not_color(self):
+        # #115 review finding: _render_pedigree_svg emits the orientation
+        # caption ('ancestors ->') as a raw SVG <text> element, not HTML in a
+        # foreignObject - SVG text paint is controlled by `fill`, not `color`,
+        # unless something bridges the two with `fill: currentColor` (nothing
+        # in this stylesheet does). A `color:` rule here silently renders the
+        # caption in the SVG default black instead of the intended muted
+        # meta-text gray. The working precedent a few lines away, .fan-label,
+        # correctly uses `fill` for its own raw SVG <text> - this rule must
+        # match it.
+        css = (ROOT / 'design' / 'styles.css').read_text(encoding='utf-8')
+        m = re.search(r'^\.ped-axis-label\s*\{([^}]*)\}', css, re.M | re.S)
+        self.assertIsNotNone(m, '.ped-axis-label rule not found in design/styles.css')
+        self.assertIn('fill:', m.group(1))
+        self.assertNotIn('color:', m.group(1))
 
     def test_fan_chart_container_supplies_the_fallback_size(self):
         # Deleting the .fan-label size alone would leave a label with no
