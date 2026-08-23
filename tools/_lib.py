@@ -295,6 +295,14 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    extract_bare_ids          - all bare IDs from a text block
 #    normalize_place_text      - lowercase/collapse-whitespace key for comparing
 #                                 free-text place names without a shared place_id
+#    expand_place_abbreviations, place_text_cluster_key - the sorted-token-set
+#                                 clustering key `fha places candidates` groups
+#                                 unlinked place_text with (moved here from
+#                                 places.py so claim.py can reuse it - #79 pt.3)
+#    read_places_registry      - places/places.yaml parsed to a plain list of
+#                                 dicts, best-effort (never raises)
+#    match_place_text_to_registry - write-time place_text -> place_id lookup
+#                                 (exact/near/None tiers) - issue #79 point 3
 #
 #  Alias resolution / publication guards
 #    resolve_typed_ref         - structured-field ref → typed canonical ID (K4 shared home)
@@ -4906,6 +4914,149 @@ def normalize_place_text(text: str | None) -> str:
     "topeka, kansas" should match.
     """
     return ' '.join((text or '').strip().lower().split())
+
+
+# St->Street / Co->County expansion and the sorted-token-set clustering key
+# below started life as private helpers inside places.py's `fha places
+# candidates` (TOOLING §10, `_expand_abbreviations`/`_candidate_key`). They
+# moved here (issue #79 point 3) so `fha claim`'s write-time registry lookup
+# (`match_place_text_to_registry` below) reuses the EXACT SAME normalization
+# `fha places candidates` clusters unlinked place_text with, rather than a
+# second, driftable copy - tools never import tools (TOOLING §15), so _lib is
+# the one place both claim.py and places.py can share this from. places.py
+# keeps `_expand_abbreviations`/`_candidate_key` as thin aliases onto these
+# so its own call sites (and any test importing those private names) are
+# unchanged.
+_PLACE_ABBREV_RE = [
+    (re.compile(r'\bst\b\.?'), 'street'),
+    (re.compile(r'\bco\b\.?'), 'county'),
+]
+
+
+def expand_place_abbreviations(text: str) -> str:
+    """Expand St->Street and Co->County abbreviations (TOOLING §10)."""
+    for pattern, expansion in _PLACE_ABBREV_RE:
+        text = pattern.sub(expansion, text)
+    return text
+
+
+def place_text_cluster_key(text: str) -> str:
+    """
+    Normalize a place_text into a sorted-token-set key so word-order and
+    abbreviation variants ("Topeka, Kansas" / "Kansas, Topeka" / "Topeka Co")
+    cluster together.
+
+    Punctuation is converted to token boundaries rather than deleted, so
+    "St. Mary" and "St Mary" remain equivalent without accidentally joining
+    neighboring words.
+    """
+    norm = expand_place_abbreviations(normalize_place_text(text))
+    norm = re.sub(r'[^\w\s]+', ' ', norm)
+    tokens = sorted(t for t in norm.split() if t)
+    return ' '.join(tokens)
+
+
+def read_places_registry(archive_root: str | Path) -> list[dict]:
+    """
+    Parse `places/places.yaml` into a plain list of place dicts (each at
+    least carrying `id`; `name`/`alt_names` when the record has them).
+
+    Best-effort and read-only, the same posture claim.py's own
+    `_place_known_in_index` takes toward the SQLite index: a missing file,
+    an unreadable or unparseable YAML, a non-list top level, or a stray
+    non-mapping row all degrade to an empty registry rather than raising.
+    The one caller today (`match_place_text_to_registry`, issue #79 point 3)
+    treats "the registry could not be read right now" the same as "the
+    registry is empty" - a claim mint must never fail because a human
+    happened to be mid-hand-edit of places.yaml when it ran.
+    """
+    if yaml is None:
+        return []
+    path = Path(archive_root) / 'places' / 'places.yaml'
+    if not path.is_file():
+        return []
+    try:
+        text = path.read_text(encoding='utf-8')
+    except OSError:
+        return []
+    try:
+        data = yaml.safe_load(text)
+    except yaml.YAMLError:
+        return []
+    if not isinstance(data, list):
+        return []
+    return [row for row in data if isinstance(row, dict) and row.get('id')]
+
+
+def match_place_text_to_registry(archive_root: str | Path, place_text: str) -> dict:
+    """
+    Match one claim's free-text place against the registered places
+    (`places/places.yaml`) - the write-time resolution issue #79 point 3
+    asked for: "when a claim is drafted with place_text, look it up against
+    the registry; on an exact or near match, attach the place_id; on a
+    miss, note it as a candidate."
+
+    Two tiers, built from the SAME normalization `fha places candidates`
+    clusters unlinked place_text with (`place_text_cluster_key` above) - a
+    write-time auto-attach and that report's clustering can never disagree
+    about what counts as "the same place":
+
+    - `'exact'` - `normalize_place_text(place_text)` equals that same
+      normalization of a registered place's `name:` or one of its
+      `alt_names:`. Safe to auto-attach: once case/punctuation/whitespace
+      noise is folded out, the strings are identical.
+    - `'near'` - not an exact match, but the sorted-token-set key agrees
+      (word order differs, or an abbreviation like "St"/"Co" was expanded
+      on one side only). NEVER auto-attached - a wrong `place_id` is worse
+      than an unlinked `place_text` that the existing `fha places
+      candidates` clustering will still surface on its own; a caller
+      returns this tier as a nudge only (point at `fha confirm place ...
+      --into`), never as a write.
+
+    A key claimed by more than one place_id - an exact tie, or a near tie -
+    is a registry hygiene problem in its own right (`fha places lint`'s
+    PL002, duplicate names): this function refuses to guess which one is
+    meant and reports no match at all, the same as a genuine miss, rather
+    than auto-attaching to an arbitrary one of them.
+
+    Returns `{'tier': 'exact'|'near'|None, 'place_id': str|None (display-
+    cased, e.g. 'L-baba9801fa'), 'name': str|None (the registered name or
+    alt_name that matched)}`.
+    """
+    key = normalize_place_text(place_text)
+    if not key:
+        return {'tier': None, 'place_id': None, 'name': None}
+    token_key = place_text_cluster_key(place_text)
+
+    exact_hits: dict[str, str] = {}
+    near_hits: dict[str, str] = {}
+    for place in read_places_registry(archive_root):
+        pid = place.get('id')
+        if not (isinstance(pid, str) and is_valid_id(pid) and id_type_of(pid) == 'L'):
+            continue
+        pid_norm = normalize_id(pid)
+        names = [place.get('name')]
+        alt = place.get('alt_names')
+        if isinstance(alt, list):
+            names.extend(alt)
+        for name in names:
+            if not isinstance(name, str) or not name.strip():
+                continue
+            if normalize_place_text(name) == key:
+                exact_hits.setdefault(pid_norm, name)
+            elif place_text_cluster_key(name) == token_key:
+                near_hits.setdefault(pid_norm, name)
+
+    if exact_hits:
+        if len(exact_hits) == 1:
+            (pid_norm, name), = exact_hits.items()
+            return {'tier': 'exact', 'place_id': fmt_id_display(pid_norm), 'name': name}
+        return {'tier': None, 'place_id': None, 'name': None}
+
+    if len(near_hits) == 1:
+        (pid_norm, name), = near_hits.items()
+        return {'tier': 'near', 'place_id': fmt_id_display(pid_norm), 'name': name}
+    return {'tier': None, 'place_id': None, 'name': None}
 
 
 def scan_ids_in_tree(archive_root: str | Path) -> set[str]:

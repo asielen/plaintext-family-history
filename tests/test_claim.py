@@ -1046,6 +1046,122 @@ class RunClaimNewTests(unittest.TestCase):
         self.assertNotIn('reviewed:', text.split('C-aa11bb22cc')[1].split('- value:')[0])
 
 
+# ── Issue #79 point 3: write-time place resolution on `fha claim new` ───────────
+
+def _write_registry(root: Path, text: str) -> None:
+    (root / 'places').mkdir(parents=True, exist_ok=True)
+    (root / 'places' / 'places.yaml').write_text(text, encoding='utf-8')
+
+
+class RunClaimNewPlaceResolutionTests(unittest.TestCase):
+    """A brand-new claim minted with `place_text` and no `place` looks the
+    text up against `places/places.yaml` before it is written - the "real
+    fix" issue #79 asked for: an exact match after normalization attaches
+    `place:` automatically, a near match is surfaced but never attached, and
+    a genuine miss changes nothing from today's behavior."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.source = _write_source(self.root)
+        _write_person(self.root, 'P-aaaaaaaaaa', 'Anna Smith')
+        _write_registry(
+            self.root,
+            '- id: L-baba9801fa\n'
+            '  name: Topeka, Kansas\n'
+            '  alt_names: ["Topeka County, Kansas"]\n')
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _claims(self) -> dict:
+        return {c['id']: c for c in read_record(self.source)['claims']}
+
+    def test_exact_match_attaches_place_id_automatically(self) -> None:
+        result = claim.run_claim_new(
+            self.root, source_id='S-1111111111', claim_type='residence',
+            value='Lived in Topeka, Kansas', persons=['P-aaaaaaaaaa'],
+            place_text='Topeka, Kansas')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        rec = self._claims()[result['claim_id']]
+        self.assertEqual(str(rec['place']), 'L-baba9801fa')
+        self.assertEqual(rec['place_text'], 'Topeka, Kansas')   # unaltered, SPEC §15
+        text = ' '.join(m.text for m in result.messages)
+        self.assertIn('matched the registered place', text)
+        self.assertIn('attached place: automatically', text)
+
+    def test_exact_match_on_alt_name_also_attaches(self) -> None:
+        result = claim.run_claim_new(
+            self.root, source_id='S-1111111111', claim_type='residence',
+            value='Lived there', persons=['P-aaaaaaaaaa'],
+            place_text='Topeka County, Kansas')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        rec = self._claims()[result['claim_id']]
+        self.assertEqual(str(rec['place']), 'L-baba9801fa')
+
+    def test_case_and_whitespace_noise_still_matches_exactly(self) -> None:
+        result = claim.run_claim_new(
+            self.root, source_id='S-1111111111', claim_type='residence',
+            value='Lived there', persons=['P-aaaaaaaaaa'],
+            place_text='  topeka,   KANSAS  ')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        rec = self._claims()[result['claim_id']]
+        self.assertEqual(str(rec['place']), 'L-baba9801fa')
+
+    def test_near_match_is_not_auto_attached_but_is_noted(self) -> None:
+        # Word order differs ("Kansas, Topeka" vs the registered "Topeka,
+        # Kansas") - same token set, not the same string. A wrong place_id
+        # is worse than an unlinked place_text, so this must NOT attach.
+        result = claim.run_claim_new(
+            self.root, source_id='S-1111111111', claim_type='residence',
+            value='Lived there', persons=['P-aaaaaaaaaa'],
+            place_text='Kansas, Topeka')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        rec = self._claims()[result['claim_id']]
+        self.assertNotIn('place', rec)
+        self.assertEqual(rec['place_text'], 'Kansas, Topeka')
+        text = ' '.join(m.text for m in result.messages)
+        self.assertIn('close to the registered place', text)
+        self.assertIn('NOT linked automatically', text)
+        self.assertIn('fha confirm place', text)
+
+    def test_genuine_miss_leaves_place_text_unlinked_same_as_today(self) -> None:
+        result = claim.run_claim_new(
+            self.root, source_id='S-1111111111', claim_type='residence',
+            value='Lived there', persons=['P-aaaaaaaaaa'],
+            place_text='Wichita, Kansas')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        rec = self._claims()[result['claim_id']]
+        self.assertNotIn('place', rec)
+        self.assertEqual(rec['place_text'], 'Wichita, Kansas')
+        text = ' '.join(m.text for m in result.messages)
+        self.assertNotIn('matched the registered place', text)
+        self.assertNotIn('close to the registered place', text)
+
+    def test_explicit_place_is_never_overridden_by_the_lookup(self) -> None:
+        # A caller who already named a place (even a different, unrelated
+        # one) is never second-guessed by the registry lookup.
+        result = claim.run_claim_new(
+            self.root, source_id='S-1111111111', claim_type='residence',
+            value='Lived there', persons=['P-aaaaaaaaaa'],
+            place='L-9e2210ab44', place_text='Topeka, Kansas')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        rec = self._claims()[result['claim_id']]
+        self.assertEqual(str(rec['place']), 'L-9e2210ab44')
+        text = ' '.join(m.text for m in result.messages)
+        self.assertNotIn('matched the registered place', text)
+
+    def test_no_registry_file_is_a_quiet_no_op(self) -> None:
+        (self.root / 'places' / 'places.yaml').unlink()
+        result = claim.run_claim_new(
+            self.root, source_id='S-1111111111', claim_type='residence',
+            value='Lived there', persons=['P-aaaaaaaaaa'],
+            place_text='Topeka, Kansas')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        rec = self._claims()[result['claim_id']]
+        self.assertNotIn('place', rec)
+
+
 # ── fha claim new: CLI routing (fha.main and the standalone parser) ─────────────
 
 class ClaimNewCliRoutingTests(unittest.TestCase):
@@ -1429,6 +1545,85 @@ class RunClaimFieldEditTests(unittest.TestCase):
         result = claim.run_claim(self.root, claim_id='C-bb22cc33dd', status='rejected')
         self.assertEqual(result.exit_code, EXIT_CLEAN)
         self.assertEqual(self._claims()['C-bb22cc33dd']['status'], 'rejected')
+
+
+# ── Issue #79 point 3: write-time place resolution on `fha claim <C-id>` ────────
+
+class RunClaimFieldEditPlaceResolutionTests(unittest.TestCase):
+    """The edit verb gets the same write-time registry lookup as `fha claim
+    new` whenever `--place-text` is set with no `--place` - but only when
+    the claim does not already carry a `place:`, so correcting the wording
+    of an already-linked claim never silently re-points its link."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.source = _write_source(self.root)
+        _write_person(self.root, 'P-aaaaaaaaaa', 'Anna Smith')
+        _write_registry(
+            self.root,
+            '- id: L-baba9801fa\n'
+            '  name: Topeka, Kansas\n'
+            '  alt_names: ["Topeka County, Kansas"]\n')
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _claims(self) -> dict:
+        return {c['id']: c for c in read_record(self.source)['claims']}
+
+    def test_exact_match_attaches_place_id_on_a_field_only_edit(self) -> None:
+        # C-aa11bb22cc (the fixture claim) starts with no place: at all.
+        result = claim.run_claim(
+            self.root, claim_id='C-aa11bb22cc', place_text='Topeka, Kansas')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        rec = self._claims()['C-aa11bb22cc']
+        self.assertEqual(str(rec['place']), 'L-baba9801fa')
+        self.assertEqual(rec['place_text'], 'Topeka, Kansas')
+        text = ' '.join(m.text for m in result.messages)
+        self.assertIn('matched the registered place', text)
+
+    def test_near_match_is_not_auto_attached_on_edit_either(self) -> None:
+        result = claim.run_claim(
+            self.root, claim_id='C-aa11bb22cc', place_text='Kansas, Topeka')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        rec = self._claims()['C-aa11bb22cc']
+        self.assertNotIn('place', rec)
+        text = ' '.join(m.text for m in result.messages)
+        self.assertIn('NOT linked automatically', text)
+
+    def test_genuine_miss_edits_place_text_only_same_as_today(self) -> None:
+        result = claim.run_claim(
+            self.root, claim_id='C-aa11bb22cc', place_text='Wichita, Kansas')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        rec = self._claims()['C-aa11bb22cc']
+        self.assertNotIn('place', rec)
+        self.assertEqual(rec['place_text'], 'Wichita, Kansas')
+
+    def test_a_claim_that_already_has_a_place_link_is_never_reattached(self) -> None:
+        # Correcting place_text wording on an ALREADY-linked claim must not
+        # silently re-point (or even just re-confirm) its existing place:
+        # link from a fresh registry lookup - that link was a human/tool
+        # decision made separately, and this feature only fills emptiness.
+        first = claim.run_claim(
+            self.root, claim_id='C-bb22cc33dd', place='L-9e2210ab44')
+        self.assertEqual(first.exit_code, EXIT_CLEAN)
+        second = claim.run_claim(
+            self.root, claim_id='C-bb22cc33dd', place_text='Topeka, Kansas')
+        self.assertEqual(second.exit_code, EXIT_CLEAN)
+        rec = self._claims()['C-bb22cc33dd']
+        self.assertEqual(str(rec['place']), 'L-9e2210ab44')   # untouched
+        self.assertEqual(rec['place_text'], 'Topeka, Kansas')
+        text = ' '.join(m.text for m in second.messages)
+        self.assertNotIn('matched the registered place', text)
+
+    def test_explicit_place_on_the_edit_verb_is_never_overridden(self) -> None:
+        result = claim.run_claim(
+            self.root, claim_id='C-aa11bb22cc',
+            place='L-9e2210ab44', place_text='Topeka, Kansas')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        rec = self._claims()['C-aa11bb22cc']
+        self.assertEqual(str(rec['place']), 'L-9e2210ab44')
 
 
 # ── Batch status moves (TOOLING §3b amendment): run_claim_batch ─────────────────
