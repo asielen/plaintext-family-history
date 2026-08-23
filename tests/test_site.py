@@ -2594,6 +2594,21 @@ class TreeTests(_Base):
         self.assertIn(within_bound, got_ids)
         self.assertNotIn(beyond_bound, got_ids)
 
+    def test_descendant_tree_render_deferred_until_details_opens(self):
+        # #152 review fix (P2): the descendants <details> is closed by
+        # default (person.html), so calling FhaTree.render() unconditionally
+        # at page load - the pre-fix behavior - fed it a zero-width
+        # container (a collapsed <details> is not laid out at all), which
+        # left the chart badly fit until the reader pressed Fit by hand.
+        # The emitted script must now wait for the enclosing <details>'s own
+        # `toggle` event, which only fires once it is genuinely open and has
+        # real layout dimensions.
+        self._seed_rels_chain()
+        self._run(linked=True)
+        gus_page = self._read('persons/p-cccccccccc.html')
+        self.assertIn('function renderTree()', gus_page)
+        self.assertIn("addEventListener('toggle'", gus_page)
+
     def test_mistyped_root_person_warns(self):
         self._seed_person('p-aaaaaaaaaa', 'Real Person')
         (self.archive_root / 'fha.yaml').write_text(
