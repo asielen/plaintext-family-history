@@ -921,7 +921,7 @@ _RESEARCH_SAME_HEADING_MD = '''# Research - Test Person
 
 class QuestionNamespacingTests(unittest.TestCase):
     """
-    The same `## Q:` heading in two files must not shadow.  _parse_questions
+    The same `## Q:` heading in two files must not shadow.  parse_questions
     keys by '{file} :: {heading}' so a heading that recurs across
     notes/questions.md and a person research file (easy at hundreds of
     questions) keeps both entries; display and old-snapshot comparison use
@@ -944,7 +944,7 @@ class QuestionNamespacingTests(unittest.TestCase):
         (self.archive_root / 'people' / 'test__person_research_P-aaaaaaaaaa.md').write_text(
             _RESEARCH_SAME_HEADING_MD, encoding='utf-8'
         )
-        questions = report._parse_questions(self.archive_root)
+        questions = report.parse_questions(self.archive_root)
         same_heading = [
             info for info in questions.values()
             if info['heading'] == 'When was Test Person born?'
@@ -968,7 +968,7 @@ class QuestionNamespacingTests(unittest.TestCase):
         (self.archive_root / 'people' / 'smith__anne_research_P-bbbbbbbbbb.md').write_text(
             _RESEARCH_SAME_HEADING_MD, encoding='utf-8'
         )
-        questions = report._parse_questions(self.archive_root)
+        questions = report.parse_questions(self.archive_root)
         self.assertEqual(
             sorted({info['file'] for info in questions.values()}),
             ['people/smith__anne_research_P-bbbbbbbbbb.md'],
@@ -986,7 +986,7 @@ class QuestionNamespacingTests(unittest.TestCase):
             + _RESEARCH_SAME_HEADING_MD,
             encoding='utf-8',
         )
-        questions = report._parse_questions(self.archive_root)
+        questions = report.parse_questions(self.archive_root)
         self.assertEqual(questions, {})
 
     def test_discoveries_show_plain_heading_and_accept_old_snapshot_keys(self) -> None:

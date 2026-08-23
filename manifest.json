@@ -420,7 +420,7 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "70dccec3f2a893c9489cde2ac19c5314f4d13fe24a8d1e759356408876f9d6cd",
+      "sha256": "5f57e5b50866f61ad1674f667c23789b1249564ed29fe58f07f5b63f02eea7dc",
       "spec_version": "1.2",
       "src": "tools/_lib.py"
     },
@@ -630,7 +630,7 @@
     {
       "path": ".fha/tools/report.py",
       "category": "operating",
-      "sha256": "aed63bf495eaa7dfb774df1d613c94499bbc29ba5e1690482058098013551113",
+      "sha256": "7b7895ebaf4bdf6d5d309251fa18c6311e20fb3891f68aedc2d686b18db9654b",
       "spec_version": "1.2",
       "src": "tools/report.py"
     },
@@ -658,7 +658,7 @@
     {
       "path": ".fha/tools/site.py",
       "category": "operating",
-      "sha256": "315a6c67c81d3b9fde5df88580742ee6a73580f8fb84ccf3de90e76cdfaf2699",
+      "sha256": "9ee4cfbee1b3b1590adbfd381ddda6ea400b67e99b16669940d9a03dfc1f4468",
       "spec_version": "1.2",
       "src": "tools/site.py"
     },
@@ -721,7 +721,7 @@
     {
       "path": ".fha/tools/templates/person.html",
       "category": "operating",
-      "sha256": "0f5d7da82b587085c49c5ab0cada49987cc788dc4a5a14f2344c4452cd706cc0",
+      "sha256": "add5a9943ad8849263516359207bfd712ea6abfbbef4fc4892ff50e974face6c",
       "spec_version": "1.2",
       "src": "tools/templates/person.html"
     },
