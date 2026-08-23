@@ -4252,10 +4252,12 @@ class _SiteBuilder:
         non-living, non-redacted ancestor reached - the standalone home
         pedigree's redaction-safe hub fallback (#115). Returns None when no
         eligible ancestor exists at all (root_pid's whole recorded line is
-        living/unknown/restricted, or nothing is recorded above root_pid and
-        root_pid is itself ineligible) - the caller's cue to fall back to a
-        hub-only render (just the hub's own family row) with an explanatory
-        note, rather than a page with nothing on it.
+        living/unknown/restricted, or every tie to it is unpublishable, or
+        nothing is recorded above root_pid and root_pid is itself
+        ineligible) - the caller's cue to fall back to a blank hub-only
+        render (`_build_family_wings` also withholds root_pid's own spouse/
+        children/siblings once it is itself redacted - review fix, PR #152)
+        with an explanatory note, rather than a page with nothing on it.
 
         BFS explores nearer ancestors before farther ones (parents, then
         grandparents, ...), one whole generation at a time, each generation's
@@ -4276,7 +4278,26 @@ class _SiteBuilder:
         only caller and is repurposed here rather than deleted, per #115's
         design. The graph walk (BFS over `parent` edges) is UNCHANGED; only
         the selection rule (closest-eligible instead of deepest-of-all) and
-        the redaction check are new."""
+        the redaction check are new.
+
+        EDGE eligibility (review fix, PR #152): a candidate is not just the
+        far end of SOME parent edge - it is the far end of a specific tie,
+        and that tie must itself be publishable, exactly like every other
+        ancestor/descendant walk in this file (`_build_ahnentafel`,
+        `_build_tree_data`) already requires via `_has_public_claim`. Without
+        this, a parent tie backed only by a restricted claim or a claim
+        sourced exclusively from a hard-restricted source (DNA/by-request/
+        publication_ok:false) - the exact case that mechanism exists to keep
+        off the public site - could still promote that ancestor to be the
+        home page's PUBLIC-FACING hub: their real name, dates, and a link to
+        their own page, once removed from a living seed by nothing sturdier
+        than the very tie the marker says not to publish. A non-public edge
+        is skipped outright (`continue` before `other` is ever added to
+        `seen`/the next level), so - like the other walks - it also cannot be
+        used to reach further ancestors THROUGH it: there is no public path
+        across an unpublishable tie, so nothing beyond it is reachable
+        either. `root_pid` itself needs no such check (it has no incoming
+        edge to cross to be considered)."""
         if root_pid in self.person_meta and not self._person_is_redacted(self.person_meta[root_pid]):
             return root_pid
         seen = {root_pid}
@@ -4290,9 +4311,12 @@ class _SiteBuilder:
                     (cur,),
                 ):
                     other = r['other_id']
-                    if other not in seen:
-                        seen.add(other)
-                        level.append(other)
+                    if other in seen:
+                        continue
+                    if not self.linked and not self._has_public_claim(cur, other):
+                        continue
+                    seen.add(other)
+                    level.append(other)
             for pid in sorted(level):
                 meta = self.person_meta.get(pid)
                 if meta is not None and not self._person_is_redacted(meta):

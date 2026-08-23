@@ -2876,6 +2876,43 @@ class HomePedigreeTests(_Base):
         self.assertNotIn('Living Owner', home)   # nowhere on the page - never gets a page
         self.assertIn("Deceased Parent&#39;s family", home)
 
+    def test_redaction_safe_hub_skips_a_parent_tie_backed_only_by_a_restricted_source(self):
+        # Blocker fix (PR #152): `_apex_ancestor` walked `parent` edges to
+        # find a publishable substitute hub but never checked whether the
+        # TIE crossed was itself public - unlike every other ancestor walk
+        # in this file. A living owner's only recorded parent, tied to them
+        # SOLELY by a claim sourced from a hard-restricted source, must not
+        # be promoted to be the site's public-facing hub just because the
+        # PARENT themselves happens to be deceased and otherwise
+        # unrestricted - the restricted source exists precisely to keep that
+        # tie off the public site. With no other path to an eligible
+        # ancestor, this must fall all the way through to the no-eligible-
+        # ancestor blank-hub fallback, exactly as if the parent were not
+        # recorded at all.
+        self._seed_person('p-aaaaaaaaaa', 'Alice Living', living='true')
+        self._seed_person('p-bbbbbbbbbb', 'Bob Restricted Parent')
+        self._seed_rel('p-aaaaaaaaaa', 'parent', 'p-bbbbbbbbbb')
+        self._seed_rel('p-bbbbbbbbbb', 'child', 'p-aaaaaaaaaa')
+        self._seed_source('s-2222222222', 'Restricted Source', restricted=1,
+                          people=('p-aaaaaaaaaa', 'p-bbbbbbbbbb'))
+        self._seed_claim('c-2222222222', 's-2222222222', 'relationship',
+                         'Bob Restricted Parent is the parent of Alice Living',
+                         status='accepted', persons=('p-aaaaaaaaaa', 'p-bbbbbbbbbb'),
+                         roles={'p-aaaaaaaaaa': 'child', 'p-bbbbbbbbbb': 'parent'})
+        self._seed_home()
+        self._run(linked=False)
+        home = self._read('index.html')
+        # Bob is otherwise an ordinary curated/deceased person, so he still
+        # gets his own page and a site-wide People-index entry - that part
+        # is correct and unrelated to this bug. What must NOT happen is Bob
+        # becoming the PEDIGREE HUB: no card, link, or "Bob's family..."
+        # caption inside the pedigree section itself.
+        ped = self._pedigree_section(home)
+        self.assertNotIn('Bob Restricted Parent', ped)
+        self.assertNotIn('persons/p-bbbbbbbbbb.html', ped)
+        self.assertNotIn('Alice Living', home)   # nowhere on the page - never gets a page
+        self.assertIn('No ancestor eligible to publish was found', home)
+
     def test_linked_mode_never_substitutes_the_hub(self):
         self._seed_person('p-aaaaaaaaaa', 'Living Owner', living='true')
         self._seed_person('p-bbbbbbbbbb', 'Deceased Parent')
