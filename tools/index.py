@@ -249,6 +249,8 @@ CREATE TABLE IF NOT EXISTS source_files(
   copy TEXT,
   derived INTEGER DEFAULT 0,
   original_filename TEXT,
+  date_edtf TEXT,        -- optional per-file date (SPEC §14, #123); NULL when
+                          -- the `files:` entry carries no `date:` of its own
   exists_on_disk INTEGER,
   in_inventory INTEGER
 );
@@ -1328,6 +1330,14 @@ def _index_source(
         # exactly this role/copy pair, so the column must carry whatever the
         # record actually wrote, not a blanket NULL.
         copy_letter = str(f.get('copy', '')).strip() or None
+        # `date:` (SPEC §14, #123) is this file's own EDTF date, distinct
+        # from the source's own `source_date:` - for a source that legitimately
+        # bundles files from different dates. Stored raw, same discipline as
+        # `copy_letter` above and as `claims.date_edtf` (index.py's claim
+        # INSERT below): the string the record wrote, unparsed/unvalidated
+        # beyond what already happens elsewhere, NULL when the entry carries
+        # no `date:` of its own.
+        file_date_edtf = str(f.get('date', '')).strip() or None
         derived = 1 if f.get('derived') in (True, 'true') else 0
         orig_name = str(f.get('original_filename', '')) or None
         file_status = str(f.get('status', ''))
@@ -1340,9 +1350,10 @@ def _index_source(
         conn.execute(
             '''INSERT INTO source_files
                (source_id, path, role, copy, derived, original_filename,
-                exists_on_disk, in_inventory)
-               VALUES (?,?,?,?,?,?,?,1)''',
-            (sid, file_path, role, copy_letter, derived, orig_name, exists),
+                date_edtf, exists_on_disk, in_inventory)
+               VALUES (?,?,?,?,?,?,?,?,1)''',
+            (sid, file_path, role, copy_letter, derived, orig_name,
+             file_date_edtf, exists),
         )
 
         # Text companion (role: transcript / transcription / extracted-text):

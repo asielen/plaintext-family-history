@@ -35,7 +35,8 @@ sys.path.insert(0, str(ROOT / 'tools'))
 import index
 from _lib import (
     EXIT_CLEAN, EXIT_FAILURE, EXIT_WARNINGS, claim_is_own_vital,
-    social_parties, spouse_parties, vital_subjects,
+    social_parties, spouse_parties, sqlite_cache_schema_status,
+    vital_subjects,
 )
 
 
@@ -1368,6 +1369,166 @@ class SourceFilesCopyColumnTests(unittest.TestCase):
         self.assertEqual(
             index.upsert_source(self.root, {}, _COPY_SID.lower()), 'indexed')
         self.assertEqual(self._copy_column(), full)
+
+
+_DATE_SID = 'S-9d9d9d9d9d'
+_DATE_SOURCE = '''---
+id: {sid}
+title: Newspaper clippings, several dates
+source_type: newspaper
+source_date: 1916-02/1916-06
+files:
+  - file: documents/newspaper/clipping-a_{sid}.pdf
+    role: clipping
+    date: 1916-02-26
+  - file: documents/newspaper/clipping-b_{sid}.pdf
+    role: clipping
+    copy: b
+    date: 1916-06-03
+  - file: documents/newspaper/clipping-c_{sid}.pdf
+    role: clipping
+---
+
+## Notes
+Three clippings about the same event, mailed months apart (#123).
+'''
+
+
+class SourceFilesDateColumnTests(unittest.TestCase):
+    """SPEC §14 (#123): a `files:` entry may carry an optional per-file
+    `date:` (EDTF) distinct from the source's own `source_date:` - for a
+    source that legitimately bundles files from different dates (several
+    newspaper clippings about one event, mailed months apart). TOOLING §2
+    added a matching `source_files.date_edtf` column, but until this fix
+    `_index_source`'s file-inventory INSERT never read `f.get('date')` off
+    the frontmatter entry at all, so the column stayed permanently NULL no
+    matter what a record wrote - the same shape of bug PR #143 fixed for
+    `copy:`, one field over. Checked in both the full rebuild and the
+    incremental upsert (both flow through `_index_source` and must agree,
+    TOOLING §2), and stored RAW/unvalidated, the same discipline
+    `claims.date_edtf` already uses (index.py's claim INSERT: `str(claim.get
+    ('date', ''))`, no EDTF parsing at index time)."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        _write(
+            self.root / 'sources' / 'newspaper' / f'clippings_{_DATE_SID.lower()}.md',
+            _DATE_SOURCE.format(sid=_DATE_SID),
+        )
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _date_column(self) -> dict:
+        conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
+        try:
+            return dict(conn.execute(
+                'SELECT path, date_edtf FROM source_files WHERE source_id = ?',
+                (_DATE_SID.lower(),)))
+        finally:
+            conn.close()
+
+    def test_full_build_reads_date_from_frontmatter(self) -> None:
+        index.build_index(self.root, {})
+        got = self._date_column()
+        self.assertEqual(
+            got[f'documents/newspaper/clipping-a_{_DATE_SID}.pdf'], '1916-02-26')
+        self.assertEqual(
+            got[f'documents/newspaper/clipping-b_{_DATE_SID}.pdf'], '1916-06-03')
+        # A file with no `date:` line must stay NULL, not inherit a sibling's
+        # or fall back to the source's own `source_date:`.
+        self.assertIsNone(
+            got[f'documents/newspaper/clipping-c_{_DATE_SID}.pdf'])
+
+    def test_upsert_matches_full_build(self) -> None:
+        index.build_index(self.root, {})
+        full = self._date_column()
+        self.assertEqual(
+            index.upsert_source(self.root, {}, _DATE_SID.lower()), 'indexed')
+        self.assertEqual(self._date_column(), full)
+
+
+_OLD_SCHEMA_STAMP_SQL = (
+    "PRAGMA user_version=6;"
+    "CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);"
+    "INSERT INTO meta(key, value) VALUES ('schema_version', '6');"
+    "CREATE TABLE persons(id TEXT, name TEXT, path TEXT);"
+    "CREATE TABLE sources(id TEXT, title TEXT, path TEXT);"
+    "CREATE TABLE claims(id TEXT, source_id TEXT);"
+)
+
+
+class IndexSchemaVersionBumpTests(unittest.TestCase):
+    """#123: `source_files` gained a `date_edtf` column (TOOLING §2) with no
+    matching `INDEX_SCHEMA_VERSION` bump at first - so a v6 `.cache/index.
+    sqlite` built by yesterday's tools would read every row's `date_edtf` as
+    NULL forever, indistinguishable from a file that genuinely carries no
+    per-file `date:`, until a human happened to run a full `fha index` for
+    some unrelated reason. Bumping the constant (6 -> 7) is what makes
+    `sqlite_cache_schema_status` - the gate every incremental-write path
+    checks before trusting a cache - call a v6-stamped cache 'old-schema' and
+    refuse it, same rationale `_lib.py`'s own comment block already
+    documents for the v2/v3/v4/v5 bumps. A hand-stamped v6 cache (schema_
+    version='6' in `meta`, matching `PRAGMA user_version`) stands in for
+    'whatever a pre-#123 `fha index` run actually wrote' - it does not need
+    to reproduce every column of that shape, only the version marker every
+    caller actually reads."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        (self.root / '.cache').mkdir(parents=True)
+        self.db_path = self.root / '.cache' / 'index.sqlite'
+        conn = sqlite3.connect(str(self.db_path))
+        conn.executescript(_OLD_SCHEMA_STAMP_SQL)
+        conn.commit()
+        conn.close()
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_schema_version_is_7(self) -> None:
+        # Pins the bump itself - a silent regression back to 6 would defeat
+        # every check below without failing any of them on its own.
+        self.assertEqual(index.INDEX_SCHEMA_VERSION, 7)
+
+    def test_v6_stamped_cache_reads_as_old_schema(self) -> None:
+        status, _detail = sqlite_cache_schema_status(
+            self.db_path, index.INDEX_SCHEMA_VERSION, ('persons', 'sources', 'claims'))
+        self.assertEqual(status, 'old-schema')
+
+    def test_upsert_refuses_the_stale_cache_instead_of_silently_missing_the_column(self) -> None:
+        # A v6 cache lacks source_files.date_edtf outright. upsert_source must
+        # refuse it up front (same as a genuinely-missing .sqlite file) rather
+        # than either crashing on the missing column or - worse - silently
+        # writing rows that skip it. The source file has to actually exist on
+        # disk, or upsert_source answers 'not_found' before it ever reaches
+        # the schema check this test targets.
+        _write(
+            self.root / 'sources' / 'other' / 'clip_s-1111111111.md',
+            '---\nid: S-1111111111\ntitle: Clip\nsource_type: other\n---\n\n## Claims\n')
+        status = index.upsert_source(self.root, {}, 's-1111111111')
+        self.assertEqual(status, 'index_absent')
+
+    def test_full_rebuild_replaces_the_old_shape_cleanly(self) -> None:
+        # `fha index` (the fix a human is pointed at) must not merely refuse -
+        # it has to actually produce the new column, populated, on top of a
+        # cache that started out old-shaped.
+        _write(
+            self.root / 'sources' / 'other' / 'clip_s-1111111111.md',
+            '---\nid: S-1111111111\ntitle: Clip\nsource_type: other\n'
+            'files:\n  - file: documents/other/clip_S-1111111111.pdf\n'
+            '    role: clipping\n    date: 1916-02-26\n---\n\n## Claims\n')
+        index.build_index(self.root, {})
+        conn = sqlite3.connect(str(self.db_path))
+        try:
+            row = conn.execute(
+                'SELECT date_edtf FROM source_files WHERE source_id = ?',
+                ('s-1111111111',)).fetchone()
+        finally:
+            conn.close()
+        self.assertEqual(row[0], '1916-02-26')
 
 
 _EXTRACT_SID = 'S-7a7a7a7a7a'
