@@ -964,6 +964,38 @@ class PlaceTextEscalationTests(unittest.TestCase):
         self.assertIn('Place candidates section below', md)
         self.assertNotIn('fha report --section place-candidates', md)
 
+    def test_escalation_exposed_in_structured_result(self) -> None:
+        # Codex review, PR #142 finding 4: `run_report` used to thread the
+        # escalation state only into the Markdown-rendering path, so a
+        # workbench or other headless consumer reading the structured
+        # Result (not reparsing Markdown) had no way to tell a 20-claim
+        # oversight escalation apart from an ordinary §6b candidate.
+        self._write_cluster_source('S-9000000010', 'Warsaw, Poland', 20)
+        result = report.run_report(self.archive_root, {}, full=True)
+
+        escalations = result.data['place_escalations']
+        self.assertEqual(len(escalations), 1)
+        self.assertEqual(escalations[0]['label'], 'Warsaw, Poland')
+        self.assertEqual(escalations[0]['claim_count'], 20)
+
+        # Also marked in data['sections'], the same key -> list[str] shape
+        # every other section already uses there.
+        self.assertIn('place-escalations', result.data['sections'])
+        self.assertTrue(any(
+            'Warsaw, Poland' in line
+            for line in result.data['sections']['place-escalations']
+        ))
+
+    def test_no_escalation_reports_empty_structured_result(self) -> None:
+        # The structured field must exist (and be empty/say-so) even on a
+        # run with no escalation, not only appear when one fires.
+        result = report.run_report(self.archive_root, {}, full=True)
+        self.assertEqual(result.data['place_escalations'], [])
+        self.assertEqual(
+            result.data['sections']['place-escalations'],
+            ['No place-text clusters past the oversight threshold.'],
+        )
+
 
 _RESEARCH_SAME_HEADING_MD = '''# Research - Test Person
 

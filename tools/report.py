@@ -1501,6 +1501,19 @@ def run_report(
       - data['full_markdown']: the complete report (what the snapshot/cache hold).
       - data['sections']: the per-section structured bodies (key -> list[str]),
         so a consumer can read each section as data, not just parsed text.
+        Also carries a `'place-escalations'` entry (same list[str] shape,
+        the escalated clusters' own rendered lines) alongside the numbered
+        sections - it is not one of `SECTIONS`/`_SECTION_KEYS`, so it is
+        never itself a `--section` filter target or its own `## N.` heading;
+        it exists here purely so a consumer reading `data['sections']` sees
+        the same escalation the markdown banner shows.
+      - data['place_escalations']: the escalated clusters as raw structured
+        dicts (`label`, `claim_count`, `claim_ids`, `date_min`, `date_max` -
+        `_place_text_escalations`' own return shape, never re-derived), so a
+        workbench or other headless consumer can tell a 20-claim oversight
+        escalation apart from an ordinary §6b candidate without reparsing
+        Markdown (Codex review, PR #142 finding 4 - previously this state
+        only ever reached `_render_report`'s Markdown output).
     The persisted snapshot and `.cache/report_{date}.md` always hold the complete
     report - `--section` narrows what's printed this run, not what's recorded -
     and both written files are listed in `result.changed`.  `result.exit_code`
@@ -1593,6 +1606,13 @@ def run_report(
         place_escalation_lines = [
             _place_text_group_line(archive_root, g) for g in place_escalations
         ]
+        # Not one of SECTIONS/_SECTION_KEYS (never a `--section` filter target
+        # or its own `## N.` heading) - present purely so `data['sections']`
+        # exposes the same escalation a headless consumer can already read as
+        # raw dicts off `data['place_escalations']` below (Codex review,
+        # PR #142 finding 4).
+        bodies['place-escalations'] = place_escalation_lines or [
+            'No place-text clusters past the oversight threshold.']
 
         generated = datetime.date.today().isoformat()
         full_md = _render_report(generated, bodies, section_filter=None,
@@ -1635,6 +1655,7 @@ def run_report(
             'markdown': printed_md,
             'full_markdown': full_md,
             'sections': bodies,
+            'place_escalations': place_escalations,
         },
         # The index warnings also ride as structured messages for headless
         # consumers; the markdown embeds the same texts as the archive-notes
