@@ -114,7 +114,7 @@
     {
       "path": ".claude/skills/setup-interview/SKILL.md",
       "category": "operating",
-      "sha256": "b17f53395aa0a34b7219a4c422c5bd9c54078a21ef2bf27a2b7c41ee4069531b",
+      "sha256": "0c29e3bae6d17043ab2b4783e26f9ef0b3ec878e1a02b3231abd2416779f0f49",
       "spec_version": "1.2"
     },
     {
@@ -413,14 +413,14 @@
     {
       "path": ".fha/tools/README.md",
       "category": "operating",
-      "sha256": "cb4adca87cdeda5ea432bb5ced364f11a36130a1bdb6683ebaafb09f2966c35d",
+      "sha256": "a9609644249f151d43795fde0c9d822689e2404b450694a36af9b4bae19b4f0c",
       "spec_version": "1.2",
       "src": "tools/README.md"
     },
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "7df187bd5801d2adcf4292d0e4fbf963fd9984eff34b33941e9e92ebf32ece01",
+      "sha256": "4fc350ba7074c902c832ab5104e96cee726d7f29214197937bc685300dbef7b9",
       "spec_version": "1.2",
       "src": "tools/_lib.py"
     },
@@ -483,7 +483,7 @@
     {
       "path": ".fha/tools/claim.py",
       "category": "operating",
-      "sha256": "a45f1d7288b822671a3937da978ce40c588ad221ec63e86061f886880a314e8c",
+      "sha256": "575664a5a96837f639663e05f17d167a1e3e862875aba9e34130898b101de254",
       "spec_version": "1.2",
       "src": "tools/claim.py"
     },
@@ -602,7 +602,7 @@
     {
       "path": ".fha/tools/places.py",
       "category": "operating",
-      "sha256": "cd0d5a757e784ce8ea3511e1ee5677ff313927f26926b9081bdc965864b24c97",
+      "sha256": "b1156bed6e468dd35965af21ff45047b49d8f9a17c7fd8b3470356b3c9494a73",
       "spec_version": "1.2",
       "src": "tools/places.py"
     },
@@ -884,7 +884,7 @@
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "d39175382663b841ea019bec7d57e7d74ece7c357ea30605d101cf8966f71bc2",
+      "sha256": "e72c84a3b807c9decc04cf1d27434d700f438151d8b9f2967ffdb93e008243f7",
       "spec_version": "1.2"
     },
     {
