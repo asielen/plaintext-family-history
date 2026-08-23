@@ -887,18 +887,37 @@ def _render_fan_svg(labels: dict, max_gen: int, r0: float = 54, ring: float = 60
     return '\n'.join(out)
 
 
+def _branch_root(num: int) -> int:
+    """The generation-1 slot (2 or 3) that Ahnentafel slot `num` reduces to -
+    repeatedly halve (integer floor division, the same operation that walks a
+    slot to its own parent) until it lands on 2 or 3. Split out of
+    `_ancestor_branch` (#152 review fix, P2) so a caller can also ask "was
+    THIS slot's own root actually sex-derived" before trusting the branch it
+    implies - see `_ancestor_branch`'s docstring."""
+    while num > 3:
+        num //= 2
+    return num
+
+
 def _ancestor_branch(num: int) -> int:
     """1 (paternal, through slot 2) or 2 (maternal, through slot 3) for an
     Ahnentafel ancestor slot (#115 branch coloring, home pedigree only).
 
     An ancestor's ultimate line is recoverable from its OWN slot number alone,
-    with no extra data or lookup: repeatedly halve the slot (integer floor
-    division, the same operation that walks a slot to its own parent) until it
-    lands on 2 or 3 - father's or mother's line. Only ever called for slot >= 2
-    (the subject, slot 1, has no line of its own to belong to)."""
-    while num > 3:
-        num //= 2
-    return 1 if num == 2 else 2
+    with no extra data or lookup: repeatedly halve the slot until it lands on
+    2 or 3 - father's or mother's line (`_branch_root`). Only ever called for
+    slot >= 2 (the subject, slot 1, has no line of its own to belong to).
+
+    This is a pure function of the slot number - it does NOT know whether
+    slot 2 vs 3 was actually DERIVED from a recorded `sex:` or merely
+    DEFAULTED by elimination among unknown-sex parents (`_build_ahnentafel`'s
+    `sex_derived` flag). `_render_pedigree_svg`'s card loop checks that flag
+    itself (via `_branch_root` + the labels dict) before calling this
+    function at all, and skips the branch color entirely for a defaulted
+    root - see its own comment. A caller that wants a color with no evidence
+    behind it can still call this directly; the render loop is the one place
+    that must not."""
+    return 1 if _branch_root(num) == 2 else 2
 
 
 def _render_pedigree_svg(labels: dict, spouses: list[dict] | None = None,
@@ -971,7 +990,12 @@ def _render_pedigree_svg(labels: dict, spouses: list[dict] | None = None,
     left edge by paternal/maternal line: an Ahnentafel slot's line is recoverable
     from its own number alone (halve it repeatedly until it lands on 2 or 3 -
     see `_ancestor_branch`), so this costs no extra data, just a slot-number
-    check per card. `axis_label` (#115) draws one small caption above the
+    check per card - EXCEPT when the slot's own root (2 or 3) was placed by
+    elimination among unknown-sex parents rather than matched by a recorded
+    `sex:` (`labels[root]['sex_derived']` is False, from `_build_ahnentafel`):
+    that root's whole subtree renders with no branch class at all (#152
+    review fix, P2) rather than asserting a paternal/maternal fact nobody
+    actually recorded. `axis_label` (#115) draws one small caption above the
     ancestor columns ('ancestors of {name} ->'-style orientation text) - omitted
     when there is no ancestor column to sit above (ancestor_generations == 0,
     the redaction-safe hub-only fallback). `home` (#115) is purely a sizing
@@ -1237,7 +1261,22 @@ def _render_pedigree_svg(labels: dict, spouses: list[dict] | None = None,
                 midx = (x + CW + x2) / 2
                 links.append(f'<path class="ped-link" d="M{x + CW:.0f},{yc:.0f} '
                              f'H{midx:.0f} V{y2:.0f} H{x2:.0f}"/>')
-        branch = _ancestor_branch(slot) if (branch_color and slot != 1 and kind == 'person') else None
+        branch = None
+        if branch_color and slot != 1 and kind == 'person':
+            # #152 review fix (P2): a slot's branch color is only as good as
+            # the evidence behind whichever slot (2 or 3) it ultimately
+            # reduces to (`_branch_root`) - when THAT root was placed by
+            # elimination among unknown-sex parents rather than matched by a
+            # recorded `sex:` (`sex_derived` is False, from
+            # `_build_ahnentafel`), the slot-2-vs-3 split itself is
+            # order-dependent, not evidence, so tinting it paternal/maternal
+            # would assert a fact nobody actually recorded - and could even
+            # swap which color an unknown-sex parent's line gets between
+            # builds. Default True (undecided root, e.g. no ancestors drawn
+            # at all) preserves the pre-fix look for every ordinary chart.
+            root_label = labels.get(_branch_root(slot)) or {}
+            if root_label.get('sex_derived', True):
+                branch = _ancestor_branch(slot)
         cards.append(card(x, yc, ' ped-self' if slot == 1 else '', None if kind == 'empty' else lab,
                           slot, branch))
 
@@ -4432,15 +4471,49 @@ class _SiteBuilder:
                 'redacted': False, 'dates': self._person_vitals(pid)}
 
     def _build_ahnentafel(self, seed: str, max_gen: int, page_dir: Path) -> tuple[dict, dict]:
-        """Ahnentafel map {number: {'name','url','redacted'}} for the fan chart,
-        walking `parent` edges from the seed, plus a second map {number: pid} of
-        each EMPTY ancestor slot's known child (workbench mode wires this onto
-        the pedigree's 'Unknown' placeholder so it opens 'add family' scoped to
-        that child - the slot that is actually missing a parent, not a fixed
-        subject). Father (a parent recorded M) takes the even slot, mother (F)
-        the odd one; unknown-sex parents fill whatever slot is free. Redaction
-        is applied per person - a withheld ancestor becomes a blank segment,
-        never a leaked name (mirrors `_tree_node`)."""
+        """Ahnentafel map {number: {'name','url','redacted', 'sex_derived'}} for
+        the fan chart, walking `parent` edges from the seed, plus a second map
+        {number: pid} of each EMPTY ancestor slot's known child (workbench mode
+        wires this onto the pedigree's 'Unknown' placeholder so it opens 'add
+        family' scoped to that child - the slot that is actually missing a
+        parent, not a fixed subject). Father (a parent recorded M) takes the
+        even slot, mother (F) the odd one; unknown-sex parents fill whatever
+        slot is free. Redaction is applied per person - a withheld ancestor
+        becomes a blank segment, never a leaked name (mirrors `_tree_node`).
+
+        GENETIC LINE ONLY (#152 review fix, P2, SPEC §12.2). The Ahnentafel
+        numbering - and the branch coloring it drives - means "the genetic
+        pedigree": a parent edge whose claim carries an explicit non-genetic
+        `subtype` (adoptive/step/foster/guardian/surrogate-gestational/social)
+        never occupies a slot here, so a social/legal parent (and their whole
+        ancestor line behind them) is never falsely presented as biological
+        ancestry. An unset/legacy/unrecognised subtype defaults to genetic
+        (`is_genetic_parent_subtype`, back-compat, SPEC §12.2) - the person/
+        relationship views already draw a non-genetic child distinctly
+        (bracket labels, W127); this is that same distinction applied to
+        pedigree eligibility rather than to display styling, per the review's
+        own steer ("filtering out is simpler and safer"). Decided per OTHER_ID
+        across every claim behind that edge, not per row: the schema does not
+        actually forbid two separate claims about the same parent-child pair
+        carrying different subtypes, so one genuinely genetic claim is enough
+        to seat the parent even if some other claim about the same pair
+        happens to carry a social subtype too.
+
+        SLOT-ASSIGNMENT PROVENANCE (#152 review fix, P2). Each filled slot's
+        label also carries `sex_derived`: True when the occupant was matched
+        by an explicit recorded sex (father via `sex: M`, mother via `sex: F`),
+        False when it was placed by elimination - the only candidate(s) left
+        after the sex match, e.g. two parents who are both unknown-sex, or an
+        unknown-sex parent paired with a same-sex-recorded co-parent. Only the
+        SEED's own two immediate parents (slots 2/3) actually affect anything
+        downstream: `_ancestor_branch` reduces every deeper slot back to 2 or
+        3 by halving, so a slot-4-vs-5 (etc) elimination never crosses the
+        paternal/maternal boundary - but this is tracked uniformly at every
+        generation rather than special-cased to slot 2/3, both because it
+        costs nothing extra here and so the field stays meaningful if a future
+        caller ever wants it deeper. `_render_pedigree_svg` reads it (via the
+        labels dict) to withhold branch coloring from a slot whose parity was
+        never actually evidenced by a `sex:` value."""
         labels: dict[int, dict] = {1: self._chart_entry(seed, page_dir)}
         missing_parent_of: dict[int, str] = {}
         queue: deque[tuple[int, str]] = deque([(1, seed)])
@@ -4449,10 +4522,15 @@ class _SiteBuilder:
             num, pid = queue.popleft()
             if num.bit_length() - 1 >= max_gen:
                 continue
-            parents: list[tuple[str, str]] = []
+            # other_id -> {'sex', 'genetic'}: aggregated across every claim
+            # backing that one edge, since adding claim_id/subtype to the
+            # SELECT means DISTINCT no longer collapses multiple claims about
+            # the same pair into one row the way the old sex-only query did.
+            parent_rows: dict[str, dict] = {}
             for r in self.conn.execute(
-                '''SELECT DISTINCT r.other_id, p.sex
+                '''SELECT DISTINCT r.other_id, p.sex, r.claim_id, c.subtype
                    FROM relationships r JOIN persons p ON r.other_id = p.id
+                   LEFT JOIN claims c ON r.claim_id = c.id
                    WHERE r.person_id = ? AND r.rel = 'parent' ''', (pid,)):
                 other = r['other_id']
                 # A deceased ancestor without a page (stub) still fills its slot as a
@@ -4462,7 +4540,13 @@ class _SiteBuilder:
                 if not self.linked and (ometa is None or self._person_is_redacted(ometa)
                                         or not self._has_public_claim(pid, other)):
                     continue
-                parents.append((other, (r['sex'] or '').upper()))
+                subtype = (r['subtype'] or '').strip().lower() or None
+                entry = parent_rows.setdefault(
+                    other, {'sex': (r['sex'] or '').upper(), 'genetic': False})
+                if is_genetic_parent_subtype(subtype):
+                    entry['genetic'] = True
+            parents: list[tuple[str, str]] = [
+                (other, info['sex']) for other, info in parent_rows.items() if info['genetic']]
             # Workbench only: a parent recorded as a frontmatter hypothesis
             # (the add-family flow's whole output - never indexed) occupies
             # their slot too. Without this the slot still drew 'Unknown - add'
@@ -4470,7 +4554,9 @@ class _SiteBuilder:
             # finding, round 3, PR #31). The card is tagged so the chart
             # never passes an unsourced belief off as a claim-backed edge;
             # standalone/plain-linked builds are untouched (unsourced ties
-            # must not publish).
+            # must not publish). Unsourced, so there is no claim to carry a
+            # subtype - a hypothesis parent is always treated as genetic
+            # (matches the "unset defaults to genetic" back-compat rule).
             hyp_parents: set[str] = set()
             if self.workbench:
                 known = {p for p, _ in parents}
@@ -4483,17 +4569,21 @@ class _SiteBuilder:
                     hyp_parents.add(hp)
                     parents.append((hp, (hrow['sex'] or '').upper()))
             father = next((p for p, s in parents if s == 'M'), None)
+            father_derived = father is not None
             mother = next((p for p, s in parents if s == 'F' and p != father), None)
+            mother_derived = mother is not None
             rest = [p for p, s in parents if p not in (father, mother)]
             if father is None and rest:
                 father = rest.pop(0)
             if mother is None and rest:
                 mother = rest.pop(0)
-            for slot_num, ppid in ((2 * num, father), (2 * num + 1, mother)):
+            for slot_num, ppid, sex_derived in (
+                    (2 * num, father, father_derived), (2 * num + 1, mother, mother_derived)):
                 if not ppid:
                     missing_parent_of[slot_num] = pid
                     continue
                 labels[slot_num] = self._chart_entry(ppid, page_dir)
+                labels[slot_num]['sex_derived'] = sex_derived
                 if ppid in hyp_parents:
                     labels[slot_num]['hypothesis'] = True
                 if ppid not in seen:          # pedigree collapse: show, don't re-walk

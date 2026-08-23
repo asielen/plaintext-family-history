@@ -2975,6 +2975,70 @@ class HomePedigreeTests(_Base):
         self.assertNotIn('ped-branch-1', self._read('persons/p-aaaaaaaaaa.html'))
         self.assertNotIn('ped-branch-2', self._read('persons/p-aaaaaaaaaa.html'))
 
+    def test_ahnentafel_excludes_non_genetic_parent(self):
+        # #152 review fix (P2, SPEC §12.2): a parent-child edge whose backing
+        # claim carries an explicit non-genetic `subtype` (adoptive/step/
+        # foster/guardian/...) must never occupy an Ahnentafel slot - doing
+        # so falsely presents a social/legal parent, and their whole
+        # ancestor line behind them, as ordinary biological ancestry. The
+        # excluded slot reads as an ordinary unresearched 'Unknown', not a
+        # labelled non-genetic card (matches the review's own "filtering out
+        # is simpler and safer" steer).
+        self._seed_person('p-aaaaaaaaaa', 'Hub Person', sex='F')
+        self._seed_person('p-bbbbbbbbbb', 'Adoptive Parent', sex='F')
+        self._seed_person('p-cccccccccc', 'Bio Parent', sex='M')
+        self._seed_rel('p-aaaaaaaaaa', 'parent', 'p-bbbbbbbbbb', claim_id='c-1111111111')
+        self._seed_rel('p-bbbbbbbbbb', 'child', 'p-aaaaaaaaaa')
+        self._seed_rel('p-aaaaaaaaaa', 'parent', 'p-cccccccccc')
+        self._seed_rel('p-cccccccccc', 'child', 'p-aaaaaaaaaa')
+        self._seed_source('s-1111111111', 'Adoption Record',
+                          people=('p-aaaaaaaaaa', 'p-bbbbbbbbbb'))
+        self._seed_claim('c-1111111111', 's-1111111111', 'relationship',
+                         'Hub was adopted by Adoptive Parent', status='accepted',
+                         subtype='adoptive', persons=('p-bbbbbbbbbb', 'p-aaaaaaaaaa'),
+                         roles={'p-bbbbbbbbbb': 'parent', 'p-aaaaaaaaaa': 'child'})
+        self._seed_home()
+        self._run(linked=True)
+        ped = self._pedigree_section(self._read('index.html'))
+        self.assertNotIn('Adoptive Parent', ped)
+        self.assertIn('Bio Parent', ped)
+
+    def test_unknown_sex_parents_get_no_branch_color(self):
+        # #152 review fix (P2): when NEITHER parent has a known sex, which
+        # one lands in Ahnentafel slot 2 (paternal) vs 3 (maternal) is pure
+        # query/iteration order, not evidence - so tinting either slot's
+        # line paternal/maternal would assert a fact nobody actually
+        # recorded, and the two colors could even swap between builds.
+        self._seed_person('p-aaaaaaaaaa', 'Hub Person', sex='F')
+        self._seed_person('p-bbbbbbbbbb', 'Parent One', sex='unknown')
+        self._seed_person('p-cccccccccc', 'Parent Two', sex='unknown')
+        for parent in ('p-bbbbbbbbbb', 'p-cccccccccc'):
+            self._seed_rel('p-aaaaaaaaaa', 'parent', parent)
+            self._seed_rel(parent, 'child', 'p-aaaaaaaaaa')
+        self._seed_home()
+        self._run(linked=True)
+        ped = self._pedigree_section(self._read('index.html'))
+        self.assertNotIn('ped-branch-1', ped)
+        self.assertNotIn('ped-branch-2', ped)
+
+    def test_one_known_sex_parent_keeps_branch_color_when_co_parent_is_unknown(self):
+        # The companion case: only the DEFAULTED slot loses its color. A
+        # parent whose sex genuinely IS on record keeps the branch color its
+        # own recorded sex derives - the fix is not "disable all coloring
+        # whenever any parent's sex is unknown," only "never color a slot
+        # whose OWN placement in slot 2 vs 3 was not actually evidenced."
+        self._seed_person('p-aaaaaaaaaa', 'Hub Person', sex='F')
+        self._seed_person('p-bbbbbbbbbb', 'Known Mother', sex='F')
+        self._seed_person('p-cccccccccc', 'Unknown Parent', sex='unknown')
+        for parent in ('p-bbbbbbbbbb', 'p-cccccccccc'):
+            self._seed_rel('p-aaaaaaaaaa', 'parent', parent)
+            self._seed_rel(parent, 'child', 'p-aaaaaaaaaa')
+        self._seed_home()
+        self._run(linked=True)
+        ped = self._pedigree_section(self._read('index.html'))
+        self.assertIn('ped-branch-2', ped)     # Known Mother's line - genuinely derived
+        self.assertNotIn('ped-branch-1', ped)  # Unknown Parent's line - defaulted, no evidence
+
     def test_axis_label_and_caption_present(self):
         self._seed_person('p-aaaaaaaaaa', 'Hub Person')
         self._seed_home()
