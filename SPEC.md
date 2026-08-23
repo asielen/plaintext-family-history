@@ -685,6 +685,8 @@ Tooling recurses `within` so "claims in Fairview" includes its houses and cemete
 Most addresses never become places at all - they live as `place_text` on claims.
 A micro-place earns an L-record by the processing path like everything else: when it recurs and matters (the family home across decades of claims; the cemetery holding six relatives). **Recurrence is detected, not remembered:** the report surfaces unlinked `place_text` values that cluster past a threshold (and photo-GPS clusters near no known place) as place candidates; confirmed elevation mints the L-id and guides per-claim backfill of `place:` - `place_text` itself is never altered.
 
+**Write-time resolution.** A claim's `place_text` is also checked against already-registered names/`alt_names` at the moment it is written (`fha claim new`/`fha claim <C-id>`, #79 point 3): an exact match after normalization attaches `place:` automatically, no separate elevation step needed for a place the registry already knows. A near match (word order, an abbreviation) is surfaced as a note only, never auto-attached - a wrong `place_id` is worse than an unlinked `place_text` the recurrence-detection pass above will still catch.
+
 ## 16. The curated person files `LOCKED`
 
 Per the filename grammars of §13, a person - stub or curated alike (§9) - has, in their folder:
