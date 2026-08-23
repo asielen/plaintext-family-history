@@ -828,6 +828,68 @@ class OrphanedBackPhotosTests(unittest.TestCase):
         result = doctor.run_doctor(self.root, self._fha_config())
         self.assertIsNone(self._finding(result))
 
+    def test_copy_lettered_listed_file_does_not_borrow_plain_prints_back(self) -> None:
+        # Codex review finding #6 (PR #145): a source that lists a
+        # COPY-LETTERED print (x-00100b.jpg, filed via #113's own copy-letter
+        # grammar as a SEPARATE physical item from the plain print) must
+        # never have its letter folded off by grouping_stem for this
+        # comparison - that would match it against the UNLETTERED print's
+        # OWN back scan and recommend attaching a back scan that belongs
+        # with a different print to the wrong source.
+        (self.root / 'photos' / 'x-00100b.jpg').write_bytes(b'second print')
+        (self.root / 'photos' / 'x-00100-back.jpg').write_bytes(b'plain prints back')
+        _write(self.root / 'sources' / 'photos' / 'copy_S-6666666666.md', _SOURCE.format(
+            sid='S-6666666666', title='Copy',
+            line='files:\n  - file: photos/x-00100b.jpg\n    role: primary\n'))
+
+        result = doctor.run_doctor(self.root, self._fha_config())
+        self.assertIsNone(self._finding(result))
+
+    def test_same_basename_different_folders_checked_independently(self) -> None:
+        # Codex review finding #7 (PR #145): two listed photos sharing a
+        # basename from DIFFERENT folders must be keyed and checked
+        # independently. Keying the candidate map by base_id alone silently
+        # keeps only the FIRST folder's copy (dict.setdefault), so a real
+        # back scan sitting beside the SECOND folder's copy is never even
+        # looked for.
+        (self.root / 'photos' / 'album-a').mkdir()
+        (self.root / 'photos' / 'album-b').mkdir()
+        (self.root / 'photos' / 'album-a' / 'scan001.jpg').write_bytes(b'a')
+        (self.root / 'photos' / 'album-b' / 'scan001.jpg').write_bytes(b'b')
+        (self.root / 'photos' / 'album-b' / 'scan001-back.jpg').write_bytes(b'b back')
+        _write(self.root / 'sources' / 'photos' / 'twofolders_S-7777777777.md', _SOURCE.format(
+            sid='S-7777777777', title='Two Folders',
+            line=('files:\n'
+                  '  - file: photos/album-a/scan001.jpg\n    role: primary\n'
+                  '  - file: photos/album-b/scan001.jpg\n    role: primary\n')))
+
+        result = doctor.run_doctor(self.root, self._fha_config())
+        report = '\n'.join(result.data['lines'])
+
+        self.assertIn('orphaned back scan', report)
+        self.assertIn('photos/album-b/scan001-back.jpg', report)
+
+    def test_repair_command_names_real_primary_and_is_quoted(self) -> None:
+        # Codex review finding #4 (PR #145): the suggested repair command
+        # must name the source's REAL listed primary path - not the literal
+        # placeholder text "<that source's primary file>", which cannot be
+        # run as typed - and both file arguments must be quoted with
+        # `_lib.shell_quote` so a path containing spaces still runs when
+        # copied verbatim.
+        (self.root / 'photos' / 'my album').mkdir()
+        (self.root / 'photos' / 'my album' / 'scan 001.jpg').write_bytes(b'front')
+        (self.root / 'photos' / 'my album' / 'scan 001-back.jpg').write_bytes(b'back')
+        _write(self.root / 'sources' / 'photos' / 'spaced_S-8888888888.md', _SOURCE.format(
+            sid='S-8888888888', title='Spaced',
+            line='files:\n  - file: photos/my album/scan 001.jpg\n    role: primary\n'))
+
+        result = doctor.run_doctor(self.root, self._fha_config())
+        report = '\n'.join(result.data['lines'])
+
+        self.assertNotIn("<that source's primary file>", report)
+        self.assertIn(doctor.shell_quote('photos/my album/scan 001.jpg'), report)
+        self.assertIn(doctor.shell_quote('photos/my album/scan 001-back.jpg'), report)
+
 
 class RenderTests(unittest.TestCase):
     """_cmd_doctor renders data['lines'] verbatim and returns the exit code."""
