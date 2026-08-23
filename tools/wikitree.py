@@ -104,6 +104,8 @@ from _lib import (
     EXIT_FAILURE,
     EXIT_WARNINGS,
     Result,
+    VITAL_TYPES,
+    claim_is_own_vital,
     configure_utf8_stdout,
     edtf_bounds,
     extract_token_ids,
@@ -890,6 +892,14 @@ def _render_templates(
     `_spacetime_index`: an infobox template ({{Birth|place=...}}) is a
     structured machine-fact, so a negated claim - "not born in Topeka" -
     would emit the positive field the claim denies.
+
+    So is a VITAL claim that is a record of somebody else the claim also names
+    (`_lib.claim_is_own_vital`, #126). Same argument one step further along: a
+    birth certificate names the baby AND both parents, and {{Birth|place=...}}
+    published on the mother's profile asserts her birthplace, in a field
+    another site will read as data. Only birth/death/marriage/baptism/burial
+    are scoped - a `residence` or `census` claim naming a household is about
+    everyone in it, which is the whole point of listing them.
     """
     if not templates:
         return []
@@ -907,6 +917,10 @@ def _render_templates(
         """,
         (pid,),
     ).fetchall()
+    own_vital: dict[str, list[str] | None] = {}
+    rows = [r for r in rows
+            if r['type'] not in VITAL_TYPES
+            or claim_is_own_vital(conn, pid, r['id'], r['type'], own_vital)]
     if restricted_claims:
         rows = [r for r in rows if normalize_id(str(r['id'])) not in restricted_claims]
     person_cache: dict[str, bool] = {}

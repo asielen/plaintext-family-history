@@ -49,7 +49,10 @@ def _parent_child(conn, parent, child, ds='1900-01-01', de='1900-12-31'):
 
 
 def _add_claim(conn, cid, ctype, persons, date_edtf='', place_id=None, place_text=None,
-               source_id='s-0000000001', status='accepted', value='x', negated=0):
+               source_id='s-0000000001', status='accepted', value='x', negated=0,
+               roles=None):
+    """Seed one claim. `roles` is {person_id: role} - the `roles:` map that says
+    which of the people a claim names plays which part (SPEC §8.3)."""
     mn = ''
     if date_edtf:
         from _lib import edtf_bounds
@@ -62,8 +65,30 @@ def _add_claim(conn, cid, ctype, persons, date_edtf='', place_id=None, place_tex
     for pos, p in enumerate(persons):
         conn.execute(
             'INSERT INTO claim_persons(claim_id, person_id, position, role) VALUES (?,?,?,?)',
-            (cid, p, pos, None),
+            (cid, p, pos, (roles or {}).get(p)),
         )
+
+
+def _individuals(text: str) -> dict:
+    """Every INDI record in an export, keyed by the person id in its REFN line."""
+    out, current = {}, None
+    for line in text.split('\r\n'):
+        if line.startswith('0 '):
+            if current:
+                block = '\r\n'.join(current)
+                for ln in current:
+                    if ln.startswith('1 REFN '):
+                        out[ln[len('1 REFN '):].strip().lower()] = block
+            current = [line] if line.endswith(' INDI') else None
+            continue
+        if current is not None:
+            current.append(line)
+    if current:
+        block = '\r\n'.join(current)
+        for ln in current:
+            if ln.startswith('1 REFN '):
+                out[ln[len('1 REFN '):].strip().lower()] = block
+    return out
 
 
 def _add_source(conn, sid, title, *, source_type='vital-record', restricted=0):
@@ -720,6 +745,79 @@ class MarriageRoleScopingTests(unittest.TestCase):
         self.assertEqual(r['status'], 'ok')
         self.assertEqual(
             [m for m in r['messages'] if 'marriage' in m.lower()], [])
+
+
+class BirthDeathRoleScopingTests(unittest.TestCase):
+    """A BIRT/DEAT event belongs to the person the record is OF, not to every
+    person the record names.
+
+    The scoping rule `MarriageRoleScopingTests` covers for MARR was never
+    carried to the vitals: `_load_vitals` picked the first accepted birth or
+    death claim NAMING each person, so a mother co-named on her son's birth
+    certificate exported his 1888 birth as her own BIRT. That reaches whatever
+    program reads the file as a plain, unqualified fact about her (#126).
+    """
+
+    MOM, SON = 'p-2000000001', 'p-2000000002'
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        conn = _make_index(self.root)
+        _add_person(conn, self.MOM, 'Iris Marr', 'F', surname='Marr')
+        _add_person(conn, self.SON, 'Peter Marr', 'M', surname='Marr')
+        _parent_child(conn, self.MOM, self.SON)
+        _add_source(conn, 's-0000000001', 'Birth certificate')
+        self.conn = conn
+
+    def tearDown(self):
+        try:
+            self.conn.close()
+        except sqlite3.ProgrammingError:
+            pass
+        self._tmp.cleanup()
+
+    def _export(self, roles):
+        _add_claim(self.conn, 'c-0000000001', 'birth', [self.SON, self.MOM],
+                   date_edtf='1888', place_text='Riverton', roles=roles)
+        self.conn.commit()
+        self.conn.close()
+        r = gedcom.run_gedcom(self.root, self.SON, mode='connected')
+        self.assertEqual(r['status'], 'ok')
+        return _individuals(r['text'])
+
+    def test_mother_named_as_parent_exports_no_birth_of_her_own(self):
+        indi = self._export({self.SON: 'child', self.MOM: 'parent'})
+        self.assertNotIn('BIRT', indi[self.MOM],
+                         "the mother's INDI record must carry no birth event "
+                         "taken from her son's birth certificate")
+
+    def test_the_child_the_claim_names_still_exports_his_birth(self):
+        # The other half: scoping must not cost the subject his own event.
+        indi = self._export({self.SON: 'child', self.MOM: 'parent'})
+        self.assertIn('BIRT', indi[self.SON])
+        self.assertIn('Riverton', indi[self.SON])
+
+    def test_a_legacy_claim_with_no_roles_map_keeps_its_old_behaviour(self):
+        # The claim never said, so nothing is withheld - the same
+        # back-compatibility bargain the index and the site build strike.
+        indi = self._export(None)
+        self.assertIn('BIRT', indi[self.MOM])
+        self.assertIn('BIRT', indi[self.SON])
+
+    def test_a_relative_on_a_death_record_exports_no_death_of_her_own(self):
+        # SPEC §8.3 names no role for the deceased, so the claim can only say
+        # who the OTHERS were; the unroled person is the one who died.
+        _add_source(self.conn, 's-0000000002', 'Death certificate')
+        _add_claim(self.conn, 'c-0000000002', 'death', [self.MOM, self.SON],
+                   date_edtf='1920', place_text='Riverton',
+                   source_id='s-0000000002', roles={self.SON: 'child'})
+        self.conn.commit()
+        self.conn.close()
+        r = gedcom.run_gedcom(self.root, self.SON, mode='connected')
+        indi = _individuals(r['text'])
+        self.assertNotIn('DEAT', indi[self.SON])
+        self.assertIn('DEAT', indi[self.MOM])
 
 
 if __name__ == '__main__':

@@ -91,13 +91,22 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    file_entry_carries_text   - one files: entry -> is its content searchable text?
 #    files_carry_searchable_text - a source's files: block -> any text at all?
 #
-#  Who a marriage claim marries (SPEC §8.3, TOOLING §197)
+#  Who a claim is really about - roles:, never the whole persons: list (SPEC §8.3)
 #    spouse_parties            - a claim's (pid, role) list -> the people it says
 #                                 married EACH OTHER; the one rule index, gedcom
 #                                 and lint all read, so they cannot disagree
 #    parentage_parties         - the same question for parentage: a claim's
 #                                 (pid, role) list -> (children, parents), roles
 #                                 only, never position; read by index and lint
+#    VITAL_SUBJECT_ROLES       - the role a vital claim's own subject carries,
+#                                 per claim type (birth/baptism -> child, …)
+#    vital_subjects            - whose OWN Born/Died/Married a vital claim
+#                                 supplies, or None when the claim never said
+#    claim_is_own_vital        - the same question against the index: is claim X
+#                                 a record OF person Y? read by site, gedcom,
+#                                 views and wikitree
+#    social_parties            - who a friend/associate/neighbor claim says knew
+#                                 EACH OTHER; read by index
 #
 #  Archive configuration
 #    find_archive_root         - walk up from CWD to find fha.yaml
@@ -604,6 +613,221 @@ def parentage_parties(
     if not children or not parents:
         return [], []
     return children, parents
+
+
+# The role a claim's OWN SUBJECT carries, per vital claim type. `birth` and
+# `baptism` name the person the record is about as the `child`; `marriage` and
+# `divorce` name them as `spouse` (and on those two, `spouse_parties` answers
+# first - see `vital_subjects` case 2). `death` and `burial` are absent on
+# purpose: SPEC §8.3's role vocabulary has no word for the deceased, so a death
+# claim can only say who the OTHER people are (the widow, the children, the
+# informant), and the subject is the one the claim left unroled.
+VITAL_SUBJECT_ROLES: dict[str, str] = {
+    'birth': 'child',
+    'baptism': 'child',
+    'marriage': 'spouse',
+    'divorce': 'spouse',
+}
+
+
+def vital_subjects(
+    claim_type: Any, persons_with_roles: Iterable[tuple[str, Any]],
+) -> list[str] | None:
+    """
+    Whose OWN Born/Died/Married a vital claim supplies - or None when it hasn't said.
+
+    `persons:` is the index of who a claim is about, not a list of subjects
+    (SPEC §8.3). A vital record routinely names more than the one person it
+    is a record OF: a birth certificate names the baby, both parents and the
+    informant; a death certificate names the deceased, the surviving spouse,
+    the children who reported it, sometimes the parents; a marriage licence
+    names the couple and both sets of parents. Listing all of them in
+    `persons:` is the correct way to write the claim - the semantics live in
+    the optional `roles:` map, which is what this reads.
+
+    Asking "which claims name this person?" and calling the answer his vitals
+    is how a mother's summary box comes to read `Born: 1888` off her own son's
+    birth certificate, and how a chart node gets life dates that put a death
+    before a birth. That is issue #126, and it is the same defect #58 found in
+    marriage pairing and #118 found in social edges, one query further on.
+
+    Input is the claim's people paired with the role each plays, in the claim's
+    own order: `[(pid, role), …]`, role None or '' where the claim gave none.
+    People are counted ONCE each, first appearance keeping their place, for the
+    reason `spouse_parties` spells out: `persons: [P-a, "[[Alice Smith]]"]` is
+    one person written two ways and `claim_persons` stores a row per entry.
+
+    Returns, in order:
+
+      1. **None** when NO named person carries a role at all. The claim never
+         answered the question, so the caller keeps whatever it did before this
+         rule existed - ordinarily "everyone named". This is the legacy claim,
+         written before `roles:` was expected on vitals, and the whole
+         back-compatibility bargain: a rule that silently emptied those
+         archives' summary boxes would be a worse bug than the one it fixes.
+      2. On a **couple claim** (`marriage`/`divorce`), whoever
+         `spouse_parties` says married each other. That rule - not this one -
+         is the archive's single answer to "who married whom": the index mints
+         the spouse edge from it, `fha gedcom` picks the FAM from it, and
+         `fha lint` W115/W125 read it. Deciding the question a second way here
+         made the two disagree on the claim `spouse_parties` documents as its
+         typo case (`roles: {spouse: [P-a]}` with the partner left unroled, from
+         a mistyped id or a name that stopped resolving): the index recorded the
+         marriage while the partner's own summary box and WikiTree profile
+         quietly dropped it. One rule, one home.
+      3. The people named under this type's **subject role** (`VITAL_SUBJECT_ROLES`
+         - `child` for birth/baptism, `spouse` for marriage/divorce) when the
+         claim names any. The claim said outright who it is about. On a couple
+         claim this is reached only where `spouse_parties` found no couple -
+         `roles: {spouse: [P-a], parent: [P-b]}`, which names P-a's own
+         marriage while refusing to marry him to P-b.
+      4. Otherwise the people the claim left **unroled**. This is the ordinary
+         death record (`roles: {spouse: [widow], child: [informant]}` - nobody
+         can be marked "deceased", so the deceased is the one with no part to
+         play) and the birth claim written `roles: {parent: [mother, father]}`
+         with the baby unmarked.
+      5. Which can be **empty**, and that is an answer too: every person named
+         was named as somebody else on the record, so it is nobody's own vital.
+         An empty list is exactly the mother-on-her-son's-birth-certificate
+         case, and returning her son's date for her is the bug.
+
+    Case 5 is deliberately silent rather than falling back to "everyone named":
+    a death claim whose `roles:` map casts every person it names as somebody
+    else yields no death date at all, and the archive's bargain throughout this
+    file is that a missing fact is recoverable where a false one is not.
+    """
+    first_role: dict[str, str] = {}
+    for pid, role in persons_with_roles:
+        if pid not in first_role:
+            first_role[pid] = str(role or '').strip().lower()
+    pairs = list(first_role.items())
+
+    if not any(role for _pid, role in pairs):
+        return None
+
+    subject_role = VITAL_SUBJECT_ROLES.get(str(claim_type or '').strip().lower())
+    if subject_role == 'spouse':
+        couple = spouse_parties(pairs)
+        if couple:
+            return couple
+    if subject_role:
+        named = [pid for pid, role in pairs if role == subject_role]
+        if named:
+            return named
+    return [pid for pid, role in pairs if not role]
+
+
+def claim_is_own_vital(
+    conn: Any, person_id: str, claim_id: str, claim_type: str,
+    cache: dict[str, list[str] | None] | None = None,
+) -> bool:
+    """Is this indexed vital claim a record OF this person, or of a relative it
+    also names?
+
+    The index-backed half of `vital_subjects`: it reads the claim's people and
+    roles out of `claim_persons` and applies the rule. Four tools ask this - the
+    site's summary block and chart nodes, the GEDCOM writer's BIRT/DEAT, the
+    WikiTree infoboxes, and the tree view's node labels - and a question
+    answered four ways drifts, which is how the archive came to disagree with
+    its own export about who married whom (#58). One rule, one home.
+
+    `cache`, when given, memoizes the CLAIM's subject list - never the yes/no
+    answer, which is per person. A person named on twenty records would
+    otherwise re-read the same rows twenty times, and a whole-site build asks
+    this once per vital claim per person; keyed on the claim alone, one cache
+    is safely shared across every person in a build.
+
+    True for a claim whose `roles:` map says nothing (`vital_subjects` returns
+    None) - the legacy claim, where the caller keeps the behaviour it has
+    always had.
+    """
+    if cache is not None and claim_id in cache:
+        subjects = cache[claim_id]
+    else:
+        rows = conn.execute(
+            'SELECT person_id, role FROM claim_persons WHERE claim_id = ? '
+            'ORDER BY position', (claim_id,)).fetchall()
+        subjects = vital_subjects(
+            claim_type,
+            [(normalize_id(str(r[0])), r[1]) for r in rows])
+        if cache is not None:
+            cache[claim_id] = subjects
+    return subjects is None or normalize_id(str(person_id)) in subjects
+
+
+# The non-kin social ties (SPEC §8.2) and the `roles:` keys that name their
+# parties. Subtype and role key are the same word here - `subtype: friend` with
+# `roles: {friend: […]}` - unlike kin claims, where the roles (child/parent) and
+# the subtype (the bond's nature: biological, adoptive, …) answer different
+# questions. All three are read as party-naming keys on any social claim,
+# because `associate` is written as the generic one: a `subtype: friend` claim
+# carrying `roles: {associate: [P-a, P-b]}` has named its parties perfectly
+# clearly, and refusing to read it would be fussy about a distinction the
+# archive itself does not draw.
+SOCIAL_TIE_SUBTYPES: frozenset[str] = frozenset({'friend', 'associate', 'neighbor'})
+
+
+def social_parties(
+    persons_with_roles: Iterable[tuple[str, Any]], subtype: Any,
+) -> list[str]:
+    """
+    Who a social relationship claim (friend/associate/neighbor) says knew EACH OTHER.
+
+    The same rule `spouse_parties` applies to couples, applied to the tie that
+    has no certificate. A `subtype: friend` claim can legitimately name three
+    people in `persons:` - two friends and the child one of them brought along
+    in the anecdote - while `roles: {friend: [P-a, P-b]}` names the two who
+    were actually friends. Pairing everyone named made the child a friend of
+    both adults, and since that child is separately (and correctly) somebody's
+    parent or child, the generated page then showed the same pair as parent and
+    friend at once, with nothing to tell the reader which one the archive
+    actually holds evidence for. That is issue #118.
+
+    Input is the claim's people paired with the role each plays, in the claim's
+    own order; people are counted once each, first appearance keeping their
+    place, exactly as in `spouse_parties`.
+
+    Four cases, in order:
+
+      1. `roles: {<subtype>: […]}` naming TWO OR MORE people -> those people,
+         whatever else `persons:` lists. Unlike a marriage, three or more IS
+         the ordinary shape here: a claim can record that four neighbours all
+         knew one another, and every pairing derives.
+      2. Otherwise, two or more people under ANY social role key
+         (`SOCIAL_TIE_SUBTYPES`). `associate` is the generic key an author
+         reaches for on a `friend` claim, and a claim that plainly named its
+         parties should not lose its edges over which of three near-synonyms
+         it used. The exact-subtype pass runs first so a claim that DID draw
+         the distinction is read as it was written.
+      3. Otherwise, when NO named person carries a role from outside that set
+         -> everyone named. That covers the legacy claim with no `roles:` map
+         at all (which is how these claims were written before `roles:` was
+         expected, and which must keep deriving exactly as it did), and the
+         map that resolved only one name - a typo'd id, an alias that stopped
+         resolving - where one name is no answer to "who knew whom".
+      4. Otherwise -> NOTHING. The claim called somebody a parent, a spouse, an
+         employer; pairing them off as friends would contradict the claim in
+         its own words. A false social edge is read back as fact by the
+         relationship views and `fha relate`, while a missing one is merely
+         missing - the same bargain `spouse_parties` strikes, for the same
+         reason.
+    """
+    want = str(subtype or '').strip().lower()
+    first_role: dict[str, str] = {}
+    for pid, role in persons_with_roles:
+        if pid not in first_role:
+            first_role[pid] = str(role or '').strip().lower()
+    pairs = list(first_role.items())
+
+    exact = [pid for pid, role in pairs if role and role == want]
+    if len(exact) >= 2:
+        return exact
+    social = [pid for pid, role in pairs if role in SOCIAL_TIE_SUBTYPES]
+    if len(social) >= 2:
+        return social
+    if not any(role and role not in SOCIAL_TIE_SUBTYPES for _pid, role in pairs):
+        return [pid for pid, _role in pairs]
+    return []
 
 
 def spouse_extended_base(

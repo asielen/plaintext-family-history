@@ -254,6 +254,7 @@ from _lib import (
     Result,
     append_paragraph_to_section,
     build_ahnentafel_map,
+    claim_is_own_vital,
     configure_utf8_stdout,
     couple_folder_dirs,
     couple_folder_for_prefix,
@@ -2795,6 +2796,13 @@ def _accepted_vital_claim_exists(archive_root: Path, pid: str, field: str) -> bo
     record (SPEC §8.6: recording what you know before you can prove it is a
     legitimate starting state), but the human should know the claim, not
     this field, is what exports and timelines actually show.
+
+    The claim must be a record OF this person, not merely one that names them
+    (`_lib.claim_is_own_vital`, #126). A birth certificate names the baby AND
+    both parents, so asking "is there an accepted birth claim mentioning her?"
+    told a woman who has no birth record of her own that a claim already
+    supersedes her estimate - a warning about a fact that does not exist, on a
+    write the tool then performs anyway.
     """
     db_path = archive_root / '.cache' / 'index.sqlite'
     status, _ = sqlite_cache_schema_status(
@@ -2806,12 +2814,12 @@ def _accepted_vital_claim_exists(archive_root: Path, pid: str, field: str) -> bo
     except sqlite3.Error:
         return False
     try:
-        row = conn.execute(
-            'SELECT 1 FROM claims c JOIN claim_persons cp ON cp.claim_id = c.id '
-            'WHERE cp.person_id = ? AND c.type = ? AND c.status = ? LIMIT 1',
+        candidates = conn.execute(
+            'SELECT c.id FROM claims c JOIN claim_persons cp ON cp.claim_id = c.id '
+            'WHERE cp.person_id = ? AND c.type = ? AND c.status = ? ORDER BY c.id',
             (pid, field, 'accepted'),
-        ).fetchone()
-        return row is not None
+        ).fetchall()
+        return any(claim_is_own_vital(conn, pid, r[0], field) for r in candidates)
     except sqlite3.Error:
         return False
     finally:

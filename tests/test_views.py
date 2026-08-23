@@ -109,5 +109,63 @@ class DraftQueueUndecodableProfileTests(unittest.TestCase):
         self.assertFalse(companion.exists())
 
 
+class TreeNodeVitalScopingTests(unittest.TestCase):
+    """A tree node's life dates are the person's OWN (#126).
+
+    `_build_nodes_bulk` labelled every node with the first accepted birth/death
+    claim NAMING that person, so a mother co-named on her son's birth
+    certificate was drawn as `Iris Marr (1888-)` - his year, under her name.
+    The chart label is the shortest, most quotable thing on the page, which is
+    exactly why a wrong one travels. Same defect the site build carries in
+    `_person_vitals`; the two renderers must answer identically.
+    """
+
+    MOM, SON = 'p-2000000001', 'p-2000000002'
+
+    def setUp(self) -> None:
+        import sqlite3
+        from index import _DDL
+        self.conn = sqlite3.connect(':memory:')
+        self.conn.executescript(_DDL)
+        self.conn.row_factory = sqlite3.Row
+        for pid, name, sex in ((self.MOM, 'Iris Marr', 'F'),
+                               (self.SON, 'Peter Marr', 'M')):
+            self.conn.execute(
+                'INSERT INTO persons(id, name, sex, living, tier, status, path) '
+                "VALUES (?,?,?,'false','curated','active',?)",
+                (pid, name, sex, f'people/{pid}.md'))
+
+    def tearDown(self) -> None:
+        self.conn.close()
+
+    def _seed_birth(self, roles: dict | None) -> None:
+        self.conn.execute(
+            'INSERT INTO claims(id, source_id, type, date_edtf, date_min, value, status) '
+            "VALUES ('c-0000000001','s-0000000001','birth','1888','1888-01-01',"
+            "'born','accepted')")
+        for pos, pid in enumerate((self.SON, self.MOM)):
+            self.conn.execute(
+                'INSERT INTO claim_persons(claim_id, person_id, position, role) '
+                "VALUES ('c-0000000001',?,?,?)", (pid, pos, (roles or {}).get(pid)))
+
+    def _vitals(self) -> dict:
+        nodes = views._build_nodes_bulk(self.conn, [self.MOM, self.SON])
+        return {pid: nodes[pid]['vitals'] for pid in (self.MOM, self.SON)}
+
+    def test_mother_named_as_parent_gets_no_birth_year_on_her_node(self) -> None:
+        self._seed_birth({self.SON: 'child', self.MOM: 'parent'})
+        self.assertIsNone(self._vitals()[self.MOM]['birth'])
+
+    def test_the_child_the_claim_names_keeps_his_own_birth_year(self) -> None:
+        self._seed_birth({self.SON: 'child', self.MOM: 'parent'})
+        self.assertEqual(self._vitals()[self.SON]['birth'], '1888')
+
+    def test_a_legacy_claim_with_no_roles_map_keeps_its_old_behaviour(self) -> None:
+        self._seed_birth(None)
+        vitals = self._vitals()
+        self.assertEqual(vitals[self.MOM]['birth'], '1888')
+        self.assertEqual(vitals[self.SON]['birth'], '1888')
+
+
 if __name__ == '__main__':
     unittest.main()

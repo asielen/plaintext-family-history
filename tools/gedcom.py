@@ -85,6 +85,7 @@ from _lib import (
     EXIT_FAILURE,
     EXIT_WARNINGS,
     Result,
+    claim_is_own_vital,
     configure_utf8_stdout,
     fmt_id_display,
     id_type_of,
@@ -522,6 +523,20 @@ def _load_vitals(
     omitted. `is_public`, when given, also rejects free-text-restricted and
     per-claim-restricted rows BEFORE the per-key pick, so an earlier-dated
     restricted claim cannot evict (and thereby suppress) a publishable later one.
+
+    The claim must also be a record OF that person, not merely one that names
+    them (`_lib.claim_is_own_vital`, #126). A birth certificate names the baby, both
+    parents and the informant; a death certificate names the deceased and the
+    relative who reported it. Keyed on `person_id` alone this wrote the son's
+    1888 BIRT onto his mother's INDI record - the same defect
+    `_spouse_persons_for_claim` fixes for MARR, one query along, and with the
+    same consequence: a fact about the wrong person, exported as truth into
+    whatever program reads the file. A claim carrying no `roles:` map has not
+    said, and keeps the behaviour it always had.
+
+    The scoping test runs BEFORE the per-key pick, for the reason `is_public`
+    does: a relative's earlier-dated record would otherwise take the slot and
+    suppress the person's own.
     """
     if not pids:
         return {}
@@ -543,9 +558,12 @@ def _load_vitals(
         """,
         list(pids),
     ).fetchall()
+    subjects: dict[str, list[str] | None] = {}
     out: dict[tuple[str, str], sqlite3.Row] = {}
     for r in rows:
         if is_public is not None and not is_public(r):
+            continue
+        if not claim_is_own_vital(conn, r['person_id'], r['id'], r['type'], subjects):
             continue
         out.setdefault((r['person_id'], r['type']), r)
     return out
