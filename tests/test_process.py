@@ -1229,6 +1229,35 @@ class ProcessTestCase(unittest.TestCase):
         self.assertEqual(rc, EXIT_ERRORS)
         self.assertTrue(other.exists())  # untouched, not renamed
 
+    # ── Codex review, PR #145, finding 5 ────────────────────────────────────────
+
+    def test_more_honors_explicit_type_for_photo_extension_attachment(self) -> None:
+        # Finding #5: --more must honor an explicit --type the same way the
+        # primary file's own classification does - a .jpg page attached with
+        # --type census must be filed and renamed as a document page under
+        # documents/census/, not defaulted into the photo library by
+        # extension with an embedded PHOTO keyword instead.
+        self._install_photo_store()  # only exercised if the fix regresses
+        primary = self.archive / 'documents' / 'census' / 'convention7.txt'
+        primary.write_text('p1', encoding='utf-8')
+        self.assertEqual(self._run([str(primary), '--type', 'census']), EXIT_CLEAN)
+        renamed = next((self.archive / 'documents' / 'census').glob('*_S-*.txt'))
+
+        (self.archive / 'inbox').mkdir()
+        page2 = self.archive / 'inbox' / 'page-2.jpg'
+        page2.write_bytes(b'\xff\xd8\xff')
+
+        rc = self._run([str(renamed), '--more', str(page2), 'page-2', '--type', 'census'])
+        self.assertEqual(rc, EXIT_CLEAN)
+
+        self.assertEqual(list((self.archive / 'photos').rglob('page-2*')), [])
+        attached = list((self.archive / 'documents' / 'census').glob('*page-2*_S-*.jpg'))
+        self.assertEqual(len(attached), 1)
+        record = next((self.archive / 'sources' / 'census').glob('*_S-*.md'))
+        files = read_record(record)['meta']['files']
+        self.assertEqual(len(files), 2)
+        self.assertEqual(files[1]['role'], 'page-2')
+
     # ── classification + slug units ──────────────────────────────────────────
 
     def test_classify_asset(self) -> None:

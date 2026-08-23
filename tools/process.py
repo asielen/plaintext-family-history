@@ -2630,6 +2630,7 @@ def attach_more(
     dry_run: bool,
     real_path: Path | None = None,
     backup: OriginalBackup | None = None,
+    source_type: str | None = None,
 ) -> int:
     """M7.2 `--more`: attach an additional file to an existing source record.
 
@@ -2644,6 +2645,16 @@ def attach_more(
     the keyword read below uses it; an inbox-staged primary is unprocessed, so
     the preview then refuses with the same "not a processed source" answer the
     live run gives, instead of a spurious read failure.
+
+    `source_type` is the CLI's own validated `--type` (e.g. `fha process
+    <primary> --more page-2.jpg page-2 --type census`) - the SAME rule "an
+    explicit --type wins" that the primary file's own classification honors
+    (`classify_asset`'s docstring). Before this, a `--more` file's root was
+    decided purely by extension, so `--type census` on a `.jpg` attachment was
+    silently accepted and then ignored: the page landed in `photos/` with a
+    PHOTO keyword instead of being filed and renamed as a document page under
+    `documents/census/`, the same class of bug issue #59 already fixed for
+    the primary file's own classification.
 
     This is a thin wrapper: `--more`'s FILE argument is documented (and used,
     per the CLI's own example) as a plain path into `inbox/`, but until #111
@@ -2660,13 +2671,14 @@ def attach_more(
     """
     pre_move_more = more_file
     more_file, _, more_relocate_undo = _relocate_from_inbox(
-        archive_root, fha_config, more_file, None, dry_run=dry_run)
+        archive_root, fha_config, more_file, None,
+        source_type=source_type, dry_run=dry_run)
     more_real_path = pre_move_more if dry_run and more_file != pre_move_more else None
     try:
         rc = _attach_more_engine(
             archive_root, fha_config, primary_path, more_file, role, copy,
             dry_run=dry_run, real_path=real_path, more_real_path=more_real_path,
-            backup=backup,
+            backup=backup, source_type=source_type,
         )
     except Exception:
         if more_relocate_undo is not None:
@@ -2689,6 +2701,7 @@ def _attach_more_engine(
     real_path: Path | None,
     more_real_path: Path | None,
     backup: OriginalBackup | None,
+    source_type: str | None = None,
 ) -> int:
     """The `--more` attach logic proper, run against `more_file`'s resolved
     location (`attach_more`'s inbox-relocation wrapper has already moved it,
@@ -2703,6 +2716,11 @@ def _attach_more_engine(
     for the PRIMARY, extended to the `--more` file. Every on-disk read below
     targets it; every destination-shaped use (alias, rename target, printed
     path) keeps using `more_file`.
+
+    `source_type` is the CLI's own `--type`, passed straight through to
+    `classify_asset` for `more_file` - see `attach_more`'s docstring. It plays
+    no part in classifying `primary_path` (already a processed source; its
+    root was decided when IT was filed).
     """
     more_on_disk = more_real_path if more_real_path is not None else more_file
     # _source_id_of reads the primary's embedded SOURCE keyword via exiftool when
@@ -2736,7 +2754,7 @@ def _attach_more_engine(
     if record_path is None:
         raise ProcessError(f'no source record found for {sid.upper()} under sources/.')
 
-    more_kind = classify_asset(more_file, fha_config, archive_root)
+    more_kind = classify_asset(more_file, fha_config, archive_root, source_type=source_type)
 
     if more_kind == 'photo':
         photos_root = resolve_path(_PHOTO_DIR, fha_config, archive_root)
@@ -4427,7 +4445,8 @@ def _run_process(args: argparse.Namespace) -> int:
                 role = role.strip() or 'attachment'
                 copy = copy.strip() or None
                 rc = attach_more(archive_root, fha_config, file_path, more_file,
-                                  role, copy, dry_run=dry_run, real_path=real_path)
+                                  role, copy, dry_run=dry_run, real_path=real_path,
+                                  source_type=source_type)
         else:
             kind = classify_asset(file_path, fha_config, archive_root,
                                   source_type=source_type)
