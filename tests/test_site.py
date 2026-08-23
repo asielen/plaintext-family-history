@@ -2434,6 +2434,65 @@ class FamilyChartTests(_Base):
         page = self._read('persons/p-aaaaaaaaaa.html')
         self.assertIn('class="pedigree"', page)
         self.assertIn('Margaret Cole', page)
+        # #119 regression: zero known parents (an empty `labels` beyond the
+        # subject) used to collapse the reserved ancestor band down to just
+        # the subject's own row - but the two 'Unknown' parent placeholders
+        # still draw at their normal offset rows regardless (the render dict
+        # always adds them once the subject draws), so they landed outside
+        # the too-small viewBox and were silently clipped by the SVG's
+        # default overflow:hidden. Both placeholders must fall entirely
+        # inside the computed viewBox's numeric bounds, not merely be
+        # present somewhere in the markup.
+        svg_match = re.search(
+            r'<svg class="pedigree[^"]*" viewBox="0 0 ([\d.]+) ([\d.]+)"[^>]*>(.*?)</svg>',
+            page, re.S)
+        self.assertIsNotNone(svg_match)
+        vb_w, vb_h = float(svg_match.group(1)), float(svg_match.group(2))
+        placeholders = re.findall(
+            r'<foreignObject x="(-?\d+)" y="(-?\d+)" width="(\d+)" height="(\d+)">'
+            r'<div[^>]*class="ped-node ped-empty"', svg_match.group(3))
+        self.assertEqual(len(placeholders), 2)    # both parent slots unknown
+        for x, y, w, h in placeholders:
+            x, y, w, h = int(x), int(y), int(w), int(h)
+            self.assertGreaterEqual(x, 0)
+            self.assertGreaterEqual(y, 0)
+            self.assertLessEqual(x + w, vb_w)
+            self.assertLessEqual(y + h, vb_h)
+
+    def test_subject_alone_lane_does_not_collide_with_first_spouse_bracket(self):
+        # #120: a blended family - a subject-alone children lane (kids with
+        # no drawn co-parent) plus at least one drawn spouse with their own
+        # children - used to draw the first spouse's couple bracket leaving
+        # the subject's card on the EXACT row the subject-alone lane's own
+        # horizontal segment already occupies (the bracket's stagger offset
+        # is indexed on the spouse loop alone, and evaluates to zero for
+        # spouse index 0). That is a true collinear overlap between two
+        # lanes, contradicting the routing code's own comment that "no two
+        # lanes share a collinear segment". Both segments leave the subject
+        # at the same x (the subject's own column) - they must not also
+        # share the same y, or they lie on the same line.
+        svg = site._render_pedigree_svg(
+            {1: {'name': 'Subject', 'url': None, 'redacted': False, 'dates': {}}},
+            spouses=[{'name': 'Spouse', 'id': 'p-bbbbbbbbbb', 'url': None, 'dates': {}}],
+            children=[{'name': 'Alone Kid', 'co_parents': [], 'url': None, 'dates': {}},
+                      {'name': 'Spouse Kid', 'co_parents': ['p-bbbbbbbbbb'],
+                       'url': None, 'dates': {}}])
+        # The subject-alone lane's own leg: a plain "leave the subject, go to
+        # the trunk" horizontal with no V/H after it - unlike a couple
+        # bracket, which always closes back to the x it left from.
+        alone = re.search(r'<path class="ped-link" d="M(\d+),(\d+) H(\d+)"/>', svg)
+        self.assertIsNotNone(alone)
+        alone_x, alone_y = int(alone.group(1)), int(alone.group(2))
+        # The first spouse's couple bracket: leaves the subject, drops to the
+        # spouse's row, and returns to the SAME x it left from (backreference
+        # \1) - the closed shape that marks a couple bracket in this file's
+        # other tests too.
+        bracket = re.search(
+            r'<path class="ped-link" d="M(\d+),(\d+) H(\d+) V(\d+) H\1"/>', svg)
+        self.assertIsNotNone(bracket)
+        bracket_x, bracket_y = int(bracket.group(1)), int(bracket.group(2))
+        self.assertEqual(alone_x, bracket_x)      # both leave the subject's own column
+        self.assertNotEqual(alone_y, bracket_y)   # but not on the same row - no collinear overlap
 
     def test_family_chart_multiple_spouses_stack(self):
         self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley')
