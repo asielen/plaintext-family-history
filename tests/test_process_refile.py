@@ -352,24 +352,26 @@ class ProcessRefileTestCase(unittest.TestCase):
         self.assertTrue(card.exists())
 
     def test_file_flag_selects_and_siblings_survive_value_exact(self) -> None:
-        # card.jpg's alias is a SUBSTRING of card.jpg.txt's, and the superstring
-        # sibling is listed FIRST so the trap is armed: a first-match substring
-        # rewriter (`old_alias in value`) would grab card.jpg.txt's line before
-        # reaching card.jpg's. The value-exact one must skip it and rewrite the
-        # real target only.
+        # card_{SID}.jpg's alias is a SUBSTRING of card_{SID}.jpg.txt's, and the
+        # superstring sibling is listed FIRST so the trap is armed: a first-match
+        # substring rewriter (`old_alias in value`) would grab card_{SID}.jpg.txt's
+        # line before reaching card_{SID}.jpg's. The value-exact one must skip it
+        # and rewrite the real target only. (Both filenames carry the record's own
+        # S-id suffix, SPEC §13 - the shape a genuinely processed file always has,
+        # and the shape refile's own identity check now requires.)
         self._install_photo_store()
-        card = self.archive / 'documents' / 'census' / 'card.jpg'
+        card = self.archive / 'documents' / 'census' / f'card_{SID}.jpg'
         card.write_bytes(b'jpegbytes')
-        sidecar = self.archive / 'documents' / 'census' / 'card.jpg.txt'
+        sidecar = self.archive / 'documents' / 'census' / f'card_{SID}.jpg.txt'
         sidecar.write_text('notes', encoding='utf-8')
-        entry = ('  - file: documents/census/card.jpg.txt\n'
+        entry = (f'  - file: documents/census/card_{SID}.jpg.txt\n'
                  '    role: transcript\n'
-                 '  - file: documents/census/card.jpg\n'
+                 f'  - file: documents/census/card_{SID}.jpg\n'
                  '    role: primary\n')
         record = self.archive / 'sources' / 'census' / f'campaign-card_{SID}.md'
         record.write_bytes(_record_text(entry).encode('utf-8'))
 
-        rc = self._run([SID, '--file', 'card.jpg', '--to', 'photos', '--dest', '1880s'])
+        rc = self._run([SID, '--file', f'card_{SID}.jpg', '--to', 'photos', '--dest', '1880s'])
 
         self.assertEqual(rc, EXIT_CLEAN)
         self.assertFalse(card.exists())
@@ -377,7 +379,7 @@ class ProcessRefileTestCase(unittest.TestCase):
         self.assertTrue(sidecar.exists(), 'the unselected sibling never moves')
         body = record.read_text(encoding='utf-8')
         self.assertIn('file: photos/1880s/card.jpg\n', body.replace('\r\n', '\n'))
-        self.assertIn('file: documents/census/card.jpg.txt', body)
+        self.assertIn(f'file: documents/census/card_{SID}.jpg.txt', body)
 
     def test_file_flag_naming_nothing_lists_what_exists(self) -> None:
         self._install_photo_store()
@@ -402,6 +404,123 @@ class ProcessRefileTestCase(unittest.TestCase):
         self.assertEqual(rc, EXIT_FAILURE)
         self.assertIn('not on disk', err)
         self.assertIn('fha reconcile', err)
+
+    # -- containment + identity guards (audit finding, mirrors the #147-review --
+    # -- fix to `fha source clear-keyword`) ------------------------------------
+
+    def test_stored_alias_escaping_documents_root_refused(self) -> None:
+        # A hand-edited/corrupted files: entry that STARTS WITH 'documents' as
+        # text (passing a naive prefix check) but actually resolves outside the
+        # configured documents root via a '..' segment. Before the fix this
+        # silently moved (and thereby deleted, since _move_file removes the
+        # source) a file that was never part of the archive at all - proven by
+        # a repro against the pre-fix code. Nothing outside the archive may be
+        # touched, moved, or deleted.
+        self._install_photo_store()
+        outside = self.tmp / 'outside-secret.tif'
+        outside.write_bytes(b'not part of the archive')
+        entry = f'  - file: documents/../../{outside.name}\n    role: primary\n'
+        record = self.archive / 'sources' / 'census' / f'campaign-card_{SID}.md'
+        record.write_bytes(_record_text(entry).encode('utf-8'))
+
+        rc, _out, err = self._run_captured([SID, '--to', 'photos', '--dest', '1880s'])
+
+        self.assertEqual(rc, EXIT_FAILURE)
+        self.assertIn('resolves outside', err)
+        self.assertIn('documents', err)
+        self.assertTrue(outside.exists(), 'a file outside the archive must never be touched')
+        self.assertFalse((self.archive / 'photos' / '1880s').exists())
+
+    def test_stored_alias_escaping_photos_root_refused(self) -> None:
+        self._install_photo_store()
+        outside = self.tmp / 'outside-secret.jpg'
+        outside.write_bytes(b'not part of the archive')
+        entry = f'  - file: photos/../../{outside.name}\n    role: primary\n    is_primary: true\n'
+        record = self.archive / 'sources' / 'photos' / f'portrait_{SID}.md'
+        record.write_bytes(_record_text(entry, source_type='photo').encode('utf-8'))
+
+        rc, _out, err = self._run_captured(
+            [SID, '--to', 'documents', '--type', 'photo', '--yes'])
+
+        self.assertEqual(rc, EXIT_FAILURE)
+        self.assertIn('resolves outside', err)
+        self.assertIn('photos', err)
+        self.assertTrue(outside.exists(), 'a file outside the archive must never be touched')
+        self.assertFalse((self.archive / 'documents' / 'photos').exists())
+
+    def test_documents_asset_belonging_to_different_source_refused(self) -> None:
+        # Inventory drift: this source's files: entry names a documents-root
+        # file whose OWN filename (SPEC #13's `_{S-id}` suffix) says it belongs
+        # to a DIFFERENT source. Before the fix, refile trusted the record's
+        # files: entry alone and would relocate the other source's asset,
+        # relabelling it as this source's own while the other source's record
+        # was left pointing at nothing.
+        self._install_photo_store()
+        other_sid = 'S-zzyy888888'
+        other_asset = self.archive / 'documents' / 'census' / f'other-deed_{other_sid}.jpg'
+        other_asset.write_bytes(b'belongs to a different source')
+        entry = f'  - file: documents/census/other-deed_{other_sid}.jpg\n    role: primary\n'
+        record = self.archive / 'sources' / 'census' / f'campaign-card_{SID}.md'
+        record.write_bytes(_record_text(entry).encode('utf-8'))
+
+        rc, _out, err = self._run_captured([SID, '--to', 'photos', '--dest', '1880s'])
+
+        self.assertEqual(rc, EXIT_FAILURE)
+        self.assertIn('inventory drift', err)
+        self.assertIn(other_sid, err)
+        self.assertTrue(other_asset.exists(), "another source's file must never move")
+
+    def test_documents_asset_with_no_source_id_at_all_refused(self) -> None:
+        # A files: entry naming a file that carries no `_{S-id}` suffix at all
+        # (never processed through fha, or the suffix was stripped by hand) is
+        # refused on the same footing as a definite mismatch - absence of the
+        # identity marker is exactly what a `fha source clear-keyword` target
+        # refuses too.
+        self._install_photo_store()
+        stray = self.archive / 'documents' / 'census' / 'unlabeled.jpg'
+        stray.write_bytes(b'no source id in this filename')
+        entry = '  - file: documents/census/unlabeled.jpg\n    role: primary\n'
+        record = self.archive / 'sources' / 'census' / f'campaign-card_{SID}.md'
+        record.write_bytes(_record_text(entry).encode('utf-8'))
+
+        rc, _out, err = self._run_captured([SID, '--to', 'photos', '--dest', '1880s'])
+
+        self.assertEqual(rc, EXIT_FAILURE)
+        self.assertIn('no source id at all', err)
+        self.assertTrue(stray.exists())
+
+    def test_photo_asset_belonging_to_different_source_refused(self) -> None:
+        # Same drift, photos-root direction: the target's embedded SOURCE:
+        # keyword (photos are never renamed, so there is no filename signal)
+        # names a different source outright - unambiguous evidence this photo
+        # is not the requested source's own asset.
+        store = self._install_photo_store()
+        asset, record = self._write_photo_source()
+        other_sid = 'S-zzyy999999'
+        store.keywords[str(asset)] = [f'SOURCE: {other_sid}']
+
+        rc, _out, err = self._run_captured(
+            [SID, '--to', 'documents', '--type', 'photo', '--yes'])
+
+        self.assertEqual(rc, EXIT_FAILURE)
+        self.assertIn('inventory drift', err)
+        self.assertIn(other_sid, err)
+        self.assertTrue(asset.exists(), "another source's photo must never move")
+
+    def test_photo_asset_with_no_keyword_still_proceeds(self) -> None:
+        # A photo with no embedded SOURCE: keyword at all (or one that cannot
+        # be read because exiftool is unavailable) has no positive evidence of
+        # drift - refile is left to the containment check rather than refusing
+        # on an inference it cannot confirm, so this is unaffected by the new
+        # identity guard (regression check: a bare-bones photo fixture like
+        # every other photos->documents test in this file must still work).
+        self._install_photo_store()
+        asset, _record = self._write_photo_source()
+
+        rc = self._run([SID, '--to', 'documents', '--type', 'photo', '--yes'])
+
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertFalse(asset.exists())
 
     def test_working_copy_refusal(self) -> None:
         (self.archive / 'WORKING_COPY').write_text('marker', encoding='utf-8')
@@ -1011,9 +1130,11 @@ class ProcessRefileTestCase(unittest.TestCase):
     def test_flow_style_frontmatter_with_body_bullet_refuses(self) -> None:
         # The inventory is flow-style YAML the line matcher cannot see; a body
         # bullet reads '- file: <same path>'. The scan is fence-bounded, so it
-        # never rewrites the body line - it refuses, archive untouched.
+        # never rewrites the body line - it refuses, archive untouched. (The
+        # file carries its own S-id suffix, SPEC §13, so refile's identity
+        # check passes and this test still exercises the line-matcher refusal.)
         self._install_photo_store()
-        card = self.archive / 'documents' / 'census' / 'card.jpg'
+        card = self.archive / 'documents' / 'census' / f'card_{SID}.jpg'
         card.write_bytes(b'jpegbytes')
         record = self.archive / 'sources' / 'census' / f'campaign-card_{SID}.md'
         record.write_bytes((
@@ -1026,7 +1147,7 @@ class ProcessRefileTestCase(unittest.TestCase):
             'repository: unknown\n'
             'citation: Campaign card\n'
             'people: []\n'
-            'files: [{file: documents/census/card.jpg, role: primary}]\n'
+            f'files: [{{file: documents/census/card_{SID}.jpg, role: primary}}]\n'
             'created: 2026-07-01\n'
             '---\n'
             '\n'
@@ -1035,7 +1156,7 @@ class ProcessRefileTestCase(unittest.TestCase):
             '```\n'
             '\n'
             '## Notes\n'
-            '- file: documents/census/card.jpg\n'
+            f'- file: documents/census/card_{SID}.jpg\n'
         ).encode('utf-8'))
         before = record.read_bytes()
 

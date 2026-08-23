@@ -3359,12 +3359,80 @@ def process_refile(
             '`fha reconcile` to re-tie it to its record.')
 
     src = resolve_path(stored_alias, fha_config, archive_root)
+
+    # P1 (audit finding, mirrors the #147-review fix to `fha source
+    # clear-keyword`): the `alias_root` check above only confirms the alias
+    # STARTS WITH 'documents'/'photos' AS TEXT - a hand-edited or corrupted
+    # entry like 'documents/../../outside.tif' passes that check, but
+    # `resolve_path` joins the alias onto the configured root with plain path
+    # arithmetic and does not itself guard against a '..' segment (or a
+    # doubled separator) carrying the result outside that root. Resolve both
+    # sides and refuse before touching the filesystem at all if the target
+    # does not actually land beneath the root it claims to be under -
+    # otherwise refile would move (or, on the copy+unlink fallback, delete)
+    # a file that was never part of this archive.
+    claimed_root = resolve_path(alias_root, fha_config, archive_root)
+    if not _is_under(src, claimed_root):
+        raise ProcessError(
+            f'{stored_alias} resolves outside the configured {alias_root} '
+            f'folder ({claimed_root}) - this looks like a hand-edited files: '
+            f'entry gone wrong (a `..` segment, or a doubled slash). Fix the '
+            f'entry in {record_path.name} by hand, then retry. Nothing was '
+            'moved.')
+
     if not src.is_file():
         raise ProcessError(
             f'{stored_alias} is not on disk. If the {alias_root} folder lives on '
             'an external drive, plug it in; if the file was moved, run '
             '`fha reconcile` first so the record points at its real location, '
             'then re-run.')
+
+    # P1 (audit finding, same source as above): confirm the file this would
+    # move actually IS the requested source's own asset before touching it.
+    # Inventory drift - a hand-edited or stale files: entry that still names a
+    # file since reassigned to (or always belonging to) a DIFFERENT source -
+    # can point one source's refile at another source's file, silently
+    # relocating it (and rewriting the WRONG record's files: entry to claim
+    # it) while the other source's own record is left pointing at nothing.
+    # documents-root identity rides in the filename's own `_{S-id}` suffix
+    # (SPEC §13 - the same convention `_filename_has_source_id`/`--more`
+    # already check), and every `fha process`-produced documents-root file
+    # carries it unconditionally, so its absence is refused exactly like
+    # `fha source clear-keyword`'s own identity check treats a missing
+    # marker. photos-root files are never renamed, so there is no filename
+    # signal there - only a DEFINITE, present-and-different embedded
+    # SOURCE: keyword is refused (unambiguous drift: this file is on record
+    # as belonging to another source); a photo with no keyword at all, or one
+    # that could not be read because exiftool is unavailable, is left to the
+    # weaker (but still-fixed) containment check above rather than refused on
+    # an inference this verb cannot confirm - the same "verify what can
+    # actually be verified" posture refile already takes for the keyword it
+    # embeds at the destination, so this verb gains no hard new dependency.
+    if alias_root == 'documents':
+        filename_sid = _filename_has_source_id(src)
+        if filename_sid != sid.lower():
+            carried = fmt_id_display(filename_sid) if filename_sid else 'no source id at all'
+            raise ProcessError(
+                f"{stored_alias}'s own filename carries {carried}, not {sid} - "
+                f"{record_path.name}'s files: entry looks like inventory drift "
+                f'(it names a file that belongs to a different source), and '
+                f'moving it would relocate the WRONG document. Run `fha '
+                'reconcile` to re-tie sources to their actual files, then retry. '
+                'Nothing was moved.')
+    else:
+        try:
+            embedded_sid = _read_source_keyword(src)
+        except RuntimeError:
+            embedded_sid = None
+        if embedded_sid is not None and embedded_sid != sid.lower():
+            raise ProcessError(
+                f"{stored_alias}'s own embedded SOURCE keyword carries "
+                f'{fmt_id_display(embedded_sid)}, not {sid} - '
+                f"{record_path.name}'s files: entry looks like inventory "
+                f'drift (it names a file that belongs to a different '
+                f'source), and moving it would relocate the WRONG photo. '
+                'Run `fha reconcile` to re-tie sources to their actual '
+                'files, then retry. Nothing was moved.')
 
     # The source's type, resolved. A type that is wrong for the destination
     # root is part of the misfiling this verb corrects, so refile carries the
