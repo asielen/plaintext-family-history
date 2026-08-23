@@ -924,6 +924,92 @@ class PlaceTextEscalationTests(unittest.TestCase):
         self.assertIn('--into=L-baba9801fa', md)
         self.assertNotIn('--name=', md)
 
+    def test_escalation_banner_says_not_linked_not_unregistered_when_already_registered(
+        self,
+    ) -> None:
+        # Codex review, PR #142 follow-up finding 1: the bold banner heading
+        # above every section used to unconditionally say "no place
+        # registered", even when the escalated cluster's own bullet right
+        # below it (via _place_text_group_line, the fix immediately above)
+        # is busy recommending `--into <existing L-id>` because the label
+        # DOES match something already registered. That is self-contradictory
+        # - it found a registered place but the heading says none exists -
+        # and a human skimming only the bold heading would still walk away
+        # minting a duplicate. The heading must describe an already-
+        # registered-but-unlinked cluster accurately instead.
+        (self.archive_root / 'places').mkdir(parents=True)
+        (self.archive_root / 'places' / 'places.yaml').write_text(
+            '- id: L-baba9801fa\n  name: Warsaw, Poland\n', encoding='utf-8')
+        self._write_cluster_source('S-9000000011', 'Warsaw, Poland', 20)
+        result = report.run_report(self.archive_root, {}, full=True)
+        md = result['markdown']
+        banner = md[:md.index('## 0.')]
+        self.assertNotIn('no place registered', banner)
+        self.assertIn('already registered but not yet linked', banner)
+
+    def test_escalation_banner_mixed_registered_and_unregistered_avoids_overclaiming(
+        self,
+    ) -> None:
+        # One escalated cluster already matches a registered place, another
+        # genuinely matches none - the banner covers both clusters in one
+        # heading, so it must not assert either extreme ("no place
+        # registered" is false for the first; "already registered" is false
+        # for the second). It falls back to wording that is true of both.
+        (self.archive_root / 'places').mkdir(parents=True)
+        (self.archive_root / 'places' / 'places.yaml').write_text(
+            '- id: L-baba9801fa\n  name: Warsaw, Poland\n', encoding='utf-8')
+        self._write_cluster_source('S-9000000012', 'Warsaw, Poland', 20)
+        self._write_cluster_source('S-9000000013', 'Unregistered City', 20)
+        result = report.run_report(self.archive_root, {}, full=True)
+        md = result['markdown']
+        banner = md[:md.index('## 0.')]
+        self.assertNotIn('no place registered', banner)
+        self.assertNotIn('already registered but not yet linked', banner)
+        self.assertIn('not yet linked to a place', banner)
+
+    def test_cluster_matching_multiple_registered_places_does_not_recommend_a_mint(
+        self,
+    ) -> None:
+        # Codex review, PR #142 follow-up finding 2: `_lib.
+        # match_place_text_to_registry` deliberately returns tier: None when
+        # two different registered place_ids share this cluster's normalized
+        # name (a PL002 duplicate-name registry problem) - it refuses to
+        # guess which one is meant. Falling through to the `--name` mint
+        # recommendation there would invite minting a THIRD, duplicate
+        # place_id on top of an already-unresolved clash instead of
+        # resolving it. The line must name the real tied ids and point at
+        # `--into`/`fha places lint`, never `--name`.
+        (self.archive_root / 'places').mkdir(parents=True)
+        (self.archive_root / 'places' / 'places.yaml').write_text(
+            '- id: L-aaaaaaaaaa\n  name: Springfield\n'
+            '- id: L-bbbbbbbbbb\n  name: Springfield\n', encoding='utf-8')
+        self._write_cluster_source('S-9000000014', 'Springfield', 20)
+        result = report.run_report(self.archive_root, {}, full=True)
+        md = result['markdown']
+        self.assertIn('MULTIPLE registered places', md)
+        self.assertIn('L-aaaaaaaaaa', md)
+        self.assertIn('L-bbbbbbbbbb', md)
+        self.assertIn('fha places lint', md)
+        self.assertNotIn('--name=', md)
+
+    def test_escalation_banner_flags_ambiguous_match_without_asserting_unregistered(
+        self,
+    ) -> None:
+        # The banner heading for an escalated cluster whose name is
+        # ambiguous (ties between two registered places) must not claim "no
+        # place registered" either - a registered place (in fact two) does
+        # exist, the problem is picking between them.
+        (self.archive_root / 'places').mkdir(parents=True)
+        (self.archive_root / 'places' / 'places.yaml').write_text(
+            '- id: L-aaaaaaaaaa\n  name: Springfield\n'
+            '- id: L-bbbbbbbbbb\n  name: Springfield\n', encoding='utf-8')
+        self._write_cluster_source('S-9000000015', 'Springfield', 20)
+        result = report.run_report(self.archive_root, {}, full=True)
+        md = result['markdown']
+        banner = md[:md.index('## 0.')]
+        self.assertNotIn('no place registered', banner)
+        self.assertIn('ambiguous', banner)
+
     def test_place_candidates_run_only_once_per_report(self) -> None:
         # Codex review, PR #142 finding 2: §6b's own listing and the
         # escalation banner above it used to each make their own

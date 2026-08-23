@@ -86,7 +86,13 @@ CODE MAP
                                     recommends `--into <L-id>` instead of
                                     minting via `--name` when the cluster's
                                     label already matches a registered place
-                                    (Codex review, PR #142 finding 1)
+                                    (Codex review, PR #142 finding 1); names
+                                    a duplicate-name registry clash instead
+                                    of recommending a mint through it when
+                                    the match was ambiguous (Codex review,
+                                    PR #142 follow-up finding 2 - real
+                                    `ambiguous_ids` off the match, never
+                                    guessed)
     _section_place_candidates    - §6b: renders `_fetch_place_candidates`'s
                                     result, each place-text cluster line
                                     carrying its own `fha confirm place`
@@ -954,7 +960,7 @@ def _section_photo_triage(
 
 # ── Section 6b: Place candidates ──────────────────────────────────────────────
 
-def _place_text_group_line(archive_root: Path, g: dict) -> str:
+def _place_text_group_line(archive_root: Path, g: dict, match: dict | None = None) -> str:
     """
     One place-text cluster's report line: label, claim count, date spread,
     and the exact `fha confirm place` command that clears it (issue #79
@@ -979,11 +985,34 @@ def _place_text_group_line(archive_root: Path, g: dict) -> str:
     has one (Codex review, PR #142 finding 1) - so a match here recommends
     `fha confirm place ... --into <existing L-id>` instead, and `--name` is
     offered only once no registered place matches at all.
+
+    A `tier: None` result also covers a SECOND, distinct situation that
+    `match_place_text_to_registry` deliberately collapses to the same tier:
+    the cluster's label ties between two or more already-registered
+    place_ids (a PL002 duplicate-name registry problem in its own right).
+    Falling through to the `--name` mint recommendation there would invite
+    the human to create a THIRD, duplicate place_id instead of resolving the
+    clash (Codex review, PR #142 finding 2 follow-up) - so this checks
+    `match['ambiguous_ids']` (the real tied ids the match reported, never
+    guessed at here) and names the clash plus `fha places lint` as the way
+    to see it, instead. `--name` is now offered only once BOTH `tier` is
+    `None` AND `ambiguous_ids` is empty - i.e. truly no registered place
+    matches at all, ambiguous or otherwise.
+
+    `match` lets a caller that already looked the cluster's label up pass
+    that result in, instead of this function repeating the same registry
+    read a second time - `run_report`'s escalation-banner renderer does
+    exactly that (see `_place_text_escalations`'s docstring and the finding-1
+    fix in `_render_report`), since it also needs to know whether any
+    escalated cluster already has a registry match to word its own banner
+    accurately. Omitted (the §6b listing's own call), it is looked up here
+    exactly as before.
     """
     spread = f"{g['date_min']}/{g['date_max']}" if g['date_min'] or g['date_max'] else 'no dates'
     name = g['label']
     ids = ' '.join(fmt_id_display(cid) for cid in g['claim_ids'])
-    match = match_place_text_to_registry(archive_root, name)
+    if match is None:
+        match = match_place_text_to_registry(archive_root, name)
     if match['tier'] and match['place_id']:
         tier_word = 'matches' if match['tier'] == 'exact' else 'near-matches'
         return (
@@ -991,6 +1020,14 @@ def _place_text_group_line(archive_root: Path, g: dict) -> str:
             f"{tier_word} the already-registered {match['name']!r} "
             f"({match['place_id']}) - link with "
             f"`fha confirm place {ids} --into={match['place_id']}`"
+        )
+    ambiguous_ids = match.get('ambiguous_ids')
+    if ambiguous_ids:
+        return (
+            f"{name} - {g['claim_count']} claim(s), {spread} - "
+            f"matches MULTIPLE registered places ({', '.join(ambiguous_ids)}) - "
+            f"pick one with `fha confirm place {ids} --into=<one of the above>`, "
+            'or run `fha places lint` to see the clash'
         )
     return (
         f"{name} - {g['claim_count']} claim(s), {spread} - "
@@ -1423,6 +1460,7 @@ def _render_report(
     section_filter: str | None,
     archive_notes: list[str] | None = None,
     place_escalation_lines: list[str] | None = None,
+    place_escalation_matches: list[dict] | None = None,
 ) -> str:
     """Assemble the report markdown: title, archive notes (when any), sections.
 
@@ -1451,6 +1489,27 @@ def _render_report(
     listed at its normal spot in §6b below, so nothing here shrinks that
     section's own listing.
 
+    `place_escalation_matches` is `run_report`'s parallel list of each of
+    those same clusters' `_lib.match_place_text_to_registry` result (the
+    exact dicts `_place_text_group_line` used to decide `--into` vs
+    `--name` for its own bullet) - here purely to word the banner's HEADING
+    accurately. Before this existed the heading unconditionally said "no
+    place registered", even for a cluster whose bullet, right below it,
+    was busy recommending `--into <existing L-id>` because the label DOES
+    match something already registered - self-contradictory, and a human
+    skimming only the bold heading would still walk away minting a
+    duplicate (Codex review, PR #142 finding 1). Bucketed by tier: any
+    cluster with a real `tier` already has a registered place waiting to be
+    linked; a `tier: None` cluster with `ambiguous_ids` matches more than
+    one registered place and needs a human pick, not a mint; only a
+    `tier: None` cluster with no `ambiguous_ids` either is a genuine miss.
+    All-miss keeps the original "no place registered" wording (still
+    accurate there); all-registered says so instead; anything mixed - or
+    `None` (an older/direct caller that has not looked matches up) - falls
+    back to a phrasing that is true of every cluster in the list either way,
+    "not yet linked to a place", rather than asserting a state some of the
+    clusters do not share.
+
     When `section_filter` narrows the view to something other than
     `place-candidates`, §6b itself is omitted from what actually prints, so
     pointing the banner at "the Place candidates section below" would name
@@ -1467,10 +1526,26 @@ def _render_report(
             pointer = 'run `fha report --section place-candidates` to see every cluster'
         else:
             pointer = 'see the Place candidates section below for every cluster'
+        matches = place_escalation_matches or []
+        if matches and len(matches) == len(place_escalation_lines):
+            registered = sum(1 for m in matches if m.get('tier'))
+            ambiguous = sum(
+                1 for m in matches if not m.get('tier') and m.get('ambiguous_ids'))
+            genuine_miss = len(matches) - registered - ambiguous
+            if registered == len(matches):
+                state_phrase = 'already registered but not yet linked'
+            elif ambiguous == len(matches):
+                state_phrase = 'ambiguous - each matches multiple registered places'
+            elif genuine_miss == len(matches):
+                state_phrase = 'no place registered'
+            else:
+                state_phrase = 'not yet linked to a place'
+        else:
+            state_phrase = 'no place registered'
         lines.append(
             f'**{len(place_escalation_lines)} place-text cluster(s) past the '
-            f'{_PLACE_ESCALATION_THRESHOLD}-claim oversight threshold, no place '
-            'registered - this is not a candidate to weigh, it is an oversight '
+            f'{_PLACE_ESCALATION_THRESHOLD}-claim oversight threshold, {state_phrase} '
+            '- this is not a candidate to weigh, it is an oversight '
             f'to close ({pointer}):**'
         )
         lines.extend(f'- {line}' for line in place_escalation_lines)
@@ -1603,8 +1678,19 @@ def run_report(
         }
 
         place_escalations = _place_text_escalations(place_candidates)
+        # Looked up once per escalated cluster and reused for both the
+        # rendered bullet (`_place_text_group_line`, passed in below instead
+        # of letting it repeat this same registry read) and the banner's own
+        # wording just below - the banner needs to know whether ANY
+        # escalated cluster already matches a registered place so it never
+        # again claims "no place registered" for one that does (Codex
+        # review, PR #142 finding 1).
+        place_escalation_matches = [
+            match_place_text_to_registry(archive_root, g['label']) for g in place_escalations
+        ]
         place_escalation_lines = [
-            _place_text_group_line(archive_root, g) for g in place_escalations
+            _place_text_group_line(archive_root, g, match=m)
+            for g, m in zip(place_escalations, place_escalation_matches)
         ]
         # Not one of SECTIONS/_SECTION_KEYS (never a `--section` filter target
         # or its own `## N.` heading) - present purely so `data['sections']`
@@ -1617,10 +1703,12 @@ def run_report(
         generated = datetime.date.today().isoformat()
         full_md = _render_report(generated, bodies, section_filter=None,
                                  archive_notes=archive_notes,
-                                 place_escalation_lines=place_escalation_lines)
+                                 place_escalation_lines=place_escalation_lines,
+                                 place_escalation_matches=place_escalation_matches)
         printed_md = full_md if not section else _render_report(
             generated, bodies, section_filter=section, archive_notes=archive_notes,
-            place_escalation_lines=place_escalation_lines)
+            place_escalation_lines=place_escalation_lines,
+            place_escalation_matches=place_escalation_matches)
 
         cache_dir = archive_root / '.cache'
         cache_dir.mkdir(parents=True, exist_ok=True)
