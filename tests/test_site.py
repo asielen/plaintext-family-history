@@ -3861,6 +3861,26 @@ class ProseConverterTests(unittest.TestCase):
         out = site._prose_to_html('Born in [S-1111111111] year.', lambda t: f'<a>{t}</a>')
         self.assertIn('<a>S-1111111111</a>', out)
 
+    # -- #144 review findings on _scrub_internal_encoding / _translate_date_before --
+
+    def test_claim_id_paren_removal_reinserts_missing_space(self):
+        # Finding 1: `_CLAIM_ID_PAREN_RE` eats an optional LEADING space along
+        # with the parenthetical. When nothing separates the closing paren
+        # from the next word, removing the match used to weld the two
+        # surrounding words together ("recordconfirms" instead of "record
+        # confirms") because there was never a trailing space to fall back on.
+        out = site._scrub_internal_encoding('The record (C-4kx9m2p7qr)confirms the date.')
+        self.assertEqual(out, 'The record confirms the date.')
+
+    def test_claim_id_paren_removal_does_not_double_space(self):
+        # The finding-1 fix must not overcorrect: when a space (or
+        # punctuation) already follows the parenthetical, no second space
+        # should be inserted.
+        out = site._scrub_internal_encoding('The record (C-4kx9m2p7qr) confirms the date.')
+        self.assertEqual(out, 'The record confirms the date.')
+        out2 = site._scrub_internal_encoding('The record (C-4kx9m2p7qr).')
+        self.assertEqual(out2, 'The record.')
+
 
 class WorkbenchModeTests(_Base):
     """Workbench mode (serve-only) adds editing chrome and provisional vitals,

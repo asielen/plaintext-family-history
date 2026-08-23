@@ -541,6 +541,28 @@ _MONTH_NAMES = ('January', 'February', 'March', 'April', 'May', 'June', 'July',
                 'August', 'September', 'October', 'November', 'December')
 
 
+def _strip_claim_id_paren(match: re.Match) -> str:
+    """One `(C-xxxxxxxxxx)` match -> '' (dropped) or a single space (#144
+    review finding 1).
+
+    The regex eats an optional single LEADING space along with the
+    parenthetical, so a trailing sentence like " (C-xxx)." collapses cleanly
+    to "." with no orphan space. But that leading-space consumption has
+    nothing to say about what follows the match: a hand-edited parenthetical
+    sitting directly against the next word with no space of its own
+    ("record(C-xxx)confirms") loses its ONLY separator and the two words run
+    together ("recordconfirms"). Reinserting a single space whenever the
+    character right after the match is an ordinary word character (not
+    whitespace, not punctuation, not the end of the string) restores that
+    separator without ever double-spacing the already-correct case where a
+    space or punctuation mark already follows."""
+    end = match.end()
+    text = match.string
+    if end < len(text) and text[end].isalnum():
+        return ' '
+    return ''
+
+
 def _translate_date_before(match: re.Match) -> str:
     """One `[..YYYY[-MM[-DD]]]` match -> the plain phrase base.html's date-
     notation legend already uses for this form ("before <date>"), so prose
@@ -557,14 +579,15 @@ def _translate_date_before(match: re.Match) -> str:
 
 def _scrub_internal_encoding(text: str) -> str:
     """Remove/translate internal-only encoding that must never reach reader-
-    facing prose (#140): a bare claim-id parenthetical is dropped outright,
-    and a raw `[..YYYY]`-shaped "before" date is translated to plain English.
-    Applied to raw value/notes/body text BEFORE any HTML escaping, so callers
-    doing their own index-based substitutions afterward (e.g. the timeline's
-    place-mention span) see only the already-scrubbed text."""
+    facing prose (#140): a bare claim-id parenthetical is dropped outright
+    (spacing preserved, #144 finding 1), and a raw `[..YYYY]`-shaped "before"
+    date is translated to plain English. Applied to raw value/notes/body text
+    BEFORE any HTML escaping, so callers doing their own index-based
+    substitutions afterward (e.g. the timeline's place-mention span) see only
+    the already-scrubbed text."""
     if not text:
         return text
-    text = _CLAIM_ID_PAREN_RE.sub('', text)
+    text = _CLAIM_ID_PAREN_RE.sub(_strip_claim_id_paren, text)
     text = _DATE_BEFORE_RE.sub(_translate_date_before, text)
     return text
 
