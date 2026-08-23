@@ -824,9 +824,8 @@ def _render_pedigree_svg(labels: dict, spouses: list[dict] | None = None,
             continue
         lab = labels.get(slot)
         render[slot] = ('person', lab) if (lab and lab.get('name')) else ('empty', None)
-    # Deepest generation actually PLACED in `render` - used below to size the
-    # reserved ancestor band, and again for the overall width - so the two
-    # can never drift apart (see `ancestor_band` below, #119).
+    # Deepest generation actually PLACED in `render` - used below for the
+    # overall width.
     max_gen = max((k.bit_length() - 1 for k in render), default=0)
 
     subject_row = 1.5
@@ -843,25 +842,25 @@ def _render_pedigree_svg(labels: dict, spouses: list[dict] | None = None,
     # Row of each child by its ORIGINAL index (cards and ticks look rows up here).
     child_row_of = {orig: children_rows[pos] for pos, orig in enumerate(ordered_children)}
 
-    # The ancestor band has always been rendered at a fixed size (rows 0-3,
-    # the full grandparent grid) whenever any ancestor slot beyond the
-    # subject is PLACED - regardless of whether that slot has a known name or
-    # is a faint 'Unknown' placeholder - preserved here so an ancestors-only
-    # chart's canvas is unchanged. This used to be sized off `len(labels)`
-    # (the count of KNOWN ancestors) on the theory that a chart with no
-    # ancestors "has no reason to reserve that band" - but an unresolved
-    # parent never shows up in `labels` at all (it lives only in
-    # `missing_parent_of`), while `render` above always adds an empty slot 2
-    # and slot 3 the moment the subject draws (i.e. always). So a person with
-    # zero known parents still gets two 'Unknown' cards at their normal offset
-    # rows, and the old check collapsed the band down to the subject's own
-    # row anyway - clipping both cards outside the computed viewBox (#119).
-    # `max_gen` (computed above from `render`, not `labels`) is what actually
-    # decides which rows get cards, so basing the band on it keeps the two in
-    # lockstep. Spouse/children rows then extend the band only when they
-    # reach beyond it (extra spouses stacking past row 3, a wide brood of
-    # children reaching above row 0).
-    ancestor_band = [0.0, 3.0] if max_gen >= 1 else [subject_row]
+    # The ancestor band is always the full grandparent grid (rows 0-3): slot 1
+    # (the subject) is unconditionally `('person', ...)` above, so the render
+    # loop unconditionally places slots 2 and 3 too - as a known name or a
+    # faint 'Unknown' - the moment the subject draws (i.e. always). There is
+    # no input for which those two slots are placed but empty of a card, so a
+    # band that reserves anything less than rows 0-3 always undercounts the
+    # 'Unknown' cards that are about to draw there regardless.
+    #
+    # This used to be sized off `len(labels)` (the count of KNOWN ancestors)
+    # on the theory that a chart with no ancestors "has no reason to reserve
+    # that band" - but an unresolved parent never shows up in `labels` at all
+    # (it lives only in `missing_parent_of`), so a person with zero known
+    # parents still got two 'Unknown' cards at their normal offset rows while
+    # the old check collapsed the band down to the subject's own row -
+    # clipping both cards outside the computed viewBox (#119). Spouse/
+    # children rows then extend the band only when they reach beyond it
+    # (extra spouses stacking past row 3, a wide brood of children reaching
+    # above row 0).
+    ancestor_band = [0.0, 3.0]
     all_rows = ancestor_band + spouse_rows + children_rows
     min_row, max_row = min(all_rows), max(all_rows)
     base = PAD + CH / 2 - min_row * ROW
