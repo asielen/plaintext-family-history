@@ -481,6 +481,52 @@ _LIST_RE = re.compile(r'^\s*[-*]\s+(.*)$')
 # Renders as a figure; the id resolves to a photo through the index. Caption optional.
 _EMBED_RE = re.compile(r'^!\[\[\s*([^\]|]+?)\s*(?:\|\s*([^\]]*?)\s*)?\]\]\s*$')
 
+# A bare `(C-xxxxxxxxxx)` claim-id parenthetical (#140) - an internal cross-
+# reference, not the sanctioned `[[C-xxxx]]` citation form, and meaningless
+# to a reader. Parentheses never collide with the wikilink (`[[ ]]`) or
+# legacy-token (`[ID]`) forms `_INLINE_RE` resolves into links, so this is
+# safe to drop unconditionally rather than routed through render_token. Same
+# id-char class `_INLINE_RE`'s legacy token uses (Crockford Base32, SPEC §10).
+_CLAIM_ID_PAREN_RE = re.compile(r'\s?\(C-[0-9a-hjkmnp-tv-z]{10}\)', re.I)
+
+# A raw `[..YYYY[-MM[-DD]]]` "before" date (SPEC §11's bracket form) embedded
+# mid-sentence in prose (#140) - the same notation base.html's shared footer
+# legend explains (#131) when it appears as a standalone structured date, but
+# a reader meeting the literal brackets/dots inside a sentence gets no such
+# context and the sentence reads as broken. Translated in place instead.
+_DATE_BEFORE_RE = re.compile(r'\[\.\.(\d{4})(?:-(\d{2}))?(?:-(\d{2}))?\]')
+
+_MONTH_NAMES = ('January', 'February', 'March', 'April', 'May', 'June', 'July',
+                'August', 'September', 'October', 'November', 'December')
+
+
+def _translate_date_before(match: re.Match) -> str:
+    """One `[..YYYY[-MM[-DD]]]` match -> the plain phrase base.html's date-
+    notation legend already uses for this form ("before <date>"), so prose
+    and the legend never teach the reader two different words for the same
+    mark."""
+    year, month, day = match.group(1), match.group(2), match.group(3)
+    if month and month.isdigit() and 1 <= int(month) <= 12:
+        month_name = _MONTH_NAMES[int(month) - 1]
+        if day and day.isdigit():
+            return f'before {month_name} {int(day)}, {year}'
+        return f'before {month_name} {year}'
+    return f'before {year}'
+
+
+def _scrub_internal_encoding(text: str) -> str:
+    """Remove/translate internal-only encoding that must never reach reader-
+    facing prose (#140): a bare claim-id parenthetical is dropped outright,
+    and a raw `[..YYYY]`-shaped "before" date is translated to plain English.
+    Applied to raw value/notes/body text BEFORE any HTML escaping, so callers
+    doing their own index-based substitutions afterward (e.g. the timeline's
+    place-mention span) see only the already-scrubbed text."""
+    if not text:
+        return text
+    text = _CLAIM_ID_PAREN_RE.sub('', text)
+    text = _DATE_BEFORE_RE.sub(_translate_date_before, text)
+    return text
+
 
 def _prose_to_html(text: str, render_token, render_embed=None, *, drop_private: bool = False) -> str:
     """Convert a simple markdown block to HTML using only the stdlib.
@@ -499,6 +545,7 @@ def _prose_to_html(text: str, render_token, render_embed=None, *, drop_private: 
     """
     if text:
         text = apply_private_fence(text, drop=drop_private)
+        text = _scrub_internal_encoding(text)
     if not text or not text.strip():
         return ''
     lines = text.replace('\r\n', '\n').split('\n')
@@ -2621,8 +2668,8 @@ class _SiteBuilder:
         with the same wording - the divergence is public-vs-working surface,
         not two rules.)
 
-        Two rendering fixes live here (#127, #128; #129's fix is template-only,
-        see person.html):
+        Three rendering fixes live here (#127, #128, #140; #129's fix is
+        template-only, see person.html):
           - #127: each entry carries `place_redundant` - true when the claim's
             own value text already names the place naturally ("moved to
             Millbrook to farm"), decided by `_place_mention_span` (whole
@@ -2643,6 +2690,12 @@ class _SiteBuilder:
             heading between them. The fix sorts a COPY of the rows by decade
             before grouping; Python's sort is stable, so date_min order
             survives as the within-decade tiebreak.
+          - #140: a claim's value text can carry internal-only encoding a
+            reader was never meant to see - a bare `(C-xxxxxxxxxx)` claim-id
+            parenthetical, or a raw `[..YYYY]` "before" date bracket - so
+            `_scrub_internal_encoding` runs on it before `_place_mention_span`
+            (see below) and before `_timeline_value_html` escapes it for
+            display.
         """
         status_filter = ("c.status IN ('accepted','needs-review')" if self.linked
                          else "c.status = 'accepted'")
@@ -2687,7 +2740,11 @@ class _SiteBuilder:
                 current = decade
                 entries = []
             place_label = self._place_label(r['place_text'], r['place_id'])
-            value_text = r['value'] or ''
+            # #140: scrub BEFORE the place-mention span is computed, so a
+            # length change from stripping a claim-id parenthetical or
+            # expanding a `[..YYYY]` date never desyncs `mention`'s indices
+            # from the text `_timeline_value_html` actually renders.
+            value_text = _scrub_internal_encoding(r['value'] or '')
             mention = _place_mention_span(value_text, place_label)
             entries.append({
                 'date': r['date_edtf'] or '(undated)', 'type': r['type'],

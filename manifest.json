@@ -658,7 +658,7 @@
     {
       "path": ".fha/tools/site.py",
       "category": "operating",
-      "sha256": "0b6a0335edc00fdb82d5f94d4d19c68cc65aa0b95923a4468c08bb3b87969050",
+      "sha256": "315a6c67c81d3b9fde5df88580742ee6a73580f8fb84ccf3de90e76cdfaf2699",
       "spec_version": "1.2",
       "src": "tools/site.py"
     },
