@@ -76,6 +76,8 @@ CODE MAP
     _prose_to_html             - minimal stdlib markdown→HTML (no md library)
     _inline_html               - inline pass: links, [ID] tokens, **bold**
     _extract_section           - pull one `## Heading` section body from a record
+    _question_block_body       - a '## Q:' block's body, heading dropped, cut
+                                 before the next heading of any kind (#117)
 
   Dates
     _decade_header             - EDTF date → "1880s" decade label (timeline grouping)
@@ -120,9 +122,12 @@ CODE MAP
   Builder
     _SiteBuilder               - holds conn, mode, maps, page sets, jinja env
       .prepare                 - load persons/sources, decide which pages exist
+      ._load_open_questions    - index open '## Q:' blocks by referenced person
+                                 id (#117; workbench-only, see build_person_page)
       ._claim_is_own_vital     - is this vital claim a record OF this person,
                                  or of a relative it also names? (roles:, #126)
       ._person_summary         - the Born/Died/Married infobox, own vitals only
+      ._person_open_questions  - this person's open questions, rendered
       .render_token            - one [ID] token → HTML (link / redaction / mark)
       .build_source_page       - M8.1 source page
       .build_person_page       - M8.2 person page
@@ -171,6 +176,7 @@ from _lib import (
     load_fha_yaml,
     normalize_id,
     open_index_db,
+    parse_questions,
     person_section_is_unfilled,
     photoindex_status,
     photos_ignore_matcher,
@@ -606,6 +612,30 @@ def _extract_section(body: str, heading: str) -> str | None:
     if not content or content in ('*(none yet)*', '(none yet)'):
         return None
     return content
+
+
+def _question_block_body(block: str) -> str:
+    """A `## Q:` block's body: its own heading line dropped, cut before the
+    next markdown heading of any level (issue #117).
+
+    `_lib.parse_question_blocks` splits purely on `## Q:` boundaries (see its
+    own docstring): fed a WHOLE research file, as `_lib.parse_questions` does
+    for a person's own '## Open Questions' section, the LAST question block
+    in that file keeps everything that follows it too - `## Hypotheses`,
+    `## Research Log`, whatever the SPEC §16 scaffold puts next - because
+    nothing in that split stops at a heading of any OTHER level. That reach
+    never mattered before: the only existing reader of a block's raw text
+    (report.py's answerable-questions section) only keyword-searches it. A
+    person's page RENDERS it, so an untrimmed block would show someone's
+    Hypotheses and Research Log as if they were part of an unrelated open
+    question. This stops at the same boundary `_extract_section` respects
+    for every other person-page section - the next `## ` heading, of any
+    kind - and drops the block's own heading line, since the template shows
+    that heading text on its own.
+    """
+    _first_line, _sep, rest = block.partition('\n')
+    m = re.search(r'^## ', rest, re.M)
+    return rest[:m.start()] if m else rest
 
 
 # ── Dates ───────────────────────────────────────────────────────────────────
@@ -1248,6 +1278,10 @@ class _SiteBuilder:
         self.source_meta: dict[str, sqlite3.Row] = {}
         self.place_meta: dict[str, sqlite3.Row] = {}
         self.place_names: dict[str, str] = {}   # id → display name (token rendering)
+        # pid -> its open '## Q:' blocks (issue #117), built once in prepare()
+        # by _load_open_questions - only when self.workbench (see
+        # build_person_page for why this never reaches a public build).
+        self.person_questions: dict[str, list[dict]] = {}
         self.alias_map: dict[str, str] = {}     # lowercased name/stem → canonical id
         self.person_pages: set[str] = set()   # normalized pids that get a page
         self.source_pages: set[str] = set()   # normalized sids that get a page
@@ -1419,6 +1453,12 @@ class _SiteBuilder:
             if self.linked or not self._person_is_redacted(row):
                 self.person_pages.add(pid)
 
+        # Workbench-only (build_person_page): parsing/indexing every open
+        # question is skipped entirely on a standalone or plain --linked
+        # build, where the section never renders anyway.
+        if self.workbench:
+            self._load_open_questions()
+
         self._open_photos()
 
     def _load_restriction_markers(self) -> None:
@@ -1541,6 +1581,43 @@ class _SiteBuilder:
                 cid = normalize_id(str(claim.get('id', '')))
                 if cid and _is_restricted_value(claim.get('restricted')):
                     self.restricted_claims.add(cid)
+
+    def _load_open_questions(self) -> None:
+        """Index every OPEN '## Q:' block by the person id(s) its `refs:`
+        names, so build_person_page can look a person's questions up by pid
+        instead of re-scanning the whole log per page (issue #117).
+
+        `_lib.parse_questions` reads both notes/questions.md AND every
+        person's own research-file `## Open Questions` section - the same
+        parser `fha report` reads, so the two tools never disagree about
+        what a person's open questions are. That scope answers a design
+        question the issue leaves open: a question logged in Person B's
+        research file that also `refs:` Person A DOES surface on Person A's
+        page, not just on Person B's - inherited for free from the shared
+        parser's existing reach, not a new decision made here.
+
+        Only 'open' questions are indexed - an answered or closed '## Q:'
+        is settled research, not a live pointer a page should keep raising.
+        A widely-referenced question naming several people legitimately
+        appears on several pages; that is not a duplication bug.
+
+        Called only when self.workbench (see build_person_page): a '## Q:'
+        block carries no `restricted:` field of its own yet, and its
+        `context:` can legitimately hold sensitive detail about a living
+        third party that nothing here has vetted, so this stays on the
+        private local-preview surface until that field exists.
+        """
+        for _key, info in sorted(parse_questions(self.archive_root).items()):
+            if info['status'] != 'open':
+                continue
+            # set(): a `refs:` list naming the same person twice (a plausible
+            # copy-paste slip, e.g. `refs: [P-x, P-x]`) must not double-file
+            # the question onto that one person's own list, which would
+            # render it twice on their page - a real duplication bug, unlike
+            # the same question legitimately appearing on SEVERAL people's
+            # pages.
+            for ref in {r for r in info['refs'] if r.startswith('p-')}:
+                self.person_questions.setdefault(ref, []).append(info)
 
     def _open_photos(self) -> None:
         """Open the photo index once if it is fresh, for the person photo strips.
@@ -2209,6 +2286,17 @@ class _SiteBuilder:
                                 for e in stories_entries],
             'research_entries': [{'html': self._markup(e['html']), 'raw': e['raw']}
                                  for e in research_entries],
+            # Workbench-only (issue #117): open questions naming this person,
+            # from notes/questions.md and every person's own research file
+            # alike. Gated on `workbench`, not merely `linked`, because a
+            # '## Q:' block carries no `restricted:` field of its own yet and
+            # its `context:` can hold sensitive detail about a living third
+            # party - the same safe-default gate `open_review_count` below
+            # uses for workbench-only content, until that field lands.
+            'open_questions': [{'heading': q['heading'], 'file': q['file'],
+                                'html': self._markup(q['html'])}
+                               for q in (self._person_open_questions(pid, page_dir)
+                                         if self.workbench else [])],
             'timeline': timeline, 'sources': sources, 'family': family, 'photos': photos,
             # Workbench-only fields (harmless in standalone - the template gates
             # every use on `workbench`): the record's on-disk relpath for the
@@ -2655,6 +2743,30 @@ class _SiteBuilder:
             {'html': _prose_to_html(e, render, embed, drop_private=dp),
              'raw': lookup.get(e.strip(), e)}
             for e in split_log_entries(display_section or '')]
+
+    def _person_open_questions(self, pid: str, page_dir: Path) -> list[dict]:
+        """This person's open questions (issue #117), rendered through the
+        same prose-to-HTML pipeline Research Notes uses, so a `[[P-…]]`
+        cross-link and any `<!-- private -->` fence in a question's
+        `context:` behave exactly as they do everywhere else on the page.
+
+        Reads `self.person_questions`, built once for the whole build by
+        `_load_open_questions` - never called here, so a person with no
+        indexed questions costs one dict lookup, not a re-scan of the log.
+        Only called from build_person_page when self.workbench (see there
+        for why); `dp` still reads `not self.linked` rather than a bare
+        `False` so this stays correct if that ever changes.
+        """
+        render = lambda tok, disp=None: self.render_token(tok, page_dir, disp)  # noqa: E731
+        embed = lambda t, c: self._render_embed(t, c, page_dir)  # noqa: E731
+        dp = not self.linked
+        out: list[dict] = []
+        for info in self.person_questions.get(pid, []):
+            body = _question_block_body(info['block'])
+            html = _prose_to_html(body, render, embed, drop_private=dp) if body.strip() else ''
+            if html:
+                out.append({'heading': info['heading'], 'file': info['file'], 'html': html})
+        return out
 
     def _person_timeline(self, pid: str, page_dir: Path) -> list[dict]:
         """The person's claims grouped by decade (TOOLING §12; same shape as

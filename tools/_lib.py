@@ -189,6 +189,17 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    is_person_file_kind       - is this person file the `research`/`timeline`/… companion?
 #                                 (the §13 kind SLOT, never a substring of the stem;
 #                                  pass `meta` and the file's own content decides)
+#
+#  Open questions ('## Q:' blocks, SPEC §17) - notes/questions.md + every
+#  person research file's own '## Open Questions' section
+#    QUESTION_HEADING_RE, QUESTION_STATUS_RE, QUESTION_REFS_RE - the block grammar
+#    parse_question_blocks     - split one file's text into {heading: {status, refs, block}}
+#    parse_questions            - notes/questions.md + every person research file ->
+#                                 {'{file} :: {heading}': {status, refs, block, heading, file}}
+#                                 (issue #117: the one place `fha report` and `fha site`
+#                                 both read, so the two never disagree about what a
+#                                 person's open questions are)
+#
 #    ParsedName, parse_media_filename - decompose an unprocessed photo/scan filename
 #                                 into base_id + variant/part-kind/page/crop (TOOLING §6/§9)
 #
@@ -3984,6 +3995,140 @@ def is_person_file_kind(path: str | Path, kind: str, meta: dict | None = None) -
     if parsed is not None:
         return parsed.get('id_type') == 'P' and parsed.get('kind') == kind
     return Path(path).stem.endswith(f'_{kind}')
+
+
+# ── Open questions ('## Q:' blocks, SPEC §17) ────────────────────────────────
+#
+# `notes/questions.md` (general questions) and a person's own research
+# companion's `## Open Questions` section (SPEC §16) share one block grammar:
+# an `## Q:` heading, then `- status:`/`- refs:`/`- context:` fields. Both
+# `fha report` (discoveries/answerable-questions sections) and `fha site`
+# (issue #117: surfacing a person's open questions on their own page) need
+# the parsed form - the split-and-extract lived only in report.py until both
+# callers needed it, so it moved here (tools never import tools; _lib.py is
+# the one shared dependency, TOOLING §15).
+#
+# `lint.py` keeps its OWN, separate, coarser block-splitter
+# (`_question_blocks`/`_has_question_for`) rather than switching to this one.
+# E009 only needs "do these two IDs co-occur inside the same block" - a plain
+# substring test over ANY `##`-heading block, questions.md and research files
+# alike - and never reads `status`/`refs` as structured fields. Promoting
+# that one too would add a caller nobody needs; the two implementations are
+# kept in scope-sync by convention (both read questions.md + every person
+# research file's content), not by shared code.
+
+QUESTION_HEADING_RE = re.compile(r'^## Q:\s*(.+)$', re.M)
+QUESTION_STATUS_RE = re.compile(r'^- status:\s*(.+)$', re.M)
+QUESTION_REFS_RE = re.compile(r'^- refs:\s*\[(.*?)\]', re.M)
+
+
+def parse_question_blocks(text: str) -> dict[str, dict]:
+    """Split one file's text into {heading: {'status', 'refs', 'block'}}.
+
+    Splits purely on `## Q:` boundaries (a lookahead `re.split`), so a block
+    runs from its own heading to the NEXT `## Q:` heading - or, when none
+    follows, to the end of the text handed in. Fed a WHOLE file (as
+    `parse_questions` does for a person's research file), the last block's
+    `'block'` text can therefore run past the end of the Open Questions
+    section into whatever heading follows (`## Hypotheses`, `## Research
+    Log`, …). That has been harmless everywhere `'block'` has been read so
+    far - `fha report`'s answerable-questions section only keyword-searches
+    it - so this function does not trim to the next heading of any kind
+    itself; a caller that means to DISPLAY `'block'` verbatim (site.py's
+    person-page render) is responsible for cutting it back to the next `##`
+    heading on its own.
+    """
+    out: dict[str, dict] = {}
+    blocks = re.split(r'(?=^## Q:)', text, flags=re.M)
+    for block in blocks:
+        m = QUESTION_HEADING_RE.match(block)
+        if not m:
+            continue
+        heading = m.group(1).strip()
+        status_m = QUESTION_STATUS_RE.search(block)
+        refs_m = QUESTION_REFS_RE.search(block)
+        refs = [
+            normalize_id(r.strip()) for r in (refs_m.group(1).split(',') if refs_m else [])
+            if r.strip()
+        ]
+        out[heading] = {
+            'status': status_m.group(1).strip() if status_m else '',
+            'refs': refs,
+            'block': block,
+        }
+    return out
+
+
+def parse_questions(archive_root: Path) -> dict[str, dict]:
+    """
+    Parse notes/questions.md AND every person research file's
+    `## Open Questions` block into {key: {'status', 'refs', 'block',
+    'heading', 'file'}}, keyed by '{relative file path} :: {heading}'.
+
+    Mirrors `fha lint`'s E009 question-scanning scope: lint.py's
+    `_has_question_for` checks both `registry.questions_content`
+    (notes/questions.md) and `registry.research_content` (every person
+    research file collected in `_walk_archive` via
+    `is_person_file_kind(path, 'research', meta)`, under `people/`) - the
+    same two sources read here, kept in sync by convention since lint keeps
+    its own simpler splitter (see the module note above) rather than calling
+    this function. Every READER of the parsed form - `fha report`'s
+    discoveries/answerable-questions sections, `fha site`'s person-page
+    open-questions block - calls this one function, so a question logged
+    only in a person's research file reads the same way everywhere: a
+    caller that rolled its own scan would silently miss it.
+
+    Keys are namespaced by file because the same heading text easily recurs
+    across files once questions number in the hundreds ("When was he born?"
+    on two research sheets), and a plain-heading dict would silently shadow
+    one question with the other. The display text lives in each entry's
+    'heading' field. A duplicate heading *within* one file still collides
+    (last one wins) - acceptable, since a single file's headings sit side by
+    side where the human edits them.
+    """
+    out: dict[str, dict] = {}
+
+    def _merge(qpath: Path, text: str) -> None:
+        try:
+            rel = qpath.relative_to(archive_root).as_posix()
+        except ValueError:
+            rel = qpath.as_posix()
+        for heading, info in parse_question_blocks(text).items():
+            out[f'{rel} :: {heading}'] = {**info, 'heading': heading, 'file': rel}
+
+    path = archive_root / 'notes' / 'questions.md'
+    if path.exists():
+        try:
+            _merge(path, path.read_text(encoding='utf-8'))
+        except OSError:
+            pass
+
+    people_root = archive_root / 'people'
+    if people_root.exists():
+        for rpath in sorted(people_root.rglob('*.md')):
+            # Two passes on purpose. The filename can only ever NARROW this set
+            # (nothing outside SPEC §13's kind slot is a research file), so the
+            # record is read only for the handful of files that could be one -
+            # and then content settles it, exactly as lint does. That second
+            # half matters: the kind slot is also a legal last given name, so
+            # `smith__anne_research_P-….md` may be Anne Research Smith's own
+            # record, and a profile's `## Open Questions` block belongs to no
+            # question scope (SPEC §16 homes it in the research companion).
+            if not is_person_file_kind(rpath, 'research'):
+                continue
+            try:
+                meta = read_record(rpath)['meta']
+            except Exception:
+                meta = {}
+            if not is_person_file_kind(rpath, 'research', meta):
+                continue
+            try:
+                text = rpath.read_text(encoding='utf-8')
+            except OSError:
+                continue
+            _merge(rpath, text)
+
+    return out
 
 
 # ── Media filename grammar (TOOLING.md §6, §9) ───────────────────────────────

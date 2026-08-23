@@ -3827,6 +3827,132 @@ class WorkbenchModeTests(_Base):
         self._read('sources/s-1111111111.html')
 
 
+class OpenQuestionsSectionTests(_Base):
+    """Issue #117: a person referenced by a `## Q:` block's `refs:` sees that
+    question on their own page. Workbench-only (same gate `open_review_count`
+    uses) until `## Q:` blocks carry their own `restricted:` field - a
+    question's `context:` can hold sensitive detail about a living third
+    party that nothing here has vetted, so this stays off the public AND
+    plain `--linked` builds for now, not just the standalone one."""
+
+    def _write_questions_md(self, text: str) -> None:
+        path = self.archive_root / 'notes' / 'questions.md'
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding='utf-8')
+
+    def test_open_question_shows_in_workbench_only(self):
+        self._seed_person('p-aaaaaaaaaa', 'Jane Doe', tier='curated')
+        self._write_questions_md(
+            '# Open Questions\n\n'
+            '## Q: When did Jane arrive in Kansas?\n'
+            '- origin: human\n'
+            '- status: open\n'
+            '- refs: [P-aaaaaaaaaa]\n'
+            '- context:\n'
+            '  - (human, 2026-06-01) Census says 1880, no earlier record found.\n'
+        )
+        wb = self._run(linked=True, workbench=True)
+        self.assertTrue(wb.ok, wb.messages)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('Open Questions', html)
+        self.assertIn('When did Jane arrive in Kansas?', html)
+        self.assertIn('Census says 1880', html)
+        self.assertIn('notes/questions.md', html)   # provenance caption
+
+        # Standalone (public) build of the SAME archive: none of it.
+        import shutil as _sh
+        _sh.rmtree(self.out_dir, ignore_errors=True)
+        std = self._run(linked=False)
+        self.assertTrue(std.ok, std.messages)
+        std_html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertNotIn('When did Jane arrive in Kansas?', std_html)
+        self.assertNotIn('Census says 1880', std_html)
+
+        # Plain `--linked` (no workbench): also none of it - the safe
+        # default this PR ships stays narrower than "any unredacted build",
+        # matching the one existing workbench-only count/section precedent
+        # (`open_review_count`) rather than a new `linked`-only gate.
+        _sh.rmtree(self.out_dir, ignore_errors=True)
+        lo = self._run(linked=True, workbench=False)
+        self.assertTrue(lo.ok, lo.messages)
+        lo_html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertNotIn('When did Jane arrive in Kansas?', lo_html)
+
+    def test_a_ref_naming_the_same_person_twice_does_not_double_render(self):
+        # A `refs:` list is free-text-typed by a human; `refs: [P-x, P-x]` is
+        # a plausible copy-paste slip. That must not render the SAME question
+        # twice on P-x's own page - unlike a question legitimately naming
+        # several different people, which correctly appears on each of them.
+        self._seed_person('p-aaaaaaaaaa', 'Jane Doe', tier='curated')
+        self._write_questions_md(
+            '## Q: Repeated ref question\n'
+            '- status: open\n'
+            '- refs: [P-aaaaaaaaaa, P-aaaaaaaaaa]\n'
+            '- context:\n'
+            '  - (human, 2026-06-01) One question, one person, named twice.\n'
+        )
+        wb = self._run(linked=True, workbench=True)
+        self.assertTrue(wb.ok, wb.messages)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertEqual(html.count('Repeated ref question'), 1)
+
+    def test_answered_question_is_not_surfaced(self):
+        # Only OPEN questions are a live pointer; an answered/closed one is
+        # settled research, not something a page should keep raising.
+        self._seed_person('p-aaaaaaaaaa', 'Jane Doe', tier='curated')
+        self._write_questions_md(
+            '# Open Questions\n\n'
+            '## Q: When did Jane arrive in Kansas?\n'
+            '- origin: human\n'
+            '- status: answered [[S-1111111111]]\n'
+            '- refs: [P-aaaaaaaaaa]\n'
+            '- context:\n'
+            '  - (human, 2026-06-01) 1880 census confirms arrival.\n'
+        )
+        wb = self._run(linked=True, workbench=True)
+        self.assertTrue(wb.ok, wb.messages)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertNotIn('When did Jane arrive in Kansas?', html)
+
+    def test_question_in_a_different_persons_research_file_surfaces_here_too(self):
+        # The issue's own open design question: does a question logged in
+        # Person B's research file, but `refs:`-ing Person A, show on Person
+        # A's page too? Implemented answer: yes - inherited for free from
+        # `_lib.parse_questions` reading every person's research file, not a
+        # new decision made in site.py. This was a live open question in the
+        # issue, not a settled contract - flagged again in the PR body.
+        self._seed_person('p-aaaaaaaaaa', 'Jane Doe', tier='curated')
+        self._seed_person('p-bbbbbbbbbb', 'Bob Roe', tier='curated', surname='Roe')
+        research_path = self.archive_root / 'people' / 'roe__test_research_p-bbbbbbbbbb.md'
+        research_path.write_text(
+            '---\nid: p-bbbbbbbbbb\ncreated: 2026-06-01\n---\n\n'
+            '## Open Questions\n\n'
+            '## Q: Are Jane and Bob related?\n'
+            '- origin: human\n'
+            '- status: open\n'
+            '- refs: [P-aaaaaaaaaa, P-bbbbbbbbbb]\n'
+            '- context:\n'
+            '  - (human, 2026-06-01) Both lived in the same county in 1880.\n'
+            '\n## Hypotheses\n\n*(none yet)*\n\n## Research Log\n\n*(none yet)*\n',
+            encoding='utf-8')
+        wb = self._run(linked=True, workbench=True)
+        self.assertTrue(wb.ok, wb.messages)
+        for pid in ('p-aaaaaaaaaa', 'p-bbbbbbbbbb'):
+            html = self._read(f'persons/{pid}.html')
+            self.assertIn('Are Jane and Bob related?', html, pid)
+            self.assertIn('Both lived in the same county', html, pid)
+            # #117 block-scoping guard: `_lib.parse_question_blocks` splits
+            # purely on `## Q:` boundaries, so the raw block for the LAST
+            # question in a file runs through to end-of-file - the sibling
+            # `## Hypotheses`/`## Research Log` sections that follow it here
+            # would leak onto the page as if part of the question without
+            # site.py's own trim (`_question_block_body`). Neither heading
+            # word appears anywhere else on a person page (no template ever
+            # emits it), so its presence at all means the trim regressed.
+            self.assertNotIn('Hypotheses', html, pid)
+            self.assertNotIn('Research Log', html, pid)
+
+
 # ── A person's vitals are their OWN, not their relatives' (#126) ─────────────
 #
 # A vital record names more than the person it is a record OF: a birth

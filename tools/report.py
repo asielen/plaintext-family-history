@@ -56,7 +56,8 @@ CODE MAP
 
   Snapshot
     _load_snapshot / _write_snapshot  - .cache/last_report.json read/write
-    _parse_questions            - questions.md + research files -> {file :: heading: {...}}
+    (parse_questions            - questions.md + research files -> {file :: heading: {...}} -
+                                 lives in _lib, shared with site.py, issue #117)
     _vitals_gap_pids            - W101 findings -> sorted P-id list (via registry paths)
     _build_snapshot             - current-state snapshot dict from the just-refreshed index
 
@@ -118,10 +119,10 @@ from _lib import (
     FhaConfigError,
     Result,
     fmt_id_display,
-    is_person_file_kind,
     load_fha_yaml,
     normalize_id,
     open_index_db,
+    parse_questions,
     read_record,
     is_working_copy,
     resolve_root_arg,
@@ -180,102 +181,13 @@ def _write_snapshot(archive_root: Path, snapshot: dict) -> None:
     path.write_text(json.dumps(snapshot, indent=2, sort_keys=True), encoding='utf-8')
 
 
-_QUESTION_HEADING_RE = re.compile(r'^## Q:\s*(.+)$', re.M)
-_QUESTION_STATUS_RE = re.compile(r'^- status:\s*(.+)$', re.M)
-_QUESTION_REFS_RE = re.compile(r'^- refs:\s*\[(.*?)\]', re.M)
-
-
-def _parse_question_blocks(text: str) -> dict[str, dict]:
-    """Parse one file's text into {heading: {'status', 'refs', 'block'}}."""
-    out: dict[str, dict] = {}
-    blocks = re.split(r'(?=^## Q:)', text, flags=re.M)
-    for block in blocks:
-        m = _QUESTION_HEADING_RE.match(block)
-        if not m:
-            continue
-        heading = m.group(1).strip()
-        status_m = _QUESTION_STATUS_RE.search(block)
-        refs_m = _QUESTION_REFS_RE.search(block)
-        refs = [
-            normalize_id(r.strip()) for r in (refs_m.group(1).split(',') if refs_m else [])
-            if r.strip()
-        ]
-        out[heading] = {
-            'status': status_m.group(1).strip() if status_m else '',
-            'refs': refs,
-            'block': block,
-        }
-    return out
-
-
-def _parse_questions(archive_root: Path) -> dict[str, dict]:
-    """
-    Parse notes/questions.md AND every person research file's
-    `## Open Questions` block into {key: {'status', 'refs', 'block',
-    'heading', 'file'}}, keyed by '{relative file path} :: {heading}'.
-
-    Mirrors `fha lint`'s E009 question-scanning scope exactly: lint.py's
-    `_has_question_for` checks both `registry.questions_content`
-    (notes/questions.md) and `registry.research_content` (every person
-    research file collected in `_walk_archive` via
-    `is_person_file_kind(path, 'research', meta)`, under `people/`). The report's
-    answerable-questions/discoveries sections must see the same question set
-    lint does, or a question logged only in a person's research file would
-    never get a closure proposal here - and one this side read as research
-    would get a closure proposal lint never saw. Both halves are why the two
-    call the same helper rather than restating the rule.
-
-    Keys are namespaced by file because the same heading text easily recurs
-    across files once questions number in the hundreds ("When was he born?"
-    on two research sheets), and a plain-heading dict would silently shadow
-    one question with the other. The display text lives in each entry's
-    'heading' field. A duplicate heading *within* one file still collides
-    (last one wins) - acceptable, since a single file's headings sit side by
-    side where the human edits them.
-    """
-    out: dict[str, dict] = {}
-
-    def _merge(qpath: Path, text: str) -> None:
-        try:
-            rel = qpath.relative_to(archive_root).as_posix()
-        except ValueError:
-            rel = qpath.as_posix()
-        for heading, info in _parse_question_blocks(text).items():
-            out[f'{rel} :: {heading}'] = {**info, 'heading': heading, 'file': rel}
-
-    path = archive_root / 'notes' / 'questions.md'
-    if path.exists():
-        try:
-            _merge(path, path.read_text(encoding='utf-8'))
-        except OSError:
-            pass
-
-    people_root = archive_root / 'people'
-    if people_root.exists():
-        for rpath in sorted(people_root.rglob('*.md')):
-            # Two passes on purpose. The filename can only ever NARROW this set
-            # (nothing outside SPEC §13's kind slot is a research file), so the
-            # record is read only for the handful of files that could be one -
-            # and then content settles it, exactly as lint does. That second
-            # half matters: the kind slot is also a legal last given name, so
-            # `smith__anne_research_P-….md` may be Anne Research Smith's own
-            # record, and a profile's `## Open Questions` block belongs to no
-            # question scope (SPEC §16 homes it in the research companion).
-            if not is_person_file_kind(rpath, 'research'):
-                continue
-            try:
-                meta = read_record(rpath)['meta']
-            except Exception:
-                meta = {}
-            if not is_person_file_kind(rpath, 'research', meta):
-                continue
-            try:
-                text = rpath.read_text(encoding='utf-8')
-            except OSError:
-                continue
-            _merge(rpath, text)
-
-    return out
+# The `## Q:` block grammar (heading/status/refs regexes) and the two parse
+# functions that used to live here (`_parse_question_blocks`/`_parse_questions`)
+# moved to `_lib.py` as `parse_question_blocks`/`parse_questions` (issue #117):
+# `fha site` needed the same parse to surface a person's open questions on
+# their page, and `site.py` cannot import `report.py` (tools never import
+# tools - this module is the documented exception, not a precedent to copy).
+# Imported above; every call site below kept its old behavior unchanged.
 
 
 def _vitals_gap_pids(findings: list, registry) -> list[str]:
@@ -356,7 +268,7 @@ def _build_snapshot(conn, archive_root: Path, findings: list, registry) -> dict:
     relationships = sorted(
         {tuple(r) for r in conn.execute('SELECT person_id, rel, other_id FROM relationships')}
     )
-    questions = _parse_questions(archive_root)
+    questions = parse_questions(archive_root)
     # E009 contradiction messages, so a resolution that adds an open question
     # (refs both claim-ids, no claim_links change) without changing claim
     # status still shows up as "resolved" in section 0 -- a pure claim_links
@@ -423,7 +335,7 @@ def _section_discoveries(conn, prev: dict, current: dict) -> list[str]:
     cur_q = current['question_status_by_heading']
 
     def _q_prev_status(key: str) -> str:
-        # Keys are '{file} :: {heading}' (see _parse_questions); a snapshot
+        # Keys are '{file} :: {heading}' (see parse_questions); a snapshot
         # written before the namespacing keyed by bare heading, so fall back
         # to it - otherwise every already-answered question would re-announce
         # as "newly answered" once after a tools update.
@@ -799,7 +711,7 @@ def _section_answerable_questions(conn, archive_root: Path) -> list[str]:
     referenced C-id changed status - proposed only, never executed (TOOLING
     §15a: closing requires human confirmation).
     """
-    questions = _parse_questions(archive_root)
+    questions = parse_questions(archive_root)
     open_qs = {h: info for h, info in questions.items() if info['status'] == 'open'}
     if not open_qs:
         return ['No open questions.']
