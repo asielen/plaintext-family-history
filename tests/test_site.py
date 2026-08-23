@@ -438,6 +438,48 @@ class PersonPageTests(_Base):
         self.assertIn('corroborates her birth on 9 September 1899', html)
         self.assertNotIn('C-4kx9m2p7qr', html)
 
+    def test_biography_embed_caption_claim_id_is_scrubbed(self):
+        # P2 (PR #158 follow-up): `_prose_to_html` routes a prose embed
+        # (`![[S-id|Caption]]`) through `render_embed` BEFORE `_inline_html`
+        # (and its per-span scrub) ever runs, so `_render_embed`'s caption
+        # handling only HTML-escaped the caption - a claim id embedded in
+        # it leaked into both the visible <figcaption> text and the image's
+        # alt attribute. The embed TARGET (the S-id) is unaffected.
+        self._seed_source('s-1111111111', 'Photo Source', source_type='photo')
+        img = self.archive_root / 'photos' / '1880' / 'pic.jpg'
+        img.parent.mkdir(parents=True, exist_ok=True)
+        img.write_bytes(b'not a real image - linked mode never decodes it')
+        self.conn.execute(
+            'INSERT INTO source_files(source_id, path, role) VALUES (?,?,?)',
+            ('s-1111111111', 'photos/1880/pic.jpg', 'front'))
+        bio = ('# Thomas\n## Biography\n'
+               '![[S-1111111111|Old photo (C-4kx9m2p7qr)]]\n')
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley', body=bio)
+        self._run(linked=True)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertNotIn('C-4kx9m2p7qr', html)
+        self.assertIn('<figcaption>Old photo</figcaption>', html)
+        self.assertIn('alt="Old photo"', html)
+
+    def test_biography_wikilink_display_label_claim_id_is_scrubbed(self):
+        # P2 (PR #158 follow-up): a labeled wikilink's display text
+        # (`[[S-id|label]]`) reaches `render_token` via `_inline_html`'s
+        # `wdisp` group, which the per-span scrub fix (#144 finding 3)
+        # never covered - `render_token`'s source/person/place renderers
+        # only HTML-escape the display text, so a claim id embedded in the
+        # label leaked straight onto the reader-facing page. The link
+        # TARGET (the S-id) must stay untouched so the citation still
+        # resolves.
+        bio = ('# Thomas\n## Biography\n'
+               'See [[S-1111111111|the record (C-4kx9m2p7qr)]] for details.\n')
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley', body=bio)
+        self._seed_source('s-1111111111', 'Census')
+        self._run(linked=True)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertNotIn('C-4kx9m2p7qr', html)
+        self.assertIn('>the record</a>', html)
+        self.assertIn('../sources/s-1111111111.html', html)    # citation still resolves
+
     def test_biography_translates_before_date_bracket_in_prose(self):
         # #140: a raw `[..YYYY]` "before" bracket (SPEC §11) embedded mid-
         # sentence in a claim/biography's free text must render as the same
@@ -3997,10 +4039,22 @@ class ProseConverterTests(unittest.TestCase):
         # of the URL before the link was ever matched, producing a link
         # that looked well-formed but silently pointed at the wrong
         # (truncated) target. The id must survive inside the href.
+        #
+        # P2 (PR #158 follow-up), the test-quality half: this test used to
+        # only assert the id substring survived SOMEWHERE in the output -
+        # which passed even though `_INLINE_RE`'s `lurl` group stopped at
+        # the claim id's OWN closing paren (it did not count balanced
+        # parens), producing a link that was still corrupted:
+        # `<a href="...ref=(C-4kx9m2p7qr">record</a>)` - a TRUNCATED href
+        # (missing its closing paren) plus a stray trailing ')' leaking as
+        # literal text after `</a>`. Assert the complete, single anchor tag
+        # (full href, no trailing ')') rather than substring presence.
         ident = lambda t: f'TOK({t})'  # noqa: E731
         out = site._prose_to_html(
             '[record](https://example.test/search?ref=(C-4kx9m2p7qr))', ident)
-        self.assertIn('C-4kx9m2p7qr', out)
+        self.assertEqual(
+            out,
+            '<p><a href="https://example.test/search?ref=(C-4kx9m2p7qr)">record</a></p>')
 
     def test_link_display_text_is_still_scrubbed(self):
         # The finding-3 fix protects the URL TARGET only - a link's visible
@@ -4011,6 +4065,25 @@ class ProseConverterTests(unittest.TestCase):
             '[The record (C-4kx9m2p7qr)](https://example.test/page)', ident)
         self.assertNotIn('C-4kx9m2p7qr', out)
         self.assertIn('<a href="https://example.test/page">The record</a>', out)
+
+    def test_wikilink_display_label_claim_id_is_scrubbed(self):
+        # P2 (PR #158 follow-up): a LABELED wikilink's display text
+        # (`[[S-id|label]]`) is reader-facing prose exactly like a markdown
+        # link's label (see test_link_display_text_is_still_scrubbed above) -
+        # it must be scrubbed of an internal claim-id parenthetical before it
+        # reaches render_token. The wikilink TARGET must stay untouched so
+        # the link still resolves.
+        seen = {}
+
+        def render_token(tok, disp=None):
+            seen['tok'], seen['disp'] = tok, disp
+            return f'TOK({tok}|{disp})'
+
+        out = site._prose_to_html(
+            '[[S-1111111111|the record (C-4kx9m2p7qr)]]', render_token)
+        self.assertNotIn('C-4kx9m2p7qr', out)
+        self.assertEqual(seen['tok'], 'S-1111111111')       # target untouched
+        self.assertNotIn('C-4kx9m2p7qr', seen['disp'] or '')
 
 
 class WorkbenchModeTests(_Base):

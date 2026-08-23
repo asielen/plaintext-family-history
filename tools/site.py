@@ -480,8 +480,20 @@ def _safe_link_href(raw_url: str) -> str | None:
 # matched before a token so a token never half-matches a link; the `[[ ]]`
 # wikilink is matched before the legacy single-bracket `[ID]`; bold is last.
 # Anything not matched is literal text and gets escaped.
+# `lurl` allows one level of BALANCED parens inside the URL (P2, PR #158
+# follow-up) - a plain `[^)\s]+` stops at a URL's own first `)`, which is
+# wrong the moment the URL legitimately contains one, e.g. a claim-id
+# parenthetical pasted into a query string
+# (`https://example.test/search?ref=(C-4kx9m2p7qr)`) or a Wikipedia-style
+# disambiguation path. Without balancing, the group stops at the inner `)`,
+# producing a TRUNCATED href plus a stray `)` leaking as literal text right
+# after the closing `</a>` - the link still "matches" but points at the
+# wrong, cut-off target. `(?:[^()\s]|\([^()\s]*\))+` matches runs of
+# non-paren/non-space characters OR one complete `(...)` unit at a time, so
+# a `(...)` pair inside the URL is consumed whole and only the link's OWN
+# closing paren (matched separately, right after this group) ends the URL.
 _INLINE_RE = re.compile(
-    r'\[(?P<ltext>[^\]]+)\]\((?P<lurl>[^)\s]+)\)'                 # [text](url)
+    r'\[(?P<ltext>[^\]]+)\]\((?P<lurl>(?:[^()\s]|\([^()\s]*\))+)\)'  # [text](url)
     r'|\[\[(?P<wtarget>[^\[\]|#]+)(?:#[^\[\]|]*)?(?:\|(?P<wdisp>[^\[\]]*))?\]\]'  # [[target|disp]]
     r'|\[(?P<token>[PSCLH]-[0-9a-hjkmnp-tv-z]{10})\]'            # legacy [ID] token
     r'|\*\*(?P<bold>.+?)\*\*',                                    # **bold**
@@ -515,7 +527,13 @@ def _inline_html(text: str, render_token) -> str:
     `[record](https://example.test/search/[..1905])`). A link/wikilink
     TARGET (`lurl`/`wtarget`) is therefore never scrubbed - it is a URL or a
     record id, not prose a reader reads as English - only literal text and a
-    visible label (`ltext`, `bold`) are.
+    visible label (`ltext`, `wdisp`, `bold`) are. `wdisp` (a wikilink's
+    `|display` text, e.g. `[[S-id|the record (C-xxxx)]]`) was originally
+    missed here (P2, PR #158 follow-up) - it reaches `render_token`, whose
+    source/person/place renderers only HTML-escape it, so an internal claim
+    id left unscrubbed in a wikilink's label leaked straight onto the
+    reader-facing page even though the equivalent markdown-link label
+    (`ltext`) was already covered.
     """
     out: list[str] = []
     pos = 0
@@ -523,7 +541,8 @@ def _inline_html(text: str, render_token) -> str:
         out.append(_escape(_scrub_internal_encoding(text[pos:m.start()])))
         pos = m.end()
         if m.group('wtarget') is not None:
-            out.append(render_token(m.group('wtarget').strip(), m.group('wdisp')))
+            out.append(render_token(m.group('wtarget').strip(),
+                                     _scrub_internal_encoding(m.group('wdisp'))))
         elif m.group('token'):
             out.append(render_token(m.group('token')))
         elif m.group('ltext') is not None:
@@ -4061,11 +4080,21 @@ class _SiteBuilder:
     def _render_embed(self, target: str, caption: str, page_dir: Path) -> str:
         """A `![[S-id|Caption]]` prose embed → a responsive <figure>. The image is
         capped in height by CSS so a large scan never blows up the page. An
-        unresolvable or withheld reference renders nothing (never a raw id)."""
+        unresolvable or withheld reference renders nothing (never a raw id).
+
+        `_prose_to_html` calls `render_embed` (this method) BEFORE
+        `_inline_html`'s per-span scrub (#144 finding 3) ever runs over the
+        block, so the caption must be scrubbed of internal-only encoding
+        (`_scrub_internal_encoding`, #140) right here - a caption is
+        reader-facing prose exactly like a link's label, and an unscrubbed
+        claim id would otherwise leak into both the visible <figcaption>
+        text and the image's alt attribute (P2, PR #158 follow-up). The
+        embed TARGET is never scrubbed - it is an id/path, not prose."""
         href = self._image_href(target, page_dir, 'embeds')
         if not href:
             self.messages.append(f'WARNING: embed {target!r} matched no publishable photo; skipped.')
             return ''
+        caption = _scrub_internal_encoding(caption) if caption else caption
         cap = _escape(caption) if caption else ''
         # `alt` is an HTML attribute - a caption like `" onerror="alert(1)` would
         # break out of the `_escape(quote=False)` body form. Quote-aware escaping
