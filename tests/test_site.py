@@ -2705,6 +2705,62 @@ class PedigreeGeometryGuardTests(unittest.TestCase):
         self.assertEqual(pos['Mother'][1], 39 + 2.5 * 72)
 
 
+class PedigreeAxisLabelCenteringTests(unittest.TestCase):
+    """#152 review fix (minor, cosmetic): the axis-label caption used to sit
+    at `col_x(1)` - the left edge of just the FIRST ancestor generation's
+    column - regardless of how many were actually drawn. Fine by coincidence
+    at the person-page chart's fixed 2 generations; visibly off at the home
+    page's deeper default, where it labeled only the nearest column instead
+    of the whole ancestor block beneath it. `_full_labels`/`_positions` are
+    copied from `PedigreeGeometryGuardTests` rather than shared by
+    inheritance, so this class's own tests don't also re-run that class's."""
+
+    def _full_labels(self, max_slot: int) -> dict:
+        return {n: {'name': f'A{n}', 'url': None, 'redacted': False, 'dates': {}}
+                for n in range(1, max_slot + 1)}
+
+    def _positions(self, svg: str) -> dict[str, tuple[int, float]]:
+        out = {}
+        for x, y, w, h, inner in re.findall(
+                r'<foreignObject x="(-?\d+)" y="(-?\d+)" width="(\d+)" height="(\d+)">(.*?)</foreignObject>',
+                svg, re.S):
+            m = re.search(r'ped-name[^>]*>([^<]*)<', inner)
+            if m and m.group(1):
+                out[m.group(1)] = (int(x), int(y) + int(h) / 2)
+        return out
+
+    def test_axis_label_centered_across_all_drawn_ancestor_columns(self):
+        labels = self._full_labels(15)   # 3 fully-known ancestor generations
+        svg = site._render_pedigree_svg(labels, ancestor_generations=3, axis_label='ancestors →')
+        label_m = re.search(r'<text class="ped-axis-label" x="(-?\d+)"', svg)
+        self.assertIsNotNone(label_m)
+        label_x = int(label_m.group(1))
+        positions = self._positions(svg)
+        col1_left = positions['A2'][0]        # any slot-2 card sits at col_x(1)
+        last_col_left = positions['A8'][0]    # a slot-8 card sits at col_x(3), the deepest column
+        last_col_right = last_col_left + 176  # CW
+        self.assertEqual(label_x, round((col1_left + last_col_right) / 2))
+        # The specific defect this guards against: no longer pinned to
+        # column 1's own left edge once more than one column is drawn.
+        self.assertNotEqual(label_x, col1_left)
+
+    def test_axis_label_still_centers_on_the_single_column_at_two_generations(self):
+        # The formula must collapse correctly to "center of the one column"
+        # when only one ancestor generation is drawn (the person-page
+        # chart's own shape) - not just look right at deeper depths.
+        labels = {
+            1: {'name': 'Subject', 'url': None, 'redacted': False, 'dates': {}},
+            2: {'name': 'Father', 'url': None, 'redacted': False, 'dates': {}},
+            3: {'name': 'Mother', 'url': None, 'redacted': False, 'dates': {}},
+        }
+        svg = site._render_pedigree_svg(labels, ancestor_generations=1, axis_label='ancestors →')
+        label_m = re.search(r'<text class="ped-axis-label" x="(-?\d+)"', svg)
+        self.assertIsNotNone(label_m)
+        positions = self._positions(svg)
+        col1_left = positions['Father'][0]
+        self.assertEqual(int(label_m.group(1)), round(col1_left + 176 / 2))
+
+
 class HomePedigreeTests(_Base):
     """#115: the home page's marriage-aware ancestor pedigree - seeding
     (site.home_person, falling back to root_person), configurable depth
@@ -2829,6 +2885,39 @@ class HomePedigreeTests(_Base):
         self.assertIn('Deceased Sibling', ped)
         self.assertNotIn('Living Sibling', home)   # nowhere on the page at all - never gets a page
         self.assertIn('ped-link-sibling', ped)
+
+    def test_full_sibling_included_via_a_later_shared_parents_public_tie(self):
+        # #152 review fix (minor, completeness): `_hub_siblings` used to mark
+        # a candidate 'seen' the moment it was first reached, even when that
+        # first-visited parent's tie failed the public-claim gate - so a full
+        # sibling (sharing BOTH of the hub's parents) whose tie to the FIRST
+        # shared parent (sorted by id) was non-public got silently excluded,
+        # even though their tie to the SECOND shared parent was perfectly
+        # public. A candidate must now be gated on its BEST tie, not its
+        # first-visited one.
+        self._seed_person('p-aaaaaaaaaa', 'Hub Person')
+        self._seed_person('p-1111111111', 'Parent A')   # sorts before Parent B
+        self._seed_person('p-2222222222', 'Parent B')
+        self._seed_person('p-cccccccccc', 'Full Sibling')
+        for parent in ('p-1111111111', 'p-2222222222'):
+            for kid in ('p-aaaaaaaaaa', 'p-cccccccccc'):
+                self._seed_rel(parent, 'child', kid)
+                self._seed_rel(kid, 'parent', parent)
+        # Full Sibling's tie to Parent A (visited FIRST) is backed only by a
+        # claim from a hard-restricted source - not public.
+        self._seed_source('s-1111111111', 'Restricted Source', restricted=1,
+                          people=('p-1111111111', 'p-cccccccccc'))
+        self._seed_claim('c-1111111111', 's-1111111111', 'relationship',
+                         'Full Sibling is the child of Parent A', status='accepted',
+                         persons=('p-1111111111', 'p-cccccccccc'),
+                         roles={'p-1111111111': 'parent', 'p-cccccccccc': 'child'})
+        # Full Sibling's tie to Parent B carries no claim at all - a bare
+        # relationships-table row, which _has_public_claim treats as public
+        # (no claims to withhold behind).
+        self._seed_home()
+        self._run(linked=False)
+        home = self._read('index.html')
+        self.assertIn('Full Sibling', self._pedigree_section(home))
 
     def test_branch_coloring_on_home_page_not_on_person_page(self):
         # #115: branch coloring is opt-in (the `home=True`/`branch_color=True`

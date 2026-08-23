@@ -1,0 +1,43 @@
+{
+  "seed": "P-2b3c4d5e6f",
+  "mode": "descendants",
+  "nodes": [
+    {
+      "p_id": "P-2b3c4d5e6f",
+      "name": "James Robert Bradford",
+      "sex": "M",
+      "vitals": {
+        "birth": "1955-03-15",
+        "death": "2015-11-03"
+      },
+      "url": "p-2b3c4d5e6f.html",
+      "photo": null
+    },
+    {
+      "p_id": "P-0a1b2c3d4e",
+      "name": "Alex James Bradford",
+      "sex": "unknown",
+      "vitals": {
+        "birth": null,
+        "death": null
+      },
+      "url": "p-0a1b2c3d4e.html",
+      "photo": null
+    }
+  ],
+  "edges": [
+    {
+      "type": "child",
+      "from": "P-2b3c4d5e6f",
+      "to": "P-0a1b2c3d4e",
+      "claim_id": "C-fc0000003c",
+      "subtype": "biological",
+      "genetic": true,
+      "kind": "genetic",
+      "dates": {
+        "start": null,
+        "end": null
+      }
+    }
+  ]
+}

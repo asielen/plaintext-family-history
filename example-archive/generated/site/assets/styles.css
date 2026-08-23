@@ -521,7 +521,8 @@ a.fan-link, a.fan-link:hover { text-decoration: none; }
 .ped-node.ped-sibling { background: var(--surface-sunken); }
 .ped-link-sibling { stroke-dasharray: 1 4; stroke-linecap: round; }
 .ped-axis-label { font-family: var(--font-sans); font-size: var(--text-xs); font-weight: 600;
-                  text-transform: uppercase; letter-spacing: var(--tracking-caps); fill: var(--muted); }
+                  text-transform: uppercase; letter-spacing: var(--tracking-caps); fill: var(--muted);
+                  text-anchor: middle; }
 /* A 2nd/3rd marriage's whole lane - couple bracket, trunk, child ticks -
    renders dotted so each family unit reads as one line style (owner decision,
    review 2026-07-17). Deliberately distinct from the interactive tree's dash

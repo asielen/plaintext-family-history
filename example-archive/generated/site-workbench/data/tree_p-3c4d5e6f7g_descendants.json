@@ -1,0 +1,43 @@
+{
+  "seed": "P-3c4d5e6f7g",
+  "mode": "descendants",
+  "nodes": [
+    {
+      "p_id": "P-3c4d5e6f7g",
+      "name": "Carol Anne Simmons",
+      "sex": "F",
+      "vitals": {
+        "birth": null,
+        "death": null
+      },
+      "url": "p-3c4d5e6f7g.html",
+      "photo": null
+    },
+    {
+      "p_id": "P-0a1b2c3d4e",
+      "name": "Alex James Bradford",
+      "sex": "unknown",
+      "vitals": {
+        "birth": null,
+        "death": null
+      },
+      "url": "p-0a1b2c3d4e.html",
+      "photo": null
+    }
+  ],
+  "edges": [
+    {
+      "type": "child",
+      "from": "P-3c4d5e6f7g",
+      "to": "P-0a1b2c3d4e",
+      "claim_id": "C-fc0000003c",
+      "subtype": "biological",
+      "genetic": true,
+      "kind": "genetic",
+      "dates": {
+        "start": null,
+        "end": null
+      }
+    }
+  ]
+}
