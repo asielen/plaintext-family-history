@@ -885,10 +885,11 @@ def _empty_curated_views_result(conn: sqlite3.Connection) -> Result:
     """
     if _curated_person_ids(conn):
         print(
-            'All curated persons are still under people/stubs/ or people/connections/ - '
-            'nothing was generated; promote them into their couple folders first '
-            '(`fha person promote <P-id>` per person, or `fha views brackets '
-            '--fix-promote` for the whole direct line).',
+            'All curated persons are still under people/stubs/ - nothing was '
+            'generated; promote them first (`fha person promote <P-id>` per '
+            'person, or `fha views brackets --fix-promote` for the whole direct '
+            'line; a non-direct person needs `--into connections/` by hand, '
+            'SPEC §12.3).',
             file=sys.stderr,
         )
         return _views_result(EXIT_WARNINGS, data={'count': 0})
@@ -2071,6 +2072,17 @@ def _check_w110_ahnentafel(
         if m:
             folder_by_prefix[int(m.group(1))] = folder
 
+    # people/connections/ is a real, permanent home for a curated NON-direct
+    # person (#80) - but a person filed there can later turn out to be
+    # direct-line (a parent link discovered afterwards, or a hand edit): the
+    # promote engine's own docstring calls that "a couple-folder mismatch,
+    # left to lint (W110)", so this check must actually be able to see it.
+    # `all_couple_dirs` deliberately excludes connections/ (it is never a
+    # couple folder to rename), so it is scanned here as an ADDITIONAL stray-
+    # file source, never as a rename/derivation candidate.
+    connections_dir = archive_root / 'people' / 'connections'
+    stray_scan_dirs = all_couple_dirs + ([connections_dir] if connections_dir.is_dir() else [])
+
     # Also register pending W110 rename destinations so that file-move targets
     # resolve to the correct folder even when it doesn't yet exist on disk.
     for new_folder in folders_being_renamed.values():
@@ -2095,10 +2107,11 @@ def _check_w110_ahnentafel(
 
         person_name = _person_name_from_db(conn, pid)
 
-        # Scan ALL couple dirs for companion files that belong to this person but
-        # are not in the expected folder - catches strays even when the profile
-        # itself is already correctly placed.
-        for folder in all_couple_dirs:
+        # Scan couple dirs (plus connections/, added above) for companion files
+        # that belong to this person but are not in the expected folder -
+        # catches strays even when the profile itself is already correctly
+        # placed.
+        for folder in stray_scan_dirs:
             if folder == dest_folder:
                 continue
             # If this folder is about to be renamed to the correct prefix, the
@@ -2110,6 +2123,8 @@ def _check_w110_ahnentafel(
             for src_path in _companion_files_in_folder(folder, pid):
                 dst_path = dest_folder / src_path.name
                 actual_prefix = _folder_numeric_prefix(folder.name)
+                current_location = (f'folder prefix {actual_prefix}' if actual_prefix is not None
+                                     else f'people/{folder.name}/')
                 issues.append({
                     'code': 'W110',
                     'kind': 'file_move',
@@ -2119,8 +2134,8 @@ def _check_w110_ahnentafel(
                     'msg': (
                         f'W110 people/{folder.name}/{src_path.name}: '
                         f'{person_name} (Ahnentafel {pos}) '
-                        f'is in folder prefix {actual_prefix}, '
-                        f'expected {expected_prefix}'
+                        f'is in {current_location}, '
+                        f'expected prefix {expected_prefix}'
                     ),
                 })
 
