@@ -3100,6 +3100,23 @@ class HomePedigreeTests(_Base):
         self.assertIn('ped-branch-2', ped)     # Known Mother's line - genuinely derived
         self.assertNotIn('ped-branch-1', ped)  # Unknown Parent's line - defaulted, no evidence
 
+    def test_stub_ancestor_renders_unlinked_plain_name(self):
+        # docs/CUSTOMIZING_SITE.md's click-through promise is qualified to
+        # ancestors that already have a page in this build (#152 review fix,
+        # doc wording only - `_chart_entry` already behaved this way; this
+        # locks the behavior in so the corrected doc text keeps matching
+        # it). A stub-tier ancestor gets no page outside workbench, so
+        # `_chart_entry` renders them as a plain, unlinked name - never a
+        # dead or guessed link.
+        self._seed_person('p-aaaaaaaaaa', 'Hub Person')
+        self._seed_person('p-bbbbbbbbbb', 'Stub Ancestor', tier='stub')
+        self._seed_rel('p-aaaaaaaaaa', 'parent', 'p-bbbbbbbbbb')
+        self._seed_rel('p-bbbbbbbbbb', 'child', 'p-aaaaaaaaaa')
+        self._seed_home()
+        self._run(linked=True)
+        ped = self._pedigree_section(self._read('index.html'))
+        self.assertIn('<span class="ped-name">Stub Ancestor</span>', ped)
+
     def test_axis_label_and_caption_present(self):
         self._seed_person('p-aaaaaaaaaa', 'Hub Person')
         self._seed_home()
