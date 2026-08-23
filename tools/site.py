@@ -78,7 +78,14 @@ CODE MAP
                                  fail-closed on damaged markers - lives in _lib)
     _safe_link_href            - markdown-link scheme allowlist (stored-XSS guard)
     _prose_to_html             - minimal stdlib markdown→HTML (no md library)
-    _inline_html               - inline pass: links, [ID] tokens, **bold**
+    _inline_html               - inline pass: links, [ID] tokens, **bold**;
+                                 also where `_scrub_internal_encoding` runs
+                                 (per literal span, after links are matched)
+    _scrub_internal_encoding   - drop a bare (C-xxxx) parenthetical / translate
+                                 a [..YYYY] "before" bracket in free-text claim
+                                 values, wherever one reaches a reader-facing
+                                 page (prose, timeline, source/place claims
+                                 tables, person summary vitals)
     _extract_section           - pull one `## Heading` section body from a record
     _question_block_body       - a '## Q:' block's body, heading dropped, cut
                                  before the next heading of any kind (#117)
@@ -495,11 +502,25 @@ def _inline_html(text: str, render_token) -> str:
 
     `render_token(target, display=None)` accepts an ID *or* a human name/stem
     (resolved through the alias map) plus the optional in-token display text.
+
+    Internal-only encoding (`_scrub_internal_encoding` - #140, #144 finding
+    3) is scrubbed HERE, per literal-text run and per construct's own visible
+    label, AFTER `_INLINE_RE` has already matched links/tokens/bold against
+    the UNSCRUBBED text - never as a pre-pass over the whole raw block.
+    Scrubbing first (the old order, in `_prose_to_html`) could rewrite a
+    `[..1905]`-shaped or `(C-xxxxxxxxxx)`-shaped substring sitting INSIDE a
+    markdown link's URL before `_INLINE_RE` ever got a chance to recognize
+    `[text](url)` as a link at all - corrupting the target and breaking the
+    link syntax outright (issue reproduces with e.g.
+    `[record](https://example.test/search/[..1905])`). A link/wikilink
+    TARGET (`lurl`/`wtarget`) is therefore never scrubbed - it is a URL or a
+    record id, not prose a reader reads as English - only literal text and a
+    visible label (`ltext`, `bold`) are.
     """
     out: list[str] = []
     pos = 0
     for m in _INLINE_RE.finditer(text):
-        out.append(_escape(text[pos:m.start()]))
+        out.append(_escape(_scrub_internal_encoding(text[pos:m.start()])))
         pos = m.end()
         if m.group('wtarget') is not None:
             out.append(render_token(m.group('wtarget').strip(), m.group('wdisp')))
@@ -507,13 +528,14 @@ def _inline_html(text: str, render_token) -> str:
             out.append(render_token(m.group('token')))
         elif m.group('ltext') is not None:
             href = _safe_link_href(m.group('lurl'))
+            label = _escape(_scrub_internal_encoding(m.group('ltext')))
             if href is not None:
-                out.append(f'<a href="{href}">{_escape(m.group("ltext"))}</a>')
+                out.append(f'<a href="{href}">{label}</a>')
             else:
-                out.append(_escape(m.group('ltext')))
+                out.append(label)
         else:  # bold
-            out.append(f'<strong>{_escape(m.group("bold"))}</strong>')
-    out.append(_escape(text[pos:]))
+            out.append(f'<strong>{_escape(_scrub_internal_encoding(m.group("bold")))}</strong>')
+    out.append(_escape(_scrub_internal_encoding(text[pos:])))
     return ''.join(out)
 
 
@@ -637,10 +659,16 @@ def _prose_to_html(text: str, render_token, render_embed=None, *, drop_private: 
     `drop_private=True` (a public/standalone build) strips `<!-- private -->…
     <!-- /private -->` fenced prose before rendering; the linked preview keeps
     the content and only removes the marker comments.
+
+    Internal-only encoding (`_scrub_internal_encoding`, #140) is NOT applied
+    here as a pre-pass over the raw block - it runs inside `_inline_html`
+    instead, per literal-text span, after markdown links/tokens/bold are
+    already identified (#144 finding 3; see that function's docstring for
+    why a whole-block pre-pass corrupts a link target that happens to
+    contain a claim-id- or date-bracket-shaped substring).
     """
     if text:
         text = apply_private_fence(text, drop=drop_private)
-        text = _scrub_internal_encoding(text)
     if not text or not text.strip():
         return ''
     lines = text.replace('\r\n', '\n').split('\n')

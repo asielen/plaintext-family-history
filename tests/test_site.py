@@ -3928,6 +3928,39 @@ class ProseConverterTests(unittest.TestCase):
         self.assertIn('before 1905', out)
         self.assertNotIn('[..1905]', out)
 
+    def test_link_target_with_before_bracket_stays_a_working_link(self):
+        # Finding 3: scrubbing the whole raw block BEFORE `_inline_html`
+        # identified markdown links rewrote a `[..YYYY]`-shaped substring
+        # INSIDE the URL, inserting a space that broke `_INLINE_RE`'s link
+        # match entirely - the link rendered as dead literal text, not a
+        # link at all.
+        ident = lambda t: f'TOK({t})'  # noqa: E731
+        out = site._prose_to_html(
+            '[record](https://example.test/search/[..1905])', ident)
+        self.assertIn('<a href="https://example.test/search/[..1905]">record</a>', out)
+        self.assertNotIn('before 1905', out)
+
+    def test_link_target_with_claim_id_paren_not_silently_truncated(self):
+        # Finding 3, the claim-id case: the old order let
+        # `_CLAIM_ID_PAREN_RE` silently DELETE a "(C-xxxxxxxxxx)" chunk out
+        # of the URL before the link was ever matched, producing a link
+        # that looked well-formed but silently pointed at the wrong
+        # (truncated) target. The id must survive inside the href.
+        ident = lambda t: f'TOK({t})'  # noqa: E731
+        out = site._prose_to_html(
+            '[record](https://example.test/search?ref=(C-4kx9m2p7qr))', ident)
+        self.assertIn('C-4kx9m2p7qr', out)
+
+    def test_link_display_text_is_still_scrubbed(self):
+        # The finding-3 fix protects the URL TARGET only - a link's visible
+        # label is reader-facing prose like any other and must still be
+        # scrubbed.
+        ident = lambda t: f'TOK({t})'  # noqa: E731
+        out = site._prose_to_html(
+            '[The record (C-4kx9m2p7qr)](https://example.test/page)', ident)
+        self.assertNotIn('C-4kx9m2p7qr', out)
+        self.assertIn('<a href="https://example.test/page">The record</a>', out)
+
 
 class WorkbenchModeTests(_Base):
     """Workbench mode (serve-only) adds editing chrome and provisional vitals,
