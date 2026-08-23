@@ -77,6 +77,13 @@ A guess clearly marked as a guess is always better than a wrong exact date.
 And it's fine to jot a birth or death date before you've found the record - write it down, and the
 assistant keeps it on a gentle "still to source" list until the evidence turns up.
 
+**One source, several dates?** A source can bundle several files that don't all share one date -
+four newspaper clippings about the same event, mailed months apart, filed as one evidence folder.
+Give the source's own date the same range treatment as "February or March 1871" above - the
+earliest to the latest, e.g. `1916-02/1916-06` - so the page shows a true span instead of picking
+one file's date and leaving the rest unlabeled. Tell the assistant the earliest and latest dates
+you can see and it writes the range for you.
+
 ---
 
 ## How to link to a source or person

@@ -260,6 +260,31 @@ class SourcePageTests(_Base):
         html = self._read('sources/s-1111111111.html')
         self.assertIn('file not available', html)
 
+    def test_file_entry_note_adds_copy_letter_when_present(self):
+        # #123: a multi-file bundle (four newspaper clippings, say) reads as
+        # indistinguishable when every entry's note is the bare 'role:
+        # clipping'. Once the indexer stops dropping `copy:` on the floor
+        # (the source_files.copy fix, same issue), the site's file-list note
+        # names the variant too - 'role: clipping · copy: b' - so same-role
+        # files in one bundle are told apart without needing per-file dates.
+        self._seed_source('s-1111111111', 'Clippings Bundle', source_type='newspaper')
+        clip_dir = self.archive_root / 'documents' / 'newspaper'
+        clip_dir.mkdir(parents=True, exist_ok=True)
+        (clip_dir / 'clipping-a.pdf').write_bytes(b'not a real pdf')
+        (clip_dir / 'clipping-b.pdf').write_bytes(b'not a real pdf')
+        self.conn.execute(
+            'INSERT INTO source_files(source_id, path, role, copy) VALUES (?,?,?,?)',
+            ('s-1111111111', 'documents/newspaper/clipping-a.pdf', 'clipping', None))
+        self.conn.execute(
+            'INSERT INTO source_files(source_id, path, role, copy) VALUES (?,?,?,?)',
+            ('s-1111111111', 'documents/newspaper/clipping-b.pdf', 'clipping', 'b'))
+        self._run(linked=True)
+        html = self._read('sources/s-1111111111.html')
+        self.assertIn('role: clipping · copy: b', html)
+        # The un-lettered sibling keeps the original, shorter note - no
+        # 'copy: None' leaking through, and the two entries stay distinct.
+        self.assertIn('role: clipping</span>', html)
+
 
 class SourceRedactionTests(_Base):
     def _setup_redactable(self):
