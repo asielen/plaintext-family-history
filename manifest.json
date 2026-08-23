@@ -114,7 +114,7 @@
     {
       "path": ".claude/skills/setup-interview/SKILL.md",
       "category": "operating",
-      "sha256": "b17f53395aa0a34b7219a4c422c5bd9c54078a21ef2bf27a2b7c41ee4069531b",
+      "sha256": "6d456502b01f5335925e6ec5218ecc6f4fdbd9ee2b9f809e32bedea76e3997dc",
       "spec_version": "1.2"
     },
     {
@@ -385,7 +385,7 @@
     {
       "path": ".fha/design/styles.css",
       "category": "operating",
-      "sha256": "2da166619f12f68fba3cda5cd6b7702ad93b6ccb557d1191ebe6be3f6284f308",
+      "sha256": "16bb74972709f8df772aaabcfa0dcc83511232bd15ca0629e84ad72d7debaae3",
       "spec_version": "1.2",
       "src": "design/styles.css"
     },
@@ -413,14 +413,14 @@
     {
       "path": ".fha/tools/README.md",
       "category": "operating",
-      "sha256": "8a706a29b63c7eb93871036fe81fb9c8a914b752a6a4f67e393b44079b67c191",
+      "sha256": "cb4adca87cdeda5ea432bb5ced364f11a36130a1bdb6683ebaafb09f2966c35d",
       "spec_version": "1.2",
       "src": "tools/README.md"
     },
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "7df187bd5801d2adcf4292d0e4fbf963fd9984eff34b33941e9e92ebf32ece01",
+      "sha256": "7376993295e4dda6f31a9dbaf9373e5c2eefe3e7158b424b690cb2cb049f80e3",
       "spec_version": "1.2",
       "src": "tools/_lib.py"
     },
@@ -483,7 +483,7 @@
     {
       "path": ".fha/tools/claim.py",
       "category": "operating",
-      "sha256": "a45f1d7288b822671a3937da978ce40c588ad221ec63e86061f886880a314e8c",
+      "sha256": "5edaefe377e94eae3154c1c8a3cbd591541c86f1e96c2e1701a15380974ec9d2",
       "spec_version": "1.2",
       "src": "tools/claim.py"
     },
@@ -553,7 +553,7 @@
     {
       "path": ".fha/tools/index.py",
       "category": "operating",
-      "sha256": "956573f074b4a96e474a0e0dcdca50f05bff2b6a8c79a0eeff67759264b9523c",
+      "sha256": "8bded87196f000c51336d080e75cff9d76490c4f7b7fd55a49c8243ad8efcab9",
       "spec_version": "1.2",
       "src": "tools/index.py"
     },
@@ -602,7 +602,7 @@
     {
       "path": ".fha/tools/places.py",
       "category": "operating",
-      "sha256": "cd0d5a757e784ce8ea3511e1ee5677ff313927f26926b9081bdc965864b24c97",
+      "sha256": "c454c89a1b006713f3295e78cf76744417000d52373de08723e5f7447a611fdc",
       "spec_version": "1.2",
       "src": "tools/places.py"
     },
@@ -658,7 +658,7 @@
     {
       "path": ".fha/tools/site.py",
       "category": "operating",
-      "sha256": "edf15fbed7ce0cce71e473401ecf96e5274166d44797e29dd728944f59720f88",
+      "sha256": "fdce7831ca48045ec309292da5c5d7f366a867fe62f1678fabe46d11262270a2",
       "spec_version": "1.2",
       "src": "tools/site.py"
     },
@@ -675,6 +675,13 @@
       "sha256": "e56f016cc8119c3f424033197350f591851a6b70bdcfaeee7e2f7600f915b98a",
       "spec_version": "1.2",
       "src": "tools/stubs.py"
+    },
+    {
+      "path": ".fha/tools/templates/_pedigree_home.html",
+      "category": "operating",
+      "sha256": "b6138af981858f5fff281228d9e8d94ef7e8bd0889122ebe0b2636776e2abf23",
+      "spec_version": "1.2",
+      "src": "tools/templates/_pedigree_home.html"
     },
     {
       "path": ".fha/tools/templates/_tree.html",
@@ -714,14 +721,14 @@
     {
       "path": ".fha/tools/templates/index.html",
       "category": "operating",
-      "sha256": "a41e80e24e62216b5d0da81634ec915142ae86be1427120b65d218887f479dc4",
+      "sha256": "7e217cedd2d8b51cc80fef845723f2d33bea66e192ed6808148bf53f4988d7a1",
       "spec_version": "1.2",
       "src": "tools/templates/index.html"
     },
     {
       "path": ".fha/tools/templates/person.html",
       "category": "operating",
-      "sha256": "add5a9943ad8849263516359207bfd712ea6abfbbef4fc4892ff50e974face6c",
+      "sha256": "6f49777a7d4c0421130fcc32f4b679b46e0a15278479edacc8c679d287e58ccd",
       "spec_version": "1.2",
       "src": "tools/templates/person.html"
     },
@@ -749,7 +756,7 @@
     {
       "path": ".fha/tools/templates/vendor/fha-tree.js",
       "category": "operating",
-      "sha256": "ef2cff386e1b50256d2583efcc08eb18d9cc50b4d46cbe19d2587a61bac7d81a",
+      "sha256": "d1cb3c912891166d2c93386018d469758fcc1475aabbeee6a6e397545b0784d2",
       "spec_version": "1.2",
       "src": "tools/templates/vendor/fha-tree.js"
     },
@@ -871,13 +878,13 @@
     {
       "path": "SPEC.md",
       "category": "operating",
-      "sha256": "68ed01ef2dd599f7b48a29a7631648729f98668023c2358133c6f3ab2b33c549",
+      "sha256": "b6d8e176d9ece1e9b26da3bd351a179d6e7cbe5a4bceb42c6926854c48edb30c",
       "spec_version": "1.2"
     },
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "1b16eb71e745a74a392c1387ccf2feb3619a532c652fc9ce2d740806a45f9f5a",
+      "sha256": "d39175382663b841ea019bec7d57e7d74ece7c357ea30605d101cf8966f71bc2",
       "spec_version": "1.2"
     },
     {
@@ -889,7 +896,7 @@
     {
       "path": "docs/CUSTOMIZING_SITE.md",
       "category": "operating",
-      "sha256": "2cfdf7d9aaab35ca0054f3d4678e07d19f2cbd6abed811a68fabce5e84da054e",
+      "sha256": "0d8d290025c35eaf4404cc9b1c07b7b4838db9be5d07a2aa97286d031f0a472f",
       "spec_version": "1.2"
     },
     {
