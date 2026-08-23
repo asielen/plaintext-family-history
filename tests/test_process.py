@@ -1061,6 +1061,76 @@ class ProcessTestCase(unittest.TestCase):
         files = read_record(record)['meta']['files']
         self.assertEqual(len(files), 1)
 
+    # ── #111: --more attaches straight from the inbox ─────────────────────────
+
+    def test_more_attaches_document_straight_from_inbox(self) -> None:
+        # Issue #111's own repro, document form: stage front + back together
+        # in inbox/, process the front, then --more the back with no manual
+        # move in between.
+        (self.archive / 'inbox').mkdir()
+        front = self.archive / 'inbox' / 'inbox-front.txt'
+        front.write_text('front', encoding='utf-8')
+        back = self.archive / 'inbox' / 'inbox-back.txt'
+        back.write_text('back', encoding='utf-8')
+
+        self.assertEqual(self._run([str(front), '--type', 'census']), EXIT_CLEAN)
+        renamed = next((self.archive / 'documents' / 'census').glob('*_S-*.txt'))
+        sid = renamed.stem.split('_')[-1]
+
+        rc = self._run([str(renamed), '--more', str(back), 'back'])
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertFalse(back.exists())  # moved out of inbox and renamed
+        self.assertEqual(list((self.archive / 'inbox').iterdir()), [])
+        attached = list((self.archive / 'documents' / 'census').glob(f'*back*_{sid}.txt'))
+        self.assertEqual(len(attached), 1)
+        record = next((self.archive / 'sources' / 'census').glob('*_S-*.md'))
+        files = read_record(record)['meta']['files']
+        self.assertEqual(len(files), 2)
+        self.assertEqual(files[1]['role'], 'back')
+
+    def test_more_attaches_photo_straight_from_inbox(self) -> None:
+        # Issue #111's own repro, photo form.
+        store = self._install_photo_store()
+        (self.archive / 'inbox').mkdir()
+        front = self.archive / 'inbox' / 'inbox-front.jpg'
+        front.write_bytes(b'\xff\xd8\xff')
+        back = self.archive / 'inbox' / 'inbox-back.jpg'
+        back.write_bytes(b'\xff\xd8\xff')
+
+        self.assertEqual(self._run([str(front)]), EXIT_CLEAN)
+        filed_front = self.archive / 'photos' / 'inbox-front.jpg'
+        self.assertTrue(filed_front.exists())
+        record = next((self.archive / 'sources' / 'photos').glob('*_S-*.md'))
+
+        rc = self._run([str(filed_front), '--more', str(back), 'back'])
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertEqual(list((self.archive / 'inbox').iterdir()), [])
+        filed_back = self.archive / 'photos' / 'inbox-back.jpg'
+        self.assertTrue(filed_back.exists())
+        self.assertEqual(len(store.read(filed_back)), 1)
+        rec = read_record(record)
+        self.assertEqual(len(rec['meta']['files']), 2)
+        self.assertEqual(rec['meta']['files'][1]['role'], 'back')
+
+    def test_more_from_inbox_rolled_back_on_failed_attach(self) -> None:
+        # A --more file relocated out of inbox must move back there if the
+        # attach itself then fails, not be left stranded outside it.
+        page1 = self.archive / 'documents' / 'census' / 'unreadable1.txt'
+        page1.write_text('p1', encoding='utf-8')
+        self.assertEqual(self._run([str(page1), '--type', 'census']), EXIT_CLEAN)
+        renamed1 = next((self.archive / 'documents' / 'census').glob('*_S-*.txt'))
+        record = next((self.archive / 'sources' / 'census').glob('*_S-*.md'))
+        record.unlink()
+        record.mkdir()  # read_text() on a directory raises OSError
+
+        (self.archive / 'inbox').mkdir()
+        page2 = self.archive / 'inbox' / 'unreadable2.txt'
+        page2.write_text('p2', encoding='utf-8')
+        rc = self._run([str(renamed1), '--more', str(page2), 'page-2'])
+        self.assertEqual(rc, EXIT_FAILURE)
+        self.assertTrue(page2.exists())  # relocation undone, back in inbox/
+        self.assertEqual(list((self.archive / 'documents' / 'census').glob('*page-2*')), [])
+
     # ── classification + slug units ──────────────────────────────────────────
 
     def test_classify_asset(self) -> None:

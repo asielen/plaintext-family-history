@@ -131,7 +131,9 @@ are found the user is asked whether they are *one* source (shared S-id) or
 #    process_photo_group       - M7.3: one S-id over a variation set (transactional)
 #    process_folder            - M7.3: triage a folder, process selected groups
 #    process_bundle            - M7.4: dissolve a notes.md bundle into one source
-#    attach_more               - M7.2: attach a file to an existing source
+#    attach_more               - M7.2: relocate --more's file out of inbox/ if needed (#111),
+#                                 then hand off to the engine below
+#    _attach_more_engine       - the attach logic proper: identity-mark + files: entry
 #
 #  Refile (the sanctioned cross-root correction move)
 #    _stdin_is_interactive     - tty seam for the photo-catalog confirm (tests patch it)
@@ -2503,7 +2505,67 @@ def attach_more(
     the keyword read below uses it; an inbox-staged primary is unprocessed, so
     the preview then refuses with the same "not a processed source" answer the
     live run gives, instead of a spurious read failure.
+
+    This is a thin wrapper: `--more`'s FILE argument is documented (and used,
+    per the CLI's own example) as a plain path into `inbox/`, but until #111
+    every downstream check assumed it was already filed - `process_photo`/
+    `process_document` get their own inbox-relocation from `_run_process`
+    before they are ever called, and `attach_more` had no equivalent at all.
+    Relocating `more_file` HERE, in the one function that owns its whole
+    lifecycle, mirrors that same dance (`_relocate_from_inbox`) rather than
+    threading it through the CLI dispatcher a second time. Any non-clean
+    result from the engine below - a refusal or a raised exception alike -
+    undoes the relocation, so a failed attach never leaves the file stranded
+    outside the inbox with nothing to show for it (the same "undo the move
+    too" rule `_run_process` already applies to the primary).
     """
+    pre_move_more = more_file
+    more_file, _, more_relocate_undo = _relocate_from_inbox(
+        archive_root, fha_config, more_file, None, dry_run=dry_run)
+    more_real_path = pre_move_more if dry_run and more_file != pre_move_more else None
+    try:
+        rc = _attach_more_engine(
+            archive_root, fha_config, primary_path, more_file, role, copy,
+            dry_run=dry_run, real_path=real_path, more_real_path=more_real_path,
+            backup=backup,
+        )
+    except Exception:
+        if more_relocate_undo is not None:
+            more_relocate_undo()
+        raise
+    if rc != EXIT_CLEAN and more_relocate_undo is not None:
+        more_relocate_undo()
+    return rc
+
+
+def _attach_more_engine(
+    archive_root: Path,
+    fha_config: dict,
+    primary_path: Path,
+    more_file: Path,
+    role: str,
+    copy: str | None,
+    *,
+    dry_run: bool,
+    real_path: Path | None,
+    more_real_path: Path | None,
+    backup: OriginalBackup | None,
+) -> int:
+    """The `--more` attach logic proper, run against `more_file`'s resolved
+    location (`attach_more`'s inbox-relocation wrapper has already moved it,
+    or confirmed it needs no move). Split out so that wrapper has a single
+    call site to undo the relocation on any non-clean result, rather than
+    threading the undo through every one of this function's several
+    raise/return points.
+
+    `more_real_path` is `more_file`'s pre-move location on a DRY-RUN
+    relocation (nothing moved, `more_file` names a destination that does not
+    exist yet) - the same `real_path` contract `process_photo` already uses
+    for the PRIMARY, extended to the `--more` file. Every on-disk read below
+    targets it; every destination-shaped use (alias, rename target, printed
+    path) keeps using `more_file`.
+    """
+    more_on_disk = more_real_path if more_real_path is not None else more_file
     # _source_id_of reads the primary's embedded SOURCE keyword via exiftool when
     # it's a photo. The documented dry-run contract is "no exiftool call" - a
     # machine without exiftool on PATH must still get a preview here, so only
@@ -2546,13 +2608,13 @@ def attach_more(
             )
         if dry_run:
             try:
-                more_existing = _read_source_keyword(more_file)
+                more_existing = _read_source_keyword(more_on_disk)
             except RuntimeError as e:
                 print(f'WARNING: could not read existing keywords from {more_file.name}: {e}',
                       file=sys.stderr)
                 more_existing = None
         else:
-            more_existing = _read_source_keyword(more_file)
+            more_existing = _read_source_keyword(more_on_disk)
         if more_existing:
             raise ProcessError(f'{more_file.name} already carries a SOURCE keyword.')
         new_alias = path_to_alias(more_file, _PHOTO_DIR, fha_config, archive_root)
