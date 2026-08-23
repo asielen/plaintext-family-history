@@ -126,6 +126,8 @@ configure_utf8_stdout()
 #    _index_places           - places.yaml → places, place_names, place_history
 #    _index_person           - one person .md → persons + person_files
 #                              + hypotheses + search_log (research files)
+#    _optional_scalar        - one files: entry's copy:/date: → text | None
+#                              (omitted key and explicit YAML null both NULL)
 #    _index_source           - one source .md → sources + claims + claim_persons
 #                              + claim_links + source_files + source_people
 #    _index_notes            - notes/*.md → notes_fts
@@ -1212,6 +1214,26 @@ def _index_person(
             _index_research_log_block(conn, body, pid, rel_path)
 
 
+def _optional_scalar(value: object) -> str | None:
+    """One optional `files:` entry field → its stripped text, or None.
+
+    A `files:` entry's `copy:`/`date:` keys are both optional (SPEC §14): a
+    human may omit the key entirely, or leave it written but blank
+    (`date:` with nothing after the colon). YAML parses the second form as an
+    explicit null, not an empty string, so `f.get(key, '')`'s `''` default
+    never fires - the caller gets `None` back either way, and `str(None)`
+    produces the literal four-character text 'None'. Handling the null case
+    here, before any `str()` conversion, is what keeps both forms landing as
+    SQL NULL - never the literal word 'None' rendered on a source page as
+    though it were a real value. Codex review on PR #149 caught this for
+    `date:`; `copy:` carried the identical shape (same `f.get(key, '')`
+    idiom, same explicit-null path) so it is fixed the same way here."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
 def _index_source(
     conn: sqlite3.Connection,
     path: Path,
@@ -1328,16 +1350,21 @@ def _index_source(
         # `copy: b`/`c`/`d` distinguishes same-day (or same-bundle, #123)
         # file variants; a claim's `asset: b-back` (SPEC §8.4) pins to
         # exactly this role/copy pair, so the column must carry whatever the
-        # record actually wrote, not a blanket NULL.
-        copy_letter = str(f.get('copy', '')).strip() or None
+        # record actually wrote, not a blanket NULL. `_optional_scalar`
+        # treats a bare `copy:` (explicit YAML null) the same as an omitted
+        # key - both NULL, never the literal text 'None' a plain `str()`
+        # would otherwise produce.
+        copy_letter = _optional_scalar(f.get('copy'))
         # `date:` (SPEC §14, #123) is this file's own EDTF date, distinct
         # from the source's own `source_date:` - for a source that legitimately
         # bundles files from different dates. Stored raw, same discipline as
         # `copy_letter` above and as `claims.date_edtf` (index.py's claim
         # INSERT below): the string the record wrote, unparsed/unvalidated
         # beyond what already happens elsewhere, NULL when the entry carries
-        # no `date:` of its own.
-        file_date_edtf = str(f.get('date', '')).strip() or None
+        # no `date:` of its own - and, via `_optional_scalar`, NULL rather
+        # than the literal text 'None' when the entry writes a bare `date:`
+        # with nothing after the colon (Codex review on PR #149).
+        file_date_edtf = _optional_scalar(f.get('date'))
         derived = 1 if f.get('derived') in (True, 'true') else 0
         orig_name = str(f.get('original_filename', '')) or None
         file_status = str(f.get('status', ''))

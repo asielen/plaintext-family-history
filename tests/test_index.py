@@ -1314,6 +1314,9 @@ files:
   - file: documents/newspaper/clipping-b_{sid}.pdf
     role: clipping
     copy: b
+  - file: documents/newspaper/clipping-c_{sid}.pdf
+    role: clipping
+    copy:
 ---
 
 ## Notes
@@ -1363,6 +1366,20 @@ class SourceFilesCopyColumnTests(unittest.TestCase):
         self.assertIsNone(
             got[f'documents/newspaper/clipping-a_{_COPY_SID}.pdf'])
 
+    def test_blank_copy_is_null_not_the_string_none(self) -> None:
+        # Codex review on PR #149: `copy:` shares the identical blank-vs-
+        # absent shape date_edtf was fixed for - a bare `copy:` line with
+        # nothing after the colon parses as YAML null, and `str(None)`
+        # produces the literal text 'None' unless the null is caught before
+        # the str() conversion. clipping-c writes the explicit-null form;
+        # clipping-a (no `copy:` key at all) already covers the omitted form
+        # in the assertion above - both must land as SQL NULL.
+        index.build_index(self.root, {})
+        got = self._copy_column()
+        value = got[f'documents/newspaper/clipping-c_{_COPY_SID}.pdf']
+        self.assertIsNone(value)
+        self.assertNotEqual(value, 'None')
+
     def test_upsert_matches_full_build(self) -> None:
         index.build_index(self.root, {})
         full = self._copy_column()
@@ -1387,10 +1404,13 @@ files:
     date: 1916-06-03
   - file: documents/newspaper/clipping-c_{sid}.pdf
     role: clipping
+  - file: documents/newspaper/clipping-d_{sid}.pdf
+    role: clipping
+    date:
 ---
 
 ## Notes
-Three clippings about the same event, mailed months apart (#123).
+Four clippings about the same event, mailed months apart (#123).
 '''
 
 
@@ -1440,6 +1460,22 @@ class SourceFilesDateColumnTests(unittest.TestCase):
         # or fall back to the source's own `source_date:`.
         self.assertIsNone(
             got[f'documents/newspaper/clipping-c_{_DATE_SID}.pdf'])
+
+    def test_blank_date_is_null_not_the_string_none(self) -> None:
+        # Codex review on PR #149: a bare `date:` line with nothing after the
+        # colon parses as YAML null, not an omitted key - `f.get('date', '')`
+        # never sees its `''` default fire, and the pre-fix `str(f.get(
+        # 'date', ''))` produced the literal four-character text 'None',
+        # stored in date_edtf and rendered on the source page as though it
+        # were a real date ('None · role: clipping'). clipping-d writes the
+        # explicit-null form; clipping-c (no `date:` key at all) already
+        # covers the omitted form in the assertion above - both round-trip
+        # forms must land as SQL NULL.
+        index.build_index(self.root, {})
+        got = self._date_column()
+        value = got[f'documents/newspaper/clipping-d_{_DATE_SID}.pdf']
+        self.assertIsNone(value)
+        self.assertNotEqual(value, 'None')
 
     def test_upsert_matches_full_build(self) -> None:
         index.build_index(self.root, {})
