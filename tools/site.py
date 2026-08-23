@@ -80,6 +80,10 @@ CODE MAP
   Dates
     _decade_header             - EDTF date → "1880s" decade label (timeline grouping)
 
+  Places
+    _place_mention_span        - where a claim's own sentence already names its
+                                 place (so the timeline prints it once, linked)
+
   Image derivatives
     _PIL_AVAILABLE             - is Pillow importable?
     _make_derivative           - resized, EXIF-stripped JPEG/PNG copy (standalone)
@@ -575,6 +579,41 @@ def _decade_header(date_edtf: str | None) -> str | None:
         return f'{(int(edtf[:4]) // 10) * 10}s'
     except (ValueError, IndexError):
         return None
+
+
+# ── Places ──────────────────────────────────────────────────────────────────
+
+def _place_mention_span(value: str, place_label: str) -> tuple[int, int] | None:
+    """Where `value` already names `place_label` in its own words, or None.
+
+    The person timeline prints the claim's sentence and then the claim's
+    place, so a sentence that already says where it happened ("moved to
+    Millbrook to farm") used to read "... to farm @ Millbrook" (#127).
+    Deciding that needs more than `label in value`:
+
+      - Whole words only. "Hampton" is a substring of "Southampton", and a
+        plain containment test would read "married at Southampton" as already
+        naming the place Hampton and drop a real, different place from the
+        page. Losing a fact is worse than repeating one.
+      - Punctuation and spacing between the words are matched loosely,
+        because one place gets written both ways in practice: the registry
+        says "Millbrook, NY" and the sentence says "Millbrook NY".
+
+    The whole label has to appear. A sentence naming only part of it ("moved
+    to Millbrook", place "Millbrook, Dutchess County, New York") is not
+    redundant - the rest of the label is information the reader does not have
+    yet - so the timeline still prints the fuller place after the sentence.
+
+    Returning the span rather than a bare yes/no is what lets the caller hang
+    the place-page link on the words already in the sentence instead of
+    losing that link along with the repeated place name.
+    """
+    words = re.findall(r'\w+', place_label or '')
+    if not words or not value:
+        return None
+    pattern = r'\b' + r'\W+'.join(re.escape(w) for w in words) + r'\b'
+    match = re.search(pattern, value, re.IGNORECASE)
+    return match.span() if match else None
 
 
 # ── Image derivatives ─────────────────────────────────────────────────────────
@@ -1682,6 +1721,29 @@ class _SiteBuilder:
             return self._markup(f'<a href="{href}">{_escape(label)}</a>')
         return self._markup(_escape(label))
 
+    def _timeline_value_html(self, value: str, mention: tuple[int, int] | None,
+                             place_id: str | None, page_dir: Path):
+        """A timeline sentence as HTML, with the place it already names linked.
+
+        #127 stops the timeline repeating a place the sentence has already
+        stated, but that trailing place was also the only thing linking the
+        place's page from a person page - the link symmetry `_place_html`
+        exists for, and it would go missing for exactly the claims most
+        likely to carry a registered place ("Thomas Hartley born ... in
+        Fairview, Breton County, Kansas"). So when the sentence carries the
+        mention, the mention carries the link: the place page stays one click
+        away and its name is still printed only once.
+
+        Escaping happens here at the leaves (the same rule as every other
+        `_markup` caller in this file), since the returned Markup goes to the
+        template with autoescape already satisfied."""
+        if mention is None or not place_id or place_id not in self.place_pages:
+            return self._markup(_escape(value))
+        start, end = mention
+        href = html.escape(_rel_href(self.places_dir / _page_filename(place_id), page_dir), quote=True)
+        return self._markup(f'{_escape(value[:start])}<a href="{href}">'
+                            f'{_escape(value[start:end])}</a>{_escape(value[end:])}')
+
     # - assets -
 
     def _asset_href(self, resolved: Path, page_dir: Path) -> str:
@@ -2487,7 +2549,31 @@ class _SiteBuilder:
         unconfirmed. Suggested claims never render here in any mode. (`fha
         views timeline`, the private research artifact, keeps needs-review
         with the same wording - the divergence is public-vs-working surface,
-        not two rules.)"""
+        not two rules.)
+
+        Two rendering fixes live here (#127, #128; #129's fix is template-only,
+        see person.html):
+          - #127: each entry carries `place_redundant` - true when the claim's
+            own value text already names the place naturally ("moved to
+            Millbrook to farm"), decided by `_place_mention_span` (whole
+            words, loose punctuation - not a bare substring test). The
+            template only appends a trailing place mention when this is
+            false, so a place already stated in the sentence is never doubled
+            up as a bare "@ Place" tag. When it IS stated in the sentence,
+            `_timeline_value_html` moves the place-page link onto those
+            words, so suppressing the repeat never costs the reader the link.
+          - #128: the SQL sorts rows by `date_min` (a widened, sortable value)
+            but decade grouping reads `date_edtf` via `_decade_header` - a
+            DIFFERENT field, deliberately (see that function's docstring): an
+            approximate '1840~' widens date_min to '1839-01-01' and would
+            group into the wrong decade if grouping used date_min too. Those
+            two fields can disagree for an uncertain/ranged date, so a
+            straight linear pass over date_min order can split one decade's
+            entries into two non-contiguous groups with another decade's
+            heading between them. The fix sorts a COPY of the rows by decade
+            before grouping; Python's sort is stable, so date_min order
+            survives as the within-decade tiebreak.
+        """
         status_filter = ("c.status IN ('accepted','needs-review')" if self.linked
                          else "c.status = 'accepted'")
         living_filter = (
@@ -2513,19 +2599,31 @@ class _SiteBuilder:
             rows = [r for r in rows
                     if normalize_id(str(r['id'])) not in self.restricted_claims
                     and not self._source_hard_restricted(r['source_id'])]
+        def _decade_sort_key(decade: str | None) -> tuple[int, int]:
+            if decade is None:
+                return (1, 0)   # undated sorts after every dated decade
+            return (0, int(decade[:-1]))   # '1930s' -> 1930
+
+        rows_with_decade = [(r, _decade_header(r['date_edtf'])) for r in rows]
+        rows_with_decade.sort(key=lambda item: _decade_sort_key(item[1]))
+
         groups: list[dict] = []
         current: str | None = '\x00'   # sentinel distinct from None (undated)
         entries: list[dict] = []
-        for r in rows:
-            decade = _decade_header(r['date_edtf'])
+        for r, decade in rows_with_decade:
             if decade != current:
                 if entries:
                     groups.append({'decade': None if current == '\x00' else current, 'entries': entries})
                 current = decade
                 entries = []
+            place_label = self._place_label(r['place_text'], r['place_id'])
+            value_text = r['value'] or ''
+            mention = _place_mention_span(value_text, place_label)
             entries.append({
-                'date': r['date_edtf'] or '(undated)', 'type': r['type'], 'value': r['value'],
+                'date': r['date_edtf'] or '(undated)', 'type': r['type'],
+                'value': self._timeline_value_html(value_text, mention, r['place_id'], page_dir),
                 'place': self._place_html(r['place_text'], r['place_id'], page_dir),
+                'place_redundant': mention is not None,
                 'source_html': self._markup(self._source_link(r['source_id'], page_dir)) if r['source_id'] else '',
                 'status': r['status'], 'confidence': r['confidence'] or '',
                 'parked': r['reviewed'] or '',
