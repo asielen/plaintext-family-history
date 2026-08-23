@@ -193,6 +193,83 @@ class XrefTests(unittest.TestCase):
         result = xref.run_xref(self.archive_root)
         self.assertEqual(result['groups'], [])
 
+    def test_census_claims_with_head_household_roles_still_compare(self) -> None:
+        # Regression guard: `vital_subjects` must be scoped to genuine vital
+        # types only (_VITAL_TYPES minus the couple types), never applied to
+        # a substantive type like census. A census claim's `roles: {head:
+        # [...], household_member: [...]}` legitimately roles EVERY person on
+        # the record, so vital_subjects (which looks for whoever the roles:
+        # map left UNROLED) would find nobody and wrongly empty this person's
+        # census bucket entirely if it were consulted here - silently
+        # breaking every census comparison archive-wide, not just this one.
+        self._seed_persons_sources()
+        _insert_claim(self.conn, 'c-aaaaaaaaaa', 's-1111111111', 'census',
+                       '1880 census, head of household', date_edtf='1880',
+                       persons=['p-aaaaaaaaaa'], roles={'p-aaaaaaaaaa': 'head'})
+        _insert_claim(self.conn, 'c-bbbbbbbbbb', 's-2222222222', 'census',
+                       '1880 census, household member', date_edtf='1880',
+                       persons=['p-aaaaaaaaaa'], roles={'p-aaaaaaaaaa': 'household_member'})
+        self.conn.commit()
+
+        result = xref.run_xref(self.archive_root)
+        self.assertEqual(len(result['groups']), 1)
+        pairs = result['groups'][0]['pairs']
+        self.assertEqual(pairs[0]['kind'], 'corroborates')
+
+    def test_duplicate_person_row_keeps_first_role_for_vital_subject(self) -> None:
+        # claim_persons has no UNIQUE constraint (persons: [P-a,
+        # "[[Alice Smith]]"] is one person written two ways and lands twice,
+        # per the module's own ORDER BY position comment above). The FIRST
+        # occurrence's role must win when building claim_role, same as every
+        # other first-occurrence-wins contract in this codebase - otherwise a
+        # duplicate row with a blank/different role can silently overwrite
+        # the real one (e.g. the birth subject's own 'child' role) and
+        # vital_subjects reads the wrong - or no - subject for the claim.
+        self._seed_persons_sources()
+        self.conn.execute("INSERT INTO persons(id, name, living, tier, path) VALUES "
+                           "('p-bbbbbbbbbb','Parent','false','curated','y.md')")
+        self.conn.execute(
+            "INSERT INTO claims(id, source_id, type, date_edtf, value, status, negated) "
+            "VALUES ('c-aaaaaaaaaa','s-1111111111','birth','1918','born 1918','accepted',0)"
+        )
+        # p-aaaaaaaaaa (the baby) appears TWICE: first correctly roled
+        # 'child', then a duplicate (e.g. an ID entry after a name-alias
+        # entry) mistakenly roled 'parent' - the trap a plain dict assignment
+        # falls into, since it's inserted AFTER the correct row. A blank
+        # duplicate role would still get caught by vital_subjects' own
+        # "unroled" fallback case regardless of which role wins, so this
+        # needs a duplicate with a DIFFERENT real role to actually diverge:
+        # last-wins reads p-a as only ever 'parent' (never 'child'), which
+        # `vital_subjects` cannot satisfy from ANY of its four cases (not the
+        # subject role, and not unroled either) - subjects becomes [], and
+        # p-a's own birth claim is wrongly excluded from her own bucket.
+        self.conn.execute(
+            "INSERT INTO claim_persons(claim_id, person_id, position, role) VALUES "
+            "('c-aaaaaaaaaa','p-aaaaaaaaaa',0,'child')"
+        )
+        self.conn.execute(
+            "INSERT INTO claim_persons(claim_id, person_id, position, role) VALUES "
+            "('c-aaaaaaaaaa','p-bbbbbbbbbb',1,'parent')"
+        )
+        self.conn.execute(
+            "INSERT INTO claim_persons(claim_id, person_id, position, role) VALUES "
+            "('c-aaaaaaaaaa','p-aaaaaaaaaa',2,'parent')"
+        )
+        _insert_claim(self.conn, 'c-bbbbbbbbbb', 's-2222222222', 'birth',
+                       'born 1920, contradicting record', date_edtf='1920',
+                       persons=['p-aaaaaaaaaa'])
+        self.conn.commit()
+
+        result = xref.run_xref(self.archive_root)
+        # If the duplicate's blank role had won, p-aaaaaaaaaa would read as
+        # NOT a subject of c-aaaaaaaaaa (nobody there carries 'child'), the
+        # claim would be excluded from her own bucket, and there would be no
+        # group/pair at all. The first ('child') role winning means it stays
+        # in her bucket and compares against her other birth claim.
+        self.assertEqual(len(result['groups']), 1)
+        pairs = result['groups'][0]['pairs']
+        self.assertEqual(pairs[0]['kind'], 'contradicts')
+
     def test_matching_place_id_corroborates_despite_place_text_wording(self) -> None:
         self._seed_persons_sources()
         _insert_claim(self.conn, 'c-aaaaaaaaaa', 's-1111111111', 'birth',
