@@ -94,6 +94,27 @@ closed-vocabulary or already-short values, so the summary line is legible
 either way; `--value`/`--place-text`/`--anchor`/`--notes` gained the
 explicit echo line.
 
+**Write-time place resolution (2026-08, issue #79 point 3).** Both verbs now
+look `--place-text` up against `places/places.yaml` (`_lib.
+match_place_text_to_registry`, reusing the exact sorted-token-set
+normalization `fha places candidates` clusters unlinked place_text with -
+`_lib.place_text_cluster_key`, moved out of places.py so this file can share
+it without violating "tools never import tools") whenever `--place` is not
+also given. An EXACT match (same normalized text as a registered place's
+`name:`/`alt_names:`) auto-attaches that `place_id` - the claim is minted (or,
+on the edit verb, only when it does not already carry a `place:`) with
+`place:` already set, no separate `fha confirm place` step needed for a place
+the registry already knows. A NEAR match (same token set, different word
+order or an expanded abbreviation) is reported as a nudge only and never
+auto-attached - a wrong `place_id` is worse than an unlinked `place_text`
+that the existing candidate-clustering report will still catch. A miss
+changes nothing: `place_text:` is written exactly as before. This is the
+"real fix" half of #79 (points 1-2, the report-side call-to-action and
+threshold escalation, shipped earlier in #100/#142); it is a pure code-level
+backstop underneath the skill-level lookup `process-source`/`review-claims`
+already perform by hand (issue #81) - a claim minted straight from
+`fha claim new` (no skill in the loop) gets the same resolution.
+
 The edit is **surgical**: only the one named claim's entry inside its source
 `.md` `## Claims` block is touched - its sibling claims, the block's key order,
 and any hand comments are preserved - mirroring `places geocode`'s surgical
@@ -221,6 +242,7 @@ from _lib import (
     format_edtf_error,
     id_type_of,
     is_valid_id,
+    match_place_text_to_registry,
     mint_ids,
     normalize_date,
     normalize_id,
@@ -355,6 +377,58 @@ def _place_known_in_index(archive_root: Path, place_id: str) -> bool:
         return False
     finally:
         conn.close()
+
+
+def _resolve_place_text_for_write(
+    archive_root: Path, place: str | None, place_text: str | None,
+) -> dict | None:
+    """Issue #79 point 3 - "resolve at write time": when a claim is about to
+    carry `place_text` but no `place`, look the text up against the
+    registry (`_lib.match_place_text_to_registry`) before writing.
+
+    Returns None when there is nothing to look up (a `place` was already
+    given explicitly - never override an explicit choice - or there is no
+    `place_text` to match). Otherwise returns the match dict
+    (`{'tier', 'place_id', 'name'}`); the caller decides what to DO with it
+    - only `run_claim`/`run_claim_new` know whether this is a brand-new
+    claim or a correction to one that may already carry its own `place:`.
+
+    Deliberately conservative: this only ever *proposes* an id for the
+    caller to adopt when the tier is `'exact'`. A `'near'` tier is never
+    auto-attached - see the docstring on `match_place_text_to_registry` for
+    why a wrong `place_id` is worse than an unlinked `place_text`.
+    """
+    if place is not None or not place_text or not place_text.strip():
+        return None
+    return match_place_text_to_registry(archive_root, place_text)
+
+
+def _place_match_note(cid_display: str, match: dict) -> str | None:
+    """The human-facing line for a `_resolve_place_text_for_write` result,
+    or None when the tier is neither `'exact'` nor `'near'` (nothing to say
+    - a plain miss is silent, exactly as it was before this feature: an
+    unlinked `place_text` is the normal case, not a shortfall).
+
+    `'exact'` reports what just happened (an automatic write) and how to
+    correct it if it's wrong; `'near'` reports what did NOT happen and why,
+    with the exact command that would link it on the human's own say-so -
+    the same `fha confirm place ... --into` arm `process-source`/`place-
+    research` already document for this merge case.
+    """
+    if match['tier'] == 'exact':
+        return (
+            f"place_text matched the registered place {match['name']!r} "
+            f"({match['place_id']}) - attached place: automatically (issue #79 "
+            f"point 3: write-time place resolution). Wrong match? Correct it with "
+            f"`fha claim {cid_display} --place L-...`.")
+    if match['tier'] == 'near':
+        return (
+            f"place_text is close to the registered place {match['name']!r} "
+            f"({match['place_id']}) but did not match exactly after normalizing, "
+            "so it was NOT linked automatically - a wrong place is worse than none. "
+            f"If this is the same place, link it with `fha confirm place {cid_display} "
+            f"--into {match['place_id']}`.")
+    return None
 
 
 def _validate_field_args(
@@ -958,6 +1032,11 @@ def run_claim(
     (`fha index`) and echoes each free-text/vocabulary field's new value on
     its own line (issue #54 - a wrapper that mangled the argument before this
     tool saw it is now visible at the point the write happened).
+
+    `place_text` given with no `place` and the claim not already carrying
+    one is looked up against the registry (issue #79 point 3) - an exact
+    match auto-attaches `place:` (reported in the messages); a near match
+    is only noted, never attached; a miss changes nothing.
     """
     result = Result(data={
         'status': None, 'claim_id': None, 'before_status': None,
@@ -1074,6 +1153,15 @@ def run_claim(
         result.add('error', f'cannot read {record_path}: {e}')
         return result
 
+    # Issue #79 point 3: only when this claim does not ALREADY carry a
+    # place: - never let a place_text correction silently re-point an
+    # existing, presumably human-verified link.
+    place_match = None
+    if not claim.get('place'):
+        place_match = _resolve_place_text_for_write(archive_root, place, place_text)
+        if place_match is not None and place_match['tier'] == 'exact':
+            place = place_match['place_id']
+
     place_display = fmt_id_display(normalize_id(place)) if place is not None else None
 
     try:
@@ -1165,6 +1253,11 @@ def run_claim(
     # _echo_field_lines. information/evidence are closed-vocabulary, already
     # visible in the summary line above, so they are not repeated here.
     echo_lines = _echo_field_lines(value=value, place_text=place_text, anchor=anchor, notes=notes)
+
+    if place_match is not None:
+        note = _place_match_note(fmt_id_display(cid), place_match)
+        if note is not None:
+            result.add('info', note)
 
     if dry_run:
         result.data['status'] = 'ok'
@@ -1612,6 +1705,12 @@ def run_claim_new(
     `ClaimEditRefused` (caught here as `_ClaimEditRefused`) rather than ever
     saving a rewrite that would corrupt the block - the same insurance
     `run_confirm_cooccur` relies on for the identical append step.
+
+    `place_text` given with no `place` is looked up against the registry
+    before the claim is rendered (issue #79 point 3) - an exact match mints
+    the claim with `place:` already attached (reported in the messages); a
+    near match is only noted, never attached; a miss mints exactly as
+    before, `place_text:` alone.
     """
     result = Result(data={'status': None, 'claim_id': None, 'source_id': None})
 
@@ -1657,6 +1756,14 @@ def run_claim_new(
     # list (a claim minted before its people are linked), not "leave it alone".
     if persons_norm is None:
         persons_norm = []
+
+    # Issue #79 point 3 - "resolve at write time": a brand-new claim has no
+    # place: yet by definition, so this is the primary case the feature
+    # targets. Only an exact registry match auto-attaches; see
+    # _resolve_place_text_for_write / match_place_text_to_registry.
+    place_match = _resolve_place_text_for_write(archive_root, place, place_text)
+    if place_match is not None and place_match['tier'] == 'exact':
+        place = place_match['place_id']
 
     source_path = find_source_record_path(archive_root, sid)
     if source_path is None:
@@ -1732,6 +1839,10 @@ def run_claim_new(
         result.add('warning',
                    f'{fmt_id_display(cid)} has no persons: yet - `fha lint` will flag it until '
                    f'you link one: `fha claim {fmt_id_display(cid)} --persons P-id[,P-id...]`.')
+    if place_match is not None:
+        note = _place_match_note(fmt_id_display(cid), place_match)
+        if note is not None:
+            result.add('info', note)
     if place is not None and not _place_known_in_index(archive_root, place):
         result.add('warning',
                    f'--place {fmt_id_display(normalize_id(place))} was not found in the place '

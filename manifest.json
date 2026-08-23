@@ -420,7 +420,7 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "0981498961701def01b275a669885f9ac605086f8a4d54e2b7e7c9d805c0a609",
+      "sha256": "7df187bd5801d2adcf4292d0e4fbf963fd9984eff34b33941e9e92ebf32ece01",
       "spec_version": "1.2",
       "src": "tools/_lib.py"
     },
@@ -483,7 +483,7 @@
     {
       "path": ".fha/tools/claim.py",
       "category": "operating",
-      "sha256": "5edaefe377e94eae3154c1c8a3cbd591541c86f1e96c2e1701a15380974ec9d2",
+      "sha256": "a45f1d7288b822671a3937da978ce40c588ad221ec63e86061f886880a314e8c",
       "spec_version": "1.2",
       "src": "tools/claim.py"
     },
@@ -602,7 +602,7 @@
     {
       "path": ".fha/tools/places.py",
       "category": "operating",
-      "sha256": "c454c89a1b006713f3295e78cf76744417000d52373de08723e5f7447a611fdc",
+      "sha256": "cd0d5a757e784ce8ea3511e1ee5677ff313927f26926b9081bdc965864b24c97",
       "spec_version": "1.2",
       "src": "tools/places.py"
     },

@@ -112,6 +112,7 @@ from _lib import (
     FhaConfigError,
     Result,
     edtf_bounds,
+    expand_place_abbreviations,
     fmt_id_display,
     format_edtf_error,
     id_type_of,
@@ -122,6 +123,7 @@ from _lib import (
     normalize_place_text,
     open_index_db,
     photoindex_status,
+    place_text_cluster_key,
     read_text_exact,
     reapply_newline,
     resolve_root_arg,
@@ -311,33 +313,17 @@ def run_lint(archive_root: Path) -> Result:
 
 # ── Candidates: place-text clustering ──────────────────────────────────────────
 
-_ABBREV_RE = [
-    (re.compile(r'\bst\b\.?'), 'street'),
-    (re.compile(r'\bco\b\.?'), 'county'),
-]
-
-
-def _expand_abbreviations(text: str) -> str:
-    """Expand St->Street and Co->County abbreviations (TOOLING §10)."""
-    for pattern, expansion in _ABBREV_RE:
-        text = pattern.sub(expansion, text)
-    return text
-
-
-def _candidate_key(text: str) -> str:
-    """
-    Normalize a place_text into a sorted-token-set key so word-order and
-    abbreviation variants ("Topeka, Kansas" / "Kansas, Topeka" / "Topeka Co")
-    cluster together.
-
-    TOOLING §10 includes punctuation normalization; punctuation is converted
-    to token boundaries rather than deleted so `St. Mary` and `St Mary`
-    remain equivalent without accidentally joining neighboring words.
-    """
-    norm = _expand_abbreviations(normalize_place_text(text))
-    norm = re.sub(r'[^\w\s]+', ' ', norm)
-    tokens = sorted(t for t in norm.split() if t)
-    return ' '.join(tokens)
+# `_expand_abbreviations`/`_candidate_key` moved to `_lib.py` as
+# `expand_place_abbreviations`/`place_text_cluster_key` (issue #79 point 3):
+# `fha claim`'s write-time registry lookup needs this exact normalization too
+# (a write-time auto-attach and this file's own clustering must never
+# disagree about what counts as "the same place"), and tools never import
+# tools (TOOLING §15) - _lib is the one place both can share it from. Kept
+# as thin aliases here so this file's own call sites below, and any test
+# importing `places._expand_abbreviations`/`places._candidate_key`, are
+# unchanged.
+_expand_abbreviations = expand_place_abbreviations
+_candidate_key = place_text_cluster_key
 
 
 def _place_text_candidates(conn: sqlite3.Connection, threshold: int) -> list[dict]:
