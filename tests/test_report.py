@@ -588,6 +588,31 @@ class ReportTests(unittest.TestCase):
         argv = shlex.split(command)
         self.assertEqual(argv, ['fha', 'process', 'photos/1962/Family Reunion 1962.jpg'])
 
+    def test_scan_error_still_shows_stale_triage_candidates(self) -> None:
+        # Audit finding: a scan_error used to short-circuit
+        # _section_photo_triage entirely, returning a bare "triage results
+        # below may be stale" message and never actually calling
+        # run_triage() - discarding the real (if session-stale) candidates
+        # the PERSISTED .cache/photos.sqlite still has, even though the
+        # message's own wording promised results would follow. run_triage()
+        # reads that persisted catalog independently of whether this
+        # session's live rescan (the source of scan_error) succeeded, so it
+        # is always safe to call - the scan-error note should compose onto
+        # the real results, not replace them.
+        triage = report.Result(data={
+            'status': 'fresh',
+            'candidates': [
+                {'path': 'photos/1950/reunion.jpg', 'score': 3, 'signals': ['caption']},
+            ],
+        })
+        with unittest.mock.patch.object(
+            report.photoindex, 'run_scan', side_effect=RuntimeError('exiftool not found')
+        ), unittest.mock.patch.object(report.photoindex, 'run_triage', return_value=triage):
+            result = report.run_report(self.archive_root, {}, full=True, section='photo-triage')
+        md = result['markdown']
+        self.assertIn('photo scan failed this session', md)
+        self.assertIn('photos/1950/reunion.jpg', md)
+
     def test_answerable_questions_skips_marriage_for_no_known_marriages_person(self) -> None:
         # lint.py's W101 rule never requires a marriage claim for a person
         # with no_known_marriages: true; the answerable-questions proposal
@@ -906,6 +931,23 @@ class PlaceTextEscalationTests(unittest.TestCase):
         result = report.run_report(
             self.archive_root, {}, full=True, section='review-queue')
         self.assertIn('place-text cluster(s) past the', result['markdown'])
+
+    def test_place_candidates_run_only_once_per_report(self) -> None:
+        # Audit finding: §6b's own listing (_section_place_candidates) and
+        # the escalation banner above it (_place_text_escalations) used to
+        # each make their own independent places.run_candidates() call -
+        # doubling the full GPS photo-cluster pass (_gps_clusters' photo-
+        # index read and greedy clustering) and any stale-photo-index
+        # warning on every report run that had an escalation. One `fha
+        # report` run must call it exactly once, whether or not an
+        # escalation fires.
+        self._write_cluster_source('S-9000000007', 'Warsaw, Poland', 20)
+        import places
+        with unittest.mock.patch.object(
+            places, 'run_candidates', wraps=places.run_candidates
+        ) as spy:
+            report.run_report(self.archive_root, {}, full=True)
+        self.assertEqual(spy.call_count, 1)
 
 
 _RESEARCH_SAME_HEADING_MD = '''# Research - Test Person
