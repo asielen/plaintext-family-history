@@ -314,6 +314,24 @@ class SourcePageTests(_Base):
         # files read as distinct on both axes at once.
         self.assertIn('3 June 1916 · role: clipping · copy: b</span>', html)
 
+    def test_claims_table_value_scrubbed_but_workbench_prefill_keeps_raw(self):
+        # #144 review finding 4: build_source_page passed the raw claim
+        # value straight into the claims table - a source page could
+        # publish a bare (C-xxxxxxxxxx) parenthetical the prose/timeline
+        # scrub already keeps off every other page. The workbench "edit &
+        # accept" prefill still needs the UNscrubbed original so a human
+        # editing the claim sees exactly what is stored, not a lossy
+        # display copy.
+        self._seed_person('p-aaaaaaaaaa', 'Jane Doe')
+        self._seed_source('s-1111111111', 'Census', people=('p-aaaaaaaaaa',))
+        self._seed_claim('c-1111111111', 's-1111111111', 'residence',
+                         'Lived in Kansas (C-4kx9m2p7qr) per the deed',
+                         status='suggested', persons=('p-aaaaaaaaaa',))
+        self._run(linked=True, workbench=True)
+        html = self._read('sources/s-1111111111.html')
+        self.assertIn('Lived in Kansas per the deed', html)          # reader-facing cell: scrubbed
+        self.assertIn('Lived in Kansas (C-4kx9m2p7qr) per the deed', html)  # wb prefill: raw
+
 
 class SourceRedactionTests(_Base):
     def _setup_redactable(self):
@@ -693,6 +711,23 @@ class PersonPageTests(_Base):
         # bleeds into the previous value, which would read as one run-on line.
         self.assertIn('1840', html[born_idx:married_idx])
         self.assertNotIn('1871', html[born_idx:married_idx])
+
+    def test_summary_vital_without_date_scrubs_claim_id_paren_in_free_text_value(self):
+        # #144 review finding 4: a vital claim with no date_edtf falls back
+        # to its free-text value for the Born/Died/Married summary line -
+        # the one place a bare (C-xxxxxxxxxx) parenthetical could reach the
+        # person summary unscrubbed, since every OTHER vital display uses
+        # the structured date_edtf instead (which must stay untranslated -
+        # base.html's own legend explains its notation).
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley')
+        self._seed_source('s-1111111111', 'Record', people=('p-aaaaaaaaaa',))
+        self._seed_claim('c-1111111111', 's-1111111111', 'birth',
+                         'Born about harvest time (C-4kx9m2p7qr)',
+                         status='accepted', persons=('p-aaaaaaaaaa',))
+        self._run(linked=True)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('Born about harvest time', html)
+        self.assertNotIn('C-4kx9m2p7qr', html)
 
     def _legend(self, html):
         """The date-notation legend paragraph on a built page, tag to tag.
@@ -2164,6 +2199,22 @@ class PlacePageTests(_Base):
         html = self._read('sources/s-1111111111.html')
         self.assertIn('Old Country', html)
         self.assertNotIn('places/', html.split('Old Country')[0][-200:])  # no place link around it
+
+    def test_events_table_value_scrubs_claim_id_paren(self):
+        # #144 review finding 4: build_place_page passed the raw claim value
+        # straight into the "Events here" table - the same unscrubbed-
+        # internal-encoding gap as the source page's claims table, on the
+        # place page's own claims render.
+        self._seed_person('p-aaaaaaaaaa', 'Jane')
+        self._seed_source('s-1111111111', 'Census', people=('p-aaaaaaaaaa',))
+        self._seed_place('l-1111111111', 'Fairview')
+        self._seed_claim_at_place('c-1111111111', 's-1111111111', 'l-1111111111',
+                                  'Lived in Fairview (C-4kx9m2p7qr) per the deed',
+                                  ('p-aaaaaaaaaa',))
+        self._run(linked=True)
+        html = self._read('places/l-1111111111.html')
+        self.assertIn('Lived in Fairview per the deed', html)
+        self.assertNotIn('C-4kx9m2p7qr', html)
 
 
 class DiscoveriesTests(_Base):

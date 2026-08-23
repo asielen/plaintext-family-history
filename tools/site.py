@@ -2423,7 +2423,12 @@ class _SiteBuilder:
             ).fetchall()
             persons_html = ', '.join(self._person_link(p['person_id'], page_dir) for p in person_rows)
             claims.append({
-                'type': c['type'], 'value': c['value'], 'date': c['date_edtf'] or '',
+                'type': c['type'],
+                # Reader-facing cell: scrubbed of internal-only encoding the
+                # same way prose/timeline values already are (#144 finding
+                # 4) - a source page is a reader-facing page like any other.
+                'value': _scrub_internal_encoding(c['value'] or ''),
+                'date': c['date_edtf'] or '',
                 'place': self._place_html(c['place_text'], c['place_id'], page_dir),
                 'persons_html': self._markup(persons_html), 'status': c['status'],
                 'confidence': c['confidence'] or '',
@@ -2437,6 +2442,12 @@ class _SiteBuilder:
                 # is the DISPLAY label (registry name when the claim carries a
                 # resolved place_id and no text) so a resolved place never
                 # opens as a blank field the human could overwrite unknowingly.
+                # value_raw stays UNscrubbed on purpose (#144 finding 4): the
+                # edit modal must prefill with the claim's real stored text,
+                # not the reader-facing scrub, or a human editing the claim
+                # would silently lose the very encoding they might want to
+                # correct or keep.
+                'value_raw': c['value'] or '',
                 'place_text': self._place_label(c['place_text'], c['place_id']),
                 'place_id': fmt_id_display(c['place_id']) if c['place_id'] else '',
                 'persons_ids': ','.join(fmt_id_display(p['person_id']) for p in person_rows),
@@ -2802,7 +2813,15 @@ class _SiteBuilder:
                 r = by_type[t]
                 row_out = {
                     'label': _VITAL_LABELS[t],
-                    'value': r['date_edtf'] or r['value'] or '',
+                    # #144 finding 4: a vital claim WITH a date_edtf shows that
+                    # structured date as-is (base.html's own legend explains
+                    # its bracket/tilde/question-mark notation - it is not
+                    # prose and must not be translated to "before ..."
+                    # phrasing). Only the free-text FALLBACK - a vital claim
+                    # with no date_edtf at all - can carry the raw internal
+                    # encoding a reader was never meant to see, so only that
+                    # branch is scrubbed.
+                    'value': r['date_edtf'] or _scrub_internal_encoding(r['value'] or ''),
                     'place': self._place_html(r['place_text'], r['place_id'], page_dir),
                     'source_html': self._markup(self._source_link(r['source_id'], page_dir)) if r['source_id'] else '',
                     'confidence': r['confidence'] or '',
@@ -4136,7 +4155,14 @@ class _SiteBuilder:
             for p in person_rows:
                 person_freq[p['person_id']] = person_freq.get(p['person_id'], 0) + 1
             claims.append({
-                'type': c['type'], 'value': c['value'], 'date': c['date_edtf'] or '',
+                'type': c['type'],
+                # Reader-facing cell: scrubbed of internal-only encoding, same
+                # as the source page's claims table (#144 finding 4). The
+                # place page's Events table has no workbench edit-prefill for
+                # a claim value, so unlike build_source_page there is no raw
+                # counterpart to keep alongside it.
+                'value': _scrub_internal_encoding(c['value'] or ''),
+                'date': c['date_edtf'] or '',
                 'persons_html': self._markup(
                     ', '.join(self._person_link(p['person_id'], page_dir) for p in person_rows)),
                 'source_html': self._markup(self._source_link(c['source_id'], page_dir)) if c['source_id'] else '',
