@@ -2558,6 +2558,42 @@ class TreeTests(_Base):
         self.assertEqual(sorted(set(ids)), ['P-aaaaaaaaaa', 'P-bbbbbbbbbb'])
         self.assertEqual(len(ids), len(set(ids)))                      # each node once
 
+    def test_descendant_tree_bfs_is_bounded_not_unbounded(self):
+        # #152 review fix (P2, performance): `build_person_page` used to call
+        # `_make_tree_ctx` with `max_hops=None` (fully unbounded) for every
+        # curated person's opt-in descendant tree - a real O(N^2) build cost
+        # across a lineage of N curated people, since descendant subtrees
+        # overlap heavily (a person's descendants include their children's
+        # descendants, and so on). It is now bounded by
+        # `_DESCENDANT_TREE_MAX_HOPS`; build a chain deeper than the bound
+        # and confirm the server-side walk actually stops there rather than
+        # serializing the whole remaining line.
+        bound = site._DESCENDANT_TREE_MAX_HOPS
+        ids = []
+        prev = None
+        for g in range(bound + 4):
+            # Fixed-width numeric suffix (zero-padded to 2 digits) - a
+            # variable-width `f'gen{g}'` + zero-fill collides once g reaches
+            # double digits (e.g. 'gen1' and 'gen10' both zero-pad to the
+            # same 10-char string), which this loop's depth (> 12) reaches.
+            pid = f'p-g{g:02d}' + '0' * 7
+            self._seed_person(pid, f'Descendant Gen{g}', surname=f'Gen{g}')
+            if prev is not None:
+                self._seed_rel(prev, 'child', pid)
+                self._seed_rel(pid, 'parent', prev)
+            ids.append(pid)
+            prev = pid
+        (self.archive_root / 'fha.yaml').write_text(
+            f'roots: {{}}\nroot_person: P-{ids[0][2:]}\n', encoding='utf-8')
+        self._run(linked=True)
+        data = json.loads(
+            (self.out_dir / 'data' / f'tree_{ids[0]}_descendants.json').read_text(encoding='utf-8'))
+        got_ids = {n['p_id'] for n in data['nodes']}
+        within_bound = f'P-{ids[bound][2:]}'         # hop == bound: still walked
+        beyond_bound = f'P-{ids[bound + 1][2:]}'      # hop == bound + 1: never reached
+        self.assertIn(within_bound, got_ids)
+        self.assertNotIn(beyond_bound, got_ids)
+
     def test_mistyped_root_person_warns(self):
         self._seed_person('p-aaaaaaaaaa', 'Real Person')
         (self.archive_root / 'fha.yaml').write_text(

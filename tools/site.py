@@ -343,6 +343,33 @@ _FAN_GENERATIONS = 3
 _HOME_PEDIGREE_GENERATIONS_DEFAULT = 5
 _HOME_PEDIGREE_GENERATIONS_MAX = 8
 
+# Server-side hop bound for each curated person's descendant-explorer BFS
+# (#152 review fix, P2 - performance). `build_person_page` used to call
+# `_make_tree_ctx` with `max_hops=None` (fully unbounded) for every curated
+# person's opt-in descendant tree, even though the disclosure is collapsed
+# by default and the client only ever paints `initial_depth` generations at
+# once. Because descendant subtrees overlap heavily along one lineage (a
+# person's descendants include their children's descendants, and so on), an
+# unbounded walk per page made a lineage of N curated people redo roughly
+# O(N^2) worth of node/edge serialization and index queries across one site
+# build - each ancestor's page re-walking almost the same, ever-shrinking
+# tail the page below it already walked in full. Bounding the SERVER walk
+# turns that per-page cost into a small constant (bounded by branching
+# factor ^ this depth) instead of "however much tree is left below this
+# person," so total build cost becomes O(N * constant) rather than O(N^2).
+# This does not eliminate the redundancy (two adjacent ancestors' trees
+# still overlap within the bound) - it caps it, which is the (b) option from
+# the review's own effort-ordered list, chosen over full cross-page
+# memoization (a, more effort - the JSON's node `url`s are relative to each
+# page's own directory, so sharing computed subtrees across pages would need
+# decoupling that first) or on-demand generation (c, changes the "every
+# curated person gets a page" contract). 12 generations is deep enough that
+# no real archive is expected to ever notice the bound in the rendered tree
+# (it is far deeper than `_HOME_PEDIGREE_GENERATIONS_MAX`'s ancestor-side 8);
+# it exists to make the walk's cost provably bounded, not to be a visible
+# limit. See `build_person_page`'s `descendants_tree` context.
+_DESCENDANT_TREE_MAX_HOPS = 12
+
 # Redaction display strings (M8 UX bar: redacted content is named, never a blank).
 _LIVING_LABEL = 'Living Person'
 _RESTRICTED_LABEL = 'Restricted - not included in this publication'
@@ -2533,9 +2560,13 @@ class _SiteBuilder:
         # instead of the old apex-of-root_person. `_make_tree_ctx` already
         # returns None for a person with no descendant edges at all, so the
         # link/section simply does not render for a leaf of the tree - no
-        # extra check needed here.
+        # extra check needed here. `max_hops=_DESCENDANT_TREE_MAX_HOPS`
+        # (#152 review fix, P2, performance - not None/unbounded as before):
+        # see that constant's own comment for why an unbounded per-page walk
+        # was a real O(N^2) cost across a build with many curated people.
         descendants_tree = self._make_tree_ctx(
-            pid, 'descendants', None, page_dir, f'Descendants of {name}', initial_depth=4)
+            pid, 'descendants', _DESCENDANT_TREE_MAX_HOPS, page_dir,
+            f'Descendants of {name}', initial_depth=4)
 
         ctx = {
             'display_id': fmt_id_display(pid), 'name': name,
