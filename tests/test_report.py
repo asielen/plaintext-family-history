@@ -940,6 +940,30 @@ class PlaceTextEscalationTests(unittest.TestCase):
             report.run_report(self.archive_root, {}, full=True)
         self.assertEqual(spy.call_count, 1)
 
+    def test_section_filtered_run_points_to_the_place_candidates_command(self) -> None:
+        # Codex review, PR #142 finding 3: `--section review-queue` (or any
+        # filter other than place-candidates) omits §6b from what actually
+        # prints, so telling the human to "see the Place candidates section
+        # below" points at content that is not in this run's output. The
+        # banner must name the exact follow-up command instead.
+        self._write_cluster_source('S-9000000008', 'Warsaw, Poland', 20)
+        result = report.run_report(
+            self.archive_root, {}, full=True, section='review-queue')
+        md = result['markdown']
+        self.assertIn('fha report --section place-candidates', md)
+        self.assertNotIn('Place candidates section below', md)
+
+    def test_place_candidates_filtered_run_keeps_the_below_wording(self) -> None:
+        # When §6b IS the section being shown (or on a full, unfiltered
+        # report), the "see the Place candidates section below" wording is
+        # still accurate and should not be replaced.
+        self._write_cluster_source('S-9000000009', 'Warsaw, Poland', 20)
+        result = report.run_report(
+            self.archive_root, {}, full=True, section='place-candidates')
+        md = result['markdown']
+        self.assertIn('Place candidates section below', md)
+        self.assertNotIn('fha report --section place-candidates', md)
+
 
 _RESEARCH_SAME_HEADING_MD = '''# Research - Test Person
 

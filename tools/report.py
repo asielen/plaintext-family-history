@@ -1449,18 +1449,29 @@ def _render_report(
     quietly at position 10 of 13. Also printed on section-filtered runs,
     matching `archive_notes`' own rule - and the full cluster is still
     listed at its normal spot in §6b below, so nothing here shrinks that
-    section's own listing."""
+    section's own listing.
+
+    When `section_filter` narrows the view to something other than
+    `place-candidates`, §6b itself is omitted from what actually prints, so
+    pointing the banner at "the Place candidates section below" would name
+    content the human cannot see in this run (Codex review, PR #142
+    finding 3) - the banner instead names the exact follow-up command,
+    `fha report --section place-candidates`."""
     lines = [f'# fha report - {generated}', '']
     if archive_notes:
         lines.append('**Archive notes from this refresh:**')
         lines.extend(f'- {note}' for note in archive_notes)
         lines.append('')
     if place_escalation_lines:
+        if section_filter and section_filter != 'place-candidates':
+            pointer = 'run `fha report --section place-candidates` to see every cluster'
+        else:
+            pointer = 'see the Place candidates section below for every cluster'
         lines.append(
             f'**{len(place_escalation_lines)} place-text cluster(s) past the '
             f'{_PLACE_ESCALATION_THRESHOLD}-claim oversight threshold, no place '
             'registered - this is not a candidate to weigh, it is an oversight '
-            'to close (see the Place candidates section below for every cluster):**'
+            f'to close ({pointer}):**'
         )
         lines.extend(f'- {line}' for line in place_escalation_lines)
         lines.append('')
