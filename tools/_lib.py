@@ -4963,6 +4963,36 @@ def normalize_id(id_str: str) -> str:
     return id_str.strip().lower() if id_str else ''
 
 
+def optional_scalar(value: object) -> str | None:
+    """One optional YAML frontmatter field's raw value → its stripped text, or None.
+
+    Many frontmatter fields are optional (SPEC): a human may omit the key
+    entirely, or write the key with nothing after the colon (`date:` alone).
+    YAML parses the second form as an explicit null, not an empty string, so
+    the common `d.get(key, '')` idiom's `''` default only fires for the FIRST
+    form - the key being truly absent. For the second form the key IS
+    present, so `.get()` returns `None` and the default never fires; a caller
+    that then does `str(...)` on the result gets the literal four-character
+    text 'None', silently stored or rendered as though it were a real value
+    (Codex review, PR #149/#157 - first caught on `source_files.copy`/
+    `date_edtf`, then found repeated across most optional columns this
+    module and its siblings populate).
+
+    Catching the null case HERE, before any `str()` conversion, is what
+    keeps both the omitted-key and explicit-null forms landing as the same
+    "nothing here" value - Python `None`, and downstream SQL `NULL` - never
+    the word 'None'. Shared in `_lib.py` (not left private to `index.py`)
+    because the same hazard recurs anywhere a tool reads one optional
+    scalar off already-parsed YAML and needs to tell "absent" from "blank"
+    apart from "written" - `tools never import tools`, so a helper more than
+    one tool needs lives here.
+    """
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
 def is_valid_id(id_str: str) -> bool:
     """Return True if id_str is a syntactically valid archive ID."""
     if not id_str:
