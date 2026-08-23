@@ -125,6 +125,27 @@ class XrefTests(unittest.TestCase):
         pairs = result['groups'][0]['pairs']
         self.assertEqual(pairs[0]['kind'], 'corroborates')
 
+    def test_birth_claim_naming_a_parent_does_not_enter_the_parents_own_birth_bucket(self) -> None:
+        # #126's xref twin: a mother's OWN birth claim and her son's birth
+        # claim (which names her as `roles: {parent: [...]}`) used to land in
+        # the same ('birth',) bucket for her, purely because persons: named
+        # her on both - the same "everyone named" bucketing #63 already fixed
+        # for marriage/divorce. Non-overlapping vital dates on two records of
+        # two different people's births must never read as a contradiction.
+        self._seed_persons_sources()
+        self.conn.execute("INSERT INTO persons(id, name, living, tier, path) VALUES "
+                           "('p-bbbbbbbbbb','Son','false','curated','y.md')")
+        _insert_claim(self.conn, 'c-aaaaaaaaaa', 's-1111111111', 'birth',
+                       'born 1888', date_edtf='1888', persons=['p-aaaaaaaaaa'])
+        _insert_claim(self.conn, 'c-bbbbbbbbbb', 's-2222222222', 'birth',
+                       'born 1918 to Test Person', date_edtf='1918',
+                       persons=['p-bbbbbbbbbb', 'p-aaaaaaaaaa'],
+                       roles={'p-bbbbbbbbbb': 'child', 'p-aaaaaaaaaa': 'parent'})
+        self.conn.commit()
+
+        result = xref.run_xref(self.archive_root)
+        self.assertEqual(result['groups'], [])
+
     def test_same_source_pair_excluded(self) -> None:
         self._seed_persons_sources()
         _insert_claim(self.conn, 'c-aaaaaaaaaa', 's-1111111111', 'birth',

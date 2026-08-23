@@ -120,6 +120,7 @@ from _lib import (
     open_index_db,
     resolve_root_arg,
     spouse_parties,
+    vital_subjects,
 )
 
 configure_utf8_stdout()
@@ -334,6 +335,28 @@ def _run_xref_queries(conn: sqlite3.Connection) -> dict:
         if not parties and not claim['negated'] and len(named) >= 2:
             unscoped_claim_ids.add(cid)
 
+    # Who each OTHER vital claim (birth/death/baptism/burial/census/... -
+    # anything not `relationship` and not a couple type above) is actually a
+    # record OF, read through the shared `_lib.vital_subjects` rule (see the
+    # module docstring's reasoning for #63, extended here to the same bug one
+    # level over: #126 is a mother's own summary box reading `Born: 1888` off
+    # her SON's birth certificate because `persons:` names her as a parent on
+    # it; the identical shape here is her birth claim and his birth claim
+    # landing in the same `('birth',)` bucket and being compared as if they
+    # were two records of HER birth, because bucketing this branch used to key
+    # on "every person named" the same way marriage/divorce did before #63.
+    # Computed once per claim, up front, for the same reason claim_parties is:
+    # who a claim is a vital record of does not depend on whose bucket is
+    # being built.
+    claim_vital_subjects: dict[str, list[str] | None] = {}
+    for cid, claim in claims_by_id.items():
+        if claim['type'] == 'relationship' or claim['type'] in _COUNTERPART_VITAL_TYPES:
+            continue
+        persons_with_roles = [
+            (pid, claim_role.get((cid, pid))) for pid in claim_persons.get(cid, [])
+        ]
+        claim_vital_subjects[cid] = vital_subjects(claim['type'], persons_with_roles)
+
     groups = []
     for person_id, claim_ids in sorted(claims_by_person.items()):
         by_group: dict[tuple, list[str]] = {}
@@ -409,6 +432,17 @@ def _run_xref_queries(conn: sqlite3.Connection) -> dict:
                 else:
                     no_counterpart.setdefault(claim['type'], []).append(cid)
             else:
+                subjects = claim_vital_subjects.get(cid)
+                if subjects is not None and person_id not in subjects:
+                    # Named on the claim (a parent, a witness, an informant)
+                    # but not the person(s) `vital_subjects` says it's a
+                    # record OF - this claim asserts nothing about THIS
+                    # person's own birth/death/etc., so it does not enter
+                    # their vitals bucket at all (#126's xref twin, same
+                    # skip the marriage/divorce branch above already takes
+                    # for spouse_parties). `None` (a legacy claim with no
+                    # roles: map) keeps the old broad behavior unchanged.
+                    continue
                 key = (claim['type'],)
                 by_group.setdefault(key, []).append(cid)
 
