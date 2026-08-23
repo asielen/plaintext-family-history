@@ -96,6 +96,9 @@ are found the user is asked whether they are *one* source (shared S-id) or
 #
 #  exiftool seams (monkeypatched in tests - process never imports photoindex)
 #    _run_exiftool_read_keywords - read embedded Keywords/Subject of one file
+#    _clear_read_only            - make a file writable before exiftool touches it (#110)
+#    _cleanup_exiftool_tmp       - delete a stray <file>_exiftool_tmp left by a failed write (#110)
+#    _format_exiftool_tmp_error  - name the real fix if a tmp-file collision still surfaces (#110)
 #    _run_exiftool_embed_source  - write `SOURCE: {S-id}` into one file
 #    _run_exiftool_remove_source - remove a just-written `SOURCE: {S-id}`
 #    _open_backup                - the run's safety-copy policy, announced (TOOLING §13f)
@@ -161,6 +164,7 @@ import datetime
 import json
 import re
 import shutil
+import stat
 import subprocess
 import sys
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -398,6 +402,78 @@ def _run_exiftool_read_keywords(file_path: Path) -> list[str]:
     return out
 
 
+# The literal suffix exiftool's `-overwrite_original_in_place` appends to the
+# temp file it writes through before swapping it in for the real one - no dot,
+# no configurability, verified against the issue's own reproduction (#110).
+_EXIFTOOL_TMP_SUFFIX = '_exiftool_tmp'
+_EXIFTOOL_TMP_EXISTS_RE = re.compile(r'temporary file already exists', re.I)
+
+
+def _clear_read_only(file_path: Path) -> None:
+    """Make `file_path` writable before exiftool's own write, best-effort (#110).
+
+    `_relocate_from_inbox` is a plain move/rename, which preserves whatever
+    permission bits a file already had - an inbox-staged original that
+    arrived read-only (common: copied off read-only media, or a personal
+    "protect this" habit) reaches the embed step still locked, and exiftool
+    then fails with a write-permission error that names no fix. Nothing in
+    this archive's design requires a filed original to stay read-only for
+    fha's own subsequent keyword write, so this clears the bit unconditionally
+    before every embed/remove attempt. Best-effort and silent on failure: if
+    clearing it does not work either, exiftool's own error still surfaces
+    exactly as it did before this existed - this is not a new failure mode,
+    only a chance to avoid the old one.
+    """
+    try:
+        mode = file_path.stat().st_mode
+        file_path.chmod(mode | stat.S_IWRITE)
+    except OSError:
+        pass
+
+
+def _cleanup_exiftool_tmp(file_path: Path) -> None:
+    """Delete a stray `<file>_exiftool_tmp` left beside `file_path` (#110).
+
+    exiftool's `-overwrite_original_in_place` writes through a temp file
+    named literally `<path>_exiftool_tmp` and renames it over the original
+    only on success; a write that fails part-way (e.g. the destination was
+    read-only) leaves that temp file behind. A later attempt against the same
+    destination then trips exiftool's OWN "temporary file already exists"
+    guard - a second, different-looking error that names the wrong cause and
+    masks that the real one (e.g. read-only) may already be fixed. Called
+    both before an embed/remove attempt (clears a stale file left by an
+    EARLIER failed run) and after one fails (clears whatever THIS attempt
+    left), so a retry only ever meets the real, current cause. Best-effort:
+    the rare case a locked temp file cannot be deleted still surfaces via
+    `_format_exiftool_tmp_error` naming the manual fix.
+    """
+    tmp_path = file_path.with_name(file_path.name + _EXIFTOOL_TMP_SUFFIX)
+    try:
+        tmp_path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def _format_exiftool_tmp_error(stderr_text: str, file_path: Path) -> str:
+    """Rewrite exiftool's "temp file already exists" stderr to name the fix (#110).
+
+    `_cleanup_exiftool_tmp` runs before every embed/remove attempt, so this
+    text should be rare - it only reaches a user if the stray temp file could
+    not be deleted (e.g. locked by another process). When it does, the raw
+    exiftool text alone reads as an unrelated new failure rather than the
+    leftover of a previous one; naming the exact file and the delete-then-
+    retry fix keeps the next step honest (AGENTS.md: every error names the
+    fix, not just the symptom).
+    """
+    if not _EXIFTOOL_TMP_EXISTS_RE.search(stderr_text):
+        return stderr_text
+    tmp_path = file_path.with_name(file_path.name + _EXIFTOOL_TMP_SUFFIX)
+    return (
+        f'{stderr_text} - this is a stray file left by a previous failed attempt, '
+        f'not a new problem; delete {tmp_path} and try again'
+    )
+
+
 def _run_exiftool_embed_source(
     file_path: Path, s_id: str, extra_keywords: list[str] | None = None,
     *, backup: OriginalBackup,
@@ -420,11 +496,19 @@ def _run_exiftool_embed_source(
 
     Returns None on success, the stderr text on a per-file failure; raises
     RuntimeError only when exiftool itself is absent.
+
+    Before writing: clears any read-only bit on `file_path` and any stray
+    `_exiftool_tmp` left beside it by an earlier failed attempt (#110) - both
+    are cheap, best-effort, and mean an ordinary retry after fixing the real
+    cause (e.g. clearing read-only by hand) just works, instead of tripping a
+    second, differently-worded failure that hides the first one was fixed.
     """
     try:
         backup.ensure(file_path)
     except BackupRefused as e:
         return str(e)
+    _clear_read_only(file_path)
+    _cleanup_exiftool_tmp(file_path)
     keywords = [f'SOURCE: {s_id}'] + (extra_keywords or [])
     kw_args = [f'-keywords+={kw}' for kw in keywords]
     cmd = ['exiftool'] + kw_args + ['-overwrite_original_in_place', str(file_path)]
@@ -432,7 +516,10 @@ def _run_exiftool_embed_source(
         proc = subprocess.run(cmd, check=False, capture_output=True, text=True, encoding='utf-8')
     except FileNotFoundError as e:
         raise RuntimeError(format_exiftool_error('fha process')) from e
-    return None if proc.returncode == 0 else proc.stderr.strip()
+    if proc.returncode == 0:
+        return None
+    _cleanup_exiftool_tmp(file_path)
+    return _format_exiftool_tmp_error(proc.stderr.strip(), file_path)
 
 
 def _run_exiftool_remove_source(
@@ -454,11 +541,19 @@ def _run_exiftool_remove_source(
     already there - the forward write made it, or refused and left nothing to
     roll back - so this call costs one `exists()` check and can only refuse in
     the case where the forward write would have refused too.
+
+    Shares the same read-only-clear / stray-tmp-cleanup discipline as
+    `_run_exiftool_embed_source` (#110) - the forward write already clears
+    both, so in practice this is a no-op here, but the rollback is its own
+    exiftool invocation and can fail for the identical reason if something
+    else re-locked the file mid-run.
     """
     try:
         backup.ensure(file_path)
     except BackupRefused as e:
         return str(e)
+    _clear_read_only(file_path)
+    _cleanup_exiftool_tmp(file_path)
     keywords = [f'SOURCE: {s_id}'] + (extra_keywords or [])
     kw_args = [f'-keywords-={kw}' for kw in keywords]
     cmd = ['exiftool'] + kw_args + ['-overwrite_original_in_place', str(file_path)]
@@ -466,7 +561,10 @@ def _run_exiftool_remove_source(
         proc = subprocess.run(cmd, check=False, capture_output=True, text=True, encoding='utf-8')
     except FileNotFoundError as e:
         raise RuntimeError(format_exiftool_error('fha process')) from e
-    return None if proc.returncode == 0 else proc.stderr.strip()
+    if proc.returncode == 0:
+        return None
+    _cleanup_exiftool_tmp(file_path)
+    return _format_exiftool_tmp_error(proc.stderr.strip(), file_path)
 
 
 def _open_backup(

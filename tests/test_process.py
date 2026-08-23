@@ -12,9 +12,12 @@ import os
 import contextlib
 import io
 import shutil
+import stat
+import subprocess
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -2695,6 +2698,107 @@ class TypeFlagRoutingTests(unittest.TestCase):
         self.assertTrue((self.archive / 'photos' / 'front.jpg').is_file())
         self.assertEqual(
             len(list((self.archive / 'sources' / 'photos').glob('*_S-*.md'))), 1)
+
+
+class ExiftoolReadOnlyRetryTests(unittest.TestCase):
+    """#110: a read-only inbox file's embed failure must not block a retry
+    with a misleading 'temp file already exists' error once the real cause
+    (read-only) is fixed.
+
+    Exercises `_run_exiftool_embed_source` directly (not through the
+    FakePhotoStore every other photo test in this file uses) with a mocked
+    `subprocess.run`, so the read-only-clear / stray-tmp-cleanup logic these
+    tests pin actually runs - the fake seam other tests install replaces
+    that whole function and would test nothing here.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self.photo = self.tmp / 'locked.jpg'
+        self.photo.write_bytes(b'\xff\xd8\xff')
+        self.backup = process.OriginalBackup(self.tmp, {})
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _tmp_file(self) -> Path:
+        return self.photo.with_name(self.photo.name + '_exiftool_tmp')
+
+    def test_embed_clears_read_only_before_writing(self) -> None:
+        self.photo.chmod(stat.S_IREAD)
+        self.assertFalse(os.access(self.photo, os.W_OK))
+        with unittest.mock.patch.object(process.subprocess, 'run') as run:
+            run.return_value = subprocess.CompletedProcess([], 0, stdout='', stderr='')
+            err = process._run_exiftool_embed_source(self.photo, 'S-aaaaaaaaaa', backup=self.backup)
+        self.assertIsNone(err)
+        self.assertTrue(os.access(self.photo, os.W_OK))
+
+    def test_stray_tmp_from_an_earlier_failed_run_is_cleared_before_retry(self) -> None:
+        # Simulates exactly the issue's own repro sequence: attempt 1 already
+        # failed and left its temp file behind; nobody deleted it by hand.
+        self._tmp_file().write_bytes(b'stale from a previous attempt')
+        with unittest.mock.patch.object(process.subprocess, 'run') as run:
+            run.return_value = subprocess.CompletedProcess([], 0, stdout='', stderr='')
+            err = process._run_exiftool_embed_source(self.photo, 'S-aaaaaaaaaa', backup=self.backup)
+        self.assertIsNone(err)
+        self.assertFalse(self._tmp_file().exists())
+
+    def test_a_failed_attempt_cleans_up_its_own_stray_tmp(self) -> None:
+        def fake_run(cmd, **kwargs):
+            # exiftool's real behaviour: the temp file is created before the
+            # write that then fails on a read-only destination.
+            self._tmp_file().write_bytes(b'partial write')
+            return subprocess.CompletedProcess(
+                cmd, 1, stdout='', stderr=f'Error opening {self.photo} for writing')
+
+        with unittest.mock.patch.object(process.subprocess, 'run', side_effect=fake_run):
+            err = process._run_exiftool_embed_source(self.photo, 'S-aaaaaaaaaa', backup=self.backup)
+        self.assertIsNotNone(err)
+        self.assertFalse(self._tmp_file().exists())
+
+    def test_retry_after_fixing_read_only_succeeds_with_no_leftover_tmp(self) -> None:
+        # The full round-trip the issue's own test asks for: attempt 1 fails
+        # (read-only + exiftool's temp file left behind), the read-only bit
+        # is fixed by hand, attempt 2 must succeed with no manual tmp cleanup.
+        self.photo.chmod(stat.S_IREAD)
+        calls = {'n': 0}
+
+        def fake_run(cmd, **kwargs):
+            calls['n'] += 1
+            if calls['n'] == 1:
+                self._tmp_file().write_bytes(b'partial write')
+                return subprocess.CompletedProcess(
+                    cmd, 1, stdout='', stderr=f'Error opening {self.photo} for writing')
+            if self._tmp_file().exists():
+                return subprocess.CompletedProcess(
+                    cmd, 1, stdout='',
+                    stderr=f'Error: Temporary file already exists: {self._tmp_file()}')
+            return subprocess.CompletedProcess(cmd, 0, stdout='', stderr='')
+
+        with unittest.mock.patch.object(process.subprocess, 'run', side_effect=fake_run):
+            first = process._run_exiftool_embed_source(self.photo, 'S-aaaaaaaaaa', backup=self.backup)
+            self.assertIsNotNone(first)
+            # Fix the real cause by hand, exactly as the issue's own
+            # reproduction does - no manual tmp-file deletion.
+            self.photo.chmod(stat.S_IWRITE)
+            second = process._run_exiftool_embed_source(self.photo, 'S-aaaaaaaaaa', backup=self.backup)
+        self.assertIsNone(second)
+        self.assertEqual(calls['n'], 2)
+
+    def test_tmp_exists_error_names_the_real_fix_when_cleanup_cannot_run(self) -> None:
+        # Defense in depth for the rare case the stray file itself cannot be
+        # deleted (e.g. locked by another process): the message that reaches
+        # the user must name the real fix, not just repeat exiftool's own
+        # unrelated-sounding text.
+        raw = f'Error: Temporary file already exists: {self.photo}_exiftool_tmp'
+        rewritten = process._format_exiftool_tmp_error(raw, self.photo)
+        self.assertIn('previous failed attempt', rewritten)
+        self.assertIn(f'{self.photo}_exiftool_tmp', rewritten)
+
+    def test_ordinary_stderr_is_passed_through_unchanged(self) -> None:
+        raw = 'Error: some unrelated exiftool failure'
+        self.assertEqual(process._format_exiftool_tmp_error(raw, self.photo), raw)
 
 
 if __name__ == '__main__':
