@@ -229,11 +229,13 @@ fha claim new --source S-id --type … --value …    mint a brand-new claim ont
 fha confirm <verb> …         act on a detection candidate, report prompt, or confirmed
                             decision (xref/cooccur/dismiss/place/discovery/draft/merge)
 fha person new "Name" …      mint a brand-new person stub from nothing (provisional vitals)
-fha person promote <P-id> [--into FOLDER]   graduate a direct-line stub to curated: tier flip,
-                            couple-folder filing, backfill any record section a pre-#76 stub is
-                            still missing (never a research file - that stays opt-in, SPEC §16b);
-                            always explicit, never automatic; non-direct people keep their stub
-                            (a legitimate state)
+fha person promote <P-id> [--into FOLDER]   graduate a stub to curated: tier flip, filing,
+                            backfill any record section a pre-#76 stub is still missing (never a
+                            research file - that stays opt-in, SPEC §16b); always explicit, never
+                            automatic. A direct-line person files into their derived couple folder;
+                            `--into connections/` files anyone else flat in people/connections/
+                            (SPEC §12.3) - called with no --into, a non-direct stub is refused
+                            with that exact command named, never left stuck
 fha person rename <P-id> "New Name" [--keep-variant]   correct a name: frontmatter, profile +
                             research filenames, stale generated companions (regenerate via
                             `fha views …`), and - when unambiguous - the couple folder text

@@ -71,9 +71,10 @@ shortcut for this skill, where one exists. It is safe to run anytime — it only
      action, not just a passing mention; see step 4), §7 (hypotheses / draft queues), §7b (promotion
      candidates — people who've earned a real page: a direct-line ancestor still a stub, or a stub that
      keeps turning up in accepted facts; frame as someday-leads — *"Frank keeps showing up — nine accepted
-     facts and still a stub"*. For a direct-line person the graduation is `fha person promote`, run
-     only on the human's say-so; a non-direct claim-heavy stub just stays a stub for now — the report
-     says so itself) only when they hold something worth acting on. Don't read empty sections aloud.
+     facts and still a stub"*. The graduation is `fha person promote`, run only on the human's say-so —
+     a direct-line person files into their couple folder, anyone else files flat in people/connections/
+     via `--into connections/` (SPEC §12.3; the report names the exact command either way)) only when
+     they hold something worth acting on. Don't read empty sections aloud.
 
 4. **Offer exactly one next action — weigh §6b honestly instead of defaulting past it.** The single best
    next step is usually a `review-claims` session on the oldest backlog, or `process-source` on the inbox

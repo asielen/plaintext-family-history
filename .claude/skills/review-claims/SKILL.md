@@ -208,17 +208,18 @@ its claims to the people asked about and leave the rest for later sessions.
    Then, with the index fresh from step 5, check for **two nudges — promotion and places — each capped at
    one per session, same explicit-yes gate, never repeated once declined this session.**
 
-   **Promotion**, for **direct-line** people only (the promote verb serves the direct line; curating
-   anyone else is an open design decision): is any person decided-on this session flagged by the
-   `fha views brackets` run above as a **direct-line stub**, or a direct-line stub now holding accepted
-   claims at or over the promotion threshold — `fha.yaml`'s `promotion:` → `claims_threshold`, default 5
-   when the key is absent (read the file directly)? If so, say one plain nudge: "Frank S. Woodbury now has
-   9 accepted claims and no curated profile — want me to promote him and draft a bio?" **Only on his
-   explicit yes**, run `fha person promote <P-id>` and hand off to `write-biography`. A NON-direct person
-   who crosses the threshold gets an FYI, never the offer: "Frank keeps turning up — 5 accepted claims
-   now — but he sits off the direct line, so a real profile isn't wired up for people off it yet — that's
-   a known gap (issue #80), not a permanent no." No yes, no write, no nagging — one nudge per person per
-   session, then let it rest.
+   **Promotion**, for anyone decided-on this session who has earned a real page: is any such person
+   flagged by the `fha views brackets` run above as a **direct-line stub**, or holding accepted claims at
+   or over the promotion threshold — `fha.yaml`'s `promotion:` → `claims_threshold`, default 5 when the
+   key is absent (read the file directly)? If so, say one plain nudge, worded for which kind of person
+   this is: for a **direct-line** stub, "Frank S. Woodbury now has 9 accepted claims and no curated
+   profile — want me to promote him and draft a bio?", and **only on his explicit yes**, run
+   `fha person promote <P-id>` and hand off to `write-biography`. For a **non-direct** person crossing the
+   threshold, the same nudge offers the connections form instead: "Frank keeps turning up — 5 accepted
+   claims now, off the direct line — want me to promote him as a connection and draft a bio?", and only on
+   his explicit yes, run `fha person promote <P-id> --into connections/` (SPEC §12.3, no numbering) before
+   the same `write-biography` hand-off. No yes, no write, no nagging — one nudge per person per session,
+   then let it rest.
 
    **Places.** A review pass that just accepted a batch of claims is precisely the moment a place-text
    cluster crosses its threshold — check for it here rather than leaving it for a session that never comes

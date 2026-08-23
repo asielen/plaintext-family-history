@@ -2417,9 +2417,44 @@ class PromoteTests(unittest.TestCase):
         msg = res.messages[0].text
         self.assertIn('direct', msg)
         self.assertIn('legitimate', msg)
+        # #80: the refusal names the actual fix.
+        self.assertIn('--into connections/', msg)
         # The stub is untouched.
         self.assertTrue(
             (self.root / 'people' / 'stubs' / f'far__frank_{P_FRIEND}.md').exists())
+
+    def test_into_connections_promotes_a_non_direct_stub(self) -> None:
+        # #80: the resolution to the open TOOLING §3c design question -
+        # a non-direct person is no longer a permanent dead end.
+        res = person.run_promote(self.root, P_FRIEND, into='connections/')
+        self.assertEqual(res.exit_code, EXIT_CLEAN)
+        self.assertEqual(res.data['status'], 'ok')
+        self.assertIsNone(res.data['position'])
+        self.assertEqual(res.data['folder'], 'connections')
+        self.assertFalse(
+            (self.root / 'people' / 'stubs' / f'far__frank_{P_FRIEND}.md').exists())
+        new_path = self.root / 'people' / 'connections' / f'far__frank_{P_FRIEND}.md'
+        self.assertTrue(new_path.exists())
+        rec = read_record(new_path)
+        self.assertEqual(str(rec['meta'].get('tier')), 'curated')
+        # No Ahnentafel number in the success message - there is none to report.
+        self.assertNotIn('Ahnentafel', res.messages[0].text)
+
+    def test_into_connections_dry_run_writes_nothing(self) -> None:
+        res = person.run_promote(self.root, P_FRIEND, into='people/connections', dry_run=True)
+        self.assertEqual(res.exit_code, EXIT_CLEAN)
+        self.assertEqual(res.data['status'], 'dry-run')
+        self.assertTrue(
+            (self.root / 'people' / 'stubs' / f'far__frank_{P_FRIEND}.md').exists())
+        self.assertFalse((self.root / 'people' / 'connections').exists())
+
+    def test_already_curated_in_connections_is_a_clean_noop(self) -> None:
+        res = person.run_promote(self.root, P_FRIEND, into='connections/')
+        self.assertEqual(res.exit_code, EXIT_CLEAN)
+        res2 = person.run_promote(self.root, P_FRIEND)
+        self.assertEqual(res2.exit_code, EXIT_CLEAN)
+        self.assertEqual(res2.data['status'], 'already')
+        self.assertEqual(res2.data['folder'], 'connections')
 
     def test_missing_root_person_refused(self) -> None:
         (self.root / 'fha.yaml').write_text(
@@ -2443,11 +2478,20 @@ class PromoteTests(unittest.TestCase):
         self.assertEqual(res.exit_code, EXIT_FAILURE)
         self.assertIn('people/', res.messages[0].text)
 
-    def test_into_reserved_folder_refused(self) -> None:
-        for reserved in ('stubs', 'people/connections'):
-            res = person.run_promote(self.root, P_PA, into=reserved)
-            self.assertEqual(res.exit_code, EXIT_FAILURE, reserved)
-            self.assertIn('reserved', res.messages[0].text)
+    def test_into_stubs_refused(self) -> None:
+        res = person.run_promote(self.root, P_PA, into='stubs')
+        self.assertEqual(res.exit_code, EXIT_FAILURE)
+        self.assertIn('reserved', res.messages[0].text)
+        self.assertTrue(self.pa_stub.exists())
+
+    def test_into_connections_refuses_a_direct_line_person(self) -> None:
+        # #80's mirror-refusal: P_PA IS on the direct line, so connections/
+        # is not "reserved" in the generic sense - it is refused for the
+        # opposite reason, naming the correct (plain `promote`) command.
+        res = person.run_promote(self.root, P_PA, into='people/connections')
+        self.assertEqual(res.exit_code, EXIT_FAILURE)
+        self.assertIn('direct', res.messages[0].text)
+        self.assertIn('Ahnentafel', res.messages[0].text)
         self.assertTrue(self.pa_stub.exists())
 
     def test_into_nested_path_refused(self) -> None:

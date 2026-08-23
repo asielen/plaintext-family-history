@@ -822,15 +822,22 @@ def _curated_person_ids(conn: sqlite3.Connection) -> list[str]:
     return [r['id'] for r in rows]
 
 
-_RESERVED_VIEW_FOLDERS = ('stubs', 'connections')
+_RESERVED_VIEW_FOLDERS = ('stubs',)
 
 
 def _reserved_view_folder(profile_p: Path | None) -> str | None:
-    """The reserved non-couple folder a profile sits directly under, else None.
+    """The reserved folder a profile sits directly under, else None.
 
-    Companion views live beside curated profiles in couple folders; people/stubs/
-    and people/connections/ are the reserved non-couple folders (`_couple_folders`
-    excludes both), so a profile parked in either must not get a companion view.
+    Companion views live beside a curated profile wherever it is filed - a
+    couple folder or, since #80, people/connections/ (a flat, non-numbered
+    home for a curated person with no derived Ahnentafel position, SPEC
+    §12.3: their per-person timeline/sources-index/draft-queue work exactly
+    like a couple-folder person's, since those are written beside the
+    profile regardless of which folder that is; only the couple-LEVEL
+    sources-index stays couple-folder-only, since there is no couple or
+    bracket list to hang one on in connections/ - see `_lib.couple_folder_dirs`,
+    which still excludes connections/ for that reason). people/stubs/ is the
+    only folder a companion view still refuses to write beside.
     """
     if profile_p is not None and profile_p.parent.name.lower() in _RESERVED_VIEW_FOLDERS:
         return profile_p.parent.name.lower()
@@ -927,12 +934,12 @@ def _skip_stub_person(
     )
     print(
         f"{pid} ({row['name']}) {reason} - companion views like the {view_name} "
-        f"belong to curated people in their couple folder (SPEC §16), so nothing "
-        f"was written. To generate one, promote the record first - "
-        f"`fha person promote {fmt_id_display(pid)}` does it in one step for a "
-        f"direct-line person (tier, couple-folder filing, research file); "
-        f"otherwise set `tier: curated` and move it out of people/stubs/ or "
-        f"people/connections/ by hand - then re-run.",
+        f"belong to a curated person filed in a couple folder or people/"
+        f"connections/ (SPEC §16), so nothing was written. To generate one, "
+        f"promote the record first - `fha person promote {fmt_id_display(pid)}` "
+        f"does it in one step for a direct-line person, or add `--into "
+        f"connections/` for anyone else (SPEC §12.3); otherwise set `tier: "
+        f"curated` and move it out of people/stubs/ by hand - then re-run.",
         file=sys.stderr,
     )
     return True
