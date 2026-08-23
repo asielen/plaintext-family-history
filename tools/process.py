@@ -893,6 +893,29 @@ def _companion_for_sidecar(sidecar: Path) -> Path | None:
     return candidates[0]
 
 
+def _sidecar_hinted_source_type(sidecar: Path | None) -> str | None:
+    """The `source_type:` hint a stub sidecar carries, or None.
+
+    A best-effort peek: a sidecar that fails to parse returns None here
+    rather than raising, because every call site either has its own explicit
+    `--type` to fall back on or re-reads the sidecar itself downstream (where
+    the real ProcessError surfaces with the full context). Factored out so
+    the CLI's inbox-relocation classification (`_run_process`, #113's
+    back-sibling fix) and `_relocate_from_inbox`'s own internal classification
+    read the SAME hint the SAME way - two independent re-implementations of
+    "peek at source_type:" is exactly how they used to drift (one honoring
+    the hint, the other silently falling back to the raw --type/extension).
+    """
+    if sidecar is None:
+        return None
+    try:
+        sidecar_meta, _ = _read_sidecar(sidecar)
+    except ProcessError:
+        return None  # downstream re-parse will raise the real error
+    hinted = sidecar_meta.get('source_type')
+    return str(hinted) if hinted else None
+
+
 def _relocate_from_inbox(
     archive_root: Path,
     fha_config: dict,
@@ -941,15 +964,8 @@ def _relocate_from_inbox(
     # and the explicit flag outranks the hint. classify_asset owns the rule -
     # including that a stated `photo` never pushes a non-photo file into the
     # photo library.
-    hinted_type = None
-    if sidecar is not None:
-        try:
-            sidecar_meta, _ = _read_sidecar(sidecar)
-            hinted_type = sidecar_meta.get('source_type')
-        except ProcessError:
-            pass  # downstream re-parse will raise the real error
     kind = classify_asset(file_path, fha_config, archive_root,
-                          source_type=source_type or hinted_type)
+                          source_type=source_type or _sidecar_hinted_source_type(sidecar))
     dest_root = (
         resolve_path(_PHOTO_DIR, fha_config, archive_root) if kind == 'photo'
         else resolve_path('documents', fha_config, archive_root)
@@ -4353,9 +4369,20 @@ def _run_process(args: argparse.Namespace) -> int:
         else:
             sidecar_path = _find_sidecar(file_path)
         pre_move_path = file_path
+        # Resolve --type/the sidecar hint to the SAME effective classification
+        # _relocate_from_inbox would derive internally, and pass it explicitly
+        # rather than let the primary and (below) any back-sibling relocation
+        # each re-derive their own answer. Before this, a back sibling's
+        # relocation call had no sidecar to hint from (a back scan carries no
+        # sidecar of its own) and fell back to the raw --type (often None),
+        # so a sidecar-hinted document primary (e.g. `census.jpg` + a stub
+        # saying `source_type: census`) could route to documents/ while its
+        # `-back` sibling, seeing no hint, routed to photos/ instead - two
+        # different roots for one physical item (#113 follow-up).
+        relocate_type = source_type or _sidecar_hinted_source_type(sidecar_path)
         file_path, sidecar_path, relocate_undo = _relocate_from_inbox(
             archive_root, fha_config, file_path, sidecar_path,
-            source_type=source_type, dry_run=dry_run,
+            source_type=relocate_type, dry_run=dry_run,
         )
     except ProcessError as e:
         print(f'ERROR: {e}', file=sys.stderr)
@@ -4430,9 +4457,15 @@ def _run_process(args: argparse.Namespace) -> int:
                 else:
                     back_src = _find_back_sibling(pre_move_path)
                     if back_src is not None:
+                        # Same resolved classification as the primary's own
+                        # relocation just above (relocate_type, not the raw
+                        # --type) - see that call's comment. A back sibling
+                        # carries no sidecar of its own to hint from, so
+                        # without this it silently lost the primary's hint
+                        # and could land in the wrong root (#1 above).
                         back_sibling, _, back_relocate_undo = _relocate_from_inbox(
                             archive_root, fha_config, back_src, None,
-                            source_type=source_type, dry_run=dry_run,
+                            source_type=relocate_type, dry_run=dry_run,
                         )
                     rc = process_document(
                         archive_root, fha_config, file_path,

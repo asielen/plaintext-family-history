@@ -1064,6 +1064,35 @@ class ProcessTestCase(unittest.TestCase):
         files = read_record(record)['meta']['files']
         self.assertEqual(len(files), 1)
 
+    # ── Codex review, PR #145, finding 1 ────────────────────────────────────────
+
+    def test_back_sibling_relocation_honors_sidecar_hinted_type(self) -> None:
+        # Finding #1: the back-sibling relocation must be classified with the
+        # SAME resolved type the primary file's own relocation used -
+        # including a hint pulled from the PRIMARY's sidecar, which the back
+        # sibling has no sidecar of its own to repeat. Before the fix, the
+        # back sibling's relocation call saw no sidecar and no --type, so it
+        # fell back to its photo extension and previewed a move into
+        # photos/ while the primary (thanks to the hint) moved into
+        # documents/ - two different roots for one physical item.
+        (self.archive / 'inbox').mkdir()
+        primary = self.archive / 'inbox' / 'census-01.jpg'
+        primary.write_bytes(b'\xff\xd8\xff')
+        sidecar = self.archive / 'inbox' / 'census-01.notes.md'
+        sidecar.write_text('---\nsource_type: census\n---\n', encoding='utf-8')
+        back = self.archive / 'inbox' / 'census-01-back.jpg'
+        back.write_bytes(b'\xff\xd8\xff')
+
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = self._run([str(primary), '--dry-run'])
+        self.assertEqual(rc, EXIT_CLEAN)
+        text = out.getvalue()
+
+        self.assertIn('census-01.jpg out of inbox/ into documents/', text)
+        self.assertIn('census-01-back.jpg out of inbox/ into documents/', text)
+        self.assertNotIn('census-01-back.jpg out of inbox/ into photos/', text)
+
     # ── Codex review, PR #145, finding 3 ────────────────────────────────────────
 
     def test_find_back_sibling_matches_different_extension_via_directory_scan(self) -> None:
