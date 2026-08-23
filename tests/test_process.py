@@ -12,9 +12,12 @@ import os
 import contextlib
 import io
 import shutil
+import stat
+import subprocess
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -959,6 +962,212 @@ class ProcessTestCase(unittest.TestCase):
         # nothing left flat at the root top
         self.assertEqual([p for p in (self.archive / 'documents').iterdir()
                           if p.is_file()], [])
+
+    # ── #113: a print/copy letter is never read as "back" ────────────────────
+
+    def test_bare_copy_letter_is_never_read_as_back(self) -> None:
+        # The reported bug's exact shape: a trailing letter directly after a
+        # sequence number ('item-04-01400b') names a SEPARATE print of the
+        # same negative - never the back of a print. Only an explicit
+        # -back/_back suffix means that.
+        letter = parse_media_filename('item-04-01400b')
+        self.assertNotEqual(letter.part_kind, 'back')
+        self.assertEqual(letter.variant_id, 'b')
+        self.assertEqual(letter.base_id, 'item-04-01400')
+
+        explicit_back = parse_media_filename('item-04-01400-back')
+        self.assertEqual(explicit_back.part_kind, 'back')
+        self.assertEqual(explicit_back.base_id, 'item-04-01400')
+
+    def test_photo_group_assigns_primary_back_and_copy_roles(self) -> None:
+        # #113's own fixture: a plain primary, its explicit -back, and a
+        # bare-letter second print of the same negative, processed together.
+        # Confirms the role-assignment half of #113 end-to-end (already
+        # correct in _lib's grammar - this locks it against regression).
+        self._install_photo_store()
+        self._install_prompt('one')
+        primary = self.archive / 'photos' / '1880' / 'x-00100.jpg'
+        primary.write_bytes(b'\xff\xd8\xff')
+        back = self.archive / 'photos' / '1880' / 'x-00100-back.jpg'
+        back.write_bytes(b'\xff\xd8\xff')
+        copy_print = self.archive / 'photos' / '1880' / 'x-00100b.jpg'
+        copy_print.write_bytes(b'\xff\xd8\xff')
+
+        rc = self._run([str(primary)])
+        self.assertEqual(rc, EXIT_CLEAN)
+
+        record = next((self.archive / 'sources' / 'photos').glob('*_S-*.md'))
+        files = {Path(f['file']).name: f for f in read_record(record)['meta']['files']}
+        self.assertEqual(len(files), 3)
+        self.assertEqual(files['x-00100.jpg']['role'], 'primary')
+        self.assertEqual(files['x-00100-back.jpg']['role'], 'back')
+        self.assertNotEqual(files['x-00100b.jpg']['role'], 'back')
+        self.assertEqual(files['x-00100b.jpg']['copy'], 'b')
+
+    def test_document_back_sibling_auto_attached_same_folder(self) -> None:
+        # #113: a document's -back scan is pulled in automatically at import
+        # time - unlike a copy-letter print, an explicit -back suffix names
+        # no other physical item, so there is nothing for a human to be
+        # asked about.
+        primary = self.archive / 'documents' / 'census' / 'x-00200.txt'
+        primary.write_text('front text', encoding='utf-8')
+        back = self.archive / 'documents' / 'census' / 'x-00200-back.txt'
+        back.write_text('handwritten caption', encoding='utf-8')
+
+        rc = self._run([str(primary), '--type', 'census'])
+        self.assertEqual(rc, EXIT_CLEAN)
+
+        self.assertFalse(primary.exists())
+        self.assertFalse(back.exists())  # not left on disk unrecorded
+        record = next((self.archive / 'sources' / 'census').glob('*_S-*.md'))
+        files = read_record(record)['meta']['files']
+        self.assertEqual(len(files), 2)
+        self.assertEqual(files[0]['role'], 'primary')
+        self.assertEqual(files[1]['role'], 'back')
+        self.assertEqual(files[1]['original_filename'], 'x-00200-back.txt')
+        attached_back = list((self.archive / 'documents' / 'census').glob('*-back_S-*.txt'))
+        self.assertEqual(len(attached_back), 1)
+
+    def test_document_back_sibling_auto_attached_from_inbox(self) -> None:
+        # Same as above, but both files staged together in inbox/ - the
+        # realistic bulk-migration shape #113 was actually found in.
+        (self.archive / 'inbox').mkdir()
+        primary = self.archive / 'inbox' / 'x-00300.txt'
+        primary.write_text('front text', encoding='utf-8')
+        back = self.archive / 'inbox' / 'x-00300-back.txt'
+        back.write_text('handwritten caption', encoding='utf-8')
+
+        rc = self._run([str(primary), '--type', 'census'])
+        self.assertEqual(rc, EXIT_CLEAN)
+
+        self.assertEqual(list((self.archive / 'inbox').iterdir()), [])
+        record = next((self.archive / 'sources' / 'census').glob('*_S-*.md'))
+        files = read_record(record)['meta']['files']
+        self.assertEqual(len(files), 2)
+        self.assertEqual(files[1]['role'], 'back')
+        self.assertEqual(files[1]['original_filename'], 'x-00300-back.txt')
+
+    def test_document_copy_letter_primary_does_not_pull_back(self) -> None:
+        # Scope guard: only a PLAIN scan auto-pulls a back sibling - a
+        # copy-letter print processed on its own must not reach for a back
+        # scan that conceptually belongs with the group's plain primary.
+        copy_print = self.archive / 'documents' / 'census' / 'x-00400b.txt'
+        copy_print.write_text('second print', encoding='utf-8')
+        back = self.archive / 'documents' / 'census' / 'x-00400-back.txt'
+        back.write_text('caption', encoding='utf-8')
+
+        rc = self._run([str(copy_print), '--type', 'census'])
+        self.assertEqual(rc, EXIT_CLEAN)
+
+        self.assertTrue(back.exists())  # left untouched, not auto-pulled
+        record = next((self.archive / 'sources' / 'census').glob('*_S-*.md'))
+        files = read_record(record)['meta']['files']
+        self.assertEqual(len(files), 1)
+
+    # ── #111: --more attaches straight from the inbox ─────────────────────────
+
+    def test_more_attaches_document_straight_from_inbox(self) -> None:
+        # Issue #111's own repro, document form: stage front + back together
+        # in inbox/, process the front, then --more the back with no manual
+        # move in between.
+        (self.archive / 'inbox').mkdir()
+        front = self.archive / 'inbox' / 'inbox-front.txt'
+        front.write_text('front', encoding='utf-8')
+        back = self.archive / 'inbox' / 'inbox-back.txt'
+        back.write_text('back', encoding='utf-8')
+
+        self.assertEqual(self._run([str(front), '--type', 'census']), EXIT_CLEAN)
+        renamed = next((self.archive / 'documents' / 'census').glob('*_S-*.txt'))
+        sid = renamed.stem.split('_')[-1]
+
+        rc = self._run([str(renamed), '--more', str(back), 'back'])
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertFalse(back.exists())  # moved out of inbox and renamed
+        self.assertEqual(list((self.archive / 'inbox').iterdir()), [])
+        attached = list((self.archive / 'documents' / 'census').glob(f'*back*_{sid}.txt'))
+        self.assertEqual(len(attached), 1)
+        record = next((self.archive / 'sources' / 'census').glob('*_S-*.md'))
+        files = read_record(record)['meta']['files']
+        self.assertEqual(len(files), 2)
+        self.assertEqual(files[1]['role'], 'back')
+
+    def test_more_attaches_photo_straight_from_inbox(self) -> None:
+        # Issue #111's own repro, photo form.
+        store = self._install_photo_store()
+        (self.archive / 'inbox').mkdir()
+        front = self.archive / 'inbox' / 'inbox-front.jpg'
+        front.write_bytes(b'\xff\xd8\xff')
+        back = self.archive / 'inbox' / 'inbox-back.jpg'
+        back.write_bytes(b'\xff\xd8\xff')
+
+        self.assertEqual(self._run([str(front)]), EXIT_CLEAN)
+        filed_front = self.archive / 'photos' / 'inbox-front.jpg'
+        self.assertTrue(filed_front.exists())
+        record = next((self.archive / 'sources' / 'photos').glob('*_S-*.md'))
+
+        rc = self._run([str(filed_front), '--more', str(back), 'back'])
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertEqual(list((self.archive / 'inbox').iterdir()), [])
+        filed_back = self.archive / 'photos' / 'inbox-back.jpg'
+        self.assertTrue(filed_back.exists())
+        self.assertEqual(len(store.read(filed_back)), 1)
+        rec = read_record(record)
+        self.assertEqual(len(rec['meta']['files']), 2)
+        self.assertEqual(rec['meta']['files'][1]['role'], 'back')
+
+    def test_more_from_inbox_rolled_back_on_failed_attach(self) -> None:
+        # A --more file relocated out of inbox must move back there if the
+        # attach itself then fails, not be left stranded outside it.
+        page1 = self.archive / 'documents' / 'census' / 'unreadable1.txt'
+        page1.write_text('p1', encoding='utf-8')
+        self.assertEqual(self._run([str(page1), '--type', 'census']), EXIT_CLEAN)
+        renamed1 = next((self.archive / 'documents' / 'census').glob('*_S-*.txt'))
+        record = next((self.archive / 'sources' / 'census').glob('*_S-*.md'))
+        record.unlink()
+        record.mkdir()  # read_text() on a directory raises OSError
+
+        (self.archive / 'inbox').mkdir()
+        page2 = self.archive / 'inbox' / 'unreadable2.txt'
+        page2.write_text('p2', encoding='utf-8')
+        rc = self._run([str(renamed1), '--more', str(page2), 'page-2'])
+        self.assertEqual(rc, EXIT_FAILURE)
+        self.assertTrue(page2.exists())  # relocation undone, back in inbox/
+        self.assertEqual(list((self.archive / 'documents' / 'census').glob('*page-2*')), [])
+
+    # ── #108: --more accepts a file already matching this source's S-id ──────
+
+    def test_more_accepts_file_already_matching_this_sources_sid(self) -> None:
+        page1 = self.archive / 'documents' / 'census' / 'convention1.txt'
+        page1.write_text('p1', encoding='utf-8')
+        self.assertEqual(self._run([str(page1), '--type', 'census']), EXIT_CLEAN)
+        renamed1 = next((self.archive / 'documents' / 'census').glob('*_S-*.txt'))
+        sid = renamed1.stem.split('_')[-1]
+
+        # Named on the archive's own recommended companion convention BEFORE
+        # being attached - exactly what a transcript tool would produce.
+        pre_named = self.archive / 'documents' / 'census' / f'convention1-transcript_{sid}.md'
+        pre_named.write_text('transcript text', encoding='utf-8')
+
+        rc = self._run([str(renamed1), '--more', str(pre_named), 'transcript'])
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertTrue(pre_named.exists())  # no rename
+        record = next((self.archive / 'sources' / 'census').glob('*_S-*.md'))
+        files = read_record(record)['meta']['files']
+        self.assertEqual(len(files), 2)
+        self.assertEqual(files[1]['role'], 'transcript')
+        self.assertTrue(files[1]['file'].endswith(f'convention1-transcript_{sid}.md'))
+
+    def test_more_still_refuses_a_mismatched_sid(self) -> None:
+        page1 = self.archive / 'documents' / 'census' / 'convention2.txt'
+        page1.write_text('p1', encoding='utf-8')
+        self.assertEqual(self._run([str(page1), '--type', 'census']), EXIT_CLEAN)
+        renamed1 = next((self.archive / 'documents' / 'census').glob('*_S-*.txt'))
+
+        other = self.archive / 'documents' / 'census' / 'other-transcript_S-zzzzzzzzzz.md'
+        other.write_text('x', encoding='utf-8')
+        rc = self._run([str(renamed1), '--more', str(other), 'transcript'])
+        self.assertEqual(rc, EXIT_ERRORS)
+        self.assertTrue(other.exists())  # untouched, not renamed
 
     # ── classification + slug units ──────────────────────────────────────────
 
@@ -2489,6 +2698,107 @@ class TypeFlagRoutingTests(unittest.TestCase):
         self.assertTrue((self.archive / 'photos' / 'front.jpg').is_file())
         self.assertEqual(
             len(list((self.archive / 'sources' / 'photos').glob('*_S-*.md'))), 1)
+
+
+class ExiftoolReadOnlyRetryTests(unittest.TestCase):
+    """#110: a read-only inbox file's embed failure must not block a retry
+    with a misleading 'temp file already exists' error once the real cause
+    (read-only) is fixed.
+
+    Exercises `_run_exiftool_embed_source` directly (not through the
+    FakePhotoStore every other photo test in this file uses) with a mocked
+    `subprocess.run`, so the read-only-clear / stray-tmp-cleanup logic these
+    tests pin actually runs - the fake seam other tests install replaces
+    that whole function and would test nothing here.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self.photo = self.tmp / 'locked.jpg'
+        self.photo.write_bytes(b'\xff\xd8\xff')
+        self.backup = process.OriginalBackup(self.tmp, {})
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _tmp_file(self) -> Path:
+        return self.photo.with_name(self.photo.name + '_exiftool_tmp')
+
+    def test_embed_clears_read_only_before_writing(self) -> None:
+        self.photo.chmod(stat.S_IREAD)
+        self.assertFalse(os.access(self.photo, os.W_OK))
+        with unittest.mock.patch.object(process.subprocess, 'run') as run:
+            run.return_value = subprocess.CompletedProcess([], 0, stdout='', stderr='')
+            err = process._run_exiftool_embed_source(self.photo, 'S-aaaaaaaaaa', backup=self.backup)
+        self.assertIsNone(err)
+        self.assertTrue(os.access(self.photo, os.W_OK))
+
+    def test_stray_tmp_from_an_earlier_failed_run_is_cleared_before_retry(self) -> None:
+        # Simulates exactly the issue's own repro sequence: attempt 1 already
+        # failed and left its temp file behind; nobody deleted it by hand.
+        self._tmp_file().write_bytes(b'stale from a previous attempt')
+        with unittest.mock.patch.object(process.subprocess, 'run') as run:
+            run.return_value = subprocess.CompletedProcess([], 0, stdout='', stderr='')
+            err = process._run_exiftool_embed_source(self.photo, 'S-aaaaaaaaaa', backup=self.backup)
+        self.assertIsNone(err)
+        self.assertFalse(self._tmp_file().exists())
+
+    def test_a_failed_attempt_cleans_up_its_own_stray_tmp(self) -> None:
+        def fake_run(cmd, **kwargs):
+            # exiftool's real behaviour: the temp file is created before the
+            # write that then fails on a read-only destination.
+            self._tmp_file().write_bytes(b'partial write')
+            return subprocess.CompletedProcess(
+                cmd, 1, stdout='', stderr=f'Error opening {self.photo} for writing')
+
+        with unittest.mock.patch.object(process.subprocess, 'run', side_effect=fake_run):
+            err = process._run_exiftool_embed_source(self.photo, 'S-aaaaaaaaaa', backup=self.backup)
+        self.assertIsNotNone(err)
+        self.assertFalse(self._tmp_file().exists())
+
+    def test_retry_after_fixing_read_only_succeeds_with_no_leftover_tmp(self) -> None:
+        # The full round-trip the issue's own test asks for: attempt 1 fails
+        # (read-only + exiftool's temp file left behind), the read-only bit
+        # is fixed by hand, attempt 2 must succeed with no manual tmp cleanup.
+        self.photo.chmod(stat.S_IREAD)
+        calls = {'n': 0}
+
+        def fake_run(cmd, **kwargs):
+            calls['n'] += 1
+            if calls['n'] == 1:
+                self._tmp_file().write_bytes(b'partial write')
+                return subprocess.CompletedProcess(
+                    cmd, 1, stdout='', stderr=f'Error opening {self.photo} for writing')
+            if self._tmp_file().exists():
+                return subprocess.CompletedProcess(
+                    cmd, 1, stdout='',
+                    stderr=f'Error: Temporary file already exists: {self._tmp_file()}')
+            return subprocess.CompletedProcess(cmd, 0, stdout='', stderr='')
+
+        with unittest.mock.patch.object(process.subprocess, 'run', side_effect=fake_run):
+            first = process._run_exiftool_embed_source(self.photo, 'S-aaaaaaaaaa', backup=self.backup)
+            self.assertIsNotNone(first)
+            # Fix the real cause by hand, exactly as the issue's own
+            # reproduction does - no manual tmp-file deletion.
+            self.photo.chmod(stat.S_IWRITE)
+            second = process._run_exiftool_embed_source(self.photo, 'S-aaaaaaaaaa', backup=self.backup)
+        self.assertIsNone(second)
+        self.assertEqual(calls['n'], 2)
+
+    def test_tmp_exists_error_names_the_real_fix_when_cleanup_cannot_run(self) -> None:
+        # Defense in depth for the rare case the stray file itself cannot be
+        # deleted (e.g. locked by another process): the message that reaches
+        # the user must name the real fix, not just repeat exiftool's own
+        # unrelated-sounding text.
+        raw = f'Error: Temporary file already exists: {self.photo}_exiftool_tmp'
+        rewritten = process._format_exiftool_tmp_error(raw, self.photo)
+        self.assertIn('previous failed attempt', rewritten)
+        self.assertIn(f'{self.photo}_exiftool_tmp', rewritten)
+
+    def test_ordinary_stderr_is_passed_through_unchanged(self) -> None:
+        raw = 'Error: some unrelated exiftool failure'
+        self.assertEqual(process._format_exiftool_tmp_error(raw, self.photo), raw)
 
 
 if __name__ == '__main__':
