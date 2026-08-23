@@ -4966,11 +4966,14 @@ def read_places_registry(archive_root: str | Path) -> tuple[list[dict], str | No
 
     Returns `(rows, error)`. Best-effort and read-only, the same posture
     claim.py's own `_place_known_in_index` takes toward the SQLite index -
-    but a missing file and a MALFORMED one are no longer the same outcome
-    (Codex review, PR #150): a fresh archive's not-yet-created
-    `places.yaml` is a normal empty registry (`error` stays `None`), while a
-    file that EXISTS but cannot be read as one - unreadable, unparseable
-    YAML, or a top level that isn't a list - is a distinguishable failure
+    but a missing/empty file and a MALFORMED one are no longer the same
+    outcome (Codex review, PR #150): a fresh archive's not-yet-created
+    `places.yaml`, AND the comment-only seed file `fha install` actually
+    ships (`archive-template/places/places.yaml` - all comments, so
+    `yaml.safe_load` returns `None`), are both a normal empty registry
+    (`error` stays `None`), while a file that EXISTS and parses to
+    something other than that - unreadable, unparseable YAML, or a
+    non-`None` top level that isn't a list - is a distinguishable failure
     (`rows` is `[]`, `error` names what went wrong in plain language). The
     caller (`match_place_text_to_registry`, issue #79 point 3) forwards
     `error` on so `claim.py`'s `_resolve_place_text_for_write` can warn with
@@ -4998,6 +5001,17 @@ def read_places_registry(archive_root: str | Path) -> tuple[list[dict], str | No
         data = yaml.safe_load(text)
     except yaml.YAMLError as e:
         return [], f'places/places.yaml has a YAML error: {e}'
+    if data is None:
+        # A comment-only (or otherwise all-whitespace) file parses to None,
+        # not []/a list - and that is exactly the shipped seed state
+        # (archive-template/places/places.yaml, SPEC §15's "empty to start"
+        # registry): every freshly-installed archive starts with a file
+        # that is nothing but comments until its first place is registered.
+        # Codex review, PR #150 follow-up: this must degrade to an ordinary
+        # empty registry, same as a missing file, BEFORE the non-list
+        # rejection below - otherwise a brand-new archive's totally correct
+        # seed file gets misclassified as malformed on every place-text edit.
+        return [], None
     if not isinstance(data, list):
         return [], 'places/places.yaml is not a list at the top level (see SPEC §15 for the registry shape)'
     return [row for row in data if isinstance(row, dict) and row.get('id')], None

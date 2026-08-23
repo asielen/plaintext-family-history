@@ -444,7 +444,7 @@ def _place_match_note(cid_display: str, match: dict, *, dry_run: bool = False) -
     return None
 
 
-def _place_registry_error_note(place_text: str, error: str) -> str:
+def _place_registry_error_note(place_text: str, error: str, *, dry_run: bool = False) -> str:
     """The human-facing warning for a `_resolve_place_text_for_write` result
     whose `registry_error` is set (Codex review, PR #150) - `places.yaml`
     exists but could not be parsed, so the write-time lookup never ran at
@@ -452,12 +452,22 @@ def _place_registry_error_note(place_text: str, error: str) -> str:
     successfully with `place_text` left unlinked (same as a genuine miss),
     but the human deserves an honest reason instead of a silent no-op that
     looks identical to "nothing in the registry matched".
+
+    `dry_run` (Codex review, PR #150 follow-up) exists for the same reason
+    `_place_match_note` takes it: the caller only ever emits this note AFTER
+    the outcome is known - inside the `--dry-run` preview branch (nothing
+    written) or after a live write actually SUCCEEDED - never up front where
+    a genuine write failure would surface the false-success wording in the
+    same breath as the write error. `dry_run=True` phrases the trailing
+    sentence as a preview ("would still be written"); the live wording
+    ("was still written") is only ever reached once the write has happened.
     """
+    outcome = 'would still be written' if dry_run else 'was still written'
     return (
         f'place_text {place_text!r} could not be checked against the place registry - '
         f'places/places.yaml has a problem: {error}. Run `fha lint` to find and fix it; '
-        "until then, place_text won't auto-resolve to a registered place. The claim "
-        'was still written, with place_text left unlinked.')
+        f"until then, place_text won't auto-resolve to a registered place. The claim "
+        f'{outcome}, with place_text left unlinked.')
 
 
 def _validate_field_args(
@@ -1289,9 +1299,15 @@ def run_claim(
     # visible in the summary line above, so they are not repeated here.
     echo_lines = _echo_field_lines(value=value, place_text=place_text, anchor=anchor, notes=notes)
 
+    # The registry-error warning names the write's OUTCOME ("was"/"would
+    # still be written"), so its result.add() is deferred to the branch
+    # that knows the outcome (Codex review, PR #150 follow-up) - built here,
+    # emitted below, never up front where a live write that goes on to FAIL
+    # would show the false-success wording in the same breath as the error.
+    registry_error_note = None
     if place_match is not None:
         if place_match.get('registry_error'):
-            result.add('warning', _place_registry_error_note(place_text, place_match['registry_error']))
+            registry_error_note = place_match['registry_error']
         note = _place_match_note(fmt_id_display(cid), place_match, dry_run=dry_run)
         if note is not None:
             result.add('info', note)
@@ -1306,6 +1322,8 @@ def run_claim(
         result.add('info', f'[dry-run] Would set {summary}')
         for dline in diff:
             result.add('info', dline)
+        if registry_error_note is not None:
+            result.add('warning', _place_registry_error_note(place_text, registry_error_note, dry_run=True))
         result.add('info', _DRY_RUN_TRAILER)
         return result
 
@@ -1327,6 +1345,8 @@ def run_claim(
     result.data['status'] = 'ok'
     result.note_changed(record_path)
     result.add('info', f'Set {summary}', path=record_path)
+    if registry_error_note is not None:
+        result.add('warning', _place_registry_error_note(place_text, registry_error_note, dry_run=False))
     for line in echo_lines:
         result.add('info', line)
     result.add('info', _INDEX_REMINDER, next_step='fha index')
@@ -1882,9 +1902,15 @@ def run_claim_new(
         result.add('warning',
                    f'{fmt_id_display(cid)} has no persons: yet - `fha lint` will flag it until '
                    f'you link one: `fha claim {fmt_id_display(cid)} --persons P-id[,P-id...]`.')
+    # The registry-error warning names the write's OUTCOME ("was"/"would
+    # still be written"), so its result.add() is deferred to the branch
+    # that knows the outcome (Codex review, PR #150 follow-up) - built here,
+    # emitted below, never up front where a live write that goes on to FAIL
+    # would show the false-success wording in the same breath as the error.
+    registry_error_note = None
     if place_match is not None:
         if place_match.get('registry_error'):
-            result.add('warning', _place_registry_error_note(place_text, place_match['registry_error']))
+            registry_error_note = place_match['registry_error']
         note = _place_match_note(fmt_id_display(cid), place_match, dry_run=dry_run)
         if note is not None:
             result.add('info', note)
@@ -1915,6 +1941,8 @@ def run_claim_new(
             fromfile=f'{source_path} (before)', tofile=f'{source_path} (after)', lineterm='',
         ):
             result.add('info', dline)
+        if registry_error_note is not None:
+            result.add('warning', _place_registry_error_note(place_text, registry_error_note, dry_run=True))
         result.add('info', '[dry-run] No file written. Re-run without --dry-run to apply.')
         return result
 
@@ -1926,6 +1954,8 @@ def run_claim_new(
         return _fail(result, 'failed', f'cannot write {source_path}: {e}',
                      next_step='Check the file is not open elsewhere and the folder is writable, then retry.')
 
+    if registry_error_note is not None:
+        result.add('warning', _place_registry_error_note(place_text, registry_error_note, dry_run=False))
     result.data['status'] = 'ok'
     result.note_changed(source_path)
     result.add('info', f'Minted {summary}', path=source_path)

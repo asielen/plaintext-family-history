@@ -188,6 +188,47 @@ class LintForgivingDateTests(unittest.TestCase):
         self.assertTrue(e004)
 
 
+class LintPlacesRegistryShapeTests(unittest.TestCase):
+    """places/places.yaml's top level must be a list (SPEC §15). Codex review,
+    PR #150 follow-up: a valid-YAML-but-wrong-shape file (e.g. `not_a_list:
+    true`) used to be silently coerced to zero places with no finding at
+    all - `fha lint` said "no issues found" on exactly the archive state
+    `fha claim`'s write-time place lookup (`_lib.read_places_registry`) was
+    separately warning about as malformed, sending the human to a command
+    that told them nothing was wrong."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        (self.root / 'places').mkdir(parents=True)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _lint(self, places_yaml_text: str) -> list:
+        (self.root / 'places' / 'places.yaml').write_text(places_yaml_text, encoding='utf-8')
+        findings, _ = lint._run_lint_core(self.root, {})
+        return findings
+
+    def test_non_list_top_level_is_an_e010_finding(self) -> None:
+        findings = self._lint('not_a_list: true\n')
+        e010 = [f for f in findings if f.code == 'E010' and 'places.yaml' in f.message]
+        self.assertTrue(e010, [str(f) for f in findings])
+        self.assertIn('not a list', e010[0].message)
+
+    def test_comment_only_seed_file_is_not_a_finding(self) -> None:
+        # The shipped archive-template seed (all comments, so
+        # yaml.safe_load returns None) is a normal empty registry, not a
+        # malformed one - must not raise an E010.
+        seed_path = ROOT / 'archive-template' / 'places' / 'places.yaml'
+        findings = self._lint(seed_path.read_text(encoding='utf-8'))
+        self.assertFalse([f for f in findings if 'places.yaml' in f.message])
+
+    def test_well_formed_list_is_not_a_finding(self) -> None:
+        findings = self._lint('- id: L-aaaaaaaaaa\n  name: Fairview\n')
+        self.assertFalse([f for f in findings if 'places.yaml' in f.message])
+
+
 class LintControlledVocabularyTests(unittest.TestCase):
     """E010 confidence presence + E019 status/confidence value checks (SPEC §8.1/§8.5),
     and the SPEC §9 MERGED-INTO tombstone filename grammar."""

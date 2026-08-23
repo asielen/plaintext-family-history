@@ -1200,6 +1200,56 @@ class RunClaimNewPlaceResolutionTests(unittest.TestCase):
         warnings = [m.text for m in result.messages if m.level == 'warning']
         self.assertTrue(any('places.yaml has a problem' in w for w in warnings))
         self.assertTrue(any('fha lint' in w for w in warnings))
+        # The write actually succeeded here, so the live wording ("was") is
+        # correct in this case - see the two tests below for the cases
+        # where it must NOT say this.
+        self.assertTrue(any('was still written' in w for w in warnings))
+
+    def test_malformed_registry_dry_run_says_would_not_was(self) -> None:
+        # Codex review, PR #150 follow-up: a --dry-run preview used to say
+        # "The claim was still written" - a false claim, since --dry-run
+        # writes nothing - in the very same breath the dry-run trailer said
+        # "No file written". The registry-error warning must be dry-run-
+        # aware exactly like the place-match note already is.
+        (self.root / 'places' / 'places.yaml').write_text(
+            'not_a_list: true\n', encoding='utf-8')
+        before = self.source.read_text(encoding='utf-8')
+        result = claim.run_claim_new(
+            self.root, source_id='S-1111111111', claim_type='residence',
+            value='Lived there', persons=['P-aaaaaaaaaa'],
+            place_text='Topeka, Kansas', dry_run=True)
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertEqual(self.source.read_text(encoding='utf-8'), before)
+        warnings = [m.text for m in result.messages if m.level == 'warning']
+        self.assertTrue(any('would still be written' in w for w in warnings), warnings)
+        self.assertFalse(any('was still written' in w for w in warnings), warnings)
+
+    def test_malformed_registry_warning_is_silent_on_a_genuine_write_failure(self) -> None:
+        # Codex review, PR #150 follow-up: a genuine live write failure used
+        # to report the false-success "was still written" wording before the
+        # write error even surfaced - the warning was added to the result
+        # before the write was even attempted. Once the write actually
+        # fails, the honest thing is silence on that point (the write-error
+        # message already says nothing was saved), not a reassurance that
+        # never came true.
+        (self.root / 'places' / 'places.yaml').write_text(
+            'not_a_list: true\n', encoding='utf-8')
+        orig = claim.write_text_exact_atomic
+
+        def failing(path, text):
+            raise OSError('simulated disk full')
+        claim.write_text_exact_atomic = failing
+        try:
+            result = claim.run_claim_new(
+                self.root, source_id='S-1111111111', claim_type='residence',
+                value='Lived there', persons=['P-aaaaaaaaaa'],
+                place_text='Topeka, Kansas')
+        finally:
+            claim.write_text_exact_atomic = orig
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        texts = [m.text for m in result.messages]
+        self.assertFalse(any('still written' in t for t in texts), texts)
+        self.assertTrue(any('cannot write' in t for t in texts), texts)
 
 
 # ── fha claim new: CLI routing (fha.main and the standalone parser) ─────────────
@@ -1654,6 +1704,49 @@ class RunClaimFieldEditPlaceResolutionTests(unittest.TestCase):
         warnings = [m.text for m in result.messages if m.level == 'warning']
         self.assertTrue(any('places.yaml has a problem' in w for w in warnings))
         self.assertTrue(any('fha lint' in w for w in warnings))
+        # The write actually succeeded here, so the live wording ("was") is
+        # correct in this case - see the two tests below for the cases
+        # where it must NOT say this.
+        self.assertTrue(any('was still written' in w for w in warnings))
+
+    def test_malformed_registry_dry_run_says_would_not_was(self) -> None:
+        # Codex review, PR #150 follow-up: a --dry-run preview used to say
+        # "The claim was still written" - false, since --dry-run writes
+        # nothing - in the very same breath the dry-run trailer said "No
+        # file written". Dry-run-aware exactly like the place-match note.
+        (self.root / 'places' / 'places.yaml').write_text(
+            'not_a_list: true\n', encoding='utf-8')
+        before = self.source.read_text(encoding='utf-8')
+        result = claim.run_claim(
+            self.root, claim_id='C-aa11bb22cc', place_text='Topeka, Kansas', dry_run=True)
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertEqual(self.source.read_text(encoding='utf-8'), before)
+        warnings = [m.text for m in result.messages if m.level == 'warning']
+        self.assertTrue(any('would still be written' in w for w in warnings), warnings)
+        self.assertFalse(any('was still written' in w for w in warnings), warnings)
+
+    def test_malformed_registry_warning_is_silent_on_a_genuine_write_failure(self) -> None:
+        # Codex review, PR #150 follow-up: a genuine live write failure used
+        # to report the false-success "was still written" wording before the
+        # write error even surfaced. Once the write actually fails, silence
+        # on that point is the honest thing - the write-error message
+        # already says nothing was saved.
+        (self.root / 'places' / 'places.yaml').write_text(
+            'not_a_list: true\n', encoding='utf-8')
+        orig = claim.write_text_exact_atomic
+
+        def failing(path, text):
+            raise OSError('simulated disk full')
+        claim.write_text_exact_atomic = failing
+        try:
+            result = claim.run_claim(
+                self.root, claim_id='C-aa11bb22cc', place_text='Topeka, Kansas')
+        finally:
+            claim.write_text_exact_atomic = orig
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        texts = [m.text for m in result.messages]
+        self.assertFalse(any('still written' in t for t in texts), texts)
+        self.assertTrue(any('cannot write' in t for t in texts), texts)
 
     def test_near_match_is_not_auto_attached_on_edit_either(self) -> None:
         result = claim.run_claim(

@@ -34,6 +34,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import yaml
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
 
@@ -79,6 +81,26 @@ class ReadPlacesRegistryTests(unittest.TestCase):
         rows, error = read_places_registry(self.root)
         self.assertEqual(rows, [])
         self.assertIsNotNone(error)
+
+    def test_comment_only_seed_file_is_a_valid_empty_registry_not_malformed(self) -> None:
+        # Codex review, PR #150 follow-up: archive-template/places/places.yaml
+        # - the file every freshly-installed archive starts with - is ALL
+        # comments (SPEC §15's seed state). `yaml.safe_load` on comment-only
+        # text returns None, not [] or a list, so the non-list rejection
+        # above used to misclassify this shipped, valid, empty-to-start seed
+        # file as a malformed registry - `fha claim new --place-text` on a
+        # brand-new archive, before its first place is ever registered,
+        # would then emit a bogus "malformed registry" repair warning on
+        # totally correct data. `data is None` must degrade to an ordinary
+        # empty registry (error stays None), the same as a missing file,
+        # BEFORE the non-list check runs.
+        seed_path = ROOT / 'archive-template' / 'places' / 'places.yaml'
+        seed_text = seed_path.read_text(encoding='utf-8')
+        self.assertIsNone(yaml.safe_load(seed_text))   # pin the assumption this guards
+        _write_registry(self.root, seed_text)
+        rows, error = read_places_registry(self.root)
+        self.assertEqual(rows, [])
+        self.assertIsNone(error)
 
     def test_stray_non_mapping_row_is_skipped_not_fatal(self) -> None:
         _write_registry(
