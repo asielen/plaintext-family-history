@@ -1401,13 +1401,14 @@ def _role_note(role: str | None, copy: str | None, date_edtf: str | None = None)
     """Plain-language annotation for one source-page file entry: its `files:`
     entry's optional per-file `date:` (SPEC §14, #123) first, then its
     `role:`, then - when set - its `copy:` letter (SPEC §14's `copy: b`/`c`/`d`
-    same-day/same-bundle variant marker - #123 also fixed the indexer landing
+    same-day/same-item variant marker - #123 also fixed the indexer landing
     that value as NULL instead of reading it). Renders '26 February 1916 ·
-    role: clipping · copy: b', or just 'role: clipping' when there is
+    role: entry · copy: b', or just 'role: entry' when there is
     neither, so a source with a single, undated file per role keeps today's
-    shorter label and only a bundle of look-alike variants (front/back copy
-    A, front/back copy B, four same-role newspaper clippings mailed months
-    apart, …) gains the extra clauses that tell its files apart.
+    shorter label and only a run of look-alike variants (front/back copy
+    A, front/back copy B, several same-role entries of one household ledger
+    or pages of a multi-sitting letter, …) gains the extra clauses that tell
+    its files apart.
 
     `date_edtf` is rendered through `photoindex._humanize_edtf` - the
     existing EDTF -> plain-English helper (decades, `~`/`?` hedges, month/day

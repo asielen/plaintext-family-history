@@ -1306,24 +1306,24 @@ class SourceRestrictedTests(unittest.TestCase):
 _COPY_SID = 'S-8c8c8c8c8c'
 _COPY_SOURCE = '''---
 id: {sid}
-title: Newspaper clippings, several dates
-source_type: newspaper
+title: Household ledger, several entries
+source_type: ledger
 files:
-  - file: documents/newspaper/clipping-a_{sid}.pdf
-    role: clipping
-  - file: documents/newspaper/clipping-b_{sid}.pdf
-    role: clipping
+  - file: documents/ledger/entry-a_{sid}.pdf
+    role: entry
+  - file: documents/ledger/entry-b_{sid}.pdf
+    role: entry
     copy: b
 ---
 
 ## Notes
-Four clippings spanning months, one bundle (#123).
+One ledger, entries written months apart (#123).
 '''
 
 
 class SourceFilesCopyColumnTests(unittest.TestCase):
     """A `files:` entry may already set `copy: b`/`c`/`d` to distinguish
-    same-day (or, per #123, same-bundle) file variants - the claim `asset:
+    same-day (or, per #123, same-item) file variants - the claim `asset:
     b-back` form (SPEC §8.4) pins a claim to exactly this role/copy pair, and
     the `source_files.copy` column (TOOLING §2) exists to carry it into the
     index. The file-inventory INSERT hard-coded that column to NULL instead
@@ -1338,7 +1338,7 @@ class SourceFilesCopyColumnTests(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.root = Path(self._tmp.name)
         _write(
-            self.root / 'sources' / 'newspaper' / f'clippings_{_COPY_SID.lower()}.md',
+            self.root / 'sources' / 'ledger' / f'ledger_{_COPY_SID.lower()}.md',
             _COPY_SOURCE.format(sid=_COPY_SID),
         )
 
@@ -1358,10 +1358,10 @@ class SourceFilesCopyColumnTests(unittest.TestCase):
         index.build_index(self.root, {})
         got = self._copy_column()
         self.assertEqual(
-            got[f'documents/newspaper/clipping-b_{_COPY_SID}.pdf'], 'b')
+            got[f'documents/ledger/entry-b_{_COPY_SID}.pdf'], 'b')
         # A file with no `copy:` line must stay NULL, not inherit its sibling's.
         self.assertIsNone(
-            got[f'documents/newspaper/clipping-a_{_COPY_SID}.pdf'])
+            got[f'documents/ledger/entry-a_{_COPY_SID}.pdf'])
 
     def test_upsert_matches_full_build(self) -> None:
         index.build_index(self.root, {})
@@ -1374,46 +1374,47 @@ class SourceFilesCopyColumnTests(unittest.TestCase):
 _DATE_SID = 'S-9d9d9d9d9d'
 _DATE_SOURCE = '''---
 id: {sid}
-title: Newspaper clippings, several dates
-source_type: newspaper
+title: Household ledger, several entries
+source_type: ledger
 source_date: 1916-02/1916-06
 files:
-  - file: documents/newspaper/clipping-a_{sid}.pdf
-    role: clipping
+  - file: documents/ledger/entry-a_{sid}.pdf
+    role: entry
     date: 1916-02-26
-  - file: documents/newspaper/clipping-b_{sid}.pdf
-    role: clipping
+  - file: documents/ledger/entry-b_{sid}.pdf
+    role: entry
     copy: b
     date: 1916-06-03
-  - file: documents/newspaper/clipping-c_{sid}.pdf
-    role: clipping
+  - file: documents/ledger/entry-c_{sid}.pdf
+    role: entry
 ---
 
 ## Notes
-Three clippings about the same event, mailed months apart (#123).
+One ledger, entries spanning months (#123).
 '''
 
 
 class SourceFilesDateColumnTests(unittest.TestCase):
     """SPEC §14 (#123): a `files:` entry may carry an optional per-file
     `date:` (EDTF) distinct from the source's own `source_date:` - for a
-    source that legitimately bundles files from different dates (several
-    newspaper clippings about one event, mailed months apart). TOOLING §2
-    added a matching `source_files.date_edtf` column, but until this fix
-    `_index_source`'s file-inventory INSERT never read `f.get('date')` off
-    the frontmatter entry at all, so the column stayed permanently NULL no
-    matter what a record wrote - the same shape of bug PR #143 fixed for
-    `copy:`, one field over. Checked in both the full rebuild and the
-    incremental upsert (both flow through `_index_source` and must agree,
-    TOOLING §2), and stored RAW/unvalidated, the same discipline
-    `claims.date_edtf` already uses (index.py's claim INSERT: `str(claim.get
-    ('date', ''))`, no EDTF parsing at index time)."""
+    source whose files are still facets of one piece of evidence (SPEC §7)
+    but were not all created on the same day (a household ledger whose
+    entries span months; a multi-page letter written across several
+    sittings). TOOLING §2 added a matching `source_files.date_edtf` column,
+    but until this fix `_index_source`'s file-inventory INSERT never read
+    `f.get('date')` off the frontmatter entry at all, so the column stayed
+    permanently NULL no matter what a record wrote - the same shape of bug
+    PR #143 fixed for `copy:`, one field over. Checked in both the full
+    rebuild and the incremental upsert (both flow through `_index_source`
+    and must agree, TOOLING §2), and stored RAW/unvalidated, the same
+    discipline `claims.date_edtf` already uses (index.py's claim INSERT:
+    `str(claim.get('date', ''))`, no EDTF parsing at index time)."""
 
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
         self.root = Path(self._tmp.name)
         _write(
-            self.root / 'sources' / 'newspaper' / f'clippings_{_DATE_SID.lower()}.md',
+            self.root / 'sources' / 'ledger' / f'ledger_{_DATE_SID.lower()}.md',
             _DATE_SOURCE.format(sid=_DATE_SID),
         )
 
@@ -1433,13 +1434,13 @@ class SourceFilesDateColumnTests(unittest.TestCase):
         index.build_index(self.root, {})
         got = self._date_column()
         self.assertEqual(
-            got[f'documents/newspaper/clipping-a_{_DATE_SID}.pdf'], '1916-02-26')
+            got[f'documents/ledger/entry-a_{_DATE_SID}.pdf'], '1916-02-26')
         self.assertEqual(
-            got[f'documents/newspaper/clipping-b_{_DATE_SID}.pdf'], '1916-06-03')
+            got[f'documents/ledger/entry-b_{_DATE_SID}.pdf'], '1916-06-03')
         # A file with no `date:` line must stay NULL, not inherit a sibling's
         # or fall back to the source's own `source_date:`.
         self.assertIsNone(
-            got[f'documents/newspaper/clipping-c_{_DATE_SID}.pdf'])
+            got[f'documents/ledger/entry-c_{_DATE_SID}.pdf'])
 
     def test_upsert_matches_full_build(self) -> None:
         index.build_index(self.root, {})

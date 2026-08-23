@@ -658,7 +658,7 @@
     {
       "path": ".fha/tools/site.py",
       "category": "operating",
-      "sha256": "69aa014639d15dcc8030d2efceb6872daea9acf2ccc9ca8386aecd77c54fe29d",
+      "sha256": "2daf8bc58a8d8e55d48999670cd92ed31902af53ee97eeec558e2f4befafbd23",
       "spec_version": "1.2",
       "src": "tools/site.py"
     },
@@ -872,7 +872,7 @@
     {
       "path": "GETTING_STARTED.md",
       "category": "operating",
-      "sha256": "e2715c9d629ae8c15f7ead989e2d6da1d73967a712cd711d9b36dfd9abaad49f",
+      "sha256": "625b64c1affc10cdf39c1a038dbc77f16d030767664a5966ec2b0275268f685f",
       "spec_version": "1.2"
     },
     {
@@ -884,7 +884,7 @@
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "d39175382663b841ea019bec7d57e7d74ece7c357ea30605d101cf8966f71bc2",
+      "sha256": "af1aaaefdcd61334ee5958966ac4b724767ae57739536f2f0ed93dcdc6508446",
       "spec_version": "1.2"
     },
     {
@@ -908,7 +908,7 @@
     {
       "path": "docs/FILING_CABINET.md",
       "category": "operating",
-      "sha256": "d9f9d6843e4578a8a856589e74bc060d8f06f2adb56b580a6e21639205328551",
+      "sha256": "a9257d08897d793125a4c1a478932ac26f5c761d5319b25104adb58ad03001a7",
       "spec_version": "1.2"
     },
     {
