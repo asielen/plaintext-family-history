@@ -5268,6 +5268,34 @@ class GalleryTests(unittest.TestCase):
             # The tif is never emitted as an <img> (its alt would name the file).
             self.assertNotIn('oldscan.tif" alt=', html)
 
+    def test_gallery_tile_and_chip_links_open_in_new_tab(self) -> None:
+        # #122: the gallery's job is to open the real photo file, not replace
+        # the gallery page itself - both the tile link and the variant-chip
+        # links ("N more files") must carry target="_blank" rel="noopener".
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            cfg = {'roots': {'photos': 'photos'}}
+            self._stage(
+                archive,
+                {'portrait_1880.jpg': {'Keywords': ['DATE: Y!'],
+                                   'DateTimeOriginal': '1880:01:01 00:00:00'}},
+                cfg,
+                extra_files=('portrait_1880b.jpg',),
+            )
+
+            result = photoindex.run_gallery(archive, cfg, edtf='188X')
+            html = self._read(result['written'])
+
+            tile_start = html.index('<a class="photo-tile"')
+            tile_tag_end = html.index('>', tile_start)
+            self.assertIn('target="_blank"', html[tile_start:tile_tag_end])
+            self.assertIn('rel="noopener"', html[tile_start:tile_tag_end])
+
+            chip_a_start = html.index('<a href=', html.index('<li><a href='))
+            chip_tag_end = html.index('>', chip_a_start)
+            self.assertIn('target="_blank"', html[chip_a_start:chip_tag_end])
+            self.assertIn('rel="noopener"', html[chip_a_start:chip_tag_end])
+
     def test_gallery_file_urls_resolve_through_roots(self) -> None:
         # With an external photos root in fha.yaml, hrefs must point at the
         # resolved absolute location, not archive_root/photos.

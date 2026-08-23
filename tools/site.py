@@ -649,7 +649,11 @@ def _render_fan_svg(labels: dict, max_gen: int, r0: float = 54, ring: float = 60
     colour lightened by generation (set inline as CSS vars, composed by the
     stylesheet, so custom.css can retint the whole chart). Labels ride an SVG
     <textPath> - curved along the ring on the roomy inner generations, radial
-    (reading outward) on the narrow outer ones - and are truncated to fit.
+    (reading outward) on the narrow outer ones - each shrunk to fit its own arc
+    and shortened only once that shrink hits a readable floor. The chosen size
+    goes out as a font-size presentation attribute, so styles.css must not
+    declare a font-size on `.fan-label` itself: a rule matching the label beats
+    a presentation attribute and flattens every label back to one size (#116).
     Colour/type come from the design tokens; this function only lays out geometry."""
     # Size to the actual depth present, not the configured maximum, so a shallow
     # tree renders as a small tidy fan rather than a huge mostly-empty canvas.
@@ -715,9 +719,22 @@ def _render_fan_svg(labels: dict, max_gen: int, r0: float = 54, ring: float = 60
         # floor; only below the floor do we truncate (the roomy inner rings then
         # show full names, the tight outer rings shorten but keep it in the tooltip).
         _CW = 0.66                                    # approx glyph width in em for the serif
-        fs = max(8.0, min(fs_max, avail / (max(1, len(full)) * _CW)))
-        budget = max(3, int(avail / (fs * _CW)))
-        name = full if len(full) <= budget else full[:budget - 1].rstrip() + '…'
+        _FS_MIN = 8.0                                 # readable floor; below it we shorten instead
+        fs = min(fs_max, avail / (max(1, len(full)) * _CW))
+        # Round the size DOWN to the one decimal the attribute is written with,
+        # so the size drawn is never larger than the size the fit was measured
+        # at - the whole point of #116 is that computed and rendered agree.
+        fs = math.floor(fs * 10) / 10
+        if fs >= _FS_MIN:
+            # The size was picked so the whole name fits, so it fits. Deriving a
+            # character budget back out of `fs` here only reintroduced the float
+            # rounding it came from, and ellipsised names the shrink had already
+            # made room for ("Chastina Augusta Re…" at 9.5px on a 21-character arc).
+            name = full
+        else:
+            fs = _FS_MIN
+            budget = max(3, int(avail / (fs * _CW)))
+            name = full if len(full) <= budget else full[:budget - 1].rstrip() + '…'
         # The full name rides a <title> so a truncated arc label is never lossy:
         # hovering (or a screen reader) gives the whole name.
         title = f'<title>{html.escape(full)}</title>'

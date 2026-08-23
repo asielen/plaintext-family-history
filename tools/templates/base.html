@@ -37,6 +37,19 @@
 {% else %}
   <p>{{ footer_note }}</p>
 {% endif %}
+  {#- The reader's legend for the marks a date can carry (issue #131). `fha
+      site` prints a claim's date exactly as the record stores it, so every
+      form SPEC.md 11 allows is a form a visitor can meet - each one gets a
+      sentence and a worked example here, because a mark nobody explains
+      reads as a typo. A new row in that table needs a new sentence here. #}
+  <p class="date-notation-note">Dates here are sometimes marked to show how certain they are.
+  A <strong>~</strong> means "about this year" - close, but not exact (<strong>1891~</strong>).
+  A <strong>?</strong> means the year is probably right but has not been confirmed
+  (<strong>1891?</strong>). An <strong>X</strong> in place of the last digit means only the
+  decade is known (<strong>193X</strong> = sometime in the 1930s). A <strong>/</strong> between
+  two dates marks a range - the real date falls somewhere between the two, not two separate
+  dates (<strong>1871-02/1871-03</strong> = February or March 1871). And
+  <strong>[..1920]</strong> means "some time before 1920".</p>
 </footer>
 {% if workbench %}
 {% include "workbench/_modals.html" %}
