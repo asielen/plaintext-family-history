@@ -824,15 +824,40 @@ def _find_back_sibling(file_path: Path) -> Path | None:
     `select_variation_primary` uses for its default pick - so processing a
     copy-letter print or a crop on its own never reaches for a shared back
     scan that conceptually belongs with the group's primary, not with it.
+
+    Finds the sibling by SCANNING the directory and parsing every candidate's
+    stem with `parse_media_filename` - the same parser this codebase's own
+    filename grammar and photo-variation grouping already use - rather than
+    constructing one or two hardcoded lowercase `{stem}-back`/`{stem}_back`
+    candidate paths and probing each with `.is_file()`. Two gaps that shape
+    missed on a real filesystem: an explicitly-named sibling in a DIFFERENT
+    case (`record-BACK.PDF`, on a case-sensitive filesystem where a lowercase
+    guess simply does not match), and a back scan saved with a DIFFERENT
+    extension than the primary (`record.jpg` primary, `record-back.jpeg`
+    scan). Both parse to `part_kind == 'back'` with the same `base_id` as the
+    primary, so the scan finds them; the two-candidate-path guess could not.
+    Requires EXACTLY ONE match (case-insensitive `base_id` compare) - two or
+    more candidates is an ambiguity this function does not resolve, so it
+    returns None rather than guessing which one is "the" back.
     """
     parsed = parse_media_filename(file_path.stem)
     if parsed.variant_id is not None or parsed.part_kind != 'none' or parsed.is_crop:
         return None
-    for sep in ('-', '_'):
-        candidate = file_path.with_name(f'{file_path.stem}{sep}back{file_path.suffix}')
-        if candidate.is_file():
-            return candidate
-    return None
+    base_id = parsed.base_id.lower()
+    try:
+        siblings = list(file_path.parent.iterdir())
+    except OSError:
+        return None
+    matches = []
+    for candidate in siblings:
+        if not candidate.is_file():
+            continue
+        candidate_parsed = parse_media_filename(candidate.stem)
+        if candidate_parsed.part_kind != 'back':
+            continue
+        if candidate_parsed.base_id.lower() == base_id:
+            matches.append(candidate)
+    return matches[0] if len(matches) == 1 else None
 
 
 def _companion_for_sidecar(sidecar: Path) -> Path | None:

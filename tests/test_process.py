@@ -1064,6 +1064,37 @@ class ProcessTestCase(unittest.TestCase):
         files = read_record(record)['meta']['files']
         self.assertEqual(len(files), 1)
 
+    # ── Codex review, PR #145, finding 3 ────────────────────────────────────────
+
+    def test_find_back_sibling_matches_different_extension_via_directory_scan(self) -> None:
+        # Finding #3: a back scan saved with a DIFFERENT extension than the
+        # primary must still be found. The old implementation constructed
+        # only `{primary stem}-back{PRIMARY's own suffix}` candidates, so a
+        # back saved as .jpeg beside a .jpg primary was invisible to it -
+        # the fix scans the directory and parses each candidate's own stem
+        # instead of guessing one hardcoded path.
+        primary = self.archive / 'documents' / 'census' / 'x-00500.jpg'
+        primary.write_bytes(b'\xff\xd8\xff')
+        back = self.archive / 'documents' / 'census' / 'x-00500-back.jpeg'
+        back.write_bytes(b'\xff\xd8\xff')
+
+        self.assertEqual(process._find_back_sibling(primary), back)
+
+    def test_find_back_sibling_returns_none_on_ambiguous_match(self) -> None:
+        # Finding #3 (ambiguity half): the old two-candidate guess checked
+        # '-back' before '_back' and returned on the FIRST match, blind to
+        # any other back-shaped file with a different extension. Scanning
+        # the directory can now see both at once - and must refuse to guess
+        # which one is "the" back rather than silently picking one.
+        primary = self.archive / 'documents' / 'census' / 'ambiguous.txt'
+        primary.write_text('front', encoding='utf-8')
+        back1 = self.archive / 'documents' / 'census' / 'ambiguous-back.txt'
+        back1.write_text('back1', encoding='utf-8')
+        back2 = self.archive / 'documents' / 'census' / 'ambiguous_back.pdf'
+        back2.write_text('back2', encoding='utf-8')
+
+        self.assertIsNone(process._find_back_sibling(primary))
+
     # ── #111: --more attaches straight from the inbox ─────────────────────────
 
     def test_more_attaches_document_straight_from_inbox(self) -> None:
