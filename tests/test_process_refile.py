@@ -459,7 +459,8 @@ class ProcessRefileTestCase(unittest.TestCase):
         other_sid = 'S-zzyy888888'
         other_asset = self.archive / 'documents' / 'census' / f'other-deed_{other_sid}.jpg'
         other_asset.write_bytes(b'belongs to a different source')
-        entry = f'  - file: documents/census/other-deed_{other_sid}.jpg\n    role: primary\n'
+        stored_alias = f'documents/census/other-deed_{other_sid}.jpg'
+        entry = f'  - file: {stored_alias}\n    role: primary\n'
         record = self.archive / 'sources' / 'census' / f'campaign-card_{SID}.md'
         record.write_bytes(_record_text(entry).encode('utf-8'))
 
@@ -469,6 +470,15 @@ class ProcessRefileTestCase(unittest.TestCase):
         self.assertIn('inventory drift', err)
         self.assertIn(other_sid, err)
         self.assertTrue(other_asset.exists(), "another source's file must never move")
+        # #2 audit finding: `fha reconcile` cannot heal this - it only
+        # re-links a files: entry whose path no longer resolves, and this
+        # one DOES resolve (just to the wrong file). The message must say so
+        # and name the exact hand-edit instead of pointing at a command that
+        # would run clean and change nothing.
+        self.assertIn('cannot fix this', err)
+        self.assertIn('Fix it by hand', err)
+        self.assertIn(record.name, err)
+        self.assertIn(stored_alias, err)
 
     def test_documents_asset_with_no_source_id_at_all_refused(self) -> None:
         # A files: entry naming a file that carries no `_{S-id}` suffix at all
@@ -521,6 +531,70 @@ class ProcessRefileTestCase(unittest.TestCase):
 
         self.assertEqual(rc, EXIT_CLEAN)
         self.assertFalse(asset.exists())
+
+    def test_photo_asset_genuinely_unavailable_exiftool_still_proceeds(self) -> None:
+        # The one soft-fail case that IS supposed to degrade to the weaker
+        # containment-only check: exiftool itself is not installed on this
+        # machine, so nothing at all can be learned about the file. Pinned
+        # here specifically because the P1 fix below narrows the soft-fail
+        # from "any RuntimeError" to "only ExiftoolUnavailableError" - this
+        # proves the narrowing did not also break the legitimate case.
+        store = self._install_photo_store()
+        asset, _record = self._write_photo_source()
+        store.unavailable_paths.add(str(asset))
+
+        rc = self._run([SID, '--to', 'documents', '--type', 'photo', '--yes'])
+
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertFalse(asset.exists())
+
+    def test_photo_asset_unreadable_for_other_reason_refused(self) -> None:
+        # P1 audit finding: `_read_source_keyword`'s underlying read raises the
+        # SAME RuntimeError whether exiftool is genuinely absent OR exiftool
+        # is present but rejects the file (corrupt/unsupported) or returns
+        # invalid JSON. Before the fix, refile caught RuntimeError blanket and
+        # treated every case identically to "exiftool unavailable" - so a
+        # photo that is unreadable for this OTHER reason, but which actually
+        # carries a different source's embedded id, would silently pass the
+        # identity check and get moved/relabelled as the wrong source's
+        # asset. It must refuse instead: the file cannot be verified, so it
+        # cannot be moved.
+        store = self._install_photo_store()
+        asset, _record = self._write_photo_source()
+        store.read_fail_paths.add(str(asset))
+
+        rc, _out, err = self._run_captured(
+            [SID, '--to', 'documents', '--type', 'photo', '--yes'])
+
+        self.assertEqual(rc, EXIT_FAILURE)
+        self.assertIn('could not be read', err)
+        self.assertNotIn('Traceback', err)
+        self.assertTrue(asset.exists(), 'an unverifiable photo must never move')
+
+    def test_photo_asset_with_conflicting_second_keyword_refused(self) -> None:
+        # #5 audit finding: a photo can carry more than one SOURCE: value
+        # across its Keywords/Subject fields (a hand edit, or a duplicate
+        # embed). Before the fix, the identity check read only the FIRST
+        # matching value - so when that first value happened to equal the
+        # requested source's id, a CONFLICTING second value naming a
+        # different source was never even looked at, and refile moved the
+        # ambiguous file, rewriting only the requested source's inventory
+        # while the other named source's own record was left pointing at
+        # nothing.
+        store = self._install_photo_store()
+        asset, _record = self._write_photo_source()
+        other_sid = 'S-zzyy777777'
+        # First value agrees with the requested source (e.g. Keywords); the
+        # conflicting second value sits behind it (e.g. Subject).
+        store.keywords[str(asset)] = [f'SOURCE: {SID}', f'SOURCE: {other_sid}']
+
+        rc, _out, err = self._run_captured(
+            [SID, '--to', 'documents', '--type', 'photo', '--yes'])
+
+        self.assertEqual(rc, EXIT_FAILURE)
+        self.assertIn('inventory drift', err)
+        self.assertIn(other_sid, err)
+        self.assertTrue(asset.exists(), 'an ambiguously-marked photo must never move')
 
     def test_working_copy_refusal(self) -> None:
         (self.archive / 'WORKING_COPY').write_text('marker', encoding='utf-8')

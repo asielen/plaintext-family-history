@@ -1124,7 +1124,32 @@ def _resolve_source_files(
                 f'{fmt_id_display(row["source_id"])} asset {row["path"]!r} could not be resolved: {e}'
             )
             continue
-        if not (_is_under_root(resolved, documents_root) or _is_under_root(resolved, photos_root)):
+        try:
+            contained = (_is_under_root(resolved, documents_root)
+                         or _is_under_root(resolved, photos_root))
+        except RuntimeError as e:
+            # `_is_under_root` calls `.resolve()` on both `resolved` and the
+            # configured root; if either traverses a symlink loop, `.resolve()`
+            # raises RuntimeError rather than returning - and unlike
+            # ValueError/OSError, `_is_under_root` does not catch it (audit
+            # finding, round 2). This function runs BEFORE the packet build's
+            # own guarded write block and the CLI has no exception translation
+            # here, so an uncaught RuntimeError would turn one malformed
+            # filesystem entry into a bare traceback and NO packet at all,
+            # instead of the graceful "omitted with a warning" every other
+            # resolution failure above already gets. Catch it here and give the
+            # same treatment: excluded, with a message naming what it almost
+            # certainly is (a corrupted or maliciously crafted symlink loop,
+            # not an ordinary missing/escaping path).
+            missing.append(
+                f'{fmt_id_display(row["source_id"])} asset {row["path"]!r} could not be '
+                f'checked against the configured roots ({e}) - this looks like a symlink '
+                'loop, most likely from a corrupted or maliciously crafted filesystem '
+                'entry, and was left out of the packet. Find and fix or remove the '
+                'offending symlink, then build the packet again.'
+            )
+            continue
+        if not contained:
             missing.append(
                 f'{fmt_id_display(row["source_id"])} asset {row["path"]!r} resolves outside '
                 'the configured documents/photos roots - this looks like a hand-edited '

@@ -103,7 +103,9 @@ are found the user is asked whether they are *one* source (shared S-id) or
 #    _run_exiftool_remove_source - remove a just-written `SOURCE: {S-id}`
 #    _open_backup                - the run's safety-copy policy, announced (TOOLING §13f)
 #    _flush_backup_messages      - print its notices (warnings to stderr)
-#    _read_source_keyword        - the S-id embedded in a photo, or None
+#    _read_source_keyword        - the FIRST S-id embedded in a photo, or None
+#    _read_all_source_keywords   - every distinct S-id embedded in a photo (refile identity check)
+#    ExiftoolUnavailableError    - exiftool itself missing, distinct from a per-file read failure
 #
 #  Record scaffolding
 #    _scaffold_text            - the §14 source-record template as text
@@ -369,18 +371,36 @@ def _filename_has_source_id(file_path: Path) -> str | None:
 # photoindex's (tools never import tools - TOOLING §15). Tests monkeypatch these
 # two functions to exercise the photo paths without exiftool on PATH.
 
+class ExiftoolUnavailableError(RuntimeError):
+    """exiftool itself could not be run at all (missing from PATH).
+
+    Distinct from a per-file read/parse failure (a nonzero exit reading THIS
+    file, or invalid JSON on its stdout) - both of those mean exiftool IS
+    present and runnable, it just did not like this particular file. A caller
+    that soft-fails when the environment lacks exiftool (the refile identity
+    check's weaker containment-only fallback) must catch narrowly, only this,
+    rather than blanket `RuntimeError` - otherwise a photo that is unreadable
+    for some OTHER reason but still carries a conflicting embedded source id
+    would silently pass the identity check instead of refusing (P1 audit
+    finding on `fha process refile`).
+    """
+
+
 def _run_exiftool_read_keywords(file_path: Path) -> list[str]:
     """Return the embedded Keywords/Subject of one file (union, order-preserving).
 
     Used only to detect an already-embedded `SOURCE:` keyword before processing
-    a photo. Raises RuntimeError if exiftool is missing - that is an environment
-    problem the caller surfaces, distinct from "no keyword present".
+    a photo. Raises `ExiftoolUnavailableError` (a `RuntimeError` subclass) if
+    exiftool itself is missing - an environment problem the caller surfaces,
+    distinct from "no keyword present"; raises plain `RuntimeError` for every
+    other read failure (nonzero exit, invalid JSON), since exiftool ran but
+    this specific read did not succeed.
     """
     cmd = ['exiftool', '-j', '-Keywords', '-Subject', str(file_path)]
     try:
         proc = subprocess.run(cmd, check=False, capture_output=True, text=True, encoding='utf-8')
     except FileNotFoundError as e:
-        raise RuntimeError(format_exiftool_error('fha process')) from e
+        raise ExiftoolUnavailableError(format_exiftool_error('fha process')) from e
     if proc.returncode != 0:
         raise RuntimeError(f'exiftool failed reading {file_path.name}: {proc.stderr.strip()}')
     try:
@@ -593,12 +613,35 @@ def _flush_backup_messages(backup: OriginalBackup) -> None:
 
 
 def _read_source_keyword(file_path: Path) -> str | None:
-    """Return the S-id embedded in a photo's `SOURCE:` keyword, or None."""
+    """Return the FIRST S-id embedded in a photo's `SOURCE:` keyword(s), or None.
+
+    A photo should carry exactly one, but a hand-edited or corrupted
+    Keywords/Subject field can carry more than one (e.g. a different value in
+    each field) - a caller that must notice every embedded value, not just
+    the first, uses `_read_all_source_keywords` instead (the refile identity
+    check: a second, conflicting value must refuse the move even when the
+    FIRST value matches the expected source - #163 audit finding).
+    """
+    matches = _read_all_source_keywords(file_path)
+    return matches[0] if matches else None
+
+
+def _read_all_source_keywords(file_path: Path) -> list[str]:
+    """Return every distinct S-id embedded in a photo's `SOURCE:` keyword(s).
+
+    Order-preserving, deduplicated, lowercased. See `_read_source_keyword`
+    for why this exists as a sibling rather than a changed return shape:
+    every other caller wants "the" S-id an asset carries and is unaffected by
+    a conflicting second value, so their contract (str | None) is untouched.
+    """
+    out: list[str] = []
     for kw in _run_exiftool_read_keywords(file_path):
         m = _SOURCE_KEYWORD_RE.match(kw.strip())
         if m:
-            return m.group(1).lower()
-    return None
+            sid = m.group(1).lower()
+            if sid not in out:
+                out.append(sid)
+    return out
 
 
 # ── Record scaffolding ────────────────────────────────────────────────────────
@@ -3399,15 +3442,43 @@ def process_refile(
     # already check), and every `fha process`-produced documents-root file
     # carries it unconditionally, so its absence is refused exactly like
     # `fha source clear-keyword`'s own identity check treats a missing
-    # marker. photos-root files are never renamed, so there is no filename
-    # signal there - only a DEFINITE, present-and-different embedded
-    # SOURCE: keyword is refused (unambiguous drift: this file is on record
-    # as belonging to another source); a photo with no keyword at all, or one
-    # that could not be read because exiftool is unavailable, is left to the
-    # weaker (but still-fixed) containment check above rather than refused on
-    # an inference this verb cannot confirm - the same "verify what can
-    # actually be verified" posture refile already takes for the keyword it
-    # embeds at the destination, so this verb gains no hard new dependency.
+    # marker. `fha reconcile` cannot repair THIS drift, though (round-2 audit
+    # finding): it only re-links a `files:` entry whose stored path no longer
+    # resolves on disk (TOOLING §9), and `src.is_file()` above already
+    # confirmed this one does resolve - the entry is not stale, it is simply
+    # wrong. The message below names the exact hand-edit instead of a command
+    # that would run clean and change nothing, leaving the human to retry
+    # forever.
+    #
+    # photos-root files are never renamed, so there is no filename signal
+    # there - identity rides in the embedded SOURCE: keyword(s) instead, read
+    # via `_read_all_source_keywords` (not the single-value
+    # `_read_source_keyword`) so a SECOND, conflicting value - e.g. one in
+    # Keywords, a different one in Subject, from a hand-edited or corrupted
+    # field - is never missed just because the FIRST value happened to match
+    # (round-2 audit finding: accepting on the first match let refile move an
+    # ambiguous file while the OTHER named source's own inventory silently
+    # kept pointing at nothing). ANY present-and-different value is refused
+    # (unambiguous drift: this file is on record, at least in part, as
+    # belonging to another source); a photo with no keyword at all is left to
+    # the weaker (but still-fixed) containment check above rather than
+    # refused on an inference this verb cannot confirm - the same "verify
+    # what can actually be verified" posture refile already takes for the
+    # keyword it embeds at the destination, so this verb gains no hard new
+    # dependency.
+    #
+    # A read FAILURE is not the same as "no keyword" and must not be treated
+    # as one (the P1 half of the round-2 audit finding): only
+    # `ExiftoolUnavailableError` - exiftool itself missing from the machine -
+    # earns the soft-fail down to the containment check, because that machine
+    # truly cannot learn anything about the file. Every OTHER read failure
+    # (exiftool present but this file rejected as corrupt/unsupported, or
+    # invalid JSON on its stdout) means exiftool DID run and simply could not
+    # confirm this file's identity; treating that the same as "no keyword
+    # present" let a photo that actually carries another source's embedded id
+    # slip through unverified and get moved/relabelled as this source's
+    # asset. Refuse instead - the human can inspect the file (or fix whatever
+    # exiftool choked on) and retry.
     if alias_root == 'documents':
         filename_sid = _filename_has_source_id(src)
         if filename_sid != sid.lower():
@@ -3416,18 +3487,33 @@ def process_refile(
                 f"{stored_alias}'s own filename carries {carried}, not {sid} - "
                 f"{record_path.name}'s files: entry looks like inventory drift "
                 f'(it names a file that belongs to a different source), and '
-                f'moving it would relocate the WRONG document. Run `fha '
-                'reconcile` to re-tie sources to their actual files, then retry. '
-                'Nothing was moved.')
+                f'moving it would relocate the WRONG document. `fha reconcile` '
+                'cannot fix this: it only re-links a files: entry whose path no '
+                f'longer resolves on disk, and {stored_alias} still resolves - '
+                'it is simply the wrong file for this record. Fix it by hand: '
+                f'open {record_path.name}, find the `files:` entry `file: '
+                f'{stored_alias}`, and either point it at the correct on-disk '
+                f'file for this source (one whose own filename ends `_{sid}`) '
+                'or delete the entry if no such file exists. Nothing was moved.')
     else:
         try:
-            embedded_sid = _read_source_keyword(src)
-        except RuntimeError:
-            embedded_sid = None
-        if embedded_sid is not None and embedded_sid != sid.lower():
+            embedded_sids = _read_all_source_keywords(src)
+        except ExiftoolUnavailableError:
+            embedded_sids = []
+        except RuntimeError as e:
             raise ProcessError(
-                f"{stored_alias}'s own embedded SOURCE keyword carries "
-                f'{fmt_id_display(embedded_sid)}, not {sid} - '
+                f'{stored_alias} could not be read to confirm which source it '
+                f'belongs to ({e}) - refusing to move it without checking, '
+                'since a hidden identity conflict would relocate the WRONG '
+                'photo. Make sure exiftool can open the file (it may be '
+                'corrupt or an unsupported format), then retry. Nothing was '
+                'moved.') from e
+        conflicting = sorted({s for s in embedded_sids if s != sid.lower()})
+        if conflicting:
+            carried = ', '.join(fmt_id_display(s) for s in conflicting)
+            raise ProcessError(
+                f"{stored_alias}'s own embedded SOURCE keyword(s) carry "
+                f'{carried}, not {sid} - '
                 f"{record_path.name}'s files: entry looks like inventory "
                 f'drift (it names a file that belongs to a different '
                 f'source), and moving it would relocate the WRONG photo. '
