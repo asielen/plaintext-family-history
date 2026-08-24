@@ -2558,24 +2558,26 @@ class TreeTests(_Base):
         self.assertEqual(sorted(set(ids)), ['P-aaaaaaaaaa', 'P-bbbbbbbbbb'])
         self.assertEqual(len(ids), len(set(ids)))                      # each node once
 
-    def test_descendant_tree_bfs_is_bounded_not_unbounded(self):
-        # #152 review fix (P2, performance): `build_person_page` used to call
-        # `_make_tree_ctx` with `max_hops=None` (fully unbounded) for every
-        # curated person's opt-in descendant tree - a real O(N^2) build cost
-        # across a lineage of N curated people, since descendant subtrees
-        # overlap heavily (a person's descendants include their children's
-        # descendants, and so on). It is now bounded by
-        # `_DESCENDANT_TREE_MAX_HOPS`; build a chain deeper than the bound
-        # and confirm the server-side walk actually stops there rather than
-        # serializing the whole remaining line.
-        bound = site._DESCENDANT_TREE_MAX_HOPS
+    def test_descendant_tree_data_stays_complete_beyond_old_bound(self):
+        # #152 follow-up review fix (P2, finding 1): the first cut of the
+        # #152 performance fix used `_DESCENDANT_TREE_MAX_HOPS` (then 12) as
+        # a hard TRUNCATION bound on the server-side BFS, silently dropping
+        # every descendant past 12 hops from both the embedded tree and the
+        # reusable `data/tree_*.json` artifact - contradicting
+        # tools/README.md's promise that "only the initial paint is bounded
+        # while the data stays complete and the reader expands forward."
+        # Build a chain well past that old 12-hop bound (but nowhere near
+        # today's much larger safety-net value) and confirm every generation
+        # survives in the artifact - this must fail against the pre-fix hard
+        # truncation.
+        depth = 20
         ids = []
         prev = None
-        for g in range(bound + 4):
+        for g in range(depth):
             # Fixed-width numeric suffix (zero-padded to 2 digits) - a
             # variable-width `f'gen{g}'` + zero-fill collides once g reaches
             # double digits (e.g. 'gen1' and 'gen10' both zero-pad to the
-            # same 10-char string), which this loop's depth (> 12) reaches.
+            # same 10-char string), which this loop's depth (20) reaches.
             pid = f'p-g{g:02d}' + '0' * 7
             self._seed_person(pid, f'Descendant Gen{g}', surname=f'Gen{g}')
             if prev is not None:
@@ -2585,14 +2587,46 @@ class TreeTests(_Base):
             prev = pid
         (self.archive_root / 'fha.yaml').write_text(
             f'roots: {{}}\nroot_person: P-{ids[0][2:]}\n', encoding='utf-8')
-        self._run(linked=True)
+        res = self._run(linked=True)
+        self.assertEqual(res['status'], 'ok')
         data = json.loads(
             (self.out_dir / 'data' / f'tree_{ids[0]}_descendants.json').read_text(encoding='utf-8'))
         got_ids = {n['p_id'] for n in data['nodes']}
-        within_bound = f'P-{ids[bound][2:]}'         # hop == bound: still walked
-        beyond_bound = f'P-{ids[bound + 1][2:]}'      # hop == bound + 1: never reached
+        expected_ids = {f'P-{pid[2:]}' for pid in ids}
+        self.assertEqual(got_ids, expected_ids)          # every generation present, none dropped
+        self.assertFalse(any('truncated' in m.lower() for m in res['messages']))
+
+    def test_descendant_tree_bfs_safety_net_still_truncates_and_warns(self):
+        # #152 follow-up review fix (P2, finding 1): `_DESCENDANT_TREE_MAX_
+        # HOPS` is now a generous safety net (real archives should never hit
+        # it), not a display bound - but it must still actually stop a
+        # pathological walk, and must say so loudly rather than silently
+        # dropping generations. Patch it down to a small value to exercise
+        # that safety-net path without building hundreds of fixture people.
+        ids = []
+        prev = None
+        for g in range(5):
+            pid = f'p-g{g:02d}' + '0' * 7
+            self._seed_person(pid, f'Descendant Gen{g}', surname=f'Gen{g}')
+            if prev is not None:
+                self._seed_rel(prev, 'child', pid)
+                self._seed_rel(pid, 'parent', prev)
+            ids.append(pid)
+            prev = pid
+        (self.archive_root / 'fha.yaml').write_text(
+            f'roots: {{}}\nroot_person: P-{ids[0][2:]}\n', encoding='utf-8')
+        with unittest.mock.patch.object(site, '_DESCENDANT_TREE_MAX_HOPS', 2):
+            res = self._run(linked=True)
+        self.assertEqual(res['status'], 'ok')                          # terminates, not an error
+        data = json.loads(
+            (self.out_dir / 'data' / f'tree_{ids[0]}_descendants.json').read_text(encoding='utf-8'))
+        got_ids = {n['p_id'] for n in data['nodes']}
+        within_bound = f'P-{ids[2][2:]}'      # hop == 2: still walked
+        beyond_bound = f'P-{ids[3][2:]}'      # hop == 3: never reached, safety net stopped it
         self.assertIn(within_bound, got_ids)
         self.assertNotIn(beyond_bound, got_ids)
+        self.assertTrue(any('truncated' in m.lower() and 'descendants' in m.lower()
+                            for m in res['messages']))                # warned, not silent
 
     def test_descendant_tree_render_deferred_until_details_opens(self):
         # #152 review fix (P2): the descendants <details> is closed by
@@ -2905,6 +2939,23 @@ class HomePedigreeTests(_Base):
         ped = self._pedigree_section(self._read('index.html'))
         self.assertIn('Ancestor Gen5', ped)      # the documented default (5) - not int(3.9)=3
         self.assertNotIn('Ancestor Gen6', ped)
+
+    def test_integral_float_generations_is_accepted(self):
+        # #152 follow-up review fix (P2, finding 6): PyYAML parses a hand-
+        # edited `home_pedigree_generations: 3.0` as a Python `float`, not an
+        # `int` - a harmless slip, and mathematically a genuine whole number.
+        # The fractional-rejection fix above must not catch this case too:
+        # `3.0` should be honored as depth 3 (not silently overridden to the
+        # default of 5), and with no "not a whole number" warning, since
+        # nothing was actually wrong with what the human wrote.
+        self._seed_person('p-aaaaaaaaaa', 'Hub Person')
+        self._seed_linear_ancestors('p-aaaaaaaaaa', 5)
+        self._seed_home(extra_yaml='  home_pedigree_generations: 3.0\n')
+        res = self._run(linked=True)
+        self.assertFalse(any('home_pedigree_generations' in m for m in res['messages']))
+        ped = self._pedigree_section(self._read('index.html'))
+        self.assertIn('Ancestor Gen3', ped)       # the REQUESTED depth (3) - not the default (5)
+        self.assertNotIn('Ancestor Gen4', ped)
 
     def test_boolean_generations_warns_and_uses_default(self):
         # Same bug, different door: `bool` is an `int` subclass in Python, so
@@ -5007,6 +5058,30 @@ class TreeFitScaleTests(unittest.TestCase):
         # wrapStatic()'s.
         self.assertEqual(js.count('Math.min(MAX_SCALE, vpW / (contentW + FIT_PAD * 2)'), 2)
 
+    def test_zoom_out_does_not_reverse_direction_below_min_scale(self):
+        # #152 follow-up review fix (P2, finding 2): zoomAt() used to run its
+        # computed next scale through clampScale() unconditionally - fine
+        # normally, but once fit() (fixed above) parks the view BELOW
+        # MIN_SCALE for a very deep pedigree, that plain clamp RAISES a
+        # further zoom-OUT request back up to MIN_SCALE, reversing the
+        # requested direction (e.g. an outward 0.8x zoom from 0.05 computes
+        # 0.04, clampScale(0.04) returns 0.1 - zoom out actually zooms in
+        # 2x). zoomAt() must instead route through the shared
+        # nextZoomScale() helper, which only re-applies the floor for the
+        # opposite (zoom-in) direction. Checked in both fit()/zoomAt() copies
+        # (render() and wrapStatic()) and in both committed example-site
+        # copies, alongside the template.
+        for path in (ROOT / 'tools' / 'templates' / 'vendor' / 'fha-tree.js',
+                     ROOT / 'example-archive' / 'generated' / 'site' / 'vendor' / 'fha-tree.js',
+                     ROOT / 'example-archive' / 'generated' / 'site-workbench' / 'vendor' / 'fha-tree.js'):
+            with self.subTest(path):
+                js = path.read_text(encoding='utf-8')
+                self.assertIn('function nextZoomScale(sc, factor)', js)
+                # The pre-fix shape must be gone from both zoomAt() copies.
+                self.assertEqual(js.count('var next = clampScale(sc * factor);'), 0)
+                # The fixed shape: present once per zoomAt() copy.
+                self.assertEqual(js.count('var next = nextZoomScale(sc, factor);'), 2)
+
     def test_committed_showcase_vendor_copies_match_the_template(self):
         # The same staleness class #153 already fixed once for the
         # workbench showcase's stylesheet (CommittedShowcaseAssetTests): the
@@ -5085,6 +5160,25 @@ class CommittedShowcaseAssetTests(unittest.TestCase):
                     'and copy design/styles.css over the site-workbench snapshot '
                     '(that one is built by `fha serve` and cannot be rebuilt '
                     'reproducibly - it embeds a per-process CSRF token).')
+
+    def test_committed_showcase_person_pages_have_deferred_tree_render(self):
+        # #152 follow-up review fix (P2, finding 3): the deferred-render fix
+        # (FhaTree.render() now waits for the enclosing <details>' own
+        # `toggle` event before running, instead of running unconditionally
+        # at page load into a closed - so zero-width - <details>) landed in
+        # tools/templates/_tree.html, but the committed example pages are
+        # static HTML snapshots that only pick it up on a rebuild. Same
+        # staleness class as the vendor-copy check above, checked against
+        # both committed example sites' descendant-tree-carrying showcase
+        # page (P-de957bcda1, the fixture person the #152 finding named).
+        for rel in ('example-archive/generated/site/persons/p-de957bcda1.html',
+                    'example-archive/generated/site-workbench/persons/p-de957bcda1.html'):
+            with self.subTest(rel):
+                html = (ROOT / rel).read_text(encoding='utf-8')
+                self.assertIn('function renderTree()', html,
+                              f'{rel} is stale - it still calls FhaTree.render() '
+                              'unconditionally. Regenerate the example-archive site output.')
+                self.assertIn("addEventListener('toggle'", html)
 
 
 if __name__ == '__main__':

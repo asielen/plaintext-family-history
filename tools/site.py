@@ -343,32 +343,41 @@ _FAN_GENERATIONS = 3
 _HOME_PEDIGREE_GENERATIONS_DEFAULT = 5
 _HOME_PEDIGREE_GENERATIONS_MAX = 8
 
-# Server-side hop bound for each curated person's descendant-explorer BFS
-# (#152 review fix, P2 - performance). `build_person_page` used to call
-# `_make_tree_ctx` with `max_hops=None` (fully unbounded) for every curated
-# person's opt-in descendant tree, even though the disclosure is collapsed
-# by default and the client only ever paints `initial_depth` generations at
-# once. Because descendant subtrees overlap heavily along one lineage (a
-# person's descendants include their children's descendants, and so on), an
-# unbounded walk per page made a lineage of N curated people redo roughly
-# O(N^2) worth of node/edge serialization and index queries across one site
-# build - each ancestor's page re-walking almost the same, ever-shrinking
-# tail the page below it already walked in full. Bounding the SERVER walk
-# turns that per-page cost into a small constant (bounded by branching
-# factor ^ this depth) instead of "however much tree is left below this
-# person," so total build cost becomes O(N * constant) rather than O(N^2).
-# This does not eliminate the redundancy (two adjacent ancestors' trees
-# still overlap within the bound) - it caps it, which is the (b) option from
-# the review's own effort-ordered list, chosen over full cross-page
-# memoization (a, more effort - the JSON's node `url`s are relative to each
-# page's own directory, so sharing computed subtrees across pages would need
-# decoupling that first) or on-demand generation (c, changes the "every
-# curated person gets a page" contract). 12 generations is deep enough that
-# no real archive is expected to ever notice the bound in the rendered tree
-# (it is far deeper than `_HOME_PEDIGREE_GENERATIONS_MAX`'s ancestor-side 8);
-# it exists to make the walk's cost provably bounded, not to be a visible
-# limit. See `build_person_page`'s `descendants_tree` context.
-_DESCENDANT_TREE_MAX_HOPS = 12
+# Server-side hop SAFETY NET for each curated person's descendant-explorer
+# BFS (#152 review fix, P2 - performance; raised + re-scoped by a second
+# #152 follow-up review after the first cut of this fix - see below).
+# `build_person_page` used to call `_make_tree_ctx` with `max_hops=None`
+# (fully unbounded) for every curated person's opt-in descendant tree, even
+# though the disclosure is collapsed by default and the client only ever
+# PAINTS `initial_depth` generations at once. Because descendant subtrees
+# overlap heavily along one lineage (a person's descendants include their
+# children's descendants, and so on), an unbounded walk per page made a
+# lineage of N curated people redo roughly O(N^2) worth of `relationships`
+# queries across one site build - each ancestor's page re-issuing almost the
+# same SELECTs the page below it already ran in full.
+#
+# The first cut of this fix used this constant as a hard TRUNCATION bound,
+# which silently dropped any descendant more than 12 hops from the seed from
+# BOTH the embedded tree and the reusable `data/tree_*.json` artifact -
+# contradicting `tools/README.md`'s own promise that "only the initial paint
+# is bounded while the data stays complete and the reader expands forward."
+# The real O(N^2) cost was the repeated `relationships` SELECT per shared
+# descendant, not the size of any one page's JSON, so `_tree_edges_cache`
+# (memoized in `__init__`, read via `_tree_relationship_rows`) now caches
+# those rows for the whole build: a person reached by many overlapping
+# walks is queried once, however many pages' trees pass through them. That
+# turns the real cost from O(N^2) queries into O(N) queries (plus O(N^2)
+# cheap in-memory dict/edge construction, which is orders of magnitude
+# cheaper than the SQL round trips it replaces, and trivial at any archive
+# size a human genealogy actually reaches).
+#
+# With the query cost solved, this constant goes back to being what a hop
+# bound like this should be: a generous safety net against a pathological
+# or corrupt dataset, not a visible content limit - raised far past any
+# depth a real family tree reaches, with `_build_tree_data` warning loudly
+# (never silently) if a walk ever actually hits it. See `build_person_page`'s
+# `descendants_tree` context and `_build_tree_data`'s `truncated` handling.
+_DESCENDANT_TREE_MAX_HOPS = 500
 
 # Redaction display strings (M8 UX bar: redacted content is named, never a blank).
 _LIVING_LABEL = 'Living Person'
@@ -1605,6 +1614,16 @@ class _SiteBuilder:
         # lookup + derivative) and reused across their page and every tree node
         # they appear in. Value: the publishable image file, or None.
         self._profile_photo_cache: dict[str, Path | None] = {}
+        # One person's `relationships` rows for a given direction ('parent' or
+        # 'child'), memoized across every descendant/ancestor tree BFS in this
+        # build (#152 review fix, P2, finding 1 - see `_DESCENDANT_TREE_MAX_
+        # HOPS`'s comment). Curated people's descendant trees overlap heavily
+        # along a shared lineage - a person's descendants include their
+        # children's descendants, and so on - so without this cache a lineage
+        # of N curated people re-issues roughly the same SELECT up to N times,
+        # walking the same shrinking tail each page below re-walks in full.
+        # Keyed (person_id, rel); value is the raw `sqlite3.Row` list.
+        self._tree_edges_cache: dict[tuple[str, str], list] = {}
         # Per-person-page footnote registry: cited sources become numbered
         # footnotes (superscripts inline, names listed at the bottom) instead of
         # raw [S-id] chips. None outside a person page (e.g. place pages), where
@@ -2560,10 +2579,11 @@ class _SiteBuilder:
         # instead of the old apex-of-root_person. `_make_tree_ctx` already
         # returns None for a person with no descendant edges at all, so the
         # link/section simply does not render for a leaf of the tree - no
-        # extra check needed here. `max_hops=_DESCENDANT_TREE_MAX_HOPS`
-        # (#152 review fix, P2, performance - not None/unbounded as before):
-        # see that constant's own comment for why an unbounded per-page walk
-        # was a real O(N^2) cost across a build with many curated people.
+        # extra check needed here. `max_hops=_DESCENDANT_TREE_MAX_HOPS` is a
+        # generous safety net, not a display bound (#152 review fix, P2): the
+        # data stays complete (memoized `relationships` queries keep the walk
+        # affordable - see that constant's own comment), and `initial_depth`
+        # below is what actually bounds the client's initial paint.
         descendants_tree = self._make_tree_ctx(
             pid, 'descendants', _DESCENDANT_TREE_MAX_HOPS, page_dir,
             f'Descendants of {name}', initial_depth=4)
@@ -4421,26 +4441,46 @@ class _SiteBuilder:
                 'vitals': self._person_vitals(pid), 'url': url,
                 'photo': self._profile_photo_href(pid, page_dir)}
 
+    def _tree_relationship_rows(self, pid: str, rel: str) -> list:
+        """One person's `relationships` rows for direction `rel`, memoized for
+        the whole build (#152 review fix, P2, finding 1 - see
+        `_tree_edges_cache`'s comment in `__init__` and `_DESCENDANT_TREE_MAX_
+        HOPS`'s comment for why this matters: it is the fix that lets the BFS
+        below stay unbounded without re-paying an O(N^2) query cost)."""
+        key = (pid, rel)
+        rows = self._tree_edges_cache.get(key)
+        if rows is None:
+            rows = self.conn.execute(
+                '''SELECT DISTINCT r.other_id, r.claim_id, c.subtype
+                   FROM relationships r LEFT JOIN claims c ON r.claim_id = c.id
+                   WHERE r.person_id = ? AND r.rel = ?''',
+                (pid, rel),
+            ).fetchall()
+            self._tree_edges_cache[key] = rows
+        return rows
+
     def _build_tree_data(self, seed: str, mode: str, max_hops: int | None, page_dir: Path) -> dict:
         """BFS the `relationships` graph from `seed` and emit the neutral tree
         JSON (TOOLING §7/§14b) plus a per-node `url`. `descendants` follows
         `child` edges, `ancestors` follows `parent` edges; a visited set guards
-        cousin-marriage cycles. Redaction is applied per node in `_tree_node`."""
+        cousin-marriage cycles. Redaction is applied per node in `_tree_node`.
+        `max_hops` is a safety net, not a display bound (#152 review fix, P2,
+        finding 1) - see `_DESCENDANT_TREE_MAX_HOPS`'s comment. Hitting it
+        drops real genealogy data, so callers pass a bound generous enough
+        that no real archive should ever reach it, and a hit is warned about
+        below rather than silently accepted."""
         rel = 'parent' if mode == 'ancestors' else 'child'
         order = [seed]
         seen = {seed}
         edges: list[dict] = []
+        truncated = False
         queue: deque[tuple[str, int]] = deque([(seed, 0)])
         while queue:
             cur, hop = queue.popleft()
             if max_hops is not None and hop >= max_hops:
+                truncated = True
                 continue
-            for r in self.conn.execute(
-                '''SELECT DISTINCT r.other_id, r.claim_id, c.subtype
-                   FROM relationships r LEFT JOIN claims c ON r.claim_id = c.id
-                   WHERE r.person_id = ? AND r.rel = ?''',
-                (cur, rel),
-            ):
+            for r in self._tree_relationship_rows(cur, rel):
                 other = r['other_id']
                 if not self.linked:
                     # Include a deceased person even when they have no page of their
@@ -4475,6 +4515,14 @@ class _SiteBuilder:
                     seen.add(other)
                     order.append(other)
                     queue.append((other, hop + 1))
+        if truncated:
+            # Should not happen in any real archive (see `_DESCENDANT_TREE_
+            # MAX_HOPS`'s comment) - surfaced loudly rather than silently
+            # dropping generations from the reusable JSON artifact.
+            self.messages.append(
+                f'WARNING: {mode} tree for {fmt_id_display(seed)} exceeded '
+                f'{max_hops} generations and was truncated; some real '
+                f'genealogy data was omitted from its tree JSON.')
         return {
             'seed': fmt_id_display(seed), 'mode': mode,
             'nodes': [self._tree_node(pid, page_dir) for pid in order],
@@ -4945,19 +4993,38 @@ class _SiteBuilder:
         chart a generation or more shallower than configured with no warning
         at all, and it accepts a YAML boolean as `1`/`0` (`bool` is an `int`
         subclass in Python) even though a boolean was plainly never meant as
-        a generation count. Both are rejected up front, the same way a
-        non-numeric string already is - a whole number is an actual `int`
-        (never a `bool`) or a string that reads as one; anything else,
-        including a float that happens to be integral (`3.0`), takes the
-        warned default fallback rather than a silent, wrong-typed accept."""
+        a generation count. A `bool` is rejected outright (never a generation
+        count, whatever its int value), and a genuinely fractional or
+        non-finite float (`3.5`, `.nan`, `.inf`) takes the warned default
+        fallback the same way a non-numeric string already does.
+
+        A FLOAT WHOSE VALUE IS WHOLE (`3.0`) is different (#152 follow-up
+        review fix, P2, finding 6): PyYAML parses a hand-edited
+        `home_pedigree_generations: 3.0` as a Python `float`, not an `int` -
+        an easy, harmless slip for a human editing YAML by hand, and
+        mathematically an actual whole number the reader plainly meant as
+        one. Silently substituting the default depth (5) instead of the
+        requested 3 is not the recoverable-loose-input behavior this
+        fallback exists for elsewhere in this method (a bad string, an
+        out-of-range int) - so a finite float that survives an integer round
+        trip (`int(raw) == raw`) is coerced to that `int` and accepted like
+        any other whole number, no warning needed since nothing was actually
+        wrong with what the human wrote."""
         raw = site_cfg.get('home_pedigree_generations')
         if raw is None:
             return _HOME_PEDIGREE_GENERATIONS_DEFAULT
-        if isinstance(raw, bool) or isinstance(raw, float):
+        if isinstance(raw, bool):
             self.messages.append(
                 f'WARNING: fha.yaml site.home_pedigree_generations {raw!r} is not a whole number; '
                 f'using the default of {_HOME_PEDIGREE_GENERATIONS_DEFAULT}.')
             return _HOME_PEDIGREE_GENERATIONS_DEFAULT
+        if isinstance(raw, float):
+            if not math.isfinite(raw) or raw != int(raw):
+                self.messages.append(
+                    f'WARNING: fha.yaml site.home_pedigree_generations {raw!r} is not a whole '
+                    f'number; using the default of {_HOME_PEDIGREE_GENERATIONS_DEFAULT}.')
+                return _HOME_PEDIGREE_GENERATIONS_DEFAULT
+            raw = int(raw)   # 3.0 -> 3: a whole number, just spelled as a float
         try:
             n = int(raw)
         except (TypeError, ValueError):

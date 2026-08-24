@@ -68,6 +68,25 @@
   var ZOOM_STEP = 1.25;  // per +/- button press
   var HOME_SCALE = 1;    // px-per-unit when the Home button frames the home person
 
+  // Effective next scale for one manual zoom step from `sc` by `factor`
+  // (factor < 1 zooms out, > 1 zooms in). Normally just the ordinary
+  // MIN/MAX_SCALE clamp - but once fit() has already dropped the view below
+  // MIN_SCALE (a very deep pedigree; see MIN_SCALE's own comment above),
+  // clamping a further zoom-OUT the ordinary way would raise it back up to
+  // MIN_SCALE - i.e. REVERSE the requested direction, so pressing "zoom out"
+  // would visibly zoom in (#152 review fix, P2, finding 2). Below the floor,
+  // an outward request is instead allowed to continue past MIN_SCALE (still
+  // capped by MAX_SCALE); an inward request from below the floor is
+  // unaffected - it may land back at MIN_SCALE, same as the ordinary clamp.
+  // Shared by render() and wrapStatic(): both duplicate the DOM wiring
+  // around this per this file's own design note above (`s`/`vx`/`vw`/...
+  // are per-instance local state), but the pan/zoom MATH itself is one
+  // function so a fix here can't land in only one of the two copies.
+  function nextZoomScale(sc, factor) {
+    if (factor < 1 && sc < MIN_SCALE) return Math.min(MAX_SCALE, sc * factor);
+    return Math.max(MIN_SCALE, Math.min(MAX_SCALE, sc * factor));
+  }
+
   function svg(tag, attrs) {
     var e = document.createElementNS(SVGNS, tag);
     for (var k in attrs) { if (attrs.hasOwnProperty(k)) e.setAttribute(k, attrs[k]); }
@@ -234,7 +253,7 @@
     // Zoom about a client (screen) point so that point stays put under it.
     function zoomAt(clientX, clientY, factor) {
       var sc = currentScale();
-      var next = clampScale(sc * factor);
+      var next = nextZoomScale(sc, factor);
       factor = next / sc;
       if (factor === 1) return;
       userInteracted = true;
@@ -584,13 +603,14 @@
       s.setAttribute('viewBox', vx + ' ' + vy + ' ' + vw + ' ' + vh);
     }
     function currentScale() { return VH / vh; }
-    function clampScale(sc) { return Math.max(MIN_SCALE, Math.min(MAX_SCALE, sc)); }
 
     function fit() {
       userInteracted = false;
       var vpW = viewportW();
-      // Not clampScale(): MIN_SCALE must not stop Fit from showing the whole
+      // No MIN_SCALE floor here: it must not stop Fit from showing the whole
       // chart (see the MIN_SCALE comment above) - only cap the ceiling here.
+      // (No clampScale() in this scope - wrapStatic has no home() to need
+      // one; zoomAt below uses the shared nextZoomScale() instead.)
       var sc = Math.min(MAX_SCALE, vpW / (contentW + FIT_PAD * 2),
                                    VH / (contentH + FIT_PAD * 2));
       vw = vpW / sc; vh = VH / sc;
@@ -601,7 +621,7 @@
 
     function zoomAt(clientX, clientY, factor) {
       var sc = currentScale();
-      var next = clampScale(sc * factor);
+      var next = nextZoomScale(sc, factor);
       factor = next / sc;
       if (factor === 1) return;
       userInteracted = true;

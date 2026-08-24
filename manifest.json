@@ -413,7 +413,7 @@
     {
       "path": ".fha/tools/README.md",
       "category": "operating",
-      "sha256": "eb1ba91fe08027ac3fa172b4a84b0f1f0da1e8826bbf0e7b21c8f1cd2355301d",
+      "sha256": "94d7532dc6b27f4e04ab064f2701856dd094ddc4f8491ed00e2b75ac061a4310",
       "spec_version": "1.2",
       "src": "tools/README.md"
     },
@@ -658,7 +658,7 @@
     {
       "path": ".fha/tools/site.py",
       "category": "operating",
-      "sha256": "cb8e402a8cba9e054d704d719c9baf3dc7d8449068e16151a5fc30bc2fa382b6",
+      "sha256": "6acb3ef763aea4c704a687d9b11a16e5c7204afba7f8e14d78174b19e4658247",
       "spec_version": "1.2",
       "src": "tools/site.py"
     },
@@ -756,7 +756,7 @@
     {
       "path": ".fha/tools/templates/vendor/fha-tree.js",
       "category": "operating",
-      "sha256": "0d80fbd0a36823a42bf8f3f7b269aca8f20e77b13ad616532438f66f69d012df",
+      "sha256": "3d2b1b6b26af40f5c17893b663df56bf36b61debfa08845fc09197ea2ed91139",
       "spec_version": "1.2",
       "src": "tools/templates/vendor/fha-tree.js"
     },
@@ -884,7 +884,7 @@
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "cbaba28f534a158342d419f1e7199f8904a9722baeecfe09517812d628176201",
+      "sha256": "4e432a413d3b673c45cac36e79896ac68cee57259ae330f7d352db1cebae0636",
       "spec_version": "1.2"
     },
     {
