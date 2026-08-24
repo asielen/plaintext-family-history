@@ -780,6 +780,75 @@ class OrphanedBackPhotosTests(unittest.TestCase):
         self.assertEqual(check['status'], 'warn')
         self.assertGreaterEqual(result.exit_code, EXIT_WARNINGS)
 
+    # ── Codex review, PR #145 followups (PR #161), finding 2 ─────────────────
+
+    def test_unlisted_back_sibling_different_case_is_flagged(self) -> None:
+        # Finding #2: a back scan saved in a DIFFERENT CASE than the primary
+        # must still be found. The old hand-built candidate check only ever
+        # probed the exact lowercase `{base_id}-back{ext}` / `_back{ext}`
+        # spellings, so a back saved as `x-00200-BACK.jpg` was invisible to
+        # it on a case-sensitive filesystem - the fix scans the directory and
+        # parses each candidate's own stem instead, the same way
+        # `process.py`'s `_find_back_sibling` already does at import time.
+        (self.root / 'photos' / 'x-00200.jpg').write_bytes(b'front')
+        (self.root / 'photos' / 'x-00200-BACK.jpg').write_bytes(b'back')
+        _write(self.root / 'sources' / 'photos' / 'card2_S-1111111112.md', _SOURCE.format(
+            sid='S-1111111112', title='Card 2',
+            line='files:\n  - file: photos/x-00200.jpg\n    role: primary\n'))
+
+        result = doctor.run_doctor(self.root, self._fha_config())
+        report = '\n'.join(result.data['lines'])
+
+        self.assertIn('orphaned back scan', report)
+        self.assertIn('photos/x-00200-BACK.jpg', report)
+        check = self._finding(result)
+        self.assertIsNotNone(check)
+        self.assertEqual(check['status'], 'warn')
+
+    def test_unlisted_back_sibling_different_extension_is_flagged(self) -> None:
+        # Finding #2: a back scan saved with a DIFFERENT EXTENSION than the
+        # primary must still be found - `x-00300-back.jpeg` beside a
+        # `x-00300.jpg` primary, invisible to the old
+        # `{base_id}-back{PRIMARY's own extension}` guess.
+        (self.root / 'photos' / 'x-00300.jpg').write_bytes(b'front')
+        (self.root / 'photos' / 'x-00300-back.jpeg').write_bytes(b'back')
+        _write(self.root / 'sources' / 'photos' / 'card3_S-1111111113.md', _SOURCE.format(
+            sid='S-1111111113', title='Card 3',
+            line='files:\n  - file: photos/x-00300.jpg\n    role: primary\n'))
+
+        result = doctor.run_doctor(self.root, self._fha_config())
+        report = '\n'.join(result.data['lines'])
+
+        self.assertIn('orphaned back scan', report)
+        self.assertIn('photos/x-00300-back.jpeg', report)
+
+    # ── Codex review, PR #145 followups (PR #161), finding 5 ─────────────────
+
+    def test_missing_primary_routes_to_reconcile_not_a_dead_process_command(self) -> None:
+        # Finding #5: when the source's LISTED primary is itself missing from
+        # disk while its back scan still sits there, the suggested command
+        # must not be `fha process <missing primary> --more ...` - that
+        # command's positional FILE argument would not exist, so it would
+        # fail the instant it is run. The suggestion must route to the
+        # missing-file recovery path (`fha reconcile`) instead.
+        (self.root / 'photos' / 'x-00400-back.jpg').write_bytes(b'back')
+        # x-00400.jpg (the listed primary) is deliberately never created.
+        _write(self.root / 'sources' / 'photos' / 'card4_S-1111111114.md', _SOURCE.format(
+            sid='S-1111111114', title='Card 4',
+            line='files:\n  - file: photos/x-00400.jpg\n    role: primary\n'))
+
+        result = doctor.run_doctor(self.root, self._fha_config())
+        report = '\n'.join(result.data['lines'])
+
+        self.assertIn('orphaned back scan', report)
+        self.assertIn('missing from disk', report)
+        self.assertIn('reconcile', report)
+        self.assertNotIn(
+            f'{doctor._LAUNCHER} process {doctor.shell_quote("photos/x-00400.jpg")}', report)
+        check = self._finding(result)
+        self.assertIsNotNone(check)
+        self.assertEqual(check['status'], 'warn')
+
     def test_listed_back_is_clean(self) -> None:
         (self.root / 'photos' / 'x-00100.jpg').write_bytes(b'front')
         (self.root / 'photos' / 'x-00100-back.jpg').write_bytes(b'back')
