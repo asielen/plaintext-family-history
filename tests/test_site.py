@@ -95,7 +95,7 @@ class _Base(unittest.TestCase):
     # - seeding -
 
     def _seed_person(self, pid, name='Test Person', *, living='false', tier='curated',
-                     surname='Person', body='# Test Person\n', frontmatter_extra=''):
+                     surname='Person', body='# Test Person\n', frontmatter_extra='', sex='M'):
         rel = f'people/{surname.lower()}__test_{pid}.md'
         path = self.archive_root / rel
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -111,7 +111,7 @@ class _Base(unittest.TestCase):
         self.conn.execute(
             'INSERT INTO persons(id, name, surname, sex, living, tier, status, path) '
             'VALUES (?,?,?,?,?,?,?,?)',
-            (pid, name, surname, 'M', living, tier, 'active', rel),
+            (pid, name, surname, sex, living, tier, 'active', rel),
         )
 
     def _seed_source(self, sid, title='A Source', *, source_type='census', restricted=0,
@@ -133,7 +133,7 @@ class _Base(unittest.TestCase):
 
     def _seed_claim(self, cid, sid, ctype, value, *, status='accepted', date_edtf=None,
                     place_text=None, persons=(), confidence=None, reviewed=None, negated=0,
-                    roles=None, date_min=None):
+                    roles=None, date_min=None, subtype=None):
         """Seed one claim. `roles` is {person_id: role}, the `roles:` map as
         `fha index` stores it - which of the people a claim names plays which
         part (SPEC §8.3). Omit it for the legacy/unroled claim.
@@ -141,14 +141,18 @@ class _Base(unittest.TestCase):
         date_min defaults to the naive January-1 widening of date_edtf (matches
         what real claims carry for a plain year), but a test can override it to
         construct the #128 shape - an uncertain/ranged date_edtf whose widened
-        date_min lands in a different decade than the display date reads as."""
+        date_min lands in a different decade than the display date reads as.
+
+        `subtype` is the relationship claim's nature (SPEC §8.2/§12.2 -
+        `adoptive`/`step`/`foster`/`guardian`/... for a non-genetic parent-
+        child edge, `biological` or unset for a genetic one)."""
         if date_min is None:
             date_min = (date_edtf or '')[:4] + '-01-01' if date_edtf else None
         self.conn.execute(
-            'INSERT INTO claims(id, source_id, type, value, status, date_edtf, date_min, place_text, '
-            'confidence, reviewed, negated) '
-            'VALUES (?,?,?,?,?,?,?,?,?,?,?)',
-            (cid, sid, ctype, value, status, date_edtf, date_min, place_text,
+            'INSERT INTO claims(id, source_id, type, subtype, value, status, date_edtf, date_min, '
+            'place_text, confidence, reviewed, negated) '
+            'VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+            (cid, sid, ctype, subtype, value, status, date_edtf, date_min, place_text,
              confidence, reviewed, negated),
         )
         for pos, pid in enumerate(persons):
@@ -156,10 +160,10 @@ class _Base(unittest.TestCase):
                 'INSERT INTO claim_persons(claim_id, person_id, position, role) VALUES (?,?,?,?)',
                 (cid, pid, pos, (roles or {}).get(pid)))
 
-    def _seed_rel(self, pid, rel, other):
+    def _seed_rel(self, pid, rel, other, *, claim_id='c-rrrrrrrrrr'):
         self.conn.execute(
             'INSERT INTO relationships(person_id, rel, other_id, claim_id) VALUES (?,?,?,?)',
-            (pid, rel, other, 'c-rrrrrrrrrr'))
+            (pid, rel, other, claim_id))
 
     def _run(self, *, linked=False, dry_run=False, workbench=False):
         self.conn.commit()
@@ -2731,6 +2735,91 @@ class TreeTests(_Base):
         self.assertEqual(sorted(set(ids)), ['P-aaaaaaaaaa', 'P-bbbbbbbbbb'])
         self.assertEqual(len(ids), len(set(ids)))                      # each node once
 
+    def test_descendant_tree_data_stays_complete_beyond_old_bound(self):
+        # #152 follow-up review fix (P2, finding 1): the first cut of the
+        # #152 performance fix used `_DESCENDANT_TREE_MAX_HOPS` (then 12) as
+        # a hard TRUNCATION bound on the server-side BFS, silently dropping
+        # every descendant past 12 hops from both the embedded tree and the
+        # reusable `data/tree_*.json` artifact - contradicting
+        # tools/README.md's promise that "only the initial paint is bounded
+        # while the data stays complete and the reader expands forward."
+        # Build a chain well past that old 12-hop bound (but nowhere near
+        # today's much larger safety-net value) and confirm every generation
+        # survives in the artifact - this must fail against the pre-fix hard
+        # truncation.
+        depth = 20
+        ids = []
+        prev = None
+        for g in range(depth):
+            # Fixed-width numeric suffix (zero-padded to 2 digits) - a
+            # variable-width `f'gen{g}'` + zero-fill collides once g reaches
+            # double digits (e.g. 'gen1' and 'gen10' both zero-pad to the
+            # same 10-char string), which this loop's depth (20) reaches.
+            pid = f'p-g{g:02d}' + '0' * 7
+            self._seed_person(pid, f'Descendant Gen{g}', surname=f'Gen{g}')
+            if prev is not None:
+                self._seed_rel(prev, 'child', pid)
+                self._seed_rel(pid, 'parent', prev)
+            ids.append(pid)
+            prev = pid
+        (self.archive_root / 'fha.yaml').write_text(
+            f'roots: {{}}\nroot_person: P-{ids[0][2:]}\n', encoding='utf-8')
+        res = self._run(linked=True)
+        self.assertEqual(res['status'], 'ok')
+        data = json.loads(
+            (self.out_dir / 'data' / f'tree_{ids[0]}_descendants.json').read_text(encoding='utf-8'))
+        got_ids = {n['p_id'] for n in data['nodes']}
+        expected_ids = {f'P-{pid[2:]}' for pid in ids}
+        self.assertEqual(got_ids, expected_ids)          # every generation present, none dropped
+        self.assertFalse(any('truncated' in m.lower() for m in res['messages']))
+
+    def test_descendant_tree_bfs_safety_net_still_truncates_and_warns(self):
+        # #152 follow-up review fix (P2, finding 1): `_DESCENDANT_TREE_MAX_
+        # HOPS` is now a generous safety net (real archives should never hit
+        # it), not a display bound - but it must still actually stop a
+        # pathological walk, and must say so loudly rather than silently
+        # dropping generations. Patch it down to a small value to exercise
+        # that safety-net path without building hundreds of fixture people.
+        ids = []
+        prev = None
+        for g in range(5):
+            pid = f'p-g{g:02d}' + '0' * 7
+            self._seed_person(pid, f'Descendant Gen{g}', surname=f'Gen{g}')
+            if prev is not None:
+                self._seed_rel(prev, 'child', pid)
+                self._seed_rel(pid, 'parent', prev)
+            ids.append(pid)
+            prev = pid
+        (self.archive_root / 'fha.yaml').write_text(
+            f'roots: {{}}\nroot_person: P-{ids[0][2:]}\n', encoding='utf-8')
+        with unittest.mock.patch.object(site, '_DESCENDANT_TREE_MAX_HOPS', 2):
+            res = self._run(linked=True)
+        self.assertEqual(res['status'], 'ok')                          # terminates, not an error
+        data = json.loads(
+            (self.out_dir / 'data' / f'tree_{ids[0]}_descendants.json').read_text(encoding='utf-8'))
+        got_ids = {n['p_id'] for n in data['nodes']}
+        within_bound = f'P-{ids[2][2:]}'      # hop == 2: still walked
+        beyond_bound = f'P-{ids[3][2:]}'      # hop == 3: never reached, safety net stopped it
+        self.assertIn(within_bound, got_ids)
+        self.assertNotIn(beyond_bound, got_ids)
+        self.assertTrue(any('truncated' in m.lower() and 'descendants' in m.lower()
+                            for m in res['messages']))                # warned, not silent
+
+    def test_descendant_tree_render_deferred_until_details_opens(self):
+        # #152 review fix (P2): the descendants <details> is closed by
+        # default (person.html), so calling FhaTree.render() unconditionally
+        # at page load - the pre-fix behavior - fed it a zero-width
+        # container (a collapsed <details> is not laid out at all), which
+        # left the chart badly fit until the reader pressed Fit by hand.
+        # The emitted script must now wait for the enclosing <details>'s own
+        # `toggle` event, which only fires once it is genuinely open and has
+        # real layout dimensions.
+        self._seed_rels_chain()
+        self._run(linked=True)
+        gus_page = self._read('persons/p-cccccccccc.html')
+        self.assertIn('function renderTree()', gus_page)
+        self.assertIn("addEventListener('toggle'", gus_page)
+
     def test_mistyped_root_person_warns(self):
         self._seed_person('p-aaaaaaaaaa', 'Real Person')
         (self.archive_root / 'fha.yaml').write_text(
@@ -3012,6 +3101,48 @@ class HomePedigreeTests(_Base):
         self.assertTrue(any('home_pedigree_generations' in m and 'whole number' in m
                             for m in res['messages']))
 
+    def test_fractional_generations_warns_and_uses_default(self):
+        # #152 review fix (P2): `int(3.9)` truncates to 3 with no error -
+        # `int()` succeeding is not the same as "this was genuinely a whole
+        # number." A fractional YAML value must be rejected the same way a
+        # non-numeric string already is, not silently narrowed to a
+        # shallower chart than configured with no warning at all.
+        self._seed_person('p-aaaaaaaaaa', 'Hub Person')
+        self._seed_linear_ancestors('p-aaaaaaaaaa', 6)
+        self._seed_home(extra_yaml='  home_pedigree_generations: 3.9\n')
+        res = self._run(linked=True)
+        self.assertTrue(any('home_pedigree_generations' in m and 'whole number' in m
+                            for m in res['messages']))
+        ped = self._pedigree_section(self._read('index.html'))
+        self.assertIn('Ancestor Gen5', ped)      # the documented default (5) - not int(3.9)=3
+        self.assertNotIn('Ancestor Gen6', ped)
+
+    def test_integral_float_generations_is_accepted(self):
+        # #152 follow-up review fix (P2, finding 6): PyYAML parses a hand-
+        # edited `home_pedigree_generations: 3.0` as a Python `float`, not an
+        # `int` - a harmless slip, and mathematically a genuine whole number.
+        # The fractional-rejection fix above must not catch this case too:
+        # `3.0` should be honored as depth 3 (not silently overridden to the
+        # default of 5), and with no "not a whole number" warning, since
+        # nothing was actually wrong with what the human wrote.
+        self._seed_person('p-aaaaaaaaaa', 'Hub Person')
+        self._seed_linear_ancestors('p-aaaaaaaaaa', 5)
+        self._seed_home(extra_yaml='  home_pedigree_generations: 3.0\n')
+        res = self._run(linked=True)
+        self.assertFalse(any('home_pedigree_generations' in m for m in res['messages']))
+        ped = self._pedigree_section(self._read('index.html'))
+        self.assertIn('Ancestor Gen3', ped)       # the REQUESTED depth (3) - not the default (5)
+        self.assertNotIn('Ancestor Gen4', ped)
+
+    def test_boolean_generations_warns_and_uses_default(self):
+        # Same bug, different door: `bool` is an `int` subclass in Python, so
+        # `int(True) == 1` used to be silently accepted as a valid depth.
+        self._seed_person('p-aaaaaaaaaa', 'Hub Person')
+        self._seed_home(extra_yaml='  home_pedigree_generations: true\n')
+        res = self._run(linked=True)
+        self.assertTrue(any('home_pedigree_generations' in m and 'whole number' in m
+                            for m in res['messages']))
+
     def test_seeds_on_home_person_not_root_person(self):
         self._seed_person('p-aaaaaaaaaa', 'Root Person')
         self._seed_person('p-bbbbbbbbbb', 'Home Person')
@@ -3096,6 +3227,86 @@ class HomePedigreeTests(_Base):
         home = self._read('index.html')
         self.assertIn('Full Sibling', self._pedigree_section(home))
 
+    def test_restricted_hub_parent_tie_contributes_no_sibling_candidates(self):
+        # #152 review fix (P1, privacy-adjacent): `_hub_siblings` used to
+        # check ONLY the CANDIDATE's own tie to a shared parent
+        # (`_has_public_claim(parent, candidate)`), never the HUB's OWN tie
+        # to that same parent. So a parent the hub is tied to ONLY through a
+        # restricted/sealed claim still contributed sibling candidates - via
+        # those candidates' own PUBLIC ties to that same parent - which
+        # tells a reader "the hub is tied to this parent" just as surely as
+        # printing the parent's name on the hub's own card would, defeating
+        # the whole point of restricting the hub's own tie. A parent the hub
+        # is not itself publicly tied to must now contribute NO candidates
+        # at all, regardless of how public a candidate's own tie to that
+        # parent is.
+        self._seed_person('p-aaaaaaaaaa', 'Hub Person')
+        self._seed_person('p-bbbbbbbbbb', 'Shared Parent')
+        self._seed_person('p-cccccccccc', 'Other Child')
+        self._seed_rel('p-bbbbbbbbbb', 'child', 'p-aaaaaaaaaa', claim_id='c-1111111111')
+        self._seed_rel('p-aaaaaaaaaa', 'parent', 'p-bbbbbbbbbb', claim_id='c-1111111111')
+        self._seed_rel('p-bbbbbbbbbb', 'child', 'p-cccccccccc')
+        self._seed_rel('p-cccccccccc', 'parent', 'p-bbbbbbbbbb')
+        # The HUB's own tie to Shared Parent is backed only by a claim from
+        # a hard-restricted source - not public. The relationships row above
+        # carries this SAME claim_id (rather than the generic placeholder
+        # `_seed_rel` otherwise defaults to) so the edge-specific check
+        # (`_has_public_parent_edge`, the #152-round P1 fix) can actually see
+        # which claim backs it - the same way `fha index` always ties a
+        # derived relationships row to the real claim that produced it.
+        self._seed_source('s-1111111111', 'Restricted Source', restricted=1,
+                          people=('p-bbbbbbbbbb', 'p-aaaaaaaaaa'))
+        self._seed_claim('c-1111111111', 's-1111111111', 'relationship',
+                         'Hub is the child of Shared Parent', status='accepted',
+                         persons=('p-bbbbbbbbbb', 'p-aaaaaaaaaa'),
+                         roles={'p-bbbbbbbbbb': 'parent', 'p-aaaaaaaaaa': 'child'})
+        # Other Child's own tie to Shared Parent carries no claim at all - a
+        # bare relationships-table row, publicly tied per `_has_public_claim`.
+        self._seed_home()
+        self._run(linked=False)
+        home = self._read('index.html')
+        # Other Child is an ordinary curated person and legitimately appears
+        # in the home page's surname A-Z index regardless - the assertion
+        # must be scoped to the pedigree chart itself, not the whole page.
+        self.assertNotIn('Other Child', self._pedigree_section(home))
+
+    def test_unrelated_public_claim_does_not_fake_a_public_parent_tie(self):
+        # Codex review (P1, PR #152 round): `_has_public_claim(p, pid)` asks
+        # "is there ANY publishable claim connecting these two people, about
+        # anything" - a completely UNRELATED public claim (a shared census
+        # entry, here) satisfies that even though the parent-child tie
+        # itself is backed only by a restricted claim, letting the hub's
+        # sibling-candidate gate wrongly treat the hub as publicly tied to
+        # this parent. `_has_public_parent_edge` asks the narrower, correct
+        # question - is the parent-child RELATIONSHIP itself public - so it
+        # must not be fooled by the census claim's mere presence.
+        self._seed_person('p-aaaaaaaaaa', 'Hub Person')
+        self._seed_person('p-bbbbbbbbbb', 'Shared Parent')
+        self._seed_person('p-cccccccccc', 'Other Child')
+        self._seed_rel('p-bbbbbbbbbb', 'child', 'p-aaaaaaaaaa', claim_id='c-1111111111')
+        self._seed_rel('p-aaaaaaaaaa', 'parent', 'p-bbbbbbbbbb', claim_id='c-1111111111')
+        self._seed_rel('p-bbbbbbbbbb', 'child', 'p-cccccccccc')
+        self._seed_rel('p-cccccccccc', 'parent', 'p-bbbbbbbbbb')
+        # The parent-child claim itself is restricted...
+        self._seed_source('s-1111111111', 'Restricted Source', restricted=1,
+                          people=('p-bbbbbbbbbb', 'p-aaaaaaaaaa'))
+        self._seed_claim('c-1111111111', 's-1111111111', 'relationship',
+                         'Hub is the child of Shared Parent', status='accepted',
+                         persons=('p-bbbbbbbbbb', 'p-aaaaaaaaaa'),
+                         roles={'p-bbbbbbbbbb': 'parent', 'p-aaaaaaaaaa': 'child'})
+        # ...but a completely unrelated, perfectly public census claim ALSO
+        # names both people (as household members, not as parent/child) -
+        # the exact shape a pair-wide "any claim at all" check cannot tell
+        # apart from genuine evidence of the parent-child tie itself.
+        self._seed_source('s-2222222222', 'Public Census')
+        self._seed_claim('c-2222222222', 's-2222222222', 'census',
+                         'Shared Parent and Hub Person both listed in the 1900 census',
+                         status='accepted', persons=('p-bbbbbbbbbb', 'p-aaaaaaaaaa'))
+        self._seed_home()
+        self._run(linked=False)
+        home = self._read('index.html')
+        self.assertNotIn('Other Child', self._pedigree_section(home))
+
     def test_branch_coloring_on_home_page_not_on_person_page(self):
         # #115: branch coloring is opt-in (the `home=True`/`branch_color=True`
         # pair `_build_home_pedigree` passes), so an ordinary person's own
@@ -3109,6 +3320,123 @@ class HomePedigreeTests(_Base):
         self.assertIn('ped-branch-1', self._read('index.html'))
         self.assertNotIn('ped-branch-1', self._read('persons/p-aaaaaaaaaa.html'))
         self.assertNotIn('ped-branch-2', self._read('persons/p-aaaaaaaaaa.html'))
+
+    def test_ahnentafel_excludes_non_genetic_parent(self):
+        # #152 review fix (P2, SPEC §12.2): a parent-child edge whose backing
+        # claim carries an explicit non-genetic `subtype` (adoptive/step/
+        # foster/guardian/...) must never occupy an Ahnentafel slot - doing
+        # so falsely presents a social/legal parent, and their whole
+        # ancestor line behind them, as ordinary biological ancestry. The
+        # excluded slot reads as an ordinary unresearched 'Unknown', not a
+        # labelled non-genetic card (matches the review's own "filtering out
+        # is simpler and safer" steer).
+        self._seed_person('p-aaaaaaaaaa', 'Hub Person', sex='F')
+        self._seed_person('p-bbbbbbbbbb', 'Adoptive Parent', sex='F')
+        self._seed_person('p-cccccccccc', 'Bio Parent', sex='M')
+        self._seed_rel('p-aaaaaaaaaa', 'parent', 'p-bbbbbbbbbb', claim_id='c-1111111111')
+        self._seed_rel('p-bbbbbbbbbb', 'child', 'p-aaaaaaaaaa')
+        self._seed_rel('p-aaaaaaaaaa', 'parent', 'p-cccccccccc')
+        self._seed_rel('p-cccccccccc', 'child', 'p-aaaaaaaaaa')
+        self._seed_source('s-1111111111', 'Adoption Record',
+                          people=('p-aaaaaaaaaa', 'p-bbbbbbbbbb'))
+        self._seed_claim('c-1111111111', 's-1111111111', 'relationship',
+                         'Hub was adopted by Adoptive Parent', status='accepted',
+                         subtype='adoptive', persons=('p-bbbbbbbbbb', 'p-aaaaaaaaaa'),
+                         roles={'p-bbbbbbbbbb': 'parent', 'p-aaaaaaaaaa': 'child'})
+        self._seed_home()
+        self._run(linked=True)
+        ped = self._pedigree_section(self._read('index.html'))
+        self.assertNotIn('Adoptive Parent', ped)
+        self.assertIn('Bio Parent', ped)
+
+    def test_restricted_genetic_claim_does_not_confirm_ancestry_via_an_unrelated_public_claim(self):
+        # Codex review (P1, PR #152 round): a pair can carry BOTH a public
+        # NON-genetic claim (adoptive) and a restricted GENETIC (biological)
+        # claim. `_has_public_claim(pid, other)` - a pair-wide "does ANY
+        # public claim connect these two people, about anything" check - was
+        # satisfied by the public adoptive claim alone, and that let the
+        # RESTRICTED biological claim's genetic subtype set `entry['genetic']
+        # = True` regardless, presenting a genetic ancestry relationship
+        # whose only actual evidence is restricted (DNA/by-request) material.
+        # Standalone mode with no public genetic evidence must show this
+        # slot as an ordinary unresearched gap, the same as the
+        # explicitly-non-genetic-subtype case just above - not the parent's
+        # name.
+        self._seed_person('p-aaaaaaaaaa', 'Hub Person', sex='F')
+        self._seed_person('p-bbbbbbbbbb', 'Bio Or Adoptive Parent', sex='F')
+        self._seed_rel('p-aaaaaaaaaa', 'parent', 'p-bbbbbbbbbb', claim_id='c-1111111111')
+        self._seed_rel('p-bbbbbbbbbb', 'child', 'p-aaaaaaaaaa')
+        self._seed_rel('p-aaaaaaaaaa', 'parent', 'p-bbbbbbbbbb', claim_id='c-2222222222')
+        self._seed_source('s-1111111111', 'Adoption Record',
+                          people=('p-aaaaaaaaaa', 'p-bbbbbbbbbb'))
+        self._seed_claim('c-1111111111', 's-1111111111', 'relationship',
+                         'Hub was adopted by Bio Or Adoptive Parent', status='accepted',
+                         subtype='adoptive', persons=('p-bbbbbbbbbb', 'p-aaaaaaaaaa'),
+                         roles={'p-bbbbbbbbbb': 'parent', 'p-aaaaaaaaaa': 'child'})
+        self._seed_source('s-2222222222', 'DNA Report', restricted='dna',
+                          people=('p-aaaaaaaaaa', 'p-bbbbbbbbbb'))
+        self._seed_claim('c-2222222222', 's-2222222222', 'relationship',
+                         'DNA confirms Bio Or Adoptive Parent as biological parent',
+                         status='accepted', subtype='biological',
+                         persons=('p-bbbbbbbbbb', 'p-aaaaaaaaaa'),
+                         roles={'p-bbbbbbbbbb': 'parent', 'p-aaaaaaaaaa': 'child'})
+        self._seed_home()
+        self._run(linked=False)
+        ped = self._pedigree_section(self._read('index.html'))
+        self.assertNotIn('Bio Or Adoptive Parent', ped)
+
+    def test_unknown_sex_parents_get_no_branch_color(self):
+        # #152 review fix (P2): when NEITHER parent has a known sex, which
+        # one lands in Ahnentafel slot 2 (paternal) vs 3 (maternal) is pure
+        # query/iteration order, not evidence - so tinting either slot's
+        # line paternal/maternal would assert a fact nobody actually
+        # recorded, and the two colors could even swap between builds.
+        self._seed_person('p-aaaaaaaaaa', 'Hub Person', sex='F')
+        self._seed_person('p-bbbbbbbbbb', 'Parent One', sex='unknown')
+        self._seed_person('p-cccccccccc', 'Parent Two', sex='unknown')
+        for parent in ('p-bbbbbbbbbb', 'p-cccccccccc'):
+            self._seed_rel('p-aaaaaaaaaa', 'parent', parent)
+            self._seed_rel(parent, 'child', 'p-aaaaaaaaaa')
+        self._seed_home()
+        self._run(linked=True)
+        ped = self._pedigree_section(self._read('index.html'))
+        self.assertNotIn('ped-branch-1', ped)
+        self.assertNotIn('ped-branch-2', ped)
+
+    def test_one_known_sex_parent_keeps_branch_color_when_co_parent_is_unknown(self):
+        # The companion case: only the DEFAULTED slot loses its color. A
+        # parent whose sex genuinely IS on record keeps the branch color its
+        # own recorded sex derives - the fix is not "disable all coloring
+        # whenever any parent's sex is unknown," only "never color a slot
+        # whose OWN placement in slot 2 vs 3 was not actually evidenced."
+        self._seed_person('p-aaaaaaaaaa', 'Hub Person', sex='F')
+        self._seed_person('p-bbbbbbbbbb', 'Known Mother', sex='F')
+        self._seed_person('p-cccccccccc', 'Unknown Parent', sex='unknown')
+        for parent in ('p-bbbbbbbbbb', 'p-cccccccccc'):
+            self._seed_rel('p-aaaaaaaaaa', 'parent', parent)
+            self._seed_rel(parent, 'child', 'p-aaaaaaaaaa')
+        self._seed_home()
+        self._run(linked=True)
+        ped = self._pedigree_section(self._read('index.html'))
+        self.assertIn('ped-branch-2', ped)     # Known Mother's line - genuinely derived
+        self.assertNotIn('ped-branch-1', ped)  # Unknown Parent's line - defaulted, no evidence
+
+    def test_stub_ancestor_renders_unlinked_plain_name(self):
+        # docs/CUSTOMIZING_SITE.md's click-through promise is qualified to
+        # ancestors that already have a page in this build (#152 review fix,
+        # doc wording only - `_chart_entry` already behaved this way; this
+        # locks the behavior in so the corrected doc text keeps matching
+        # it). A stub-tier ancestor gets no page outside workbench, so
+        # `_chart_entry` renders them as a plain, unlinked name - never a
+        # dead or guessed link.
+        self._seed_person('p-aaaaaaaaaa', 'Hub Person')
+        self._seed_person('p-bbbbbbbbbb', 'Stub Ancestor', tier='stub')
+        self._seed_rel('p-aaaaaaaaaa', 'parent', 'p-bbbbbbbbbb')
+        self._seed_rel('p-bbbbbbbbbb', 'child', 'p-aaaaaaaaaa')
+        self._seed_home()
+        self._run(linked=True)
+        ped = self._pedigree_section(self._read('index.html'))
+        self.assertIn('<span class="ped-name">Stub Ancestor</span>', ped)
 
     def test_axis_label_and_caption_present(self):
         self._seed_person('p-aaaaaaaaaa', 'Hub Person')
@@ -5090,6 +5418,72 @@ class FanChartLabelTests(_Base):
         self.assertGreater(labels['Bo Ford'], labels['Chastina Augusta Reed'])
 
 
+class TreeFitScaleTests(unittest.TestCase):
+    """#152 review fix (P2): `fha-tree.js`'s `fit()` (both the collapsible-
+    tree `render()` copy and the `wrapStatic()` copy for the static home
+    pedigree) must be able to compute a scale BELOW `MIN_SCALE` for a chart
+    tall/wide enough to need one - `MIN_SCALE` bounds manual zoom-out only
+    (the -/+ buttons, wheel, pinch), not what "Fit chart to view" is allowed
+    to compute. At the deep end of a configured home pedigree
+    (`home_pedigree_generations` 7-8, the documented max) with a
+    substantially-populated tree, the drawn chart can need a scale under 0.1
+    to fit the at-most-620px viewport - clamping fit()'s own computation
+    through `clampScale()` (as before this fix) left part of the chart
+    permanently out of view with no way to zoom out any further. A
+    regression here textually reintroduces exactly that clamp."""
+
+    def test_fit_does_not_clamp_through_min_scale(self):
+        js = (ROOT / 'tools' / 'templates' / 'vendor' / 'fha-tree.js').read_text(encoding='utf-8')
+        # The pre-fix shape, in both fit() copies: the whole Math.min(...)
+        # fit computation wrapped in clampScale(...), which floors it at
+        # MIN_SCALE. Must not appear anywhere in the file.
+        self.assertEqual(js.count('clampScale(Math.min(vpW / (contentW + FIT_PAD * 2)'), 0)
+        # The fixed shape: MAX_SCALE is still respected as a ceiling (so a
+        # tiny chart does not over-zoom on Fit), MIN_SCALE is not consulted
+        # at all - present once in render()'s fit() and once in
+        # wrapStatic()'s.
+        self.assertEqual(js.count('Math.min(MAX_SCALE, vpW / (contentW + FIT_PAD * 2)'), 2)
+
+    def test_zoom_out_does_not_reverse_direction_below_min_scale(self):
+        # #152 follow-up review fix (P2, finding 2): zoomAt() used to run its
+        # computed next scale through clampScale() unconditionally - fine
+        # normally, but once fit() (fixed above) parks the view BELOW
+        # MIN_SCALE for a very deep pedigree, that plain clamp RAISES a
+        # further zoom-OUT request back up to MIN_SCALE, reversing the
+        # requested direction (e.g. an outward 0.8x zoom from 0.05 computes
+        # 0.04, clampScale(0.04) returns 0.1 - zoom out actually zooms in
+        # 2x). zoomAt() must instead route through the shared
+        # nextZoomScale() helper, which only re-applies the floor for the
+        # opposite (zoom-in) direction. Checked in both fit()/zoomAt() copies
+        # (render() and wrapStatic()) and in both committed example-site
+        # copies, alongside the template.
+        for path in (ROOT / 'tools' / 'templates' / 'vendor' / 'fha-tree.js',
+                     ROOT / 'example-archive' / 'generated' / 'site' / 'vendor' / 'fha-tree.js',
+                     ROOT / 'example-archive' / 'generated' / 'site-workbench' / 'vendor' / 'fha-tree.js'):
+            with self.subTest(path):
+                js = path.read_text(encoding='utf-8')
+                self.assertIn('function nextZoomScale(sc, factor)', js)
+                # The pre-fix shape must be gone from both zoomAt() copies.
+                self.assertEqual(js.count('var next = clampScale(sc * factor);'), 0)
+                # The fixed shape: present once per zoomAt() copy.
+                self.assertEqual(js.count('var next = nextZoomScale(sc, factor);'), 2)
+
+    def test_committed_showcase_vendor_copies_match_the_template(self):
+        # The same staleness class #153 already fixed once for the
+        # workbench showcase's stylesheet (CommittedShowcaseAssetTests): the
+        # two example sites under example-archive/generated/ are committed,
+        # browsable snapshots, so a fix that only touches
+        # tools/templates/vendor/fha-tree.js still ships the old bug to
+        # anyone reading those unless the committed copies are synced too.
+        template = (ROOT / 'tools' / 'templates' / 'vendor' / 'fha-tree.js').read_text(encoding='utf-8')
+        for rel in ('example-archive/generated/site/vendor/fha-tree.js',
+                    'example-archive/generated/site-workbench/vendor/fha-tree.js'):
+            with self.subTest(rel):
+                self.assertEqual(
+                    (ROOT / rel).read_text(encoding='utf-8'), template,
+                    f'{rel} is stale - copy tools/templates/vendor/fha-tree.js over it verbatim.')
+
+
 class FanChartStyleTests(unittest.TestCase):
     def test_fan_label_has_no_fixed_font_size(self):
         # Issue #116: _render_fan_svg() computes a per-label auto-shrink
@@ -5152,6 +5546,25 @@ class CommittedShowcaseAssetTests(unittest.TestCase):
                     'and copy design/styles.css over the site-workbench snapshot '
                     '(that one is built by `fha serve` and cannot be rebuilt '
                     'reproducibly - it embeds a per-process CSRF token).')
+
+    def test_committed_showcase_person_pages_have_deferred_tree_render(self):
+        # #152 follow-up review fix (P2, finding 3): the deferred-render fix
+        # (FhaTree.render() now waits for the enclosing <details>' own
+        # `toggle` event before running, instead of running unconditionally
+        # at page load into a closed - so zero-width - <details>) landed in
+        # tools/templates/_tree.html, but the committed example pages are
+        # static HTML snapshots that only pick it up on a rebuild. Same
+        # staleness class as the vendor-copy check above, checked against
+        # both committed example sites' descendant-tree-carrying showcase
+        # page (P-de957bcda1, the fixture person the #152 finding named).
+        for rel in ('example-archive/generated/site/persons/p-de957bcda1.html',
+                    'example-archive/generated/site-workbench/persons/p-de957bcda1.html'):
+            with self.subTest(rel):
+                html = (ROOT / rel).read_text(encoding='utf-8')
+                self.assertIn('function renderTree()', html,
+                              f'{rel} is stale - it still calls FhaTree.render() '
+                              'unconditionally. Regenerate the example-archive site output.')
+                self.assertIn("addEventListener('toggle'", html)
 
 
 if __name__ == '__main__':

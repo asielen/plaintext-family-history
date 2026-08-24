@@ -346,6 +346,42 @@ _FAN_GENERATIONS = 3
 _HOME_PEDIGREE_GENERATIONS_DEFAULT = 5
 _HOME_PEDIGREE_GENERATIONS_MAX = 8
 
+# Server-side hop SAFETY NET for each curated person's descendant-explorer
+# BFS (#152 review fix, P2 - performance; raised + re-scoped by a second
+# #152 follow-up review after the first cut of this fix - see below).
+# `build_person_page` used to call `_make_tree_ctx` with `max_hops=None`
+# (fully unbounded) for every curated person's opt-in descendant tree, even
+# though the disclosure is collapsed by default and the client only ever
+# PAINTS `initial_depth` generations at once. Because descendant subtrees
+# overlap heavily along one lineage (a person's descendants include their
+# children's descendants, and so on), an unbounded walk per page made a
+# lineage of N curated people redo roughly O(N^2) worth of `relationships`
+# queries across one site build - each ancestor's page re-issuing almost the
+# same SELECTs the page below it already ran in full.
+#
+# The first cut of this fix used this constant as a hard TRUNCATION bound,
+# which silently dropped any descendant more than 12 hops from the seed from
+# BOTH the embedded tree and the reusable `data/tree_*.json` artifact -
+# contradicting `tools/README.md`'s own promise that "only the initial paint
+# is bounded while the data stays complete and the reader expands forward."
+# The real O(N^2) cost was the repeated `relationships` SELECT per shared
+# descendant, not the size of any one page's JSON, so `_tree_edges_cache`
+# (memoized in `__init__`, read via `_tree_relationship_rows`) now caches
+# those rows for the whole build: a person reached by many overlapping
+# walks is queried once, however many pages' trees pass through them. That
+# turns the real cost from O(N^2) queries into O(N) queries (plus O(N^2)
+# cheap in-memory dict/edge construction, which is orders of magnitude
+# cheaper than the SQL round trips it replaces, and trivial at any archive
+# size a human genealogy actually reaches).
+#
+# With the query cost solved, this constant goes back to being what a hop
+# bound like this should be: a generous safety net against a pathological
+# or corrupt dataset, not a visible content limit - raised far past any
+# depth a real family tree reaches, with `_build_tree_data` warning loudly
+# (never silently) if a walk ever actually hits it. See `build_person_page`'s
+# `descendants_tree` context and `_build_tree_data`'s `truncated` handling.
+_DESCENDANT_TREE_MAX_HOPS = 500
+
 # Redaction display strings (M8 UX bar: redacted content is named, never a blank).
 _LIVING_LABEL = 'Living Person'
 _RESTRICTED_LABEL = 'Restricted - not included in this publication'
@@ -983,18 +1019,37 @@ def _render_fan_svg(labels: dict, max_gen: int, r0: float = 54, ring: float = 60
     return '\n'.join(out)
 
 
+def _branch_root(num: int) -> int:
+    """The generation-1 slot (2 or 3) that Ahnentafel slot `num` reduces to -
+    repeatedly halve (integer floor division, the same operation that walks a
+    slot to its own parent) until it lands on 2 or 3. Split out of
+    `_ancestor_branch` (#152 review fix, P2) so a caller can also ask "was
+    THIS slot's own root actually sex-derived" before trusting the branch it
+    implies - see `_ancestor_branch`'s docstring."""
+    while num > 3:
+        num //= 2
+    return num
+
+
 def _ancestor_branch(num: int) -> int:
     """1 (paternal, through slot 2) or 2 (maternal, through slot 3) for an
     Ahnentafel ancestor slot (#115 branch coloring, home pedigree only).
 
     An ancestor's ultimate line is recoverable from its OWN slot number alone,
-    with no extra data or lookup: repeatedly halve the slot (integer floor
-    division, the same operation that walks a slot to its own parent) until it
-    lands on 2 or 3 - father's or mother's line. Only ever called for slot >= 2
-    (the subject, slot 1, has no line of its own to belong to)."""
-    while num > 3:
-        num //= 2
-    return 1 if num == 2 else 2
+    with no extra data or lookup: repeatedly halve the slot until it lands on
+    2 or 3 - father's or mother's line (`_branch_root`). Only ever called for
+    slot >= 2 (the subject, slot 1, has no line of its own to belong to).
+
+    This is a pure function of the slot number - it does NOT know whether
+    slot 2 vs 3 was actually DERIVED from a recorded `sex:` or merely
+    DEFAULTED by elimination among unknown-sex parents (`_build_ahnentafel`'s
+    `sex_derived` flag). `_render_pedigree_svg`'s card loop checks that flag
+    itself (via `_branch_root` + the labels dict) before calling this
+    function at all, and skips the branch color entirely for a defaulted
+    root - see its own comment. A caller that wants a color with no evidence
+    behind it can still call this directly; the render loop is the one place
+    that must not."""
+    return 1 if _branch_root(num) == 2 else 2
 
 
 def _render_pedigree_svg(labels: dict, spouses: list[dict] | None = None,
@@ -1067,7 +1122,12 @@ def _render_pedigree_svg(labels: dict, spouses: list[dict] | None = None,
     left edge by paternal/maternal line: an Ahnentafel slot's line is recoverable
     from its own number alone (halve it repeatedly until it lands on 2 or 3 -
     see `_ancestor_branch`), so this costs no extra data, just a slot-number
-    check per card. `axis_label` (#115) draws one small caption above the
+    check per card - EXCEPT when the slot's own root (2 or 3) was placed by
+    elimination among unknown-sex parents rather than matched by a recorded
+    `sex:` (`labels[root]['sex_derived']` is False, from `_build_ahnentafel`):
+    that root's whole subtree renders with no branch class at all (#152
+    review fix, P2) rather than asserting a paternal/maternal fact nobody
+    actually recorded. `axis_label` (#115) draws one small caption above the
     ancestor columns ('ancestors of {name} ->'-style orientation text) - omitted
     when there is no ancestor column to sit above (ancestor_generations == 0,
     the redaction-safe hub-only fallback). `home` (#115) is purely a sizing
@@ -1333,7 +1393,22 @@ def _render_pedigree_svg(labels: dict, spouses: list[dict] | None = None,
                 midx = (x + CW + x2) / 2
                 links.append(f'<path class="ped-link" d="M{x + CW:.0f},{yc:.0f} '
                              f'H{midx:.0f} V{y2:.0f} H{x2:.0f}"/>')
-        branch = _ancestor_branch(slot) if (branch_color and slot != 1 and kind == 'person') else None
+        branch = None
+        if branch_color and slot != 1 and kind == 'person':
+            # #152 review fix (P2): a slot's branch color is only as good as
+            # the evidence behind whichever slot (2 or 3) it ultimately
+            # reduces to (`_branch_root`) - when THAT root was placed by
+            # elimination among unknown-sex parents rather than matched by a
+            # recorded `sex:` (`sex_derived` is False, from
+            # `_build_ahnentafel`), the slot-2-vs-3 split itself is
+            # order-dependent, not evidence, so tinting it paternal/maternal
+            # would assert a fact nobody actually recorded - and could even
+            # swap which color an unknown-sex parent's line gets between
+            # builds. Default True (undecided root, e.g. no ancestors drawn
+            # at all) preserves the pre-fix look for every ordinary chart.
+            root_label = labels.get(_branch_root(slot)) or {}
+            if root_label.get('sex_derived', True):
+                branch = _ancestor_branch(slot)
         cards.append(card(x, yc, ' ped-self' if slot == 1 else '', None if kind == 'empty' else lab,
                           slot, branch))
 
@@ -1657,6 +1732,16 @@ class _SiteBuilder:
         # lookup + derivative) and reused across their page and every tree node
         # they appear in. Value: the publishable image file, or None.
         self._profile_photo_cache: dict[str, Path | None] = {}
+        # One person's `relationships` rows for a given direction ('parent' or
+        # 'child'), memoized across every descendant/ancestor tree BFS in this
+        # build (#152 review fix, P2, finding 1 - see `_DESCENDANT_TREE_MAX_
+        # HOPS`'s comment). Curated people's descendant trees overlap heavily
+        # along a shared lineage - a person's descendants include their
+        # children's descendants, and so on - so without this cache a lineage
+        # of N curated people re-issues roughly the same SELECT up to N times,
+        # walking the same shrinking tail each page below re-walks in full.
+        # Keyed (person_id, rel); value is the raw `sqlite3.Row` list.
+        self._tree_edges_cache: dict[tuple[str, str], list] = {}
         # Per-person-page footnote registry: cited sources become numbered
         # footnotes (superscripts inline, names listed at the bottom) instead of
         # raw [S-id] chips. None outside a person page (e.g. place pages), where
@@ -2642,9 +2727,14 @@ class _SiteBuilder:
         # instead of the old apex-of-root_person. `_make_tree_ctx` already
         # returns None for a person with no descendant edges at all, so the
         # link/section simply does not render for a leaf of the tree - no
-        # extra check needed here.
+        # extra check needed here. `max_hops=_DESCENDANT_TREE_MAX_HOPS` is a
+        # generous safety net, not a display bound (#152 review fix, P2): the
+        # data stays complete (memoized `relationships` queries keep the walk
+        # affordable - see that constant's own comment), and `initial_depth`
+        # below is what actually bounds the client's initial paint.
         descendants_tree = self._make_tree_ctx(
-            pid, 'descendants', None, page_dir, f'Descendants of {name}', initial_depth=4)
+            pid, 'descendants', _DESCENDANT_TREE_MAX_HOPS, page_dir,
+            f'Descendants of {name}', initial_depth=4)
 
         ctx = {
             'display_id': fmt_id_display(pid), 'name': name,
@@ -3347,13 +3437,60 @@ class _SiteBuilder:
             (pid1, pid2),
         ).fetchall()
         for r in rows:
-            if not self.linked and r['status'] != 'accepted':
-                continue
-            if normalize_id(str(r['id'])) in self.restricted_claims:
-                continue
-            if not self._source_hard_restricted(r['source_id']):
+            if self._claim_row_is_publishable(r['id'], r['source_id'], r['status']):
                 return True
         return not rows  # no claims at all → relationship came from YAML directly, show it
+
+    def _claim_row_is_publishable(self, claim_id, source_id, status) -> bool:
+        """Return True if ONE specific claim (already known to name whoever the
+        caller cares about) may be shown - the per-claim rule `_has_public_claim`
+        applies to every row of a pair's claims before OR-ing them together.
+        Exposed separately so a caller that must know whether a SPECIFIC edge is
+        public - not just "is there SOME public claim connecting these two
+        people, about anything at all" - can ask the narrower, correct question
+        (site.py Codex review, PR #152 round, P1: `_has_public_claim`'s pair-wide
+        OR let a restricted parent-child tie read as public whenever the same two
+        people also shared an unrelated public claim, e.g. a census entry).
+
+        A `relationships` row whose `claim_id` names no row that actually
+        exists in `claims` (`status is None` after the LEFT JOIN - a bare
+        edge with no backing claim at all, e.g. a hand-written
+        `relationships:` entry) is publishable: the same "nothing to hide
+        behind" rule `_has_public_claim` applies via its own `not rows`
+        fallback for a pair with zero claims connecting them. A real claim
+        row always carries a non-null status, so `status is None` is the
+        correct "no such claim" signal - not `claim_id is None`, since a
+        dangling/placeholder claim_id (present but naming nothing real) must
+        read the same way."""
+        if status is None:
+            return True
+        if not self.linked and status != 'accepted':
+            return False
+        if normalize_id(str(claim_id)) in self.restricted_claims:
+            return False
+        return not self._source_hard_restricted(source_id)
+
+    def _has_public_parent_edge(self, child_pid: str, parent_pid: str) -> bool:
+        """Return True if the SPECIFIC parent-child relationship edge - not just
+        any claim naming both people, about anything - has at least one public
+        backing claim.
+
+        `_has_public_claim` answers a broader question (is there ANY publishable
+        claim connecting these two people) that a completely unrelated public
+        claim - a shared census entry, a residence record - can satisfy even
+        when the parent-child tie itself is evidenced only by a restricted
+        claim. A parent-slot / sibling-eligibility check needs the narrower
+        answer: is THIS relationship - the one about to be shown - itself
+        backed by something public (site.py Codex review, PR #152 round, P1)."""
+        rows = self.conn.execute(
+            "SELECT r.claim_id, c.source_id, c.status FROM relationships r "
+            "LEFT JOIN claims c ON r.claim_id = c.id "
+            "WHERE r.person_id = ? AND r.rel = 'parent' AND r.other_id = ?",
+            (child_pid, parent_pid),
+        ).fetchall()
+        return any(
+            self._claim_row_is_publishable(r['claim_id'], r['source_id'], r['status'])
+            for r in rows)
 
     def _is_living_tagged_photo(self, alias_path: str) -> bool:
         """Return True when any person tagged to this photo in the catalog is living/unknown.
@@ -4524,26 +4661,46 @@ class _SiteBuilder:
                 'vitals': self._person_vitals(pid), 'url': url,
                 'photo': self._profile_photo_href(pid, page_dir)}
 
+    def _tree_relationship_rows(self, pid: str, rel: str) -> list:
+        """One person's `relationships` rows for direction `rel`, memoized for
+        the whole build (#152 review fix, P2, finding 1 - see
+        `_tree_edges_cache`'s comment in `__init__` and `_DESCENDANT_TREE_MAX_
+        HOPS`'s comment for why this matters: it is the fix that lets the BFS
+        below stay unbounded without re-paying an O(N^2) query cost)."""
+        key = (pid, rel)
+        rows = self._tree_edges_cache.get(key)
+        if rows is None:
+            rows = self.conn.execute(
+                '''SELECT DISTINCT r.other_id, r.claim_id, c.subtype
+                   FROM relationships r LEFT JOIN claims c ON r.claim_id = c.id
+                   WHERE r.person_id = ? AND r.rel = ?''',
+                (pid, rel),
+            ).fetchall()
+            self._tree_edges_cache[key] = rows
+        return rows
+
     def _build_tree_data(self, seed: str, mode: str, max_hops: int | None, page_dir: Path) -> dict:
         """BFS the `relationships` graph from `seed` and emit the neutral tree
         JSON (TOOLING §7/§14b) plus a per-node `url`. `descendants` follows
         `child` edges, `ancestors` follows `parent` edges; a visited set guards
-        cousin-marriage cycles. Redaction is applied per node in `_tree_node`."""
+        cousin-marriage cycles. Redaction is applied per node in `_tree_node`.
+        `max_hops` is a safety net, not a display bound (#152 review fix, P2,
+        finding 1) - see `_DESCENDANT_TREE_MAX_HOPS`'s comment. Hitting it
+        drops real genealogy data, so callers pass a bound generous enough
+        that no real archive should ever reach it, and a hit is warned about
+        below rather than silently accepted."""
         rel = 'parent' if mode == 'ancestors' else 'child'
         order = [seed]
         seen = {seed}
         edges: list[dict] = []
+        truncated = False
         queue: deque[tuple[str, int]] = deque([(seed, 0)])
         while queue:
             cur, hop = queue.popleft()
             if max_hops is not None and hop >= max_hops:
+                truncated = True
                 continue
-            for r in self.conn.execute(
-                '''SELECT DISTINCT r.other_id, r.claim_id, c.subtype
-                   FROM relationships r LEFT JOIN claims c ON r.claim_id = c.id
-                   WHERE r.person_id = ? AND r.rel = ?''',
-                (cur, rel),
-            ):
+            for r in self._tree_relationship_rows(cur, rel):
                 other = r['other_id']
                 if not self.linked:
                     # Include a deceased person even when they have no page of their
@@ -4578,6 +4735,14 @@ class _SiteBuilder:
                     seen.add(other)
                     order.append(other)
                     queue.append((other, hop + 1))
+        if truncated:
+            # Should not happen in any real archive (see `_DESCENDANT_TREE_
+            # MAX_HOPS`'s comment) - surfaced loudly rather than silently
+            # dropping generations from the reusable JSON artifact.
+            self.messages.append(
+                f'WARNING: {mode} tree for {fmt_id_display(seed)} exceeded '
+                f'{max_hops} generations and was truncated; some real '
+                f'genealogy data was omitted from its tree JSON.')
         return {
             'seed': fmt_id_display(seed), 'mode': mode,
             'nodes': [self._tree_node(pid, page_dir) for pid in order],
@@ -4605,15 +4770,49 @@ class _SiteBuilder:
                 'redacted': False, 'dates': self._person_vitals(pid)}
 
     def _build_ahnentafel(self, seed: str, max_gen: int, page_dir: Path) -> tuple[dict, dict]:
-        """Ahnentafel map {number: {'name','url','redacted'}} for the fan chart,
-        walking `parent` edges from the seed, plus a second map {number: pid} of
-        each EMPTY ancestor slot's known child (workbench mode wires this onto
-        the pedigree's 'Unknown' placeholder so it opens 'add family' scoped to
-        that child - the slot that is actually missing a parent, not a fixed
-        subject). Father (a parent recorded M) takes the even slot, mother (F)
-        the odd one; unknown-sex parents fill whatever slot is free. Redaction
-        is applied per person - a withheld ancestor becomes a blank segment,
-        never a leaked name (mirrors `_tree_node`)."""
+        """Ahnentafel map {number: {'name','url','redacted', 'sex_derived'}} for
+        the fan chart, walking `parent` edges from the seed, plus a second map
+        {number: pid} of each EMPTY ancestor slot's known child (workbench mode
+        wires this onto the pedigree's 'Unknown' placeholder so it opens 'add
+        family' scoped to that child - the slot that is actually missing a
+        parent, not a fixed subject). Father (a parent recorded M) takes the
+        even slot, mother (F) the odd one; unknown-sex parents fill whatever
+        slot is free. Redaction is applied per person - a withheld ancestor
+        becomes a blank segment, never a leaked name (mirrors `_tree_node`).
+
+        GENETIC LINE ONLY (#152 review fix, P2, SPEC §12.2). The Ahnentafel
+        numbering - and the branch coloring it drives - means "the genetic
+        pedigree": a parent edge whose claim carries an explicit non-genetic
+        `subtype` (adoptive/step/foster/guardian/surrogate-gestational/social)
+        never occupies a slot here, so a social/legal parent (and their whole
+        ancestor line behind them) is never falsely presented as biological
+        ancestry. An unset/legacy/unrecognised subtype defaults to genetic
+        (`is_genetic_parent_subtype`, back-compat, SPEC §12.2) - the person/
+        relationship views already draw a non-genetic child distinctly
+        (bracket labels, W127); this is that same distinction applied to
+        pedigree eligibility rather than to display styling, per the review's
+        own steer ("filtering out is simpler and safer"). Decided per OTHER_ID
+        across every claim behind that edge, not per row: the schema does not
+        actually forbid two separate claims about the same parent-child pair
+        carrying different subtypes, so one genuinely genetic claim is enough
+        to seat the parent even if some other claim about the same pair
+        happens to carry a social subtype too.
+
+        SLOT-ASSIGNMENT PROVENANCE (#152 review fix, P2). Each filled slot's
+        label also carries `sex_derived`: True when the occupant was matched
+        by an explicit recorded sex (father via `sex: M`, mother via `sex: F`),
+        False when it was placed by elimination - the only candidate(s) left
+        after the sex match, e.g. two parents who are both unknown-sex, or an
+        unknown-sex parent paired with a same-sex-recorded co-parent. Only the
+        SEED's own two immediate parents (slots 2/3) actually affect anything
+        downstream: `_ancestor_branch` reduces every deeper slot back to 2 or
+        3 by halving, so a slot-4-vs-5 (etc) elimination never crosses the
+        paternal/maternal boundary - but this is tracked uniformly at every
+        generation rather than special-cased to slot 2/3, both because it
+        costs nothing extra here and so the field stays meaningful if a future
+        caller ever wants it deeper. `_render_pedigree_svg` reads it (via the
+        labels dict) to withhold branch coloring from a slot whose parity was
+        never actually evidenced by a `sex:` value."""
         labels: dict[int, dict] = {1: self._chart_entry(seed, page_dir)}
         missing_parent_of: dict[int, str] = {}
         queue: deque[tuple[int, str]] = deque([(1, seed)])
@@ -4622,10 +4821,16 @@ class _SiteBuilder:
             num, pid = queue.popleft()
             if num.bit_length() - 1 >= max_gen:
                 continue
-            parents: list[tuple[str, str]] = []
+            # other_id -> {'sex', 'genetic'}: aggregated across every claim
+            # backing that one edge, since adding claim_id/subtype to the
+            # SELECT means DISTINCT no longer collapses multiple claims about
+            # the same pair into one row the way the old sex-only query did.
+            parent_rows: dict[str, dict] = {}
             for r in self.conn.execute(
-                '''SELECT DISTINCT r.other_id, p.sex
+                '''SELECT DISTINCT r.other_id, p.sex, r.claim_id, c.subtype,
+                          c.source_id, c.status
                    FROM relationships r JOIN persons p ON r.other_id = p.id
+                   LEFT JOIN claims c ON r.claim_id = c.id
                    WHERE r.person_id = ? AND r.rel = 'parent' ''', (pid,)):
                 other = r['other_id']
                 # A deceased ancestor without a page (stub) still fills its slot as a
@@ -4635,7 +4840,23 @@ class _SiteBuilder:
                 if not self.linked and (ometa is None or self._person_is_redacted(ometa)
                                         or not self._has_public_claim(pid, other)):
                     continue
-                parents.append((other, (r['sex'] or '').upper()))
+                subtype = (r['subtype'] or '').strip().lower() or None
+                entry = parent_rows.setdefault(
+                    other, {'sex': (r['sex'] or '').upper(), 'genetic': False})
+                # P1 (Codex review, PR #152 round): a pair can carry BOTH a
+                # public non-genetic claim (adoptive) and a restricted genetic
+                # one - the pair-wide `_has_public_claim` check just above lets
+                # `other` into the pedigree via the public adoptive claim, but
+                # that must not also let THIS row's restricted genetic subtype
+                # set the flag; only a row whose OWN claim is itself
+                # publishable may mark the tie genetic. --linked shows every
+                # edge, same as everywhere else on this page.
+                if is_genetic_parent_subtype(subtype) and (
+                        self.linked or self._claim_row_is_publishable(
+                            r['claim_id'], r['source_id'], r['status'])):
+                    entry['genetic'] = True
+            parents: list[tuple[str, str]] = [
+                (other, info['sex']) for other, info in parent_rows.items() if info['genetic']]
             # Workbench only: a parent recorded as a frontmatter hypothesis
             # (the add-family flow's whole output - never indexed) occupies
             # their slot too. Without this the slot still drew 'Unknown - add'
@@ -4643,7 +4864,9 @@ class _SiteBuilder:
             # finding, round 3, PR #31). The card is tagged so the chart
             # never passes an unsourced belief off as a claim-backed edge;
             # standalone/plain-linked builds are untouched (unsourced ties
-            # must not publish).
+            # must not publish). Unsourced, so there is no claim to carry a
+            # subtype - a hypothesis parent is always treated as genetic
+            # (matches the "unset defaults to genetic" back-compat rule).
             hyp_parents: set[str] = set()
             if self.workbench:
                 known = {p for p, _ in parents}
@@ -4656,17 +4879,21 @@ class _SiteBuilder:
                     hyp_parents.add(hp)
                     parents.append((hp, (hrow['sex'] or '').upper()))
             father = next((p for p, s in parents if s == 'M'), None)
+            father_derived = father is not None
             mother = next((p for p, s in parents if s == 'F' and p != father), None)
+            mother_derived = mother is not None
             rest = [p for p, s in parents if p not in (father, mother)]
             if father is None and rest:
                 father = rest.pop(0)
             if mother is None and rest:
                 mother = rest.pop(0)
-            for slot_num, ppid in ((2 * num, father), (2 * num + 1, mother)):
+            for slot_num, ppid, sex_derived in (
+                    (2 * num, father, father_derived), (2 * num + 1, mother, mother_derived)):
                 if not ppid:
                     missing_parent_of[slot_num] = pid
                     continue
                 labels[slot_num] = self._chart_entry(ppid, page_dir)
+                labels[slot_num]['sex_derived'] = sex_derived
                 if ppid in hyp_parents:
                     labels[slot_num]['hypothesis'] = True
                 if ppid not in seen:          # pedigree collapse: show, don't re-walk
@@ -4854,10 +5081,36 @@ class _SiteBuilder:
         two parent ids happened to sort with the non-public tie first -
         under-inclusion only (never a privacy leak: a candidate still needs
         at least one public tie and a clean redaction check to appear at
-        all), but a real completeness bug."""
+        all), but a real completeness bug.
+
+        A parent must be one the HUB is itself PUBLICLY tied to before it
+        contributes any sibling candidate at all (#152 review fix, P1,
+        privacy-adjacent). The candidate-side check below (a sibling's own
+        tie to the shared parent) is not enough on its own: it protects the
+        CANDIDATE's privacy, but says nothing about the HUB's. If the hub's
+        own parent-child claim to a parent is restricted (a sealed/DNA-only
+        source, say) while that SAME parent has a perfectly public tie to
+        some other child, the old code still walked that parent's children
+        and published the other child as the hub's sibling - which tells a
+        reader "the hub is tied to this parent" exactly as surely as
+        printing the parent's name on the hub's own card would, defeating
+        the restriction's whole point. A parent the hub is not publicly
+        tied to is therefore dropped BEFORE it is ever used as a source of
+        candidates - in standalone mode; `--linked` shows every edge, same
+        as everywhere else on this page."""
         parent_ids = [r['other_id'] for r in self.conn.execute(
             "SELECT DISTINCT other_id FROM relationships WHERE person_id = ? AND rel = 'parent'",
             (pid,))]
+        if not self.linked:
+            # P1 (Codex review, PR #152 round): `_has_public_claim` asks "is
+            # ANY claim connecting these two people public, about anything" -
+            # an unrelated public claim (a shared census entry, a residence
+            # record) could satisfy it even while the hub's OWN parent-child
+            # tie to `p` is backed only by a restricted claim, defeating the
+            # whole point of gating siblings on the hub's own public tie.
+            # `_has_public_parent_edge` asks the narrower, correct question:
+            # is the parent-child relationship itself publicly backed.
+            parent_ids = [p for p in parent_ids if self._has_public_parent_edge(pid, p)]
         # other_id -> every shared parent_id tying them to the hub, in
         # first-discovered order (a plain dict preserves insertion order) -
         # collected in full before any candidate is gated, so a later
@@ -4971,10 +5224,46 @@ class _SiteBuilder:
         `50` would try to lay out over a quadrillion slots. A malformed or
         out-of-range value degrades to the nearest sane default with a
         warning rather than failing the whole build - the home page is worth
-        finishing even when one setting is wrong."""
+        finishing even when one setting is wrong.
+
+        Genuinely-a-whole-number check (#152 review fix, P2): `int(raw)`
+        alone is not that check - it silently TRUNCATES a float instead of
+        raising (`int(3.9) == 3`), so a fractional YAML value degraded the
+        chart a generation or more shallower than configured with no warning
+        at all, and it accepts a YAML boolean as `1`/`0` (`bool` is an `int`
+        subclass in Python) even though a boolean was plainly never meant as
+        a generation count. A `bool` is rejected outright (never a generation
+        count, whatever its int value), and a genuinely fractional or
+        non-finite float (`3.5`, `.nan`, `.inf`) takes the warned default
+        fallback the same way a non-numeric string already does.
+
+        A FLOAT WHOSE VALUE IS WHOLE (`3.0`) is different (#152 follow-up
+        review fix, P2, finding 6): PyYAML parses a hand-edited
+        `home_pedigree_generations: 3.0` as a Python `float`, not an `int` -
+        an easy, harmless slip for a human editing YAML by hand, and
+        mathematically an actual whole number the reader plainly meant as
+        one. Silently substituting the default depth (5) instead of the
+        requested 3 is not the recoverable-loose-input behavior this
+        fallback exists for elsewhere in this method (a bad string, an
+        out-of-range int) - so a finite float that survives an integer round
+        trip (`int(raw) == raw`) is coerced to that `int` and accepted like
+        any other whole number, no warning needed since nothing was actually
+        wrong with what the human wrote."""
         raw = site_cfg.get('home_pedigree_generations')
         if raw is None:
             return _HOME_PEDIGREE_GENERATIONS_DEFAULT
+        if isinstance(raw, bool):
+            self.messages.append(
+                f'WARNING: fha.yaml site.home_pedigree_generations {raw!r} is not a whole number; '
+                f'using the default of {_HOME_PEDIGREE_GENERATIONS_DEFAULT}.')
+            return _HOME_PEDIGREE_GENERATIONS_DEFAULT
+        if isinstance(raw, float):
+            if not math.isfinite(raw) or raw != int(raw):
+                self.messages.append(
+                    f'WARNING: fha.yaml site.home_pedigree_generations {raw!r} is not a whole '
+                    f'number; using the default of {_HOME_PEDIGREE_GENERATIONS_DEFAULT}.')
+                return _HOME_PEDIGREE_GENERATIONS_DEFAULT
+            raw = int(raw)   # 3.0 -> 3: a whole number, just spelled as a float
         try:
             n = int(raw)
         except (TypeError, ValueError):
