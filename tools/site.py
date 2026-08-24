@@ -1603,16 +1603,18 @@ def _with_role_note(message: str, role_note: str | None) -> str:
     """Compose a fixed availability/status message with the file's own
     `_role_note` output (date/role/copy), so a degraded display path (an
     asset that cannot be resolved or is missing on disk, a standalone build
-    without Pillow, a failed image-derivative creation) still surfaces the
-    per-file facts the index already has instead of discarding them outright.
-    Only the FILE's presentability is degraded on these paths - not the
-    indexed facts about it - so the message adds to `role_note` rather than
-    replacing it (#123 follow-up, Codex review on PR #149: `_file_entry`/
-    `_standalone_image_entry` used to drop date/role/copy entirely on every
-    one of these branches). `role_note` first, message last, matching the
-    join order the 'original kept in the archive' branch already used before
-    this fix generalized the pattern to every fallback branch in both
-    functions."""
+    without Pillow, a failed image-derivative creation, a file omitted for
+    naming a living person, …) still surfaces the per-file facts the index
+    already has instead of discarding them outright. Only the FILE's
+    presentability is degraded on these paths - not the indexed facts about
+    it - so the message adds to `role_note` rather than replacing it (#123
+    follow-up, Codex review on PR #149: `_file_entry`/`_standalone_image_entry`
+    used to drop date/role/copy entirely on every one of these branches; a
+    later proactive audit found the same bug shape a third time in the
+    living-tagged-photo gate inside `_source_file_entries`). `role_note`
+    first, message last, matching the join order the 'original kept in the
+    archive' branch already used before this fix generalized the pattern to
+    every fallback branch across the module."""
     return f'{role_note} · {message}' if role_note else message
 
 
@@ -1732,6 +1734,16 @@ class _SiteBuilder:
         # lookup + derivative) and reused across their page and every tree node
         # they appear in. Value: the publishable image file, or None.
         self._profile_photo_cache: dict[str, Path | None] = {}
+        # `_provisional_vital` is asked up to four times per person page
+        # (birth/death x date/place - PROVISIONAL_VITAL_FIELDS) and each ask
+        # used to independently re-read and re-parse the same record file
+        # from disk (audit finding: the same duplicate-expensive-call shape
+        # already fixed once in report.py's places.run_candidates() case).
+        # One parsed record per person, memoized here, serves all four asks.
+        # None means "read failed or the file is undecodable" (cached too,
+        # so a broken file is not retried four times either) - distinct from
+        # "not yet asked" (pid absent from the dict).
+        self._provisional_record_cache: dict[str, dict | None] = {}
         # One person's `relationships` rows for a given direction ('parent' or
         # 'child'), memoized across every descendant/ancestor tree BFS in this
         # build (#152 review fix, P2, finding 1 - see `_DESCENDANT_TREE_MAX_
@@ -2645,10 +2657,17 @@ class _SiteBuilder:
             if not f['path']:
                 continue
             # Standalone: skip images co-tagged to a living person in the photo catalog.
+            # Same bug shape as _file_entry/_standalone_image_entry's fallback
+            # branches (Codex review, PR #149 finding 4): only the FILE's
+            # presentability is degraded here (it names a living person), not
+            # the indexed date/role/copy facts about it, so the fixed message
+            # is composed onto _role_note via _with_role_note rather than
+            # replacing it outright.
             if not self.linked and self._is_living_tagged_photo(f['path']):
                 entries.append({
                     'label': Path(f['path']).name,
-                    'note': 'image omitted - tagged to a living person',
+                    'note': _with_role_note('image omitted - tagged to a living person',
+                                            _role_note(f['role'], f['copy'], f['date_edtf'])),
                     'link_href': None,
                     'thumb_href': None,
                     'path': f['path'],
@@ -3048,22 +3067,35 @@ class _SiteBuilder:
         """Read one provisional (unsourced) `birth:`/`death:` estimate from a
         person's frontmatter, or None. Non-load-bearing family knowledge
         (SPEC §9, `PROVISIONAL_VITAL_FIELDS`); the index does not carry it, so it
-        is read from the record file on demand and only in workbench mode."""
+        is read from the record file on demand and only in workbench mode.
+
+        This is asked up to four times per person page (birth/death x
+        date/place - `PROVISIONAL_VITAL_FIELDS`), all against the SAME
+        record. The parsed record is memoized in `_provisional_record_cache`
+        after the first ask so the other three reuse it rather than each
+        re-reading and re-parsing the file from disk (audit finding: this
+        function's own comment used to note the fourfold repetition as an
+        accepted cost rather than caching it - the same duplicate-expensive-
+        call shape already fixed once elsewhere in this suite, report.py's
+        `places.run_candidates()` case)."""
         row = self.person_meta.get(pid)
         if not row:
             return None
-        try:
-            rec = read_record(self.archive_root / row['path'],
-                               on_decode_error=_ignore_decode_error)
-        except Exception:  # noqa: BLE001 - defensive; see _ignore_decode_error
-            return None
-        if rec.get('undecodable'):
-            # Same file `_person_prose` reads for this same page - its own
-            # WARNING already names it. This helper runs up to four times per
-            # page (birth/death x date/place), so repeating the warning here
-            # would spam one broken file's worth of near-identical lines
-            # rather than add information; staying quiet is the deliberate
-            # choice, not an oversight.
+        if pid not in self._provisional_record_cache:
+            try:
+                rec = read_record(self.archive_root / row['path'],
+                                   on_decode_error=_ignore_decode_error)
+            except Exception:  # noqa: BLE001 - defensive; see _ignore_decode_error
+                rec = None
+            if rec is not None and rec.get('undecodable'):
+                # Same file `_person_prose` reads for this same page - its own
+                # WARNING already names it. Staying quiet here (rather than
+                # repeating that warning for each of up to four field asks)
+                # is the deliberate choice, not an oversight.
+                rec = None
+            self._provisional_record_cache[pid] = rec
+        rec = self._provisional_record_cache[pid]
+        if rec is None:
             return None
         val = rec['meta'].get(field)
         return str(val).strip() if val not in (None, '') else None

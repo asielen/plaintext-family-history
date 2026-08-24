@@ -1122,6 +1122,37 @@ class ClaimPersonResolutionTests(unittest.TestCase):
         self.assertEqual(status, 'indexed')
         self.assertEqual(self._snapshot(), full)
 
+    def test_upsert_source_does_not_reread_the_file_for_its_own_decode_check(self) -> None:
+        # Audit finding: upsert_source used to read and UTF-8-decode the
+        # upserted file THREE times - once via read_text_or_report, purely
+        # to check decodability before its deletes (the text discarded),
+        # once inside _index_source's own read_record call moments later
+        # (the actual frontmatter/claims parse), and once more in
+        # _index_citations_for_file's raw-line citation scan. The first two
+        # are the SAME parse done twice for no reason and are now shared via
+        # `rec=`; the third is a legitimate separate pass (a raw errors=
+        # 'ignore' line scan for `[[...]]` tokens, run only after the fresh
+        # alias map below has this source's own reinserted stems - genuinely
+        # sequential, not the same call repeated) and is not touched here.
+        # So the fixed count is 2, down from 3 - not 1. Spies on
+        # Path.read_text itself (not read_record/read_text_or_report by
+        # name) so the count is honest regardless of which function does
+        # the actual disk read.
+        index.build_index(self.root, {})
+        target = self.root / 'sources' / 'birth_S-1111111111.md'
+        calls: list[Path] = []
+        real_read_text = Path.read_text
+
+        def spy(self_path, *a, **kw):
+            if self_path == target:
+                calls.append(self_path)
+            return real_read_text(self_path, *a, **kw)
+
+        with unittest.mock.patch.object(Path, 'read_text', spy):
+            status = index.upsert_source(self.root, {}, 's-1111111111')
+        self.assertEqual(status, 'indexed')
+        self.assertEqual(len(calls), 2, calls)
+
 
 _ALIAS_CLASH_PERSON = '''---
 id: P-aaaaaaaaaa

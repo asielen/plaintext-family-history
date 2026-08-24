@@ -3692,10 +3692,22 @@ def _check_generated_headers(archive_root: Path, findings: list[Finding],
     W128 recorder: a file this rglob cannot decode as UTF-8 is skipped here
     exactly like a missing file always was, and reported once, aggregated,
     rather than crashing this sweep (#68).
+
+    Skips people/, sources/, and notes/ (audit finding): Pass 1
+    (`_walk_archive`) already reads every file in those three trees moments
+    earlier in the same `_run_lint_core` call, and this function's own body
+    is a deferred no-op (`pass` below - W105 has never yet actually fired),
+    so re-reading them here bought nothing but doubling the archive's total
+    I/O on every `fha lint`/`fha doctor` run. Everywhere else (root-level
+    docs, a stray .md) is still Pass 1's blind spot, so this keeps scanning
+    there.
     """
     gen_header = re.compile(r'^<!-- GENERATED', re.M)
+    already_walked = (archive_root / 'people', archive_root / 'sources', archive_root / 'notes')
     for path in archive_root.rglob('*.md'):
         if '.cache' in path.parts:
+            continue
+        if any(path.is_relative_to(tree) for tree in already_walked):
             continue
         text = read_text_or_report(path, on_decode_error=on_decode_error)
         if text is None:

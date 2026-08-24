@@ -1,7 +1,7 @@
 {
   "manifest_version": "1",
   "spec_version": "1.2",
-  "generated": "2026-08-23",
+  "generated": "2026-08-24",
   "files": [
     {
       "path": ".claude/skills/README.md",
@@ -420,7 +420,7 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "04f3ac08f863cfab6900c09bec336114bf89d2bb0d46a82ebecc958f9fbc0db7",
+      "sha256": "80598aaa2eeecaf623863d9de083443c5358c75e7ebcec8c56f9c5fc0502bc23",
       "spec_version": "1.2",
       "src": "tools/_lib.py"
     },
@@ -511,7 +511,7 @@
     {
       "path": ".fha/tools/doctor.py",
       "category": "operating",
-      "sha256": "bf8bcdebb2725e934149594132d14946fe8c6ea8ac2f7a9fbcc7cc67cff46223",
+      "sha256": "e10454d516189db52d67952120d7b006b701355fe2195c4afda2d04c98cb915e",
       "spec_version": "1.2",
       "src": "tools/doctor.py"
     },
@@ -553,14 +553,14 @@
     {
       "path": ".fha/tools/index.py",
       "category": "operating",
-      "sha256": "0b038ad555042068cc1bfb61e8f96d9d0fb1d0ada5a9abc1237c2231c5ec2d7f",
+      "sha256": "f732428911d82250b15610809dc4d0af2016244222137e9539627e1ac2d740e2",
       "spec_version": "1.2",
       "src": "tools/index.py"
     },
     {
       "path": ".fha/tools/lint.py",
       "category": "operating",
-      "sha256": "cb383af367d9dcc47de51f96af26f419c578063970c939999ae1e9ab85ba0643",
+      "sha256": "adee7dcb1a7b487b907c78130a0bc49990cfd34ea6fe4c82e1b425993089af12",
       "spec_version": "1.2",
       "src": "tools/lint.py"
     },
@@ -630,7 +630,7 @@
     {
       "path": ".fha/tools/report.py",
       "category": "operating",
-      "sha256": "82ce36781f1a47cf49189144f5f64a67020ff28c967ff1e207778aa7a531d760",
+      "sha256": "7b93a345d89a3a61b3a7f7fd2bbd06bfed3902c83e3301dd88ac0be123e66dad",
       "spec_version": "1.2",
       "src": "tools/report.py"
     },
@@ -658,7 +658,7 @@
     {
       "path": ".fha/tools/site.py",
       "category": "operating",
-      "sha256": "31ed82e699d91753c454f5c1764d2624bfa46cbe1257d7ad5105e121898ff954",
+      "sha256": "9227a99de3d566637f19c4ccc059bf340758dc9da6c7f7e641cc4305b72348bf",
       "spec_version": "1.2",
       "src": "tools/site.py"
     },

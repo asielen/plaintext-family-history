@@ -39,6 +39,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
 
+import _lib
 import capture
 import doctor
 import index
@@ -187,6 +188,27 @@ class StaleIndexCauseTests(unittest.TestCase):
         self.assertIn('reconnect it', report)
         check = next(c for c in result.data['checks'] if c['id'] == 'index')
         self.assertEqual(check['unreadable_dirs'], ['sources/other'])
+
+    def test_the_stale_diagnosis_walks_each_record_tree_only_once(self) -> None:
+        # Audit finding: naming WHICH folder was unreadable used to be a
+        # second, independent walk of the exact same sources/people/notes
+        # trees `_index_freshness`'s own watermark computation had just
+        # walked - the same duplicate-expensive-walk shape already fixed
+        # once elsewhere in this suite (report.py's places.run_candidates()
+        # history). One `fha doctor` run must walk each record tree exactly
+        # once, whether or not a folder turns out to be unreadable.
+        calls: list[Path] = []
+        real = _lib.walk_files
+
+        def spy(root, *a, **kw):
+            calls.append(Path(root))
+            return real(root, *a, **kw)
+
+        with unittest.mock.patch.object(_lib, 'walk_files', side_effect=spy):
+            self._report(self.root / 'sources' / 'other')
+        record_trees = (self.root / 'sources', self.root / 'people', self.root / 'notes')
+        tree_calls = [p for p in calls if p in record_trees]
+        self.assertEqual(sorted(tree_calls), sorted(set(record_trees)), tree_calls)
 
     def test_the_scanned_counts_say_they_are_a_floor(self) -> None:
         # These count privacy-bearing records, and they are counted by

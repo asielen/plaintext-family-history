@@ -1707,6 +1707,40 @@ class AssetTests(_Base):
         self.assertNotIn('class="source-portrait"', html)
         self.assertIn('image omitted - tagged to a living person', html)
 
+    def test_living_tagged_note_keeps_date_and_role(self):
+        # Same bug shape as PR #149 finding 4 (see _with_role_note), but in a
+        # fallback branch that fix never touched: the living-tagged-photo gate
+        # in _source_file_entries builds its 'note' straight from a fixed
+        # string, even though the very source_files row it is iterating
+        # (role/copy/date_edtf) is right there. Only the FILE's presentability
+        # is degraded (it names a living person) - the indexed date/role/copy
+        # facts should still show, exactly as they do on the other degraded
+        # paths this same function calls into (_file_entry/
+        # _standalone_image_entry).
+        self._seed_person('p-aaaaaaaaaa', 'Living Larry', living='true')
+        self._seed_source('s-1111111111', 'Photo Source', source_type='photo')
+        img = self.archive_root / 'photos' / '1880' / 'pic.jpg'
+        img.parent.mkdir(parents=True, exist_ok=True)
+        img.write_bytes(b'not-a-real-image-but-exists')
+        self.conn.execute(
+            'INSERT INTO source_files(source_id, path, role, copy, date_edtf) VALUES (?,?,?,?,?)',
+            ('s-1111111111', 'photos/1880/pic.jpg', 'front', 'b', '1916-02-26'))
+        pconn = self._make_photos_db()
+        pconn.execute(
+            'INSERT INTO photos(path, group_id, is_primary, caption) VALUES (?,?,?,?)',
+            ('photos/1880/pic.jpg', 'g1', 1, ''))
+        pconn.execute(
+            'INSERT INTO photo_people(path, person_ref, via) VALUES (?,?,?)',
+            ('photos/1880/pic.jpg', 'p-aaaaaaaaaa', 'pid-keyword'))
+        pconn.commit()
+        pconn.close()
+        self._make_photos_fresh()
+        self._run(linked=False)
+        html = self._read('sources/s-1111111111.html')
+        self.assertIn(
+            '26 February 1916 · role: front · copy: b · image omitted - tagged to a living person',
+            html)
+
 
 class LivingPhotoCheckUnavailableTests(_Base):
     """The living-person photo gate fails OPEN, and the build says so.
@@ -4652,6 +4686,27 @@ class WorkbenchModeTests(_Base):
         self.assertIn('"mdate": "1923"', wb)
         self.assertIn('"mplace": "Kansas"', wb)
         self.assertNotIn('"mdate": "1923 - Kansas"', wb)
+
+    def test_provisional_vital_reads_the_record_once_per_person(self):
+        # _provisional_vital's own docstring says it "runs up to four times
+        # per page (birth/death x date/place)" - and, before this fix, each
+        # call independently did a fresh read_record() (full file read +
+        # YAML/markdown parse) of the SAME person record, discarding the
+        # parse the previous call had just done. One parse per person per
+        # build is enough; _person_summary asks for all four fields off the
+        # SAME frontmatter snapshot.
+        self._seed_person('p-aaaaaaaaaa', 'Prov Person', living='false', tier='curated',
+                          frontmatter_extra=('birth: 1923\nbirth_place: Kansas\n'
+                                             'death: 1990\ndeath_place: Texas'))
+        builder = site._SiteBuilder(self.conn, self.archive_root, {}, self.out_dir,
+                                    linked=True, workbench=True)
+        builder.prepare()
+        with unittest.mock.patch.object(
+            site, 'read_record', wraps=site.read_record
+        ) as spy:
+            for field in ('birth', 'birth_place', 'death', 'death_place'):
+                builder._provisional_vital('p-aaaaaaaaaa', field)
+        self.assertEqual(spy.call_count, 1)
 
     def test_note_entry_edit_payload_is_the_as_written_text(self):
         # P2 codex finding (round 2, PR #31): the per-entry Stories/Research

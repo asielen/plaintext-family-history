@@ -923,16 +923,28 @@ def _section_photo_triage(
             'are on the main machine. Run `fha photoindex` on the main archive, '
             'or copy an existing .cache/photos.sqlite here for read-only photo queries.'
         ]
-    if scan_error:
-        return [
-            f'Photo scan failed this session ({scan_error}) - triage results below may be '
-            'stale; run `fha photoindex` once the issue is fixed.'
-        ]
-    # The scan's notes are prepended before the index verdict, not after: when
-    # this session's scan could not read some files, that is very often WHY
-    # the catalog below is missing or out of date, and printing the verdict
-    # alone would send the human to re-run the command that just told him.
+    # The scan's notes/error are prepended before the index verdict, not
+    # after: when this session's scan could not read some files (or failed
+    # outright), that is very often WHY the catalog below is missing or out
+    # of date, and printing the verdict alone would send the human to
+    # re-run the command that just told him.
+    #
+    # A `scan_error` used to short-circuit here, returning a bare "results
+    # below may be stale" message and never actually calling run_triage() -
+    # discarding the triage candidates it promised were coming (audit
+    # finding: the same data-dropping-fallback shape already fixed once in
+    # site.py's file-entry notes). `run_triage()` reads the PERSISTED
+    # `.cache/photos.sqlite`, independent of whether THIS session's live
+    # rescan (`photoindex.run_scan`, the source of `scan_error`) succeeded -
+    # it degrades to its own 'absent'/'unreadable' status rather than
+    # raising, so it is always safe to call. The caveat now composes onto
+    # the real (if session-stale) results instead of replacing them.
     lines = [f'Note: {n}' for n in (scan_notes or [])]
+    if scan_error:
+        lines.append(
+            f'Note: photo scan failed this session ({scan_error}) - triage '
+            'results below may be stale; run `fha photoindex` once the issue is fixed.'
+        )
     result = photoindex.run_triage(archive_root, fha_config, top=10)
     if result['status'] in ('absent', 'unreadable'):
         return lines + [
