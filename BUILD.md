@@ -1159,7 +1159,21 @@ simple counts - the lightest remaining report work, bundled together for that re
 **Section 6 - Photo triage.** Call `photoindex.triage(root, top=10)` and embed ranked list.
 
 **Section 6b - Place candidates.** Call `places.candidates(root)` if places tool is built;
-else stub with a note.
+else stub with a note. Each cluster line carries a ready-to-run `fha confirm place` command
+(issue #79 point 1) - `--into <existing L-id>` when the cluster's label already matches (exact
+or near, ignoring word order/abbreviations) a place already in `places/places.yaml`, `--name=...`
+(mint) only when none matches.
+
+**Place-text oversight escalation (issue #79 point 2, later addition).** Any §6b place-text
+cluster reaching 20+ claims is also promoted into a banner printed above every section (same
+lead position as the refresh's own `archive_notes`), instead of sitting only at §6b's position
+10 of 13. One shared `places.run_candidates()` fetch feeds both §6b's own listing and this
+banner (never a second, independent call - the escalation reads no more than the same
+`place_text_groups` §6b already computed). Prints on `--section`-filtered runs too; when the
+active filter omits §6b, the banner names the follow-up command (`fha report --section
+place-candidates`) instead of pointing at content the filtered output does not carry. Also
+exposed on the structured `Result` (`data['place_escalations']`, `data['sections']
+['place-escalations']`) for a headless consumer, not only in the rendered markdown.
 
 **Section 7 - Hypotheses & draft queues.** From `hypotheses WHERE status='open'`: count per
 person. From `person_files` kind='draft-queue': persons whose file is non-trivially non-empty.

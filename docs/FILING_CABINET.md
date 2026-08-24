@@ -32,6 +32,12 @@ keep its picture side in the photo box while its typed-up transcription sits in 
 both filed under the same evidence folder - and if something does land in the wrong drawer,
 `fha process refile` moves it to the other one and corrects the paperwork in one step.
 
+**One evidence folder, or two?** A folder holds every facet of *one* piece of evidence - fronts,
+backs, extra scans, the pages of a multi-page letter written across several sittings, or a ledger
+whose entries run for months. Two separately published things - two different newspaper clippings,
+even about the same event, even mailed in the same envelope - are two evidence folders, not one.
+When in doubt: could each item stand as its own citation? If yes, it gets its own folder.
+
 A couple divider's label also lists that couple's children, and it quietly flags anything worth
 seeing at a glance - a child who joined by adoption rather than birth (`Ruth (adopted)`), or a
 person who belongs to more than one branch and is filed under another divider (`Thomas Hartley
