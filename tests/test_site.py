@@ -261,58 +261,60 @@ class SourcePageTests(_Base):
         self.assertIn('file not available', html)
 
     def test_file_entry_note_adds_copy_letter_when_present(self):
-        # #123: a multi-file bundle (four newspaper clippings, say) reads as
-        # indistinguishable when every entry's note is the bare 'role:
-        # clipping'. Once the indexer stops dropping `copy:` on the floor
-        # (the source_files.copy fix, same issue), the site's file-list note
-        # names the variant too - 'role: clipping · copy: b' - so same-role
-        # files in one bundle are told apart without needing per-file dates.
-        self._seed_source('s-1111111111', 'Clippings Bundle', source_type='newspaper')
-        clip_dir = self.archive_root / 'documents' / 'newspaper'
-        clip_dir.mkdir(parents=True, exist_ok=True)
-        (clip_dir / 'clipping-a.pdf').write_bytes(b'not a real pdf')
-        (clip_dir / 'clipping-b.pdf').write_bytes(b'not a real pdf')
+        # #123: one continuous document with several same-role entries (a
+        # household ledger, say) reads as indistinguishable when every
+        # entry's note is the bare 'role: entry'. Once the indexer stops
+        # dropping `copy:` on the floor (the source_files.copy fix, same
+        # issue), the site's file-list note names the variant too - 'role:
+        # entry · copy: b' - so same-role entries of one item are told apart
+        # without needing per-file dates.
+        self._seed_source('s-1111111111', 'Household Ledger', source_type='other')
+        ledger_dir = self.archive_root / 'documents' / 'ledger'
+        ledger_dir.mkdir(parents=True, exist_ok=True)
+        (ledger_dir / 'entry-a.pdf').write_bytes(b'not a real pdf')
+        (ledger_dir / 'entry-b.pdf').write_bytes(b'not a real pdf')
         self.conn.execute(
             'INSERT INTO source_files(source_id, path, role, copy) VALUES (?,?,?,?)',
-            ('s-1111111111', 'documents/newspaper/clipping-a.pdf', 'clipping', None))
+            ('s-1111111111', 'documents/ledger/entry-a.pdf', 'entry', None))
         self.conn.execute(
             'INSERT INTO source_files(source_id, path, role, copy) VALUES (?,?,?,?)',
-            ('s-1111111111', 'documents/newspaper/clipping-b.pdf', 'clipping', 'b'))
+            ('s-1111111111', 'documents/ledger/entry-b.pdf', 'entry', 'b'))
         self._run(linked=True)
         html = self._read('sources/s-1111111111.html')
-        self.assertIn('role: clipping · copy: b', html)
+        self.assertIn('role: entry · copy: b', html)
         # The un-lettered sibling keeps the original, shorter note - no
         # 'copy: None' leaking through, and the two entries stay distinct.
-        self.assertIn('role: clipping</span>', html)
+        self.assertIn('role: entry</span>', html)
 
     def test_file_entry_note_includes_human_date_when_present(self):
-        # #123, the schema's own worked example: a source that legitimately
-        # bundles files from different dates (several newspaper clippings
-        # about one event, mailed months apart) can now give each `files:`
-        # entry its own `date:` (SPEC §14), distinct from the source's own
-        # `source_date:`. Once that value round-trips into source_files.
-        # date_edtf (tools/index.py), the site's file note renders it human-
-        # readable and FIRST - '26 February 1916 · role: clipping · copy: b'
-        # - so two same-role files in one bundle read as distinct by DATE,
-        # not just by an opaque copy letter.
-        self._seed_source('s-1111111111', 'Clippings Bundle', source_type='newspaper')
-        clip_dir = self.archive_root / 'documents' / 'newspaper'
-        clip_dir.mkdir(parents=True, exist_ok=True)
-        (clip_dir / 'clipping-a.pdf').write_bytes(b'not a real pdf')
-        (clip_dir / 'clipping-b.pdf').write_bytes(b'not a real pdf')
+        # #123, the schema's own worked example: a source whose files are
+        # still facets of one piece of evidence (SPEC §7) but were not all
+        # written on the same day - a household ledger whose entries span
+        # months - can now give each `files:` entry its own `date:`
+        # (SPEC §14), distinct from the source's own `source_date:`. Once
+        # that value round-trips into source_files.date_edtf (tools/index.py),
+        # the site's file note renders it human-readable and FIRST - '26
+        # February 1916 · role: entry · copy: b' - so two same-role entries
+        # of one ledger read as distinct by DATE, not just by an opaque copy
+        # letter.
+        self._seed_source('s-1111111111', 'Household Ledger', source_type='other')
+        ledger_dir = self.archive_root / 'documents' / 'ledger'
+        ledger_dir.mkdir(parents=True, exist_ok=True)
+        (ledger_dir / 'entry-a.pdf').write_bytes(b'not a real pdf')
+        (ledger_dir / 'entry-b.pdf').write_bytes(b'not a real pdf')
         self.conn.execute(
             'INSERT INTO source_files(source_id, path, role, copy, date_edtf) VALUES (?,?,?,?,?)',
-            ('s-1111111111', 'documents/newspaper/clipping-a.pdf', 'clipping', None, '1916-02-26'))
+            ('s-1111111111', 'documents/ledger/entry-a.pdf', 'entry', None, '1916-02-26'))
         self.conn.execute(
             'INSERT INTO source_files(source_id, path, role, copy, date_edtf) VALUES (?,?,?,?,?)',
-            ('s-1111111111', 'documents/newspaper/clipping-b.pdf', 'clipping', 'b', '1916-06-03'))
+            ('s-1111111111', 'documents/ledger/entry-b.pdf', 'entry', 'b', '1916-06-03'))
         self._run(linked=True)
         html = self._read('sources/s-1111111111.html')
         # Undated-copy sibling: date first, no copy letter.
-        self.assertIn('26 February 1916 · role: clipping</span>', html)
+        self.assertIn('26 February 1916 · role: entry</span>', html)
         # Dated + copy-lettered sibling: date, then role, then copy - the two
         # files read as distinct on both axes at once.
-        self.assertIn('3 June 1916 · role: clipping · copy: b</span>', html)
+        self.assertIn('3 June 1916 · role: entry · copy: b</span>', html)
 
     def test_file_entry_note_distinguishes_uncertain_date_from_approximate(self):
         # Codex review on PR #149 (P2): a `date: 1916?` (uncertain - "not sure
