@@ -262,6 +262,61 @@ class SourceClearKeywordTests(unittest.TestCase):
         # requested change did not land - the caller should still know it.
         self.assertTrue(result.changed)
 
+    def test_leftover_duplicate_of_the_replacement_is_caught(self) -> None:
+        # #156 review (P2, finding 1, round 2): a MEMBERSHIP check ("is the
+        # replacement present at all") cannot see a multiplicity problem. The
+        # field starts with BOTH the noncanonical spelling and the exact
+        # replacement already sitting in it - matches collects both
+        # case-insensitively, and the code plans to remove both and add the
+        # canonical spelling back once (collapsing two variants into one). A
+        # write that removes only ONE of the two matched values but still
+        # appends the replacement leaves TWO copies of 'Margaret Hartley' on
+        # disk - a real bug the old exemption ("this value is one of our own
+        # intended additions, so its presence is never suspicious") could not
+        # see, because it never checked HOW MANY copies remained.
+        self.store.seed(self.asset, subject=[
+            'margaret hartley', 'Margaret Hartley', 'SOURCE: ' + SID])
+
+        def _fake_write_partial_removal(path, *, remove, add, backup):
+            backup.ensure(path)
+            f = self.store._fields(path)
+            # Only remove the FIRST matched value, simulating a write that
+            # partially failed, then still perform the addition.
+            removed_once = False
+            for tag, value in remove:
+                if not removed_once and value in f[tag]:
+                    f[tag].remove(value)
+                    removed_once = True
+            for tag, value in add:
+                f[tag].append(value)
+            return None
+        source_mod._run_exiftool_edit_keyword_fields = _fake_write_partial_removal
+
+        result = self._run(keyword='margaret hartley', replace_with='Margaret Hartley')
+        self.assertEqual(result['status'], 'refused')
+        self.assertFalse(result.ok)
+        self.assertIn('extra copy', result.messages[-1].text)
+        self.assertTrue(result.changed)
+
+    def test_symlink_loop_during_resolve_is_refused_not_a_traceback(self) -> None:
+        # #156 review (P2, finding 2, round 2): Path.resolve() raises
+        # RuntimeError - not OSError - for a symlink loop on the Python
+        # versions this tool supports. An uncaught RuntimeError here would
+        # escape as a raw traceback instead of the intended plain refusal.
+        import pathlib
+        orig_resolve = pathlib.Path.resolve
+
+        def _raise_loop(self, *a, **kw):
+            raise RuntimeError('Symlink loop from "x" to "y"')
+        pathlib.Path.resolve = _raise_loop
+        try:
+            result = self._run(keyword='Margaret Hartley')
+        finally:
+            pathlib.Path.resolve = orig_resolve
+        self.assertEqual(result['status'], 'refused')
+        self.assertEqual(self.store.write_calls, [])
+        self.assertIn('could not be resolved', result.messages[-1].text)
+
     def test_addition_that_did_not_land_is_also_caught(self) -> None:
         def _fake_write_only_removes(path, *, remove, add, backup):
             backup.ensure(path)

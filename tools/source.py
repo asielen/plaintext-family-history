@@ -148,6 +148,7 @@ import json
 import re
 import subprocess
 import sys
+from collections import Counter
 from pathlib import Path, PurePosixPath
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -769,7 +770,14 @@ def run_source_clear_keyword(
     try:
         resolved_target = abs_path.resolve()
         resolved_documents_root = documents_root.resolve()
-    except OSError as e:
+    except (OSError, RuntimeError) as e:
+        # P2 (#156 review finding 2, round 2): on the Python versions this
+        # tool supports, Path.resolve() raises RuntimeError - not OSError -
+        # for a symlink loop (the documents root or the listed asset itself),
+        # not just for the OSError-shaped failures (missing drive, permission
+        # denial) already handled here. An uncaught RuntimeError would escape
+        # this engine as a raw traceback instead of the intended plain
+        # refusal.
         return _refuse(
             'refused',
             f'{alias} could not be resolved to a real path ({e}). Check the '
@@ -819,14 +827,23 @@ def run_source_clear_keyword(
     filename_sid = normalize_id(filename_match.group(1)) if filename_match else None
     if filename_sid != sid:
         carried = fmt_id_display(filename_sid) if filename_sid else 'no source id at all'
+        # P2 (#156 review finding 3, round 2): `fha reconcile` cannot repair
+        # this - its _plan step skips any inventory entry whose resolved path
+        # already exists on disk (tools/reconcile.py), and this refusal is
+        # only reached after abs_path.is_file() already succeeded above. That
+        # left the user with a suggested command that runs, changes nothing,
+        # and the same refusal forever. Name the exact manual fix instead:
+        # which record's files: entry is wrong and what it should say.
         return _refuse(
             'refused',
             f"{alias}'s own filename carries {carried}, not "
             f'{fmt_id_display(sid)} - {record_path.name}\'s files: entry '
             f'looks like inventory drift (it names a file that belongs to a '
-            f"different source), and editing it would change the WRONG "
-            'document\'s keywords. Run `fha reconcile` to re-tie sources to '
-            'their actual files, then retry.')
+            f"different source). `fha reconcile` cannot fix this on its own "
+            f'(it skips any files: entry whose target already exists on '
+            f'disk) - edit the files: entry in {record_path.name} by hand '
+            f'so it names {fmt_id_display(sid)}\'s own file instead, then '
+            'retry. Nothing was read or changed.')
 
     try:
         fields = _run_exiftool_read_keyword_fields(abs_path)
@@ -944,27 +961,38 @@ def run_source_clear_keyword(
     #      matched value that is ALSO one of those intended additions is
     #      excluded from the "still there" check - its presence is expected,
     #      not a leftover.
-    add_by_tag: dict[str, set[str]] = {}
-    for tag, value in add:
-        add_by_tag.setdefault(tag, set()).add(value)
-    not_removed = [
-        (tag, value) for tag, value in matches
-        if value not in add_by_tag.get(tag, set())
-        and any(v == value for v in after_fields.get(tag, []))
-    ]
-    not_added = [
-        (tag, value) for tag, value in add
-        if not any(v == value for v in after_fields.get(tag, []))
-    ]
-    if not_removed or not_added:
-        result.note_changed(abs_path)  # exiftool did write SOMETHING to the file
-        problems = []
-        if not_removed:
-            problems.append('still carries ' + ', '.join(
-                f'{tag}: {value!r}' for tag, value in not_removed))
-        if not_added:
+    # P2 (#156 review finding 1, round 2): a membership check ("is this value
+    # present at all") cannot see a MULTIPLICITY problem - when a field
+    # already held the exact replacement spelling alongside the noncanonical
+    # one being removed (e.g. both 'margaret hartley' and 'Margaret Hartley'),
+    # excluding every matched value that's also an intended addition from the
+    # "still there" check (the old `not_removed`/`add_by_tag` logic) let a
+    # partial write that removed only the noncanonical copy and then added a
+    # SECOND copy of the canonical spelling pass verification with a straight
+    # duplicate now sitting in the field. Compare the expected FINAL COUNT of
+    # every value per tag - original counts, minus every matched removal,
+    # plus every intended addition - against what's actually on disk.
+    problems = []
+    touched_tags = sorted({tag for tag, _ in matches} | {tag for tag, _ in add})
+    for tag in touched_tags:
+        expected_counts = (
+            Counter(fields.get(tag, []))
+            - Counter(value for t, value in matches if t == tag)
+            + Counter(value for t, value in add if t == tag)
+        )
+        actual_counts = Counter(after_fields.get(tag, []))
+        missing = expected_counts - actual_counts
+        extra = actual_counts - expected_counts
+        if missing:
             problems.append('is missing ' + ', '.join(
-                f'{tag}: {value!r}' for tag, value in not_added))
+                f'{tag}: {value!r}' + (f' (x{n})' if n > 1 else '')
+                for value, n in missing.items()))
+        if extra:
+            problems.append('still carries an unexpected extra copy of ' + ', '.join(
+                f'{tag}: {value!r}' + (f' (x{n})' if n > 1 else '')
+                for value, n in extra.items()))
+    if problems:
+        result.note_changed(abs_path)  # exiftool did write SOMETHING to the file
         return _refuse(
             'refused',
             f'exiftool reported success, but re-reading {alias} shows it '
