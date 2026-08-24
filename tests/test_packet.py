@@ -1391,6 +1391,91 @@ class PacketTests(unittest.TestCase):
 
         self.assertEqual(result['status'], 'restricted-subject')
 
+    def test_traversal_files_entry_excluded_not_bundled(self):
+        """A '..'-escaping files: entry must never be resolved and copied.
+
+        `source_files.path` is a straight copy of the source record's own
+        hand-editable `files:` entry (SPEC #14) - a hand-edited or corrupted
+        entry like 'documents/../../outside-secret.tif' resolves outside the
+        configured documents root. Before the fix, `_resolve_source_files`
+        trusted the resolved path outright and `_copy_into` would
+        `shutil.copy2` whatever it found there straight into the packet - a
+        bundle the archive owner hands to a family member, so this was a real
+        privacy leak of an arbitrary readable file, not just a data-integrity
+        issue. The asset must be reported excluded, and the file outside the
+        archive must never be touched or appear in the packet.
+        """
+        self._seed_person()
+        outside = self.archive_root.parent / 'outside-secret.tif'
+        outside.write_bytes(b'not part of the archive at all')
+        self.addCleanup(lambda: outside.unlink(missing_ok=True))
+        self._seed_source(
+            's-1111111111', 'Traversal Source',
+            asset_rel='documents/../../outside-secret.tif', create_asset=False,
+        )
+        self._commit_fresh()
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir, no_photos=True)
+
+        self.assertEqual(result['status'], 'ok')
+        files_dir = result['packet_dir'] / 'files'
+        if files_dir.exists():
+            self.assertNotIn('outside-secret.tif', [p.name for p in files_dir.rglob('*')])
+        readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
+        self.assertIn('outside-secret.tif', readme)
+        self.assertIn('resolves outside', readme)
+        self.assertTrue(outside.exists(), 'the file outside the archive must never be touched')
+        self.assertEqual(outside.read_bytes(), b'not part of the archive at all')
+
+    def test_symlink_loop_during_containment_check_is_excluded_not_crashed(self):
+        """A `Path.resolve()` symlink loop must degrade to an excluded asset,
+        never an uncaught traceback and no packet at all.
+
+        `_is_under_root` calls `.resolve()` on both the candidate path and
+        each configured root; a symlink loop (most likely a corrupted or
+        maliciously crafted filesystem entry) makes `.resolve()` raise
+        `RuntimeError` rather than return - and unlike ValueError/OSError,
+        `_is_under_root` did not catch it (round-2 #163 audit finding).
+        `_resolve_source_files` runs before the packet build's own guarded
+        write block and the CLI applies no exception translation here, so
+        before the fix this turned one malformed filesystem entry into a bare
+        crash instead of the graceful "omitted with a warning" every other
+        resolution failure already gets.
+
+        Simulated via a monkeypatch rather than a real filesystem symlink
+        loop: creating one needs a privilege this test environment does not
+        have (Windows requires an elevated/Developer-Mode symlink privilege
+        even for an ordinary symlink, let alone a self-referential one), and
+        the exception a loop raises is a documented pathlib contract, not
+        behavior that differs by how the loop was made.
+        """
+        self._seed_person()
+        self._seed_source(
+            's-1111111111', 'Loop Source',
+            asset_rel='documents/other/loop.tif', create_asset=False,
+        )
+        self._commit_fresh()
+
+        real_is_under_root = packet._is_under_root
+
+        def looping_is_under_root(path, root):
+            if path.name == 'loop.tif':
+                raise RuntimeError('Symlink loop from loop.tif')
+            return real_is_under_root(path, root)
+
+        with unittest.mock.patch.object(packet, '_is_under_root',
+                                        side_effect=looping_is_under_root):
+            result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir,
+                                       no_photos=True)
+
+        self.assertEqual(result['status'], 'ok')
+        files_dir = result['packet_dir'] / 'files'
+        if files_dir.exists():
+            self.assertNotIn('loop.tif', [p.name for p in files_dir.rglob('*')])
+        readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
+        self.assertIn('loop.tif', readme)
+        self.assertIn('symlink loop', readme)
+
     def test_unreadable_source_is_left_out_with_its_files(self):
         """A source whose own record cannot be read takes its assets with it.
 

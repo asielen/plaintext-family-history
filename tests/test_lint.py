@@ -2386,6 +2386,89 @@ class UntranscribedEvidenceTests(unittest.TestCase):
         self.assertIn('W124', [m.code for m in result.messages])
 
 
+_E011_SID = 'S-5n7q9s1t3v'
+_E011_SOURCE = '''---
+id: {sid}
+title: Escaping Source
+source_type: other
+files:{files}
+---
+
+## Claims
+```yaml
+```
+'''
+
+
+class InventoryContainmentE011Tests(unittest.TestCase):
+    """E011: a `files:` entry that resolves OUTSIDE the configured
+    documents/photos roots (round-2 #163 audit finding).
+
+    Before this, E011 tested only `resolved.exists()` and had nothing to say
+    about a hand-edited entry (a `..` segment, or a doubled slash) that
+    resolves to a real file elsewhere on disk - the exact diagnostic `fha
+    process refile`'s and `fha packet`'s own containment checks point at
+    (`Run \\`fha lint\\``), which reported nothing for exactly this shape.
+    """
+
+    def setUp(self) -> None:
+        self.root = Path(tempfile.mkdtemp())
+        (self.root / 'fha.yaml').write_text(
+            'roots:\n  documents: documents\n  photos: photos\n', encoding='utf-8')
+        (self.root / 'people').mkdir()
+        (self.root / 'sources' / 'other').mkdir(parents=True)
+        (self.root / 'documents' / 'other').mkdir(parents=True)
+
+    def _write_source(self, file_line: str) -> None:
+        block = f'\n{file_line}' if file_line else ''
+        (self.root / 'sources' / 'other' / f'escaping-source_{_E011_SID}.md').write_text(
+            _E011_SOURCE.format(sid=_E011_SID, files=block), encoding='utf-8')
+
+    def _e011_findings(self) -> list:
+        findings, _ = lint._run_lint_core(self.root, {})
+        return [f for f in findings if f.code == 'E011']
+
+    def test_traversal_entry_is_flagged_even_though_it_resolves_somewhere(self) -> None:
+        # An escaping path that ALSO exists on disk (just outside the
+        # archive) must still be flagged - an exists()-only test would pass
+        # it clean, which is exactly the gap this closes.
+        outside = self.root.parent / 'outside-secret.tif'
+        outside.write_bytes(b'not part of the archive')
+        self.addCleanup(lambda: outside.unlink(missing_ok=True))
+        self._write_source('  - file: documents/../../outside-secret.tif\n    role: primary')
+
+        found = self._e011_findings()
+
+        self.assertEqual(len(found), 1, [f.message for f in found])
+        self.assertEqual(found[0].severity, 'E')
+        self.assertIn('resolves outside', found[0].message)
+        self.assertIn("outside-secret.tif", found[0].message)
+        # Names the actual fix (a hand edit), not `fha reconcile` - reconcile
+        # only re-links a files: entry whose path no longer resolves, and
+        # this one does resolve (just to the wrong place).
+        self.assertIn('by hand', found[0].message)
+
+    def test_traversal_entry_to_a_missing_target_is_still_flagged(self) -> None:
+        # The escaping path need not even resolve to a real file - containment
+        # is checked before existence, so a '..'-entry pointing at nothing is
+        # reported as escaping, not as an ordinary "not found on disk" E011.
+        self._write_source(
+            '  - file: documents/../../nowhere-at-all.tif\n    role: primary')
+
+        found = self._e011_findings()
+
+        self.assertEqual(len(found), 1, [f.message for f in found])
+        self.assertIn('resolves outside', found[0].message)
+
+    def test_ordinary_entry_inside_documents_root_is_not_flagged(self) -> None:
+        asset = self.root / 'documents' / 'other' / f'escaping-source_{_E011_SID}.jpg'
+        asset.write_bytes(b'jpegbytes')
+        self._write_source(
+            f'  - file: documents/other/escaping-source_{_E011_SID}.jpg\n    role: primary')
+
+        self.assertEqual(self._e011_findings(), [])
+
+
 class UnscopedCoupleClaimW125Tests(unittest.TestCase):
     """W125: a marriage/divorce claim naming more than two people with no
     `roles: spouse:` map.

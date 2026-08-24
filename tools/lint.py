@@ -155,6 +155,8 @@ configure_utf8_stdout()
 #    REQUIRED_*_FIELDS           - required frontmatter keys per record type
 #    _normalize_alias_path       - backslash→slash normalisation for path comparison
 #    _mapped_root, _path_to_alias - resolve fha.yaml alias roots to absolute paths
+#    _resolved_within_asset_roots - E011 containment: is a resolved files: path
+#                                   actually under documents/ or photos/?
 #    _is_generated_file / _never_mintable - GENERATED views + READMEs are never records
 #    _resolve_person_ref         - one persons:/roles: ref → P-id (alias map first)
 #    _claim_person_ids           - resolved P-ids from a claim's persons: field
@@ -500,6 +502,29 @@ def _path_to_alias(path: Path, alias: str, registry: Registry) -> str | None:
     except ValueError:
         return None
     return f'{alias}/{rel.as_posix()}'
+
+
+def _resolved_within_asset_roots(resolved: Path, registry: Registry) -> bool:
+    """True if `resolved` lands inside the configured documents/ or photos/ root.
+
+    A deliberate local twin of process.py's `_is_under` / packet.py's
+    `_is_under_root` (tools never import tools - TOOLING §15). Added so E011
+    can actually catch a `files:` entry a hand edit (or a '..' segment, or a
+    doubled slash) has carried outside both configured roots - `fha process
+    refile` and `fha packet` each grew their own containment check for
+    exactly this shape (round-2 #163 audit), but until this, `fha lint`'s own
+    E011 check tested only `resolved.exists()` and had NOTHING to say about
+    an entry that resolves to a real file OUTSIDE the archive: the packet
+    warning that names this problem points here (`fha lint`), and this is
+    what makes that pointer true rather than a dead end.
+    """
+    for alias in ('documents', 'photos'):
+        try:
+            resolved.resolve().relative_to(_mapped_root(alias, registry).resolve())
+            return True
+        except (ValueError, OSError, RuntimeError):
+            continue
+    return False
 
 
 # The generated-file ownership marker (TOOLING §1): a file is tool-owned when
@@ -1433,6 +1458,16 @@ def _process_source_file(path: Path, registry: Registry, findings: list[Finding]
             continue  # assets assumed-present on main machine; never flag as missing
 
         resolved = resolve_path(file_path_str, registry.fha_config, registry.archive_root)
+
+        if not _resolved_within_asset_roots(resolved, registry):
+            findings.append(Finding('E', 'E011', path,
+                f'Inventory file {file_path_str!r} resolves outside the configured '
+                "documents/photos roots - this looks like a hand-edited files: entry "
+                "gone wrong (a '..' segment, or a doubled slash). `fha reconcile` "
+                "cannot help (nothing moved): edit the file: value in this record's "
+                'frontmatter by hand to a path that stays inside documents/ or '
+                'photos/, then re-run.'))
+            continue
 
         if not resolved.exists():
             if file_status == 'missing-fixture':

@@ -62,9 +62,19 @@ class FakePhotoStore:
     def __init__(self) -> None:
         self.keywords: dict[str, list[str]] = {}
         self.fail_paths: set[str] = set()
+        # `read_fail_paths` simulates exiftool RUNNING but failing on this one
+        # file (a nonzero exit, or invalid JSON on stdout) - it IS present and
+        # runnable, it just could not read this particular file.
+        # `unavailable_paths` simulates exiftool itself being absent from the
+        # machine entirely - a caller may soft-fail on this (and only this)
+        # without soft-failing on an ordinary per-file read failure (#163 P1
+        # audit finding on `fha process refile`).
         self.read_fail_paths: set[str] = set()
+        self.unavailable_paths: set[str] = set()
 
     def read(self, file_path: Path) -> list[str]:
+        if str(file_path) in self.unavailable_paths:
+            raise process.ExiftoolUnavailableError('simulated: exiftool not on PATH')
         if str(file_path) in self.read_fail_paths:
             raise RuntimeError('simulated exiftool read failure')
         return list(self.keywords.get(str(file_path), []))
