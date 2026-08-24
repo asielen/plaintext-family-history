@@ -116,7 +116,8 @@ are found the user is asked whether they are *one* source (shared S-id) or
 #  Source-stub sidecar (*.notes.md) + bundle notes.md
 #    _find_sidecar             - the {stem}.notes.md beside an asset, if any
 #    _find_back_sibling        - an unambiguous {base_id}-back sibling beside a plain
-#                                 scan, pulled in automatically rather than left behind (#113)
+#                                 scan, pulled in automatically rather than left behind
+#                                 (#113); raises on more than one candidate (#145 finding 4)
 #    _companion_for_sidecar    - resolve direct sidecar input to its asset
 #    _read_sidecar             - its hint frontmatter + prose body
 #    _bundle_file_hints        - bundle notes per-file role/copy/primary hints
@@ -867,15 +868,62 @@ def _find_back_sibling(file_path: Path) -> Path | None:
     `select_variation_primary` uses for its default pick - so processing a
     copy-letter print or a crop on its own never reaches for a shared back
     scan that conceptually belongs with the group's primary, not with it.
+
+    Finds the sibling by SCANNING the directory and parsing every candidate's
+    stem with `parse_media_filename` - the same parser this codebase's own
+    filename grammar and photo-variation grouping already use - rather than
+    constructing one or two hardcoded lowercase `{stem}-back`/`{stem}_back`
+    candidate paths and probing each with `.is_file()`. Two gaps that shape
+    missed on a real filesystem: an explicitly-named sibling in a DIFFERENT
+    case (`record-BACK.PDF`, on a case-sensitive filesystem where a lowercase
+    guess simply does not match), and a back scan saved with a DIFFERENT
+    extension than the primary (`record.jpg` primary, `record-back.jpeg`
+    scan). Both parse to `part_kind == 'back'` with the same `base_id` as the
+    primary, so the scan finds them; the two-candidate-path guess could not.
+    Requires EXACTLY ONE match (case-insensitive `base_id` compare). A
+    genuine zero-match is unambiguous - returns None, nothing to attach - but
+    TWO OR MORE candidates is a real ambiguity this function does not resolve
+    on its own, and it RAISES rather than silently picking one (#145 finding
+    4). Before this, "nothing found" and "found several, pick one for me"
+    both returned the very same None, so the caller silently processed the
+    primary alone and left EVERY candidate back scan unattached with no
+    warning at all: document intake renames the primary at the same moment
+    (removing the obvious naming link back to any candidate), and `fha
+    doctor`'s orphaned-back-photo check explicitly excludes document-root
+    entries (TOOLING §3a), so nothing downstream ever catches it either. Both
+    call sites - `process_document`'s own same-folder fallback, and
+    `_run_process`'s inbox-aware discovery, which runs before the primary is
+    even relocated - already execute inside a ProcessError-handling context,
+    so raising here reaches the human refusal the same way every other
+    "found more than one, won't guess" case in this module does
+    (`_companion_for_sidecar`'s multiple-companion-asset refusal is the twin
+    case for a source-stub sidecar).
     """
     parsed = parse_media_filename(file_path.stem)
     if parsed.variant_id is not None or parsed.part_kind != 'none' or parsed.is_crop:
         return None
-    for sep in ('-', '_'):
-        candidate = file_path.with_name(f'{file_path.stem}{sep}back{file_path.suffix}')
-        if candidate.is_file():
-            return candidate
-    return None
+    base_id = parsed.base_id.lower()
+    try:
+        siblings = list(file_path.parent.iterdir())
+    except OSError:
+        return None
+    matches = []
+    for candidate in siblings:
+        if not candidate.is_file():
+            continue
+        candidate_parsed = parse_media_filename(candidate.stem)
+        if candidate_parsed.part_kind != 'back':
+            continue
+        if candidate_parsed.base_id.lower() == base_id:
+            matches.append(candidate)
+    if len(matches) > 1:
+        names = ', '.join(sorted(m.name for m in matches))
+        raise ProcessError(
+            f'{file_path.name} has more than one possible back scan beside it: '
+            f'{names} - which one is "the" back cannot be guessed. Rename or move '
+            'aside all but the intended one, then re-run.'
+        )
+    return matches[0] if matches else None
 
 
 def _companion_for_sidecar(sidecar: Path) -> Path | None:
@@ -909,6 +957,29 @@ def _companion_for_sidecar(sidecar: Path) -> Path | None:
             'Process the intended asset directly.'
         )
     return candidates[0]
+
+
+def _sidecar_hinted_source_type(sidecar: Path | None) -> str | None:
+    """The `source_type:` hint a stub sidecar carries, or None.
+
+    A best-effort peek: a sidecar that fails to parse returns None here
+    rather than raising, because every call site either has its own explicit
+    `--type` to fall back on or re-reads the sidecar itself downstream (where
+    the real ProcessError surfaces with the full context). Factored out so
+    the CLI's inbox-relocation classification (`_run_process`, #113's
+    back-sibling fix) and `_relocate_from_inbox`'s own internal classification
+    read the SAME hint the SAME way - two independent re-implementations of
+    "peek at source_type:" is exactly how they used to drift (one honoring
+    the hint, the other silently falling back to the raw --type/extension).
+    """
+    if sidecar is None:
+        return None
+    try:
+        sidecar_meta, _ = _read_sidecar(sidecar)
+    except ProcessError:
+        return None  # downstream re-parse will raise the real error
+    hinted = sidecar_meta.get('source_type')
+    return str(hinted) if hinted else None
 
 
 def _relocate_from_inbox(
@@ -959,15 +1030,8 @@ def _relocate_from_inbox(
     # and the explicit flag outranks the hint. classify_asset owns the rule -
     # including that a stated `photo` never pushes a non-photo file into the
     # photo library.
-    hinted_type = None
-    if sidecar is not None:
-        try:
-            sidecar_meta, _ = _read_sidecar(sidecar)
-            hinted_type = sidecar_meta.get('source_type')
-        except ProcessError:
-            pass  # downstream re-parse will raise the real error
     kind = classify_asset(file_path, fha_config, archive_root,
-                          source_type=source_type or hinted_type)
+                          source_type=source_type or _sidecar_hinted_source_type(sidecar))
     dest_root = (
         resolve_path(_PHOTO_DIR, fha_config, archive_root) if kind == 'photo'
         else resolve_path('documents', fha_config, archive_root)
@@ -2621,6 +2685,82 @@ def process_bundle(
     return EXIT_CLEAN
 
 
+# ── DNA restriction on an existing source (Codex PR #145 review, finding 1) ──
+# A DNA attachment names the WHOLE source it lands on as DNA material, not
+# just the one file: `fha packet` decides what to copy per SOURCE, not per
+# file (packet.py's `_source_copy_plan` copies every asset belonging to an
+# INCLUDED source). An unrestricted source that gains a DNA attachment via
+# `--more --type dna` would therefore ship that file the moment the source
+# itself ships - under `--include-restricted` alone, or under no flag at all
+# if the source carried no marker before - defeating the no-override
+# `restricted: dna` contract (AGENTS.md #6, TOOLING §1, SPEC §19) that every
+# other DNA path already keeps (`fha process --type dna` on a NEW primary file
+# forces `restricted:` before scaffolding, SPEC §8.5.5, lint E017). These two
+# helpers extend that same promise to an EXISTING source: `_attach_more_engine`
+# reads the record once up front and calls them from whichever branch (photo
+# or document) and whichever exit path (fresh attach, dry-run preview, or the
+# document branch's idempotent-retry no-op) ends up writing.
+
+def _restricted_type_of(value) -> str | None:
+    """Normalize a raw `restricted:` value to its type, or None when
+    unrestricted.
+
+    A local twin of packet.py's own `_restricted_type` (tools never import
+    tools, TOOLING §15) - duplicated rather than shared so the two readers
+    agree on the SAME contract without a cross-tool import: an absent/false
+    value is unrestricted, a plain truthy value is the type 'plain', and any
+    other string is its own type ('dna', 'by-request', …), lowercased. Feed it
+    a `parse_frontmatter_strict` value (uncoerced YAML) - the same source
+    packet.py's `_record_restriction` reads from - not `read_record`'s
+    string-coerced meta, or a real YAML `true` would fail the `value in
+    (True, 'true')` check.
+    """
+    if value in (None, False, '', 'false'):
+        return None
+    if value in (True, 'true'):
+        return 'plain'
+    return str(value).strip().lower() or 'plain'
+
+
+def _force_dna_restriction_text(record_text: str) -> tuple[str, bool]:
+    """Set the record's `restricted:` marker to `dna`, unless it already
+    carries one that protects at least as well. Returns (new_text, changed).
+
+    Already-sufficient markers are left alone: `dna` needs no upgrade, and
+    `by-request` is MORE restrictive (never opens under any flag, where `dna`
+    opens with `--include-dna`) - downgrading it to `dna` would be a
+    regression dressed up as a fix. Anything else - absent, plain `true`, or a
+    different free-text type such as `deadname` - opens under
+    `--include-restricted` alone today, which is exactly the gap a DNA
+    attachment cannot be allowed to leave open.
+
+    Text surgery, not a YAML round-trip, so a human's field order and
+    comments elsewhere in the frontmatter survive untouched - the same
+    discipline `_rewrite_source_type_line` and `_lib.append_file_entry_to_record`
+    already apply here, including the CRLF-faithful line-ending handling
+    (`append_file_entry_to_record`'s docstring): every line this function
+    introduces carries the record's own ending, so a CRLF-authored record
+    never comes out with a bare-LF island exactly where the edit landed. A
+    record with no parseable frontmatter fence is left untouched (nothing
+    safe to edit) rather than guessed at.
+    """
+    meta = parse_frontmatter_strict(record_text) or {}
+    if _restricted_type_of(meta.get('restricted')) in ('dna', 'by-request'):
+        return record_text, False
+    lines = record_text.split('\n')
+    cr = '\r' if '\r\n' in record_text else ''
+    fence_idx = [i for i, ln in enumerate(lines) if ln.rstrip('\r') == '---']
+    if len(fence_idx) < 2:
+        return record_text, False
+    start, end = fence_idx[0], fence_idx[1]
+    for i in range(start + 1, end):
+        if lines[i].rstrip('\r').startswith('restricted:'):
+            lines[i] = 'restricted: dna' + cr
+            return '\n'.join(lines), True
+    lines[end:end] = ['restricted: dna' + cr]
+    return '\n'.join(lines), True
+
+
 def attach_more(
     archive_root: Path,
     fha_config: dict,
@@ -2632,6 +2772,7 @@ def attach_more(
     dry_run: bool,
     real_path: Path | None = None,
     backup: OriginalBackup | None = None,
+    source_type: str | None = None,
 ) -> int:
     """M7.2 `--more`: attach an additional file to an existing source record.
 
@@ -2646,6 +2787,16 @@ def attach_more(
     the keyword read below uses it; an inbox-staged primary is unprocessed, so
     the preview then refuses with the same "not a processed source" answer the
     live run gives, instead of a spurious read failure.
+
+    `source_type` is the CLI's own validated `--type` (e.g. `fha process
+    <primary> --more page-2.jpg page-2 --type census`) - the SAME rule "an
+    explicit --type wins" that the primary file's own classification honors
+    (`classify_asset`'s docstring). Before this, a `--more` file's root was
+    decided purely by extension, so `--type census` on a `.jpg` attachment was
+    silently accepted and then ignored: the page landed in `photos/` with a
+    PHOTO keyword instead of being filed and renamed as a document page under
+    `documents/census/`, the same class of bug issue #59 already fixed for
+    the primary file's own classification.
 
     This is a thin wrapper: `--more`'s FILE argument is documented (and used,
     per the CLI's own example) as a plain path into `inbox/`, but until #111
@@ -2662,13 +2813,14 @@ def attach_more(
     """
     pre_move_more = more_file
     more_file, _, more_relocate_undo = _relocate_from_inbox(
-        archive_root, fha_config, more_file, None, dry_run=dry_run)
+        archive_root, fha_config, more_file, None,
+        source_type=source_type, dry_run=dry_run)
     more_real_path = pre_move_more if dry_run and more_file != pre_move_more else None
     try:
         rc = _attach_more_engine(
             archive_root, fha_config, primary_path, more_file, role, copy,
             dry_run=dry_run, real_path=real_path, more_real_path=more_real_path,
-            backup=backup,
+            backup=backup, source_type=source_type,
         )
     except Exception:
         if more_relocate_undo is not None:
@@ -2691,6 +2843,7 @@ def _attach_more_engine(
     real_path: Path | None,
     more_real_path: Path | None,
     backup: OriginalBackup | None,
+    source_type: str | None = None,
 ) -> int:
     """The `--more` attach logic proper, run against `more_file`'s resolved
     location (`attach_more`'s inbox-relocation wrapper has already moved it,
@@ -2705,6 +2858,11 @@ def _attach_more_engine(
     for the PRIMARY, extended to the `--more` file. Every on-disk read below
     targets it; every destination-shaped use (alias, rename target, printed
     path) keeps using `more_file`.
+
+    `source_type` is the CLI's own `--type`, passed straight through to
+    `classify_asset` for `more_file` - see `attach_more`'s docstring. It plays
+    no part in classifying `primary_path` (already a processed source; its
+    root was decided when IT was filed).
     """
     more_on_disk = more_real_path if more_real_path is not None else more_file
     # _source_id_of reads the primary's embedded SOURCE keyword via exiftool when
@@ -2738,7 +2896,33 @@ def _attach_more_engine(
     if record_path is None:
         raise ProcessError(f'no source record found for {sid.upper()} under sources/.')
 
-    more_kind = classify_asset(more_file, fha_config, archive_root)
+    more_kind = classify_asset(more_file, fha_config, archive_root, source_type=source_type)
+
+    # #1 (Codex PR #145 review, P1): an explicit --type dna on a --more
+    # attachment must not leave the SOURCE record itself unrestricted.
+    # `fha packet` decides what to copy per SOURCE, not per file
+    # (packet.py's `_source_copy_plan` copies every asset belonging to an
+    # INCLUDED source), so a source that stayed unrestricted after gaining a
+    # DNA attachment would ship that file under `--include-restricted`
+    # alone - or under no flag at all - defeating the no-override
+    # `restricted: dna` contract (AGENTS.md #6, TOOLING §1, SPEC §19) every
+    # other DNA path already keeps (`fha process --type dna` on a NEW
+    # primary forces it, SPEC §8.5.5, lint E017). Read the record once, up
+    # front, so both branches below - and the document branch's
+    # idempotent-retry check - see the same answer; `_restricted_type_of` is
+    # a local twin of packet.py's own `_restricted_type` (tools never import
+    # tools, TOOLING §15) so the two readers agree on what already counts as
+    # sufficiently restricted.
+    try:
+        record_text_for_check = read_text_exact(record_path)
+    except (OSError, UnicodeDecodeError) as e:
+        print(f'ERROR: could not read {_rel(record_path, archive_root)}: {e}', file=sys.stderr)
+        return EXIT_FAILURE
+    meta_for_check = parse_frontmatter_strict(record_text_for_check) or {}
+    needs_dna_upgrade = (
+        (source_type or '').strip().lower() == 'dna'
+        and _restricted_type_of(meta_for_check.get('restricted')) not in ('dna', 'by-request')
+    )
 
     if more_kind == 'photo':
         photos_root = resolve_path(_PHOTO_DIR, fha_config, archive_root)
@@ -2765,6 +2949,12 @@ def _attach_more_engine(
         if dry_run:
             _open_backup(archive_root, fha_config, backup)
             print(f'[dry-run] Would embed SOURCE: {sid} in {more_file.name} (no rename)')
+            if needs_dna_upgrade:
+                _, dna_would_change = _force_dna_restriction_text(record_text_for_check)
+                if dna_would_change:
+                    print(f'[dry-run] Would set restricted: dna on '
+                          f'{_rel(record_path, archive_root)} (required for the attached '
+                          'DNA file).')
             print(f'[dry-run] Would add files: entry (role: {role}) to '
                   f'{_rel(record_path, archive_root)}')
             return EXIT_CLEAN
@@ -2783,8 +2973,12 @@ def _attach_more_engine(
             print(f'ERROR: exiftool could not embed SOURCE keyword in {more_file.name}: {err}',
                   file=sys.stderr)
             return EXIT_FAILURE
+        dna_restriction_set = False
         try:
-            new_text = _append_file_entry(old_text, entry)
+            new_text = old_text
+            if needs_dna_upgrade:
+                new_text, dna_restriction_set = _force_dna_restriction_text(new_text)
+            new_text = _append_file_entry(new_text, entry)
             # Atomic, unlike the scaffolding writes above: those CREATE a record
             # and their undo unlinks the partial, but this one REPLACES a
             # complete source record to add one files: entry. A truncating write
@@ -2810,6 +3004,9 @@ def _attach_more_engine(
             return EXIT_FAILURE
         _flush_backup_messages(backup)
         print(f'Embedded SOURCE: {sid} in {more_file.name} (not renamed)')
+        if dna_restriction_set:
+            print(f'Set restricted: dna on {_rel(record_path, archive_root)} '
+                  '(required for the attached DNA file).')
         print(f'Added files: entry (role: {role}) to {_rel(record_path, archive_root)}')
         return EXIT_CLEAN
 
@@ -2864,6 +3061,101 @@ def _attach_more_engine(
     # though it needs no RENAME - the two are independent (#108 + #111).
     needs_move = new_path.resolve() != more_file.resolve()
     new_alias = path_to_alias(new_path, 'documents', fha_config, archive_root)
+
+    # #2 fix: the no-rename path above (#108) accepts ANY file already
+    # carrying this source's own S-id - including one that is ALREADY listed
+    # in the record's own files: (an already-attached transcript, or even the
+    # primary file itself, re-offered under a different role spelling).
+    # Without this check, retrying the identical --more command exits clean
+    # while silently appending a DUPLICATE alias entry - or, worse, a second
+    # entry for the same physical file carrying a CONFLICTING role. Checked
+    # here (before any write, and before the dry-run branch below) so a
+    # dry-run preview and a live run agree on the outcome, and an idempotent
+    # retry never reaches the rename/move logic at all.
+    #
+    # `record_text_for_check`/`meta_for_check` (read_text_exact +
+    # parse_frontmatter_strict, not read_record) come from the shared read
+    # near the top of this function (the DNA-restriction check, finding 1,
+    # needed the same record read before this function knew which branch it
+    # was in) - an unparseable frontmatter there already fell back to `{}`,
+    # so the duplicate check below just finds no `files:` list rather than
+    # inventing a new refusal class this finding did not ask for.
+    existing_entries = [e for e in (meta_for_check.get('files') or [])
+                        if isinstance(e, dict) and e.get('file')]
+    new_alias_norm = new_alias.replace('\\', '/')
+    existing_match = next(
+        (e for e in existing_entries
+         if str(e['file']).replace('\\', '/') == new_alias_norm),
+        None,
+    )
+    if existing_match is not None:
+        existing_role = str(existing_match.get('role') or '').strip() or 'attachment'
+        existing_copy = str(existing_match.get('copy') or '').strip() or None
+        requested_role = role.strip() or 'attachment'
+        requested_copy = (copy or '').strip() or None
+        if existing_role == requested_role and existing_copy == requested_copy:
+            # #3 (Codex PR #145 review): the alias/role/copy lining up with an
+            # already-listed entry is only a genuine repeat of an
+            # already-completed command when the supplied file IS ALREADY at
+            # the listed destination (`not needs_move`). Before this, ANY
+            # alias match short-circuited here, so a record whose listed file
+            # had gone missing from disk - with a same-named REPLACEMENT
+            # still sitting untouched under its own name - reported "already
+            # attached, nothing to do" without ever moving the replacement
+            # into place or touching the record: a false success that left
+            # the hole exactly as it was.
+            if not needs_move:
+                if needs_dna_upgrade:
+                    new_text, changed = _force_dna_restriction_text(record_text_for_check)
+                    if dry_run:
+                        if changed:
+                            print(f'[dry-run] Would set restricted: dna on '
+                                  f'{_rel(record_path, archive_root)} (required for the '
+                                  'attached DNA file).')
+                    elif changed:
+                        try:
+                            write_text_exact_atomic(
+                                record_path, reapply_newline(new_text, record_text_for_check))
+                        except OSError as e:
+                            print(f'ERROR: could not write '
+                                  f'{_rel(record_path, archive_root)}: {e}', file=sys.stderr)
+                            return EXIT_FAILURE
+                        print(f'Set restricted: dna on {_rel(record_path, archive_root)} '
+                              '(required for the attached DNA file).')
+                print(f"{more_file.name} is already attached to "
+                      f"{_rel(record_path, archive_root)} as role '{existing_role}'"
+                      + (f' (copy: {existing_copy})' if existing_copy else '')
+                      + ' - nothing to do.')
+                return EXIT_CLEAN
+            if new_path.exists():
+                raise ProcessError(
+                    f'destination file already exists: {new_path.name} - '
+                    f'{new_alias} is already listed in {_rel(record_path, archive_root)} as '
+                    f"role '{existing_role}'"
+                    + (f' (copy: {existing_copy})' if existing_copy else '')
+                    + ', and a different file already sits at that path. Resolve the '
+                    'name collision by hand, then re-run.'
+                )
+            raise ProcessError(
+                f'{new_alias} is already listed in {_rel(record_path, archive_root)} as '
+                f"role '{existing_role}'"
+                + (f' (copy: {existing_copy})' if existing_copy else '')
+                + f', but that file is missing from disk, and {more_file.name} is a '
+                'different file still sitting where it was - not yet moved into place. '
+                'If it is meant to replace the missing file, remove the stale files: '
+                'entry from the record by hand and re-run this command to attach it '
+                'fresh; if the original was simply misplaced, put it back at the '
+                'listed path instead.'
+            )
+        raise ProcessError(
+            f'{new_alias} is already listed in {_rel(record_path, archive_root)} as '
+            f"role '{existing_role}'"
+            + (f' (copy: {existing_copy})' if existing_copy else '')
+            + f", which conflicts with the requested role '{requested_role}'"
+            + (f' (copy: {requested_copy})' if requested_copy else '')
+            + '. Edit the record by hand if this is intentional, or attach a different file.'
+        )
+
     entry = [f'  - file: {_yaml_inline(new_alias)}', f'    role: {_yaml_inline(role)}']
     if copy:
         entry.append(f'    copy: {_yaml_inline(copy)}')
@@ -2880,6 +3172,9 @@ def _attach_more_engine(
             print(f'[dry-run] Would rename {more_file.name} -> {more_dest_display}')
         else:
             print(f"[dry-run] {more_file.name} already carries this source's S-id; keeping its name.")
+        if needs_dna_upgrade:
+            print(f'[dry-run] Would set restricted: dna on {_rel(record_path, archive_root)} '
+                  '(required for the attached DNA file).')
         print(f'[dry-run] Would add files: entry (role: {role}) to '
               f'{_rel(record_path, archive_root)}')
         return EXIT_CLEAN
@@ -2890,13 +3185,17 @@ def _attach_more_engine(
     except (OSError, UnicodeDecodeError) as e:
         print(f'ERROR: could not read {_rel(record_path, archive_root)}: {e}', file=sys.stderr)
         return EXIT_FAILURE
+    dna_restriction_set = False
     try:
         if needs_move:
             new_path.parent.mkdir(parents=True, exist_ok=True)
             more_file.rename(new_path)
             undo.append((f'move {new_path.name} back to {more_file.name}',
                          lambda: new_path.rename(more_file)))
-        new_text = _append_file_entry(old_text, entry)
+        new_text = old_text
+        if needs_dna_upgrade:
+            new_text, dna_restriction_set = _force_dna_restriction_text(new_text)
+        new_text = _append_file_entry(new_text, entry)
         # Atomic for the same reason as the photos branch above: an existing
         # source record is being replaced, not created.
         write_text_exact_atomic(record_path, reapply_newline(new_text, old_text))
@@ -2924,6 +3223,9 @@ def _attach_more_engine(
         print(f'Renamed {more_file.name} -> {more_dest_display}')
     else:
         print(f'Kept {more_file.name} (already named for this source)')
+    if dna_restriction_set:
+        print(f'Set restricted: dna on {_rel(record_path, archive_root)} '
+              '(required for the attached DNA file).')
     print(f'Added files: entry (role: {role}) to {_rel(record_path, archive_root)}')
     return EXIT_CLEAN
 
@@ -4482,9 +4784,20 @@ def _run_process(args: argparse.Namespace) -> int:
         else:
             sidecar_path = _find_sidecar(file_path)
         pre_move_path = file_path
+        # Resolve --type/the sidecar hint to the SAME effective classification
+        # _relocate_from_inbox would derive internally, and pass it explicitly
+        # rather than let the primary and (below) any back-sibling relocation
+        # each re-derive their own answer. Before this, a back sibling's
+        # relocation call had no sidecar to hint from (a back scan carries no
+        # sidecar of its own) and fell back to the raw --type (often None),
+        # so a sidecar-hinted document primary (e.g. `census.jpg` + a stub
+        # saying `source_type: census`) could route to documents/ while its
+        # `-back` sibling, seeing no hint, routed to photos/ instead - two
+        # different roots for one physical item (#113 follow-up).
+        relocate_type = source_type or _sidecar_hinted_source_type(sidecar_path)
         file_path, sidecar_path, relocate_undo = _relocate_from_inbox(
             archive_root, fha_config, file_path, sidecar_path,
-            source_type=source_type, dry_run=dry_run,
+            source_type=relocate_type, dry_run=dry_run,
         )
     except ProcessError as e:
         print(f'ERROR: {e}', file=sys.stderr)
@@ -4529,7 +4842,8 @@ def _run_process(args: argparse.Namespace) -> int:
                 role = role.strip() or 'attachment'
                 copy = copy.strip() or None
                 rc = attach_more(archive_root, fha_config, file_path, more_file,
-                                  role, copy, dry_run=dry_run, real_path=real_path)
+                                  role, copy, dry_run=dry_run, real_path=real_path,
+                                  source_type=source_type)
         else:
             kind = classify_asset(file_path, fha_config, archive_root,
                                   source_type=source_type)
@@ -4559,9 +4873,15 @@ def _run_process(args: argparse.Namespace) -> int:
                 else:
                     back_src = _find_back_sibling(pre_move_path)
                     if back_src is not None:
+                        # Same resolved classification as the primary's own
+                        # relocation just above (relocate_type, not the raw
+                        # --type) - see that call's comment. A back sibling
+                        # carries no sidecar of its own to hint from, so
+                        # without this it silently lost the primary's hint
+                        # and could land in the wrong root (#1 above).
                         back_sibling, _, back_relocate_undo = _relocate_from_inbox(
                             archive_root, fha_config, back_src, None,
-                            source_type=source_type, dry_run=dry_run,
+                            source_type=relocate_type, dry_run=dry_run,
                         )
                     rc = process_document(
                         archive_root, fha_config, file_path,

@@ -305,9 +305,25 @@ source and drafts `relationship` claims with explicit `roles:` maps for parentag
 line pointing here. Session check pending, like the other layers. Built directly against `root_generation`
 (issue #72, MI-equivalent `#102`, merged into master the same session) - no longer a forward dependency.
 
-**Orchestrates:** `fha person new`, `fha person set-sex`, `fha person set-living`, `fha process`,
-hand-drafted claims (the same Stage-B judgment `process-source` already performs), `review-claims` -
-no new verb.
+**Step 0 - place-backlog offer (2026-08, issue #79 point 4, PR #150).** Before the family questions, the
+skill now runs one cheap, silent, one-time check: an archive that already carries imported/migrated
+material (`fha gedcom import` run before this interview - a sanctioned ordering per AGENTS.md) can reach
+this interview sitting on a real backlog of unlinked `place_text` with zero registered places, and nobody
+ever offered the one pass that would fix it. `fha index` then `fha places candidates --include-suggested`
+surfaces the clusters (widened to count `status: suggested` claims - `fha gedcom import` mints everything
+at that status, so the plain accepted/needs-review-only view would see nothing); past a 20-claim oversight
+bar (`_PLACE_ESCALATION_THRESHOLD`'s own bar, issue #79 point 2), the skill offers once to register the
+biggest cluster(s) via `fha confirm place`, then reindexes and runs `fha places lint` to confirm no new
+registry-hygiene findings. "Not now" or silence drops it for the rest of the session; a registry that
+already has an entry, or every cluster below the bar, means the check says nothing at all.
+
+**Orchestrates:** `fha index`, `fha places candidates --include-suggested`, `fha confirm place`, `fha
+places lint` (step 0's place-backlog offer), `fha person new`, `fha person set-sex`, `fha person
+set-living`, `fha process`, hand-drafted claims (the same Stage-B judgment `process-source` already
+performs), `review-claims`. One core-tool addition: `places.py`'s `fha places candidates` gained the
+`--include-suggested` flag (Codex review, PR #150) so this skill's one-time backlog scan can see a
+fresh-import-shaped backlog that the everyday, `suggested`-excluding view cannot - every other verb this
+skill drives already existed.
 
 ---
 

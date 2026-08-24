@@ -134,14 +134,27 @@
 <script>
 (function () {
   var holder = document.getElementById('fha-tree-data');
-  if (!holder || !window.FhaTree || !window.FhaTreeAdapter) return;
-  try {
-    var data = JSON.parse(holder.textContent);
-    var root = window.FhaTreeAdapter.fromNeutral(data);
-    var opts = { initialDepth: 4,
-                 homeId: null };
-    window.FhaTree.render(document.getElementById('fha-tree'), root, opts);
-  } catch (e) { /* a bad tree must never blank the page */ }
+  var mount = document.getElementById('fha-tree');
+  if (!holder || !mount || !window.FhaTree || !window.FhaTreeAdapter) return;
+  function renderTree() {
+    try {
+      var data = JSON.parse(holder.textContent);
+      var root = window.FhaTreeAdapter.fromNeutral(data);
+      var opts = { initialDepth: 4,
+                   homeId: null };
+      window.FhaTree.render(mount, root, opts);
+    } catch (e) { /* a bad tree must never blank the page */ }
+  }
+  var host = mount.closest ? mount.closest('details') : null;
+  if (!host || host.open) {
+    renderTree();
+  } else {
+    host.addEventListener('toggle', function onToggle() {
+      if (!host.open) return;               // ignore the close-toggle
+      host.removeEventListener('toggle', onToggle);
+      renderTree();
+    });
+  }
 })();
 </script>
 

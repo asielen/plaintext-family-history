@@ -1,4 +1,6 @@
 import argparse
+import contextlib
+import io
 import sqlite3
 import shutil
 import subprocess
@@ -283,6 +285,55 @@ class PlacesCandidatesTests(unittest.TestCase):
         self.conn.commit()
         result = places.run_candidates(self.archive_root, {}, threshold=3)
         self.assertEqual(result['place_text_groups'], [])
+
+    def test_suggested_claims_excluded_by_default(self) -> None:
+        # Codex review, PR #150 (following issue #79 point 4): the everyday
+        # view must keep excluding still-unreviewed claims - only the
+        # setup-interview skill's one-time backlog scan opts into counting
+        # them, via --include-suggested.
+        for i in range(3):
+            _add_claim(self.conn, f'c-{i}111111111', place_text='Topeka, Kansas', status='suggested')
+        self.conn.commit()
+        result = places.run_candidates(self.archive_root, {}, threshold=3)
+        self.assertEqual(result['place_text_groups'], [])
+
+    def test_include_suggested_widens_the_cluster(self) -> None:
+        # A fresh `fha gedcom import` mints every claim as `suggested` - the
+        # exact scenario the setup-interview skill's step 0 must be able to
+        # see. include_suggested=True must count them without excluding the
+        # normal accepted/needs-review claims.
+        _add_claim(self.conn, 'c-0111111111', place_text='Topeka, Kansas', status='accepted')
+        _add_claim(self.conn, 'c-1111111111', place_text='Topeka, Kansas', status='needs-review')
+        _add_claim(self.conn, 'c-2111111111', place_text='Topeka, Kansas', status='suggested')
+        self.conn.commit()
+        without = places.run_candidates(self.archive_root, {}, threshold=3)
+        self.assertEqual(without['place_text_groups'], [])   # only 2 count by default
+        result = places.run_candidates(self.archive_root, {}, threshold=3, include_suggested=True)
+        self.assertEqual(len(result['place_text_groups']), 1)
+        self.assertEqual(result['place_text_groups'][0]['claim_count'], 3)
+
+    def test_include_suggested_still_excludes_rejected_and_superseded(self) -> None:
+        _add_claim(self.conn, 'c-0111111111', place_text='Topeka, Kansas', status='suggested')
+        _add_claim(self.conn, 'c-1111111111', place_text='Topeka, Kansas', status='suggested')
+        _add_claim(self.conn, 'c-2111111111', place_text='Topeka, Kansas', status='rejected')
+        self.conn.commit()
+        result = places.run_candidates(self.archive_root, {}, threshold=3, include_suggested=True)
+        self.assertEqual(result['place_text_groups'], [])   # only 2 suggested, below threshold 3
+
+    def test_cli_include_suggested_flag_reaches_the_engine(self) -> None:
+        (self.archive_root / 'fha.yaml').write_text('roots: {}\n', encoding='utf-8')
+        for i in range(3):
+            _add_claim(self.conn, f'c-{i}111111111', place_text='Topeka, Kansas', status='suggested')
+        self.conn.commit()
+        args = argparse.Namespace(root=str(self.archive_root), threshold=3, include_suggested=True)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = places._cmd_places_candidates(args)
+        self.assertEqual(rc, places.EXIT_CLEAN)
+        # The real guard: the CLI flag must actually reach run_candidates and
+        # widen the cluster, not just parse without error.
+        self.assertIn('Found 1 candidate place-text cluster', buf.getvalue())
+        self.assertIn('Topeka, Kansas - 3 claim(s)', buf.getvalue())
 
     def test_date_spread_reported(self) -> None:
         _add_claim(self.conn, 'c-1111111111', place_text='Topeka, Kansas', date_edtf='1870')
