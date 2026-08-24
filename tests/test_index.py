@@ -1307,7 +1307,8 @@ _COPY_SID = 'S-8c8c8c8c8c'
 _COPY_SOURCE = '''---
 id: {sid}
 title: Household ledger, several entries
-source_type: ledger
+source_type: other
+subtype: ledger
 files:
   - file: documents/ledger/entry-a_{sid}.pdf
     role: entry
@@ -1375,7 +1376,8 @@ _DATE_SID = 'S-9d9d9d9d9d'
 _DATE_SOURCE = '''---
 id: {sid}
 title: Household ledger, several entries
-source_type: ledger
+source_type: other
+subtype: ledger
 source_date: 1916-02/1916-06
 files:
   - file: documents/ledger/entry-a_{sid}.pdf

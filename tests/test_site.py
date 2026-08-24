@@ -268,7 +268,7 @@ class SourcePageTests(_Base):
         # issue), the site's file-list note names the variant too - 'role:
         # entry · copy: b' - so same-role entries of one item are told apart
         # without needing per-file dates.
-        self._seed_source('s-1111111111', 'Household Ledger', source_type='ledger')
+        self._seed_source('s-1111111111', 'Household Ledger', source_type='other')
         ledger_dir = self.archive_root / 'documents' / 'ledger'
         ledger_dir.mkdir(parents=True, exist_ok=True)
         (ledger_dir / 'entry-a.pdf').write_bytes(b'not a real pdf')
@@ -297,7 +297,7 @@ class SourcePageTests(_Base):
         # February 1916 · role: entry · copy: b' - so two same-role entries
         # of one ledger read as distinct by DATE, not just by an opaque copy
         # letter.
-        self._seed_source('s-1111111111', 'Household Ledger', source_type='ledger')
+        self._seed_source('s-1111111111', 'Household Ledger', source_type='other')
         ledger_dir = self.archive_root / 'documents' / 'ledger'
         ledger_dir.mkdir(parents=True, exist_ok=True)
         (ledger_dir / 'entry-a.pdf').write_bytes(b'not a real pdf')
