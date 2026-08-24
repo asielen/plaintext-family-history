@@ -75,6 +75,7 @@ from _lib import (
     link_field_refs,
     load_fha_yaml,
     normalize_id,
+    optional_scalar,
     parentage_parties,
     parse_filename,
     person_file_kind,
@@ -126,6 +127,9 @@ configure_utf8_stdout()
 #    _index_places           - places.yaml → places, place_names, place_history
 #    _index_person           - one person .md → persons + person_files
 #                              + hypotheses + search_log (research files)
+#    _optional_id_ref        - one optional id-reference field (merged_into:/
+#                              superseded_by:/hypothesis:) → normalized id | None
+#                              (composes _lib.optional_scalar + normalize_id)
 #    _index_source           - one source .md → sources + claims + claim_persons
 #                              + claim_links + source_files + source_people
 #    _index_notes            - notes/*.md → notes_fts
@@ -750,7 +754,13 @@ def _index_places(conn: sqlite3.Connection, archive_root: Path) -> list[str]:
         )
         for h in (place.get('history') or []):
             if isinstance(h, dict):
-                period = str(h.get('period', ''))
+                # period: normally carries every history entry's reason for
+                # being (SPEC §15), but a hand-edited `period:` line left
+                # blank is the same YAML-null shape as any other optional
+                # scalar - `optional_scalar` keeps it NULL rather than the
+                # literal text 'None' feeding `edtf_bounds` or landing in
+                # `place_history.period_edtf`.
+                period = optional_scalar(h.get('period'))
                 mn, mx = edtf_bounds(period) if period else ('', '')
                 conn.execute(
                     'INSERT INTO place_history(place_id, period_edtf, date_min, date_max, hierarchy) VALUES (?,?,?,?,?)',
@@ -1011,7 +1021,13 @@ def _index_person(
     if not pid:
         return
 
-    name = str(meta.get('name', '')) or 'unknown'
+    # `name:` is required (SPEC §9), but a hand-blanked line (`name:` with
+    # nothing after the colon) still parses as YAML null, not the omitted
+    # key `str(meta.get('name', ''))`'s `''` default is waiting for - so the
+    # `or` has to run on the raw value, before `str()`, or a blank name
+    # indexes as the literal text 'None' rather than falling back to
+    # 'unknown' the way an actually-missing name does.
+    name = str(meta.get('name') or 'unknown')
     stem = path.stem
     # Content decides, the filename hints.  The rule itself lives in
     # `_lib.person_file_kind` - index and lint reading it differently is what
@@ -1049,6 +1065,15 @@ def _index_person(
             if len(core) >= 2:
                 surname = core[-1].title()
 
+        # `living:` is required (SPEC §9), but the same missing-vs-blank hazard
+        # every optional field carries still applies to a hand-blanked
+        # required one: a bare `living:` with nothing after the colon parses
+        # as YAML null just like an omitted key, so `str(None).lower()` here
+        # produces 'none' - not one of the three legal values, so the
+        # normalization below still catches it and falls back to 'unknown'
+        # (the same safe default the omitted-key case already got). No `or`
+        # guard needed here specifically because every non-legal string,
+        # 'none' included, is caught by the same membership check.
         living_val = str(meta.get('living', 'unknown')).lower()
         if living_val not in ('true', 'false', 'unknown'):
             living_val = 'unknown'
@@ -1060,15 +1085,27 @@ def _index_person(
                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)''',
             (
                 pid, name, surname,
-                str(meta.get('sex', '')),
+                # sex: (SPEC §9, optional) - blank must land as '', matching
+                # the omitted-key default; `str(meta.get('sex', ''))` alone
+                # would store the literal text 'None' for a bare `sex:` line
+                # (#157-shape bug, same file, other fields).
+                str(meta.get('sex') or ''),
                 living_val,
-                str(meta.get('tier', 'stub')),
-                str(meta.get('status', 'active')),
-                normalize_id(str(meta.get('merged_into', ''))) or None,
+                # tier: defaults to 'stub' when truly absent (SPEC §9); a
+                # bare `tier:` line must fall back the same way, not store
+                # 'None' as though it were a fourth tier value.
+                str(meta.get('tier') or 'stub'),
+                # status: defaults to 'active' (merged/superseded are the
+                # other legal values, SPEC §9) - same blank-vs-absent fix.
+                str(meta.get('status') or 'active'),
+                _optional_id_ref(meta.get('merged_into')),
                 1 if meta.get('no_known_marriages') in (True, 'true') else 0,
                 1 if meta.get('no_known_children') in (True, 'true') else 0,
-                str(meta.get('birth', '')) or None,
-                str(meta.get('death', '')) or None,
+                # birth:/death: are optional provisional estimates (SPEC §9);
+                # `optional_scalar` keeps a blank line and an omitted key both
+                # NULL, matching `source_files.date_edtf`'s discipline.
+                optional_scalar(meta.get('birth')),
+                optional_scalar(meta.get('death')),
                 str(path.relative_to(archive_root)),
             ),
         )
@@ -1212,6 +1249,25 @@ def _index_person(
             _index_research_log_block(conn, body, pid, rel_path)
 
 
+def _optional_id_ref(value: object) -> str | None:
+    """One optional ID-reference field (`merged_into:`/`superseded_by:`/
+    `hypothesis:`) → its normalized id, or None.
+
+    These fields carry the identical missing-vs-blank hazard `_lib.
+    optional_scalar` exists for (an omitted key and an explicit YAML null
+    - a bare `merged_into:` with nothing after the colon - both parse to
+    `None`, and a bare `str()` on that produces the literal text 'None'),
+    plus a second step: the surviving text still has to become a *normalized
+    id*, not just non-empty text. Composing the two keeps both hazards
+    covered in the right order - `optional_scalar` guards the `str()`
+    conversion (a `None` stays `None`, never becomes the word 'None'), then
+    `normalize_id` lowercases/strips it into the canonical id form (and is
+    itself None-safe, so an already-None input just flows through to ''). The
+    final `or None` turns that '' back into NULL, matching every other
+    optional column in this module."""
+    return normalize_id(optional_scalar(value)) or None
+
+
 def _index_source(
     conn: sqlite3.Connection,
     path: Path,
@@ -1260,7 +1316,14 @@ def _index_source(
 
     title = str(meta.get('title', ''))
     source_type = str(meta.get('source_type', ''))
-    date_edtf = str(meta.get('source_date', ''))
+    # source_date: is written on nearly every source but is not itself
+    # required (an undated artifact is legitimate), and a bare `source_date:`
+    # line parses as YAML null the same as any other optional field - so this
+    # goes through `optional_scalar` rather than a plain `str(...get(k,''))`,
+    # matching `claims.date_edtf` below and keeping a blank line from landing
+    # as the literal text 'None' (rendered on the source page as a date, or
+    # fed into `edtf_bounds` as an unparseable "date").
+    date_edtf = optional_scalar(meta.get('source_date'))
     mn, mx = edtf_bounds(date_edtf) if date_edtf else ('', '')
     # Any truthy `restricted:` - including the typed values `dna`/`by-request`,
     # the strongest markers - stores 1, so every SQL prefilter built on this
@@ -1286,12 +1349,17 @@ def _index_source(
            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)''',
         (
             sid, title, source_type, date_edtf, mn, mx,
-            str(meta.get('repository', '')),
+            # repository:/source_class: are both optional (SPEC §14) - blank
+            # must land as '', not the literal text 'None'.
+            str(meta.get('repository') or ''),
             restricted,
-            str(meta.get('source_class', '')),
+            str(meta.get('source_class') or ''),
             pub_ok,
-            str(meta.get('status', 'active')),
-            normalize_id(str(meta.get('superseded_by', ''))) or None,
+            # status: defaults to 'active' the same way persons.status does
+            # (merged/superseded are the other legal values) - a blank line
+            # must fall back the same way an omitted key does.
+            str(meta.get('status') or 'active'),
+            _optional_id_ref(meta.get('superseded_by')),
             str(path.relative_to(archive_root)),
         ),
     )
@@ -1324,22 +1392,42 @@ def _index_source(
         if not isinstance(f, dict):
             continue
         file_path = str(f.get('file', ''))
-        role = str(f.get('role', ''))
+        # role: is written on every real entry but, like any hand-typed YAML
+        # scalar, a bare `role:` line still parses as null - and `role` is
+        # rendered straight onto the source page (`site._role_note`), so a
+        # blank line here would show the literal text 'role: None' rather
+        # than omitting the label the way a truly-absent role already does.
+        role = str(f.get('role') or '')
         # `copy: b`/`c`/`d` distinguishes same-day (or same-bundle, #123)
         # file variants; a claim's `asset: b-back` (SPEC §8.4) pins to
         # exactly this role/copy pair, so the column must carry whatever the
-        # record actually wrote, not a blanket NULL.
-        copy_letter = str(f.get('copy', '')).strip() or None
+        # record actually wrote, not a blanket NULL. `optional_scalar`
+        # treats a bare `copy:` (explicit YAML null) the same as an omitted
+        # key - both NULL, never the literal text 'None' a plain `str()`
+        # would otherwise produce.
+        copy_letter = optional_scalar(f.get('copy'))
         # `date:` (SPEC §14, #123) is this file's own EDTF date, distinct
         # from the source's own `source_date:` - for a source that legitimately
         # bundles files from different dates. Stored raw, same discipline as
         # `copy_letter` above and as `claims.date_edtf` (index.py's claim
         # INSERT below): the string the record wrote, unparsed/unvalidated
         # beyond what already happens elsewhere, NULL when the entry carries
-        # no `date:` of its own.
-        file_date_edtf = str(f.get('date', '')).strip() or None
+        # no `date:` of its own - and, via `optional_scalar`, NULL rather
+        # than the literal text 'None' when the entry writes a bare `date:`
+        # with nothing after the colon (Codex review on PR #149).
+        file_date_edtf = optional_scalar(f.get('date'))
         derived = 1 if f.get('derived') in (True, 'true') else 0
-        orig_name = str(f.get('original_filename', '')) or None
+        # original_filename: is normally machine-written (`fha process`
+        # records it before renaming a documents-root file), but a hand-edit
+        # can still blank the line - same hazard, same fix, as every other
+        # optional field in this loop.
+        orig_name = optional_scalar(f.get('original_filename'))
+        # status: (SPEC §14) "omitted means present" - a `missing`/
+        # `missing-fixture` marker is the only thing this field is for. It is
+        # computed here but not currently written to any column (source_files
+        # has no `status` field yet - see TOOLING §2); left as dead code
+        # rather than wired up, since giving it a real destination is a
+        # separate design decision, not this bug fix's scope.
         file_status = str(f.get('status', ''))
 
         resolved = resolve_path(file_path, fha_config, archive_root)
@@ -1405,7 +1493,14 @@ def _index_source(
         if not cid or not cid.startswith('c-'):
             continue
 
-        claim_date = str(claim.get('date', ''))
+        # date: (SPEC §8.4) is "EDTF; omit only if truly undatable" - an
+        # explicitly optional field, and a bare `date:` line parses as YAML
+        # null exactly like every other optional scalar here.
+        # `optional_scalar` keeps that NULL rather than feeding the literal
+        # text 'None' into `edtf_bounds` (which would silently treat it as
+        # an unparseable date) or into `claims.date_edtf` (rendered on the
+        # claim as though it were a real, if odd, date).
+        claim_date = optional_scalar(claim.get('date'))
         cmn, cmx = edtf_bounds(claim_date) if claim_date else ('', '')
         negated = 1 if claim.get('negated') in (True, 'true') else 0
         # place: gets the same tolerance as persons: - a wrapped `[[L-…]]` or an
@@ -1413,7 +1508,32 @@ def _index_source(
         # place_id (it lives in place_text) instead of being stored as garbage.
         place_id_raw = resolve_typed_ref(claim.get('place'), alias_map, want='L')
 
-        sig_override = str(claim.get('significance', '')) or None
+        # Every field below is explicitly optional (SPEC §8.4's "other
+        # optional fields, present only when used" block). All of them used
+        # to read `str(claim.get(key, '')) or None` - which looks like it
+        # guards the blank-line case but does not: `str()` runs on the raw
+        # `.get()` result BEFORE the `or`, so a bare `key:` line (YAML null,
+        # key present) becomes the STRING 'None' first, and `'None' or None`
+        # stays 'None' - a non-empty string is truthy, so the `or None` never
+        # fires. `optional_scalar` fixes the order (checks for None before
+        # any `str()` conversion), so both the omitted-key and explicit-null
+        # forms land as SQL NULL, never the literal word 'None' rendered on
+        # a claim as though it were a real confidence/evidence/note/etc.
+        subtype = optional_scalar(claim.get('subtype'))
+        place_text = optional_scalar(claim.get('place_text'))
+        reviewed = optional_scalar(claim.get('reviewed'))
+        confidence = optional_scalar(claim.get('confidence'))
+        information = optional_scalar(claim.get('information'))
+        evidence = optional_scalar(claim.get('evidence'))
+        asset = optional_scalar(claim.get('asset'))
+        anchor = optional_scalar(claim.get('anchor'))
+        # hypothesis: is a back-pointer id (SPEC §8.4), not free text, so it
+        # goes through `_optional_id_ref` (optional_scalar + normalize_id)
+        # like `merged_into:`/`superseded_by:` above.
+        hypothesis_id = _optional_id_ref(claim.get('hypothesis'))
+        sig_override = optional_scalar(claim.get('significance'))
+        significance_reason = optional_scalar(claim.get('significance_reason'))
+        notes = optional_scalar(claim.get('notes'))
 
         conn.execute(
             '''INSERT OR REPLACE INTO claims
@@ -1425,23 +1545,23 @@ def _index_source(
             (
                 cid, sid,
                 str(claim.get('type', '')),
-                str(claim.get('subtype', '')) or None,
+                subtype,
                 claim_date, cmn, cmx,
                 place_id_raw,
-                str(claim.get('place_text', '')) or None,
+                place_text,
                 str(claim.get('value', '')),
                 str(claim.get('status', '')),
-                str(claim.get('reviewed', '')) or None,
-                str(claim.get('confidence', '')) or None,
-                str(claim.get('information', '')) or None,
-                str(claim.get('evidence', '')) or None,
-                str(claim.get('asset', '')) or None,
-                str(claim.get('anchor', '')) or None,
-                normalize_id(str(claim.get('hypothesis', ''))) or None,
+                reviewed,
+                confidence,
+                information,
+                evidence,
+                asset,
+                anchor,
+                hypothesis_id,
                 sig_override,
-                str(claim.get('significance_reason', '')) or None,
+                significance_reason,
                 negated,
-                str(claim.get('notes', '')) or None,
+                notes,
             ),
         )
 

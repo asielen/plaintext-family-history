@@ -316,6 +316,88 @@ class SourcePageTests(_Base):
         # files read as distinct on both axes at once.
         self.assertIn('3 June 1916 · role: entry · copy: b</span>', html)
 
+    def test_file_entry_note_distinguishes_uncertain_date_from_approximate(self):
+        # Codex review on PR #149 (P2): a `date: 1916?` (uncertain - "not sure
+        # this is the right year") used to render through the same "about
+        # {year}" prefix as `date: 1916~` (approximate - "this is a rough
+        # guess"), misstating what the archive actually recorded on the
+        # source page. The two markers must read as the two different things
+        # they record - matching base.html's own date-notation legend, which
+        # already explains `~` as "about this year" and `?` as "the year is
+        # probably right but has not been confirmed".
+        self._seed_source('s-1111111111', 'Uncertain Date Source', source_type='newspaper')
+        clip_dir = self.archive_root / 'documents' / 'newspaper'
+        clip_dir.mkdir(parents=True, exist_ok=True)
+        (clip_dir / 'clipping-a.pdf').write_bytes(b'not a real pdf')
+        self.conn.execute(
+            'INSERT INTO source_files(source_id, path, role, date_edtf) VALUES (?,?,?,?)',
+            ('s-1111111111', 'documents/newspaper/clipping-a.pdf', 'clipping', '1916?'))
+        self._run(linked=True)
+        html = self._read('sources/s-1111111111.html')
+        self.assertIn('1916 (unconfirmed) · role: clipping</span>', html)
+        self.assertNotIn('about 1916', html)
+
+    def test_missing_asset_note_keeps_date_and_role(self):
+        # Codex review on PR #149 (P2): a dated file missing on disk used to
+        # have its ENTIRE role_note (date/role/copy) replaced by the fixed
+        # 'file not available in this build' message, discarding facts the
+        # index still has even though only the FILE's presentability is
+        # degraded, not the record of what it was.
+        self._seed_source('s-1111111111', 'Has Asset', source_type='newspaper')
+        self.conn.execute(
+            'INSERT INTO source_files(source_id, path, role, copy, date_edtf) VALUES (?,?,?,?,?)',
+            ('s-1111111111', 'documents/newspaper/ghost.pdf', 'clipping', 'b', '1916-02-26'))
+        self._run(linked=True)
+        html = self._read('sources/s-1111111111.html')
+        self.assertIn(
+            '26 February 1916 · role: clipping · copy: b · file not available in this build',
+            html)
+
+    def test_no_pillow_note_keeps_date_and_role(self):
+        # Codex review on PR #149 (P2): a standalone build with Pillow
+        # unavailable used to replace a dated photo's note with the fixed
+        # 'image omitted (Pillow not installed)' message alone - a common,
+        # supported configuration, not an edge case - dropping the date/role
+        # the index still carries for it.
+        self._seed_source('s-1111111111', 'Photo Source', source_type='photo')
+        img = self.archive_root / 'photos' / '1880' / 'pic.jpg'
+        img.parent.mkdir(parents=True, exist_ok=True)
+        img.write_bytes(b'not-a-real-image-but-exists')
+        self.conn.execute(
+            'INSERT INTO source_files(source_id, path, role, date_edtf) VALUES (?,?,?,?)',
+            ('s-1111111111', 'photos/1880/pic.jpg', 'front', '1916-02-26'))
+        original = site._PIL_AVAILABLE
+        site._PIL_AVAILABLE = False
+        try:
+            self._run(linked=False)
+        finally:
+            site._PIL_AVAILABLE = original
+        html = self._read('sources/s-1111111111.html')
+        self.assertIn(
+            '26 February 1916 · role: front · image omitted (Pillow not installed)',
+            html)
+
+    @unittest.skipUnless(site._PIL_AVAILABLE, 'Pillow not installed')
+    def test_failed_derivative_note_keeps_date_and_role(self):
+        # Codex review on PR #149 (P2): the other standalone-image fallback -
+        # Pillow present but the derivative fails (corrupt image, unsupported
+        # format, locked file) - had the same bug: 'image could not be
+        # processed' replaced the whole note instead of joining it.
+        self._seed_source('s-1111111111', 'Photo Source', source_type='photo')
+        img = self.archive_root / 'photos' / '1880' / 'pic.jpg'
+        img.parent.mkdir(parents=True, exist_ok=True)
+        img.write_bytes(b'not-a-real-image-but-exists')   # not a decodable image
+        self.conn.execute(
+            'INSERT INTO source_files(source_id, path, role, date_edtf) VALUES (?,?,?,?)',
+            ('s-1111111111', 'photos/1880/pic.jpg', 'front', '1916-02-26'))
+        res = self._run(linked=False)
+        self.assertTrue(
+            any('could not build a web image' in m for m in res['messages']), res['messages'])
+        html = self._read('sources/s-1111111111.html')
+        self.assertIn(
+            '26 February 1916 · role: front · image could not be processed',
+            html)
+
 
 class SourceRedactionTests(_Base):
     def _setup_redactable(self):

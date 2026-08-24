@@ -1315,6 +1315,9 @@ files:
   - file: documents/ledger/entry-b_{sid}.pdf
     role: entry
     copy: b
+  - file: documents/newspaper/clipping-c_{sid}.pdf
+    role: clipping
+    copy:
 ---
 
 ## Notes
@@ -1364,6 +1367,20 @@ class SourceFilesCopyColumnTests(unittest.TestCase):
         self.assertIsNone(
             got[f'documents/ledger/entry-a_{_COPY_SID}.pdf'])
 
+    def test_blank_copy_is_null_not_the_string_none(self) -> None:
+        # Codex review on PR #149: `copy:` shares the identical blank-vs-
+        # absent shape date_edtf was fixed for - a bare `copy:` line with
+        # nothing after the colon parses as YAML null, and `str(None)`
+        # produces the literal text 'None' unless the null is caught before
+        # the str() conversion. clipping-c writes the explicit-null form;
+        # clipping-a (no `copy:` key at all) already covers the omitted form
+        # in the assertion above - both must land as SQL NULL.
+        index.build_index(self.root, {})
+        got = self._copy_column()
+        value = got[f'documents/newspaper/clipping-c_{_COPY_SID}.pdf']
+        self.assertIsNone(value)
+        self.assertNotEqual(value, 'None')
+
     def test_upsert_matches_full_build(self) -> None:
         index.build_index(self.root, {})
         full = self._copy_column()
@@ -1389,6 +1406,9 @@ files:
     date: 1916-06-03
   - file: documents/ledger/entry-c_{sid}.pdf
     role: entry
+  - file: documents/ledger/entry-d_{sid}.pdf
+    role: entry
+    date:
 ---
 
 ## Notes
@@ -1443,6 +1463,22 @@ class SourceFilesDateColumnTests(unittest.TestCase):
         # or fall back to the source's own `source_date:`.
         self.assertIsNone(
             got[f'documents/ledger/entry-c_{_DATE_SID}.pdf'])
+
+    def test_blank_date_is_null_not_the_string_none(self) -> None:
+        # Codex review on PR #149: a bare `date:` line with nothing after the
+        # colon parses as YAML null, not an omitted key - `f.get('date', '')`
+        # never sees its `''` default fire, and the pre-fix `str(f.get(
+        # 'date', ''))` produced the literal four-character text 'None',
+        # stored in date_edtf and rendered on the source page as though it
+        # were a real date ('None · role: clipping'). clipping-d writes the
+        # explicit-null form; entry-c (no `date:` key at all) already
+        # covers the omitted form in the assertion above - both round-trip
+        # forms must land as SQL NULL.
+        index.build_index(self.root, {})
+        got = self._date_column()
+        value = got[f'documents/ledger/entry-d_{_DATE_SID}.pdf']
+        self.assertIsNone(value)
+        self.assertNotEqual(value, 'None')
 
     def test_upsert_matches_full_build(self) -> None:
         index.build_index(self.root, {})
@@ -3482,3 +3518,514 @@ class DeathClaimRoleScopingTests(unittest.TestCase):
         self._write_death(roles=None)
         index.build_index(self.root, {})
         self.assertEqual(self._son_marriage_end(), '1920-01-01')
+
+
+# ── Blank-vs-omitted None bug sweep (proactive audit past #157/PR #157) ─────
+#
+# PR #157 fixed `source_files.copy`/`date_edtf` for the exact hazard covered
+# above: `str(x.get(key, ''))` (or `str(x.get(key, '')) or None`) only
+# guards the OMITTED-key case - a bare `key:` line with nothing after the
+# colon parses as an explicit YAML null, the key IS present, so the `.get()`
+# default never fires and `str(None)` produces the literal four-character
+# text 'None', stored/rendered as though it were a real value. This sweep
+# checks every OTHER optional column `_index_person`/`_index_source`/
+# `_index_places` populate for the identical shape. Each class below writes
+# a fixture with the field BLANK (bare `key:`) and a sibling with the key
+# OMITTED entirely, and asserts both land on the exact same value - never
+# the string 'None' - plus one fixture with the field genuinely populated,
+# to confirm the fix does not disturb the real round trip.
+
+_PERSON_OPTIONAL_BLANK = '''---
+id: P-bbbbbbbbb1
+name: Blank Fields Person
+living: false
+sex:
+tier:
+status:
+merged_into:
+birth:
+death:
+---
+
+# Blank Fields Person
+'''
+
+_PERSON_OPTIONAL_OMITTED = '''---
+id: P-bbbbbbbbb2
+name: Omitted Fields Person
+living: false
+---
+
+# Omitted Fields Person
+'''
+
+_PERSON_OPTIONAL_POPULATED = '''---
+id: P-bbbbbbbbb3
+name: Populated Fields Person
+living: false
+sex: F
+tier: curated
+status: active
+merged_into: P-ccccccccc1
+birth: 1900
+death: 1980
+---
+
+# Populated Fields Person
+'''
+
+
+class PersonOptionalFieldsBlankVsOmittedTests(unittest.TestCase):
+    """`_index_person`'s persons INSERT read `sex`/`tier`/`status`/
+    `merged_into`/`birth`/`death` with the same broken shape PR #157 fixed
+    for `source_files.copy`/`date_edtf`: `tier`/`status` used
+    `str(meta.get(key, default))` (the `default` only fires when the key is
+    missing, never when it is present-but-blank), and `merged_into`/`birth`/
+    `death` used `str(meta.get(key, '')) or None` (which looks like it
+    guards blank too, but `str()` runs BEFORE the `or`, so a blank value
+    becomes the string 'None' first and the `or None` - checking a truthy
+    non-empty string - never fires). `sex` had no guard at all. A bare
+    `sex:`/`tier:`/`status:`/`merged_into:`/`birth:`/`death:` line (YAML
+    null) must land exactly like an omitted key, never as the text 'None'."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        _write(self.root / 'people' / 'blank__fields_P-bbbbbbbbb1.md',
+               _PERSON_OPTIONAL_BLANK)
+        _write(self.root / 'people' / 'omitted__fields_P-bbbbbbbbb2.md',
+               _PERSON_OPTIONAL_OMITTED)
+        _write(self.root / 'people' / 'populated__fields_P-bbbbbbbbb3.md',
+               _PERSON_OPTIONAL_POPULATED)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _row(self, pid: str) -> dict:
+        conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
+        conn.row_factory = sqlite3.Row
+        try:
+            row = conn.execute(
+                'SELECT sex, tier, status, merged_into, birth, death '
+                'FROM persons WHERE id = ?', (pid.lower(),)).fetchone()
+            return dict(row)
+        finally:
+            conn.close()
+
+    def test_blank_and_omitted_fields_land_identically_never_the_string_none(self) -> None:
+        index.build_index(self.root, {})
+        blank = self._row('P-bbbbbbbbb1')
+        omitted = self._row('P-bbbbbbbbb2')
+        self.assertEqual(blank, omitted)
+        self.assertEqual(blank['sex'], '')
+        self.assertEqual(blank['tier'], 'stub')
+        self.assertEqual(blank['status'], 'active')
+        self.assertIsNone(blank['merged_into'])
+        self.assertIsNone(blank['birth'])
+        self.assertIsNone(blank['death'])
+        for value in blank.values():
+            self.assertNotEqual(value, 'None')
+
+    def test_populated_fields_still_round_trip(self) -> None:
+        index.build_index(self.root, {})
+        row = self._row('P-bbbbbbbbb3')
+        self.assertEqual(row['sex'], 'F')
+        self.assertEqual(row['tier'], 'curated')
+        self.assertEqual(row['status'], 'active')
+        self.assertEqual(row['merged_into'], 'p-ccccccccc1')
+        self.assertEqual(row['birth'], '1900')
+        self.assertEqual(row['death'], '1980')
+
+    def test_a_second_full_build_is_idempotent(self) -> None:
+        # There is no separate upsert_person entrypoint (persons only index
+        # through the full-build path, unlike sources' upsert_source) - the
+        # symmetric check available here is that rebuilding twice lands on
+        # the exact same values, not a drifting or re-corrupted one.
+        index.build_index(self.root, {})
+        before = {pid: self._row(pid) for pid in
+                  ('P-bbbbbbbbb1', 'P-bbbbbbbbb2', 'P-bbbbbbbbb3')}
+        index.build_index(self.root, {})
+        for pid, expected in before.items():
+            self.assertEqual(self._row(pid), expected)
+
+
+class PersonNameBlankVsOmittedTests(unittest.TestCase):
+    """`_index_person` read `name` as `str(meta.get('name', '')) or 'unknown'`
+    - the same str()-before-or ordering bug: a blank `name:` line landed as
+    the literal text 'None' (a truthy string, so the `or 'unknown'` fallback
+    never fired) instead of falling back to 'unknown' the way an actually
+    missing `name:` key already did."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        _write(self.root / 'people' / 'blank__name_P-bbbbbbbbb4.md',
+               '---\nid: P-bbbbbbbbb4\nname:\nliving: false\n---\n\n# Blank Name\n')
+        _write(self.root / 'people' / 'omitted__name_P-bbbbbbbbb5.md',
+               '---\nid: P-bbbbbbbbb5\nliving: false\n---\n\n# Omitted Name\n')
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _name(self, pid: str) -> str:
+        conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
+        try:
+            row = conn.execute('SELECT name FROM persons WHERE id = ?',
+                                (pid.lower(),)).fetchone()
+            return row[0]
+        finally:
+            conn.close()
+
+    def test_blank_name_falls_back_to_unknown_like_an_omitted_name_does(self) -> None:
+        index.build_index(self.root, {})
+        self.assertEqual(self._name('P-bbbbbbbbb4'), 'unknown')
+        self.assertEqual(self._name('P-bbbbbbbbb5'), 'unknown')
+
+
+_SOURCE_OPTIONAL_BLANK = '''---
+id: S-bbbbbbbbb1
+title: Blank Fields Source
+source_type: photo
+source_date:
+repository:
+source_class:
+status:
+superseded_by:
+---
+
+## Notes
+Blank optional fields.
+'''
+
+_SOURCE_OPTIONAL_OMITTED = '''---
+id: S-bbbbbbbbb2
+title: Omitted Fields Source
+source_type: photo
+---
+
+## Notes
+Omitted optional fields.
+'''
+
+_SOURCE_OPTIONAL_POPULATED = '''---
+id: S-bbbbbbbbb3
+title: Populated Fields Source
+source_type: photo
+source_date: 1900
+repository: family collection
+source_class: original
+status: active
+superseded_by: S-ccccccccc1
+---
+
+## Notes
+Populated optional fields.
+'''
+
+
+class SourceOptionalFieldsBlankVsOmittedTests(unittest.TestCase):
+    """`_index_source`'s sources INSERT read `source_date`/`repository`/
+    `source_class`/`status`/`superseded_by` with the same broken shape as
+    the persons table above (`status` had a default that only fired on a
+    missing key; `superseded_by` used the str()-before-or ordering bug;
+    `repository`/`source_class`/`source_date` had no guard at all, so a
+    blank line indexed as the literal text 'None' - rendered on the source
+    page as a fake date/repository/class instead of the blank the record
+    actually wrote)."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        _write(self.root / 'sources' / 'photo' / 'blank_S-bbbbbbbbb1.md',
+               _SOURCE_OPTIONAL_BLANK)
+        _write(self.root / 'sources' / 'photo' / 'omitted_S-bbbbbbbbb2.md',
+               _SOURCE_OPTIONAL_OMITTED)
+        _write(self.root / 'sources' / 'photo' / 'populated_S-bbbbbbbbb3.md',
+               _SOURCE_OPTIONAL_POPULATED)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _row(self, sid: str) -> dict:
+        conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
+        conn.row_factory = sqlite3.Row
+        try:
+            row = conn.execute(
+                'SELECT date_edtf, repository, source_class, status, superseded_by '
+                'FROM sources WHERE id = ?', (sid.lower(),)).fetchone()
+            return dict(row)
+        finally:
+            conn.close()
+
+    def test_blank_and_omitted_fields_land_identically_never_the_string_none(self) -> None:
+        index.build_index(self.root, {})
+        blank = self._row('S-bbbbbbbbb1')
+        omitted = self._row('S-bbbbbbbbb2')
+        self.assertEqual(blank, omitted)
+        self.assertIsNone(blank['date_edtf'])
+        self.assertEqual(blank['repository'], '')
+        self.assertEqual(blank['source_class'], '')
+        self.assertEqual(blank['status'], 'active')
+        self.assertIsNone(blank['superseded_by'])
+        for value in blank.values():
+            self.assertNotEqual(value, 'None')
+
+    def test_populated_fields_still_round_trip(self) -> None:
+        index.build_index(self.root, {})
+        row = self._row('S-bbbbbbbbb3')
+        self.assertEqual(row['date_edtf'], '1900')
+        self.assertEqual(row['repository'], 'family collection')
+        self.assertEqual(row['source_class'], 'original')
+        self.assertEqual(row['status'], 'active')
+        self.assertEqual(row['superseded_by'], 's-ccccccccc1')
+
+    def test_upsert_matches_full_build(self) -> None:
+        index.build_index(self.root, {})
+        before = {sid: self._row(sid) for sid in
+                  ('S-bbbbbbbbb1', 'S-bbbbbbbbb2', 'S-bbbbbbbbb3')}
+        for sid in before:
+            self.assertEqual(index.upsert_source(self.root, {}, sid.lower()), 'indexed')
+        for sid, expected in before.items():
+            self.assertEqual(self._row(sid), expected)
+
+
+_ROLE_SID = 'S-bbbbbbbbb6'
+_ROLE_SOURCE = '''---
+id: {sid}
+title: Role column source
+source_type: photo
+files:
+  - file: photos/1900/blank-role.jpg
+    role:
+  - file: photos/1900/omitted-role.jpg
+  - file: photos/1900/real-role.jpg
+    role: front
+---
+'''
+
+
+class SourceFilesRoleColumnTests(unittest.TestCase):
+    """`_index_source`'s file-inventory loop read `role` as
+    `str(f.get('role', ''))` with no guard at all - a blank `role:` line
+    indexed as the literal text 'None', which `site._role_note` renders
+    straight onto the source page (`if role: parts.append(f'role: {role}')`)
+    as though 'None' were a real inventory role."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        _write(
+            self.root / 'sources' / 'photo' / f'roles_{_ROLE_SID.lower()}.md',
+            _ROLE_SOURCE.format(sid=_ROLE_SID),
+        )
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _roles(self) -> dict:
+        conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
+        try:
+            return dict(conn.execute(
+                'SELECT path, role FROM source_files WHERE source_id = ?',
+                (_ROLE_SID.lower(),)))
+        finally:
+            conn.close()
+
+    def test_blank_role_matches_omitted_role_never_the_string_none(self) -> None:
+        index.build_index(self.root, {})
+        roles = self._roles()
+        self.assertEqual(roles['photos/1900/blank-role.jpg'], '')
+        self.assertEqual(roles['photos/1900/omitted-role.jpg'], '')
+        self.assertEqual(roles['photos/1900/real-role.jpg'], 'front')
+        for value in roles.values():
+            self.assertNotEqual(value, 'None')
+
+
+_CLAIM_OPT_SID = 'S-bbbbbbbbb7'
+_CLAIM_OPT_SOURCE = '''---
+id: {sid}
+title: Claim optional fields source
+source_type: interview
+---
+
+## Claims
+```yaml
+- id: C-bbbbbbbbb1
+  value: "blank fields claim"
+  type: occupation
+  persons: [P-aaaaaaaaaa]
+  status: suggested
+  date:
+  subtype:
+  place_text:
+  reviewed:
+  confidence:
+  information:
+  evidence:
+  asset:
+  anchor:
+  hypothesis:
+  significance:
+  significance_reason:
+  notes:
+
+- id: C-bbbbbbbbb2
+  value: "omitted fields claim"
+  type: occupation
+  persons: [P-aaaaaaaaaa]
+  status: suggested
+
+- id: C-bbbbbbbbb3
+  value: "populated fields claim"
+  type: relationship
+  persons: [P-aaaaaaaaaa]
+  roles: {{child: [P-aaaaaaaaaa]}}
+  status: accepted
+  date: 1900
+  subtype: adoptive
+  place_text: "Fairview, Kansas"
+  reviewed: 2026-01-01
+  confidence: high
+  information: primary
+  evidence: direct
+  asset: b-back
+  anchor: "00:01:00"
+  hypothesis: H-ccccccccc1
+  significance: vital
+  significance_reason: "linchpin of the identification"
+  notes: "a note"
+```
+'''
+
+_CLAIM_OPT_COLUMNS = (
+    'date_edtf', 'subtype', 'place_text', 'reviewed', 'confidence',
+    'information', 'evidence', 'asset', 'anchor', 'hypothesis',
+    'significance_override', 'significance_reason', 'notes',
+)
+
+
+class ClaimOptionalFieldsBlankVsOmittedTests(unittest.TestCase):
+    """SPEC §8.4's "other optional fields, present only when used" block -
+    `subtype`/`place_text`/`reviewed`/`confidence`/`information`/`evidence`/
+    `asset`/`anchor`/`hypothesis`/`significance`/`significance_reason`/
+    `notes`/`date` - all read `str(claim.get(key, '')) or None`. That looks
+    like it guards the blank-line case, but `str()` runs on the raw `.get()`
+    result BEFORE the `or`: a bare `key:` line parses as YAML null, so
+    `str(None)` produces the STRING 'None' first, and `'None' or None`
+    stays 'None' - a non-empty string is truthy, so the fallback never
+    fires. Every field in `_CLAIM_OPT_COLUMNS` must land as SQL NULL for
+    both the blank and the omitted form, and round-trip correctly when
+    genuinely populated."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        _write(
+            self.root / 'sources' / 'interview' / f'opt_{_CLAIM_OPT_SID.lower()}.md',
+            _CLAIM_OPT_SOURCE.format(sid=_CLAIM_OPT_SID),
+        )
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _row(self, cid: str) -> dict:
+        conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
+        conn.row_factory = sqlite3.Row
+        try:
+            row = conn.execute(
+                f'SELECT {", ".join(_CLAIM_OPT_COLUMNS)} FROM claims WHERE id = ?',
+                (cid.lower(),)).fetchone()
+            return dict(row)
+        finally:
+            conn.close()
+
+    def test_blank_and_omitted_fields_land_identically_never_the_string_none(self) -> None:
+        index.build_index(self.root, {})
+        blank = self._row('C-bbbbbbbbb1')
+        omitted = self._row('C-bbbbbbbbb2')
+        self.assertEqual(blank, omitted)
+        for column, value in blank.items():
+            self.assertIsNone(value, column)
+            self.assertNotEqual(value, 'None', column)
+
+    def test_populated_fields_still_round_trip(self) -> None:
+        index.build_index(self.root, {})
+        row = self._row('C-bbbbbbbbb3')
+        self.assertEqual(row['date_edtf'], '1900')
+        self.assertEqual(row['subtype'], 'adoptive')
+        self.assertEqual(row['place_text'], 'Fairview, Kansas')
+        self.assertEqual(row['reviewed'], '2026-01-01')
+        self.assertEqual(row['confidence'], 'high')
+        self.assertEqual(row['information'], 'primary')
+        self.assertEqual(row['evidence'], 'direct')
+        self.assertEqual(row['asset'], 'b-back')
+        self.assertEqual(row['anchor'], '00:01:00')
+        self.assertEqual(row['hypothesis'], 'h-ccccccccc1')
+        self.assertEqual(row['significance_override'], 'vital')
+        self.assertEqual(row['significance_reason'],
+                          'linchpin of the identification')
+        self.assertEqual(row['notes'], 'a note')
+
+    def test_upsert_matches_full_build(self) -> None:
+        index.build_index(self.root, {})
+        before = {cid: self._row(cid) for cid in
+                  ('C-bbbbbbbbb1', 'C-bbbbbbbbb2', 'C-bbbbbbbbb3')}
+        self.assertEqual(
+            index.upsert_source(self.root, {}, _CLAIM_OPT_SID.lower()), 'indexed')
+        for cid, expected in before.items():
+            self.assertEqual(self._row(cid), expected)
+
+
+class PlaceHistoryPeriodColumnTests(unittest.TestCase):
+    """`_index_places`'s history loop read `period` as
+    `str(h.get('period', ''))` with no guard - a blank `period:` line inside
+    a `history:` entry indexed as the literal text 'None' in
+    `place_history.period_edtf` instead of NULL, and fed that same text into
+    `edtf_bounds` as an unparseable "date"."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        (self.root / 'places').mkdir(parents=True)
+        _write(
+            self.root / 'places' / 'places.yaml',
+            '- id: L-bbbbbbbbb1\n'
+            '  name: Blank History Place\n'
+            '  history:\n'
+            '    - period:\n'
+            '      hierarchy: Somewhere Territory\n'
+            '- id: L-bbbbbbbbb2\n'
+            '  name: Omitted History Place\n'
+            '  history:\n'
+            '    - hierarchy: Somewhere Else Territory\n'
+            '- id: L-bbbbbbbbb3\n'
+            '  name: Populated History Place\n'
+            '  history:\n'
+            '    - period: "1900/1910"\n'
+            '      hierarchy: Somewhere Real Territory\n',
+        )
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _period(self, pid: str) -> str | None:
+        conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
+        try:
+            row = conn.execute(
+                'SELECT period_edtf FROM place_history WHERE place_id = ?',
+                (pid.lower(),)).fetchone()
+            return row[0] if row else 'NO ROW'
+        finally:
+            conn.close()
+
+    def test_blank_period_matches_omitted_period_never_the_string_none(self) -> None:
+        index.build_index(self.root, {})
+        blank = self._period('L-bbbbbbbbb1')
+        omitted = self._period('L-bbbbbbbbb2')
+        self.assertEqual(blank, omitted)
+        self.assertIsNone(blank)
+        self.assertNotEqual(blank, 'None')
+
+    def test_populated_period_still_round_trips(self) -> None:
+        index.build_index(self.root, {})
+        self.assertEqual(self._period('L-bbbbbbbbb3'), '1900/1910')

@@ -1590,7 +1590,12 @@ def _check_bracket_lists(registry: Registry, findings: list[Finding]) -> None:
 
         derived_entries = []
         for cpid, natures in child_natures.items():
-            name = str(registry.person_meta.get(cpid, {}).get('name', ''))
+            # `.get('name', '')`'s '' default only fires when the key is
+            # missing; a hand-blanked `name:` line (YAML null, key present)
+            # would otherwise str()-convert to the literal text 'None' -
+            # which is truthy, so `if not name` below would treat a
+            # nameless record as named and include it in the bracket label.
+            name = str(registry.person_meta.get(cpid, {}).get('name') or '')
             if not name:
                 continue
             label = None
@@ -1833,7 +1838,11 @@ def _check_ahnentafel_placement(registry: Registry, findings: list[Finding]) -> 
     # fact about a person, which only the human can record.
     for gap in sex_gaps:
         pid = gap['pid']
-        name = str(registry.person_meta.get(pid, {}).get('name', pid))
+        # `.get('name', pid)`'s pid fallback only fires when the key is
+        # missing; a blank `name:` line would str()-convert to the literal
+        # text 'None' instead of falling back to the id the way an actually
+        # nameless record already does.
+        name = str(registry.person_meta.get(pid, {}).get('name') or pid)
         profile_paths = registry.person_profile_paths.get(pid, [])
         where = (profile_paths[0] if profile_paths
                  else registry.archive_root / 'fha.yaml')
@@ -1860,7 +1869,9 @@ def _check_ahnentafel_placement(registry: Registry, findings: list[Finding]) -> 
                 continue
             m = re.match(r'^(\d+)', folder_name)
             if not m:
-                name = str(registry.person_meta.get(pid, {}).get('name', pid))
+                # See the sex_gaps loop above: `.get('name', pid)`'s pid
+                # fallback never fires for a blank (not just missing) name.
+                name = str(registry.person_meta.get(pid, {}).get('name') or pid)
                 findings.append(Finding('W', 'W110', p,
                     f'{name} (Ahnentafel {pos}) is in folder {folder_name!r} with no '
                     f'numeric prefix, expected prefix {expected_prefix}; '
@@ -1872,7 +1883,7 @@ def _check_ahnentafel_placement(registry: Registry, findings: list[Finding]) -> 
             # the correct location for a direct-line person file.
             if re.match(r'^(\d+) ', folder_name) and actual_prefix == expected_prefix:
                 continue
-            name = str(registry.person_meta.get(pid, {}).get('name', pid))
+            name = str(registry.person_meta.get(pid, {}).get('name') or pid)
             findings.append(Finding('W', 'W110', p,
                 f'{name} (Ahnentafel {pos}) is in folder prefix {actual_prefix}, '
                 f'expected prefix {expected_prefix}; '
@@ -1918,7 +1929,11 @@ def _check_direct_line_stubs(
         is_stub_tier = str(meta.get('tier') or 'stub').strip().lower() != 'curated'
         if not (is_stub_tier or in_stubs):
             continue
-        name = str(meta.get('name', pid))
+        # `.get('name', pid)`'s pid fallback only fires when the key is
+        # missing, not when a hand-blanked `name:` line parses as YAML null -
+        # that would otherwise str()-convert to the literal text 'None' and
+        # show as "None (Ahnentafel N) is a direct-line ancestor..." below.
+        name = str(meta.get('name') or pid)
         display_pid = pid[0].upper() + pid[1:]
         findings.append(Finding('W', 'W119', profile,
             f'{name} (Ahnentafel {pos}) is a direct-line ancestor still filed '
@@ -4539,7 +4554,13 @@ def _fix_mint_ids(
             continue
         nl = _file_newline(text)
         if kind == 'P':
-            name = str(read_record(path)['meta'].get('name', ''))
+            # `.get('name', '')`'s '' default only fires when the key is
+            # missing; a blank `name:` line would str()-convert to the
+            # literal text 'None' and get split into a surname/given pair
+            # by `_person_filename_parts`, minting the file a garbage
+            # 'none__none_P-....md' name instead of falling back to the
+            # filename-derived split the same as a truly nameless record.
+            name = str(read_record(path)['meta'].get('name') or '')
             surname, given = _person_filename_parts(name, path.stem)
             new_name = f'{surname}__{given}_{new_id}.md'
         else:
@@ -4777,7 +4798,13 @@ def _mint_claim_ids_in_file(
         # mapping's key column. Anything deeper is scalar content.
         dash_prefix = rf'{re.escape(base_indent)}-[ \t]+'
         key_prefix = rf'(?:{dash_prefix}|{re.escape(key_indent)})'
-        label = str(claim.get('value', ''))[:40] or f'entry {i + 1}'
+        # `str(claim.get('value', ''))[:40] or fallback` looks like it
+        # guards a blank `value:` line, but `str()` runs before the `or`:
+        # a bare `value:` (YAML null) becomes the STRING 'None' first, and
+        # that truthy 4-character text wins over the `entry N` fallback -
+        # showing `claim "None"` in the --fix-ids progress line instead of
+        # the same fallback an actually-missing value already gets.
+        label = str(claim.get('value') or '')[:40] or f'entry {i + 1}'
         plan = {'kind': None, 'insert_at': None, 'continuation': '',
                 'replace_span': None, 'snippet_suffix': '',
                 'stamp_at': None, 'stamp_text': ''}

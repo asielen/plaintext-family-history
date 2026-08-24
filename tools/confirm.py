@@ -183,6 +183,7 @@ from _lib import (
     load_cooccur_dismissed,
     mint_ids,
     normalize_id,
+    optional_scalar,
     parse_filename,
     parse_frontmatter_strict,
     read_record,
@@ -719,7 +720,15 @@ def _claim_value_by_id(path: Path, cid: str) -> str | None:
         return None
     for claim in claims:
         if isinstance(claim, dict) and normalize_id(str(claim.get('id', ''))) == cid:
-            return str(claim.get('value', '')) or None
+            # `value:` is required (SPEC §8.4), but a hand-edit in progress
+            # can still blank the line - `str(claim.get('value', '')) or
+            # None` looked like it handled that, but `str()` ran on the raw
+            # `.get()` result before the `or`, so a blank line (YAML null)
+            # became the literal text 'None' first and the `or None` never
+            # fired (a non-empty string is truthy). `optional_scalar` checks
+            # for None before any `str()` conversion, matching this
+            # function's own documented "or None" contract.
+            return optional_scalar(claim.get('value'))
     return None
 
 
