@@ -87,6 +87,36 @@ DESIGN RULES (why the code looks the way it does)
   follows - `fha process`'s SOURCE: embed, `fha photoindex tag-person`/
   `set-summary` - so a fifth call site does not quietly skip the one
   original-asset protection the other four share.
+- **The asset picked has to be verified, not just located (PR #147 review).**
+  A `files:` entry is a hand-editable trust boundary, so before any exiftool
+  call `run_source_clear_keyword` re-derives the documents root and refuses a
+  resolved target that lands outside it (a `..`/doubled-slash alias can
+  otherwise escape a naive prefix check), refuses a directory target (exiftool
+  happily writes into every file inside one), and refuses unless the file's
+  OWN filename embeds this same source's S-id (SPEC §13's `_{S-id}` suffix -
+  the same convention process.py's `_filename_has_source_id` checks) so
+  inventory drift never edits a different source's file under this one's
+  name. A missing asset also now reports `ok: False` (it used to leave the
+  default `True` standing next to `status: not-found`) - a headless caller
+  reading `Result.as_dict()` must never mistake that for success.
+- **Exiftool exiting 0 is not proof the write landed (PR #147 review).**
+  After a successful-looking exiftool call, `run_source_clear_keyword`
+  re-reads the file's Keywords/Subject fields and confirms the removal and
+  any addition actually took, rather than declaring success from the exit
+  code alone - a race between the pre-write read and the write itself (e.g.
+  something else touching the same file) can otherwise leave exiftool
+  reporting success while nothing really changed.
+- **`SOURCE:` is not an ordinary keyword, and case-only corrections must not
+  vanish (PR #147 review).** `clear-keyword` refuses a `--keyword`/
+  `--replace-with` value matching the SPEC §20 rule 3 SOURCE: shape - that
+  keyword is the third link tying a file to its record, not a stray tag this
+  verb corrects, and nothing downstream catches a pure removal of it.
+  Separately, the "is the replacement already present" duplicate check now
+  looks at each field's state AFTER this operation's own removal, not the
+  as-read state - otherwise a case-only correction ('margaret hartley' ->
+  'Margaret Hartley') sees its own about-to-be-removed old value as a
+  case-insensitive "match", skips adding the correction, and the keyword
+  vanishes entirely while the command still reports success.
 
 CODE MAP
 --------
@@ -118,6 +148,7 @@ import json
 import re
 import subprocess
 import sys
+from collections import Counter
 from pathlib import Path, PurePosixPath
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -164,6 +195,16 @@ configure_utf8_stdout()
 # line - see run_source_note). Used only for the duplicate-heading safety check;
 # the actual locate/append goes through the shared _lib section helpers.
 _NOTES_HEADING_RE = re.compile(r'^##\s+Notes\s*$')
+
+# The embedded `SOURCE: S-xxxx` identity keyword (SPEC §20 rule 3 - the third
+# redundant link tying a source to its file, alongside the filename's own
+# `_{S-id}` suffix and the record's files: entry). source.py keeps its own
+# copy rather than importing process.py's/lint.py's identical pattern (tools
+# never import tools - TOOLING §15); `clear-keyword` uses it to refuse
+# touching this specific keyword shape (#147 review) - it corrects an
+# ORDINARY stray tag, never the marker that makes a file findable as a source
+# in the first place.
+_SOURCE_KEYWORD_RE = re.compile(r'^SOURCE:\s*(S-[0-9a-hjkmnp-tv-z]{10})$', re.I)
 
 
 def _source_label(text: str, sid: str) -> str:
@@ -547,11 +588,27 @@ def run_source_clear_keyword(
     `--file NAME` picks among several; with exactly one documents-root file
     listed, it is picked automatically.
 
+    A `--keyword` that is itself the file's own correct SOURCE: identity
+    keyword (SPEC §20 rule 3) is always refused - removing it breaks the tie
+    to this record. But a WRONG SOURCE: marker (some other source's id,
+    embedded by mistake) may be corrected by naming it as `--keyword` and
+    passing this source's own marker as `--replace-with` - the one SOURCE:
+    edit this command allows, because `fha reconcile` cannot fix it: its
+    `_plan` skips any files: entry whose target already exists on disk and
+    never edits embedded document metadata at all (reconcile.py), so a
+    correctly-named, correctly-filed file carrying the wrong marker would
+    otherwise have no tool-mediated repair path. Every other SOURCE: edit
+    (removing it outright, or writing a DIFFERENT source's marker over an
+    ordinary keyword) stays refused.
+
     `data`: {'status': 'ok'|'dry-run'|'not-found'|'refused', 'source_id',
     'path', 'removed_from', 'added_to'}. Exit codes: 0 ok/dry-run · 1 record
-    or asset not found on disk · 3 refusals (bad id, blank --keyword, no/
-    ambiguous documents-root file, keyword not currently present, exiftool or
-    backup failure).
+    or asset not found on disk · 3 refusals (bad id, blank --keyword, a
+    target found but not a regular file, no/ambiguous documents-root file, a
+    target outside the documents root or belonging to a different source, an
+    unauthorized SOURCE: keyword edit (see above), keyword not currently
+    present, exiftool or backup failure, or the post-write verification
+    finding the change did not actually take).
     """
     result = Result(data={'status': None, 'source_id': None, 'path': None,
                           'removed_from': [], 'added_to': []})
@@ -576,6 +633,60 @@ def run_source_clear_keyword(
             f'Run `fha source clear-keyword {fmt_id_display(sid)} --keyword '
             '"the exact text"`.')
     replacement = (replace_with or '').strip() or None
+
+    # P2 (#147 review, refined by #156 review finding 3): refuse before
+    # touching anything if either side of the edit is a SOURCE: identity
+    # keyword (SPEC §20 rule 3) - EXCEPT the one narrow repair this command
+    # allows: --keyword names a WRONG marker (some other source's id) and
+    # --replace-with names THIS source's own correct marker. That repair has
+    # no other tool-mediated path - `fha reconcile`'s `_plan` (reconcile.py)
+    # skips any files: entry whose target already exists on disk and never
+    # edits embedded document metadata at all, so a correctly-named,
+    # correctly-filed file carrying the wrong SOURCE: marker would otherwise
+    # be stuck refusing in a loop pointing at a command that cannot help it.
+    # Every other SOURCE: edit (removing the file's own correct marker, or
+    # writing a DIFFERENT source's marker over an ordinary keyword) remains
+    # refused - nothing downstream catches a pure removal (the
+    # embedded-keyword lint only iterates markers that remain), so this has
+    # to refuse here.
+    keyword_marker_sid: str | None = None
+    m = _SOURCE_KEYWORD_RE.match(keyword_text)
+    if m:
+        keyword_marker_sid = normalize_id(m.group(1))
+    replacement_marker_sid: str | None = None
+    if replacement:
+        m = _SOURCE_KEYWORD_RE.match(replacement)
+        if m:
+            replacement_marker_sid = normalize_id(m.group(1))
+    marker_correction = (
+        keyword_marker_sid is not None and keyword_marker_sid != sid
+        and replacement_marker_sid == sid)
+
+    if keyword_marker_sid == sid:
+        return _refuse(
+            'refused',
+            f'{keyword_text!r} is {fmt_id_display(sid)}\'s own SOURCE: '
+            'identity keyword - the link (SPEC §20) that ties this file to '
+            'its record. clear-keyword will not remove it; doing so would '
+            'break that tie.')
+    if keyword_marker_sid is not None and not marker_correction:
+        return _refuse(
+            'refused',
+            f'{keyword_text!r} is a SOURCE: identity keyword for a '
+            f'different source than {fmt_id_display(sid)} - `fha reconcile` '
+            'cannot fix this (it skips any files: entry whose target '
+            'already exists on disk, and never edits embedded metadata). '
+            'To correct the marker, re-run with --replace-with '
+            f'"SOURCE: {fmt_id_display(sid)}" - the one SOURCE: edit '
+            'clear-keyword allows.')
+    if replacement_marker_sid is not None and not marker_correction:
+        return _refuse(
+            'refused',
+            f'--replace-with {replacement!r} looks like a SOURCE: identity '
+            'keyword - clear-keyword will not write one in place of an '
+            f'ordinary keyword; that would tie this file to a different '
+            f'source than {fmt_id_display(sid)}. If the file is genuinely '
+            'misfiled, use `fha reconcile`, not clear-keyword.')
 
     record_path = find_source_record_path(archive_root, sid)
     if record_path is None:
@@ -644,14 +755,95 @@ def run_source_clear_keyword(
     alias = str(doc_entries[0].get('file'))
     abs_path = resolve_path(alias, fha_config, archive_root)
     result.data['path'] = alias
-    if not abs_path.exists():
-        result.data['status'] = 'not-found'
-        result.exit_code = EXIT_WARNINGS
-        result.add('warning',
-                   f'{alias} is not on disk - if it moved within the documents '
-                   'folder, `fha reconcile` re-ties it; if it lives on an '
-                   'external drive, plug it in.')
-        return result
+
+    # P1 (#147 review): the doc_entries filter above only checks that the
+    # alias STARTS WITH 'documents' as text - a hand-edited entry like
+    # 'documents/../../outside.tif' or 'documents//tmp/outside.tif' passes
+    # that check, but resolve_path joins the alias onto the configured
+    # documents root with plain path arithmetic and does not itself guard
+    # against a '..' or doubled separator carrying the result outside that
+    # root. Resolve both sides and refuse before touching the filesystem at
+    # all if the target does not actually land beneath the documents root -
+    # otherwise clear-keyword would read, back up, and rewrite an unrelated
+    # file the record never named.
+    documents_root = resolve_path('documents', fha_config, archive_root)
+    try:
+        resolved_target = abs_path.resolve()
+        resolved_documents_root = documents_root.resolve()
+    except (OSError, RuntimeError) as e:
+        # P2 (#156 review finding 2, round 2): on the Python versions this
+        # tool supports, Path.resolve() raises RuntimeError - not OSError -
+        # for a symlink loop (the documents root or the listed asset itself),
+        # not just for the OSError-shaped failures (missing drive, permission
+        # denial) already handled here. An uncaught RuntimeError would escape
+        # this engine as a raw traceback instead of the intended plain
+        # refusal.
+        return _refuse(
+            'refused',
+            f'{alias} could not be resolved to a real path ({e}). Check the '
+            f'files: entry in {record_path.name} and try again.')
+    if (resolved_target != resolved_documents_root
+            and resolved_documents_root not in resolved_target.parents):
+        return _refuse(
+            'refused',
+            f'{alias} resolves outside the configured documents folder '
+            f'({resolved_documents_root}) - this looks like a hand-edited '
+            f'files: entry gone wrong (a `..` segment, or a doubled slash). '
+            f'Fix the entry in {record_path.name} by hand, then retry. '
+            'Nothing was read or changed.')
+
+    # P1 (#147 review): a files: entry can point at a folder rather than one
+    # file (e.g. 'documents/deeds'), and exiftool accepts a directory operand
+    # and applies its write arguments to every file inside it - especially
+    # dangerous with originals_backup unset, where nothing is copied first.
+    # Require a regular file before reading or writing any metadata.
+    if abs_path.is_dir():
+        return _refuse(
+            'refused',
+            f'{alias} is a folder, not a file - clear-keyword only edits one '
+            f"document's metadata at a time and refuses to touch every file "
+            f'inside a folder. Check the files: entry in {record_path.name}; '
+            'if it should name one specific file, fix it there and retry.')
+    if not abs_path.is_file():
+        return result_fail(
+            result, 'not-found',
+            f'{alias} is not on disk - if it moved within the documents '
+            'folder, `fha reconcile` re-ties it; if it lives on an external '
+            'drive, plug it in.',
+            exit_code=EXIT_WARNINGS, level='warning')
+
+    # P1 (#147 review): confirm the file this would edit actually IS the
+    # requested source's own asset before reading or writing anything.
+    # Inventory drift - a hand-edited files: entry that still points at a
+    # filename since reassigned to a different source, or a copy-pasted entry
+    # that never matched - can point one source's clear-keyword at a
+    # DIFFERENT source's file. The filename itself carries the answer: a
+    # processed documents-root file's name ends `_{S-id}` (SPEC §13, the same
+    # convention process.py's _filename_has_source_id checks, and the same
+    # pattern _SID_SUFFIX_RE below already parses for `extract`), so compare
+    # that embedded id against the source this command was actually asked to
+    # correct rather than trusting the record's own files: entry blindly.
+    filename_match = _SID_SUFFIX_RE.search(abs_path.stem)
+    filename_sid = normalize_id(filename_match.group(1)) if filename_match else None
+    if filename_sid != sid:
+        carried = fmt_id_display(filename_sid) if filename_sid else 'no source id at all'
+        # P2 (#156 review finding 3, round 2): `fha reconcile` cannot repair
+        # this - its _plan step skips any inventory entry whose resolved path
+        # already exists on disk (tools/reconcile.py), and this refusal is
+        # only reached after abs_path.is_file() already succeeded above. That
+        # left the user with a suggested command that runs, changes nothing,
+        # and the same refusal forever. Name the exact manual fix instead:
+        # which record's files: entry is wrong and what it should say.
+        return _refuse(
+            'refused',
+            f"{alias}'s own filename carries {carried}, not "
+            f'{fmt_id_display(sid)} - {record_path.name}\'s files: entry '
+            f'looks like inventory drift (it names a file that belongs to a '
+            f"different source). `fha reconcile` cannot fix this on its own "
+            f'(it skips any files: entry whose target already exists on '
+            f'disk) - edit the files: entry in {record_path.name} by hand '
+            f'so it names {fmt_id_display(sid)}\'s own file instead, then '
+            'retry. Nothing was read or changed.')
 
     try:
         fields = _run_exiftool_read_keyword_fields(abs_path)
@@ -672,11 +864,27 @@ def run_source_clear_keyword(
             f'{alias} does not currently carry the keyword {keyword_text!r} - '
             f'nothing to clear. Its embedded keywords right now: {shown}.')
 
+    # P2 (#147 review): the "is replacement already present" check must look
+    # at each field's state AFTER this operation's own removal, not the
+    # as-read state - otherwise a case-only correction (replacing 'margaret
+    # hartley' with 'Margaret Hartley') finds its own about-to-be-removed old
+    # value as a case-insensitive "match", concludes the replacement is
+    # already there, and skips adding it - while the removal below still
+    # takes the old value out. Net effect: the keyword vanishes entirely and
+    # the command still reports success. Excluding the exact values this call
+    # is about to remove from the "already present" check fixes that; a
+    # replacement equal to some OTHER, unrelated value in the field still
+    # correctly gets skipped as a real duplicate.
+    removed_by_tag: dict[str, set[str]] = {}
+    for tag, value in matches:
+        removed_by_tag.setdefault(tag, set()).add(value)
+
     add: list[tuple[str, str]] = []
     if replacement:
         tags_with_match = sorted({tag for tag, _ in matches})
         for tag in tags_with_match:
-            if not any(v.strip().lower() == replacement.lower() for v in fields[tag]):
+            remaining = [v for v in fields[tag] if v not in removed_by_tag.get(tag, set())]
+            if not any(v.strip().lower() == replacement.lower() for v in remaining):
                 add.append((tag, replacement))
 
     if dry_run:
@@ -707,6 +915,90 @@ def run_source_clear_keyword(
         return _refuse(
             'refused',
             f'exiftool could not update {alias}: {error}. Nothing was changed.')
+
+    # P2 (#147 review): exiftool's exit code says the CALL succeeded, not that
+    # the field actually ended up in the state this command asked for - a
+    # race (something else touched the file's metadata between the read above
+    # and this write) can leave exiftool reporting success while a value it
+    # was told to remove is still there, or one it was told to add never
+    # landed. Re-read the fields and confirm both sides actually took before
+    # declaring success; a caller reading Result.as_dict() must never see
+    # ok: true for a write that did not really happen.
+    try:
+        after_fields = _run_exiftool_read_keyword_fields(abs_path)
+    except RuntimeError as e:
+        # P2 (#156 review finding 2): the write itself already happened -
+        # exiftool returned 0 above - so even though this re-read failed and
+        # the change cannot be CONFIRMED, the file on disk was genuinely
+        # touched. Record that before returning, the same way the "write
+        # landed but didn't fully take" refusal a few lines down already
+        # does; otherwise a caller reading Result.as_dict() sees changed: []
+        # next to a refusal, which reads as "nothing happened" when
+        # something did.
+        result.note_changed(abs_path)
+        return _refuse(
+            'refused',
+            f'{alias} was written, but the change could not be verified ({e}). '
+            'Run `fha lint --with-exif` to check its current state by hand.')
+
+    # P2 (#156 review finding 1): compared EXACTLY - no .strip(), no
+    # case-fold. Two failure modes with the earlier stripped comparison:
+    #
+    #   1. A stripped comparison treats two DIFFERENT on-file strings that
+    #      differ only by surrounding whitespace as "the same value" - a
+    #      replacement whose exact text differs from the removed spelling
+    #      only by whitespace was mistaken for the old value still sitting
+    #      there, and a write that worked exactly as asked was wrongly
+    #      refused.
+    #   2. When the field held MULTIPLE case variants of the same word (e.g.
+    #      both 'margaret hartley' and 'Margaret Hartley') and --replace-with
+    #      happens to equal one of them byte-for-byte, that spelling is
+    #      correctly removed-then-re-added by design (collapsing duplicates
+    #      down to one canonical spelling) - no textual comparison, stripped
+    #      or not, can tell that apart from "removal failed" purely by
+    #      looking at the string. `add_by_tag` carries the values this call
+    #      itself is intentionally putting (back) into each field, so a
+    #      matched value that is ALSO one of those intended additions is
+    #      excluded from the "still there" check - its presence is expected,
+    #      not a leftover.
+    # P2 (#156 review finding 1, round 2): a membership check ("is this value
+    # present at all") cannot see a MULTIPLICITY problem - when a field
+    # already held the exact replacement spelling alongside the noncanonical
+    # one being removed (e.g. both 'margaret hartley' and 'Margaret Hartley'),
+    # excluding every matched value that's also an intended addition from the
+    # "still there" check (the old `not_removed`/`add_by_tag` logic) let a
+    # partial write that removed only the noncanonical copy and then added a
+    # SECOND copy of the canonical spelling pass verification with a straight
+    # duplicate now sitting in the field. Compare the expected FINAL COUNT of
+    # every value per tag - original counts, minus every matched removal,
+    # plus every intended addition - against what's actually on disk.
+    problems = []
+    touched_tags = sorted({tag for tag, _ in matches} | {tag for tag, _ in add})
+    for tag in touched_tags:
+        expected_counts = (
+            Counter(fields.get(tag, []))
+            - Counter(value for t, value in matches if t == tag)
+            + Counter(value for t, value in add if t == tag)
+        )
+        actual_counts = Counter(after_fields.get(tag, []))
+        missing = expected_counts - actual_counts
+        extra = actual_counts - expected_counts
+        if missing:
+            problems.append('is missing ' + ', '.join(
+                f'{tag}: {value!r}' + (f' (x{n})' if n > 1 else '')
+                for value, n in missing.items()))
+        if extra:
+            problems.append('still carries an unexpected extra copy of ' + ', '.join(
+                f'{tag}: {value!r}' + (f' (x{n})' if n > 1 else '')
+                for value, n in extra.items()))
+    if problems:
+        result.note_changed(abs_path)  # exiftool did write SOMETHING to the file
+        return _refuse(
+            'refused',
+            f'exiftool reported success, but re-reading {alias} shows it '
+            + ' and '.join(problems) + ' - something else may have changed '
+            'the file at the same moment. Run `fha lint --with-exif` to see '
+            'its current state, then retry.')
 
     result.data['status'] = 'ok'
     result.data['removed_from'] = sorted({tag for tag, _ in matches})

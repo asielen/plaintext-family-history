@@ -95,7 +95,7 @@ class _Base(unittest.TestCase):
     # - seeding -
 
     def _seed_person(self, pid, name='Test Person', *, living='false', tier='curated',
-                     surname='Person', body='# Test Person\n', frontmatter_extra=''):
+                     surname='Person', body='# Test Person\n', frontmatter_extra='', sex='M'):
         rel = f'people/{surname.lower()}__test_{pid}.md'
         path = self.archive_root / rel
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -111,7 +111,7 @@ class _Base(unittest.TestCase):
         self.conn.execute(
             'INSERT INTO persons(id, name, surname, sex, living, tier, status, path) '
             'VALUES (?,?,?,?,?,?,?,?)',
-            (pid, name, surname, 'M', living, tier, 'active', rel),
+            (pid, name, surname, sex, living, tier, 'active', rel),
         )
 
     def _seed_source(self, sid, title='A Source', *, source_type='census', restricted=0,
@@ -133,7 +133,7 @@ class _Base(unittest.TestCase):
 
     def _seed_claim(self, cid, sid, ctype, value, *, status='accepted', date_edtf=None,
                     place_text=None, persons=(), confidence=None, reviewed=None, negated=0,
-                    roles=None, date_min=None):
+                    roles=None, date_min=None, subtype=None):
         """Seed one claim. `roles` is {person_id: role}, the `roles:` map as
         `fha index` stores it - which of the people a claim names plays which
         part (SPEC §8.3). Omit it for the legacy/unroled claim.
@@ -141,14 +141,18 @@ class _Base(unittest.TestCase):
         date_min defaults to the naive January-1 widening of date_edtf (matches
         what real claims carry for a plain year), but a test can override it to
         construct the #128 shape - an uncertain/ranged date_edtf whose widened
-        date_min lands in a different decade than the display date reads as."""
+        date_min lands in a different decade than the display date reads as.
+
+        `subtype` is the relationship claim's nature (SPEC §8.2/§12.2 -
+        `adoptive`/`step`/`foster`/`guardian`/... for a non-genetic parent-
+        child edge, `biological` or unset for a genetic one)."""
         if date_min is None:
             date_min = (date_edtf or '')[:4] + '-01-01' if date_edtf else None
         self.conn.execute(
-            'INSERT INTO claims(id, source_id, type, value, status, date_edtf, date_min, place_text, '
-            'confidence, reviewed, negated) '
-            'VALUES (?,?,?,?,?,?,?,?,?,?,?)',
-            (cid, sid, ctype, value, status, date_edtf, date_min, place_text,
+            'INSERT INTO claims(id, source_id, type, subtype, value, status, date_edtf, date_min, '
+            'place_text, confidence, reviewed, negated) '
+            'VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+            (cid, sid, ctype, subtype, value, status, date_edtf, date_min, place_text,
              confidence, reviewed, negated),
         )
         for pos, pid in enumerate(persons):
@@ -156,10 +160,10 @@ class _Base(unittest.TestCase):
                 'INSERT INTO claim_persons(claim_id, person_id, position, role) VALUES (?,?,?,?)',
                 (cid, pid, pos, (roles or {}).get(pid)))
 
-    def _seed_rel(self, pid, rel, other):
+    def _seed_rel(self, pid, rel, other, *, claim_id='c-rrrrrrrrrr'):
         self.conn.execute(
             'INSERT INTO relationships(person_id, rel, other_id, claim_id) VALUES (?,?,?,?)',
-            (pid, rel, other, 'c-rrrrrrrrrr'))
+            (pid, rel, other, claim_id))
 
     def _run(self, *, linked=False, dry_run=False, workbench=False):
         self.conn.commit()
@@ -261,58 +265,160 @@ class SourcePageTests(_Base):
         self.assertIn('file not available', html)
 
     def test_file_entry_note_adds_copy_letter_when_present(self):
-        # #123: a multi-file bundle (four newspaper clippings, say) reads as
-        # indistinguishable when every entry's note is the bare 'role:
-        # clipping'. Once the indexer stops dropping `copy:` on the floor
-        # (the source_files.copy fix, same issue), the site's file-list note
-        # names the variant too - 'role: clipping · copy: b' - so same-role
-        # files in one bundle are told apart without needing per-file dates.
-        self._seed_source('s-1111111111', 'Clippings Bundle', source_type='newspaper')
-        clip_dir = self.archive_root / 'documents' / 'newspaper'
-        clip_dir.mkdir(parents=True, exist_ok=True)
-        (clip_dir / 'clipping-a.pdf').write_bytes(b'not a real pdf')
-        (clip_dir / 'clipping-b.pdf').write_bytes(b'not a real pdf')
+        # #123: one continuous document with several same-role entries (a
+        # household ledger, say) reads as indistinguishable when every
+        # entry's note is the bare 'role: entry'. Once the indexer stops
+        # dropping `copy:` on the floor (the source_files.copy fix, same
+        # issue), the site's file-list note names the variant too - 'role:
+        # entry · copy: b' - so same-role entries of one item are told apart
+        # without needing per-file dates.
+        self._seed_source('s-1111111111', 'Household Ledger', source_type='other')
+        ledger_dir = self.archive_root / 'documents' / 'ledger'
+        ledger_dir.mkdir(parents=True, exist_ok=True)
+        (ledger_dir / 'entry-a.pdf').write_bytes(b'not a real pdf')
+        (ledger_dir / 'entry-b.pdf').write_bytes(b'not a real pdf')
         self.conn.execute(
             'INSERT INTO source_files(source_id, path, role, copy) VALUES (?,?,?,?)',
-            ('s-1111111111', 'documents/newspaper/clipping-a.pdf', 'clipping', None))
+            ('s-1111111111', 'documents/ledger/entry-a.pdf', 'entry', None))
         self.conn.execute(
             'INSERT INTO source_files(source_id, path, role, copy) VALUES (?,?,?,?)',
-            ('s-1111111111', 'documents/newspaper/clipping-b.pdf', 'clipping', 'b'))
+            ('s-1111111111', 'documents/ledger/entry-b.pdf', 'entry', 'b'))
         self._run(linked=True)
         html = self._read('sources/s-1111111111.html')
-        self.assertIn('role: clipping · copy: b', html)
+        self.assertIn('role: entry · copy: b', html)
         # The un-lettered sibling keeps the original, shorter note - no
         # 'copy: None' leaking through, and the two entries stay distinct.
-        self.assertIn('role: clipping</span>', html)
+        self.assertIn('role: entry</span>', html)
 
     def test_file_entry_note_includes_human_date_when_present(self):
-        # #123, the schema's own worked example: a source that legitimately
-        # bundles files from different dates (several newspaper clippings
-        # about one event, mailed months apart) can now give each `files:`
-        # entry its own `date:` (SPEC §14), distinct from the source's own
-        # `source_date:`. Once that value round-trips into source_files.
-        # date_edtf (tools/index.py), the site's file note renders it human-
-        # readable and FIRST - '26 February 1916 · role: clipping · copy: b'
-        # - so two same-role files in one bundle read as distinct by DATE,
-        # not just by an opaque copy letter.
-        self._seed_source('s-1111111111', 'Clippings Bundle', source_type='newspaper')
-        clip_dir = self.archive_root / 'documents' / 'newspaper'
-        clip_dir.mkdir(parents=True, exist_ok=True)
-        (clip_dir / 'clipping-a.pdf').write_bytes(b'not a real pdf')
-        (clip_dir / 'clipping-b.pdf').write_bytes(b'not a real pdf')
+        # #123, the schema's own worked example: a source whose files are
+        # still facets of one piece of evidence (SPEC §7) but were not all
+        # written on the same day - a household ledger whose entries span
+        # months - can now give each `files:` entry its own `date:`
+        # (SPEC §14), distinct from the source's own `source_date:`. Once
+        # that value round-trips into source_files.date_edtf (tools/index.py),
+        # the site's file note renders it human-readable and FIRST - '26
+        # February 1916 · role: entry · copy: b' - so two same-role entries
+        # of one ledger read as distinct by DATE, not just by an opaque copy
+        # letter.
+        self._seed_source('s-1111111111', 'Household Ledger', source_type='other')
+        ledger_dir = self.archive_root / 'documents' / 'ledger'
+        ledger_dir.mkdir(parents=True, exist_ok=True)
+        (ledger_dir / 'entry-a.pdf').write_bytes(b'not a real pdf')
+        (ledger_dir / 'entry-b.pdf').write_bytes(b'not a real pdf')
         self.conn.execute(
             'INSERT INTO source_files(source_id, path, role, copy, date_edtf) VALUES (?,?,?,?,?)',
-            ('s-1111111111', 'documents/newspaper/clipping-a.pdf', 'clipping', None, '1916-02-26'))
+            ('s-1111111111', 'documents/ledger/entry-a.pdf', 'entry', None, '1916-02-26'))
         self.conn.execute(
             'INSERT INTO source_files(source_id, path, role, copy, date_edtf) VALUES (?,?,?,?,?)',
-            ('s-1111111111', 'documents/newspaper/clipping-b.pdf', 'clipping', 'b', '1916-06-03'))
+            ('s-1111111111', 'documents/ledger/entry-b.pdf', 'entry', 'b', '1916-06-03'))
         self._run(linked=True)
         html = self._read('sources/s-1111111111.html')
         # Undated-copy sibling: date first, no copy letter.
-        self.assertIn('26 February 1916 · role: clipping</span>', html)
+        self.assertIn('26 February 1916 · role: entry</span>', html)
         # Dated + copy-lettered sibling: date, then role, then copy - the two
         # files read as distinct on both axes at once.
-        self.assertIn('3 June 1916 · role: clipping · copy: b</span>', html)
+        self.assertIn('3 June 1916 · role: entry · copy: b</span>', html)
+
+    def test_file_entry_note_distinguishes_uncertain_date_from_approximate(self):
+        # Codex review on PR #149 (P2): a `date: 1916?` (uncertain - "not sure
+        # this is the right year") used to render through the same "about
+        # {year}" prefix as `date: 1916~` (approximate - "this is a rough
+        # guess"), misstating what the archive actually recorded on the
+        # source page. The two markers must read as the two different things
+        # they record - matching base.html's own date-notation legend, which
+        # already explains `~` as "about this year" and `?` as "the year is
+        # probably right but has not been confirmed".
+        self._seed_source('s-1111111111', 'Uncertain Date Source', source_type='newspaper')
+        clip_dir = self.archive_root / 'documents' / 'newspaper'
+        clip_dir.mkdir(parents=True, exist_ok=True)
+        (clip_dir / 'clipping-a.pdf').write_bytes(b'not a real pdf')
+        self.conn.execute(
+            'INSERT INTO source_files(source_id, path, role, date_edtf) VALUES (?,?,?,?)',
+            ('s-1111111111', 'documents/newspaper/clipping-a.pdf', 'clipping', '1916?'))
+        self._run(linked=True)
+        html = self._read('sources/s-1111111111.html')
+        self.assertIn('1916 (unconfirmed) · role: clipping</span>', html)
+        self.assertNotIn('about 1916', html)
+
+    def test_missing_asset_note_keeps_date_and_role(self):
+        # Codex review on PR #149 (P2): a dated file missing on disk used to
+        # have its ENTIRE role_note (date/role/copy) replaced by the fixed
+        # 'file not available in this build' message, discarding facts the
+        # index still has even though only the FILE's presentability is
+        # degraded, not the record of what it was.
+        self._seed_source('s-1111111111', 'Has Asset', source_type='newspaper')
+        self.conn.execute(
+            'INSERT INTO source_files(source_id, path, role, copy, date_edtf) VALUES (?,?,?,?,?)',
+            ('s-1111111111', 'documents/newspaper/ghost.pdf', 'clipping', 'b', '1916-02-26'))
+        self._run(linked=True)
+        html = self._read('sources/s-1111111111.html')
+        self.assertIn(
+            '26 February 1916 · role: clipping · copy: b · file not available in this build',
+            html)
+
+    def test_no_pillow_note_keeps_date_and_role(self):
+        # Codex review on PR #149 (P2): a standalone build with Pillow
+        # unavailable used to replace a dated photo's note with the fixed
+        # 'image omitted (Pillow not installed)' message alone - a common,
+        # supported configuration, not an edge case - dropping the date/role
+        # the index still carries for it.
+        self._seed_source('s-1111111111', 'Photo Source', source_type='photo')
+        img = self.archive_root / 'photos' / '1880' / 'pic.jpg'
+        img.parent.mkdir(parents=True, exist_ok=True)
+        img.write_bytes(b'not-a-real-image-but-exists')
+        self.conn.execute(
+            'INSERT INTO source_files(source_id, path, role, date_edtf) VALUES (?,?,?,?)',
+            ('s-1111111111', 'photos/1880/pic.jpg', 'front', '1916-02-26'))
+        original = site._PIL_AVAILABLE
+        site._PIL_AVAILABLE = False
+        try:
+            self._run(linked=False)
+        finally:
+            site._PIL_AVAILABLE = original
+        html = self._read('sources/s-1111111111.html')
+        self.assertIn(
+            '26 February 1916 · role: front · image omitted (Pillow not installed)',
+            html)
+
+    @unittest.skipUnless(site._PIL_AVAILABLE, 'Pillow not installed')
+    def test_failed_derivative_note_keeps_date_and_role(self):
+        # Codex review on PR #149 (P2): the other standalone-image fallback -
+        # Pillow present but the derivative fails (corrupt image, unsupported
+        # format, locked file) - had the same bug: 'image could not be
+        # processed' replaced the whole note instead of joining it.
+        self._seed_source('s-1111111111', 'Photo Source', source_type='photo')
+        img = self.archive_root / 'photos' / '1880' / 'pic.jpg'
+        img.parent.mkdir(parents=True, exist_ok=True)
+        img.write_bytes(b'not-a-real-image-but-exists')   # not a decodable image
+        self.conn.execute(
+            'INSERT INTO source_files(source_id, path, role, date_edtf) VALUES (?,?,?,?)',
+            ('s-1111111111', 'photos/1880/pic.jpg', 'front', '1916-02-26'))
+        res = self._run(linked=False)
+        self.assertTrue(
+            any('could not build a web image' in m for m in res['messages']), res['messages'])
+        html = self._read('sources/s-1111111111.html')
+        self.assertIn(
+            '26 February 1916 · role: front · image could not be processed',
+            html)
+
+    def test_claims_table_value_scrubbed_but_workbench_prefill_keeps_raw(self):
+        # #144 review finding 4: build_source_page passed the raw claim
+        # value straight into the claims table - a source page could
+        # publish a bare (C-xxxxxxxxxx) parenthetical the prose/timeline
+        # scrub already keeps off every other page. The workbench "edit &
+        # accept" prefill still needs the UNscrubbed original so a human
+        # editing the claim sees exactly what is stored, not a lossy
+        # display copy.
+        self._seed_person('p-aaaaaaaaaa', 'Jane Doe')
+        self._seed_source('s-1111111111', 'Census', people=('p-aaaaaaaaaa',))
+        self._seed_claim('c-1111111111', 's-1111111111', 'residence',
+                         'Lived in Kansas (C-4kx9m2p7qr) per the deed',
+                         status='suggested', persons=('p-aaaaaaaaaa',))
+        self._run(linked=True, workbench=True)
+        html = self._read('sources/s-1111111111.html')
+        self.assertIn('Lived in Kansas per the deed', html)          # reader-facing cell: scrubbed
+        self.assertIn('Lived in Kansas (C-4kx9m2p7qr) per the deed', html)  # wb prefill: raw
 
 
 class SourceRedactionTests(_Base):
@@ -419,6 +525,48 @@ class PersonPageTests(_Base):
         html = self._read('persons/p-aaaaaaaaaa.html')
         self.assertIn('corroborates her birth on 9 September 1899', html)
         self.assertNotIn('C-4kx9m2p7qr', html)
+
+    def test_biography_embed_caption_claim_id_is_scrubbed(self):
+        # P2 (PR #158 follow-up): `_prose_to_html` routes a prose embed
+        # (`![[S-id|Caption]]`) through `render_embed` BEFORE `_inline_html`
+        # (and its per-span scrub) ever runs, so `_render_embed`'s caption
+        # handling only HTML-escaped the caption - a claim id embedded in
+        # it leaked into both the visible <figcaption> text and the image's
+        # alt attribute. The embed TARGET (the S-id) is unaffected.
+        self._seed_source('s-1111111111', 'Photo Source', source_type='photo')
+        img = self.archive_root / 'photos' / '1880' / 'pic.jpg'
+        img.parent.mkdir(parents=True, exist_ok=True)
+        img.write_bytes(b'not a real image - linked mode never decodes it')
+        self.conn.execute(
+            'INSERT INTO source_files(source_id, path, role) VALUES (?,?,?)',
+            ('s-1111111111', 'photos/1880/pic.jpg', 'front'))
+        bio = ('# Thomas\n## Biography\n'
+               '![[S-1111111111|Old photo (C-4kx9m2p7qr)]]\n')
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley', body=bio)
+        self._run(linked=True)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertNotIn('C-4kx9m2p7qr', html)
+        self.assertIn('<figcaption>Old photo</figcaption>', html)
+        self.assertIn('alt="Old photo"', html)
+
+    def test_biography_wikilink_display_label_claim_id_is_scrubbed(self):
+        # P2 (PR #158 follow-up): a labeled wikilink's display text
+        # (`[[S-id|label]]`) reaches `render_token` via `_inline_html`'s
+        # `wdisp` group, which the per-span scrub fix (#144 finding 3)
+        # never covered - `render_token`'s source/person/place renderers
+        # only HTML-escape the display text, so a claim id embedded in the
+        # label leaked straight onto the reader-facing page. The link
+        # TARGET (the S-id) must stay untouched so the citation still
+        # resolves.
+        bio = ('# Thomas\n## Biography\n'
+               'See [[S-1111111111|the record (C-4kx9m2p7qr)]] for details.\n')
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley', body=bio)
+        self._seed_source('s-1111111111', 'Census')
+        self._run(linked=True)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertNotIn('C-4kx9m2p7qr', html)
+        self.assertIn('>the record</a>', html)
+        self.assertIn('../sources/s-1111111111.html', html)    # citation still resolves
 
     def test_biography_translates_before_date_bracket_in_prose(self):
         # #140: a raw `[..YYYY]` "before" bracket (SPEC §11) embedded mid-
@@ -693,6 +841,23 @@ class PersonPageTests(_Base):
         # bleeds into the previous value, which would read as one run-on line.
         self.assertIn('1840', html[born_idx:married_idx])
         self.assertNotIn('1871', html[born_idx:married_idx])
+
+    def test_summary_vital_without_date_scrubs_claim_id_paren_in_free_text_value(self):
+        # #144 review finding 4: a vital claim with no date_edtf falls back
+        # to its free-text value for the Born/Died/Married summary line -
+        # the one place a bare (C-xxxxxxxxxx) parenthetical could reach the
+        # person summary unscrubbed, since every OTHER vital display uses
+        # the structured date_edtf instead (which must stay untranslated -
+        # base.html's own legend explains its notation).
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley')
+        self._seed_source('s-1111111111', 'Record', people=('p-aaaaaaaaaa',))
+        self._seed_claim('c-1111111111', 's-1111111111', 'birth',
+                         'Born about harvest time (C-4kx9m2p7qr)',
+                         status='accepted', persons=('p-aaaaaaaaaa',))
+        self._run(linked=True)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('Born about harvest time', html)
+        self.assertNotIn('C-4kx9m2p7qr', html)
 
     def _legend(self, html):
         """The date-notation legend paragraph on a built page, tag to tag.
@@ -2165,6 +2330,22 @@ class PlacePageTests(_Base):
         self.assertIn('Old Country', html)
         self.assertNotIn('places/', html.split('Old Country')[0][-200:])  # no place link around it
 
+    def test_events_table_value_scrubs_claim_id_paren(self):
+        # #144 review finding 4: build_place_page passed the raw claim value
+        # straight into the "Events here" table - the same unscrubbed-
+        # internal-encoding gap as the source page's claims table, on the
+        # place page's own claims render.
+        self._seed_person('p-aaaaaaaaaa', 'Jane')
+        self._seed_source('s-1111111111', 'Census', people=('p-aaaaaaaaaa',))
+        self._seed_place('l-1111111111', 'Fairview')
+        self._seed_claim_at_place('c-1111111111', 's-1111111111', 'l-1111111111',
+                                  'Lived in Fairview (C-4kx9m2p7qr) per the deed',
+                                  ('p-aaaaaaaaaa',))
+        self._run(linked=True)
+        html = self._read('places/l-1111111111.html')
+        self.assertIn('Lived in Fairview per the deed', html)
+        self.assertNotIn('C-4kx9m2p7qr', html)
+
 
 class DiscoveriesTests(_Base):
     def _write_discoveries(self, text):
@@ -2554,6 +2735,91 @@ class TreeTests(_Base):
         self.assertEqual(sorted(set(ids)), ['P-aaaaaaaaaa', 'P-bbbbbbbbbb'])
         self.assertEqual(len(ids), len(set(ids)))                      # each node once
 
+    def test_descendant_tree_data_stays_complete_beyond_old_bound(self):
+        # #152 follow-up review fix (P2, finding 1): the first cut of the
+        # #152 performance fix used `_DESCENDANT_TREE_MAX_HOPS` (then 12) as
+        # a hard TRUNCATION bound on the server-side BFS, silently dropping
+        # every descendant past 12 hops from both the embedded tree and the
+        # reusable `data/tree_*.json` artifact - contradicting
+        # tools/README.md's promise that "only the initial paint is bounded
+        # while the data stays complete and the reader expands forward."
+        # Build a chain well past that old 12-hop bound (but nowhere near
+        # today's much larger safety-net value) and confirm every generation
+        # survives in the artifact - this must fail against the pre-fix hard
+        # truncation.
+        depth = 20
+        ids = []
+        prev = None
+        for g in range(depth):
+            # Fixed-width numeric suffix (zero-padded to 2 digits) - a
+            # variable-width `f'gen{g}'` + zero-fill collides once g reaches
+            # double digits (e.g. 'gen1' and 'gen10' both zero-pad to the
+            # same 10-char string), which this loop's depth (20) reaches.
+            pid = f'p-g{g:02d}' + '0' * 7
+            self._seed_person(pid, f'Descendant Gen{g}', surname=f'Gen{g}')
+            if prev is not None:
+                self._seed_rel(prev, 'child', pid)
+                self._seed_rel(pid, 'parent', prev)
+            ids.append(pid)
+            prev = pid
+        (self.archive_root / 'fha.yaml').write_text(
+            f'roots: {{}}\nroot_person: P-{ids[0][2:]}\n', encoding='utf-8')
+        res = self._run(linked=True)
+        self.assertEqual(res['status'], 'ok')
+        data = json.loads(
+            (self.out_dir / 'data' / f'tree_{ids[0]}_descendants.json').read_text(encoding='utf-8'))
+        got_ids = {n['p_id'] for n in data['nodes']}
+        expected_ids = {f'P-{pid[2:]}' for pid in ids}
+        self.assertEqual(got_ids, expected_ids)          # every generation present, none dropped
+        self.assertFalse(any('truncated' in m.lower() for m in res['messages']))
+
+    def test_descendant_tree_bfs_safety_net_still_truncates_and_warns(self):
+        # #152 follow-up review fix (P2, finding 1): `_DESCENDANT_TREE_MAX_
+        # HOPS` is now a generous safety net (real archives should never hit
+        # it), not a display bound - but it must still actually stop a
+        # pathological walk, and must say so loudly rather than silently
+        # dropping generations. Patch it down to a small value to exercise
+        # that safety-net path without building hundreds of fixture people.
+        ids = []
+        prev = None
+        for g in range(5):
+            pid = f'p-g{g:02d}' + '0' * 7
+            self._seed_person(pid, f'Descendant Gen{g}', surname=f'Gen{g}')
+            if prev is not None:
+                self._seed_rel(prev, 'child', pid)
+                self._seed_rel(pid, 'parent', prev)
+            ids.append(pid)
+            prev = pid
+        (self.archive_root / 'fha.yaml').write_text(
+            f'roots: {{}}\nroot_person: P-{ids[0][2:]}\n', encoding='utf-8')
+        with unittest.mock.patch.object(site, '_DESCENDANT_TREE_MAX_HOPS', 2):
+            res = self._run(linked=True)
+        self.assertEqual(res['status'], 'ok')                          # terminates, not an error
+        data = json.loads(
+            (self.out_dir / 'data' / f'tree_{ids[0]}_descendants.json').read_text(encoding='utf-8'))
+        got_ids = {n['p_id'] for n in data['nodes']}
+        within_bound = f'P-{ids[2][2:]}'      # hop == 2: still walked
+        beyond_bound = f'P-{ids[3][2:]}'      # hop == 3: never reached, safety net stopped it
+        self.assertIn(within_bound, got_ids)
+        self.assertNotIn(beyond_bound, got_ids)
+        self.assertTrue(any('truncated' in m.lower() and 'descendants' in m.lower()
+                            for m in res['messages']))                # warned, not silent
+
+    def test_descendant_tree_render_deferred_until_details_opens(self):
+        # #152 review fix (P2): the descendants <details> is closed by
+        # default (person.html), so calling FhaTree.render() unconditionally
+        # at page load - the pre-fix behavior - fed it a zero-width
+        # container (a collapsed <details> is not laid out at all), which
+        # left the chart badly fit until the reader pressed Fit by hand.
+        # The emitted script must now wait for the enclosing <details>'s own
+        # `toggle` event, which only fires once it is genuinely open and has
+        # real layout dimensions.
+        self._seed_rels_chain()
+        self._run(linked=True)
+        gus_page = self._read('persons/p-cccccccccc.html')
+        self.assertIn('function renderTree()', gus_page)
+        self.assertIn("addEventListener('toggle'", gus_page)
+
     def test_mistyped_root_person_warns(self):
         self._seed_person('p-aaaaaaaaaa', 'Real Person')
         (self.archive_root / 'fha.yaml').write_text(
@@ -2835,6 +3101,48 @@ class HomePedigreeTests(_Base):
         self.assertTrue(any('home_pedigree_generations' in m and 'whole number' in m
                             for m in res['messages']))
 
+    def test_fractional_generations_warns_and_uses_default(self):
+        # #152 review fix (P2): `int(3.9)` truncates to 3 with no error -
+        # `int()` succeeding is not the same as "this was genuinely a whole
+        # number." A fractional YAML value must be rejected the same way a
+        # non-numeric string already is, not silently narrowed to a
+        # shallower chart than configured with no warning at all.
+        self._seed_person('p-aaaaaaaaaa', 'Hub Person')
+        self._seed_linear_ancestors('p-aaaaaaaaaa', 6)
+        self._seed_home(extra_yaml='  home_pedigree_generations: 3.9\n')
+        res = self._run(linked=True)
+        self.assertTrue(any('home_pedigree_generations' in m and 'whole number' in m
+                            for m in res['messages']))
+        ped = self._pedigree_section(self._read('index.html'))
+        self.assertIn('Ancestor Gen5', ped)      # the documented default (5) - not int(3.9)=3
+        self.assertNotIn('Ancestor Gen6', ped)
+
+    def test_integral_float_generations_is_accepted(self):
+        # #152 follow-up review fix (P2, finding 6): PyYAML parses a hand-
+        # edited `home_pedigree_generations: 3.0` as a Python `float`, not an
+        # `int` - a harmless slip, and mathematically a genuine whole number.
+        # The fractional-rejection fix above must not catch this case too:
+        # `3.0` should be honored as depth 3 (not silently overridden to the
+        # default of 5), and with no "not a whole number" warning, since
+        # nothing was actually wrong with what the human wrote.
+        self._seed_person('p-aaaaaaaaaa', 'Hub Person')
+        self._seed_linear_ancestors('p-aaaaaaaaaa', 5)
+        self._seed_home(extra_yaml='  home_pedigree_generations: 3.0\n')
+        res = self._run(linked=True)
+        self.assertFalse(any('home_pedigree_generations' in m for m in res['messages']))
+        ped = self._pedigree_section(self._read('index.html'))
+        self.assertIn('Ancestor Gen3', ped)       # the REQUESTED depth (3) - not the default (5)
+        self.assertNotIn('Ancestor Gen4', ped)
+
+    def test_boolean_generations_warns_and_uses_default(self):
+        # Same bug, different door: `bool` is an `int` subclass in Python, so
+        # `int(True) == 1` used to be silently accepted as a valid depth.
+        self._seed_person('p-aaaaaaaaaa', 'Hub Person')
+        self._seed_home(extra_yaml='  home_pedigree_generations: true\n')
+        res = self._run(linked=True)
+        self.assertTrue(any('home_pedigree_generations' in m and 'whole number' in m
+                            for m in res['messages']))
+
     def test_seeds_on_home_person_not_root_person(self):
         self._seed_person('p-aaaaaaaaaa', 'Root Person')
         self._seed_person('p-bbbbbbbbbb', 'Home Person')
@@ -2919,6 +3227,86 @@ class HomePedigreeTests(_Base):
         home = self._read('index.html')
         self.assertIn('Full Sibling', self._pedigree_section(home))
 
+    def test_restricted_hub_parent_tie_contributes_no_sibling_candidates(self):
+        # #152 review fix (P1, privacy-adjacent): `_hub_siblings` used to
+        # check ONLY the CANDIDATE's own tie to a shared parent
+        # (`_has_public_claim(parent, candidate)`), never the HUB's OWN tie
+        # to that same parent. So a parent the hub is tied to ONLY through a
+        # restricted/sealed claim still contributed sibling candidates - via
+        # those candidates' own PUBLIC ties to that same parent - which
+        # tells a reader "the hub is tied to this parent" just as surely as
+        # printing the parent's name on the hub's own card would, defeating
+        # the whole point of restricting the hub's own tie. A parent the hub
+        # is not itself publicly tied to must now contribute NO candidates
+        # at all, regardless of how public a candidate's own tie to that
+        # parent is.
+        self._seed_person('p-aaaaaaaaaa', 'Hub Person')
+        self._seed_person('p-bbbbbbbbbb', 'Shared Parent')
+        self._seed_person('p-cccccccccc', 'Other Child')
+        self._seed_rel('p-bbbbbbbbbb', 'child', 'p-aaaaaaaaaa', claim_id='c-1111111111')
+        self._seed_rel('p-aaaaaaaaaa', 'parent', 'p-bbbbbbbbbb', claim_id='c-1111111111')
+        self._seed_rel('p-bbbbbbbbbb', 'child', 'p-cccccccccc')
+        self._seed_rel('p-cccccccccc', 'parent', 'p-bbbbbbbbbb')
+        # The HUB's own tie to Shared Parent is backed only by a claim from
+        # a hard-restricted source - not public. The relationships row above
+        # carries this SAME claim_id (rather than the generic placeholder
+        # `_seed_rel` otherwise defaults to) so the edge-specific check
+        # (`_has_public_parent_edge`, the #152-round P1 fix) can actually see
+        # which claim backs it - the same way `fha index` always ties a
+        # derived relationships row to the real claim that produced it.
+        self._seed_source('s-1111111111', 'Restricted Source', restricted=1,
+                          people=('p-bbbbbbbbbb', 'p-aaaaaaaaaa'))
+        self._seed_claim('c-1111111111', 's-1111111111', 'relationship',
+                         'Hub is the child of Shared Parent', status='accepted',
+                         persons=('p-bbbbbbbbbb', 'p-aaaaaaaaaa'),
+                         roles={'p-bbbbbbbbbb': 'parent', 'p-aaaaaaaaaa': 'child'})
+        # Other Child's own tie to Shared Parent carries no claim at all - a
+        # bare relationships-table row, publicly tied per `_has_public_claim`.
+        self._seed_home()
+        self._run(linked=False)
+        home = self._read('index.html')
+        # Other Child is an ordinary curated person and legitimately appears
+        # in the home page's surname A-Z index regardless - the assertion
+        # must be scoped to the pedigree chart itself, not the whole page.
+        self.assertNotIn('Other Child', self._pedigree_section(home))
+
+    def test_unrelated_public_claim_does_not_fake_a_public_parent_tie(self):
+        # Codex review (P1, PR #152 round): `_has_public_claim(p, pid)` asks
+        # "is there ANY publishable claim connecting these two people, about
+        # anything" - a completely UNRELATED public claim (a shared census
+        # entry, here) satisfies that even though the parent-child tie
+        # itself is backed only by a restricted claim, letting the hub's
+        # sibling-candidate gate wrongly treat the hub as publicly tied to
+        # this parent. `_has_public_parent_edge` asks the narrower, correct
+        # question - is the parent-child RELATIONSHIP itself public - so it
+        # must not be fooled by the census claim's mere presence.
+        self._seed_person('p-aaaaaaaaaa', 'Hub Person')
+        self._seed_person('p-bbbbbbbbbb', 'Shared Parent')
+        self._seed_person('p-cccccccccc', 'Other Child')
+        self._seed_rel('p-bbbbbbbbbb', 'child', 'p-aaaaaaaaaa', claim_id='c-1111111111')
+        self._seed_rel('p-aaaaaaaaaa', 'parent', 'p-bbbbbbbbbb', claim_id='c-1111111111')
+        self._seed_rel('p-bbbbbbbbbb', 'child', 'p-cccccccccc')
+        self._seed_rel('p-cccccccccc', 'parent', 'p-bbbbbbbbbb')
+        # The parent-child claim itself is restricted...
+        self._seed_source('s-1111111111', 'Restricted Source', restricted=1,
+                          people=('p-bbbbbbbbbb', 'p-aaaaaaaaaa'))
+        self._seed_claim('c-1111111111', 's-1111111111', 'relationship',
+                         'Hub is the child of Shared Parent', status='accepted',
+                         persons=('p-bbbbbbbbbb', 'p-aaaaaaaaaa'),
+                         roles={'p-bbbbbbbbbb': 'parent', 'p-aaaaaaaaaa': 'child'})
+        # ...but a completely unrelated, perfectly public census claim ALSO
+        # names both people (as household members, not as parent/child) -
+        # the exact shape a pair-wide "any claim at all" check cannot tell
+        # apart from genuine evidence of the parent-child tie itself.
+        self._seed_source('s-2222222222', 'Public Census')
+        self._seed_claim('c-2222222222', 's-2222222222', 'census',
+                         'Shared Parent and Hub Person both listed in the 1900 census',
+                         status='accepted', persons=('p-bbbbbbbbbb', 'p-aaaaaaaaaa'))
+        self._seed_home()
+        self._run(linked=False)
+        home = self._read('index.html')
+        self.assertNotIn('Other Child', self._pedigree_section(home))
+
     def test_branch_coloring_on_home_page_not_on_person_page(self):
         # #115: branch coloring is opt-in (the `home=True`/`branch_color=True`
         # pair `_build_home_pedigree` passes), so an ordinary person's own
@@ -2932,6 +3320,123 @@ class HomePedigreeTests(_Base):
         self.assertIn('ped-branch-1', self._read('index.html'))
         self.assertNotIn('ped-branch-1', self._read('persons/p-aaaaaaaaaa.html'))
         self.assertNotIn('ped-branch-2', self._read('persons/p-aaaaaaaaaa.html'))
+
+    def test_ahnentafel_excludes_non_genetic_parent(self):
+        # #152 review fix (P2, SPEC §12.2): a parent-child edge whose backing
+        # claim carries an explicit non-genetic `subtype` (adoptive/step/
+        # foster/guardian/...) must never occupy an Ahnentafel slot - doing
+        # so falsely presents a social/legal parent, and their whole
+        # ancestor line behind them, as ordinary biological ancestry. The
+        # excluded slot reads as an ordinary unresearched 'Unknown', not a
+        # labelled non-genetic card (matches the review's own "filtering out
+        # is simpler and safer" steer).
+        self._seed_person('p-aaaaaaaaaa', 'Hub Person', sex='F')
+        self._seed_person('p-bbbbbbbbbb', 'Adoptive Parent', sex='F')
+        self._seed_person('p-cccccccccc', 'Bio Parent', sex='M')
+        self._seed_rel('p-aaaaaaaaaa', 'parent', 'p-bbbbbbbbbb', claim_id='c-1111111111')
+        self._seed_rel('p-bbbbbbbbbb', 'child', 'p-aaaaaaaaaa')
+        self._seed_rel('p-aaaaaaaaaa', 'parent', 'p-cccccccccc')
+        self._seed_rel('p-cccccccccc', 'child', 'p-aaaaaaaaaa')
+        self._seed_source('s-1111111111', 'Adoption Record',
+                          people=('p-aaaaaaaaaa', 'p-bbbbbbbbbb'))
+        self._seed_claim('c-1111111111', 's-1111111111', 'relationship',
+                         'Hub was adopted by Adoptive Parent', status='accepted',
+                         subtype='adoptive', persons=('p-bbbbbbbbbb', 'p-aaaaaaaaaa'),
+                         roles={'p-bbbbbbbbbb': 'parent', 'p-aaaaaaaaaa': 'child'})
+        self._seed_home()
+        self._run(linked=True)
+        ped = self._pedigree_section(self._read('index.html'))
+        self.assertNotIn('Adoptive Parent', ped)
+        self.assertIn('Bio Parent', ped)
+
+    def test_restricted_genetic_claim_does_not_confirm_ancestry_via_an_unrelated_public_claim(self):
+        # Codex review (P1, PR #152 round): a pair can carry BOTH a public
+        # NON-genetic claim (adoptive) and a restricted GENETIC (biological)
+        # claim. `_has_public_claim(pid, other)` - a pair-wide "does ANY
+        # public claim connect these two people, about anything" check - was
+        # satisfied by the public adoptive claim alone, and that let the
+        # RESTRICTED biological claim's genetic subtype set `entry['genetic']
+        # = True` regardless, presenting a genetic ancestry relationship
+        # whose only actual evidence is restricted (DNA/by-request) material.
+        # Standalone mode with no public genetic evidence must show this
+        # slot as an ordinary unresearched gap, the same as the
+        # explicitly-non-genetic-subtype case just above - not the parent's
+        # name.
+        self._seed_person('p-aaaaaaaaaa', 'Hub Person', sex='F')
+        self._seed_person('p-bbbbbbbbbb', 'Bio Or Adoptive Parent', sex='F')
+        self._seed_rel('p-aaaaaaaaaa', 'parent', 'p-bbbbbbbbbb', claim_id='c-1111111111')
+        self._seed_rel('p-bbbbbbbbbb', 'child', 'p-aaaaaaaaaa')
+        self._seed_rel('p-aaaaaaaaaa', 'parent', 'p-bbbbbbbbbb', claim_id='c-2222222222')
+        self._seed_source('s-1111111111', 'Adoption Record',
+                          people=('p-aaaaaaaaaa', 'p-bbbbbbbbbb'))
+        self._seed_claim('c-1111111111', 's-1111111111', 'relationship',
+                         'Hub was adopted by Bio Or Adoptive Parent', status='accepted',
+                         subtype='adoptive', persons=('p-bbbbbbbbbb', 'p-aaaaaaaaaa'),
+                         roles={'p-bbbbbbbbbb': 'parent', 'p-aaaaaaaaaa': 'child'})
+        self._seed_source('s-2222222222', 'DNA Report', restricted='dna',
+                          people=('p-aaaaaaaaaa', 'p-bbbbbbbbbb'))
+        self._seed_claim('c-2222222222', 's-2222222222', 'relationship',
+                         'DNA confirms Bio Or Adoptive Parent as biological parent',
+                         status='accepted', subtype='biological',
+                         persons=('p-bbbbbbbbbb', 'p-aaaaaaaaaa'),
+                         roles={'p-bbbbbbbbbb': 'parent', 'p-aaaaaaaaaa': 'child'})
+        self._seed_home()
+        self._run(linked=False)
+        ped = self._pedigree_section(self._read('index.html'))
+        self.assertNotIn('Bio Or Adoptive Parent', ped)
+
+    def test_unknown_sex_parents_get_no_branch_color(self):
+        # #152 review fix (P2): when NEITHER parent has a known sex, which
+        # one lands in Ahnentafel slot 2 (paternal) vs 3 (maternal) is pure
+        # query/iteration order, not evidence - so tinting either slot's
+        # line paternal/maternal would assert a fact nobody actually
+        # recorded, and the two colors could even swap between builds.
+        self._seed_person('p-aaaaaaaaaa', 'Hub Person', sex='F')
+        self._seed_person('p-bbbbbbbbbb', 'Parent One', sex='unknown')
+        self._seed_person('p-cccccccccc', 'Parent Two', sex='unknown')
+        for parent in ('p-bbbbbbbbbb', 'p-cccccccccc'):
+            self._seed_rel('p-aaaaaaaaaa', 'parent', parent)
+            self._seed_rel(parent, 'child', 'p-aaaaaaaaaa')
+        self._seed_home()
+        self._run(linked=True)
+        ped = self._pedigree_section(self._read('index.html'))
+        self.assertNotIn('ped-branch-1', ped)
+        self.assertNotIn('ped-branch-2', ped)
+
+    def test_one_known_sex_parent_keeps_branch_color_when_co_parent_is_unknown(self):
+        # The companion case: only the DEFAULTED slot loses its color. A
+        # parent whose sex genuinely IS on record keeps the branch color its
+        # own recorded sex derives - the fix is not "disable all coloring
+        # whenever any parent's sex is unknown," only "never color a slot
+        # whose OWN placement in slot 2 vs 3 was not actually evidenced."
+        self._seed_person('p-aaaaaaaaaa', 'Hub Person', sex='F')
+        self._seed_person('p-bbbbbbbbbb', 'Known Mother', sex='F')
+        self._seed_person('p-cccccccccc', 'Unknown Parent', sex='unknown')
+        for parent in ('p-bbbbbbbbbb', 'p-cccccccccc'):
+            self._seed_rel('p-aaaaaaaaaa', 'parent', parent)
+            self._seed_rel(parent, 'child', 'p-aaaaaaaaaa')
+        self._seed_home()
+        self._run(linked=True)
+        ped = self._pedigree_section(self._read('index.html'))
+        self.assertIn('ped-branch-2', ped)     # Known Mother's line - genuinely derived
+        self.assertNotIn('ped-branch-1', ped)  # Unknown Parent's line - defaulted, no evidence
+
+    def test_stub_ancestor_renders_unlinked_plain_name(self):
+        # docs/CUSTOMIZING_SITE.md's click-through promise is qualified to
+        # ancestors that already have a page in this build (#152 review fix,
+        # doc wording only - `_chart_entry` already behaved this way; this
+        # locks the behavior in so the corrected doc text keeps matching
+        # it). A stub-tier ancestor gets no page outside workbench, so
+        # `_chart_entry` renders them as a plain, unlinked name - never a
+        # dead or guessed link.
+        self._seed_person('p-aaaaaaaaaa', 'Hub Person')
+        self._seed_person('p-bbbbbbbbbb', 'Stub Ancestor', tier='stub')
+        self._seed_rel('p-aaaaaaaaaa', 'parent', 'p-bbbbbbbbbb')
+        self._seed_rel('p-bbbbbbbbbb', 'child', 'p-aaaaaaaaaa')
+        self._seed_home()
+        self._run(linked=True)
+        ped = self._pedigree_section(self._read('index.html'))
+        self.assertIn('<span class="ped-name">Stub Ancestor</span>', ped)
 
     def test_axis_label_and_caption_present(self):
         self._seed_person('p-aaaaaaaaaa', 'Hub Person')
@@ -3861,6 +4366,137 @@ class ProseConverterTests(unittest.TestCase):
         out = site._prose_to_html('Born in [S-1111111111] year.', lambda t: f'<a>{t}</a>')
         self.assertIn('<a>S-1111111111</a>', out)
 
+    # -- #144 review findings on _scrub_internal_encoding / _translate_date_before --
+
+    def test_claim_id_paren_removal_reinserts_missing_space(self):
+        # Finding 1: `_CLAIM_ID_PAREN_RE` eats an optional LEADING space along
+        # with the parenthetical. When nothing separates the closing paren
+        # from the next word, removing the match used to weld the two
+        # surrounding words together ("recordconfirms" instead of "record
+        # confirms") because there was never a trailing space to fall back on.
+        out = site._scrub_internal_encoding('The record (C-4kx9m2p7qr)confirms the date.')
+        self.assertEqual(out, 'The record confirms the date.')
+
+    def test_claim_id_paren_removal_does_not_double_space(self):
+        # The finding-1 fix must not overcorrect: when a space (or
+        # punctuation) already follows the parenthetical, no second space
+        # should be inserted.
+        out = site._scrub_internal_encoding('The record (C-4kx9m2p7qr) confirms the date.')
+        self.assertEqual(out, 'The record confirms the date.')
+        out2 = site._scrub_internal_encoding('The record (C-4kx9m2p7qr).')
+        self.assertEqual(out2, 'The record.')
+
+    def test_before_bracket_with_invalid_day_left_unchanged(self):
+        # Finding 2: a syntactically-matching but calendrically impossible
+        # bound (February has no 31st) must not be translated to the
+        # nonsensical "before February 31, 1900", and must not be silently
+        # reduced to "before 1900" by dropping the bad groups either - the
+        # original text is left exactly as written.
+        out = site._scrub_internal_encoding('The land sold [..1900-02-31], records show.')
+        self.assertIn('[..1900-02-31]', out)
+        self.assertNotIn('before', out)
+
+    def test_before_bracket_with_invalid_month_left_unchanged(self):
+        # Finding 2, the other half: an invalid MONTH (13) must not be
+        # silently truncated to "before 1900" either.
+        out = site._scrub_internal_encoding('The land sold [..1900-13-01], records show.')
+        self.assertIn('[..1900-13-01]', out)
+        self.assertNotIn('before', out)
+
+    def test_before_bracket_with_valid_date_still_translates(self):
+        # Guards that finding 2's validation doesn't overreach: a real,
+        # valid calendar date still translates exactly as before.
+        out = site._scrub_internal_encoding('The land sold [..1900-02-28], records show.')
+        self.assertIn('before February 28, 1900', out)
+        self.assertNotIn('[..1900-02-28]', out)
+
+    def test_before_bracket_as_interval_start_left_whole_untouched(self):
+        # Finding 5: one bound of a two-sided EDTF interval must not be
+        # translated on its own - `[..1900]/1910` (uncertain start, certain
+        # end) translating only the bracketed half produces the broken
+        # hybrid "before 1900/1910", half English and half raw. The whole
+        # interval is left exactly as written instead.
+        out = site._scrub_internal_encoding('They lived there [..1900]/1910, per the deed.')
+        self.assertIn('[..1900]/1910', out)
+        self.assertNotIn('before', out)
+
+    def test_before_bracket_as_interval_end_left_whole_untouched(self):
+        # Finding 5, the mirrored shape: certain start, uncertain end.
+        out = site._scrub_internal_encoding('They lived there 1900/[..1910], per the deed.')
+        self.assertIn('1900/[..1910]', out)
+        self.assertNotIn('before', out)
+
+    def test_standalone_before_bracket_still_translates(self):
+        # Guards that the finding-5 interval fix doesn't overreach: a
+        # bracket that is NOT adjacent to a slash still translates normally.
+        out = site._scrub_internal_encoding('They emigrated [..1905], settling nearby.')
+        self.assertIn('before 1905', out)
+        self.assertNotIn('[..1905]', out)
+
+    def test_link_target_with_before_bracket_stays_a_working_link(self):
+        # Finding 3: scrubbing the whole raw block BEFORE `_inline_html`
+        # identified markdown links rewrote a `[..YYYY]`-shaped substring
+        # INSIDE the URL, inserting a space that broke `_INLINE_RE`'s link
+        # match entirely - the link rendered as dead literal text, not a
+        # link at all.
+        ident = lambda t: f'TOK({t})'  # noqa: E731
+        out = site._prose_to_html(
+            '[record](https://example.test/search/[..1905])', ident)
+        self.assertIn('<a href="https://example.test/search/[..1905]">record</a>', out)
+        self.assertNotIn('before 1905', out)
+
+    def test_link_target_with_claim_id_paren_not_silently_truncated(self):
+        # Finding 3, the claim-id case: the old order let
+        # `_CLAIM_ID_PAREN_RE` silently DELETE a "(C-xxxxxxxxxx)" chunk out
+        # of the URL before the link was ever matched, producing a link
+        # that looked well-formed but silently pointed at the wrong
+        # (truncated) target. The id must survive inside the href.
+        #
+        # P2 (PR #158 follow-up), the test-quality half: this test used to
+        # only assert the id substring survived SOMEWHERE in the output -
+        # which passed even though `_INLINE_RE`'s `lurl` group stopped at
+        # the claim id's OWN closing paren (it did not count balanced
+        # parens), producing a link that was still corrupted:
+        # `<a href="...ref=(C-4kx9m2p7qr">record</a>)` - a TRUNCATED href
+        # (missing its closing paren) plus a stray trailing ')' leaking as
+        # literal text after `</a>`. Assert the complete, single anchor tag
+        # (full href, no trailing ')') rather than substring presence.
+        ident = lambda t: f'TOK({t})'  # noqa: E731
+        out = site._prose_to_html(
+            '[record](https://example.test/search?ref=(C-4kx9m2p7qr))', ident)
+        self.assertEqual(
+            out,
+            '<p><a href="https://example.test/search?ref=(C-4kx9m2p7qr)">record</a></p>')
+
+    def test_link_display_text_is_still_scrubbed(self):
+        # The finding-3 fix protects the URL TARGET only - a link's visible
+        # label is reader-facing prose like any other and must still be
+        # scrubbed.
+        ident = lambda t: f'TOK({t})'  # noqa: E731
+        out = site._prose_to_html(
+            '[The record (C-4kx9m2p7qr)](https://example.test/page)', ident)
+        self.assertNotIn('C-4kx9m2p7qr', out)
+        self.assertIn('<a href="https://example.test/page">The record</a>', out)
+
+    def test_wikilink_display_label_claim_id_is_scrubbed(self):
+        # P2 (PR #158 follow-up): a LABELED wikilink's display text
+        # (`[[S-id|label]]`) is reader-facing prose exactly like a markdown
+        # link's label (see test_link_display_text_is_still_scrubbed above) -
+        # it must be scrubbed of an internal claim-id parenthetical before it
+        # reaches render_token. The wikilink TARGET must stay untouched so
+        # the link still resolves.
+        seen = {}
+
+        def render_token(tok, disp=None):
+            seen['tok'], seen['disp'] = tok, disp
+            return f'TOK({tok}|{disp})'
+
+        out = site._prose_to_html(
+            '[[S-1111111111|the record (C-4kx9m2p7qr)]]', render_token)
+        self.assertNotIn('C-4kx9m2p7qr', out)
+        self.assertEqual(seen['tok'], 'S-1111111111')       # target untouched
+        self.assertNotIn('C-4kx9m2p7qr', seen['disp'] or '')
+
 
 class WorkbenchModeTests(_Base):
     """Workbench mode (serve-only) adds editing chrome and provisional vitals,
@@ -4782,6 +5418,72 @@ class FanChartLabelTests(_Base):
         self.assertGreater(labels['Bo Ford'], labels['Chastina Augusta Reed'])
 
 
+class TreeFitScaleTests(unittest.TestCase):
+    """#152 review fix (P2): `fha-tree.js`'s `fit()` (both the collapsible-
+    tree `render()` copy and the `wrapStatic()` copy for the static home
+    pedigree) must be able to compute a scale BELOW `MIN_SCALE` for a chart
+    tall/wide enough to need one - `MIN_SCALE` bounds manual zoom-out only
+    (the -/+ buttons, wheel, pinch), not what "Fit chart to view" is allowed
+    to compute. At the deep end of a configured home pedigree
+    (`home_pedigree_generations` 7-8, the documented max) with a
+    substantially-populated tree, the drawn chart can need a scale under 0.1
+    to fit the at-most-620px viewport - clamping fit()'s own computation
+    through `clampScale()` (as before this fix) left part of the chart
+    permanently out of view with no way to zoom out any further. A
+    regression here textually reintroduces exactly that clamp."""
+
+    def test_fit_does_not_clamp_through_min_scale(self):
+        js = (ROOT / 'tools' / 'templates' / 'vendor' / 'fha-tree.js').read_text(encoding='utf-8')
+        # The pre-fix shape, in both fit() copies: the whole Math.min(...)
+        # fit computation wrapped in clampScale(...), which floors it at
+        # MIN_SCALE. Must not appear anywhere in the file.
+        self.assertEqual(js.count('clampScale(Math.min(vpW / (contentW + FIT_PAD * 2)'), 0)
+        # The fixed shape: MAX_SCALE is still respected as a ceiling (so a
+        # tiny chart does not over-zoom on Fit), MIN_SCALE is not consulted
+        # at all - present once in render()'s fit() and once in
+        # wrapStatic()'s.
+        self.assertEqual(js.count('Math.min(MAX_SCALE, vpW / (contentW + FIT_PAD * 2)'), 2)
+
+    def test_zoom_out_does_not_reverse_direction_below_min_scale(self):
+        # #152 follow-up review fix (P2, finding 2): zoomAt() used to run its
+        # computed next scale through clampScale() unconditionally - fine
+        # normally, but once fit() (fixed above) parks the view BELOW
+        # MIN_SCALE for a very deep pedigree, that plain clamp RAISES a
+        # further zoom-OUT request back up to MIN_SCALE, reversing the
+        # requested direction (e.g. an outward 0.8x zoom from 0.05 computes
+        # 0.04, clampScale(0.04) returns 0.1 - zoom out actually zooms in
+        # 2x). zoomAt() must instead route through the shared
+        # nextZoomScale() helper, which only re-applies the floor for the
+        # opposite (zoom-in) direction. Checked in both fit()/zoomAt() copies
+        # (render() and wrapStatic()) and in both committed example-site
+        # copies, alongside the template.
+        for path in (ROOT / 'tools' / 'templates' / 'vendor' / 'fha-tree.js',
+                     ROOT / 'example-archive' / 'generated' / 'site' / 'vendor' / 'fha-tree.js',
+                     ROOT / 'example-archive' / 'generated' / 'site-workbench' / 'vendor' / 'fha-tree.js'):
+            with self.subTest(path):
+                js = path.read_text(encoding='utf-8')
+                self.assertIn('function nextZoomScale(sc, factor)', js)
+                # The pre-fix shape must be gone from both zoomAt() copies.
+                self.assertEqual(js.count('var next = clampScale(sc * factor);'), 0)
+                # The fixed shape: present once per zoomAt() copy.
+                self.assertEqual(js.count('var next = nextZoomScale(sc, factor);'), 2)
+
+    def test_committed_showcase_vendor_copies_match_the_template(self):
+        # The same staleness class #153 already fixed once for the
+        # workbench showcase's stylesheet (CommittedShowcaseAssetTests): the
+        # two example sites under example-archive/generated/ are committed,
+        # browsable snapshots, so a fix that only touches
+        # tools/templates/vendor/fha-tree.js still ships the old bug to
+        # anyone reading those unless the committed copies are synced too.
+        template = (ROOT / 'tools' / 'templates' / 'vendor' / 'fha-tree.js').read_text(encoding='utf-8')
+        for rel in ('example-archive/generated/site/vendor/fha-tree.js',
+                    'example-archive/generated/site-workbench/vendor/fha-tree.js'):
+            with self.subTest(rel):
+                self.assertEqual(
+                    (ROOT / rel).read_text(encoding='utf-8'), template,
+                    f'{rel} is stale - copy tools/templates/vendor/fha-tree.js over it verbatim.')
+
+
 class FanChartStyleTests(unittest.TestCase):
     def test_fan_label_has_no_fixed_font_size(self):
         # Issue #116: _render_fan_svg() computes a per-label auto-shrink
@@ -4844,6 +5546,25 @@ class CommittedShowcaseAssetTests(unittest.TestCase):
                     'and copy design/styles.css over the site-workbench snapshot '
                     '(that one is built by `fha serve` and cannot be rebuilt '
                     'reproducibly - it embeds a per-process CSRF token).')
+
+    def test_committed_showcase_person_pages_have_deferred_tree_render(self):
+        # #152 follow-up review fix (P2, finding 3): the deferred-render fix
+        # (FhaTree.render() now waits for the enclosing <details>' own
+        # `toggle` event before running, instead of running unconditionally
+        # at page load into a closed - so zero-width - <details>) landed in
+        # tools/templates/_tree.html, but the committed example pages are
+        # static HTML snapshots that only pick it up on a rebuild. Same
+        # staleness class as the vendor-copy check above, checked against
+        # both committed example sites' descendant-tree-carrying showcase
+        # page (P-de957bcda1, the fixture person the #152 finding named).
+        for rel in ('example-archive/generated/site/persons/p-de957bcda1.html',
+                    'example-archive/generated/site-workbench/persons/p-de957bcda1.html'):
+            with self.subTest(rel):
+                html = (ROOT / rel).read_text(encoding='utf-8')
+                self.assertIn('function renderTree()', html,
+                              f'{rel} is stale - it still calls FhaTree.render() '
+                              'unconditionally. Regenerate the example-archive site output.')
+                self.assertIn("addEventListener('toggle'", html)
 
 
 if __name__ == '__main__':

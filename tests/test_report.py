@@ -991,6 +991,181 @@ class PlaceTextEscalationTests(unittest.TestCase):
             self.archive_root, {}, full=True, section='review-queue')
         self.assertIn('place-text cluster(s) past the', result['markdown'])
 
+    def test_escalation_recommends_linking_to_an_already_registered_place(self) -> None:
+        # Codex review, PR #142 finding 1: a cluster naming a place that is
+        # ALREADY in places/places.yaml (e.g. claims drafted before the
+        # write-time resolver landed, issue #79 point 3, or any 'near' match
+        # that resolver deliberately never auto-attaches) must not be told
+        # to mint a brand-new place - copying the banner's own suggested
+        # `--name` command would create a duplicate L-id for a place that
+        # already has one. It must recommend `--into <existing L-id>` instead.
+        (self.archive_root / 'places').mkdir(parents=True)
+        (self.archive_root / 'places' / 'places.yaml').write_text(
+            '- id: L-baba9801fa\n  name: Warsaw, Poland\n', encoding='utf-8')
+        self._write_cluster_source('S-9000000006', 'Warsaw, Poland', 20)
+        result = report.run_report(self.archive_root, {}, full=True)
+        md = result['markdown']
+        self.assertIn('--into=L-baba9801fa', md)
+        self.assertNotIn('--name=', md)
+
+    def test_escalation_banner_says_not_linked_not_unregistered_when_already_registered(
+        self,
+    ) -> None:
+        # Codex review, PR #142 follow-up finding 1: the bold banner heading
+        # above every section used to unconditionally say "no place
+        # registered", even when the escalated cluster's own bullet right
+        # below it (via _place_text_group_line, the fix immediately above)
+        # is busy recommending `--into <existing L-id>` because the label
+        # DOES match something already registered. That is self-contradictory
+        # - it found a registered place but the heading says none exists -
+        # and a human skimming only the bold heading would still walk away
+        # minting a duplicate. The heading must describe an already-
+        # registered-but-unlinked cluster accurately instead.
+        (self.archive_root / 'places').mkdir(parents=True)
+        (self.archive_root / 'places' / 'places.yaml').write_text(
+            '- id: L-baba9801fa\n  name: Warsaw, Poland\n', encoding='utf-8')
+        self._write_cluster_source('S-9000000011', 'Warsaw, Poland', 20)
+        result = report.run_report(self.archive_root, {}, full=True)
+        md = result['markdown']
+        banner = md[:md.index('## 0.')]
+        self.assertNotIn('no place registered', banner)
+        self.assertIn('already registered but not yet linked', banner)
+
+    def test_escalation_banner_mixed_registered_and_unregistered_avoids_overclaiming(
+        self,
+    ) -> None:
+        # One escalated cluster already matches a registered place, another
+        # genuinely matches none - the banner covers both clusters in one
+        # heading, so it must not assert either extreme ("no place
+        # registered" is false for the first; "already registered" is false
+        # for the second). It falls back to wording that is true of both.
+        (self.archive_root / 'places').mkdir(parents=True)
+        (self.archive_root / 'places' / 'places.yaml').write_text(
+            '- id: L-baba9801fa\n  name: Warsaw, Poland\n', encoding='utf-8')
+        self._write_cluster_source('S-9000000012', 'Warsaw, Poland', 20)
+        self._write_cluster_source('S-9000000013', 'Unregistered City', 20)
+        result = report.run_report(self.archive_root, {}, full=True)
+        md = result['markdown']
+        banner = md[:md.index('## 0.')]
+        self.assertNotIn('no place registered', banner)
+        self.assertNotIn('already registered but not yet linked', banner)
+        self.assertIn('not yet linked to a place', banner)
+
+    def test_cluster_matching_multiple_registered_places_does_not_recommend_a_mint(
+        self,
+    ) -> None:
+        # Codex review, PR #142 follow-up finding 2: `_lib.
+        # match_place_text_to_registry` deliberately returns tier: None when
+        # two different registered place_ids share this cluster's normalized
+        # name (a PL002 duplicate-name registry problem) - it refuses to
+        # guess which one is meant. Falling through to the `--name` mint
+        # recommendation there would invite minting a THIRD, duplicate
+        # place_id on top of an already-unresolved clash instead of
+        # resolving it. The line must name the real tied ids and point at
+        # `--into`/`fha places lint`, never `--name`.
+        (self.archive_root / 'places').mkdir(parents=True)
+        (self.archive_root / 'places' / 'places.yaml').write_text(
+            '- id: L-aaaaaaaaaa\n  name: Springfield\n'
+            '- id: L-bbbbbbbbbb\n  name: Springfield\n', encoding='utf-8')
+        self._write_cluster_source('S-9000000014', 'Springfield', 20)
+        result = report.run_report(self.archive_root, {}, full=True)
+        md = result['markdown']
+        self.assertIn('MULTIPLE registered places', md)
+        self.assertIn('L-aaaaaaaaaa', md)
+        self.assertIn('L-bbbbbbbbbb', md)
+        self.assertIn('fha places lint', md)
+        self.assertNotIn('--name=', md)
+
+    def test_escalation_banner_flags_ambiguous_match_without_asserting_unregistered(
+        self,
+    ) -> None:
+        # The banner heading for an escalated cluster whose name is
+        # ambiguous (ties between two registered places) must not claim "no
+        # place registered" either - a registered place (in fact two) does
+        # exist, the problem is picking between them.
+        (self.archive_root / 'places').mkdir(parents=True)
+        (self.archive_root / 'places' / 'places.yaml').write_text(
+            '- id: L-aaaaaaaaaa\n  name: Springfield\n'
+            '- id: L-bbbbbbbbbb\n  name: Springfield\n', encoding='utf-8')
+        self._write_cluster_source('S-9000000015', 'Springfield', 20)
+        result = report.run_report(self.archive_root, {}, full=True)
+        md = result['markdown']
+        banner = md[:md.index('## 0.')]
+        self.assertNotIn('no place registered', banner)
+        self.assertIn('ambiguous', banner)
+
+    def test_place_candidates_run_only_once_per_report(self) -> None:
+        # Codex review, PR #142 finding 2: §6b's own listing and the
+        # escalation banner above it used to each make their own
+        # independent `places.run_candidates()` call - doubling the full
+        # GPS photo-cluster pass (`_gps_clusters`' photo-index read and
+        # greedy clustering) and any stale-photo-index warning on every
+        # report run that had an escalation. One `fha report` run must
+        # call it exactly once, whether or not an escalation fires.
+        self._write_cluster_source('S-9000000007', 'Warsaw, Poland', 20)
+        import places
+        with unittest.mock.patch.object(
+            places, 'run_candidates', wraps=places.run_candidates
+        ) as spy:
+            report.run_report(self.archive_root, {}, full=True)
+        self.assertEqual(spy.call_count, 1)
+
+    def test_section_filtered_run_points_to_the_place_candidates_command(self) -> None:
+        # Codex review, PR #142 finding 3: `--section review-queue` (or any
+        # filter other than place-candidates) omits §6b from what actually
+        # prints, so telling the human to "see the Place candidates section
+        # below" points at content that is not in this run's output. The
+        # banner must name the exact follow-up command instead.
+        self._write_cluster_source('S-9000000008', 'Warsaw, Poland', 20)
+        result = report.run_report(
+            self.archive_root, {}, full=True, section='review-queue')
+        md = result['markdown']
+        self.assertIn('fha report --section place-candidates', md)
+        self.assertNotIn('Place candidates section below', md)
+
+    def test_place_candidates_filtered_run_keeps_the_below_wording(self) -> None:
+        # When §6b IS the section being shown (or on a full, unfiltered
+        # report), the "see the Place candidates section below" wording is
+        # still accurate and should not be replaced.
+        self._write_cluster_source('S-9000000009', 'Warsaw, Poland', 20)
+        result = report.run_report(
+            self.archive_root, {}, full=True, section='place-candidates')
+        md = result['markdown']
+        self.assertIn('Place candidates section below', md)
+        self.assertNotIn('fha report --section place-candidates', md)
+
+    def test_escalation_exposed_in_structured_result(self) -> None:
+        # Codex review, PR #142 finding 4: `run_report` used to thread the
+        # escalation state only into the Markdown-rendering path, so a
+        # workbench or other headless consumer reading the structured
+        # Result (not reparsing Markdown) had no way to tell a 20-claim
+        # oversight escalation apart from an ordinary §6b candidate.
+        self._write_cluster_source('S-9000000010', 'Warsaw, Poland', 20)
+        result = report.run_report(self.archive_root, {}, full=True)
+
+        escalations = result.data['place_escalations']
+        self.assertEqual(len(escalations), 1)
+        self.assertEqual(escalations[0]['label'], 'Warsaw, Poland')
+        self.assertEqual(escalations[0]['claim_count'], 20)
+
+        # Also marked in data['sections'], the same key -> list[str] shape
+        # every other section already uses there.
+        self.assertIn('place-escalations', result.data['sections'])
+        self.assertTrue(any(
+            'Warsaw, Poland' in line
+            for line in result.data['sections']['place-escalations']
+        ))
+
+    def test_no_escalation_reports_empty_structured_result(self) -> None:
+        # The structured field must exist (and be empty/say-so) even on a
+        # run with no escalation, not only appear when one fires.
+        result = report.run_report(self.archive_root, {}, full=True)
+        self.assertEqual(result.data['place_escalations'], [])
+        self.assertEqual(
+            result.data['sections']['place-escalations'],
+            ['No place-text clusters past the oversight threshold.'],
+        )
+
 
 _RESEARCH_SAME_HEADING_MD = '''# Research - Test Person
 

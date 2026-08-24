@@ -220,6 +220,12 @@ Find any scan, photo, or downloaded record - a birth certificate, an old photo, 
 from a genealogy site. Copy the file into the `inbox/` folder inside your archive. That's it;
 don't rename it.
 
+Got more than one separately-published item - two different letters, two different newspaper
+clippings, even about the same event? Drop each one in on its own; it becomes its own record. A
+single item's own pages, fronts and backs, or extra scans belong together and become one record,
+but two separately published things never get bundled into one just because they arrived
+together.
+
 Optionally, drop a short note beside it describing what it is - copy
 `inbox/_TEMPLATE.notes.md`, rename the copy `notes.md`, and answer the questions in plain words
 ("a photo of Grandma Rose's wedding, around 1955, found in a shoebox"). The assistant uses your
