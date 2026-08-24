@@ -78,7 +78,14 @@ CODE MAP
                                  fail-closed on damaged markers - lives in _lib)
     _safe_link_href            - markdown-link scheme allowlist (stored-XSS guard)
     _prose_to_html             - minimal stdlib markdown→HTML (no md library)
-    _inline_html               - inline pass: links, [ID] tokens, **bold**
+    _inline_html               - inline pass: links, [ID] tokens, **bold**;
+                                 also where `_scrub_internal_encoding` runs
+                                 (per literal span, after links are matched)
+    _scrub_internal_encoding   - drop a bare (C-xxxx) parenthetical / translate
+                                 a [..YYYY] "before" bracket in free-text claim
+                                 values, wherever one reaches a reader-facing
+                                 page (prose, timeline, source/place claims
+                                 tables, person summary vitals)
     _extract_section           - pull one `## Heading` section body from a record
     _question_block_body       - a '## Q:' block's body, heading dropped, cut
                                  before the next heading of any kind (#117)
@@ -192,8 +199,10 @@ from _lib import (
     extract_bare_ids,
     FhaConfigError,
     fmt_id_display,
+    humanize_edtf as _humanize_edtf,
     id_type_of,
     is_genetic_parent_subtype,
+    is_valid_edtf,
     is_working_copy,
     load_fha_yaml,
     normalize_id,
@@ -215,12 +224,6 @@ from _lib import (
     strip_unaccepted_drafts,
     unreadable_dir_recorder,
     walk_files,)
-
-# `_humanize_edtf` (EDTF -> plain-reading date, e.g. '26 February 1916') is
-# reused as-is for a per-file `date:` note (#123) rather than hand-rolled a
-# second time - same convention report.py/reconcile.py already follow for
-# borrowing photoindex.py's helpers.
-import photoindex
 
 configure_utf8_stdout()
 
@@ -508,8 +511,20 @@ def _safe_link_href(raw_url: str) -> str | None:
 # matched before a token so a token never half-matches a link; the `[[ ]]`
 # wikilink is matched before the legacy single-bracket `[ID]`; bold is last.
 # Anything not matched is literal text and gets escaped.
+# `lurl` allows one level of BALANCED parens inside the URL (P2, PR #158
+# follow-up) - a plain `[^)\s]+` stops at a URL's own first `)`, which is
+# wrong the moment the URL legitimately contains one, e.g. a claim-id
+# parenthetical pasted into a query string
+# (`https://example.test/search?ref=(C-4kx9m2p7qr)`) or a Wikipedia-style
+# disambiguation path. Without balancing, the group stops at the inner `)`,
+# producing a TRUNCATED href plus a stray `)` leaking as literal text right
+# after the closing `</a>` - the link still "matches" but points at the
+# wrong, cut-off target. `(?:[^()\s]|\([^()\s]*\))+` matches runs of
+# non-paren/non-space characters OR one complete `(...)` unit at a time, so
+# a `(...)` pair inside the URL is consumed whole and only the link's OWN
+# closing paren (matched separately, right after this group) ends the URL.
 _INLINE_RE = re.compile(
-    r'\[(?P<ltext>[^\]]+)\]\((?P<lurl>[^)\s]+)\)'                 # [text](url)
+    r'\[(?P<ltext>[^\]]+)\]\((?P<lurl>(?:[^()\s]|\([^()\s]*\))+)\)'  # [text](url)
     r'|\[\[(?P<wtarget>[^\[\]|#]+)(?:#[^\[\]|]*)?(?:\|(?P<wdisp>[^\[\]]*))?\]\]'  # [[target|disp]]
     r'|\[(?P<token>[PSCLH]-[0-9a-hjkmnp-tv-z]{10})\]'            # legacy [ID] token
     r'|\*\*(?P<bold>.+?)\*\*',                                    # **bold**
@@ -530,25 +545,47 @@ def _inline_html(text: str, render_token) -> str:
 
     `render_token(target, display=None)` accepts an ID *or* a human name/stem
     (resolved through the alias map) plus the optional in-token display text.
+
+    Internal-only encoding (`_scrub_internal_encoding` - #140, #144 finding
+    3) is scrubbed HERE, per literal-text run and per construct's own visible
+    label, AFTER `_INLINE_RE` has already matched links/tokens/bold against
+    the UNSCRUBBED text - never as a pre-pass over the whole raw block.
+    Scrubbing first (the old order, in `_prose_to_html`) could rewrite a
+    `[..1905]`-shaped or `(C-xxxxxxxxxx)`-shaped substring sitting INSIDE a
+    markdown link's URL before `_INLINE_RE` ever got a chance to recognize
+    `[text](url)` as a link at all - corrupting the target and breaking the
+    link syntax outright (issue reproduces with e.g.
+    `[record](https://example.test/search/[..1905])`). A link/wikilink
+    TARGET (`lurl`/`wtarget`) is therefore never scrubbed - it is a URL or a
+    record id, not prose a reader reads as English - only literal text and a
+    visible label (`ltext`, `wdisp`, `bold`) are. `wdisp` (a wikilink's
+    `|display` text, e.g. `[[S-id|the record (C-xxxx)]]`) was originally
+    missed here (P2, PR #158 follow-up) - it reaches `render_token`, whose
+    source/person/place renderers only HTML-escape it, so an internal claim
+    id left unscrubbed in a wikilink's label leaked straight onto the
+    reader-facing page even though the equivalent markdown-link label
+    (`ltext`) was already covered.
     """
     out: list[str] = []
     pos = 0
     for m in _INLINE_RE.finditer(text):
-        out.append(_escape(text[pos:m.start()]))
+        out.append(_escape(_scrub_internal_encoding(text[pos:m.start()])))
         pos = m.end()
         if m.group('wtarget') is not None:
-            out.append(render_token(m.group('wtarget').strip(), m.group('wdisp')))
+            out.append(render_token(m.group('wtarget').strip(),
+                                     _scrub_internal_encoding(m.group('wdisp'))))
         elif m.group('token'):
             out.append(render_token(m.group('token')))
         elif m.group('ltext') is not None:
             href = _safe_link_href(m.group('lurl'))
+            label = _escape(_scrub_internal_encoding(m.group('ltext')))
             if href is not None:
-                out.append(f'<a href="{href}">{_escape(m.group("ltext"))}</a>')
+                out.append(f'<a href="{href}">{label}</a>')
             else:
-                out.append(_escape(m.group('ltext')))
+                out.append(label)
         else:  # bold
-            out.append(f'<strong>{_escape(m.group("bold"))}</strong>')
-    out.append(_escape(text[pos:]))
+            out.append(f'<strong>{_escape(_scrub_internal_encoding(m.group("bold")))}</strong>')
+    out.append(_escape(_scrub_internal_encoding(text[pos:])))
     return ''.join(out)
 
 
@@ -577,15 +614,66 @@ _MONTH_NAMES = ('January', 'February', 'March', 'April', 'May', 'June', 'July',
                 'August', 'September', 'October', 'November', 'December')
 
 
+def _strip_claim_id_paren(match: re.Match) -> str:
+    """One `(C-xxxxxxxxxx)` match -> '' (dropped) or a single space (#144
+    review finding 1).
+
+    The regex eats an optional single LEADING space along with the
+    parenthetical, so a trailing sentence like " (C-xxx)." collapses cleanly
+    to "." with no orphan space. But that leading-space consumption has
+    nothing to say about what follows the match: a hand-edited parenthetical
+    sitting directly against the next word with no space of its own
+    ("record(C-xxx)confirms") loses its ONLY separator and the two words run
+    together ("recordconfirms"). Reinserting a single space whenever the
+    character right after the match is an ordinary word character (not
+    whitespace, not punctuation, not the end of the string) restores that
+    separator without ever double-spacing the already-correct case where a
+    space or punctuation mark already follows."""
+    end = match.end()
+    text = match.string
+    if end < len(text) and text[end].isalnum():
+        return ' '
+    return ''
+
+
 def _translate_date_before(match: re.Match) -> str:
     """One `[..YYYY[-MM[-DD]]]` match -> the plain phrase base.html's date-
     notation legend already uses for this form ("before <date>"), so prose
     and the legend never teach the reader two different words for the same
-    mark."""
+    mark.
+
+    Two guards keep this from ever emitting a wrong or broken reading (#144
+    review findings 2 and 5):
+      - The matched year/month/day is validated as a real calendar date
+        (via `_lib.is_valid_edtf`, the same validator `process.py`/`claim.py`
+        use for `--date`) before any translation happens. A syntactically-
+        matching but impossible bound - `[..1900-02-31]` (no such day),
+        `[..1900-13-01]` (no such month) - is left exactly as written rather
+        than rendered as a nonsensical "before February 31, 1900" or
+        silently reduced to "before 1900" by just dropping the bad groups.
+      - A bracket sitting directly against a `/` (`[..1900]/1910` or
+        `1900/[..1910]`) is one bound of a two-sided EDTF interval, not a
+        standalone "before" date. Translating only the bracketed half would
+        leave the interval half English, half raw ("before 1900/1910") -
+        so the whole interval is left untouched instead; the regex only
+        ever matches a bracket that is NOT part of a `/` interval, one
+        component of which it doesn't understand.
+    """
+    text = match.string
+    start, end = match.start(), match.end()
+    if (start > 0 and text[start - 1] == '/') or (end < len(text) and text[end] == '/'):
+        return match.group(0)
     year, month, day = match.group(1), match.group(2), match.group(3)
-    if month and month.isdigit() and 1 <= int(month) <= 12:
+    bare = year
+    if month:
+        bare += f'-{month}'
+        if day:
+            bare += f'-{day}'
+    if not is_valid_edtf(bare):
+        return match.group(0)
+    if month:
         month_name = _MONTH_NAMES[int(month) - 1]
-        if day and day.isdigit():
+        if day:
             return f'before {month_name} {int(day)}, {year}'
         return f'before {month_name} {year}'
     return f'before {year}'
@@ -593,14 +681,16 @@ def _translate_date_before(match: re.Match) -> str:
 
 def _scrub_internal_encoding(text: str) -> str:
     """Remove/translate internal-only encoding that must never reach reader-
-    facing prose (#140): a bare claim-id parenthetical is dropped outright,
-    and a raw `[..YYYY]`-shaped "before" date is translated to plain English.
+    facing prose (#140): a bare claim-id parenthetical is dropped outright
+    (spacing preserved, #144 finding 1), and a raw `[..YYYY]`-shaped "before"
+    date is translated to plain English when it validates as a real date and
+    stands alone (not one bound of a `/` interval - #144 findings 2 and 5).
     Applied to raw value/notes/body text BEFORE any HTML escaping, so callers
     doing their own index-based substitutions afterward (e.g. the timeline's
     place-mention span) see only the already-scrubbed text."""
     if not text:
         return text
-    text = _CLAIM_ID_PAREN_RE.sub('', text)
+    text = _CLAIM_ID_PAREN_RE.sub(_strip_claim_id_paren, text)
     text = _DATE_BEFORE_RE.sub(_translate_date_before, text)
     return text
 
@@ -619,10 +709,16 @@ def _prose_to_html(text: str, render_token, render_embed=None, *, drop_private: 
     `drop_private=True` (a public/standalone build) strips `<!-- private -->…
     <!-- /private -->` fenced prose before rendering; the linked preview keeps
     the content and only removes the marker comments.
+
+    Internal-only encoding (`_scrub_internal_encoding`, #140) is NOT applied
+    here as a pre-pass over the raw block - it runs inside `_inline_html`
+    instead, per literal-text span, after markdown links/tokens/bold are
+    already identified (#144 finding 3; see that function's docstring for
+    why a whole-block pre-pass corrupts a link target that happens to
+    contain a claim-id- or date-bracket-shaped substring).
     """
     if text:
         text = apply_private_fence(text, drop=drop_private)
-        text = _scrub_internal_encoding(text)
     if not text or not text.strip():
         return ''
     lines = text.replace('\r\n', '\n').split('\n')
@@ -1476,26 +1572,48 @@ def _role_note(role: str | None, copy: str | None, date_edtf: str | None = None)
     """Plain-language annotation for one source-page file entry: its `files:`
     entry's optional per-file `date:` (SPEC §14, #123) first, then its
     `role:`, then - when set - its `copy:` letter (SPEC §14's `copy: b`/`c`/`d`
-    same-day/same-bundle variant marker - #123 also fixed the indexer landing
+    same-day/same-item variant marker - #123 also fixed the indexer landing
     that value as NULL instead of reading it). Renders '26 February 1916 ·
-    role: clipping · copy: b', or just 'role: clipping' when there is
+    role: entry · copy: b', or just 'role: entry' when there is
     neither, so a source with a single, undated file per role keeps today's
-    shorter label and only a bundle of look-alike variants (front/back copy
-    A, front/back copy B, four same-role newspaper clippings mailed months
-    apart, …) gains the extra clauses that tell its files apart.
+    shorter label and only a run of look-alike variants (front/back copy
+    A, front/back copy B, several same-role entries of one household ledger
+    or pages of a multi-sitting letter, …) gains the extra clauses that tell
+    its files apart.
 
-    `date_edtf` is rendered through `photoindex._humanize_edtf` - the
-    existing EDTF -> plain-English helper (decades, `~`/`?` hedges, month/day
-    all handled there already) - rather than a second hand-rolled version of
-    the same formatting living in this module."""
+    `date_edtf` is rendered through `_lib.humanize_edtf` - the shared EDTF ->
+    plain-English helper (decades, month/day, and `~`/`?` hedges rendered as
+    the two different things they record - "about" for approximate, "
+    (unconfirmed)" for uncertain - all handled there already) - rather than a
+    second hand-rolled version of the same formatting living in this module.
+    Moved into `_lib.py` (#123 follow-up, Codex review on PR #149) so this
+    module no longer has to import the whole `photoindex` tool just to reach
+    one date formatter."""
     parts: list[str] = []
     if date_edtf:
-        parts.append(photoindex._humanize_edtf(date_edtf))
+        parts.append(_humanize_edtf(date_edtf))
     if role:
         parts.append(f'role: {role}')
     if copy:
         parts.append(f'copy: {copy}')
     return ' · '.join(parts) if parts else None
+
+
+def _with_role_note(message: str, role_note: str | None) -> str:
+    """Compose a fixed availability/status message with the file's own
+    `_role_note` output (date/role/copy), so a degraded display path (an
+    asset that cannot be resolved or is missing on disk, a standalone build
+    without Pillow, a failed image-derivative creation) still surfaces the
+    per-file facts the index already has instead of discarding them outright.
+    Only the FILE's presentability is degraded on these paths - not the
+    indexed facts about it - so the message adds to `role_note` rather than
+    replacing it (#123 follow-up, Codex review on PR #149: `_file_entry`/
+    `_standalone_image_entry` used to drop date/role/copy entirely on every
+    one of these branches). `role_note` first, message last, matching the
+    join order the 'original kept in the archive' branch already used before
+    this fix generalized the pattern to every fallback branch in both
+    functions."""
+    return f'{role_note} · {message}' if role_note else message
 
 
 def _page_filename(record_id: str) -> str:
@@ -2287,17 +2405,29 @@ class _SiteBuilder:
         variants (front/back copy A, front/back copy B, …) reads as
         distinguishable entries instead of a wall of identical "role: front"
         labels. `date_edtf` (the entry's optional per-file `date:`, SPEC §14,
-        #123) rides along the same way, rendered human-readable and first."""
+        #123) rides along the same way, rendered human-readable and first.
+
+        Every branch below is a DEGRADED display, not a missing record: the
+        index still knows the file's date/role/copy even when the asset
+        itself cannot be shown (path unresolvable, missing on disk, Pillow
+        absent). `role_note` is computed up front from the parameters alone -
+        it needs nothing the resolve step below can fail to produce - and
+        `_with_role_note` composes it onto every fallback message, so those
+        facts never silently vanish just because the FILE became
+        unpresentable (#123 follow-up, Codex review on PR #149: this used to
+        replace the whole note with a fixed message on each of these paths)."""
         label = Path(asset_rel).name
+        role_note = _role_note(role, copy, date_edtf)
         try:
             resolved = resolve_path(asset_rel, self.fha_config, self.archive_root)
         except Exception:
-            return {'label': label, 'note': 'asset path could not be resolved', 'link_href': None, 'thumb_href': None}
+            return {'label': label, 'note': _with_role_note('asset path could not be resolved', role_note),
+                    'link_href': None, 'thumb_href': None}
         is_image = resolved.suffix.lower() in _IMAGE_SUFFIXES
-        role_note = _role_note(role, copy, date_edtf)
 
         if not resolved.exists():
-            return {'label': label, 'note': 'file not available in this build', 'link_href': None, 'thumb_href': None}
+            return {'label': label, 'note': _with_role_note('file not available in this build', role_note),
+                    'link_href': None, 'thumb_href': None}
 
         if self.linked:
             href = self._asset_href(resolved, page_dir)
@@ -2310,9 +2440,10 @@ class _SiteBuilder:
         # standalone
         if is_image:
             if not _PIL_AVAILABLE:
-                return {'label': label, 'note': 'image omitted (Pillow not installed)', 'link_href': None, 'thumb_href': None}
+                return {'label': label, 'note': _with_role_note('image omitted (Pillow not installed)', role_note),
+                        'link_href': None, 'thumb_href': None}
             return None  # signal: caller handles derivative creation (needs sid)
-        return {'label': label, 'note': (role_note + ' · ' if role_note else '') + 'original kept in the archive',
+        return {'label': label, 'note': _with_role_note('original kept in the archive', role_note),
                 'link_href': None, 'thumb_href': None}
 
     def _media_dest(self, alias_path: str, subdir: str) -> Path:
@@ -2334,15 +2465,21 @@ class _SiteBuilder:
         its file entry. Split from `_file_entry` because it needs the source id
         for the media subfolder and may emit a warning into `self.messages`.
         `copy`/`date_edtf` mirror `_file_entry`'s parameters of the same name
-        (SPEC §14)."""
+        (SPEC §14). On a failed derivative (corrupt image, unsupported format,
+        locked file) the date/role/copy note still carries through via
+        `_with_role_note` rather than being replaced outright (#123 follow-up,
+        Codex review on PR #149) - the FILE could not be rendered, but the
+        indexed facts about it are still known and worth showing."""
         resolved = resolve_path(asset_rel, self.fha_config, self.archive_root)
         dest = self._media_dest(asset_rel, normalize_id(sid))
+        role_note = _role_note(role, copy, date_edtf)
         if _make_derivative(resolved, dest):
             href = _rel_href(dest, page_dir)
-            return {'label': Path(asset_rel).name, 'note': _role_note(role, copy, date_edtf),
+            return {'label': Path(asset_rel).name, 'note': role_note,
                     'link_href': href, 'thumb_href': href}
         self.messages.append(f'WARNING: could not build a web image for {asset_rel} (skipped, build continues)')
-        return {'label': Path(asset_rel).name, 'note': 'image could not be processed', 'link_href': None, 'thumb_href': None}
+        return {'label': Path(asset_rel).name, 'note': _with_role_note('image could not be processed', role_note),
+                'link_href': None, 'thumb_href': None}
 
     # - source page (M8.1) -
 
@@ -2426,7 +2563,12 @@ class _SiteBuilder:
             ).fetchall()
             persons_html = ', '.join(self._person_link(p['person_id'], page_dir) for p in person_rows)
             claims.append({
-                'type': c['type'], 'value': c['value'], 'date': c['date_edtf'] or '',
+                'type': c['type'],
+                # Reader-facing cell: scrubbed of internal-only encoding the
+                # same way prose/timeline values already are (#144 finding
+                # 4) - a source page is a reader-facing page like any other.
+                'value': _scrub_internal_encoding(c['value'] or ''),
+                'date': c['date_edtf'] or '',
                 'place': self._place_html(c['place_text'], c['place_id'], page_dir),
                 'persons_html': self._markup(persons_html), 'status': c['status'],
                 'confidence': c['confidence'] or '',
@@ -2440,6 +2582,12 @@ class _SiteBuilder:
                 # is the DISPLAY label (registry name when the claim carries a
                 # resolved place_id and no text) so a resolved place never
                 # opens as a blank field the human could overwrite unknowingly.
+                # value_raw stays UNscrubbed on purpose (#144 finding 4): the
+                # edit modal must prefill with the claim's real stored text,
+                # not the reader-facing scrub, or a human editing the claim
+                # would silently lose the very encoding they might want to
+                # correct or keep.
+                'value_raw': c['value'] or '',
                 'place_text': self._place_label(c['place_text'], c['place_id']),
                 'place_id': fmt_id_display(c['place_id']) if c['place_id'] else '',
                 'persons_ids': ','.join(fmt_id_display(p['person_id']) for p in person_rows),
@@ -2810,7 +2958,15 @@ class _SiteBuilder:
                 r = by_type[t]
                 row_out = {
                     'label': _VITAL_LABELS[t],
-                    'value': r['date_edtf'] or r['value'] or '',
+                    # #144 finding 4: a vital claim WITH a date_edtf shows that
+                    # structured date as-is (base.html's own legend explains
+                    # its bracket/tilde/question-mark notation - it is not
+                    # prose and must not be translated to "before ..."
+                    # phrasing). Only the free-text FALLBACK - a vital claim
+                    # with no date_edtf at all - can carry the raw internal
+                    # encoding a reader was never meant to see, so only that
+                    # branch is scrubbed.
+                    'value': r['date_edtf'] or _scrub_internal_encoding(r['value'] or ''),
                     'place': self._place_html(r['place_text'], r['place_id'], page_dir),
                     'source_html': self._markup(self._source_link(r['source_id'], page_dir)) if r['source_id'] else '',
                     'confidence': r['confidence'] or '',
@@ -4097,11 +4253,21 @@ class _SiteBuilder:
     def _render_embed(self, target: str, caption: str, page_dir: Path) -> str:
         """A `![[S-id|Caption]]` prose embed → a responsive <figure>. The image is
         capped in height by CSS so a large scan never blows up the page. An
-        unresolvable or withheld reference renders nothing (never a raw id)."""
+        unresolvable or withheld reference renders nothing (never a raw id).
+
+        `_prose_to_html` calls `render_embed` (this method) BEFORE
+        `_inline_html`'s per-span scrub (#144 finding 3) ever runs over the
+        block, so the caption must be scrubbed of internal-only encoding
+        (`_scrub_internal_encoding`, #140) right here - a caption is
+        reader-facing prose exactly like a link's label, and an unscrubbed
+        claim id would otherwise leak into both the visible <figcaption>
+        text and the image's alt attribute (P2, PR #158 follow-up). The
+        embed TARGET is never scrubbed - it is an id/path, not prose."""
         href = self._image_href(target, page_dir, 'embeds')
         if not href:
             self.messages.append(f'WARNING: embed {target!r} matched no publishable photo; skipped.')
             return ''
+        caption = _scrub_internal_encoding(caption) if caption else caption
         cap = _escape(caption) if caption else ''
         # `alt` is an HTML attribute - a caption like `" onerror="alert(1)` would
         # break out of the `_escape(quote=False)` body form. Quote-aware escaping
@@ -4191,7 +4357,14 @@ class _SiteBuilder:
             for p in person_rows:
                 person_freq[p['person_id']] = person_freq.get(p['person_id'], 0) + 1
             claims.append({
-                'type': c['type'], 'value': c['value'], 'date': c['date_edtf'] or '',
+                'type': c['type'],
+                # Reader-facing cell: scrubbed of internal-only encoding, same
+                # as the source page's claims table (#144 finding 4). The
+                # place page's Events table has no workbench edit-prefill for
+                # a claim value, so unlike build_source_page there is no raw
+                # counterpart to keep alongside it.
+                'value': _scrub_internal_encoding(c['value'] or ''),
+                'date': c['date_edtf'] or '',
                 'persons_html': self._markup(
                     ', '.join(self._person_link(p['person_id'], page_dir) for p in person_rows)),
                 'source_html': self._markup(self._source_link(c['source_id'], page_dir)) if c['source_id'] else '',

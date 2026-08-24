@@ -4,7 +4,7 @@ places.py - fha places: place registry hygiene, recurrence detection, and
 human-directed registry edits (TOOLING §10, SPEC §15).
 
   fha places lint [--root PATH]
-  fha places candidates [--root PATH] [--threshold N]
+  fha places candidates [--root PATH] [--threshold N] [--include-suggested]
   fha places geocode [--place L-id] [--all] [--offline] [--root PATH]
   fha places set L-id [--coords "LAT, LON"] [--aka NAME]... [--history "PERIOD | HIERARCHY"]...
   fha places note L-id --text TEXT [--dry-run]
@@ -27,8 +27,13 @@ hygiene:
 expansion) and clustered by a sorted token-set key so word-order variants and
 abbreviation variants land in the same group; groups with >= `--threshold`
 (default 3) occurrences are surfaced with their claim count and EDTF date
-spread. A second, independent detector clusters geotagged photos
-(`.cache/photos.sqlite`) that have no known place within ~150m of them.
+spread. `--include-suggested` widens the status filter to also count
+`status: suggested` claims - off by default (a still-unreviewed claim might
+be disputed away before it becomes fact), meant for a one-time backlog scan
+right after a fresh `fha gedcom import` (which mints everything as
+`suggested`), not everyday use. A second, independent detector clusters
+geotagged photos (`.cache/photos.sqlite`) that have no known place within
+~150m of them.
 
 `fha places geocode` (TOOLING §10) backfills `coords` (and proposes alt-names)
 for registry places that lack coordinates, using a one-time **offline GeoNames**
@@ -326,14 +331,44 @@ _expand_abbreviations = expand_place_abbreviations
 _candidate_key = place_text_cluster_key
 
 
-def _place_text_candidates(conn: sqlite3.Connection, threshold: int) -> list[dict]:
+def _place_text_candidates(
+    conn: sqlite3.Connection, threshold: int, *, include_suggested: bool = False,
+) -> list[dict]:
+    """Cluster distinct unlinked `place_text` values into candidate groups.
+
+    Normal use (the everyday `fha places candidates`/`fha report` §6b view)
+    scopes to ACTIVE claims only - `accepted`/`needs-review` - deliberately
+    excluding `suggested`: a still-unreviewed claim's `place_text` might be
+    disputed away by the human before it ever becomes a fact worth a
+    registry entry, so folding it into "here is what your archive actually
+    says" would overstate the case.
+
+    `include_suggested=True` widens the status filter to also count
+    `suggested` claims (Codex review, PR #150, following issue #79 point 4).
+    This exists for exactly one caller today: the setup-interview skill's
+    one-time, pre-family-interview backlog check. `fha gedcom import` - an
+    order this project's own docs sanction running BEFORE that interview -
+    mints every claim at `status: suggested`, so a fresh import with a real
+    place-text backlog and zero registered places produced ZERO candidate
+    clusters under the accepted/needs-review-only filter, silently missing
+    the exact scenario that check exists to catch. Widening is safe there
+    because that check is a one-time informational scan ("is there a
+    backlog worth an interruption"), not a "confirmed data" report - it
+    never counts as ground truth and never itself decides anything. The
+    flag is opt-in and defaults to the normal, conservative scope so every
+    other caller (this file's own CLI default, `fha report`) is unaffected.
+    """
+    statuses = ('accepted', 'needs-review', 'suggested') if include_suggested \
+        else ('accepted', 'needs-review')
+    placeholders = ','.join('?' * len(statuses))
     rows = conn.execute(
-        """
+        f"""
         SELECT id, place_text, date_edtf FROM claims
         WHERE (place_id IS NULL OR place_id = '')
           AND place_text IS NOT NULL AND place_text != ''
-          AND status IN ('accepted', 'needs-review')
-        """
+          AND status IN ({placeholders})
+        """,
+        statuses,
     ).fetchall()
 
     groups: dict[str, dict] = {}
@@ -460,7 +495,9 @@ def _gps_clusters(
 
 # ── Top-level query ───────────────────────────────────────────────────────────
 
-def run_candidates(archive_root: Path, fha_config: dict, threshold: int = 3) -> Result:
+def run_candidates(
+    archive_root: Path, fha_config: dict, threshold: int = 3, *, include_suggested: bool = False,
+) -> Result:
     """
     Cluster unlinked place-text and GPS candidates; return a Result.
 
@@ -469,6 +506,15 @@ def run_candidates(archive_root: Path, fha_config: dict, threshold: int = 3) -> 
     flat list of pre-formatted summary strings - the shape `fha report`'s §6b
     section expects (it just prints `f"- {g}"` for each).  Result exposes
     dict-style access (_lib.py), so callers keep reading `result['groups']`.
+
+    `include_suggested` (Codex review, PR #150) widens the place-text
+    clustering to also count `status: suggested` claims - see
+    `_place_text_candidates`'s docstring for why this stays off by default
+    (`fha report` and the plain CLI both leave it False) and who actually
+    needs it on (the setup-interview skill's one-time pre-family-interview
+    backlog scan, which runs right after a `fha gedcom import` that mints
+    everything as `suggested`). GPS clustering is untouched either way - it
+    has no claim `status:` to filter on.
     """
     conn = open_index_db(archive_root, _CANDIDATES_REQUIRED_TABLES)
     if conn is None:
@@ -476,7 +522,7 @@ def run_candidates(archive_root: Path, fha_config: dict, threshold: int = 3) -> 
             'status': 'failed', 'groups': [], 'place_text_groups': [], 'gps_clusters': []})
 
     try:
-        place_text_groups = _place_text_candidates(conn, threshold)
+        place_text_groups = _place_text_candidates(conn, threshold, include_suggested=include_suggested)
         known_coords = []
         for row in conn.execute('SELECT lat, lon FROM places WHERE lat IS NOT NULL AND lon IS NOT NULL'):
             try:
@@ -1417,7 +1463,9 @@ def _cmd_places_candidates(args: argparse.Namespace) -> int:
         print('ERROR: --threshold must be a positive integer.', file=sys.stderr)
         return EXIT_FAILURE
 
-    result = run_candidates(archive_root, fha_config, threshold=threshold)
+    include_suggested = bool(getattr(args, 'include_suggested', False))
+    result = run_candidates(archive_root, fha_config, threshold=threshold,
+                             include_suggested=include_suggested)
     if result['status'] == 'failed':
         return EXIT_FAILURE
 
@@ -1571,6 +1619,10 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
     candidates_p.add_argument('--root', metavar='PATH', default=argparse.SUPPRESS, help='Archive root (auto-detected if omitted).')
     candidates_p.add_argument('--threshold', type=int, default=3, metavar='N',
                                help='Minimum occurrences for a candidate cluster (default: 3).')
+    candidates_p.add_argument('--include-suggested', action='store_true', dest='include_suggested',
+                               help='Also cluster place_text on status: suggested claims (normally '
+                                    'excluded) - a one-time pre-review backlog scan, e.g. right after '
+                                    'a fresh `fha gedcom import`, not the everyday view.')
     candidates_p.set_defaults(func=_cmd_places_candidates)
 
     geocode_p = deferred.add_parser('geocode', help='Backfill coords/alt-names from the offline GeoNames dump')
@@ -1646,6 +1698,7 @@ def _standalone_main(argv: list[str] | None = None) -> int:
     candidates_p = subs.add_parser('candidates')
     candidates_p.add_argument('--root', metavar='PATH')
     candidates_p.add_argument('--threshold', type=int, default=3)
+    candidates_p.add_argument('--include-suggested', action='store_true', dest='include_suggested')
     candidates_p.set_defaults(func=_cmd_places_candidates)
 
     geocode_p = subs.add_parser('geocode')

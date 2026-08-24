@@ -149,10 +149,25 @@ value typed into `fha.yaml` by hand.
   minting and the `sex:`/`living:` writes are not claims and carry no status; they are the same
   direct, confirmed-in-conversation writes `fha person new`/`set-sex`/`set-living` make everywhere else,
   gated by asking him plainly rather than by `fha claim`.
-- No new tool work: `fha person new`, `fha person set-sex`, `fha person set-living`, `fha process`, and
-  hand-drafted claims (the same Stage-B judgment `process-source` already performs - there is no `fha
-  claim new --type relationship`, since a `roles:` map is too structured for a single-claim CLI mint)
-  are all that's orchestrated. `fha install`'s "Next steps" gained one line pointing here.
+- **Step 0 - place-backlog offer (2026-08, issue #79 point 4, PR #150).** Before the family questions,
+  one cheap, silent, one-time check: an archive that already carries imported/migrated material (`fha
+  gedcom import` run before this interview - AGENTS.md sanctions that ordering) can reach this interview
+  sitting on a real backlog of unlinked `place_text` with zero registered places, never once offered the
+  pass that would fix it. `fha index` then `fha places candidates --include-suggested` surfaces the
+  clusters - `fha gedcom import` mints everything at `status: suggested`, so the plain accepted/needs-
+  review-only view this command uses everywhere else would see nothing from a fresh import, silently
+  missing the exact scenario this check exists to catch. Past a 20-claim oversight bar (the same scale
+  `fha report`'s own lead-in escalation uses, issue #79 point 2), the skill offers once to register the
+  biggest cluster(s) via `fha confirm place`, then `fha index` + `fha places lint` to confirm the registry
+  stayed clean. Declining, or a registry/cluster set below the bar, means the check says nothing and moves
+  straight to step 1.
+- Tool work: `fha person new`, `fha person set-sex`, `fha person set-living`, `fha process`, `fha index`,
+  `fha confirm place`, `fha places lint`, and hand-drafted claims (the same Stage-B judgment
+  `process-source` already performs - there is no `fha claim new --type relationship`, since a `roles:`
+  map is too structured for a single-claim CLI mint) are all that's orchestrated - with one addition at
+  the tool level: `fha places candidates` gained `--include-suggested` (Codex review, PR #150) so this
+  skill's one-time scan can see a fresh-import-shaped backlog the everyday view is right to exclude
+  elsewhere. `fha install`'s "Next steps" gained one line pointing here.
 
 ---
 
