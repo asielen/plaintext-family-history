@@ -497,6 +497,23 @@ class ClaimIdMintingTests(unittest.TestCase):
         lint.run_lint(self.root, {}, fix_ids=True)
         self.assertEqual(self.src.read_bytes(), before)
 
+    def test_refusal_on_a_blank_value_names_entry_n_not_the_string_none(self) -> None:
+        # `str(claim.get('value', ''))[:40] or fallback` looked like it
+        # guarded a blank `value:`, but `str()` ran before the `or`: the
+        # refusal line would otherwise read `claim "None"` instead of the
+        # same `entry N` fallback an actually-missing value already gets.
+        # Reuses the flow-style refusal path (`value:` blank inside a
+        # one-line `- {...}` claim) since that is the cheapest existing
+        # trigger for the refusal message this `label` feeds.
+        self.src.write_text(_claims_source(
+            '- {value: , type: note, persons: [P-1111111111], '
+            'status: suggested, confidence: low}\n'), encoding='utf-8')
+        result = lint.run_lint(self.root, {}, fix_ids=True)
+        refusals = [l for l in result.data['progress'] if 'fha id mint C' in l]
+        self.assertEqual(len(refusals), 1)
+        self.assertIn('claim "entry 1"', refusals[0])
+        self.assertNotIn('"None"', refusals[0])
+
 
 def _person_md(pid: str, name: str, extra: str = '') -> str:
     return (
@@ -663,6 +680,37 @@ class FixIdsRenamesSuffixedNamesTests(unittest.TestCase):
         son = list(people_dir.glob('dodson__roy_eugene_jr_P-*.md'))
         self.assertEqual(len(father), 1, sorted(p.name for p in people_dir.iterdir()))
         self.assertEqual(len(son), 1, sorted(p.name for p in people_dir.iterdir()))
+
+
+class FixIdsBlankNameFallsBackToFilenameTests(unittest.TestCase):
+    """`_fix_mint_ids` read the new record's name as
+    `str(read_record(path)['meta'].get('name', ''))` - the same omitted-
+    vs-blank hazard again: a blank `name:` line (YAML null, key present)
+    str()-converted to the literal text 'None' before this fix, and
+    `_person_filename_parts` then split THAT into a bogus surname 'none'
+    instead of falling back to the file's own stem, the way a genuinely
+    nameless record's docstring says it should ("falling back to the
+    hand-filename when there is no usable name")."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        (self.root / 'fha.yaml').write_text('roots: {}\n', encoding='utf-8')
+        (self.root / 'people').mkdir(parents=True)
+        (self.root / 'sources').mkdir()
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_blank_name_files_under_the_filename_stem_not_none(self) -> None:
+        (self.root / 'people' / 'Mystery Person.md').write_text(
+            '---\nname:\nliving: false\n---\n\n# Mystery Person\n', encoding='utf-8')
+        lint.run_lint(self.root, {}, fix_ids=True)
+        minted = list((self.root / 'people').glob('*_P-*.md'))
+        self.assertEqual(len(minted), 1,
+                          sorted(p.name for p in (self.root / 'people').iterdir()))
+        self.assertNotIn('none', minted[0].name.lower())
+        self.assertIn('mysteryperson', minted[0].name.lower())
 
 
 class ResearchHypothesisE004Tests(unittest.TestCase):
@@ -1806,6 +1854,87 @@ class DirectLineStubW119Tests(unittest.TestCase):
         w119 = self._w119(self._build(root_person=False))
         self.assertEqual(w119, [])
 
+    def test_blank_name_falls_back_to_the_pid_not_the_string_none(self) -> None:
+        # Codex-shape audit past #157: `.get('name', pid)`'s pid fallback
+        # only fires when the key is missing - a hand-blanked `name:` line
+        # (YAML null, key present) str()-converts to the literal text
+        # 'None' first, so the message would otherwise read "None
+        # (Ahnentafel N) is a direct-line ancestor..." instead of falling
+        # back to the id the way an actually nameless record already does.
+        root = self._build()
+        pa_path = root / 'people' / 'stubs' / f'mirror__pa_{self.PA}.md'
+        pa_path.write_text(
+            f'---\nid: {self.PA}\nname:\nsex: M\nliving: false\ntier: stub\n'
+            '---\n\n# Pa Mirror\n\n## Biography\n\nx\n', encoding='utf-8')
+        w119 = self._w119(root)
+        self.assertEqual(len(w119), 1)
+        self.assertIn(self.PA.lower(), w119[0].message)
+        self.assertNotIn('None (Ahnentafel', w119[0].message)
+
+
+class AhnentafelPlacementBlankNameTests(unittest.TestCase):
+    """W110 (wrong couple folder) and W120 (sex-defaulted slot) share
+    `_check_ahnentafel_placement`, and both built their finding message off
+    the same broken `str(registry.person_meta.get(pid, {}).get('name',
+    pid))` shape `DirectLineStubW119Tests` guards for W119: the `pid`
+    fallback only fires when `name:` is missing, not when it is present but
+    blank, so a hand-blanked name would show as the literal text 'None'
+    instead of the id."""
+
+    KID = 'P-4aaaaaaaaa'   # root_person
+    PA = 'P-4bbbbbbbbb'    # KID's sole linked parent - blank name, no sex
+    SID = 'S-4aaaaaaaaa'
+
+    def _build(self) -> Path:
+        root = Path(tempfile.mkdtemp())
+        (root / 'people' / '001 Kid Mirror').mkdir(parents=True)
+        # No `sex:` at all (triggers W120's "lone parent, sex defaulted"),
+        # and `name:` written blank rather than omitted or filled in - the
+        # explicit-null shape the pid fallback does not catch.
+        (root / 'people' / '099 Wrong Folder').mkdir(parents=True)
+        (root / 'sources' / 'notes').mkdir(parents=True)
+        (root / 'fha.yaml').write_text(
+            f'root_person: {self.KID}\nroots:\n  documents: documents\n',
+            encoding='utf-8')
+        (root / 'people' / '001 Kid Mirror' / f'mirror__kid_{self.KID}.md').write_text(
+            f'---\nid: {self.KID}\nname: Kid Mirror\nsex: F\nliving: false\n'
+            'tier: curated\n---\n\n# Kid Mirror\n\n## Biography\n\nx\n',
+            encoding='utf-8')
+        (root / 'people' / '099 Wrong Folder' / f'mirror__pa_{self.PA}.md').write_text(
+            f'---\nid: {self.PA}\nname:\nliving: false\ntier: stub\n'
+            '---\n\n# Blank Name Parent\n', encoding='utf-8')
+        claim = (
+            f'- value: "{self.KID} child of {self.PA}"\n'
+            f'  id: C-4aaaaaaaaa\n  type: relationship\n  subtype: biological\n'
+            f'  persons: [{self.KID}, {self.PA}]\n  roles:\n'
+            f'    child: {self.KID}\n    parent: [{self.PA}]\n'
+            f'  status: accepted\n  reviewed: 2026-01-01\n  confidence: high\n'
+            f'  information: primary\n  evidence: direct\n  notes: x.\n'
+        )
+        (root / 'sources' / 'notes' / f'rel_{self.SID.lower()}.md').write_text(
+            f'---\nid: {self.SID}\ntitle: Rel\nsource_type: other\n---\n\n'
+            f'## Claims\n```yaml\n{claim}```\n', encoding='utf-8')
+        return root
+
+    def _findings(self, root: Path, code: str) -> list:
+        from _lib import load_fha_yaml
+        findings, _reg = lint._run_lint_core(root, load_fha_yaml(root))
+        return [f for f in findings if f.code == code]
+
+    def test_w110_names_the_pid_not_the_string_none(self) -> None:
+        root = self._build()
+        w110 = self._findings(root, 'W110')
+        self.assertEqual(len(w110), 1)
+        self.assertIn(self.PA.lower(), w110[0].message)
+        self.assertNotIn('None (Ahnentafel', w110[0].message)
+
+    def test_w120_names_the_pid_not_the_string_none(self) -> None:
+        root = self._build()
+        w120 = self._findings(root, 'W120')
+        self.assertEqual(len(w120), 1)
+        self.assertIn(self.PA.lower(), w120[0].message)
+        self.assertNotIn('None (Ahnentafel', w120[0].message)
+
 
 class KeywordScanRespectsPhotosIgnoreTests(unittest.TestCase):
     """E012's exiftool pass honours `photos_ignore:` like the catalog scan.
@@ -2813,6 +2942,63 @@ class ParentageDerivationParityTests(unittest.TestCase):
         self.assertEqual(len(self._codes(root, 'E013')), 1)
 
 
+class BracketListBlankChildNameTests(unittest.TestCase):
+    """`_check_bracket_lists` (W103) read a candidate bracket child's name as
+    `str(registry.person_meta.get(cpid, {}).get('name', ''))` - the '' default
+    only fires when the key is missing. A child record with a hand-blanked
+    `name:` line (YAML null, key present) str()-converted to the literal
+    text 'None' first, which is truthy - so the `if not name: continue`
+    skip (meant to drop genuinely nameless children from the derived list)
+    never fired, and the derived bracket list carried a literal 'None' as a
+    child's name. `fha views brackets --fix` would then rename the couple
+    folder to something like `002 A Person + Spouse [None]`."""
+
+    A = 'P-5cccccccc1'   # the parent, and the couple folder's occupant
+    B = 'P-5cccccccc2'   # the child - blank name:
+    SID = 'S-5cccccccc1'
+    FOLDER = '002 A Blank + Spouse []'
+
+    def _build(self) -> Path:
+        root = Path(tempfile.mkdtemp())
+        (root / 'people' / self.FOLDER).mkdir(parents=True)
+        (root / 'sources' / 'notes').mkdir(parents=True)
+        (root / 'fha.yaml').write_text(
+            'roots:\n  documents: documents\n', encoding='utf-8')
+        (root / 'people' / self.FOLDER / f'x__a_{self.A}.md').write_text(
+            f'---\nid: {self.A}\nname: A Blank\nsex: M\nliving: false\n'
+            'tier: curated\n---\n\n# A Blank\n\n## Biography\n\nx\n',
+            encoding='utf-8')
+        (root / 'people' / f'x__b_{self.B}.md').write_text(
+            f'---\nid: {self.B}\nname:\nsex: F\nliving: false\n'
+            'tier: curated\n---\n\n# Blank Name Child\n\n## Biography\n\nx\n',
+            encoding='utf-8')
+        claim = (
+            f'- value: "B born to A"\n  id: C-5cccccccc1\n'
+            f'  type: birth\n'
+            f'  persons: [{self.B}, {self.A}]\n  roles:\n'
+            f'    child: {self.B}\n    parent: [{self.A}]\n'
+            f'  status: accepted\n  reviewed: 2026-01-01\n  confidence: high\n'
+            f'  information: primary\n  evidence: direct\n  notes: x.\n'
+        )
+        (root / 'sources' / 'notes' / f'rel_{self.SID.lower()}.md').write_text(
+            f'---\nid: {self.SID}\ntitle: Birth register\n'
+            f'source_type: vital-record\n---\n\n'
+            f'## Claims\n```yaml\n{claim}```\n', encoding='utf-8')
+        return root
+
+    def test_a_nameless_child_is_dropped_never_labeled_none(self) -> None:
+        from _lib import load_fha_yaml
+        root = self._build()
+        findings, _reg = lint._run_lint_core(root, load_fha_yaml(root))
+        w103 = [f for f in findings if f.code == 'W103']
+        # A child with no usable name contributes nothing to the derived
+        # bracket list (same as a name-less record already being dropped) -
+        # the folder's already-empty brackets match, so nothing is stale.
+        for f in w103:
+            self.assertNotIn('None', f.message)
+        self.assertEqual(w103, [])
+
+
 class UndecodableSingleFileReadTests(unittest.TestCase):
     """#68, call-shape A: a single required-file read - E009's questions.md
     (line ~831 today) and E018's AGENTS.md (line ~3098 today).
@@ -3529,6 +3715,137 @@ class StrayPersonKeywordW131Tests(unittest.TestCase):
         self.assertEqual([f for f in findings if f.code == 'W131'], [])
         self.assertFalse(hasattr(self, '_called_with'),
                          'exiftool must not be invoked at all without --with-exif')
+
+    def test_the_suggested_command_is_shell_quoted_not_python_repr(self) -> None:
+        # #147 review (P2): the message used Python's repr() (always single
+        # quotes) to show the recovery command. cmd.exe does not treat single
+        # quotes as an argument delimiter, so on Windows Command Prompt,
+        # copying the suggested `fha source clear-keyword ... --keyword
+        # '...'` command splits into multiple arguments and argparse rejects
+        # it. _lib.shell_quote already solves this for the active shell (used
+        # elsewhere in lint.py/report.py for exactly this purpose) - the
+        # message must use it instead.
+        from _lib import shell_quote
+        w131 = self._w131()
+        msg = w131[0].message
+        text = 'Margaret Hartley'
+        quoted = shell_quote(text)
+        self.assertIn(f'--keyword {quoted}', msg)
+        # #156 review (P1): on POSIX, shlex.quote('Margaret Hartley') and
+        # repr('Margaret Hartley') happen to produce the IDENTICAL
+        # single-quoted string - there is no way for a message to contain
+        # the shell-quoted form WITHOUT also containing that string, so the
+        # negative half of this check only has something real to prove on a
+        # platform where the two forms actually differ (Windows, where
+        # shell_quote switches to cmd.exe/PowerShell-style double quotes).
+        # Asserting both unconditionally made this test fail on Linux/macOS
+        # even though the underlying fix (use shell_quote, not repr()) is
+        # in place.
+        if quoted != repr(text):
+            self.assertNotIn(f'--keyword {text!r}', msg)
+
+    def test_the_exiftool_scan_is_batched_not_read_in_one_call(self) -> None:
+        # #147 review (P2): the pre-fix reader made ONE call to
+        # _run_exiftool_keyword_rows over the ENTIRE scan (that function did
+        # its own batching internally, invisible to a caller or a
+        # monkeypatch), so every batch's raw JSON rows - Keywords/Subject
+        # values included - sat in memory for the whole scan before any
+        # reduction happened. That is hundreds of MB, or a killed process, on
+        # an archive with tens of thousands of heavily-tagged photos. The fix
+        # moves batching to the caller (_read_exif_keywords), which calls
+        # _run_exiftool_keyword_rows once per <=50-file group and reduces
+        # each batch immediately. Create enough documents-root files to force
+        # more than one batch and confirm the seam is actually driven that way.
+        bulk_dir = self.root / 'documents' / 'bulk'
+        bulk_dir.mkdir(parents=True)
+        for i in range(60):
+            (bulk_dir / f'file{i:03d}.tif').write_bytes(b'x')
+
+        calls: list[list] = []
+
+        def _rows(paths):
+            calls.append(list(paths))
+            return [{'SourceFile': str(p)} for p in paths]
+
+        lint._run_exiftool_keyword_rows = _rows
+        lint._run_lint_core(self.root, self.config, with_exif=True)
+
+        self.assertGreater(len(calls), 1,
+                           'a 61-file scan must be read in more than one exiftool call')
+        for batch in calls:
+            self.assertLessEqual(len(batch), 50,
+                                 'each exiftool call must cover at most one batch')
+
+
+class ReadExifKeywordsMemoryScopeTests(unittest.TestCase):
+    """#147 review (P2): `_read_exif_keywords` (the shared exiftool-keyword
+    reducer behind E011/E012's SOURCE: check and W131) must retain a file's
+    full raw Keywords/Subject values ONLY for documents-root paths - a
+    photos-root file's raw keyword text is never read for anything but the
+    cheap SOURCE: S-id extraction, so keeping the rest around for tens of
+    thousands of heavily-tagged photos would be pure waste. Calls the
+    reducer directly (no archive fixture needed); `_run_exiftool_keyword_rows`
+    is monkeypatched the same way the W131 tests above patch it.
+    """
+
+    def setUp(self) -> None:
+        self._orig_rows = lint._run_exiftool_keyword_rows
+
+    def tearDown(self) -> None:
+        lint._run_exiftool_keyword_rows = self._orig_rows
+
+    def test_raw_values_are_kept_only_for_documents_root_paths(self) -> None:
+        doc_path = Path('documents/deed.tif').resolve()
+        photo_path = Path('photos/1900/snap.jpg').resolve()
+
+        def _rows(paths):
+            return [
+                {'SourceFile': str(doc_path), 'Subject': ['Margaret Hartley']},
+                {'SourceFile': str(photo_path),
+                 'Subject': ['a whole pile of unrelated Lightroom tags']},
+            ]
+        lint._run_exiftool_keyword_rows = _rows
+
+        _source_keywords, raw_keywords = lint._read_exif_keywords(
+            [doc_path, photo_path], {doc_path})
+
+        self.assertEqual(raw_keywords.get(doc_path), ['Margaret Hartley'])
+        self.assertNotIn(photo_path, raw_keywords,
+                         "a photos-root file's raw keyword values must never be retained")
+
+    def test_source_ids_are_extracted_for_every_scanned_file_regardless_of_root(self) -> None:
+        doc_path = Path('documents/deed.tif').resolve()
+        photo_path = Path('photos/1900/snap.jpg').resolve()
+        sid = 'S-2b3c4d5e6f'
+
+        def _rows(paths):
+            return [
+                {'SourceFile': str(doc_path), 'Keywords': [f'SOURCE: {sid}']},
+                {'SourceFile': str(photo_path), 'Keywords': [f'SOURCE: {sid}']},
+            ]
+        lint._run_exiftool_keyword_rows = _rows
+
+        source_keywords, raw_keywords = lint._read_exif_keywords(
+            [doc_path, photo_path], {doc_path})
+
+        self.assertEqual(source_keywords.get(doc_path), {sid.lower()})
+        self.assertEqual(source_keywords.get(photo_path), {sid.lower()})
+        self.assertNotIn(photo_path, raw_keywords)   # not a documents-root path
+
+    def test_batches_are_capped_at_the_batch_size(self) -> None:
+        paths = [Path(f'documents/f{i}.tif').resolve() for i in range(125)]
+        calls: list[list] = []
+
+        def _rows(batch):
+            calls.append(list(batch))
+            return [{'SourceFile': str(p)} for p in batch]
+
+        lint._run_exiftool_keyword_rows = _rows
+        lint._read_exif_keywords(paths, set(paths))
+
+        self.assertEqual(len(calls), 3)   # 125 files -> 50 + 50 + 25
+        for batch in calls:
+            self.assertLessEqual(len(batch), lint._KEYWORD_BATCH_SIZE)
 
 
 if __name__ == '__main__':

@@ -209,6 +209,10 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    edtf_bounds               - compute (date_min, date_max) ISO strings
 #    _pad_date, _last_day      - internal date-padding helpers
 #    edtf_confidence           - sortable confidence score (components + marker rank)
+#    humanize_edtf             - EDTF -> plain-English reading date ('about 1912',
+#                                 '1916 (unconfirmed)', '3 May 1912', '1912 to 1915') -
+#                                 shared by fha photoindex (gallery labels) and fha
+#                                 site (per-file `date:` notes, #123 follow-up)
 #
 #  Photo DATE: keyword resolution (SPEC §20) - shared by photoindex + process
 #    PHOTO_DATE_PATTERN_RE     - the letter grammar a DATE: keyword may carry
@@ -4637,6 +4641,126 @@ def edtf_confidence(edtf: str | None) -> tuple[int, int]:
     return (n_components, -marker_rank)
 
 
+# ── EDTF -> plain-English rendering (shared by fha photoindex and fha site) ──
+#
+# Moved here from photoindex.py (#123 follow-up, Codex review on PR #149):
+# `fha site` needed this same EDTF -> plain-reading formatter to render a
+# source file's per-file `date:` (SPEC §14), and reaching for it by importing
+# the whole photoindex.py module crossed this repo's "tools never import
+# tools" rule (report.py is the one documented orchestrator exception -
+# site.py is not, TOOLING §15 / AGENTS_TOOLING.md). Both tools now import the
+# public name below and alias it back to their historical `_humanize_edtf`
+# local name, so no call site changed shape.
+
+_EDTF_MONTH_NAMES = [
+    '', 'January', 'February', 'March', 'April', 'May', 'June',
+    'July', 'August', 'September', 'October', 'November', 'December',
+]
+
+
+def _humanize_edtf_bound(s: str) -> str:
+    """Humanize one EDTF date token with no interval or bracket wrapper.
+
+    Shared by `humanize_edtf` for a plain date and for each side of a range or
+    a bracket-qualified bound, so 'about 1912' and the '1912' half of a
+    '1912/1915' range go through the same month/day/decade logic.
+
+    A `~` (approximate - base.html's date-notation legend: "about this year -
+    close, but not exact") renders as an "about " prefix. A `?` (uncertain -
+    the legend: "the year is probably right but has not been confirmed") once
+    got the exact same "about " prefix, which quietly turned "not sure this is
+    the right year" into "approximately this year" - a real semantic bug (#123
+    follow-up, Codex review on PR #149): it misstated what the archive
+    actually recorded on every generated page showing a per-file date with a
+    `?` marker. The two hedges now read as the two different things they
+    record: `?` renders as a "(unconfirmed)" suffix instead, never conflated
+    with `~`'s "about ". A component carrying both markers (not a real SPEC
+    §20 shape today, but not excluded by this function's own input contract)
+    prefers the stronger "not sure at all" reading over the weaker "roughly
+    right" one. Decades render as "Nx0s", and a plain year / year-month / full
+    date reads naturally ("May 1912", "3 May 1912"). Anything this does not
+    recognise falls back to the raw core string rather than guessing.
+    """
+    uncertain = '?' in s
+    approx = '~' in s and not uncertain
+    core = s.strip('~?')
+
+    decade = re.match(r'^(\d{3})[Xx]$', core)
+    if decade:
+        label = f'{int(decade.group(1)) * 10}s'
+    else:
+        ymd = re.match(r'^(\d{4})(?:-~?(\d{2}))?(?:-~?(\d{2}))?$', core)
+        if ymd:
+            year, month, day = ymd.group(1), ymd.group(2), ymd.group(3)
+            if month:
+                mi = int(month)
+                month_label = _EDTF_MONTH_NAMES[mi] if 1 <= mi <= 12 else month
+                if day:
+                    label = f'{int(day)} {month_label} {year}'
+                else:
+                    label = f'{month_label} {year}'
+            else:
+                label = year
+        else:
+            label = core
+
+    if uncertain:
+        return f'{label} (unconfirmed)'
+    if approx:
+        return f'about {label}'
+    return label
+
+
+_EDTF_BEFORE_RE = re.compile(r'^\[\.\.(.+)\]$')
+_EDTF_AFTER_RE = re.compile(r'^\[(.+)\.\.\]$')
+
+
+def humanize_edtf(edtf: str | None) -> str:
+    """Turn an EDTF date into a plain reading date for one gallery row or
+    source-file note.
+
+    Genealogy dates are EDTF (SPEC §20). Three shapes beyond a plain date need
+    their own reading, or the qualifier they carry silently vanishes and an
+    uncertain span reads as a specific-looking date (a real gallery bug: a
+    '1912/1915' row used to show bare "1912", and a '[..1900]' before-date
+    used to show bare "1900"):
+      - a slash interval ('1870/1875') reads as "1870 to 1875"; an open side
+        ('1870/..', '../1875') reads as "after 1870" / "before 1875";
+      - a bracket-qualified bound ('[..1900]' on/before, '[1900..]' on/after)
+        reads as "before 1900" / "after 1900";
+      - anything else goes through `_humanize_edtf_bound` for the decade/date
+        formatting a plain reader expects ("1920s", "about 1912", "May 1912",
+        "1916 (unconfirmed)").
+    None/empty yields "Undated".
+    """
+    if not edtf:
+        return 'Undated'
+    raw = str(edtf).strip()
+    if not raw:
+        return 'Undated'
+
+    if '/' in raw:
+        start, end = (part.strip() for part in raw.split('/', 1))
+        start_label = _humanize_edtf_bound(start) if start and start != '..' else None
+        end_label = _humanize_edtf_bound(end) if end and end != '..' else None
+        if start_label and end_label:
+            return f'{start_label} to {end_label}'
+        if start_label:
+            return f'after {start_label}'
+        if end_label:
+            return f'before {end_label}'
+        return 'Undated'
+
+    before = _EDTF_BEFORE_RE.match(raw)
+    if before:
+        return f'before {_humanize_edtf_bound(before.group(1))}'
+    after = _EDTF_AFTER_RE.match(raw)
+    if after:
+        return f'after {_humanize_edtf_bound(after.group(1))}'
+
+    return _humanize_edtf_bound(raw)
+
+
 # ── Photo DATE: keyword resolution (SPEC §20) ─────────────────────────────────
 #
 # Every tool that reads a photo's date reads it here. `fha photoindex` resolves
@@ -4839,6 +4963,36 @@ def normalize_id(id_str: str) -> str:
     return id_str.strip().lower() if id_str else ''
 
 
+def optional_scalar(value: object) -> str | None:
+    """One optional YAML frontmatter field's raw value → its stripped text, or None.
+
+    Many frontmatter fields are optional (SPEC): a human may omit the key
+    entirely, or write the key with nothing after the colon (`date:` alone).
+    YAML parses the second form as an explicit null, not an empty string, so
+    the common `d.get(key, '')` idiom's `''` default only fires for the FIRST
+    form - the key being truly absent. For the second form the key IS
+    present, so `.get()` returns `None` and the default never fires; a caller
+    that then does `str(...)` on the result gets the literal four-character
+    text 'None', silently stored or rendered as though it were a real value
+    (Codex review, PR #149/#157 - first caught on `source_files.copy`/
+    `date_edtf`, then found repeated across most optional columns this
+    module and its siblings populate).
+
+    Catching the null case HERE, before any `str()` conversion, is what
+    keeps both the omitted-key and explicit-null forms landing as the same
+    "nothing here" value - Python `None`, and downstream SQL `NULL` - never
+    the word 'None'. Shared in `_lib.py` (not left private to `index.py`)
+    because the same hazard recurs anywhere a tool reads one optional
+    scalar off already-parsed YAML and needs to tell "absent" from "blank"
+    apart from "written" - `tools never import tools`, so a helper more than
+    one tool needs lives here.
+    """
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
 def is_valid_id(id_str: str) -> bool:
     """Return True if id_str is a syntactically valid archive ID."""
     if not id_str:
@@ -5021,11 +5175,26 @@ def match_place_text_to_registry(archive_root: str | Path, place_text: str) -> d
 
     Returns `{'tier': 'exact'|'near'|None, 'place_id': str|None (display-
     cased, e.g. 'L-baba9801fa'), 'name': str|None (the registered name or
-    alt_name that matched)}`.
+    alt_name that matched), 'ambiguous_ids': list[str]|None}`.
+
+    `ambiguous_ids` is the one field that exists SPECIFICALLY for a `tier:
+    None` caller that needs to tell "genuinely no match" apart from "this
+    function refused to guess" - the tie case the docstring above describes.
+    It stays `None` (not an empty list) whenever `tier` is a real value, and
+    whenever the miss is genuine (no registered name shares this text's
+    normalization at all); it is the display-cased, sorted list of every
+    tied `place_id` ONLY in the two tie branches below. A write-time caller
+    (`claim.py`) that only ever checks `tier` sees no behavior change - this
+    is additive, read by report.py's §6b/escalation-banner rendering so it
+    can name the clash instead of silently falling through to a mint
+    recommendation that would create a THIRD, duplicate place_id on top of
+    an already-unresolved duplicate-name registry problem (Codex review,
+    PR #142 finding 2 follow-up).
     """
+    empty = {'tier': None, 'place_id': None, 'name': None, 'ambiguous_ids': None}
     key = normalize_place_text(place_text)
     if not key:
-        return {'tier': None, 'place_id': None, 'name': None}
+        return dict(empty)
     token_key = place_text_cluster_key(place_text)
 
     exact_hits: dict[str, str] = {}
@@ -5050,13 +5219,19 @@ def match_place_text_to_registry(archive_root: str | Path, place_text: str) -> d
     if exact_hits:
         if len(exact_hits) == 1:
             (pid_norm, name), = exact_hits.items()
-            return {'tier': 'exact', 'place_id': fmt_id_display(pid_norm), 'name': name}
-        return {'tier': None, 'place_id': None, 'name': None}
+            return {'tier': 'exact', 'place_id': fmt_id_display(pid_norm), 'name': name,
+                    'ambiguous_ids': None}
+        return {'tier': None, 'place_id': None, 'name': None,
+                'ambiguous_ids': sorted(fmt_id_display(pid) for pid in exact_hits)}
 
     if len(near_hits) == 1:
         (pid_norm, name), = near_hits.items()
-        return {'tier': 'near', 'place_id': fmt_id_display(pid_norm), 'name': name}
-    return {'tier': None, 'place_id': None, 'name': None}
+        return {'tier': 'near', 'place_id': fmt_id_display(pid_norm), 'name': name,
+                'ambiguous_ids': None}
+    if len(near_hits) > 1:
+        return {'tier': None, 'place_id': None, 'name': None,
+                'ambiguous_ids': sorted(fmt_id_display(pid) for pid in near_hits)}
+    return dict(empty)
 
 
 def scan_ids_in_tree(archive_root: str | Path) -> set[str]:
