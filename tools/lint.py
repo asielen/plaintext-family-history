@@ -92,9 +92,11 @@ from _lib import (
     parentage_parties,
     photos_ignore_matcher,
     photos_ignore_patterns,
+    resolve_claim_persons_with_roles,
     spouse_extended_base,
     spouse_parties,
     strip_generational_suffix,
+    vital_subjects,
     extract_token_ids,
     extract_wikilinks,
     link_field_refs,
@@ -2903,8 +2905,27 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
         # birth/death completeness check below. The marriage branch keeps its
         # own explicit negated-marriage rule (a negated marriage IS a
         # completeness signal - "never married").
-        claimed_types = {str(c.get('type', '')) for c in person_claims
-                         if c.get('negated') not in (True, 'true')}
+        #
+        # A claim only counts toward pid's OWN vitals when pid is actually
+        # among that claim's vital_subjects(...) - named as the record's
+        # SUBJECT (child on a birth, spouse on a marriage), not merely named
+        # somewhere on it as a parent, witness, or informant. Without this,
+        # a person who only appears as a parent on their CHILD's birth claim
+        # reads as having their own birth covered - the false-negative twin
+        # of issue #126 (a false life-date), same root cause (#136).
+        claimed_types: set[str] = set()
+        negated_marriage = False
+        for c in person_claims:
+            ctype = str(c.get('type', ''))
+            negated = c.get('negated') in (True, 'true')
+            persons_with_roles = resolve_claim_persons_with_roles(c, registry.alias_map)
+            subjects = vital_subjects(ctype, persons_with_roles)
+            if subjects is not None and pid not in subjects:
+                continue   # named on the claim but not its actual subject - asserts nothing about pid's own vitals
+            if ctype == 'marriage' and negated:
+                negated_marriage = True
+            if not negated:
+                claimed_types.add(ctype)
 
         missing_vitals = []
         for vital in ('birth', 'marriage', 'death'):
@@ -2913,10 +2934,6 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
             if vital == 'marriage':
                 if meta.get('no_known_marriages') in (True, 'true'):
                     continue   # confirmed no marriages
-                negated_marriage = any(
-                    str(c.get('type', '')) == 'marriage' and c.get('negated') in (True, 'true')
-                    for c in person_claims
-                )
                 if negated_marriage:
                     continue
             if vital not in claimed_types:

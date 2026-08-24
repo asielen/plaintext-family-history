@@ -1231,6 +1231,49 @@ class NegatedVitalPolarityTests(unittest.TestCase):
         self.assertTrue([l for l in backlog if "provisional birth: '1985~'" in l], backlog)
 
 
+class VitalSubjectRoleW101Tests(unittest.TestCase):
+    """W101 must only credit a person with their OWN birth/marriage/death when
+    a claim's `roles:` map actually casts them as the record's SUBJECT
+    (`_lib.vital_subjects`), not merely names them in `persons:` as a
+    parent/witness/informant on someone ELSE's vital record. Counting any
+    claim that names pid - regardless of role - is the false-negative twin of
+    issue #126 (a false life-date): a real vitals gap silently reads as
+    covered because the person happens to appear on a relative's record."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        (self.root / 'fha.yaml').write_text('roots: {}\n', encoding='utf-8')
+        (self.root / 'people').mkdir(parents=True)
+        (self.root / 'sources').mkdir()
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_parent_role_on_childs_birth_claim_does_not_satisfy_own_birth(self) -> None:
+        # P-1111111111 (the parent) has no birth claim of their own. The only
+        # birth claim naming them is their CHILD's (P-2222222222) - and there
+        # roles: casts them as `parent`, not the claim's subject. W101 must
+        # still report P-1111111111's own birth as missing.
+        (self.root / 'people' / 'rivera__sam_P-1111111111.md').write_text(
+            '---\nid: P-1111111111\nname: Sam Rivera\ntier: curated\n'
+            'living: false\nno_known_marriages: true\n---\n\n# Sam Rivera\n',
+            encoding='utf-8')
+        (self.root / 'people' / 'rivera__jr_P-2222222222.md').write_text(
+            '---\nid: P-2222222222\nname: Sam Rivera Jr\ntier: stub\n'
+            'living: false\n---\n\n# Sam Rivera Jr\n', encoding='utf-8')
+        (self.root / 'sources' / 'test_S-1111111111.md').write_text(_claims_source(
+            '- id: C-1111111111\n  type: birth\n'
+            '  persons: [P-2222222222, P-1111111111]\n  roles:\n'
+            '    child: [P-2222222222]\n    parent: [P-1111111111]\n'
+            '  value: Sam Jr born 1925\n  status: accepted\n  confidence: high\n'
+        ), encoding='utf-8')
+        findings, _ = lint._run_lint_core(self.root, {})
+        w101 = [f for f in findings if f.code == 'W101']
+        self.assertEqual(len(w101), 1, findings)
+        self.assertIn('birth', w101[0].message)
+
+
 class _SurgeryBase(unittest.TestCase):
     """Shared scaffolding for the fix-mode surgery tests: one named person and
     one source file whose bytes the test controls exactly (write_bytes, so

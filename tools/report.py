@@ -134,6 +134,7 @@ from _lib import (
     EXIT_FAILURE,
     EXIT_WARNINGS,
     build_ahnentafel_map,
+    claim_is_own_vital,
     extract_token_ids,
     FhaConfigError,
     Result,
@@ -760,15 +761,26 @@ def _section_answerable_questions(conn, archive_root: Path) -> list[str]:
         if not proposal:
             for pid in (r for r in info['refs'] if r.startswith('p-')):
                 accepted_claims = conn.execute(
-                    "SELECT c.type, c.negated FROM claims c "
+                    "SELECT c.id, c.type, c.negated FROM claims c "
                     "JOIN claim_persons cp ON cp.claim_id = c.id "
                     "WHERE cp.person_id=? AND c.status='accepted'",
                     (pid,),
                 ).fetchall()
-                claim_types = {r['type'] for r in accepted_claims}
+                # Only a claim that actually casts pid as the record's own
+                # SUBJECT (child on a birth, spouse on a marriage - see
+                # claim_is_own_vital) counts toward pid's own vitals; a claim
+                # naming pid merely as a parent/witness/informant on someone
+                # ELSE's record must not read as pid's own vital being covered
+                # (the false-negative twin of #126, same root cause as #136).
+                vital_cache: dict[str, list[str] | None] = {}
+                own_claims = [
+                    r for r in accepted_claims
+                    if claim_is_own_vital(conn, pid, r['id'], r['type'], vital_cache)
+                ]
+                claim_types = {r['type'] for r in own_claims}
                 negated_marriage = any(
                     r['type'] == 'marriage' and r['negated'] in (1, True, 'true')
-                    for r in accepted_claims
+                    for r in own_claims
                 )
                 person_row = conn.execute(
                     'SELECT living, no_known_marriages FROM persons WHERE id=?', (pid,)

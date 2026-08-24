@@ -781,6 +781,49 @@ def claim_is_own_vital(
     return subjects is None or normalize_id(str(person_id)) in subjects
 
 
+def resolve_claim_persons_with_roles(
+    claim: dict, alias_map: dict[str, str] | None = None,
+) -> list[tuple[str, str | None]]:
+    """Resolve a raw claim dict's `persons:`/`roles:` into `(pid, role)` pairs,
+    in `persons:` order.
+
+    The registry-world twin of what `fha index` resolves into the
+    `claim_persons` table's `(person_id, role)` columns (`tools/index.py`'s
+    `_index_source`, the reference implementation this mirrors). A tool
+    working off the registry - no SQLite index available yet, or deliberately
+    not wanting one - still needs to ask `vital_subjects`/`social_parties`/
+    `spouse_parties` the same question `fha index` would answer, and get the
+    same answer; this is the resolution step those rules take as input, done
+    the same way `_index_source` does it so the two never drift apart.
+
+    Entries pass through `link_field_refs` (bare IDs, quoted or unquoted
+    wikilinks all reduce to their target) and then `resolve_typed_ref` with
+    `want='P'`, exactly as `_index_source` resolves both `persons:` and each
+    `roles:` value. An unresolvable person (unknown/ambiguous name, dangling
+    ID) is dropped rather than paired with a role - the same inert-note-link
+    treatment `_index_source` and `_claim_person_ids` both give it (TOOLING
+    §3 E004): a garbage id in `(pid, role)` would answer the vitals/social
+    questions above about a person the archive cannot actually name."""
+    roles_map = claim.get('roles') or {}
+    resolved_roles: list[tuple[str, set[str]]] = []
+    if isinstance(roles_map, dict):
+        for role_name, role_val in roles_map.items():
+            role_pids = {
+                rid for r in link_field_refs(role_val)
+                for rid in [resolve_typed_ref(r, alias_map, want='P')]
+                if rid
+            }
+            resolved_roles.append((str(role_name), role_pids))
+    out: list[tuple[str, str | None]] = []
+    for p_raw in link_field_refs(claim.get('persons')):
+        pid = resolve_typed_ref(p_raw, alias_map, want='P')
+        if not pid:
+            continue
+        role = next((rn for rn, pids in resolved_roles if pid in pids), None)
+        out.append((pid, role))
+    return out
+
+
 # The non-kin social ties (SPEC §8.2) and the `roles:` keys that name their
 # parties. Subtype and role key are the same word here - `subtype: friend` with
 # `roles: {friend: […]}` - unlike kin claims, where the roles (child/parent) and

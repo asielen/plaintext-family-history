@@ -184,6 +184,61 @@ _QUESTIONS_PARTIAL_VITALS_MD = '''# Open Questions (general)
   - (human, 2026-01-01) Birth date still needs confirmation.
 '''
 
+# Role Only Parent has no birth claim of their own; the only birth claim
+# naming them is their CHILD's, where roles: casts them as `parent`, not the
+# claim's subject. Guards against counting ANY claim naming pid toward pid's
+# own vitals - the false-negative twin of #126, same root cause as #136.
+_PERSON_PARENT_ROLE_ONLY_MD = '''---
+id: P-dddddddddd
+name: Role Only Parent
+living: false
+tier: curated
+no_known_marriages: true
+---
+
+## Biography
+
+Some text about Role Only Parent.
+'''
+
+_PERSON_CHILD_OF_ROLE_ONLY_MD = '''---
+id: P-eeeeeeeeee
+name: Role Only Child
+living: false
+tier: stub
+---
+'''
+
+_SOURCE_CHILDS_BIRTH_NAMES_PARENT_MD = '''---
+id: S-5555555555
+title: Source Five
+source_type: vital-record
+---
+
+## Claims
+```yaml
+- id: C-5555555555
+  type: birth
+  persons: [P-eeeeeeeeee, P-dddddddddd]
+  roles:
+    child: [P-eeeeeeeeee]
+    parent: [P-dddddddddd]
+  value: Role Only Child born 1925
+  status: accepted
+  reviewed: 2026-01-01
+```
+'''
+
+_QUESTIONS_PARENT_ROLE_ONLY_MD = '''# Open Questions (general)
+
+## Q: When was Role Only Parent born?
+- origin: human
+- status: open
+- refs: [P-dddddddddd]
+- context:
+  - (human, 2026-01-01) Birth date still needs confirmation.
+'''
+
 # Three claims sharing one place_text and carrying no place_id - the
 # smallest cluster that clears run_candidates()'s default threshold (3),
 # for the §6b call-to-action test (issue #79 point 1).
@@ -635,6 +690,35 @@ class ReportTests(unittest.TestCase):
         # The proposal must cite only the matched vital (birth), not the
         # full needed set (birth, death, marriage).
         self.assertIn('accepted birth claim(s)', md)
+
+    def test_answerable_questions_does_not_propose_for_parent_role_only_claim(self) -> None:
+        # Role Only Parent has no birth claim of their own. The only birth
+        # claim naming them is their CHILD's (Role Only Child) - and there
+        # roles: casts them as `parent`, not the claim's subject. Being
+        # merely named in persons: on someone else's vital claim must not
+        # read as Role Only Parent's own birth gap being closeable - a
+        # proposal line only ever prints its heading text (see the
+        # partial-vitals test above), so its ABSENCE here is what proves no
+        # closure was proposed.
+        (self.archive_root / 'people' / 'roleonly_P-dddddddddd.md').write_text(
+            _PERSON_PARENT_ROLE_ONLY_MD, encoding='utf-8'
+        )
+        (self.archive_root / 'people' / 'roleonlychild_P-eeeeeeeeee.md').write_text(
+            _PERSON_CHILD_OF_ROLE_ONLY_MD, encoding='utf-8'
+        )
+        (self.archive_root / 'sources' / 'sourcefive_S-5555555555.md').write_text(
+            _SOURCE_CHILDS_BIRTH_NAMES_PARENT_MD, encoding='utf-8'
+        )
+        (self.archive_root / 'notes' / 'questions.md').write_text(
+            _QUESTIONS_PARENT_ROLE_ONLY_MD, encoding='utf-8'
+        )
+
+        result = report.run_report(self.archive_root, {}, full=True)
+        md = result['markdown']
+
+        self.assertNotIn('When was Role Only Parent born?', md)
+        self.assertNotIn('propose: review', md)
+        self.assertIn('No open question currently has a closing proposal.', md)
 
     def test_search_log_only_marks_old_nil_searches_stale(self) -> None:
         report.run_report(self.archive_root, {}, full=True)
