@@ -114,7 +114,7 @@
     {
       "path": ".claude/skills/setup-interview/SKILL.md",
       "category": "operating",
-      "sha256": "b17f53395aa0a34b7219a4c422c5bd9c54078a21ef2bf27a2b7c41ee4069531b",
+      "sha256": "0c29e3bae6d17043ab2b4783e26f9ef0b3ec878e1a02b3231abd2416779f0f49",
       "spec_version": "1.2"
     },
     {
@@ -413,14 +413,14 @@
     {
       "path": ".fha/tools/README.md",
       "category": "operating",
-      "sha256": "74f2a0f0168d365eff68cc19ffdfd97f45a53492c9c054814983034c219465d0",
+      "sha256": "52beb56b9f209982e743ccee41d3b0f76e86f5d1e68a59063fcf63e01feec8f4",
       "spec_version": "1.2",
       "src": "tools/README.md"
     },
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "a91c4d9989d49b5407c4ca499153236bef97ad2300622a3caa6ad54612ec8548",
+      "sha256": "c65270cda63390804e79f3fa9bd1565f1ece37012523bca144241127a7751f3e",
       "spec_version": "1.2",
       "src": "tools/_lib.py"
     },
@@ -483,7 +483,7 @@
     {
       "path": ".fha/tools/claim.py",
       "category": "operating",
-      "sha256": "a45f1d7288b822671a3937da978ce40c588ad221ec63e86061f886880a314e8c",
+      "sha256": "78803eed0ee8233bc314692cf78a8204bb84b022eafb710799afeb5122f7e29d",
       "spec_version": "1.2",
       "src": "tools/claim.py"
     },
@@ -560,7 +560,7 @@
     {
       "path": ".fha/tools/lint.py",
       "category": "operating",
-      "sha256": "3bf2de7fb5a2305da01ab02802034e0b5bda61fda1adf246e198b2cd2bb75ad4",
+      "sha256": "c21fa8bd2739e0c501ffa0f8ca7b29bd8079dae7b72101955d861f2985b123fe",
       "spec_version": "1.2",
       "src": "tools/lint.py"
     },
@@ -602,7 +602,7 @@
     {
       "path": ".fha/tools/places.py",
       "category": "operating",
-      "sha256": "cd0d5a757e784ce8ea3511e1ee5677ff313927f26926b9081bdc965864b24c97",
+      "sha256": "b1156bed6e468dd35965af21ff45047b49d8f9a17c7fd8b3470356b3c9494a73",
       "spec_version": "1.2",
       "src": "tools/places.py"
     },
@@ -884,7 +884,7 @@
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "447467f1a5a83e08c37f40956dd5a5126fd71ec110590b214559fd39d958ac0a",
+      "sha256": "da00203e538a3a68d27a2c8a3b9821049641d492efbb02da6328af6a209e42ff",
       "spec_version": "1.2"
     },
     {

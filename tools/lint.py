@@ -889,8 +889,31 @@ def _walk_archive(archive_root: Path, registry: Registry, findings: list[Finding
     if places_path.exists():
         try:
             with open(places_path, encoding='utf-8') as f:
-                places = yaml.safe_load(f) or []
-            for place in (places if isinstance(places, list) else []):
+                places = yaml.safe_load(f)
+            if places is None:
+                # Comment-only (or otherwise all-whitespace) file - the
+                # shipped seed state (archive-template/places/places.yaml,
+                # SPEC §15's "empty to start" registry). A normal empty
+                # registry, not a finding.
+                places = []
+            elif not isinstance(places, list):
+                # Valid YAML, but the wrong shape (e.g. `not_a_list: true`) -
+                # this used to be silently treated as zero places with no
+                # finding at all, so `fha lint` reported "no issues" on a
+                # registry that `fha claim`'s write-time place lookup (issue
+                # #79 point 3, `_lib.read_places_registry`) was separately
+                # reporting as malformed - sending the human to a lint run
+                # that told them nothing was wrong (Codex review, PR #150
+                # follow-up). Report it here too, under the same E010 parse-
+                # problem code every other "this record can't be read"
+                # finding in this module uses.
+                findings.append(Finding(
+                    'E', 'E010', places_path,
+                    'places.yaml is not a list at the top level (see SPEC §15 for the '
+                    'registry shape) - every place record it might contain is unreadable '
+                    'until this is fixed.'))
+                places = []
+            for place in places:
                 if isinstance(place, dict):
                     pid = normalize_id(str(place.get('id', '')))
                     if pid and pid.startswith('l-'):
