@@ -129,6 +129,7 @@ from _lib import (
     root_generation_seed_position,
     roots_change_orphans,
     sex_slot_is_defaulted,
+    shell_quote,
     undecodable_file_recorder,
     unreadable_dir_recorder,
     walk_files,
@@ -204,14 +205,18 @@ configure_utf8_stdout()
 #    _check_reverse_inventory    - E011: document files vs source inventory lists
 #    _check_embedded_source_keywords - E012: exiftool SOURCE: keyword vs inventory;
 #                                   also runs W131 off the same exiftool pass
-#    _run_exiftool_keyword_rows  - batched exiftool -j -Keywords -Subject read
-#                                   (monkeypatchable seam, mirrors photoindex.py's
-#                                   own _run_exiftool - tools never import tools)
-#    _read_raw_keywords          - _run_exiftool_keyword_rows -> {path: [raw values]},
-#                                   shared by _read_source_keywords (E011/E012) and
-#                                   _check_stray_person_keywords (W131) so --with-exif
-#                                   scans each file's metadata only once
-#    _read_source_keywords       - _read_raw_keywords, filtered to SOURCE: S-id values
+#    _run_exiftool_keyword_rows  - ONE exiftool -j -Keywords -Subject call over
+#                                   one batch of files (monkeypatchable seam,
+#                                   mirrors photoindex.py's own _run_exiftool -
+#                                   tools never import tools)
+#    _read_exif_keywords         - batches paths through _run_exiftool_keyword_rows
+#                                   and reduces each batch immediately: a SOURCE:
+#                                   S-id set for EVERY file (E011/E012), full raw
+#                                   Keywords/Subject values kept only for
+#                                   documents-root paths (W131's own scope) - never
+#                                   accumulates a whole scan's rows before reducing
+#    _read_source_keywords       - _read_exif_keywords's SOURCE:-id map alone,
+#                                   kept as its own entry point for API stability
 #    _check_stray_person_keywords - W131: documents-root keyword naming a known
 #                                   person absent from the source's own people: list
 #    _check_generated_headers    - W105: hand-edits below a GENERATED header
@@ -884,8 +889,31 @@ def _walk_archive(archive_root: Path, registry: Registry, findings: list[Finding
     if places_path.exists():
         try:
             with open(places_path, encoding='utf-8') as f:
-                places = yaml.safe_load(f) or []
-            for place in (places if isinstance(places, list) else []):
+                places = yaml.safe_load(f)
+            if places is None:
+                # Comment-only (or otherwise all-whitespace) file - the
+                # shipped seed state (archive-template/places/places.yaml,
+                # SPEC §15's "empty to start" registry). A normal empty
+                # registry, not a finding.
+                places = []
+            elif not isinstance(places, list):
+                # Valid YAML, but the wrong shape (e.g. `not_a_list: true`) -
+                # this used to be silently treated as zero places with no
+                # finding at all, so `fha lint` reported "no issues" on a
+                # registry that `fha claim`'s write-time place lookup (issue
+                # #79 point 3, `_lib.read_places_registry`) was separately
+                # reporting as malformed - sending the human to a lint run
+                # that told them nothing was wrong (Codex review, PR #150
+                # follow-up). Report it here too, under the same E010 parse-
+                # problem code every other "this record can't be read"
+                # finding in this module uses.
+                findings.append(Finding(
+                    'E', 'E010', places_path,
+                    'places.yaml is not a list at the top level (see SPEC §15 for the '
+                    'registry shape) - every place record it might contain is unreadable '
+                    'until this is fixed.'))
+                places = []
+            for place in places:
                 if isinstance(place, dict):
                     pid = normalize_id(str(place.get('id', '')))
                     if pid and pid.startswith('l-'):
@@ -1590,7 +1618,12 @@ def _check_bracket_lists(registry: Registry, findings: list[Finding]) -> None:
 
         derived_entries = []
         for cpid, natures in child_natures.items():
-            name = str(registry.person_meta.get(cpid, {}).get('name', ''))
+            # `.get('name', '')`'s '' default only fires when the key is
+            # missing; a hand-blanked `name:` line (YAML null, key present)
+            # would otherwise str()-convert to the literal text 'None' -
+            # which is truthy, so `if not name` below would treat a
+            # nameless record as named and include it in the bracket label.
+            name = str(registry.person_meta.get(cpid, {}).get('name') or '')
             if not name:
                 continue
             label = None
@@ -1833,7 +1866,11 @@ def _check_ahnentafel_placement(registry: Registry, findings: list[Finding]) -> 
     # fact about a person, which only the human can record.
     for gap in sex_gaps:
         pid = gap['pid']
-        name = str(registry.person_meta.get(pid, {}).get('name', pid))
+        # `.get('name', pid)`'s pid fallback only fires when the key is
+        # missing; a blank `name:` line would str()-convert to the literal
+        # text 'None' instead of falling back to the id the way an actually
+        # nameless record already does.
+        name = str(registry.person_meta.get(pid, {}).get('name') or pid)
         profile_paths = registry.person_profile_paths.get(pid, [])
         where = (profile_paths[0] if profile_paths
                  else registry.archive_root / 'fha.yaml')
@@ -1860,7 +1897,9 @@ def _check_ahnentafel_placement(registry: Registry, findings: list[Finding]) -> 
                 continue
             m = re.match(r'^(\d+)', folder_name)
             if not m:
-                name = str(registry.person_meta.get(pid, {}).get('name', pid))
+                # See the sex_gaps loop above: `.get('name', pid)`'s pid
+                # fallback never fires for a blank (not just missing) name.
+                name = str(registry.person_meta.get(pid, {}).get('name') or pid)
                 findings.append(Finding('W', 'W110', p,
                     f'{name} (Ahnentafel {pos}) is in folder {folder_name!r} with no '
                     f'numeric prefix, expected prefix {expected_prefix}; '
@@ -1872,7 +1911,7 @@ def _check_ahnentafel_placement(registry: Registry, findings: list[Finding]) -> 
             # the correct location for a direct-line person file.
             if re.match(r'^(\d+) ', folder_name) and actual_prefix == expected_prefix:
                 continue
-            name = str(registry.person_meta.get(pid, {}).get('name', pid))
+            name = str(registry.person_meta.get(pid, {}).get('name') or pid)
             findings.append(Finding('W', 'W110', p,
                 f'{name} (Ahnentafel {pos}) is in folder prefix {actual_prefix}, '
                 f'expected prefix {expected_prefix}; '
@@ -1918,7 +1957,11 @@ def _check_direct_line_stubs(
         is_stub_tier = str(meta.get('tier') or 'stub').strip().lower() != 'curated'
         if not (is_stub_tier or in_stubs):
             continue
-        name = str(meta.get('name', pid))
+        # `.get('name', pid)`'s pid fallback only fires when the key is
+        # missing, not when a hand-blanked `name:` line parses as YAML null -
+        # that would otherwise str()-convert to the literal text 'None' and
+        # show as "None (Ahnentafel N) is a direct-line ancestor..." below.
+        name = str(meta.get('name') or pid)
         display_pid = pid[0].upper() + pid[1:]
         findings.append(Finding('W', 'W119', profile,
             f'{name} (Ahnentafel {pos}) is a direct-line ancestor still filed '
@@ -3217,6 +3260,7 @@ def _check_embedded_source_keywords(registry: Registry, findings: list[Finding])
     be its own bug."""
     scan_paths: set[Path] = set()
     path_aliases: dict[Path, str] = {}
+    documents_paths: set[Path] = set()
 
     for alias in ('documents', 'photos'):
         root = _mapped_root(alias, registry)
@@ -3227,17 +3271,17 @@ def _check_embedded_source_keywords(registry: Registry, findings: list[Finding])
                 alias_path = _path_to_alias(file_path, alias, registry)
                 if alias_path:
                     path_aliases[resolved] = alias_path
+                if alias == 'documents':
+                    documents_paths.add(resolved)
 
     if not scan_paths:
         return
 
     try:
-        raw_keywords = _read_raw_keywords(sorted(scan_paths))
+        keyword_map, raw_keywords = _read_exif_keywords(sorted(scan_paths), documents_paths)
     except RuntimeError as e:
         findings.append(Finding('E', 'E012', registry.archive_root, str(e)))
         return
-
-    keyword_map = _filter_source_keywords(raw_keywords)
 
     inventory_by_alias: dict[str, str] = {}
     for sid, paths in registry.source_inventory.items():
@@ -3263,89 +3307,116 @@ def _check_embedded_source_keywords(registry: Registry, findings: list[Finding])
     _check_stray_person_keywords(registry, findings, raw_keywords, path_aliases)
 
 
+# One `exiftool -j -Keywords -Subject` invocation covers at most this many
+# files - an argv-length safety limit (unrelated to the memory concern
+# _read_exif_keywords fixes below), matched to the batch size this check has
+# always used.
+_KEYWORD_BATCH_SIZE = 50
+
+
 def _run_exiftool_keyword_rows(paths: list[Path]) -> list[dict]:
-    """Batched `exiftool -j -Keywords -Subject` read over every scanned asset.
+    """One `exiftool -j -Keywords -Subject` call over this BATCH of files.
 
     A monkeypatchable seam (tests substitute canned JSON rows so `--with-exif`
     is exercised with no real exiftool binary on PATH) - mirrors the same
-    split photoindex.py keeps for its own `_run_exiftool`. Kept separate from
-    `_read_raw_keywords`'s parsing so the batching/subprocess mechanics live
-    in exactly one place. Raises RuntimeError when exiftool itself is
-    missing, or when a batch's JSON cannot be parsed - both environment
-    problems the caller (`_check_embedded_source_keywords`) turns into one
-    E012 finding rather than crashing the whole lint run.
+    split photoindex.py keeps for its own `_run_exiftool`. Batching across a
+    whole scan is the CALLER's job (`_read_exif_keywords`, immediately below)
+    - this function makes exactly one exiftool call for whatever `paths` it
+    is given (the caller keeps that at or under `_KEYWORD_BATCH_SIZE`) and
+    returns that call's rows, nothing more. Raises RuntimeError when exiftool
+    itself is missing, or when the batch's JSON cannot be parsed - both
+    environment problems the caller (`_check_embedded_source_keywords`) turns
+    into one E012 finding rather than crashing the whole lint run.
     """
-    rows: list[dict] = []
-    batch_size = 50
-    for start in range(0, len(paths), batch_size):
-        batch = paths[start:start + batch_size]
-        cmd = ['exiftool', '-j', '-Keywords', '-Subject'] + [str(p) for p in batch]
-        try:
-            proc = subprocess.run(
-                cmd,
-                check=False,
-                capture_output=True,
-                text=True,
-                encoding='utf-8',
-            )
-        except FileNotFoundError as e:
-            raise RuntimeError(format_exiftool_error('fha lint --with-exif')) from e
-        if proc.returncode not in (0, 1):
-            raise RuntimeError(f'exiftool failed while reading embedded metadata: {proc.stderr.strip()}')
-        try:
-            rows.extend(json.loads(proc.stdout or '[]'))
-        except json.JSONDecodeError as e:
-            raise RuntimeError(f'exiftool returned invalid JSON: {e}') from e
-    return rows
+    cmd = ['exiftool', '-j', '-Keywords', '-Subject'] + [str(p) for p in paths]
+    try:
+        proc = subprocess.run(
+            cmd,
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding='utf-8',
+        )
+    except FileNotFoundError as e:
+        raise RuntimeError(format_exiftool_error('fha lint --with-exif')) from e
+    if proc.returncode not in (0, 1):
+        raise RuntimeError(f'exiftool failed while reading embedded metadata: {proc.stderr.strip()}')
+    try:
+        return json.loads(proc.stdout or '[]')
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f'exiftool returned invalid JSON: {e}') from e
 
 
-def _read_raw_keywords(paths: list[Path]) -> dict[Path, list[str]]:
-    """Every embedded Keywords/Subject value per file (raw union, order-preserving).
-
-    The shared read behind both `_read_source_keywords` (E011/E012's SOURCE:
-    match) and `_check_stray_person_keywords` (W131) - one exiftool pass
-    answers for both checks, since `--with-exif` is already the slow flag and
-    scanning the same files twice to look at two different keyword shapes
-    would double that cost for no reason. A file exiftool has nothing to say
-    about (an unreadable or unsupported format) simply has no entry - callers
-    already treat an absent path as "nothing to check" (E012's `.items()`
-    loop, W131's `.get()` below), the same tolerance the original SOURCE:-only
-    reader had for a per-file exiftool error.
-    """
-    result: dict[Path, list[str]] = {}
-    for row in _run_exiftool_keyword_rows(paths):
-        source_file = row.get('SourceFile')
-        if not source_file:
-            continue
-        values: list[str] = []
-        for key in ('Keywords', 'Subject'):
-            for v in _metadata_values(row.get(key)):
-                if v not in values:
-                    values.append(v)
-        result[Path(source_file).resolve()] = values
-    return result
-
-
-def _filter_source_keywords(raw_keywords: dict[Path, list[str]]) -> dict[Path, set[str]]:
-    """Narrow a raw-keyword map down to the `SOURCE: S-id` values (E011/E012)."""
+def _source_ids_in_keywords(values: list[str]) -> set[str]:
+    """The `SOURCE: S-id` ids embedded among one file's raw keyword values."""
     return {
-        path: {
-            normalize_id(m.group(1))
-            for value in values
-            for m in [_SOURCE_KEYWORD_RE.match(value.strip())]
-            if m
-        }
-        for path, values in raw_keywords.items()
+        normalize_id(m.group(1))
+        for value in values
+        for m in [_SOURCE_KEYWORD_RE.match(value.strip())]
+        if m
     }
+
+
+def _read_exif_keywords(
+    paths: list[Path], documents_paths: set[Path],
+) -> tuple[dict[Path, set[str]], dict[Path, list[str]]]:
+    """One batched exiftool pass, reduced batch-by-batch - not accumulated
+    across the whole scan before reducing (#147 review finding).
+
+    Returns `(source_keyword_map, raw_keyword_map)`:
+      - `source_keyword_map` covers EVERY scanned file (documents and photos
+        alike) - just the cheap `SOURCE: S-id` extraction E011/E012 need.
+      - `raw_keyword_map` covers ONLY files in `documents_paths` and keeps
+        their full raw Keywords/Subject values - `_check_stray_person_keywords`
+        (W131)'s own scope, and the sole reason a full value list is ever kept
+        at all.
+
+    Before this, the read (`_read_raw_keywords`) called `_run_exiftool_
+    keyword_rows` ONCE over the entire scan, which itself accumulated every
+    batch's JSON rows into one list before returning - so a full Keywords/
+    Subject value list for every scanned file, photos included, sat in
+    memory for the whole scan. On an archive with tens of thousands of
+    heavily-tagged photos (the photos root has no such cap; `documents` is
+    typically a small fraction of a real archive's asset count) that list can
+    run to hundreds of MB, or get the process killed outright, even though a
+    photo's raw keyword text is NEVER read for anything - only its SOURCE: id
+    is. Batching AND reducing here, one `_KEYWORD_BATCH_SIZE`-file group at a
+    time, means at most one batch's raw JSON is ever alive at once; a file
+    exiftool has nothing to say about (unreadable/unsupported format) simply
+    gets no entry in either map, the same tolerance the original reader had
+    for a per-file exiftool error.
+    """
+    source_keywords: dict[Path, set[str]] = {}
+    raw_keywords: dict[Path, list[str]] = {}
+    for start in range(0, len(paths), _KEYWORD_BATCH_SIZE):
+        batch = paths[start:start + _KEYWORD_BATCH_SIZE]
+        for row in _run_exiftool_keyword_rows(batch):
+            source_file = row.get('SourceFile')
+            if not source_file:
+                continue
+            path = Path(source_file).resolve()
+            values: list[str] = []
+            for key in ('Keywords', 'Subject'):
+                for v in _metadata_values(row.get(key)):
+                    if v not in values:
+                        values.append(v)
+            sids = _source_ids_in_keywords(values)
+            if sids:
+                source_keywords[path] = sids
+            if path in documents_paths:
+                raw_keywords[path] = values
+    return source_keywords, raw_keywords
 
 
 def _read_source_keywords(paths: list[Path]) -> dict[Path, set[str]]:
     """Read SOURCE: S-id keywords from files using exiftool JSON output.
 
-    Kept as its own entry point (rather than inlining `_filter_source_keywords`
-    at every call site) for API stability - it is the one exiftool-backed
-    function this module has always exposed by this name."""
-    return _filter_source_keywords(_read_raw_keywords(paths))
+    Kept as its own entry point for API stability - it is the one exiftool-
+    backed function this module has always exposed by this name. No file's
+    raw keyword values are ever retained here (`documents_paths=frozenset()`)
+    - this entry point has only ever returned the reduced SOURCE:-id view."""
+    source_keywords, _raw = _read_exif_keywords(paths, frozenset())
+    return source_keywords
 
 
 def _check_stray_person_keywords(
@@ -3393,6 +3464,12 @@ def _check_stray_person_keywords(
 
     Read entirely from the archive's own records plus the raw keyword values
     the shared exiftool pass already collected - no second read of any file.
+    `raw_keywords` is already narrowed to documents-root paths by the caller
+    (`_read_exif_keywords`'s `documents_paths` filter, #147 review - a
+    photos-root file's raw keyword values are never retained at all, so there
+    is nothing left here to accidentally scope-leak into). The alias-prefix
+    check below stays anyway as a belt-and-braces guard, the same instinct as
+    `claims_edit_problem`'s regression check elsewhere in this codebase.
     """
     for disk_path, keywords in raw_keywords.items():
         alias_path = path_aliases.get(disk_path)
@@ -3432,9 +3509,9 @@ def _check_stray_person_keywords(
                 f'pass, often), silently tying the document to someone it has nothing '
                 f'to do with - and any photo or desktop search over the file inherits '
                 f'the same wrong association. If the tag is wrong, clear it with '
-                f'`fha source clear-keyword {fmt_id_display(sid)} --keyword {text!r}`; '
-                f'if the person genuinely belongs on this source, add them to its '
-                f'people: list instead.'))
+                f'`fha source clear-keyword {fmt_id_display(sid)} --keyword '
+                f'{shell_quote(text)}`; if the person genuinely belongs on this '
+                f'source, add them to its people: list instead.'))
 
 
 def _metadata_values(value: object) -> list[str]:
@@ -4539,7 +4616,13 @@ def _fix_mint_ids(
             continue
         nl = _file_newline(text)
         if kind == 'P':
-            name = str(read_record(path)['meta'].get('name', ''))
+            # `.get('name', '')`'s '' default only fires when the key is
+            # missing; a blank `name:` line would str()-convert to the
+            # literal text 'None' and get split into a surname/given pair
+            # by `_person_filename_parts`, minting the file a garbage
+            # 'none__none_P-....md' name instead of falling back to the
+            # filename-derived split the same as a truly nameless record.
+            name = str(read_record(path)['meta'].get('name') or '')
             surname, given = _person_filename_parts(name, path.stem)
             new_name = f'{surname}__{given}_{new_id}.md'
         else:
@@ -4777,7 +4860,13 @@ def _mint_claim_ids_in_file(
         # mapping's key column. Anything deeper is scalar content.
         dash_prefix = rf'{re.escape(base_indent)}-[ \t]+'
         key_prefix = rf'(?:{dash_prefix}|{re.escape(key_indent)})'
-        label = str(claim.get('value', ''))[:40] or f'entry {i + 1}'
+        # `str(claim.get('value', ''))[:40] or fallback` looks like it
+        # guards a blank `value:` line, but `str()` runs before the `or`:
+        # a bare `value:` (YAML null) becomes the STRING 'None' first, and
+        # that truthy 4-character text wins over the `entry N` fallback -
+        # showing `claim "None"` in the --fix-ids progress line instead of
+        # the same fallback an actually-missing value already gets.
+        label = str(claim.get('value') or '')[:40] or f'entry {i + 1}'
         plan = {'kind': None, 'insert_at': None, 'continuation': '',
                 'replace_span': None, 'snippet_suffix': '',
                 'stamp_at': None, 'stamp_text': ''}

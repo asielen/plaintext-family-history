@@ -145,8 +145,10 @@ a consistent way back to it.
   page, so the site navigates as one site rather than a pile of pages. Fully relative
   hrefs (works from `file://` and a USB stick, per TOOLING §12).
 
-Existing home elements — the interactive descendant explorer, the surname A–Z index,
-the discoveries teaser (TOOLING §12, "Pages: Home") — stay; Phase A frames them with the
+Existing home elements — the marriage-aware ancestor pedigree (#115, which replaced the
+home page's interactive descendant explorer as its centerpiece; the explorer itself
+moved to a per-person opt-in link, see Phase C below), the surname A–Z index, the
+discoveries teaser (TOOLING §12, "Pages: Home") — stay; Phase A frames them with the
 hero, the intro, and the summary.
 
 ### Phase B — Photo embeds in prose
@@ -172,8 +174,9 @@ A small, legible family strip at the head of each person page: **parents, siblin
 children only** — the immediate family a reader wants at a glance, not the whole tree.
 Rendered server-side from the `relationships` edges (no JavaScript), redaction-aware
 (living/unknown relatives render as "Living Person" with no link, same as everywhere).
-Deliberately scoped tight: the full pedigree and descendant explorer already live in the
-interactive trees (TOOLING §12); this is the quick-orientation strip, not a second tree.
+Deliberately scoped tight: the person page already carries its own ancestor pedigree
+(a server-rendered static chart, TOOLING §12) plus a per-person opt-in descendant
+explorer (#115); this is the quick-orientation strip, not a second tree.
 
 ### Phase D — Large-tree pan/zoom
 

@@ -68,8 +68,11 @@ site:
   card that just says "Living Person."
 - **`home_pedigree_generations`** controls how many generations of ancestors the
   homepage chart reaches back through (5 by default — parents, grandparents,
-  great-grandparents, and two more). You can click any ancestor's own card to see
-  their chart centered on them and go back further from there.
+  great-grandparents, and two more). You can click any ancestor's card **that
+  already has its own page** to see their chart centered on them and go back
+  further from there — an ancestor who is still just a stub (a name in the tree
+  with no page written up yet, a normal and common state for an archive still in
+  progress) shows as a plain, unlinked name instead.
 
 The photo you name in `image` is handled like every other photo on the site: a
 web-friendly copy is made, its hidden location/camera data is stripped, and if it happens
