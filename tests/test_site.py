@@ -3066,12 +3066,17 @@ class HomePedigreeTests(_Base):
         self._seed_person('p-aaaaaaaaaa', 'Hub Person')
         self._seed_person('p-bbbbbbbbbb', 'Shared Parent')
         self._seed_person('p-cccccccccc', 'Other Child')
-        self._seed_rel('p-bbbbbbbbbb', 'child', 'p-aaaaaaaaaa')
-        self._seed_rel('p-aaaaaaaaaa', 'parent', 'p-bbbbbbbbbb')
+        self._seed_rel('p-bbbbbbbbbb', 'child', 'p-aaaaaaaaaa', claim_id='c-1111111111')
+        self._seed_rel('p-aaaaaaaaaa', 'parent', 'p-bbbbbbbbbb', claim_id='c-1111111111')
         self._seed_rel('p-bbbbbbbbbb', 'child', 'p-cccccccccc')
         self._seed_rel('p-cccccccccc', 'parent', 'p-bbbbbbbbbb')
         # The HUB's own tie to Shared Parent is backed only by a claim from
-        # a hard-restricted source - not public.
+        # a hard-restricted source - not public. The relationships row above
+        # carries this SAME claim_id (rather than the generic placeholder
+        # `_seed_rel` otherwise defaults to) so the edge-specific check
+        # (`_has_public_parent_edge`, the #152-round P1 fix) can actually see
+        # which claim backs it - the same way `fha index` always ties a
+        # derived relationships row to the real claim that produced it.
         self._seed_source('s-1111111111', 'Restricted Source', restricted=1,
                           people=('p-bbbbbbbbbb', 'p-aaaaaaaaaa'))
         self._seed_claim('c-1111111111', 's-1111111111', 'relationship',
@@ -3086,6 +3091,43 @@ class HomePedigreeTests(_Base):
         # Other Child is an ordinary curated person and legitimately appears
         # in the home page's surname A-Z index regardless - the assertion
         # must be scoped to the pedigree chart itself, not the whole page.
+        self.assertNotIn('Other Child', self._pedigree_section(home))
+
+    def test_unrelated_public_claim_does_not_fake_a_public_parent_tie(self):
+        # Codex review (P1, PR #152 round): `_has_public_claim(p, pid)` asks
+        # "is there ANY publishable claim connecting these two people, about
+        # anything" - a completely UNRELATED public claim (a shared census
+        # entry, here) satisfies that even though the parent-child tie
+        # itself is backed only by a restricted claim, letting the hub's
+        # sibling-candidate gate wrongly treat the hub as publicly tied to
+        # this parent. `_has_public_parent_edge` asks the narrower, correct
+        # question - is the parent-child RELATIONSHIP itself public - so it
+        # must not be fooled by the census claim's mere presence.
+        self._seed_person('p-aaaaaaaaaa', 'Hub Person')
+        self._seed_person('p-bbbbbbbbbb', 'Shared Parent')
+        self._seed_person('p-cccccccccc', 'Other Child')
+        self._seed_rel('p-bbbbbbbbbb', 'child', 'p-aaaaaaaaaa', claim_id='c-1111111111')
+        self._seed_rel('p-aaaaaaaaaa', 'parent', 'p-bbbbbbbbbb', claim_id='c-1111111111')
+        self._seed_rel('p-bbbbbbbbbb', 'child', 'p-cccccccccc')
+        self._seed_rel('p-cccccccccc', 'parent', 'p-bbbbbbbbbb')
+        # The parent-child claim itself is restricted...
+        self._seed_source('s-1111111111', 'Restricted Source', restricted=1,
+                          people=('p-bbbbbbbbbb', 'p-aaaaaaaaaa'))
+        self._seed_claim('c-1111111111', 's-1111111111', 'relationship',
+                         'Hub is the child of Shared Parent', status='accepted',
+                         persons=('p-bbbbbbbbbb', 'p-aaaaaaaaaa'),
+                         roles={'p-bbbbbbbbbb': 'parent', 'p-aaaaaaaaaa': 'child'})
+        # ...but a completely unrelated, perfectly public census claim ALSO
+        # names both people (as household members, not as parent/child) -
+        # the exact shape a pair-wide "any claim at all" check cannot tell
+        # apart from genuine evidence of the parent-child tie itself.
+        self._seed_source('s-2222222222', 'Public Census')
+        self._seed_claim('c-2222222222', 's-2222222222', 'census',
+                         'Shared Parent and Hub Person both listed in the 1900 census',
+                         status='accepted', persons=('p-bbbbbbbbbb', 'p-aaaaaaaaaa'))
+        self._seed_home()
+        self._run(linked=False)
+        home = self._read('index.html')
         self.assertNotIn('Other Child', self._pedigree_section(home))
 
     def test_branch_coloring_on_home_page_not_on_person_page(self):
@@ -3129,6 +3171,42 @@ class HomePedigreeTests(_Base):
         ped = self._pedigree_section(self._read('index.html'))
         self.assertNotIn('Adoptive Parent', ped)
         self.assertIn('Bio Parent', ped)
+
+    def test_restricted_genetic_claim_does_not_confirm_ancestry_via_an_unrelated_public_claim(self):
+        # Codex review (P1, PR #152 round): a pair can carry BOTH a public
+        # NON-genetic claim (adoptive) and a restricted GENETIC (biological)
+        # claim. `_has_public_claim(pid, other)` - a pair-wide "does ANY
+        # public claim connect these two people, about anything" check - was
+        # satisfied by the public adoptive claim alone, and that let the
+        # RESTRICTED biological claim's genetic subtype set `entry['genetic']
+        # = True` regardless, presenting a genetic ancestry relationship
+        # whose only actual evidence is restricted (DNA/by-request) material.
+        # Standalone mode with no public genetic evidence must show this
+        # slot as an ordinary unresearched gap, the same as the
+        # explicitly-non-genetic-subtype case just above - not the parent's
+        # name.
+        self._seed_person('p-aaaaaaaaaa', 'Hub Person', sex='F')
+        self._seed_person('p-bbbbbbbbbb', 'Bio Or Adoptive Parent', sex='F')
+        self._seed_rel('p-aaaaaaaaaa', 'parent', 'p-bbbbbbbbbb', claim_id='c-1111111111')
+        self._seed_rel('p-bbbbbbbbbb', 'child', 'p-aaaaaaaaaa')
+        self._seed_rel('p-aaaaaaaaaa', 'parent', 'p-bbbbbbbbbb', claim_id='c-2222222222')
+        self._seed_source('s-1111111111', 'Adoption Record',
+                          people=('p-aaaaaaaaaa', 'p-bbbbbbbbbb'))
+        self._seed_claim('c-1111111111', 's-1111111111', 'relationship',
+                         'Hub was adopted by Bio Or Adoptive Parent', status='accepted',
+                         subtype='adoptive', persons=('p-bbbbbbbbbb', 'p-aaaaaaaaaa'),
+                         roles={'p-bbbbbbbbbb': 'parent', 'p-aaaaaaaaaa': 'child'})
+        self._seed_source('s-2222222222', 'DNA Report', restricted='dna',
+                          people=('p-aaaaaaaaaa', 'p-bbbbbbbbbb'))
+        self._seed_claim('c-2222222222', 's-2222222222', 'relationship',
+                         'DNA confirms Bio Or Adoptive Parent as biological parent',
+                         status='accepted', subtype='biological',
+                         persons=('p-bbbbbbbbbb', 'p-aaaaaaaaaa'),
+                         roles={'p-bbbbbbbbbb': 'parent', 'p-aaaaaaaaaa': 'child'})
+        self._seed_home()
+        self._run(linked=False)
+        ped = self._pedigree_section(self._read('index.html'))
+        self.assertNotIn('Bio Or Adoptive Parent', ped)
 
     def test_unknown_sex_parents_get_no_branch_color(self):
         # #152 review fix (P2): when NEITHER parent has a known sex, which

@@ -3281,13 +3281,60 @@ class _SiteBuilder:
             (pid1, pid2),
         ).fetchall()
         for r in rows:
-            if not self.linked and r['status'] != 'accepted':
-                continue
-            if normalize_id(str(r['id'])) in self.restricted_claims:
-                continue
-            if not self._source_hard_restricted(r['source_id']):
+            if self._claim_row_is_publishable(r['id'], r['source_id'], r['status']):
                 return True
         return not rows  # no claims at all → relationship came from YAML directly, show it
+
+    def _claim_row_is_publishable(self, claim_id, source_id, status) -> bool:
+        """Return True if ONE specific claim (already known to name whoever the
+        caller cares about) may be shown - the per-claim rule `_has_public_claim`
+        applies to every row of a pair's claims before OR-ing them together.
+        Exposed separately so a caller that must know whether a SPECIFIC edge is
+        public - not just "is there SOME public claim connecting these two
+        people, about anything at all" - can ask the narrower, correct question
+        (site.py Codex review, PR #152 round, P1: `_has_public_claim`'s pair-wide
+        OR let a restricted parent-child tie read as public whenever the same two
+        people also shared an unrelated public claim, e.g. a census entry).
+
+        A `relationships` row whose `claim_id` names no row that actually
+        exists in `claims` (`status is None` after the LEFT JOIN - a bare
+        edge with no backing claim at all, e.g. a hand-written
+        `relationships:` entry) is publishable: the same "nothing to hide
+        behind" rule `_has_public_claim` applies via its own `not rows`
+        fallback for a pair with zero claims connecting them. A real claim
+        row always carries a non-null status, so `status is None` is the
+        correct "no such claim" signal - not `claim_id is None`, since a
+        dangling/placeholder claim_id (present but naming nothing real) must
+        read the same way."""
+        if status is None:
+            return True
+        if not self.linked and status != 'accepted':
+            return False
+        if normalize_id(str(claim_id)) in self.restricted_claims:
+            return False
+        return not self._source_hard_restricted(source_id)
+
+    def _has_public_parent_edge(self, child_pid: str, parent_pid: str) -> bool:
+        """Return True if the SPECIFIC parent-child relationship edge - not just
+        any claim naming both people, about anything - has at least one public
+        backing claim.
+
+        `_has_public_claim` answers a broader question (is there ANY publishable
+        claim connecting these two people) that a completely unrelated public
+        claim - a shared census entry, a residence record - can satisfy even
+        when the parent-child tie itself is evidenced only by a restricted
+        claim. A parent-slot / sibling-eligibility check needs the narrower
+        answer: is THIS relationship - the one about to be shown - itself
+        backed by something public (site.py Codex review, PR #152 round, P1)."""
+        rows = self.conn.execute(
+            "SELECT r.claim_id, c.source_id, c.status FROM relationships r "
+            "LEFT JOIN claims c ON r.claim_id = c.id "
+            "WHERE r.person_id = ? AND r.rel = 'parent' AND r.other_id = ?",
+            (child_pid, parent_pid),
+        ).fetchall()
+        return any(
+            self._claim_row_is_publishable(r['claim_id'], r['source_id'], r['status'])
+            for r in rows)
 
     def _is_living_tagged_photo(self, alias_path: str) -> bool:
         """Return True when any person tagged to this photo in the catalog is living/unknown.
@@ -4607,7 +4654,8 @@ class _SiteBuilder:
             # the same pair into one row the way the old sex-only query did.
             parent_rows: dict[str, dict] = {}
             for r in self.conn.execute(
-                '''SELECT DISTINCT r.other_id, p.sex, r.claim_id, c.subtype
+                '''SELECT DISTINCT r.other_id, p.sex, r.claim_id, c.subtype,
+                          c.source_id, c.status
                    FROM relationships r JOIN persons p ON r.other_id = p.id
                    LEFT JOIN claims c ON r.claim_id = c.id
                    WHERE r.person_id = ? AND r.rel = 'parent' ''', (pid,)):
@@ -4622,7 +4670,17 @@ class _SiteBuilder:
                 subtype = (r['subtype'] or '').strip().lower() or None
                 entry = parent_rows.setdefault(
                     other, {'sex': (r['sex'] or '').upper(), 'genetic': False})
-                if is_genetic_parent_subtype(subtype):
+                # P1 (Codex review, PR #152 round): a pair can carry BOTH a
+                # public non-genetic claim (adoptive) and a restricted genetic
+                # one - the pair-wide `_has_public_claim` check just above lets
+                # `other` into the pedigree via the public adoptive claim, but
+                # that must not also let THIS row's restricted genetic subtype
+                # set the flag; only a row whose OWN claim is itself
+                # publishable may mark the tie genetic. --linked shows every
+                # edge, same as everywhere else on this page.
+                if is_genetic_parent_subtype(subtype) and (
+                        self.linked or self._claim_row_is_publishable(
+                            r['claim_id'], r['source_id'], r['status'])):
                     entry['genetic'] = True
             parents: list[tuple[str, str]] = [
                 (other, info['sex']) for other, info in parent_rows.items() if info['genetic']]
@@ -4871,7 +4929,15 @@ class _SiteBuilder:
             "SELECT DISTINCT other_id FROM relationships WHERE person_id = ? AND rel = 'parent'",
             (pid,))]
         if not self.linked:
-            parent_ids = [p for p in parent_ids if self._has_public_claim(p, pid)]
+            # P1 (Codex review, PR #152 round): `_has_public_claim` asks "is
+            # ANY claim connecting these two people public, about anything" -
+            # an unrelated public claim (a shared census entry, a residence
+            # record) could satisfy it even while the hub's OWN parent-child
+            # tie to `p` is backed only by a restricted claim, defeating the
+            # whole point of gating siblings on the hub's own public tie.
+            # `_has_public_parent_edge` asks the narrower, correct question:
+            # is the parent-child relationship itself publicly backed.
+            parent_ids = [p for p in parent_ids if self._has_public_parent_edge(pid, p)]
         # other_id -> every shared parent_id tying them to the hub, in
         # first-discovered order (a plain dict preserves insertion order) -
         # collected in full before any candidate is gated, so a later
