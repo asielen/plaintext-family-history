@@ -23,6 +23,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
 
+import packet
 import photoindex
 import process
 from _lib import (
@@ -1109,12 +1110,14 @@ class ProcessTestCase(unittest.TestCase):
 
         self.assertEqual(process._find_back_sibling(primary), back)
 
-    def test_find_back_sibling_returns_none_on_ambiguous_match(self) -> None:
-        # Finding #3 (ambiguity half): the old two-candidate guess checked
-        # '-back' before '_back' and returned on the FIRST match, blind to
-        # any other back-shaped file with a different extension. Scanning
-        # the directory can now see both at once - and must refuse to guess
-        # which one is "the" back rather than silently picking one.
+    def test_find_back_sibling_raises_on_ambiguous_match(self) -> None:
+        # Finding #3 (ambiguity half) / finding #4 (Codex PR #145 followup):
+        # the old two-candidate guess checked '-back' before '_back' and
+        # returned on the FIRST match, blind to any other back-shaped file
+        # with a different extension. Scanning the directory can now see both
+        # at once - and must surface the ambiguity rather than silently
+        # picking one (returning None, indistinguishable from "no back at
+        # all") or silently proceeding with neither attached (finding 4).
         primary = self.archive / 'documents' / 'census' / 'ambiguous.txt'
         primary.write_text('front', encoding='utf-8')
         back1 = self.archive / 'documents' / 'census' / 'ambiguous-back.txt'
@@ -1122,7 +1125,45 @@ class ProcessTestCase(unittest.TestCase):
         back2 = self.archive / 'documents' / 'census' / 'ambiguous_back.pdf'
         back2.write_text('back2', encoding='utf-8')
 
-        self.assertIsNone(process._find_back_sibling(primary))
+        with self.assertRaises(process.ProcessError) as ctx:
+            process._find_back_sibling(primary)
+        text = str(ctx.exception)
+        self.assertIn('ambiguous-back.txt', text)
+        self.assertIn('ambiguous_back.pdf', text)
+
+    # ── Codex review, PR #145 followups (PR #161), finding 4 ─────────────────
+
+    def test_process_refuses_on_ambiguous_back_candidates(self) -> None:
+        # Finding #4: two different files that both look like a back scan
+        # (different extensions) must stop the whole `fha process` command,
+        # not just silently process the primary alone. Before the fix,
+        # `_find_back_sibling` returned the same None for "no back" and "too
+        # many backs", so the primary was processed clean and BOTH candidates
+        # were left on disk unrecorded with no warning - document intake
+        # renames the primary at the same moment (removing the naming link),
+        # and `fha doctor`'s orphan check excludes document-root entries, so
+        # nothing downstream would ever have caught it.
+        primary = self.archive / 'documents' / 'census' / 'twoback.txt'
+        primary.write_text('front', encoding='utf-8')
+        back1 = self.archive / 'documents' / 'census' / 'twoback-back.txt'
+        back1.write_text('back1', encoding='utf-8')
+        back2 = self.archive / 'documents' / 'census' / 'twoback_back.pdf'
+        back2.write_text('back2', encoding='utf-8')
+
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            rc = self._run([str(primary), '--type', 'census'])
+
+        self.assertEqual(rc, EXIT_ERRORS)
+        text = err.getvalue()
+        self.assertIn('twoback-back.txt', text)
+        self.assertIn('twoback_back.pdf', text)
+        # Nothing moved or minted: the primary is refused before scaffolding,
+        # not processed alone with the ambiguity silently dropped.
+        self.assertTrue(primary.exists())
+        self.assertTrue(back1.exists())
+        self.assertTrue(back2.exists())
+        self.assertEqual(list((self.archive / 'sources').rglob('*.md')), [])
 
     # ── #111: --more attaches straight from the inbox ─────────────────────────
 
@@ -1293,6 +1334,74 @@ class ProcessTestCase(unittest.TestCase):
         files = read_record(record)['meta']['files']
         self.assertEqual(len(files), 1)
 
+    # ── Codex review, PR #145 followups (PR #161), finding 3 ─────────────────
+
+    def test_more_replacement_for_missing_listed_attachment_is_refused(self) -> None:
+        # Finding #3: when a source record still lists an attachment whose
+        # file has gone missing from disk, and the human supplies a
+        # REPLACEMENT file that would be renamed to that SAME alias with the
+        # same role/copy, the idempotent-retry check (finding #2's own fix)
+        # must not report a false "already attached, nothing to do" - the
+        # listed file is still missing, and the replacement is still sitting
+        # untouched under its old name.
+        primary = self.archive / 'documents' / 'census' / 'main-record.txt'
+        primary.write_text('front', encoding='utf-8')
+        self.assertEqual(self._run([str(primary), '--type', 'census']), EXIT_CLEAN)
+        renamed = next((self.archive / 'documents' / 'census').glob('main-record*_S-*.txt'))
+        record = next((self.archive / 'sources' / 'census').glob('*_S-*.md'))
+
+        original_more = self.archive / 'documents' / 'census' / 'replacement.txt'
+        original_more.write_text('original page 2', encoding='utf-8')
+        rc = self._run([str(renamed), '--more', str(original_more), 'page-2'])
+        self.assertEqual(rc, EXIT_CLEAN)
+        attached = next((self.archive / 'documents' / 'census').glob('replacement-page-2_S-*.txt'))
+        self.assertEqual(len(read_record(record)['meta']['files']), 2)
+
+        # The listed file goes missing from disk (deleted, an external drive
+        # unplugged, whatever the cause) - the SAME name is free again.
+        attached.unlink()
+        replacement = self.archive / 'documents' / 'census' / 'replacement.txt'
+        replacement.write_text('rescanned page 2', encoding='utf-8')
+
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            rc = self._run([str(renamed), '--more', str(replacement), 'page-2'])
+
+        self.assertEqual(rc, EXIT_ERRORS)
+        text = err.getvalue()
+        self.assertIn('missing from disk', text)
+        self.assertNotIn('Traceback', text)
+        # No false success: the replacement was never moved into place, the
+        # hole is still a hole, and the record still carries only the one
+        # (stale) entry - no silent duplicate either.
+        self.assertTrue(replacement.exists())
+        self.assertFalse(attached.exists())
+        self.assertEqual(len(read_record(record)['meta']['files']), 2)
+
+    def test_more_exact_same_file_at_listed_destination_is_still_idempotent(self) -> None:
+        # Scope guard alongside finding #3: the genuinely-already-done case
+        # (the supplied file IS already sitting at the listed destination)
+        # must still short-circuit as a clean no-op - only a file at a
+        # DIFFERENT current location triggers the new refusal above.
+        primary = self.archive / 'documents' / 'census' / 'main-record2.txt'
+        primary.write_text('front', encoding='utf-8')
+        self.assertEqual(self._run([str(primary), '--type', 'census']), EXIT_CLEAN)
+        renamed = next((self.archive / 'documents' / 'census').glob('main-record2*_S-*.txt'))
+        record = next((self.archive / 'sources' / 'census').glob('*_S-*.md'))
+
+        more_file = self.archive / 'documents' / 'census' / 'sidepage.txt'
+        more_file.write_text('page 2', encoding='utf-8')
+        rc = self._run([str(renamed), '--more', str(more_file), 'page-2'])
+        self.assertEqual(rc, EXIT_CLEAN)
+        attached = next((self.archive / 'documents' / 'census').glob('sidepage-page-2_S-*.txt'))
+
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = self._run([str(renamed), '--more', str(attached), 'page-2'])
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertIn('nothing to do', out.getvalue())
+        self.assertEqual(len(read_record(record)['meta']['files']), 2)
+
     # ── Codex review, PR #145, finding 5 ────────────────────────────────────────
 
     def test_more_honors_explicit_type_for_photo_extension_attachment(self) -> None:
@@ -1321,6 +1430,160 @@ class ProcessTestCase(unittest.TestCase):
         files = read_record(record)['meta']['files']
         self.assertEqual(len(files), 2)
         self.assertEqual(files[1]['role'], 'page-2')
+
+    # ── Codex review, PR #145 followups (PR #161), finding 1 (P1) ────────────
+    # An explicit `--type dna` on a `--more` attachment must not leave the
+    # SOURCE record itself unrestricted: `fha packet` decides what to copy
+    # per SOURCE, not per file, so an unrestricted source that gains a DNA
+    # attachment would otherwise ship it under --include-restricted alone -
+    # or under no flag at all - defeating the no-override `restricted: dna`
+    # contract (AGENTS.md #6).
+
+    def test_force_dna_restriction_text_unit(self) -> None:
+        # Direct coverage of the text-surgery helper: an absent or plain
+        # marker is upgraded to `restricted: dna`; a marker that already
+        # protects at least as well (`dna` itself, or the never-overridden
+        # `by-request`) is left untouched rather than downgraded.
+        absent = '---\nid: s-1234567890\ntitle: A Letter\n---\n## Claims\n'
+        new_text, changed = process._force_dna_restriction_text(absent)
+        self.assertTrue(changed)
+        self.assertEqual(process.parse_frontmatter_strict(new_text)['restricted'], 'dna')
+
+        plain = '---\nid: s-1234567890\ntitle: A Letter\nrestricted: true\n---\n## Claims\n'
+        new_text, changed = process._force_dna_restriction_text(plain)
+        self.assertTrue(changed)
+        self.assertEqual(process.parse_frontmatter_strict(new_text)['restricted'], 'dna')
+
+        already_dna = '---\nid: s-1234567890\ntitle: A Letter\nrestricted: dna\n---\n## Claims\n'
+        new_text, changed = process._force_dna_restriction_text(already_dna)
+        self.assertFalse(changed)
+        self.assertEqual(new_text, already_dna)
+
+        by_request = ('---\nid: s-1234567890\ntitle: A Letter\n'
+                      'restricted: by-request\n---\n## Claims\n')
+        new_text, changed = process._force_dna_restriction_text(by_request)
+        self.assertFalse(changed)  # MORE restrictive than dna - never downgraded
+        self.assertEqual(new_text, by_request)
+
+    def test_more_type_dna_forces_restriction_on_unrestricted_source(self) -> None:
+        # The P1 scenario itself: attach a DNA file, via --more --type dna,
+        # to an EXISTING source that started out unrestricted.
+        primary = self.archive / 'documents' / 'census' / 'family-letter.txt'
+        primary.write_text('Dear cousin,', encoding='utf-8')
+        rc = self._run([str(primary), '--type', 'letter'])
+        self.assertEqual(rc, EXIT_CLEAN)
+        renamed = next((self.archive / 'documents' / 'census').glob('family-letter*_S-*.txt'))
+        record = next((self.archive / 'sources' / 'letter').glob('*_S-*.md'))
+        self.assertNotIn('restricted', read_record(record)['meta'])  # unrestricted to start
+
+        (self.archive / 'inbox').mkdir()
+        kit = self.archive / 'inbox' / 'ancestrydna-kit.txt'
+        kit.write_text('rsid,chromosome,position,allele1,allele2\n', encoding='utf-8')
+
+        rc = self._run([str(renamed), '--more', str(kit), 'attachment', '--type', 'dna'])
+        self.assertEqual(rc, EXIT_CLEAN)
+
+        rec = read_record(record)['meta']
+        self.assertEqual(rec['restricted'], 'dna')
+        self.assertEqual(len(rec['files']), 2)
+
+        # Classified as a DOCUMENT (finding #5's own contract - --type dna is
+        # not --type photo) - the extension never sends it to the photo
+        # library, where this DNA-restriction fix does not reach.
+        self.assertEqual(list((self.archive / 'photos').rglob('*ancestrydna*')), [])
+        attached = list((self.archive / 'documents' / 'census').glob('*ancestrydna-kit*_S-*'))
+        self.assertEqual(len(attached), 1)
+
+        # packet.py's OWN decision function agrees this now reads as the
+        # no-override 'dna' type, which --include-restricted alone does NOT
+        # open (mirrors test_packet.py's
+        # test_dna_source_excluded_even_with_include_restricted).
+        value, trouble = packet._record_restriction(record)
+        self.assertIsNone(trouble)
+        self.assertEqual(packet._restricted_type(value), 'dna')
+        self.assertFalse(packet._restricted_included(
+            value, include_restricted=True, include_dna=False))
+        self.assertTrue(packet._restricted_included(
+            value, include_restricted=False, include_dna=True))
+
+    def test_more_type_dna_dry_run_previews_restriction_without_writing(self) -> None:
+        primary = self.archive / 'documents' / 'census' / 'dry-letter.txt'
+        primary.write_text('Dear cousin,', encoding='utf-8')
+        self.assertEqual(self._run([str(primary), '--type', 'letter']), EXIT_CLEAN)
+        renamed = next((self.archive / 'documents' / 'census').glob('dry-letter*_S-*.txt'))
+        record = next((self.archive / 'sources' / 'letter').glob('*_S-*.md'))
+
+        (self.archive / 'inbox').mkdir()
+        kit = self.archive / 'inbox' / 'dry-kit.txt'
+        kit.write_text('data', encoding='utf-8')
+
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = self._run(
+                [str(renamed), '--more', str(kit), 'attachment', '--type', 'dna', '--dry-run'])
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertIn('Would set restricted: dna', out.getvalue())
+        self.assertNotIn('restricted', read_record(record)['meta'])  # nothing written
+        self.assertTrue(kit.exists())  # not moved
+
+    def test_more_type_dna_upgrades_restriction_on_idempotent_retry(self) -> None:
+        # The idempotent-retry no-op (finding #3's own fix) must not let an
+        # already-listed DNA attachment stay unrestricted forever just
+        # because the file/role/copy already match - re-running the same
+        # `--more --type dna` command must still upgrade a stale record even
+        # when there is no new files: entry to add.
+        primary = self.archive / 'documents' / 'census' / 'family-letter2.txt'
+        primary.write_text('Dear cousin,', encoding='utf-8')
+        self.assertEqual(self._run([str(primary), '--type', 'letter']), EXIT_CLEAN)
+        renamed = next((self.archive / 'documents' / 'census').glob('family-letter2*_S-*.txt'))
+        record = next((self.archive / 'sources' / 'letter').glob('*_S-*.md'))
+
+        (self.archive / 'inbox').mkdir()
+        kit = self.archive / 'inbox' / 'kit2.txt'
+        kit.write_text('data', encoding='utf-8')
+
+        rc = self._run([str(renamed), '--more', str(kit), 'attachment', '--type', 'dna'])
+        self.assertEqual(rc, EXIT_CLEAN)
+        attached = next((self.archive / 'documents' / 'census').glob('kit2*_S-*.txt'))
+        self.assertEqual(read_record(record)['meta']['restricted'], 'dna')
+
+        # Simulate a pre-fix record: strip restricted: back out by hand, as
+        # if this attach had happened before finding #1 existed, leaving the
+        # files: entry exactly as it already is (the file is already at its
+        # listed destination - the genuinely-already-done case finding #3's
+        # check is meant for).
+        text = record.read_text(encoding='utf-8')
+        record.write_text(text.replace('restricted: dna\n', ''), encoding='utf-8')
+        self.assertNotIn('restricted', read_record(record)['meta'])
+
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = self._run(
+                [str(renamed), '--more', str(attached), 'attachment', '--type', 'dna'])
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertIn('already attached', out.getvalue())
+        self.assertIn('Set restricted: dna', out.getvalue())
+        rec = read_record(record)['meta']
+        self.assertEqual(rec['restricted'], 'dna')
+        self.assertEqual(len(rec['files']), 2)  # not duplicated
+
+    def test_more_without_dna_type_never_touches_restriction(self) -> None:
+        # Scope guard: a --more attach with no --type (or a non-dna --type)
+        # must never add a restricted: marker - only an explicit --type dna
+        # triggers the upgrade.
+        primary = self.archive / 'documents' / 'census' / 'plain-letter.txt'
+        primary.write_text('Dear cousin,', encoding='utf-8')
+        self.assertEqual(self._run([str(primary), '--type', 'letter']), EXIT_CLEAN)
+        renamed = next((self.archive / 'documents' / 'census').glob('plain-letter*_S-*.txt'))
+        record = next((self.archive / 'sources' / 'letter').glob('*_S-*.md'))
+
+        (self.archive / 'inbox').mkdir()
+        extra = self.archive / 'inbox' / 'plain-page-2.txt'
+        extra.write_text('more text', encoding='utf-8')
+
+        rc = self._run([str(renamed), '--more', str(extra), 'page-2'])
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertNotIn('restricted', read_record(record)['meta'])
 
     # ── classification + slug units ──────────────────────────────────────────
 
