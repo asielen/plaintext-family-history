@@ -3,7 +3,21 @@
    script tag (read from the DOM, not fetched) so it renders from file:// with
    no CORS/network dependency; the .json file is also written to site/data/ as
    the reusable data artifact. tree.data_json is pre-escaped for safe embedding
-   in a <script> element. #}
+   in a <script> element.
+
+   #152 review fix (P2): person.html's caller wraps this partial's mount point
+   in a <details> that is CLOSED by default (the demoted per-person descendant
+   explorer). A collapsed <details>'s content is not laid out at all, so
+   rendering unconditionally at page load - the pre-fix behavior - fed
+   FhaTree.render() a zero-width container; viewportW() fell back to a
+   hardcoded 900px and drew the tree shrunk to that, and opening the
+   <details> later fires no `resize` event of its own to correct it, so the
+   reader was stuck with a badly-fit chart until they pressed Fit by hand.
+   Rendering now waits for the enclosing <details>'s own `toggle` event
+   (fired the moment the reader opens it, when the container has real
+   layout dimensions) - or renders immediately when there is no <details>
+   ancestor at all, or it is already open, so this partial keeps working
+   exactly as before in any context that does not collapse it. #}
 {% if tree %}
 <div class="fha-tree" id="fha-tree"></div>
 <p class="fha-tree-note">{{ tree.caption }} - click a name to open that person; use −/+ to collapse or expand.</p>
@@ -13,14 +27,27 @@
 <script>
 (function () {
   var holder = document.getElementById('fha-tree-data');
-  if (!holder || !window.FhaTree || !window.FhaTreeAdapter) return;
-  try {
-    var data = JSON.parse(holder.textContent);
-    var root = window.FhaTreeAdapter.fromNeutral(data);
-    var opts = { initialDepth: {{ tree.initial_depth if tree.initial_depth is not none else 'null' }},
-                 homeId: {{ (tree.home_id | tojson) if tree.home_id else 'null' }} };
-    window.FhaTree.render(document.getElementById('fha-tree'), root, opts);
-  } catch (e) { /* a bad tree must never blank the page */ }
+  var mount = document.getElementById('fha-tree');
+  if (!holder || !mount || !window.FhaTree || !window.FhaTreeAdapter) return;
+  function renderTree() {
+    try {
+      var data = JSON.parse(holder.textContent);
+      var root = window.FhaTreeAdapter.fromNeutral(data);
+      var opts = { initialDepth: {{ tree.initial_depth if tree.initial_depth is not none else 'null' }},
+                   homeId: {{ (tree.home_id | tojson) if tree.home_id else 'null' }} };
+      window.FhaTree.render(mount, root, opts);
+    } catch (e) { /* a bad tree must never blank the page */ }
+  }
+  var host = mount.closest ? mount.closest('details') : null;
+  if (!host || host.open) {
+    renderTree();
+  } else {
+    host.addEventListener('toggle', function onToggle() {
+      if (!host.open) return;               // ignore the close-toggle
+      host.removeEventListener('toggle', onToggle);
+      renderTree();
+    });
+  }
 })();
 </script>
 {% endif %}

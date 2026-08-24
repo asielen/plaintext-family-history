@@ -97,6 +97,7 @@ from _lib import (
     resolve_root_arg,
     Result,
     roots_change_orphans,
+    shell_quote,
     sqlite_cache_schema_status,
     undecodable_file_recorder,
     VENDOR_DIR,
@@ -131,7 +132,9 @@ configure_utf8_stdout()
 #
 #  Orphaned back-scan check (#113)
 #    _check_orphaned_back_photos - an unlisted -back/_back sibling on disk
-#                               beside a photo a source DOES list
+#                               beside a photo a source DOES list; its local
+#                               _find_back_on_disk scans the directory via
+#                               parse_media_filename (#145 followup, finding 2)
 #
 #  Top-level
 #    run_doctor                - orchestrate all checks; return a Result (no printing)
@@ -583,12 +586,36 @@ def _check_orphaned_back_photos(archive_root: Path, fha_config: dict,
     Photos are never renamed (SPEC §12.1), so the check is a plain filename
     comparison, never an exiftool call: for every photo file a source DOES
     list, compute its `base_id` (`_lib.grouping_stem` - the same key `fha
-    process`'s own variation grouping uses) and look beside it on disk for
-    `{base_id}-back{ext}` / `{base_id}_back{ext}`. A source that already
-    lists a `role: back` file for that base_id is skipped entirely - checked
-    by the RECORDED role, not by re-deriving one from the back file's own
-    name, since a human may have filed a back scan under a slightly
-    different name than the grammar would predict.
+    process`'s own variation grouping uses) and look beside it on disk for a
+    `part_kind == 'back'` sibling sharing that `base_id`, via a directory
+    scan + `parse_media_filename` (`_find_back_on_disk`, a local twin of
+    `process.py`'s own `_find_back_sibling` - #145 followup review, finding
+    2) rather than hand-building one or two lowercase, same-extension
+    candidate paths: a back scan saved in a different CASE
+    (`scan-BACK.jpg`) or a different EXTENSION (`scan-back.jpeg` beside a
+    `.jpg` primary) is found the same way `fha process` finds it at import
+    time. A source that already lists a `role: back` file for that base_id
+    is skipped entirely - checked by the RECORDED role, not by re-deriving
+    one from the back file's own name, since a human may have filed a back
+    scan under a slightly different name than the grammar would predict.
+
+    A copy-lettered listed file (`x-00100b.jpg` - TOOLING §6's copy-print
+    grammar, #113) is skipped when building the base_id candidates: it names
+    a SEPARATE physical print from the group's plain/unlettered scan, and
+    #113's own `fha process` fix never infers ITS back from a different
+    print's back either. Folding the letter off via `grouping_stem` for this
+    comparison would collapse `x-00100b.jpg` and `x-00100.jpg` onto the same
+    key and recommend attaching the unlettered print's back scan to the
+    COPY's source instead - corrupting the association #113 exists to keep
+    straight. Only a plain listed file (no variant letter) is ever a
+    candidate here.
+
+    Candidates are keyed by `(parent folder, base_id)`, not `base_id` alone:
+    two listed photos sharing a basename from DIFFERENT folders (an unusual
+    but legal `files:` shape - the same base name reused across two album
+    folders) are physically distinct siblings with physically distinct
+    potential backs, and collapsing them onto one dict key would silently
+    check only whichever one was encountered first.
 
     Scoped to the photos root only. A documents-root file is RENAMED on
     import (`{slug}_{S-id}.ext`), so its original folder no longer holds a
@@ -596,6 +623,19 @@ def _check_orphaned_back_photos(archive_root: Path, fha_config: dict,
     after-the-fact filename check for a document the way there is for a
     photo, which is exactly why the document side of #113 is fixed at
     IMPORT time instead (`process_document`'s own back-sibling pull-in).
+
+    The suggested repair command names the source's REAL listed primary path
+    (already in hand - this check is iterating the record's own `files:` to
+    find the orphan) rather than a placeholder a human would have to fill
+    in by hand, and quotes both file arguments with `_lib.shell_quote` so a
+    path containing spaces still runs when copied verbatim - UNLESS that
+    primary is itself missing from disk (#145 followup review, finding 5):
+    `fha process {primary} --more ...` needs an existing FILE argument, so
+    naming a vanished primary there would hand back a command that fails the
+    moment it is run. That case routes to the missing-file recovery path
+    instead, mirroring lint.py's own E011 guidance for a missing inventory
+    file (`fha reconcile` re-ties a MOVED file by name; it cannot help a
+    truly deleted file or a changed `roots:` mapping).
     """
     sources_dir = archive_root / 'sources'
     if not sources_dir.is_dir():
@@ -604,6 +644,54 @@ def _check_orphaned_back_photos(archive_root: Path, fha_config: dict,
         resolve_path('photos', fha_config, archive_root)
     except FhaConfigError:
         return EXIT_CLEAN          # no usable photos root: nothing to check
+
+    def _find_back_on_disk(parent_dir: Path, base_id: str) -> Path | None:
+        """Scan `parent_dir` for a `part_kind == 'back'` sibling sharing
+        `base_id` (case-insensitive) - a LOCAL TWIN of `process.py`'s own
+        `_find_back_sibling`, which scans a directory with the same
+        `parse_media_filename` parser instead of hand-building one or two
+        lowercase, same-extension candidate paths and probing each with
+        `.is_file()` (#145 followup review, finding 2). Tools never import
+        tools (TOOLING §15), so this is a duplicate of that scan, not a
+        cross-module call - but it needs to recognize exactly the same
+        back-sibling SHAPES `fha process` now does at import time, or a
+        photo filed before this check last ran (or filed with a back saved
+        in a different case/extension) reports clean here while genuinely
+        carrying an unlisted back scan.
+
+        Two gaps the old two-candidate guess could not see, both real on an
+        actual filesystem: a back scan saved in a DIFFERENT CASE than the
+        primary (`scan-BACK.jpg` beside `scan.jpg`, on a case-sensitive
+        filesystem where a lowercase guess never matches), and one saved
+        with a DIFFERENT EXTENSION (`scan-back.jpeg` beside a `scan.jpg`
+        primary). Both parse to `part_kind == 'back'` with the same
+        `grouping_stem`, so the scan finds them.
+
+        Ambiguity (more than one candidate) is left alone here - returns
+        None, exactly like "nothing found" - rather than raised the way
+        `process.py`'s `_find_back_sibling` now refuses on ambiguity (#145
+        finding 4): that fix stops a ONE-TIME import from silently guessing.
+        This check instead re-scans an archive that may have been evolving
+        for years, on every `fha doctor` run; hard-refusing every run until
+        a human resolves the ambiguity would make doctor itself unusable for
+        an unrelated reason. A human looking at the finding's named primary
+        can still go resolve it by hand.
+        """
+        base_id_norm = base_id.lower()
+        try:
+            siblings = list(parent_dir.iterdir())
+        except OSError:
+            return None
+        matches = []
+        for candidate in siblings:
+            if not candidate.is_file():
+                continue
+            candidate_parsed = parse_media_filename(candidate.stem)
+            if candidate_parsed.part_kind != 'back':
+                continue
+            if grouping_stem(candidate_parsed).lower() == base_id_norm:
+                matches.append(candidate)
+        return matches[0] if len(matches) == 1 else None
 
     findings: list[str] = []
     for record_path in sorted(sources_dir.rglob('*.md')):
@@ -615,8 +703,10 @@ def _check_orphaned_back_photos(archive_root: Path, fha_config: dict,
             continue
 
         listed: set[str] = set()
-        sample_path: dict[str, Path] = {}   # base_id -> one on-disk Path sharing it
-        has_back: set[str] = set()          # base_ids the record already lists a back for
+        # (parent folder, base_id) -> one on-disk Path sharing that key, so two
+        # same-named siblings from different folders are tracked independently.
+        sample_path: dict[tuple[Path, str], Path] = {}
+        has_back: set[tuple[Path, str]] = set()   # keys the record already lists a back for
         for item in entries:
             if not isinstance(item, dict):
                 continue
@@ -628,27 +718,49 @@ def _check_orphaned_back_photos(archive_root: Path, fha_config: dict,
                 on_disk = resolve_path(str(file_alias), fha_config, archive_root)
             except FhaConfigError:
                 continue
-            base_id = grouping_stem(parse_media_filename(on_disk.stem))
-            sample_path.setdefault(base_id, on_disk)
+            parsed = parse_media_filename(on_disk.stem)
+            if parsed.variant_id is not None:
+                continue            # a copy-letter print - never a back candidate (#113)
+            key = (on_disk.parent, grouping_stem(parsed))
+            sample_path.setdefault(key, on_disk)
             if str(item.get('role') or '').strip().lower() == 'back':
-                has_back.add(base_id)
+                has_back.add(key)
 
-        for base_id, disk_path in sample_path.items():
-            if base_id in has_back:
+        for (parent_dir, base_id), disk_path in sample_path.items():
+            if (parent_dir, base_id) in has_back:
                 continue
-            for sep in ('-', '_'):
-                candidate = disk_path.with_name(f'{base_id}{sep}back{disk_path.suffix}')
-                if not candidate.is_file():
-                    continue
-                candidate_alias = path_to_alias(candidate, 'photos', fha_config, archive_root)
-                if candidate_alias not in listed:
-                    findings.append(
-                        f'orphaned back scan: {candidate_alias} sits on disk but is not '
-                        f'listed in {record_path.name}\'s files:  next: attach it - '
-                        f'`{_LAUNCHER} process <that source\'s primary file> --more '
-                        f'{candidate_alias} back --root "{archive_root}"`'
-                    )
-                break
+            candidate = _find_back_on_disk(parent_dir, base_id)
+            if candidate is None:
+                continue
+            candidate_alias = path_to_alias(candidate, 'photos', fha_config, archive_root)
+            if candidate_alias in listed:
+                continue
+            primary_alias = path_to_alias(disk_path, 'photos', fha_config, archive_root)
+            if disk_path.is_file():
+                findings.append(
+                    f'orphaned back scan: {candidate_alias} sits on disk but is not '
+                    f'listed in {record_path.name}\'s files:  next: attach it - '
+                    f'`{_LAUNCHER} process {shell_quote(primary_alias)} --more '
+                    f'{shell_quote(candidate_alias)} back --root "{archive_root}"`'
+                )
+            else:
+                # #145 followup review, finding 5: the LISTED primary is
+                # itself missing from disk (moved, deleted, or the roots:
+                # mapping changed), so `fha process {primary_alias} --more
+                # ...` would fail immediately - its positional FILE argument
+                # does not exist. Route to the missing-file recovery path
+                # instead, mirroring lint.py's own E011 guidance for a
+                # missing inventory file: `fha reconcile` re-ties a MOVED
+                # file automatically by matching name; it cannot help if the
+                # file is simply gone, or if roots: changed instead.
+                findings.append(
+                    f'orphaned back scan: {candidate_alias} sits on disk, but its listed '
+                    f"primary {primary_alias} is missing from disk, so {record_path.name}'s "
+                    'own entry needs fixing first - next: if the primary was moved within '
+                    f'the photos root, run `{_LAUNCHER} reconcile --root "{archive_root}"` '
+                    '(preview with --dry-run) to re-tie it, then re-run `fha doctor`; if it '
+                    'was deleted or the roots: mapping changed, fix the record by hand.'
+                )
 
     if not findings:
         return EXIT_CLEAN

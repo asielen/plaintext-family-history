@@ -1068,6 +1068,19 @@ def _citation_named_persons(
     return rows
 
 
+def _is_under_root(path: Path, root: Path) -> bool:
+    """True if `path` is inside `root` (both resolved); False on unrelated trees.
+
+    A deliberate local twin of process.py's `_is_under` (tools never import
+    tools - TOOLING §15).
+    """
+    try:
+        path.resolve().relative_to(root.resolve())
+        return True
+    except (ValueError, OSError):
+        return False
+
+
 def _resolve_source_files(
     conn: sqlite3.Connection,
     archive_root: Path,
@@ -1079,6 +1092,18 @@ def _resolve_source_files(
     Packet output should be useful even when a fixture or archive points at a
     missing file, but omission must not be silent: the caller writes these
     notes into README.txt and returns a warning exit.
+
+    `source_files.path` is a straight copy of the source record's own
+    hand-editable `files:` entry (index.py's INSERT), the same trust boundary
+    `fha source clear-keyword` and `fha process refile` guard against a
+    naive-string escape - a '..'-carrying entry like
+    'documents/../../outside.tif' resolves outside the configured root, and
+    without a containment check `_copy_into` would `shutil.copy2` whatever
+    that resolves to straight into an exported packet a human hands to a
+    family member. Every resolved path is required to land inside the
+    configured documents or photos root before it is offered for copying;
+    anything else is reported the same way a missing file already is, not
+    silently included.
     """
     if not source_ids:
         return {}, []
@@ -1087,6 +1112,8 @@ def _resolve_source_files(
         f'SELECT source_id, path FROM source_files WHERE source_id IN ({placeholders})',
         source_ids,
     ).fetchall()
+    documents_root = resolve_path('documents', fha_config, archive_root)
+    photos_root = resolve_path('photos', fha_config, archive_root)
     out: dict[str, list[Path]] = {}
     missing: list[str] = []
     for row in rows:
@@ -1095,6 +1122,39 @@ def _resolve_source_files(
         except Exception as e:
             missing.append(
                 f'{fmt_id_display(row["source_id"])} asset {row["path"]!r} could not be resolved: {e}'
+            )
+            continue
+        try:
+            contained = (_is_under_root(resolved, documents_root)
+                         or _is_under_root(resolved, photos_root))
+        except RuntimeError as e:
+            # `_is_under_root` calls `.resolve()` on both `resolved` and the
+            # configured root; if either traverses a symlink loop, `.resolve()`
+            # raises RuntimeError rather than returning - and unlike
+            # ValueError/OSError, `_is_under_root` does not catch it (audit
+            # finding, round 2). This function runs BEFORE the packet build's
+            # own guarded write block and the CLI has no exception translation
+            # here, so an uncaught RuntimeError would turn one malformed
+            # filesystem entry into a bare traceback and NO packet at all,
+            # instead of the graceful "omitted with a warning" every other
+            # resolution failure above already gets. Catch it here and give the
+            # same treatment: excluded, with a message naming what it almost
+            # certainly is (a corrupted or maliciously crafted symlink loop,
+            # not an ordinary missing/escaping path).
+            missing.append(
+                f'{fmt_id_display(row["source_id"])} asset {row["path"]!r} could not be '
+                f'checked against the configured roots ({e}) - this looks like a symlink '
+                'loop, most likely from a corrupted or maliciously crafted filesystem '
+                'entry, and was left out of the packet. Find and fix or remove the '
+                'offending symlink, then build the packet again.'
+            )
+            continue
+        if not contained:
+            missing.append(
+                f'{fmt_id_display(row["source_id"])} asset {row["path"]!r} resolves outside '
+                'the configured documents/photos roots - this looks like a hand-edited '
+                'files: entry gone wrong (a \'..\' segment, or a doubled slash), and was '
+                'left out of the packet. Run `fha lint` and fix the entry by hand.'
             )
             continue
         if resolved.exists():

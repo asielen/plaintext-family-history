@@ -1159,7 +1159,21 @@ simple counts - the lightest remaining report work, bundled together for that re
 **Section 6 - Photo triage.** Call `photoindex.triage(root, top=10)` and embed ranked list.
 
 **Section 6b - Place candidates.** Call `places.candidates(root)` if places tool is built;
-else stub with a note.
+else stub with a note. Each cluster line carries a ready-to-run `fha confirm place` command
+(issue #79 point 1) - `--into <existing L-id>` when the cluster's label already matches (exact
+or near, ignoring word order/abbreviations) a place already in `places/places.yaml`, `--name=...`
+(mint) only when none matches.
+
+**Place-text oversight escalation (issue #79 point 2, later addition).** Any §6b place-text
+cluster reaching 20+ claims is also promoted into a banner printed above every section (same
+lead position as the refresh's own `archive_notes`), instead of sitting only at §6b's position
+10 of 13. One shared `places.run_candidates()` fetch feeds both §6b's own listing and this
+banner (never a second, independent call - the escalation reads no more than the same
+`place_text_groups` §6b already computed). Prints on `--section`-filtered runs too; when the
+active filter omits §6b, the banner names the follow-up command (`fha report --section
+place-candidates`) instead of pointing at content the filtered output does not carry. Also
+exposed on the structured `Result` (`data['place_escalations']`, `data['sections']
+['place-escalations']`) for a headless consumer, not only in the rendered markdown.
 
 **Section 7 - Hypotheses & draft queues.** From `hypotheses WHERE status='open'`: count per
 person. From `person_files` kind='draft-queue': persons whose file is non-trivially non-empty.
@@ -1598,6 +1612,22 @@ fha site --root example-archive
 # each curated person page: ancestor pedigree (≥2 generations)
 # library vendored; no CDN; works from file://
 ```
+
+**Amended 2026-08-22 (#115, #152):** the checklist above matches M8.5's
+original shape, since superseded on the home page - kept here as the
+historical record of what this milestone shipped, not as today's acceptance
+check. #115 replaced the home page's descendant tree with the
+**marriage-aware ancestor pedigree** (a server-rendered static SVG, seeded
+on `site.home_person`/`root_person`, depth controlled by
+`site.home_pedigree_generations`) as the home page's centerpiece; the
+interactive descendant explorer this section built is **not gone** - it
+moved to a per-person opt-in link on the **Person (curated)** page ("See
+descendants of {name} →", inside a closed-by-default `<details>`), seeded on
+THAT person rather than once from the root's apex. The vendored renderer,
+adapter, and neutral tree JSON contract this section built are all still the
+same pipeline, unchanged in shape - only where and how often it is seeded
+changed. See TOOLING §12 ("Pages: Home" / "Tree rendering") for the current
+shipped shape and `docs/SITE_PLAN.md` for the customization-layer view.
 
 ---
 
