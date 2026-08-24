@@ -192,6 +192,7 @@ from _lib import (
     extract_bare_ids,
     FhaConfigError,
     fmt_id_display,
+    humanize_edtf as _humanize_edtf,
     id_type_of,
     is_genetic_parent_subtype,
     is_working_copy,
@@ -215,12 +216,6 @@ from _lib import (
     strip_unaccepted_drafts,
     unreadable_dir_recorder,
     walk_files,)
-
-# `_humanize_edtf` (EDTF -> plain-reading date, e.g. '26 February 1916') is
-# reused as-is for a per-file `date:` note (#123) rather than hand-rolled a
-# second time - same convention report.py/reconcile.py already follow for
-# borrowing photoindex.py's helpers.
-import photoindex
 
 configure_utf8_stdout()
 
@@ -1401,26 +1396,48 @@ def _role_note(role: str | None, copy: str | None, date_edtf: str | None = None)
     """Plain-language annotation for one source-page file entry: its `files:`
     entry's optional per-file `date:` (SPEC §14, #123) first, then its
     `role:`, then - when set - its `copy:` letter (SPEC §14's `copy: b`/`c`/`d`
-    same-day/same-bundle variant marker - #123 also fixed the indexer landing
+    same-day/same-item variant marker - #123 also fixed the indexer landing
     that value as NULL instead of reading it). Renders '26 February 1916 ·
-    role: clipping · copy: b', or just 'role: clipping' when there is
+    role: entry · copy: b', or just 'role: entry' when there is
     neither, so a source with a single, undated file per role keeps today's
-    shorter label and only a bundle of look-alike variants (front/back copy
-    A, front/back copy B, four same-role newspaper clippings mailed months
-    apart, …) gains the extra clauses that tell its files apart.
+    shorter label and only a run of look-alike variants (front/back copy
+    A, front/back copy B, several same-role entries of one household ledger
+    or pages of a multi-sitting letter, …) gains the extra clauses that tell
+    its files apart.
 
-    `date_edtf` is rendered through `photoindex._humanize_edtf` - the
-    existing EDTF -> plain-English helper (decades, `~`/`?` hedges, month/day
-    all handled there already) - rather than a second hand-rolled version of
-    the same formatting living in this module."""
+    `date_edtf` is rendered through `_lib.humanize_edtf` - the shared EDTF ->
+    plain-English helper (decades, month/day, and `~`/`?` hedges rendered as
+    the two different things they record - "about" for approximate, "
+    (unconfirmed)" for uncertain - all handled there already) - rather than a
+    second hand-rolled version of the same formatting living in this module.
+    Moved into `_lib.py` (#123 follow-up, Codex review on PR #149) so this
+    module no longer has to import the whole `photoindex` tool just to reach
+    one date formatter."""
     parts: list[str] = []
     if date_edtf:
-        parts.append(photoindex._humanize_edtf(date_edtf))
+        parts.append(_humanize_edtf(date_edtf))
     if role:
         parts.append(f'role: {role}')
     if copy:
         parts.append(f'copy: {copy}')
     return ' · '.join(parts) if parts else None
+
+
+def _with_role_note(message: str, role_note: str | None) -> str:
+    """Compose a fixed availability/status message with the file's own
+    `_role_note` output (date/role/copy), so a degraded display path (an
+    asset that cannot be resolved or is missing on disk, a standalone build
+    without Pillow, a failed image-derivative creation) still surfaces the
+    per-file facts the index already has instead of discarding them outright.
+    Only the FILE's presentability is degraded on these paths - not the
+    indexed facts about it - so the message adds to `role_note` rather than
+    replacing it (#123 follow-up, Codex review on PR #149: `_file_entry`/
+    `_standalone_image_entry` used to drop date/role/copy entirely on every
+    one of these branches). `role_note` first, message last, matching the
+    join order the 'original kept in the archive' branch already used before
+    this fix generalized the pattern to every fallback branch in both
+    functions."""
+    return f'{role_note} · {message}' if role_note else message
 
 
 def _page_filename(record_id: str) -> str:
@@ -2202,17 +2219,29 @@ class _SiteBuilder:
         variants (front/back copy A, front/back copy B, …) reads as
         distinguishable entries instead of a wall of identical "role: front"
         labels. `date_edtf` (the entry's optional per-file `date:`, SPEC §14,
-        #123) rides along the same way, rendered human-readable and first."""
+        #123) rides along the same way, rendered human-readable and first.
+
+        Every branch below is a DEGRADED display, not a missing record: the
+        index still knows the file's date/role/copy even when the asset
+        itself cannot be shown (path unresolvable, missing on disk, Pillow
+        absent). `role_note` is computed up front from the parameters alone -
+        it needs nothing the resolve step below can fail to produce - and
+        `_with_role_note` composes it onto every fallback message, so those
+        facts never silently vanish just because the FILE became
+        unpresentable (#123 follow-up, Codex review on PR #149: this used to
+        replace the whole note with a fixed message on each of these paths)."""
         label = Path(asset_rel).name
+        role_note = _role_note(role, copy, date_edtf)
         try:
             resolved = resolve_path(asset_rel, self.fha_config, self.archive_root)
         except Exception:
-            return {'label': label, 'note': 'asset path could not be resolved', 'link_href': None, 'thumb_href': None}
+            return {'label': label, 'note': _with_role_note('asset path could not be resolved', role_note),
+                    'link_href': None, 'thumb_href': None}
         is_image = resolved.suffix.lower() in _IMAGE_SUFFIXES
-        role_note = _role_note(role, copy, date_edtf)
 
         if not resolved.exists():
-            return {'label': label, 'note': 'file not available in this build', 'link_href': None, 'thumb_href': None}
+            return {'label': label, 'note': _with_role_note('file not available in this build', role_note),
+                    'link_href': None, 'thumb_href': None}
 
         if self.linked:
             href = self._asset_href(resolved, page_dir)
@@ -2225,9 +2254,10 @@ class _SiteBuilder:
         # standalone
         if is_image:
             if not _PIL_AVAILABLE:
-                return {'label': label, 'note': 'image omitted (Pillow not installed)', 'link_href': None, 'thumb_href': None}
+                return {'label': label, 'note': _with_role_note('image omitted (Pillow not installed)', role_note),
+                        'link_href': None, 'thumb_href': None}
             return None  # signal: caller handles derivative creation (needs sid)
-        return {'label': label, 'note': (role_note + ' · ' if role_note else '') + 'original kept in the archive',
+        return {'label': label, 'note': _with_role_note('original kept in the archive', role_note),
                 'link_href': None, 'thumb_href': None}
 
     def _media_dest(self, alias_path: str, subdir: str) -> Path:
@@ -2249,15 +2279,21 @@ class _SiteBuilder:
         its file entry. Split from `_file_entry` because it needs the source id
         for the media subfolder and may emit a warning into `self.messages`.
         `copy`/`date_edtf` mirror `_file_entry`'s parameters of the same name
-        (SPEC §14)."""
+        (SPEC §14). On a failed derivative (corrupt image, unsupported format,
+        locked file) the date/role/copy note still carries through via
+        `_with_role_note` rather than being replaced outright (#123 follow-up,
+        Codex review on PR #149) - the FILE could not be rendered, but the
+        indexed facts about it are still known and worth showing."""
         resolved = resolve_path(asset_rel, self.fha_config, self.archive_root)
         dest = self._media_dest(asset_rel, normalize_id(sid))
+        role_note = _role_note(role, copy, date_edtf)
         if _make_derivative(resolved, dest):
             href = _rel_href(dest, page_dir)
-            return {'label': Path(asset_rel).name, 'note': _role_note(role, copy, date_edtf),
+            return {'label': Path(asset_rel).name, 'note': role_note,
                     'link_href': href, 'thumb_href': href}
         self.messages.append(f'WARNING: could not build a web image for {asset_rel} (skipped, build continues)')
-        return {'label': Path(asset_rel).name, 'note': 'image could not be processed', 'link_href': None, 'thumb_href': None}
+        return {'label': Path(asset_rel).name, 'note': _with_role_note('image could not be processed', role_note),
+                'link_href': None, 'thumb_href': None}
 
     # - source page (M8.1) -
 

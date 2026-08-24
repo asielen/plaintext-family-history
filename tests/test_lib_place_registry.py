@@ -93,6 +93,7 @@ class MatchPlaceTextToRegistryTests(unittest.TestCase):
         self.assertEqual(m['tier'], 'exact')
         self.assertEqual(m['place_id'], 'L-baba9801fa')
         self.assertEqual(m['name'], 'Topeka, Kansas')
+        self.assertIsNone(m['ambiguous_ids'])
 
     def test_exact_match_is_case_and_whitespace_insensitive(self) -> None:
         m = match_place_text_to_registry(self.root, '  topeka,   KANSAS  ')
@@ -119,6 +120,10 @@ class MatchPlaceTextToRegistryTests(unittest.TestCase):
         m = match_place_text_to_registry(self.root, 'Wichita, Kansas')
         self.assertIsNone(m['tier'])
         self.assertIsNone(m['place_id'])
+        # A genuine miss is not the same as a refused-to-guess tie - a
+        # caller must be able to tell the two apart (report.py §6b/the
+        # escalation banner does, Codex review PR #142 follow-up finding 2).
+        self.assertIsNone(m['ambiguous_ids'])
 
     def test_empty_text_is_none(self) -> None:
         m = match_place_text_to_registry(self.root, '   ')
@@ -145,6 +150,12 @@ class MatchPlaceTextToRegistryTests(unittest.TestCase):
         m = match_place_text_to_registry(self.root, 'Springfield')
         self.assertIsNone(m['tier'])
         self.assertIsNone(m['place_id'])
+        # `tier: None` alone can't tell a genuine miss apart from a refused
+        # tie - `ambiguous_ids` carries the real tied ids for a caller (e.g.
+        # report.py) that wants to say WHICH places clash instead of
+        # silently falling through to a mint recommendation (Codex review,
+        # PR #142 follow-up finding 2).
+        self.assertEqual(m['ambiguous_ids'], ['L-aaaaaaaaaa', 'L-bbbbbbbbbb'])
 
     def test_ambiguous_near_tie_also_refuses_to_guess(self) -> None:
         _write_registry(
@@ -155,6 +166,7 @@ class MatchPlaceTextToRegistryTests(unittest.TestCase):
         # with that same token set has two equally-plausible near matches.
         m = match_place_text_to_registry(self.root, 'Topeka Kansas')
         self.assertIsNone(m['tier'])
+        self.assertEqual(m['ambiguous_ids'], ['L-aaaaaaaaaa', 'L-bbbbbbbbbb'])
 
     def test_malformed_registry_degrades_to_no_match_not_a_crash(self) -> None:
         _write_registry(self.root, 'not_a_list: true\n')

@@ -1345,5 +1345,48 @@ class DuplicateIdRefusalTests(unittest.TestCase):
         self.assertNotIn('E001', msg)
 
 
+class ClaimValueByIdBlankValueTests(unittest.TestCase):
+    """`_claim_value_by_id` (feeds the contradiction-question heading) read
+    `str(claim.get('value', '')) or None` - `str()` ran on the raw `.get()`
+    result before the `or`, so a claim with a hand-blanked `value:` line
+    (YAML null, key present) would return the literal text 'None' instead
+    of the documented None ("can't be read or the id isn't found") - a
+    contradiction question could then open headed "None" rather than
+    reading as though the claim had no value text at all."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _write_source(self, claim_body: str) -> Path:
+        path = self.root / 'source_S-6000000001.md'
+        path.write_text(
+            '---\nid: S-6000000001\ntitle: Test\nsource_type: other\n---\n\n'
+            f'## Claims\n```yaml\n{claim_body}```\n', encoding='utf-8')
+        return path
+
+    def test_blank_value_returns_none_not_the_string_none(self) -> None:
+        path = self._write_source(
+            '- id: C-6000000001\n  value:\n  type: note\n'
+            '  persons: [P-1111111111]\n  status: suggested\n')
+        self.assertIsNone(confirm._claim_value_by_id(path, 'c-6000000001'))
+
+    def test_populated_value_still_round_trips(self) -> None:
+        path = self._write_source(
+            '- id: C-6000000002\n  value: a real value\n  type: note\n'
+            '  persons: [P-1111111111]\n  status: suggested\n')
+        self.assertEqual(
+            confirm._claim_value_by_id(path, 'c-6000000002'), 'a real value')
+
+    def test_unknown_id_returns_none(self) -> None:
+        path = self._write_source(
+            '- id: C-6000000003\n  value: something\n  type: note\n'
+            '  persons: [P-1111111111]\n  status: suggested\n')
+        self.assertIsNone(confirm._claim_value_by_id(path, 'c-9999999999'))
+
+
 if __name__ == '__main__':
     unittest.main()

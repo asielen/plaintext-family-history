@@ -261,58 +261,142 @@ class SourcePageTests(_Base):
         self.assertIn('file not available', html)
 
     def test_file_entry_note_adds_copy_letter_when_present(self):
-        # #123: a multi-file bundle (four newspaper clippings, say) reads as
-        # indistinguishable when every entry's note is the bare 'role:
-        # clipping'. Once the indexer stops dropping `copy:` on the floor
-        # (the source_files.copy fix, same issue), the site's file-list note
-        # names the variant too - 'role: clipping · copy: b' - so same-role
-        # files in one bundle are told apart without needing per-file dates.
-        self._seed_source('s-1111111111', 'Clippings Bundle', source_type='newspaper')
-        clip_dir = self.archive_root / 'documents' / 'newspaper'
-        clip_dir.mkdir(parents=True, exist_ok=True)
-        (clip_dir / 'clipping-a.pdf').write_bytes(b'not a real pdf')
-        (clip_dir / 'clipping-b.pdf').write_bytes(b'not a real pdf')
+        # #123: one continuous document with several same-role entries (a
+        # household ledger, say) reads as indistinguishable when every
+        # entry's note is the bare 'role: entry'. Once the indexer stops
+        # dropping `copy:` on the floor (the source_files.copy fix, same
+        # issue), the site's file-list note names the variant too - 'role:
+        # entry · copy: b' - so same-role entries of one item are told apart
+        # without needing per-file dates.
+        self._seed_source('s-1111111111', 'Household Ledger', source_type='other')
+        ledger_dir = self.archive_root / 'documents' / 'ledger'
+        ledger_dir.mkdir(parents=True, exist_ok=True)
+        (ledger_dir / 'entry-a.pdf').write_bytes(b'not a real pdf')
+        (ledger_dir / 'entry-b.pdf').write_bytes(b'not a real pdf')
         self.conn.execute(
             'INSERT INTO source_files(source_id, path, role, copy) VALUES (?,?,?,?)',
-            ('s-1111111111', 'documents/newspaper/clipping-a.pdf', 'clipping', None))
+            ('s-1111111111', 'documents/ledger/entry-a.pdf', 'entry', None))
         self.conn.execute(
             'INSERT INTO source_files(source_id, path, role, copy) VALUES (?,?,?,?)',
-            ('s-1111111111', 'documents/newspaper/clipping-b.pdf', 'clipping', 'b'))
+            ('s-1111111111', 'documents/ledger/entry-b.pdf', 'entry', 'b'))
         self._run(linked=True)
         html = self._read('sources/s-1111111111.html')
-        self.assertIn('role: clipping · copy: b', html)
+        self.assertIn('role: entry · copy: b', html)
         # The un-lettered sibling keeps the original, shorter note - no
         # 'copy: None' leaking through, and the two entries stay distinct.
-        self.assertIn('role: clipping</span>', html)
+        self.assertIn('role: entry</span>', html)
 
     def test_file_entry_note_includes_human_date_when_present(self):
-        # #123, the schema's own worked example: a source that legitimately
-        # bundles files from different dates (several newspaper clippings
-        # about one event, mailed months apart) can now give each `files:`
-        # entry its own `date:` (SPEC §14), distinct from the source's own
-        # `source_date:`. Once that value round-trips into source_files.
-        # date_edtf (tools/index.py), the site's file note renders it human-
-        # readable and FIRST - '26 February 1916 · role: clipping · copy: b'
-        # - so two same-role files in one bundle read as distinct by DATE,
-        # not just by an opaque copy letter.
-        self._seed_source('s-1111111111', 'Clippings Bundle', source_type='newspaper')
-        clip_dir = self.archive_root / 'documents' / 'newspaper'
-        clip_dir.mkdir(parents=True, exist_ok=True)
-        (clip_dir / 'clipping-a.pdf').write_bytes(b'not a real pdf')
-        (clip_dir / 'clipping-b.pdf').write_bytes(b'not a real pdf')
+        # #123, the schema's own worked example: a source whose files are
+        # still facets of one piece of evidence (SPEC §7) but were not all
+        # written on the same day - a household ledger whose entries span
+        # months - can now give each `files:` entry its own `date:`
+        # (SPEC §14), distinct from the source's own `source_date:`. Once
+        # that value round-trips into source_files.date_edtf (tools/index.py),
+        # the site's file note renders it human-readable and FIRST - '26
+        # February 1916 · role: entry · copy: b' - so two same-role entries
+        # of one ledger read as distinct by DATE, not just by an opaque copy
+        # letter.
+        self._seed_source('s-1111111111', 'Household Ledger', source_type='other')
+        ledger_dir = self.archive_root / 'documents' / 'ledger'
+        ledger_dir.mkdir(parents=True, exist_ok=True)
+        (ledger_dir / 'entry-a.pdf').write_bytes(b'not a real pdf')
+        (ledger_dir / 'entry-b.pdf').write_bytes(b'not a real pdf')
         self.conn.execute(
             'INSERT INTO source_files(source_id, path, role, copy, date_edtf) VALUES (?,?,?,?,?)',
-            ('s-1111111111', 'documents/newspaper/clipping-a.pdf', 'clipping', None, '1916-02-26'))
+            ('s-1111111111', 'documents/ledger/entry-a.pdf', 'entry', None, '1916-02-26'))
         self.conn.execute(
             'INSERT INTO source_files(source_id, path, role, copy, date_edtf) VALUES (?,?,?,?,?)',
-            ('s-1111111111', 'documents/newspaper/clipping-b.pdf', 'clipping', 'b', '1916-06-03'))
+            ('s-1111111111', 'documents/ledger/entry-b.pdf', 'entry', 'b', '1916-06-03'))
         self._run(linked=True)
         html = self._read('sources/s-1111111111.html')
         # Undated-copy sibling: date first, no copy letter.
-        self.assertIn('26 February 1916 · role: clipping</span>', html)
+        self.assertIn('26 February 1916 · role: entry</span>', html)
         # Dated + copy-lettered sibling: date, then role, then copy - the two
         # files read as distinct on both axes at once.
-        self.assertIn('3 June 1916 · role: clipping · copy: b</span>', html)
+        self.assertIn('3 June 1916 · role: entry · copy: b</span>', html)
+
+    def test_file_entry_note_distinguishes_uncertain_date_from_approximate(self):
+        # Codex review on PR #149 (P2): a `date: 1916?` (uncertain - "not sure
+        # this is the right year") used to render through the same "about
+        # {year}" prefix as `date: 1916~` (approximate - "this is a rough
+        # guess"), misstating what the archive actually recorded on the
+        # source page. The two markers must read as the two different things
+        # they record - matching base.html's own date-notation legend, which
+        # already explains `~` as "about this year" and `?` as "the year is
+        # probably right but has not been confirmed".
+        self._seed_source('s-1111111111', 'Uncertain Date Source', source_type='newspaper')
+        clip_dir = self.archive_root / 'documents' / 'newspaper'
+        clip_dir.mkdir(parents=True, exist_ok=True)
+        (clip_dir / 'clipping-a.pdf').write_bytes(b'not a real pdf')
+        self.conn.execute(
+            'INSERT INTO source_files(source_id, path, role, date_edtf) VALUES (?,?,?,?)',
+            ('s-1111111111', 'documents/newspaper/clipping-a.pdf', 'clipping', '1916?'))
+        self._run(linked=True)
+        html = self._read('sources/s-1111111111.html')
+        self.assertIn('1916 (unconfirmed) · role: clipping</span>', html)
+        self.assertNotIn('about 1916', html)
+
+    def test_missing_asset_note_keeps_date_and_role(self):
+        # Codex review on PR #149 (P2): a dated file missing on disk used to
+        # have its ENTIRE role_note (date/role/copy) replaced by the fixed
+        # 'file not available in this build' message, discarding facts the
+        # index still has even though only the FILE's presentability is
+        # degraded, not the record of what it was.
+        self._seed_source('s-1111111111', 'Has Asset', source_type='newspaper')
+        self.conn.execute(
+            'INSERT INTO source_files(source_id, path, role, copy, date_edtf) VALUES (?,?,?,?,?)',
+            ('s-1111111111', 'documents/newspaper/ghost.pdf', 'clipping', 'b', '1916-02-26'))
+        self._run(linked=True)
+        html = self._read('sources/s-1111111111.html')
+        self.assertIn(
+            '26 February 1916 · role: clipping · copy: b · file not available in this build',
+            html)
+
+    def test_no_pillow_note_keeps_date_and_role(self):
+        # Codex review on PR #149 (P2): a standalone build with Pillow
+        # unavailable used to replace a dated photo's note with the fixed
+        # 'image omitted (Pillow not installed)' message alone - a common,
+        # supported configuration, not an edge case - dropping the date/role
+        # the index still carries for it.
+        self._seed_source('s-1111111111', 'Photo Source', source_type='photo')
+        img = self.archive_root / 'photos' / '1880' / 'pic.jpg'
+        img.parent.mkdir(parents=True, exist_ok=True)
+        img.write_bytes(b'not-a-real-image-but-exists')
+        self.conn.execute(
+            'INSERT INTO source_files(source_id, path, role, date_edtf) VALUES (?,?,?,?)',
+            ('s-1111111111', 'photos/1880/pic.jpg', 'front', '1916-02-26'))
+        original = site._PIL_AVAILABLE
+        site._PIL_AVAILABLE = False
+        try:
+            self._run(linked=False)
+        finally:
+            site._PIL_AVAILABLE = original
+        html = self._read('sources/s-1111111111.html')
+        self.assertIn(
+            '26 February 1916 · role: front · image omitted (Pillow not installed)',
+            html)
+
+    @unittest.skipUnless(site._PIL_AVAILABLE, 'Pillow not installed')
+    def test_failed_derivative_note_keeps_date_and_role(self):
+        # Codex review on PR #149 (P2): the other standalone-image fallback -
+        # Pillow present but the derivative fails (corrupt image, unsupported
+        # format, locked file) - had the same bug: 'image could not be
+        # processed' replaced the whole note instead of joining it.
+        self._seed_source('s-1111111111', 'Photo Source', source_type='photo')
+        img = self.archive_root / 'photos' / '1880' / 'pic.jpg'
+        img.parent.mkdir(parents=True, exist_ok=True)
+        img.write_bytes(b'not-a-real-image-but-exists')   # not a decodable image
+        self.conn.execute(
+            'INSERT INTO source_files(source_id, path, role, date_edtf) VALUES (?,?,?,?)',
+            ('s-1111111111', 'photos/1880/pic.jpg', 'front', '1916-02-26'))
+        res = self._run(linked=False)
+        self.assertTrue(
+            any('could not build a web image' in m for m in res['messages']), res['messages'])
+        html = self._read('sources/s-1111111111.html')
+        self.assertIn(
+            '26 February 1916 · role: front · image could not be processed',
+            html)
 
 
 class SourceRedactionTests(_Base):
