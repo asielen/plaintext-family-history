@@ -5175,11 +5175,26 @@ def match_place_text_to_registry(archive_root: str | Path, place_text: str) -> d
 
     Returns `{'tier': 'exact'|'near'|None, 'place_id': str|None (display-
     cased, e.g. 'L-baba9801fa'), 'name': str|None (the registered name or
-    alt_name that matched)}`.
+    alt_name that matched), 'ambiguous_ids': list[str]|None}`.
+
+    `ambiguous_ids` is the one field that exists SPECIFICALLY for a `tier:
+    None` caller that needs to tell "genuinely no match" apart from "this
+    function refused to guess" - the tie case the docstring above describes.
+    It stays `None` (not an empty list) whenever `tier` is a real value, and
+    whenever the miss is genuine (no registered name shares this text's
+    normalization at all); it is the display-cased, sorted list of every
+    tied `place_id` ONLY in the two tie branches below. A write-time caller
+    (`claim.py`) that only ever checks `tier` sees no behavior change - this
+    is additive, read by report.py's §6b/escalation-banner rendering so it
+    can name the clash instead of silently falling through to a mint
+    recommendation that would create a THIRD, duplicate place_id on top of
+    an already-unresolved duplicate-name registry problem (Codex review,
+    PR #142 finding 2 follow-up).
     """
+    empty = {'tier': None, 'place_id': None, 'name': None, 'ambiguous_ids': None}
     key = normalize_place_text(place_text)
     if not key:
-        return {'tier': None, 'place_id': None, 'name': None}
+        return dict(empty)
     token_key = place_text_cluster_key(place_text)
 
     exact_hits: dict[str, str] = {}
@@ -5204,13 +5219,19 @@ def match_place_text_to_registry(archive_root: str | Path, place_text: str) -> d
     if exact_hits:
         if len(exact_hits) == 1:
             (pid_norm, name), = exact_hits.items()
-            return {'tier': 'exact', 'place_id': fmt_id_display(pid_norm), 'name': name}
-        return {'tier': None, 'place_id': None, 'name': None}
+            return {'tier': 'exact', 'place_id': fmt_id_display(pid_norm), 'name': name,
+                    'ambiguous_ids': None}
+        return {'tier': None, 'place_id': None, 'name': None,
+                'ambiguous_ids': sorted(fmt_id_display(pid) for pid in exact_hits)}
 
     if len(near_hits) == 1:
         (pid_norm, name), = near_hits.items()
-        return {'tier': 'near', 'place_id': fmt_id_display(pid_norm), 'name': name}
-    return {'tier': None, 'place_id': None, 'name': None}
+        return {'tier': 'near', 'place_id': fmt_id_display(pid_norm), 'name': name,
+                'ambiguous_ids': None}
+    if len(near_hits) > 1:
+        return {'tier': None, 'place_id': None, 'name': None,
+                'ambiguous_ids': sorted(fmt_id_display(pid) for pid in near_hits)}
+    return dict(empty)
 
 
 def scan_ids_in_tree(archive_root: str | Path) -> set[str]:
