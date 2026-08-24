@@ -420,7 +420,7 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "2a922814c1f9380f17dbd0c4b6acbd3c132e02377d37f39eda3faa61bfe2e945",
+      "sha256": "a91c4d9989d49b5407c4ca499153236bef97ad2300622a3caa6ad54612ec8548",
       "spec_version": "1.2",
       "src": "tools/_lib.py"
     },
@@ -490,7 +490,7 @@
     {
       "path": ".fha/tools/confirm.py",
       "category": "operating",
-      "sha256": "60337f6cb0912ae916d20af5b50a6bf62fb6f34ef0adbe9cda1996a518058707",
+      "sha256": "181100e3a1e14e8fdd6490d944911cfb08a14fec94a9522d9d59a079c31342fb",
       "spec_version": "1.2",
       "src": "tools/confirm.py"
     },
@@ -553,14 +553,14 @@
     {
       "path": ".fha/tools/index.py",
       "category": "operating",
-      "sha256": "956573f074b4a96e474a0e0dcdca50f05bff2b6a8c79a0eeff67759264b9523c",
+      "sha256": "0b038ad555042068cc1bfb61e8f96d9d0fb1d0ada5a9abc1237c2231c5ec2d7f",
       "spec_version": "1.2",
       "src": "tools/index.py"
     },
     {
       "path": ".fha/tools/lint.py",
       "category": "operating",
-      "sha256": "e36f88a0920bfad6c1f65b31bf3ec0b4f34ea18b453cbc8aea4e995914de74e6",
+      "sha256": "24facbbed31d1dd83c675bc51ae0d02aff34653f7fb36b05aeffde31436be6bd",
       "spec_version": "1.2",
       "src": "tools/lint.py"
     },
@@ -595,7 +595,7 @@
     {
       "path": ".fha/tools/photoindex.py",
       "category": "operating",
-      "sha256": "a44cd4d0436961a1d4cc6ea894529f4f5aa54a2d8efd9b58121468c614266570",
+      "sha256": "b6efc3d8de62c7d2a8a9e9dd49965cbb616db2bfd49838a9782e08c92a880fc8",
       "spec_version": "1.2",
       "src": "tools/photoindex.py"
     },
@@ -658,7 +658,7 @@
     {
       "path": ".fha/tools/site.py",
       "category": "operating",
-      "sha256": "69aa014639d15dcc8030d2efceb6872daea9acf2ccc9ca8386aecd77c54fe29d",
+      "sha256": "0badbfd3cc43fbb519291bac4bfa0dfad72c9bfb99a35bfa5bfc7aa4f1962a19",
       "spec_version": "1.2",
       "src": "tools/site.py"
     },
@@ -860,7 +860,7 @@
     {
       "path": "CHEATSHEET.md",
       "category": "operating",
-      "sha256": "8c97e235eb62bc342a9a1955800ca9ff59896ea4844ea69a0a37917f2f00c253",
+      "sha256": "77f2599e640bb38a46c8f8f7d324ce5286540447ab0a0f5b0d09d0b2c1d35932",
       "spec_version": "1.2"
     },
     {
@@ -872,19 +872,19 @@
     {
       "path": "GETTING_STARTED.md",
       "category": "operating",
-      "sha256": "e2715c9d629ae8c15f7ead989e2d6da1d73967a712cd711d9b36dfd9abaad49f",
+      "sha256": "625b64c1affc10cdf39c1a038dbc77f16d030767664a5966ec2b0275268f685f",
       "spec_version": "1.2"
     },
     {
       "path": "SPEC.md",
       "category": "operating",
-      "sha256": "53ffb1557980f51ec033e3bf2b777051462972da6e49c9c523fc953efb75b717",
+      "sha256": "c689f005aeddae4a74f01a16dc4a4d150362b0e7ec07ad5efd2593ce9ddb0e0e",
       "spec_version": "1.2"
     },
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "3aff91d7770ad5997ccb3b2c662aefbd2099a2a2c2d74d1bb708a0cd066ab729",
+      "sha256": "447467f1a5a83e08c37f40956dd5a5126fd71ec110590b214559fd39d958ac0a",
       "spec_version": "1.2"
     },
     {
@@ -908,7 +908,7 @@
     {
       "path": "docs/FILING_CABINET.md",
       "category": "operating",
-      "sha256": "d9f9d6843e4578a8a856589e74bc060d8f06f2adb56b580a6e21639205328551",
+      "sha256": "a9257d08897d793125a4c1a478932ac26f5c761d5319b25104adb58ad03001a7",
       "spec_version": "1.2"
     },
     {
