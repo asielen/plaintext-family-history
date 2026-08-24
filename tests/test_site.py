@@ -398,6 +398,24 @@ class SourcePageTests(_Base):
             '26 February 1916 · role: front · image could not be processed',
             html)
 
+    def test_claims_table_value_scrubbed_but_workbench_prefill_keeps_raw(self):
+        # #144 review finding 4: build_source_page passed the raw claim
+        # value straight into the claims table - a source page could
+        # publish a bare (C-xxxxxxxxxx) parenthetical the prose/timeline
+        # scrub already keeps off every other page. The workbench "edit &
+        # accept" prefill still needs the UNscrubbed original so a human
+        # editing the claim sees exactly what is stored, not a lossy
+        # display copy.
+        self._seed_person('p-aaaaaaaaaa', 'Jane Doe')
+        self._seed_source('s-1111111111', 'Census', people=('p-aaaaaaaaaa',))
+        self._seed_claim('c-1111111111', 's-1111111111', 'residence',
+                         'Lived in Kansas (C-4kx9m2p7qr) per the deed',
+                         status='suggested', persons=('p-aaaaaaaaaa',))
+        self._run(linked=True, workbench=True)
+        html = self._read('sources/s-1111111111.html')
+        self.assertIn('Lived in Kansas per the deed', html)          # reader-facing cell: scrubbed
+        self.assertIn('Lived in Kansas (C-4kx9m2p7qr) per the deed', html)  # wb prefill: raw
+
 
 class SourceRedactionTests(_Base):
     def _setup_redactable(self):
@@ -503,6 +521,48 @@ class PersonPageTests(_Base):
         html = self._read('persons/p-aaaaaaaaaa.html')
         self.assertIn('corroborates her birth on 9 September 1899', html)
         self.assertNotIn('C-4kx9m2p7qr', html)
+
+    def test_biography_embed_caption_claim_id_is_scrubbed(self):
+        # P2 (PR #158 follow-up): `_prose_to_html` routes a prose embed
+        # (`![[S-id|Caption]]`) through `render_embed` BEFORE `_inline_html`
+        # (and its per-span scrub) ever runs, so `_render_embed`'s caption
+        # handling only HTML-escaped the caption - a claim id embedded in
+        # it leaked into both the visible <figcaption> text and the image's
+        # alt attribute. The embed TARGET (the S-id) is unaffected.
+        self._seed_source('s-1111111111', 'Photo Source', source_type='photo')
+        img = self.archive_root / 'photos' / '1880' / 'pic.jpg'
+        img.parent.mkdir(parents=True, exist_ok=True)
+        img.write_bytes(b'not a real image - linked mode never decodes it')
+        self.conn.execute(
+            'INSERT INTO source_files(source_id, path, role) VALUES (?,?,?)',
+            ('s-1111111111', 'photos/1880/pic.jpg', 'front'))
+        bio = ('# Thomas\n## Biography\n'
+               '![[S-1111111111|Old photo (C-4kx9m2p7qr)]]\n')
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley', body=bio)
+        self._run(linked=True)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertNotIn('C-4kx9m2p7qr', html)
+        self.assertIn('<figcaption>Old photo</figcaption>', html)
+        self.assertIn('alt="Old photo"', html)
+
+    def test_biography_wikilink_display_label_claim_id_is_scrubbed(self):
+        # P2 (PR #158 follow-up): a labeled wikilink's display text
+        # (`[[S-id|label]]`) reaches `render_token` via `_inline_html`'s
+        # `wdisp` group, which the per-span scrub fix (#144 finding 3)
+        # never covered - `render_token`'s source/person/place renderers
+        # only HTML-escape the display text, so a claim id embedded in the
+        # label leaked straight onto the reader-facing page. The link
+        # TARGET (the S-id) must stay untouched so the citation still
+        # resolves.
+        bio = ('# Thomas\n## Biography\n'
+               'See [[S-1111111111|the record (C-4kx9m2p7qr)]] for details.\n')
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley', body=bio)
+        self._seed_source('s-1111111111', 'Census')
+        self._run(linked=True)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertNotIn('C-4kx9m2p7qr', html)
+        self.assertIn('>the record</a>', html)
+        self.assertIn('../sources/s-1111111111.html', html)    # citation still resolves
 
     def test_biography_translates_before_date_bracket_in_prose(self):
         # #140: a raw `[..YYYY]` "before" bracket (SPEC §11) embedded mid-
@@ -777,6 +837,23 @@ class PersonPageTests(_Base):
         # bleeds into the previous value, which would read as one run-on line.
         self.assertIn('1840', html[born_idx:married_idx])
         self.assertNotIn('1871', html[born_idx:married_idx])
+
+    def test_summary_vital_without_date_scrubs_claim_id_paren_in_free_text_value(self):
+        # #144 review finding 4: a vital claim with no date_edtf falls back
+        # to its free-text value for the Born/Died/Married summary line -
+        # the one place a bare (C-xxxxxxxxxx) parenthetical could reach the
+        # person summary unscrubbed, since every OTHER vital display uses
+        # the structured date_edtf instead (which must stay untranslated -
+        # base.html's own legend explains its notation).
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley')
+        self._seed_source('s-1111111111', 'Record', people=('p-aaaaaaaaaa',))
+        self._seed_claim('c-1111111111', 's-1111111111', 'birth',
+                         'Born about harvest time (C-4kx9m2p7qr)',
+                         status='accepted', persons=('p-aaaaaaaaaa',))
+        self._run(linked=True)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('Born about harvest time', html)
+        self.assertNotIn('C-4kx9m2p7qr', html)
 
     def _legend(self, html):
         """The date-notation legend paragraph on a built page, tag to tag.
@@ -2248,6 +2325,22 @@ class PlacePageTests(_Base):
         html = self._read('sources/s-1111111111.html')
         self.assertIn('Old Country', html)
         self.assertNotIn('places/', html.split('Old Country')[0][-200:])  # no place link around it
+
+    def test_events_table_value_scrubs_claim_id_paren(self):
+        # #144 review finding 4: build_place_page passed the raw claim value
+        # straight into the "Events here" table - the same unscrubbed-
+        # internal-encoding gap as the source page's claims table, on the
+        # place page's own claims render.
+        self._seed_person('p-aaaaaaaaaa', 'Jane')
+        self._seed_source('s-1111111111', 'Census', people=('p-aaaaaaaaaa',))
+        self._seed_place('l-1111111111', 'Fairview')
+        self._seed_claim_at_place('c-1111111111', 's-1111111111', 'l-1111111111',
+                                  'Lived in Fairview (C-4kx9m2p7qr) per the deed',
+                                  ('p-aaaaaaaaaa',))
+        self._run(linked=True)
+        html = self._read('places/l-1111111111.html')
+        self.assertIn('Lived in Fairview per the deed', html)
+        self.assertNotIn('C-4kx9m2p7qr', html)
 
 
 class DiscoveriesTests(_Base):
@@ -3944,6 +4037,137 @@ class ProseConverterTests(unittest.TestCase):
     def test_token_delegated_to_renderer(self):
         out = site._prose_to_html('Born in [S-1111111111] year.', lambda t: f'<a>{t}</a>')
         self.assertIn('<a>S-1111111111</a>', out)
+
+    # -- #144 review findings on _scrub_internal_encoding / _translate_date_before --
+
+    def test_claim_id_paren_removal_reinserts_missing_space(self):
+        # Finding 1: `_CLAIM_ID_PAREN_RE` eats an optional LEADING space along
+        # with the parenthetical. When nothing separates the closing paren
+        # from the next word, removing the match used to weld the two
+        # surrounding words together ("recordconfirms" instead of "record
+        # confirms") because there was never a trailing space to fall back on.
+        out = site._scrub_internal_encoding('The record (C-4kx9m2p7qr)confirms the date.')
+        self.assertEqual(out, 'The record confirms the date.')
+
+    def test_claim_id_paren_removal_does_not_double_space(self):
+        # The finding-1 fix must not overcorrect: when a space (or
+        # punctuation) already follows the parenthetical, no second space
+        # should be inserted.
+        out = site._scrub_internal_encoding('The record (C-4kx9m2p7qr) confirms the date.')
+        self.assertEqual(out, 'The record confirms the date.')
+        out2 = site._scrub_internal_encoding('The record (C-4kx9m2p7qr).')
+        self.assertEqual(out2, 'The record.')
+
+    def test_before_bracket_with_invalid_day_left_unchanged(self):
+        # Finding 2: a syntactically-matching but calendrically impossible
+        # bound (February has no 31st) must not be translated to the
+        # nonsensical "before February 31, 1900", and must not be silently
+        # reduced to "before 1900" by dropping the bad groups either - the
+        # original text is left exactly as written.
+        out = site._scrub_internal_encoding('The land sold [..1900-02-31], records show.')
+        self.assertIn('[..1900-02-31]', out)
+        self.assertNotIn('before', out)
+
+    def test_before_bracket_with_invalid_month_left_unchanged(self):
+        # Finding 2, the other half: an invalid MONTH (13) must not be
+        # silently truncated to "before 1900" either.
+        out = site._scrub_internal_encoding('The land sold [..1900-13-01], records show.')
+        self.assertIn('[..1900-13-01]', out)
+        self.assertNotIn('before', out)
+
+    def test_before_bracket_with_valid_date_still_translates(self):
+        # Guards that finding 2's validation doesn't overreach: a real,
+        # valid calendar date still translates exactly as before.
+        out = site._scrub_internal_encoding('The land sold [..1900-02-28], records show.')
+        self.assertIn('before February 28, 1900', out)
+        self.assertNotIn('[..1900-02-28]', out)
+
+    def test_before_bracket_as_interval_start_left_whole_untouched(self):
+        # Finding 5: one bound of a two-sided EDTF interval must not be
+        # translated on its own - `[..1900]/1910` (uncertain start, certain
+        # end) translating only the bracketed half produces the broken
+        # hybrid "before 1900/1910", half English and half raw. The whole
+        # interval is left exactly as written instead.
+        out = site._scrub_internal_encoding('They lived there [..1900]/1910, per the deed.')
+        self.assertIn('[..1900]/1910', out)
+        self.assertNotIn('before', out)
+
+    def test_before_bracket_as_interval_end_left_whole_untouched(self):
+        # Finding 5, the mirrored shape: certain start, uncertain end.
+        out = site._scrub_internal_encoding('They lived there 1900/[..1910], per the deed.')
+        self.assertIn('1900/[..1910]', out)
+        self.assertNotIn('before', out)
+
+    def test_standalone_before_bracket_still_translates(self):
+        # Guards that the finding-5 interval fix doesn't overreach: a
+        # bracket that is NOT adjacent to a slash still translates normally.
+        out = site._scrub_internal_encoding('They emigrated [..1905], settling nearby.')
+        self.assertIn('before 1905', out)
+        self.assertNotIn('[..1905]', out)
+
+    def test_link_target_with_before_bracket_stays_a_working_link(self):
+        # Finding 3: scrubbing the whole raw block BEFORE `_inline_html`
+        # identified markdown links rewrote a `[..YYYY]`-shaped substring
+        # INSIDE the URL, inserting a space that broke `_INLINE_RE`'s link
+        # match entirely - the link rendered as dead literal text, not a
+        # link at all.
+        ident = lambda t: f'TOK({t})'  # noqa: E731
+        out = site._prose_to_html(
+            '[record](https://example.test/search/[..1905])', ident)
+        self.assertIn('<a href="https://example.test/search/[..1905]">record</a>', out)
+        self.assertNotIn('before 1905', out)
+
+    def test_link_target_with_claim_id_paren_not_silently_truncated(self):
+        # Finding 3, the claim-id case: the old order let
+        # `_CLAIM_ID_PAREN_RE` silently DELETE a "(C-xxxxxxxxxx)" chunk out
+        # of the URL before the link was ever matched, producing a link
+        # that looked well-formed but silently pointed at the wrong
+        # (truncated) target. The id must survive inside the href.
+        #
+        # P2 (PR #158 follow-up), the test-quality half: this test used to
+        # only assert the id substring survived SOMEWHERE in the output -
+        # which passed even though `_INLINE_RE`'s `lurl` group stopped at
+        # the claim id's OWN closing paren (it did not count balanced
+        # parens), producing a link that was still corrupted:
+        # `<a href="...ref=(C-4kx9m2p7qr">record</a>)` - a TRUNCATED href
+        # (missing its closing paren) plus a stray trailing ')' leaking as
+        # literal text after `</a>`. Assert the complete, single anchor tag
+        # (full href, no trailing ')') rather than substring presence.
+        ident = lambda t: f'TOK({t})'  # noqa: E731
+        out = site._prose_to_html(
+            '[record](https://example.test/search?ref=(C-4kx9m2p7qr))', ident)
+        self.assertEqual(
+            out,
+            '<p><a href="https://example.test/search?ref=(C-4kx9m2p7qr)">record</a></p>')
+
+    def test_link_display_text_is_still_scrubbed(self):
+        # The finding-3 fix protects the URL TARGET only - a link's visible
+        # label is reader-facing prose like any other and must still be
+        # scrubbed.
+        ident = lambda t: f'TOK({t})'  # noqa: E731
+        out = site._prose_to_html(
+            '[The record (C-4kx9m2p7qr)](https://example.test/page)', ident)
+        self.assertNotIn('C-4kx9m2p7qr', out)
+        self.assertIn('<a href="https://example.test/page">The record</a>', out)
+
+    def test_wikilink_display_label_claim_id_is_scrubbed(self):
+        # P2 (PR #158 follow-up): a LABELED wikilink's display text
+        # (`[[S-id|label]]`) is reader-facing prose exactly like a markdown
+        # link's label (see test_link_display_text_is_still_scrubbed above) -
+        # it must be scrubbed of an internal claim-id parenthetical before it
+        # reaches render_token. The wikilink TARGET must stay untouched so
+        # the link still resolves.
+        seen = {}
+
+        def render_token(tok, disp=None):
+            seen['tok'], seen['disp'] = tok, disp
+            return f'TOK({tok}|{disp})'
+
+        out = site._prose_to_html(
+            '[[S-1111111111|the record (C-4kx9m2p7qr)]]', render_token)
+        self.assertNotIn('C-4kx9m2p7qr', out)
+        self.assertEqual(seen['tok'], 'S-1111111111')       # target untouched
+        self.assertNotIn('C-4kx9m2p7qr', seen['disp'] or '')
 
 
 class WorkbenchModeTests(_Base):

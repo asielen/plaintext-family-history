@@ -78,7 +78,14 @@ CODE MAP
                                  fail-closed on damaged markers - lives in _lib)
     _safe_link_href            - markdown-link scheme allowlist (stored-XSS guard)
     _prose_to_html             - minimal stdlib markdown→HTML (no md library)
-    _inline_html               - inline pass: links, [ID] tokens, **bold**
+    _inline_html               - inline pass: links, [ID] tokens, **bold**;
+                                 also where `_scrub_internal_encoding` runs
+                                 (per literal span, after links are matched)
+    _scrub_internal_encoding   - drop a bare (C-xxxx) parenthetical / translate
+                                 a [..YYYY] "before" bracket in free-text claim
+                                 values, wherever one reaches a reader-facing
+                                 page (prose, timeline, source/place claims
+                                 tables, person summary vitals)
     _extract_section           - pull one `## Heading` section body from a record
     _question_block_body       - a '## Q:' block's body, heading dropped, cut
                                  before the next heading of any kind (#117)
@@ -195,6 +202,7 @@ from _lib import (
     humanize_edtf as _humanize_edtf,
     id_type_of,
     is_genetic_parent_subtype,
+    is_valid_edtf,
     is_working_copy,
     load_fha_yaml,
     normalize_id,
@@ -467,8 +475,20 @@ def _safe_link_href(raw_url: str) -> str | None:
 # matched before a token so a token never half-matches a link; the `[[ ]]`
 # wikilink is matched before the legacy single-bracket `[ID]`; bold is last.
 # Anything not matched is literal text and gets escaped.
+# `lurl` allows one level of BALANCED parens inside the URL (P2, PR #158
+# follow-up) - a plain `[^)\s]+` stops at a URL's own first `)`, which is
+# wrong the moment the URL legitimately contains one, e.g. a claim-id
+# parenthetical pasted into a query string
+# (`https://example.test/search?ref=(C-4kx9m2p7qr)`) or a Wikipedia-style
+# disambiguation path. Without balancing, the group stops at the inner `)`,
+# producing a TRUNCATED href plus a stray `)` leaking as literal text right
+# after the closing `</a>` - the link still "matches" but points at the
+# wrong, cut-off target. `(?:[^()\s]|\([^()\s]*\))+` matches runs of
+# non-paren/non-space characters OR one complete `(...)` unit at a time, so
+# a `(...)` pair inside the URL is consumed whole and only the link's OWN
+# closing paren (matched separately, right after this group) ends the URL.
 _INLINE_RE = re.compile(
-    r'\[(?P<ltext>[^\]]+)\]\((?P<lurl>[^)\s]+)\)'                 # [text](url)
+    r'\[(?P<ltext>[^\]]+)\]\((?P<lurl>(?:[^()\s]|\([^()\s]*\))+)\)'  # [text](url)
     r'|\[\[(?P<wtarget>[^\[\]|#]+)(?:#[^\[\]|]*)?(?:\|(?P<wdisp>[^\[\]]*))?\]\]'  # [[target|disp]]
     r'|\[(?P<token>[PSCLH]-[0-9a-hjkmnp-tv-z]{10})\]'            # legacy [ID] token
     r'|\*\*(?P<bold>.+?)\*\*',                                    # **bold**
@@ -489,25 +509,47 @@ def _inline_html(text: str, render_token) -> str:
 
     `render_token(target, display=None)` accepts an ID *or* a human name/stem
     (resolved through the alias map) plus the optional in-token display text.
+
+    Internal-only encoding (`_scrub_internal_encoding` - #140, #144 finding
+    3) is scrubbed HERE, per literal-text run and per construct's own visible
+    label, AFTER `_INLINE_RE` has already matched links/tokens/bold against
+    the UNSCRUBBED text - never as a pre-pass over the whole raw block.
+    Scrubbing first (the old order, in `_prose_to_html`) could rewrite a
+    `[..1905]`-shaped or `(C-xxxxxxxxxx)`-shaped substring sitting INSIDE a
+    markdown link's URL before `_INLINE_RE` ever got a chance to recognize
+    `[text](url)` as a link at all - corrupting the target and breaking the
+    link syntax outright (issue reproduces with e.g.
+    `[record](https://example.test/search/[..1905])`). A link/wikilink
+    TARGET (`lurl`/`wtarget`) is therefore never scrubbed - it is a URL or a
+    record id, not prose a reader reads as English - only literal text and a
+    visible label (`ltext`, `wdisp`, `bold`) are. `wdisp` (a wikilink's
+    `|display` text, e.g. `[[S-id|the record (C-xxxx)]]`) was originally
+    missed here (P2, PR #158 follow-up) - it reaches `render_token`, whose
+    source/person/place renderers only HTML-escape it, so an internal claim
+    id left unscrubbed in a wikilink's label leaked straight onto the
+    reader-facing page even though the equivalent markdown-link label
+    (`ltext`) was already covered.
     """
     out: list[str] = []
     pos = 0
     for m in _INLINE_RE.finditer(text):
-        out.append(_escape(text[pos:m.start()]))
+        out.append(_escape(_scrub_internal_encoding(text[pos:m.start()])))
         pos = m.end()
         if m.group('wtarget') is not None:
-            out.append(render_token(m.group('wtarget').strip(), m.group('wdisp')))
+            out.append(render_token(m.group('wtarget').strip(),
+                                     _scrub_internal_encoding(m.group('wdisp'))))
         elif m.group('token'):
             out.append(render_token(m.group('token')))
         elif m.group('ltext') is not None:
             href = _safe_link_href(m.group('lurl'))
+            label = _escape(_scrub_internal_encoding(m.group('ltext')))
             if href is not None:
-                out.append(f'<a href="{href}">{_escape(m.group("ltext"))}</a>')
+                out.append(f'<a href="{href}">{label}</a>')
             else:
-                out.append(_escape(m.group('ltext')))
+                out.append(label)
         else:  # bold
-            out.append(f'<strong>{_escape(m.group("bold"))}</strong>')
-    out.append(_escape(text[pos:]))
+            out.append(f'<strong>{_escape(_scrub_internal_encoding(m.group("bold")))}</strong>')
+    out.append(_escape(_scrub_internal_encoding(text[pos:])))
     return ''.join(out)
 
 
@@ -536,15 +578,66 @@ _MONTH_NAMES = ('January', 'February', 'March', 'April', 'May', 'June', 'July',
                 'August', 'September', 'October', 'November', 'December')
 
 
+def _strip_claim_id_paren(match: re.Match) -> str:
+    """One `(C-xxxxxxxxxx)` match -> '' (dropped) or a single space (#144
+    review finding 1).
+
+    The regex eats an optional single LEADING space along with the
+    parenthetical, so a trailing sentence like " (C-xxx)." collapses cleanly
+    to "." with no orphan space. But that leading-space consumption has
+    nothing to say about what follows the match: a hand-edited parenthetical
+    sitting directly against the next word with no space of its own
+    ("record(C-xxx)confirms") loses its ONLY separator and the two words run
+    together ("recordconfirms"). Reinserting a single space whenever the
+    character right after the match is an ordinary word character (not
+    whitespace, not punctuation, not the end of the string) restores that
+    separator without ever double-spacing the already-correct case where a
+    space or punctuation mark already follows."""
+    end = match.end()
+    text = match.string
+    if end < len(text) and text[end].isalnum():
+        return ' '
+    return ''
+
+
 def _translate_date_before(match: re.Match) -> str:
     """One `[..YYYY[-MM[-DD]]]` match -> the plain phrase base.html's date-
     notation legend already uses for this form ("before <date>"), so prose
     and the legend never teach the reader two different words for the same
-    mark."""
+    mark.
+
+    Two guards keep this from ever emitting a wrong or broken reading (#144
+    review findings 2 and 5):
+      - The matched year/month/day is validated as a real calendar date
+        (via `_lib.is_valid_edtf`, the same validator `process.py`/`claim.py`
+        use for `--date`) before any translation happens. A syntactically-
+        matching but impossible bound - `[..1900-02-31]` (no such day),
+        `[..1900-13-01]` (no such month) - is left exactly as written rather
+        than rendered as a nonsensical "before February 31, 1900" or
+        silently reduced to "before 1900" by just dropping the bad groups.
+      - A bracket sitting directly against a `/` (`[..1900]/1910` or
+        `1900/[..1910]`) is one bound of a two-sided EDTF interval, not a
+        standalone "before" date. Translating only the bracketed half would
+        leave the interval half English, half raw ("before 1900/1910") -
+        so the whole interval is left untouched instead; the regex only
+        ever matches a bracket that is NOT part of a `/` interval, one
+        component of which it doesn't understand.
+    """
+    text = match.string
+    start, end = match.start(), match.end()
+    if (start > 0 and text[start - 1] == '/') or (end < len(text) and text[end] == '/'):
+        return match.group(0)
     year, month, day = match.group(1), match.group(2), match.group(3)
-    if month and month.isdigit() and 1 <= int(month) <= 12:
+    bare = year
+    if month:
+        bare += f'-{month}'
+        if day:
+            bare += f'-{day}'
+    if not is_valid_edtf(bare):
+        return match.group(0)
+    if month:
         month_name = _MONTH_NAMES[int(month) - 1]
-        if day and day.isdigit():
+        if day:
             return f'before {month_name} {int(day)}, {year}'
         return f'before {month_name} {year}'
     return f'before {year}'
@@ -552,14 +645,16 @@ def _translate_date_before(match: re.Match) -> str:
 
 def _scrub_internal_encoding(text: str) -> str:
     """Remove/translate internal-only encoding that must never reach reader-
-    facing prose (#140): a bare claim-id parenthetical is dropped outright,
-    and a raw `[..YYYY]`-shaped "before" date is translated to plain English.
+    facing prose (#140): a bare claim-id parenthetical is dropped outright
+    (spacing preserved, #144 finding 1), and a raw `[..YYYY]`-shaped "before"
+    date is translated to plain English when it validates as a real date and
+    stands alone (not one bound of a `/` interval - #144 findings 2 and 5).
     Applied to raw value/notes/body text BEFORE any HTML escaping, so callers
     doing their own index-based substitutions afterward (e.g. the timeline's
     place-mention span) see only the already-scrubbed text."""
     if not text:
         return text
-    text = _CLAIM_ID_PAREN_RE.sub('', text)
+    text = _CLAIM_ID_PAREN_RE.sub(_strip_claim_id_paren, text)
     text = _DATE_BEFORE_RE.sub(_translate_date_before, text)
     return text
 
@@ -578,10 +673,16 @@ def _prose_to_html(text: str, render_token, render_embed=None, *, drop_private: 
     `drop_private=True` (a public/standalone build) strips `<!-- private -->…
     <!-- /private -->` fenced prose before rendering; the linked preview keeps
     the content and only removes the marker comments.
+
+    Internal-only encoding (`_scrub_internal_encoding`, #140) is NOT applied
+    here as a pre-pass over the raw block - it runs inside `_inline_html`
+    instead, per literal-text span, after markdown links/tokens/bold are
+    already identified (#144 finding 3; see that function's docstring for
+    why a whole-block pre-pass corrupts a link target that happens to
+    contain a claim-id- or date-bracket-shaped substring).
     """
     if text:
         text = apply_private_fence(text, drop=drop_private)
-        text = _scrub_internal_encoding(text)
     if not text or not text.strip():
         return ''
     lines = text.replace('\r\n', '\n').split('\n')
@@ -2377,7 +2478,12 @@ class _SiteBuilder:
             ).fetchall()
             persons_html = ', '.join(self._person_link(p['person_id'], page_dir) for p in person_rows)
             claims.append({
-                'type': c['type'], 'value': c['value'], 'date': c['date_edtf'] or '',
+                'type': c['type'],
+                # Reader-facing cell: scrubbed of internal-only encoding the
+                # same way prose/timeline values already are (#144 finding
+                # 4) - a source page is a reader-facing page like any other.
+                'value': _scrub_internal_encoding(c['value'] or ''),
+                'date': c['date_edtf'] or '',
                 'place': self._place_html(c['place_text'], c['place_id'], page_dir),
                 'persons_html': self._markup(persons_html), 'status': c['status'],
                 'confidence': c['confidence'] or '',
@@ -2391,6 +2497,12 @@ class _SiteBuilder:
                 # is the DISPLAY label (registry name when the claim carries a
                 # resolved place_id and no text) so a resolved place never
                 # opens as a blank field the human could overwrite unknowingly.
+                # value_raw stays UNscrubbed on purpose (#144 finding 4): the
+                # edit modal must prefill with the claim's real stored text,
+                # not the reader-facing scrub, or a human editing the claim
+                # would silently lose the very encoding they might want to
+                # correct or keep.
+                'value_raw': c['value'] or '',
                 'place_text': self._place_label(c['place_text'], c['place_id']),
                 'place_id': fmt_id_display(c['place_id']) if c['place_id'] else '',
                 'persons_ids': ','.join(fmt_id_display(p['person_id']) for p in person_rows),
@@ -2756,7 +2868,15 @@ class _SiteBuilder:
                 r = by_type[t]
                 row_out = {
                     'label': _VITAL_LABELS[t],
-                    'value': r['date_edtf'] or r['value'] or '',
+                    # #144 finding 4: a vital claim WITH a date_edtf shows that
+                    # structured date as-is (base.html's own legend explains
+                    # its bracket/tilde/question-mark notation - it is not
+                    # prose and must not be translated to "before ..."
+                    # phrasing). Only the free-text FALLBACK - a vital claim
+                    # with no date_edtf at all - can carry the raw internal
+                    # encoding a reader was never meant to see, so only that
+                    # branch is scrubbed.
+                    'value': r['date_edtf'] or _scrub_internal_encoding(r['value'] or ''),
                     'place': self._place_html(r['place_text'], r['place_id'], page_dir),
                     'source_html': self._markup(self._source_link(r['source_id'], page_dir)) if r['source_id'] else '',
                     'confidence': r['confidence'] or '',
@@ -3996,11 +4116,21 @@ class _SiteBuilder:
     def _render_embed(self, target: str, caption: str, page_dir: Path) -> str:
         """A `![[S-id|Caption]]` prose embed → a responsive <figure>. The image is
         capped in height by CSS so a large scan never blows up the page. An
-        unresolvable or withheld reference renders nothing (never a raw id)."""
+        unresolvable or withheld reference renders nothing (never a raw id).
+
+        `_prose_to_html` calls `render_embed` (this method) BEFORE
+        `_inline_html`'s per-span scrub (#144 finding 3) ever runs over the
+        block, so the caption must be scrubbed of internal-only encoding
+        (`_scrub_internal_encoding`, #140) right here - a caption is
+        reader-facing prose exactly like a link's label, and an unscrubbed
+        claim id would otherwise leak into both the visible <figcaption>
+        text and the image's alt attribute (P2, PR #158 follow-up). The
+        embed TARGET is never scrubbed - it is an id/path, not prose."""
         href = self._image_href(target, page_dir, 'embeds')
         if not href:
             self.messages.append(f'WARNING: embed {target!r} matched no publishable photo; skipped.')
             return ''
+        caption = _scrub_internal_encoding(caption) if caption else caption
         cap = _escape(caption) if caption else ''
         # `alt` is an HTML attribute - a caption like `" onerror="alert(1)` would
         # break out of the `_escape(quote=False)` body form. Quote-aware escaping
@@ -4090,7 +4220,14 @@ class _SiteBuilder:
             for p in person_rows:
                 person_freq[p['person_id']] = person_freq.get(p['person_id'], 0) + 1
             claims.append({
-                'type': c['type'], 'value': c['value'], 'date': c['date_edtf'] or '',
+                'type': c['type'],
+                # Reader-facing cell: scrubbed of internal-only encoding, same
+                # as the source page's claims table (#144 finding 4). The
+                # place page's Events table has no workbench edit-prefill for
+                # a claim value, so unlike build_source_page there is no raw
+                # counterpart to keep alongside it.
+                'value': _scrub_internal_encoding(c['value'] or ''),
+                'date': c['date_edtf'] or '',
                 'persons_html': self._markup(
                     ', '.join(self._person_link(p['person_id'], page_dir) for p in person_rows)),
                 'source_html': self._markup(self._source_link(c['source_id'], page_dir)) if c['source_id'] else '',
