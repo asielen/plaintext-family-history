@@ -4444,21 +4444,79 @@ class ProseConverterTests(unittest.TestCase):
         self.assertIn('before February 28, 1900', out)
         self.assertNotIn('[..1900-02-28]', out)
 
-    def test_before_bracket_as_interval_start_left_whole_untouched(self):
-        # Finding 5: one bound of a two-sided EDTF interval must not be
-        # translated on its own - `[..1900]/1910` (uncertain start, certain
-        # end) translating only the bracketed half produces the broken
-        # hybrid "before 1900/1910", half English and half raw. The whole
-        # interval is left exactly as written instead.
+    def test_before_bracket_as_interval_start_is_translated_in_full(self):
+        # #144 finding 5 originally had `_translate_date_before` leave the
+        # WHOLE interval untouched here, since translating only the
+        # bracketed half would have produced the broken hybrid
+        # "before 1900/1910", half English and half raw. #167 finding 3
+        # completes the job instead of just avoiding the broken hybrid:
+        # `_translate_date_before_slash` now renders BOTH bounds in plain
+        # English, so raw `[..1900]/1910`-style notation no longer reaches
+        # the reader-facing page for this shape. This replaces the old
+        # "left untouched" expectation, which is intentionally no longer
+        # true for this exact input.
         out = site._scrub_internal_encoding('They lived there [..1900]/1910, per the deed.')
-        self.assertIn('[..1900]/1910', out)
+        self.assertIn('before 1900 to 1910', out)
+        self.assertNotIn('[..1900]/1910', out)
+
+    def test_before_bracket_as_interval_end_is_translated_in_full(self):
+        # #167 finding 3, the mirrored shape: certain start, uncertain end.
+        out = site._scrub_internal_encoding('They lived there 1900/[..1910], per the deed.')
+        self.assertIn('1900 to before 1910', out)
+        self.assertNotIn('1900/[..1910]', out)
+
+    def test_before_bracket_interval_with_month_day_both_sides(self):
+        # #167 finding 3: the month/day formatting used for a lone bracket
+        # (`_format_edtf_ymd`, shared with `_translate_date_before`) applies
+        # to EACH side of the interval independently.
+        out = site._scrub_internal_encoding(
+            'Span: [..1900-05-03]/1910-06, per the deed.')
+        self.assertIn('before May 3, 1900 to June 1910', out)
+        out2 = site._scrub_internal_encoding(
+            'Span: 1900-06/[..1910-05-03], per the deed.')
+        self.assertIn('June 1900 to before May 3, 1910', out2)
+
+    def test_before_bracket_interval_invalid_bracket_side_left_whole_untouched(self):
+        # #167 finding 3: the same calendar validation `_translate_date_before`
+        # applies to a lone bracket applies to the bracketed side of an
+        # interval - an impossible date (no month 13) leaves the WHOLE
+        # interval untouched rather than translate a bogus bound.
+        out = site._scrub_internal_encoding(
+            'Span: [..1900-13-01]/1910, per the deed.')
+        self.assertIn('[..1900-13-01]/1910', out)
         self.assertNotIn('before', out)
 
-    def test_before_bracket_as_interval_end_left_whole_untouched(self):
-        # Finding 5, the mirrored shape: certain start, uncertain end.
-        out = site._scrub_internal_encoding('They lived there 1900/[..1910], per the deed.')
-        self.assertIn('1900/[..1910]', out)
+    def test_before_bracket_interval_invalid_plain_side_left_whole_untouched(self):
+        # #167 finding 3, mirrored: an impossible date on the PLAIN side
+        # (no day 31 in February) also leaves the whole interval untouched.
+        out = site._scrub_internal_encoding(
+            'Span: [..1900]/1910-02-31, per the deed.')
+        self.assertIn('[..1900]/1910-02-31', out)
         self.assertNotIn('before', out)
+
+    def test_before_bracket_interval_both_sides_bracketed_left_untouched(self):
+        # #167 finding 3: `[..YYYY]/[..YYYY]` (both sides bracketed) is
+        # deliberately OUT of scope - `_lib.humanize_edtf`, the model for
+        # this project's interval wording, has no established phrasing for
+        # a bracket on both sides of a slash - so this shape still falls
+        # through to `_translate_date_before`'s own adjacency guard and is
+        # left exactly as written, same as before this fix.
+        out = site._scrub_internal_encoding(
+            'They lived there [..1900]/[..1910], per the deed.')
+        self.assertIn('[..1900]/[..1910]', out)
+        self.assertNotIn('before', out)
+
+    def test_before_bracket_interval_digit_run_not_mistaken_for_bound(self):
+        # #167 finding 3: the plain side's year must not swallow (or be
+        # swallowed by) an adjacent digit that isn't really part of the
+        # date - guards against a regex that's too loose about where the
+        # plain bound starts/ends.
+        out = site._scrub_internal_encoding('X [..1900]/19105 Y')
+        self.assertIn('[..1900]/19105', out)
+        self.assertNotIn('before', out)
+        out2 = site._scrub_internal_encoding('X 21900/[..1910] Y')
+        self.assertIn('21900/[..1910]', out2)
+        self.assertNotIn('before', out2)
 
     def test_standalone_before_bracket_still_translates(self):
         # Guards that the finding-5 interval fix doesn't overreach: a
@@ -4530,6 +4588,114 @@ class ProseConverterTests(unittest.TestCase):
         self.assertNotIn('C-4kx9m2p7qr', out)
         self.assertEqual(seen['tok'], 'S-1111111111')       # target untouched
         self.assertNotIn('C-4kx9m2p7qr', seen['disp'] or '')
+
+    # -- #167 (Codex P2 findings left over from PR #158) --
+
+    def test_wikilink_label_with_date_bracket_notation_still_links(self):
+        # #167 finding 2 (privacy-adjacent): a wikilink display label that
+        # legitimately contains SPEC §11 before-date notation, e.g.
+        # `record filed [..1905]`, used to trip `_INLINE_RE`'s `wdisp` group
+        # (`[^\[\]]*` cannot match ANY bracket character) - the whole
+        # `[[...]]` construct then failed to match as a wikilink at all and
+        # fell through as ordinary literal text, which only gets HTML-
+        # escaped, never scanned for bare ids. The raw internal source id
+        # leaked onto the page, unlinked and unscrubbed. Assert the FULL
+        # pipeline: a real citation link is produced (render_token is
+        # actually called, proving `_INLINE_RE` matched the wikilink
+        # alternative), its label comes back scrubbed AND humanized, and the
+        # raw id string appears nowhere unlinked in the output.
+        seen = {}
+
+        def render_token(tok, disp=None):
+            seen['tok'], seen['disp'] = tok, disp
+            return f'<a href="../sources/{tok}.html">{disp}</a>'
+
+        out = site._prose_to_html(
+            '[[S-1111111111|record filed [..1905]]]', render_token)
+        self.assertEqual(seen['tok'], 'S-1111111111')
+        self.assertEqual(seen['disp'], 'record filed before 1905')
+        self.assertIn('<a href="../sources/S-1111111111.html">record filed before 1905</a>', out)
+        # The raw id must not appear anywhere OUTSIDE the link render_token
+        # itself produced - i.e. not leaked as unlinked literal text.
+        self.assertEqual(out.count('S-1111111111'), 1)
+        self.assertNotIn('[..1905]', out)
+
+    def test_wikilink_plain_label_unaffected_by_bracket_tolerant_wdisp(self):
+        # #167 finding 2 regression guard: an ordinary label with no
+        # brackets at all must behave exactly as before the `wdisp` widening.
+        seen = {}
+
+        def render_token(tok, disp=None):
+            seen['tok'], seen['disp'] = tok, disp
+            return f'TOK({tok}|{disp})'
+
+        out = site._prose_to_html('[[S-1111111111|plain label]]', render_token)
+        self.assertEqual(seen['tok'], 'S-1111111111')
+        self.assertEqual(seen['disp'], 'plain label')
+        self.assertIn('TOK(S-1111111111|plain label)', out)
+
+    def test_wikilink_bracket_label_does_not_swallow_following_text(self):
+        # #167 finding 2, greediness guard: the bracket-tolerant `wdisp`
+        # must stop at the wikilink's OWN closing `]]` rather than reach
+        # past it into unrelated bracketed text later in the same block.
+        def render_token(tok, disp=None):
+            return f'TOK({tok}|{disp})'
+
+        out = site._prose_to_html(
+            '[[S-1111111111|see [bar] here]] and then [S-2222222222] too.', render_token)
+        self.assertIn('TOK(S-1111111111|see [bar] here)', out)
+        self.assertIn('TOK(S-2222222222|None)', out)     # legacy [ID] token still parses after
+
+    def test_claim_id_paren_before_bold_keeps_separating_space(self):
+        # #167 finding 1: `_scrub_internal_encoding` runs per literal-text
+        # RUN inside `_inline_html`'s loop. When a claim-id parenthetical
+        # sits at the very END of a run that is immediately followed - with
+        # no space of its own - by a DIFFERENT matched inline construct
+        # (here, `**bold**`), the substring handed to
+        # `_scrub_internal_encoding` ends exactly at the match, so
+        # `_strip_claim_id_paren`'s own "what follows?" check saw nothing
+        # and dropped the separating space entirely - "record" and
+        # "confirms" welded together with no space between them.
+        ident = lambda t, d=None: t  # noqa: E731
+        out = site._inline_html('The record (C-4kx9m2p7qr)**confirms**', ident)
+        self.assertEqual(out, 'The record <strong>confirms</strong>')
+
+    def test_claim_id_paren_before_markdown_link_keeps_separating_space(self):
+        # #167 finding 1, the symmetric case named in the issue: the same
+        # glue happens right before a markdown link.
+        ident = lambda t, d=None: t  # noqa: E731
+        out = site._inline_html(
+            'The record (C-4kx9m2p7qr)[confirms](https://example.test)', ident)
+        self.assertEqual(out, 'The record <a href="https://example.test">confirms</a>')
+
+    def test_claim_id_paren_before_wikilink_keeps_separating_space(self):
+        # #167 finding 1: the adjacency bug applies to ANY matched inline
+        # construct following with no gap, not just bold/markdown-link -
+        # including a wikilink, whose rendered HTML is opaque to
+        # `_inline_html` (it cannot peek inside `render_token`'s output).
+        def render_token(tok, disp=None):
+            return f'<a>{tok}</a>'
+
+        out = site._inline_html('The record (C-4kx9m2p7qr)[[S-1111111111]]', render_token)
+        self.assertEqual(out, 'The record <a>S-1111111111</a>')
+
+    def test_claim_id_paren_spacing_fix_does_not_double_space_at_boundary(self):
+        # #167 finding 1 must not overcorrect: when a real space already
+        # separates the parenthetical from the following construct, no
+        # second space is inserted.
+        ident = lambda t, d=None: t  # noqa: E731
+        out = site._inline_html('The record (C-4kx9m2p7qr) **confirms**', ident)
+        self.assertEqual(out, 'The record <strong>confirms</strong>')
+
+    def test_claim_id_paren_at_true_end_of_block_still_drops_cleanly(self):
+        # #167 finding 1 regression guard: when nothing follows the
+        # parenthetical at all (the TRUE end of the block, not merely the
+        # end of one internal literal-text run), the old "drop with no
+        # trailing space" behavior is unaffected - there is no boundary
+        # character to consult and none is invented.
+        ident = lambda t, d=None: t  # noqa: E731
+        out = site._inline_html('The record (C-4kx9m2p7qr)', ident)
+        self.assertEqual(out, 'The record')
 
 
 class WorkbenchModeTests(_Base):

@@ -523,9 +523,27 @@ def _safe_link_href(raw_url: str) -> str | None:
 # non-paren/non-space characters OR one complete `(...)` unit at a time, so
 # a `(...)` pair inside the URL is consumed whole and only the link's OWN
 # closing paren (matched separately, right after this group) ends the URL.
+# `wdisp` (a wikilink's `|display` label) needs the SAME one-level-of-
+# balancing trick, for square brackets instead of parens (#167 finding 2,
+# privacy-adjacent): a plain `[^\[\]]*` cannot match ANY `[` or `]`, so a
+# label that legitimately contains SPEC §11 before-date notation, e.g.
+# `[[S-1111111111|record filed [..1905]]]`, made the WHOLE wikilink
+# alternative fail to match at that position - `_INLINE_RE` then had no
+# alternative left that matched, so the entire construct fell through as
+# ordinary literal text. Literal text only gets HTML-escaped and scrubbed
+# of claim-id-parens/date-brackets (`_scrub_internal_encoding`); it is NOT
+# scanned for bare `S-xxxx`/etc. id tokens (that is `render_token`'s job,
+# reached only through a MATCHED `[[...]]`/`[ID]` construct) - so the raw
+# `S-1111111111` id leaked onto the page verbatim, unlinked and unscrubbed.
+# `(?:[^\[\]]|\[[^\[\]]*\])*` mirrors `lurl`'s technique: a non-bracket
+# char, OR one complete `[...]` unit with no brackets of its own inside it,
+# repeated. A lone `]` (including the first `]` of the wikilink's own
+# terminating `]]`) matches neither alternative, so the group always stops
+# there - it cannot swallow the construct's own closing `]]`.
 _INLINE_RE = re.compile(
     r'\[(?P<ltext>[^\]]+)\]\((?P<lurl>(?:[^()\s]|\([^()\s]*\))+)\)'  # [text](url)
-    r'|\[\[(?P<wtarget>[^\[\]|#]+)(?:#[^\[\]|]*)?(?:\|(?P<wdisp>[^\[\]]*))?\]\]'  # [[target|disp]]
+    r'|\[\[(?P<wtarget>[^\[\]|#]+)(?:#[^\[\]|]*)?'
+    r'(?:\|(?P<wdisp>(?:[^\[\]]|\[[^\[\]]*\])*))?\]\]'            # [[target|disp]]
     r'|\[(?P<token>[PSCLH]-[0-9a-hjkmnp-tv-z]{10})\]'            # legacy [ID] token
     r'|\*\*(?P<bold>.+?)\*\*',                                    # **bold**
     re.I,
@@ -565,11 +583,29 @@ def _inline_html(text: str, render_token) -> str:
     id left unscrubbed in a wikilink's label leaked straight onto the
     reader-facing page even though the equivalent markdown-link label
     (`ltext`) was already covered.
+
+    Each literal-text run is scrubbed independently (#167 finding 1): when a
+    claim-id parenthetical sits at the very END of a run - e.g.
+    "The record (C-4kx9m2p7qr)" immediately followed by a matched `**bold**`
+    or `[link](url)` with no space of its own - `_strip_claim_id_paren`
+    (see its docstring) has no way to see what comes next in the FULL
+    original text; the substring it is handed simply ends at the match. Left
+    alone, it drops the separating space it would otherwise reinsert,
+    welding the two surrounding words together ("record**confirms**" -> no
+    space before "confirms"). `_INLINE_BOUNDARY_CHAR`, a sentinel "a word
+    character follows immediately" flag, is passed as every run's boundary
+    EXCEPT the last (nothing follows the block's final literal-text run) -
+    we do not attempt to peek at the actual first rendered character of the
+    upcoming match `m` itself, since a wikilink/token's rendered form is
+    opaque HTML from `render_token`; any construct immediately adjacent with
+    no gap is treated the same, conservatively, as "followed by a word
+    character".
     """
     out: list[str] = []
     pos = 0
     for m in _INLINE_RE.finditer(text):
-        out.append(_escape(_scrub_internal_encoding(text[pos:m.start()])))
+        out.append(_escape(_scrub_internal_encoding(
+            text[pos:m.start()], _INLINE_BOUNDARY_CHAR)))
         pos = m.end()
         if m.group('wtarget') is not None:
             out.append(render_token(m.group('wtarget').strip(),
@@ -603,6 +639,15 @@ _EMBED_RE = re.compile(r'^!\[\[\s*([^\]|]+?)\s*(?:\|\s*([^\]]*?)\s*)?\]\]\s*$')
 # id-char class `_INLINE_RE`'s legacy token uses (Crockford Base32, SPEC §10).
 _CLAIM_ID_PAREN_RE = re.compile(r'\s?\(C-[0-9a-hjkmnp-tv-z]{10}\)', re.I)
 
+# Sentinel passed as `_scrub_internal_encoding`'s `next_char` for the
+# literal-text run immediately preceding a matched inline construct
+# (`_inline_html`, #167 finding 1) - any alphanumeric character works,
+# `_strip_claim_id_paren` only ever calls `.isalnum()` on it. Its actual
+# value never reaches rendered output; it exists purely to say "yes, a word
+# character follows here with no gap" for a run whose OWN text happens to
+# end exactly where the match begins.
+_INLINE_BOUNDARY_CHAR = 'x'
+
 # A raw `[..YYYY[-MM[-DD]]]` "before" date (SPEC §11's bracket form) embedded
 # mid-sentence in prose (#140) - the same notation base.html's shared footer
 # legend explains (#131) when it appears as a standalone structured date, but
@@ -610,13 +655,31 @@ _CLAIM_ID_PAREN_RE = re.compile(r'\s?\(C-[0-9a-hjkmnp-tv-z]{10}\)', re.I)
 # context and the sentence reads as broken. Translated in place instead.
 _DATE_BEFORE_RE = re.compile(r'\[\.\.(\d{4})(?:-(\d{2}))?(?:-(\d{2}))?\]')
 
+# The two-sided-interval shape `_translate_date_before` deliberately leaves
+# alone (see its docstring): one bound written as a `[..YYYY[-MM[-DD]]]`
+# bracket, the OTHER a plain `YYYY[-MM[-DD]]` with no bracket, joined by `/`
+# (#167 finding 3). `(?<!\d)`/`(?!\d)` bound the plain side so it can't
+# silently swallow (or be swallowed by) an adjacent digit run that isn't
+# really part of this date - the bracket side needs no such guard since `[`
+# and `]` are already unambiguous delimiters. Two full alternatives (rather
+# than one pattern with the bracket "on either side") because Python `re`
+# cannot reuse the same group name twice in one pattern; `by`/`bm`/`bd` name
+# the bracketed year/month/day, `py`/`pm`/`pd` the plain ones, suffixed `1`
+# for "bracket comes first" and `2` for "plain comes first".
+_DATE_BEFORE_SLASH_RE = re.compile(
+    r'\[\.\.(?P<by1>\d{4})(?:-(?P<bm1>\d{2}))?(?:-(?P<bd1>\d{2}))?\]'
+    r'/(?P<py1>\d{4})(?:-(?P<pm1>\d{2}))?(?:-(?P<pd1>\d{2}))?(?!\d)'
+    r'|(?<!\d)(?P<py2>\d{4})(?:-(?P<pm2>\d{2}))?(?:-(?P<pd2>\d{2}))?'
+    r'/\[\.\.(?P<by2>\d{4})(?:-(?P<bm2>\d{2}))?(?:-(?P<bd2>\d{2}))?\]',
+)
+
 _MONTH_NAMES = ('January', 'February', 'March', 'April', 'May', 'June', 'July',
                 'August', 'September', 'October', 'November', 'December')
 
 
-def _strip_claim_id_paren(match: re.Match) -> str:
+def _strip_claim_id_paren(match: re.Match, boundary_next_char: str | None = None) -> str:
     """One `(C-xxxxxxxxxx)` match -> '' (dropped) or a single space (#144
-    review finding 1).
+    review finding 1; #167 finding 1 extends it to the block-level boundary).
 
     The regex eats an optional single LEADING space along with the
     parenthetical, so a trailing sentence like " (C-xxx)." collapses cleanly
@@ -628,12 +691,49 @@ def _strip_claim_id_paren(match: re.Match) -> str:
     character right after the match is an ordinary word character (not
     whitespace, not punctuation, not the end of the string) restores that
     separator without ever double-spacing the already-correct case where a
-    space or punctuation mark already follows."""
+    space or punctuation mark already follows.
+
+    `boundary_next_char` covers the one case this match's OWN string can't
+    answer: `_scrub_internal_encoding` is called per literal-text SPAN
+    inside `_inline_html`'s loop, so a claim-id-paren sitting at the very
+    END of a span that is immediately followed - in the FULL original text -
+    by a different matched inline construct (`**bold**`, a markdown link, a
+    wikilink) has nothing after it within `match.string`; `end < len(text)`
+    is false even though, in the real text, a word character effectively
+    follows right away. `end == len(text)` is exactly the "this match is at
+    the true end of whatever string it was given" case, so only then do we
+    fall back to the caller-supplied boundary character - any match that
+    has real trailing text within its own string (including an earlier
+    claim-id-paren followed by more claim-id-parens) is unaffected and
+    keeps deciding from its own `text[end]` as before."""
     end = match.end()
     text = match.string
-    if end < len(text) and text[end].isalnum():
+    if end < len(text):
+        next_char = text[end]
+    else:
+        next_char = boundary_next_char
+    if next_char is not None and next_char.isalnum():
         return ' '
     return ''
+
+
+def _format_edtf_ymd(year: str, month: str | None, day: str | None) -> str:
+    """Plain English reading of one already-validated YYYY[-MM[-DD]]
+    component - '1900', 'May 1900', or 'May 3, 1900'. Shared by
+    `_translate_date_before` (a single bracket-qualified "before" bound) and
+    `_translate_date_before_slash` (#167 finding 3, a two-sided interval
+    with one bracketed bound), so both phrase a month/day the same way. Not
+    to be confused with `_lib._humanize_edtf_bound`, which reads a raw EDTF
+    token and uses "3 May 1900" day-before-month ordering with no comma -
+    this keeps site.py's own pre-existing "May 3, 1900" wording, established
+    by `_translate_date_before` before this helper was split out, so no
+    already-shipped rendering changes shape."""
+    if month:
+        month_name = _MONTH_NAMES[int(month) - 1]
+        if day:
+            return f'{month_name} {int(day)}, {year}'
+        return f'{month_name} {year}'
+    return year
 
 
 def _translate_date_before(match: re.Match) -> str:
@@ -653,11 +753,19 @@ def _translate_date_before(match: re.Match) -> str:
         silently reduced to "before 1900" by just dropping the bad groups.
       - A bracket sitting directly against a `/` (`[..1900]/1910` or
         `1900/[..1910]`) is one bound of a two-sided EDTF interval, not a
-        standalone "before" date. Translating only the bracketed half would
-        leave the interval half English, half raw ("before 1900/1910") -
-        so the whole interval is left untouched instead; the regex only
-        ever matches a bracket that is NOT part of a `/` interval, one
-        component of which it doesn't understand.
+        standalone "before" date, and this function only ever renders a
+        single "before X" phrase - it has no way to also speak the OTHER
+        side of the interval. `_scrub_internal_encoding` runs
+        `_DATE_BEFORE_SLASH_RE`/`_translate_date_before_slash` FIRST (#167
+        finding 3), which recognizes and fully translates the specific
+        two-sided shape "one bracketed bound, one plain bound" - so by the
+        time this function's own regex (`_DATE_BEFORE_RE`, which cannot see
+        across the `/` at all) runs, that shape is already gone from the
+        text. This guard therefore now only ever fires for the shapes the
+        slash translator does NOT handle - chiefly `[..YYYY]/[..YYYY]` (both
+        sides bracketed), which stays deliberately out of scope (see
+        `_translate_date_before_slash`'s docstring) - and this bracket is
+        still left exactly as written rather than guessed at.
     """
     text = match.string
     start, end = match.start(), match.end()
@@ -671,26 +779,93 @@ def _translate_date_before(match: re.Match) -> str:
             bare += f'-{day}'
     if not is_valid_edtf(bare):
         return match.group(0)
-    if month:
-        month_name = _MONTH_NAMES[int(month) - 1]
-        if day:
-            return f'before {month_name} {int(day)}, {year}'
-        return f'before {month_name} {year}'
-    return f'before {year}'
+    return f'before {_format_edtf_ymd(year, month, day)}'
 
 
-def _scrub_internal_encoding(text: str) -> str:
+def _translate_date_before_slash(match: re.Match) -> str:
+    """One two-sided EDTF interval, exactly one side a `[..YYYY[-MM[-DD]]]`
+    bracket and the other a plain `YYYY[-MM[-DD]]`, joined by `/` -> both
+    bounds in plain English (#167 finding 3), e.g. `[..1900]/1910` ->
+    "before 1900 to 1910" and `1900/[..1910]` -> "1900 to before 1910".
+
+    Before this, `_translate_date_before`'s own adjacency guard (see its
+    docstring) deliberately left the WHOLE interval untouched rather than
+    translate only the bracketed half and leave the other half raw - safe,
+    but incomplete: it never came back to finish the one shape it CAN render
+    completely and correctly. That left raw `[..YYYY]/YYYY`-style notation
+    on the reader-facing page for exactly the sentence the humanizer exists
+    to fix. This function is `_scrub_internal_encoding`'s FIRST date-bracket
+    pass (before `_DATE_BEFORE_RE`/`_translate_date_before`), so it sees -
+    and consumes - the bracket together with its `/` and the other bound
+    before the single-bracket translator or its "leave the whole interval
+    alone" guard ever gets a chance to fire on the now-already-handled
+    bracket.
+
+    `[..YYYY]/[..YYYY]` (BOTH sides bracketed) is NOT matched here and
+    stays out of scope, left untouched by `_translate_date_before`'s
+    existing guard exactly as before this fix: `_lib.humanize_edtf` - the
+    established model for this project's interval wording (a slash splits
+    on `/`, humanizes each side, joins as "X to Y") - has no existing
+    phrasing for a bracket on BOTH sides of a slash either, so this would be
+    inventing vocabulary with no precedent anywhere in the codebase rather
+    than reusing established wording; left as a clearly-flagged narrowing of
+    this fix's coverage rather than guessed at.
+
+    Each side is validated with `is_valid_edtf` exactly as
+    `_translate_date_before` validates its single bound - either side
+    failing validation (e.g. `[..1900-13-01]/1910`, no such month) leaves
+    the WHOLE match untouched rather than translate one real bound next to
+    one bogus one."""
+    g = match.groupdict()
+    bracket_first = g['by1'] is not None
+    if bracket_first:
+        b_year, b_month, b_day = g['by1'], g['bm1'], g['bd1']
+        p_year, p_month, p_day = g['py1'], g['pm1'], g['pd1']
+    else:
+        p_year, p_month, p_day = g['py2'], g['pm2'], g['pd2']
+        b_year, b_month, b_day = g['by2'], g['bm2'], g['bd2']
+
+    def _bare(year: str, month: str | None, day: str | None) -> str:
+        v = year
+        if month:
+            v += f'-{month}'
+            if day:
+                v += f'-{day}'
+        return v
+
+    if not is_valid_edtf(_bare(b_year, b_month, b_day)) or \
+            not is_valid_edtf(_bare(p_year, p_month, p_day)):
+        return match.group(0)
+
+    before_label = f'before {_format_edtf_ymd(b_year, b_month, b_day)}'
+    plain_label = _format_edtf_ymd(p_year, p_month, p_day)
+    if bracket_first:
+        return f'{before_label} to {plain_label}'
+    return f'{plain_label} to {before_label}'
+
+
+def _scrub_internal_encoding(text: str, next_char: str | None = None) -> str:
     """Remove/translate internal-only encoding that must never reach reader-
     facing prose (#140): a bare claim-id parenthetical is dropped outright
-    (spacing preserved, #144 finding 1), and a raw `[..YYYY]`-shaped "before"
-    date is translated to plain English when it validates as a real date and
-    stands alone (not one bound of a `/` interval - #144 findings 2 and 5).
-    Applied to raw value/notes/body text BEFORE any HTML escaping, so callers
-    doing their own index-based substitutions afterward (e.g. the timeline's
-    place-mention span) see only the already-scrubbed text."""
+    (spacing preserved, #144 finding 1; boundary-aware, #167 finding 1), a
+    raw `[..YYYY]`-shaped "before" date is translated to plain English when
+    it validates as a real date and stands alone (not one bound of a `/`
+    interval - #144 findings 2 and 5), and a two-sided interval with exactly
+    one bracketed bound is translated in full - both bounds in plain
+    English (#167 finding 3). Applied to raw value/notes/body text BEFORE
+    any HTML escaping, so callers doing their own index-based substitutions
+    afterward (e.g. the timeline's place-mention span) see only the
+    already-scrubbed text.
+
+    `next_char`, when given, is the character that immediately follows
+    `text` in the CALLER's full original string (not necessarily reflected
+    anywhere inside `text` itself) - see `_strip_claim_id_paren`'s docstring
+    for why `_inline_html` needs to pass this for a literal-text run that
+    ends exactly where a different matched inline construct begins."""
     if not text:
         return text
-    text = _CLAIM_ID_PAREN_RE.sub(_strip_claim_id_paren, text)
+    text = _CLAIM_ID_PAREN_RE.sub(lambda m: _strip_claim_id_paren(m, next_char), text)
+    text = _DATE_BEFORE_SLASH_RE.sub(_translate_date_before_slash, text)
     text = _DATE_BEFORE_RE.sub(_translate_date_before, text)
     return text
 
