@@ -94,8 +94,12 @@ different people's births. Fixed through `_lib.vital_subjects`: a claim is
 bucketed under a named person only when they're among its resolved subjects
 (the type's subject role - `child` for birth/baptism - when the claim names
 one, otherwise whoever `roles:` left unroled, the ordinary shape for a death
-record). A legacy claim with no `roles:` map at all (`vital_subjects` returns
-`None`) keeps the old broad behavior unchanged. This scoping is deliberately
+record). A legacy claim naming AT MOST ONE person with no `roles:` map at
+all (`vital_subjects` returns `None`) keeps the old broad behavior
+unchanged - there is nobody else to be ambiguous about. A claim naming
+TWO OR MORE people with no `roles:` map at all has not said which of them
+the claim is about; `vital_subjects` returns `[]` for that shape (#126,
+reopened) and the claim enters neither person's bucket. This scoping is deliberately
 NOT applied to a substantive type (`census`, `residence`, `occupation`, ...):
 those claims legitimately role every person on the record (`head`/
 `household_member`, ...), so `vital_subjects` would find nobody unroled and
@@ -482,9 +486,14 @@ def _run_xref_queries(conn: sqlite3.Connection) -> dict:
                     # person's own birth/death/etc., so it does not enter
                     # their vitals bucket at all (#126's xref twin, same
                     # skip the marriage/divorce branch above already takes
-                    # for spouse_parties). `None` - a legacy vital claim with
-                    # no roles: map, or any non-vital substantive type never
-                    # looked up above - keeps the old broad behavior unchanged.
+                    # for spouse_parties). `None` - a legacy vital claim
+                    # naming at most one person with no roles: map, or any
+                    # non-vital substantive type never looked up above -
+                    # keeps the old broad behavior unchanged. A vital claim
+                    # naming two or more people with no roles: map at all is
+                    # NOT this case: `subjects` is `[]`, not None, so the
+                    # `continue` above fires for everyone it names (#126,
+                    # reopened) - the claim has not said whose vital it is.
                     continue
                 key = (claim['type'],)
                 by_group.setdefault(key, []).append(cid)

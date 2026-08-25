@@ -184,6 +184,58 @@ _QUESTIONS_PARTIAL_VITALS_MD = '''# Open Questions (general)
   - (human, 2026-01-01) Birth date still needs confirmation.
 '''
 
+# #126, reopened: a death claim naming two people with NO roles: map at all
+# (not even a partial one, unlike Role Only Parent's roled birth claim above)
+# has not said which of them died. Guards against the exact shape the first
+# pass of #126's fix missed - it only reached claims with SOME role signal.
+_PERSON_NEEDS_DEATH_MD = '''---
+id: P-ffffffffff
+name: Needs Death Person
+living: false
+tier: curated
+no_known_marriages: true
+---
+
+## Biography
+
+Some text about Needs Death Person.
+'''
+
+_PERSON_KIN_OF_NEEDS_DEATH_MD = '''---
+id: P-gggggggggg
+name: Kin Of Needs Death
+living: false
+tier: stub
+---
+'''
+
+_SOURCE_DEATH_NAMES_TWO_NO_ROLES_MD = '''---
+id: S-6666666666
+title: Source Six
+source_type: vital-record
+---
+
+## Claims
+```yaml
+- id: C-6666666666
+  type: death
+  persons: [P-ffffffffff, P-gggggggggg]
+  value: Visited the grave in 1990
+  status: accepted
+  reviewed: 2026-01-01
+```
+'''
+
+_QUESTIONS_NEEDS_DEATH_MD = '''# Open Questions (general)
+
+## Q: When did Needs Death Person die?
+- origin: human
+- status: open
+- refs: [P-ffffffffff]
+- context:
+  - (human, 2026-01-01) Death date still needs confirmation.
+'''
+
 # Role Only Parent has no birth claim of their own; the only birth claim
 # naming them is their CHILD's, where roles: casts them as `parent`, not the
 # claim's subject. Guards against counting ANY claim naming pid toward pid's
@@ -742,6 +794,34 @@ class ReportTests(unittest.TestCase):
         md = result['markdown']
 
         self.assertNotIn('When was Role Only Parent born?', md)
+        self.assertNotIn('propose: review', md)
+        self.assertIn('No open question currently has a closing proposal.', md)
+
+    def test_answerable_questions_does_not_propose_for_no_roles_multi_person_claim(
+            self) -> None:
+        # #126, reopened: unlike Role Only Parent above (a roled claim), this
+        # death claim has NO roles: map at all and names two people - it has
+        # not said which of them died. A claim with zero role signal used to
+        # be read as "everyone named", which would have wrongly proposed
+        # closing Needs Death Person's question from a claim that may
+        # actually be about their kin.
+        (self.archive_root / 'people' / 'needsdeath__P-ffffffffff.md').write_text(
+            _PERSON_NEEDS_DEATH_MD, encoding='utf-8'
+        )
+        (self.archive_root / 'people' / 'kin__P-gggggggggg.md').write_text(
+            _PERSON_KIN_OF_NEEDS_DEATH_MD, encoding='utf-8'
+        )
+        (self.archive_root / 'sources' / 'sourcesix_S-6666666666.md').write_text(
+            _SOURCE_DEATH_NAMES_TWO_NO_ROLES_MD, encoding='utf-8'
+        )
+        (self.archive_root / 'notes' / 'questions.md').write_text(
+            _QUESTIONS_NEEDS_DEATH_MD, encoding='utf-8'
+        )
+
+        result = report.run_report(self.archive_root, {}, full=True)
+        md = result['markdown']
+
+        self.assertNotIn('When did Needs Death Person die?', md)
         self.assertNotIn('propose: review', md)
         self.assertIn('No open question currently has a closing proposal.', md)
 
