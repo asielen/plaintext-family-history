@@ -779,9 +779,9 @@ class OrphanedBackPhotosTests(unittest.TestCase):
     def _fha_config(self) -> dict:
         return {'roots': {'photos': 'photos', 'documents': 'documents'}}
 
-    def _finding(self, result):
+    def _finding(self, result, check_id: str = 'orphaned_back_photos'):
         return next(
-            (c for c in result.data['checks'] if c['id'] == 'orphaned_back_photos'),
+            (c for c in result.data['checks'] if c['id'] == check_id),
             None,
         )
 
@@ -1007,10 +1007,82 @@ class OrphanedBackPhotosTests(unittest.TestCase):
         # Neither candidate is silently attached/recommended as THE back -
         # doctor must not guess which one is real.
         self.assertNotIn('orphaned back scan', report)
-        check = self._finding(result)
-        self.assertIsNotNone(check, 'doctor must report an orphaned_back_photos finding')
+        # Issue #169 followup review, finding 5: a purely-ambiguous run
+        # reports under its OWN 'ambiguous_back_photos' check, not folded
+        # into 'orphaned_back_photos' (whose "attach each" next_step would
+        # be wrong advice here).
+        self.assertIsNone(self._finding(result, 'orphaned_back_photos'))
+        check = self._finding(result, 'ambiguous_back_photos')
+        self.assertIsNotNone(check, 'doctor must report an ambiguous_back_photos finding')
         self.assertEqual(check['status'], 'warn')
+        self.assertEqual(check['detail'], '1 primary(ies) with 2+ unlisted back-shaped '
+                         'candidates on disk')
+        self.assertNotIn('attach each', check['next_step'])
         self.assertGreaterEqual(result.exit_code, EXIT_WARNINGS)
+
+    def test_ambiguous_back_scan_finding_never_tells_owner_to_rename_a_photo(self) -> None:
+        # Issue #169 followup review, finding 1 (P1): following the recovery
+        # advice by renaming one of the ambiguous candidates on disk would
+        # break the external photo catalog that the archive's no-rename rule
+        # (AGENTS.md: "NEVER rename or move anything under the photos root")
+        # protects. The finding must direct the owner to a non-renaming fix
+        # (attach the correct candidate) instead.
+        (self.root / 'photos' / 'x-00501.jpg').write_bytes(b'front')
+        (self.root / 'photos' / 'x-00501-back.jpg').write_bytes(b'back candidate one')
+        (self.root / 'photos' / 'x-00501_back.jpeg').write_bytes(b'back candidate two')
+        _write(self.root / 'sources' / 'photos' / 'ambiguous2_S-9999999998.md', _SOURCE.format(
+            sid='S-9999999998', title='Ambiguous 2',
+            line='files:\n  - file: photos/x-00501.jpg\n    role: primary\n'))
+
+        result = doctor.run_doctor(self.root, self._fha_config())
+        report = '\n'.join(result.data['lines'])
+
+        self.assertIn('ambiguous back scan', report)
+        self.assertNotIn('remove or rename', report)
+        self.assertNotIn('rename the other', report)
+        # The structured next_step must not INSTRUCT a rename either (it may
+        # mention "never rename" as a safeguard - that is a prohibition, not
+        # an instruction to do it).
+        check = self._finding(result, 'ambiguous_back_photos')
+        self.assertIsNotNone(check)
+        self.assertNotIn('remove or rename', check['next_step'])
+        self.assertNotIn('rename the other', check['next_step'])
+
+    def test_missing_primary_with_ambiguous_backs_routes_to_reconcile(self) -> None:
+        # Issue #169 followup review, finding 6: when the listed primary is
+        # ITSELF missing from disk AND its directory holds 2+ unlisted
+        # back-shaped candidates, the ambiguity branch used to run BEFORE
+        # the missing-primary check, so it fired first and suggested `fha
+        # process <missing primary> --more ...` - a command that fails
+        # immediately because its positional FILE argument does not exist.
+        # The missing-primary check must win regardless of candidate count,
+        # matching the single-candidate case's own correct behavior.
+        (self.root / 'photos' / 'x-00700-back.jpg').write_bytes(b'back candidate one')
+        (self.root / 'photos' / 'x-00700_back.jpeg').write_bytes(b'back candidate two')
+        # x-00700.jpg (the listed primary) is deliberately never created.
+        _write(self.root / 'sources' / 'photos' / 'card7_S-1313131313.md', _SOURCE.format(
+            sid='S-1313131313', title='Card 7',
+            line='files:\n  - file: photos/x-00700.jpg\n    role: primary\n'))
+
+        result = doctor.run_doctor(self.root, self._fha_config())
+        report = '\n'.join(result.data['lines'])
+
+        # Both candidates are still named, and the guidance is the
+        # reconciliation/manual-repair path - never a dead `fha process`
+        # command naming the nonexistent primary.
+        self.assertIn('missing from disk', report)
+        self.assertIn('reconcile', report)
+        self.assertIn('photos/x-00700-back.jpg', report)
+        self.assertIn('photos/x-00700_back.jpeg', report)
+        self.assertNotIn(
+            f'{doctor._LAUNCHER} process {doctor.shell_quote("photos/x-00700.jpg")}', report)
+        # This is the missing-primary shape, not the "doctor cannot tell
+        # which is real" ambiguity message - the two are different failures.
+        self.assertNotIn('ambiguous back scan', report)
+        self.assertIsNone(self._finding(result, 'ambiguous_back_photos'))
+        check = self._finding(result, 'orphaned_back_photos')
+        self.assertIsNotNone(check)
+        self.assertEqual(check['status'], 'warn')
 
     def test_ambiguous_back_siblings_ignore_a_candidate_already_listed(self) -> None:
         # A candidate that is already listed in files: (just under some OTHER

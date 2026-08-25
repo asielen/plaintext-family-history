@@ -2733,7 +2733,28 @@ def _restricted_type_of(value) -> str | None:
 # this regex, which is the point of tightening it here rather than relying
 # on that net to keep catching it by accident). `(?:[+-]?\d?|\d[+-]?)`
 # accepts both orders, each indicator at most once.
-_BLOCK_SCALAR_HEADER_RE = re.compile(r'^[|>](?:[+-]?\d?|\d[+-]?)(\s*#.*)?$')
+#
+# YAML also lets a "node property" - an anchor (`&name`) and/or a type tag
+# (`!!str`, a bare `!`, or a custom `!tag`) - precede the block indicator on
+# the same line, in EITHER order (the YAML grammar allows both
+# tag-then-anchor and anchor-then-tag): `restricted: &privacy >-` or
+# `restricted: !!str |` are both valid hand-authored YAML (issue #169
+# followup, finding 2 - a Codex P2 against this branch's own round-1 fix).
+# Without recognizing these, `_frontmatter_key_span` never even detects a
+# block scalar is opening, falls back to header-only replacement, and the
+# re-parse safety net below correctly refuses rather than corrupt - but that
+# means a VALID restricted: shape gets a false "cannot safely rewrite"
+# refusal instead of a clean upgrade. `(?:&\S+|!\S*)` matches either
+# property form; up to two tokens (one of each kind, in either order) are
+# accepted before the indicator. This is deliberately permissive rather than
+# a full YAML grammar - anything it does not confidently recognize still
+# falls through to the existing safe single-line treatment, and the
+# re-parse safety net below still refuses rather than corrupts if this ever
+# over-matches.
+_NODE_PROPERTY = r'(?:&\S+|!\S*)'
+_BLOCK_SCALAR_HEADER_RE = re.compile(
+    r'^(?:' + _NODE_PROPERTY + r'\s+){0,2}[|>](?:[+-]?\d?|\d[+-]?)(\s*#.*)?$'
+)
 
 
 def _frontmatter_key_span(lines: list[str], start: int, end: int, key: str) -> tuple[int, int] | None:
@@ -3050,19 +3071,40 @@ def _attach_more_engine(
             print(f'ERROR: could not read {_rel(record_path, archive_root)}: {e}',
                   file=sys.stderr)
             return EXIT_FAILURE
+        # Compute and validate the rewritten record BEFORE the exiftool embed
+        # below - an irreversible-ish filesystem mutation that would
+        # otherwise depend on rollback if the rewrite then turned out to be
+        # unsafe. `_force_dna_restriction_text` can refuse (raise
+        # ProcessError) on a `restricted:` value it cannot rewrite with
+        # confidence (issue #169, finding 2); preflighting it here - before
+        # any mutation - means that refusal no longer depends on the
+        # exiftool-remove rollback below succeeding (issue #169 followup
+        # review, finding 4). Nothing has touched the photo or the record if
+        # this raises.
+        new_text = old_text
+        dna_restriction_set = False
+        if needs_dna_upgrade:
+            new_text, dna_restriction_set = _force_dna_restriction_text(
+                new_text, record_label=_rel(record_path, archive_root))
+        try:
+            new_text = _append_file_entry(new_text, entry)
+        except Exception as e:
+            # Also preflighted, ahead of the embed: an unparseable record
+            # (e.g. malformed frontmatter) can only be discovered by actually
+            # trying to append the entry, but discovering it HERE - before
+            # anything has touched the photo - means there is nothing to roll
+            # back; the old ordering embedded the keyword first and would
+            # have had to undo it for this same failure.
+            print(f'ERROR: could not add files: entry to '
+                  f'{_rel(record_path, archive_root)}: {e}', file=sys.stderr)
+            return EXIT_FAILURE
         backup = _open_backup(archive_root, fha_config, backup)
         err = _run_exiftool_embed_source(more_file, sid, backup=backup)
         if err is not None:
             print(f'ERROR: exiftool could not embed SOURCE keyword in {more_file.name}: {err}',
                   file=sys.stderr)
             return EXIT_FAILURE
-        dna_restriction_set = False
         try:
-            new_text = old_text
-            if needs_dna_upgrade:
-                new_text, dna_restriction_set = _force_dna_restriction_text(
-                    new_text, record_label=_rel(record_path, archive_root))
-            new_text = _append_file_entry(new_text, entry)
             # Atomic, unlike the scaffolding writes above: those CREATE a record
             # and their undo unlinks the partial, but this one REPLACES a
             # complete source record to add one files: entry. A truncating write
@@ -3258,8 +3300,22 @@ def _attach_more_engine(
         else:
             print(f"[dry-run] {more_file.name} already carries this source's S-id; keeping its name.")
         if needs_dna_upgrade:
-            print(f'[dry-run] Would set restricted: dna on {_rel(record_path, archive_root)} '
-                  '(required for the attached DNA file).')
+            # Validate the rewrite here too, not just on the live path
+            # (issue #169 followup review, finding 3): `_force_dna_
+            # restriction_text` can refuse (raise ProcessError) on a
+            # `restricted:` value it cannot rewrite with confidence, and
+            # running that validation only live let `--dry-run` promise an
+            # update it could not actually deliver - the live run would
+            # begin the rename, then fail and roll it back, while the
+            # preview had reported clean. This call is pure text surgery (no
+            # filesystem side effects), so calling it here for its outcome
+            # is safe during a dry run; a refusal now shows up identically
+            # in preview and in the live run.
+            _, dna_would_change = _force_dna_restriction_text(
+                record_text_for_check, record_label=_rel(record_path, archive_root))
+            if dna_would_change:
+                print(f'[dry-run] Would set restricted: dna on {_rel(record_path, archive_root)} '
+                      '(required for the attached DNA file).')
         print(f'[dry-run] Would add files: entry (role: {role}) to '
               f'{_rel(record_path, archive_root)}')
         return EXIT_CLEAN
@@ -3270,18 +3326,34 @@ def _attach_more_engine(
     except (OSError, UnicodeDecodeError) as e:
         print(f'ERROR: could not read {_rel(record_path, archive_root)}: {e}', file=sys.stderr)
         return EXIT_FAILURE
+    # Compute and validate the rewritten record BEFORE the rename below - the
+    # documents-root counterpart to the photo branch's own preflight above
+    # (issue #169 followup review, finding 4): a refusal from
+    # `_force_dna_restriction_text` must not depend on the rename-undo below
+    # succeeding. Nothing on disk has moved yet if this raises.
+    new_text = old_text
     dna_restriction_set = False
+    if needs_dna_upgrade:
+        new_text, dna_restriction_set = _force_dna_restriction_text(
+            new_text, record_label=_rel(record_path, archive_root))
+    try:
+        new_text = _append_file_entry(new_text, entry)
+    except Exception as e:
+        # Also preflighted, ahead of the rename: an unparseable record (e.g.
+        # malformed frontmatter) can only be discovered by actually trying to
+        # append the entry, but discovering it HERE - before anything on
+        # disk has moved - means there is nothing to roll back; the old
+        # ordering renamed the file first and would have had to undo that
+        # for this same failure.
+        print(f'ERROR: could not add files: entry to '
+              f'{_rel(record_path, archive_root)}: {e}', file=sys.stderr)
+        return EXIT_FAILURE
     try:
         if needs_move:
             new_path.parent.mkdir(parents=True, exist_ok=True)
             more_file.rename(new_path)
             undo.append((f'move {new_path.name} back to {more_file.name}',
                          lambda: new_path.rename(more_file)))
-        new_text = old_text
-        if needs_dna_upgrade:
-            new_text, dna_restriction_set = _force_dna_restriction_text(
-                new_text, record_label=_rel(record_path, archive_root))
-        new_text = _append_file_entry(new_text, entry)
         # Atomic for the same reason as the photos branch above: an existing
         # source record is being replaced, not created.
         write_text_exact_atomic(record_path, reapply_newline(new_text, old_text))
