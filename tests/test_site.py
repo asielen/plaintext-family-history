@@ -659,6 +659,77 @@ class PersonPageTests(_Base):
         self.assertIn('Moved to Millbrook NY to farm', html)
         self.assertNotIn('at Millbrook, NY', html)
 
+    def test_timeline_place_tag_omitted_when_sentence_states_only_the_leading_name(self):
+        # #127 reopened (reopening comment example 1, paraphrased/genericized
+        # per this project's convention of never using real family data in
+        # test fixtures): PR #134's fix only changed the connector from "@"
+        # to "at" - it never touched the underlying rule that the WHOLE
+        # place label had to appear before the trailing tag was suppressed.
+        # A sentence naming just a place's leading/common name (here, the
+        # city) while the registry's fuller label adds a state qualifier
+        # still read as "...in Millbrook at Millbrook, New York" - the city
+        # named twice. Suppress the whole tag once the leading name is
+        # recognized; the fuller label is still reachable via the link.
+        # ctype is deliberately NOT one of the vital types (_person_summary's
+        # 'birth'/'death'/'marriage'/'baptism'/'burial') - those get their own
+        # separate, structured summary row that also prints the place, which
+        # would double-count "Millbrook" for a reason unrelated to this bug.
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley')
+        self._seed_source('s-1111111111', 'Record', people=('p-aaaaaaaaaa',))
+        self._seed_claim('c-1111111111', 's-1111111111', 'record',
+                         'The birth certificate was delivered at the Grange Hall '
+                         'in Millbrook', status='accepted', date_edtf='1900',
+                         place_text='Millbrook, New York', persons=('p-aaaaaaaaaa',))
+        self._run(linked=True)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('The birth certificate was delivered at the Grange Hall in Millbrook', html)
+        self.assertNotIn('at Millbrook, New York', html)
+        self.assertEqual(html.count('Millbrook'), 1)   # named once, not doubled
+
+    def test_timeline_place_tag_omitted_when_sentence_states_the_home_name(self):
+        # #127 reopened (reopening comment example 2, paraphrased): a
+        # sentence already naming "the family home" still grew a trailing
+        # "at the family home, Cook County, Illinois" - the home named
+        # twice, once naturally and once as the leading words of the
+        # "new" fact being appended.
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley')
+        self._seed_source('s-1111111111', 'Record', people=('p-aaaaaaaaaa',))
+        self._seed_claim('c-1111111111', 's-1111111111', 'residence',
+                         'Resided at the family home as of the 1920 census, at age 79',
+                         status='accepted', date_edtf='1920',
+                         place_text='the family home, Cook County, Illinois',
+                         persons=('p-aaaaaaaaaa',))
+        self._run(linked=True)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('Resided at the family home as of the 1920 census, at age 79', html)
+        self.assertNotIn('at the family home, Cook County, Illinois', html)
+        self.assertEqual(html.count('the family home'), 1)   # named once, not doubled
+
+    def test_timeline_place_tag_omitted_for_reordered_compound_place_list(self):
+        # #127 reopened (reopening comment example 3, paraphrased): a
+        # "traveled through" sentence already spells out both countries and
+        # all their cities, but the trailing tag repeated the exact same
+        # place list verbatim - "...and France (Paris, Lyon) in 1920 ... at
+        # Italy and France (Rome, Milan, Paris, Lyon)". This is not the
+        # punctuation-only gap #127's original fix handled (a real word,
+        # "and", separates the two countries in the sentence, and the two
+        # sides are in different positions relative to their city lists), so
+        # the old whole-label contiguous match could never bridge it. Once
+        # the sentence already states the label's leading name ("Italy"),
+        # the whole tag - reordering and all - is redundant.
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley')
+        self._seed_source('s-1111111111', 'Record', people=('p-aaaaaaaaaa',))
+        self._seed_claim('c-1111111111', 's-1111111111', 'travel',
+                         'Traveled through Italy (Rome, Milan) and France (Paris, Lyon) '
+                         'in 1920', status='accepted', date_edtf='1920',
+                         place_text='Italy and France (Rome, Milan, Paris, Lyon)',
+                         persons=('p-aaaaaaaaaa',))
+        self._run(linked=True)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('Traveled through Italy (Rome, Milan) and France (Paris, Lyon) in 1920', html)
+        self.assertNotIn('at Italy and France (Rome, Milan, Paris, Lyon)', html)
+        self.assertEqual(html.count('Italy'), 1)   # named once, not doubled
+
     def test_timeline_strips_bare_claim_id_parenthetical(self):
         # #140: same rendering bug as the Biography case, on the Timeline's
         # separate render path (_timeline_value_html) - a bare `(C-xxxxxxxxxx)`
@@ -2334,12 +2405,19 @@ class PlacePageTests(_Base):
         self.assertIn('Married at Southampton at '
                       '<a href="../places/l-1111111111.html">Hampton</a>', person_html)
 
-    def test_timeline_place_partly_named_by_the_sentence_still_renders_in_full(self):
-        # The suppression is conservative on purpose: a sentence naming only
-        # the town ("Moved to Millbrook") does not make the registry's fuller
-        # "Millbrook, Dutchess County, New York" redundant - the county and
-        # state are information the reader does not have yet - so the full
-        # place still follows the sentence, linked.
+    def test_timeline_place_partly_named_by_the_sentence_is_still_redundant(self):
+        # #127 reopened: this used to be the OLD, too-strict policy's pinned
+        # case - a sentence naming only the town ("Moved to Millbrook") did
+        # NOT make the registry's fuller "Millbrook, Dutchess County, New
+        # York" redundant, so the timeline printed "Moved to Millbrook at
+        # Millbrook, Dutchess County, New York" - the reader sees "Millbrook"
+        # twice, which is exactly the reopened bug report's shape (a city or
+        # a home named once naturally, then repeated verbatim as the leading
+        # word of the trailing tag). The county/state qualifier is real new
+        # information, but forcing it onto the sentence is worse than the
+        # near-duplicate it produces; the fuller name is still one click away
+        # via the place-page link, which the caller moves onto "Millbrook" in
+        # the sentence instead of losing it.
         self._seed_person('p-aaaaaaaaaa', 'Jane')
         self._seed_source('s-1111111111', 'Census', people=('p-aaaaaaaaaa',))
         self._seed_place('l-1111111111', 'Millbrook, Dutchess County, New York')
@@ -2347,8 +2425,10 @@ class PlacePageTests(_Base):
                                   'Moved to Millbrook', ('p-aaaaaaaaaa',))
         self._run(linked=True)
         person_html = self._read('persons/p-aaaaaaaaaa.html')
-        self.assertIn('Moved to Millbrook at <a href="../places/l-1111111111.html">'
-                      'Millbrook, Dutchess County, New York</a>', person_html)
+        self.assertIn('Moved to <a href="../places/l-1111111111.html">Millbrook</a>',
+                      person_html)
+        self.assertNotIn('Dutchess County', person_html)   # qualifier not force-printed
+        self.assertEqual(person_html.count('Millbrook'), 1)   # named once, not doubled
 
     def test_freetext_place_without_id_is_not_linked(self):
         self._seed_person('p-aaaaaaaaaa', 'Jane')

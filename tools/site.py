@@ -828,13 +828,45 @@ def _decade_header(date_edtf: str | None) -> str | None:
 
 # ── Places ──────────────────────────────────────────────────────────────────
 
+# A place label's top-level "leading component" boundary (#127 reopened): the
+# first comma, or the word "and", whichever comes first - "Millbrook" out of
+# "Millbrook, Dutchess County, New York", "Italy" out of "Italy and France
+# (Rome, Milan)". Both are how a genealogist actually appends a qualifier
+# onto a name a reader would already recognize.
+_PLACE_LEADING_SPLIT_RE = re.compile(r',|\band\b', re.IGNORECASE)
+
+
+def _place_leading_component(place_label: str) -> str:
+    """`place_label`'s primary/recognizable name - the text before its first
+    top-level comma or the word "and" - or the label unchanged when it has
+    neither. See `_place_mention_span`."""
+    m = _PLACE_LEADING_SPLIT_RE.search(place_label)
+    return place_label[:m.start()].strip() if m else place_label.strip()
+
+
+def _match_place_words(value: str, label: str) -> tuple[int, int] | None:
+    """Whole-word, loose-punctuation search for `label`'s words in `value`
+    (the matching rules `_place_mention_span` documents); span in `value`'s
+    coordinates, or None."""
+    words = re.findall(r'\w+', label or '')
+    if not words or not value:
+        return None
+    pattern = r'\b' + r'\W+'.join(re.escape(w) for w in words) + r'\b'
+    match = re.search(pattern, value, re.IGNORECASE)
+    return match.span() if match else None
+
+
 def _place_mention_span(value: str, place_label: str) -> tuple[int, int] | None:
     """Where `value` already names `place_label` in its own words, or None.
 
     The person timeline prints the claim's sentence and then the claim's
     place, so a sentence that already says where it happened ("moved to
-    Millbrook to farm") used to read "... to farm @ Millbrook" (#127).
-    Deciding that needs more than `label in value`:
+    Millbrook to farm") used to read "... to farm @ Millbrook" (#127), then
+    "... to farm at Millbrook, Dutchess County, New York" once that first fix
+    shipped (#127 reopened) - only the connector word had changed; the reader
+    still saw "Millbrook" twice, once in their own sentence and once tacked
+    on after it. Deciding what counts as "already named" needs more than
+    `label in value`:
 
       - Whole words only. "Hampton" is a substring of "Southampton", and a
         plain containment test would read "married at Southampton" as already
@@ -844,21 +876,43 @@ def _place_mention_span(value: str, place_label: str) -> tuple[int, int] | None:
         because one place gets written both ways in practice: the registry
         says "Millbrook, NY" and the sentence says "Millbrook NY".
 
-    The whole label has to appear. A sentence naming only part of it ("moved
-    to Millbrook", place "Millbrook, Dutchess County, New York") is not
-    redundant - the rest of the label is information the reader does not have
-    yet - so the timeline still prints the fuller place after the sentence.
+    A match against the WHOLE label is tried first - unchanged from #127's
+    original fix, and still the only test a single-component label (no
+    comma, no "and") ever gets. When that fails, a second try uses only the
+    label's LEADING component (`_place_leading_component`): "Millbrook" out
+    of "Millbrook, Dutchess County, New York", or "Italy" out of "Italy and
+    France (Rome, Milan, Paris, Lyon)". This is what #127 reopened changes -
+    a sentence naming just that leading, reader-recognizable name now counts
+    as already naming the place, even when a trailing qualifier (a county, a
+    state, a second country in a compound list) never gets restated in the
+    tag. Dropping that qualifier from the timeline sentence is a deliberate
+    tradeoff, not a lost fact: the matched words still carry the place-page
+    link (below), so the fuller name is one click away on the place's own
+    page. The alternative - append only the missing qualifier, e.g. "(Cook
+    County, Illinois)" instead of the whole label - was considered and
+    rejected: `place_text` is unstructured free text everywhere else in this
+    codebase (even registry matching only ever compares or clusters the
+    WHOLE string - see `_lib.normalize_place_text`/`place_text_cluster_key`),
+    so there is no reliable way to carve "just the qualifier" out of an
+    arbitrary label without guessing at internal structure the data model
+    does not actually have. Suppressing the whole tag once the leading name
+    is recognized is the simpler, safer call - the same preference this
+    codebase reaches for elsewhere (PR #152 review: "filtering out is
+    simpler and safer") - and it is what actually kills the reader-visible
+    symptom: the same recognizable place name is never printed twice in one
+    sentence.
 
     Returning the span rather than a bare yes/no is what lets the caller hang
     the place-page link on the words already in the sentence instead of
     losing that link along with the repeated place name.
     """
-    words = re.findall(r'\w+', place_label or '')
-    if not words or not value:
-        return None
-    pattern = r'\b' + r'\W+'.join(re.escape(w) for w in words) + r'\b'
-    match = re.search(pattern, value, re.IGNORECASE)
-    return match.span() if match else None
+    match = _match_place_words(value, place_label)
+    if match is not None:
+        return match
+    leading = _place_leading_component(place_label or '')
+    if leading and leading != (place_label or '').strip():
+        return _match_place_words(value, leading)
+    return None
 
 
 # ── Image derivatives ─────────────────────────────────────────────────────────
@@ -3294,12 +3348,17 @@ class _SiteBuilder:
           - #127: each entry carries `place_redundant` - true when the claim's
             own value text already names the place naturally ("moved to
             Millbrook to farm"), decided by `_place_mention_span` (whole
-            words, loose punctuation - not a bare substring test). The
-            template only appends a trailing place mention when this is
-            false, so a place already stated in the sentence is never doubled
-            up as a bare "@ Place" tag. When it IS stated in the sentence,
-            `_timeline_value_html` moves the place-page link onto those
-            words, so suppressing the repeat never costs the reader the link.
+            words, loose punctuation, and - #127 reopened - a match on just
+            the place label's LEADING component counts too, so "resided at
+            the family home" does not get a redundant trailing "at the
+            family home, Cook County, Illinois"; see that function's
+            docstring for the full reasoning). The template only appends a
+            trailing place mention when this is false, so a place already
+            stated in the sentence is never doubled up as a bare "@ Place"
+            tag (or, post-#127-reopened, as a same-named "at Place" repeat
+            either). When it IS stated in the sentence, `_timeline_value_html`
+            moves the place-page link onto those words, so suppressing the
+            repeat never costs the reader the link.
           - #128: the SQL sorts rows by `date_min` (a widened, sortable value)
             but decade grouping reads `date_edtf` via `_decade_header` - a
             DIFFERENT field, deliberately (see that function's docstring): an
