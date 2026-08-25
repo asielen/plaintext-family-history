@@ -2106,22 +2106,25 @@ def _derive_relationships(conn: sqlite3.Connection) -> None:
             # question: nothing here mints an edge, so an unscoped loop cannot
             # invent a marriage, only end real ones belonging to other people.
             #
-            # SPEC §8.3's role vocabulary has no word for the deceased, so
-            # `_lib.vital_subjects` reads the claim the only way it can be
-            # written: whoever the roles: map did NOT cast as somebody else.
-            # A claim naming exactly one person has not said anything, but
-            # there is nobody else to disambiguate FROM, so `vital_subjects`
-            # answers None and the one person named (pids' only entry) is
-            # still read as deceased. A claim naming several people with no
-            # roles: map at all has genuinely not said which of them died -
-            # closing every one of their marriages used to be exactly the
-            # "son's own marriage ended on his father's death date" bug this
-            # branch's own docstring describes, just reached through the
-            # unroled case instead of a miscast one (#126, reopened).
-            # `vital_subjects` now answers [] rather than None for that
-            # multi-person, no-roles shape, so this loop closes nothing for
-            # it - a missing date_end an archive can recover by adding
-            # roles:, unlike a false one closing a living relative's marriage.
+            # `roles: deceased:` (SPEC §8.3, #173 follow-up) is how a claim
+            # names its own subject explicitly - including two people who
+            # died in the same event, both losing their marriage here. A
+            # claim naming nobody `deceased:` falls back to `_lib.vital_
+            # subjects`'s older convention: whoever the roles: map did NOT
+            # cast as somebody else. A claim naming exactly one person has
+            # not said anything, but there is nobody else to disambiguate
+            # FROM, so `vital_subjects` answers None and the one person named
+            # (pids' only entry) is still read as deceased. A claim naming
+            # several people with no roles: map at all (not even `deceased:`)
+            # has genuinely not said which of them died - closing every one
+            # of their marriages used to be exactly the "son's own marriage
+            # ended on his father's death date" bug this branch's own
+            # docstring describes, just reached through the unroled case
+            # instead of a miscast one (#126, reopened). `vital_subjects`
+            # answers [] rather than None for that multi-person, no-roles
+            # shape, so this loop closes nothing for it - a missing date_end
+            # an archive can recover by adding roles:, unlike a false one
+            # closing a living relative's marriage.
             subjects = vital_subjects('death', all_persons)
             for deceased_id in (pids if subjects is None else subjects):
                 conn.execute(

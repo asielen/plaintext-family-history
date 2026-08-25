@@ -2919,19 +2919,26 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
                             'naming who was baptized (and, if useful, `parent: '
                             '[P-…, P-…]` for the parents alongside).'))
                     else:
-                        # death/burial: SPEC §8.3's role vocabulary has no
-                        # word for the deceased - the record says who died by
-                        # saying who everyone ELSE was and leaving that one
-                        # person unroled (_lib.vital_subjects case 4).
+                        # death/burial: `roles: deceased:` (SPEC §8.3, #173
+                        # follow-up) names the subject(s) directly - the
+                        # only shape that can represent two people who died
+                        # in one event with nobody else on the record to
+                        # leave unroled. The older convention (say who
+                        # everyone ELSE was and leave the subject unroled,
+                        # _lib.vital_subjects case 4) still works and is
+                        # offered as the alternative for the ordinary,
+                        # single-decedent-plus-informant shape.
                         verb = 'died' if claim_type == 'death' else 'was buried'
                         findings.append(Finding('W', 'W132', src_path,
                             f'Claim {claim.get("id","?")} (type: {claim_type}) names '
                             f'{len(distinct)} people but does not say which of them '
                             f'{verb}{where_it_goes}'
-                            f'Leave the person who {verb} unroled, and add a roles: '
-                            'map naming who everyone else is - `roles:` then '
-                            'indented lines like `spouse: [P-…]`, `child: [P-…]`, '
-                            '`parent: [P-…]`, or `witness: [P-…]`.'))
+                            f'Add a roles: map - either `deceased: [P-…]` naming '
+                            f'directly who {verb} (list more than one id if they '
+                            f'{verb} together), or leave the person who {verb} '
+                            'unroled and name who everyone else is instead - '
+                            '`spouse: [P-…]`, `child: [P-…]`, `parent: [P-…]`, or '
+                            '`witness: [P-…]`.'))
 
             # place reference - forgiving (PR 05): never reject a place the human
             # typed.  A well-formed L-id (bare or [[wrapped]]) that doesn't

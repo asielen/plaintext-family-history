@@ -3326,10 +3326,28 @@ class VitalSubjectsRuleTests(unittest.TestCase):
         self.assertEqual(
             vital_subjects('birth', [('p-a', ' Child '), ('p-b', 'parent')]), ['p-a'])
 
-    def test_an_unknown_claim_type_falls_back_to_the_unroled_people(self) -> None:
-        # No subject role is defined for `burial`, so the rule is the death one.
+    def test_a_burial_claim_falls_back_to_the_unroled_people_when_nobody_is_marked_deceased(
+            self) -> None:
+        # `deceased:` is defined for `burial` (#126/#173 follow-up), but this
+        # claim doesn't use it - nobody is marked `deceased:`, so case 3 finds
+        # no match and the rule falls through to the pre-existing convention:
+        # the unroled person is the subject.
         self.assertEqual(
             vital_subjects('burial', [('p-a', None), ('p-b', 'spouse')]), ['p-a'])
+
+    def test_a_burial_claim_with_deceased_role_names_the_subject_directly(self) -> None:
+        self.assertEqual(
+            vital_subjects('burial', [('p-a', 'deceased'), ('p-b', 'spouse')]), ['p-a'])
+
+    def test_a_joint_death_claim_names_both_deceased_as_subjects(self) -> None:
+        # #173 follow-up: two people who died in the same event (a shipwreck,
+        # a house fire), with no other party named on the record at all -
+        # genuinely not ambiguous to a human, but shaped exactly like the
+        # zero-role case 2a rule exists to refuse. `roles: deceased:` says so
+        # outright instead of relying on silence.
+        self.assertEqual(
+            vital_subjects('death', [('p-a', 'deceased'), ('p-b', 'deceased')]),
+            ['p-a', 'p-b'])
 
     def test_a_couple_claim_answers_with_the_same_couple_spouse_parties_does(self) -> None:
         # `spouse_parties` is the archive's one rule for who married whom - the

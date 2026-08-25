@@ -644,15 +644,22 @@ def parentage_parties(
 # The role a claim's OWN SUBJECT carries, per vital claim type. `birth` and
 # `baptism` name the person the record is about as the `child`; `marriage` and
 # `divorce` name them as `spouse` (and on those two, `spouse_parties` answers
-# first - see `vital_subjects` case 2). `death` and `burial` are absent on
-# purpose: SPEC §8.3's role vocabulary has no word for the deceased, so a death
-# claim can only say who the OTHER people are (the widow, the children, the
-# informant), and the subject is the one the claim left unroled.
+# first - see `vital_subjects` case 1); `death` and `burial` name them as
+# `deceased` (SPEC §8.3, added #126/#173 follow-up specifically so a claim
+# recording two people who died in the same event - a shipwreck, a house
+# fire - with no other party named at all can say so explicitly, rather than
+# reading as the same "ambiguous, nobody named" shape as a claim that
+# genuinely hasn't said which of several people it's about). A claim that
+# names nobody `deceased:` still falls through to the pre-existing
+# convention: the subject is whoever the claim left unroled, once someone
+# ELSE present (the widow, the children, the informant) has a role.
 VITAL_SUBJECT_ROLES: dict[str, str] = {
     'birth': 'child',
     'baptism': 'child',
     'marriage': 'spouse',
     'divorce': 'spouse',
+    'death': 'deceased',
+    'burial': 'deceased',
 }
 
 
@@ -717,32 +724,38 @@ def vital_subjects(
          people are named (and case 1 found no couple). A claim that named
          several people and marked none of their parts has not, in fact, said
          which of them it is a record of - guessing "everyone" here is the
-         mother's `Born: 1888` bug restated for the vital types SPEC has no
-         subject-role word for at all (`death`/`burial`): a burial claim
-         naming the deceased alongside a grandchild who visited the grave,
-         with no `roles:` map at all, used to read as BOTH of their own
-         burials (#126, reopened - the Died/Buried field and a chart node both
-         still showed a relative's record after the first pass of this fix
-         only reached claims that had SOME role signal to work with). Silence
-         is recoverable; the archive's bargain throughout this file is that a
-         missing fact beats a false one. Note this deliberately behaves
-         differently from case 2 purely on headcount, not on claim type - a
-         two-person `marriage`/`divorce` claim never reaches here at all,
-         because case 1 already resolved it.
+         mother's `Born: 1888` bug restated for a claim with no role signal
+         at all: a burial claim naming the deceased alongside a grandchild
+         who visited the grave, with no `roles:` map at all, used to read as
+         BOTH of their own burials (#126, reopened - the Died/Buried field
+         and a chart node both still showed a relative's record after the
+         first pass of this fix only reached claims that had SOME role
+         signal to work with). Silence is recoverable; the archive's bargain
+         throughout this file is that a missing fact beats a false one. A
+         death/burial claim that IS legitimately about two people at once (a
+         shared death) is not this case - it says so via `roles: deceased:`
+         (case 3) instead of relying on silence. Note case 2a deliberately
+         behaves differently from case 2 purely on headcount, not on claim
+         type - a two-person `marriage`/`divorce` claim never reaches here at
+         all, because case 1 already resolved it.
       3. The people named under this type's **subject role** (`VITAL_SUBJECT_ROLES`
-         - `child` for birth/baptism, `spouse` for marriage/divorce) when the
-         claim names any. The claim said outright who it is about. On a couple
-         claim this is reached only where `spouse_parties` found no couple -
-         `roles: {spouse: [P-a], parent: [P-b]}`, which names P-a's own
-         marriage while refusing to marry him to P-b.
+         - `child` for birth/baptism, `spouse` for marriage/divorce, `deceased`
+         for death/burial) when the claim names any. The claim said outright
+         who it is about. On a couple claim this is reached only where
+         `spouse_parties` found no couple - `roles: {spouse: [P-a], parent:
+         [P-b]}`, which names P-a's own marriage while refusing to marry him
+         to P-b. On a death/burial claim, `roles: {deceased: [P-a, P-b]}` is
+         how two people who died in the same event are named as joint
+         subjects explicitly, rather than relying on case 4 below.
       4. Otherwise the people the claim left **unroled**. This is the ordinary
-         death record (`roles: {spouse: [widow], child: [informant]}` - nobody
-         can be marked "deceased", so the deceased is the one with no part to
-         play) and the birth claim written `roles: {parent: [mother, father]}`
-         with the baby unmarked. Reached only when at least one person on the
-         claim DOES carry a role (case 2a's zero-role, multi-person shape
-         already returned above), so "unroled" here is always a genuine,
-         narrower subset of `persons:`, never the whole list by accident.
+         death record written the OLD way, before `deceased:` existed
+         (`roles: {spouse: [widow], child: [informant]}` - nobody marked
+         "deceased", so the deceased is the one with no part to play) and the
+         birth claim written `roles: {parent: [mother, father]}` with the
+         baby unmarked. Reached only when at least one person on the claim
+         DOES carry a role (case 2a's zero-role, multi-person shape already
+         returned above), so "unroled" here is always a genuine, narrower
+         subset of `persons:`, never the whole list by accident.
       5. Which can be **empty** here too, and that is an answer too: every
          person named was named as somebody else on the record, so it is
          nobody's own vital. An empty list is exactly the mother-on-her-son's-
