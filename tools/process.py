@@ -296,11 +296,25 @@ def _derive_slug(slug: str | None, title: str | None, file_path: Path) -> str:
 # ── Asset classification ──────────────────────────────────────────────────────
 
 def _is_under(path: Path, root: Path) -> bool:
-    """True if `path` is inside `root` (both resolved); False on unrelated trees."""
+    """True if `path` is inside `root` (both resolved); False on unrelated trees.
+
+    Also False - rather than a raised `RuntimeError` - when either side's
+    `.resolve()` hits a symlink loop (issue #170 finding 2, round-3 audit):
+    `Path.resolve()` raises `RuntimeError` for that case, distinct from the
+    `ValueError`/`OSError` an ordinary unresolvable path raises, and every one
+    of this function's ~11 call sites already treats a plain False as "not
+    verifiably contained" and produces its own clean refusal (or a silent
+    skip) - none needs to tell a symlink loop apart from an everyday
+    containment failure. Folding RuntimeError in here, once, turns what used
+    to be a raw traceback out of `process_refile`'s containment guard (added
+    in PR #163's own P1 fix, which only caught ValueError/OSError) into that
+    same clean refusal at every call site, live and `--dry-run` alike -
+    instead of hand-wrapping each call individually.
+    """
     try:
         path.resolve().relative_to(root.resolve())
         return True
-    except (ValueError, OSError):
+    except (ValueError, OSError, RuntimeError):
         return False
 
 
@@ -3460,7 +3474,13 @@ def _validate_dest_subpath(root: Path, dest: str, root_label: str) -> Path:
     dest_dir = root.joinpath(*parts)
     try:
         dest_dir.resolve().relative_to(root.resolve())
-    except (ValueError, OSError):
+    except (ValueError, OSError, RuntimeError):
+        # RuntimeError joins ValueError/OSError here for the same reason as
+        # `_is_under` above (issue #170 finding 2): a symlink loop under
+        # --dest raises RuntimeError from `.resolve()`, not ValueError/
+        # OSError, and without it here this refusal was a raw traceback
+        # instead of the clean message every other containment failure
+        # already gets.
         raise ProcessError(
             f'--dest {dest!r} does not resolve to a folder inside the '
             f'{root_label} root - name a plain subfolder, e.g. {example}.')
@@ -3721,7 +3741,8 @@ def process_refile(
         raise ProcessError(
             f'{stored_alias} resolves outside the configured {alias_root} '
             f'folder ({claimed_root}) - this looks like a hand-edited files: '
-            f'entry gone wrong (a `..` segment, or a doubled slash). Fix the '
+            f'entry gone wrong (a `..` segment, a doubled slash, or a symlink '
+            f'loop somewhere along the path). Fix the '
             f'entry in {record_path.name} by hand, then retry. Nothing was '
             'moved.')
 
@@ -3812,6 +3833,14 @@ def process_refile(
                 'moved.') from e
         conflicting = sorted({s for s in embedded_sids if s != sid.lower()})
         if conflicting:
+            # Same dead-end shape as the documents-root branch above (issue
+            # #170 finding 3, round-3 audit): `fha reconcile`'s document pass
+            # only considers documents-alias entries (its own docstring:
+            # "the photos side has its own [machinery]"), and its photo pass
+            # only re-ties `fha photoindex`'s own catalog to files on disk -
+            # neither one touches THIS record's `files:` entry. Suggesting it
+            # here would run clean and change nothing, leaving the human to
+            # retry forever. Name the exact entry to fix by hand instead.
             carried = ', '.join(fmt_id_display(s) for s in conflicting)
             raise ProcessError(
                 f"{stored_alias}'s own embedded SOURCE keyword(s) carry "
@@ -3819,8 +3848,14 @@ def process_refile(
                 f"{record_path.name}'s files: entry looks like inventory "
                 f'drift (it names a file that belongs to a different '
                 f'source), and moving it would relocate the WRONG photo. '
-                'Run `fha reconcile` to re-tie sources to their actual '
-                'files, then retry. Nothing was moved.')
+                '`fha reconcile` cannot fix this: its document pass ignores '
+                'photos/ aliases, and its photo pass only re-ties the photo '
+                f'catalog, not this record. Fix it by hand: open '
+                f'{record_path.name}, find the `files:` entry `file: '
+                f'{stored_alias}`, and either point it at the correct '
+                f'on-disk photo for this source (one whose embedded SOURCE '
+                f'keyword names {sid}) or delete the entry if no such photo '
+                'exists. Nothing was moved.')
 
     # The source's type, resolved. A type that is wrong for the destination
     # root is part of the misfiling this verb corrects, so refile carries the

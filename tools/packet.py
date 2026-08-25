@@ -1081,6 +1081,30 @@ def _is_under_root(path: Path, root: Path) -> bool:
         return False
 
 
+def _redact_asset_path(raw: str) -> str:
+    """Render a `files:` entry for a packet's README: unchanged if it is a
+    normal relative alias ('documents/...', 'photos/...'), basename-only if
+    it looks like an absolute filesystem path.
+
+    A stored `files:` entry is meant to be a portable alias (TOOLING: "all
+    stored paths are alias-form"), but nothing stops a hand-edit from
+    replacing one with a real absolute path off the archive owner's own
+    machine - and a packet is exported to a family member outside that
+    machine (issue #170 finding 1, round-3 audit). `_resolve_source_files`
+    already keeps such an entry's ASSET out of the packet (the containment
+    check below), but before this it still copied the raw string straight
+    into `missing_assets`, and from there into README.txt - disclosing the
+    owner's username, drive layout, or private directory names even though
+    the file itself was correctly omitted. An ordinary alias is left exactly
+    as-is: that is useful diagnostic information a human can act on, not a
+    leak. Mirrors process.py's `_validate_dest_subpath` absolute/drive-
+    relative test (tools never import tools - TOOLING §15).
+    """
+    if Path(raw).is_absolute() or (len(raw) > 1 and raw[1] == ':'):
+        return Path(raw).name or '(unnamed path)'
+    return raw
+
+
 def _resolve_source_files(
     conn: sqlite3.Connection,
     archive_root: Path,
@@ -1104,6 +1128,12 @@ def _resolve_source_files(
     configured documents or photos root before it is offered for copying;
     anything else is reported the same way a missing file already is, not
     silently included.
+
+    Every note below names the offending entry via `_redact_asset_path`, not
+    the raw stored string - an entry that is itself an absolute local path
+    (rather than a portable alias) is shown as a basename only, so the
+    README.txt these notes flow into never discloses the owner's username or
+    drive layout to whoever the packet is handed to (issue #170 finding 1).
     """
     if not source_ids:
         return {}, []
@@ -1117,17 +1147,24 @@ def _resolve_source_files(
     out: dict[str, list[Path]] = {}
     missing: list[str] = []
     for row in rows:
+        # Never echo the raw stored `files:` string into README.txt below -
+        # if it is a hand-edited absolute path rather than a portable alias,
+        # the raw string can carry the owner's username, drive layout, or
+        # private directory names (issue #170 finding 1, round-3 audit). An
+        # ordinary relative alias passes through unchanged; see
+        # `_redact_asset_path`.
+        shown_path = _redact_asset_path(str(row['path']))
         try:
             resolved = resolve_path(row['path'], fha_config, archive_root)
         except Exception as e:
             missing.append(
-                f'{fmt_id_display(row["source_id"])} asset {row["path"]!r} could not be resolved: {e}'
+                f'{fmt_id_display(row["source_id"])} asset {shown_path!r} could not be resolved: {e}'
             )
             continue
         try:
             contained = (_is_under_root(resolved, documents_root)
                          or _is_under_root(resolved, photos_root))
-        except RuntimeError as e:
+        except RuntimeError:
             # `_is_under_root` calls `.resolve()` on both `resolved` and the
             # configured root; if either traverses a symlink loop, `.resolve()`
             # raises RuntimeError rather than returning - and unlike
@@ -1140,10 +1177,16 @@ def _resolve_source_files(
             # resolution failure above already gets. Catch it here and give the
             # same treatment: excluded, with a message naming what it almost
             # certainly is (a corrupted or maliciously crafted symlink loop,
-            # not an ordinary missing/escaping path).
+            # not an ordinary missing/escaping path). The raw RuntimeError
+            # text is deliberately NOT included (issue #170 finding 1, round-3
+            # audit): `Path.resolve()` embeds the absolute, OS-resolved
+            # filename that looped in its message, which can carry the same
+            # username/drive-layout information `shown_path` above is already
+            # redacting - a fixed, generic phrase says exactly as much as a
+            # human handed this packet needs to know.
             missing.append(
-                f'{fmt_id_display(row["source_id"])} asset {row["path"]!r} could not be '
-                f'checked against the configured roots ({e}) - this looks like a symlink '
+                f'{fmt_id_display(row["source_id"])} asset {shown_path!r} could not be '
+                'checked against the configured roots - this looks like a symlink '
                 'loop, most likely from a corrupted or maliciously crafted filesystem '
                 'entry, and was left out of the packet. Find and fix or remove the '
                 'offending symlink, then build the packet again.'
@@ -1151,7 +1194,7 @@ def _resolve_source_files(
             continue
         if not contained:
             missing.append(
-                f'{fmt_id_display(row["source_id"])} asset {row["path"]!r} resolves outside '
+                f'{fmt_id_display(row["source_id"])} asset {shown_path!r} resolves outside '
                 'the configured documents/photos roots - this looks like a hand-edited '
                 'files: entry gone wrong (a \'..\' segment, or a doubled slash), and was '
                 'left out of the packet. Run `fha lint` and fix the entry by hand.'
@@ -1161,7 +1204,7 @@ def _resolve_source_files(
             out.setdefault(row['source_id'], []).append(resolved)
         else:
             missing.append(
-                f'{fmt_id_display(row["source_id"])} asset missing on disk: {row["path"]}'
+                f'{fmt_id_display(row["source_id"])} asset missing on disk: {shown_path}'
             )
     return out, missing
 

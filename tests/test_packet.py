@@ -1476,6 +1476,112 @@ class PacketTests(unittest.TestCase):
         self.assertIn('loop.tif', readme)
         self.assertIn('symlink loop', readme)
 
+    def test_symlink_loop_message_omits_raw_exception_text(self):
+        """The symlink-loop note must not echo `Path.resolve()`'s own
+        exception text into README.txt (issue #170 finding 1, round-3
+        audit).
+
+        `.resolve()` raises `RuntimeError` carrying the absolute, OS-resolved
+        filename it looped on - which can be just as revealing of the
+        owner's username or drive layout as the raw `files:` entry the
+        symlink-loop branch already stopped interpolating verbatim. Before
+        the fix, the branch below wrote `{e}` straight into the note; now it
+        is a fixed, generic phrase with no exception text at all.
+        """
+        self._seed_person()
+        self._seed_source(
+            's-1111111111', 'Loop Source',
+            asset_rel='documents/other/loop.tif', create_asset=False,
+        )
+        self._commit_fresh()
+
+        real_is_under_root = packet._is_under_root
+        leaky_text = r'C:\Users\andrew\AppData\Local\Temp\loop-junction\loop.tif'
+
+        def looping_is_under_root(path, root):
+            if path.name == 'loop.tif':
+                raise RuntimeError(
+                    f"[WinError 1921] Symbolic link loop: '{leaky_text}'")
+            return real_is_under_root(path, root)
+
+        with unittest.mock.patch.object(packet, '_is_under_root',
+                                        side_effect=looping_is_under_root):
+            result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir,
+                                       no_photos=True)
+
+        self.assertEqual(result['status'], 'ok')
+        readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
+        self.assertIn('symlink loop', readme)
+        self.assertNotIn(leaky_text, readme)
+        self.assertNotIn('andrew', readme)
+        self.assertNotIn('WinError', readme)
+
+    def test_absolute_files_entry_path_redacted_to_basename_in_readme(self):
+        """A `files:` entry that is a hand-edited absolute local path (not a
+        portable alias) must appear in README.txt as a basename only, never
+        the full path (issue #170 finding 1, round-3 audit).
+
+        `_resolve_source_files` already keeps the asset itself out of the
+        packet (it resolves outside the configured roots), but before the
+        fix it still copied the raw absolute string verbatim into the
+        'resolves outside' note - disclosing the owner's username and drive
+        layout to whoever the packet is handed to. An ordinary relative
+        alias (the '..'-traversal case covered by
+        `test_traversal_files_entry_excluded_not_bundled` above) is a
+        different case and must still print in full - only a string that
+        actually looks like an absolute filesystem path is redacted.
+        """
+        self._seed_person()
+        absolute_path = r'C:\Users\andrew\Secret Folder\private-scan.tif'
+        self._seed_source(
+            's-1111111111', 'Absolute Path Source',
+            asset_rel=absolute_path, create_asset=False,
+        )
+        self._commit_fresh()
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir,
+                                   no_photos=True)
+
+        self.assertEqual(result['status'], 'ok')
+        files_dir = result['packet_dir'] / 'files'
+        if files_dir.exists():
+            self.assertNotIn('private-scan.tif', [p.name for p in files_dir.rglob('*')])
+        readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
+        self.assertIn('resolves outside', readme)
+        self.assertIn('private-scan.tif', readme)
+        self.assertNotIn('andrew', readme)
+        self.assertNotIn('Secret Folder', readme)
+        self.assertNotIn(absolute_path, readme)
+
+    def test_redact_asset_path_leaves_ordinary_aliases_untouched(self):
+        """`_redact_asset_path` is a no-op on the normal, portable alias
+        forms `files:` entries are meant to hold - only something that
+        actually looks like an absolute filesystem path is redacted
+        (issue #170 finding 1). A plain alias is useful diagnostic
+        information for a hand-fix, not a leak.
+        """
+        self.assertEqual(
+            packet._redact_asset_path('documents/census/scan.jpg'),
+            'documents/census/scan.jpg')
+        self.assertEqual(
+            packet._redact_asset_path('documents/../../outside-secret.tif'),
+            'documents/../../outside-secret.tif')
+        self.assertEqual(
+            packet._redact_asset_path('photos/1880/portrait.jpg'),
+            'photos/1880/portrait.jpg')
+
+    def test_redact_asset_path_basenames_absolute_and_drive_relative_paths(self):
+        """Both a fully-rooted absolute path and a Windows drive-relative
+        one ('C:foo', no separator after the colon - the same escape
+        `_validate_dest_subpath` in process.py already guards against) are
+        redacted to a basename (issue #170 finding 1)."""
+        self.assertEqual(
+            packet._redact_asset_path(r'C:\Users\andrew\Secret Folder\private-scan.tif'),
+            'private-scan.tif')
+        self.assertEqual(
+            packet._redact_asset_path(r'C:private-scan.tif'),
+            'private-scan.tif')
+
     def test_unreadable_source_is_left_out_with_its_files(self):
         """A source whose own record cannot be read takes its assets with it.
 
