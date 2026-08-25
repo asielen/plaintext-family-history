@@ -1505,6 +1505,32 @@ class ProcessTestCase(unittest.TestCase):
         self.assertEqual(restricted_lines, ['restricted: dna'])
         self.assertNotIn('  true', lines)
 
+    def test_force_dna_restriction_text_replaces_digit_before_chomp_block_scalar_span(
+            self) -> None:
+        # YAML permits the block scalar's indentation indicator (a digit)
+        # and its chomping indicator (+/-) in EITHER order - `|2-` and `|-2`
+        # mean the same thing. The header regex originally only accepted
+        # chomp-then-digit; this is the other order (adversarial review,
+        # round-2 audit - a real gap, though the belt-and-suspenders
+        # re-parse below already caught it by accident before this
+        # tightening, via YAML's own line-folding of the orphaned
+        # continuation).
+        block_scalar = (
+            '---\nid: s-1234567890\ntitle: A Letter\n'
+            'restricted: |2-\n  true\nnote: kept\n---\n## Claims\n'
+        )
+        new_text, changed = process._force_dna_restriction_text(block_scalar)
+        self.assertTrue(changed)
+        reparsed = process.parse_frontmatter_strict(new_text)
+        self.assertIsNotNone(reparsed)
+        self.assertEqual(reparsed['restricted'], 'dna')
+        self.assertEqual(reparsed['note'], 'kept')
+        lines = new_text.split('\n')
+        self.assertEqual(
+            [ln for ln in lines if ln.strip() == 'restricted: dna'],
+            ['restricted: dna'])
+        self.assertNotIn('  true', lines)
+
     def test_force_dna_restriction_text_replaces_literal_block_scalar_span_crlf(self) -> None:
         # Same shape with the `|` (literal) block style and CRLF line
         # endings, to confirm the span-removal keeps this function's own

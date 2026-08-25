@@ -2722,7 +2722,18 @@ def _restricted_type_of(value) -> str | None:
     return str(value).strip().lower() or 'plain'
 
 
-_BLOCK_SCALAR_HEADER_RE = re.compile(r'^[|>][+-]?\d*(\s*#.*)?$')
+
+# YAML permits the block scalar's chomping indicator (`+`/`-`) and its
+# explicit indentation indicator (a digit 1-9) in EITHER order - `|2-` and
+# `|-2` are the same header. `[+-]?\d*` alone only accepted chomp-then-digit
+# (adversarial review, round-2 audit: `|2-` failed to match, so
+# `_frontmatter_key_span` fell back to header-only replacement for that
+# order - the original bug, for that narrower shape; caught in practice by
+# `_force_dna_restriction_text`'s own re-parse safety net rather than by
+# this regex, which is the point of tightening it here rather than relying
+# on that net to keep catching it by accident). `(?:[+-]?\d?|\d[+-]?)`
+# accepts both orders, each indicator at most once.
+_BLOCK_SCALAR_HEADER_RE = re.compile(r'^[|>](?:[+-]?\d?|\d[+-]?)(\s*#.*)?$')
 
 
 def _frontmatter_key_span(lines: list[str], start: int, end: int, key: str) -> tuple[int, int] | None:
