@@ -1582,6 +1582,46 @@ class PacketTests(unittest.TestCase):
             packet._redact_asset_path(r'C:private-scan.tif'),
             'private-scan.tif')
 
+    def test_redact_asset_path_basenames_home_directory_shorthand(self):
+        """`~user/...` leaks a literal username through the exact same gap
+        as an absolute path, on any OS - `pathlib` never treats `~` as
+        meaningful on its own, and nothing here expands it (adversarial
+        review, round-4 audit)."""
+        self.assertEqual(
+            packet._redact_asset_path('~andrew_sielen/Documents/secret.pdf'),
+            'secret.pdf')
+        self.assertEqual(
+            packet._redact_asset_path('~/Documents/secret.pdf'),
+            'secret.pdf')
+
+    def test_redact_asset_path_basenames_posix_absolute_path_on_windows(self):
+        """A POSIX-style absolute path ('/Users/name/...', no drive letter)
+        is NOT `is_absolute()` under `WindowsPath` - Windows "absolute"
+        requires a drive or UNC root - so it used to sail through
+        `_redact_asset_path` whole and unredacted on a Windows archive
+        owner's machine (adversarial review, round-4 audit)."""
+        self.assertEqual(
+            packet._redact_asset_path('/Users/andrew_sielen/Documents/secret.pdf'),
+            'secret.pdf')
+
+    def test_redact_asset_path_basenames_windows_backslash_leading_separator(self):
+        """A bare leading backslash with no drive letter ('\\Users\\...',
+        drive-relative-to-current-drive) is also foreign to a portable
+        alias and must not pass through unredacted."""
+        self.assertEqual(
+            packet._redact_asset_path('\\Users\\andrew_sielen\\secret.pdf'),
+            'secret.pdf')
+
+    def test_redact_asset_path_still_passes_through_ordinary_aliases(self):
+        """The character-level check must not become so eager it starts
+        redacting normal, safe relative aliases."""
+        self.assertEqual(
+            packet._redact_asset_path('documents/census/1900_S-1111111111.jpg'),
+            'documents/census/1900_S-1111111111.jpg')
+        self.assertEqual(
+            packet._redact_asset_path('photos/1900s/family_S-2222222222.jpg'),
+            'photos/1900s/family_S-2222222222.jpg')
+
     def test_unreadable_source_is_left_out_with_its_files(self):
         """A source whose own record cannot be read takes its assets with it.
 

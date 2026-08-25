@@ -1084,7 +1084,7 @@ def _is_under_root(path: Path, root: Path) -> bool:
 def _redact_asset_path(raw: str) -> str:
     """Render a `files:` entry for a packet's README: unchanged if it is a
     normal relative alias ('documents/...', 'photos/...'), basename-only if
-    it looks like an absolute filesystem path.
+    it looks like an absolute filesystem path or a home-directory shorthand.
 
     A stored `files:` entry is meant to be a portable alias (TOOLING: "all
     stored paths are alias-form"), but nothing stops a hand-edit from
@@ -1097,10 +1097,32 @@ def _redact_asset_path(raw: str) -> str:
     owner's username, drive layout, or private directory names even though
     the file itself was correctly omitted. An ordinary alias is left exactly
     as-is: that is useful diagnostic information a human can act on, not a
-    leak. Mirrors process.py's `_validate_dest_subpath` absolute/drive-
-    relative test (tools never import tools - TOOLING §15).
+    leak.
+
+    Checked by leading CHARACTER, not `Path(raw).is_absolute()` alone
+    (adversarial review, round-4 audit): a portable alias never starts with
+    a path separator, `~`, or a drive letter, so any of those on the raw
+    string is already disqualifying regardless of what the current OS's
+    `pathlib` considers absolute. `Path.is_absolute()` is platform-relative
+    and was the actual bug - `WindowsPath('/Users/name/secret.pdf').is_absolute()`
+    is `False` (Windows "absolute" requires a drive or UNC root), so a
+    POSIX-style absolute path leaked through whole on an archive owner's
+    Windows machine; `~andrew_sielen/Documents/secret.pdf` (shell home-
+    directory shorthand, which nothing here ever expands) leaked a literal
+    username through the exact same gap, on any OS, since `pathlib` never
+    treats `~` as meaningful on its own. `Path(raw).is_absolute()` is kept
+    as a catch-all fourth check for any OS-specific absolute form the three
+    character checks don't anticipate, not as the primary test anymore.
     """
-    if Path(raw).is_absolute() or (len(raw) > 1 and raw[1] == ':'):
+    if not raw:
+        return raw
+    looks_foreign = (
+        raw[0] in ('/', '\\')
+        or raw[0] == '~'
+        or (len(raw) > 1 and raw[1] == ':')
+        or Path(raw).is_absolute()
+    )
+    if looks_foreign:
         return Path(raw).name or '(unnamed path)'
     return raw
 
