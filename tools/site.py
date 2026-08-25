@@ -540,8 +540,28 @@ def _safe_link_href(raw_url: str) -> str | None:
 # repeated. A lone `]` (including the first `]` of the wikilink's own
 # terminating `]]`) matches neither alternative, so the group always stops
 # there - it cannot swallow the construct's own closing `]]`.
+#
+# `ltext` (a markdown link's `[text](url)` label) gets the identical
+# treatment for the identical reason (adversarial review of PR #158's own
+# `wdisp` fix, #167 finding 2 continued): it was left as the original
+# `[^\]]+` - a single unmatched `]` inside the label, e.g.
+# `[see S-1111111111 [..1905]](url)`, broke the WHOLE markdown-link
+# alternative the same way `wdisp`'s did, and the raw id leaked the same
+# way, still unlinked. `+` (not `*`) keeps the pre-existing "label is
+# non-empty" requirement.
+#
+# Neither widening is a complete fix by itself - no FIXED-DEPTH regex can
+# balance brackets nested arbitrarily deep (two-plus levels, e.g.
+# `[[S-id|a[b[c]d]e]]`), or genuinely unbalanced ones (a stray `[` or `]`
+# with no partner at all) - the construct still falls through as ordinary
+# literal text for those shapes, exactly as before either widening existed.
+# `_BARE_ID_RE` (see `_scrub_internal_encoding`) is the DEFENSE-IN-DEPTH
+# backstop for that residual case: literal text - unlike a link/wikilink
+# TARGET, which is never scrubbed - is always scanned for a bare id shape
+# before it reaches the page, so even a construct `_INLINE_RE` never
+# recognizes as a link can no longer leak its raw citation id verbatim.
 _INLINE_RE = re.compile(
-    r'\[(?P<ltext>[^\]]+)\]\((?P<lurl>(?:[^()\s]|\([^()\s]*\))+)\)'  # [text](url)
+    r'\[(?P<ltext>(?:[^\[\]]|\[[^\[\]]*\])+)\]\((?P<lurl>(?:[^()\s]|\([^()\s]*\))+)\)'  # [text](url)
     r'|\[\[(?P<wtarget>[^\[\]|#]+)(?:#[^\[\]|]*)?'
     r'(?:\|(?P<wdisp>(?:[^\[\]]|\[[^\[\]]*\])*))?\]\]'            # [[target|disp]]
     r'|\[(?P<token>[PSCLH]-[0-9a-hjkmnp-tv-z]{10})\]'            # legacy [ID] token
@@ -585,42 +605,63 @@ def _inline_html(text: str, render_token) -> str:
     (`ltext`) was already covered.
 
     Each literal-text run is scrubbed independently (#167 finding 1): when a
-    claim-id parenthetical sits at the very END of a run - e.g.
-    "The record (C-4kx9m2p7qr)" immediately followed by a matched `**bold**`
-    or `[link](url)` with no space of its own - `_strip_claim_id_paren`
-    (see its docstring) has no way to see what comes next in the FULL
-    original text; the substring it is handed simply ends at the match. Left
-    alone, it drops the separating space it would otherwise reinsert,
-    welding the two surrounding words together ("record**confirms**" -> no
-    space before "confirms"). `_INLINE_BOUNDARY_CHAR`, a sentinel "a word
-    character follows immediately" flag, is passed as every run's boundary
-    EXCEPT the last (nothing follows the block's final literal-text run) -
-    we do not attempt to peek at the actual first rendered character of the
-    upcoming match `m` itself, since a wikilink/token's rendered form is
-    opaque HTML from `render_token`; any construct immediately adjacent with
-    no gap is treated the same, conservatively, as "followed by a word
-    character".
+    claim-id parenthetical (or, since the adversarial-review follow-up, a
+    bare citation-id token - see `_BARE_ID_RE`) sits at the very END of a
+    run - e.g. "The record (C-4kx9m2p7qr)" immediately followed by a matched
+    `**bold**` or `[link](url)` with no space of its own -
+    `_strip_claim_id_paren` (see its docstring) has no way to see what comes
+    next in the FULL original text; the substring it is handed simply ends
+    at the match. Left alone, it drops the separating space it would
+    otherwise reinsert, welding the two surrounding words together
+    ("record**confirms**" -> no space before "confirms"). A boundary
+    character - "what does a reader see right after this run?" - is passed
+    for every run EXCEPT the last (nothing follows the block's final
+    literal-text run).
+
+    That boundary character is the ACTUAL next rendered character where the
+    upcoming match `m` makes it knowable, not a blind guess (adversarial
+    review follow-up on the #167 finding-1 fix: a hardcoded sentinel that
+    always claimed "a word character follows" over-inserted a space before
+    PUNCTUATION too, e.g. `(C-xxx)**!important**` gained a wrong leading
+    space before "!important"). `**bold**` and `[text](url)` labels are
+    captured groups (`bold`/`ltext`) whose OWN first character - before
+    scrubbing/escaping/wrapping - is exactly what a reader sees right after
+    the boundary, so it is used directly. A wikilink's display label
+    (`wdisp`) is used too, but AFTER scrubbing: `_BARE_ID_RE` can rewrite
+    its first character (a label starting with a bare id becomes
+    `_BARE_ID_LABEL`, starting with `[` instead of a letter/digit), so only
+    the scrubbed form reflects what actually renders. A bare wikilink
+    (`[[target]]`, no label) or a legacy `[ID]` token has no visible text of
+    its own here at all - both are delegated to `render_token`, whose
+    output is opaque HTML this function never peeks inside - so
+    `_INLINE_BOUNDARY_CHAR`, the same conservative "assume a word character
+    follows" sentinel as before, is still used for those two cases only.
     """
     out: list[str] = []
     pos = 0
     for m in _INLINE_RE.finditer(text):
-        out.append(_escape(_scrub_internal_encoding(
-            text[pos:m.start()], _INLINE_BOUNDARY_CHAR)))
-        pos = m.end()
+        # Work out this match's own rendered output AND the boundary
+        # character its literal-text predecessor should see, together -
+        # both come from the same captured groups (see this function's
+        # docstring for why each case picks the boundary source it does).
         if m.group('wtarget') is not None:
-            out.append(render_token(m.group('wtarget').strip(),
-                                     _scrub_internal_encoding(m.group('wdisp'))))
+            scrubbed_wdisp = _scrub_internal_encoding(m.group('wdisp'))
+            boundary = scrubbed_wdisp[0] if scrubbed_wdisp else _INLINE_BOUNDARY_CHAR
+            rendered = render_token(m.group('wtarget').strip(), scrubbed_wdisp)
         elif m.group('token'):
-            out.append(render_token(m.group('token')))
+            boundary = _INLINE_BOUNDARY_CHAR
+            rendered = render_token(m.group('token'))
         elif m.group('ltext') is not None:
+            boundary = m.group('ltext')[0]
             href = _safe_link_href(m.group('lurl'))
             label = _escape(_scrub_internal_encoding(m.group('ltext')))
-            if href is not None:
-                out.append(f'<a href="{href}">{label}</a>')
-            else:
-                out.append(label)
+            rendered = f'<a href="{href}">{label}</a>' if href is not None else label
         else:  # bold
-            out.append(f'<strong>{_escape(_scrub_internal_encoding(m.group("bold")))}</strong>')
+            boundary = m.group('bold')[0]
+            rendered = f'<strong>{_escape(_scrub_internal_encoding(m.group("bold")))}</strong>'
+        out.append(_escape(_scrub_internal_encoding(text[pos:m.start()], boundary)))
+        pos = m.end()
+        out.append(rendered)
     out.append(_escape(_scrub_internal_encoding(text[pos:])))
     return ''.join(out)
 
@@ -639,13 +680,58 @@ _EMBED_RE = re.compile(r'^!\[\[\s*([^\]|]+?)\s*(?:\|\s*([^\]]*?)\s*)?\]\]\s*$')
 # id-char class `_INLINE_RE`'s legacy token uses (Crockford Base32, SPEC §10).
 _CLAIM_ID_PAREN_RE = re.compile(r'\s?\(C-[0-9a-hjkmnp-tv-z]{10}\)', re.I)
 
+# A bare `[PSCLH]-xxxxxxxxxx`-shaped citation id sitting in literal prose
+# text, NOT wrapped in a construct `_INLINE_RE` actually matched (#167
+# finding 2 continued, adversarial review of PR #158's fix - privacy-
+# critical). `_INLINE_RE`'s `wdisp`/`ltext` label groups now tolerate one
+# level of bracket nesting (see `_INLINE_RE`'s own comment), but no FIXED-
+# DEPTH regex can balance brackets nested arbitrarily deep, or genuinely
+# unbalanced ones - `[[S-1111111111|text [oops]]` (missing a `]`),
+# `[[S-1111111111|text ][ stuff]]`, `[[S-1111111111|text [a[b]c]]]` (nested
+# two deep), and the markdown-link equivalent
+# `[see S-1111111111 [..1905]](url)` all still make the WHOLE construct fail
+# to match, falling through as ordinary literal text. Literal text is
+# HTML-escaped and scrubbed of claim-id-parens/date-brackets, but - before
+# this fix - never inspected for a bare id shape, so the raw id leaked onto
+# the reader-facing page verbatim: exactly the class of leak the `wdisp`
+# widening (this same file, same review round) was meant to close, just not
+# fully. This is a DEFENSE-IN-DEPTH backstop, not a replacement for
+# `_INLINE_RE` matching real constructs correctly: `_scrub_internal_encoding`
+# is never called on a link/wikilink/token's own TARGET (`lurl`/`wtarget`/
+# `token` - see `_inline_html`, which never routes those through it), only
+# on literal text and a matched construct's own visible LABEL, so this can
+# never re-touch or corrupt an id `_INLINE_RE` already correctly turned into
+# a real citation link. Same id-char class as `_INLINE_RE`'s legacy `[ID]`
+# token (Crockford Base32, SPEC §10); the lookarounds keep it from matching
+# a hyphenated id-shaped substring embedded inside a longer alphanumeric run
+# (rather than matching only bracket-delimited ids, since the whole point is
+# these tokens are NOT reliably bracket-delimited once they've leaked here).
+_BARE_ID_RE = re.compile(
+    r'(?<![0-9A-Za-z])[PSCLH]-[0-9a-hjkmnp-tv-z]{10}(?![0-9A-Za-z])', re.I)
+
+# Replacement text for a `_BARE_ID_RE` match (M8 UX bar, `_LIVING_LABEL`/
+# `_RESTRICTED_LABEL`'s own rule: redacted content is NAMED, never silently
+# dropped to a blank). `render_token`'s own "unresolved token" convention
+# (`<mark>[X-xxxx]</mark>`, `render_token`'s final fallback) is NOT reused
+# here on purpose - it still shows the raw id text, which is exactly what
+# this backstop exists to stop leaking; a generic, non-identifying
+# placeholder is used instead. Deliberately plain text, not markup:
+# `_scrub_internal_encoding` returns plain text that its caller HTML-escapes
+# afterward (`_inline_html`), so - unlike `render_token`'s HTML, built and
+# returned directly, never re-escaped - anything but plain text here would
+# come out as visible, broken `&lt;span&gt;`-style tags. The bracket
+# punctuation mirrors `render_token`'s bracketed look without needing markup.
+_BARE_ID_LABEL = '[record]'
+
 # Sentinel passed as `_scrub_internal_encoding`'s `next_char` for the
-# literal-text run immediately preceding a matched inline construct
-# (`_inline_html`, #167 finding 1) - any alphanumeric character works,
-# `_strip_claim_id_paren` only ever calls `.isalnum()` on it. Its actual
-# value never reaches rendered output; it exists purely to say "yes, a word
-# character follows here with no gap" for a run whose OWN text happens to
-# end exactly where the match begins.
+# literal-text run immediately preceding a matched inline construct whose
+# own first rendered character is NOT knowable without calling
+# `render_token` (`_inline_html`, #167 finding 1; see its docstring for the
+# full boundary-character picture) - any alphanumeric character works,
+# `_strip_claim_id_paren`/`_redact_bare_id` only ever call `.isalnum()` on
+# it. Its actual value never reaches rendered output; it exists purely to
+# say "yes, a word character follows here with no gap" for a run whose OWN
+# text happens to end exactly where the match begins.
 _INLINE_BOUNDARY_CHAR = 'x'
 
 # A raw `[..YYYY[-MM[-DD]]]` "before" date (SPEC §11's bracket form) embedded
@@ -715,6 +801,34 @@ def _strip_claim_id_paren(match: re.Match, boundary_next_char: str | None = None
     if next_char is not None and next_char.isalnum():
         return ' '
     return ''
+
+
+def _redact_bare_id(match: re.Match, boundary_next_char: str | None = None) -> str:
+    """One bare `[PSCLH]-xxxxxxxxxx` match -> `_BARE_ID_LABEL` (#167 finding
+    2 continued - see `_BARE_ID_RE`'s docstring for why this backstop
+    exists).
+
+    Unlike `_strip_claim_id_paren`'s match, this one is never dropped to
+    nothing - but `_BARE_ID_LABEL` still ends in a non-word glyph (`]`), so
+    the exact same welding risk `_strip_claim_id_paren` guards against
+    applies here too: a bare id sitting at the very END of a literal-text
+    run that is immediately followed - in the FULL original text - by a
+    different matched inline construct with no gap of its own would
+    otherwise leave `_BARE_ID_LABEL`'s closing `]` jammed directly against
+    the next word with no separating space
+    ("...S-1111111111**note**" -> "...[record]note"). Same boundary logic
+    as `_strip_claim_id_paren`: consult the match's own trailing text first,
+    falling back to the caller-supplied `boundary_next_char` only when this
+    match sits at the true end of whatever string it was given."""
+    end = match.end()
+    text = match.string
+    if end < len(text):
+        next_char = text[end]
+    else:
+        next_char = boundary_next_char
+    if next_char is not None and next_char.isalnum():
+        return _BARE_ID_LABEL + ' '
+    return _BARE_ID_LABEL
 
 
 def _format_edtf_ymd(year: str, month: str | None, day: str | None) -> str:
@@ -848,14 +962,25 @@ def _scrub_internal_encoding(text: str, next_char: str | None = None) -> str:
     """Remove/translate internal-only encoding that must never reach reader-
     facing prose (#140): a bare claim-id parenthetical is dropped outright
     (spacing preserved, #144 finding 1; boundary-aware, #167 finding 1), a
-    raw `[..YYYY]`-shaped "before" date is translated to plain English when
-    it validates as a real date and stands alone (not one bound of a `/`
+    bare `[PSCLH]-xxxxxxxxxx`-shaped citation id that reached here unlinked
+    is replaced with a generic placeholder (boundary-aware the same way -
+    #167 finding 2 continued, see `_BARE_ID_RE`'s docstring), a raw
+    `[..YYYY]`-shaped "before" date is translated to plain English when it
+    validates as a real date and stands alone (not one bound of a `/`
     interval - #144 findings 2 and 5), and a two-sided interval with exactly
     one bracketed bound is translated in full - both bounds in plain
     English (#167 finding 3). Applied to raw value/notes/body text BEFORE
     any HTML escaping, so callers doing their own index-based substitutions
     afterward (e.g. the timeline's place-mention span) see only the
     already-scrubbed text.
+
+    The claim-id-paren pass runs BEFORE the bare-id pass deliberately: a
+    well-formed `(C-xxxxxxxxxx)` parenthetical must be fully consumed - and
+    its own smart-spacing logic applied - as ONE unit first, or the bare-id
+    pass would rewrite the id INSIDE the parens first (`(C-xxx)` ->
+    `([record])`), and `_CLAIM_ID_PAREN_RE` would then no longer recognize
+    the now-different text as its own pattern at all, silently losing the
+    drop-the-whole-parenthetical behavior #144/#167 finding 1 established.
 
     `next_char`, when given, is the character that immediately follows
     `text` in the CALLER's full original string (not necessarily reflected
@@ -865,6 +990,7 @@ def _scrub_internal_encoding(text: str, next_char: str | None = None) -> str:
     if not text:
         return text
     text = _CLAIM_ID_PAREN_RE.sub(lambda m: _strip_claim_id_paren(m, next_char), text)
+    text = _BARE_ID_RE.sub(lambda m: _redact_bare_id(m, next_char), text)
     text = _DATE_BEFORE_SLASH_RE.sub(_translate_date_before_slash, text)
     text = _DATE_BEFORE_RE.sub(_translate_date_before, text)
     return text

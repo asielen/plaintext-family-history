@@ -4646,6 +4646,71 @@ class ProseConverterTests(unittest.TestCase):
         self.assertIn('TOK(S-1111111111|see [bar] here)', out)
         self.assertIn('TOK(S-2222222222|None)', out)     # legacy [ID] token still parses after
 
+    # -- adversarial review follow-up on #167 (both findings incomplete) --
+
+    def test_wikilink_missing_close_bracket_does_not_leak_id(self):
+        # Problem 1 repro 1: `wdisp`'s one-level bracket tolerance (#167
+        # finding 2) does not save a construct with genuinely UNBALANCED
+        # brackets - here the label's own `[oops]` closes, but the
+        # wikilink's own trailing `]]` is missing one `]`. No fixed-depth
+        # regex can match this as a wikilink, so it falls through as
+        # literal text; the DEFENSE-IN-DEPTH backstop (`_BARE_ID_RE`) must
+        # still keep the raw source id off the page.
+        out = site._inline_html('[[S-1111111111|text [oops]]', lambda t, d=None: t)
+        self.assertNotIn('S-1111111111', out)
+        self.assertIn('[record]', out)
+
+    def test_wikilink_swapped_bracket_order_does_not_leak_id(self):
+        # Problem 1 repro 2: `][` in that order (not a balanced `[...]`
+        # unit at all) - same failure mode, same backstop.
+        out = site._inline_html('[[S-1111111111|text ][ stuff]]', lambda t, d=None: t)
+        self.assertNotIn('S-1111111111', out)
+        self.assertIn('[record]', out)
+
+    def test_wikilink_nested_two_levels_does_not_leak_id(self):
+        # Problem 1 repro 3: nesting two levels deep is past what ANY
+        # fixed-depth regex (including the one-level-tolerant `wdisp`) can
+        # balance - same failure mode, same backstop.
+        out = site._inline_html('[[S-1111111111|text [a[b]c]]]', lambda t, d=None: t)
+        self.assertNotIn('S-1111111111', out)
+        self.assertIn('[record]', out)
+
+    def test_markdown_link_label_bracket_notation_does_not_leak_id(self):
+        # Problem 1 repro 4: the IDENTICAL vulnerability in `ltext` (a
+        # markdown link's label), which - unlike `wdisp` - had never been
+        # widened at all before this fix. Widening `ltext` the same way
+        # `wdisp` was widened (#167 finding 2 continued) means this
+        # particular one-level-nested shape now matches as a REAL, WORKING
+        # link - a strictly better outcome than falling through to the
+        # backstop - with the label's bare id still caught and redacted by
+        # the same backstop that protects a failed-match run.
+        out = site._inline_html(
+            '[see S-1111111111 [..1905]](https://example.test/x)', lambda t, d=None: t)
+        self.assertNotIn('S-1111111111', out)
+        self.assertEqual(
+            out, '<a href="https://example.test/x">see [record] before 1905</a>')
+
+    def test_bare_id_backstop_does_not_fire_inside_a_matched_targets_own_id(self):
+        # The backstop must never re-touch or corrupt an id `_INLINE_RE`
+        # already correctly turned into a real citation link - it only ever
+        # sees a construct's LABEL (or literal text between constructs),
+        # never a link/wikilink/token's own TARGET. A wikilink whose LABEL
+        # happens to mention a *different* id as plain descriptive text
+        # exercises both halves of that invariant at once: the real target
+        # (`S-2222222222`) must resolve to a normal working link, while the
+        # incidental bare id sitting in the label text still gets redacted.
+        seen = {}
+
+        def render_token(tok, disp=None):
+            seen['tok'], seen['disp'] = tok, disp
+            return f'TOK({tok}|{disp})'
+
+        out = site._inline_html(
+            '[[S-2222222222|S-1111111111 mentioned]]', render_token)
+        self.assertEqual(seen['tok'], 'S-2222222222')          # target untouched
+        self.assertNotIn('S-1111111111', out)
+        self.assertIn('[record] mentioned', out)
+
     def test_claim_id_paren_before_bold_keeps_separating_space(self):
         # #167 finding 1: `_scrub_internal_encoding` runs per literal-text
         # RUN inside `_inline_html`'s loop. When a claim-id parenthetical
@@ -4696,6 +4761,53 @@ class ProseConverterTests(unittest.TestCase):
         ident = lambda t, d=None: t  # noqa: E731
         out = site._inline_html('The record (C-4kx9m2p7qr)', ident)
         self.assertEqual(out, 'The record')
+
+    # -- adversarial review follow-up on #167 finding 1 (boundary sentinel) --
+
+    def test_claim_id_paren_before_bold_starting_with_punctuation_no_space(self):
+        # Problem 2 repro 1: the prior fix's `_INLINE_BOUNDARY_CHAR`
+        # sentinel always claimed "a word character follows," so a space
+        # got inserted even when the bold text's REAL first character is
+        # punctuation. The real first character (`m.group('bold')[0]`) must
+        # be used instead, so no space is added before "!important".
+        ident = lambda t, d=None: t  # noqa: E731
+        out = site._inline_html('(C-4kx9m2p7qr)**!important**', ident)
+        self.assertEqual(out, '<strong>!important</strong>')
+
+    def test_claim_id_paren_before_markdown_link_starting_with_punctuation_no_space(self):
+        # Problem 2 repro 2: same regression, a markdown link whose label
+        # starts with punctuation.
+        ident = lambda t, d=None: t  # noqa: E731
+        out = site._inline_html('(C-4kx9m2p7qr)[!see](https://example.test)', ident)
+        self.assertEqual(out, '<a href="https://example.test">!see</a>')
+
+    def test_claim_id_paren_before_wikilink_label_starting_with_punctuation_no_space(self):
+        # Problem 2 repro 3: same regression, a wikilink whose display
+        # label starts with punctuation.
+        def render_token(tok, disp=None):
+            return f'<a>{disp}</a>'
+
+        out = site._inline_html('(C-4kx9m2p7qr)[[S-1111111111|!see]]', render_token)
+        self.assertEqual(out, '<a>!see</a>')
+
+    def test_bare_id_redaction_reinserts_missing_space(self):
+        # `_BARE_ID_LABEL` is never dropped to nothing (unlike a claim-id
+        # paren), but it still ends in a non-word `]` - the same welding
+        # risk applies when a bare id sits at the very end of a literal-text
+        # run immediately followed by a different matched construct with no
+        # gap of its own.
+        ident = lambda t, d=None: t  # noqa: E731
+        out = site._inline_html('See S-1111111111**note**', ident)
+        self.assertEqual(out, 'See [record] <strong>note</strong>')
+
+    def test_bare_id_redaction_does_not_double_space(self):
+        # Mirrors `_strip_claim_id_paren`'s own no-double-space guard: when
+        # a real space (or punctuation) already follows the bare id, no
+        # second space is inserted.
+        out = site._scrub_internal_encoding('See S-1111111111 mentioned.')
+        self.assertEqual(out, 'See [record] mentioned.')
+        out2 = site._scrub_internal_encoding('See S-1111111111.')
+        self.assertEqual(out2, 'See [record].')
 
 
 class WorkbenchModeTests(_Base):
