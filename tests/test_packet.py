@@ -1594,6 +1594,16 @@ class PacketTests(unittest.TestCase):
             packet._redact_asset_path('~/Documents/secret.pdf'),
             'secret.pdf')
 
+    def test_redact_asset_path_basenames_bare_home_shorthand_with_no_path(self):
+        """A BARE `~user` (or `~user/`, or `~`) with no further path
+        component has nothing real for PureWindowsPath to extract - `.name`
+        returns the shorthand itself unchanged, so it still leaked the
+        username even after the round-5 fix above handled `~user/...`
+        (Codex review, round-6 audit)."""
+        self.assertEqual(packet._redact_asset_path('~andrew_sielen'), '(unnamed path)')
+        self.assertEqual(packet._redact_asset_path('~andrew_sielen/'), '(unnamed path)')
+        self.assertEqual(packet._redact_asset_path('~/'), '(unnamed path)')
+
     def test_redact_asset_path_basenames_posix_absolute_path_on_windows(self):
         """A POSIX-style absolute path ('/Users/name/...', no drive letter)
         is NOT `is_absolute()` under `WindowsPath` - Windows "absolute"

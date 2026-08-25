@@ -1142,9 +1142,24 @@ def _redact_asset_path(raw: str) -> str:
         or (len(raw) > 1 and raw[1] == ':')
         or Path(raw).is_absolute()
     )
-    if looks_foreign:
-        return PureWindowsPath(raw).name or '(unnamed path)'
-    return raw
+    if not looks_foreign:
+        return raw
+    name = PureWindowsPath(raw).name or '(unnamed path)'
+    # A bare `~`/`~user` shorthand - with or without a trailing separator,
+    # and with no further path component after it - has nothing real for
+    # PureWindowsPath to extract, so `.name` returns the shorthand ITSELF
+    # unchanged (Codex review, round-6 audit): `~andrew_sielen` -> the same
+    # string back, and `~andrew_sielen/` -> `~andrew_sielen` (the trailing
+    # separator carries no component of its own to become the name). Both
+    # still ship the username straight into README.txt. Checking the
+    # EXTRACTED name for a leading `~` (rather than the raw string, which an
+    # earlier version of this fix did and which missed the trailing-slash
+    # shape) catches every variant: whatever PureWindowsPath handed back is
+    # still just the shorthand, not a real trailing component, whenever it
+    # still starts with `~`.
+    if name.startswith('~'):
+        return '(unnamed path)'
+    return name
 
 
 def _resolve_source_files(

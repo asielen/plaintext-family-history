@@ -3884,9 +3884,10 @@ def process_refile(
                 f'catalog, not this record. Fix it by hand: open '
                 f'{record_path.name}, find the `files:` entry `file: '
                 f'{stored_alias}`, and either point it at the correct '
-                f'on-disk photo for this source (one whose embedded SOURCE '
-                f'keyword names {sid}) or delete the entry if no such photo '
-                'exists. Nothing was moved.')
+                f'on-disk photo for this source (untagged, or whose '
+                f'embedded SOURCE keyword already names {sid} - either is '
+                f'fine) or delete the entry if no such photo exists. '
+                'Nothing was moved.')
 
     # The source's type, resolved. A type that is wrong for the destination
     # root is part of the misfiling this verb corrects, so refile carries the

@@ -695,6 +695,13 @@ class ProcessRefileTestCase(unittest.TestCase):
         self.assertIn(other_sid, err)
         self.assertTrue(asset.exists(), 'an ambiguously-marked photo must never move')
         self.assertIn('cannot fix this', err)
+        # Codex review, round-6 audit: the fix-by-hand advice must not
+        # contradict existing behavior, which deliberately also accepts an
+        # UNTAGGED photo (embedded_sids empty -> conflicting empty -> this
+        # whole refusal branch never fires on retry) as a valid target -
+        # telling the owner it must carry a matching keyword would risk
+        # them discarding a perfectly good, merely-untagged photo.
+        self.assertIn('untagged', err)
 
     def test_working_copy_refusal(self) -> None:
         (self.archive / 'WORKING_COPY').write_text('marker', encoding='utf-8')
