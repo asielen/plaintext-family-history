@@ -797,9 +797,14 @@ def claim_is_own_vital(
     this once per vital claim per person; keyed on the claim alone, one cache
     is safely shared across every person in a build.
 
-    True for a claim whose `roles:` map says nothing (`vital_subjects` returns
-    None) - the legacy claim, where the caller keeps the behaviour it has
-    always had.
+    True for a claim `vital_subjects` returns None for - a claim naming at
+    most one person with no `roles:` map at all, the one legacy shape safe to
+    read as "the caller keeps the behaviour it has always had" (nothing to
+    disambiguate). A claim naming several people with no `roles:` map is a
+    DIFFERENT case (`vital_subjects` returns `[]`, not None) and this
+    returns False for every one of them - guessing "everyone" there is the
+    #126 bug this rule exists to prevent, not the legacy behaviour to
+    preserve. See `vital_subjects`'s own docstring for the full case list.
     """
     if cache is not None and claim_id in cache:
         subjects = cache[claim_id]

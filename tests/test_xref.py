@@ -146,6 +146,27 @@ class XrefTests(unittest.TestCase):
         result = xref.run_xref(self.archive_root)
         self.assertEqual(result['groups'], [])
 
+    def test_death_claim_with_no_roles_at_all_naming_two_people_enters_neither_bucket(
+            self) -> None:
+        # #126, reopened: a death claim naming two people with NO roles: map
+        # at all (not even a partial one, unlike the roled parent/child shape
+        # above) has not said which of them died - `vital_subjects` now
+        # answers [] for this shape rather than "everyone named". Neither
+        # person's own death bucket may be entered by a claim that has not
+        # actually said it is about them.
+        self._seed_persons_sources()
+        self.conn.execute("INSERT INTO persons(id, name, living, tier, path) VALUES "
+                           "('p-bbbbbbbbbb','Kin','false','curated','y.md')")
+        _insert_claim(self.conn, 'c-aaaaaaaaaa', 's-1111111111', 'death',
+                       'died 1940', date_edtf='1940', persons=['p-aaaaaaaaaa'])
+        _insert_claim(self.conn, 'c-bbbbbbbbbb', 's-2222222222', 'death',
+                       'visited the grave in 1940, no roles noted',
+                       date_edtf='1940', persons=['p-aaaaaaaaaa', 'p-bbbbbbbbbb'])
+        self.conn.commit()
+
+        result = xref.run_xref(self.archive_root)
+        self.assertEqual(result['groups'], [])
+
     def test_same_source_pair_excluded(self) -> None:
         self._seed_persons_sources()
         _insert_claim(self.conn, 'c-aaaaaaaaaa', 's-1111111111', 'birth',

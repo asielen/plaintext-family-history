@@ -1273,6 +1273,32 @@ class VitalSubjectRoleW101Tests(unittest.TestCase):
         self.assertEqual(len(w101), 1, findings)
         self.assertIn('birth', w101[0].message)
 
+    def test_two_person_death_claim_with_no_roles_at_all_does_not_satisfy_own_death(
+            self) -> None:
+        # #126, reopened: a death claim naming P-1111111111 alongside a
+        # relative, with NO roles: map at all (not even a partial one), has
+        # not said which of them died - `_lib.vital_subjects` now answers []
+        # for this shape rather than treating it as "everyone's own vital".
+        # W101 must still report P-1111111111's own death as missing rather
+        # than crediting it from a claim that may actually be the relative's.
+        (self.root / 'people' / 'rivera__sam_P-1111111111.md').write_text(
+            '---\nid: P-1111111111\nname: Sam Rivera\ntier: curated\n'
+            'living: false\nno_known_marriages: true\n---\n\n# Sam Rivera\n',
+            encoding='utf-8')
+        (self.root / 'people' / 'rivera__kin_P-3333333333.md').write_text(
+            '---\nid: P-3333333333\nname: Kin Rivera\ntier: stub\n'
+            'living: false\n---\n\n# Kin Rivera\n', encoding='utf-8')
+        (self.root / 'sources' / 'test_S-3333333333.md').write_text(_claims_source(
+            '- id: C-3333333333\n  type: death\n'
+            '  persons: [P-1111111111, P-3333333333]\n'
+            '  value: Visited the grave in 1990\n  status: accepted\n'
+            '  confidence: high\n'
+        ), encoding='utf-8')
+        findings, _ = lint._run_lint_core(self.root, {})
+        w101 = [f for f in findings if f.code == 'W101']
+        self.assertEqual(len(w101), 1, findings)
+        self.assertIn('death', w101[0].message)
+
 
 class _SurgeryBase(unittest.TestCase):
     """Shared scaffolding for the fix-mode surgery tests: one named person and
