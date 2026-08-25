@@ -318,6 +318,30 @@ def _is_under(path: Path, root: Path) -> bool:
         return False
 
 
+def _resolve_hits_symlink_loop(path: Path) -> bool:
+    """True if resolving `path` alone hits a symlink loop specifically.
+
+    `_is_under`'s widened except tuple folds a symlink loop into the same
+    `False` as an everyday containment miss for all ~11 of its callers
+    uniformly - right for most of them, since a plain refusal is enough
+    (Codex review, round-5 audit). `process_refile`'s own containment
+    refusal is the one exception: its message already NAMES a symlink loop
+    as a possible cause alongside a `..` segment or doubled slash, but then
+    gives one universal remedy - "fix the files: entry by hand" - that is
+    actively wrong when the entry is correct and an on-disk symlink is what
+    actually needs repairing. This is the targeted re-check that call site
+    uses to tell the two apart and give the right remedy for each, the same
+    way `packet.py`'s `_resolve_source_files` already does for its own
+    identical containment check."""
+    try:
+        path.resolve()
+        return False
+    except RuntimeError:
+        return True
+    except (ValueError, OSError):
+        return False
+
+
 def classify_asset(file_path: Path, fha_config: dict, archive_root: Path,
                    *, source_type: str | None = None) -> str:
     """Return 'photo' or 'document' for an asset file (TOOLING §6).
@@ -3738,11 +3762,18 @@ def process_refile(
     # a file that was never part of this archive.
     claimed_root = resolve_path(alias_root, fha_config, archive_root)
     if not _is_under(src, claimed_root):
+        if _resolve_hits_symlink_loop(src) or _resolve_hits_symlink_loop(claimed_root):
+            raise ProcessError(
+                f'{stored_alias} could not be checked against the configured '
+                f'{alias_root} root - this looks like a symlink loop, most '
+                'likely from a corrupted or maliciously crafted filesystem '
+                f'entry, not a mistyped files: entry in {record_path.name}. '
+                'Find and fix or remove the offending symlink, then retry. '
+                'Nothing was moved.')
         raise ProcessError(
             f'{stored_alias} resolves outside the configured {alias_root} '
             f'folder ({claimed_root}) - this looks like a hand-edited files: '
-            f'entry gone wrong (a `..` segment, a doubled slash, or a symlink '
-            f'loop somewhere along the path). Fix the '
+            f'entry gone wrong (a `..` segment or a doubled slash). Fix the '
             f'entry in {record_path.name} by hand, then retry. Nothing was '
             'moved.')
 

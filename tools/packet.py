@@ -199,7 +199,7 @@ import shutil
 import sqlite3
 import sys
 import zipfile
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -1113,6 +1113,26 @@ def _redact_asset_path(raw: str) -> str:
     treats `~` as meaningful on its own. `Path(raw).is_absolute()` is kept
     as a catch-all fourth check for any OS-specific absolute form the three
     character checks don't anticipate, not as the primary test anymore.
+
+    The BASENAME is extracted with `PureWindowsPath`, unconditionally, not
+    `Path` (Codex review, round-5 audit - the mirror-image of the bug just
+    above): this archive's packet can be built on any OS, and a `files:`
+    entry can name a foreign path from a DIFFERENT OS than the one doing
+    the building. `Path(raw)` resolves to whichever OS-specific class the
+    CURRENT host uses - on POSIX, `PosixPath('C:\\Users\\andrew\\secret.pdf').name`
+    never recognizes `\\` as a separator at all and returns the entire raw
+    string unchanged, shipping the username straight into README.txt on a
+    Linux/Mac-built packet (this is exactly what CI's Linux runners caught
+    - the prior fix's own new Windows-path tests only ever ran, and passed,
+    on the Windows machine that authored them). `PureWindowsPath` never
+    touches the filesystem and understands BOTH separator styles (`/` and
+    `\\`) plus drive letters and UNC roots on every host OS alike, so a
+    Windows-shaped foreign path redacts correctly when the packet is built
+    on POSIX, and a POSIX-shaped foreign path (forward-slash-separated)
+    still redacts correctly too - `PureWindowsPath` is a strict superset of
+    `PurePosixPath`'s separator handling for this purpose (real per-OS
+    filesystem calls are never made here, only string splitting to find the
+    trailing component).
     """
     if not raw:
         return raw
@@ -1123,7 +1143,7 @@ def _redact_asset_path(raw: str) -> str:
         or Path(raw).is_absolute()
     )
     if looks_foreign:
-        return Path(raw).name or '(unnamed path)'
+        return PureWindowsPath(raw).name or '(unnamed path)'
     return raw
 
 

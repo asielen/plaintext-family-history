@@ -478,10 +478,13 @@ class ProcessRefileTestCase(unittest.TestCase):
         # claimed root; a symlink loop on either side makes `.resolve()`
         # raise `RuntimeError`, which - before the fix - only the guard's
         # `except (ValueError, OSError):` clause did NOT catch, letting it
-        # escape uncaught. It must be refused exactly like any other
-        # containment failure: the same 'resolves outside' ProcessError
-        # `test_stored_alias_escaping_documents_root_refused` above gets, not
-        # a crash.
+        # escape uncaught. It must be refused cleanly, not a crash - and
+        # (Codex review, round-5 audit) with a message that names the
+        # symlink loop as the thing to fix, not the ordinary "edit the
+        # files: entry by hand" advice `test_stored_alias_escaping_documents_root_refused`
+        # above gets for a genuine escaping-path entry: that advice is wrong
+        # here, since the entry may be perfectly correct and an on-disk
+        # symlink is what actually needs repairing.
         self._install_photo_store()
         asset, record = self._write_doc_source()
 
@@ -490,7 +493,8 @@ class ProcessRefileTestCase(unittest.TestCase):
 
         self.assertEqual(rc, EXIT_FAILURE)
         self.assertNotIn('Traceback', err)
-        self.assertIn('resolves outside', err)
+        self.assertIn('symlink loop', err)
+        self.assertNotIn('resolves outside', err)
         self.assertTrue(asset.exists(),
                          'a file whose containment could not be verified must never move')
 
@@ -508,7 +512,8 @@ class ProcessRefileTestCase(unittest.TestCase):
 
         self.assertEqual(rc, EXIT_FAILURE)
         self.assertNotIn('Traceback', err)
-        self.assertIn('resolves outside', err)
+        self.assertIn('symlink loop', err)
+        self.assertNotIn('resolves outside', err)
         self.assertTrue(asset.exists(), 'a dry-run must never move anything, loop or not')
 
     def test_dest_subpath_symlink_loop_refused_cleanly(self) -> None:
