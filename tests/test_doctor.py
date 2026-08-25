@@ -981,6 +981,62 @@ class OrphanedBackPhotosTests(unittest.TestCase):
         self.assertIn(doctor.shell_quote('photos/my album/scan 001.jpg'), report)
         self.assertIn(doctor.shell_quote('photos/my album/scan 001-back.jpg'), report)
 
+    # ── Issue #169, finding 2 ──────────────────────────────────────────────
+
+    def test_ambiguous_back_siblings_are_flagged_not_silently_clean(self) -> None:
+        # Finding #2: when a listed primary has TWO DIFFERENT unlisted back
+        # candidates on disk (e.g. differing in case or extension, as in the
+        # issue's own examples), `_find_back_on_disk` used to collapse that
+        # ambiguity into the same None as "no back scan at all" - so `fha
+        # doctor` reported clean even though both files were orphaned. The
+        # fix must name every candidate in its own finding instead.
+        (self.root / 'photos' / 'x-00500.jpg').write_bytes(b'front')
+        (self.root / 'photos' / 'x-00500-back.jpg').write_bytes(b'back candidate one')
+        (self.root / 'photos' / 'x-00500_back.jpeg').write_bytes(b'back candidate two')
+        _write(self.root / 'sources' / 'photos' / 'ambiguous_S-9999999999.md', _SOURCE.format(
+            sid='S-9999999999', title='Ambiguous',
+            line='files:\n  - file: photos/x-00500.jpg\n    role: primary\n'))
+
+        result = doctor.run_doctor(self.root, self._fha_config())
+        report = '\n'.join(result.data['lines'])
+
+        # Not the old silent-pass outcome: this must warn, not read clean.
+        self.assertIn('ambiguous back scan', report)
+        self.assertIn('photos/x-00500-back.jpg', report)
+        self.assertIn('photos/x-00500_back.jpeg', report)
+        # Neither candidate is silently attached/recommended as THE back -
+        # doctor must not guess which one is real.
+        self.assertNotIn('orphaned back scan', report)
+        check = self._finding(result)
+        self.assertIsNotNone(check, 'doctor must report an orphaned_back_photos finding')
+        self.assertEqual(check['status'], 'warn')
+        self.assertGreaterEqual(result.exit_code, EXIT_WARNINGS)
+
+    def test_ambiguous_back_siblings_ignore_a_candidate_already_listed(self) -> None:
+        # A candidate that is already listed in files: (just under some OTHER
+        # role, e.g. attached as a plain 'attachment' rather than 'back') is
+        # not itself orphaned - it must be dropped before judging ambiguity,
+        # so a genuinely lone unlisted candidate still reports as a normal
+        # single "orphaned back scan", not as "ambiguous".
+        (self.root / 'photos' / 'x-00600.jpg').write_bytes(b'front')
+        (self.root / 'photos' / 'x-00600-back.jpg').write_bytes(b'already listed elsewhere')
+        (self.root / 'photos' / 'x-00600_back.jpeg').write_bytes(b'genuinely unlisted')
+        _write(self.root / 'sources' / 'photos' / 'partial_S-1212121212.md', _SOURCE.format(
+            sid='S-1212121212', title='Partial',
+            line=('files:\n'
+                  '  - file: photos/x-00600.jpg\n    role: primary\n'
+                  '  - file: photos/x-00600-back.jpg\n    role: attachment\n')))
+
+        result = doctor.run_doctor(self.root, self._fha_config())
+        report = '\n'.join(result.data['lines'])
+
+        self.assertNotIn('ambiguous back scan', report)
+        self.assertIn('orphaned back scan', report)
+        self.assertIn('photos/x-00600_back.jpeg', report)
+        # Exactly one orphan reported - the already-listed candidate must
+        # not also show up as a second, spurious finding.
+        self.assertEqual(report.count('orphaned back scan'), 1)
+
 
 class RenderTests(unittest.TestCase):
     """_cmd_doctor renders data['lines'] verbatim and returns the exit code."""

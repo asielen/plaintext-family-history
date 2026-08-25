@@ -645,8 +645,8 @@ def _check_orphaned_back_photos(archive_root: Path, fha_config: dict,
     except FhaConfigError:
         return EXIT_CLEAN          # no usable photos root: nothing to check
 
-    def _find_back_on_disk(parent_dir: Path, base_id: str) -> Path | None:
-        """Scan `parent_dir` for a `part_kind == 'back'` sibling sharing
+    def _find_back_on_disk(parent_dir: Path, base_id: str) -> list[Path]:
+        """Scan `parent_dir` for every `part_kind == 'back'` sibling sharing
         `base_id` (case-insensitive) - a LOCAL TWIN of `process.py`'s own
         `_find_back_sibling`, which scans a directory with the same
         `parse_media_filename` parser instead of hand-building one or two
@@ -667,21 +667,26 @@ def _check_orphaned_back_photos(archive_root: Path, fha_config: dict,
         primary). Both parse to `part_kind == 'back'` with the same
         `grouping_stem`, so the scan finds them.
 
-        Ambiguity (more than one candidate) is left alone here - returns
-        None, exactly like "nothing found" - rather than raised the way
-        `process.py`'s `_find_back_sibling` now refuses on ambiguity (#145
-        finding 4): that fix stops a ONE-TIME import from silently guessing.
-        This check instead re-scans an archive that may have been evolving
-        for years, on every `fha doctor` run; hard-refusing every run until
-        a human resolves the ambiguity would make doctor itself unusable for
-        an unrelated reason. A human looking at the finding's named primary
-        can still go resolve it by hand.
+        Returns every match, not just a lone one: ambiguity (more than one
+        candidate) is left for the CALLER to report as its own finding
+        (issue #169, finding 2) rather than resolved - or silently
+        refused - here. `process.py`'s `_find_back_sibling` now refuses on
+        ambiguity at import time (#145 finding 4), which is right for a
+        ONE-TIME import; this check instead re-scans an archive that may
+        have been evolving for years, on every `fha doctor` run, so
+        hard-refusing every run until a human resolves the ambiguity would
+        make doctor itself unusable for an unrelated reason. Collapsing
+        "two different unlisted candidates" into the same empty result as
+        "genuinely nothing found" would just trade that unusable-doctor
+        failure mode for a silently-clean one instead - so the caller gets
+        the full list and names every candidate in its finding, and a human
+        resolves it by hand from there.
         """
         base_id_norm = base_id.lower()
         try:
             siblings = list(parent_dir.iterdir())
         except OSError:
-            return None
+            return []
         matches = []
         for candidate in siblings:
             if not candidate.is_file():
@@ -691,7 +696,7 @@ def _check_orphaned_back_photos(archive_root: Path, fha_config: dict,
                 continue
             if grouping_stem(candidate_parsed).lower() == base_id_norm:
                 matches.append(candidate)
-        return matches[0] if len(matches) == 1 else None
+        return matches
 
     findings: list[str] = []
     for record_path in sorted(sources_dir.rglob('*.md')):
@@ -729,13 +734,41 @@ def _check_orphaned_back_photos(archive_root: Path, fha_config: dict,
         for (parent_dir, base_id), disk_path in sample_path.items():
             if (parent_dir, base_id) in has_back:
                 continue
-            candidate = _find_back_on_disk(parent_dir, base_id)
-            if candidate is None:
-                continue
-            candidate_alias = path_to_alias(candidate, 'photos', fha_config, archive_root)
-            if candidate_alias in listed:
+            candidates = _find_back_on_disk(parent_dir, base_id)
+            # A candidate already listed under some OTHER role (an
+            # `attachment`, say, rather than `back`) is not orphaned - drop
+            # it before judging ambiguity, or a second, genuinely-unlisted
+            # candidate would be reported as "ambiguous" against a file
+            # that needs no attention at all.
+            unlisted = [
+                c for c in candidates
+                if path_to_alias(c, 'photos', fha_config, archive_root) not in listed
+            ]
+            if not unlisted:
                 continue
             primary_alias = path_to_alias(disk_path, 'photos', fha_config, archive_root)
+            if len(unlisted) > 1:
+                # Issue #169, finding 2: two (or more) DIFFERENT unlisted
+                # back candidates (e.g. `scan-back.jpg` and `scan_back.jpeg`)
+                # must not read as "no back scan" - `_find_back_on_disk`'s
+                # own docstring explains why doctor still refuses to GUESS
+                # which one is real; this finding instead names all of them
+                # so a human can tell doctor is not clean here.
+                candidate_aliases = sorted(
+                    path_to_alias(c, 'photos', fha_config, archive_root) for c in unlisted)
+                names = ', '.join(candidate_aliases)
+                findings.append(
+                    f'ambiguous back scan: {len(candidate_aliases)} unlisted back-shaped '
+                    f"files sit on disk for {primary_alias} in {record_path.name}'s files: "
+                    f'({names}) - doctor cannot tell which (if any) is the real back scan, '
+                    'so it is not attaching either  next: figure out which one is right and '
+                    f'attach it by hand - `{_LAUNCHER} process {shell_quote(primary_alias)} '
+                    f'--more <the file> back --root "{archive_root}"` - then remove or rename '
+                    'the other so this stops flagging as ambiguous.'
+                )
+                continue
+            candidate = unlisted[0]
+            candidate_alias = path_to_alias(candidate, 'photos', fha_config, archive_root)
             if disk_path.is_file():
                 findings.append(
                     f'orphaned back scan: {candidate_alias} sits on disk but is not '

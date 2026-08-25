@@ -2722,7 +2722,52 @@ def _restricted_type_of(value) -> str | None:
     return str(value).strip().lower() or 'plain'
 
 
-def _force_dna_restriction_text(record_text: str) -> tuple[str, bool]:
+_BLOCK_SCALAR_HEADER_RE = re.compile(r'^[|>][+-]?\d*(\s*#.*)?$')
+
+
+def _frontmatter_key_span(lines: list[str], start: int, end: int, key: str) -> tuple[int, int] | None:
+    """Return the (first, last) line indexes - inclusive, within [start, end) -
+    of a top-level frontmatter key's FULL value, or None if `key:` is absent.
+
+    Most frontmatter scalars live on one line, but YAML also lets a value
+    open a block scalar (`key: >-` / `|` / `|-` / `|+`, or a bare trailing
+    colon that opens a nested block) whose real text continues on the
+    following more-indented - or blank - lines. A caller that touches only
+    the header line and drops the continuation produces frontmatter that
+    still STARTS with a valid-looking `key: value` line but is malformed YAML
+    underneath (issue #169, finding 1) - exactly the failure this span-aware
+    lookup exists to avoid, by handing the caller the whole span to replace
+    as one unit. `source_type:` never takes this shape (SOURCE_TYPES is a
+    closed set of single tokens a human cannot author as a block scalar), so
+    `_rewrite_source_type_line` has no matching gap and does not need this
+    helper; `restricted:` does, since a human can hand-author any YAML scalar
+    there, block form included.
+    """
+    for i in range(start, end):
+        raw = lines[i].rstrip('\r')
+        if not raw.startswith(key + ':'):
+            continue
+        body = raw[len(key) + 1:].strip()
+        last = i
+        if body == '' or _BLOCK_SCALAR_HEADER_RE.match(body):
+            j = i + 1
+            while j < end:
+                nxt = lines[j].rstrip('\r')
+                if nxt.strip() == '':
+                    j += 1
+                    continue
+                if nxt[:1] in (' ', '\t'):
+                    last = j
+                    j += 1
+                    continue
+                break
+        return i, last
+    return None
+
+
+def _force_dna_restriction_text(
+    record_text: str, *, record_label: str | None = None,
+) -> tuple[str, bool]:
     """Set the record's `restricted:` marker to `dna`, unless it already
     carries one that protects at least as well. Returns (new_text, changed).
 
@@ -2743,6 +2788,19 @@ def _force_dna_restriction_text(record_text: str) -> tuple[str, bool]:
     never comes out with a bare-LF island exactly where the edit landed. A
     record with no parseable frontmatter fence is left untouched (nothing
     safe to edit) rather than guessed at.
+
+    The `restricted:` value may itself be a multi-line YAML block scalar
+    (e.g. `restricted: >-` with an indented `true` on the next line) -
+    `_frontmatter_key_span` locates the WHOLE span so it can be replaced as
+    one unit, rather than leaving an orphaned continuation line behind
+    (issue #169, finding 1: a Codex P2 from PR #161's review that was
+    tracked rather than fixed in the moment). Belt-and-suspenders past that:
+    the rewritten text is re-parsed before it is trusted, and this function
+    refuses (raises ProcessError, original text untouched) rather than hand
+    the caller frontmatter that would not actually read back as
+    `restricted: dna` - the same "refuse rather than corrupt" posture
+    `process_refile` applies to its own record surgery via its own
+    `parse_frontmatter_strict(final_text)` re-parse.
     """
     meta = parse_frontmatter_strict(record_text) or {}
     if _restricted_type_of(meta.get('restricted')) in ('dna', 'by-request'):
@@ -2753,12 +2811,25 @@ def _force_dna_restriction_text(record_text: str) -> tuple[str, bool]:
     if len(fence_idx) < 2:
         return record_text, False
     start, end = fence_idx[0], fence_idx[1]
-    for i in range(start + 1, end):
-        if lines[i].rstrip('\r').startswith('restricted:'):
-            lines[i] = 'restricted: dna' + cr
-            return '\n'.join(lines), True
-    lines[end:end] = ['restricted: dna' + cr]
-    return '\n'.join(lines), True
+    span = _frontmatter_key_span(lines, start + 1, end, 'restricted')
+    if span is None:
+        new_lines = list(lines)
+        new_lines[end:end] = ['restricted: dna' + cr]
+    else:
+        first, last = span
+        new_lines = lines[:first] + ['restricted: dna' + cr] + lines[last + 1:]
+    new_text = '\n'.join(new_lines)
+    reparsed = parse_frontmatter_strict(new_text)
+    if reparsed is None or _restricted_type_of(reparsed.get('restricted')) != 'dna':
+        where = f' in {record_label}' if record_label else ''
+        raise ProcessError(
+            f'refusing: forcing restricted: dna{where} would not read back '
+            'cleanly - the restricted: value may use a YAML form this '
+            'surgical rewrite could not safely replace. Fix restricted: by '
+            'hand to a plain `restricted: dna` line, then re-run. '
+            'Nothing was written.'
+        )
+    return new_text, True
 
 
 def attach_more(
@@ -2950,7 +3021,8 @@ def _attach_more_engine(
             _open_backup(archive_root, fha_config, backup)
             print(f'[dry-run] Would embed SOURCE: {sid} in {more_file.name} (no rename)')
             if needs_dna_upgrade:
-                _, dna_would_change = _force_dna_restriction_text(record_text_for_check)
+                _, dna_would_change = _force_dna_restriction_text(
+                    record_text_for_check, record_label=_rel(record_path, archive_root))
                 if dna_would_change:
                     print(f'[dry-run] Would set restricted: dna on '
                           f'{_rel(record_path, archive_root)} (required for the attached '
@@ -2977,7 +3049,8 @@ def _attach_more_engine(
         try:
             new_text = old_text
             if needs_dna_upgrade:
-                new_text, dna_restriction_set = _force_dna_restriction_text(new_text)
+                new_text, dna_restriction_set = _force_dna_restriction_text(
+                    new_text, record_label=_rel(record_path, archive_root))
             new_text = _append_file_entry(new_text, entry)
             # Atomic, unlike the scaffolding writes above: those CREATE a record
             # and their undo unlinks the partial, but this one REPLACES a
@@ -3106,7 +3179,8 @@ def _attach_more_engine(
             # the hole exactly as it was.
             if not needs_move:
                 if needs_dna_upgrade:
-                    new_text, changed = _force_dna_restriction_text(record_text_for_check)
+                    new_text, changed = _force_dna_restriction_text(
+                        record_text_for_check, record_label=_rel(record_path, archive_root))
                     if dry_run:
                         if changed:
                             print(f'[dry-run] Would set restricted: dna on '
@@ -3194,7 +3268,8 @@ def _attach_more_engine(
                          lambda: new_path.rename(more_file)))
         new_text = old_text
         if needs_dna_upgrade:
-            new_text, dna_restriction_set = _force_dna_restriction_text(new_text)
+            new_text, dna_restriction_set = _force_dna_restriction_text(
+                new_text, record_label=_rel(record_path, archive_root))
         new_text = _append_file_entry(new_text, entry)
         # Atomic for the same reason as the photos branch above: an existing
         # source record is being replaced, not created.

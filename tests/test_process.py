@@ -1475,6 +1475,54 @@ class ProcessTestCase(unittest.TestCase):
         self.assertFalse(changed)  # MORE restrictive than dna - never downgraded
         self.assertEqual(new_text, by_request)
 
+    # ── Issue #169, finding 1 ──────────────────────────────────────────────
+    # A Codex P2 from PR #161's review, tracked rather than fixed at the
+    # time: `restricted:` may itself be a valid multi-line YAML block scalar
+    # (`restricted: >-` with an indented continuation on the next line). The
+    # old single-line replace rewrote only the header, leaving the
+    # continuation orphaned in the frontmatter - malformed YAML that still
+    # reports success.
+
+    def test_force_dna_restriction_text_replaces_block_scalar_span(self) -> None:
+        # `restricted: >-` / `true` (folded block scalar) is valid YAML that
+        # parses to the string 'true' - _restricted_type_of reads that as
+        # 'plain', i.e. not yet DNA-sufficient, so the upgrade must fire.
+        block_scalar = (
+            '---\nid: s-1234567890\ntitle: A Letter\n'
+            'restricted: >-\n  true\nnote: kept\n---\n## Claims\n'
+        )
+        new_text, changed = process._force_dna_restriction_text(block_scalar)
+        self.assertTrue(changed)
+        reparsed = process.parse_frontmatter_strict(new_text)
+        self.assertIsNotNone(reparsed)
+        self.assertEqual(reparsed['restricted'], 'dna')
+        self.assertEqual(reparsed['id'], 's-1234567890')
+        self.assertEqual(reparsed['note'], 'kept')  # untouched sibling field
+        # No orphaned continuation line left behind: exactly one line opens
+        # with 'restricted:' and it is the single rewritten line.
+        lines = new_text.split('\n')
+        restricted_lines = [ln for ln in lines if ln.strip() == 'restricted: dna']
+        self.assertEqual(restricted_lines, ['restricted: dna'])
+        self.assertNotIn('  true', lines)
+
+    def test_force_dna_restriction_text_replaces_literal_block_scalar_span_crlf(self) -> None:
+        # Same shape with the `|` (literal) block style and CRLF line
+        # endings, to confirm the span-removal keeps this function's own
+        # documented CRLF-faithful promise even when it has to drop lines
+        # from the middle of the frontmatter, not just rewrite one in place.
+        block_scalar = (
+            '---\r\nid: s-1234567890\r\ntitle: A Letter\r\n'
+            'restricted: |\r\n  yes\r\n  really\r\n---\r\n## Claims\r\n'
+        )
+        new_text, changed = process._force_dna_restriction_text(block_scalar)
+        self.assertTrue(changed)
+        self.assertNotIn('\n', new_text.replace('\r\n', ''))  # every line still CRLF
+        reparsed = process.parse_frontmatter_strict(new_text)
+        self.assertIsNotNone(reparsed)
+        self.assertEqual(reparsed['restricted'], 'dna')
+        self.assertNotIn('yes', new_text)
+        self.assertNotIn('really', new_text)
+
     def test_more_type_dna_forces_restriction_on_unrestricted_source(self) -> None:
         # The P1 scenario itself: attach a DNA file, via --more --type dna,
         # to an EXISTING source that started out unrestricted.
@@ -1576,6 +1624,53 @@ class ProcessTestCase(unittest.TestCase):
         rec = read_record(record)['meta']
         self.assertEqual(rec['restricted'], 'dna')
         self.assertEqual(len(rec['files']), 2)  # not duplicated
+
+    def test_more_type_dna_attach_replaces_block_scalar_restricted_span(self) -> None:
+        # Issue #169, finding 1, end-to-end through `--more --type dna`: a
+        # source whose `restricted:` was hand-authored as a multi-line YAML
+        # block scalar must come out with a clean single-line
+        # `restricted: dna` and no orphaned continuation line - not the
+        # malformed frontmatter the old single-line replace produced while
+        # still reporting success.
+        primary = self.archive / 'documents' / 'census' / 'family-letter3.txt'
+        primary.write_text('Dear cousin,', encoding='utf-8')
+        self.assertEqual(self._run([str(primary), '--type', 'letter']), EXIT_CLEAN)
+        renamed = next((self.archive / 'documents' / 'census').glob('family-letter3*_S-*.txt'))
+        record = next((self.archive / 'sources' / 'letter').glob('*_S-*.md'))
+
+        # Hand-author a valid multiline `restricted:` block scalar into the
+        # freshly scaffolded record, as a human editing the record directly
+        # might (the scenario Codex's review flagged).
+        text = record.read_text(encoding='utf-8')
+        self.assertIn('---\n', text)
+        head, _, tail = text.partition('---\n')
+        # head is '' (fence opens the file); split tail at its own closing
+        # fence to insert a block-scalar restricted: line inside the frontmatter.
+        body, _, rest = tail.partition('\n---\n')
+        text = f'---\n{body}\nrestricted: >-\n  true\n---\n{rest}'
+        record.write_text(text, encoding='utf-8')
+        meta = process.parse_frontmatter_strict(record.read_text(encoding='utf-8'))
+        self.assertEqual(meta['restricted'], 'true')  # block scalar reads as a plain string
+
+        (self.archive / 'inbox').mkdir()
+        kit = self.archive / 'inbox' / 'kit3.txt'
+        kit.write_text('data', encoding='utf-8')
+
+        rc = self._run([str(renamed), '--more', str(kit), 'attachment', '--type', 'dna'])
+        self.assertEqual(rc, EXIT_CLEAN)
+
+        final_text = record.read_text(encoding='utf-8')
+        reparsed = process.parse_frontmatter_strict(final_text)
+        self.assertIsNotNone(reparsed)  # still valid YAML, not malformed
+        self.assertEqual(reparsed['restricted'], 'dna')
+        rec = read_record(record)['meta']
+        self.assertEqual(rec['restricted'], 'dna')
+        self.assertEqual(len(rec['files']), 2)
+        # No orphaned continuation line ('  true') left dangling in the file.
+        lines = final_text.split('\n')
+        self.assertNotIn('  true', lines)
+        restricted_lines = [ln for ln in lines if ln.strip() == 'restricted: dna']
+        self.assertEqual(restricted_lines, ['restricted: dna'])
 
     def test_more_without_dna_type_never_touches_restriction(self) -> None:
         # Scope guard: a --more attach with no --type (or a non-dna --type)
