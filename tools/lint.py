@@ -2309,6 +2309,27 @@ def _claim_parentage_pids(
     return set(children), set(parents)
 
 
+def _claim_vital_subjects(
+    claim: dict, alias_map: dict[str, str] | None = None,
+) -> list[str] | None:
+    """Whose own Born/Died/Married this claim supplies, read the way the index
+    reads it - the registry-world twin of `_lib.claim_is_own_vital` (which
+    reads `claim_persons` off the SQL index) for the lint paths that work from
+    the raw claim dict instead: the needs-sourcing backlog
+    (`_accepted_vital_pids`) and the W104 summary-citation check
+    (`_check_summary_line`).
+
+    Resolves `persons:`/`roles:` through `_lib.resolve_claim_persons_with_roles`
+    and hands the pairs to `_lib.vital_subjects`, exactly the two calls the
+    W101 vitals-gap check above already makes on the same claim dict shape -
+    one rule, one home, so a person's own needs-sourcing backlog entry and
+    W104 summary check can no longer credit a claim that `claim_is_own_vital`
+    rejects for every site/GEDCOM/WikiTree/chart consumer (#126 reopened,
+    #136)."""
+    persons_with_roles = resolve_claim_persons_with_roles(claim, alias_map)
+    return vital_subjects(str(claim.get('type', '')), persons_with_roles)
+
+
 def _claim_backs_edge(
     claim: dict, owner_pid: str, other_pid: str | None, role: str,
     alias_map: dict[str, str] | None = None,
@@ -2846,6 +2867,71 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
                             'parents too, and that is right) and add a roles: map - '
                             '`roles:` then indented `child: [P-…]` and '
                             '`parent: [P-…, P-…]` lines.'))
+
+            # W132: an accepted death/burial/baptism claim naming 2+ people
+            # with NO roles: map at all - the zero-role-signal shape
+            # `_lib.vital_subjects` (#126, reopened) now answers [] for
+            # rather than guessing "everyone named is their own record".
+            # Birth already has W126 and marriage/divorce already have W125;
+            # death/burial/baptism never had a claim-specific warning at all
+            # (W101 only covers death, only for curated people, and never
+            # names the claim itself), so without this a claim shaped like
+            # this can silently drop out of every `claim_is_own_vital`
+            # consumer - the site's summary block and chart nodes, the
+            # GEDCOM writer's BIRT/DEAT, the WikiTree infoboxes, the tree
+            # view's node labels - with nothing telling the human to add a
+            # roles: map.
+            #
+            # Deliberately NARROWER than W125/W126's own condition: this
+            # fires only on `vital_subjects`' case 2a (no named person
+            # carries ANY role, and 2+ are named), never on its case 5
+            # (SOME role is present, but nobody is left unroled - "every
+            # person named was named as somebody else"). Case 5 is a claim
+            # that DID answer the question, just not in any of these
+            # people's favor - `roles: {spouse: [widow], child: [informant]}`
+            # on a claim naming only the widow and the informant, say - and
+            # SPEC's silence there is deliberate (`vital_subjects`'s own
+            # docstring, cases 2a vs 5), not a gap this warning exists to
+            # surface. Testing `not any(role for _, role in
+            # persons_with_roles)` alongside `subjects == []` is what tells
+            # the two apart without re-deriving vital_subjects' own headcount
+            # logic inline.
+            if claim_type in ('death', 'burial', 'baptism') and derives_edges:
+                persons_with_roles = resolve_claim_persons_with_roles(claim, alias_map)
+                subjects = vital_subjects(claim_type, persons_with_roles)
+                has_any_role = any(role for _pid, role in persons_with_roles)
+                if subjects == [] and not has_any_role:
+                    named = _claim_person_ids(claim, alias_map)
+                    distinct = {pid: None for pid in named}   # ordered, deduplicated
+                    where_it_goes = (
+                        " - it is not recorded as anyone's own record and will "
+                        'not appear in anyone\'s summary box, chart node, GEDCOM, '
+                        'or WikiTree profile. ')
+                    if claim_type == 'baptism':
+                        # Baptism shares birth's subject-role vocabulary
+                        # (VITAL_SUBJECT_ROLES: child), so the repair mirrors
+                        # W126's own: a child: line says who was baptized.
+                        findings.append(Finding('W', 'W132', src_path,
+                            f'Claim {claim.get("id","?")} (type: baptism) names '
+                            f'{len(distinct)} people but does not say who was '
+                            f'baptized{where_it_goes}'
+                            'Add a roles: map - an indented `child: [P-…]` line '
+                            'naming who was baptized (and, if useful, `parent: '
+                            '[P-…, P-…]` for the parents alongside).'))
+                    else:
+                        # death/burial: SPEC §8.3's role vocabulary has no
+                        # word for the deceased - the record says who died by
+                        # saying who everyone ELSE was and leaving that one
+                        # person unroled (_lib.vital_subjects case 4).
+                        verb = 'died' if claim_type == 'death' else 'was buried'
+                        findings.append(Finding('W', 'W132', src_path,
+                            f'Claim {claim.get("id","?")} (type: {claim_type}) names '
+                            f'{len(distinct)} people but does not say which of them '
+                            f'{verb}{where_it_goes}'
+                            f'Leave the person who {verb} unroled, and add a roles: '
+                            'map naming who everyone else is - `roles:` then '
+                            'indented lines like `spouse: [P-…]`, `child: [P-…]`, '
+                            '`parent: [P-…]`, or `witness: [P-…]`.'))
 
             # place reference - forgiving (PR 05): never reject a place the human
             # typed.  A well-formed L-id (bare or [[wrapped]]) that doesn't
@@ -3657,6 +3743,24 @@ def _check_summary_line(
             if normalize_id(str(c.get('_source_id', ''))) == normalize_id(sid)
             and str(c.get('type', '')) in expected_types
         ]
+        if label in ('Born', 'Died', 'Married'):
+            # A claim citing the right source and the right type can still be
+            # a RELATIVE's vital, not this person's own (#126 reopened, #136):
+            # a death claim also names the widow, a birth claim the parents,
+            # and a claim naming 2+ people with no roles: map at all has not
+            # said whose vital it is either. Only a claim `_lib.vital_subjects`
+            # actually resolves to profile_pid backs the line - the same rule
+            # `claim_is_own_vital` applies for the site/GEDCOM/WikiTree/chart
+            # consumers, so a profile's own summary block can no longer accept
+            # a citation those exporters would themselves reject. (Parents/
+            # Children are deliberately NOT filtered here - that is a
+            # parentage question, not a vital-subject one, and E013 below
+            # already scopes it through `_build_children_of`.)
+            matching = [
+                c for c in matching
+                if (subjects := _claim_vital_subjects(c, registry.alias_map)) is None
+                or profile_pid in subjects
+            ]
         if not matching and expected_types:
             findings.append(Finding('W', 'W104', profile_path,
                 f'Summary **{label}:** cites [S-{sid.split("-", 1)[-1]}] but no accepted '
@@ -4127,7 +4231,8 @@ def _friendly_to(to_raw: object) -> str:
 
 
 def _accepted_vital_pids(registry: Registry) -> set[tuple[str, str]]:
-    """{(P-id, 'birth'|'death')} for every accepted vital claim naming a person.
+    """{(P-id, 'birth'|'death')} for every accepted vital claim naming a person
+    AS ITS OWN SUBJECT.
 
     A sourced, accepted vital claim SUPERSEDES the provisional `birth:`/`death:`
     field, so the needs-sourcing backlog stops listing that field once one exists.
@@ -4135,7 +4240,16 @@ def _accepted_vital_pids(registry: Registry) -> set[tuple[str, str]]:
     Negated claims do NOT supersede: a `--negated` birth ("not born in 1900")
     is a confirmed absence, not the settled date the provisional field records,
     so it must not silence the needs-sourcing reminder for a real provisional
-    date. Same polarity rule as the W101 vitals-gap check above."""
+    date. Same polarity rule as the W101 vitals-gap check above.
+
+    Scoped through `_claim_vital_subjects` (`_lib.vital_subjects`), the same
+    rule W101 and `_check_summary_line`'s W104 check apply: a claim naming
+    pid only as a parent/witness/informant on a RELATIVE's birth/death record
+    must not supersede pid's own provisional date, and (#126 reopened) a
+    claim naming 2+ people with no `roles:` map at all has not said whose
+    birth/death it is either - crediting either shape here left the backlog
+    silently agreeing with a claim `claim_is_own_vital` already rejects
+    everywhere else (#136)."""
     out: set[tuple[str, str]] = set()
     for claims in registry.source_claims.values():
         for claim in claims:
@@ -4145,7 +4259,10 @@ def _accepted_vital_pids(registry: Registry) -> set[tuple[str, str]]:
             if (ctype in PROVISIONAL_VITAL_FIELDS
                     and str(claim.get('status', '')) == 'accepted'
                     and claim.get('negated') not in (True, 'true')):
+                subjects = _claim_vital_subjects(claim, registry.alias_map)
                 for ppid in _claim_person_ids(claim, registry.alias_map):
+                    if subjects is not None and ppid not in subjects:
+                        continue   # named on the claim but not its actual subject (#126/#136)
                     out.add((ppid, ctype))
     return out
 
