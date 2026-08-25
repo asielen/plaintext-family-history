@@ -4518,6 +4518,53 @@ class ProseConverterTests(unittest.TestCase):
         self.assertIn('21900/[..1910]', out2)
         self.assertNotIn('before', out2)
 
+    # -- adversarial review follow-up on #167 finding 3 (plain-side qualifier) --
+
+    def test_before_bracket_interval_trailing_plain_qualifier_uncertain(self):
+        # Codex's exact repro: the plain RIGHT-hand bound carries a trailing
+        # `?` (uncertain). Before this fix the regex's plain-side
+        # alternative matched only the unqualified `1910` prefix, leaving
+        # the `?` dangling, unconsumed, surviving literally in the output
+        # right after "1910". The qualifier must now be consumed as part of
+        # the match and humanized with this archive's existing "(unconfirmed)"
+        # wording (`_lib._humanize_edtf_bound`), not left dangling.
+        out = site._scrub_internal_encoding('They lived there [..1900]/1910?, per the deed.')
+        self.assertIn('before 1900 to 1910 (unconfirmed)', out)
+        self.assertNotIn('[..1900]/1910?', out)
+        self.assertNotIn('1910?', out)
+
+    def test_before_bracket_interval_leading_plain_qualifier_uncertain(self):
+        # Codex's mirrored repro: the plain LEFT-hand bound carries the `?`.
+        # Codex reports this shape was "left untouched" entirely - the
+        # un-widened plain-side pattern could not reach past the `?` to find
+        # the `/` right after it, so `_DATE_BEFORE_SLASH_RE` never matched
+        # here at all.
+        out = site._scrub_internal_encoding('They lived there 1900?/[..1910], per the deed.')
+        self.assertIn('1900 (unconfirmed) to before 1910', out)
+        self.assertNotIn('1900?/[..1910]', out)
+        self.assertNotIn('1900?', out)
+
+    def test_before_bracket_interval_plain_qualifier_approximate(self):
+        # The archive's OTHER qualifier character, `~` (approximate), reads
+        # as "about ..." (`_lib._humanize_edtf_bound`) rather than
+        # "(unconfirmed)" - both qualifier characters, not just `?`, must be
+        # consumed and humanized.
+        out = site._scrub_internal_encoding('They lived there [..1900]/1910~, per the deed.')
+        self.assertIn('before 1900 to about 1910', out)
+        self.assertNotIn('1910~', out)
+
+    def test_before_bracket_interval_qualified_plain_side_invalid_date_left_whole_untouched(self):
+        # The existing "invalid date leaves the whole match untouched" guard
+        # must still hold with a qualifier present alongside a genuinely
+        # invalid date component (no month 13) - the qualifier is a
+        # confidence marker, not part of calendar validity, so it does not
+        # change which side is invalid or rescue the invalid one. The WHOLE
+        # match, qualifier included, is left exactly as written.
+        out = site._scrub_internal_encoding(
+            'Span: [..1900]/1910-13-01?, per the deed.')
+        self.assertIn('[..1900]/1910-13-01?', out)
+        self.assertNotIn('before', out)
+
     def test_standalone_before_bracket_still_translates(self):
         # Guards that the finding-5 interval fix doesn't overreach: a
         # bracket that is NOT adjacent to a slash still translates normally.
@@ -4690,6 +4737,44 @@ class ProseConverterTests(unittest.TestCase):
         self.assertEqual(
             out, '<a href="https://example.test/x">see [record] before 1905</a>')
 
+    # -- Codex review of #167 finding 3 (wikilink-vs-markdown-link precedence) --
+
+    def test_wikilink_followed_by_parens_not_swallowed_as_markdown_link(self):
+        # Codex's exact repro: the `ltext` bracket-nesting widening (above)
+        # made a `[[S-id|source]]` wikilink immediately followed by `(note)`
+        # look, from the markdown-link alternative's perspective, like a
+        # label consisting of one balanced-bracket unit followed by a URL -
+        # `<a href="note">[S-1111111111|source]</a>`, losing the internal
+        # citation entirely. Precedence must go to the wikilink: the citation
+        # renders through `render_token` and `(note)` survives as literal
+        # trailing text, matching the pre-widening behaviour.
+        def render_token(tok, disp=None):
+            return f'<a href="../sources/{tok}.html">{disp}</a>'
+
+        out = site._inline_html('[[S-1111111111|source]](note)', render_token)
+        self.assertEqual(
+            out, '<a href="../sources/S-1111111111.html">source</a>(note)')
+
+    def test_genuine_markdown_link_still_works_after_wikilink_precedence_fix(self):
+        # An ordinary markdown link (no embedded `[[...]]` at all) must be
+        # completely unaffected by giving the wikilink alternative
+        # precedence.
+        out = site._inline_html('[label](https://example.test/x)', lambda t, d=None: t)
+        self.assertEqual(out, '<a href="https://example.test/x">label</a>')
+
+    def test_markdown_link_label_with_single_bracket_date_notation_still_works(self):
+        # The tension the precedence fix has to resolve: a markdown-link
+        # label that legitimately STARTS with one bracketed unit (the #167
+        # finding-2-continued widening's whole point) - here SPEC §11
+        # before-date notation right at the front of the label - must still
+        # match as a markdown link, not be mistaken for a wikilink start
+        # just because it also begins with `[`. The wikilink alternative
+        # requires an immediate `]]` to close, which this shape never has
+        # (only one `]` follows the date bracket, then more label text), so
+        # it correctly falls through to the markdown-link alternative.
+        out = site._inline_html('[see [..1900] record](url)', lambda t, d=None: t)
+        self.assertEqual(out, '<a href="url">see before 1900 record</a>')
+
     def test_bare_id_backstop_does_not_fire_inside_a_matched_targets_own_id(self):
         # The backstop must never re-touch or corrupt an id `_INLINE_RE`
         # already correctly turned into a real citation link - it only ever
@@ -4789,6 +4874,31 @@ class ProseConverterTests(unittest.TestCase):
 
         out = site._inline_html('(C-4kx9m2p7qr)[[S-1111111111|!see]]', render_token)
         self.assertEqual(out, '<a>!see</a>')
+
+    # -- Codex review of #167 finding 2 (boundary sentinel used the RAW label) --
+
+    def test_claim_id_paren_before_markdown_link_label_starting_with_date_bracket(self):
+        # Codex's exact repro: the boundary check used to peek `ltext`'s RAW
+        # first character (here `[`, from embedded `[..1905]` date
+        # notation - not alphanumeric) instead of the SCRUBBED label's first
+        # character (`b`, from "before 1905" - alphanumeric, once
+        # `_DATE_BEFORE_RE` has translated the bracket). The raw peek wrongly
+        # concluded no space was needed, so "The record" and "before 1905
+        # confirms" ran together with no separating space. The boundary must
+        # be computed from the scrubbed label, exactly as the wikilink
+        # branch already does for `wdisp`.
+        ident = lambda t, d=None: t  # noqa: E731
+        out = site._inline_html(
+            'The record (C-4kx9m2p7qr)[[..1905] confirms](https://x)', ident)
+        self.assertEqual(
+            out, 'The record <a href="https://x">before 1905 confirms</a>')
+
+    def test_claim_id_paren_before_bold_starting_with_date_bracket(self):
+        # Codex: "the bold branch has the same defect" - identical repro,
+        # `**bold**` instead of a markdown link.
+        ident = lambda t, d=None: t  # noqa: E731
+        out = site._inline_html('(C-4kx9m2p7qr)**[..1905] confirms**', ident)
+        self.assertEqual(out, ' <strong>before 1905 confirms</strong>')
 
     def test_bare_id_redaction_reinserts_missing_space(self):
         # `_BARE_ID_LABEL` is never dropped to nothing (unlike a claim-id
