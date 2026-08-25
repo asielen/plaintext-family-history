@@ -178,14 +178,18 @@
   {%- elif person.research_html %}{{ person.research_html }}{% endif %}
   {% endif %}
 
-  {#- Workbench-only (issue #117): open questions naming this person, from
-      notes/questions.md and every person's own research file alike - read
-      here, never edited (a question is answered/closed through the
-      research log itself, not from a person page). Gated on `workbench`
-      the same way `open_review_count` above is: a '## Q:' block carries no
-      `restricted:` field of its own yet, so this stays off the public and
-      plain-linked builds until one exists. -#}
-  {% if workbench and person.open_questions %}
+  {#- Linked-or-workbench (issue #117): open questions naming this person,
+      from notes/questions.md and every person's own research file alike -
+      read here, never edited (a question is answered/closed through the
+      research log itself, not from a person page). `person.open_questions`
+      is already built empty except when `self.linked` (site.py's
+      build_person_page - workbench always implies linked), so no separate
+      `workbench` check is needed here: a plain `--linked` preview shows
+      this section too, matching this codebase's own boundary for
+      real-but-not-yet-publishable content (`--linked`'s
+      drop_private/redaction rules elsewhere on this page), even though a
+      '## Q:' block still carries no `restricted:` field of its own. -#}
+  {% if person.open_questions %}
   <h2>Open Questions</h2>
   {% for q in person.open_questions %}
   <div>

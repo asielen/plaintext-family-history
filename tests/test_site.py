@@ -5106,18 +5106,24 @@ class WorkbenchModeTests(_Base):
 
 class OpenQuestionsSectionTests(_Base):
     """Issue #117: a person referenced by a `## Q:` block's `refs:` sees that
-    question on their own page. Workbench-only (same gate `open_review_count`
-    uses) until `## Q:` blocks carry their own `restricted:` field - a
-    question's `context:` can hold sensitive detail about a living third
-    party that nothing here has vetted, so this stays off the public AND
-    plain `--linked` builds for now, not just the standalone one."""
+    question on their own page. Gated on `linked` (workbench always implies
+    linked, see the _SiteBuilder constructor), not narrowed to `workbench`
+    alone: a `## Q:` block still carries no `restricted:` field of its own,
+    but `--linked` is this codebase's own established boundary for
+    real-but-not-yet-publishable content (`drop_private=not self.linked`,
+    `_person_is_redacted`'s `self.linked` check, both elsewhere on this same
+    page) - an owner's own local `--linked` preview never leaves their
+    machine, so it is treated the same way. The STANDALONE (published) build
+    is the one place this must never appear (issue #117's reopening: it was
+    gated so narrowly - workbench-only - that even the reporter's own
+    unredacted `--linked` preview build showed nothing)."""
 
     def _write_questions_md(self, text: str) -> None:
         path = self.archive_root / 'notes' / 'questions.md'
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding='utf-8')
 
-    def test_open_question_shows_in_workbench_only(self):
+    def test_open_question_shows_in_linked_and_workbench_not_standalone(self):
         self._seed_person('p-aaaaaaaaaa', 'Jane Doe', tier='curated')
         self._write_questions_md(
             '# Open Questions\n\n'
@@ -5136,24 +5142,29 @@ class OpenQuestionsSectionTests(_Base):
         self.assertIn('Census says 1880', html)
         self.assertIn('notes/questions.md', html)   # provenance caption
 
-        # Standalone (public) build of the SAME archive: none of it.
+        # Plain `--linked` (no workbench) - the archive owner's own
+        # unredacted local preview: the same section, same content. This is
+        # the case issue #117's reopening found broken (nothing rendered).
         import shutil as _sh
-        _sh.rmtree(self.out_dir, ignore_errors=True)
-        std = self._run(linked=False)
-        self.assertTrue(std.ok, std.messages)
-        std_html = self._read('persons/p-aaaaaaaaaa.html')
-        self.assertNotIn('When did Jane arrive in Kansas?', std_html)
-        self.assertNotIn('Census says 1880', std_html)
-
-        # Plain `--linked` (no workbench): also none of it - the safe
-        # default this PR ships stays narrower than "any unredacted build",
-        # matching the one existing workbench-only count/section precedent
-        # (`open_review_count`) rather than a new `linked`-only gate.
         _sh.rmtree(self.out_dir, ignore_errors=True)
         lo = self._run(linked=True, workbench=False)
         self.assertTrue(lo.ok, lo.messages)
         lo_html = self._read('persons/p-aaaaaaaaaa.html')
-        self.assertNotIn('When did Jane arrive in Kansas?', lo_html)
+        self.assertIn('Open Questions', lo_html)
+        self.assertIn('When did Jane arrive in Kansas?', lo_html)
+        self.assertIn('Census says 1880', lo_html)
+        self.assertIn('notes/questions.md', lo_html)
+
+        # Standalone (public) build of the SAME archive: none of it. The
+        # privacy boundary that matters - published output never carries an
+        # un-vetted question about a possibly-living third party - must hold.
+        _sh.rmtree(self.out_dir, ignore_errors=True)
+        std = self._run(linked=False)
+        self.assertTrue(std.ok, std.messages)
+        std_html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertNotIn('Open Questions', std_html)
+        self.assertNotIn('When did Jane arrive in Kansas?', std_html)
+        self.assertNotIn('Census says 1880', std_html)
 
     def test_a_ref_naming_the_same_person_twice_does_not_double_render(self):
         # A `refs:` list is free-text-typed by a human; `refs: [P-x, P-x]` is
@@ -5198,6 +5209,11 @@ class OpenQuestionsSectionTests(_Base):
         # `_lib.parse_questions` reading every person's research file, not a
         # new decision made in site.py. This was a live open question in the
         # issue, not a settled contract - flagged again in the PR body.
+        #
+        # Run under plain `--linked` (no workbench), not just workbench: the
+        # #117 reopening's whole finding was that a plain `--linked` preview
+        # showed nothing, so the cross-reference case needs to be proven in
+        # exactly the mode that was reported broken, not only in workbench.
         self._seed_person('p-aaaaaaaaaa', 'Jane Doe', tier='curated')
         self._seed_person('p-bbbbbbbbbb', 'Bob Roe', tier='curated', surname='Roe')
         research_path = self.archive_root / 'people' / 'roe__test_research_p-bbbbbbbbbb.md'
@@ -5212,8 +5228,8 @@ class OpenQuestionsSectionTests(_Base):
             '  - (human, 2026-06-01) Both lived in the same county in 1880.\n'
             '\n## Hypotheses\n\n*(none yet)*\n\n## Research Log\n\n*(none yet)*\n',
             encoding='utf-8')
-        wb = self._run(linked=True, workbench=True)
-        self.assertTrue(wb.ok, wb.messages)
+        lo = self._run(linked=True, workbench=False)
+        self.assertTrue(lo.ok, lo.messages)
         for pid in ('p-aaaaaaaaaa', 'p-bbbbbbbbbb'):
             html = self._read(f'persons/{pid}.html')
             self.assertIn('Are Jane and Bob related?', html, pid)

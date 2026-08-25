@@ -146,7 +146,7 @@ CODE MAP
     _SiteBuilder               - holds conn, mode, maps, page sets, jinja env
       .prepare                 - load persons/sources, decide which pages exist
       ._load_open_questions    - index open '## Q:' blocks by referenced person
-                                 id (#117; workbench-only, see build_person_page)
+                                 id (#117; linked-or-workbench, see build_person_page)
       ._claim_is_own_vital     - is this vital claim a record OF this person,
                                  or of a relative it also names? (roles:, #126)
       ._person_summary         - the Born/Died/Married infobox, own vitals only
@@ -1691,8 +1691,9 @@ class _SiteBuilder:
         self.place_meta: dict[str, sqlite3.Row] = {}
         self.place_names: dict[str, str] = {}   # id → display name (token rendering)
         # pid -> its open '## Q:' blocks (issue #117), built once in prepare()
-        # by _load_open_questions - only when self.workbench (see
-        # build_person_page for why this never reaches a public build).
+        # by _load_open_questions - only when self.linked (see
+        # build_person_page for why this never reaches a public/standalone
+        # build).
         self.person_questions: dict[str, list[dict]] = {}
         self.alias_map: dict[str, str] = {}     # lowercased name/stem → canonical id
         self.person_pages: set[str] = set()   # normalized pids that get a page
@@ -1885,10 +1886,16 @@ class _SiteBuilder:
             if self.linked or not self._person_is_redacted(row):
                 self.person_pages.add(pid)
 
-        # Workbench-only (build_person_page): parsing/indexing every open
-        # question is skipped entirely on a standalone or plain --linked
-        # build, where the section never renders anyway.
-        if self.workbench:
+        # linked-or-workbench (build_person_page): parsing/indexing every
+        # open question is skipped entirely on a standalone (public) build,
+        # where the section never renders. A `## Q:` block still carries no
+        # `restricted:` field of its own (issue #117 follow-up, unresolved as
+        # of this fix), but `--linked` is this codebase's own established
+        # boundary for "real content, not yet safe to publish" - the same
+        # trust boundary `drop_private=not self.linked` and
+        # `_person_is_redacted` already rely on - so a `## Q:` block gets the
+        # same treatment rather than a narrower, workbench-only carve-out.
+        if self.linked:
             self._load_open_questions()
 
         self._open_photos()
@@ -2033,11 +2040,14 @@ class _SiteBuilder:
         A widely-referenced question naming several people legitimately
         appears on several pages; that is not a duplication bug.
 
-        Called only when self.workbench (see build_person_page): a '## Q:'
+        Called only when self.linked (see build_person_page): a '## Q:'
         block carries no `restricted:` field of its own yet, and its
         `context:` can legitimately hold sensitive detail about a living
-        third party that nothing here has vetted, so this stays on the
-        private local-preview surface until that field exists.
+        third party that nothing here has vetted - but `--linked` is
+        already this codebase's boundary for exactly that kind of
+        real-but-unvetted content (the same one `drop_private=not
+        self.linked` and `_person_is_redacted` rely on), so this stays off
+        the standalone/public build only, not off every unredacted one.
         """
         for _key, info in sorted(parse_questions(self.archive_root).items()):
             if info['status'] != 'open':
@@ -2774,17 +2784,24 @@ class _SiteBuilder:
                                 for e in stories_entries],
             'research_entries': [{'html': self._markup(e['html']), 'raw': e['raw']}
                                  for e in research_entries],
-            # Workbench-only (issue #117): open questions naming this person,
-            # from notes/questions.md and every person's own research file
-            # alike. Gated on `workbench`, not merely `linked`, because a
-            # '## Q:' block carries no `restricted:` field of its own yet and
-            # its `context:` can hold sensitive detail about a living third
-            # party - the same safe-default gate `open_review_count` below
-            # uses for workbench-only content, until that field lands.
+            # Linked-or-workbench (issue #117): open questions naming this
+            # person, from notes/questions.md and every person's own research
+            # file alike. Gated on `linked` (workbench always implies
+            # linked - see the constructor), not narrowed to `workbench`
+            # alone: a '## Q:' block still carries no `restricted:` field of
+            # its own, and its `context:` can hold sensitive detail about a
+            # living third party, but `--linked` is already this codebase's
+            # trust boundary for real-but-unvetted content (same one
+            # `drop_private=not self.linked` and `_person_is_redacted` rely
+            # on) - an owner's own local `--linked` preview never leaves
+            # their machine, so it is an acceptable home for this until a
+            # privacy field lands. Narrower than that (`open_review_count`
+            # below): that field is a workbench editing-queue affordance, not
+            # unvetted research content, so it stays workbench-only.
             'open_questions': [{'heading': q['heading'], 'file': q['file'],
                                 'html': self._markup(q['html'])}
                                for q in (self._person_open_questions(pid, page_dir)
-                                         if self.workbench else [])],
+                                         if self.linked else [])],
             'timeline': timeline, 'sources': sources, 'family': family, 'photos': photos,
             # Workbench-only fields (harmless in standalone - the template gates
             # every use on `workbench`): the record's on-disk relpath for the
@@ -3262,9 +3279,10 @@ class _SiteBuilder:
         Reads `self.person_questions`, built once for the whole build by
         `_load_open_questions` - never called here, so a person with no
         indexed questions costs one dict lookup, not a re-scan of the log.
-        Only called from build_person_page when self.workbench (see there
-        for why); `dp` still reads `not self.linked` rather than a bare
-        `False` so this stays correct if that ever changes.
+        Only called from build_person_page when self.linked (see there for
+        why - workbench always implies linked, so this covers both); `dp`
+        reads `not self.linked` for the same reason every other unredacted
+        surface on this page does.
         """
         render = lambda tok, disp=None: self.render_token(tok, page_dir, disp)  # noqa: E731
         embed = lambda t, c: self._render_embed(t, c, page_dir)  # noqa: E731
