@@ -828,20 +828,63 @@ def _decade_header(date_edtf: str | None) -> str | None:
 
 # ── Places ──────────────────────────────────────────────────────────────────
 
-# A place label's top-level "leading component" boundary (#127 reopened): the
-# first comma, or the word "and", whichever comes first - "Millbrook" out of
-# "Millbrook, Dutchess County, New York", "Italy" out of "Italy and France
-# (Rome, Milan)". Both are how a genealogist actually appends a qualifier
-# onto a name a reader would already recognize.
-_PLACE_LEADING_SPLIT_RE = re.compile(r',|\band\b', re.IGNORECASE)
+# A place label's leading hierarchical component (#127 reopened) is bounded
+# by its first top-level COMMA only - "Millbrook" out of "Millbrook, Dutchess
+# County, New York". Any parenthetical is elaboration (a nested list of
+# narrower places), never a new hierarchy level, so it is stripped before
+# that comma search runs: "Rome, Milan, Paris, Lyon" inside "Italy and
+# France (Rome, Milan, Paris, Lyon)" must never be mistaken for the label's
+# OWN top-level comma. See `_place_leading_parts` for what happens to the
+# word "and" inside that leading component.
+_PLACE_PARENTHETICAL_RE = re.compile(r'\([^()]*\)')
+_PLACE_AND_RE = re.compile(r'\band\b', re.IGNORECASE)
 
 
 def _place_leading_component(place_label: str) -> str:
-    """`place_label`'s primary/recognizable name - the text before its first
-    top-level comma or the word "and" - or the label unchanged when it has
-    neither. See `_place_mention_span`."""
-    m = _PLACE_LEADING_SPLIT_RE.search(place_label)
-    return place_label[:m.start()].strip() if m else place_label.strip()
+    """`place_label`'s leading hierarchical component - the text before its
+    first top-level comma (parentheticals stripped first) - or the label
+    unchanged when it has no top-level comma at all. See
+    `_place_leading_parts` and `_place_mention_span`."""
+    label = place_label or ''
+    without_parens = _PLACE_PARENTHETICAL_RE.sub('', label)
+    comma = without_parens.find(',')
+    leading = without_parens[:comma] if comma != -1 else without_parens
+    return leading.strip()
+
+
+def _place_leading_parts(place_label: str) -> list[str]:
+    """The name(s) that must ALL be found in a sentence before the leading
+    component counts as "already stated" (#127 reopened, adversarial-review
+    follow-up).
+
+    Comma marks a HIERARCHY in this codebase's free-text `place_text`
+    convention (city, county, state - each broader than the last), so
+    `_place_leading_component` already cuts there: dropping the broader
+    units only loses precision, never identity, so a match on the leading
+    piece alone is enough.
+
+    "and" inside that leading component is different - it marks
+    COORDINATION, not hierarchy: two peer entities forming one compound name
+    ("Trinidad and Tobago", "Bosnia and Herzegovina") or a genuine list of
+    two different places ("Italy and France"). Matching just the first of
+    those and suppressing the whole tag does not lose precision, it changes
+    what place is actually named - "born in Trinidad" is not the same fact
+    as "born in Trinidad and Tobago" (there is also a Trinidad, Colorado and
+    a Trinidad, Cuba). So every coordinate part returned here must be found
+    independently in the sentence (`_place_mention_span`) before suppression
+    is safe; if even one is missing, the full trailing tag still has to
+    print rather than silently drop the part the sentence never said.
+
+    "Italy and France (Rome, Milan, Paris, Lyon)" still resolves to
+    `["Italy", "France"]` - the parenthetical never reaches this function at
+    all, having already been stripped out in `_place_leading_component`."""
+    leading = _place_leading_component(place_label)
+    if not leading:
+        return []
+    if not _PLACE_AND_RE.search(leading):
+        return [leading]
+    parts = [p.strip() for p in _PLACE_AND_RE.split(leading)]
+    return [p for p in parts if p]
 
 
 def _match_place_words(value: str, label: str) -> tuple[int, int] | None:
@@ -880,39 +923,63 @@ def _place_mention_span(value: str, place_label: str) -> tuple[int, int] | None:
     original fix, and still the only test a single-component label (no
     comma, no "and") ever gets. When that fails, a second try uses only the
     label's LEADING component (`_place_leading_component`): "Millbrook" out
-    of "Millbrook, Dutchess County, New York", or "Italy" out of "Italy and
-    France (Rome, Milan, Paris, Lyon)". This is what #127 reopened changes -
-    a sentence naming just that leading, reader-recognizable name now counts
-    as already naming the place, even when a trailing qualifier (a county, a
-    state, a second country in a compound list) never gets restated in the
-    tag. Dropping that qualifier from the timeline sentence is a deliberate
-    tradeoff, not a lost fact: the matched words still carry the place-page
-    link (below), so the fuller name is one click away on the place's own
-    page. The alternative - append only the missing qualifier, e.g. "(Cook
-    County, Illinois)" instead of the whole label - was considered and
-    rejected: `place_text` is unstructured free text everywhere else in this
-    codebase (even registry matching only ever compares or clusters the
-    WHOLE string - see `_lib.normalize_place_text`/`place_text_cluster_key`),
-    so there is no reliable way to carve "just the qualifier" out of an
-    arbitrary label without guessing at internal structure the data model
-    does not actually have. Suppressing the whole tag once the leading name
-    is recognized is the simpler, safer call - the same preference this
-    codebase reaches for elsewhere (PR #152 review: "filtering out is
-    simpler and safer") - and it is what actually kills the reader-visible
-    symptom: the same recognizable place name is never printed twice in one
-    sentence.
+    of "Millbrook, Dutchess County, New York", or "Italy" and "France" out
+    of "Italy and France (Rome, Milan, Paris, Lyon)" (see
+    `_place_leading_parts`). This is what #127 reopened changes - a sentence
+    naming just that leading, reader-recognizable name now counts as already
+    naming the place, even when a trailing qualifier (a county, a state)
+    never gets restated in the tag. Dropping that qualifier from the
+    timeline sentence is a deliberate tradeoff, not a lost fact: the matched
+    words still carry the place-page link (below), so the fuller name is one
+    click away on the place's own page. The alternative - append only the
+    missing qualifier, e.g. "(Cook County, Illinois)" instead of the whole
+    label - was considered and rejected: `place_text` is unstructured free
+    text everywhere else in this codebase (even registry matching only ever
+    compares or clusters the WHOLE string - see
+    `_lib.normalize_place_text`/`place_text_cluster_key`), so there is no
+    reliable way to carve "just the qualifier" out of an arbitrary label
+    without guessing at internal structure the data model does not actually
+    have. Suppressing the whole tag once the leading name is recognized is
+    the simpler, safer call - the same preference this codebase reaches for
+    elsewhere (PR #152 review: "filtering out is simpler and safer") - and
+    it is what actually kills the reader-visible symptom: the same
+    recognizable place name is never printed twice in one sentence.
+
+    That "simpler and safer" call breaks down, though, when the leading
+    component itself coordinates two peer names with "and" - "Trinidad and
+    Tobago", "Bosnia and Herzegovina" - rather than naming one place with a
+    trailing qualifier (adversarial-review follow-up to #127 reopened). A
+    sentence that says only "born in Trinidad" does not already name
+    "Trinidad and Tobago" - Trinidad and Tobago is one specific country, and
+    "Trinidad" alone is a different, ambiguous place (there is also a
+    Trinidad, Colorado and a Trinidad, Cuba). Suppressing the tag there
+    would not trim a qualifier, it would silently rewrite the archive's own
+    recorded country into a different one. So when the leading component
+    contains "and", EVERY coordinate part it names
+    (`_place_leading_parts`) must be found in the sentence independently
+    before suppression is safe - "Italy and France (Rome, Milan, Paris,
+    Lyon)" only suppresses when the sentence names both "Italy" and
+    "France", not just one of them. If any part is missing, the full
+    trailing tag still prints; printing a qualifier the reader can already
+    half-guess is a far smaller cost than silently dropping half of a
+    two-part place name.
 
     Returning the span rather than a bare yes/no is what lets the caller hang
     the place-page link on the words already in the sentence instead of
-    losing that link along with the repeated place name.
+    losing that link along with the repeated place name. When several
+    coordinate parts all match, the link hangs on the first one - the same
+    span this function has always returned for a leading-component match.
     """
     match = _match_place_words(value, place_label)
     if match is not None:
         return match
-    leading = _place_leading_component(place_label or '')
-    if leading and leading != (place_label or '').strip():
-        return _match_place_words(value, leading)
-    return None
+    parts = _place_leading_parts(place_label or '')
+    if not parts or parts == [(place_label or '').strip()]:
+        return None
+    spans = [_match_place_words(value, part) for part in parts]
+    if any(span is None for span in spans):
+        return None
+    return spans[0]
 
 
 # ── Image derivatives ─────────────────────────────────────────────────────────

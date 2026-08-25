@@ -730,6 +730,51 @@ class PersonPageTests(_Base):
         self.assertNotIn('at Italy and France (Rome, Milan, Paris, Lyon)', html)
         self.assertEqual(html.count('Italy'), 1)   # named once, not doubled
 
+    def test_timeline_place_tag_not_omitted_for_and_conjoined_place_name(self):
+        # Adversarial-review follow-up to #127 reopened: the leading-component
+        # fallback above treats a comma and the word "and" as the same kind of
+        # split, both marking a droppable trailing qualifier. That is right for
+        # a hierarchy (a county, a state - broader, so dropping it only loses
+        # precision) but wrong for a coordinate pair like "Trinidad and
+        # Tobago", where the two names TOGETHER are one country's name -
+        # "Trinidad" alone is a different, ambiguous place (there is also a
+        # Trinidad, Colorado and a Trinidad, Cuba). A sentence that only says
+        # "Born in Trinidad" does not already name "Trinidad and Tobago", so
+        # the trailing tag must still print in full rather than silently
+        # narrowing the record's own country of origin down to one island.
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley')
+        self._seed_source('s-1111111111', 'Record', people=('p-aaaaaaaaaa',))
+        self._seed_claim('c-1111111111', 's-1111111111', 'immigration',
+                         'Born in Trinidad', status='accepted', date_edtf='1900',
+                         place_text='Trinidad and Tobago', persons=('p-aaaaaaaaaa',))
+        self._run(linked=True)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('Born in Trinidad', html)
+        self.assertIn('at Trinidad and Tobago', html)   # full tag still prints
+        self.assertIn('Tobago', html)                   # never silently dropped
+
+    def test_timeline_place_tag_not_omitted_when_and_conjoined_part_unmentioned(self):
+        # Same root cause as the Trinidad/Tobago case above, on the exact
+        # shape #127 reopened's own compound-list fix
+        # (test_timeline_place_tag_omitted_for_reordered_compound_place_list,
+        # above) was designed for: that test's sentence names BOTH countries
+        # ("...Italy (Rome, Milan) and France (Paris, Lyon)..."), which was
+        # the only shape it ever exercised. A sentence naming only ONE side
+        # of an "and"-joined label ("Traveled to Italy", nothing about
+        # France) must not have "France" suppressed along with the
+        # already-stated "Italy" - only when EVERY coordinate part is
+        # actually found in the sentence is the whole tag safe to drop.
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley')
+        self._seed_source('s-1111111111', 'Record', people=('p-aaaaaaaaaa',))
+        self._seed_claim('c-1111111111', 's-1111111111', 'travel',
+                         'Traveled to Italy in 1920', status='accepted', date_edtf='1920',
+                         place_text='Italy and France', persons=('p-aaaaaaaaaa',))
+        self._run(linked=True)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('Traveled to Italy in 1920', html)
+        self.assertIn('at Italy and France', html)   # full tag still prints
+        self.assertIn('France', html)                # never silently dropped
+
     def test_timeline_strips_bare_claim_id_parenthetical(self):
         # #140: same rendering bug as the Biography case, on the Timeline's
         # separate render path (_timeline_value_html) - a bare `(C-xxxxxxxxxx)`
