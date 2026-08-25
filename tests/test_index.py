@@ -35,7 +35,7 @@ sys.path.insert(0, str(ROOT / 'tools'))
 import index
 from _lib import (
     EXIT_CLEAN, EXIT_FAILURE, EXIT_WARNINGS, claim_is_own_vital,
-    social_parties, spouse_parties, sqlite_cache_schema_status,
+    open_index_db, social_parties, spouse_parties, sqlite_cache_schema_status,
     vital_subjects,
 )
 
@@ -1558,10 +1558,12 @@ class IndexSchemaVersionBumpTests(unittest.TestCase):
     def tearDown(self) -> None:
         self._tmp.cleanup()
 
-    def test_schema_version_is_7(self) -> None:
-        # Pins the bump itself - a silent regression back to 6 would defeat
-        # every check below without failing any of them on its own.
-        self.assertEqual(index.INDEX_SCHEMA_VERSION, 7)
+    def test_schema_version_is_8(self) -> None:
+        # Pins the bump itself - a silent regression back to 6 or 7 would
+        # defeat every check below without failing any of them on its own.
+        # (#126 reopened bumped 7 -> 8 after this class was written for the
+        # 6 -> 7 bump; see IndexSchemaVersionV8BumpTests below for that one.)
+        self.assertEqual(index.INDEX_SCHEMA_VERSION, 8)
 
     def test_v6_stamped_cache_reads_as_old_schema(self) -> None:
         status, _detail = sqlite_cache_schema_status(
@@ -1599,6 +1601,91 @@ class IndexSchemaVersionBumpTests(unittest.TestCase):
         finally:
             conn.close()
         self.assertEqual(row[0], '1916-02-26')
+
+
+_V7_SCHEMA_STAMP_SQL = (
+    "PRAGMA user_version=7;"
+    "CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);"
+    "INSERT INTO meta(key, value) VALUES ('schema_version', '7');"
+    "CREATE TABLE persons(id TEXT, name TEXT, path TEXT);"
+    "CREATE TABLE sources(id TEXT, title TEXT, path TEXT);"
+    "CREATE TABLE claims(id TEXT, source_id TEXT);"
+    "CREATE TABLE relationships(person_id TEXT, rel TEXT, other_id TEXT, "
+    "claim_id TEXT, date_start TEXT, date_end TEXT);"
+)
+
+
+class IndexSchemaVersionV8BumpTests(unittest.TestCase):
+    """#126, reopened: `_derive_relationships`'s death branch now reads a
+    zero-role, multi-person death claim as [] rather than None
+    (`_lib.vital_subjects`), so it no longer closes every named relative's
+    marriage - only nobody's. But a `relationships` row a v7-era `fha index`
+    already wrote under the OLD rule (a living relative's marriage wrongly
+    closed by a multi-person unroled death claim) sits in `.cache/index.
+    sqlite` untouched by that fix: nothing about updating the TOOLS touches a
+    record file's mtime or the path manifest, so the existing freshness check
+    would read a v7 cache as current forever. Bumping `INDEX_SCHEMA_VERSION`
+    (7 -> 8) is what makes `sqlite_cache_schema_status` - and `open_index_db`,
+    which every index-reading tool calls before trusting a row - call a
+    v7-stamped cache 'old-schema' and refuse it, same rationale `_lib.py`'s
+    own comment block documents for the v2/v3/v4/v5/v7 bumps. A hand-stamped
+    v7 cache (schema_version='7' in `meta`, matching `PRAGMA user_version`,
+    with a `relationships` row shaped like the stale bug) stands in for
+    'whatever a pre-#126-reopened `fha index` run actually wrote'."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        (self.root / '.cache').mkdir(parents=True)
+        self.db_path = self.root / '.cache' / 'index.sqlite'
+        conn = sqlite3.connect(str(self.db_path))
+        conn.executescript(_V7_SCHEMA_STAMP_SQL)
+        # A `relationships` row shaped exactly like the bug this bump exists
+        # to invalidate: a spouse edge closed by a death claim that (under
+        # the OLD, pre-#126-reopened rule) treated a multi-person unroled
+        # death as everyone's own death.
+        conn.execute(
+            "INSERT INTO relationships VALUES "
+            "('P-1111111111', 'spouse', 'P-2222222222', 'C-3333333333', "
+            "'1950', '1990')")
+        conn.commit()
+        conn.close()
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_v7_stamped_cache_reads_as_old_schema(self) -> None:
+        status, _detail = sqlite_cache_schema_status(
+            self.db_path, index.INDEX_SCHEMA_VERSION,
+            ('persons', 'sources', 'claims'))
+        self.assertEqual(status, 'old-schema')
+
+    def test_open_index_db_refuses_the_stale_v7_cache(self) -> None:
+        # The real caller path (`fha serve`, `fha site`, `fha gedcom`, ...):
+        # every index-reading tool opens the cache through `open_index_db`,
+        # never `sqlite_cache_schema_status` directly. Confirms the schema
+        # gate actually reaches them, not just the lower-level helper.
+        conn = open_index_db(self.root, ('persons', 'sources', 'claims'),
+                              strict=True)
+        self.assertIsNone(conn)
+
+    def test_full_rebuild_replaces_the_stale_relationships_row(self) -> None:
+        # `fha index` (the fix a human is pointed at, and what `fha serve`
+        # triggers automatically on a stale/missing cache - see serve.py)
+        # must not merely refuse the v7 cache - it has to actually rebuild,
+        # dropping the stale row rather than leaving it beside fresh ones.
+        # A minimal archive (no claims at all) is enough: the OLD row must
+        # not survive into the rebuilt table.
+        index.build_index(self.root, {})
+        conn = sqlite3.connect(str(self.db_path))
+        try:
+            rows = conn.execute('SELECT * FROM relationships').fetchall()
+            version = conn.execute(
+                "SELECT value FROM meta WHERE key='schema_version'").fetchone()
+        finally:
+            conn.close()
+        self.assertEqual(rows, [])
+        self.assertEqual(version[0], str(index.INDEX_SCHEMA_VERSION))
 
 
 _EXTRACT_SID = 'S-7a7a7a7a7a'

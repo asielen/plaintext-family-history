@@ -1288,7 +1288,18 @@ GENERATED_COMPANION_KINDS: frozenset[str] = frozenset({'timeline', 'sources-inde
 # A v6 index lacks it - every row would read NULL forever, indistinguishable
 # from a file that genuinely carries no per-file date:, until a rebuild -
 # so bump to force `fha index` to run (same rationale as v3/v4).
-INDEX_SCHEMA_VERSION = 7
+# 8: `_derive_relationships`'s death branch now reads `_lib.vital_subjects` for
+# the zero-role, multi-person shape as [] rather than None (#126, reopened) -
+# a claim naming several relatives on a death record with no roles: map at
+# all no longer closes every one of their marriages, only nobody's. A v7
+# index's `relationships` rows were materialized under the OLD rule, so a
+# cache built before this fix can still show a multi-person unroled death
+# wrongly closing a living relative's marriage even after the tools are
+# updated, until somebody happens to run a full `fha index`. Bump to force
+# that rebuild (same rationale as v2/v3/v4/v5/v7) - freshness here is a
+# schema-version gate, not a file-timestamp one, so updating the TOOLS alone
+# (no record file touched) would otherwise never invalidate the stale cache.
+INDEX_SCHEMA_VERSION = 8
 PHOTOINDEX_SCHEMA_VERSION = 1
 CACHE_SCHEMA_KEY = 'schema_version'
 
