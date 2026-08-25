@@ -3182,8 +3182,35 @@ class VitalSubjectsRuleTests(unittest.TestCase):
     (`persons:` is who a claim involves; `roles:` is who plays what), not from
     what the implementation happens to return."""
 
-    def test_no_roles_at_all_returns_none_meaning_the_claim_never_said(self) -> None:
-        self.assertIsNone(vital_subjects('birth', [('p-a', None), ('p-b', '')]))
+    def test_no_roles_at_all_with_one_person_returns_none_meaning_the_claim_never_said(
+            self) -> None:
+        # Nobody to disambiguate FROM - the one person named is safely who
+        # this is about, exactly the legacy pre-roles: claim this fallback
+        # exists for.
+        self.assertIsNone(vital_subjects('birth', [('p-a', None)]))
+
+    def test_no_roles_at_all_with_several_people_yields_nobody(self) -> None:
+        # #126 (reopened): a claim naming two or more people with NO roles:
+        # map at all has not said which of them it is a record of. Guessing
+        # "everyone" here is the mother's `Born: 1888` bug restated for a
+        # claim with zero role signal to work with - the case the first pass
+        # of this fix missed, since it only reached claims with SOME role
+        # present. This is deliberately different from the single-person case
+        # above on headcount alone, not on anything about `birth` specifically.
+        self.assertEqual(
+            vital_subjects('birth', [('p-a', None), ('p-b', '')]), [])
+
+    def test_no_roles_at_all_with_several_people_yields_nobody_for_death_too(
+            self) -> None:
+        # The shape that actually reproduced #126's reopened Died/Buried bug:
+        # a burial claim naming the deceased alongside a relative who visited
+        # the grave, with no roles: map at all. SPEC has no subject-role word
+        # for death/burial, so before this fix the claim fell straight into
+        # the old "nobody said anything, assume everyone" fallback and showed
+        # the grandfather's burial as his grandchild's own.
+        self.assertEqual(
+            vital_subjects('burial', [('p-grandfather', None), ('p-grandchild', '')]),
+            [])
 
     def test_the_subject_role_wins_when_the_claim_names_it(self) -> None:
         self.assertEqual(
@@ -3245,6 +3272,26 @@ class VitalSubjectsRuleTests(unittest.TestCase):
             vital_subjects('marriage', [('p-a', None), ('p-b', None),
                                         ('p-c', 'parent'), ('p-d', 'parent')]),
             ['p-a', 'p-b'])
+
+    def test_a_couple_claim_with_no_roles_at_all_still_reads_as_a_couple(self) -> None:
+        # `spouse_parties` runs BEFORE the no-role-at-all headcount check, so
+        # a plain "married" claim naming exactly the couple, with no roles:
+        # map needed at all, keeps working - marriage is symmetric for
+        # exactly two people, so there is nothing to disambiguate.
+        pairs = [('p-a', None), ('p-b', None)]
+        self.assertEqual(spouse_parties(pairs), ['p-a', 'p-b'])
+        self.assertEqual(vital_subjects('marriage', pairs), ['p-a', 'p-b'])
+
+    def test_a_couple_claim_with_no_roles_and_extra_people_yields_nobody(self) -> None:
+        # Four people (a couple plus both sets of parents), none of them
+        # roled: `spouse_parties` cannot pick the couple out of four
+        # unmarked names (its own len==2 rule doesn't apply), and headcount
+        # alone rules out the single-person legacy fallback. This is the
+        # #58-shaped version of #126's reopened bug: without this, all four
+        # people would have shown this claim's marriage date as their own.
+        pairs = [('p-a', None), ('p-b', None), ('p-c', None), ('p-d', None)]
+        self.assertEqual(spouse_parties(pairs), [])
+        self.assertEqual(vital_subjects('marriage', pairs), [])
 
 
 class SocialPartiesRuleTests(unittest.TestCase):
@@ -3543,12 +3590,64 @@ class DeathClaimRoleScopingTests(unittest.TestCase):
             'a death claim must not close the marriage of a relative it names; '
             "only the deceased's spouse edges end")
 
-    def test_a_legacy_death_claim_with_no_roles_still_ends_marriages(self) -> None:
-        # No roles: map, so the claim never said who died. The old behaviour
-        # stands rather than silently losing every legacy date_end.
+    def test_a_legacy_death_claim_naming_two_people_with_no_roles_ends_nobodys_marriage(
+            self) -> None:
+        # No roles: map, and TWO people named (the deceased and his son, who
+        # reported the death) - the claim has genuinely not said which of
+        # them died. Ending either marriage would be a guess: the old
+        # behaviour ("no roles: means everyone") ended the SON's marriage too,
+        # which is the exact bug this class's own docstring names ("a death
+        # claim ends the marriage of the person who died, not of the
+        # relatives who signed the certificate") - #126, reopened, found this
+        # same shape still live via the summary/chart fields, and the fix
+        # applies equally here: a missing date_end is recoverable by adding
+        # roles:, a false one closing a living relative's marriage is not.
         self._write_death(roles=None)
         index.build_index(self.root, {})
-        self.assertEqual(self._son_marriage_end(), '1920-01-01')
+        self.assertIsNone(
+            self._son_marriage_end(),
+            'an unroled, multi-person death claim must not guess whose '
+            'marriage to end')
+
+    def test_a_legacy_death_claim_naming_only_the_deceased_still_ends_their_marriage(
+            self) -> None:
+        # A death claim naming JUST the deceased, no roles: map, no second
+        # person to be ambiguous about - the pre-#126 "no roles: means
+        # everyone" fallback is still exactly right and safe for this shape,
+        # since "everyone" here is one person.
+        text = ('- id: C-4444444444\n'
+                '  value: "died"\n'
+                '  type: death\n'
+                f'  persons: [{_DTH_DEAD}]\n'
+                '  status: accepted\n'
+                '  reviewed: 2026-01-01\n'
+                '  date: 1920\n')
+        _write(self.root / 'sources' / 'death_S-7777777777.md',
+               '---\nid: S-7777777777\ntitle: Death record\n'
+               'source_type: vital-record\n---\n\n'
+               f'## Claims\n```yaml\n{text}```\n')
+        # The deceased's OWN marriage (not the son's - the son isn't even
+        # named on this claim) should still close.
+        _write(self.root / 'sources' / 'wedding_S-8888888888.md',
+               '---\nid: S-8888888888\ntitle: Marriage record\n'
+               'source_type: vital-record\n---\n\n## Claims\n```yaml\n'
+               '- id: C-3333333333\n'
+               '  value: "married"\n'
+               '  type: marriage\n'
+               f'  persons: [{_DTH_DEAD}, {_DTH_WIFE}]\n'
+               '  status: accepted\n'
+               '  reviewed: 2026-01-01\n'
+               '  date: 1890\n```\n')
+        index.build_index(self.root, {})
+        conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
+        try:
+            row = conn.execute(
+                "SELECT date_end FROM relationships WHERE rel = 'spouse' "
+                'AND person_id = ? AND other_id = ?',
+                (_DTH_DEAD.lower(), _DTH_WIFE.lower())).fetchone()
+        finally:
+            conn.close()
+        self.assertEqual(row[0] if row else 'NO EDGE', '1920-01-01')
 
 
 # ── Blank-vs-omitted None bug sweep (proactive audit past #157/PR #157) ─────

@@ -685,22 +685,50 @@ def vital_subjects(
 
     Returns, in order:
 
-      1. **None** when NO named person carries a role at all. The claim never
-         answered the question, so the caller keeps whatever it did before this
-         rule existed - ordinarily "everyone named". This is the legacy claim,
-         written before `roles:` was expected on vitals, and the whole
-         back-compatibility bargain: a rule that silently emptied those
-         archives' summary boxes would be a worse bug than the one it fixes.
-      2. On a **couple claim** (`marriage`/`divorce`), whoever
-         `spouse_parties` says married each other. That rule - not this one -
-         is the archive's single answer to "who married whom": the index mints
-         the spouse edge from it, `fha gedcom` picks the FAM from it, and
-         `fha lint` W115/W125 read it. Deciding the question a second way here
-         made the two disagree on the claim `spouse_parties` documents as its
-         typo case (`roles: {spouse: [P-a]}` with the partner left unroled, from
-         a mistyped id or a name that stopped resolving): the index recorded the
+      1. On a **couple claim** (`marriage`/`divorce`), whoever
+         `spouse_parties` says married each other, checked FIRST, before the
+         no-role-at-all shortcut below - because `spouse_parties` already has
+         its own correct answer for the all-unroled case (exactly two people
+         named, neither marked as anything else, are each other's spouse; SPEC
+         is symmetric here, there is nothing to disambiguate). Running the
+         no-role check first would hand that same pair to case 2 below with
+         the wrong reasoning and, worse, would hand a FOUR-person all-unroled
+         marriage claim (a couple plus both sets of parents, none of them
+         roled) to case 2 as well - which is exactly the #58/#126 bug this
+         rule exists to prevent. That rule - not this one - is the archive's
+         single answer to "who married whom": the index mints the spouse edge
+         from it, `fha gedcom` picks the FAM from it, and `fha lint` W115/W125
+         read it. Deciding the question a second way here made the two
+         disagree on the claim `spouse_parties` documents as its typo case
+         (`roles: {spouse: [P-a]}` with the partner left unroled, from a
+         mistyped id or a name that stopped resolving): the index recorded the
          marriage while the partner's own summary box and WikiTree profile
          quietly dropped it. One rule, one home.
+      2. **None** when NO named person carries a role at all AND exactly one
+         person is named. The claim never answered the question, but there is
+         nobody to disambiguate FROM, so the caller keeps whatever it did
+         before this rule existed - "the one person named is who this is
+         about". This is the legacy single-subject claim, written before
+         `roles:` was expected on vitals, and the narrow slice of the old
+         back-compatibility bargain that is actually safe: a rule that
+         silently emptied THIS claim shape's summary boxes would be a worse
+         bug than the one it fixes.
+      2a. **Empty** when NO named person carries a role at all and TWO OR MORE
+         people are named (and case 1 found no couple). A claim that named
+         several people and marked none of their parts has not, in fact, said
+         which of them it is a record of - guessing "everyone" here is the
+         mother's `Born: 1888` bug restated for the vital types SPEC has no
+         subject-role word for at all (`death`/`burial`): a burial claim
+         naming the deceased alongside a grandchild who visited the grave,
+         with no `roles:` map at all, used to read as BOTH of their own
+         burials (#126, reopened - the Died/Buried field and a chart node both
+         still showed a relative's record after the first pass of this fix
+         only reached claims that had SOME role signal to work with). Silence
+         is recoverable; the archive's bargain throughout this file is that a
+         missing fact beats a false one. Note this deliberately behaves
+         differently from case 2 purely on headcount, not on claim type - a
+         two-person `marriage`/`divorce` claim never reaches here at all,
+         because case 1 already resolved it.
       3. The people named under this type's **subject role** (`VITAL_SUBJECT_ROLES`
          - `child` for birth/baptism, `spouse` for marriage/divorce) when the
          claim names any. The claim said outright who it is about. On a couple
@@ -711,16 +739,21 @@ def vital_subjects(
          death record (`roles: {spouse: [widow], child: [informant]}` - nobody
          can be marked "deceased", so the deceased is the one with no part to
          play) and the birth claim written `roles: {parent: [mother, father]}`
-         with the baby unmarked.
-      5. Which can be **empty**, and that is an answer too: every person named
-         was named as somebody else on the record, so it is nobody's own vital.
-         An empty list is exactly the mother-on-her-son's-birth-certificate
-         case, and returning her son's date for her is the bug.
+         with the baby unmarked. Reached only when at least one person on the
+         claim DOES carry a role (case 2a's zero-role, multi-person shape
+         already returned above), so "unroled" here is always a genuine,
+         narrower subset of `persons:`, never the whole list by accident.
+      5. Which can be **empty** here too, and that is an answer too: every
+         person named was named as somebody else on the record, so it is
+         nobody's own vital. An empty list is exactly the mother-on-her-son's-
+         birth-certificate case, and returning her son's date for her is the
+         bug.
 
-    Case 5 is deliberately silent rather than falling back to "everyone named":
-    a death claim whose `roles:` map casts every person it names as somebody
-    else yields no death date at all, and the archive's bargain throughout this
-    file is that a missing fact is recoverable where a false one is not.
+    Cases 2a and 5 are deliberately silent rather than falling back to
+    "everyone named": a death claim whose `roles:` map casts every person it
+    names as somebody else, or says nothing about any of them, yields no death
+    date at all, and the archive's bargain throughout this file is that a
+    missing fact is recoverable where a false one is not.
     """
     first_role: dict[str, str] = {}
     for pid, role in persons_with_roles:
@@ -728,14 +761,15 @@ def vital_subjects(
             first_role[pid] = str(role or '').strip().lower()
     pairs = list(first_role.items())
 
-    if not any(role for _pid, role in pairs):
-        return None
-
     subject_role = VITAL_SUBJECT_ROLES.get(str(claim_type or '').strip().lower())
     if subject_role == 'spouse':
         couple = spouse_parties(pairs)
         if couple:
             return couple
+
+    if not any(role for _pid, role in pairs):
+        return None if len(pairs) <= 1 else []
+
     if subject_role:
         named = [pid for pid, role in pairs if role == subject_role]
         if named:

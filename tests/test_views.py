@@ -160,11 +160,32 @@ class TreeNodeVitalScopingTests(unittest.TestCase):
         self._seed_birth({self.SON: 'child', self.MOM: 'parent'})
         self.assertEqual(self._vitals()[self.SON]['birth'], '1888')
 
-    def test_a_legacy_claim_with_no_roles_map_keeps_its_old_behaviour(self) -> None:
+    def test_a_legacy_claim_naming_two_people_with_no_roles_labels_neither_node(
+            self) -> None:
+        # Two people, no roles: map at all - the claim has not said which of
+        # them was born, which is exactly this class's own bug (a mother's
+        # node drawn with her son's birth year) reached through the unroled
+        # case instead of the miscast one. The old fallback used to guess
+        # "everyone" for zero role signal at all, restating #126 rather than
+        # fixing it (#126, reopened).
         self._seed_birth(None)
         vitals = self._vitals()
-        self.assertEqual(vitals[self.MOM]['birth'], '1888')
-        self.assertEqual(vitals[self.SON]['birth'], '1888')
+        self.assertIsNone(vitals[self.MOM]['birth'])
+        self.assertIsNone(vitals[self.SON]['birth'])
+
+    def test_a_legacy_claim_naming_only_the_child_keeps_its_old_behaviour(
+            self) -> None:
+        # One person named, no roles: map - nobody to be ambiguous about, so
+        # the pre-#126 "the claim never said, so nothing is withheld"
+        # back-compatibility bargain is still exactly right here.
+        self.conn.execute(
+            'INSERT INTO claims(id, source_id, type, date_edtf, date_min, value, status) '
+            "VALUES ('c-0000000001','s-0000000001','birth','1888','1888-01-01',"
+            "'born','accepted')")
+        self.conn.execute(
+            'INSERT INTO claim_persons(claim_id, person_id, position, role) '
+            "VALUES ('c-0000000001',?,0,NULL)", (self.SON,))
+        self.assertEqual(self._vitals()[self.SON]['birth'], '1888')
 
 
 if __name__ == '__main__':
