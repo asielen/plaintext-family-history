@@ -720,6 +720,16 @@ def vital_subjects(
          back-compatibility bargain that is actually safe: a rule that
          silently emptied THIS claim shape's summary boxes would be a worse
          bug than the one it fixes.
+         This case cannot tell "genuinely, simply about one person" apart from
+         "one person left over because a `roles:` value named somebody outside
+         `persons:` and vanished before `pairs` was built" (`resolve_claim_
+         persons_with_roles`'s own note) - a hand-edit that wrote `roles:
+         {deceased: [P-dead]}` without adding `P-dead` to `persons:` leaves
+         exactly this shape, and reads the survivor left behind as her own
+         death. `pairs` carries nothing that distinguishes the two by the time
+         it reaches here, so this function does not try; TOOLING's W133
+         catches the orphaned `roles:` value directly against the raw claim,
+         upstream of this call, instead.
       2a. **Empty** when NO named person carries a role at all and TWO OR MORE
          people are named (and case 1 found no couple). A claim that named
          several people and marked none of their parts has not, in fact, said
@@ -855,7 +865,27 @@ def resolve_claim_persons_with_roles(
     ID) is dropped rather than paired with a role - the same inert-note-link
     treatment `_index_source` and `_claim_person_ids` both give it (TOOLING
     §3 E004): a garbage id in `(pid, role)` would answer the vitals/social
-    questions above about a person the archive cannot actually name."""
+    questions above about a person the archive cannot actually name.
+
+    A DIFFERENT thing is dropped just as silently: a `roles:` value that
+    resolves perfectly well but names somebody absent from `persons:` (a hand
+    edit that added `roles: {deceased: [P-dead]}` without adding `P-dead` to
+    `persons:` too). This function only ever walks `persons:` entries and asks
+    each one whether some role names it, so that person is never looked at at
+    all - not "dropped for being unresolvable", simply never a candidate.  Most
+    of the time that is a quiet no-op (TOOLING §3, `_build_child_edges`'s "a
+    broken map, not a secret extra parent"). It stops being a no-op exactly
+    when dropping the role target leaves every OTHER named person unroled: the
+    single-person legacy fallback below then reads whoever is left - the
+    widow, say - as the claim's own subject, which is the #126 bug restated
+    through a hand-edit mistake this very function cannot see, because by the
+    time it runs the target already never appears in its input. Catching that
+    shape is TOOLING's W133, checked directly against the raw claim (roles:
+    values that resolve to somebody outside persons:) rather than here: this
+    function's contract - drop what does not resolve into `persons:` order -
+    is unchanged, and every one of its callers (`vital_subjects`,
+    `spouse_parties`, `parentage_parties`, `social_parties`) keeps reading
+    exactly the pairs it always has."""
     roles_map = claim.get('roles') or {}
     resolved_roles: list[tuple[str, set[str]]] = []
     if isinstance(roles_map, dict):

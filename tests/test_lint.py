@@ -3129,6 +3129,158 @@ class UnscopedDeathBurialBaptismW132Tests(unittest.TestCase):
         self.assertNotIn(str(root), w[0].message)
 
 
+class OrphanedRoleTargetW133Tests(unittest.TestCase):
+    """W133 (#126 review, #173 follow-up): a `roles:` value that resolves to a
+    real person absent from the claim's own `persons:` list.
+
+    `_lib.resolve_claim_persons_with_roles` (and index.py's `_index_source`,
+    its mirror) only ever walks `persons:` entries and asks each one whether
+    some role names it - so a role target who never appears in `persons:` is
+    not read as a secret extra participant, it is simply never looked at, and
+    the pair is dropped before it reaches `vital_subjects`/`spouse_parties`/
+    `parentage_parties` at all. Most role words absorb that silently (a broken
+    map, not a hidden extra parent). `roles: deceased:` does not: dropping the
+    target can leave the claim's only OTHER named person - a widow, say - as
+    the sole unroled name left, and `vital_subjects`'s single-person legacy
+    fallback then reads HER as the one who died. That is the exact #126 bug
+    reintroduced through the hand-edit mistake `roles: deceased:` itself
+    invites (write the roles: line, forget the persons: line), and this is
+    the check that catches it.
+    """
+
+    WIDOW = 'P-d4d4d4d4d4'
+    DEAD = 'P-d5d5d5d5d5'
+    OTHER = 'P-d6d6d6d6d6'
+    SID = 'S-9999999999'
+
+    def _build(self, *, ctype: str = 'death', persons=None,
+               roles_block: str = '', status: str = 'accepted',
+               claim_id: str = 'C-3333333333') -> Path:
+        root = Path(tempfile.mkdtemp())
+        (root / 'people').mkdir(parents=True)
+        (root / 'sources' / 'notes').mkdir(parents=True)
+        (root / 'fha.yaml').write_text('roots:\n  documents: documents\n',
+                                       encoding='utf-8')
+        everyone = [self.WIDOW, self.DEAD, self.OTHER]
+        for n, pid in enumerate(everyone):
+            (root / 'people' / f'x__p{n}_{pid}.md').write_text(
+                f'---\nid: {pid}\nname: Person {n}\nsex: U\nliving: false\n'
+                f'tier: stub\n---\n\n# Person {n}\n', encoding='utf-8')
+        named = [self.WIDOW] if persons is None else persons
+        claim = (f'- value: "a {ctype}"\n'
+                 f'  id: {claim_id}\n'
+                 f'  type: {ctype}\n'
+                 f'  persons: [{", ".join(named)}]\n'
+                 f'  status: {status}\n  reviewed: 2026-01-01\n'
+                 f'  confidence: high\n  date: 1902-04-17\n'
+                 '  information: primary\n  evidence: direct\n'
+                 '  notes: x.\n'
+                 + roles_block)
+        (root / 'sources' / 'notes' / f'rec_{self.SID.lower()}.md').write_text(
+            f'---\nid: {self.SID}\ntitle: Rec\nsource_type: vital-record\n---\n\n'
+            f'## Claims\n```yaml\n{claim}```\n', encoding='utf-8')
+        return root
+
+    def _w133(self, root: Path) -> list:
+        from _lib import load_fha_yaml
+        findings, _reg = lint._run_lint_core(root, load_fha_yaml(root))
+        return [f for f in findings if f.code == 'W133']
+
+    def test_deceased_role_naming_someone_outside_persons_warns(self) -> None:
+        # Codex's exact reproduction: persons: [widow] only, roles: {deceased:
+        # [dead]} - a real, existing P-id, just never added to persons:.
+        roles = f'  roles:\n    deceased: [{self.DEAD}]\n'
+        w = self._w133(self._build(persons=[self.WIDOW], roles_block=roles))
+        self.assertEqual(len(w), 1)
+        f = w[0]
+        self.assertEqual(f.severity, 'W')
+        self.assertIn('C-3333333333', f.message)
+        self.assertIn('deceased', f.message)
+        self.assertIn(self.DEAD, f.message)
+        self.assertIn('persons:', f.message)
+
+    def test_the_underlying_derivation_still_misreads_the_survivor(self) -> None:
+        # Documents the deliberate lint-only choice (TOOLING W133): the lint
+        # check fires, but `vital_subjects`/`claim_is_own_vital` are left
+        # unhardened, because by the time either runs, the orphaned target
+        # has already never appeared in `resolve_claim_persons_with_roles`'s
+        # output - there is nothing left at that layer to distinguish this
+        # claim from a genuinely single-subject one. The lint check is the
+        # backstop; this proves it fires exactly where the runtime cannot
+        # safely tell the two shapes apart.
+        from _lib import resolve_claim_persons_with_roles, vital_subjects
+        claim = {
+            'id': 'C-3333333333', 'type': 'death',
+            'persons': [self.WIDOW],
+            'roles': {'deceased': [self.DEAD]},
+            'status': 'accepted',
+        }
+        pairs = resolve_claim_persons_with_roles(claim, alias_map=None)
+        self.assertEqual(pairs, [(self.WIDOW.lower(), None)])
+        subjects = vital_subjects('death', pairs)
+        self.assertIsNone(subjects)   # case 2: reads the widow as the subject
+
+        # ...and the lint check on the SAME claim shape still fires, so the
+        # mistake is surfaced even though the runtime derivation cannot see it.
+        roles = f'  roles:\n    deceased: [{self.DEAD}]\n'
+        w = self._w133(self._build(persons=[self.WIDOW], roles_block=roles))
+        self.assertEqual(len(w), 1)
+
+    def test_properly_listed_deceased_role_is_clean(self) -> None:
+        # The correct shape: both the widow and the deceased are in persons:.
+        roles = f'  roles:\n    deceased: [{self.DEAD}]\n'
+        w = self._w133(self._build(
+            persons=[self.WIDOW, self.DEAD], roles_block=roles))
+        self.assertEqual(w, [])
+
+    def test_orphaned_target_on_a_non_vital_role_also_warns(self) -> None:
+        # General hand-edit-integrity check, not specific to deceased: - an
+        # orphaned parent: target on a relationship claim is the same mistake.
+        roles = f'  roles:\n    child: [{self.WIDOW}]\n    parent: [{self.DEAD}]\n'
+        w = self._w133(self._build(
+            ctype='relationship', persons=[self.WIDOW], roles_block=roles))
+        self.assertEqual(len(w), 1)
+        self.assertIn('parent', w[0].message)
+        self.assertIn(self.DEAD, w[0].message)
+
+    def test_multiple_orphaned_targets_each_warn(self) -> None:
+        roles = (f'  roles:\n    deceased: [{self.DEAD}]\n'
+                 f'    witness: [{self.OTHER}]\n')
+        w = self._w133(self._build(persons=[self.WIDOW], roles_block=roles))
+        self.assertEqual(len(w), 2)
+
+    def test_unresolvable_name_in_roles_is_not_reported_as_orphaned(self) -> None:
+        # A typo'd/unknown NAME in roles: never resolves to a P-id at all -
+        # that is a different problem (an inert note-link), not this one.
+        roles = '  roles:\n    deceased: ["[[Nobody Nowhere]]"]\n'
+        w = self._w133(self._build(persons=[self.WIDOW], roles_block=roles))
+        self.assertEqual(w, [])
+
+    def test_fires_regardless_of_claim_status(self) -> None:
+        # A broken roles:/persons: pairing is a hand-edit mistake the moment
+        # it is written - it should surface before review, not only after
+        # acceptance (contrast with W125/W126/W132, which wait for accepted).
+        roles = f'  roles:\n    deceased: [{self.DEAD}]\n'
+        for status in ('suggested', 'needs-review', 'accepted', 'disputed'):
+            with self.subTest(status=status):
+                w = self._w133(self._build(
+                    persons=[self.WIDOW], roles_block=roles, status=status))
+                self.assertEqual(len(w), 1)
+
+    def test_list_form_roles_does_not_crash_lint(self) -> None:
+        # `roles: [spouse, child]` names nobody - it cannot orphan anyone
+        # (nothing to resolve), but it must never raise.
+        w = self._w133(self._build(roles_block='  roles: [spouse, child]\n'))
+        self.assertEqual(w, [])
+
+    def test_the_message_carries_no_absolute_path(self) -> None:
+        roles = f'  roles:\n    deceased: [{self.DEAD}]\n'
+        root = self._build(persons=[self.WIDOW], roles_block=roles)
+        w = self._w133(root)
+        self.assertEqual(len(w), 1)
+        self.assertNotIn(str(root), w[0].message)
+
+
 class RootPersonHasChildW127Tests(unittest.TestCase):
     """W127: `root_person` in `fha.yaml` has an accepted genetic child on
     record (issue #70).

@@ -1531,7 +1531,8 @@ def _build_child_edges(registry: Registry) -> dict[str, dict[str, set[str]]]:
         A `roles:` entry naming somebody left out of `persons:` is a broken map,
         not a secret extra parent, and reading first-role-per-person is also
         what makes `roles: {child: [P-a], parent: [P-a]}` derive nothing rather
-        than filing a man as his own father.
+        than filing a man as his own father. That broken-map shape is itself
+        reported, for any role on any claim, by W133.
 
     A parent/child edge is identified by its `roles:` map (it names both a
     `child` and a `parent`), NOT by `subtype:` - `subtype` names the *nature* of
@@ -2274,7 +2275,8 @@ def _claim_spouse_pids(
 
     Only people actually named in `persons:` can carry a role, matching how the
     index builds `claim_persons`: a `roles:` entry naming somebody left out of
-    `persons:` is a broken map, not a secret extra spouse.
+    `persons:` is a broken map, not a secret extra spouse - and that broken-map
+    shape is itself reported, for any role on any claim, by W133.
 
     Every role is passed through, not just `spouse`. The rule's two-person
     fallback turns on whether the OTHER person carries an explicit role, so a
@@ -2701,6 +2703,50 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
                         "missing from every timeline, vitals tally, and merge check). "
                         'Check the spelling, add the name as an alias on the right '
                         'person, or create the person - or leave it if it is only a note.'))
+
+            # W133: a roles: value resolves to a person absent from the
+            # claim's own persons: list (#126 review, #173 follow-up) - a
+            # broken map, typically from a hand-edit that added a roles:
+            # line without also adding that person to persons: (write
+            # `roles: {deceased: [P-dead]}` and forget `persons: [..., P-dead]`).
+            # Every place that turns roles: into (pid, role) pairs -
+            # `_lib.resolve_claim_persons_with_roles`, index.py's
+            # `_index_source` - only walks persons: entries and asks each one
+            # "does any role name you", so a role target absent from
+            # persons: is never looked at at all: the pair is dropped before
+            # `vital_subjects`/`spouse_parties`/`parentage_parties` ever see
+            # it, exactly the "broken map, not a secret extra parent/spouse"
+            # treatment `_build_child_edges` and `_claim_spouse_pids` already
+            # document above. For most role words that is a quiet no-op. For
+            # `roles: deceased:` (or any other claim where dropping the
+            # role's target leaves the claim's remaining people all unroled)
+            # it is worse than a no-op: it can leave a SURVIVOR - the widow,
+            # say - as the only named person left, and `vital_subjects`'s
+            # single-person legacy fallback (case 2) then reads HER as the
+            # one who died. That is the #126 bug W132 exists to catch,
+            # reintroduced through a hand-edit mistake the deceased: role
+            # itself invites. Checked on every claim regardless of type or
+            # status: a broken roles:/persons: pairing is a hand-edit mistake
+            # the moment it is written, not only once the claim is accepted,
+            # so the human sees it before review rather than after.
+            if isinstance(claim.get('roles'), dict):
+                claim_person_ids = set(_claim_person_ids(claim, alias_map))
+                for role_name in claim['roles']:
+                    for pid in sorted(_role_pids(claim, role_name, alias_map)):
+                        if pid in claim_person_ids:
+                            continue
+                        findings.append(Finding('W', 'W133', src_path,
+                            f'Claim {claim.get("id","?")} roles: {role_name}: names '
+                            f'{fmt_id_display(pid)} but persons: does not include '
+                            f'them, so this role target is silently dropped rather '
+                            "than read as a participant in this claim - if the "
+                            "record derives anything from this role (a death's "
+                            "subject, a marriage's spouse, a birth's parent), the "
+                            'derivation reads as though the role were never given, '
+                            'which can leave whoever else the claim left unroled '
+                            "wrongly read as the record's own subject instead. Add "
+                            f'{fmt_id_display(pid)} to persons: too, or remove this '
+                            'roles: entry if it does not belong on this claim.'))
 
             # W125: a marriage/divorce naming more than two people without
             # saying which two were the couple. Certificates routinely name the
