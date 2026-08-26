@@ -144,6 +144,7 @@ from _lib import (
     normalize_id,
     open_index_db,
     parse_questions,
+    read_places_registry,
     read_record,
     is_working_copy,
     resolve_root_arg,
@@ -984,7 +985,12 @@ def _section_photo_triage(
 
 # ── Section 6b: Place candidates ──────────────────────────────────────────────
 
-def _place_text_group_line(archive_root: Path, g: dict, match: dict | None = None) -> str:
+def _place_text_group_line(
+    archive_root: Path,
+    g: dict,
+    match: dict | None = None,
+    registry: tuple[list[dict], str | None] | None = None,
+) -> str:
     """
     One place-text cluster's report line: label, claim count, date spread,
     and the exact `fha confirm place` command that clears it (issue #79
@@ -1030,13 +1036,28 @@ def _place_text_group_line(archive_root: Path, g: dict, match: dict | None = Non
     fix in `_render_report`), since it also needs to know whether any
     escalated cluster already has a registry match to word its own banner
     accurately. Omitted (the §6b listing's own call), it is looked up here
-    exactly as before.
+    exactly as before - except that lookup now also honors `registry` below,
+    so "omitted" no longer means "re-reads the file from disk every time".
+
+    `registry` is `_lib.read_places_registry(archive_root)`'s own `(rows,
+    error)` result, forwarded straight through to `match_place_text_to_
+    registry` when this function does its own lookup (`match is None`).
+    Every caller here loops over multiple clusters in one report run - §6b's
+    listing over every unlinked cluster, the escalation banner over every
+    oversized one - so without this, each cluster's line silently re-read
+    and re-parsed the whole `places/places.yaml` registry from scratch, a
+    file read plus a full-registry scan repeated once per cluster instead of
+    once for the whole report (issue #166 finding 2). Both call sites now
+    read the registry exactly once, before their loop, and pass the same
+    parsed rows to every line. Omitted, this function falls back to reading
+    it fresh (a caller that only ever renders one line pays no extra cost
+    either way).
     """
     spread = f"{g['date_min']}/{g['date_max']}" if g['date_min'] or g['date_max'] else 'no dates'
     name = g['label']
     ids = ' '.join(fmt_id_display(cid) for cid in g['claim_ids'])
     if match is None:
-        match = match_place_text_to_registry(archive_root, name)
+        match = match_place_text_to_registry(archive_root, name, registry=registry)
     if match['tier'] and match['place_id']:
         tier_word = 'matches' if match['tier'] == 'exact' else 'near-matches'
         return (
@@ -1047,10 +1068,27 @@ def _place_text_group_line(archive_root: Path, g: dict, match: dict | None = Non
         )
     ambiguous_ids = match.get('ambiguous_ids')
     if ambiguous_ids:
+        # Every OTHER branch here ends with a command that is ready to paste
+        # into a shell exactly as printed (issue #79 point 1's whole point:
+        # this section names a problem AND a fix, not just the problem). The
+        # old text here broke that - `--into=<one of the above>` is not a
+        # real L-id, it's the literal placeholder string, and `<`/`>` are
+        # shell redirection operators, so pasting it verbatim doesn't even
+        # reach `fha` before the shell chokes on it (issue #166 finding 1).
+        # `ambiguous_ids` already names the real, specific candidate L-ids
+        # match_place_text_to_registry refused to guess between - so this
+        # spells out one COMPLETE, real command per candidate instead of one
+        # broken command with a fill-in-the-blank the human was never told
+        # how to fill in. `fha places lint` stays as the pointer to the
+        # underlying PL002 duplicate-name clash itself, for a human who
+        # would rather fix the registry than pick a side.
+        commands = '; '.join(
+            f'`fha confirm place {ids} --into={pid}`' for pid in ambiguous_ids
+        )
         return (
             f"{name} - {g['claim_count']} claim(s), {spread} - "
             f"matches MULTIPLE registered places ({', '.join(ambiguous_ids)}) - "
-            f"pick one with `fha confirm place {ids} --into=<one of the above>`, "
+            f"pick the one that's actually meant: {commands}, "
             'or run `fha places lint` to see the clash'
         )
     return (
@@ -1096,7 +1134,10 @@ def _fetch_place_candidates(archive_root: Path, fha_config: dict) -> tuple[dict 
 
 
 def _section_place_candidates(
-    archive_root: Path, candidates: dict | None, error: str | None,
+    archive_root: Path,
+    candidates: dict | None,
+    error: str | None,
+    places_registry: tuple[list[dict], str | None] | None = None,
 ) -> list[str]:
     """
     Renders `_fetch_place_candidates`'s result.
@@ -1132,6 +1173,18 @@ def _section_place_candidates(
     another flag - on POSIX and on Windows alike (see `shell_quote`'s own
     docstring: a plain double-quote wrap is not enough there, per the
     `claim.py`/issue #54 precedent of this exact bug shape).
+
+    `places_registry` is `_lib.read_places_registry(archive_root)`'s own
+    `(rows, error)` result, read ONCE by `run_report` and forwarded here so
+    every cluster's `_place_text_group_line` call reuses the same parsed
+    rows instead of each one re-reading and re-parsing `places/places.yaml`
+    off disk (issue #166 finding 2 - this loop runs once per unlinked
+    place-text cluster, so without this a report with N clusters read the
+    registry file N times for no reason a human running `fha report` would
+    ever see, only feel as a report that is slower the larger the archive
+    gets). Omitted (a caller exercising this section on its own, e.g. a
+    test), each line falls back to reading the registry itself, same as
+    before this existed.
     """
     if error:
         return [error]
@@ -1153,9 +1206,12 @@ def _section_place_candidates(
     if not place_text_groups and not gps_clusters:
         return ['No recurring unlinked place-text or GPS clusters found.']
 
+    if places_registry is None:
+        places_registry = read_places_registry(archive_root)
     lines: list[str] = []
     for g in place_text_groups:
-        lines.append(f'- {_place_text_group_line(archive_root, g)}')
+        lines.append(
+            f'- {_place_text_group_line(archive_root, g, registry=places_registry)}')
     for c in gps_clusters:
         lines.append(
             f"- GPS cluster near {c['lat']:.4f},{c['lon']:.4f} - "
@@ -1682,6 +1738,16 @@ def run_report(
         # run the whole GPS photo-cluster pass, and any stale-photo-index
         # warning, twice per report).
         place_candidates, place_candidates_error = _fetch_place_candidates(archive_root, fha_config)
+        # One `places/places.yaml` read, shared by every place-text cluster
+        # line this report renders - §6b's own listing (every unlinked
+        # cluster) and the escalation banner below it (the oversized ones) -
+        # instead of each cluster's `match_place_text_to_registry` call
+        # re-reading and re-parsing the same file from disk on its own
+        # (issue #166 finding 2, same "one fetch, shared" discipline as
+        # `_fetch_place_candidates` above it - Codex review, PR #142 finding
+        # 2 - applied to the registry read this section also repeated once
+        # per cluster).
+        places_registry = read_places_registry(archive_root)
 
         bodies = {
             'discoveries': _section_discoveries(conn, prev, current),
@@ -1695,22 +1761,24 @@ def run_report(
             'photo-triage': _section_photo_triage(
                 archive_root, fha_config, photo_scan_error, photo_scan_notes),
             'place-candidates': _section_place_candidates(
-                archive_root, place_candidates, place_candidates_error),
+                archive_root, place_candidates, place_candidates_error, places_registry),
             'hypotheses': _section_hypotheses(conn, archive_root),
             'promotion-candidates': _section_promotion_candidates(conn, fha_config),
             'possible-connections': _section_possible_connections(archive_root),
         }
 
         place_escalations = _place_text_escalations(place_candidates)
-        # Looked up once per escalated cluster and reused for both the
-        # rendered bullet (`_place_text_group_line`, passed in below instead
-        # of letting it repeat this same registry read) and the banner's own
-        # wording just below - the banner needs to know whether ANY
-        # escalated cluster already matches a registered place so it never
-        # again claims "no place registered" for one that does (Codex
-        # review, PR #142 finding 1).
+        # Looked up once per escalated cluster (against `places_registry`,
+        # read once above rather than per cluster - issue #166 finding 2)
+        # and reused for both the rendered bullet (`_place_text_group_line`,
+        # passed in below instead of letting it repeat this same lookup) and
+        # the banner's own wording just below - the banner needs to know
+        # whether ANY escalated cluster already matches a registered place
+        # so it never again claims "no place registered" for one that does
+        # (Codex review, PR #142 finding 1).
         place_escalation_matches = [
-            match_place_text_to_registry(archive_root, g['label']) for g in place_escalations
+            match_place_text_to_registry(archive_root, g['label'], registry=places_registry)
+            for g in place_escalations
         ]
         place_escalation_lines = [
             _place_text_group_line(archive_root, g, match=m)
