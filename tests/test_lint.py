@@ -219,14 +219,42 @@ class LintPlacesRegistryShapeTests(unittest.TestCase):
     def test_comment_only_seed_file_is_not_a_finding(self) -> None:
         # The shipped archive-template seed (all comments, so
         # yaml.safe_load returns None) is a normal empty registry, not a
-        # malformed one - must not raise an E010.
+        # malformed one - must not raise an E010. Must keep passing after
+        # issue #168's finding 2 fix (explicit null vs. genuinely-empty
+        # now come from the source text, not the parsed value alone).
         seed_path = ROOT / 'archive-template' / 'places' / 'places.yaml'
         findings = self._lint(seed_path.read_text(encoding='utf-8'))
+        self.assertFalse([f for f in findings if 'places.yaml' in f.message])
+
+    def test_empty_file_is_not_a_finding(self) -> None:
+        findings = self._lint('')
         self.assertFalse([f for f in findings if 'places.yaml' in f.message])
 
     def test_well_formed_list_is_not_a_finding(self) -> None:
         findings = self._lint('- id: L-aaaaaaaaaa\n  name: Fairview\n')
         self.assertFalse([f for f in findings if 'places.yaml' in f.message])
+
+    def test_explicit_null_is_an_e010_finding(self) -> None:
+        # Issue #168 finding 2 (Codex review, PR #159): an explicit `null`
+        # parses to the same `None` a genuinely empty/comment-only file
+        # does, but it is real hand-typed content ("nothing here yet"),
+        # not the absence of any - `fha lint`'s registry check must not
+        # silently wave it through as a normal empty registry.
+        findings = self._lint('null\n')
+        e010 = [f for f in findings if f.code == 'E010' and 'places.yaml' in f.message]
+        self.assertTrue(e010, [str(f) for f in findings])
+        self.assertIn('null', e010[0].message)
+
+    def test_malformed_yaml_error_message_has_no_pyyaml_jargon(self) -> None:
+        # Issue #168 finding 1: `fha lint` shares the same plain-language
+        # error text as the write path now (both come from
+        # `_lib.read_places_registry`) - no `<unicode string>`/caret/
+        # parser-internals jargon should reach the human here either.
+        findings = self._lint('- id: L-aaaaaaaaaa\n  name: [unterminated\n')
+        e010 = [f for f in findings if f.code == 'E010' and 'places.yaml' in f.message]
+        self.assertTrue(e010, [str(f) for f in findings])
+        for jargon in ('<unicode string>', '^', 'stream end', 'flow sequence'):
+            self.assertNotIn(jargon, e010[0].message)
 
 
 class LintControlledVocabularyTests(unittest.TestCase):

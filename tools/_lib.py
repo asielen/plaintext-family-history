@@ -5156,6 +5156,30 @@ def place_text_cluster_key(text: str) -> str:
     return ' '.join(tokens)
 
 
+_PLACES_REGISTRY_EXAMPLE = '- id: L-0123456789\n  name: Fairview'
+
+
+def _yaml_source_is_blank(text: str) -> bool:
+    """Whether `text` has no real content once full-line `#` comments and
+    surrounding whitespace are stripped away.
+
+    Used to tell a genuinely empty/comment-only file apart from one whose
+    actual content happens to parse to `None` anyway (an explicit YAML
+    `null`/`~`) - `yaml.safe_load` returns `None` for both, so the parsed
+    value alone can't distinguish "nothing here yet" (no file content) from
+    "the human typed the word null" (real content, just a null literal).
+    Only whole-line comments count; a trailing `# comment` on a content line
+    does not blank the line out, but that never matters for our callers -
+    every case that reaches here is a file that parsed to `None`, so no
+    remaining line can carry non-comment content anyway.
+    """
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped and not stripped.startswith('#'):
+            return False
+    return True
+
+
 def read_places_registry(archive_root: str | Path) -> tuple[list[dict], str | None]:
     """
     Parse `places/places.yaml` into a plain list of place dicts (each at
@@ -5184,6 +5208,27 @@ def read_places_registry(archive_root: str | Path) -> tuple[list[dict], str | No
     valid list is NOT a registry-level error - the file parsed fine as a
     list of places, one entry is just junk - so those rows are quietly
     skipped and `error` stays `None`.
+
+    Two follow-ups from PR #159's Codex review (issue #168):
+
+    - A YAML parse failure used to interpolate PyYAML's raw exception text
+      straight into `error` - `<unicode string>` markers, position carets,
+      parser-internals vocabulary the target user (a genealogist hand-
+      editing a plain-text file) has no way to act on. The raw text never
+      reaches `error` now; instead, the line/column PyYAML reports (when it
+      reports one - `yaml.MarkedYAMLError.problem_mark`) is named in plain
+      language, alongside a concrete minimal example of a valid entry.
+
+    - An explicit `null` (or `~`) hand-typed into `places.yaml` - a natural
+      way to write "nothing here yet" - parses to `None`, exactly like a
+      genuinely empty/comment-only file, so the two used to be
+      indistinguishable and an explicit `null` silently behaved as a valid
+      empty registry. `_yaml_source_is_blank` now checks the SOURCE TEXT
+      (comments/whitespace stripped) rather than the parsed value: truly
+      no content left is still the ordinary empty-seed case (`error` stays
+      `None`, unchanged from before); real content that merely parses to
+      `None` - `null`, `~` - falls through to the non-list rejection below
+      with a message naming the null explicitly.
     """
     if yaml is None:
         return [], None
@@ -5197,8 +5242,14 @@ def read_places_registry(archive_root: str | Path) -> tuple[list[dict], str | No
     try:
         data = yaml.safe_load(text)
     except yaml.YAMLError as e:
-        return [], f'places/places.yaml has a YAML error: {e}'
-    if data is None:
+        loc = _yaml_problem_location(e)
+        return [], (
+            f'places/places.yaml is not valid YAML{loc} - a list, mapping, '
+            'or quote is probably not closed correctly. A place entry '
+            f'looks like:\n{_PLACES_REGISTRY_EXAMPLE}\n'
+            '(see SPEC §15 for the registry shape).'
+        )
+    if data is None and _yaml_source_is_blank(text):
         # A comment-only (or otherwise all-whitespace) file parses to None,
         # not []/a list - and that is exactly the shipped seed state
         # (archive-template/places/places.yaml, SPEC §15's "empty to start"
@@ -5210,7 +5261,21 @@ def read_places_registry(archive_root: str | Path) -> tuple[list[dict], str | No
         # seed file gets misclassified as malformed on every place-text edit.
         return [], None
     if not isinstance(data, list):
-        return [], 'places/places.yaml is not a list at the top level (see SPEC §15 for the registry shape)'
+        if data is None:
+            # Real content (issue #168) - an explicit `null`/`~`, not a
+            # blank/comment-only file - that merely happens to parse to the
+            # same None a genuinely empty file does. Named explicitly so
+            # the human doesn't have to guess why a typed-out "nothing
+            # here yet" reads as broken.
+            reason = 'contains an explicit `null`/`~`, which is not a valid registry'
+        else:
+            reason = 'is not a list at the top level'
+        return [], (
+            f'places/places.yaml {reason} (see SPEC §15 for the registry '
+            'shape). A valid registry is either empty (blank or comments '
+            f'only) or a YAML list of place entries, for example:\n'
+            f'{_PLACES_REGISTRY_EXAMPLE}'
+        )
     return [row for row in data if isinstance(row, dict) and row.get('id')], None
 
 

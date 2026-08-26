@@ -1,7 +1,7 @@
 {
   "manifest_version": "1",
   "spec_version": "1.2",
-  "generated": "2026-08-24",
+  "generated": "2026-08-25",
   "files": [
     {
       "path": ".claude/skills/README.md",
@@ -420,7 +420,7 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "80598aaa2eeecaf623863d9de083443c5358c75e7ebcec8c56f9c5fc0502bc23",
+      "sha256": "7184b88730497854906aeb5aea34f94f26fedbb51b9d2aff6f233bdbc9d4599a",
       "spec_version": "1.2",
       "src": "tools/_lib.py"
     },
@@ -560,7 +560,7 @@
     {
       "path": ".fha/tools/lint.py",
       "category": "operating",
-      "sha256": "adee7dcb1a7b487b907c78130a0bc49990cfd34ea6fe4c82e1b425993089af12",
+      "sha256": "0ac6ff15da69cdbdec87823e0fb42b379f5b408b003166db5bde1cde4c3e0018",
       "spec_version": "1.2",
       "src": "tools/lint.py"
     },

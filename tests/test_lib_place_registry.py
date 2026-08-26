@@ -76,11 +76,73 @@ class ReadPlacesRegistryTests(unittest.TestCase):
         self.assertIsNotNone(error)
         self.assertIn('YAML', error)
 
+    def test_unparseable_yaml_error_message_has_no_pyyaml_jargon(self) -> None:
+        # Issue #168 finding 1 (Codex review, PR #159's follow-up on PR
+        # #150): the raw `yaml.YAMLError` text used to be interpolated
+        # straight into the user-facing message - `<unicode string>`
+        # markers, position carets, parser-internals vocabulary a
+        # genealogist hand-editing places.yaml has no way to act on. The
+        # message must explain the problem in plain language, name the
+        # failing line when PyYAML reports one, and show a concrete valid
+        # example - never the raw exception text.
+        _write_registry(self.root, '- id: L-aaaaaaaaaa\n  name: [unterminated\n')
+        rows, error = read_places_registry(self.root)
+        self.assertEqual(rows, [])
+        self.assertIsNotNone(error)
+        for jargon in ('<unicode string>', '^', 'stream end', 'flow sequence'):
+            self.assertNotIn(jargon, error)
+        self.assertRegex(error, r'line \d+')   # names the failing line...
+        self.assertIn('id: L-', error)         # ...and a concrete valid example
+
     def test_non_list_top_level_reports_a_distinguishable_error(self) -> None:
         _write_registry(self.root, 'not_a_list: true\n')
         rows, error = read_places_registry(self.root)
         self.assertEqual(rows, [])
         self.assertIsNotNone(error)
+
+    def test_explicit_null_is_treated_as_a_malformed_registry(self) -> None:
+        # Issue #168 finding 2 (Codex review, PR #159): `yaml.safe_load`
+        # returns None for BOTH a genuinely empty/comment-only file AND a
+        # file whose real content is the explicit YAML literal `null` - a
+        # plausible hand-edit meaning "nothing here yet". The parsed value
+        # alone can't tell those apart, so this must come from the source
+        # text: an explicit null is NOT a valid registry and must be
+        # reported, not silently treated as a normal empty one.
+        _write_registry(self.root, 'null\n')
+        rows, error = read_places_registry(self.root)
+        self.assertEqual(rows, [])
+        self.assertIsNotNone(error)
+        self.assertIn('null', error)
+
+    def test_explicit_tilde_null_is_also_treated_as_malformed(self) -> None:
+        _write_registry(self.root, '~\n')
+        rows, error = read_places_registry(self.root)
+        self.assertEqual(rows, [])
+        self.assertIsNotNone(error)
+
+    def test_null_alongside_comments_is_still_malformed(self) -> None:
+        # A comment above the null must not accidentally make the
+        # comment-stripping check see "nothing left" - the null itself is
+        # real, non-comment content.
+        _write_registry(self.root, '# nothing here yet\nnull\n')
+        rows, error = read_places_registry(self.root)
+        self.assertEqual(rows, [])
+        self.assertIsNotNone(error)
+
+    def test_genuinely_empty_file_is_still_a_normal_empty_registry(self) -> None:
+        # Must not regress (issue #168's explicit ask): a totally empty
+        # (0-byte) file is the same ordinary case as the comment-only seed
+        # file below, not the explicit-null malformed case above.
+        _write_registry(self.root, '')
+        rows, error = read_places_registry(self.root)
+        self.assertEqual(rows, [])
+        self.assertIsNone(error)
+
+    def test_whitespace_only_file_is_still_a_normal_empty_registry(self) -> None:
+        _write_registry(self.root, '\n\n   \n')
+        rows, error = read_places_registry(self.root)
+        self.assertEqual(rows, [])
+        self.assertIsNone(error)
 
     def test_comment_only_seed_file_is_a_valid_empty_registry_not_malformed(self) -> None:
         # Codex review, PR #150 follow-up: archive-template/places/places.yaml
@@ -228,6 +290,18 @@ class MatchPlaceTextToRegistryTests(unittest.TestCase):
         self.assertIsNone(m['tier'])
         self.assertIsNotNone(m['registry_error'])
         self.assertIn('YAML', m['registry_error'])
+        self.assertNotIn('<unicode string>', m['registry_error'])
+
+    def test_explicit_null_registry_degrades_to_no_match_with_an_error(self) -> None:
+        # Issue #168 finding 2: an explicit `null` places.yaml must warn
+        # the human via the same registry_error channel a malformed
+        # non-list registry does - not silently behave as an empty,
+        # error-free registry (which would leave place_text unlinked with
+        # no explanation at all).
+        _write_registry(self.root, 'null\n')
+        m = match_place_text_to_registry(self.root, 'Topeka, Kansas')
+        self.assertIsNone(m['tier'])
+        self.assertIsNotNone(m['registry_error'])
 
     def test_place_id_that_is_not_an_l_id_is_ignored(self) -> None:
         # A hand-edited places.yaml with a malformed id: line should not
