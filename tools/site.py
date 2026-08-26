@@ -826,10 +826,31 @@ _DATE_BEFORE_RE = re.compile(r'\[\.\.(\d{4})(?:-(\d{2}))?(?:-(\d{2}))?\]')
 # follow the plain side in that alternative). The bracket side never carries
 # a qualifier in this dialect (`_EDTF_PATTERNS`'s bracket form allows no
 # `?`/`~` inside `[..]` at all), so only the plain side needs this.
+#
+# `pmq1`/`pdq1` (`pmq2`/`pdq2` for the plain-first alternative) extend this
+# further (fresh Codex finding on the same #167 finding-3 pipeline, after the
+# trailing-qualifier fix above shipped): this archive's EDTF dialect also
+# lets a `~` sit COMPONENT-LEVEL, immediately before the month or day digits,
+# rather than trailing the whole date - "1910-~06" reads "1910, approximately
+# June": the year is certain, only the month is a guess
+# (`_EDTF_PATTERNS`'s `~?` sitting directly before each `\d{2}` component).
+# Unlike the trailing marker, `?` is never valid in this leading position -
+# `_EDTF_PATTERNS` only ever writes `~?` there, never `[?~]?` - so `pmq`/`pdq`
+# only ever capture a literal tilde. Before this, `[..1900]/1910-~06` matched
+# only the unqualified `1910` prefix - the exact same bug `pq1`/`pq2` fixed
+# above, but for the mid-date form instead of the trailing one - and the
+# mirrored `1910-~06/[..1900]` did not match at all, for the identical
+# reason `pq2` was needed: the plain side could not reach past `-~06` to
+# find the `/`. A trailing `pq`/`pq2` marker and a leading `pmq`/`pdq` marker
+# are not mutually exclusive in the grammar (`1910-~06?` is syntactically
+# valid too), so both are captured independently rather than as alternatives;
+# `_translate_date_before_slash` reconciles the two into one wording.
 _DATE_BEFORE_SLASH_RE = re.compile(
     r'\[\.\.(?P<by1>\d{4})(?:-(?P<bm1>\d{2}))?(?:-(?P<bd1>\d{2}))?\]'
-    r'/(?P<py1>\d{4})(?:-(?P<pm1>\d{2}))?(?:-(?P<pd1>\d{2}))?(?P<pq1>[?~])?(?!\d)'
-    r'|(?<!\d)(?P<py2>\d{4})(?:-(?P<pm2>\d{2}))?(?:-(?P<pd2>\d{2}))?(?P<pq2>[?~])?'
+    r'/(?P<py1>\d{4})(?:-(?P<pmq1>~)?(?P<pm1>\d{2}))?'
+    r'(?:-(?P<pdq1>~)?(?P<pd1>\d{2}))?(?P<pq1>[?~])?(?!\d)'
+    r'|(?<!\d)(?P<py2>\d{4})(?:-(?P<pmq2>~)?(?P<pm2>\d{2}))?'
+    r'(?:-(?P<pdq2>~)?(?P<pd2>\d{2}))?(?P<pq2>[?~])?'
     r'/\[\.\.(?P<by2>\d{4})(?:-(?P<bm2>\d{2}))?(?:-(?P<bd2>\d{2}))?\]',
 )
 
@@ -1040,17 +1061,38 @@ def _translate_date_before_slash(match: re.Match) -> str:
     qualifier or not) still leaves the WHOLE match - qualifier included -
     untouched via `match.group(0)`. The bracket side never carries a
     qualifier in this dialect (see `_DATE_BEFORE_SLASH_RE`'s comment), so
-    only the plain side's label is ever wrapped."""
+    only the plain side's label is ever wrapped.
+
+    The plain side may ALSO carry a component-level `~` sitting before the
+    month or day instead of trailing the whole date (fresh Codex finding on
+    this same pipeline): `[..1900]/1910-~06` -> "before 1900 to about June
+    1910", `1910-~06/[..1900]` -> "about June 1910 to before 1900". This is
+    folded into the same wrap `_apply_edtf_qualifier` already does for a
+    trailing marker rather than given its own phrasing - `_lib.
+    _humanize_edtf_bound` already treats a component-level `~` exactly like
+    a trailing one (it only ever checks "is `~` present anywhere in this
+    token", never WHERE), so there is no established wording to invent here.
+    A trailing `?`/`~` and a component-level `~` are not mutually exclusive
+    in the grammar (`1910-~06?` is valid too); when both are present the
+    trailing `?` wins - the same "uncertain beats approximate" precedence
+    `_humanize_edtf_bound` already applies for a component carrying both
+    markers at once. Calendar validation still runs on the fully bare
+    component (both the leading and trailing markers stripped), so a
+    component-level `~` next to a genuinely impossible month/day - e.g.
+    `[..1900]/1910-~13` (no month 13) - still leaves the WHOLE match
+    untouched, exactly like the trailing-qualifier case above."""
     g = match.groupdict()
     bracket_first = g['by1'] is not None
     if bracket_first:
         b_year, b_month, b_day = g['by1'], g['bm1'], g['bd1']
         p_year, p_month, p_day = g['py1'], g['pm1'], g['pd1']
-        p_qualifier = g['pq1']
+        p_trailing_qualifier = g['pq1']
+        p_has_component_approx = g['pmq1'] is not None or g['pdq1'] is not None
     else:
         p_year, p_month, p_day = g['py2'], g['pm2'], g['pd2']
         b_year, b_month, b_day = g['by2'], g['bm2'], g['bd2']
-        p_qualifier = g['pq2']
+        p_trailing_qualifier = g['pq2']
+        p_has_component_approx = g['pmq2'] is not None or g['pdq2'] is not None
 
     def _bare(year: str, month: str | None, day: str | None) -> str:
         v = year
@@ -1063,6 +1105,18 @@ def _translate_date_before_slash(match: re.Match) -> str:
     if not is_valid_edtf(_bare(b_year, b_month, b_day)) or \
             not is_valid_edtf(_bare(p_year, p_month, p_day)):
         return match.group(0)
+
+    # Reconcile a trailing `?`/`~` with a leading component-level `~`
+    # (`pmq`/`pdq`) into the single qualifier `_apply_edtf_qualifier`
+    # already knows how to wrap - the two are not mutually exclusive in the
+    # grammar (`1910-~06?` is valid), so a bare "is either present" check
+    # would lose whichever the wording actually needs. `_lib.
+    # _humanize_edtf_bound` prefers "not sure at all" (`?`) over "roughly
+    # right" (`~`) when one component carries both; this mirrors that same
+    # precedence rather than inventing a new rule.
+    p_qualifier = p_trailing_qualifier
+    if p_qualifier != '?' and p_has_component_approx:
+        p_qualifier = '~'
 
     before_label = f'before {_format_edtf_ymd(b_year, b_month, b_day)}'
     plain_label = _apply_edtf_qualifier(

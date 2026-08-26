@@ -4565,6 +4565,66 @@ class ProseConverterTests(unittest.TestCase):
         self.assertIn('[..1900]/1910-13-01?', out)
         self.assertNotIn('before', out)
 
+    # -- further adversarial review of #167 finding 3 (component-level qualifier) --
+
+    def test_before_bracket_interval_component_level_approximate_month(self):
+        # Codex's fresh repro: the plain bound's `~` sits COMPONENT-LEVEL,
+        # attached to just the month ("1910-~06" = "1910, approximately
+        # June" - the year is certain, only the month is a guess), not
+        # trailing the whole date the way `pq1`/`pq2` already handled. Before
+        # this fix the plain-side pattern stopped at the unqualified `1910`
+        # prefix, leaving `-~06` dangling and untranslated right after it.
+        out = site._scrub_internal_encoding(
+            'They lived there [..1900]/1910-~06, per the deed.')
+        self.assertIn('before 1900 to about June 1910', out)
+        self.assertNotIn('[..1900]/1910-~06', out)
+        self.assertNotIn('~06', out)
+
+    def test_before_bracket_interval_component_level_approximate_month_mirrored(self):
+        # Codex's mirrored repro: the plain LEFT-hand bound carries the
+        # component-level `~`. Before this fix `_DATE_BEFORE_SLASH_RE` could
+        # not reach past `-~06` to find the `/`, so this shape did not match
+        # at all and stayed raw.
+        out = site._scrub_internal_encoding(
+            'They lived there 1910-~06/[..1900], per the deed.')
+        self.assertIn('about June 1910 to before 1900', out)
+        self.assertNotIn('1910-~06/[..1900]', out)
+        self.assertNotIn('~06', out)
+
+    def test_before_bracket_interval_component_level_approximate_day(self):
+        # The same component-level `~` also legally attaches to just the DAY
+        # (`_lib._EDTF_PATTERNS`'s `~?` before either the month OR the day
+        # digit pair) with the month plain and certain.
+        out = site._scrub_internal_encoding(
+            'Span: [..1900]/1910-06-~15, per the deed.')
+        self.assertIn('before 1900 to about June 15, 1910', out)
+        self.assertNotIn('~15', out)
+
+    def test_before_bracket_interval_component_qualifier_and_trailing_uncertain(self):
+        # A trailing `?` and a leading component-level `~` are not mutually
+        # exclusive in this dialect ("1910-~06?" is syntactically valid) -
+        # when both are present, "unconfirmed" wins over "about", the same
+        # precedence `_lib._humanize_edtf_bound` already applies when one
+        # component carries both markers at once.
+        out = site._scrub_internal_encoding(
+            'Span: [..1900]/1910-~06?, per the deed.')
+        self.assertIn('before 1900 to June 1910 (unconfirmed)', out)
+        self.assertNotIn('about', out)
+        self.assertNotIn('~06?', out)
+
+    def test_before_bracket_interval_invalid_component_qualifier_left_whole_untouched(self):
+        # The existing "invalid date leaves the whole match untouched" guard
+        # extends to a component-level qualifier too: a `~` attached to a
+        # genuinely impossible month (no month 13) is still calendrically
+        # invalid regardless of the marker, and `is_valid_edtf` rejects it -
+        # so the WHOLE match, marker included, is left exactly as written
+        # rather than rendering the nonsensical "about 1910-~13" reading.
+        out = site._scrub_internal_encoding(
+            'Span: [..1900]/1910-~13, per the deed.')
+        self.assertIn('[..1900]/1910-~13', out)
+        self.assertNotIn('before', out)
+        self.assertNotIn('about', out)
+
     def test_standalone_before_bracket_still_translates(self):
         # Guards that the finding-5 interval fix doesn't overreach: a
         # bracket that is NOT adjacent to a slash still translates normally.
