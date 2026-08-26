@@ -1082,9 +1082,24 @@ def _place_text_group_line(
         # how to fill in. `fha places lint` stays as the pointer to the
         # underlying PL002 duplicate-name clash itself, for a human who
         # would rather fix the registry than pick a side.
+        #
+        # Capped at 5 spelled-out commands (adversarial review, round 4
+        # audit): each one repeats the full claim-id list, so an oversized
+        # cluster (many claims) times a wide clash (many same-named
+        # registry places - a plausible shape for a large archive with
+        # recurring town names) grows the line unreadably, unlike every
+        # OTHER multi-item listing in this file (`shown = ', '.join(x[:5]);
+        # if len(x) > 5: shown += f' and {len(x)-5} more'`, used just above
+        # for unreadable-folder listings). Past 5, the remaining candidates
+        # are still named (so nothing is hidden), just not spelled out as
+        # individual commands - `fha places lint` is the pointer for
+        # resolving the clash itself either way.
+        shown_ids = ambiguous_ids[:5]
         commands = '; '.join(
-            f'`fha confirm place {ids} --into={pid}`' for pid in ambiguous_ids
+            f'`fha confirm place {ids} --into={pid}`' for pid in shown_ids
         )
+        if len(ambiguous_ids) > 5:
+            commands += f', or one of {len(ambiguous_ids) - 5} more (see `fha places lint`)'
         return (
             f"{name} - {g['claim_count']} claim(s), {spread} - "
             f"matches MULTIPLE registered places ({', '.join(ambiguous_ids)}) - "

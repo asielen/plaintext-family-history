@@ -1280,6 +1280,29 @@ class PlaceTextGroupLineAmbiguousMatchTests(unittest.TestCase):
         self.assertNotIn('<', line)
         self.assertNotIn('>', line)
 
+    def test_wide_clash_caps_spelled_out_commands_at_five(self) -> None:
+        # Adversarial review, round 4 audit: a cluster with many claims,
+        # matched against a wide same-named-place clash (a plausible shape
+        # in a large archive with recurring town names - "Springfield" isn't
+        # rare), used to spell out one full, claim-list-repeating command
+        # PER candidate with no limit at all - the line grew without bound
+        # as either dimension grew. Past 5 candidates, the rest are still
+        # named as a count (nothing hidden), just not spelled out as their
+        # own pasteable command; `fha places lint` remains the pointer for
+        # resolving the clash itself.
+        ambiguous_ids = [f'L-{n:010d}' for n in range(8)]
+        match = {
+            'tier': None, 'place_id': None, 'name': None, 'registry_error': None,
+            'ambiguous_ids': ambiguous_ids,
+        }
+        line = report._place_text_group_line(self.archive_root, self._group(), match=match)
+        for pid in ambiguous_ids[:5]:
+            self.assertIn(f'--into={pid}`', line)
+        for pid in ambiguous_ids[5:]:
+            self.assertNotIn(f'--into={pid}`', line)
+        self.assertIn('3 more', line)
+        self.assertIn('fha places lint', line)
+
 
 class PlaceRegistryReadCountTests(unittest.TestCase):
     """Issue #166 finding 2: `_place_text_group_line`'s registry lookup used
