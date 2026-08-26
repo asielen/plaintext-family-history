@@ -1109,6 +1109,72 @@ class OrphanedBackPhotosTests(unittest.TestCase):
         # not also show up as a second, spurious finding.
         self.assertEqual(report.count('orphaned back scan'), 1)
 
+    # ── Issue #169 followup review, finding 3 ─────────────────────────────
+
+    def test_second_unlisted_back_still_flagged_after_first_is_attached(self) -> None:
+        # The old `has_back` group-skip stopped checking a (folder, base_id)
+        # group entirely the moment ANY back was listed for it - so once the
+        # owner followed THIS very check's own advice and attached one of
+        # two originally-unlisted back candidates, the second, still-unlisted
+        # one became permanently invisible on every later run instead of
+        # surfacing on its own as the ambiguous finding's message promises.
+        # Start from the ambiguous shape (two unlisted back-shaped files),
+        # then attach ONE of them under role: back, and confirm the OTHER is
+        # now reported - as a plain orphan (only one candidate remains), not
+        # as still-ambiguous, and not silently dropped.
+        (self.root / 'photos' / 'x-00650.jpg').write_bytes(b'front')
+        (self.root / 'photos' / 'x-00650-back.jpg').write_bytes(b'now attached')
+        (self.root / 'photos' / 'x-00650_back.jpeg').write_bytes(b'still unlisted')
+        _write(self.root / 'sources' / 'photos' / 'twoback_S-1414141414.md', _SOURCE.format(
+            sid='S-1414141414', title='Two Back',
+            line=('files:\n'
+                  '  - file: photos/x-00650.jpg\n    role: primary\n'
+                  '  - file: photos/x-00650-back.jpg\n    role: back\n')))
+
+        result = doctor.run_doctor(self.root, self._fha_config())
+        report = '\n'.join(result.data['lines'])
+
+        self.assertNotIn('ambiguous back scan', report)
+        self.assertIn('orphaned back scan', report)
+        self.assertIn('photos/x-00650_back.jpeg', report)
+        # The already-attached back must not itself be re-reported as orphan.
+        self.assertNotIn('photos/x-00650-back.jpg sits on disk', report)
+        check = self._finding(result)
+        self.assertIsNotNone(check, 'the leftover unlisted back must still be reported')
+        self.assertEqual(check['status'], 'warn')
+
+    # ── Issue #169 followup review, finding 4 ─────────────────────────────
+
+    def test_ambiguous_back_scan_finding_has_no_unsubstituted_placeholder(self) -> None:
+        # The ambiguous-back-scan finding used to splice the literal text
+        # "<the file>" into the middle of an otherwise-real `fha process`
+        # command - even though this report's own preamble promises "every
+        # `next:` below is a command you can copy". Copying that command
+        # verbatim hands a shell `<the` as input redirection, and `fha` never
+        # even runs. Every candidate's real alias is already known, so the
+        # fix names a complete, runnable command for each one instead of a
+        # fill-in-the-blank placeholder.
+        (self.root / 'photos' / 'x-00660.jpg').write_bytes(b'front')
+        (self.root / 'photos' / 'x-00660-back.jpg').write_bytes(b'back candidate one')
+        (self.root / 'photos' / 'x-00660_back.jpeg').write_bytes(b'back candidate two')
+        _write(self.root / 'sources' / 'photos' / 'placeholder_S-1515151515.md', _SOURCE.format(
+            sid='S-1515151515', title='Placeholder',
+            line='files:\n  - file: photos/x-00660.jpg\n    role: primary\n'))
+
+        result = doctor.run_doctor(self.root, self._fha_config())
+        report = '\n'.join(result.data['lines'])
+
+        self.assertIn('ambiguous back scan', report)
+        self.assertNotIn('<the file>', report)
+        # A real, fully-quoted, runnable command names EACH candidate - not
+        # just the ambiguity itself.
+        cmd_one = (f'{doctor._LAUNCHER} process {doctor.shell_quote("photos/x-00660.jpg")} '
+                   f'--more {doctor.shell_quote("photos/x-00660-back.jpg")} back')
+        cmd_two = (f'{doctor._LAUNCHER} process {doctor.shell_quote("photos/x-00660.jpg")} '
+                   f'--more {doctor.shell_quote("photos/x-00660_back.jpeg")} back')
+        self.assertIn(cmd_one, report)
+        self.assertIn(cmd_two, report)
+
 
 class RenderTests(unittest.TestCase):
     """_cmd_doctor renders data['lines'] verbatim and returns the exit code."""

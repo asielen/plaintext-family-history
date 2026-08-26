@@ -511,7 +511,7 @@
     {
       "path": ".fha/tools/doctor.py",
       "category": "operating",
-      "sha256": "a2c85aebb29abf9f5621d837faab1086a60e3f760f40d1391d5401877979be2d",
+      "sha256": "16eb81b9e7fa7afaedf12b0bb26871067aa3a567bf6fbad1def5538e3d5c6ad5",
       "spec_version": "1.2",
       "src": "tools/doctor.py"
     },
@@ -609,7 +609,7 @@
     {
       "path": ".fha/tools/process.py",
       "category": "operating",
-      "sha256": "d25fbbfd208283f2a6db7be450763461229751580b7299ba9a458489584c77b8",
+      "sha256": "eb5b41800531251ca0f6252010b2e11cd70f0006b3f4b2c4792e0d7bcb66feba",
       "spec_version": "1.2",
       "src": "tools/process.py"
     },

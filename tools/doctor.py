@@ -594,10 +594,19 @@ def _check_orphaned_back_photos(archive_root: Path, fha_config: dict,
     candidate paths: a back scan saved in a different CASE
     (`scan-BACK.jpg`) or a different EXTENSION (`scan-back.jpeg` beside a
     `.jpg` primary) is found the same way `fha process` finds it at import
-    time. A source that already lists a `role: back` file for that base_id
-    is skipped entirely - checked by the RECORDED role, not by re-deriving
-    one from the back file's own name, since a human may have filed a back
-    scan under a slightly different name than the grammar would predict.
+    time. A `role: back` file already listed for a base_id is recognized by
+    its RECORDED role, not by re-deriving one from the back file's own name
+    (a human may have filed a back scan under a slightly different name than
+    the grammar would predict) - but listing one back does not stop this
+    check from looking for MORE: `_find_back_on_disk` still runs for every
+    group regardless of whether it already has a listed back, and the
+    `listed` filter below drops only the candidate(s) actually named in
+    `files:`, so a SECOND, still-unlisted back-shaped file beside an
+    already-attached one is still reported (issue #169 followup review,
+    finding 3 - the earlier code exited the whole group the moment ANY back
+    was listed, so attaching one of two candidates per this very check's own
+    advice made the other invisible on every later run instead of surfacing
+    on its own as the advice promised).
 
     A copy-lettered listed file (`x-00100b.jpg` - TOOLING §6's copy-print
     grammar, #113) is skipped when building the base_id candidates: it names
@@ -738,7 +747,6 @@ def _check_orphaned_back_photos(archive_root: Path, fha_config: dict,
         # (parent folder, base_id) -> one on-disk Path sharing that key, so two
         # same-named siblings from different folders are tracked independently.
         sample_path: dict[tuple[Path, str], Path] = {}
-        has_back: set[tuple[Path, str]] = set()   # keys the record already lists a back for
         for item in entries:
             if not isinstance(item, dict):
                 continue
@@ -755,12 +763,8 @@ def _check_orphaned_back_photos(archive_root: Path, fha_config: dict,
                 continue            # a copy-letter print - never a back candidate (#113)
             key = (on_disk.parent, grouping_stem(parsed))
             sample_path.setdefault(key, on_disk)
-            if str(item.get('role') or '').strip().lower() == 'back':
-                has_back.add(key)
 
         for (parent_dir, base_id), disk_path in sample_path.items():
-            if (parent_dir, base_id) in has_back:
-                continue
             candidates = _find_back_on_disk(parent_dir, base_id)
             # A candidate already listed under some OTHER role (an
             # `attachment`, say, rather than `back`) is not orphaned - drop
@@ -816,13 +820,28 @@ def _check_orphaned_back_photos(archive_root: Path, fha_config: dict,
                 # so a human can tell doctor is not clean here.
                 n_ambiguous += 1
                 names = ', '.join(candidate_aliases)
+                # One complete, fully-quoted command PER candidate (issue #169
+                # followup review, finding 4) - the earlier text spliced the
+                # literal placeholder `<the file>` into the middle of a
+                # command, even though this whole report is introduced with
+                # "every `next:` below is a command you can copy" (the
+                # preamble printed once at the top of `fha doctor`'s output).
+                # Copying `<the file>` verbatim hands a shell `<the` as input
+                # redirection and `fha` never even runs. Every candidate's
+                # real alias is already in hand here, so there is no need for
+                # a fill-in-the-blank placeholder at all - name the command
+                # for each candidate and let the human pick which one to run.
+                commands = ' or '.join(
+                    f'`{_LAUNCHER} process {shell_quote(primary_alias)} --more '
+                    f'{shell_quote(alias)} back --root "{archive_root}"`'
+                    for alias in candidate_aliases
+                )
                 findings.append(
                     f'ambiguous back scan: {len(candidate_aliases)} unlisted back-shaped '
                     f"files sit on disk for {primary_alias} in {record_path.name}'s files: "
                     f'({names}) - doctor cannot tell which (if any) is the real back scan, '
-                    'so it is not attaching either  next: figure out which one is right and '
-                    f'attach it by hand - `{_LAUNCHER} process {shell_quote(primary_alias)} '
-                    f'--more <the file> back --root "{archive_root}"` - never rename a file '
+                    'so it is not attaching either  next: figure out which one is right, '
+                    f'then run the matching command: {commands} - never rename a file '
                     'under the photos root to force a resolution (AGENTS.md: photos are '
                     'never renamed); once the real one is attached and listed under role: '
                     "back, the other stops matching this ambiguous pairing and its own "

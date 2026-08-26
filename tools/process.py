@@ -2755,6 +2755,39 @@ _NODE_PROPERTY = r'(?:&\S+|!\S*)'
 _BLOCK_SCALAR_HEADER_RE = re.compile(
     r'^(?:' + _NODE_PROPERTY + r'\s+){0,2}[|>](?:[+-]?\d?|\d[+-]?)(\s*#.*)?$'
 )
+_NODE_PROPERTY_TOKEN_RE = re.compile(r'^' + _NODE_PROPERTY + r'$')
+
+
+def _leading_yaml_anchor(value_body: str) -> str | None:
+    """Return the anchor name (without its leading `&`) if `value_body` -
+    the text of a `key:` line after the colon - opens with a YAML anchor
+    node property, else None.
+
+    A human can put an anchor on ANY value, not just a block scalar's own
+    header (`restricted: &privacy >-`, but just as validly a one-line
+    `restricted: &privacy true`) - up to two node properties (an anchor
+    and/or a type tag), in either order, may precede the actual scalar per
+    the YAML grammar `_BLOCK_SCALAR_HEADER_RE` already leans on. Scanning
+    stops at the first token that is not itself a node property, so a plain
+    value's own text is never mistaken for one - `_leading_yaml_anchor('true')`
+    is None, and `_leading_yaml_anchor('&privacy true')` is `'privacy'`.
+
+    A caller that REPLACES the whole value outright (issue #169 followup
+    review, finding 1) needs this to keep any alias ELSEWHERE in the same
+    document valid: `note: *privacy` resolves to whatever `&privacy` points
+    at, so dropping the anchor along with the old value leaves that alias
+    referencing nothing - not a corruption THIS value caused, but one this
+    value's replacement would inflict on a different field entirely. Only
+    the anchor is returned - a type tag has no alias pointing at it, so
+    there is nothing about it that a value replacement needs to preserve.
+    """
+    anchor = None
+    for tok in value_body.split():
+        if not _NODE_PROPERTY_TOKEN_RE.match(tok):
+            break
+        if tok.startswith('&'):
+            anchor = tok[1:]
+    return anchor
 
 
 def _frontmatter_key_span(lines: list[str], start: int, end: int, key: str) -> tuple[int, int] | None:
@@ -2774,6 +2807,22 @@ def _frontmatter_key_span(lines: list[str], start: int, end: int, key: str) -> t
     `_rewrite_source_type_line` has no matching gap and does not need this
     helper; `restricted:` does, since a human can hand-author any YAML scalar
     there, block form included.
+
+    A block scalar's content sits at ONE fixed indentation level - established
+    by its own first non-blank continuation line, not by the parent `key:`'s
+    column - and only lines indented at least that far (or genuinely blank)
+    belong to it. A line indented less than that, but still indented more
+    than column 0, sits OUTSIDE the scalar: valid YAML, most often a comment
+    a human placed there at a shallower indent than the value itself (issue
+    #169 followup review, finding 5). The old loop below swallowed every
+    whitespace-prefixed line into the span regardless of how little it was
+    indented, so replacing the span silently deleted that comment even though
+    it was never part of the value - and the belt-and-suspenders re-parse in
+    `_force_dna_restriction_text` could not catch the loss, since the
+    resulting YAML (comment gone, everything else intact) is perfectly valid.
+    Tracking the established content indentation and stopping the moment a
+    non-blank line falls short of it keeps that comment (and anything else
+    genuinely outside the scalar) out of the deleted span.
     """
     for i in range(start, end):
         raw = lines[i].rstrip('\r')
@@ -2782,17 +2831,22 @@ def _frontmatter_key_span(lines: list[str], start: int, end: int, key: str) -> t
         body = raw[len(key) + 1:].strip()
         last = i
         if body == '' or _BLOCK_SCALAR_HEADER_RE.match(body):
+            content_indent = None
             j = i + 1
             while j < end:
                 nxt = lines[j].rstrip('\r')
                 if nxt.strip() == '':
                     j += 1
                     continue
-                if nxt[:1] in (' ', '\t'):
-                    last = j
-                    j += 1
-                    continue
-                break
+                if nxt[:1] not in (' ', '\t'):
+                    break
+                indent = len(nxt) - len(nxt.lstrip(' \t'))
+                if content_indent is None:
+                    content_indent = indent
+                elif indent < content_indent:
+                    break       # outdented relative to the scalar's own content - not part of it
+                last = j
+                j += 1
         return i, last
     return None
 
@@ -2833,6 +2887,17 @@ def _force_dna_restriction_text(
     `restricted: dna` - the same "refuse rather than corrupt" posture
     `process_refile` applies to its own record surgery via its own
     `parse_frontmatter_strict(final_text)` re-parse.
+
+    When the value being replaced carried a YAML anchor (`restricted:
+    &privacy >-`), the replacement line keeps it (`restricted: &privacy
+    dna`) instead of dropping it (issue #169 followup review, finding 1):
+    valid hand-authored YAML can point an alias at that anchor from ANOTHER
+    field entirely (`note: *privacy`), and an alias with no matching anchor
+    is itself invalid YAML - the belt-and-suspenders re-parse below would
+    then refuse a document whose human-authored shape was never wrong in
+    the first place. `&privacy dna` still parses to the plain string `dna`
+    for THIS field, and now leaves `*privacy` resolving to that same string
+    rather than to nothing.
     """
     meta = parse_frontmatter_strict(record_text) or {}
     if _restricted_type_of(meta.get('restricted')) in ('dna', 'by-request'):
@@ -2849,7 +2914,10 @@ def _force_dna_restriction_text(
         new_lines[end:end] = ['restricted: dna' + cr]
     else:
         first, last = span
-        new_lines = lines[:first] + ['restricted: dna' + cr] + lines[last + 1:]
+        old_body = lines[first].rstrip('\r')[len('restricted') + 1:].strip()
+        anchor = _leading_yaml_anchor(old_body)
+        replacement = f'restricted: &{anchor} dna' if anchor else 'restricted: dna'
+        new_lines = lines[:first] + [replacement + cr] + lines[last + 1:]
     new_text = '\n'.join(new_lines)
     reparsed = parse_frontmatter_strict(new_text)
     if reparsed is None or _restricted_type_of(reparsed.get('restricted')) != 'dna':
@@ -2862,6 +2930,76 @@ def _force_dna_restriction_text(
             'Nothing was written.'
         )
     return new_text, True
+
+
+def _preflight_dna_restriction_before_relocation(
+    archive_root: Path,
+    fha_config: dict,
+    primary_path: Path,
+    real_path: Path | None,
+    *,
+    dry_run: bool,
+    source_type: str | None,
+) -> None:
+    """Best-effort preflight for `attach_more`: when `--type dna` is in play,
+    validate the record's `restricted:` rewrite BEFORE `_relocate_from_inbox`
+    ever moves an inbox-sourced `--more` file out of `inbox/`.
+
+    `_attach_more_engine`'s own photo/document branches already preflight
+    `_force_dna_restriction_text` ahead of their own irreversible-ish
+    mutations (the exiftool embed / the rename) - but by the time execution
+    reaches EITHER branch, `attach_more`'s own wrapper has already relocated
+    an inbox-sourced `--more` file into its asset root (issue #169 followup
+    review, finding 2). A refusal from `_force_dna_restriction_text` still
+    gets the relocation undone - `attach_more`'s `except Exception:` around
+    the engine call below already does that - but recovery then depends on
+    THAT undo (another filesystem move) succeeding too; an undo that itself
+    hits an OSError would leave a failed command's attachment stranded
+    outside the inbox regardless of how carefully the engine ordered its own
+    mutations. Running this validation-only pass first means the relocation
+    - and any dependency on undoing it - never happens at all when the
+    rewrite would refuse.
+
+    This resolves the primary's S-id and its record the same way
+    `_attach_more_engine` does, but ONLY to learn whether
+    `_force_dna_restriction_text` would refuse; the rewritten text is
+    discarded, and the engine re-reads the record fresh afterward. Every
+    OTHER failure mode this touches - primary not processed, no record
+    found, record unreadable - is swallowed here rather than raised: those
+    are unrelated to this finding and already get their own undo-on-failure
+    handling exactly as before, so raising early for them here would only
+    change their existing messages/exit codes for no reason this finding
+    asks for. Only `_force_dna_restriction_text`'s own refusal - the one
+    mutation-ordering hazard this preflight exists to catch - is allowed to
+    propagate out of this function.
+    """
+    if (source_type or '').strip().lower() != 'dna':
+        return
+    try:
+        primary_on_disk = real_path if real_path is not None else primary_path
+        if dry_run and classify_asset(primary_path, fha_config, archive_root) == 'photo':
+            try:
+                raw_sid = _read_source_keyword(primary_on_disk)
+            except RuntimeError:
+                return
+        else:
+            raw_sid = _source_id_of(primary_path, fha_config, archive_root)
+        if raw_sid is None:
+            return
+        sid = fmt_id_display(raw_sid)
+        record_path = _find_record_for_sid(archive_root, sid)
+        if record_path is None:
+            return
+        record_text = read_text_exact(record_path)
+    except (OSError, UnicodeDecodeError, ProcessError):
+        return
+    meta = parse_frontmatter_strict(record_text) or {}
+    if _restricted_type_of(meta.get('restricted')) in ('dna', 'by-request'):
+        return
+    # Validation only: the rewritten text is discarded. A refusal here IS the
+    # ordering hazard this preflight exists to catch, and propagates to
+    # `attach_more`'s caller before anything has been relocated.
+    _force_dna_restriction_text(record_text, record_label=_rel(record_path, archive_root))
 
 
 def attach_more(
@@ -2913,7 +3051,18 @@ def attach_more(
     undoes the relocation, so a failed attach never leaves the file stranded
     outside the inbox with nothing to show for it (the same "undo the move
     too" rule `_run_process` already applies to the primary).
+
+    `_preflight_dna_restriction_before_relocation` runs BEFORE that
+    relocation, not after (issue #169 followup review, finding 2): an
+    explicit `--type dna` whose `restricted:` rewrite would refuse must not
+    depend on the relocation's own undo succeeding to keep an inbox-sourced
+    file from being stranded outside `inbox/` - see that function's
+    docstring for why "moved then undone" is not equivalent to "never
+    moved" here.
     """
+    _preflight_dna_restriction_before_relocation(
+        archive_root, fha_config, primary_path, real_path,
+        dry_run=dry_run, source_type=source_type)
     pre_move_more = more_file
     more_file, _, more_relocate_undo = _relocate_from_inbox(
         archive_root, fha_config, more_file, None,
