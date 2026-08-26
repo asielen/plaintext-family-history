@@ -156,5 +156,59 @@ class ParseQuestionsTests(unittest.TestCase):
         self.assertEqual(parse_questions(empty_root), {})
 
 
+class ParseQuestionsUndecodableFileTests(unittest.TestCase):
+    """PR #179 review, finding 2: a `## Q:` log saved in the wrong text
+    encoding used to raise `UnicodeDecodeError` straight out of this
+    function - `path.read_text(encoding='utf-8')` behind a plain `except
+    OSError`, and `UnicodeDecodeError` is a `ValueError`, not an `OSError`.
+    Harmless while only `fha report` called `parse_questions` (one CLI
+    command failing); a real crash once `fha site --linked` started calling
+    it too (issue #117), since that build promises to always return a
+    `Result`. `read_text_or_report` is this codebase's shared fix for
+    exactly this failure shape - these tests pin `parse_questions` onto it,
+    independent of either caller."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.archive_root = Path(self._tmp.name)
+        (self.archive_root / 'notes').mkdir(parents=True)
+        (self.archive_root / 'people').mkdir(parents=True)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_undecodable_questions_md_is_skipped_not_raised(self) -> None:
+        # No on_decode_error given: the old behavior (before this fix) was to
+        # raise here. Now it is a silent skip, same as a missing file always
+        # was - a caller with somewhere to put a warning opts in below.
+        (self.archive_root / 'notes' / 'questions.md').write_bytes(
+            '## Q: Kraków connection?\n- status: open\n'.encode('cp1252'))
+        self.assertEqual(parse_questions(self.archive_root), {})
+
+    def test_undecodable_questions_md_is_reported_when_asked(self) -> None:
+        (self.archive_root / 'notes' / 'questions.md').write_bytes(
+            '## Q: Kraków connection?\n- status: open\n'.encode('cp1252'))
+        reported: list[Path] = []
+        questions = parse_questions(self.archive_root, on_decode_error=reported.append)
+        self.assertEqual(questions, {})
+        self.assertEqual(len(reported), 1)
+
+    def test_undecodable_research_file_is_skipped_other_files_still_parse(self) -> None:
+        (self.archive_root / 'notes' / 'questions.md').write_text(
+            '## Q: Healthy question?\n- status: open\n- refs: [P-aaaaaaaaaa]\n',
+            encoding='utf-8')
+        bad = self.archive_root / 'people' / 'roe__test_research_p-bbbbbbbbbb.md'
+        bad.write_bytes(
+            ('---\nid: p-bbbbbbbbbb\n---\n\n## Open Questions\n\n'
+             '## Q: Kraków connection?\n- status: open\n- refs: [P-bbbbbbbbbb]\n')
+            .encode('cp1252'))
+        reported: list[Path] = []
+        questions = parse_questions(self.archive_root, on_decode_error=reported.append)
+        self.assertEqual(len(questions), 1)
+        self.assertIn('notes/questions.md :: Healthy question?', questions)
+        self.assertEqual(len(reported), 1)
+        self.assertTrue(str(reported[0]).endswith('roe__test_research_p-bbbbbbbbbb.md'))
+
+
 if __name__ == '__main__':
     unittest.main()

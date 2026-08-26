@@ -5245,6 +5245,112 @@ class OpenQuestionsSectionTests(_Base):
             self.assertNotIn('Hypotheses', html, pid)
             self.assertNotIn('Research Log', html, pid)
 
+    def test_by_request_persons_own_question_is_withheld_from_every_page(self):
+        # PR #179 review, finding 1 (P1, privacy leak): `restricted:
+        # by-request` is SPEC §19's one no-override tier ("honored by every
+        # export path with no opt-in") - stronger than the plain
+        # restricted/living gates every OTHER check in this class relaxes
+        # under `--linked` (a deliberate, tested design:
+        # UnreadableRecordPrivacyTests.test_linked_mode_is_unchanged pins it
+        # for a by-request person's own name/vitals/bio, and this fix does
+        # not reopen that). Before this fix, `_load_open_questions` read a
+        # `## Q:` block's home research file with no restriction check at
+        # all, so Rae's own private research note - `refs:`-naming both
+        # herself AND a different, unrestricted relative - rendered in full
+        # on BOTH pages under a plain `--linked` preview: exactly the leak
+        # this pins closed, on both sides (her own page, and the
+        # cross-referenced relative's).
+        self._seed_person('p-aaaaaaaaaa', 'Reticent Rae', surname='Rae',
+                          frontmatter_extra='restricted: by-request')
+        self._seed_person('p-bbbbbbbbbb', 'Open Otto', surname='Otto')
+        research_path = self.archive_root / 'people' / 'rae__test_research_p-aaaaaaaaaa.md'
+        research_path.write_text(
+            '---\nid: p-aaaaaaaaaa\ncreated: 2026-06-01\n---\n\n'
+            '## Open Questions\n\n'
+            "## Q: Was Rae really Otto's half-sibling?\n"
+            '- origin: human\n'
+            '- status: open\n'
+            '- refs: [P-aaaaaaaaaa, P-bbbbbbbbbb]\n'
+            '- context:\n'
+            '  - (human, 2026-06-01) A sealed adoption record hints at this; '
+            'Rae asked never to have it discussed.\n',
+            encoding='utf-8')
+        lo = self._run(linked=True, workbench=False)
+        self.assertTrue(lo.ok, lo.messages)
+        for pid in ('p-aaaaaaaaaa', 'p-bbbbbbbbbb'):
+            html = self._read(f'persons/{pid}.html')
+            self.assertNotIn('half-sibling', html, pid)
+            self.assertNotIn('sealed adoption record', html, pid)
+            self.assertNotIn('Open Questions', html, pid)
+
+    def test_plain_restricted_persons_question_still_renders_under_linked(self):
+        # Not over-broadened: by-request is SPEC §19's ONE no-override tier.
+        # A plain `restricted: true` origin - a lesser tier other export
+        # paths can unlock via --include-restricted - must still surface
+        # their open questions under `--linked`, exactly as `--linked`
+        # already shows that same person's own restricted claims/sources/
+        # name in full (SourcePageTests.
+        # test_standalone_shows_accepted_only_linked_shows_everything, etc.).
+        self._seed_person('p-aaaaaaaaaa', 'Plainly Restricted Pat', surname='Pat',
+                          frontmatter_extra='restricted: true')
+        research_path = self.archive_root / 'people' / 'pat__test_research_p-aaaaaaaaaa.md'
+        research_path.write_text(
+            '---\nid: p-aaaaaaaaaa\ncreated: 2026-06-01\n---\n\n'
+            '## Open Questions\n\n'
+            '## Q: Where was Pat actually born?\n'
+            '- status: open\n'
+            '- refs: [P-aaaaaaaaaa]\n'
+            '- context:\n'
+            '  - (human, 2026-06-01) Two conflicting county records.\n',
+            encoding='utf-8')
+        lo = self._run(linked=True, workbench=False)
+        self.assertTrue(lo.ok, lo.messages)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('Where was Pat actually born?', html)
+        self.assertIn('Two conflicting county records', html)
+
+    def test_undecodable_questions_md_is_skipped_with_a_warning_not_a_crash(self):
+        # PR #179 review, finding 2 (P2, crash/availability): `_lib.
+        # parse_questions` used to read notes/questions.md with a plain
+        # `path.read_text(encoding='utf-8')` behind an `except OSError` -
+        # `UnicodeDecodeError` is a `ValueError`, so it escaped straight out
+        # of `_load_open_questions`, through `prepare()`, and out of
+        # `run_site` itself, which promises to always return a `Result`.
+        self._seed_person('p-aaaaaaaaaa', 'Jane Doe')
+        bad = self.archive_root / 'notes' / 'questions.md'
+        bad.parent.mkdir(parents=True, exist_ok=True)
+        bad.write_bytes('## Q: Kraków connection?\n- status: open\n'.encode('cp1252'))
+        res = self._run(linked=True)
+        self.assertTrue(res.ok, res.messages)
+        messages = res['messages']
+        self.assertTrue(
+            any('notes/questions.md' in m and "isn't saved as UTF-8 text" in m
+                for m in messages), messages)
+        # One bad file costs only its own content - every other page builds fine.
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertNotIn('Kraków connection', html)
+
+    def test_undecodable_research_file_is_skipped_others_still_index(self):
+        self._seed_person('p-aaaaaaaaaa', 'Jane Doe', surname='Doe')
+        self._seed_person('p-bbbbbbbbbb', 'Bob Roe', surname='Roe')
+        bad_research = self.archive_root / 'people' / 'roe__test_research_p-bbbbbbbbbb.md'
+        bad_research.write_bytes(
+            ('---\nid: p-bbbbbbbbbb\n---\n\n## Open Questions\n\n'
+             '## Q: Kraków connection?\n- status: open\n- refs: [P-bbbbbbbbbb]\n')
+            .encode('cp1252'))
+        self._write_questions_md(
+            '## Q: Healthy question?\n- status: open\n- refs: [P-aaaaaaaaaa]\n'
+            '- context:\n  - (human, 2026-06-01) Still readable.\n'
+        )
+        res = self._run(linked=True)
+        self.assertTrue(res.ok, res.messages)
+        messages = res['messages']
+        self.assertTrue(
+            any('roe__test_research_p-bbbbbbbbbb.md' in m
+                and "isn't saved as UTF-8 text" in m for m in messages), messages)
+        html_a = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('Healthy question?', html_a)
+
 
 # ── A person's vitals are their OWN, not their relatives' (#126) ─────────────
 #

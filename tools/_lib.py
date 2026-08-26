@@ -4123,7 +4123,7 @@ def parse_question_blocks(text: str) -> dict[str, dict]:
     return out
 
 
-def parse_questions(archive_root: Path) -> dict[str, dict]:
+def parse_questions(archive_root: Path, *, on_decode_error=None) -> dict[str, dict]:
     """
     Parse notes/questions.md AND every person research file's
     `## Open Questions` block into {key: {'status', 'refs', 'block',
@@ -4149,6 +4149,21 @@ def parse_questions(archive_root: Path) -> dict[str, dict]:
     'heading' field. A duplicate heading *within* one file still collides
     (last one wins) - acceptable, since a single file's headings sit side by
     side where the human edits them.
+
+    A file that is not valid UTF-8 (a Windows editor's cp1252 default, most
+    often) used to raise `UnicodeDecodeError` straight out of this function -
+    `UnicodeDecodeError` is a `ValueError`, not an `OSError`, so the plain
+    `except OSError` this used to read through did not catch it. That was a
+    low-exposure latent bug while only `fha report` called this (one CLI
+    command failing is a bad afternoon); once `fha site --linked` started
+    calling it too (issue #117), the same bad encoding took down an entire
+    site build instead of one report. `read_text_or_report` is this
+    codebase's shared fix for exactly that failure shape (see its docstring):
+    it returns `None` instead of raising, and calls `on_decode_error` (when
+    given) so a caller with somewhere to put a warning can name the file
+    rather than silently losing its questions. Passing nothing keeps the
+    previous silent-skip behavior for a missing/unreadable file, now
+    extended to an undecodable one instead of crashing on it.
     """
     out: dict[str, dict] = {}
 
@@ -4162,10 +4177,9 @@ def parse_questions(archive_root: Path) -> dict[str, dict]:
 
     path = archive_root / 'notes' / 'questions.md'
     if path.exists():
-        try:
-            _merge(path, path.read_text(encoding='utf-8'))
-        except OSError:
-            pass
+        text = read_text_or_report(path, on_decode_error=on_decode_error)
+        if text is not None:
+            _merge(path, text)
 
     people_root = archive_root / 'people'
     if people_root.exists():
@@ -4186,9 +4200,8 @@ def parse_questions(archive_root: Path) -> dict[str, dict]:
                 meta = {}
             if not is_person_file_kind(rpath, 'research', meta):
                 continue
-            try:
-                text = rpath.read_text(encoding='utf-8')
-            except OSError:
+            text = read_text_or_report(rpath, on_decode_error=on_decode_error)
+            if text is None:
                 continue
             _merge(rpath, text)
 
