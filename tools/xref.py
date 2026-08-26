@@ -99,7 +99,10 @@ all (`vital_subjects` returns `None`) keeps the old broad behavior
 unchanged - there is nobody else to be ambiguous about. A claim naming
 TWO OR MORE people with no `roles:` map at all has not said which of them
 the claim is about; `vital_subjects` returns `[]` for that shape (#126,
-reopened) and the claim enters neither person's bucket. This scoping is deliberately
+reopened) and the claim enters neither person's bucket - reported instead
+in the Result's `unscoped` list (#172), the same treatment the ambiguous
+marriage/divorce case above already gets, so the human sees it rather than
+watching it vanish from every bucket with no trace. This scoping is deliberately
 NOT applied to a substantive type (`census`, `residence`, `occupation`, ...):
 those claims legitimately role every person on the record (`head`/
 `household_member`, ...), so `vital_subjects` would find nobody unroled and
@@ -248,13 +251,18 @@ def run_xref(archive_root: Path) -> Result:
     source_id, source_title, type, date_edtf, place_text, value.
 
     `unscoped` is the secondary "here's what I couldn't do" list (matching
-    `run_index`'s `unreadable_records`/warnings shape) - marriage/divorce
-    claims naming 2+ people where `_lib.spouse_parties` could not tell the
-    couple from everyone else named on the claim, so they were left out of
+    `run_index`'s `unreadable_records`/warnings shape) - claims left out of
     every comparison bucket in `groups` rather than risking a fabricated
-    contradiction (#63; see the module docstring's "MARRIAGE/DIVORCE
-    BUCKETING" section). Each entry's `persons` is the display names of
-    everyone the claim names, in claim order.
+    contradiction, reported here so a human can see them instead of the
+    claim just vanishing. Two shapes populate it: marriage/divorce claims
+    naming 2+ people where `_lib.spouse_parties` could not tell the couple
+    from everyone else named on the claim (#63; see the module docstring's
+    "MARRIAGE/DIVORCE BUCKETING" section), and death/burial/baptism claims
+    naming 2+ people with no `roles:` map at all - `_lib.vital_subjects`'s
+    case 2a, the same zero-role-signal shape `fha lint`'s W132 reports (#172;
+    see "OTHER VITAL-TYPE BUCKETING"). Each entry's `persons` is the display
+    names of everyone the claim names, in claim order; `claim['type']` tells
+    the two shapes apart for anyone reading the list programmatically.
     """
     conn = open_index_db(archive_root, _REQUIRED_TABLES)
     if conn is None:
@@ -393,15 +401,35 @@ def _run_xref_queries(conn: sqlite3.Connection) -> dict:
     # Computed once per claim, up front, for the same reason claim_parties is:
     # who a claim is a vital record of does not depend on whose bucket is
     # being built.
+    #
+    # `unscoped_vital_claim_ids` is this branch's twin of `unscoped_claim_ids`
+    # above (#172): a death/burial/baptism claim naming 2+ people with NO
+    # `roles:` map at all is `vital_subjects`'s case 2a - the exact
+    # zero-role-signal shape `fha lint`'s W132 reports - and has not said
+    # which of them it is a record of, any more than a roles-less marriage
+    # certificate has said which two people married. `subjects == []` alone
+    # is not enough to tell case 2a from case 5 (some role present, but
+    # resolving to no subject either - a claim that DID answer the question,
+    # just not in any of these people's favor); testing `not any(role for
+    # _, role in persons_with_roles)` alongside it is what W132 does to tell
+    # the two apart, reused here rather than re-derived a third time. Unlike
+    # W132 (accepted, non-negated claims only), this covers `needs-review`
+    # claims too, matching every other comparison `fha xref` makes - a claim
+    # that dropped out of every bucket here is a claim this tool compared
+    # nothing against, whether or not it has cleared review yet.
     _OTHER_VITAL_TYPES = _VITAL_TYPES - _COUNTERPART_VITAL_TYPES
     claim_vital_subjects: dict[str, list[str] | None] = {}
+    unscoped_vital_claim_ids: set[str] = set()
     for cid, claim in claims_by_id.items():
         if claim['type'] not in _OTHER_VITAL_TYPES:
             continue
         persons_with_roles = [
             (pid, claim_role.get((cid, pid))) for pid in claim_persons.get(cid, [])
         ]
-        claim_vital_subjects[cid] = vital_subjects(claim['type'], persons_with_roles)
+        subjects = vital_subjects(claim['type'], persons_with_roles)
+        claim_vital_subjects[cid] = subjects
+        if subjects == [] and not any(role for _pid, role in persons_with_roles):
+            unscoped_vital_claim_ids.add(cid)
 
     groups = []
     for person_id, claim_ids in sorted(claims_by_person.items()):
@@ -494,6 +522,12 @@ def _run_xref_queries(conn: sqlite3.Connection) -> dict:
                     # NOT this case: `subjects` is `[]`, not None, so the
                     # `continue` above fires for everyone it names (#126,
                     # reopened) - the claim has not said whose vital it is.
+                    # The zero-role-signal shape among these (case 2a,
+                    # `unscoped_vital_claim_ids` above) is already reported in
+                    # the Result's `unscoped` list rather than just dropped
+                    # here (#172) - this `continue` still empties every
+                    # person's bucket for it, but the claim itself is no
+                    # longer untraceable.
                     continue
                 key = (claim['type'],)
                 by_group.setdefault(key, []).append(cid)
@@ -545,9 +579,12 @@ def _run_xref_queries(conn: sqlite3.Connection) -> dict:
 
     groups.sort(key=lambda g: g['person_name'] or '')
 
-    # Sorted by claim id for stable output - unscoped_claim_ids was built as
-    # a set while walking claims_by_id, whose order sqlite does not
-    # guarantee.
+    # Sorted by claim id for stable output - unscoped_claim_ids and
+    # unscoped_vital_claim_ids were both built as sets while walking
+    # claims_by_id, whose order sqlite does not guarantee. The two sets are
+    # disjoint (marriage/divorce vs. the other four vital types never share a
+    # claim `type`), so the union below adds no claim twice; the CLI tells
+    # them apart afterward by each entry's own `claim['type']`.
     unscoped = [
         {
             'claim': claims_by_id[cid],
@@ -562,7 +599,7 @@ def _run_xref_queries(conn: sqlite3.Connection) -> dict:
                 for pid in dict.fromkeys(claim_persons.get(cid, []))
             ],
         }
-        for cid in sorted(unscoped_claim_ids)
+        for cid in sorted(unscoped_claim_ids | unscoped_vital_claim_ids)
     ]
 
     return {'status': 'ok', 'groups': groups, 'unscoped': unscoped}
@@ -577,6 +614,22 @@ def _fmt_claim(c: dict) -> str:
         f"{fmt_id_display(c['id'])}  [{c['source_title']} / {fmt_id_display(c['source_id'])}]  "
         f"{date_label}{place} - {c['value']}"
     )
+
+
+def _vital_unscoped_advice(claim_type: str) -> str:
+    """Repair text for one `unscoped` entry whose claim is birth/death/
+    baptism/burial (#172) - the vital twin of the marriage/divorce advice in
+    `_cmd_xref` below, worded per type the same way `fha lint`'s W132
+    branches its message."""
+    if claim_type in ('birth', 'baptism'):
+        verb = 'was born' if claim_type == 'birth' else 'was baptized'
+        return (f"not who {verb}, so it can't be compared against other records. "
+                f"Add a roles: map - an indented `child: [P-…]` line naming who {verb}.")
+    verb = 'died' if claim_type == 'death' else 'was buried'
+    return (f"not which of them {verb}, so it can't be compared against other records. "
+            f"Add a roles: map - either `deceased: [P-…]` naming who {verb} (more than "
+            f"one id if they {verb} together), or leave that person unroled and name "
+            "everyone else instead - `spouse:`, `child:`, `parent:`, or `witness:`.")
 
 
 def _cmd_xref(args: argparse.Namespace) -> int:
@@ -607,14 +660,30 @@ def _cmd_xref(args: argparse.Namespace) -> int:
     else:
         print('No candidate pairs found.')
 
-    if unscoped:
-        print(f"\n{len(unscoped)} marriage/divorce claim(s) could not be scoped for comparison:")
-        for item in unscoped:
+    # Two shapes share the `unscoped` list (#172): a roles-less marriage/
+    # divorce certificate `_lib.spouse_parties` couldn't pair off, and a
+    # death/birth/baptism/burial claim naming 2+ people with no roles: map at
+    # all (`_lib.vital_subjects`'s case 2a). Each gets its own section and its
+    # own repair wording - a shared sentence would either say "the couple"
+    # to a birth claim or "who was born" to a marriage certificate.
+    couple_items = [item for item in unscoped if item['claim']['type'] in ('marriage', 'divorce')]
+    vital_items = [item for item in unscoped if item['claim']['type'] not in ('marriage', 'divorce')]
+
+    if couple_items:
+        print(f"\n{len(couple_items)} marriage/divorce claim(s) could not be scoped for comparison:")
+        for item in couple_items:
             names = ', '.join(item['persons'])
             print(f"  {_fmt_claim(item['claim'])}")
             print(f"    Names {names} but not which two of them were the couple, so it "
                   "can't be compared against other records. Add a roles: map naming the "
                   'pair - `roles:` then an indented `spouse: [P-…, P-…]` line.')
+
+    if vital_items:
+        print(f"\n{len(vital_items)} birth/death/baptism/burial claim(s) could not be scoped for comparison:")
+        for item in vital_items:
+            names = ', '.join(item['persons'])
+            print(f"  {_fmt_claim(item['claim'])}")
+            print(f"    Names {names} but {_vital_unscoped_advice(item['claim']['type'])}")
     return EXIT_CLEAN
 
 
