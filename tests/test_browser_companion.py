@@ -795,5 +795,27 @@ class ArchiveReadmeTestCase(unittest.TestCase):
         self.assertIn('fha capture --ingest', text)
 
 
+class SourceTypeVocabularyTestCase(unittest.TestCase):
+    """The panel's own source_type picker must not lag `_lib.SOURCE_TYPES`.
+
+    #114 follow-up (Codex review, PR #178): `ephemera` joined the controlled
+    vocabulary but panel.js's own friendly-label list - the capture panel's
+    filing surface, independent of the workbench modal - kept teaching the
+    old, shorter set. Nothing caught the drift because the two were never
+    compared; this pins them together so a future SOURCE_TYPES addition
+    fails here instead of silently going unpickable from the panel.
+    """
+
+    def test_panel_source_types_cover_the_controlled_vocabulary(self) -> None:
+        import _lib
+        panel_src = (COMPANION / 'src' / 'panel.js').read_text(encoding='utf-8')
+        m = re.search(r'const SOURCE_TYPES = \[(.*?)\];', panel_src, re.S)
+        self.assertIsNotNone(m, 'panel.js: no `const SOURCE_TYPES = [...]` literal found')
+        values = set(re.findall(r"\['([\w-]+)',", m.group(1)))
+        missing = _lib.SOURCE_TYPES - values
+        self.assertEqual(missing, set(),
+                          f'panel.js SOURCE_TYPES missing: {missing}')
+
+
 if __name__ == '__main__':
     unittest.main()

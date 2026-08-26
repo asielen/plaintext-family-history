@@ -267,6 +267,12 @@ sweep. Works one item at a time; for a full inbox, triage and confirm each with 
    AI pass with `outputs: []` (step 8), and **skip the `review-claims` hand-off** — there is nothing to
    review. Close with `fha index` and `fha lint` yourself, since the review close-out won't run.
 
+   **A clipping that names no one in the family at all** — period news, local color, general history
+   kept on purpose for texture or a future biography, not because it evidences anyone — is
+   `source_type: ephemera` (#114, SPEC §14), not `newspaper`/`other`. It is the one type where
+   `people:` staying empty and `## Claims` staying empty are the *expected* shape, not a gap to chase;
+   a piece that later turns out to name someone after all is simply re-typed to whatever fits.
+
    One flavor of this deserves special respect: **material kept because it was investigated and
    rejected** — a debunked lineage pamphlet, a mail-order surname history, a disproven family legend.
    Its record's title/Notes say it is not evidence, and that verdict is the human's research conclusion.
