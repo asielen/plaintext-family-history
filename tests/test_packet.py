@@ -1622,6 +1622,52 @@ class PacketTests(unittest.TestCase):
             packet._redact_asset_path('\\Users\\andrew_sielen\\secret.pdf'),
             'secret.pdf')
 
+    def test_redact_asset_path_basenames_trailing_separator_home_directory(self):
+        """A genuine absolute path (no `~` anywhere) that ends AT a home
+        directory, with a trailing separator and nothing after it, has no
+        real file component - `PureWindowsPath('/Users/andrew_sielen/').name`
+        still returns `'andrew_sielen'`, the username, because whatever
+        follows the last separator in a path ending WITH one is empty by
+        definition. Neither of these starts with `~`, so the round-6
+        bare-shorthand check never saw them (Codex review, round-7 audit,
+        issue #170 finding 1)."""
+        self.assertEqual(
+            packet._redact_asset_path('/Users/andrew_sielen/'), '(unnamed path)')
+        self.assertEqual(
+            packet._redact_asset_path('C:\\Users\\andrew_sielen\\'), '(unnamed path)')
+
+    def test_redact_asset_path_basenames_home_directory_no_trailing_separator(self):
+        """The same leak as the trailing-separator shape above, reached by
+        simply dropping the trailing slash: `/Users/andrew_sielen` and
+        `C:\\Users\\andrew_sielen` still end EXACTLY at the home directory,
+        with nothing real after it, so `.name` is still just the username.
+        This is not literally what Codex's finding quoted, but it is the
+        same bug one keystroke away, and there is no `~` sigil here either
+        to lean on - `_is_bare_directory_reference` recognizes the shape
+        directly by checking that the path stops exactly at a `Users`/`home`
+        child of its root, with nothing beyond it (round-7 audit)."""
+        self.assertEqual(
+            packet._redact_asset_path('/Users/andrew_sielen'), '(unnamed path)')
+        self.assertEqual(
+            packet._redact_asset_path(r'C:\Users\andrew_sielen'), '(unnamed path)')
+        self.assertEqual(
+            packet._redact_asset_path('/home/andrew_sielen'), '(unnamed path)')
+
+    def test_redact_asset_path_home_directory_check_does_not_over_redact(self):
+        """The home-directory-root check must not fire on a real file that
+        merely lives somewhere under a home directory (still a normal,
+        useful basename), nor on an unrelated absolute path that happens to
+        have a `Users`- or `home`-named directory somewhere in its middle
+        (not immediately under the root, and not the last component)."""
+        self.assertEqual(
+            packet._redact_asset_path('/Users/andrew_sielen/Documents/secret.pdf'),
+            'secret.pdf')
+        self.assertEqual(
+            packet._redact_asset_path(r'C:\Users\andrew_sielen\Documents\secret.pdf'),
+            'secret.pdf')
+        self.assertEqual(
+            packet._redact_asset_path('/data/home/report.pdf'), 'report.pdf')
+
     def test_redact_asset_path_still_passes_through_ordinary_aliases(self):
         """The character-level check must not become so eager it starts
         redacting normal, safe relative aliases."""

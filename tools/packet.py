@@ -1133,6 +1133,17 @@ def _redact_asset_path(raw: str) -> str:
     `PurePosixPath`'s separator handling for this purpose (real per-OS
     filesystem calls are never made here, only string splitting to find the
     trailing component).
+
+    A hand-edited entry can also be a genuine absolute path - no `~`
+    involved at all - that happens to END at a directory named after the
+    owner's username: `/Users/andrew_sielen/` or `C:\\Users\\andrew_sielen\\`
+    (Codex review, round-7 audit). Neither starts with `~`, so the round-6
+    bare-shorthand check above never sees them, and `PureWindowsPath(...).name`
+    still returns `'andrew_sielen'` - the last PATH COMPONENT, which here is
+    a directory (in fact the username itself), not a file. The general
+    invariant is checked directly, before basename extraction, by
+    `_is_bare_directory_reference`: see its docstring for the two
+    unambiguous shapes it recognizes.
     """
     if not raw:
         return raw
@@ -1144,22 +1155,63 @@ def _redact_asset_path(raw: str) -> str:
     )
     if not looks_foreign:
         return raw
+    if _is_bare_directory_reference(raw):
+        return '(unnamed path)'
     name = PureWindowsPath(raw).name or '(unnamed path)'
-    # A bare `~`/`~user` shorthand - with or without a trailing separator,
-    # and with no further path component after it - has nothing real for
+    # A bare `~`/`~user` shorthand with NO separator anywhere in it (no
+    # trailing slash either - that shape is caught by
+    # `_is_bare_directory_reference` above) has nothing real for
     # PureWindowsPath to extract, so `.name` returns the shorthand ITSELF
     # unchanged (Codex review, round-6 audit): `~andrew_sielen` -> the same
-    # string back, and `~andrew_sielen/` -> `~andrew_sielen` (the trailing
-    # separator carries no component of its own to become the name). Both
-    # still ship the username straight into README.txt. Checking the
-    # EXTRACTED name for a leading `~` (rather than the raw string, which an
-    # earlier version of this fix did and which missed the trailing-slash
-    # shape) catches every variant: whatever PureWindowsPath handed back is
-    # still just the shorthand, not a real trailing component, whenever it
-    # still starts with `~`.
+    # string back. That still ships the username straight into README.txt.
+    # Checking the EXTRACTED name for a leading `~` (rather than the raw
+    # string, which an earlier version of this fix did and which missed the
+    # trailing-slash shape - now handled separately above) catches this
+    # remaining variant: whatever PureWindowsPath handed back is still just
+    # the shorthand, not a real trailing component, whenever it still starts
+    # with `~`.
     if name.startswith('~'):
         return '(unnamed path)'
     return name
+
+
+def _is_bare_directory_reference(raw: str) -> bool:
+    """True when `raw` names a directory, not a real file - so there is
+    nothing safe to show as a basename at all (Codex review, round-7 audit,
+    issue #170 finding 1).
+
+    Two shapes are unambiguous without ever touching the filesystem
+    (`_redact_asset_path` only ever does string splitting, ``real per-OS
+    filesystem calls are never made here`` per its own docstring):
+
+    - A trailing separator. Whatever follows the LAST separator in a path
+      that ENDS with one is empty by definition - there is no trailing file
+      component at all, only a directory. `/Users/andrew_sielen/` and
+      `C:\\Users\\andrew_sielen\\` are exactly this shape. This also
+      subsumes the bare-tilde-with-trailing-slash case the round-6 fix
+      handled as a special case of its own (`~andrew_sielen/`), so that
+      variant no longer needs separate handling.
+    - An absolute path that ends EXACTLY at a home-directory root -
+      `/Users/<name>`, `/home/<name>`, or `C:\\Users\\<name>` - with nothing
+      after it and no trailing separator either. Dropping the trailing
+      slash from the shapes above reaches the identical leak
+      (`PureWindowsPath('/Users/andrew_sielen').name` is still
+      `'andrew_sielen'`) without tripping the check above, so it is
+      recognized on its own terms: `PureWindowsPath(raw).parts` has exactly
+      three components (the anchor, `Users`/`home`, and the name) only when
+      the path stops at the home directory itself. A real file living
+      somewhere under a home directory (`/Users/andrew_sielen/secret.pdf`,
+      or anything deeper) has a fourth part and is unaffected - only the
+      bare root itself redacts.
+
+    A bare `~user` with no separator anywhere (`~andrew_sielen`, one part,
+    neither shape above) is NOT covered here - `_redact_asset_path` still
+    catches it separately, since the leading `~` is itself the tell.
+    """
+    if raw.rstrip().endswith(('/', '\\')):
+        return True
+    parts = PureWindowsPath(raw).parts
+    return len(parts) == 3 and parts[1].lower() in ('users', 'home')
 
 
 def _resolve_source_files(
