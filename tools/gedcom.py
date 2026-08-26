@@ -531,8 +531,12 @@ def _load_vitals(
     1888 BIRT onto his mother's INDI record - the same defect
     `_spouse_persons_for_claim` fixes for MARR, one query along, and with the
     same consequence: a fact about the wrong person, exported as truth into
-    whatever program reads the file. A claim carrying no `roles:` map has not
-    said, and keeps the behaviour it always had.
+    whatever program reads the file. A claim naming at most one person with
+    no `roles:` map at all has not said, and keeps the behaviour it always
+    had (nobody else to be ambiguous about); a claim naming two or more
+    people with no `roles:` map at all has not said which of them it is
+    about, and `vital_subjects` scopes it to none of them (#126, reopened) -
+    it exports no BIRT/DEAT for anyone it names.
 
     The scoping test runs BEFORE the per-key pick, for the reason `is_public`
     does: a relative's earlier-dated record would otherwise take the slot and
