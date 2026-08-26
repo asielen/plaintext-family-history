@@ -658,7 +658,7 @@
     {
       "path": ".fha/tools/site.py",
       "category": "operating",
-      "sha256": "c0e01cf18999e0659dc065f5c81a5830d7ad94b1fee19339ecfc5b2d7dc8eaf7",
+      "sha256": "f5ed0aed0375b572b42b9bf2b6c2f7ae91ad5b25343cc9fdf32ebeab66d41f6b",
       "spec_version": "1.2",
       "src": "tools/site.py"
     },
@@ -728,7 +728,7 @@
     {
       "path": ".fha/tools/templates/person.html",
       "category": "operating",
-      "sha256": "a3ff96147312c3c293dde5acf06b4fdb62fd20776ffaf3778761b6bd2534c7f0",
+      "sha256": "b55faabe42370e39fa7d22ce608e99384e90a45fb60eed1fa8eafdfb5aef3573",
       "spec_version": "1.2",
       "src": "tools/templates/person.html"
     },
