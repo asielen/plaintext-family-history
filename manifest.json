@@ -884,7 +884,7 @@
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "6a3aca6121833fc68a537b0898bdad6166445cb56c279c2f877d63d086200768",
+      "sha256": "c290db67aa2b64b6ddc1a358ba4bef0f4e2e94447850c0c206c3faf09c07c31c",
       "spec_version": "1.2"
     },
     {
@@ -1080,7 +1080,7 @@
     {
       "path": "sources/_TEMPLATE.source.md",
       "category": "skeleton",
-      "sha256": "4aa8fdecd3da6ff70a5efa65996fcc153150ae95c3a108aa17220ed9274ba7ae",
+      "sha256": "aab8dc33fbabf7388d4f4b7cc14f7e5b7f936b4ed7acb454c9741d81d9b84180",
       "spec_version": "1.2",
       "src": "archive-template/sources/_TEMPLATE.source.md"
     }
