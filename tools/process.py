@@ -296,12 +296,112 @@ def _derive_slug(slug: str | None, title: str | None, file_path: Path) -> str:
 # ── Asset classification ──────────────────────────────────────────────────────
 
 def _is_under(path: Path, root: Path) -> bool:
-    """True if `path` is inside `root` (both resolved); False on unrelated trees."""
+    """True if `path` is inside `root` (both resolved); False on unrelated trees.
+
+    Also False - rather than a raised `RuntimeError` - when either side's
+    `.resolve()` hits a symlink loop (issue #170 finding 2, round-3 audit):
+    `Path.resolve()` raises `RuntimeError` for that case, distinct from the
+    `ValueError`/`OSError` an ordinary unresolvable path raises, and every one
+    of this function's ~11 call sites already treats a plain False as "not
+    verifiably contained" and produces its own clean refusal (or a silent
+    skip) - none needs to tell a symlink loop apart from an everyday
+    containment failure. Folding RuntimeError in here, once, turns what used
+    to be a raw traceback out of `process_refile`'s containment guard (added
+    in PR #163's own P1 fix, which only caught ValueError/OSError) into that
+    same clean refusal at every call site, live and `--dry-run` alike -
+    instead of hand-wrapping each call individually.
+    """
     try:
         path.resolve().relative_to(root.resolve())
         return True
+    except (ValueError, OSError, RuntimeError):
+        return False
+
+
+def _resolve_hits_symlink_loop(path: Path) -> bool:
+    """True if resolving `path` alone hits a symlink loop specifically.
+
+    `_is_under`'s widened except tuple folds a symlink loop into the same
+    `False` as an everyday containment miss for all ~11 of its callers
+    uniformly - right for most of them, since a plain refusal is enough
+    (Codex review, round-5 audit). `process_refile`'s own containment
+    refusal was the first exception: its message already NAMES a symlink
+    loop as a possible cause alongside a `..` segment or doubled slash, but
+    then gives one universal remedy - "fix the files: entry by hand" - that
+    is actively wrong when the entry is correct and an on-disk symlink is
+    what actually needs repairing. This is the targeted re-check that call
+    site uses to tell the two apart and give the right remedy for each, the
+    same way `packet.py`'s `_resolve_source_files` already does for its own
+    identical containment check.
+
+    `_is_under_strict`/`_require_contained` below reuse this same primitive
+    to extend that same distinction to every OTHER user-facing containment
+    check in this file (issue #170 finding 2, extended - Codex review
+    round-8 audit): `classify_asset`, `process_document`, `process_photo`,
+    `process_photo_group`, and `attach_more` all had the identical gap -
+    a symlink loop on a configured root silently became a generic "not
+    under the root; file it there" refusal, which cannot be acted on when
+    the file may already be exactly where it belongs and the real problem
+    is a corrupted symlink."""
+    try:
+        path.resolve()
+        return False
+    except RuntimeError:
+        return True
     except (ValueError, OSError):
         return False
+
+
+def _containment_loop_error(offending: Path, root_label: str) -> ProcessError:
+    """The message for a containment check that could not be verified
+    because resolving the candidate path or the root itself hit a symlink
+    loop - naming the loop as the thing to fix, not a genuine "elsewhere"
+    answer (issue #170 finding 2, extended - Codex review round-8 audit).
+    Shared by `_is_under_strict` (and, through it, `_require_contained`) so
+    every call site below phrases this the same way `process_refile`'s own
+    hand-written version of the same distinction already does."""
+    return ProcessError(
+        f'{offending.name} could not be checked against the configured '
+        f'{root_label} - this looks like a symlink loop, not a misfiled '
+        'asset. Find and fix (or remove) the broken symlink, then retry.'
+    )
+
+
+def _is_under_strict(path: Path, root: Path, *, root_label: str) -> bool:
+    """Like `_is_under`, but raises `ProcessError` instead of returning
+    `False` when a symlink loop - not genuine non-containment - is what
+    stopped resolution (issue #170 finding 2, extended - Codex review
+    round-8 audit).
+
+    `classify_asset` calls this directly: a plain `_is_under` False there
+    is not just "not verifiably contained", it feeds a fallback decision
+    (stated `source_type`, then file extension) that can misfile a document
+    into the photo library, or vice versa, permanently - silently treating
+    "could not verify because of a broken symlink" the same as "genuinely
+    elsewhere" is not safe there the way it is for `_is_under`'s other,
+    purely refuse-or-continue callers.
+    """
+    if _is_under(path, root):
+        return True
+    if _resolve_hits_symlink_loop(path) or _resolve_hits_symlink_loop(root):
+        raise _containment_loop_error(path, root_label)
+    return False
+
+
+def _require_contained(path: Path, root: Path, *, root_label: str, message: str) -> None:
+    """Raise `ProcessError` unless `path` is verifiably under `root`.
+
+    `message` is the caller's own genuine "not under root" wording - each
+    call site phrases the remedy a little differently ('before processing',
+    'before attaching it', 'file the whole set there', ...) - this only
+    decides WHICH message is right: a symlink loop on either side raises
+    `_containment_loop_error` instead (via `_is_under_strict`), since that
+    is a different, unrelated failure with a different fix (issue #170
+    finding 2, extended - Codex review round-8 audit).
+    """
+    if _is_under_strict(path, root, root_label=root_label):
+        return
+    raise ProcessError(message)
 
 
 def classify_asset(file_path: Path, fha_config: dict, archive_root: Path,
@@ -341,12 +441,19 @@ def classify_asset(file_path: Path, fha_config: dict, archive_root: Path,
 
     **Then the file itself:** a known photo extension is a photo, everything
     else a document.
+
+    A symlink loop on either configured root is not treated as "genuinely
+    not under this root" - `_is_under_strict` raises instead of falling
+    through, because a silent guess here (stated `source_type`, then
+    extension) could misfile a document into the photo library, or a photo
+    into documents, with no way back short of `fha process refile` (issue
+    #170 finding 2, extended - Codex review round-8 audit).
     """
     documents_root = resolve_path('documents', fha_config, archive_root)
-    if _is_under(file_path, documents_root):
+    if _is_under_strict(file_path, documents_root, root_label='documents root'):
         return 'document'
     photos_root = resolve_path(_PHOTO_DIR, fha_config, archive_root)
-    if _is_under(file_path, photos_root):
+    if _is_under_strict(file_path, photos_root, root_label='photos root'):
         return 'photo'
     stated = str(source_type).strip().lower() if source_type else ''
     if stated and stated != _PHOTO_SOURCE_TYPE:
@@ -1540,12 +1647,14 @@ def process_document(
         )
 
     documents_root = resolve_path('documents', fha_config, archive_root)
-    if not _is_under(file_path, documents_root):
-        raise ProcessError(
+    _require_contained(
+        file_path, documents_root, root_label='documents root',
+        message=(
             f'{file_path.name} is not under the configured documents root '
             f'({_rel(documents_root, archive_root)}); file it there before processing - '
             'a record outside the asset roots cannot be expressed as a portable alias path.'
-        )
+        ),
+    )
 
     final_title = title or _slugify(file_path.stem).replace('-', ' ')
     sidecar = _find_sidecar(real_path if real_path is not None else file_path)
@@ -1580,11 +1689,13 @@ def process_document(
     # source the linter would immediately flag.
     if source_type == 'dna':
         dna_root = documents_root / 'dna'
-        if not _is_under(file_path, dna_root):
-            raise ProcessError(
+        _require_contained(
+            file_path, dna_root, root_label='documents/dna root',
+            message=(
                 f'{file_path.name} is source_type dna but is not under '
                 f'{_rel(dna_root, archive_root)}; file DNA originals there before processing.'
-            )
+            ),
+        )
 
     sid = _mint_one_source_id(archive_root, source_id=source_id)
     if report is not None:
@@ -1886,12 +1997,14 @@ def process_photo(
     report-back pair - see its docstring.
     """
     photos_root = resolve_path(_PHOTO_DIR, fha_config, archive_root)
-    if not _is_under(file_path, photos_root):
-        raise ProcessError(
+    _require_contained(
+        file_path, photos_root, root_label='photos root',
+        message=(
             f'{file_path.name} is not under the configured photos root '
             f'({_rel(photos_root, archive_root)}); file it there before processing - '
             'a record outside the asset roots cannot be expressed as a portable alias path.'
-        )
+        ),
+    )
     on_disk = real_path if real_path is not None else file_path
 
     # Read all keywords at once: one exiftool call detects a pre-existing SOURCE:
@@ -2094,11 +2207,13 @@ def process_photo_group(
     real_paths = real_paths or {}
     photos_root = resolve_path(_PHOTO_DIR, fha_config, archive_root)
     for m in members:
-        if not _is_under(m, photos_root):
-            raise ProcessError(
+        _require_contained(
+            m, photos_root, root_label='photos root',
+            message=(
                 f'{m.name} is not under the configured photos root '
                 f'({_rel(photos_root, archive_root)}); file the whole set there before processing.'
-            )
+            ),
+        )
 
     # Refuse the set if any member is already processed, and collect per-member
     # existing P-id keywords so rollback only removes the ones this run added.
@@ -3178,11 +3293,13 @@ def _attach_more_engine(
 
     if more_kind == 'photo':
         photos_root = resolve_path(_PHOTO_DIR, fha_config, archive_root)
-        if not _is_under(more_file, photos_root):
-            raise ProcessError(
+        _require_contained(
+            more_file, photos_root, root_label='photos root',
+            message=(
                 f'{more_file.name} is not under the configured photos root '
                 f'({_rel(photos_root, archive_root)}); file it there before attaching it.'
-            )
+            ),
+        )
         if dry_run:
             try:
                 more_existing = _read_source_keyword(more_on_disk)
@@ -3301,11 +3418,13 @@ def _attach_more_engine(
         )
     already_named = existing_doc_sid is not None
     documents_root = resolve_path('documents', fha_config, archive_root)
-    if not _is_under(more_file, documents_root):
-        raise ProcessError(
+    _require_contained(
+        more_file, documents_root, root_label='documents root',
+        message=(
             f'{more_file.name} is not under the configured documents root '
             f'({_rel(documents_root, archive_root)}); file it there before attaching it.'
-        )
+        ),
+    )
     if already_named:
         # Already named exactly right (#108) - keep the name as-is rather than
         # recomputing base+suffix+sid, which would either duplicate the role
@@ -3767,7 +3886,13 @@ def _validate_dest_subpath(root: Path, dest: str, root_label: str) -> Path:
     dest_dir = root.joinpath(*parts)
     try:
         dest_dir.resolve().relative_to(root.resolve())
-    except (ValueError, OSError):
+    except (ValueError, OSError, RuntimeError):
+        # RuntimeError joins ValueError/OSError here for the same reason as
+        # `_is_under` above (issue #170 finding 2): a symlink loop under
+        # --dest raises RuntimeError from `.resolve()`, not ValueError/
+        # OSError, and without it here this refusal was a raw traceback
+        # instead of the clean message every other containment failure
+        # already gets.
         raise ProcessError(
             f'--dest {dest!r} does not resolve to a folder inside the '
             f'{root_label} root - name a plain subfolder, e.g. {example}.')
@@ -4025,10 +4150,18 @@ def process_refile(
     # a file that was never part of this archive.
     claimed_root = resolve_path(alias_root, fha_config, archive_root)
     if not _is_under(src, claimed_root):
+        if _resolve_hits_symlink_loop(src) or _resolve_hits_symlink_loop(claimed_root):
+            raise ProcessError(
+                f'{stored_alias} could not be checked against the configured '
+                f'{alias_root} root - this looks like a symlink loop, most '
+                'likely from a corrupted or maliciously crafted filesystem '
+                f'entry, not a mistyped files: entry in {record_path.name}. '
+                'Find and fix or remove the offending symlink, then retry. '
+                'Nothing was moved.')
         raise ProcessError(
             f'{stored_alias} resolves outside the configured {alias_root} '
             f'folder ({claimed_root}) - this looks like a hand-edited files: '
-            f'entry gone wrong (a `..` segment, or a doubled slash). Fix the '
+            f'entry gone wrong (a `..` segment or a doubled slash). Fix the '
             f'entry in {record_path.name} by hand, then retry. Nothing was '
             'moved.')
 
@@ -4119,6 +4252,14 @@ def process_refile(
                 'moved.') from e
         conflicting = sorted({s for s in embedded_sids if s != sid.lower()})
         if conflicting:
+            # Same dead-end shape as the documents-root branch above (issue
+            # #170 finding 3, round-3 audit): `fha reconcile`'s document pass
+            # only considers documents-alias entries (its own docstring:
+            # "the photos side has its own [machinery]"), and its photo pass
+            # only re-ties `fha photoindex`'s own catalog to files on disk -
+            # neither one touches THIS record's `files:` entry. Suggesting it
+            # here would run clean and change nothing, leaving the human to
+            # retry forever. Name the exact entry to fix by hand instead.
             carried = ', '.join(fmt_id_display(s) for s in conflicting)
             raise ProcessError(
                 f"{stored_alias}'s own embedded SOURCE keyword(s) carry "
@@ -4126,8 +4267,15 @@ def process_refile(
                 f"{record_path.name}'s files: entry looks like inventory "
                 f'drift (it names a file that belongs to a different '
                 f'source), and moving it would relocate the WRONG photo. '
-                'Run `fha reconcile` to re-tie sources to their actual '
-                'files, then retry. Nothing was moved.')
+                '`fha reconcile` cannot fix this: its document pass ignores '
+                'photos/ aliases, and its photo pass only re-ties the photo '
+                f'catalog, not this record. Fix it by hand: open '
+                f'{record_path.name}, find the `files:` entry `file: '
+                f'{stored_alias}`, and either point it at the correct '
+                f'on-disk photo for this source (untagged, or whose '
+                f'embedded SOURCE keyword already names {sid} - either is '
+                f'fine) or delete the entry if no such photo exists. '
+                'Nothing was moved.')
 
     # The source's type, resolved. A type that is wrong for the destination
     # root is part of the misfiling this verb corrects, so refile carries the
@@ -4684,10 +4832,26 @@ def _mint_one_source_id(archive_root: Path, source_id: str | None = None) -> str
 
 
 def _rel(path: Path, archive_root: Path) -> str:
-    """Display a path relative to the archive root when possible, else as posix."""
+    """Display a path relative to the archive root when possible, else as posix.
+
+    Also falls back on `RuntimeError` (issue #170 finding 2, extended -
+    Codex review round-8 audit), not just `ValueError`/`OSError`: every
+    "not under the configured root" `ProcessError` message in this file
+    calls `_rel(root, archive_root)` to show the root's location, and that
+    call is built EAGERLY as part of the message string - even when the
+    containment check that triggered it (`_require_contained`/
+    `_is_under_strict`) is about to prefer a different, symlink-specific
+    error instead. Before this, a symlink loop on `root` itself made this
+    display call raise an uncaught `RuntimeError` while constructing the
+    (ultimately discarded) genuine-failure message, crashing with a raw
+    traceback instead of ever reaching the clean symlink-loop refusal -
+    the exact failure mode `_is_under` was already fixed to avoid (round-3
+    audit), reached here through a different function. A path that cannot
+    be resolved for display, loop or otherwise, is shown as-is.
+    """
     try:
         return path.resolve().relative_to(archive_root.resolve()).as_posix()
-    except (ValueError, OSError):
+    except (ValueError, OSError, RuntimeError):
         return path.as_posix()
 
 
@@ -4730,16 +4894,35 @@ def _resolve_input_file(
     Returns (resolved_path, None) on a hit, or (None, message) on a miss; the
     message names every location searched plus the next step, because a bare
     "file not found" leaves a non-technical user nowhere to go.
+
+    Raises `ProcessError` instead when RESOLVING the path itself - not
+    finding it - is what fails: a symlink loop under either candidate
+    location (adversarial review of PR #170, extended - every other
+    containment/resolution check in this file already distinguishes "not
+    there" from "could not even be checked because of a broken symlink" via
+    `_resolve_hits_symlink_loop`; this is the one caller of a bare
+    `Path.resolve()` in the whole module that still did not, so a symlink
+    loop under the very first file a user names crashed with a raw,
+    unhelpful `RuntimeError` before any of that hardening ever ran).
     """
     def found(p: Path) -> bool:
         return p.is_file() if require_file else p.exists()
 
+    def resolved(p: Path, *, where: str) -> Path:
+        if _resolve_hits_symlink_loop(p):
+            raise ProcessError(
+                f'{what} could not be resolved {where}: {raw} - this looks '
+                'like a symlink loop, not a missing file. Find and fix (or '
+                'remove) the broken symlink, then retry.'
+            )
+        return p.resolve()
+
     raw_path = Path(raw)
-    primary = raw_path.resolve()
+    primary = resolved(raw_path, where='as typed')
     if found(primary):
         return primary, None
     if not raw_path.is_absolute():
-        retry = (archive_root / raw_path).resolve()
+        retry = resolved(archive_root / raw_path, where='inside your archive')
         # retry == primary when the command already runs from the archive root
         # itself; a second look at the same spot would name one place twice.
         if retry != primary:
@@ -4975,7 +5158,11 @@ def _run_process(args: argparse.Namespace) -> int:
     # is forgiving: a relative path that misses from here is retried under the
     # archive root, so the cheat-sheet spelling ("inbox/scan.jpg" typed from
     # the workshop folder) just works.
-    file_path, path_error = _resolve_input_file(args.file, archive_root)
+    try:
+        file_path, path_error = _resolve_input_file(args.file, archive_root)
+    except ProcessError as e:
+        print(f'ERROR: {e}', file=sys.stderr)
+        return EXIT_ERRORS
     if file_path is None:
         print(f'ERROR: {path_error}', file=sys.stderr)
         return EXIT_ERRORS

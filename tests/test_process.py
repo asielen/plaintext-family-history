@@ -239,6 +239,30 @@ class ProcessTestCase(unittest.TestCase):
         queue = list(answers)
         process._prompt = lambda _msg: queue.pop(0) if queue else ''
 
+    def _patch_resolve_to_loop_on(self, target_name: str):
+        """Make `Path.resolve()` raise `RuntimeError` for any path whose
+        final component is `target_name`, and behave normally for every
+        other path.
+
+        A real symlink loop needs a privilege this Windows test environment
+        does not have (mirrors test_process_refile.py's own note on the same
+        constraint); `.resolve()` raising `RuntimeError` is the documented
+        pathlib contract a real loop triggers, so patching it directly -
+        scoped to one specific filename so every OTHER `.resolve()` call the
+        code under test makes along the way is unaffected - reproduces the
+        same failure a loop would (issue #170 finding 2, extended - Codex
+        review round-8 audit: a symlink loop on a configured root, not just
+        on the candidate asset).
+        """
+        real_resolve = Path.resolve
+
+        def looping_resolve(path_self, *args, **kwargs):
+            if path_self.name == target_name:
+                raise RuntimeError(f'Symlink loop resolving {target_name}')
+            return real_resolve(path_self, *args, **kwargs)
+
+        return unittest.mock.patch.object(Path, 'resolve', looping_resolve)
+
     def _run(self, argv: list[str]) -> int:
         return process._standalone_main(argv + ['--root', str(self.archive)])
 
@@ -784,6 +808,30 @@ class ProcessTestCase(unittest.TestCase):
         self.assertEqual(store.read(outside), [])
         self.assertEqual(list((self.archive / 'sources').rglob('*.md')), [])
 
+    def test_photo_symlink_loop_on_photos_root_names_the_loop(self) -> None:
+        # Same class of bug as process_document's own case above, at
+        # process_photo's own containment guard (issue #170 finding 2,
+        # extended - Codex review round-8 audit): a broken symlink in the
+        # configured photos root must be named as the cause, not answered
+        # with "file it there" advice that cannot be acted on.
+        self._install_photo_store()
+        asset = self.archive / 'photos' / '1880' / 'portrait.jpg'
+        asset.write_bytes(b'\xff\xd8\xff')
+        cfg = load_fha_yaml(self.archive, strict=True)
+        photos_root = self.archive / 'photos'
+
+        with self._patch_resolve_to_loop_on(photos_root.name):
+            with self.assertRaises(process.ProcessError) as ctx:
+                process.process_photo(
+                    self.archive, cfg, asset,
+                    slug=None, title=None, source_date=None, dry_run=True,
+                )
+
+        text = str(ctx.exception)
+        self.assertIn('symlink loop', text)
+        self.assertNotIn('file it there', text)
+        self.assertEqual(list((self.archive / 'sources').rglob('*.md')), [])
+
     def test_more_refuses_photo_attachment_outside_photos_root(self) -> None:
         store = self._install_photo_store()
         front = self.archive / 'photos' / '1880' / 'cardx.jpg'
@@ -824,6 +872,77 @@ class ProcessTestCase(unittest.TestCase):
         rc = self._run([str(renamed1), '--more', str(outside), 'page-2'])
         self.assertEqual(rc, EXIT_ERRORS)
         self.assertTrue(outside.exists())  # not renamed
+
+    def test_more_document_attachment_symlink_loop_on_documents_root_names_the_loop(
+        self,
+    ) -> None:
+        # Issue #170 finding 2, extended (Codex review round-8 audit):
+        # attachment validation (`--more`) must also name a broken
+        # documents-root symlink as the cause, not tell the owner to move a
+        # file that may already be exactly where it belongs.
+        page1 = self.archive / 'documents' / 'census' / 'pagex1.txt'
+        page1.write_text('p1', encoding='utf-8')
+        self.assertEqual(self._run([str(page1)]), EXIT_CLEAN)
+        renamed1 = next((self.archive / 'documents' / 'census').glob('*_S-*.txt'))
+
+        page2 = self.archive / 'documents' / 'census' / 'pagex2.txt'
+        page2.write_text('p2', encoding='utf-8')
+
+        documents_root = self.archive / 'documents'
+        err = io.StringIO()
+        with self._patch_resolve_to_loop_on(documents_root.name):
+            with contextlib.redirect_stderr(err):
+                rc = self._run([str(renamed1), '--more', str(page2), 'page-2'])
+
+        self.assertEqual(rc, EXIT_ERRORS)
+        text = err.getvalue()
+        self.assertIn('symlink loop', text)
+        self.assertNotIn('file it there', text)
+        self.assertTrue(page2.exists())  # not renamed - refused before mutation
+
+    def test_file_argument_symlink_loop_names_the_loop_not_a_raw_crash(self) -> None:
+        # Adversarial review of PR #170, extended: every containment check
+        # further down the flow (classify_asset, process_document,
+        # process_photo, attach_more) already names a symlink loop cleanly -
+        # but `_resolve_input_file`, the FIRST thing that runs on the FILE
+        # argument, called `Path.resolve()` directly with no guard at all.
+        # A loop on the file itself used to bubble out of
+        # `_resolve_input_file` as a raw, uncaught `RuntimeError` - before
+        # any of that later hardening ever got a chance to run - rather than
+        # the same clean, actionable refusal every other resolution failure
+        # in this file already gives.
+        looping = self.archive / 'photos' / '1880' / 'looping-scan.jpg'
+        looping.write_bytes(b'\xff\xd8\xff')
+
+        err = io.StringIO()
+        with self._patch_resolve_to_loop_on(looping.name):
+            with contextlib.redirect_stderr(err):
+                rc = self._run([str(looping)])
+
+        self.assertEqual(rc, EXIT_ERRORS)
+        text = err.getvalue()
+        self.assertIn('symlink loop', text)
+        self.assertEqual(list((self.archive / 'sources').rglob('*.md')), [])
+
+    def test_more_file_argument_symlink_loop_names_the_loop_not_a_raw_crash(self) -> None:
+        # Same gap, reached through `--more`'s own call to
+        # `_resolve_input_file` instead of the FILE positional's.
+        page1 = self.archive / 'documents' / 'census' / 'pagex1.txt'
+        page1.write_text('p1', encoding='utf-8')
+        self.assertEqual(self._run([str(page1)]), EXIT_CLEAN)
+        renamed1 = next((self.archive / 'documents' / 'census').glob('*_S-*.txt'))
+
+        looping = self.archive / 'documents' / 'census' / 'looping-page2.txt'
+        looping.write_text('p2', encoding='utf-8')
+
+        err = io.StringIO()
+        with self._patch_resolve_to_loop_on(looping.name):
+            with contextlib.redirect_stderr(err):
+                rc = self._run([str(renamed1), '--more', str(looping), 'page-2'])
+
+        self.assertEqual(rc, EXIT_ERRORS)
+        text = err.getvalue()
+        self.assertIn('symlink loop', text)
 
     def test_dna_source_marked_restricted_and_requires_dna_root(self) -> None:
         outside = self.archive / 'documents' / 'census' / 'kit.txt'
@@ -2106,6 +2225,51 @@ class ProcessTestCase(unittest.TestCase):
         rc = self._run([str(outside)])
         self.assertEqual(rc, EXIT_ERRORS)
         self.assertTrue(outside.exists())
+        self.assertEqual(list((self.archive / 'sources').rglob('*.md')), [])
+
+    def test_classify_asset_symlink_loop_on_documents_root_names_the_loop(self) -> None:
+        # Issue #170 finding 2, extended (Codex review round-8 audit):
+        # a symlink loop in the CONFIGURED documents root must not silently
+        # become a coin-flip extension guess (which could misfile a
+        # document into the photo library with no way back short of
+        # `fha process refile`) - `classify_asset` must raise, naming the
+        # loop, instead of falling through.
+        asset = self.archive / 'documents' / 'census' / 'loose.txt'
+        asset.write_text('x', encoding='utf-8')
+        cfg = load_fha_yaml(self.archive, strict=True)
+        documents_root = self.archive / 'documents'
+
+        with self._patch_resolve_to_loop_on(documents_root.name):
+            with self.assertRaises(process.ProcessError) as ctx:
+                process.classify_asset(asset, cfg, self.archive)
+
+        text = str(ctx.exception)
+        self.assertIn('symlink loop', text)
+        self.assertNotIn('file it there', text)
+
+    def test_document_symlink_loop_on_documents_root_names_the_loop(self) -> None:
+        # Same bug, at the user-facing guard `process_document` runs on its
+        # own account: before the fix, a broken documents-root symlink made
+        # `_is_under` return False for a file that may already be exactly
+        # where it belongs, and the guard told the owner to "file it there"
+        # - advice that cannot succeed until the symlink itself is repaired
+        # (issue #170 finding 2, extended - Codex review round-8 audit).
+        asset = self.archive / 'documents' / 'census' / 'loose.txt'
+        asset.write_text('x', encoding='utf-8')
+        cfg = load_fha_yaml(self.archive, strict=True)
+        documents_root = self.archive / 'documents'
+
+        with self._patch_resolve_to_loop_on(documents_root.name):
+            with self.assertRaises(process.ProcessError) as ctx:
+                process.process_document(
+                    self.archive, cfg, asset,
+                    source_type='census', slug=None, title=None, source_date=None,
+                    dry_run=True,
+                )
+
+        text = str(ctx.exception)
+        self.assertIn('symlink loop', text)
+        self.assertNotIn('file it there', text)
         self.assertEqual(list((self.archive / 'sources').rglob('*.md')), [])
 
     def test_document_relative_path_resolves_alias_under_cwd(self) -> None:
