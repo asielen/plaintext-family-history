@@ -983,7 +983,7 @@ _CLAIM_MARKER_KEYS: frozenset[str] = frozenset({'id', 'type', 'value', 'persons'
 SOURCE_TYPES: frozenset[str] = frozenset({
     'census', 'vital-record', 'newspaper', 'photo', 'interview', 'letter',
     'military-record', 'land-record', 'probate', 'directory', 'dna', 'book',
-    'website', 'artifact', 'proof-argument', 'other',
+    'website', 'artifact', 'proof-argument', 'ephemera', 'other',
 })
 
 EDTF_EXAMPLE_TEXT = 'like 1880, 1880-06-15, or 188X for "the 1880s"'
@@ -5304,13 +5304,32 @@ def read_places_registry(archive_root: str | Path) -> tuple[list[dict], str | No
     return [row for row in data if isinstance(row, dict) and row.get('id')], None
 
 
-def match_place_text_to_registry(archive_root: str | Path, place_text: str) -> dict:
+def match_place_text_to_registry(
+    archive_root: str | Path,
+    place_text: str,
+    *,
+    registry: tuple[list[dict], str | None] | None = None,
+) -> dict:
     """
     Match one claim's free-text place against the registered places
     (`places/places.yaml`) - the write-time resolution issue #79 point 3
     asked for: "when a claim is drafted with place_text, look it up against
     the registry; on an exact or near match, attach the place_id; on a
     miss, note it as a candidate."
+
+    `registry` lets a caller that is about to do this lookup many times in
+    one pass - report.py's §6b listing and its escalation banner, one call
+    per place-text cluster - pass in `read_places_registry(archive_root)`'s
+    own `(rows, error)` result instead of making this function re-read and
+    re-parse `places/places.yaml` from scratch on every single call. Before
+    this existed, a report with N unlinked-place clusters re-read and
+    re-scanned the whole registry N times over - quadratic in (clusters x
+    registry size) for work that only ever needed the file read once per
+    report run (issue #166 finding 2; a synthetic 200-cluster/200-place
+    fixture measured ~6.9s in this section alone). Omitted (every existing
+    caller, including `claim.py`'s single-lookup write path), the lookup
+    reads the registry itself exactly as before - this is additive, not a
+    behavior change for anyone who only ever calls this once.
 
     Two tiers, built from the SAME normalization `fha places candidates`
     clusters unlinked place_text with (`place_text_cluster_key` above) - a
@@ -5368,7 +5387,10 @@ def match_place_text_to_registry(archive_root: str | Path, place_text: str) -> d
 
     exact_hits: dict[str, str] = {}
     near_hits: dict[str, str] = {}
-    rows, registry_error = read_places_registry(archive_root)
+    if registry is None:
+        rows, registry_error = read_places_registry(archive_root)
+    else:
+        rows, registry_error = registry
     for place in rows:
         pid = place.get('id')
         if not (isinstance(pid, str) and is_valid_id(pid) and id_type_of(pid) == 'L'):

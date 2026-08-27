@@ -32,6 +32,7 @@ absent - only warn honestly about which of the two happened.
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 import yaml
@@ -39,6 +40,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
 
+import _lib
 from _lib import (
     expand_place_abbreviations,
     match_place_text_to_registry,
@@ -349,6 +351,70 @@ class MatchPlaceTextToRegistryTests(unittest.TestCase):
         _write_registry(self.root, '- id: not-an-id\n  name: Topeka, Kansas\n')
         m = match_place_text_to_registry(self.root, 'Topeka, Kansas')
         self.assertIsNone(m['tier'])
+
+
+class MatchPlaceTextToRegistryPreparsedRegistryTests(unittest.TestCase):
+    """Issue #166 finding 2: a caller looking up many place_texts in one
+    pass (report.py's §6b listing and its escalation banner, one call per
+    place-text cluster) used to force this function to re-read and
+    re-parse the whole `places/places.yaml` registry from scratch on every
+    single call - a report with N clusters read the same never-changing
+    file N times over for no reason a human would ever see, only feel as a
+    report that is slower the larger the archive gets. The `registry`
+    keyword lets a caller pass `read_places_registry(archive_root)`'s own
+    `(rows, error)` result in once and reuse it for every lookup instead."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        # A real, valid, ON-DISK registry that WOULD match "Topeka, Kansas"
+        # if this function ever fell back to reading it - every test below
+        # passes a `registry=` override instead, so a match/miss can only
+        # be explained by the override actually being used.
+        _write_registry(self.root, '- id: L-baba9801fa\n  name: Topeka, Kansas\n')
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_registry_param_is_used_instead_of_the_real_on_disk_file(self) -> None:
+        # setUp's on-disk registry has a match for this text; overriding
+        # with an empty registry must produce a miss - if the parameter were
+        # silently ignored, this would come back 'exact' from disk instead.
+        m = match_place_text_to_registry(self.root, 'Topeka, Kansas', registry=([], None))
+        self.assertIsNone(m['tier'])
+        self.assertIsNone(m['place_id'])
+
+    def test_registry_param_supplies_a_match_with_no_file_on_disk_at_all(self) -> None:
+        empty_tmp = tempfile.TemporaryDirectory()
+        try:
+            root = Path(empty_tmp.name)   # no places/places.yaml exists here
+            rows = [{'id': 'L-cccccccccc', 'name': 'Topeka, Kansas'}]
+            m = match_place_text_to_registry(root, 'Topeka, Kansas', registry=(rows, None))
+            self.assertEqual(m['tier'], 'exact')
+            self.assertEqual(m['place_id'], 'L-cccccccccc')
+        finally:
+            empty_tmp.cleanup()
+
+    def test_registry_param_forwards_its_own_error_without_rereading(self) -> None:
+        m = match_place_text_to_registry(
+            self.root, 'Topeka, Kansas',
+            registry=([], 'places/places.yaml is not a list at the top level'))
+        self.assertIsNone(m['tier'])
+        self.assertEqual(
+            m['registry_error'], 'places/places.yaml is not a list at the top level')
+
+    def test_registry_param_never_touches_read_places_registry(self) -> None:
+        with unittest.mock.patch.object(_lib, 'read_places_registry') as spy:
+            match_place_text_to_registry(self.root, 'Topeka, Kansas', registry=([], None))
+        spy.assert_not_called()
+
+    def test_omitted_registry_param_reads_the_file_exactly_as_before(self) -> None:
+        # No behavior change for the many callers (claim.py's single
+        # write-time lookup, and every pre-existing test above) that never
+        # pass `registry` at all.
+        m = match_place_text_to_registry(self.root, 'Topeka, Kansas')
+        self.assertEqual(m['tier'], 'exact')
+        self.assertEqual(m['place_id'], 'L-baba9801fa')
 
 
 class ClusterKeySharedWithPlacesTests(unittest.TestCase):
