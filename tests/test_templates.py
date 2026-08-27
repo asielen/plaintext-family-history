@@ -152,6 +152,23 @@ class TemplatesAreSkippedTests(_ArchiveBase):
 
 
 class ScaffoldParityTests(unittest.TestCase):
+    def test_source_type_vocabulary_matches_the_template_comment(self):
+        # #114 follow-up (Codex review, PR #178): `ephemera` joined
+        # `_lib.SOURCE_TYPES` but the shipped `_TEMPLATE.source.md`'s "one
+        # of: ..." comment - the by-hand filing surface for a genealogist
+        # with no tools - kept teaching the old, shorter list. Nothing
+        # caught the drift because the two were never compared. Every
+        # controlled `source_type` value must appear in that comment so a
+        # future addition to SOURCE_TYPES fails this test instead of
+        # silently going undiscoverable by hand.
+        from _lib import SOURCE_TYPES
+        tmpl_text = (TEMPLATES / 'sources' / '_TEMPLATE.source.md').read_text(encoding='utf-8')
+        comment = '\n'.join(
+            ln for ln in tmpl_text.splitlines() if ln.lstrip().startswith('#') or 'source_type:' in ln)
+        missing = {t for t in SOURCE_TYPES if t not in comment}
+        self.assertEqual(missing, set(),
+                          f'_TEMPLATE.source.md comment missing source_type(s): {missing}')
+
     def test_stub_frontmatter_matches_person_template(self):
         # #76: _TEMPLATE.person.md is the one template for a person at
         # either tier (it already defaults to tier: stub) - compare the

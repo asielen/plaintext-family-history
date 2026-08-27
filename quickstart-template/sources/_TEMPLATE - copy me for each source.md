@@ -7,7 +7,7 @@
 title:            # a short name, e.g. "1950 census, Brooks household"
 source_type:      # photo, census, vital-record, newspaper, letter, interview,
                   # military-record, land-record, probate, directory, book,
-                  # website, artifact, other
+                  # website, artifact, ephemera, other
 source_date:      # when it was made - a year is fine
 repository:       # where the original lives (an attic, a courthouse, a website)
 citation:         # one sentence, in your own words, saying exactly what this is

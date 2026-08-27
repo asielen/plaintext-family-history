@@ -4867,6 +4867,19 @@ class WorkbenchModeTests(_Base):
         self.assertNotIn('<option>certificate</option>', wb)
         self.assertIn('<option>vital-record</option>', wb)
 
+    def test_ephemera_source_type_option_offered(self):
+        # #114 follow-up (Codex review, PR #178): `ephemera` joined the
+        # SOURCE_TYPES controlled vocabulary but the two "file it as a
+        # source" modals (single file and bundle) still offered only the
+        # older, fixed option list - a genealogist filing from the browser
+        # workbench had no way to pick it. Both selects must offer it now.
+        self._seed_person('p-aaaaaaaaaa', name='Test Person', living='false', tier='curated')
+        self._run_wb()
+        wb = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertEqual(wb.count('<option>ephemera</option>'), 2,
+                          'both the single-file and bundle "file as a source" '
+                          'modals must offer ephemera')
+
     def test_living_modal_prefills_current_value_not_a_hardcoded_default(self):
         # P2 codex finding (round 3, PR #30): the Change-living modal always
         # defaulted its radio group to "deceased" regardless of the actual

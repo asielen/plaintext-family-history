@@ -10,6 +10,7 @@ hand-built .cache/index.sqlite.
 
 import datetime
 import json
+import re
 import shlex
 import sys
 import tempfile
@@ -21,6 +22,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
 
+import _lib
 import lint
 import report
 from _lib import shell_quote
@@ -1100,6 +1102,29 @@ class PlaceTextEscalationTests(unittest.TestCase):
         self.assertIn('L-bbbbbbbbbb', md)
         self.assertIn('fha places lint', md)
         self.assertNotIn('--name=', md)
+        # Issue #166 finding 1: the old text here spliced in the literal,
+        # unsubstituted placeholder `--into=<one of the above>` - not a real
+        # L-id, and `<`/`>` are shell redirection, so copying it (every
+        # OTHER command in this report is meant to be pasted verbatim) broke
+        # before `fha` even ran. Each real candidate id now gets its own
+        # complete, ready-to-paste command instead.
+        self.assertNotIn('<one of the above>', md)
+        self.assertNotIn('<', md)
+        self.assertNotIn('>', md)
+        line = next(l for l in md.splitlines() if 'MULTIPLE registered places' in l)
+        commands = re.findall(r'`([^`]+)`', line)
+        into_commands = [c for c in commands if c.startswith('fha confirm place')]
+        self.assertEqual(len(into_commands), 2)   # one complete command per candidate
+        seen_targets = set()
+        for command in into_commands:
+            argv = shlex.split(command)
+            self.assertEqual(argv[:3], ['fha', 'confirm', 'place'])
+            self.assertTrue(argv[-1].startswith('--into=L-'))
+            seen_targets.add(argv[-1].split('=', 1)[1])
+            # Every claim in the 20-claim cluster is still named, exactly
+            # like the exact/near-match and no-match branches already do.
+            self.assertEqual(len(argv) - 4, 20)   # fha, confirm, place, --into= bracket the ids
+        self.assertEqual(seen_targets, {'L-aaaaaaaaaa', 'L-bbbbbbbbbb'})
 
     def test_escalation_banner_flags_ambiguous_match_without_asserting_unregistered(
         self,
@@ -1190,6 +1215,165 @@ class PlaceTextEscalationTests(unittest.TestCase):
             result.data['sections']['place-escalations'],
             ['No place-text clusters past the oversight threshold.'],
         )
+
+
+class PlaceTextGroupLineAmbiguousMatchTests(unittest.TestCase):
+    """Issue #166 finding 1, isolated at the unit level: `_place_text_group_
+    line`'s "matches MULTIPLE registered places" branch used to splice in
+    the literal, unsubstituted placeholder text `--into=<one of the above>`
+    - not a real L-id, and shell-breaking if pasted verbatim (`<`/`>` are
+    redirection). Every other branch in this function ends with a command
+    that is genuinely ready to paste (issue #79 point 1's whole point); this
+    pins that the ambiguous branch now does too, with one complete command
+    per real candidate id `match['ambiguous_ids']` names."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.archive_root = Path(self._tmp.name)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _group(self) -> dict:
+        return {
+            'label': 'Springfield', 'claim_count': 2, 'date_min': None, 'date_max': None,
+            'claim_ids': ['C-1111111111', 'C-2222222222'],
+        }
+
+    def test_no_unsubstituted_placeholder_survives(self) -> None:
+        match = {
+            'tier': None, 'place_id': None, 'name': None, 'registry_error': None,
+            'ambiguous_ids': ['L-aaaaaaaaaa', 'L-bbbbbbbbbb'],
+        }
+        line = report._place_text_group_line(self.archive_root, self._group(), match=match)
+        self.assertNotIn('one of the above', line)
+        self.assertNotIn('<', line)
+        self.assertNotIn('>', line)
+
+    def test_one_complete_pasteable_command_per_candidate(self) -> None:
+        match = {
+            'tier': None, 'place_id': None, 'name': None, 'registry_error': None,
+            'ambiguous_ids': ['L-aaaaaaaaaa', 'L-bbbbbbbbbb'],
+        }
+        line = report._place_text_group_line(self.archive_root, self._group(), match=match)
+        for pid in ('L-aaaaaaaaaa', 'L-bbbbbbbbbb'):
+            command = f'fha confirm place C-1111111111 C-2222222222 --into={pid}'
+            self.assertIn(f'`{command}`', line)
+            # Genuinely a complete, shell-splittable command naming every
+            # claim id in the cluster - not a fragment or a sample.
+            self.assertEqual(
+                shlex.split(command),
+                ['fha', 'confirm', 'place', 'C-1111111111', 'C-2222222222', f'--into={pid}'])
+        self.assertIn('fha places lint', line)   # the registry-hygiene pointer stays too
+
+    def test_three_way_tie_still_gives_one_command_each(self) -> None:
+        # ambiguous_ids can carry more than two ids (three or more registered
+        # places sharing one normalized name) - nothing in the fix assumes
+        # exactly two.
+        match = {
+            'tier': None, 'place_id': None, 'name': None, 'registry_error': None,
+            'ambiguous_ids': ['L-aaaaaaaaaa', 'L-bbbbbbbbbb', 'L-cccccccccc'],
+        }
+        line = report._place_text_group_line(self.archive_root, self._group(), match=match)
+        for pid in ('L-aaaaaaaaaa', 'L-bbbbbbbbbb', 'L-cccccccccc'):
+            self.assertIn(f'--into={pid}`', line)
+        self.assertNotIn('<', line)
+        self.assertNotIn('>', line)
+
+    def test_wide_clash_caps_spelled_out_commands_at_five(self) -> None:
+        # Adversarial review, round 4 audit: a cluster with many claims,
+        # matched against a wide same-named-place clash (a plausible shape
+        # in a large archive with recurring town names - "Springfield" isn't
+        # rare), used to spell out one full, claim-list-repeating command
+        # PER candidate with no limit at all - the line grew without bound
+        # as either dimension grew. Past 5 candidates, the rest are still
+        # named as a count (nothing hidden), just not spelled out as their
+        # own pasteable command; `fha places lint` remains the pointer for
+        # resolving the clash itself.
+        ambiguous_ids = [f'L-{n:010d}' for n in range(8)]
+        match = {
+            'tier': None, 'place_id': None, 'name': None, 'registry_error': None,
+            'ambiguous_ids': ambiguous_ids,
+        }
+        line = report._place_text_group_line(self.archive_root, self._group(), match=match)
+        for pid in ambiguous_ids[:5]:
+            self.assertIn(f'--into={pid}`', line)
+        for pid in ambiguous_ids[5:]:
+            self.assertNotIn(f'--into={pid}`', line)
+        self.assertIn('3 more', line)
+        self.assertIn('fha places lint', line)
+
+
+class PlaceRegistryReadCountTests(unittest.TestCase):
+    """Issue #166 finding 2: `_place_text_group_line`'s registry lookup used
+    to call `_lib.read_places_registry` - a `places/places.yaml` file read
+    plus a full scan against every registered name - fresh, once per
+    place-text cluster. A report with N unlinked clusters therefore read and
+    re-parsed the same never-changing file N times over, for no reason a
+    human running `fha report` would ever see, only feel as a report that
+    gets slower the more clusters (or the bigger the registry) an archive
+    accumulates - a synthetic 200-cluster/200-place fixture measured ~6.9s
+    in this section alone. One report run must read the registry exactly
+    once no matter how many clusters it renders, the same "one fetch,
+    shared" discipline issue #79/Codex review PR #142 finding 2 already
+    established for `places.run_candidates()` itself, just above
+    (`test_place_candidates_run_only_once_per_report`)."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.archive_root = Path(self._tmp.name)
+        (self.archive_root / 'people').mkdir(parents=True)
+        (self.archive_root / 'sources').mkdir(parents=True)
+        (self.archive_root / 'people' / 'test__person_P-aaaaaaaaaa.md').write_text(
+            _PERSON_MD, encoding='utf-8')
+        (self.archive_root / 'places').mkdir(parents=True)
+        (self.archive_root / 'places' / 'places.yaml').write_text(
+            '- id: L-baba9801fa\n  name: Topeka, Kansas\n', encoding='utf-8')
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _write_cluster_source(self, sid: str, place_text: str, count: int) -> None:
+        # Mirrors PlaceTextEscalationTests._write_cluster_source above - one
+        # source carrying `count` residence claims sharing `place_text` and
+        # no `place_id`, the shape `places._place_text_candidates` clusters
+        # on. run_candidates()'s own default clustering threshold is 3.
+        seed = int(sid[-1]) * 100
+        claims = ''.join(
+            f'- id: C-9{seed + i:09d}\n  type: residence\n  persons: [P-aaaaaaaaaa]\n'
+            f'  value: Lived there\n  place_text: "{place_text}"\n'
+            '  status: accepted\n  reviewed: 2026-01-01\n'
+            for i in range(count)
+        )
+        body = (
+            f'---\nid: {sid}\ntitle: Cluster source\nsource_type: vital-record\n---\n\n'
+            f'## Claims\n```yaml\n{claims}```\n'
+        )
+        fname = sid.lower().replace('-', '_') + '.md'
+        (self.archive_root / 'sources' / fname).write_text(body, encoding='utf-8')
+
+    def test_registry_read_once_per_report_regardless_of_cluster_count(self) -> None:
+        cities = ['Warsaw, Poland', 'Berlin, Germany', 'Paris, France',
+                  'Madrid, Spain', 'Rome, Italy']
+        for i, city in enumerate(cities, start=1):
+            self._write_cluster_source(f'S-900000000{i}', city, 3)
+
+        # Patched in both homes: `report.read_places_registry` (report.py's
+        # own imported name, used at the top of run_report/_section_place_
+        # candidates) and `_lib.read_places_registry` (the name `_lib.py`'s
+        # own `match_place_text_to_registry` would fall back to re-reading
+        # from if a future change stopped threading `registry=` through) -
+        # sharing one spy so either path is counted, whichever a regression
+        # would actually go through.
+        spy = unittest.mock.Mock(wraps=_lib.read_places_registry)
+        with unittest.mock.patch.object(_lib, 'read_places_registry', spy), \
+             unittest.mock.patch.object(report, 'read_places_registry', spy):
+            result = report.run_report(self.archive_root, {}, full=True)
+
+        md = result['markdown']
+        for city in cities:
+            self.assertIn(city, md)   # the fixture actually produced 5 clusters
+        self.assertEqual(spy.call_count, 1)
 
 
 _RESEARCH_SAME_HEADING_MD = '''# Research - Test Person

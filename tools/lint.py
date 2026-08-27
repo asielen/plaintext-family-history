@@ -121,6 +121,7 @@ from _lib import (
     normalize_date,
     normalize_id,
     parse_filename,
+    read_places_registry,
     read_record,
     read_text_exact,
     read_text_or_report,
@@ -911,43 +912,34 @@ def _walk_archive(archive_root: Path, registry: Registry, findings: list[Finding
     so their L-ids are available when Pass 2 checks place references in claims.
     """
 
-    # Places
+    # Places. Delegates the actual parsing to `_lib.read_places_registry` -
+    # the exact function `fha claim`'s write-time place lookup uses - so the
+    # two never again classify the same file differently (Codex review, PR
+    # #150 follow-up: a valid-YAML-but-wrong-shape file, e.g. `not_a_list:
+    # true`, used to be silently coerced to zero places here with no
+    # finding at all, while the write path separately reported it as
+    # malformed - `fha lint` said "no issues" on the exact archive state
+    # that told the human something else was broken). Reported under the
+    # same E010 parse-problem code every other "this record can't be read"
+    # finding in this module uses. Still wrapped in `except Exception`: an
+    # undecodable-bytes places.yaml raises `UnicodeDecodeError`, which is a
+    # `ValueError` rather than the `OSError` `read_places_registry` itself
+    # catches (#68's known gap for `except OSError` in this codebase), and
+    # lint must never crash on a bad archive.
     places_path = archive_root / 'places' / 'places.yaml'
-    if places_path.exists():
-        try:
-            with open(places_path, encoding='utf-8') as f:
-                places = yaml.safe_load(f)
-            if places is None:
-                # Comment-only (or otherwise all-whitespace) file - the
-                # shipped seed state (archive-template/places/places.yaml,
-                # SPEC §15's "empty to start" registry). A normal empty
-                # registry, not a finding.
-                places = []
-            elif not isinstance(places, list):
-                # Valid YAML, but the wrong shape (e.g. `not_a_list: true`) -
-                # this used to be silently treated as zero places with no
-                # finding at all, so `fha lint` reported "no issues" on a
-                # registry that `fha claim`'s write-time place lookup (issue
-                # #79 point 3, `_lib.read_places_registry`) was separately
-                # reporting as malformed - sending the human to a lint run
-                # that told them nothing was wrong (Codex review, PR #150
-                # follow-up). Report it here too, under the same E010 parse-
-                # problem code every other "this record can't be read"
-                # finding in this module uses.
-                findings.append(Finding(
-                    'E', 'E010', places_path,
-                    'places.yaml is not a list at the top level (see SPEC §15 for the '
-                    'registry shape) - every place record it might contain is unreadable '
-                    'until this is fixed.'))
-                places = []
-            for place in places:
-                if isinstance(place, dict):
-                    pid = normalize_id(str(place.get('id', '')))
-                    if pid and pid.startswith('l-'):
-                        registry.place_ids.add(pid)
-                        registry.all_record_ids[pid] = places_path
-        except Exception as e:
-            findings.append(Finding('E', 'E010', places_path, f'places.yaml parse error: {e}'))
+    try:
+        places_rows, places_error = read_places_registry(archive_root)
+    except Exception as e:
+        findings.append(Finding('E', 'E010', places_path, f'places.yaml could not be read: {e}'))
+        places_rows, places_error = [], None
+    else:
+        if places_error is not None:
+            findings.append(Finding('E', 'E010', places_path, places_error))
+    for place in places_rows:
+        pid = normalize_id(str(place.get('id', '')))
+        if pid and pid.startswith('l-'):
+            registry.place_ids.add(pid)
+            registry.all_record_ids[pid] = places_path
 
     # `walk_files`/read recorders, not rglob + bare read_text: lint's whole
     # product is the sentence "your archive matches the spec", and either
