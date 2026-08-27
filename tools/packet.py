@@ -1081,6 +1081,39 @@ def _is_under_root(path: Path, root: Path) -> bool:
         return False
 
 
+# Unicode characters that visually resemble a real path separator, mapped to
+# the ASCII separator they impersonate - used only to detect and split a
+# foreign-looking path in `_redact_asset_path`/`_is_bare_directory_reference`
+# below, never to alter what gets shown for an ordinary alias (adversarial
+# review, round 8 audit; see `_redact_asset_path`'s docstring for the leak
+# this closes).
+_PATH_SEPARATOR_LOOKALIKES = {
+    '⁄': '/',    # FRACTION SLASH
+    '∕': '/',    # DIVISION SLASH
+    '／': '/',    # FULLWIDTH SOLIDUS
+    '⧸': '/',    # BIG SOLIDUS
+    '＼': '\\',   # FULLWIDTH REVERSE SOLIDUS
+    '⧵': '\\',   # REVERSE SOLIDUS OPERATOR
+}
+
+
+def _normalize_path_separator_lookalikes(raw: str) -> str:
+    """Replace any `_PATH_SEPARATOR_LOOKALIKES` character with the real
+    separator it impersonates. `Path.is_absolute()`, `PureWindowsPath`'s
+    parsing, and the leading-character checks in `_redact_asset_path` all
+    recognize ONLY ASCII `/`/`\\` - a path using a homoglyph instead splits
+    into far fewer components than it actually has, which is exactly the
+    "not really absolute"/"not really multi-part" confusion this whole
+    function exists to close for the real separators (see
+    `_redact_asset_path`'s own docstring on `Path.is_absolute()` and
+    `PureWindowsPath`). Applied only where a path is being SPLIT or
+    CLASSIFIED, never to what is actually shown for an ordinary, already-
+    portable alias."""
+    for lookalike, real in _PATH_SEPARATOR_LOOKALIKES.items():
+        raw = raw.replace(lookalike, real)
+    return raw
+
+
 def _redact_asset_path(raw: str) -> str:
     """Render a `files:` entry for a packet's README: unchanged if it is a
     normal relative alias ('documents/...', 'photos/...'), basename-only if
@@ -1147,17 +1180,33 @@ def _redact_asset_path(raw: str) -> str:
     """
     if not raw:
         return raw
+    # A Unicode character that visually resembles `/` or `\` but is neither
+    # (adversarial review, round 8 audit) defeats every check below at once:
+    # `Path.is_absolute()`, the leading-character checks just below, and
+    # `PureWindowsPath`'s own separator handling all recognize ONLY the two
+    # real ASCII separators, so a homoglyph-separated path collapses to far
+    # fewer "parts" than it actually has - `/Users⁄andrew_sielen⁄
+    # secret.pdf` looks foreign correctly (it still starts with a real `/`),
+    # but its basename then extracts as the entire remainder,
+    # `Users⁄andrew_sielen⁄secret.pdf` - the owner's username and
+    # full directory structure, not a redacted basename. Normalizing first
+    # closes this uniformly for `_is_bare_directory_reference` and the
+    # basename extraction below alike; the ORIGINAL `raw` is still what gets
+    # returned on the ordinary, non-foreign path, so a legitimate alias that
+    # happens to contain one of these characters as ordinary text (not as a
+    # separator) is never rewritten.
+    normalized = _normalize_path_separator_lookalikes(raw)
     looks_foreign = (
-        raw[0] in ('/', '\\')
-        or raw[0] == '~'
-        or (len(raw) > 1 and raw[1] == ':')
-        or Path(raw).is_absolute()
+        normalized[0] in ('/', '\\')
+        or normalized[0] == '~'
+        or (len(normalized) > 1 and normalized[1] == ':')
+        or Path(normalized).is_absolute()
     )
     if not looks_foreign:
         return raw
-    if _is_bare_directory_reference(raw):
+    if _is_bare_directory_reference(normalized):
         return '(unnamed path)'
-    name = PureWindowsPath(raw).name or '(unnamed path)'
+    name = PureWindowsPath(normalized).name or '(unnamed path)'
     # A bare `~`/`~user` shorthand with NO separator anywhere in it (no
     # trailing slash either - that shape is caught by
     # `_is_bare_directory_reference` above) has nothing real for
@@ -1191,27 +1240,48 @@ def _is_bare_directory_reference(raw: str) -> bool:
       subsumes the bare-tilde-with-trailing-slash case the round-6 fix
       handled as a special case of its own (`~andrew_sielen/`), so that
       variant no longer needs separate handling.
-    - An absolute path that ends EXACTLY at a home-directory root -
-      `/Users/<name>`, `/home/<name>`, or `C:\\Users\\<name>` - with nothing
-      after it and no trailing separator either. Dropping the trailing
-      slash from the shapes above reaches the identical leak
+    - An absolute path that ends EXACTLY at a directory OS convention
+      guarantees is never a file - `/Users/<name>`, `/home/<name>`,
+      `C:\\Users\\<name>` (a user's home directory), or `/Volumes/<name>`
+      (a macOS mount point - every mounted volume, local or network,
+      appears here, and a mount point cannot itself be a file) - with
+      nothing after it and no trailing separator either. Dropping the
+      trailing slash from the shapes above reaches the identical leak
       (`PureWindowsPath('/Users/andrew_sielen').name` is still
       `'andrew_sielen'`) without tripping the check above, so it is
       recognized on its own terms: `PureWindowsPath(raw).parts` has exactly
-      three components (the anchor, `Users`/`home`, and the name) only when
-      the path stops at the home directory itself. A real file living
-      somewhere under a home directory (`/Users/andrew_sielen/secret.pdf`,
+      three components (the anchor, the convention name, and whatever comes
+      after it) only when the path stops immediately there. A real file
+      living somewhere under one of these (`/Users/andrew_sielen/secret.pdf`,
       or anything deeper) has a fourth part and is unaffected - only the
       bare root itself redacts.
 
     A bare `~user` with no separator anywhere (`~andrew_sielen`, one part,
     neither shape above) is NOT covered here - `_redact_asset_path` still
     catches it separately, since the leading `~` is itself the tell.
+
+    Deliberately NOT attempted (adversarial review, round 8 audit): a
+    personal-storage path with no OS-guaranteed directory marker at all -
+    `/srv/backups/andrew_sielen`, `D:\\Backups\\andrew_sielen`,
+    `/mnt/nas/family-shares/andrew_sielen` - still shows its trailing
+    segment as a "basename" even when that segment happens to look like a
+    username. `Backups`/`srv`/an arbitrary NAS share name carries no OS
+    guarantee the way `Users`/`Volumes` does - the identical shape
+    (`D:\\Documents\\report.pdf`) is an ordinary, everyday FILE reference,
+    so treating every 3-part absolute path as a directory would silently
+    swallow real, useful diagnostic filenames right alongside the rare
+    genuine leak, with no way to tell the two apart without touching the
+    filesystem (something this function's own docstring rules out). A
+    fixed word-list of "backup-sounding" folder names would only ever cover
+    the specific examples it was written against, at the cost of exactly
+    that false-positive risk for everyone else - worse than the narrow gap
+    it would close. This one stays a known, accepted limitation rather than
+    a guess.
     """
     if raw.rstrip().endswith(('/', '\\')):
         return True
     parts = PureWindowsPath(raw).parts
-    return len(parts) == 3 and parts[1].lower() in ('users', 'home')
+    return len(parts) == 3 and parts[1].lower() in ('users', 'home', 'volumes')
 
 
 def _resolve_source_files(

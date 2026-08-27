@@ -875,6 +875,50 @@ class ProcessTestCase(unittest.TestCase):
         self.assertNotIn('file it there', text)
         self.assertTrue(page2.exists())  # not renamed - refused before mutation
 
+    def test_file_argument_symlink_loop_names_the_loop_not_a_raw_crash(self) -> None:
+        # Adversarial review of PR #170, extended: every containment check
+        # further down the flow (classify_asset, process_document,
+        # process_photo, attach_more) already names a symlink loop cleanly -
+        # but `_resolve_input_file`, the FIRST thing that runs on the FILE
+        # argument, called `Path.resolve()` directly with no guard at all.
+        # A loop on the file itself used to bubble out of
+        # `_resolve_input_file` as a raw, uncaught `RuntimeError` - before
+        # any of that later hardening ever got a chance to run - rather than
+        # the same clean, actionable refusal every other resolution failure
+        # in this file already gives.
+        looping = self.archive / 'photos' / '1880' / 'looping-scan.jpg'
+        looping.write_bytes(b'\xff\xd8\xff')
+
+        err = io.StringIO()
+        with self._patch_resolve_to_loop_on(looping.name):
+            with contextlib.redirect_stderr(err):
+                rc = self._run([str(looping)])
+
+        self.assertEqual(rc, EXIT_ERRORS)
+        text = err.getvalue()
+        self.assertIn('symlink loop', text)
+        self.assertEqual(list((self.archive / 'sources').rglob('*.md')), [])
+
+    def test_more_file_argument_symlink_loop_names_the_loop_not_a_raw_crash(self) -> None:
+        # Same gap, reached through `--more`'s own call to
+        # `_resolve_input_file` instead of the FILE positional's.
+        page1 = self.archive / 'documents' / 'census' / 'pagex1.txt'
+        page1.write_text('p1', encoding='utf-8')
+        self.assertEqual(self._run([str(page1)]), EXIT_CLEAN)
+        renamed1 = next((self.archive / 'documents' / 'census').glob('*_S-*.txt'))
+
+        looping = self.archive / 'documents' / 'census' / 'looping-page2.txt'
+        looping.write_text('p2', encoding='utf-8')
+
+        err = io.StringIO()
+        with self._patch_resolve_to_loop_on(looping.name):
+            with contextlib.redirect_stderr(err):
+                rc = self._run([str(renamed1), '--more', str(looping), 'page-2'])
+
+        self.assertEqual(rc, EXIT_ERRORS)
+        text = err.getvalue()
+        self.assertIn('symlink loop', text)
+
     def test_dna_source_marked_restricted_and_requires_dna_root(self) -> None:
         outside = self.archive / 'documents' / 'census' / 'kit.txt'
         outside.write_text('x', encoding='utf-8')

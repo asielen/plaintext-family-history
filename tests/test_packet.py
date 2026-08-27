@@ -1668,6 +1668,62 @@ class PacketTests(unittest.TestCase):
         self.assertEqual(
             packet._redact_asset_path('/data/home/report.pdf'), 'report.pdf')
 
+    def test_redact_asset_path_macos_volume_mount_point_root(self):
+        """`/Volumes/<name>` is a macOS mount point, exactly as guaranteed
+        to be a directory - never a file - as `/Users/<name>`: every mounted
+        volume (local or network) appears there. Adversarial review, round 8
+        audit: this shape used to fall through to the ordinary basename
+        extraction, showing the volume's own name as if it were a file."""
+        self.assertEqual(
+            packet._redact_asset_path('/Volumes/andrew_sielen'), '(unnamed path)')
+        self.assertEqual(
+            packet._redact_asset_path('/Volumes/andrew_sielen/'), '(unnamed path)')
+        # A real file living ON a mounted volume is unaffected - still just
+        # a normal, useful basename.
+        self.assertEqual(
+            packet._redact_asset_path('/Volumes/ExternalDrive/report.pdf'), 'report.pdf')
+
+    def test_redact_asset_path_unicode_separator_lookalikes_still_redact(self):
+        """A Unicode character that visually resembles `/` or `\\` but isn't
+        one defeats `PureWindowsPath`'s parsing and the leading-character
+        checks alike, which recognize only the two real ASCII separators -
+        collapsing a multi-component path into what looks like a single
+        opaque "basename" and shipping the owner's username and full
+        directory structure straight through instead of a redacted basename
+        (adversarial review, round 8 audit). Each of these starts with a
+        REAL `/`, so `looks_foreign` already catches it - the leak is
+        specifically in how much of the path counts as the "basename" once
+        the homoglyph separators inside it are (or aren't) recognized."""
+        self.assertEqual(
+            packet._redact_asset_path('/Users⁄andrew_sielen⁄secret.pdf'),
+            'secret.pdf')
+        self.assertEqual(
+            packet._redact_asset_path('/Users／andrew_sielen／secret.pdf'),
+            'secret.pdf')
+        self.assertEqual(
+            packet._redact_asset_path('/Users∕andrew_sielen∕secret.pdf'),
+            'secret.pdf')
+
+    def test_redact_asset_path_unicode_separator_lookalike_as_the_very_first_character(self):
+        """The harder direction of the same bug: a path that is ENTIRELY
+        homoglyph-separated, with no real ASCII separator anywhere - not
+        even leading - never trips `looks_foreign` at all without
+        normalizing first, so the whole thing used to pass through
+        completely unredacted rather than merely under-redacted."""
+        self.assertEqual(
+            packet._redact_asset_path('⁄Users⁄andrew_sielen⁄secret.pdf'),
+            'secret.pdf')
+
+    def test_redact_asset_path_unicode_lookalike_in_an_ordinary_alias_is_untouched(self):
+        """The normalization used to classify/split a foreign path must
+        never leak into what is actually SHOWN for an ordinary, already-
+        portable alias - a relative alias containing one of these
+        characters as genuine text (not functioning as a separator) is
+        returned completely unchanged, not silently rewritten."""
+        self.assertEqual(
+            packet._redact_asset_path('documents/receipts/1⁄dividend.pdf'),
+            'documents/receipts/1⁄dividend.pdf')
+
     def test_redact_asset_path_still_passes_through_ordinary_aliases(self):
         """The character-level check must not become so eager it starts
         redacting normal, safe relative aliases."""

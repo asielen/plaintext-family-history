@@ -4587,16 +4587,35 @@ def _resolve_input_file(
     Returns (resolved_path, None) on a hit, or (None, message) on a miss; the
     message names every location searched plus the next step, because a bare
     "file not found" leaves a non-technical user nowhere to go.
+
+    Raises `ProcessError` instead when RESOLVING the path itself - not
+    finding it - is what fails: a symlink loop under either candidate
+    location (adversarial review of PR #170, extended - every other
+    containment/resolution check in this file already distinguishes "not
+    there" from "could not even be checked because of a broken symlink" via
+    `_resolve_hits_symlink_loop`; this is the one caller of a bare
+    `Path.resolve()` in the whole module that still did not, so a symlink
+    loop under the very first file a user names crashed with a raw,
+    unhelpful `RuntimeError` before any of that hardening ever ran).
     """
     def found(p: Path) -> bool:
         return p.is_file() if require_file else p.exists()
 
+    def resolved(p: Path, *, where: str) -> Path:
+        if _resolve_hits_symlink_loop(p):
+            raise ProcessError(
+                f'{what} could not be resolved {where}: {raw} - this looks '
+                'like a symlink loop, not a missing file. Find and fix (or '
+                'remove) the broken symlink, then retry.'
+            )
+        return p.resolve()
+
     raw_path = Path(raw)
-    primary = raw_path.resolve()
+    primary = resolved(raw_path, where='as typed')
     if found(primary):
         return primary, None
     if not raw_path.is_absolute():
-        retry = (archive_root / raw_path).resolve()
+        retry = resolved(archive_root / raw_path, where='inside your archive')
         # retry == primary when the command already runs from the archive root
         # itself; a second look at the same spot would name one place twice.
         if retry != primary:
@@ -4832,7 +4851,11 @@ def _run_process(args: argparse.Namespace) -> int:
     # is forgiving: a relative path that misses from here is retried under the
     # archive root, so the cheat-sheet spelling ("inbox/scan.jpg" typed from
     # the workshop folder) just works.
-    file_path, path_error = _resolve_input_file(args.file, archive_root)
+    try:
+        file_path, path_error = _resolve_input_file(args.file, archive_root)
+    except ProcessError as e:
+        print(f'ERROR: {e}', file=sys.stderr)
+        return EXIT_ERRORS
     if file_path is None:
         print(f'ERROR: {path_error}', file=sys.stderr)
         return EXIT_ERRORS
