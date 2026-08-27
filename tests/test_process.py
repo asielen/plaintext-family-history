@@ -1500,6 +1500,228 @@ class ProcessTestCase(unittest.TestCase):
         self.assertFalse(changed)  # MORE restrictive than dna - never downgraded
         self.assertEqual(new_text, by_request)
 
+    # ── Issue #169, finding 1 ──────────────────────────────────────────────
+    # A Codex P2 from PR #161's review, tracked rather than fixed at the
+    # time: `restricted:` may itself be a valid multi-line YAML block scalar
+    # (`restricted: >-` with an indented continuation on the next line). The
+    # old single-line replace rewrote only the header, leaving the
+    # continuation orphaned in the frontmatter - malformed YAML that still
+    # reports success.
+
+    def test_force_dna_restriction_text_replaces_block_scalar_span(self) -> None:
+        # `restricted: >-` / `true` (folded block scalar) is valid YAML that
+        # parses to the string 'true' - _restricted_type_of reads that as
+        # 'plain', i.e. not yet DNA-sufficient, so the upgrade must fire.
+        block_scalar = (
+            '---\nid: s-1234567890\ntitle: A Letter\n'
+            'restricted: >-\n  true\nnote: kept\n---\n## Claims\n'
+        )
+        new_text, changed = process._force_dna_restriction_text(block_scalar)
+        self.assertTrue(changed)
+        reparsed = process.parse_frontmatter_strict(new_text)
+        self.assertIsNotNone(reparsed)
+        self.assertEqual(reparsed['restricted'], 'dna')
+        self.assertEqual(reparsed['id'], 's-1234567890')
+        self.assertEqual(reparsed['note'], 'kept')  # untouched sibling field
+        # No orphaned continuation line left behind: exactly one line opens
+        # with 'restricted:' and it is the single rewritten line.
+        lines = new_text.split('\n')
+        restricted_lines = [ln for ln in lines if ln.strip() == 'restricted: dna']
+        self.assertEqual(restricted_lines, ['restricted: dna'])
+        self.assertNotIn('  true', lines)
+
+    def test_force_dna_restriction_text_replaces_digit_before_chomp_block_scalar_span(
+            self) -> None:
+        # YAML permits the block scalar's indentation indicator (a digit)
+        # and its chomping indicator (+/-) in EITHER order - `|2-` and `|-2`
+        # mean the same thing. The header regex originally only accepted
+        # chomp-then-digit; this is the other order (adversarial review,
+        # round-2 audit - a real gap, though the belt-and-suspenders
+        # re-parse below already caught it by accident before this
+        # tightening, via YAML's own line-folding of the orphaned
+        # continuation).
+        block_scalar = (
+            '---\nid: s-1234567890\ntitle: A Letter\n'
+            'restricted: |2-\n  true\nnote: kept\n---\n## Claims\n'
+        )
+        new_text, changed = process._force_dna_restriction_text(block_scalar)
+        self.assertTrue(changed)
+        reparsed = process.parse_frontmatter_strict(new_text)
+        self.assertIsNotNone(reparsed)
+        self.assertEqual(reparsed['restricted'], 'dna')
+        self.assertEqual(reparsed['note'], 'kept')
+        lines = new_text.split('\n')
+        self.assertEqual(
+            [ln for ln in lines if ln.strip() == 'restricted: dna'],
+            ['restricted: dna'])
+        self.assertNotIn('  true', lines)
+
+    def test_force_dna_restriction_text_replaces_literal_block_scalar_span_crlf(self) -> None:
+        # Same shape with the `|` (literal) block style and CRLF line
+        # endings, to confirm the span-removal keeps this function's own
+        # documented CRLF-faithful promise even when it has to drop lines
+        # from the middle of the frontmatter, not just rewrite one in place.
+        block_scalar = (
+            '---\r\nid: s-1234567890\r\ntitle: A Letter\r\n'
+            'restricted: |\r\n  yes\r\n  really\r\n---\r\n## Claims\r\n'
+        )
+        new_text, changed = process._force_dna_restriction_text(block_scalar)
+        self.assertTrue(changed)
+        self.assertNotIn('\n', new_text.replace('\r\n', ''))  # every line still CRLF
+        reparsed = process.parse_frontmatter_strict(new_text)
+        self.assertIsNotNone(reparsed)
+        self.assertEqual(reparsed['restricted'], 'dna')
+        self.assertNotIn('yes', new_text)
+        self.assertNotIn('really', new_text)
+
+    # ── Issue #169 followup review, finding 5 ─────────────────────────────
+    # A block scalar's content sits at ONE indentation level, established by
+    # its own first non-blank continuation line - a line indented LESS than
+    # that, but still indented relative to column 0, sits OUTSIDE the scalar
+    # entirely: valid YAML, most often a human's own comment placed at a
+    # shallower indent than the value itself. The old continuation-consuming
+    # loop swallowed any whitespace-prefixed line regardless of how little it
+    # was indented, so replacing the span silently deleted that comment even
+    # though the resulting YAML was still perfectly valid - nothing the
+    # safety re-parse could catch.
+
+    def test_force_dna_restriction_text_preserves_outdented_comment(self) -> None:
+        block_scalar = (
+            '---\nid: s-1234567890\ntitle: A Letter\n'
+            'restricted: |\n  true\n # a human comment, one space indent\n'
+            'note: kept\n---\n## Claims\n'
+        )
+        # Confirm the premise: this really is valid YAML, and the comment
+        # line is genuinely OUTSIDE the restricted: scalar already - it does
+        # not become part of the value, nor break parsing.
+        before = process.parse_frontmatter_strict(block_scalar)
+        self.assertEqual(before['restricted'], 'true\n')
+        self.assertEqual(before['note'], 'kept')
+
+        new_text, changed = process._force_dna_restriction_text(block_scalar)
+        self.assertTrue(changed)
+        self.assertIn('# a human comment, one space indent', new_text)
+        reparsed = process.parse_frontmatter_strict(new_text)
+        self.assertIsNotNone(reparsed)
+        self.assertEqual(reparsed['restricted'], 'dna')
+        self.assertEqual(reparsed['note'], 'kept')
+
+    # ── Issue #169 followup review, finding 2 ─────────────────────────────
+    # YAML permits a "node property" - an anchor (`&name`) and/or a type tag
+    # (`!!str`, or a bare/custom `!tag`) - to precede the block-scalar
+    # indicator on the SAME line: `restricted: &privacy >-` and
+    # `restricted: !!str |` are both valid, hand-authored YAML. The regex
+    # only recognized `[|>]` as the very first character of the value, so it
+    # never even detected these as block-scalar headers at all -
+    # `_frontmatter_key_span` fell back to header-only replacement, and the
+    # belt-and-suspenders re-parse then refused (raised ProcessError) rather
+    # than hand back corrupted frontmatter - reproducing the ORIGINAL #169
+    # bug's shape as a false REFUSAL (attaching a DNA file fails outright)
+    # instead of silent corruption.
+
+    def test_force_dna_restriction_text_replaces_anchored_block_scalar_span(self) -> None:
+        block_scalar = (
+            '---\nid: s-1234567890\ntitle: A Letter\n'
+            'restricted: &privacy >-\n  true\nnote: kept\n---\n## Claims\n'
+        )
+        # Confirm the premise: PyYAML really does accept this as valid YAML.
+        self.assertEqual(
+            process.parse_frontmatter_strict(block_scalar)['restricted'], 'true')
+
+        new_text, changed = process._force_dna_restriction_text(block_scalar)
+        self.assertTrue(changed)
+        reparsed = process.parse_frontmatter_strict(new_text)
+        self.assertIsNotNone(reparsed)
+        self.assertEqual(reparsed['restricted'], 'dna')
+        self.assertEqual(reparsed['note'], 'kept')
+        lines = new_text.split('\n')
+        # Issue #169 followup review, finding 1: the anchor itself is kept on
+        # the replacement line (not bare `restricted: dna`) so an alias
+        # elsewhere in the document that points at &privacy stays valid -
+        # see test_force_dna_restriction_text_preserves_anchor_for_alias below
+        # for the end-to-end alias-resolution proof.
+        self.assertEqual(
+            [ln for ln in lines if ln.strip() == 'restricted: &privacy dna'],
+            ['restricted: &privacy dna'])
+        self.assertNotIn('  true', lines)
+
+    def test_force_dna_restriction_text_replaces_tagged_block_scalar_span(self) -> None:
+        block_scalar = (
+            '---\nid: s-1234567890\ntitle: A Letter\n'
+            'restricted: !!str |\n  true\nnote: kept\n---\n## Claims\n'
+        )
+        self.assertEqual(
+            process.parse_frontmatter_strict(block_scalar)['restricted'], 'true\n')
+
+        new_text, changed = process._force_dna_restriction_text(block_scalar)
+        self.assertTrue(changed)
+        reparsed = process.parse_frontmatter_strict(new_text)
+        self.assertIsNotNone(reparsed)
+        self.assertEqual(reparsed['restricted'], 'dna')
+        self.assertEqual(reparsed['note'], 'kept')
+        lines = new_text.split('\n')
+        self.assertEqual(
+            [ln for ln in lines if ln.strip() == 'restricted: dna'],
+            ['restricted: dna'])
+        self.assertNotIn('  true', lines)
+
+    def test_force_dna_restriction_text_replaces_anchor_and_tag_block_scalar_span(
+            self) -> None:
+        # YAML allows both node properties on one node, in either order -
+        # confirm the combined anchor+tag form is recognized too.
+        block_scalar = (
+            '---\nid: s-1234567890\ntitle: A Letter\n'
+            'restricted: &privacy !!str >-\n  true\nnote: kept\n---\n## Claims\n'
+        )
+        self.assertEqual(
+            process.parse_frontmatter_strict(block_scalar)['restricted'], 'true')
+
+        new_text, changed = process._force_dna_restriction_text(block_scalar)
+        self.assertTrue(changed)
+        reparsed = process.parse_frontmatter_strict(new_text)
+        self.assertIsNotNone(reparsed)
+        self.assertEqual(reparsed['restricted'], 'dna')
+        self.assertEqual(reparsed['note'], 'kept')
+        lines = new_text.split('\n')
+        # Same anchor-preservation as the anchor-only case above (issue #169
+        # followup review, finding 1) - the tag is dropped (nothing aliases a
+        # tag), but the anchor survives on the replacement line.
+        self.assertEqual(
+            [ln for ln in lines if ln.strip() == 'restricted: &privacy dna'],
+            ['restricted: &privacy dna'])
+        self.assertNotIn('  true', lines)
+
+    # ── Issue #169 followup review, finding 1 ─────────────────────────────
+    # Fresh evidence beyond the anchor-only-span tests above: a VALID alias
+    # elsewhere in the same frontmatter that points at the anchor being
+    # replaced. Dropping the anchor along with the old value would leave that
+    # alias resolving to nothing - invalid YAML the belt-and-suspenders
+    # re-parse would then (correctly, but unhelpfully) refuse, even though
+    # nothing the human wrote was ever wrong.
+
+    def test_force_dna_restriction_text_preserves_anchor_for_alias(self) -> None:
+        block_scalar = (
+            '---\nid: s-1234567890\ntitle: A Letter\n'
+            'restricted: &privacy >-\n  true\nnote: *privacy\n---\n## Claims\n'
+        )
+        # Confirm the premise: a real YAML parser resolves the alias to
+        # whatever the anchor currently points at.
+        before = process.parse_frontmatter_strict(block_scalar)
+        self.assertEqual(before['restricted'], 'true')
+        self.assertEqual(before['note'], 'true')
+
+        new_text, changed = process._force_dna_restriction_text(block_scalar)
+        self.assertTrue(changed)
+        reparsed = process.parse_frontmatter_strict(new_text)
+        self.assertIsNotNone(reparsed)
+        # The record still parses at all - the whole point of this finding -
+        # restricted: reads back as 'dna', and the alias tracks it: `note`
+        # resolves to 'dna' too, exactly as real YAML/anchor semantics say it
+        # should (the field's content was always "whatever restricted says"),
+        # not a bug this fix introduces.
+        self.assertEqual(reparsed['restricted'], 'dna')
+        self.assertEqual(reparsed['note'], 'dna')
+
     def test_more_type_dna_forces_restriction_on_unrestricted_source(self) -> None:
         # The P1 scenario itself: attach a DNA file, via --more --type dna,
         # to an EXISTING source that started out unrestricted.
@@ -1602,6 +1824,53 @@ class ProcessTestCase(unittest.TestCase):
         self.assertEqual(rec['restricted'], 'dna')
         self.assertEqual(len(rec['files']), 2)  # not duplicated
 
+    def test_more_type_dna_attach_replaces_block_scalar_restricted_span(self) -> None:
+        # Issue #169, finding 1, end-to-end through `--more --type dna`: a
+        # source whose `restricted:` was hand-authored as a multi-line YAML
+        # block scalar must come out with a clean single-line
+        # `restricted: dna` and no orphaned continuation line - not the
+        # malformed frontmatter the old single-line replace produced while
+        # still reporting success.
+        primary = self.archive / 'documents' / 'census' / 'family-letter3.txt'
+        primary.write_text('Dear cousin,', encoding='utf-8')
+        self.assertEqual(self._run([str(primary), '--type', 'letter']), EXIT_CLEAN)
+        renamed = next((self.archive / 'documents' / 'census').glob('family-letter3*_S-*.txt'))
+        record = next((self.archive / 'sources' / 'letter').glob('*_S-*.md'))
+
+        # Hand-author a valid multiline `restricted:` block scalar into the
+        # freshly scaffolded record, as a human editing the record directly
+        # might (the scenario Codex's review flagged).
+        text = record.read_text(encoding='utf-8')
+        self.assertIn('---\n', text)
+        head, _, tail = text.partition('---\n')
+        # head is '' (fence opens the file); split tail at its own closing
+        # fence to insert a block-scalar restricted: line inside the frontmatter.
+        body, _, rest = tail.partition('\n---\n')
+        text = f'---\n{body}\nrestricted: >-\n  true\n---\n{rest}'
+        record.write_text(text, encoding='utf-8')
+        meta = process.parse_frontmatter_strict(record.read_text(encoding='utf-8'))
+        self.assertEqual(meta['restricted'], 'true')  # block scalar reads as a plain string
+
+        (self.archive / 'inbox').mkdir()
+        kit = self.archive / 'inbox' / 'kit3.txt'
+        kit.write_text('data', encoding='utf-8')
+
+        rc = self._run([str(renamed), '--more', str(kit), 'attachment', '--type', 'dna'])
+        self.assertEqual(rc, EXIT_CLEAN)
+
+        final_text = record.read_text(encoding='utf-8')
+        reparsed = process.parse_frontmatter_strict(final_text)
+        self.assertIsNotNone(reparsed)  # still valid YAML, not malformed
+        self.assertEqual(reparsed['restricted'], 'dna')
+        rec = read_record(record)['meta']
+        self.assertEqual(rec['restricted'], 'dna')
+        self.assertEqual(len(rec['files']), 2)
+        # No orphaned continuation line ('  true') left dangling in the file.
+        lines = final_text.split('\n')
+        self.assertNotIn('  true', lines)
+        restricted_lines = [ln for ln in lines if ln.strip() == 'restricted: dna']
+        self.assertEqual(restricted_lines, ['restricted: dna'])
+
     def test_more_without_dna_type_never_touches_restriction(self) -> None:
         # Scope guard: a --more attach with no --type (or a non-dna --type)
         # must never add a restricted: marker - only an explicit --type dna
@@ -1619,6 +1888,195 @@ class ProcessTestCase(unittest.TestCase):
         rc = self._run([str(renamed), '--more', str(extra), 'page-2'])
         self.assertEqual(rc, EXIT_CLEAN)
         self.assertNotIn('restricted', read_record(record)['meta'])
+
+    # ── Issue #169 followup review, findings 3 and 4 ──────────────────────
+    # Finding #2's own fix widened `_BLOCK_SCALAR_HEADER_RE` enough that a
+    # naturally hand-authored, still-refusable `restricted:` shape is no
+    # longer easy to construct - so these tests force the refusal
+    # deterministically by monkeypatching `_force_dna_restriction_text`
+    # itself, exactly as the review comments anticipated.
+
+    def test_more_type_dna_dry_run_reports_same_refusal_as_live(self) -> None:
+        # Finding #3: on the documents-root --more --type dna path, the
+        # rewrite validation used to run only AFTER the dry-run branch had
+        # already returned clean - so --dry-run promised a restriction
+        # update the live run could not actually deliver whenever
+        # _force_dna_restriction_text would refuse. Confirm --dry-run now
+        # reports the SAME refusal the live run gives, instead of exiting
+        # clean and letting the live run begin the rename and then fail.
+        primary = self.archive / 'documents' / 'census' / 'refuse-letter.txt'
+        primary.write_text('Dear cousin,', encoding='utf-8')
+        self.assertEqual(self._run([str(primary), '--type', 'letter']), EXIT_CLEAN)
+        renamed = next((self.archive / 'documents' / 'census').glob('refuse-letter*_S-*.txt'))
+        record = next((self.archive / 'sources' / 'letter').glob('*_S-*.md'))
+
+        (self.archive / 'inbox').mkdir()
+        kit = self.archive / 'inbox' / 'refuse-kit.txt'
+        kit.write_text('data', encoding='utf-8')
+
+        def _refuse(record_text, *, record_label=None):
+            raise process.ProcessError('refusing: simulated unsafe restricted: rewrite')
+
+        orig = process._force_dna_restriction_text
+        process._force_dna_restriction_text = _refuse
+        try:
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                rc = self._run([str(renamed), '--more', str(kit), 'attachment',
+                                 '--type', 'dna', '--dry-run'])
+            self.assertEqual(rc, EXIT_ERRORS)
+            self.assertIn('simulated unsafe restricted', err.getvalue())
+            self.assertTrue(kit.exists())  # not moved
+            self.assertNotIn('restricted', read_record(record)['meta'])  # nothing written
+
+            err2 = io.StringIO()
+            with contextlib.redirect_stderr(err2):
+                rc_live = self._run(
+                    [str(renamed), '--more', str(kit), 'attachment', '--type', 'dna'])
+            self.assertEqual(rc_live, EXIT_ERRORS)
+            self.assertIn('simulated unsafe restricted', err2.getvalue())
+        finally:
+            process._force_dna_restriction_text = orig
+        self.assertTrue(kit.exists())  # still not moved after the live refusal
+        self.assertNotIn('restricted', read_record(record)['meta'])
+        self.assertEqual(len(read_record(record)['meta']['files']), 1)  # no new entry
+
+    def test_more_type_dna_photo_preflights_restriction_before_embed(self) -> None:
+        # Finding #4 (photo path): the restriction rewrite's validation used
+        # to run AFTER the exiftool SOURCE: embed - an irreversible-ish
+        # mutation that then needed rollback if the rewrite was refused.
+        # Force a refusal and confirm the embed is never even attempted, not
+        # "attempted then rolled back".
+        store = self._install_photo_store()
+        front = self.archive / 'photos' / '1880' / 'dna-card.jpg'
+        front.write_bytes(b'\xff\xd8\xff')
+        self.assertEqual(self._run([str(front)]), EXIT_CLEAN)
+        record = next((self.archive / 'sources' / 'photos').glob('*_S-*.md'))
+
+        kit = self.archive / 'photos' / '1880' / 'dna-card-kit.jpg'
+        kit.write_bytes(b'\xff\xd8\xff')
+
+        def _refuse(record_text, *, record_label=None):
+            raise process.ProcessError('refusing: simulated unsafe restricted: rewrite')
+
+        orig = process._force_dna_restriction_text
+        process._force_dna_restriction_text = _refuse
+        try:
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                rc = self._run(
+                    [str(front), '--more', str(kit), 'attachment', '--type', 'dna'])
+        finally:
+            process._force_dna_restriction_text = orig
+
+        self.assertEqual(rc, EXIT_ERRORS)
+        self.assertIn('simulated unsafe restricted', err.getvalue())
+        # The embed must never have happened - no SOURCE: keyword landed on
+        # the kit file, not "embedded then removed on rollback".
+        self.assertEqual(store.read(kit), [])
+        self.assertNotIn('restricted', read_record(record)['meta'])
+        self.assertEqual(len(read_record(record)['meta']['files']), 1)  # no new entry
+
+    def test_more_type_dna_document_preflights_restriction_before_rename(self) -> None:
+        # Finding #4 (documents counterpart): the restriction rewrite's
+        # validation used to run AFTER the file was already renamed into
+        # place. Force a refusal and confirm the rename is never even
+        # attempted - spying on Path.rename itself, since an end-state check
+        # alone cannot distinguish "never renamed" from "renamed, then
+        # successfully rolled back" (the whole point of this finding is that
+        # the old code depended on that rollback succeeding).
+        primary = self.archive / 'documents' / 'census' / 'refuse-doc.txt'
+        primary.write_text('Dear cousin,', encoding='utf-8')
+        self.assertEqual(self._run([str(primary), '--type', 'letter']), EXIT_CLEAN)
+        renamed = next((self.archive / 'documents' / 'census').glob('refuse-doc*_S-*.txt'))
+        record = next((self.archive / 'sources' / 'letter').glob('*_S-*.md'))
+
+        kit = self.archive / 'documents' / 'census' / 'refuse-kit.txt'
+        kit.write_text('data', encoding='utf-8')
+
+        def _refuse(record_text, *, record_label=None):
+            raise process.ProcessError('refusing: simulated unsafe restricted: rewrite')
+
+        rename_calls: list[tuple[str, str]] = []
+        orig_rename = Path.rename
+
+        def _spy_rename(self_path, target):
+            rename_calls.append((str(self_path), str(target)))
+            return orig_rename(self_path, target)
+
+        orig_force = process._force_dna_restriction_text
+        process._force_dna_restriction_text = _refuse
+        with unittest.mock.patch.object(Path, 'rename', _spy_rename):
+            try:
+                err = io.StringIO()
+                with contextlib.redirect_stderr(err):
+                    rc = self._run(
+                        [str(renamed), '--more', str(kit), 'attachment', '--type', 'dna'])
+            finally:
+                process._force_dna_restriction_text = orig_force
+
+        self.assertEqual(rc, EXIT_ERRORS)
+        self.assertIn('simulated unsafe restricted', err.getvalue())
+        self.assertEqual(rename_calls, [])  # never attempted, not undone
+        self.assertTrue(kit.exists())
+        self.assertNotIn('restricted', read_record(record)['meta'])
+        self.assertEqual(len(read_record(record)['meta']['files']), 1)  # no new entry
+
+    # ── Issue #169 followup review, finding 2 ─────────────────────────────
+    # `attach_more`'s own wrapper - not `_attach_more_engine` - relocates an
+    # inbox-sourced `--more` file into its asset root, and it does so BEFORE
+    # the engine (fixed by finding #4, tested just above) ever gets a chance
+    # to preflight the restricted: rewrite. So for a `--more` file that comes
+    # from inbox/ specifically, a DNA-rewrite refusal used to depend on the
+    # relocation's own undo succeeding to keep the file from being stranded
+    # outside inbox/ - "moved then undone" is not the same guarantee as
+    # "never moved", since the undo is itself a filesystem operation that can
+    # fail. This must be fixed ahead of that relocation, not just ahead of
+    # the engine's own mutations.
+
+    def test_more_type_dna_from_inbox_preflights_before_relocation(self) -> None:
+        primary = self.archive / 'documents' / 'census' / 'inbox-refuse.txt'
+        primary.write_text('Dear cousin,', encoding='utf-8')
+        self.assertEqual(self._run([str(primary), '--type', 'letter']), EXIT_CLEAN)
+        renamed = next((self.archive / 'documents' / 'census').glob('inbox-refuse*_S-*.txt'))
+        record = next((self.archive / 'sources' / 'letter').glob('*_S-*.md'))
+
+        (self.archive / 'inbox').mkdir()
+        kit = self.archive / 'inbox' / 'inbox-refuse-kit.txt'
+        kit.write_text('data', encoding='utf-8')
+
+        def _refuse(record_text, *, record_label=None):
+            raise process.ProcessError('refusing: simulated unsafe restricted: rewrite')
+
+        # Path.rename is how BOTH the inbox relocation (_relocate_from_inbox)
+        # and the engine's own document-branch move do their work - spying
+        # on it here catches either one, and the assertion below insists on
+        # neither ever having fired, not "fired then undone".
+        rename_calls: list[tuple[str, str]] = []
+        orig_rename = Path.rename
+
+        def _spy_rename(self_path, target):
+            rename_calls.append((str(self_path), str(target)))
+            return orig_rename(self_path, target)
+
+        orig_force = process._force_dna_restriction_text
+        process._force_dna_restriction_text = _refuse
+        with unittest.mock.patch.object(Path, 'rename', _spy_rename):
+            try:
+                err = io.StringIO()
+                with contextlib.redirect_stderr(err):
+                    rc = self._run(
+                        [str(renamed), '--more', str(kit), 'attachment', '--type', 'dna'])
+            finally:
+                process._force_dna_restriction_text = orig_force
+
+        self.assertEqual(rc, EXIT_ERRORS)
+        self.assertIn('simulated unsafe restricted', err.getvalue())
+        # The inbox relocation must never even have been attempted.
+        self.assertEqual(rename_calls, [])
+        self.assertTrue(kit.exists())  # still sitting in inbox/, not moved-then-undone
+        self.assertNotIn('restricted', read_record(record)['meta'])
+        self.assertEqual(len(read_record(record)['meta']['files']), 1)  # no new entry
 
     # ── classification + slug units ──────────────────────────────────────────
 
