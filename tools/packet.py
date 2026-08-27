@@ -199,7 +199,7 @@ import shutil
 import sqlite3
 import sys
 import zipfile
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -1081,6 +1081,209 @@ def _is_under_root(path: Path, root: Path) -> bool:
         return False
 
 
+# Unicode characters that visually resemble a real path separator, mapped to
+# the ASCII separator they impersonate - used only to detect and split a
+# foreign-looking path in `_redact_asset_path`/`_is_bare_directory_reference`
+# below, never to alter what gets shown for an ordinary alias (adversarial
+# review, round 8 audit; see `_redact_asset_path`'s docstring for the leak
+# this closes).
+_PATH_SEPARATOR_LOOKALIKES = {
+    '⁄': '/',    # FRACTION SLASH
+    '∕': '/',    # DIVISION SLASH
+    '／': '/',    # FULLWIDTH SOLIDUS
+    '⧸': '/',    # BIG SOLIDUS
+    '＼': '\\',   # FULLWIDTH REVERSE SOLIDUS
+    '⧵': '\\',   # REVERSE SOLIDUS OPERATOR
+}
+
+
+def _normalize_path_separator_lookalikes(raw: str) -> str:
+    """Replace any `_PATH_SEPARATOR_LOOKALIKES` character with the real
+    separator it impersonates. `Path.is_absolute()`, `PureWindowsPath`'s
+    parsing, and the leading-character checks in `_redact_asset_path` all
+    recognize ONLY ASCII `/`/`\\` - a path using a homoglyph instead splits
+    into far fewer components than it actually has, which is exactly the
+    "not really absolute"/"not really multi-part" confusion this whole
+    function exists to close for the real separators (see
+    `_redact_asset_path`'s own docstring on `Path.is_absolute()` and
+    `PureWindowsPath`). Applied only where a path is being SPLIT or
+    CLASSIFIED, never to what is actually shown for an ordinary, already-
+    portable alias."""
+    for lookalike, real in _PATH_SEPARATOR_LOOKALIKES.items():
+        raw = raw.replace(lookalike, real)
+    return raw
+
+
+def _redact_asset_path(raw: str) -> str:
+    """Render a `files:` entry for a packet's README: unchanged if it is a
+    normal relative alias ('documents/...', 'photos/...'), basename-only if
+    it looks like an absolute filesystem path or a home-directory shorthand.
+
+    A stored `files:` entry is meant to be a portable alias (TOOLING: "all
+    stored paths are alias-form"), but nothing stops a hand-edit from
+    replacing one with a real absolute path off the archive owner's own
+    machine - and a packet is exported to a family member outside that
+    machine (issue #170 finding 1, round-3 audit). `_resolve_source_files`
+    already keeps such an entry's ASSET out of the packet (the containment
+    check below), but before this it still copied the raw string straight
+    into `missing_assets`, and from there into README.txt - disclosing the
+    owner's username, drive layout, or private directory names even though
+    the file itself was correctly omitted. An ordinary alias is left exactly
+    as-is: that is useful diagnostic information a human can act on, not a
+    leak.
+
+    Checked by leading CHARACTER, not `Path(raw).is_absolute()` alone
+    (adversarial review, round-4 audit): a portable alias never starts with
+    a path separator, `~`, or a drive letter, so any of those on the raw
+    string is already disqualifying regardless of what the current OS's
+    `pathlib` considers absolute. `Path.is_absolute()` is platform-relative
+    and was the actual bug - `WindowsPath('/Users/name/secret.pdf').is_absolute()`
+    is `False` (Windows "absolute" requires a drive or UNC root), so a
+    POSIX-style absolute path leaked through whole on an archive owner's
+    Windows machine; `~andrew_sielen/Documents/secret.pdf` (shell home-
+    directory shorthand, which nothing here ever expands) leaked a literal
+    username through the exact same gap, on any OS, since `pathlib` never
+    treats `~` as meaningful on its own. `Path(raw).is_absolute()` is kept
+    as a catch-all fourth check for any OS-specific absolute form the three
+    character checks don't anticipate, not as the primary test anymore.
+
+    The BASENAME is extracted with `PureWindowsPath`, unconditionally, not
+    `Path` (Codex review, round-5 audit - the mirror-image of the bug just
+    above): this archive's packet can be built on any OS, and a `files:`
+    entry can name a foreign path from a DIFFERENT OS than the one doing
+    the building. `Path(raw)` resolves to whichever OS-specific class the
+    CURRENT host uses - on POSIX, `PosixPath('C:\\Users\\andrew\\secret.pdf').name`
+    never recognizes `\\` as a separator at all and returns the entire raw
+    string unchanged, shipping the username straight into README.txt on a
+    Linux/Mac-built packet (this is exactly what CI's Linux runners caught
+    - the prior fix's own new Windows-path tests only ever ran, and passed,
+    on the Windows machine that authored them). `PureWindowsPath` never
+    touches the filesystem and understands BOTH separator styles (`/` and
+    `\\`) plus drive letters and UNC roots on every host OS alike, so a
+    Windows-shaped foreign path redacts correctly when the packet is built
+    on POSIX, and a POSIX-shaped foreign path (forward-slash-separated)
+    still redacts correctly too - `PureWindowsPath` is a strict superset of
+    `PurePosixPath`'s separator handling for this purpose (real per-OS
+    filesystem calls are never made here, only string splitting to find the
+    trailing component).
+
+    A hand-edited entry can also be a genuine absolute path - no `~`
+    involved at all - that happens to END at a directory named after the
+    owner's username: `/Users/andrew_sielen/` or `C:\\Users\\andrew_sielen\\`
+    (Codex review, round-7 audit). Neither starts with `~`, so the round-6
+    bare-shorthand check above never sees them, and `PureWindowsPath(...).name`
+    still returns `'andrew_sielen'` - the last PATH COMPONENT, which here is
+    a directory (in fact the username itself), not a file. The general
+    invariant is checked directly, before basename extraction, by
+    `_is_bare_directory_reference`: see its docstring for the two
+    unambiguous shapes it recognizes.
+    """
+    if not raw:
+        return raw
+    # A Unicode character that visually resembles `/` or `\` but is neither
+    # (adversarial review, round 8 audit) defeats every check below at once:
+    # `Path.is_absolute()`, the leading-character checks just below, and
+    # `PureWindowsPath`'s own separator handling all recognize ONLY the two
+    # real ASCII separators, so a homoglyph-separated path collapses to far
+    # fewer "parts" than it actually has - `/Users⁄andrew_sielen⁄
+    # secret.pdf` looks foreign correctly (it still starts with a real `/`),
+    # but its basename then extracts as the entire remainder,
+    # `Users⁄andrew_sielen⁄secret.pdf` - the owner's username and
+    # full directory structure, not a redacted basename. Normalizing first
+    # closes this uniformly for `_is_bare_directory_reference` and the
+    # basename extraction below alike; the ORIGINAL `raw` is still what gets
+    # returned on the ordinary, non-foreign path, so a legitimate alias that
+    # happens to contain one of these characters as ordinary text (not as a
+    # separator) is never rewritten.
+    normalized = _normalize_path_separator_lookalikes(raw)
+    looks_foreign = (
+        normalized[0] in ('/', '\\')
+        or normalized[0] == '~'
+        or (len(normalized) > 1 and normalized[1] == ':')
+        or Path(normalized).is_absolute()
+    )
+    if not looks_foreign:
+        return raw
+    if _is_bare_directory_reference(normalized):
+        return '(unnamed path)'
+    name = PureWindowsPath(normalized).name or '(unnamed path)'
+    # A bare `~`/`~user` shorthand with NO separator anywhere in it (no
+    # trailing slash either - that shape is caught by
+    # `_is_bare_directory_reference` above) has nothing real for
+    # PureWindowsPath to extract, so `.name` returns the shorthand ITSELF
+    # unchanged (Codex review, round-6 audit): `~andrew_sielen` -> the same
+    # string back. That still ships the username straight into README.txt.
+    # Checking the EXTRACTED name for a leading `~` (rather than the raw
+    # string, which an earlier version of this fix did and which missed the
+    # trailing-slash shape - now handled separately above) catches this
+    # remaining variant: whatever PureWindowsPath handed back is still just
+    # the shorthand, not a real trailing component, whenever it still starts
+    # with `~`.
+    if name.startswith('~'):
+        return '(unnamed path)'
+    return name
+
+
+def _is_bare_directory_reference(raw: str) -> bool:
+    """True when `raw` names a directory, not a real file - so there is
+    nothing safe to show as a basename at all (Codex review, round-7 audit,
+    issue #170 finding 1).
+
+    Two shapes are unambiguous without ever touching the filesystem
+    (`_redact_asset_path` only ever does string splitting, ``real per-OS
+    filesystem calls are never made here`` per its own docstring):
+
+    - A trailing separator. Whatever follows the LAST separator in a path
+      that ENDS with one is empty by definition - there is no trailing file
+      component at all, only a directory. `/Users/andrew_sielen/` and
+      `C:\\Users\\andrew_sielen\\` are exactly this shape. This also
+      subsumes the bare-tilde-with-trailing-slash case the round-6 fix
+      handled as a special case of its own (`~andrew_sielen/`), so that
+      variant no longer needs separate handling.
+    - An absolute path that ends EXACTLY at a directory OS convention
+      guarantees is never a file - `/Users/<name>`, `/home/<name>`,
+      `C:\\Users\\<name>` (a user's home directory), or `/Volumes/<name>`
+      (a macOS mount point - every mounted volume, local or network,
+      appears here, and a mount point cannot itself be a file) - with
+      nothing after it and no trailing separator either. Dropping the
+      trailing slash from the shapes above reaches the identical leak
+      (`PureWindowsPath('/Users/andrew_sielen').name` is still
+      `'andrew_sielen'`) without tripping the check above, so it is
+      recognized on its own terms: `PureWindowsPath(raw).parts` has exactly
+      three components (the anchor, the convention name, and whatever comes
+      after it) only when the path stops immediately there. A real file
+      living somewhere under one of these (`/Users/andrew_sielen/secret.pdf`,
+      or anything deeper) has a fourth part and is unaffected - only the
+      bare root itself redacts.
+
+    A bare `~user` with no separator anywhere (`~andrew_sielen`, one part,
+    neither shape above) is NOT covered here - `_redact_asset_path` still
+    catches it separately, since the leading `~` is itself the tell.
+
+    Deliberately NOT attempted (adversarial review, round 8 audit): a
+    personal-storage path with no OS-guaranteed directory marker at all -
+    `/srv/backups/andrew_sielen`, `D:\\Backups\\andrew_sielen`,
+    `/mnt/nas/family-shares/andrew_sielen` - still shows its trailing
+    segment as a "basename" even when that segment happens to look like a
+    username. `Backups`/`srv`/an arbitrary NAS share name carries no OS
+    guarantee the way `Users`/`Volumes` does - the identical shape
+    (`D:\\Documents\\report.pdf`) is an ordinary, everyday FILE reference,
+    so treating every 3-part absolute path as a directory would silently
+    swallow real, useful diagnostic filenames right alongside the rare
+    genuine leak, with no way to tell the two apart without touching the
+    filesystem (something this function's own docstring rules out). A
+    fixed word-list of "backup-sounding" folder names would only ever cover
+    the specific examples it was written against, at the cost of exactly
+    that false-positive risk for everyone else - worse than the narrow gap
+    it would close. This one stays a known, accepted limitation rather than
+    a guess.
+    """
+    if raw.rstrip().endswith(('/', '\\')):
+        return True
+    parts = PureWindowsPath(raw).parts
+    return len(parts) == 3 and parts[1].lower() in ('users', 'home', 'volumes')
+
+
 def _resolve_source_files(
     conn: sqlite3.Connection,
     archive_root: Path,
@@ -1104,6 +1307,12 @@ def _resolve_source_files(
     configured documents or photos root before it is offered for copying;
     anything else is reported the same way a missing file already is, not
     silently included.
+
+    Every note below names the offending entry via `_redact_asset_path`, not
+    the raw stored string - an entry that is itself an absolute local path
+    (rather than a portable alias) is shown as a basename only, so the
+    README.txt these notes flow into never discloses the owner's username or
+    drive layout to whoever the packet is handed to (issue #170 finding 1).
     """
     if not source_ids:
         return {}, []
@@ -1117,17 +1326,24 @@ def _resolve_source_files(
     out: dict[str, list[Path]] = {}
     missing: list[str] = []
     for row in rows:
+        # Never echo the raw stored `files:` string into README.txt below -
+        # if it is a hand-edited absolute path rather than a portable alias,
+        # the raw string can carry the owner's username, drive layout, or
+        # private directory names (issue #170 finding 1, round-3 audit). An
+        # ordinary relative alias passes through unchanged; see
+        # `_redact_asset_path`.
+        shown_path = _redact_asset_path(str(row['path']))
         try:
             resolved = resolve_path(row['path'], fha_config, archive_root)
         except Exception as e:
             missing.append(
-                f'{fmt_id_display(row["source_id"])} asset {row["path"]!r} could not be resolved: {e}'
+                f'{fmt_id_display(row["source_id"])} asset {shown_path!r} could not be resolved: {e}'
             )
             continue
         try:
             contained = (_is_under_root(resolved, documents_root)
                          or _is_under_root(resolved, photos_root))
-        except RuntimeError as e:
+        except RuntimeError:
             # `_is_under_root` calls `.resolve()` on both `resolved` and the
             # configured root; if either traverses a symlink loop, `.resolve()`
             # raises RuntimeError rather than returning - and unlike
@@ -1140,10 +1356,16 @@ def _resolve_source_files(
             # resolution failure above already gets. Catch it here and give the
             # same treatment: excluded, with a message naming what it almost
             # certainly is (a corrupted or maliciously crafted symlink loop,
-            # not an ordinary missing/escaping path).
+            # not an ordinary missing/escaping path). The raw RuntimeError
+            # text is deliberately NOT included (issue #170 finding 1, round-3
+            # audit): `Path.resolve()` embeds the absolute, OS-resolved
+            # filename that looped in its message, which can carry the same
+            # username/drive-layout information `shown_path` above is already
+            # redacting - a fixed, generic phrase says exactly as much as a
+            # human handed this packet needs to know.
             missing.append(
-                f'{fmt_id_display(row["source_id"])} asset {row["path"]!r} could not be '
-                f'checked against the configured roots ({e}) - this looks like a symlink '
+                f'{fmt_id_display(row["source_id"])} asset {shown_path!r} could not be '
+                'checked against the configured roots - this looks like a symlink '
                 'loop, most likely from a corrupted or maliciously crafted filesystem '
                 'entry, and was left out of the packet. Find and fix or remove the '
                 'offending symlink, then build the packet again.'
@@ -1151,7 +1373,7 @@ def _resolve_source_files(
             continue
         if not contained:
             missing.append(
-                f'{fmt_id_display(row["source_id"])} asset {row["path"]!r} resolves outside '
+                f'{fmt_id_display(row["source_id"])} asset {shown_path!r} resolves outside '
                 'the configured documents/photos roots - this looks like a hand-edited '
                 'files: entry gone wrong (a \'..\' segment, or a doubled slash), and was '
                 'left out of the packet. Run `fha lint` and fix the entry by hand.'
@@ -1161,7 +1383,7 @@ def _resolve_source_files(
             out.setdefault(row['source_id'], []).append(resolved)
         else:
             missing.append(
-                f'{fmt_id_display(row["source_id"])} asset missing on disk: {row["path"]}'
+                f'{fmt_id_display(row["source_id"])} asset missing on disk: {shown_path}'
             )
     return out, missing
 

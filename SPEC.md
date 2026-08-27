@@ -641,11 +641,13 @@ Each `files:` entry may also carry an optional `date:` (EDTF) - that file's own 
 
 The frontmatter `people:` / `places:` are the human cross-link surface: link-valued so an Obsidian-only editor can cross-link by name and draw the graph edges, hand-editable, normalized to the stable `[[P-…|Name]]` / `[[L-…|Name]]` form by the tools. The claims block (§8) instead requires **bare** IDs - `persons: [P-…]`, `place: L-…` - because it is structured data in a fenced block; links live in the frontmatter, not the claims (§8.7). `places:` is optional and may be hand-added or linter-synced from the claims' `place:` fields.
 
-**Source type vocabulary** (controlled, expandable by logged decision - same pattern as claim types): `census` · `vital-record` · `newspaper` · `photo` · `interview` · `letter` · `military-record` · `land-record` · `probate` · `directory` · `dna` · `book` · `website` · `artifact` · `proof-argument` · `other` (+ free-text `subtype` when nothing fits).
+**Source type vocabulary** (controlled, expandable by logged decision - same pattern as claim types): `census` · `vital-record` · `newspaper` · `photo` · `interview` · `letter` · `military-record` · `land-record` · `probate` · `directory` · `dna` · `book` · `website` · `artifact` · `proof-argument` · `ephemera` · `other` (+ free-text `subtype` when nothing fits).
 
 **Proof-argument sources.** A conclusion resting on indirect or negative evidence is written as an **authored source**: `sources/proofs/{slug}_{S-id}.md`, `source_type: proof-argument`, `source_class: authored`.
 The body *is* the argument, citing the contributing claims and sources with normal `[[C-…]]`/`[[S-…]]` links (the linter verifies them); the concluded claim(s) live in the proof's own `## Claims` block - the proof is their source - typically with `evidence: indirect`.
 Biographies then cite the proof like any source.
+
+**Ephemera sources** (#114). Contextual or scene-setting material - period news, local color, general history - read, evaluated, and kept on purpose for texture or a future biography, but naming no one in the family: `source_type: ephemera`. Unlike every other type, `people:` is expected to stay **empty or near-empty by design**, not a research gap waiting to be filled, and `## Claims` is expected to stay empty too - the source exists for its `## Notes`/`## Stories` context value, not fact-claiming. A source that later turns out to name someone after all is simply re-typed to whatever fits (`newspaper`, `book`, …); nothing about `ephemera` is a one-way door.
 
 **DNA sources.** `source_type: dna`, **always** `restricted: true`.
 Fields: `tested_person:` (P-id), `provider:` (AncestryDNA, FamilyTreeDNA, …), `test_type:` (`autosomal` | `y-dna` | `mtdna`), optional kit notes; raw files live in `documents/dna/`.

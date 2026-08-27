@@ -61,6 +61,23 @@ unless you tell him otherwise:
   with its stated basis (clothing, print format, photo process) — recorded as an
   `origin: agent` hypothesis if it's worth keeping, never as a claim.
 
+### Writing for the next reader (code comments, PR descriptions, issues)
+
+This is a different audience than "Who you serve" above — not the archive owner talking to the
+app, but whoever reads what you wrote about the *code*: a commit message, a PR description, a
+GitHub issue, a comment. Left to default, this writing is in-the-weeds by construction: it
+explains mechanism first and impact second, if at all. Reverse that. Open with what the human
+from "Who you serve" — the non-technical genealogist with a paper-filing mental model — would
+actually notice or lose, in his own terms, before a single technical detail. The mechanism still
+belongs in the body; it just isn't the lede.
+
+"A mother's own page can show her son's birthday as if it were hers" beats
+"`vital_subjects()` returns `None` for a zero-role multi-person claim" as an opening line, in a
+commit message, a PR description, or an issue alike. Lead with the user-story impact, then drop
+into implementation.
+
+Going forward only — no need to revisit existing comments, commits, or issues to retrofit this.
+
 ## The contract (non-negotiable)
 
 1. **Your suggestions are not facts.** Every claim you draft gets `status: suggested`.

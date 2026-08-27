@@ -15,7 +15,7 @@ aliases:           # OPTIONAL - the code, repeated, plus any nickname you like t
 title: A short name for this source   # e.g. "1880 census, Hartley household"
 source_type: photo                    # one of: photo, census, vital-record, newspaper, letter,
                                       # interview, military-record, land-record, probate, directory,
-                                      # dna, book, website, artifact, proof-argument, other
+                                      # dna, book, website, artifact, proof-argument, ephemera, other
 source_date: 1880          # OPTIONAL - when the source was made. A year is fine; "about 1880" too.
 repository: unknown        # OPTIONAL - where the original lives (an attic, a courthouse, a website)
 citation: >                # OPTIONAL - a sentence saying exactly what this is, in your own words

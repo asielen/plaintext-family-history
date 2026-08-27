@@ -594,10 +594,19 @@ def _check_orphaned_back_photos(archive_root: Path, fha_config: dict,
     candidate paths: a back scan saved in a different CASE
     (`scan-BACK.jpg`) or a different EXTENSION (`scan-back.jpeg` beside a
     `.jpg` primary) is found the same way `fha process` finds it at import
-    time. A source that already lists a `role: back` file for that base_id
-    is skipped entirely - checked by the RECORDED role, not by re-deriving
-    one from the back file's own name, since a human may have filed a back
-    scan under a slightly different name than the grammar would predict.
+    time. A `role: back` file already listed for a base_id is recognized by
+    its RECORDED role, not by re-deriving one from the back file's own name
+    (a human may have filed a back scan under a slightly different name than
+    the grammar would predict) - but listing one back does not stop this
+    check from looking for MORE: `_find_back_on_disk` still runs for every
+    group regardless of whether it already has a listed back, and the
+    `listed` filter below drops only the candidate(s) actually named in
+    `files:`, so a SECOND, still-unlisted back-shaped file beside an
+    already-attached one is still reported (issue #169 followup review,
+    finding 3 - the earlier code exited the whole group the moment ANY back
+    was listed, so attaching one of two candidates per this very check's own
+    advice made the other invisible on every later run instead of surfacing
+    on its own as the advice promised).
 
     A copy-lettered listed file (`x-00100b.jpg` - TOOLING §6's copy-print
     grammar, #113) is skipped when building the base_id candidates: it names
@@ -635,7 +644,26 @@ def _check_orphaned_back_photos(archive_root: Path, fha_config: dict,
     moment it is run. That case routes to the missing-file recovery path
     instead, mirroring lint.py's own E011 guidance for a missing inventory
     file (`fha reconcile` re-ties a MOVED file by name; it cannot help a
-    truly deleted file or a changed `roots:` mapping).
+    truly deleted file or a changed `roots:` mapping). The missing-primary
+    check runs BEFORE the ambiguous-candidate branch below and covers BOTH
+    the one-candidate and 2+-candidate shapes (issue #169 followup review,
+    finding 6): a missing primary with multiple unlisted back candidates is
+    just as unable to support a real `fha process {primary} --more ...`
+    command as the one-candidate case is, so it gets the same reconciliation
+    recovery text rather than the ambiguity branch's own (would-be-broken,
+    for the identical reason) command suggestion.
+
+    The ambiguous-candidate finding (issue #169, finding 2) is counted and
+    reported SEPARATELY from the plain orphaned-back-scan count in the
+    structured `checks` list this function appends to (issue #169 followup
+    review, finding 5) - `attach each` is wrong advice when doctor could not
+    tell which candidate is real, so `ambiguous_back_photos` carries its own
+    count and its own next_step, distinct from `orphaned_back_photos`. Its
+    recovery text also never tells the human to rename or delete a file
+    inside the photos root to disambiguate (issue #169 followup review,
+    finding 1) - photos-root files are never renamed by this tool
+    (AGENTS.md), so the fix is always to attach the correct candidate, never
+    to touch the other one to make the finding go away.
     """
     sources_dir = archive_root / 'sources'
     if not sources_dir.is_dir():
@@ -645,8 +673,8 @@ def _check_orphaned_back_photos(archive_root: Path, fha_config: dict,
     except FhaConfigError:
         return EXIT_CLEAN          # no usable photos root: nothing to check
 
-    def _find_back_on_disk(parent_dir: Path, base_id: str) -> Path | None:
-        """Scan `parent_dir` for a `part_kind == 'back'` sibling sharing
+    def _find_back_on_disk(parent_dir: Path, base_id: str) -> list[Path]:
+        """Scan `parent_dir` for every `part_kind == 'back'` sibling sharing
         `base_id` (case-insensitive) - a LOCAL TWIN of `process.py`'s own
         `_find_back_sibling`, which scans a directory with the same
         `parse_media_filename` parser instead of hand-building one or two
@@ -667,21 +695,26 @@ def _check_orphaned_back_photos(archive_root: Path, fha_config: dict,
         primary). Both parse to `part_kind == 'back'` with the same
         `grouping_stem`, so the scan finds them.
 
-        Ambiguity (more than one candidate) is left alone here - returns
-        None, exactly like "nothing found" - rather than raised the way
-        `process.py`'s `_find_back_sibling` now refuses on ambiguity (#145
-        finding 4): that fix stops a ONE-TIME import from silently guessing.
-        This check instead re-scans an archive that may have been evolving
-        for years, on every `fha doctor` run; hard-refusing every run until
-        a human resolves the ambiguity would make doctor itself unusable for
-        an unrelated reason. A human looking at the finding's named primary
-        can still go resolve it by hand.
+        Returns every match, not just a lone one: ambiguity (more than one
+        candidate) is left for the CALLER to report as its own finding
+        (issue #169, finding 2) rather than resolved - or silently
+        refused - here. `process.py`'s `_find_back_sibling` now refuses on
+        ambiguity at import time (#145 finding 4), which is right for a
+        ONE-TIME import; this check instead re-scans an archive that may
+        have been evolving for years, on every `fha doctor` run, so
+        hard-refusing every run until a human resolves the ambiguity would
+        make doctor itself unusable for an unrelated reason. Collapsing
+        "two different unlisted candidates" into the same empty result as
+        "genuinely nothing found" would just trade that unusable-doctor
+        failure mode for a silently-clean one instead - so the caller gets
+        the full list and names every candidate in its finding, and a human
+        resolves it by hand from there.
         """
         base_id_norm = base_id.lower()
         try:
             siblings = list(parent_dir.iterdir())
         except OSError:
-            return None
+            return []
         matches = []
         for candidate in siblings:
             if not candidate.is_file():
@@ -691,9 +724,17 @@ def _check_orphaned_back_photos(archive_root: Path, fha_config: dict,
                 continue
             if grouping_stem(candidate_parsed).lower() == base_id_norm:
                 matches.append(candidate)
-        return matches[0] if len(matches) == 1 else None
+        return matches
 
     findings: list[str] = []
+    # Counted separately from `findings` (issue #169 followup review, finding
+    # 5): an ambiguous finding and a genuinely-resolvable orphaned one need
+    # DIFFERENT next-step advice ("attach each" is flatly wrong for an
+    # ambiguous pair - neither can be safely attached without a human
+    # choosing which is real), so a structured Result.data['checks'] consumer
+    # needs its own count and instruction for each, not one shared bucket
+    # that silently mislabels the ambiguous ones.
+    n_ambiguous = 0
     for record_path in sorted(sources_dir.rglob('*.md')):
         rec = read_record(record_path, on_decode_error=lambda p: None)
         if rec.get('undecodable') or rec.get('parse_errors'):
@@ -706,7 +747,6 @@ def _check_orphaned_back_photos(archive_root: Path, fha_config: dict,
         # (parent folder, base_id) -> one on-disk Path sharing that key, so two
         # same-named siblings from different folders are tracked independently.
         sample_path: dict[tuple[Path, str], Path] = {}
-        has_back: set[tuple[Path, str]] = set()   # keys the record already lists a back for
         for item in entries:
             if not isinstance(item, dict):
                 continue
@@ -723,53 +763,126 @@ def _check_orphaned_back_photos(archive_root: Path, fha_config: dict,
                 continue            # a copy-letter print - never a back candidate (#113)
             key = (on_disk.parent, grouping_stem(parsed))
             sample_path.setdefault(key, on_disk)
-            if str(item.get('role') or '').strip().lower() == 'back':
-                has_back.add(key)
 
         for (parent_dir, base_id), disk_path in sample_path.items():
-            if (parent_dir, base_id) in has_back:
-                continue
-            candidate = _find_back_on_disk(parent_dir, base_id)
-            if candidate is None:
-                continue
-            candidate_alias = path_to_alias(candidate, 'photos', fha_config, archive_root)
-            if candidate_alias in listed:
+            candidates = _find_back_on_disk(parent_dir, base_id)
+            # A candidate already listed under some OTHER role (an
+            # `attachment`, say, rather than `back`) is not orphaned - drop
+            # it before judging ambiguity, or a second, genuinely-unlisted
+            # candidate would be reported as "ambiguous" against a file
+            # that needs no attention at all.
+            unlisted = [
+                c for c in candidates
+                if path_to_alias(c, 'photos', fha_config, archive_root) not in listed
+            ]
+            if not unlisted:
                 continue
             primary_alias = path_to_alias(disk_path, 'photos', fha_config, archive_root)
-            if disk_path.is_file():
+            candidate_aliases = sorted(
+                path_to_alias(c, 'photos', fha_config, archive_root) for c in unlisted)
+
+            if not disk_path.is_file():
+                # #145 followup review, finding 5, and issue #169 followup
+                # review, finding 6: the LISTED primary is itself missing
+                # from disk (moved, deleted, or the roots: mapping changed),
+                # so `fha process {primary_alias} --more ...` would fail
+                # immediately - its positional FILE argument does not exist.
+                # This check runs BEFORE the ambiguity branch below (not
+                # after, and not only for the single-candidate case) so a
+                # missing primary with 2+ unlisted back candidates ALSO
+                # routes here rather than into the ambiguity branch's own
+                # `fha process {primary_alias} --more ...` suggestion, which
+                # would be exactly as broken for the same reason. Route to
+                # the missing-file recovery path instead, mirroring lint.py's
+                # own E011 guidance for a missing inventory file: `fha
+                # reconcile` re-ties a MOVED file automatically by matching
+                # name; it cannot help if the file is simply gone, or if
+                # roots: changed instead.
+                names = ', '.join(candidate_aliases)
+                what = (f'{names} sits' if len(candidate_aliases) == 1 else
+                        f'{len(candidate_aliases)} unlisted back-shaped files ({names}) sit')
                 findings.append(
-                    f'orphaned back scan: {candidate_alias} sits on disk but is not '
-                    f'listed in {record_path.name}\'s files:  next: attach it - '
-                    f'`{_LAUNCHER} process {shell_quote(primary_alias)} --more '
-                    f'{shell_quote(candidate_alias)} back --root "{archive_root}"`'
-                )
-            else:
-                # #145 followup review, finding 5: the LISTED primary is
-                # itself missing from disk (moved, deleted, or the roots:
-                # mapping changed), so `fha process {primary_alias} --more
-                # ...` would fail immediately - its positional FILE argument
-                # does not exist. Route to the missing-file recovery path
-                # instead, mirroring lint.py's own E011 guidance for a
-                # missing inventory file: `fha reconcile` re-ties a MOVED
-                # file automatically by matching name; it cannot help if the
-                # file is simply gone, or if roots: changed instead.
-                findings.append(
-                    f'orphaned back scan: {candidate_alias} sits on disk, but its listed '
+                    f'orphaned back scan: {what} on disk, but its listed '
                     f"primary {primary_alias} is missing from disk, so {record_path.name}'s "
                     'own entry needs fixing first - next: if the primary was moved within '
                     f'the photos root, run `{_LAUNCHER} reconcile --root "{archive_root}"` '
                     '(preview with --dry-run) to re-tie it, then re-run `fha doctor`; if it '
                     'was deleted or the roots: mapping changed, fix the record by hand.'
                 )
+                continue
+
+            if len(unlisted) > 1:
+                # Issue #169, finding 2: two (or more) DIFFERENT unlisted
+                # back candidates (e.g. `scan-back.jpg` and `scan_back.jpeg`)
+                # must not read as "no back scan" - `_find_back_on_disk`'s
+                # own docstring explains why doctor still refuses to GUESS
+                # which one is real; this finding instead names all of them
+                # so a human can tell doctor is not clean here.
+                n_ambiguous += 1
+                names = ', '.join(candidate_aliases)
+                # One complete, fully-quoted command PER candidate (issue #169
+                # followup review, finding 4) - the earlier text spliced the
+                # literal placeholder `<the file>` into the middle of a
+                # command, even though this whole report is introduced with
+                # "every `next:` below is a command you can copy" (the
+                # preamble printed once at the top of `fha doctor`'s output).
+                # Copying `<the file>` verbatim hands a shell `<the` as input
+                # redirection and `fha` never even runs. Every candidate's
+                # real alias is already in hand here, so there is no need for
+                # a fill-in-the-blank placeholder at all - name the command
+                # for each candidate and let the human pick which one to run.
+                commands = ' or '.join(
+                    f'`{_LAUNCHER} process {shell_quote(primary_alias)} --more '
+                    f'{shell_quote(alias)} back --root "{archive_root}"`'
+                    for alias in candidate_aliases
+                )
+                findings.append(
+                    f'ambiguous back scan: {len(candidate_aliases)} unlisted back-shaped '
+                    f"files sit on disk for {primary_alias} in {record_path.name}'s files: "
+                    f'({names}) - doctor cannot tell which (if any) is the real back scan, '
+                    'so it is not attaching either  next: figure out which one is right, '
+                    f'then run the matching command: {commands} - never rename a file '
+                    'under the photos root to force a resolution (AGENTS.md: photos are '
+                    'never renamed); once the real one is attached and listed under role: '
+                    "back, the other stops matching this ambiguous pairing and its own "
+                    'unlisted-file finding surfaces on its own on the next `fha doctor` run '
+                    'to investigate from there.'
+                )
+                continue
+
+            candidate_alias = candidate_aliases[0]
+            findings.append(
+                f'orphaned back scan: {candidate_alias} sits on disk but is not '
+                f'listed in {record_path.name}\'s files:  next: attach it - '
+                f'`{_LAUNCHER} process {shell_quote(primary_alias)} --more '
+                f'{shell_quote(candidate_alias)} back --root "{archive_root}"`'
+            )
 
     if not findings:
         return EXIT_CLEAN
     lines.extend(findings)
-    checks.append({
-        'id': 'orphaned_back_photos', 'status': 'warn',
-        'detail': f'{len(findings)} back scan(s) on disk but unlisted',
-        'next_step': 'attach each with `fha process <primary> --more <back file> back`',
-    })
+    n_orphaned = len(findings) - n_ambiguous
+    if n_orphaned:
+        checks.append({
+            'id': 'orphaned_back_photos', 'status': 'warn',
+            'detail': f'{n_orphaned} back scan(s) on disk but unlisted',
+            'next_step': 'attach each with `fha process <primary> --more <back file> back`',
+        })
+    if n_ambiguous:
+        # A separate check id, not folded into orphaned_back_photos above
+        # (issue #169 followup review, finding 5): "attach each" is wrong
+        # advice for an ambiguous pair - neither candidate can be safely
+        # attached without a human first deciding which one is the real back
+        # scan, so a headless consumer of Result.data['checks'] needs its
+        # own count and its own, non-"attach each" next step here.
+        checks.append({
+            'id': 'ambiguous_back_photos', 'status': 'warn',
+            'detail': f'{n_ambiguous} primary(ies) with 2+ unlisted back-shaped '
+                     'candidates on disk',
+            'next_step': ('resolve each by hand - see report for the candidate filenames; '
+                          'attach the correct one via `fha process <primary> --more '
+                          '<file> back` - never rename a photos-root file to disambiguate'),
+        })
     return EXIT_WARNINGS
 
 
