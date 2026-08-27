@@ -49,6 +49,7 @@
     ['website', 'Website'],
     ['artifact', 'Artifact'],
     ['proof-argument', 'Proof argument'],
+    ['ephemera', 'Ephemera'],
     ['other', 'Other'],
   ];
 

@@ -127,6 +127,31 @@ class ProcessTestCase(unittest.TestCase):
         process._prompt = self._orig_prompt
         self._tmp.cleanup()
 
+    def test_ephemera_source_type_is_accepted_not_taught_as_unknown(self) -> None:
+        # #114: a controlled-vocabulary addition (SPEC §14, "expandable by
+        # logged decision") for contextual material - period news, local
+        # color - kept for texture but naming no one in the family. Before
+        # this, filing one under source_type: ephemera hit the same "unknown
+        # source category" refusal as a genuine typo.
+        asset = self.archive / 'documents' / 'census' / 'loose.pdf'
+        asset.write_bytes(b'%PDF-1.4')
+        args = type('Args', (), {
+            'root': str(self.archive),
+            'file': str(asset),
+            'source_type': 'ephemera',
+            'title': None,
+            'slug': None,
+            'more': None,
+            'dry_run': True,
+        })()
+
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            rc = process._run_process(args)
+
+        self.assertNotEqual(rc, EXIT_ERRORS)
+        self.assertNotIn('unknown source category', err.getvalue())
+
     def test_cli_unknown_source_type_teaches_valid_vocabulary(self) -> None:
         asset = self.archive / 'documents' / 'census' / 'loose.pdf'
         asset.write_bytes(b'%PDF-1.4')
