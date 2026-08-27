@@ -1,7 +1,7 @@
 {
   "manifest_version": "1",
   "spec_version": "1.2",
-  "generated": "2026-08-25",
+  "generated": "2026-08-27",
   "files": [
     {
       "path": ".claude/skills/README.md",
@@ -413,7 +413,7 @@
     {
       "path": ".fha/tools/README.md",
       "category": "operating",
-      "sha256": "b74b5016f9f530c92fc36e63a1c3b13799dfa0d5268f4ea8894ed950648fac11",
+      "sha256": "ef3b9cd0c38b43126630f42a06cbc300f388c3e1ae2495d0d7edca4087d923ce",
       "spec_version": "1.2",
       "src": "tools/README.md"
     },
@@ -483,7 +483,7 @@
     {
       "path": ".fha/tools/claim.py",
       "category": "operating",
-      "sha256": "78803eed0ee8233bc314692cf78a8204bb84b022eafb710799afeb5122f7e29d",
+      "sha256": "c7d93b1f40231820d7ea06a691d98ffd452ee61e2a4192f00a97133b616f43fb",
       "spec_version": "1.2",
       "src": "tools/claim.py"
     },
@@ -884,7 +884,7 @@
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "aa9a1818cda9f522eeb98c2186894c69e887286fdd468bbe73c376d8ae7b9146",
+      "sha256": "3974f3a463611938352a1f92a30f8852e7d05a23ed839888e37ecbf56c935b16",
       "spec_version": "1.2"
     },
     {
