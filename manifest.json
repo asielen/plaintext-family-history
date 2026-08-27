@@ -1,7 +1,7 @@
 {
   "manifest_version": "1",
   "spec_version": "1.2",
-  "generated": "2026-08-25",
+  "generated": "2026-08-27",
   "files": [
     {
       "path": ".claude/skills/README.md",
@@ -884,7 +884,7 @@
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "861882c02b5a1cbed3c6a9da8c0924f1b38b6c9a7e6fd79cb58180e3780ca7aa",
+      "sha256": "79a246a58f54138f2a5183bf18101580167517fe6a758d3be1eabbdca4cc878e",
       "spec_version": "1.2"
     },
     {
