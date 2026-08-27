@@ -81,11 +81,20 @@ CODE MAP
     _inline_html               - inline pass: links, [ID] tokens, **bold**;
                                  also where `_scrub_internal_encoding` runs
                                  (per literal span, after links are matched)
+    _rendered_boundary_char    - the real first visible character of a
+                                 construct's OWN rendered HTML, not its
+                                 pre-render label - `_inline_html`'s spacing
+                                 decisions read this, not a guess
     _scrub_internal_encoding   - drop a bare (C-xxxx) parenthetical / translate
-                                 a [..YYYY] "before" bracket in free-text claim
-                                 values, wherever one reaches a reader-facing
-                                 page (prose, timeline, source/place claims
-                                 tables, person summary vitals)
+                                 a [..YYYY] "before" bracket (or a two-sided
+                                 [..YYYY]/YYYY interval) / redact a bare
+                                 [PSCLH]-xxxxxxxxxx citation id (`_BARE_ID_RE`,
+                                 a defense-in-depth backstop for a citation
+                                 that leaked past `_INLINE_RE` unmatched) in
+                                 free-text claim values, wherever one reaches
+                                 a reader-facing page (prose, timeline,
+                                 source/place claims tables, person summary
+                                 vitals)
     _extract_section           - pull one `## Heading` section body from a record
     _question_block_body       - a '## Q:' block's body, heading dropped, cut
                                  before the next heading of any kind (#117)
@@ -657,68 +666,76 @@ def _inline_html(text: str, render_token) -> str:
     for every run EXCEPT the last (nothing follows the block's final
     literal-text run).
 
-    That boundary character is the ACTUAL next rendered character where the
-    upcoming match `m` makes it knowable, not a blind guess (adversarial
-    review follow-up on the #167 finding-1 fix: a hardcoded sentinel that
-    always claimed "a word character follows" over-inserted a space before
-    PUNCTUATION too, e.g. `(C-xxx)**!important**` gained a wrong leading
-    space before "!important"). `**bold**`, `[text](url)`, and a wikilink's
-    display label (`wdisp`) are all used AFTER scrubbing, not the raw
-    captured group text: `_scrub_internal_encoding` can rewrite a label's
-    first character - a bare id becomes `_BARE_ID_LABEL`, starting with `[`
-    instead of a letter/digit, and a leading `[..YYYY]`-shaped "before" date
-    becomes the word "before" - so only the scrubbed form reflects what
-    actually renders. This was originally done for `wdisp` only (adversarial
-    review of the #167 finding-1 fix); Codex's own follow-up review found
-    the identical defect still live in `ltext` and `bold`, both of which
-    used to peek the RAW group's first character. The gap was invisible for
-    an ordinary label (scrubbing is a no-op with nothing to remove), but a
-    label opening with a claim-id paren or a date bracket - e.g. a markdown
-    link whose label is `[..1905] confirms` - has a raw first character
-    (`[`, not alphanumeric) that disagrees with what a reader actually sees
-    first (`b`, from "before 1905", which DOES need a preceding space): the
-    boundary check used the wrong character and silently dropped the space
-    ("record**[..1905] confirms**" rendering as "record<a ...>before 1905
-    confirms</a>" with the two words run together). `bold`/`ltext` are
-    guaranteed non-empty by `_INLINE_RE`'s own `+` quantifier, but scrubbing
-    CAN reduce a label to nothing (e.g. a label that is only a claim-id
-    paren), so - exactly like `wdisp` - `_INLINE_BOUNDARY_CHAR` is the
-    fallback when the scrubbed label comes back empty. A bare wikilink
-    (`[[target]]`, no label) or a legacy `[ID]` token has no visible text of
-    its own here at all - both are delegated to `render_token`, whose
-    output is opaque HTML this function never peeks inside - so
-    `_INLINE_BOUNDARY_CHAR`, the same conservative "assume a word character
-    follows" sentinel as before, is still used for those two cases only.
+    That boundary character is the ACTUAL next rendered character, read back
+    from `rendered` itself AFTER it's been produced - not guessed from any
+    pre-render label (adversarial review, round 3: even a SCRUBBED label can
+    still disagree with what actually renders). `render_token` does not
+    always honor the display text it's handed: a wikilink naming a redacted
+    living person, or a withheld/restricted source, ignores `in_display`
+    entirely and substitutes fixed replacement markup instead - "Living
+    Person", "Restricted - not included in this publication", or a bare
+    footnote digit - regardless of what the label said or how it scrubbed.
+    `"The record(C-xxx)[[P-id|S-2222222222]]"`, where `S-2222222222` is a
+    bare id that itself gets scrubbed to `[record]` and `P-id` resolves to a
+    redacted living person, used to compute its boundary from the scrubbed
+    LABEL's first character (`[`, not a word character) and correctly-but-
+    coincidentally skip a space - the same shape with an ordinary label
+    (`[[P-id|Margaret]]`) computed boundary from `M` (a word character) and
+    inserted one - even though BOTH actually render as "Living Person" (a
+    word character): one of the two was always going to disagree with the
+    real output, because neither ever looked at it. `_rendered_boundary_char`
+    strips markup off whatever `rendered` turned out to be for every one of
+    `_INLINE_RE`'s four branches and reads the first VISIBLE character from
+    THAT, so it can never disagree with the page a reader actually sees,
+    regardless of whether `render_token` honored, ignored, or overrode the
+    label it was given. The one case this can't help is a construct whose
+    own render comes back empty (a dangling source citation drops out to
+    `''`) - `_INLINE_BOUNDARY_CHAR`, the same conservative "assume a word
+    character follows" sentinel as before, is the fallback there.
     """
     out: list[str] = []
     pos = 0
     for m in _INLINE_RE.finditer(text):
-        # Work out this match's own rendered output AND the boundary
-        # character its literal-text predecessor should see, together -
-        # both come from the same captured groups (see this function's
-        # docstring for why each case picks the boundary source it does).
+        # Compute this match's own rendered output first - the boundary
+        # character its literal-text predecessor should see is read back
+        # from THAT (see this function's docstring for why: the rendered
+        # HTML is the only thing that can't disagree with itself).
         if m.group('wtarget') is not None:
             scrubbed_wdisp = _scrub_internal_encoding(m.group('wdisp'))
-            boundary = scrubbed_wdisp[0] if scrubbed_wdisp else _INLINE_BOUNDARY_CHAR
             rendered = render_token(m.group('wtarget').strip(), scrubbed_wdisp)
         elif m.group('token'):
-            boundary = _INLINE_BOUNDARY_CHAR
             rendered = render_token(m.group('token'))
         elif m.group('ltext') is not None:
             scrubbed_ltext = _scrub_internal_encoding(m.group('ltext'))
-            boundary = scrubbed_ltext[0] if scrubbed_ltext else _INLINE_BOUNDARY_CHAR
             href = _safe_link_href(m.group('lurl'))
             label = _escape(scrubbed_ltext)
             rendered = f'<a href="{href}">{label}</a>' if href is not None else label
         else:  # bold
             scrubbed_bold = _scrub_internal_encoding(m.group('bold'))
-            boundary = scrubbed_bold[0] if scrubbed_bold else _INLINE_BOUNDARY_CHAR
             rendered = f'<strong>{_escape(scrubbed_bold)}</strong>'
+        boundary = _rendered_boundary_char(rendered)
         out.append(_escape(_scrub_internal_encoding(text[pos:m.start()], boundary)))
         pos = m.end()
         out.append(rendered)
     out.append(_escape(_scrub_internal_encoding(text[pos:])))
     return ''.join(out)
+
+
+_HTML_TAG_RE = re.compile(r'<[^>]*>')
+
+
+def _rendered_boundary_char(rendered: str) -> str:
+    """The first VISIBLE (non-markup) character of `rendered`, for
+    `_inline_html`'s boundary-spacing decision (adversarial review, round 3
+    - see `_inline_html`'s docstring for the bug this replaced: a boundary
+    character guessed from a label instead of read back from the render
+    itself). Strips HTML tags rather than parsing them - every `rendered`
+    value here is markup this module built a line above, never third-party
+    HTML, so a plain tag-strip is exact, not an approximation. Falls back to
+    `_INLINE_BOUNDARY_CHAR` when nothing visible remains (a dangling source
+    citation renders as `''`)."""
+    visible = _HTML_TAG_RE.sub('', rendered)
+    return visible[0] if visible else _INLINE_BOUNDARY_CHAR
 
 
 _HEADING_RE = re.compile(r'^(#{1,6})\s+(.*)$')
@@ -761,8 +778,30 @@ _CLAIM_ID_PAREN_RE = re.compile(r'\s?\(C-[0-9a-hjkmnp-tv-z]{10}\)', re.I)
 # a hyphenated id-shaped substring embedded inside a longer alphanumeric run
 # (rather than matching only bracket-delimited ids, since the whole point is
 # these tokens are NOT reliably bracket-delimited once they've leaked here).
+#
+# Zero-separator adjacency (adversarial review of this same backstop): a
+# plain `(?<![0-9A-Za-z])`/`(?![0-9A-Za-z])` boundary treats a SECOND id
+# butted directly against the first one, with no separator of any kind, as
+# "embedded inside a longer alphanumeric run" - the same shape the guard
+# above is deliberately protecting against for an ordinary word. That is
+# wrong here: `S-1111111111S-2222222222` is two id-shaped tokens back to
+# back, not one word, but the first id's trailing lookahead sees the
+# second id's leading `S` (alphanumeric) and refuses to close, while the
+# second id's leading lookbehind sees the first id's trailing `1`
+# (alphanumeric) and refuses to open - each id fails to match because of
+# the OTHER, and BOTH raw ids leak onto the page verbatim, unredacted, with
+# no warning. Each boundary is therefore widened to accept not just "not
+# alphanumeric" but also "immediately preceded/followed by another
+# complete id-shaped token" (a second, fixed-width 12-character lookaround
+# alternative - `[PSCLH]-[0-9a-hjkmnp-tv-z]{10}` is always exactly 12
+# characters, so this stays a legal fixed-width Python lookbehind) - so two
+# (or more) glued-together ids now redact individually in one left-to-right
+# sweep, while a bare id embedded inside an ordinary longer word (this
+# guard's original, still-intact purpose) is still correctly left alone.
 _BARE_ID_RE = re.compile(
-    r'(?<![0-9A-Za-z])[PSCLH]-[0-9a-hjkmnp-tv-z]{10}(?![0-9A-Za-z])', re.I)
+    r'(?:(?<![0-9A-Za-z])|(?<=[PSCLH]-[0-9a-hjkmnp-tv-z]{10}))'
+    r'[PSCLH]-[0-9a-hjkmnp-tv-z]{10}'
+    r'(?:(?![0-9A-Za-z])|(?=[PSCLH]-[0-9a-hjkmnp-tv-z]{10}))', re.I)
 
 # Replacement text for a `_BARE_ID_RE` match (M8 UX bar, `_LIVING_LABEL`/
 # `_RESTRICTED_LABEL`'s own rule: redacted content is NAMED, never silently

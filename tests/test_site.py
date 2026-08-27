@@ -4979,6 +4979,53 @@ class ProseConverterTests(unittest.TestCase):
         out2 = site._scrub_internal_encoding('See S-1111111111.')
         self.assertEqual(out2, 'See [record].')
 
+    def test_two_bare_ids_glued_together_both_redact(self):
+        # Adversarial review: a plain non-alphanumeric boundary treats a
+        # SECOND id butted directly against the first, with no separator at
+        # all, as "embedded inside a longer word" - the same shape the
+        # boundary is deliberately guarding an ordinary word against - so
+        # neither id's lookaround could ever close and BOTH leaked verbatim.
+        out = site._scrub_internal_encoding('S-1111111111S-2222222222')
+        self.assertEqual(out, '[record] [record]')
+
+    def test_three_bare_ids_glued_together_all_redact(self):
+        out = site._scrub_internal_encoding('S-1111111111P-3333333333C-4444444444')
+        self.assertEqual(out, '[record] [record] [record]')
+
+    def test_bare_id_still_ignored_inside_an_ordinary_word(self):
+        # The zero-separator adjacency fix must not reopen the hole it's
+        # named after: an id-shaped substring genuinely embedded inside a
+        # longer alphanumeric run (not another complete id butted against
+        # it) stays untouched.
+        out = site._scrub_internal_encoding('wordS-1111111111word')
+        self.assertEqual(out, 'wordS-1111111111word')
+
+    def test_boundary_char_reads_the_actual_render_not_the_label(self):
+        # Adversarial review, round 3: `render_token` does not always honor
+        # the display text it's handed - a wikilink naming a redacted living
+        # person ignores `in_display` entirely and substitutes fixed
+        # replacement markup instead. The label here (a bare citation id)
+        # scrubs to `[record]`, starting with `[` - not a word character -
+        # but the ACTUAL render is "Living Person", which very much is one.
+        # Computing the boundary from the label said no space was needed;
+        # computing it from the render (what a reader truly sees) says one
+        # is. Without the fix, "The record" and "Living Person" run
+        # together with no space between them.
+        render_token = lambda t, d=None: '<span class="redacted">Living Person</span>'  # noqa: E731
+        out = site._inline_html(
+            'The record (C-4kx9m2p7qr)[[P-1111111111|S-2222222222]]', render_token)
+        self.assertEqual(
+            out, 'The record <span class="redacted">Living Person</span>')
+
+    def test_boundary_char_from_render_does_not_double_space(self):
+        # Mirror of the no-double-space guard: when the actual render starts
+        # with punctuation (not a word character), no space is inserted -
+        # even though the discarded label (starting with the word character
+        # "M", from "Margaret") would have said one was needed.
+        render_token = lambda t, d=None: '<span class="redacted">!withheld</span>'  # noqa: E731
+        out = site._inline_html('The record (C-4kx9m2p7qr)[[S-1111111111|Margaret]]', render_token)
+        self.assertEqual(out, 'The record<span class="redacted">!withheld</span>')
+
 
 class WorkbenchModeTests(_Base):
     """Workbench mode (serve-only) adds editing chrome and provisional vitals,

@@ -1,7 +1,7 @@
 {
   "manifest_version": "1",
   "spec_version": "1.2",
-  "generated": "2026-08-25",
+  "generated": "2026-08-27",
   "files": [
     {
       "path": ".claude/skills/README.md",
@@ -658,7 +658,7 @@
     {
       "path": ".fha/tools/site.py",
       "category": "operating",
-      "sha256": "c98be32f9ac4697e6448ddea2470b430efe473ae6e9d63c745fd0e1be6acb401",
+      "sha256": "66385f43838766fc47eb4a97ed09628c40dc337d5daae462b21040079dedfdc9",
       "spec_version": "1.2",
       "src": "tools/site.py"
     },
