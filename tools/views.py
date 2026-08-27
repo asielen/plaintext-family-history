@@ -3341,8 +3341,12 @@ def _build_nodes_bulk(conn: sqlite3.Connection, pids: list[str]) -> dict[str, di
     node with her son's birth year, and a chart label is the shortest, most
     quotable fact a reader takes away. The site build asks the same question in
     `site._person_vitals`, through the same rule, so the two renderers of one
-    tree cannot disagree. A claim with no `roles:` map has not said, and keeps
-    the behaviour it always had.
+    tree cannot disagree. A claim naming at most one person with no `roles:`
+    map at all has not said, and keeps the behaviour it always had (nobody
+    else to be ambiguous about); a claim naming two or more people with no
+    `roles:` map at all has not said which of them it is about, and
+    `vital_subjects` scopes it to none of them (#126, reopened) - no node
+    label picks up a date from it.
 
     `ORDER BY c.id` with first-one-wins makes the pick deterministic. More than
     one accepted claim of a vital type per person is not expected, but nothing

@@ -1314,6 +1314,182 @@ class VitalSubjectRoleW101Tests(unittest.TestCase):
         self.assertEqual(len(w101), 1, findings)
         self.assertIn('birth', w101[0].message)
 
+    def test_two_person_death_claim_with_no_roles_at_all_does_not_satisfy_own_death(
+            self) -> None:
+        # #126, reopened: a death claim naming P-1111111111 alongside a
+        # relative, with NO roles: map at all (not even a partial one), has
+        # not said which of them died - `_lib.vital_subjects` now answers []
+        # for this shape rather than treating it as "everyone's own vital".
+        # W101 must still report P-1111111111's own death as missing rather
+        # than crediting it from a claim that may actually be the relative's.
+        (self.root / 'people' / 'rivera__sam_P-1111111111.md').write_text(
+            '---\nid: P-1111111111\nname: Sam Rivera\ntier: curated\n'
+            'living: false\nno_known_marriages: true\n---\n\n# Sam Rivera\n',
+            encoding='utf-8')
+        (self.root / 'people' / 'rivera__kin_P-3333333333.md').write_text(
+            '---\nid: P-3333333333\nname: Kin Rivera\ntier: stub\n'
+            'living: false\n---\n\n# Kin Rivera\n', encoding='utf-8')
+        (self.root / 'sources' / 'test_S-3333333333.md').write_text(_claims_source(
+            '- id: C-3333333333\n  type: death\n'
+            '  persons: [P-1111111111, P-3333333333]\n'
+            '  value: Visited the grave in 1990\n  status: accepted\n'
+            '  confidence: high\n'
+        ), encoding='utf-8')
+        findings, _ = lint._run_lint_core(self.root, {})
+        w101 = [f for f in findings if f.code == 'W101']
+        self.assertEqual(len(w101), 1, findings)
+        self.assertIn('death', w101[0].message)
+
+
+class VitalSubjectScopedBacklogTests(unittest.TestCase):
+    """`_accepted_vital_pids` (the needs-sourcing backlog's "already superseded"
+    set) must scope an accepted vital claim through `_lib.vital_subjects`
+    exactly like W101 already does, not the old unscoped `_claim_person_ids`
+    membership test. Two false shapes this covers: a claim naming pid only as
+    a relative on someone ELSE's birth/death record, and (#126 reopened) a
+    claim naming 2+ people with no `roles:` map at all - `vital_subjects`
+    answers [] for that shape, not "everyone". Crediting either one silently
+    drops a real provisional date from the backlog over a claim that may not
+    be this person's at all (#136)."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        (self.root / 'fha.yaml').write_text('roots: {}\n', encoding='utf-8')
+        (self.root / 'people').mkdir(parents=True)
+        (self.root / 'sources').mkdir()
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_zero_role_multiperson_death_does_not_supersede_the_backlog(self) -> None:
+        # P-1111111111 has a provisional death: date recorded but not yet
+        # sourced. The only accepted death claim naming them also names a
+        # relative, with NO roles: map at all - #126 reopened's shape, where
+        # `vital_subjects` answers [] rather than "everyone". The backlog must
+        # still nudge for a source rather than reading this claim as it.
+        (self.root / 'people' / 'rivera__sam_P-1111111111.md').write_text(
+            '---\nid: P-1111111111\nname: Sam Rivera\nliving: false\n'
+            'death: 1941~\n---\n\n# Sam Rivera\n', encoding='utf-8')
+        (self.root / 'people' / 'rivera__kin_P-3333333333.md').write_text(
+            '---\nid: P-3333333333\nname: Kin Rivera\nliving: false\n'
+            '---\n\n# Kin Rivera\n', encoding='utf-8')
+        (self.root / 'sources' / 'test_S-3333333333.md').write_text(_claims_source(
+            '- id: C-3333333333\n  type: death\n'
+            '  persons: [P-1111111111, P-3333333333]\n'
+            '  value: Visited the grave in 1990\n  status: accepted\n'
+            '  confidence: high\n'
+        ), encoding='utf-8')
+        backlog = lint.run_lint(self.root, {}).data['backlog']
+        self.assertTrue(
+            [l for l in backlog if "provisional death: '1941~'" in l], backlog)
+
+    def test_single_subject_death_still_supersedes_the_backlog(self) -> None:
+        # Control: the legacy single-person shape (`vital_subjects` case 2,
+        # answers None - "keep the old behaviour") still supersedes, exactly
+        # as it did before this fix.
+        (self.root / 'people' / 'rivera__sam_P-1111111111.md').write_text(
+            '---\nid: P-1111111111\nname: Sam Rivera\nliving: false\n'
+            'death: 1941~\n---\n\n# Sam Rivera\n', encoding='utf-8')
+        (self.root / 'sources' / 'test_S-1111111111.md').write_text(_claims_source(
+            '- id: C-1111111111\n  type: death\n'
+            '  persons: [P-1111111111]\n'
+            '  value: died 1941\n  status: accepted\n'
+            '  confidence: high\n'
+        ), encoding='utf-8')
+        backlog = lint.run_lint(self.root, {}).data['backlog']
+        self.assertFalse(
+            [l for l in backlog if "provisional death: '1941~'" in l], backlog)
+
+    def test_parent_role_on_childs_birth_claim_does_not_supersede_the_backlog(self) -> None:
+        # The role-scoped twin: P-1111111111 only appears as `parent` on their
+        # CHILD's birth claim - not their own subject (the false-negative
+        # twin of #126, #136).
+        (self.root / 'people' / 'rivera__sam_P-1111111111.md').write_text(
+            '---\nid: P-1111111111\nname: Sam Rivera\nliving: false\n'
+            'birth: 1900~\n---\n\n# Sam Rivera\n', encoding='utf-8')
+        (self.root / 'people' / 'rivera__jr_P-2222222222.md').write_text(
+            '---\nid: P-2222222222\nname: Sam Rivera Jr\nliving: false\n'
+            '---\n\n# Sam Rivera Jr\n', encoding='utf-8')
+        (self.root / 'sources' / 'test_S-1111111111.md').write_text(_claims_source(
+            '- id: C-1111111111\n  type: birth\n'
+            '  persons: [P-2222222222, P-1111111111]\n  roles:\n'
+            '    child: [P-2222222222]\n    parent: [P-1111111111]\n'
+            '  value: Sam Jr born 1925\n  status: accepted\n  confidence: high\n'
+        ), encoding='utf-8')
+        backlog = lint.run_lint(self.root, {}).data['backlog']
+        self.assertTrue(
+            [l for l in backlog if "provisional birth: '1900~'" in l], backlog)
+
+
+class VitalSubjectScopedSummaryCitationW104Tests(unittest.TestCase):
+    """W104: a profile's own Born/Died/Married summary line must be backed by
+    a claim `_lib.vital_subjects` actually resolves to THAT profile person -
+    not merely a same-source, same-type claim that happens to name them
+    somewhere (#126 reopened, #136). Parents/Children are untouched (E013's
+    own parentage-scoped check already covers that line)."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        (self.root / 'fha.yaml').write_text('roots: {}\n', encoding='utf-8')
+        (self.root / 'people').mkdir(parents=True)
+        (self.root / 'sources').mkdir()
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _profile(self, pid: str, name: str, summary: str) -> None:
+        (self.root / 'people' / f'x__{pid}.md').write_text(
+            f'---\nid: {pid}\nname: {name}\ntier: curated\nliving: false\n'
+            f'---\n\n# {name}\n\n{summary}\n\n## Biography\n\nx\n',
+            encoding='utf-8')
+
+    def test_zero_role_multiperson_death_does_not_back_died_summary(self) -> None:
+        self._profile('P-1111111111', 'Sam Rivera', '**Died:** 1941 [S-1111111111]')
+        (self.root / 'people' / 'x__P-3333333333.md').write_text(
+            '---\nid: P-3333333333\nname: Kin Rivera\nliving: false\n---\n\n'
+            '# Kin Rivera\n', encoding='utf-8')
+        (self.root / 'sources' / 'test_S-1111111111.md').write_text(_claims_source(
+            '- id: C-1111111111\n  type: death\n'
+            '  persons: [P-1111111111, P-3333333333]\n'
+            '  value: Visited the grave\n  status: accepted\n'
+            '  confidence: high\n'
+        ), encoding='utf-8')
+        findings, _ = lint._run_lint_core(self.root, {})
+        w104 = [f for f in findings if f.code == 'W104']
+        self.assertEqual(len(w104), 1, findings)
+
+    def test_single_subject_death_still_backs_died_summary(self) -> None:
+        self._profile('P-1111111111', 'Sam Rivera', '**Died:** 1941 [S-1111111111]')
+        (self.root / 'sources' / 'test_S-1111111111.md').write_text(_claims_source(
+            '- id: C-1111111111\n  type: death\n'
+            '  persons: [P-1111111111]\n'
+            '  value: died 1941\n  status: accepted\n'
+            '  confidence: high\n'
+        ), encoding='utf-8')
+        findings, _ = lint._run_lint_core(self.root, {})
+        w104 = [f for f in findings if f.code == 'W104']
+        self.assertEqual(w104, [], findings)
+
+    def test_role_scoped_death_naming_someone_else_does_not_back_summary(self) -> None:
+        # roles: explicitly casts P-1111111111 as the surviving spouse, not
+        # the deceased - `vital_subjects` names the OTHER person instead.
+        self._profile('P-1111111111', 'Sam Rivera', '**Died:** 1941 [S-1111111111]')
+        (self.root / 'people' / 'x__P-3333333333.md').write_text(
+            '---\nid: P-3333333333\nname: Kin Rivera\nliving: false\n---\n\n'
+            '# Kin Rivera\n', encoding='utf-8')
+        (self.root / 'sources' / 'test_S-1111111111.md').write_text(_claims_source(
+            '- id: C-1111111111\n  type: death\n'
+            '  persons: [P-3333333333, P-1111111111]\n  roles:\n'
+            '    spouse: [P-1111111111]\n'
+            '  value: Kin Rivera died 1941, survived by his wife Sam\n'
+            '  status: accepted\n  confidence: high\n'
+        ), encoding='utf-8')
+        findings, _ = lint._run_lint_core(self.root, {})
+        w104 = [f for f in findings if f.code == 'W104']
+        self.assertEqual(len(w104), 1, findings)
+
 
 class _SurgeryBase(unittest.TestCase):
     """Shared scaffolding for the fix-mode surgery tests: one named person and
@@ -2853,6 +3029,295 @@ class BirthClaimWithoutParentageW126Tests(unittest.TestCase):
         # absolute path has no business in either.
         root = self._build()
         w = self._w126(root)
+        self.assertEqual(len(w), 1)
+        self.assertNotIn(str(root), w[0].message)
+
+
+class UnscopedDeathBurialBaptismW132Tests(unittest.TestCase):
+    """W132 (#126, reopened): an accepted death/burial/baptism claim naming
+    two or more people with NO `roles:` map at all - `_lib.vital_subjects`'s
+    case 2a, where a claim like a burial record naming the deceased alongside
+    a grandchild who visited the grave used to read as both of their own
+    burials, and now (correctly) reads as neither's. Birth has W126 and
+    marriage/divorce have W125 for the equivalent silence; death/burial/
+    baptism never had a claim-specific warning at all, so this is the third
+    leg of that same table.
+
+    Deliberately narrower than W125/W126: fires ONLY on the zero-role shape,
+    never when some role IS present but resolves to no subject either
+    (`vital_subjects`'s case 5) - that shape answered the question, just not
+    in anyone's favor, and stays silent by design.
+    """
+
+    A = 'P-d1d1d1d1d1'
+    B = 'P-d2d2d2d2d2'
+    C = 'P-d3d3d3d3d3'
+    SID = 'S-8888888888'
+
+    def _build(self, *, ctype: str = 'death', persons=None,
+               roles_block: str = '', status: str = 'accepted',
+               negated: bool = False) -> Path:
+        root = Path(tempfile.mkdtemp())
+        (root / 'people').mkdir(parents=True)
+        (root / 'sources' / 'notes').mkdir(parents=True)
+        (root / 'fha.yaml').write_text('roots:\n  documents: documents\n',
+                                       encoding='utf-8')
+        everyone = [self.A, self.B, self.C]
+        for n, pid in enumerate(everyone):
+            (root / 'people' / f'x__p{n}_{pid}.md').write_text(
+                f'---\nid: {pid}\nname: Person {n}\nsex: U\nliving: false\n'
+                f'tier: stub\n---\n\n# Person {n}\n', encoding='utf-8')
+        named = everyone if persons is None else persons
+        claim = (f'- value: "a {ctype}"\n'
+                 f'  id: C-2222222222\n'
+                 f'  type: {ctype}\n'
+                 f'  persons: [{", ".join(named)}]\n'
+                 f'  status: {status}\n  reviewed: 2026-01-01\n'
+                 f'  confidence: high\n  date: 1902-04-17\n'
+                 + ('  negated: true\n  evidence: negative\n' if negated
+                    else '  information: primary\n  evidence: direct\n')
+                 + '  notes: x.\n'
+                 + roles_block)
+        (root / 'sources' / 'notes' / f'rec_{self.SID.lower()}.md').write_text(
+            f'---\nid: {self.SID}\ntitle: Rec\nsource_type: vital-record\n---\n\n'
+            f'## Claims\n```yaml\n{claim}```\n', encoding='utf-8')
+        return root
+
+    def _w132(self, root: Path) -> list:
+        from _lib import load_fha_yaml
+        findings, _reg = lint._run_lint_core(root, load_fha_yaml(root))
+        return [f for f in findings if f.code == 'W132']
+
+    def test_three_person_death_without_roles_warns(self) -> None:
+        w = self._w132(self._build(ctype='death'))
+        self.assertEqual(len(w), 1)
+        f = w[0]
+        self.assertEqual(f.severity, 'W')
+        self.assertIn('C-2222222222', f.message)
+        self.assertIn('names 3 people', f.message)
+        self.assertIn('died', f.message)
+        self.assertIn('spouse: [P-', f.message)
+
+    def test_two_person_burial_without_roles_warns(self) -> None:
+        w = self._w132(self._build(ctype='burial', persons=[self.A, self.B]))
+        self.assertEqual(len(w), 1)
+        self.assertIn('names 2 people', w[0].message)
+        self.assertIn('was buried', w[0].message)
+
+    def test_baptism_without_roles_warns_and_asks_for_a_child_role(self) -> None:
+        w = self._w132(self._build(ctype='baptism'))
+        self.assertEqual(len(w), 1)
+        self.assertIn('names 3 people', w[0].message)
+        self.assertIn('who was baptized', w[0].message)
+        self.assertIn('child: [P-', w[0].message)
+
+    def test_single_person_death_claim_is_clean(self) -> None:
+        # The legacy single-subject shape (vital_subjects case 2, answers
+        # None): there is nobody else to be ambiguous about.
+        self.assertEqual(self._w132(self._build(persons=[self.A])), [])
+
+    def test_roles_map_that_resolves_a_subject_is_clean(self) -> None:
+        # The ordinary shape: the spouse and informant are roled, the
+        # deceased is left unroled (case 4) - vital_subjects answers, so
+        # there is nothing to warn about.
+        roles = f'  roles:\n    spouse: [{self.B}]\n    child: [{self.C}]\n'
+        self.assertEqual(self._w132(self._build(roles_block=roles)), [])
+
+    def test_every_person_roled_to_someone_else_does_not_warn(self) -> None:
+        # Case 5, not case 2a: SOME role is present and every named person
+        # was cast as somebody else - `vital_subjects` answers [] here too,
+        # but the claim DID answer the question (just not in favor of anyone
+        # it names), and that silence is deliberate, not this warning's
+        # business.
+        roles = f'  roles:\n    spouse: [{self.A}]\n    child: [{self.B}, {self.C}]\n'
+        self.assertEqual(self._w132(self._build(roles_block=roles)), [])
+
+    def test_suggested_claim_does_not_warn(self) -> None:
+        self.assertEqual(self._w132(self._build(status='suggested')), [])
+
+    def test_needs_review_claim_does_not_warn(self) -> None:
+        self.assertEqual(self._w132(self._build(status='needs-review')), [])
+
+    def test_negated_claim_does_not_warn(self) -> None:
+        # "We researched it and found no death record" (SPEC §8.6) - a
+        # researched absence, not a record to attribute to anyone.
+        self.assertEqual(self._w132(self._build(negated=True)), [])
+
+    def test_a_birth_claim_never_draws_this_warning(self) -> None:
+        # Birth's equivalent silence is W126's business, not W132's.
+        self.assertEqual(self._w132(self._build(ctype='birth')), [])
+
+    def test_a_marriage_claim_never_draws_this_warning(self) -> None:
+        # Marriage/divorce's equivalent silence is W125's business.
+        self.assertEqual(self._w132(self._build(ctype='marriage')), [])
+
+    def test_duplicate_persons_entry_does_not_warn(self) -> None:
+        # A bare P-id and a name-link for one person are two entries and one
+        # person - nothing to be ambiguous about.
+        self.assertEqual(
+            self._w132(self._build(persons=[self.A, '"[[Person 0]]"'])), [])
+
+    def test_list_form_roles_does_not_crash_lint(self) -> None:
+        # `roles: [spouse, child]` names nobody - it cannot scope the claim
+        # (W132 still fires), but it must never raise.
+        w = self._w132(self._build(roles_block='  roles: [spouse, child]\n'))
+        self.assertEqual(len(w), 1)
+
+    def test_the_message_carries_no_absolute_path(self) -> None:
+        root = self._build()
+        w = self._w132(root)
+        self.assertEqual(len(w), 1)
+        self.assertNotIn(str(root), w[0].message)
+
+
+class OrphanedRoleTargetW133Tests(unittest.TestCase):
+    """W133 (#126 review, #173 follow-up): a `roles:` value that resolves to a
+    real person absent from the claim's own `persons:` list.
+
+    `_lib.resolve_claim_persons_with_roles` (and index.py's `_index_source`,
+    its mirror) only ever walks `persons:` entries and asks each one whether
+    some role names it - so a role target who never appears in `persons:` is
+    not read as a secret extra participant, it is simply never looked at, and
+    the pair is dropped before it reaches `vital_subjects`/`spouse_parties`/
+    `parentage_parties` at all. Most role words absorb that silently (a broken
+    map, not a hidden extra parent). `roles: deceased:` does not: dropping the
+    target can leave the claim's only OTHER named person - a widow, say - as
+    the sole unroled name left, and `vital_subjects`'s single-person legacy
+    fallback then reads HER as the one who died. That is the exact #126 bug
+    reintroduced through the hand-edit mistake `roles: deceased:` itself
+    invites (write the roles: line, forget the persons: line), and this is
+    the check that catches it.
+    """
+
+    WIDOW = 'P-d4d4d4d4d4'
+    DEAD = 'P-d5d5d5d5d5'
+    OTHER = 'P-d6d6d6d6d6'
+    SID = 'S-9999999999'
+
+    def _build(self, *, ctype: str = 'death', persons=None,
+               roles_block: str = '', status: str = 'accepted',
+               claim_id: str = 'C-3333333333') -> Path:
+        root = Path(tempfile.mkdtemp())
+        (root / 'people').mkdir(parents=True)
+        (root / 'sources' / 'notes').mkdir(parents=True)
+        (root / 'fha.yaml').write_text('roots:\n  documents: documents\n',
+                                       encoding='utf-8')
+        everyone = [self.WIDOW, self.DEAD, self.OTHER]
+        for n, pid in enumerate(everyone):
+            (root / 'people' / f'x__p{n}_{pid}.md').write_text(
+                f'---\nid: {pid}\nname: Person {n}\nsex: U\nliving: false\n'
+                f'tier: stub\n---\n\n# Person {n}\n', encoding='utf-8')
+        named = [self.WIDOW] if persons is None else persons
+        claim = (f'- value: "a {ctype}"\n'
+                 f'  id: {claim_id}\n'
+                 f'  type: {ctype}\n'
+                 f'  persons: [{", ".join(named)}]\n'
+                 f'  status: {status}\n  reviewed: 2026-01-01\n'
+                 f'  confidence: high\n  date: 1902-04-17\n'
+                 '  information: primary\n  evidence: direct\n'
+                 '  notes: x.\n'
+                 + roles_block)
+        (root / 'sources' / 'notes' / f'rec_{self.SID.lower()}.md').write_text(
+            f'---\nid: {self.SID}\ntitle: Rec\nsource_type: vital-record\n---\n\n'
+            f'## Claims\n```yaml\n{claim}```\n', encoding='utf-8')
+        return root
+
+    def _w133(self, root: Path) -> list:
+        from _lib import load_fha_yaml
+        findings, _reg = lint._run_lint_core(root, load_fha_yaml(root))
+        return [f for f in findings if f.code == 'W133']
+
+    def test_deceased_role_naming_someone_outside_persons_warns(self) -> None:
+        # Codex's exact reproduction: persons: [widow] only, roles: {deceased:
+        # [dead]} - a real, existing P-id, just never added to persons:.
+        roles = f'  roles:\n    deceased: [{self.DEAD}]\n'
+        w = self._w133(self._build(persons=[self.WIDOW], roles_block=roles))
+        self.assertEqual(len(w), 1)
+        f = w[0]
+        self.assertEqual(f.severity, 'W')
+        self.assertIn('C-3333333333', f.message)
+        self.assertIn('deceased', f.message)
+        self.assertIn(self.DEAD, f.message)
+        self.assertIn('persons:', f.message)
+
+    def test_the_underlying_derivation_still_misreads_the_survivor(self) -> None:
+        # Documents the deliberate lint-only choice (TOOLING W133): the lint
+        # check fires, but `vital_subjects`/`claim_is_own_vital` are left
+        # unhardened, because by the time either runs, the orphaned target
+        # has already never appeared in `resolve_claim_persons_with_roles`'s
+        # output - there is nothing left at that layer to distinguish this
+        # claim from a genuinely single-subject one. The lint check is the
+        # backstop; this proves it fires exactly where the runtime cannot
+        # safely tell the two shapes apart.
+        from _lib import resolve_claim_persons_with_roles, vital_subjects
+        claim = {
+            'id': 'C-3333333333', 'type': 'death',
+            'persons': [self.WIDOW],
+            'roles': {'deceased': [self.DEAD]},
+            'status': 'accepted',
+        }
+        pairs = resolve_claim_persons_with_roles(claim, alias_map=None)
+        self.assertEqual(pairs, [(self.WIDOW.lower(), None)])
+        subjects = vital_subjects('death', pairs)
+        self.assertIsNone(subjects)   # case 2: reads the widow as the subject
+
+        # ...and the lint check on the SAME claim shape still fires, so the
+        # mistake is surfaced even though the runtime derivation cannot see it.
+        roles = f'  roles:\n    deceased: [{self.DEAD}]\n'
+        w = self._w133(self._build(persons=[self.WIDOW], roles_block=roles))
+        self.assertEqual(len(w), 1)
+
+    def test_properly_listed_deceased_role_is_clean(self) -> None:
+        # The correct shape: both the widow and the deceased are in persons:.
+        roles = f'  roles:\n    deceased: [{self.DEAD}]\n'
+        w = self._w133(self._build(
+            persons=[self.WIDOW, self.DEAD], roles_block=roles))
+        self.assertEqual(w, [])
+
+    def test_orphaned_target_on_a_non_vital_role_also_warns(self) -> None:
+        # General hand-edit-integrity check, not specific to deceased: - an
+        # orphaned parent: target on a relationship claim is the same mistake.
+        roles = f'  roles:\n    child: [{self.WIDOW}]\n    parent: [{self.DEAD}]\n'
+        w = self._w133(self._build(
+            ctype='relationship', persons=[self.WIDOW], roles_block=roles))
+        self.assertEqual(len(w), 1)
+        self.assertIn('parent', w[0].message)
+        self.assertIn(self.DEAD, w[0].message)
+
+    def test_multiple_orphaned_targets_each_warn(self) -> None:
+        roles = (f'  roles:\n    deceased: [{self.DEAD}]\n'
+                 f'    witness: [{self.OTHER}]\n')
+        w = self._w133(self._build(persons=[self.WIDOW], roles_block=roles))
+        self.assertEqual(len(w), 2)
+
+    def test_unresolvable_name_in_roles_is_not_reported_as_orphaned(self) -> None:
+        # A typo'd/unknown NAME in roles: never resolves to a P-id at all -
+        # that is a different problem (an inert note-link), not this one.
+        roles = '  roles:\n    deceased: ["[[Nobody Nowhere]]"]\n'
+        w = self._w133(self._build(persons=[self.WIDOW], roles_block=roles))
+        self.assertEqual(w, [])
+
+    def test_fires_regardless_of_claim_status(self) -> None:
+        # A broken roles:/persons: pairing is a hand-edit mistake the moment
+        # it is written - it should surface before review, not only after
+        # acceptance (contrast with W125/W126/W132, which wait for accepted).
+        roles = f'  roles:\n    deceased: [{self.DEAD}]\n'
+        for status in ('suggested', 'needs-review', 'accepted', 'disputed'):
+            with self.subTest(status=status):
+                w = self._w133(self._build(
+                    persons=[self.WIDOW], roles_block=roles, status=status))
+                self.assertEqual(len(w), 1)
+
+    def test_list_form_roles_does_not_crash_lint(self) -> None:
+        # `roles: [spouse, child]` names nobody - it cannot orphan anyone
+        # (nothing to resolve), but it must never raise.
+        w = self._w133(self._build(roles_block='  roles: [spouse, child]\n'))
+        self.assertEqual(w, [])
+
+    def test_the_message_carries_no_absolute_path(self) -> None:
+        roles = f'  roles:\n    deceased: [{self.DEAD}]\n'
+        root = self._build(persons=[self.WIDOW], roles_block=roles)
+        w = self._w133(root)
         self.assertEqual(len(w), 1)
         self.assertNotIn(str(root), w[0].message)
 

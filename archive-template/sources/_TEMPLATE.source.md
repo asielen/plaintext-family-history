@@ -93,6 +93,19 @@ created: 2026-01-01        # the date you added this (any date is fine)
 #   status: suggested
 #   confidence: high
 
+# A DEATH or BURIAL naming more than one person - say who died with "roles: deceased:".
+# Most death/burial records name more than the person who died (a spouse, an
+# informant, a grandchild who visited the grave); roles: deceased: says which one(s)
+# it was. List more than one ID if two people died or were buried together (a house
+# fire, a shipwreck) with nobody else named on the record at all.
+# - value: "Thomas Hartley died 3 March 1912, Fairview, Kansas"
+#   type: death
+#   persons: [P-__________]            # everyone the record names - the deceased included
+#   id: C-__________
+#   roles: {deceased: [P-__________]}  # list more than one ID for a shared death/burial
+#   status: suggested
+#   confidence: high
+
 # MORE LIFE EVENTS - each is a claim with a different "type" (occupation, military,
 # immigration, education, census, divorce, ...). Copy the shape above, change type + value:
 # - value: "Bookkeeper, Plains Junction Railroad"
