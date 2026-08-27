@@ -842,6 +842,68 @@ class PersonPageTests(_Base):
         self.assertIn('Born in Trinidad; a witness later traveled to Tobago', html)
         self.assertIn('at Trinidad and Tobago', html)   # full tag still prints, not suppressed
 
+    def test_timeline_place_tag_omitted_for_oxford_comma_and_conjoined_mention(self):
+        # Adversarial review, round 4 audit: an ordinary Oxford-style comma
+        # before "and" ("Trinidad, and Tobago") already matched fine against
+        # a BARE compound label with no trailing qualifier - the whole-label
+        # matcher joins words with a loose "any punctuation" gap. But the
+        # identical phrasing, against a label carrying a trailing qualifier
+        # ("Trinidad and Tobago, Caribbean" - falling through to the
+        # coordinate-parts matcher since the whole label is never fully
+        # stated), used to be silently rejected: the connective regex
+        # allowed an elaborating parenthetical before "and" but not a plain
+        # comma, so the tag never suppressed and the compound name printed
+        # twice for no reason the sentence's own wording explains.
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley')
+        self._seed_source('s-1111111111', 'Record', people=('p-aaaaaaaaaa',))
+        self._seed_claim('c-1111111111', 's-1111111111', 'immigration',
+                         'Born in Trinidad, and Tobago', status='accepted', date_edtf='1900',
+                         place_text='Trinidad and Tobago, Caribbean', persons=('p-aaaaaaaaaa',))
+        self._run(linked=True)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('Born in Trinidad, and Tobago', html)
+        self.assertNotIn('at Trinidad and Tobago, Caribbean', html)
+        self.assertEqual(html.count('Trinidad'), 1)   # named once, not doubled
+
+    def test_timeline_place_text_internal_encoding_is_scrubbed_from_the_trailing_remainder(self):
+        # Adversarial review, round 4 audit (#140's own concern, extended):
+        # every OTHER reader-facing free-text field on this page already
+        # runs through `_scrub_internal_encoding` before it can reach a
+        # rendered page - a claim's `value` text does, a source's prose
+        # does - but `place_text` reached the trailing-remainder text (the
+        # unlinkable-hierarchy continuation this branch's own earlier round
+        # introduced) completely unscrubbed. A bare citation-id
+        # parenthetical or an unedited `[..YYYY]` date bracket accidentally
+        # left in place_text used to leak straight onto the page.
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley')
+        self._seed_source('s-1111111111', 'Record', people=('p-aaaaaaaaaa',))
+        self._seed_claim('c-1111111111', 's-1111111111', 'residence',
+                         'Moved to Millbrook to farm', status='accepted',
+                         date_edtf='1900',
+                         place_text='Millbrook (C-4kx9m2p7qr), Dutchess County, [..1900]',
+                         persons=('p-aaaaaaaaaa',))
+        self._run(linked=True)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('Dutchess County, before 1900', html)
+        self.assertNotIn('C-4kx9m2p7qr', html)
+        self.assertNotIn('[..1900]', html)
+
+    def test_place_cell_internal_encoding_is_scrubbed(self):
+        # Same leak, the OTHER reader-facing surface `_place_html` feeds
+        # (the claims-table "place" cell, distinct from the timeline's
+        # remainder text above) - a claim whose place is linkable (so the
+        # timeline tag suppresses instead of printing a remainder) still
+        # shows its place in the source's own claims table.
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley')
+        self._seed_source('s-1111111111', 'Record', people=('p-aaaaaaaaaa',))
+        self._seed_claim('c-1111111111', 's-1111111111', 'residence',
+                         'Moved somewhere to farm', status='accepted', date_edtf='1900',
+                         place_text='Somewhere (C-4kx9m2p7qr)', persons=('p-aaaaaaaaaa',))
+        self._run(linked=True)
+        html = self._read('sources/s-1111111111.html')
+        self.assertNotIn('C-4kx9m2p7qr', html)
+        self.assertIn('Somewhere', html)
+
     def test_timeline_strips_bare_claim_id_parenthetical(self):
         # #140: same rendering bug as the Biography case, on the Timeline's
         # separate render path (_timeline_value_html) - a bare `(C-xxxxxxxxxx)`

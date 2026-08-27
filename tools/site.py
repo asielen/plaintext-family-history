@@ -925,15 +925,32 @@ def _match_place_words(value: str, label: str) -> tuple[int, int] | None:
     return match.span() if match else None
 
 
-# A coordinated pair's connective, permissive enough to bridge the ONE shape
-# that is already known to occur between two coordinate place names - an
-# elaborating parenthetical sitting right against the "and" ("Italy (Rome,
-# Milan) and France (Paris, Lyon)") - but nothing looser than that: no
-# unrelated clause, no second sentence, may sit between the two names. This
-# is what makes "part1 ... and ... part2" a genuinely bounded, coordinated
-# mention rather than "part1 appears somewhere, part2 appears somewhere
-# else" (#127 reopened, finding 2 follow-up).
-_PLACE_AND_GAP_RE = r'(?:\s*\([^()]*\))?\s*\band\b\s*(?:\([^()]*\))?\s*'
+# A coordinated pair's connective, permissive enough to bridge the shapes
+# already known to occur between two coordinate place names - an elaborating
+# parenthetical sitting right against the "and" ("Italy (Rome, Milan) and
+# France (Paris, Lyon)"), and an Oxford-style comma immediately before it
+# ("Trinidad, and Tobago") - but nothing looser than that: no unrelated
+# clause, no second sentence, may sit between the two names. This is what
+# makes "part1 ... and ... part2" a genuinely bounded, coordinated mention
+# rather than "part1 appears somewhere, part2 appears somewhere else" (#127
+# reopened, finding 2 follow-up).
+#
+# The optional comma closes a real regression (adversarial review, round 4
+# audit): `_match_place_words` - the WHOLE-label matcher `_place_mention_span`
+# always tries first - joins a label's words with a loose `\W+`, so "Trinidad,
+# and Tobago" already matched a bare "Trinidad and Tobago" label outright,
+# never even reaching this function. But the identical sentence, matched
+# against a label carrying a trailing qualifier ("Trinidad and Tobago,
+# Caribbean" - the whole-label match fails on the un-stated ", Caribbean",
+# falling through to THIS coordinated-parts path), used to be silently
+# rejected: the ordinary, everyday comma-before-"and" phrasing that already
+# worked for the simpler label shape stopped working the moment a qualifier
+# was added, with no user-visible reason why - the sentence still repeated
+# the compound name in full instead of suppressing it. The comma allowed
+# here is exactly as narrow as the parenthetical already was: right against
+# "and", nothing else permitted around it, so a real clause boundary
+# (semicolon, "a witness later traveled to") still correctly fails to match.
+_PLACE_AND_GAP_RE = r'(?:\s*\([^()]*\))?\s*,?\s*\band\b\s*(?:\([^()]*\))?\s*'
 
 
 def _match_coordinated_place_parts(value: str, parts: list[str]) -> tuple[int, int] | None:
@@ -2557,8 +2574,20 @@ class _SiteBuilder:
         text (free-text `place_text` with no registry id stays unlinked). Returns
         a Markup so the template renders the link; an empty Markup when there is
         no place at all (so `{% if %}` guards still treat it as absent). Mirrors
-        the `[L-id]`-token link in prose - the symmetry the review flagged."""
-        label = self._place_label(place_text, place_id)
+        the `[L-id]`-token link in prose - the symmetry the review flagged.
+
+        `label` is scrubbed the same way every other reader-facing free-text
+        field on this page already is (#140, adversarial review round 4
+        audit): `place_text` is ordinary hand-typed prose - "Millbrook,
+        Dutchess County, New York" - not exempt from the same accidental
+        leak `_scrub_internal_encoding` exists to catch everywhere else (a
+        pasted-in bare citation id, an unedited `[..YYYY]` bracket). This
+        was the one reader-facing free-text field on this page that never
+        ran through it - `value_raw`/`place_text_raw`'s WORKBENCH edit-form
+        siblings deliberately stay unscrubbed (the human must see their real
+        stored text to edit it), but this is the read-only render, not an
+        edit form, so it gets no such exemption."""
+        label = _scrub_internal_encoding(self._place_label(place_text, place_id))
         if not label:
             return self._markup('')
         if place_id and place_id in self.place_pages:
@@ -3629,7 +3658,13 @@ class _SiteBuilder:
                     groups.append({'decade': None if current == '\x00' else current, 'entries': entries})
                 current = decade
                 entries = []
-            place_label = self._place_label(r['place_text'], r['place_id'])
+            # Scrubbed the same as value_text below (adversarial review,
+            # round 4 audit): place_label feeds `_place_trailing_remainder`,
+            # whose OWN output prints straight onto the page as a sentence
+            # continuation (person.html: `{{ e.place_remainder }}`) with no
+            # further scrub of its own - an unscrubbed place_text carrying a
+            # bare citation id or date bracket reached the reader unchanged.
+            place_label = _scrub_internal_encoding(self._place_label(r['place_text'], r['place_id']))
             # #140: scrub BEFORE the place-mention span is computed, so a
             # length change from stripping a claim-id parenthetical or
             # expanding a `[..YYYY]` date never desyncs `mention`'s indices
