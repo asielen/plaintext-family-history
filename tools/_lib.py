@@ -5172,7 +5172,17 @@ def _yaml_source_is_blank(text: str) -> bool:
     does not blank the line out, but that never matters for our callers -
     every case that reaches here is a file that parsed to `None`, so no
     remaining line can carry non-comment content anyway.
+
+    A leading UTF-8 byte-order-mark (`﻿`, from `path.read_text()` on a
+    file saved by an editor that writes one) is stripped first. `str.strip()`
+    does not treat `﻿` as whitespace, so without this a BOM-only file's
+    first "line" is the lone BOM character - non-blank, doesn't start with
+    `#` - and this function would wrongly report real content where there is
+    none, sending a totally empty (BOM-only) places.yaml down the "explicit
+    null" malformed-registry path instead of the ordinary empty-registry one.
     """
+    if text.startswith('﻿'):
+        text = text[1:]
     for line in text.splitlines():
         stripped = line.strip()
         if stripped and not stripped.startswith('#'):
@@ -5233,8 +5243,23 @@ def read_places_registry(archive_root: str | Path) -> tuple[list[dict], str | No
     if yaml is None:
         return [], None
     path = Path(archive_root) / 'places' / 'places.yaml'
-    if not path.is_file():
+    if not path.exists():
         return [], None
+    if not path.is_file():
+        # Something other than an ordinary file sits at this path - most
+        # plausibly a directory, from a hand-created `mkdir places.yaml` or
+        # a sync tool that resolved a conflict by making a folder. This is
+        # NOT the "nothing here yet" case above (adversarial review of PR
+        # #168: lint.py's own places-parsing block used to check this
+        # explicitly before it was folded into this shared helper, and lost
+        # the check in the process - a places.yaml directory silently read
+        # back as an ordinary empty registry, no finding at all, rather
+        # than the clear repair pointer a human actually needs here).
+        return [], (
+            'places/places.yaml is a directory, not a file - remove or '
+            'rename it, then create places/places.yaml as an ordinary text '
+            'file (see SPEC §15 for the registry shape).'
+        )
     try:
         text = path.read_text(encoding='utf-8')
     except OSError as e:

@@ -245,6 +245,19 @@ class LintPlacesRegistryShapeTests(unittest.TestCase):
         self.assertTrue(e010, [str(f) for f in findings])
         self.assertIn('null', e010[0].message)
 
+    def test_places_yaml_as_a_directory_is_an_e010_finding(self) -> None:
+        # Adversarial review of PR #168: lint.py used to check this case
+        # itself before its places-parsing block was folded into the shared
+        # `_lib.read_places_registry` helper, and lost the check in the
+        # process - a places.yaml that is a directory on disk used to
+        # silently read back as an ordinary empty registry, no finding at
+        # all, instead of telling the human what's actually wrong.
+        (self.root / 'places' / 'places.yaml').mkdir()
+        findings, _ = lint._run_lint_core(self.root, {})
+        e010 = [f for f in findings if f.code == 'E010' and 'places.yaml' in f.message]
+        self.assertTrue(e010, [str(f) for f in findings])
+        self.assertIn('directory', e010[0].message)
+
     def test_malformed_yaml_error_message_has_no_pyyaml_jargon(self) -> None:
         # Issue #168 finding 1: `fha lint` shares the same plain-language
         # error text as the write path now (both come from
