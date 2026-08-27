@@ -983,7 +983,7 @@ _CLAIM_MARKER_KEYS: frozenset[str] = frozenset({'id', 'type', 'value', 'persons'
 SOURCE_TYPES: frozenset[str] = frozenset({
     'census', 'vital-record', 'newspaper', 'photo', 'interview', 'letter',
     'military-record', 'land-record', 'probate', 'directory', 'dna', 'book',
-    'website', 'artifact', 'proof-argument', 'other',
+    'website', 'artifact', 'proof-argument', 'ephemera', 'other',
 })
 
 EDTF_EXAMPLE_TEXT = 'like 1880, 1880-06-15, or 188X for "the 1880s"'
