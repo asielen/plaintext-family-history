@@ -5283,6 +5283,73 @@ class OpenQuestionsSectionTests(_Base):
             self.assertNotIn('sealed adoption record', html, pid)
             self.assertNotIn('Open Questions', html, pid)
 
+    def test_by_request_person_named_only_in_a_refs_list_is_still_withheld(self):
+        # Adversarial review of PR #179, round 2: the finding above pins the
+        # case where the by-request person's OWN file is the question's
+        # home. This is the reverse - the home file belongs to an ORDINARY,
+        # unrestricted person (Otto), and the question merely `refs:` Rae, a
+        # by-request relative, on top of him. Before this fix, only the
+        # home file's owner was checked, so a question homed anywhere else
+        # could still fan a by-request person's private research onto HER
+        # page via `refs:` alone. Otto's own page is unaffected - the leak
+        # was specifically Rae's page rendering research she asked not to
+        # have discussed.
+        self._seed_person('p-aaaaaaaaaa', 'Reticent Rae', surname='Rae',
+                          frontmatter_extra='restricted: by-request')
+        self._seed_person('p-bbbbbbbbbb', 'Open Otto', surname='Otto')
+        research_path = self.archive_root / 'people' / 'otto__test_research_p-bbbbbbbbbb.md'
+        research_path.write_text(
+            '---\nid: p-bbbbbbbbbb\ncreated: 2026-06-01\n---\n\n'
+            '## Open Questions\n\n'
+            "## Q: Was Rae really Otto's half-sibling?\n"
+            '- origin: human\n'
+            '- status: open\n'
+            '- refs: [P-bbbbbbbbbb, P-aaaaaaaaaa]\n'
+            '- context:\n'
+            '  - (human, 2026-06-01) A sealed adoption record hints at this; '
+            'Rae asked never to have it discussed.\n',
+            encoding='utf-8')
+        lo = self._run(linked=True, workbench=False)
+        self.assertTrue(lo.ok, lo.messages)
+        rae_html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertNotIn('half-sibling', rae_html)
+        self.assertNotIn('sealed adoption record', rae_html)
+        otto_html = self._read('persons/p-bbbbbbbbbb.html')
+        self.assertIn('half-sibling', otto_html)
+        self.assertIn('sealed adoption record', otto_html)
+
+    def test_research_file_whose_frontmatter_id_disagrees_with_its_filename_fails_closed(self):
+        # Adversarial review of PR #179, round 2: a research companion's
+        # filename and its own `id:` field are supposed to always agree
+        # (`fha lint`'s E003 flags a mismatch as an archive error), but
+        # while that inconsistency sits unresolved, the origin by-request
+        # check must not trust the filename alone - it cannot tell which of
+        # the two persons this file really belongs to, so it withholds
+        # rather than guess. This file's NAME claims Otto (unrestricted);
+        # its own `id:` says Rae (by-request) - the mismatch itself, either
+        # direction, must fail closed.
+        self._seed_person('p-aaaaaaaaaa', 'Reticent Rae', surname='Rae',
+                          frontmatter_extra='restricted: by-request')
+        self._seed_person('p-bbbbbbbbbb', 'Open Otto', surname='Otto')
+        mismatched = self.archive_root / 'people' / 'otto__test_research_p-bbbbbbbbbb.md'
+        mismatched.write_text(
+            '---\nid: p-aaaaaaaaaa\ncreated: 2026-06-01\n---\n\n'
+            '## Open Questions\n\n'
+            '## Q: Mismatched filename vs frontmatter id\n'
+            '- origin: human\n'
+            '- status: open\n'
+            '- refs: [P-bbbbbbbbbb]\n'
+            '- context:\n'
+            '  - (human, 2026-06-01) Should never render while this mismatch stands.\n',
+            encoding='utf-8')
+        lo = self._run(linked=True, workbench=False)
+        self.assertTrue(lo.ok, lo.messages)
+        html = self._read('persons/p-bbbbbbbbbb.html')
+        self.assertNotIn('Mismatched filename vs frontmatter id', html)
+        self.assertNotIn('Should never render', html)
+        messages = lo['messages']
+        self.assertTrue(any('E003' in m or 'mismatch' in m.lower() for m in messages), messages)
+
     def test_plain_restricted_persons_question_still_renders_under_linked(self):
         # Not over-broadened: by-request is SPEC §19's ONE no-override tier.
         # A plain `restricted: true` origin - a lesser tier other export

@@ -2093,6 +2093,18 @@ class _SiteBuilder:
         unrestricted relative's page who never asked for any of
         `--linked`'s reduced redaction. See `_question_origin_is_by_request`.
 
+        THE OTHER DIRECTION of that same exception (adversarial review of
+        #117): the origin check above only ever asks about the HOME file's
+        own owner - it says nothing about a question that is homed in an
+        ordinary, unrestricted person's research file but also `refs:` a
+        DIFFERENT person who herself asked to be left out. Filing under
+        `refs:` fans exactly that question onto her page too, so each ref is
+        checked on its own via `_person_is_by_request` right below, in
+        addition to (not instead of) the origin check above - a by-request
+        person's private research stays off her own page whether the leak
+        would have come from HER file being the home, or from someone
+        ELSE's file merely mentioning her.
+
         Also guards the read itself: a research file (or notes/questions.md)
         saved in a non-UTF-8 encoding used to raise `UnicodeDecodeError`
         straight out of `_lib.parse_questions` and take the whole `fha site
@@ -2114,6 +2126,14 @@ class _SiteBuilder:
             # the same question legitimately appearing on SEVERAL people's
             # pages.
             for ref in {r for r in info['refs'] if r.startswith('p-')}:
+                # Per-ref check (adversarial review of #117, see this
+                # method's docstring): the origin check above only ever
+                # covers the HOME file's own owner - a question homed in an
+                # unrestricted person's file can still name a DIFFERENT,
+                # by-request person here, and only checking each ref
+                # individually catches that direction of the same leak.
+                if self._person_is_by_request(normalize_id(ref)):
+                    continue
                 self.person_questions.setdefault(ref, []).append(info)
         for path in undecodable:
             try:
@@ -2141,7 +2161,19 @@ class _SiteBuilder:
         `kind_ambiguous` case), not off `self.restricted_persons`: that set
         is filled by `_load_restriction_markers`, which `prepare()` never
         calls when `self.linked` - and `_load_open_questions` runs precisely
-        when `self.linked` - so it is always empty here.
+        when `self.linked` - so it is always empty here. Cross-checked
+        against the file's own frontmatter `id:` by
+        `_origin_frontmatter_id_mismatches` (adversarial review of #117) -
+        see that method for why trusting the filename alone is not enough on
+        its own when the two disagree.
+
+        This only ever gates the ORIGIN (home) file - the by-request check
+        that matters for a specific `refs:` target is a separate, per-pid
+        check `_load_open_questions` applies to each ref individually (see
+        its own comment): a question homed in an unrestricted person's file
+        can still `refs:` a DIFFERENT, by-request person, and this method
+        alone would never catch that - it only ever asks about the file's
+        own owner.
         """
         file_rel = info.get('file') or ''
         if file_rel == 'notes/questions.md':
@@ -2151,8 +2183,57 @@ class _SiteBuilder:
             return False   # not a person research file - nothing to check
         pid = normalize_id(parsed['id_str'])
         if pid not in self._by_request_origin_cache:
-            self._by_request_origin_cache[pid] = self._person_is_by_request(pid)
+            self._by_request_origin_cache[pid] = (
+                self._person_is_by_request(pid)
+                or self._origin_frontmatter_id_mismatches(file_rel, pid)
+            )
         return self._by_request_origin_cache[pid]
+
+    def _origin_frontmatter_id_mismatches(self, file_rel: str, filename_pid: str) -> bool:
+        """True when `file_rel`'s own frontmatter `id:` disagrees with (or
+        cannot be read against) the P-id its FILENAME claims - defense in
+        depth for `_question_origin_is_by_request` (adversarial review of
+        #117).
+
+        A research companion's filename and its own `id:` field are SUPPOSED
+        to always agree (`archive-template/people/_TEMPLATE.research.md`:
+        "the person's code, same as on their profile") - SPEC §13's self-
+        identifying-filename invariant, and `fha lint`'s E003 already flags
+        a mismatch as an archive-level error the owner is expected to fix.
+        But while that inconsistency sits unresolved (a hand-rename or a
+        copied file, `id:` and filename edited independently), trusting the
+        filename alone to answer "does this by-request check apply to the
+        right person" means a mismatched file can no longer be told apart
+        from an ordinary one by name alone - the wrong person's by-request
+        status governs the real one's private research. Fails CLOSED the
+        same way `_person_is_by_request` already does for its own other
+        "can't verify" cases (unreadable, undecodable, no profile), rather
+        than trusting either signal on its own when they disagree.
+        """
+        try:
+            rec = read_record(self.archive_root / file_rel, on_decode_error=_ignore_decode_error)
+            trouble = rec['parse_errors'][0][1] if rec['parse_errors'] else None
+        except Exception as e:   # noqa: BLE001 - any failure is the same failure here
+            rec, trouble = None, str(e)
+        if trouble is not None or (rec is not None and rec.get('undecodable')):
+            self.messages.append(
+                f'WARNING: could not read {file_rel} to confirm it really belongs to '
+                f"{fmt_id_display(filename_pid)} (its filename) before publishing its "
+                'open questions - withheld rather than shown without being able to check.'
+            )
+            return True
+        frontmatter_id = normalize_id(str(rec['meta'].get('id') or ''))
+        if frontmatter_id != filename_pid:
+            self.messages.append(
+                f"WARNING: {file_rel}'s filename names {fmt_id_display(filename_pid)} but "
+                f"its own `id:` says "
+                f"{fmt_id_display(frontmatter_id) if frontmatter_id else '(none)'} - "
+                "`fha lint`'s E003 flags this mismatch; its open questions are withheld "
+                'rather than shown under whichever person turns out to be wrong. Fix the '
+                'mismatch (see `fha lint`) and run `fha site` again.'
+            )
+            return True
+        return False
 
     def _person_is_by_request(self, pid: str) -> bool:
         """Read one person's OWN profile record and say whether it carries
