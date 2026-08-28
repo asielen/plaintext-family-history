@@ -535,6 +535,75 @@ class ProcessRefileTestCase(unittest.TestCase):
         self.assertIn('does not resolve to a folder inside', err)
         self.assertTrue(asset.exists(), 'a file must never move on a --dest refusal')
 
+    @contextlib.contextmanager
+    def _patch_313_nonstrict_resolve_success_on(self, target_name: str):
+        """Simulate the Python 3.13+ `Path.resolve()` behavior gap finding 5
+        exploits (round-11 audit, post-merge Codex review of #197): on 3.13+,
+        NON-strict `resolve()` (what `_is_under` calls) stopped raising for a
+        genuine symlink loop at all - it silently returns a best-effort,
+        still-UNRESOLVED path instead (see `_resolve_hits_symlink_loop`'s own
+        docstring in tools/process.py). Only `resolve(strict=True)` (what
+        `_resolve_hits_symlink_loop` calls) still raises for the same loop.
+
+        A real on-disk loop needs a privilege this Windows test environment
+        does not have (the same constraint every other symlink-loop test in
+        this file already notes), so this patches `Path.resolve` directly,
+        scoped to one filename, to reproduce exactly that asymmetry - and
+        patches `Path.is_file` for the SAME filename to return False,
+        matching what a genuine loop's OS-level stat() call actually does:
+        `_is_under`'s non-strict resolve never touches the filesystem at all,
+        so without this the target's ordinary on-disk existence would mask
+        the very fallthrough this test exists to catch (the old code, having
+        wrongly trusted `_is_under`'s True, falls through to `.is_file()`
+        next - and only reports the bug's wrong "not on disk" message if
+        that check also fails, exactly as a real loop's stat() would)."""
+        real_resolve = Path.resolve
+        real_is_file = Path.is_file
+
+        def flaky_resolve(path_self, *args, **kwargs):
+            if path_self.name == target_name:
+                if kwargs.get('strict'):
+                    raise RuntimeError(f'Symlink loop resolving {target_name}')
+                return path_self  # 3.13+ non-strict best-effort: unresolved, not raised
+            return real_resolve(path_self, *args, **kwargs)
+
+        def flaky_is_file(path_self, *args, **kwargs):
+            if path_self.name == target_name:
+                return False  # a real loop's stat() fails, same as an ordinary broken path
+            return real_is_file(path_self, *args, **kwargs)
+
+        with unittest.mock.patch.object(Path, 'resolve', flaky_resolve), \
+                unittest.mock.patch.object(Path, 'is_file', flaky_is_file):
+            yield
+
+    def test_source_asset_313_style_symlink_loop_names_the_loop_not_missing(self) -> None:
+        # Finding 5 (round-11 audit): on Python 3.13+, `_is_under`'s
+        # non-strict `.resolve()` no longer raises for a genuine symlink
+        # loop - it returns a best-effort, still-unresolved path, which can
+        # still read as textually "under" the claimed root and make
+        # `_is_under` report True. Before the fix, the loop check lived only
+        # inside `if not _is_under(...):`, so a True there skipped it
+        # entirely and fell through to `if not src.is_file():` - which a
+        # genuine loop's own stat() call also fails, producing the WRONG
+        # diagnosis ("is not on disk", with the wrong remedy: plug in a
+        # drive, run reconcile) instead of naming the actual problem (a
+        # broken symlink to find and fix). The fix checks
+        # `_resolve_hits_symlink_loop` BEFORE ever trusting `_is_under`'s
+        # result, so the correct "symlink loop" refusal fires regardless of
+        # which way `_is_under` itself answers.
+        self._install_photo_store()
+        asset, record = self._write_doc_source()
+
+        with self._patch_313_nonstrict_resolve_success_on(asset.name):
+            rc, _out, err = self._run_captured([SID, '--to', 'photos', '--dest', '1880s'])
+
+        self.assertEqual(rc, EXIT_FAILURE)
+        self.assertNotIn('Traceback', err)
+        self.assertIn('symlink loop', err)
+        self.assertNotIn('not on disk', err)
+        self.assertTrue(asset.exists(),
+                         'a file whose containment could not be verified must never move')
+
     def test_documents_asset_belonging_to_different_source_refused(self) -> None:
         # Inventory drift: this source's files: entry names a documents-root
         # file whose OWN filename (SPEC #13's `_{S-id}` suffix) says it belongs

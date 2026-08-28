@@ -32,6 +32,11 @@ Checks (in order):
                          disk beside a photo a source already lists, but not
                          itself listed - often the only surviving caption or
                          provenance note for that print)
+ 15. Unresolved companion owners (#193/#179 followup: a mid-graduation
+                         research companion whose frontmatter id: names no
+                         profile anywhere - a state lint's own profile/
+                         companion classification reads as a profile
+                         missing fields, not the real problem)
 
 Exit codes: 0 = all pass; 1 = warnings only; 2 = errors.  TOOLING §3a.
 """
@@ -69,21 +74,28 @@ except ImportError:
     sys.exit(2)
 
 from _lib import (
+    carries_person_record_fields,
+    COMPANION_KINDS,
     configure_utf8_stdout,
     db_mtime,
     EXIT_CLEAN,
     EXIT_ERRORS,
     EXIT_FAILURE,
     EXIT_WARNINGS,
+    find_person_record_path,
+    fmt_id_display,
     FhaConfigError,
     format_roots_orphan_warning,
     get_roots,
     grouping_stem,
+    id_type_of,
     INDEX_SCHEMA_VERSION,
     is_fixture_path,
+    is_valid_id,
     is_working_copy,
     load_fha_yaml,
     newest_record_mtime_with_unreadable_dirs,
+    normalize_id,
     parse_filename,
     parse_media_filename,
     path_to_alias,
@@ -135,6 +147,16 @@ configure_utf8_stdout()
 #                               beside a photo a source DOES list; its local
 #                               _find_back_on_disk scans the directory via
 #                               parse_media_filename (#145 followup, finding 2)
+#
+#  Unresolved companion-owner check (#193/#179 followup, round 4, finding 4)
+#    _check_unresolved_companion_owners - a mid-graduation research companion
+#                               (id-less filename) whose frontmatter DOES carry
+#                               a valid P-id, but that id names no profile
+#                               anywhere - the state lint.py's own is_companion
+#                               test falls through (it requires parse_filename
+#                               to succeed on the FILENAME first), so lint
+#                               misreports it as a profile missing required
+#                               fields instead of the real problem
 #
 #  Top-level
 #    run_doctor                - orchestrate all checks; return a Result (no printing)
@@ -997,6 +1019,114 @@ def _check_orphaned_back_photos(archive_root: Path, fha_config: dict,
     return EXIT_WARNINGS
 
 
+# ── Unresolved companion-owner check (#193/#179 followup, round 4, finding 4) ──
+
+def _check_unresolved_companion_owners(archive_root: Path, lines: list[str],
+                                        checks: list[dict]) -> int:
+    """A mid-graduation research companion (SPEC §16: named before its id was
+    minted, `{surname}__{given}_research.md`, no trailing `_P-…`) whose own
+    frontmatter DOES carry a syntactically valid `id:`, but that id names no
+    profile record anywhere in the archive - the person it claims to belong
+    to has no page for `fha doctor` (or anyone) to point at.
+
+    `fha site`'s Open Questions build already detects exactly this state for
+    itself (`site.py`'s `_origin_id_from_frontmatter_is_by_request`) and
+    withholds the companion's questions with a "restore or create the
+    profile" warning - but that only reaches someone who runs `fha site`.
+    Doctor's own lint summary (`run_lint_silent`, the E:/W: counts above)
+    does NOT substitute for it: `lint.py`'s `is_companion` test requires
+    `parse_filename` to succeed on the FILENAME first
+    (`parsed and parsed.get('is_companion', False)`), and an id-less
+    filename never reaches that - so a file that IS a companion by its
+    CONTENT still gets registered as pid's PROFILE and judged against
+    `REQUIRED_PERSON_FIELDS`, reporting E010 "missing required field:
+    'sex'" and the like. That is real, but it names the wrong disease: a
+    human chasing E010 here goes looking for vitals to add to a profile
+    that both (a) is actually a companion note and (b) is not even the
+    person's real record, while the genuinely different problem - no
+    profile exists for this id, or this file's filename itself needs a
+    real id - goes unmentioned. This check names that problem directly, so
+    a human who runs `fha doctor` first (never `fha site`) is not left
+    chasing lint's misreading.
+
+    Detection mirrors `site.py`'s own check rather than reaching into
+    lint.py's registry (tools never import tools, TOOLING §15 - and
+    lint's own classification is precisely the thing this state falls
+    through, so borrowing it would just re-import the bug). A candidate is
+    a `people/**/*.md` file whose FILENAME carries no parseable id at all
+    (`parse_filename` returns None - both the ordinary id-bearing case and
+    the "kind slot is really the last given name" ambiguity already
+    resolve through that filename path and are not this state), whose
+    frontmatter does NOT assert the SPEC §9 person-record fields
+    (`carries_person_record_fields` - a real hand-authored, id-less
+    PROFILE is `fha lint`'s already-mintable `idless_records` case, a
+    different and already-served state, not this one), and whose stem
+    ends in a SPEC §13 companion-kind suffix (`COMPANION_KINDS`) - the
+    same `is_person_file_kind` fallback shape `site.py` reads for a
+    mid-graduation companion. Among those, only a SYNTACTICALLY VALID
+    `id:` (`is_valid_id` + `id_type_of`, not a bare prefix guess - see
+    `site.py` round 4 finding 2 for why a prefix guess is wrong here too)
+    is this check's business: an id-less or malformed `id:` is a distinct,
+    already-named problem (`fha lint`'s E002, or its auto-mintable
+    `idless_records` listing). `find_person_record_path` is the same
+    profile-only, companion-excluding, index-independent scan `fha claim`/
+    `fha person set-living`/`fha confirm merge` already trust to answer
+    "does this id name a real record" - reused here rather than a fresh
+    SQL lookup, since a stale or absent index must never mask this state
+    (the archive's own files are the truth doctor is built to check).
+    """
+    people_dir = archive_root / 'people'
+    if not people_dir.is_dir():
+        return EXIT_CLEAN
+    unresolved: list[tuple[Path, str]] = []
+    for path in sorted(people_dir.rglob('*.md')):
+        if parse_filename(path) is not None:
+            continue   # filename already carries a parseable id - not this state
+        stem = path.stem
+        if not any(stem.endswith(f'_{kind}') for kind in COMPANION_KINDS):
+            continue   # not shaped like a companion at all
+        try:
+            rec = read_record(path)
+        except Exception:
+            continue   # unreadable/undecodable - other checks above already surface this
+        if rec.get('parse_errors'):
+            continue   # malformed frontmatter - `fha lint` already surfaces this, distinctly
+        meta = rec['meta']
+        if carries_person_record_fields(meta):
+            continue   # a real hand-authored profile with no filename id yet - a different state
+        pid = normalize_id(str(meta.get('id') or ''))
+        if not (is_valid_id(pid) and id_type_of(pid) == 'P'):
+            continue   # no id, or a malformed one - fha lint (E002) already names this
+        if find_person_record_path(archive_root, pid) is not None:
+            continue   # resolves to a real profile - nothing wrong here
+        unresolved.append((path, pid))
+
+    if not unresolved:
+        return EXIT_CLEAN
+    for path, pid in unresolved:
+        try:
+            rel = path.relative_to(archive_root).as_posix()
+        except ValueError:
+            rel = str(path)
+        lines.append(
+            f'unresolved companion owner: {rel} is a research companion for '
+            f'{fmt_id_display(pid)}, but no profile record exists for that id '
+            'anywhere in the archive  next: find that person\'s real, EXISTING '
+            "P-id (their actual profile) and put it in this file's `id:` line, "
+            'renaming the file to match SPEC §13 - `fha lint` alone reports '
+            'this file as a profile missing required fields, which is not the '
+            'real problem here'
+        )
+    checks.append({
+        'id': 'unresolved_companion_owners', 'status': 'warn',
+        'detail': f'{len(unresolved)} research companion(s) whose frontmatter '
+                 'id resolves to no profile',
+        'next_step': "find the owner's real P-id, put it on the companion "
+                     'file, and rename it to match SPEC §13',
+    })
+    return EXIT_WARNINGS
+
+
 # ── Tools-version check (fha install / fha update-tools, BUILD.md M9) ───────────
 
 def _check_tools_version(archive_root: Path, lines: list[str], checks: list[dict]) -> int:
@@ -1477,6 +1607,12 @@ def run_doctor(archive_root: Path, fha_config: dict) -> Result:
     # #113: a -back/_back photo sibling sitting on disk but not in its
     # source's files: - see _check_orphaned_back_photos for the full case.
     worst = max(worst, _check_orphaned_back_photos(archive_root, fha_config, lines, checks))
+
+    # #193/#179 followup, round 4, finding 4: a mid-graduation research
+    # companion whose frontmatter id: resolves to no profile anywhere - a
+    # state lint's own profile/companion classification falls through (see
+    # _check_unresolved_companion_owners for the full case).
+    worst = max(worst, _check_unresolved_companion_owners(archive_root, lines, checks))
 
     if wc_mode:
         lines.append(
