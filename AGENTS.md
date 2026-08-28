@@ -60,6 +60,27 @@ unless you tell him otherwise:
 - **A photo-date guess is a hypothesis.** "When do you think this was taken?" gets an estimate
   with its stated basis (clothing, print format, photo process) — recorded as an
   `origin: agent` hypothesis if it's worth keeping, never as a claim.
+- **Keep the archive's own paperwork out of the family's story.** A claim's `value:` and a
+  record's reader-facing prose (Biography, Stories, an unfenced `## Research Notes` paragraph)
+  describe **what happened to the family** — a fact, in plain English, that a relative who has
+  never seen this codebase could read and understand. `fha site` renders both onto the Timeline
+  and Biography a family member actually reads, verbatim: it cannot tell "a fact about the
+  family" from "the researcher describing her own process," because both are just prose sharing
+  one field, so the discipline is yours, not the renderer's. Keep out of them: which
+  transcription pass or tool produced a reading ("the whisper transcript" vs. "the app
+  transcript" is this codebase's internal vocabulary, not a family fact), who on the research
+  team verified or corrected something and when, first-person commentary about the archive's own
+  verification process ("this session independently corroborates…"), or any other QA/review-trail
+  content — a badge, a status word, a review date, all belong to the archive's bookkeeping, never
+  to the sentence about the person. That material already has a real home, so there is never a
+  reason to leave it in the reader's way: a claim's own `notes:` field (SPEC §8.4 —
+  "provenance remarks, supersession pointers go here too" — never rendered onto any built page,
+  standalone or `--linked` alike); for something broader than one claim, a person's research file
+  `## Research Log` (SPEC §16b, likewise never rendered); or the `<!-- private -->` fence around
+  just that paragraph (TOOLING.md §3c) when it belongs sitting near the prose it concerns but
+  must still stay off a shared build. This applies whether a human typed the sentence directly or
+  an AI-assisted pass drafted it — a `mine-transcript` comparison of two transcription passes, in
+  particular, belongs in the claim's `notes:`, never its `value:` (see that skill).
 
 ### Writing for the next reader (code comments, PR descriptions, issues)
 

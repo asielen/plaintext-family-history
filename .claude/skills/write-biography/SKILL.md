@@ -66,6 +66,13 @@ it — a profile half chronicle, half narrative reads as two authors fighting.
 - **Never overwrite human text; never edit below a GENERATED header.** Draft *around* existing prose.
 - **Respect privacy** (AGENTS.md §"The contract" 6): don't surface a `living`/`restricted` person or
   detail into prose destined for export.
+- **Write about the family, never about the archive's own research process.** A sentence explaining
+  *why* a claim was accepted, that it "corroborates" or "independently confirms" an already-settled
+  fact, or how the evidence was verified is commentary about this codebase's review pipeline, not a
+  fact about a life — it has no citation to a family event because there isn't one (AGENTS.md
+  §"Speculation and storytelling" → "Keep the archive's own paperwork out of the family's story"). Cite
+  the source and state what happened; leave *how sure we are and why* out of the prose entirely — it
+  already lives in the claim's own `confidence:`/`information:`/`evidence:` fields.
 
 ## Flow
 

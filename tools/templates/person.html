@@ -103,6 +103,28 @@
   {% endif %}
 
   <h2>Timeline</h2>
+  {% if person.has_qa_badges %}
+  {#- #130: a plain-language, one-time gloss for the "low confidence"/
+      "unconfirmed" marks a Timeline entry (or, for low confidence, a
+      summary row above) can carry - gated on `has_qa_badges` (site.py) so
+      it only ever appears on a page that actually shows one of the two,
+      matching the family_strip/open_review_count gating pattern already
+      used elsewhere on this template rather than base.html's always-on
+      date-notation-note. Same "explain the vocabulary once, near where
+      it's used" convention as `fha doctor`'s opening line (tools/doctor.py)
+      and the date-notation legend itself (#131, base.html) - both marks are
+      glossed together even though a standalone build can only ever show
+      "low confidence" (an "unconfirmed" claim never leaves needs-review, so
+      it never reaches a standalone page), the same way the date legend
+      explains every SPEC 11 mark regardless of which ones a given page
+      happens to use. -#}
+  <p class="note badge-legend-note">A few facts on this page carry a short label showing how solid
+  the evidence is. <strong>low confidence</strong> means this is the best evidence found so far, but
+  nothing else has confirmed it yet - it is shown because it may still be true, not held back as
+  unproven. <strong>unconfirmed</strong> means someone looked into this and could not settle it
+  yet; when the label adds "<strong>parked</strong>" with a date, that date is simply the last time
+  anyone checked, not something that happened to the family.</p>
+  {% endif %}
   {% if person.timeline %}
   <div class="timeline">
     {% for group in person.timeline %}

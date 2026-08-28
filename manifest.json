@@ -66,7 +66,7 @@
     {
       "path": ".claude/skills/mine-transcript/SKILL.md",
       "category": "operating",
-      "sha256": "1fa433491ef1d20eee64f09852acfed6e8ca972112850aada58b342828dde742",
+      "sha256": "b8a14a7811ce49cfc119491009e0167d6047fbe8add6490a8b7c03232fe27d43",
       "spec_version": "1.2"
     },
     {
@@ -108,7 +108,7 @@
     {
       "path": ".claude/skills/review-claims/SKILL.md",
       "category": "operating",
-      "sha256": "38baa88e0ed68f2de996a8d5a237b0d0cf9f365b84ce560d6b51a8d9407fb00b",
+      "sha256": "14f8b5e1ee1f8fce95a7f5dc69e915f51b13fa249cd03c63ef89db7956a3d9cb",
       "spec_version": "1.2"
     },
     {
@@ -162,7 +162,7 @@
     {
       "path": ".claude/skills/write-biography/SKILL.md",
       "category": "operating",
-      "sha256": "dea12a568a5a28aa9ec52569ad3ea8fcf5f79b887aa08c9fac81438a5f44f070",
+      "sha256": "f43c5f8f904ae67a3d5dc81e5ddd6941404e099fa644f7c79cc475eddc023f0c",
       "spec_version": "1.2"
     },
     {
@@ -658,7 +658,7 @@
     {
       "path": ".fha/tools/site.py",
       "category": "operating",
-      "sha256": "1e25599e4bb62e035c6035a09f46a41ef26e17bcbcfc241c5b8208e5b591f508",
+      "sha256": "471e966fd8048a0f2adad0afef11eba53f40611d2799479ea5106a634ee9b90f",
       "spec_version": "1.2",
       "src": "tools/site.py"
     },
@@ -728,7 +728,7 @@
     {
       "path": ".fha/tools/templates/person.html",
       "category": "operating",
-      "sha256": "ec7828dadacffedb831ebdfb092d71fdb93c07a6538d9b342216685f65041209",
+      "sha256": "dc7e115d92348bf11cbb181c67645e76ad6fbcc7d594fabc482fa05d086ec518",
       "spec_version": "1.2",
       "src": "tools/templates/person.html"
     },
@@ -854,7 +854,7 @@
     {
       "path": "AGENTS.md",
       "category": "operating",
-      "sha256": "4b5d8ea0716d8a196ea696957ac28c486a93d139bf757f4e3f5cb513c636a03c",
+      "sha256": "8ade61acb3c27e6cf5075b06f3a392418830eb056ed47e34fa79c30cbd3aab2f",
       "spec_version": "1.2"
     },
     {

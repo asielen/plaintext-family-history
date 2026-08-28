@@ -608,6 +608,79 @@ class PersonPageTests(_Base):
         self.assertIn('Perhaps a miller', html)                  # accepted-low publishes
         self.assertIn('flag-low', html)                          # ...flagged
 
+    def _badge_legend_present(self, html):
+        return 'class="note badge-legend-note"' in html
+
+    def test_badge_legend_absent_when_no_badges_on_page(self):
+        # #130: a family member reading a page with neither mark present must
+        # not be handed an explanation for vocabulary that page never uses -
+        # the legend is gated on has_qa_badges (site.py), not printed
+        # unconditionally the way base.html's date-notation legend is.
+        self._seed_person('p-aaaaaaaaaa', 'Jane Doe')
+        self._seed_source('s-1111111111', 'Record', people=('p-aaaaaaaaaa',))
+        self._seed_claim('c-1111111111', 's-1111111111', 'residence', 'Lived quietly',
+                         status='accepted', date_edtf='1900', persons=('p-aaaaaaaaaa',))
+        self._run(linked=True)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertNotIn('flag-low', html)
+        self.assertNotIn('flag-unconfirmed', html)
+        self.assertFalse(self._badge_legend_present(html))
+
+    def test_badge_legend_appears_with_low_confidence_only(self):
+        # An accepted low-confidence vital carries its flag in the Born/Died/
+        # Married SUMMARY block too (#130's summary surface), which renders
+        # ABOVE the legend (the legend sits by the Timeline heading, further
+        # down the page) - so the legend's wording must not assume the flag
+        # it explains is always below it on the page. This also confirms the
+        # legend fires from a summary-only page even in a standalone build.
+        self._seed_person('p-aaaaaaaaaa', 'Jane Doe')
+        self._seed_source('s-1111111111', 'Record', people=('p-aaaaaaaaaa',))
+        self._seed_claim('c-1111111111', 's-1111111111', 'birth', 'Born about 1900',
+                         status='accepted', confidence='low', date_edtf='1900',
+                         persons=('p-aaaaaaaaaa',))
+        self._run(linked=False)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertNotIn('flag-unconfirmed', html)
+        self.assertTrue(self._badge_legend_present(html))
+        summary_idx = html.index('class="summary"')
+        flag_idx = html.index('flag-low')
+        legend_idx = html.index('class="note badge-legend-note"')
+        self.assertTrue(summary_idx < flag_idx < legend_idx,
+                        'the low-confidence flag must sit in the summary block, ABOVE the legend')
+        legend = html[legend_idx:]
+        self.assertIn('low confidence', legend)
+        self.assertIn('unconfirmed', legend)   # both marks glossed together (see template comment)
+        self.assertNotIn('below', legend)      # the wording must not assume the flag sits below it
+
+    def test_badge_legend_appears_with_unconfirmed_only(self):
+        # needs-review/"unconfirmed" only ever reaches linked or workbench
+        # pages (never standalone), so this exercises that surface.
+        self._seed_person('p-aaaaaaaaaa', 'Jane Doe')
+        self._seed_source('s-1111111111', 'Record', people=('p-aaaaaaaaaa',))
+        self._seed_claim('c-1111111111', 's-1111111111', 'residence', 'Lived in Fairview',
+                         status='needs-review', date_edtf='1900', reviewed='2026-08-20',
+                         persons=('p-aaaaaaaaaa',))
+        self._run(linked=True)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('flag-unconfirmed', html)
+        self.assertIn('parked 2026-08-20', html)
+        self.assertNotIn('flag-low', html)
+        self.assertTrue(self._badge_legend_present(html))
+
+    def test_badge_legend_appears_with_both_badges(self):
+        self._setup_thomas()   # already carries a needs-review claim
+        self._seed_claim('c-5555555555', 's-1111111111', 'occupation', 'Perhaps a miller',
+                         status='accepted', confidence='low', date_edtf='1885',
+                         persons=('p-aaaaaaaaaa',))
+        self._run(linked=True)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('flag-unconfirmed', html)
+        self.assertIn('flag-low', html)
+        self.assertTrue(self._badge_legend_present(html))
+        # Exactly one legend, even though both marks appear (matches the
+        # date-notation legend's own one-per-page posture, #131).
+        self.assertEqual(html.count('class="note badge-legend-note"'), 1)
+
     def test_timeline_place_tag_omitted_when_sentence_already_states_it(self):
         # #127: the timeline was appending a bare "@ Place" tag even when the
         # claim's own sentence already named that place naturally moments
