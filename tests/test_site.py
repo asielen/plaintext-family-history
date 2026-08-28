@@ -7135,6 +7135,171 @@ class OpenQuestionsSectionTests(_Base):
                 self.assertFalse(builder._person_is_by_request('p-aaaaaaaaaa'))
         self.assertEqual(spy.call_count, 1)
 
+    def test_id_less_companion_with_malformed_frontmatter_names_the_trouble(self):
+        # PR #193 post-merge review, finding 1 (P2): the ID-less origin
+        # fallback (`_origin_id_from_frontmatter_is_by_request`) used to say
+        # only "could not read ... - withheld", discarding the actual
+        # YAML parse-error text and leaving no concrete next step - correct
+        # to fail closed, useless for telling the owner what to actually go
+        # fix. The warning must now name the real cause (the parser's own
+        # error text) and a repair step that fits it (`fha lint`, or check
+        # the YAML and re-run).
+        self._seed_person('p-bbbbbbbbbb', 'Open Otto', surname='Otto')
+        # No trailing `_P-...` - the mid-graduation, id-less filename shape
+        # (`is_person_file_kind`'s documented state) that sends this through
+        # the frontmatter fallback rather than the filename-ID path. The tab
+        # character below is invalid YAML indentation, so the frontmatter
+        # fails to parse - a genuinely malformed record, not an encoding
+        # problem.
+        id_less = self.archive_root / 'people' / 'rae__reticent_research.md'
+        id_less.write_text(
+            '---\nid: p-aaaaaaaaaa\n\tname: Bad Tab\ncreated: 2026-06-01\n---\n\n'
+            '## Open Questions\n\n'
+            '## Q: Some question about Otto\n'
+            '- origin: human\n'
+            '- status: open\n'
+            '- refs: [P-bbbbbbbbbb]\n'
+            '- context:\n'
+            '  - (human, 2026-06-01) Should be withheld - the frontmatter above will not parse.\n',
+            encoding='utf-8')
+        res = self._run(linked=True, workbench=False)
+        self.assertTrue(res.ok, res.messages)
+        otto_html = self._read('persons/p-bbbbbbbbbb.html')
+        self.assertNotIn('Some question about Otto', otto_html)
+        messages = res['messages']
+        trouble = [m for m in messages if 'rae__reticent_research.md' in m]
+        self.assertEqual(len(trouble), 1, messages)
+        msg = trouble[0].lower()
+        # The real parse-error detail is no longer discarded...
+        self.assertTrue(
+            'yaml' in msg or 'tab' in msg or 'token' in msg,
+            f'warning dropped the actual parse-error detail: {trouble[0]}')
+        # ...and a concrete repair step is offered instead of a dead end.
+        self.assertTrue(
+            'fha lint' in msg or 'yaml' in msg,
+            f'warning gave no concrete repair step: {trouble[0]}')
+
+    def test_origin_check_with_no_profile_gets_a_profile_repair_step(self):
+        # PR #193 post-merge review, finding 2 (P2): `_person_is_by_request`
+        # is called both to check a research companion's OWN origin/owner
+        # and, separately, to check a `refs:` TARGET - two conceptually
+        # different questions that used to share one "no readable profile"
+        # warning telling the reader to fix the file's `refs:` list. That
+        # advice is right for the refs: case (covered by the existing
+        # test_dangling_ref_names_the_actual_origin_with_a_repair_step_once)
+        # but wrong here: this research companion's own claimed owner (from
+        # its FILENAME, `p-zzzzzzzzzz`) simply has no profile record at all
+        # - editing `refs:` fixes nothing, because refs: is not what is
+        # broken. The origin case must say to restore/create the profile.
+        self._seed_person('p-bbbbbbbbbb', 'Open Otto', surname='Otto')
+        ghost_research = self.archive_root / 'people' / 'ghost__missing_research_p-zzzzzzzzzz.md'
+        ghost_research.write_text(
+            '---\nid: p-zzzzzzzzzz\ncreated: 2026-06-01\n---\n\n'
+            '## Open Questions\n\n'
+            '## Q: Whose file is this anyway?\n'
+            '- origin: human\n'
+            '- status: open\n'
+            '- refs: [P-bbbbbbbbbb]\n'
+            '- context:\n'
+            '  - (human, 2026-06-01) Should be withheld - no profile for the owner.\n',
+            encoding='utf-8')
+        res = self._run(linked=True, workbench=False)
+        self.assertTrue(res.ok, res.messages)
+        otto_html = self._read('persons/p-bbbbbbbbbb.html')
+        self.assertNotIn('Whose file is this anyway?', otto_html)
+        messages = res['messages']
+        origin_msgs = [
+            m for m in messages
+            if 'p-zzzzzzzzzz' in m.lower() and 'ghost__missing_research' in m
+        ]
+        self.assertEqual(len(origin_msgs), 1, messages)
+        msg = origin_msgs[0].lower()
+        self.assertIn('profile', msg)
+        self.assertNotIn('refs', msg, f'origin case still points at refs:: {origin_msgs[0]}')
+
+    def test_id_less_origin_companion_with_many_questions_warns_once_not_per_question(self):
+        # PR #193 post-merge review, finding 3 (P2, perf): the ID-less
+        # origin fallback (`_origin_id_from_frontmatter_is_by_request`) has
+        # no pid to memoize by UNTIL AFTER it has already paid the cost the
+        # per-pid cache exists to avoid - reading and parsing the companion
+        # to learn its frontmatter `id:`. The existing per-pid cache
+        # (`_by_request_person_cache`, PR #179 finding 4) only ever helps
+        # once that pid is known, so this specific fallback path used to
+        # re-read and re-parse the SAME companion, and re-append the SAME
+        # malformed-frontmatter warning, once per open question in it. Same
+        # shape as test_dangling_ref_names_the_actual_origin_with_a_repair_
+        # step_once, applied to this fallback's own file-keyed cache
+        # instead of the per-pid one.
+        self._seed_person('p-bbbbbbbbbb', 'Open Otto', surname='Otto')
+        id_less = self.archive_root / 'people' / 'rae__reticent_research.md'
+        id_less.write_text(
+            '---\nid: p-aaaaaaaaaa\n\tname: Bad Tab\ncreated: 2026-06-01\n---\n\n'
+            '## Open Questions\n\n'
+            '## Q: First question naming Otto\n'
+            '- origin: human\n'
+            '- status: open\n'
+            '- refs: [P-bbbbbbbbbb]\n'
+            '- context:\n'
+            '  - (human, 2026-06-01) First one.\n'
+            '\n'
+            '## Q: Second question naming Otto\n'
+            '- origin: human\n'
+            '- status: open\n'
+            '- refs: [P-bbbbbbbbbb]\n'
+            '- context:\n'
+            '  - (human, 2026-06-01) Second one.\n',
+            encoding='utf-8')
+        res = self._run(linked=True, workbench=False)
+        self.assertTrue(res.ok, res.messages)
+        otto_html = self._read('persons/p-bbbbbbbbbb.html')
+        self.assertNotIn('First question naming Otto', otto_html)
+        self.assertNotIn('Second question naming Otto', otto_html)
+        messages = res['messages']
+        file_msgs = [m for m in messages if 'rae__reticent_research.md' in m]
+        self.assertEqual(
+            len(file_msgs), 1,
+            'the malformed-frontmatter warning must be memoized per file, not '
+            f'repeated once per question in it: {messages}')
+
+    def test_mixed_problem_refs_all_get_reported_not_just_the_first_one_found(self):
+        # PR #193 post-merge review, finding 4 (P2): the per-ref check used
+        # to be `any(_person_is_by_request(...) for ref in refs)` over what
+        # was then an unordered `set` - `any()` short-circuits on the FIRST
+        # true verdict, so a question with TWO distinct problem refs (one
+        # genuinely by-request, a separate one simply absent from the
+        # index) only ever got ONE of the two checked and warned about -
+        # whichever the set happened to yield first, not guaranteed stable
+        # across processes. The by-request ref alone is already enough to
+        # withhold the whole block (covered by
+        # test_mixed_refs_question_is_withheld_from_every_page_it_names);
+        # this test's own job is narrower - prove the OTHER, unrelated
+        # dangling-ref problem is always checked and reported too, not
+        # silently skipped depending on iteration order.
+        self._seed_person('p-aaaaaaaaaa', 'Reticent Rae', surname='Rae',
+                          frontmatter_extra='restricted: by-request')
+        self._seed_person('p-bbbbbbbbbb', 'Open Otto', surname='Otto')
+        self._write_questions_md(
+            '## Q: Rae, Otto, and a dangling third reference\n'
+            '- origin: human\n'
+            '- status: open\n'
+            '- refs: [P-bbbbbbbbbb, P-aaaaaaaaaa, P-zzzzzzzzzz]\n'
+            '- context:\n'
+            '  - (human, 2026-06-01) One of these three refs does not resolve.\n'
+        )
+        res = self._run(linked=True, workbench=False)
+        self.assertTrue(res.ok, res.messages)
+        for pid in ('p-aaaaaaaaaa', 'p-bbbbbbbbbb'):
+            html = self._read(f'persons/{pid}.html')
+            self.assertNotIn('dangling third reference', html, pid)
+        messages = res['messages']
+        dangling = [m for m in messages if 'p-zzzzzzzzzz' in m.lower()]
+        self.assertEqual(
+            len(dangling), 1,
+            'the dangling-ref problem must always be checked (and warned '
+            'about), even when a DIFFERENT ref on the same question is '
+            f'also by-request - not silently skipped by any() short-'
+            f'circuiting on whichever ref a set happened to yield first: {messages}')
+
     def test_plain_restricted_persons_question_still_renders_under_linked(self):
         # Not over-broadened: by-request is SPEC §19's ONE no-override tier.
         # A plain `restricted: true` origin - a lesser tier other export
