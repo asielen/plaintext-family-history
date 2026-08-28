@@ -2169,6 +2169,85 @@ class ExternalRootPruneFailureReportingTest(unittest.TestCase):
         self.assertTrue((self.archive / 'documents' / '.gitkeep').is_file())
 
 
+class RestorePrunedPlaceholderUsesOldBytesTest(unittest.TestCase):
+    """A stamp-write failure right after a prune must restore the exact bytes
+    THIS RUN removed - not today's release, which can differ from what this
+    archive actually received if a skeleton seed changed upstream since its
+    last update (PR #189 round 4, finding 1).
+
+    Restoring the wrong bytes is doubly bad: the (still unwritten) OLD stamp's
+    checksum for this path describes the OLD bytes, so the next run's
+    litter-check reads the restored-with-new-bytes file as human-edited and
+    leaves the now-purposeless folder in place forever - and it silently
+    updates content this project's install-once contract promises never
+    changes on its own.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self.repo = _make_fake_repo_with_asset_dirs(self.tmp / 'repo')
+        self.archive = self.tmp / 'archive'
+        self.external = self.tmp / 'external'
+        (self.external / 'docs').mkdir(parents=True)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_restore_uses_the_bytes_this_run_removed_not_todays_repo(self):
+        scaffold.run_install(self.archive, self.repo)
+        original_bytes = (self.archive / 'documents' / '.gitkeep').read_bytes()
+
+        # The seed changes upstream after this archive was installed - a
+        # later release ships different content for documents/.gitkeep than
+        # what this archive actually received.
+        _write(self.repo / 'archive-template' / 'documents' / '.gitkeep',
+               'a newer release seed\n')
+        scaffold._write_manifest(self.repo)
+        self.assertNotEqual(
+            (self.repo / 'archive-template' / 'documents' / '.gitkeep').read_bytes(),
+            original_bytes)
+
+        docs_ext = (self.external / 'docs').as_posix()
+        _write(self.archive / 'fha.yaml', f'roots:\n  documents: {docs_ext}\n  photos: photos\n')
+        with mock.patch.object(scaffold, '_write_version_stamp',
+                               side_effect=OSError(28, 'No space left on device')):
+            with contextlib.redirect_stdout(io.StringIO()), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                scaffold.run_update_tools(self.archive, self.repo)
+
+        restored = self.archive / 'documents' / '.gitkeep'
+        self.assertTrue(restored.is_file())
+        self.assertEqual(
+            restored.read_bytes(), original_bytes,
+            'the restore wrote the CURRENT repo bytes instead of the bytes '
+            'this run actually removed')
+
+    def test_a_restored_placeholder_still_reads_as_pristine_next_run(self):
+        # The real proof this matters: with the OLD bytes back in place, the
+        # recorded (still-old) stamp checksum agrees with disk again, so a
+        # later revert-to-internal recreates the placeholder normally instead
+        # of finding a "human-edited" file it refuses to touch.
+        scaffold.run_install(self.archive, self.repo)
+        _write(self.repo / 'archive-template' / 'documents' / '.gitkeep',
+               'a newer release seed\n')
+        scaffold._write_manifest(self.repo)
+        docs_ext = (self.external / 'docs').as_posix()
+        _write(self.archive / 'fha.yaml', f'roots:\n  documents: {docs_ext}\n  photos: photos\n')
+        with mock.patch.object(scaffold, '_write_version_stamp',
+                               side_effect=OSError(28, 'No space left on device')):
+            with contextlib.redirect_stdout(io.StringIO()), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                scaffold.run_update_tools(self.archive, self.repo)
+        # Stamp write now succeeds - the prune should complete cleanly, since
+        # the restored file still matches what the (old, still-recorded)
+        # stamp says was delivered.
+        with contextlib.redirect_stdout(io.StringIO()):
+            rc = scaffold.run_update_tools(self.archive, self.repo)
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertFalse((self.archive / 'documents').exists())
+
+
 class AbsoluteInternalRootRenameTest(unittest.TestCase):
     """A `roots:` value that is a VALID ABSOLUTE path resolving INSIDE the
     archive must land its placeholder at the folder it actually names, not at
@@ -2620,6 +2699,132 @@ class RemappedDestinationConflictTest(unittest.TestCase):
         self.assertTrue((self.archive / 'archive-docs' / '.gitkeep').is_file())
 
     def test_ordinary_install_is_unaffected(self):
+        rc = scaffold.run_install(self.archive, self.repo)
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertTrue((self.archive / 'fha.yaml').is_file())
+
+
+class RemappedDestinationAncestorFileTest(unittest.TestCase):
+    """A remap whose path runs through something already SITTING in the
+    archive as a plain file - not another manifest destination, which
+    RemappedDestinationConflictTest above covers - must also be refused
+    before install writes anything (PR #189 round 4, finding 2).
+
+    `documents: occupied/assets` is syntactically fine and collides with no
+    other manifest destination, so the round-3 finding-6 check lets it
+    through; only a check against the REAL filesystem catches that `occupied`
+    is already a plain file here, not a folder the documents seed can be
+    created under.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self.repo = _make_fake_repo_with_asset_dirs(self.tmp / 'repo')
+        self.archive = self.tmp / 'archive'
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _write_rename_config(self):
+        _write(self.repo / 'archive-template' / 'fha.yaml',
+               'roots:\n  documents: occupied/assets\n  photos: photos\n')
+        scaffold._write_manifest(self.repo)
+
+    def test_ancestor_already_a_file_is_refused_before_any_write(self):
+        self._write_rename_config()
+        _write(self.archive / 'occupied', 'not a folder')
+        with self.assertRaises(scaffold.ScaffoldError) as ctx:
+            scaffold.run_install(self.archive, self.repo)
+        self.assertIn('occupied', str(ctx.exception))
+        # Nothing was written at all - not the stamp, and not any operating
+        # file that sorts ahead of the remapped seed and would otherwise be
+        # copied before the loop ever reaches it and fails its `mkdir`
+        # (SPEC.md and .fha/ both sort before documents/.gitkeep).
+        self.assertFalse((self.archive / '.plaintext-version').exists())
+        self.assertFalse((self.archive / 'SPEC.md').exists())
+        self.assertFalse((self.archive / '.fha').exists())
+        # The pre-existing file itself is untouched.
+        self.assertEqual((self.archive / 'occupied').read_text(encoding='utf-8'),
+                          'not a folder')
+
+    def test_ancestor_already_a_file_is_refused_under_dry_run_too(self):
+        self._write_rename_config()
+        _write(self.archive / 'occupied', 'not a folder')
+        with self.assertRaises(scaffold.ScaffoldError):
+            scaffold.run_install(self.archive, self.repo, dry_run=True)
+
+    def test_non_colliding_rename_into_a_pre_existing_folder_is_unaffected(self):
+        # The same rename is fine when `occupied` is already a FOLDER (or
+        # does not exist yet) - only a plain file blocks it.
+        self._write_rename_config()
+        (self.archive / 'occupied').mkdir(parents=True)
+        rc = scaffold.run_install(self.archive, self.repo)
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertTrue((self.archive / 'occupied' / 'assets' / '.gitkeep').is_file())
+
+    def test_ordinary_install_into_a_clean_archive_is_unaffected(self):
+        self._write_rename_config()
+        rc = scaffold.run_install(self.archive, self.repo)
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertTrue((self.archive / 'occupied' / 'assets' / '.gitkeep').is_file())
+
+
+class FreshInstallTemplateConfigStrictTest(unittest.TestCase):
+    """A SYNTAX ERROR in archive-template/fha.yaml - the file the README's own
+    guidance tells an owner to edit before running install - must not be
+    silently read as "nothing configured" and copied into the new archive
+    anyway (PR #189 round 4, finding 3).
+
+    `run_update_tools` already reads an ALREADY-INSTALLED archive's own
+    fha.yaml this strictly (PR #189 round 3, finding 5); fresh install needs
+    the same discipline for the TEMPLATE it is about to copy, since a
+    permissive read would lay out default placeholders (wrong the moment the
+    human's edited roots: fail to parse) and leave every subsequent archive
+    command unable to read the config it just received.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self.repo = _make_fake_repo_with_asset_dirs(self.tmp / 'repo')
+        self.archive = self.tmp / 'archive'
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _break_template_yaml(self):
+        _write(self.repo / 'archive-template' / 'fha.yaml',
+               'roots:\n  documents: [unterminated\n  photos: photos\n')
+        scaffold._write_manifest(self.repo)
+
+    def test_broken_template_yaml_is_refused_before_any_write(self):
+        self._break_template_yaml()
+        with self.assertRaises(scaffold.ScaffoldError) as ctx:
+            scaffold.run_install(self.archive, self.repo)
+        self.assertIn('fha.yaml', str(ctx.exception))
+        self.assertFalse((self.archive / '.plaintext-version').exists())
+        self.assertFalse((self.archive / 'fha.yaml').exists())
+
+    def test_broken_template_yaml_is_refused_under_dry_run_too(self):
+        self._break_template_yaml()
+        with self.assertRaises(scaffold.ScaffoldError):
+            scaffold.run_install(self.archive, self.repo, dry_run=True)
+
+    def test_missing_pyyaml_still_installs_with_the_usual_advisory(self):
+        # Without PyYAML at all, install cannot check the template either way
+        # - that gap is already reported as its own advisory (#124), and must
+        # not be conflated with "the template is malformed".
+        self._break_template_yaml()
+        import _lib
+        with mock.patch.object(_lib, 'yaml', None):
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = scaffold.run_install(self.archive, self.repo)
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertIn('PyYAML', buf.getvalue())
+
+    def test_valid_template_yaml_is_unaffected(self):
         rc = scaffold.run_install(self.archive, self.repo)
         self.assertEqual(rc, EXIT_CLEAN)
         self.assertTrue((self.archive / 'fha.yaml').is_file())

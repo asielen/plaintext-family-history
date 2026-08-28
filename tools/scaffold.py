@@ -773,7 +773,7 @@ def _alias_seed_shas(
 def _prune_external_root_placeholders(
     archive_root: Path, fha_config: dict, manifest: dict, recorded: dict[str, str],
     *, dry_run: bool = False,
-) -> tuple[list[str], list[tuple[str, str]]]:
+) -> tuple[list[str], list[tuple[str, str]], dict[str, bytes]]:
     """Remove (or preview removing) an internal placeholder that just went external.
 
     An archive installed with the default internal `roots:` already has its
@@ -806,9 +806,21 @@ def _prune_external_root_placeholders(
         surfaces these so `fha update-tools` reports a non-clean exit instead
         of claiming a cleanup that did not happen. Always empty under
         `dry_run`, which never calls `rmtree`.
+      - `snapshots` - archive-relative path -> the exact bytes read from disk
+        immediately before this run's `rmtree`, for every file under an alias
+        actually removed (never populated under `dry_run`, which removes
+        nothing). This is the ONLY chance to capture what THIS run actually
+        took away: if a skeleton seed changed upstream since this archive's
+        last update, those bytes can already differ from what today's repo
+        would hand back. `_restore_pruned_placeholders` uses this snapshot to
+        put back precisely what was here if the stamp write recording the
+        removal then fails - not the current release's source, which is what
+        the (still unwritten) OLD stamp's checksum for this path would no
+        longer describe (#124 review round 4, finding 1).
     """
     removed: list[str] = []
     failed: list[tuple[str, str]] = []
+    snapshots: dict[str, bytes] = {}
     for alias in sorted(external_asset_roots(fha_config, archive_root)):
         folder = archive_root / alias
         if not folder.is_dir():
@@ -822,13 +834,25 @@ def _prune_external_root_placeholders(
         if not _placeholder_only_scaffold_litter(folder, archive_root, seed_shas):
             continue  # real content, an edited seed, or unreadable - not ours to touch
         if not dry_run:
+            # Snapshot every file this prune is about to remove, in memory,
+            # while it is still readable - the exact bytes the stamp's
+            # checksum for this path was recorded against, whatever today's
+            # repo happens to ship now.
+            for file_path in folder.rglob('*'):
+                if not file_path.is_file():
+                    continue
+                try:
+                    rel = file_path.relative_to(archive_root).as_posix()
+                    snapshots[rel] = file_path.read_bytes()
+                except OSError:
+                    pass  # best-effort - a later restore just can't cover this one
             try:
                 shutil.rmtree(folder)
             except OSError as exc:
                 failed.append((alias, str(exc)))
                 continue
         removed.append(alias)
-    return removed, failed
+    return removed, failed, snapshots
 
 
 def _prune_orphaned_literal_root_folders(
@@ -884,7 +908,7 @@ def _prune_orphaned_literal_root_folders(
 
 
 def _restore_pruned_placeholders(
-    archive_root: Path, repo_root: Path, manifest: dict, pruned_skeleton_paths: set[str],
+    archive_root: Path, pruned_skeleton_paths: set[str], snapshots: dict[str, bytes],
 ) -> list[str]:
     """Best-effort undo of a prune whose transition the stamp failed to record (#124).
 
@@ -896,11 +920,22 @@ def _restore_pruned_placeholders(
     left to prune, carries the old stamp entries forward untouched, and if the
     alias is later pointed back inside the archive, `_plan_update` reads the
     stale stamp as "already delivered" and never recreates the placeholder -
-    even though it is not really there. Restoring the exact bytes this run just
-    removed (from the same repo copy the prune itself trusted as "shipped, not
-    the human's") keeps disk and stamp in agreement again: both describe the
+    even though it is not really there. Restoring the exact bytes this run
+    just removed keeps disk and stamp in agreement again: both describe the
     pre-prune state, so the ordinary revert-to-internal path in `_plan_update`
     keeps working the next time it is actually asked to.
+
+    `snapshots` (from `_prune_external_root_placeholders`) is the bytes this
+    run actually read off disk right before removing them - NOT today's repo
+    copy. If a skeleton seed changed upstream between this archive's install
+    and the run doing the pruning, the two can legitimately differ even though
+    nothing local ever touched the file; restoring from the repo instead of
+    the snapshot would silently re-seed the placeholder with content the OLD
+    (still-recorded) stamp checksum does not describe, and the next run would
+    then read the restored file as human-edited and leave the now-purposeless
+    folder in place forever (#124 review round 4, finding 1). A path with no
+    captured snapshot (a read failure during the prune itself, vanishingly
+    rare) is reported as still-missing rather than guessed at.
 
     Returns the paths it could NOT restore (empty on full success) so the
     caller can fold them into the run's failure report - a restore that itself
@@ -908,16 +943,17 @@ def _restore_pruned_placeholders(
     paper over.
     """
     still_missing: list[str] = []
-    for entry in manifest['files']:
-        if entry['path'] not in pruned_skeleton_paths:
+    for path in sorted(pruned_skeleton_paths):
+        data = snapshots.get(path)
+        if data is None:
+            still_missing.append(path)
             continue
-        src = repo_root / entry.get('src', entry['path'])
-        dest = archive_root / entry['path']
+        dest = archive_root / path
         try:
             dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src, dest)
+            dest.write_bytes(data)
         except OSError:
-            still_missing.append(entry['path'])
+            still_missing.append(path)
     return still_missing
 
 
@@ -1209,10 +1245,14 @@ def _refuse_directory_destinations(archive_root: Path, files: list[dict]) -> Non
         )
 
 
-def _refuse_remapped_root_conflicts(files: list[dict], renames: dict[str, str]) -> None:
-    """Refuse before any mutation if two files' REMAPPED destinations collide -
-    one needing a path to be a directory, another needing that exact path to
-    be a plain file (#124 review round 3, finding 6).
+def _refuse_remapped_root_conflicts(
+    archive_root: Path, files: list[dict], renames: dict[str, str],
+) -> None:
+    """Refuse before any mutation if a REMAPPED destination cannot actually be
+    written - either because it collides with another manifest destination
+    (#124 review round 3, finding 6), or because an ancestor segment already
+    exists ON DISK as something other than a folder (#124 review round 4,
+    finding 2).
 
     A conflicting internal remap like `documents: fha.yaml/assets` is
     syntactically valid and stays inside the archive - `_contained_relative`
@@ -1229,6 +1269,18 @@ def _refuse_remapped_root_conflicts(files: list[dict], renames: dict[str, str]) 
     `fha.yaml/` as a directory, a later copy step failing to write the real
     config through it, and a retry then failing the same way because
     `fha.yaml` is now a directory, not a writable file.
+
+    A second, distinct way a remap can be unwritable: `documents:
+    occupied/assets` where `occupied` is not another manifest destination at
+    all, but something already SITTING in the archive - a plain file left
+    over from anything else entirely. Nothing above catches this, because both
+    that check and `_refuse_directory_destinations` only ever compare manifest
+    paths against each other or against their OWN literal (unremapped)
+    destination - never a remapped destination's ANCESTORS against the real
+    filesystem. Left unchecked, install proceeds to copy several files before
+    finally reaching the remapped seed and failing its `mkdir` against the
+    existing file, by which point the archive is a partial install with no
+    stamp. Checked here too, before anything is written.
     """
     dest_paths = [
         _remap_skeleton_path(e['path'], renames) if e.get('category') == 'skeleton'
@@ -1244,17 +1296,34 @@ def _refuse_remapped_root_conflicts(files: list[dict], renames: dict[str, str]) 
             if ancestor in dest_set:
                 conflicts.add(ancestor)
                 conflicts.add(dest)
-    if not conflicts:
-        return
-    listing = '\n  '.join(sorted(conflicts)[:10])
-    more = '' if len(conflicts) <= 10 else f'\n  …and {len(conflicts) - 10} more'
-    raise ScaffoldError(
-        f"fha.yaml's roots: maps two different tool files to the same path once "
-        f"the rename is applied - one needs it to be a FOLDER, another needs it "
-        f"to be that exact FILE:\n  {listing}{more}\n"
-        f"Nothing has been written. Point roots: at a folder that does not "
-        f"collide with another tool file, then re-run install."
-    )
+    if conflicts:
+        listing = '\n  '.join(sorted(conflicts)[:10])
+        more = '' if len(conflicts) <= 10 else f'\n  …and {len(conflicts) - 10} more'
+        raise ScaffoldError(
+            f"fha.yaml's roots: maps two different tool files to the same path once "
+            f"the rename is applied - one needs it to be a FOLDER, another needs it "
+            f"to be that exact FILE:\n  {listing}{more}\n"
+            f"Nothing has been written. Point roots: at a folder that does not "
+            f"collide with another tool file, then re-run install."
+        )
+
+    blocked: set[str] = set()
+    for dest in dest_set:
+        parts = PurePosixPath(dest).parts
+        for depth in range(1, len(parts)):
+            ancestor = archive_root / Path(*parts[:depth])
+            if ancestor.exists() and not ancestor.is_dir():
+                blocked.add('/'.join(parts[:depth]))
+    if blocked:
+        listing = '\n  '.join(sorted(blocked)[:10])
+        more = '' if len(blocked) <= 10 else f'\n  …and {len(blocked) - 10} more'
+        raise ScaffoldError(
+            f"fha.yaml's roots: renames a tool file to a path that runs through "
+            f"{len(blocked)} existing file(s) in {archive_root}, where a FOLDER "
+            f"needs to be created instead:\n  {listing}{more}\n"
+            f"Nothing has been written. Point roots: at a folder that does not "
+            f"collide with something already there, then re-run install."
+        )
 
 
 def _resolve_repo_root(repo_arg: str | None) -> Path:
@@ -1451,10 +1520,11 @@ def run_install(
     TOOLING §13c) rather than the literal `documents/` it would otherwise land
     at unused - unless that rename would put the placeholder somewhere it
     structurally CONFLICTS with another tool file's own destination (one
-    needing a folder, the other that same path as a file); that is refused
-    before anything is written, not discovered mid-install with a
+    needing a folder, the other that same path as a file), or runs through a
+    path segment that already exists on disk as a plain file; either is
+    refused before anything is written, not discovered mid-install with a
     half-installed archive (`_refuse_remapped_root_conflicts`, #124 review
-    round 3, finding 6).
+    round 3, finding 6; round 4, finding 2).
 
     Returns a `Result` (Result == int, so callers/tests comparing against EXIT_*
     keep working): EXIT_CLEAN on success (even with the exiftool/PyYAML
@@ -1511,7 +1581,33 @@ def run_install(
     # that differs from it (see `_acceptable`). So whatever is on disk right
     # now, the config this install will actually end up running with is
     # always this one.
-    install_fha_config = load_fha_yaml(repo_root / _SKELETON_SRC_DIR)
+    #
+    # A SYNTAX ERROR in that template is not "nothing configured" - the
+    # permissive `load_fha_yaml` used elsewhere in this file cannot tell the
+    # two apart, returning `{}` for both, and install would then copy the
+    # broken bytes into the new archive anyway (the README's own guidance is
+    # to edit this very template), laying out default placeholders while
+    # leaving every subsequent archive command unable to read the config it
+    # just received. `run_update_tools` already reads ITS OWN fha.yaml
+    # strictly for exactly this reason (#124 review round 3, finding 5) -
+    # fresh install needs the same discipline for the TEMPLATE it is about to
+    # copy (#124 review round 4, finding 3), and needs it before anything is
+    # written, not discovered afterward with a half-installed archive. Skipped
+    # only when PyYAML itself is missing, which `_preflight` already reported
+    # above as its own advisory; a strict load with no PyYAML would raise for
+    # that same underlying reason and muddy the two messages together.
+    if yaml_available():
+        try:
+            install_fha_config = load_fha_yaml(repo_root / _SKELETON_SRC_DIR, strict=True)
+        except FhaConfigError as exc:
+            raise ScaffoldError(
+                f"{repo_root / _SKELETON_SRC_DIR / 'fha.yaml'} has a problem and "
+                f"could not be read: {exc} This file ships as the starting "
+                f"fha.yaml for every new archive, so install cannot safely "
+                f"continue until it is fixed. Nothing has been written."
+            ) from exc
+    else:
+        install_fha_config = {}
     skip_paths = _external_root_skeleton_paths(install_fha_config, archive_path, manifest['files'])
     # A `roots:` value that RENAMES an alias but keeps it inside the archive
     # (`documents: archive-docs`) is not external - TOOLING §13c promises its
@@ -1526,10 +1622,12 @@ def run_install(
     files = [e for e in manifest['files'] if e['path'] not in skip_paths]
 
     # A structurally CONFLICTING remap (`documents: fha.yaml/assets`, which
-    # would need `fha.yaml` to be both a folder and the real config file) must
-    # be caught before anything is written, not discovered mid-loop with a
-    # half-installed archive and no stamp (#124 review round 3, finding 6).
-    _refuse_remapped_root_conflicts(files, renames)
+    # would need `fha.yaml` to be both a folder and the real config file), or
+    # one whose ancestor is already an existing file on disk, must be caught
+    # before anything is written, not discovered mid-loop with a
+    # half-installed archive and no stamp (#124 review round 3, finding 6;
+    # round 4, finding 2).
+    _refuse_remapped_root_conflicts(archive_path, files, renames)
 
     missing: list[str] = []
     for entry in files:
@@ -2229,7 +2327,7 @@ def run_update_tools(
         for gone in would_prune:
             print(f'[dry-run] would remove the now-empty folder {gone}/ '
                   f'(everything in it is being retired).')
-        would_prune_external, _would_fail_external = _prune_external_root_placeholders(
+        would_prune_external, _would_fail_external, _would_snapshot = _prune_external_root_placeholders(
             archive_root, fha_config, manifest, recorded_checksums, dry_run=True)
         for alias in would_prune_external:
             print(f'[dry-run] would remove the now-purposeless {alias}/ folder '
@@ -2402,7 +2500,7 @@ def run_update_tools(
     # purposeless dead weight (#124) - remove it the same way a retired file's
     # emptied directory is removed above, just triggered by the CURRENT
     # fha.yaml rather than by what retired this run.
-    pruned_external, prune_failed = _prune_external_root_placeholders(
+    pruned_external, prune_failed, pruned_snapshots = _prune_external_root_placeholders(
         archive_root, fha_config, manifest, recorded_checksums)
     for alias in pruned_external:
         print(f'Removed the now-purposeless {alias}/ folder - fha.yaml roots: '
@@ -2555,11 +2653,12 @@ def run_update_tools(
             # a later revert to an internal root would then read the stale
             # stamp as "already there" and never recreate the placeholder it
             # promises (#124 review). Restoring the exact bytes this run just
-            # removed - from the same repo copy the prune itself trusted -
-            # puts disk back in agreement with the stamp that is actually on
-            # disk, so the ordinary revert-to-internal path keeps working.
+            # removed (the snapshot taken right before `rmtree`, NOT today's
+            # repo copy - #124 review round 4, finding 1) puts disk back in
+            # agreement with the stamp that is actually on disk, so the
+            # ordinary revert-to-internal path keeps working.
             still_missing = _restore_pruned_placeholders(
-                archive_root, repo_root, manifest, pruned_skeleton_paths)
+                archive_root, pruned_skeleton_paths, pruned_snapshots)
             # An alias counts as restored only if EVERY one of its skeleton
             # paths came back - a partial restore leaves the folder in a state
             # nothing here can vouch for, so it is reported as still-missing
