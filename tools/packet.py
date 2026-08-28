@@ -201,6 +201,7 @@ import re
 import shutil
 import sqlite3
 import sys
+import unicodedata
 import zipfile
 from pathlib import Path, PureWindowsPath
 
@@ -482,6 +483,20 @@ def _redact_source_record_text(
 # DIFFERENT entry is never in scope to be matched by mistake.
 _FILE_KEY_LINE_RE = re.compile(r'(?m)^([ \t]*(?:-[ \t]+)?file[ \t]*:[ \t]*)([^\r\n]*)(\r?\n|$)')
 
+# A YAML literal (`file: |`) or folded (`file: >`) block scalar puts its
+# real value on the FOLLOWING indented lines, not on the `file:` line
+# itself - `yaml.safe_load` joins those lines into the parsed value just
+# fine, but this line-surgery function only ever rewrites the ONE line
+# `_FILE_KEY_LINE_RE` matched. Recognizing the indicator here lets
+# `_rewrite_file_key_in_entry` refuse the rewrite instead of silently
+# leaving the continuation lines - and the raw path they still hold -
+# untouched (issue #170 finding 1, round-10 audit: the fourth bypass a
+# single post-merge review pass found after six already-patched rounds on
+# this redaction surface). An optional explicit indentation indicator
+# digit and/or chomping indicator (`|-`, `|2+`, …) and a trailing comment
+# are all valid YAML here, so all three are allowed.
+_BLOCK_SCALAR_VALUE_RE = re.compile(r'^[|>][+-]?\d*\s*(#.*)?$')
+
 
 def _rewrite_file_key_in_entry(entry_text: str, new_value: str) -> tuple[str, int]:
     """Replace the VALUE on one `files:` entry's own `file:` line with
@@ -490,10 +505,28 @@ def _rewrite_file_key_in_entry(entry_text: str, new_value: str) -> tuple[str, in
     is untouched. Returns (new_entry_text, substitutions_made); a caller
     that gets back anything other than exactly 1 must not trust the
     result (issue #170 finding 1, P1 follow-up - post-merge Codex review
-    of #176, round-9 audit)."""
-    def _sub(m: re.Match) -> str:
-        return m.group(1) + yaml_inline(new_value) + m.group(3)
-    return _FILE_KEY_LINE_RE.subn(_sub, entry_text, count=1)
+    of #176, round-9 audit).
+
+    Refuses the rewrite - returning `(entry_text, 0)`, the same "could not
+    trust it" signal the caller already treats as fail-closed - in two
+    cases neither of which a caller should ever try to paper over with a
+    partial edit: more than one line in this entry matches `file:` shaped
+    syntax at all (ambiguous - which one is the real key is not this
+    function's call to make), or the matched line's value is a YAML block
+    scalar indicator (`_BLOCK_SCALAR_VALUE_RE`, round-10 audit) - the real
+    value then lives on continuation lines this function does not attempt
+    to locate and cut. Both read as "cannot safely rewrite this line", not
+    "nothing to rewrite" - it is the CALLER's job (`_redact_frontmatter_
+    files_field`) to fail the whole record closed on a 0, never to assume
+    a 0 means the entry was already clean."""
+    matches = list(_FILE_KEY_LINE_RE.finditer(entry_text))
+    if len(matches) != 1:
+        return entry_text, 0
+    m = matches[0]
+    if _BLOCK_SCALAR_VALUE_RE.match(m.group(2).strip()):
+        return entry_text, 0
+    new_text = entry_text[:m.start()] + m.group(1) + yaml_inline(new_value) + m.group(3) + entry_text[m.end():]
+    return new_text, 1
 
 
 def _redact_frontmatter_files_field(fm_text: str) -> tuple[str, int] | None:
@@ -528,11 +561,20 @@ def _redact_frontmatter_files_field(fm_text: str) -> tuple[str, int] | None:
     generates, but a hand edit could).
 
     Returns (new_fm_text, redacted_count); (fm_text, 0) when the key is
-    absent, holds no list, or no entry's `file` value is foreign. Returns
-    None when at least one entry's `file` value IS foreign and cannot be
-    safely mapped back to its own line - the caller must fail closed (leave
-    the record out of the packet entirely) rather than ship a record it
-    cannot prove is clean; a missing record in a packet is recoverable, a
+    absent (or present with an explicitly empty/null value - `files:` with
+    nothing after it and no indented list under it) or holds a list but no
+    entry's `file` value is foreign. Returns None - the caller's fail-
+    closed signal - in three cases: the key is present but its value is
+    not a list at all (round-10 audit, issue #170 finding 1: a hand edit
+    like `files: {file: /Users/alice/private.pdf}`, a mapping rather than
+    the expected list, used to read identically to "no files: key" and
+    pass straight through unredacted - a PRESENT malformed value can never
+    be proven clean the way a genuinely absent key can); at least one
+    entry's `file` value IS foreign and cannot be safely mapped back to
+    its own line (a multiline block-scalar `file:` value is one such case,
+    round-10 audit - see `_rewrite_file_key_in_entry`); or the bullet spans
+    don't line up with the parsed entries at all. A missing record in a
+    packet is recoverable, a
     leaked local path is not (the same posture `_redact_source_record_text`
     already takes for an unparseable Claims block)."""
     key_re = re.compile(r'^files\s*:\s*(.*)$')
@@ -564,8 +606,22 @@ def _redact_frontmatter_files_field(fm_text: str) -> tuple[str, int] | None:
         except yaml.YAMLError:
             return None
         value = doc.get('files') if isinstance(doc, dict) else None
-        if not isinstance(value, list):
+        if value is None:
             return fm_text, 0
+        if not isinstance(value, list):
+            # A `files:` key IS present here but its value is not the list
+            # shape every reader downstream expects (a mapping, a bare
+            # string, a number, …) - round-10 audit, issue #170 finding 1:
+            # the OLD check here read this identically to "no files: key
+            # at all" and returned the frontmatter completely unchanged,
+            # so a hand edit like `files: {file: /Users/alice/private.pdf}`
+            # shipped its raw path straight through, unredacted, in both
+            # README.txt and the copied source record. A present-but-
+            # malformed value cannot be proven clean without knowing what
+            # shape it actually is, so this fails CLOSED the same way an
+            # unparseable Claims block already does, rather than treating
+            # "malformed" as a synonym for "absent".
+            return None
         redacted = 0
         new_value = []
         for item in value:
@@ -599,8 +655,18 @@ def _redact_frontmatter_files_field(fm_text: str) -> tuple[str, int] | None:
     except yaml.YAMLError:
         return None
     value = doc.get('files') if isinstance(doc, dict) else None
-    if value is None or not isinstance(value, list):
+    if value is None:
         return fm_text, 0
+    if not isinstance(value, list):
+        # Same present-but-malformed shape as the inline arm above (round-
+        # 10 audit, issue #170 finding 1) - a block-form `files:` whose
+        # value parses to a mapping rather than a list (`files:` followed
+        # by an indented `file: /Users/alice/private.pdf` with no leading
+        # `- `, say) used to fall through this check exactly like an
+        # absent key and ship unredacted. Fail closed instead of passing
+        # it through: a value this cannot classify as a proper list is not
+        # provably clean.
+        return None
     spans = _yaml_list_item_spans(block)
     if spans is None or len(spans) != len(value):
         return None
@@ -1304,6 +1370,34 @@ def _normalize_path_separator_lookalikes(raw: str) -> str:
     return raw
 
 
+def _strip_invisible_format_chars(raw: str) -> str:
+    """Strip any LEADING or TRAILING Unicode FORMAT character (general
+    category `Cf`: a zero-width space, a byte-order mark, a right-to-left
+    override, a word joiner, and similar characters no text editor renders
+    visibly) from `raw`.
+
+    `_redact_asset_path`'s leading-character checks read `normalized[0]`/
+    `normalized[1]` positionally, and `str.strip()` only removes
+    WHITESPACE (`str.isspace()`) - every `Cf` character fails that test, so
+    one sitting at position 0 sails through `.strip()` untouched and
+    defeats those checks exactly like a visible leading space does
+    (`_redact_asset_path`'s own round-9 finding), just invisibly (this
+    function's own adversarial self-review, round-10 audit, after fixing
+    four Codex-found bypasses on the same surface). Category, not a fixed
+    character list, so this covers the zero-width space AND join AND
+    directional-override family uniformly rather than naming each one by
+    hand. Applied only where a path is being CLASSIFIED, same scope as
+    `_normalize_path_separator_lookalikes` above - never to what is
+    actually shown for an ordinary, already-portable alias."""
+    start = 0
+    while start < len(raw) and unicodedata.category(raw[start]) == 'Cf':
+        start += 1
+    end = len(raw)
+    while end > start and unicodedata.category(raw[end - 1]) == 'Cf':
+        end -= 1
+    return raw[start:end]
+
+
 def _redact_asset_path(raw: str) -> str:
     """Render a `files:` entry for a packet's README: unchanged if it is a
     normal relative alias ('documents/...', 'photos/...'), basename-only if
@@ -1380,10 +1474,31 @@ def _redact_asset_path(raw: str) -> str:
     untouched `raw` (whitespace included) is still what a genuinely
     portable, non-foreign alias gets back, so an ordinary entry's spelling
     is never silently rewritten.
+
+    A `file://` URI (`file:///Users/alice/Secret/private.pdf`) is also
+    recognized as foreign (issue #170 finding 1, round-10 audit - the
+    fourth bypass a single post-merge review pass found after six already-
+    patched rounds on this exact function): see the `file_uri_match` check
+    inline below for why the leading-character checks above all miss it.
+
+    A ZERO-WIDTH or otherwise invisible Unicode FORMAT character (a
+    zero-width space, a byte-order mark, a right-to-left override - Unicode
+    general category `Cf`) sitting at position 0 is the fifth bypass, not a
+    sixth Codex round this time but this function's own adversarial
+    self-review after the fourth: `str.strip()` above only removes
+    WHITESPACE (`str.isspace()`), and every `Cf` character is `False` for
+    that test - not the visible round-9 space, but the exact same defeat of
+    every leading-CHARACTER check by the exact same mechanism (whatever
+    sits at `normalized[0]` is not `/`/`~`/a real drive letter), just
+    invisible in almost any editor instead of merely easy to miss. This is
+    not a contrived shape either: a UTF-8-with-BOM save or a copy-paste out
+    of a browser address bar leaves exactly this behind. `_strip_invisible_
+    format_chars` runs immediately after `.strip()`, on the same
+    classification-only copy.
     """
     if not raw:
         return raw
-    stripped = raw.strip()
+    stripped = _strip_invisible_format_chars(raw.strip())
     if not stripped:
         return raw
     # A Unicode character that visually resembles `/` or `\` but is neither
@@ -1402,17 +1517,37 @@ def _redact_asset_path(raw: str) -> str:
     # happens to contain one of these characters as ordinary text (not as a
     # separator) is never rewritten.
     normalized = _normalize_path_separator_lookalikes(stripped)
+    # A `file://` URI (`file:///Users/alice/Secret/private.pdf`, or the
+    # `file://host/share/...` form some tools emit for a network path) is
+    # how a value copied out of a browser address bar or a "Copy as URI"
+    # menu item spells an absolute local path - and it defeats every check
+    # above at once (issue #170 finding 1, round-10 audit): the string
+    # starts with `f`, not a separator/`~`/drive-letter, and
+    # `Path(raw).is_absolute()` does not consider a URI STRING absolute
+    # either - it is not a real filesystem path spelling, it is a scheme
+    # plus one. `file_uri_match` is checked case-insensitively (URI schemes
+    # are not case-sensitive) and accepts either the two-slash
+    # (`file://host/path`) or three-slash (`file:///path`, empty
+    # authority) form. When it matches, everything from the scheme on is
+    # foreign by definition, and the classification/basename-extraction
+    # steps below run against the URI's PATH PART (the scheme stripped
+    # off) rather than the full string - otherwise `file:` itself would be
+    # misread as a bogus leading path segment and could leak into the
+    # "basename".
+    file_uri_match = re.match(r'(?i)^file://+', normalized)
     looks_foreign = (
         normalized[0] in ('/', '\\')
         or normalized[0] == '~'
         or (len(normalized) > 1 and normalized[1] == ':')
+        or bool(file_uri_match)
         or Path(normalized).is_absolute()
     )
     if not looks_foreign:
         return raw
-    if _is_bare_directory_reference(normalized):
+    path_part = normalized[file_uri_match.end():] if file_uri_match else normalized
+    if _is_bare_directory_reference(path_part):
         return '(unnamed path)'
-    name = PureWindowsPath(normalized).name or '(unnamed path)'
+    name = PureWindowsPath(path_part).name or '(unnamed path)'
     # A bare `~`/`~user` shorthand with NO separator anywhere in it (no
     # trailing slash either - that shape is caught by
     # `_is_bare_directory_reference` above) has nothing real for
@@ -2083,16 +2218,33 @@ def _copy_source_with_scaffolding_stripped(
     files: entry that cannot be safely rewritten skips the copy entirely
     rather than ship it unredacted.
 
-    Falls back to a plain `_copy_into` when the text cannot be read (a race
-    or permission problem, not a routing bug - `src.exists()` already
-    passed at the call site) or when nothing needed stripping/redacting at
-    all, which is the common case for a record untouched since before #75:
-    no backfill/migration tooling means this is the ordinary shape for any
-    pre-existing archive, not an edge case."""
+    Falls back to a plain `_copy_into` ONLY when the text WAS read and
+    nothing needed stripping/redacting at all, which is the common case
+    for a record untouched since before #75: no backfill/migration
+    tooling means this is the ordinary shape for any pre-existing archive,
+    not an edge case.
+
+    Fails CLOSED - same as the files: redaction two paragraphs up, same
+    warning shape as `_copy_redacted_source`'s own read failure - when the
+    text canNOT be read at all (round-10 audit, issue #170 finding 1): a
+    race, a permission problem, or a record that is not valid UTF-8
+    (`read_text_exact` raises `UnicodeError`) all used to fall back to a
+    plain `_copy_into` BYTE COPY of the untouched original - which means
+    the files: redaction two paragraphs up never even ran, so a foreign
+    `files:` entry in a record this function could not decode shipped
+    completely unredacted. Skipping the copy instead is no worse for a
+    genuinely clean record (it stays in the archive, the packet build
+    exits with a warning instead of silently succeeding) and is the only
+    safe choice for one that is not: the output can't be proven clean
+    from a record that couldn't even be read to check."""
     try:
         text = read_text_exact(src)
-    except (OSError, UnicodeError):
-        return _copy_into(src, dest_dir, messages=messages)
+    except (OSError, UnicodeError) as e:
+        if messages is not None:
+            messages.append(
+                f'WARNING: could not read {src}: {e} - the record was left out of sources/.'
+            )
+        return None
     files_redacted = _redact_source_record_files_field(text)
     if files_redacted is None:
         if messages is not None:
