@@ -233,6 +233,7 @@ from _lib import (
     id_type_of,
     is_genetic_parent_subtype,
     is_valid_edtf,
+    is_valid_id,
     is_working_copy,
     load_fha_yaml,
     normalize_id,
@@ -481,6 +482,45 @@ def _ignore_decode_error(path: Path) -> None:
     told a decode failure apart from a real parse error; this makes the two
     paths explicit even at a site where they happen to share one fallback."""
     return None
+
+
+def _plain_record_read_trouble(rec: dict | None, trouble: str) -> str:
+    """Translate a record-read failure's raw text into one short, plain
+    clause a family historian who has never heard of YAML can act on (PR
+    #193 post-merge review, round 4, finding 3).
+
+    `trouble` is whatever `_origin_id_from_frontmatter_is_by_request` read
+    off `rec['parse_errors'][0][1]` (when `read_record` itself succeeded in
+    opening the file but could not parse it) or off a bare `except Exception
+    as e: str(e)` (when even opening it failed) - either way it used to be
+    interpolated straight into the WARNING line shown to the archive owner.
+    That is not always a short sentence: a YAML frontmatter failure carries
+    `format_record_yaml_error`'s full multi-line "Original parser note:"
+    tail (PyYAML's own scanner/parser diagnostic, location trace and all),
+    and an OS-level failure carries `read_record`'s raw `Cannot read file:
+    [Errno ...]` text. Dumping either verbatim answered a genuine complaint
+    from an EARLIER round (the message used to say only "could not read ...
+    - withheld", naming no cause at all) by over-correcting into the
+    opposite problem - so this still NAMES the kind of trouble (a
+    formatting problem inside the file vs. the file itself being
+    unreachable vs. something unexpected), it just never repeats PyYAML's
+    or the OS's own words to do it.
+
+    `rec is None` means even `read_record` itself raised (the outer
+    `except Exception` in the caller) - a state with no further structure to
+    read a cause out of, so it gets the one honestly generic phrasing left."""
+    if rec is None:
+        return 'something unexpected went wrong trying to read the file'
+    if trouble.startswith('Cannot read file:'):
+        return (
+            'the file itself could not be opened from disk - it may have '
+            'been moved, renamed, or deleted since this build started, or '
+            'you may not have permission to read it'
+        )
+    return (
+        "its YAML frontmatter has a formatting problem (a stray tab, a "
+        "missing colon, or similar)"
+    )
 
 
 def _today() -> str:
@@ -3360,9 +3400,19 @@ class _SiteBuilder:
             # problem (`_ignore_decode_error` reports those as `undecodable`
             # with no `trouble` text of their own) needs a plain re-save
             # instead.
-            detail = trouble or (
-                "the file isn't saved as UTF-8 text - a Windows editor's "
-                "default encoding, often cp1252, is the usual cause"
+            #
+            # Round 4 followup, finding 3 (P2): naming the real cause used to
+            # mean interpolating `trouble` VERBATIM - PyYAML's own multi-line
+            # scanner/parser diagnostic, or a raw OS `[Errno ...]` string,
+            # dropped straight into this one WARNING line. `_plain_record_
+            # read_trouble` keeps naming WHICH kind of problem this is (a
+            # formatting problem inside the file vs. the file being
+            # unreachable) without repeating either's raw words - see its
+            # own docstring.
+            detail = (
+                _plain_record_read_trouble(rec, trouble) if trouble is not None
+                else "the file isn't saved as UTF-8 text - a Windows editor's "
+                     "default encoding, often cp1252, is the usual cause"
             )
             self.messages.append(
                 f'WARNING: could not read {file_rel} to identify whose research '
@@ -3374,22 +3424,68 @@ class _SiteBuilder:
             )
             self._by_request_origin_file_cache[file_rel] = True
             return True
-        pid = normalize_id(str(rec['meta'].get('id') or ''))
-        if not pid.startswith('p-'):
+        id_raw = rec['meta'].get('id')
+        pid = normalize_id(str(id_raw or ''))
+        if not pid:
             # PR #193 post-merge review, round 3, finding 2 (P2): this is a
             # supported, real state (a hand-authored research file whose
             # filename never carried an id and whose frontmatter never got
-            # one minted either) with an existing, one-command repair - the
-            # message used to stop at naming the problem, leaving the owner
-            # with no way to make her withheld questions reappear.
+            # one minted either) with an existing repair - the message used
+            # to stop at naming the problem, leaving the owner with no way
+            # to make her withheld questions reappear.
+            #
+            # Round 4 followup, finding 1 (P2): that repair used to be `fha
+            # lint --fix-ids`, which is the WRONG command for this state -
+            # it MINTS A BRAND-NEW P-id and renames only THIS file, which
+            # does not reconnect the companion to its actual owner (no
+            # profile exists under the new id either, so the very next `fha
+            # site` build shows this same missing-profile warning again,
+            # just under a fresh, still-orphaned id). `_lib.parse_questions`
+            # already established this file is a genuine companion by its
+            # CONTENT (see this method's own docstring) - its owner already
+            # has a profile somewhere else in the archive; the fix is to
+            # give this file THAT PERSON'S EXISTING id, not to mint a new
+            # one. No tool performs that association automatically today,
+            # so the advice is the manual SPEC §13/§16 steps that do it.
             self.messages.append(
                 f'WARNING: {file_rel} carries no parseable person id in its '
                 "filename OR its own frontmatter `id:` - there is no way to "
                 'tell whether it belongs to a person who asked to be left out '
                 '(restricted: by-request); its open questions are withheld '
-                'rather than shown without being able to check. Run `fha '
-                'lint --fix-ids` to mint and record a real id for this file, '
-                'then run `fha site` again.'
+                'rather than shown without being able to check. This is a '
+                "research companion for someone who already has a profile "
+                "elsewhere in the archive (SPEC §16) - find that person's "
+                "EXISTING P-id (`fha find` or their profile file), put it in "
+                "this file's `id:` line, and rename the file to match SPEC "
+                '§13\'s {surname}__{given}_research_{P-id}.md grammar. `fha '
+                'lint --fix-ids` would MINT A NEW id instead and leave this '
+                'file still disconnected from its real owner - it does not '
+                'complete this repair. Then run `fha site` again.'
+            )
+            self._by_request_origin_file_cache[file_rel] = True
+            return True
+        if not (is_valid_id(pid) and id_type_of(pid) == 'P'):
+            # Round 4 followup, finding 2 (P2): a MALFORMED id value (`id:
+            # P-abc` - fails the archive's real id grammar) used to pass
+            # this check on a bare `pid.startswith('p-')` prefix test, then
+            # get read as though it were a genuine, resolvable person id -
+            # routing straight to `_person_is_by_request`, which (finding no
+            # profile for a value that was never a real id) told the owner
+            # to "restore or create a profile for P-abc". There is no
+            # P-abc to restore; the real id: value itself is what needs
+            # fixing, so this now validates with the archive's authoritative
+            # id checker (`is_valid_id`/`id_type_of`, AGENTS.md's "IDs"
+            # format entry) instead of a prefix guess, and routes to the
+            # correction `fha lint` already knows how to make (E002).
+            self.messages.append(
+                f"WARNING: {file_rel}'s own frontmatter `id:` "
+                f'({id_raw!r}) is not a valid person id - there is no way '
+                'to tell whether it belongs to a person who asked to be '
+                'left out (restricted: by-request); its open questions are '
+                'withheld rather than shown without being able to check. '
+                'Run `fha lint` (E002: malformed id) to see the problem, '
+                "fix the id: value (or remove it so the file reads as "
+                "id-less), and run `fha site` again."
             )
             self._by_request_origin_file_cache[file_rel] = True
             return True

@@ -7179,6 +7179,121 @@ class OpenQuestionsSectionTests(_Base):
             'fha lint' in msg or 'yaml' in msg,
             f'warning gave no concrete repair step: {trouble[0]}')
 
+    def test_id_less_companion_read_failure_translates_the_raw_parser_text(self):
+        # PR #193 post-merge review, round 4, finding 3 (P2): round 3's fix
+        # (the test just above) stopped the warning from discarding the
+        # parse-error detail entirely, but it did so by forwarding PyYAML's
+        # OWN multi-line diagnostic verbatim - `format_record_yaml_error`'s
+        # full "Original parser note:" tail, location trace and all -
+        # straight into a WARNING line meant for a family historian who has
+        # never heard of YAML. This locks the actual requirement: the raw
+        # parser boilerplate must never appear in the message; only a short,
+        # translated cause (still naming a concrete repair step) may.
+        self._seed_person('p-bbbbbbbbbb', 'Open Otto', surname='Otto')
+        id_less = self.archive_root / 'people' / 'rae__reticent_research.md'
+        id_less.write_text(
+            '---\nid: p-aaaaaaaaaa\n\tname: Bad Tab\ncreated: 2026-06-01\n---\n\n'
+            '## Open Questions\n\n'
+            '## Q: Some question about Otto\n'
+            '- origin: human\n'
+            '- status: open\n'
+            '- refs: [P-bbbbbbbbbb]\n'
+            '- context:\n'
+            '  - (human, 2026-06-01) Should be withheld - the frontmatter above will not parse.\n',
+            encoding='utf-8')
+        res = self._run(linked=True, workbench=False)
+        self.assertTrue(res.ok, res.messages)
+        messages = res['messages']
+        trouble = [m for m in messages if 'rae__reticent_research.md' in m]
+        self.assertEqual(len(trouble), 1, messages)
+        msg = trouble[0]
+        # PyYAML's own diagnostic preamble and location trace must be
+        # translated away, never forwarded verbatim.
+        self.assertNotIn('Original parser note', msg)
+        self.assertNotIn('<unicode string>', msg)
+        self.assertNotIn('Frontmatter YAML error', msg)
+        # A short, concrete repair step still survives the translation.
+        self.assertIn('fha lint', msg)
+
+    def test_id_less_companion_with_no_id_points_at_the_owners_existing_id(self):
+        # PR #193 post-merge review, round 4, finding 1 (P2): when a research
+        # companion carries NO id anywhere (filename or frontmatter), the
+        # old advice was to run `fha lint --fix-ids` - but that command
+        # MINTS A BRAND-NEW P-id and renames only this one file, which does
+        # NOT reconnect it to its actual owner: no profile exists under the
+        # freshly-minted id either, so the very next `fha site` build shows
+        # this same missing-profile warning again, just under a fresh,
+        # still-orphaned id. The message must instead point the owner at
+        # her EXISTING P-id (find it, paste it in, rename to match) and must
+        # never claim --fix-ids completes this particular repair.
+        self._seed_person('p-bbbbbbbbbb', 'Open Otto', surname='Otto')
+        id_less = self.archive_root / 'people' / 'unclaimed__owner_research.md'
+        id_less.write_text(
+            '---\ncreated: 2026-06-01\n---\n\n'
+            '## Open Questions\n\n'
+            '## Q: No id anywhere at all\n'
+            '- origin: human\n'
+            '- status: open\n'
+            '- refs: [P-bbbbbbbbbb]\n'
+            '- context:\n'
+            '  - (human, 2026-06-01) Should be withheld - no id anywhere.\n',
+            encoding='utf-8')
+        res = self._run(linked=True, workbench=False)
+        self.assertTrue(res.ok, res.messages)
+        messages = res['messages']
+        trouble = [m for m in messages if 'unclaimed__owner_research.md' in m]
+        self.assertEqual(len(trouble), 1, messages)
+        msg = trouble[0].lower()
+        # Names the real repair - the owner's EXISTING id, pasted in and
+        # renamed to match - not a fresh mint.
+        self.assertIn('existing', msg)
+        self.assertIn('rename', msg)
+        # --fix-ids may still be NAMED (so the owner understands why it is
+        # wrong here), but must never be presented as completing the repair.
+        self.assertNotIn(
+            '`fha lint --fix-ids` to mint and record a real id for this file, '
+            'then run `fha site` again.', trouble[0],
+            f'still promises --fix-ids completes this repair: {trouble[0]}')
+        self.assertTrue(
+            'mint a new' in msg or 'would mint' in msg,
+            f'message must warn --fix-ids mints a NEW id instead of reconnecting: {trouble[0]}')
+
+    def test_id_less_companion_with_malformed_id_flags_the_id_not_a_phantom_profile(self):
+        # PR #193 post-merge review, round 4, finding 2 (P2): a MALFORMED
+        # `id:` value (`P-abc` - far short of the real 10-char Crockford
+        # grammar) used to pass a bare `pid.startswith('p-')` prefix check
+        # and get read as though it were a genuine, resolvable person id -
+        # routing to `_person_is_by_request`, which (finding no profile for
+        # a value that was never a real id) told the owner to "restore or
+        # create the profile record for P-abc". There is no P-abc to
+        # restore; the actual problem is the malformed id: value itself, and
+        # the message must say so instead of inventing a phantom profile to
+        # restore.
+        self._seed_person('p-bbbbbbbbbb', 'Open Otto', surname='Otto')
+        id_less = self.archive_root / 'people' / 'stray__owner_research.md'
+        id_less.write_text(
+            '---\nid: P-abc\ncreated: 2026-06-01\n---\n\n'
+            '## Open Questions\n\n'
+            '## Q: Whose file is this anyway?\n'
+            '- origin: human\n'
+            '- status: open\n'
+            '- refs: [P-bbbbbbbbbb]\n'
+            '- context:\n'
+            '  - (human, 2026-06-01) Should be withheld - the id: value is malformed.\n',
+            encoding='utf-8')
+        res = self._run(linked=True, workbench=False)
+        self.assertTrue(res.ok, res.messages)
+        messages = res['messages']
+        trouble = [m for m in messages if 'stray__owner_research.md' in m]
+        self.assertEqual(len(trouble), 1, messages)
+        msg = trouble[0].lower()
+        self.assertIn('not a valid', msg)
+        self.assertIn('e002', msg)
+        # The old wording (a real, resolvable pid with no matching profile)
+        # must never appear here - this id was never real in the first place.
+        self.assertNotIn('restore or create the profile', msg)
+        self.assertNotIn('no readable profile record exists', msg)
+
     def test_origin_check_with_no_profile_gets_a_profile_repair_step(self):
         # PR #193 post-merge review, finding 2 (P2): `_person_is_by_request`
         # is called both to check a research companion's OWN origin/owner
