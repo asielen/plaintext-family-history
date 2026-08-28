@@ -960,6 +960,14 @@ def gather_inbox(state: ServeState) -> dict:
         return {'items': []}
 
     entries = sorted(inbox.iterdir(), key=lambda p: p.name.lower())
+    # #109: inbox/processed/ is where `fha process` parks originals it has
+    # ALREADY filed (process.py's `_relocate_from_inbox`) - an audit trail,
+    # not new material waiting on the human. Left in, it would show up as a
+    # bogus "bundle" item below (and inflate the /inbox badge count) inviting
+    # a re-process of something already done. Reach into process.py's own
+    # constant rather than repeating the literal, so the two can never drift.
+    entries = [p for p in entries
+               if not (p.is_dir() and p.name == process_mod._INBOX_PROCESSED_DIRNAME)]
     files_only = [p for p in entries if p.is_file() and not p.name.startswith('.')]
     sidecar_files = [p for p in files_only if p.name.endswith('.notes.md')]
     asset_files = [p for p in files_only if not p.name.endswith('.notes.md')]

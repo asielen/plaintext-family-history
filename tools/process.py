@@ -237,6 +237,15 @@ _DEFAULT_DOCUMENT_TYPE = 'other'
 _PHOTO_DIR = 'photos'
 _PHOTO_SOURCE_TYPE = 'photo'
 
+# #109: where `_relocate_from_inbox` parks the ORIGINAL inbox file after
+# filing a copy into its documents/photos root - never deleted, so a human
+# processing a large batch can still spot-check the originals afterward.
+# Mirrors `fha capture --ingest`'s own park-don't-delete precedent
+# (`_INGESTED_DIRNAME` in capture.py), just without the dot-prefix: this one
+# sits inside `inbox/` itself (SPEC-visible, not a tool-internal holding pen)
+# and the issue's own acceptance test names it literally, `inbox/processed/`.
+_INBOX_PROCESSED_DIRNAME = 'processed'
+
 # A filename already carrying an S-id (e.g. a re-run of a processed document).
 _FILENAME_SOURCE_ID_RE = re.compile(r'_(S-[0-9a-hjkmnp-tv-z]{10})$', re.I)
 
@@ -1098,7 +1107,9 @@ def _relocate_from_inbox(
     source_type: str | None = None,
     dry_run: bool,
 ) -> tuple[Path, Path | None, object]:
-    """Move an inbox-staged asset (+ sidecar) into its documents/photos root.
+    """File a COPY of an inbox-staged asset (+ sidecar) into its documents/
+    photos root, and park the original(s) in `inbox/processed/` rather than
+    deleting them.
 
     `fha capture --asset` (and a hand-dropped file) stage in `inbox/`, but
     `process_document`/`process_photo` require the asset already under the
@@ -1107,15 +1118,34 @@ def _relocate_from_inbox(
     the user move it by hand first. A no-op (returns the inputs unchanged, undo
     `None`) when `file_path` isn't under the resolved inbox root.
 
-    The move is flat (same filename, no rename) into documents/ or photos/ -
-    `process_document` mints its own `{slug}_{S-id}` rename afterward; photos
-    are never renamed at all. Real moves happen with `Path.rename`, which is
-    atomic on the same filesystem; on `dry_run` nothing is touched and a
-    not-yet-existing destination path is returned so the caller's own preview
-    can still report the post-move root. That returned path names where things
-    WOULD land, not where the bytes are: any dry-run read (embedded keywords,
-    sidecar discovery, variation grouping) must keep using the pre-move path,
-    which the caller threads through as `real_path`/`real_paths`.
+    Before #109 this was a flat `Path.rename` (same filename, no rename) into
+    documents/ or photos/, which left nothing behind in `inbox/` to audit
+    afterward - processing "several hundred files" (the filed issue's own
+    case) gave the archive's owner no before-and-after view without digging
+    through git history. Now the destination gets a byte-for-byte COPY
+    (`shutil.copy2`, so timestamps/metadata survive too) under the SAME
+    filename `process_document`/`process_photo` expect (`process_document`
+    mints its own `{slug}_{S-id}` rename afterward; photos are never renamed
+    at all) - and the ORIGINAL is then MOVED, never copied again, to
+    `inbox/processed/<the relative path it had inside inbox/>`, preserving
+    whatever subfolder structure it was staged under. This mirrors `fha
+    capture --ingest`'s own park-don't-delete precedent for `.ingested/`:
+    deletion is the human's call, made after a look, not a side effect of
+    processing. The copy step reads `file_path`/`sidecar` exactly once; the
+    move step never re-reads their bytes at all.
+
+    On `dry_run` nothing is touched and not-yet-existing destination paths are
+    returned (including the `inbox/processed/` one, named but not created) so
+    the caller's own preview can still report the full plan. Those returned
+    paths name where things WOULD land, not where the bytes are: any
+    dry-run read (embedded keywords, sidecar discovery, variation grouping)
+    must keep using the pre-move path, which the caller threads through as
+    `real_path`/`real_paths`.
+
+    A collision at EITHER destination - the documents/photos root, or the
+    `inbox/processed/` park spot (e.g. a same-named file was already
+    processed once before) - refuses cleanly before anything is written,
+    exactly like the existing documents/photos collision check below.
 
     Returns `(file_path, sidecar, undo)`. This relocation runs *before*
     `process_document`/`process_photo`'s own validation (e.g. the `dna`
@@ -1123,7 +1153,9 @@ def _relocate_from_inbox(
     refusal downstream would otherwise leave the asset filed out of the inbox
     even though the command failed overall. The caller must call `undo()` (a
     no-arg callable, or `None` for the no-op case) whenever it reports the
-    relocated file's command as anything other than success.
+    relocated file's command as anything other than success - `undo()`
+    reverses BOTH steps: it deletes the destination copy and moves the
+    parked original back to its exact starting location in `inbox/`.
     """
     inbox_root = resolve_path('inbox', fha_config, archive_root)
     if not _is_under(file_path, inbox_root):
@@ -1150,22 +1182,138 @@ def _relocate_from_inbox(
     if new_sidecar is not None and new_sidecar.exists():
         raise ProcessError(f'destination already exists: {_rel(new_sidecar, archive_root)}')
 
+    # file_path is already confirmed under inbox_root above, so this relative
+    # path always resolves - it is what lets inbox/processed/ mirror whatever
+    # subfolder structure the human (or a recipe) staged the file under.
+    processed_root = inbox_root / _INBOX_PROCESSED_DIRNAME
+    inbox_rel = file_path.resolve().relative_to(inbox_root.resolve())
+    parked_path = processed_root / inbox_rel
+    parked_sidecar = (
+        processed_root / sidecar.resolve().relative_to(inbox_root.resolve())
+        if sidecar is not None else None
+    )
+    if parked_path.exists():
+        raise ProcessError(f'destination already exists: {_rel(parked_path, archive_root)}')
+    if parked_sidecar is not None and parked_sidecar.exists():
+        raise ProcessError(f'destination already exists: {_rel(parked_sidecar, archive_root)}')
+
     if dry_run:
-        print(f'[dry-run] Would move {file_path.name} out of inbox/ into '
-              f'{_rel(dest_root, archive_root)}/')
+        print(f'[dry-run] Would copy {file_path.name} out of inbox/ into '
+              f'{_rel(dest_root, archive_root)}/, parking the original at '
+              f'{_rel(parked_path, archive_root)}')
         return new_path, new_sidecar, None
 
-    dest_root.mkdir(parents=True, exist_ok=True)
-    file_path.rename(new_path)
-    if sidecar is not None:
-        sidecar.rename(new_sidecar)
-    print(f'Moved {file_path.name} out of inbox/ into {_rel(dest_root, archive_root)}/')
+    # parked_sidecar always shares parked_path's parent (a sidecar is always a
+    # same-directory sibling of its asset - _find_sidecar/_companion_for_sidecar
+    # both construct it that way), so only one lineage of processed/ subfolders
+    # is ever created here. Track which ones this call creates (deepest-named
+    # first) so a full undo below can remove them again - the same created-dirs
+    # bookkeeping process_refile's own rollback uses - rather than leaving empty
+    # `inbox/processed/...` folders behind once every file that was ever parked
+    # in them has been moved back out.
+    created_park_dirs: list[Path] = []
+    probe = parked_path.parent
+    while not probe.exists() and probe != probe.parent:
+        created_park_dirs.append(probe)
+        probe = probe.parent
+
+    # Nothing has been written yet, so any failure here (e.g. `processed/`
+    # already exists as a plain file, not a folder - NotADirectoryError) can
+    # refuse cleanly with inbox/ still guaranteed untouched.
+    try:
+        dest_root.mkdir(parents=True, exist_ok=True)
+        parked_path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        raise ProcessError(
+            f'could not create a destination folder for {file_path.name}: {e}. '
+            'Nothing was moved out of inbox/.'
+        ) from e
+
+    # Step 1: copy the bytes to the destination - read once, never again.
+    # A copy that raises, or lands short (e.g. a full disk truncating it),
+    # must leave inbox/ completely untouched: clean up any partial copy and
+    # refuse before the original is touched at all.
+    try:
+        shutil.copy2(file_path, new_path)
+        if sidecar is not None:
+            shutil.copy2(sidecar, new_sidecar)
+        if new_path.stat().st_size != file_path.stat().st_size:
+            raise OSError(f'{new_path.name} landed at a different size than the original')
+        if sidecar is not None and new_sidecar.stat().st_size != sidecar.stat().st_size:
+            raise OSError(f'{new_sidecar.name} landed at a different size than the original')
+    except OSError as e:
+        new_path.unlink(missing_ok=True)
+        if new_sidecar is not None:
+            new_sidecar.unlink(missing_ok=True)
+        raise ProcessError(
+            f'could not copy {file_path.name} into {_rel(dest_root, archive_root)}/: '
+            f'{e}. Nothing was moved out of inbox/.'
+        ) from e
+
+    # Step 2: move (never copy again) the verified-good original into
+    # inbox/processed/. _move_file is the same rename-with-copy+delete-
+    # fallback helper process_refile uses for its own moves - inbox/processed/
+    # always sits inside the same inbox root, so the fallback should never
+    # actually trigger, but nothing here depends on it not triggering.
+    primary_parked = False
+    try:
+        _move_file(file_path, parked_path)
+        primary_parked = True
+        if sidecar is not None:
+            _move_file(sidecar, parked_sidecar)
+    except OSError as e:
+        # The destination copy already landed (step 1). A failed park must not
+        # leave it stranded as an orphan with no corresponding original
+        # anywhere findable - undo the copy, and if the primary itself had
+        # already been parked before the SIDECAR's move failed, move it back
+        # to inbox/ too (_move_file's own contract guarantees a failed move
+        # never leaves an unparked file's bytes anywhere but its start point,
+        # so only the primary-already-parked case needs an explicit undo here).
+        recovery_note = ''
+        if primary_parked and parked_path.exists():
+            try:
+                _move_file(parked_path, file_path)
+            except OSError as recovery_exc:
+                recovery_note = (
+                    f' The original also could not be moved back to inbox/ '
+                    f'({recovery_exc}) - it is sitting at '
+                    f'{_rel(parked_path, archive_root)} instead.'
+                )
+        new_path.unlink(missing_ok=True)
+        if new_sidecar is not None:
+            new_sidecar.unlink(missing_ok=True)
+        for d in reversed(created_park_dirs):
+            try:
+                d.rmdir()
+            except OSError:
+                pass  # not empty (something else parked there already) - leave it
+        raise ProcessError(
+            f'could not park {file_path.name} in '
+            f'{_rel(processed_root, archive_root)}/: {e}.{recovery_note}'
+        ) from e
+
+    print(f'Filed {file_path.name} into {_rel(dest_root, archive_root)}/ and parked the '
+          f'original at {_rel(parked_path, archive_root)}')
 
     def undo() -> None:
         if new_path.exists():
-            new_path.rename(file_path)
-        if sidecar is not None and new_sidecar is not None and new_sidecar.exists():
-            new_sidecar.rename(sidecar)
+            new_path.unlink()
+        if new_sidecar is not None and new_sidecar.exists():
+            new_sidecar.unlink()
+        if parked_path.exists():
+            _move_file(parked_path, file_path)
+        if sidecar is not None and parked_sidecar is not None and parked_sidecar.exists():
+            _move_file(parked_sidecar, sidecar)
+        # Best-effort: drop any processed/ subfolders THIS call created, now
+        # that the file(s) they held are back in inbox/ - leaves nothing
+        # behind when this is the run that undoes it. A folder still holding
+        # something else this call didn't park (e.g. a sibling relocation's
+        # own file, undone separately) simply fails rmdir and is left alone.
+        for d in reversed(created_park_dirs):
+            try:
+                d.rmdir()
+            except OSError:
+                pass
 
     return new_path, new_sidecar, undo
 

@@ -1577,6 +1577,25 @@ class InboxPairingTests(_ServeCase):
         self.assertIn('data-wb-open-file="inbox/census-bundle/notes.md"', page)
         self.assertNotIn('data-wb-open-file="inbox/scan.jpg"', page)
 
+    def test_processed_park_folder_excluded_from_inbox_page(self):
+        # #109: `fha process` now parks already-filed originals in
+        # inbox/processed/ (process.py's `_relocate_from_inbox`) instead of
+        # deleting them. That folder is an audit trail, not new material -
+        # left in, it would show up here as a bogus "bundle" item (and
+        # inflate the /inbox badge count) inviting a re-process of something
+        # already done.
+        inbox = self._reset_inbox()
+        (inbox / 'fresh.txt').write_bytes(b'a')
+        parked_dir = inbox / process._INBOX_PROCESSED_DIRNAME / 'sub'
+        parked_dir.mkdir(parents=True)
+        (parked_dir / 'already-filed.txt').write_bytes(b'b')
+
+        result = serve.gather_inbox(self.state)
+        names = {item['name'] for item in result['items']}
+        self.assertEqual(names, {'fresh.txt'})
+        self.assertNotIn(process._INBOX_PROCESSED_DIRNAME, names)
+        self.assertNotIn(process._INBOX_PROCESSED_DIRNAME + '/', names)
+
 
 class PortZeroTests(unittest.TestCase):
     """Fix 10: an explicit `--port 0` must reach preflight/bind, not be
