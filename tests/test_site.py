@@ -778,8 +778,14 @@ class PersonPageTests(_Base):
         # "Millbrook" in the sentence - Dutchess County and New York
         # vanished from the page with no link anywhere to recover them,
         # a real loss of information the record actually contains. The
-        # fix prints the label's own remainder as a plain continuation of
-        # the sentence instead.
+        # fix prints the label's own remainder as a continuation of the
+        # sentence instead.
+        #
+        # #180 post-merge follow-up, finding 2: the remainder is spliced in
+        # right after "Millbrook" - the word it actually qualifies - not
+        # tacked onto the very end of the sentence (after "to farm"), which
+        # used to read as though "to farm" were somewhere in Dutchess
+        # County rather than the county being a fact about Millbrook.
         self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley')
         self._seed_source('s-1111111111', 'Record', people=('p-aaaaaaaaaa',))
         self._seed_claim('c-1111111111', 's-1111111111', 'residence',
@@ -788,7 +794,8 @@ class PersonPageTests(_Base):
                          persons=('p-aaaaaaaaaa',))
         self._run(linked=True)
         html = self._read('persons/p-aaaaaaaaaa.html')
-        self.assertIn('Moved to Millbrook to farm, Dutchess County, New York', html)
+        self.assertIn('Moved to Millbrook, Dutchess County, New York to farm', html)
+        self.assertNotIn('Moved to Millbrook to farm, Dutchess County, New York', html)  # not appended past "to farm"
         self.assertNotIn('at Millbrook, Dutchess County, New York', html)  # not a second "at" repeat
         self.assertEqual(html.count('Millbrook'), 1)      # named once, not doubled
 
@@ -800,9 +807,12 @@ class PersonPageTests(_Base):
         # "new" fact being appended.
         #
         # Finding 1 follow-up: no place_id here either, so the county/state
-        # qualifier is not simply dropped - it prints as a continuation
-        # tacked onto the end of the sentence (where the old trailing tag
-        # used to go), not re-inserted next to "the family home" itself.
+        # qualifier is not simply dropped.
+        #
+        # #180 post-merge follow-up, finding 2: the qualifier is spliced in
+        # right after "the family home" itself, not tacked onto the very
+        # end of the sentence (after "at age 79") - the old placement would
+        # have made "at age 79" read as part of the Cook County qualifier.
         self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley')
         self._seed_source('s-1111111111', 'Record', people=('p-aaaaaaaaaa',))
         self._seed_claim('c-1111111111', 's-1111111111', 'residence',
@@ -812,9 +822,9 @@ class PersonPageTests(_Base):
                          persons=('p-aaaaaaaaaa',))
         self._run(linked=True)
         html = self._read('persons/p-aaaaaaaaaa.html')
-        self.assertIn('Resided at the family home as of the 1920 census, at age 79, '
-                      'Cook County, Illinois', html)             # remainder continues the sentence
-        self.assertNotIn('at the family home, Cook County, Illinois', html)  # not a second "at" repeat
+        self.assertIn('Resided at the family home, Cook County, Illinois as of the '
+                      '1920 census, at age 79', html)             # remainder sits right after the mention
+        self.assertNotIn('at age 79, Cook County, Illinois', html)  # not appended past the whole sentence
         self.assertEqual(html.count('the family home'), 1)       # named once, not doubled
 
     def test_timeline_place_tag_omitted_for_reordered_compound_place_list(self):
@@ -937,6 +947,115 @@ class PersonPageTests(_Base):
         self.assertIn('Born in Trinidad, and Tobago', html)
         self.assertNotIn('at Trinidad and Tobago, Caribbean', html)
         self.assertEqual(html.count('Trinidad'), 1)   # named once, not doubled
+
+    def test_timeline_place_tag_not_omitted_when_leading_name_matches_an_unrelated_word(self):
+        # #180 post-merge follow-up, finding 1 (P1, THE serious one): the
+        # leading-component fallback above only ever tested whether the
+        # place's leading name's WORDS occurred somewhere in the sentence -
+        # with no check that the occurrence was actually functioning as a
+        # PLACE there. Codex's concrete, real failure: a place's leading
+        # name can just as easily be a person's SURNAME. "Washington" is
+        # both the leading name of "Washington, D.C." and an ordinary
+        # surname, so "Met George Washington while visiting" satisfied the
+        # old bare word search on "George Washington" even though the
+        # sentence never names any place at all - the claim's real
+        # (different, unstated) location would be silently suppressed with
+        # nothing printed in its place. (The sibling failure - a place-page
+        # link wrongly wrapped around the person's own name when the place
+        # is registered - is pinned in PlacePageTests below, where a
+        # registered place is available to link.) Requiring a
+        # place-indicating preposition ("in"/"at"/"to"/"from"/etc.)
+        # immediately before the match closes this: "George Washington" has
+        # no such word before "Washington" (it is "George", not "in"), so
+        # the match must not count as a place mention - the full trailing
+        # place tag has to print, exactly as if no leading-component match
+        # had ever been found.
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley')
+        self._seed_source('s-1111111111', 'Record', people=('p-aaaaaaaaaa',))
+        self._seed_claim('c-1111111111', 's-1111111111', 'event',
+                         'Met George Washington while visiting', status='accepted',
+                         date_edtf='1900', place_text='Washington, D.C.',
+                         persons=('p-aaaaaaaaaa',))
+        self._run(linked=True)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('Met George Washington while visiting', html)
+        self.assertIn('at Washington, D.C.', html)   # full tag still prints - never silently suppressed
+
+    def test_timeline_place_tag_still_omitted_when_leading_name_has_real_place_context(self):
+        # Companion to the test above, pinning that finding 1's fix does not
+        # over-tighten: a genuine place-indicating preposition right before
+        # the same leading name still counts as a real mention, exactly as
+        # every other test in this class already established for "to
+        # Millbrook"/"at the family home"/etc. shaped sentences. No place_id
+        # here (unlinkable), so "D.C." - the label's own droppable qualifier
+        # - still has to survive as a spliced-in remainder (finding 2) right
+        # after "Washington", not vanish and not print as a second, separate
+        # "at Washington, D.C." tag.
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley')
+        self._seed_source('s-1111111111', 'Record', people=('p-aaaaaaaaaa',))
+        self._seed_claim('c-1111111111', 's-1111111111', 'event',
+                         'Attended a ceremony in Washington while visiting',
+                         status='accepted', date_edtf='1900',
+                         place_text='Washington, D.C.', persons=('p-aaaaaaaaaa',))
+        self._run(linked=True)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('Attended a ceremony in Washington, D.C. while visiting', html)
+        self.assertNotIn('while visiting at Washington, D.C.', html)  # not a second, separate trailing tag
+        self.assertEqual(html.count('Washington'), 1)
+
+    def test_timeline_place_remainder_spliced_after_mention_not_after_a_later_place(self):
+        # #180 post-merge follow-up, finding 2 (P1, the other serious one):
+        # Codex's concrete, real failure - a claim's sentence names the
+        # claim's own (unlinked) place and THEN a second, unrelated place
+        # later in the same sentence. The old code appended the unlinkable
+        # place's remainder after the WHOLE rendered sentence rather than
+        # after the mention it actually describes, so a value like "She
+        # moved from Millbrook to Boston" with unlinked place_text
+        # "Millbrook, Dutchess County, New York" rendered "...to Boston,
+        # Dutchess County, New York" - read naturally, that says BOSTON is
+        # in Dutchess County, New York, a wrong and misleading attribution
+        # of a qualifier that was only ever about Millbrook. (Codex's own
+        # example phrased this as "She left Millbrook for Boston" - adapted
+        # here to "moved from ... to ..." so the claim's sentence still
+        # carries the "from"-context finding 1 above now requires before a
+        # leading-component match counts as a place mention at all; the
+        # misattribution bug itself is identical either way.) The fix
+        # splices the remainder in immediately after "Millbrook".
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley')
+        self._seed_source('s-1111111111', 'Record', people=('p-aaaaaaaaaa',))
+        self._seed_claim('c-1111111111', 's-1111111111', 'residence',
+                         'She moved from Millbrook to Boston', status='accepted',
+                         date_edtf='1900', place_text='Millbrook, Dutchess County, New York',
+                         persons=('p-aaaaaaaaaa',))
+        self._run(linked=True)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('She moved from Millbrook, Dutchess County, New York to Boston', html)
+        self.assertNotIn('to Boston, Dutchess County, New York', html)  # never misattributed to Boston
+        self.assertEqual(html.count('Millbrook'), 1)
+
+    def test_timeline_place_remainder_keeps_a_genuine_parenthetical(self):
+        # #180 post-merge follow-up, finding 3 (P2): the remainder used to
+        # be built from the SAME blanket parenthetical-stripping regex that
+        # keeps a coordinated compound's own elaboration list ("(Rome,
+        # Milan, Paris, Lyon)") from being mistaken for a hierarchy's
+        # top-level comma - but a parenthetical sitting right in a place's
+        # OWN leading name can be genuine, meaningful historical
+        # information, not internal encoding to scrub (that is
+        # `_scrub_internal_encoding`'s separate, unrelated job, and it has
+        # already run on this text by the time the remainder is computed).
+        # "Millbrook (formerly Oakville)" used to lose "(formerly Oakville)"
+        # from the rendered remainder entirely, with no link anywhere on an
+        # unlinkable claim to recover it.
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley')
+        self._seed_source('s-1111111111', 'Record', people=('p-aaaaaaaaaa',))
+        self._seed_claim('c-1111111111', 's-1111111111', 'residence',
+                         'Moved to Millbrook', status='accepted', date_edtf='1900',
+                         place_text='Millbrook (formerly Oakville), Dutchess County, New York',
+                         persons=('p-aaaaaaaaaa',))
+        self._run(linked=True)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('Moved to Millbrook (formerly Oakville), Dutchess County, New York', html)
+        self.assertEqual(html.count('Millbrook'), 1)   # named once, not doubled
 
     def test_timeline_place_text_internal_encoding_is_scrubbed_from_the_trailing_remainder(self):
         # Adversarial review, round 4 audit (#140's own concern, extended):
@@ -2685,6 +2804,59 @@ class PlacePageTests(_Base):
                       person_html)
         self.assertNotIn('Dutchess County', person_html)   # qualifier not force-printed
         self.assertEqual(person_html.count('Millbrook'), 1)   # named once, not doubled
+
+    def test_timeline_place_link_not_hung_on_an_unrelated_name_match(self):
+        # #180 post-merge follow-up, finding 1 (P1, THE serious one), the
+        # reader-VISIBLE half of the bug (the PersonPageTests sibling of
+        # this test pins the unlinkable half - a silently vanished real
+        # location). When the place IS registered and linkable, the old
+        # leading-component match - with no check that the match was
+        # actually functioning as a place - would hang the place-page link
+        # on whatever matched words it found, even a person's own SURNAME
+        # that happens to share the place's leading name: "Washington" in
+        # "Met George Washington while visiting" against registered place
+        # "Washington, D.C.". A reader would see the person's own name
+        # linked to a place page with no place relationship justifying it,
+        # while the sentence's real, unstated location silently vanished
+        # from the page entirely. Requiring a place-indicating preposition
+        # immediately before the match (finding 1's fix) rejects this
+        # match for lack of context, so the sentence's own words stay
+        # unlinked prose and the full trailing tag - itself linked to the
+        # place page, exactly where the link belongs - prints instead.
+        self._seed_person('p-aaaaaaaaaa', 'Jane')
+        self._seed_source('s-1111111111', 'Census', people=('p-aaaaaaaaaa',))
+        self._seed_place('l-1111111111', 'Washington, D.C.')
+        self._seed_claim_at_place('c-1111111111', 's-1111111111', 'l-1111111111',
+                                  'Met George Washington while visiting', ('p-aaaaaaaaaa',))
+        self._run(linked=True)
+        person_html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('Met George Washington while visiting at '
+                      '<a href="../places/l-1111111111.html">Washington, D.C.</a>', person_html)
+        self.assertNotIn('Met George <a href="../places/l-1111111111.html">', person_html)
+        self.assertNotIn('<a href="../places/l-1111111111.html">Washington</a> while', person_html)
+
+    def test_timeline_place_link_covers_the_whole_coordinated_compound(self):
+        # #180 post-merge follow-up, finding 4 (P2): when a registered
+        # compound place name is recognized via the coordinated-parts
+        # fallback matcher - a leading component like "Trinidad and Tobago"
+        # that names two peer parts joined by "and" - the matched span used
+        # to cover only the FIRST part's own words ("Trinidad"), even
+        # though the suppression decision itself was for the whole
+        # compound. Hanging the place-page link on only "Trinidad" left
+        # "and Tobago" sitting outside the link, right next to it, for a
+        # place registered under the full two-word compound name - a
+        # confusingly narrow link a reader would not expect. The fix hangs
+        # the link on the complete coordinated expression.
+        self._seed_person('p-aaaaaaaaaa', 'Jane')
+        self._seed_source('s-1111111111', 'Census', people=('p-aaaaaaaaaa',))
+        self._seed_place('l-1111111111', 'Trinidad and Tobago, Caribbean')
+        self._seed_claim_at_place('c-1111111111', 's-1111111111', 'l-1111111111',
+                                  'Born in Trinidad and Tobago', ('p-aaaaaaaaaa',))
+        self._run(linked=True)
+        person_html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('Born in <a href="../places/l-1111111111.html">Trinidad and Tobago</a>',
+                      person_html)
+        self.assertNotIn('</a> and Tobago', person_html)   # link isn't cut short at "Trinidad"
 
     def test_freetext_place_without_id_is_not_linked(self):
         self._seed_person('p-aaaaaaaaaa', 'Jane')

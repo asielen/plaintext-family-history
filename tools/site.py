@@ -1454,6 +1454,46 @@ def _match_place_words(value: str, label: str) -> tuple[int, int] | None:
     return match.span() if match else None
 
 
+# A leading-component match (below) only ever tests a FRAGMENT of a place
+# label's full text - "Washington" out of "Washington, D.C." - and a bare
+# word that short can just as easily be something else entirely: a
+# surname, a person's given name, an unrelated common noun. The WHOLE-label
+# match `_place_mention_span` always tries first does not have this problem
+# (matching several of a label's words together, in order, is specific
+# enough on its own), so this gate applies only to the fallback path.
+#
+# Real, concrete failure (post-merge Codex review of #180, finding 1): claim
+# value "Met George Washington while visiting" against place_text
+# "Washington, D.C." - "Washington" the SURNAME satisfies a bare word search
+# with nothing to tell it apart from Washington the place, so the old code
+# suppressed the sentence's real (different, unstated) location and, when
+# the place was linkable, wrapped a place-page link around a person's own
+# name. Requiring the matched word(s) to sit right after a preposition this
+# codebase's own prose actually uses for places ("born IN Millbrook",
+# "moved TO Millbrook to farm", "resided AT the family home", "traveled
+# THROUGH Italy") is a cheap, reliable enough signal that the match is
+# functioning as a place in this sentence, not merely a name that happens to
+# share the place's words - a person is never introduced as "the local
+# grocer, in George Washington" the way a place is "born in Millbrook".
+# List built from every leading-component/coordinated-parts case already
+# proven out in tests/test_site.py, plus the handful of ordinary synonyms a
+# genealogist would reach for next to them.
+_PLACE_CONTEXT_PREP_RE = re.compile(
+    r'\b(?:in|at|to|from|near|through|into|toward|towards|via|around|outside|across)\s*$',
+    re.IGNORECASE,
+)
+
+
+def _has_place_context(value: str, start: int) -> bool:
+    """Whether `value[:start]` ends with a place-indicating preposition
+    (`_PLACE_CONTEXT_PREP_RE`) immediately before a leading-component match
+    starting at `start` - the syntactic-context guard `_place_mention_span`
+    requires before trusting that fallback match (#180 post-merge follow-up,
+    finding 1). Not applied to the whole-label match, which needs no such
+    guard (see that regex's own comment)."""
+    return bool(_PLACE_CONTEXT_PREP_RE.search(value[:start]))
+
+
 # A coordinated pair's connective, permissive enough to bridge the shapes
 # already known to occur between two coordinate place names - an elaborating
 # parenthetical sitting right against the "and" ("Italy (Rome, Milan) and
@@ -1501,9 +1541,15 @@ def _match_coordinated_place_parts(value: str, parts: list[str]) -> tuple[int, i
     compound-list case already relies on (`_PLACE_AND_GAP_RE`) - rules that
     out while still matching "Italy (Rome, Milan) and France (Paris, Lyon)".
 
-    Returns the span of the FIRST part's own words (same convention
-    `_place_mention_span` has always used for hanging the place-page link),
-    or None when no such coordinated mention exists."""
+    Returns the span of the COMPLETE coordinated expression - both parts and
+    whatever connects them in the sentence, e.g. "Trinidad and Tobago" out of
+    "Born in Trinidad and Tobago" - not just the first part's own words (#180
+    post-merge follow-up, finding 4). A caller that hangs a place-page link
+    on this span (`_timeline_value_html`) needs the link to cover the whole
+    compound name a reader would expect to be clickable; returning only the
+    first part used to leave "and Tobago" sitting outside the link, right
+    next to it, for a place registered under the full compound name. Returns
+    None when no such coordinated mention exists."""
     word_patterns = []
     for part in parts:
         words = re.findall(r'\w+', part or '')
@@ -1512,7 +1558,7 @@ def _match_coordinated_place_parts(value: str, parts: list[str]) -> tuple[int, i
         word_patterns.append(r'\b' + r'\W+'.join(re.escape(w) for w in words) + r'\b')
     pattern = _PLACE_AND_GAP_RE.join(f'({p})' for p in word_patterns)
     match = re.search(pattern, value, re.IGNORECASE)
-    return match.span(1) if match else None
+    return match.span() if match else None
 
 
 def _place_mention_span(value: str, place_label: str) -> tuple[int, int] | None:
@@ -1587,9 +1633,33 @@ def _place_mention_span(value: str, place_label: str) -> tuple[int, int] | None:
     Returning the span rather than a bare yes/no is what lets the caller hang
     the place-page link on the words already in the sentence instead of
     losing that link along with the repeated place name. When the leading
-    component coordinates several parts, the link hangs on the first one -
-    the same span this function has always returned for a leading-component
-    match.
+    component coordinates several parts, the span covers the WHOLE
+    coordinated expression ("Trinidad and Tobago", not just "Trinidad") -
+    see `_match_coordinated_place_parts` (#180 post-merge follow-up, finding
+    4: a link hung on only the first part left the rest of a compound name
+    sitting outside its own place-page link).
+
+    A leading-component or coordinated-parts match (the fallback path below,
+    NOT the whole-label match above) also has to clear one more bar before
+    it counts as a genuine place mention at all (#180 post-merge follow-up,
+    finding 1): the matched word(s) must sit right after a place-indicating
+    preposition (`_has_place_context`). A short fragment like "Washington"
+    is common enough as something OTHER than a place - a surname, a given
+    name - that a bare word search alone is not trustworthy the way matching
+    several of a label's words together in order (the whole-label match) is.
+    Concrete, real failure this closes: claim value "Met George Washington
+    while visiting" against place_text "Washington, D.C." - "Washington" the
+    surname satisfies the leading-component word search with nothing to
+    tell it apart from the place, so the sentence's own (different, unstated)
+    real location was silently suppressed, and - when the place was
+    registered and linkable - the person's own name got wrapped in a link to
+    the Washington, D.C. place page. Requiring a preposition like "in Millbrook"
+    or "to Millbrook" or "at the family home" immediately before the match is
+    a cheap, reliable enough signal the match is actually functioning as a
+    place in this sentence; when that context is missing, the match is
+    discarded and the full trailing tag prints instead, exactly as if no
+    match had been found at all - losing a possible-redundancy optimization
+    is a far smaller cost than a wrong link on a person's name.
     """
     match = _match_place_words(value, place_label)
     if match is not None:
@@ -1598,8 +1668,12 @@ def _place_mention_span(value: str, place_label: str) -> tuple[int, int] | None:
     if not parts or parts == [(place_label or '').strip()]:
         return None
     if len(parts) == 1:
-        return _match_place_words(value, parts[0])
-    return _match_coordinated_place_parts(value, parts)
+        candidate = _match_place_words(value, parts[0])
+    else:
+        candidate = _match_coordinated_place_parts(value, parts)
+    if candidate is None or not _has_place_context(value, candidate[0]):
+        return None
+    return candidate
 
 
 def _place_trailing_remainder(value: str, place_label: str,
@@ -1653,9 +1727,45 @@ def _place_trailing_remainder(value: str, place_label: str,
         return ''   # the whole label was already stated verbatim
     if len(_place_leading_parts(place_label or '')) != 1:
         return ''   # "and"-coordination: no clean remainder for this shape
-    without_parens = _PLACE_PARENTHETICAL_RE.sub('', place_label or '')
-    comma = without_parens.find(',')
-    return without_parens[comma:].strip() if comma != -1 else ''
+    end = _place_leading_name_end(place_label)
+    if end is None:
+        return ''
+    return (place_label or '')[end:].rstrip()
+
+
+def _place_leading_name_end(place_label: str) -> int | None:
+    """Index in the ORIGINAL, UNSTRIPPED `place_label` immediately after its
+    leading hierarchical name - the same name `_place_leading_component`
+    identifies - or None when there is no leading name to find.
+
+    `_place_trailing_remainder` (#180 post-merge follow-up, finding 3) used
+    to build its remainder from `_PLACE_PARENTHETICAL_RE.sub('', place_label)`
+    - the SAME blanket parenthetical strip `_place_leading_component` uses to
+    keep a coordination's own elaboration list ("(Rome, Milan, Paris, Lyon)")
+    from being mistaken for a hierarchy's top-level comma. That strip is
+    right for finding the BOUNDARY between the leading name and the
+    remainder, but wrong for the remainder's own CONTENT: a parenthetical
+    sitting right after the leading name - "Millbrook (formerly Oakville),
+    Dutchess County, New York" - is genuine historical information about the
+    place itself, not internal encoding to scrub (that is
+    `_scrub_internal_encoding`'s job, already run on `place_label` before it
+    ever reaches here), and not a coordination's elaboration list either
+    (there is no "and" in this label at all). Blanket-stripping it lost
+    "(formerly Oakville)" from the page with no link anywhere to recover it -
+    the same shape of loss finding 1's own remainder fix exists to prevent.
+
+    The fix: find where the (parenthetical-stripped, comma-bounded) leading
+    name's own words occur at the very START of the REAL label text, and
+    return the end of THAT match - so the remainder below is sliced from the
+    label exactly as written, parentheticals and all, with only the matched
+    leading name itself removed from its front."""
+    leading = _place_leading_component(place_label)
+    words = re.findall(r'\w+', leading)
+    if not words:
+        return None
+    pattern = r'^\s*' + r'\W+'.join(re.escape(w) for w in words) + r'\b'
+    m = re.match(pattern, place_label or '', re.IGNORECASE)
+    return m.end() if m else None
 
 
 # ── Image derivatives ─────────────────────────────────────────────────────────
@@ -3430,8 +3540,10 @@ class _SiteBuilder:
         return self._markup(_escape(label))
 
     def _timeline_value_html(self, value: str, mention: tuple[int, int] | None,
-                             place_id: str | None, page_dir: Path):
-        """A timeline sentence as HTML, with the place it already names linked.
+                             place_id: str | None, page_dir: Path, remainder: str = ''):
+        """A timeline sentence as HTML, with the place it already names linked
+        - or, for an unlinkable claim, with its label's droppable qualifier
+        spliced in right where the mention itself sits.
 
         #127 stops the timeline repeating a place the sentence has already
         stated, but that trailing place was also the only thing linking the
@@ -3442,15 +3554,39 @@ class _SiteBuilder:
         mention, the mention carries the link: the place page stays one click
         away and its name is still printed only once.
 
+        `remainder` (#180 post-merge follow-up, finding 2) is
+        `_place_trailing_remainder`'s output for an UNLINKABLE claim whose
+        sentence already states the place's leading name - the label's own
+        qualifier ("Dutchess County, New York") that would otherwise be lost
+        along with the suppressed trailing tag. The caller used to hand this
+        text to the TEMPLATE, which appended it after the ENTIRE rendered
+        sentence rather than after the matched mention within it. That is
+        wrong whenever the mention is not the sentence's last word: value
+        "She left Millbrook for Boston" with unlinked place_text "Millbrook,
+        Dutchess County, New York" rendered "She left Millbrook for Boston,
+        Dutchess County, New York" - read naturally, that says BOSTON is in
+        Dutchess County, New York, misattributing a qualifier that was only
+        ever about Millbrook. Splicing the remainder in HERE, immediately
+        after `value[start:end]` and before the rest of the sentence, mirrors
+        exactly how the place-page link above is already spliced onto the
+        mention rather than tacked onto the end of `value` - the qualifier
+        now reads as part of the place it actually qualifies no matter where
+        in the sentence that place is mentioned.
+
         Escaping happens here at the leaves (the same rule as every other
         `_markup` caller in this file), since the returned Markup goes to the
         template with autoescape already satisfied."""
-        if mention is None or not place_id or place_id not in self.place_pages:
+        if mention is None:
             return self._markup(_escape(value))
         start, end = mention
-        href = html.escape(_rel_href(self.places_dir / _page_filename(place_id), page_dir), quote=True)
-        return self._markup(f'{_escape(value[:start])}<a href="{href}">'
-                            f'{_escape(value[start:end])}</a>{_escape(value[end:])}')
+        if place_id and place_id in self.place_pages:
+            href = html.escape(_rel_href(self.places_dir / _page_filename(place_id), page_dir), quote=True)
+            return self._markup(f'{_escape(value[:start])}<a href="{href}">'
+                                f'{_escape(value[start:end])}</a>{_escape(value[end:])}')
+        if remainder:
+            return self._markup(f'{_escape(value[:start])}{_escape(value[start:end])}'
+                                f'{_escape(remainder)}{_escape(value[end:])}')
+        return self._markup(_escape(value))
 
     # - assets -
 
@@ -4445,17 +4581,21 @@ class _SiteBuilder:
             repeat never costs the reader the link when the place is
             registered and linkable. Most one-off residence/travel claims
             never get a place registered at all (SPEC.md), so `place_id in
-            self.place_pages` also gates a SECOND field, `place_remainder`
-            (#127 reopened, finding 1 follow-up): for an unlinkable claim,
-            `_place_trailing_remainder` returns the label's own droppable
-            qualifier (e.g. ", Dutchess County, New York") instead of
-            nothing, and the template prints it as a plain continuation of
-            the sentence rather than either a full duplicate "at Placename"
-            or - the prior commit's own behavior - silently dropping the
-            qualifier with no page to recover it from. A coordinated
-            compound ("Trinidad and Tobago") has no such remainder and
-            keeps the prior commit's all-or-nothing behavior regardless of
-            `place_id` - see `_place_trailing_remainder`'s docstring.
+            self.place_pages` also gates a second value passed into
+            `_timeline_value_html` itself: an unlinkable claim's remainder
+            (#127 reopened, finding 1 follow-up; spliced in-sentence rather
+            than template-appended since #180 post-merge follow-up, finding
+            2 - see that method's docstring). `_place_trailing_remainder`
+            returns the label's own droppable qualifier (e.g. ", Dutchess
+            County, New York") instead of nothing, and `_timeline_value_html`
+            splices it in immediately after the matched mention - not
+            tacked onto the end of the whole rendered sentence, which used
+            to misattribute the qualifier to whatever place name happened to
+            come after the mention instead of the mention itself. A
+            coordinated compound ("Trinidad and Tobago") has no such
+            remainder and keeps the prior commit's all-or-nothing behavior
+            regardless of `place_id` - see `_place_trailing_remainder`'s
+            docstring.
           - #128: the SQL sorts rows by `date_min` (a widened, sortable value)
             but decade grouping reads `date_edtf` via `_decade_header` - a
             DIFFERENT field, deliberately (see that function's docstring): an
@@ -4518,10 +4658,10 @@ class _SiteBuilder:
                 entries = []
             # Scrubbed the same as value_text below (adversarial review,
             # round 4 audit): place_label feeds `_place_trailing_remainder`,
-            # whose OWN output prints straight onto the page as a sentence
-            # continuation (person.html: `{{ e.place_remainder }}`) with no
-            # further scrub of its own - an unscrubbed place_text carrying a
-            # bare citation id or date bracket reached the reader unchanged.
+            # whose OWN output is spliced straight into the rendered sentence
+            # (`_timeline_value_html`) with no further scrub of its own - an
+            # unscrubbed place_text carrying a bare citation id or date
+            # bracket would reach the reader unchanged.
             place_label = _scrub_internal_encoding(self._place_label(r['place_text'], r['place_id']))
             # #140: scrub BEFORE the place-mention span is computed, so a
             # length change from stripping a claim-id parenthetical or
@@ -4530,12 +4670,18 @@ class _SiteBuilder:
             value_text = _scrub_internal_encoding(r['value'] or '')
             mention = _place_mention_span(value_text, place_label)
             place_linkable = bool(r['place_id']) and r['place_id'] in self.place_pages
+            # The remainder is computed here (not inside _timeline_value_html
+            # itself) because it needs `place_label`, which that method never
+            # otherwise sees - but it is SPLICED there, immediately after
+            # `mention` rather than appended to the whole rendered sentence
+            # (#180 post-merge follow-up, finding 2; see that method's
+            # docstring for the misattribution bug this fixes).
+            remainder = _place_trailing_remainder(value_text, place_label, mention, place_linkable)
             entries.append({
                 'date': r['date_edtf'] or '(undated)', 'type': r['type'],
-                'value': self._timeline_value_html(value_text, mention, r['place_id'], page_dir),
+                'value': self._timeline_value_html(value_text, mention, r['place_id'], page_dir, remainder),
                 'place': self._place_html(r['place_text'], r['place_id'], page_dir),
                 'place_redundant': mention is not None,
-                'place_remainder': _place_trailing_remainder(value_text, place_label, mention, place_linkable),
                 'source_html': self._markup(self._source_link(r['source_id'], page_dir)) if r['source_id'] else '',
                 'status': r['status'], 'confidence': r['confidence'] or '',
                 'parked': r['reviewed'] or '',
