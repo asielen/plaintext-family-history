@@ -1303,6 +1303,28 @@ def _process_source_file(path: Path, registry: Registry, findings: list[Finding]
         findings.append(Finding('W', 'W109', path,
             format_source_type_error(source_type)))
 
+    # W134 (#191 follow-up, #114): source_type: ephemera requires people: to
+    # stay strictly empty (SPEC §14) - it is the one source_type whose entire
+    # point is "kept for texture, names no one in the family," so a non-empty
+    # people: list here is not a research gap to fill, it is the invariant
+    # the type exists to promise being broken - by a hand edit, or an AI pass
+    # that filled the field out of habit before checking the source_type. Left
+    # unchecked, a resolved entry indexes straight into source_people
+    # (index.py reads people: regardless of source_type) and the source then
+    # wrongly appears on that person's page, packet, and timeline, exactly
+    # what `ephemera` exists to avoid. Fires on ANY entry, resolved or not -
+    # an unresolved name link would dodge E005 too, and it still contradicts
+    # the strict-empty rule the moment it's written.
+    if source_type == 'ephemera' and people_refs:
+        count = len(people_refs)
+        findings.append(Finding('W', 'W134', path,
+            f'source_type: ephemera requires people: to stay empty (SPEC §14), '
+            f'but this source lists {count} {"entry" if count == 1 else "entries"}: '
+            f'{", ".join(str(r) for r in people_refs)}. An ephemera source that '
+            'names someone no longer qualifies as ephemera - either clear people: '
+            '(if the name is incidental prose, not evidence) or re-type the source '
+            'to whatever fits (newspaper, book, ...) and keep the people: link.'))
+
     # E017: DNA sources must be restricted AND keep their raw files under
     # documents/dna/ (SPEC §8.5.5). The `restricted` marker is open (SPEC §19,
     # TOOLING §3): any non-empty value satisfies the rule - the plain boolean,

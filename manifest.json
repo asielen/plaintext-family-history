@@ -90,7 +90,7 @@
     {
       "path": ".claude/skills/process-source/SKILL.md",
       "category": "operating",
-      "sha256": "81a9ce5937fc407a150219c200a2b2205aa2cc147dba7283a51ea40e9c7ef692",
+      "sha256": "b8635ca6e5c02fade48f06a1d438bfece946b379707288504e7cbdf32aba4ce5",
       "spec_version": "1.2"
     },
     {
@@ -413,7 +413,7 @@
     {
       "path": ".fha/tools/README.md",
       "category": "operating",
-      "sha256": "ef3b9cd0c38b43126630f42a06cbc300f388c3e1ae2495d0d7edca4087d923ce",
+      "sha256": "367b343e7b550fdbcfae1d4b5da39a393ef6d8ea78ecf7c4d15c878b61df6d0d",
       "spec_version": "1.2",
       "src": "tools/README.md"
     },
@@ -560,7 +560,7 @@
     {
       "path": ".fha/tools/lint.py",
       "category": "operating",
-      "sha256": "da25a18b286701db1291867d88068e8155473e11efe95b53cdc178bc5d451761",
+      "sha256": "849e619a3cdd3f84c419231577ec74cb9570f1b856bce7a90db7a380b9387c3b",
       "spec_version": "1.2",
       "src": "tools/lint.py"
     },
@@ -860,7 +860,7 @@
     {
       "path": "CHEATSHEET.md",
       "category": "operating",
-      "sha256": "77f2599e640bb38a46c8f8f7d324ce5286540447ab0a0f5b0d09d0b2c1d35932",
+      "sha256": "c306201fb50e74d92f191ae504db2a68624cf2fadedcaa9395b9cda4880fc907",
       "spec_version": "1.2"
     },
     {
@@ -872,7 +872,7 @@
     {
       "path": "GETTING_STARTED.md",
       "category": "operating",
-      "sha256": "625b64c1affc10cdf39c1a038dbc77f16d030767664a5966ec2b0275268f685f",
+      "sha256": "87dac7714e8401ad97e340d42657bff29120153a6bec03061286867012323c25",
       "spec_version": "1.2"
     },
     {
@@ -884,7 +884,7 @@
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "5e3ee7c1d896f5c57aa05c179b444952629c3e5856ff23dc1c5b5ed3be669b72",
+      "sha256": "40c8ced70eda90ccfc9ed038badb9fe20293583e639cf5f11ba6acb157457289",
       "spec_version": "1.2"
     },
     {
@@ -902,7 +902,7 @@
     {
       "path": "docs/FAQ.md",
       "category": "operating",
-      "sha256": "bb08d15385d5c8a5e772934bc9aac81321867a4f47e8dec2d6243e674fa89ea3",
+      "sha256": "768c4354416093a542438077356f2f09977913b0c09e5fda6f63eed96b2921cd",
       "spec_version": "1.2"
     },
     {

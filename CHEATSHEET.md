@@ -138,6 +138,10 @@ Everything is plain text or standard image files. Open any of it with Notepad, T
 photo viewer - no tool required, now or in fifty years. It opens in **Obsidian** as-is too:
 Markdown, frontmatter, `[[wikilinks]]`, no import step.
 
+**A people-free clipping is `ephemera`, not lost.** A clipping or note that names no one in your
+family files as `source_type: ephemera` - kept and searchable, but it won't show up on any person's
+page. Find it via the site's homepage Sources list or `fha find --text`.
+
 ---
 
 ## Three rules that keep you safe
