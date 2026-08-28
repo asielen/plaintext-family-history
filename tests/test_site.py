@@ -5307,6 +5307,50 @@ class ProseConverterTests(unittest.TestCase):
         self.assertNotIn('before', out)
         self.assertNotIn('about', out)
 
+    # -- post-merge Codex review of PR #174 (#167 finding 3 continued: decade bound) --
+
+    def test_before_bracket_interval_plain_decade_bound_translates(self):
+        # `_lib.is_valid_edtf('[..1900]/191X')` was already True before this
+        # fix - the validator's `\d{3}X` decade alternative is a standalone
+        # valid EDTF shape, and it accepts a decade on either side of an
+        # otherwise valid interval - but `_DATE_BEFORE_SLASH_RE`'s plain-side
+        # alternatives only ever matched a four-digit year, so this genuinely
+        # valid interval fell through untranslated and the raw bracket
+        # notation leaked into reader-facing prose. Formatted with this
+        # archive's established "1910s" decade wording (`_decade_header`,
+        # `_lib._humanize_edtf_bound`), not a bare "191X" or "1910".
+        out = site._scrub_internal_encoding('They lived there [..1900]/191X, per the deed.')
+        self.assertIn('before 1900 to 1910s', out)
+        self.assertNotIn('[..1900]/191X', out)
+
+    def test_before_bracket_interval_plain_decade_bound_mirrored(self):
+        # The mirrored shape: a decade bound leading, the bracket trailing.
+        out = site._scrub_internal_encoding('They lived there 191X/[..1900], per the deed.')
+        self.assertIn('1910s to before 1900', out)
+        self.assertNotIn('191X/[..1900]', out)
+
+    def test_before_bracket_interval_decade_bound_invalid_bracket_side_left_whole_untouched(self):
+        # The existing "invalid date leaves the whole match untouched" guard
+        # extends to a decade-shaped plain bound too: an impossible bracket
+        # side (no month 13) leaves the WHOLE interval untouched rather than
+        # translate the decade next to a bogus bracket.
+        out = site._scrub_internal_encoding(
+            'Span: [..1900-13-01]/191X, per the deed.')
+        self.assertIn('[..1900-13-01]/191X', out)
+        self.assertNotIn('before', out)
+        self.assertNotIn('1910s', out)
+
+    def test_before_bracket_interval_decade_bound_digit_run_not_mistaken_for_bound(self):
+        # Mirrors the existing four-digit-year guard: a decade bound must
+        # not swallow (or be swallowed by) an adjacent digit that isn't
+        # really part of the date.
+        out = site._scrub_internal_encoding('X [..1900]/191X5 Y')
+        self.assertIn('[..1900]/191X5', out)
+        self.assertNotIn('before', out)
+        out2 = site._scrub_internal_encoding('X 5191X/[..1900] Y')
+        self.assertIn('5191X/[..1900]', out2)
+        self.assertNotIn('before', out2)
+
     def test_standalone_before_bracket_still_translates(self):
         # Guards that the finding-5 interval fix doesn't overreach: a
         # bracket that is NOT adjacent to a slash still translates normally.

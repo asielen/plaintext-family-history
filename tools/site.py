@@ -926,12 +926,35 @@ _DATE_BEFORE_RE = re.compile(r'\[\.\.(\d{4})(?:-(\d{2}))?(?:-(\d{2}))?\]')
 # are not mutually exclusive in the grammar (`1910-~06?` is syntactically
 # valid too), so both are captured independently rather than as alternatives;
 # `_translate_date_before_slash` reconciles the two into one wording.
+#
+# `pdec1`/`pdec2` (post-merge Codex review of PR #174, #167 finding 3
+# continued): the plain side may ALSO be written in this archive's decade
+# shape, `\d{3}X` (`_lib._EDTF_PATTERNS`'s own `185X`-style alternative -
+# e.g. "the 1850s" written as an EDTF bound), not just a four-digit year.
+# `is_valid_edtf('[..1900]/191X')` was already True before this - the
+# validator has always accepted a decade on either side of an otherwise
+# valid interval - but neither plain-side alternative above could match a
+# bare `\d{3}X` at all (a decade has no year/month/day shape to capture),
+# so a genuinely valid `[..1900]/191X`-style interval fell through BOTH
+# alternatives untouched and the raw bracket notation leaked into
+# reader-facing prose. Tried as an alternative ahead of the year/month/day
+# shape in each plain-side position (order doesn't actually matter here -
+# `\d{4}` can never match a literal trailing `X`, so the two alternatives
+# never compete for the same text - but decade-first mirrors how a human
+# reads the shape). Guarded by its own trailing `(?!\d)`, the same
+# discipline the year/month/day alternative already applies, so a decade
+# bound can't silently swallow an adjacent stray digit either. A decade
+# bound never carries a `?`/`~` qualifier in this dialect - `_EDTF_PATTERNS`'s
+# `\d{3}X` pattern allows no suffix - so `pdec1`/`pdec2` have no qualifier
+# groups of their own the way `py1`/`py2` do.
 _DATE_BEFORE_SLASH_RE = re.compile(
     r'\[\.\.(?P<by1>\d{4})(?:-(?P<bm1>\d{2}))?(?:-(?P<bd1>\d{2}))?\]'
-    r'/(?P<py1>\d{4})(?:-(?P<pmq1>~)?(?P<pm1>\d{2}))?'
-    r'(?:-(?P<pdq1>~)?(?P<pd1>\d{2}))?(?P<pq1>[?~])?(?!\d)'
-    r'|(?<!\d)(?P<py2>\d{4})(?:-(?P<pmq2>~)?(?P<pm2>\d{2}))?'
-    r'(?:-(?P<pdq2>~)?(?P<pd2>\d{2}))?(?P<pq2>[?~])?'
+    r'/(?:(?P<pdec1>\d{3}X)(?!\d)'
+    r'|(?P<py1>\d{4})(?:-(?P<pmq1>~)?(?P<pm1>\d{2}))?'
+    r'(?:-(?P<pdq1>~)?(?P<pd1>\d{2}))?(?P<pq1>[?~])?(?!\d))'
+    r'|(?<!\d)(?:(?P<pdec2>\d{3}X)(?!\d)'
+    r'|(?P<py2>\d{4})(?:-(?P<pmq2>~)?(?P<pm2>\d{2}))?'
+    r'(?:-(?P<pdq2>~)?(?P<pd2>\d{2}))?(?P<pq2>[?~])?)'
     r'/\[\.\.(?P<by2>\d{4})(?:-(?P<bm2>\d{2}))?(?:-(?P<bd2>\d{2}))?\]',
 )
 
@@ -1024,6 +1047,32 @@ def _format_edtf_ymd(year: str, month: str | None, day: str | None) -> str:
             return f'{month_name} {int(day)}, {year}'
         return f'{month_name} {year}'
     return year
+
+
+def _format_edtf_decade(decade: str) -> str:
+    """Plain English reading of one already-validated `\\d{3}X` decade bound
+    - '191X' -> '1910s' (post-merge Codex review of PR #174, #167 finding 3
+    continued: a decade-shaped plain bound in a `[..YYYY]/191X`-style
+    interval, e.g. `[..1900]/191X`, is a valid EDTF value per
+    `_lib._EDTF_PATTERNS`'s own `\\d{3}X` alternative - `is_valid_edtf`
+    happily accepts it - but `_DATE_BEFORE_SLASH_RE`'s plain-side
+    alternatives only ever matched a four-digit year, so this genuinely
+    valid interval fell through untranslated and the raw bracket notation
+    leaked into reader-facing prose, exactly the class of leak this whole
+    humanizing pass exists to close).
+
+    Same formula `_decade_header` (this file's timeline/draft-queue decade
+    grouping) and `_lib._humanize_edtf_bound`'s own decade branch both use
+    (`int(decade[:3]) * 10`, suffixed 's') - reused here by VALUE rather than
+    by importing `_lib._humanize_edtf_bound` directly, for the same reason
+    `_apply_edtf_qualifier` doesn't call it either (see that function's
+    docstring): it is a private (`_`-prefixed) helper of another module, and
+    a decade has no month/day ordering to reconcile anyway, so matching its
+    wording exactly costs nothing. A decade bound never carries a trailing
+    `?`/`~` qualifier in this dialect - `_EDTF_PATTERNS`'s `\\d{3}X` pattern
+    allows no suffix at all - so, unlike `_format_edtf_ymd`, this has no
+    `_apply_edtf_qualifier` wrapping to worry about."""
+    return f'{int(decade[:3]) * 10}s'
 
 
 def _apply_edtf_qualifier(label: str, qualifier: str | None) -> str:
@@ -1161,15 +1210,33 @@ def _translate_date_before_slash(match: re.Match) -> str:
     component (both the leading and trailing markers stripped), so a
     component-level `~` next to a genuinely impossible month/day - e.g.
     `[..1900]/1910-~13` (no month 13) - still leaves the WHOLE match
-    untouched, exactly like the trailing-qualifier case above."""
+    untouched, exactly like the trailing-qualifier case above.
+
+    The plain side may ALSO be written in this archive's decade shape
+    (post-merge Codex review of PR #174, #167 finding 3 continued):
+    `[..1900]/191X` -> "before 1900 to 1910s", `191X/[..1900]` -> "1910s to
+    before 1900". `is_valid_edtf` already accepted a decade bound here
+    before this fix - `_lib._EDTF_PATTERNS`'s `\\d{3}X` alternative is a
+    standalone valid EDTF shape - but `_DATE_BEFORE_SLASH_RE`'s plain-side
+    alternatives only ever matched a four-digit year, so a genuinely valid
+    decade interval fell through untranslated and leaked raw bracket
+    notation onto the page, exactly the class of leak this whole function
+    exists to close. Formatted via `_format_edtf_decade` (see its own
+    docstring for why this reuses `_decade_header`'s established "1910s"
+    wording by value rather than importing `_lib._humanize_edtf_bound`
+    directly). A decade bound never carries a `?`/`~` qualifier in this
+    dialect, so it skips `_apply_edtf_qualifier` entirely rather than being
+    wrapped with one."""
     g = match.groupdict()
     bracket_first = g['by1'] is not None
     if bracket_first:
         b_year, b_month, b_day = g['by1'], g['bm1'], g['bd1']
+        p_decade = g['pdec1']
         p_year, p_month, p_day = g['py1'], g['pm1'], g['pd1']
         p_trailing_qualifier = g['pq1']
         p_has_component_approx = g['pmq1'] is not None or g['pdq1'] is not None
     else:
+        p_decade = g['pdec2']
         p_year, p_month, p_day = g['py2'], g['pm2'], g['pd2']
         b_year, b_month, b_day = g['by2'], g['bm2'], g['bd2']
         p_trailing_qualifier = g['pq2']
@@ -1183,25 +1250,33 @@ def _translate_date_before_slash(match: re.Match) -> str:
                 v += f'-{day}'
         return v
 
-    if not is_valid_edtf(_bare(b_year, b_month, b_day)) or \
-            not is_valid_edtf(_bare(p_year, p_month, p_day)):
+    # The plain side's bare component for validation is the decade token
+    # itself (e.g. '191X') when the decade alternative matched, since a
+    # decade has no year/month/day shape to reassemble via `_bare`.
+    p_bare = p_decade if p_decade is not None else _bare(p_year, p_month, p_day)
+    if not is_valid_edtf(_bare(b_year, b_month, b_day)) or not is_valid_edtf(p_bare):
         return match.group(0)
 
-    # Reconcile a trailing `?`/`~` with a leading component-level `~`
-    # (`pmq`/`pdq`) into the single qualifier `_apply_edtf_qualifier`
-    # already knows how to wrap - the two are not mutually exclusive in the
-    # grammar (`1910-~06?` is valid), so a bare "is either present" check
-    # would lose whichever the wording actually needs. `_lib.
-    # _humanize_edtf_bound` prefers "not sure at all" (`?`) over "roughly
-    # right" (`~`) when one component carries both; this mirrors that same
-    # precedence rather than inventing a new rule.
-    p_qualifier = p_trailing_qualifier
-    if p_qualifier != '?' and p_has_component_approx:
-        p_qualifier = '~'
-
     before_label = f'before {_format_edtf_ymd(b_year, b_month, b_day)}'
-    plain_label = _apply_edtf_qualifier(
-        _format_edtf_ymd(p_year, p_month, p_day), p_qualifier)
+    if p_decade is not None:
+        # A decade bound never carries a `?`/`~` qualifier in this dialect
+        # (see this function's docstring), so it skips
+        # `_apply_edtf_qualifier` entirely.
+        plain_label = _format_edtf_decade(p_decade)
+    else:
+        # Reconcile a trailing `?`/`~` with a leading component-level `~`
+        # (`pmq`/`pdq`) into the single qualifier `_apply_edtf_qualifier`
+        # already knows how to wrap - the two are not mutually exclusive in
+        # the grammar (`1910-~06?` is valid), so a bare "is either present"
+        # check would lose whichever the wording actually needs. `_lib.
+        # _humanize_edtf_bound` prefers "not sure at all" (`?`) over
+        # "roughly right" (`~`) when one component carries both; this
+        # mirrors that same precedence rather than inventing a new rule.
+        p_qualifier = p_trailing_qualifier
+        if p_qualifier != '?' and p_has_component_approx:
+            p_qualifier = '~'
+        plain_label = _apply_edtf_qualifier(
+            _format_edtf_ymd(p_year, p_month, p_day), p_qualifier)
     if bracket_first:
         return f'{before_label} to {plain_label}'
     return f'{plain_label} to {before_label}'
@@ -1218,7 +1293,9 @@ def _scrub_internal_encoding(text: str, next_char: str | None = None) -> str:
     validates as a real date and stands alone (not one bound of a `/`
     interval - #144 findings 2 and 5), and a two-sided interval with exactly
     one bracketed bound is translated in full - both bounds in plain
-    English (#167 finding 3). Applied to raw value/notes/body text BEFORE
+    English, including a decade-shaped plain bound (#167 finding 3;
+    post-merge Codex review of PR #174 extended this to `\\d{3}X` decade
+    bounds). Applied to raw value/notes/body text BEFORE
     any HTML escaping, so callers doing their own index-based substitutions
     afterward (e.g. the timeline's place-mention span) see only the
     already-scrubbed text.
