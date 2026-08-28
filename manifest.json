@@ -420,7 +420,7 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "2411836135e7187ca96853ba71b33410e66d4fe99add2ef1a73ef2c90345b3a5",
+      "sha256": "f85c8c66d708444fa0396e98ede5865eb8f9ed7cdd1f60c6d46e7d2e30130726",
       "spec_version": "1.2",
       "src": "tools/_lib.py"
     },
@@ -644,7 +644,7 @@
     {
       "path": ".fha/tools/scaffold.py",
       "category": "operating",
-      "sha256": "e915049dac9eabc38f65caa93f83e7a1fcdc69b9afeb0e297835920e804882ec",
+      "sha256": "eb87c2b0f9f627a05d3c41887db406abd08d494f3d0964088ea56d18d52bd861",
       "spec_version": "1.2",
       "src": "tools/scaffold.py"
     },
@@ -878,13 +878,13 @@
     {
       "path": "SPEC.md",
       "category": "operating",
-      "sha256": "722826ca9d382534b15b33223a55e4c5d4c784d2271918f191c8965f96e089d0",
+      "sha256": "5f5e94cb3aec6231351cd581346eb306848338f5c611f0d0c033da7083906145",
       "spec_version": "1.2"
     },
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "f2b7a40fe56382db4483dfb52a322981909aac73d575dcb3e13065b566a70abb",
+      "sha256": "15700ae6d4b34d30ef37b90072eca2c4145e5991a7a406799188169b99887d48",
       "spec_version": "1.2"
     },
     {

@@ -91,6 +91,14 @@ CODE MAP
     _write_version_stamp       - write .plaintext-version
     _unique_backup_path        - collision-free .plaintext-backup/{date}/ path
 
+  External asset roots (#124) - documents/photos/inbox skeleton folders skipped
+  or pruned when `roots:` points them outside the archive (external_asset_roots
+  itself lives in _lib.py, shared with any tool that needs the same question)
+    _external_root_skeleton_paths - install-time: manifest paths NOT to copy
+    _prune_external_root_placeholders - update-time: remove (or preview removing)
+                                 an already-installed placeholder that just went
+                                 external and holds nothing but scaffold litter
+
   Install (M9.1)
     _preflight                 - Python/exiftool checks → (ok, messages)
     run_install                - create skeleton + copy operating layer + stamp
@@ -126,6 +134,7 @@ from _lib import (
     VENDOR_DIR,
     Result,
     configure_utf8_stdout,
+    external_asset_roots,
     find_archive_root,
     load_fha_yaml,
     roots_change_orphans,
@@ -535,6 +544,92 @@ def _skeleton_files(repo_root: Path, unreadable: list[Path]) -> list[tuple[str, 
         if src.is_file():
             out.append((archive_path, src))
     return out
+
+
+def _external_root_skeleton_paths(
+    fha_config: dict, archive_root: Path, entries: list[dict],
+) -> set[str]:
+    """Manifest paths to skip because their alias is a configured external root.
+
+    A genealogist who keeps documents/photos on an external drive (SPEC
+    §12.4 - a supported, expected setup) gets a `documents/` or `photos/`
+    folder inside the archive that will never hold anything: `roots:` already
+    points the real files elsewhere, so the internal placeholder is dead
+    weight with no purpose from day one (#124). Matched by alias/first path
+    segment rather than by filename (`.gitkeep` today), so any future
+    skeleton seed placed under `documents/`, `photos/`, or `inbox/` is
+    skipped the same way, for the same reason.
+
+    Only `category: skeleton` entries are ever eligible - the operating layer
+    (tools, docs) never lives under these alias paths, but the check is
+    explicit rather than assumed.
+    """
+    external = external_asset_roots(fha_config, archive_root)
+    if not external:
+        return set()
+    skip: set[str] = set()
+    for entry in entries:
+        if entry.get('category') != 'skeleton':
+            continue
+        if entry['path'].split('/', 1)[0] in external:
+            skip.add(entry['path'])
+    return skip
+
+
+def _prune_external_root_placeholders(
+    archive_root: Path, fha_config: dict, manifest: dict, *, dry_run: bool = False,
+) -> list[str]:
+    """Remove (or preview removing) an internal placeholder that just went external.
+
+    An archive installed with the default internal `roots:` already has its
+    `documents/`/`photos/`/`inbox/` folder on disk; if the human later
+    re-points one of those at an external drive, the folder's purpose
+    disappears but nothing before this function ever cleaned it up (#124).
+
+    Only a folder holding NOTHING BUT scaffold litter is a candidate -
+    matching this project's own safety rule (TOOLING: never destroy something
+    that might be a human's data without being sure). "Scaffold litter" is a
+    dotfile (`.gitkeep`, the kind of thing the tools or the OS leave behind)
+    OR a file this alias's own skeleton entries shipped byte-for-byte
+    (`inbox/_TEMPLATE.notes.md` is the case in hand - it has no leading dot,
+    but it is still the install's own seed, not the human's). One real file,
+    subfolder, or anything else takes the whole folder out of consideration:
+    it is left exactly as it is - not removed, not flagged as customized, not
+    backed up. `fha update-tools` narrates that decision but never acts on
+    it; the human decides what to do with a folder that surprised the tools.
+
+    Returns the alias names actually removed (or, under `dry_run`, that WOULD
+    be removed). The caller uses this both to narrate the action and to drop
+    the matching skeleton entries from the rewritten stamp - unrecorded is
+    what lets a later revert to an internal root recreate the placeholder
+    (see the matching guard in `_plan_update`).
+    """
+    removed: list[str] = []
+    for alias in sorted(external_asset_roots(fha_config, archive_root)):
+        folder = archive_root / alias
+        if not folder.is_dir():
+            continue
+        # This alias's own skeleton seed filenames (e.g. inbox's '.gitkeep'
+        # AND '_TEMPLATE.notes.md') - shipped content, not human content,
+        # even though not every one of them is dotted.
+        seed_names = {
+            PurePosixPath(e['path']).name for e in manifest['files']
+            if e.get('category') == 'skeleton'
+            and e['path'].split('/', 1)[0] == alias
+        }
+        try:
+            entries = list(folder.iterdir())
+        except OSError:
+            continue  # can't tell what's in there - leave it, say nothing
+        if not all(e.name.startswith('.') or e.name in seed_names for e in entries):
+            continue  # real content - not ours to touch
+        if not dry_run:
+            try:
+                shutil.rmtree(folder)
+            except OSError:
+                continue
+        removed.append(alias)
+    return removed
 
 
 def generate_manifest(repo_root: Path, spec_version: str | None = None) -> dict:
@@ -997,6 +1092,11 @@ def run_install(
     already carries tools (a `.plaintext-version` or `tools/fha.py`) and points
     the human at `fha update-tools` instead - install is a one-time bootstrap.
 
+    Skips the internal `documents/`/`photos/`/`inbox/` skeleton placeholder for
+    any alias the fha.yaml about to be installed already points outside the
+    archive (`_external_root_skeleton_paths`, #124) - an archive kept on an
+    external drive never gets a purposeless empty stub for it.
+
     Returns a `Result` (Result == int, so callers/tests comparing against EXIT_*
     keep working): EXIT_CLEAN on success (even with the exiftool advisory),
     EXIT_FAILURE on a preflight failure, with the copied files and version stamp
@@ -1042,9 +1142,22 @@ def run_install(
     # A half-written `.fha/tools/` without a stamp means a previous install was
     # interrupted before it could write one.  Allow re-running install to finish.
 
+    # Skip the internal documents/photos/inbox placeholder for any alias
+    # `roots:` already points outside the archive (#124) - it would never
+    # hold anything. Read from the SOURCE fha.yaml about to be installed
+    # (archive-template/fha.yaml), not the destination: a fresh archive has
+    # nothing at archive_path/fha.yaml yet, and the ONLY fha.yaml install
+    # ever WRITES there is this same source's bytes - the conflict-preflight
+    # below refuses outright rather than installing over a destination copy
+    # that differs from it (see `_acceptable`). So whatever is on disk right
+    # now, the config this install will actually end up running with is
+    # always this one.
+    install_fha_config = load_fha_yaml(repo_root / _SKELETON_SRC_DIR)
+    skip_paths = _external_root_skeleton_paths(install_fha_config, archive_path, manifest['files'])
+
     # Validate every source exists BEFORE writing anything, so a broken/partial
     # clone fails cleanly instead of leaving a half-installed archive.
-    files = manifest['files']
+    files = [e for e in manifest['files'] if e['path'] not in skip_paths]
     missing: list[str] = []
     for entry in files:
         src = repo_root / entry.get('src', entry['path'])
@@ -1138,12 +1251,17 @@ def run_install(
             "Move or rename them first, then re-run install."
         )
 
+    skipped_aliases = sorted({p.split('/', 1)[0] for p in skip_paths})
+
     if dry_run:
         print(f'Dry run - would install into: {archive_path}')
         print(f'  {len(files)} file(s) from {repo_root / "manifest.json"}')
         skel = sum(1 for e in files if e.get('category') == 'skeleton')
         print(f'  ({skel} skeleton file(s), {len(files) - skel} operating-layer file(s))')
         print(f'  and write {archive_path / VERSION_FILE}')
+        if skipped_aliases:
+            print(f'  Would skip the internal {", ".join(skipped_aliases)}/ folder(s) - '
+                  f'fha.yaml already points them outside this archive.')
         for m in advisories:
             print(f'\nNote: {m}')
         print('\nNothing was written (dry run). Re-run without --dry-run to install.')
@@ -1192,6 +1310,10 @@ def run_install(
 
     print(f'Installed the plaintext tools into: {archive_path}')
     print(f'  {len(files)} file(s) copied; recorded in {archive_path / VERSION_FILE}')
+    if skipped_aliases:
+        print(f'  Skipped the internal {", ".join(skipped_aliases)}/ folder(s) - '
+              f'fha.yaml roots: already points them outside this archive, so an '
+              f'empty placeholder here would serve no purpose.')
     print('\nNext steps:')
     print(f'  1. Edit {archive_path / "fha.yaml"} to point at your photos and documents.')
     print(f'  2. Open the archive in your AI agent and start filing inbox/ items.')
@@ -1289,6 +1411,7 @@ def _plan_update(
     repo_root: Path,
     manifest: dict,
     stamp: dict | None,
+    fha_config: dict,
 ) -> dict:
     """Classify every operating-layer file without writing anything.
 
@@ -1304,8 +1427,15 @@ def _plan_update(
     Only "operating" files are considered. Skeleton seeds (fha.yaml, places.yaml,
     the template, .gitkeep) are install-once and deliberately untouched here, so
     `update-tools` can never clobber the human's configuration or place data.
+
+    `fha_config` is this archive's CURRENT fha.yaml (not the one it was
+    installed with) - used only to keep a still-external documents/photos/
+    inbox alias from getting its `.gitkeep` silently re-added below (#124);
+    pruning an already-installed placeholder that just WENT external is a
+    separate step (`_prune_external_root_placeholders`, run by the caller).
     """
     recorded: dict[str, str] = _stamp_file_map(stamp)
+    external_now = external_asset_roots(fha_config, archive_root)
 
     plan = {'added': [], 'current': [], 'stock': [], 'customized': [], 'retired': []}
 
@@ -1361,6 +1491,17 @@ def _plan_update(
             continue
         archive_path = entry['path']
         if archive_path in recorded or (archive_root / archive_path).exists():
+            continue
+        # A documents/photos/inbox seed whose alias is CURRENTLY external
+        # (#124) is never re-added: that folder has no purpose in this
+        # archive's configuration, install-time skipped it on purpose (or
+        # `_prune_external_root_placeholders` already removed it), and
+        # without this guard it would come right back on every single
+        # update - a `.gitkeep` this loop cannot tell apart from a
+        # genuinely-never-delivered seed otherwise. Re-pointing the alias
+        # back inside the archive drops it out of `external_now`, and the
+        # very next update recreates the placeholder through this same path.
+        if archive_path.split('/', 1)[0] in external_now:
             continue
         # Planned even when the source is MISSING, deliberately. Dropping it
         # here hid a broken clone: the run reported zero additions, rewrote the
@@ -1449,6 +1590,12 @@ def run_update_tools(
     stamp afterward (operating checksums refreshed; skeleton entries carried over;
     retired entries dropped).
 
+    Also removes an already-installed documents/photos/inbox placeholder
+    folder whose alias just went external in fha.yaml, but ONLY if nothing
+    but the scaffold's own `.gitkeep`-style litter is inside it - real
+    content, however it got there, is left completely alone
+    (`_prune_external_root_placeholders`, #124).
+
     Returns a `Result` (Result == int, so callers/tests comparing against EXIT_*
     keep working): EXIT_CLEAN on a clean update or dry run, EXIT_WARNINGS when one
     or more files could not be updated, with the files actually installed (plus
@@ -1458,6 +1605,7 @@ def run_update_tools(
     archive_root = Path(archive_root).resolve()
     manifest = load_manifest(repo_root)
     stamp = _load_version_stamp(archive_root)
+    fha_config = load_fha_yaml(archive_root)
 
     # The same refusal `install` makes, for the same reason - and it has to be
     # here too, because this is the command an owner of a hand-copied archive is
@@ -1509,7 +1657,7 @@ def run_update_tools(
         )
         print()
 
-    plan = _plan_update(archive_root, repo_root, manifest, stamp)
+    plan = _plan_update(archive_root, repo_root, manifest, stamp, fha_config)
     date_str = datetime.date.today().isoformat()
 
     # A broken/partial clone must fail before any mutation - otherwise a
@@ -1544,6 +1692,12 @@ def run_update_tools(
         for gone in would_prune:
             print(f'[dry-run] would remove the now-empty folder {gone}/ '
                   f'(everything in it is being retired).')
+        would_prune_external = _prune_external_root_placeholders(
+            archive_root, fha_config, manifest, dry_run=True)
+        for alias in would_prune_external:
+            print(f'[dry-run] would remove the now-purposeless {alias}/ folder '
+                  f'(fha.yaml roots: already points {alias} outside this archive, '
+                  f'and nothing but the install placeholder is inside it).')
         would_repair, _ = _restore_exec_bits(
             archive_root, repo_root, manifest, dry_run=True)
         for repaired in would_repair:
@@ -1696,6 +1850,27 @@ def run_update_tools(
                         [ap for ap, _src in plan['retired']
                          if ap not in failed_paths])
 
+    # A documents/photos/inbox placeholder that just went external (roots:
+    # re-pointed since install) and still holds nothing but scaffold litter is
+    # purposeless dead weight (#124) - remove it the same way a retired file's
+    # emptied directory is removed above, just triggered by the CURRENT
+    # fha.yaml rather than by what retired this run.
+    pruned_external = _prune_external_root_placeholders(archive_root, fha_config, manifest)
+    for alias in pruned_external:
+        print(f'Removed the now-purposeless {alias}/ folder - fha.yaml roots: '
+              f'already points {alias} outside this archive.')
+    # Its skeleton entries (documents/.gitkeep, …) must NOT be carried over in
+    # the stamp rewrite below - "recorded" is what stops the seed-delivery
+    # loop in `_plan_update` from ever offering it back, so a removed
+    # placeholder has to become "never delivered" again, the same as a fresh
+    # install that skipped it outright. That is also exactly what lets a
+    # later revert to an internal root recreate it.
+    pruned_skeleton_paths = {
+        e['path'] for e in manifest['files']
+        if e.get('category') == 'skeleton'
+        and e['path'].split('/', 1)[0] in pruned_external
+    }
+
     if verbose:
         for archive_path, _src in plan['current']:
             print(f'{archive_path} is already up to date.')
@@ -1717,6 +1892,11 @@ def run_update_tools(
     for entry in manifest['files']:
         archive_path = entry['path']
         if entry.get('category') == 'skeleton':
+            if archive_path in pruned_skeleton_paths:
+                # Just removed above because its alias went external and held
+                # only scaffold litter - leave it OUT of the stamp entirely
+                # (see the comment where pruned_skeleton_paths is built).
+                continue
             # A seed delivered THIS RUN must be recorded, or install-once is not
             # kept: unrecorded means "never delivered", so a later run would
             # re-deliver it - restoring a file the owner had deliberately
@@ -1789,10 +1969,14 @@ def run_update_tools(
     # narration a human sees.
     changed.extend(str(archive_root / p) for p in repaired_modes
                    if p not in installed_ok)
+    # A removed placeholder folder is a mutation too, for the same reason a
+    # restored executable bit is - a headless caller's audit should see it.
+    changed.extend(str(archive_root / alias) for alias in pruned_external)
     changed.append(str(archive_root / VERSION_FILE))
     update_data = {
         'added': n_added_ok, 'stock': n_stock_ok, 'customized': n_custom_ok,
         'retired': n_retired_ok, 'current': n_current,
+        'external_roots_pruned': pruned_external,
     }
     if failures:
         print(file=sys.stderr)

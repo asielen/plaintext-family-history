@@ -128,6 +128,27 @@ def _make_fake_repo(repo: Path) -> Path:
     return repo
 
 
+def _make_fake_repo_with_asset_dirs(repo: Path) -> Path:
+    """`_make_fake_repo` plus a documents/photos/inbox skeleton seed.
+
+    The base fixture omits all three (its skeleton is deliberately tiny) so
+    the ordinary install/update tests stay minimal and fast. The roots:-
+    external scaffolding tests (#124) need all three present so there is a
+    real placeholder folder to skip creating, or to prune later.
+
+    inbox/ gets a SECOND seed file with no leading dot
+    (`_TEMPLATE.notes.md`), mirroring the real archive-template/inbox/ - the
+    real skeleton is not dotfiles-only, so the prune logic has to recognize
+    this as ITS OWN litter by name, not just by a leading dot.
+    """
+    _make_fake_repo(repo)
+    for alias in ('documents', 'photos', 'inbox'):
+        _write(repo / 'archive-template' / alias / '.gitkeep', '')
+    _write(repo / 'archive-template' / 'inbox' / '_TEMPLATE.notes.md', '# staging notes\n')
+    scaffold._write_manifest(repo)
+    return repo
+
+
 class ManifestSyncTest(unittest.TestCase):
     """The committed manifest.json must match what the repo currently contains."""
 
@@ -1657,6 +1678,193 @@ class UpdateToolsTest(unittest.TestCase):
         backups = list((self.archive / '.plaintext-backup').rglob('atool.py'))
         self.assertEqual(len(backups), 1)
         self.assertEqual(backups[0].read_text(encoding='utf-8'), 'print("HAND EDIT")\n')
+
+
+class ExternalRootScaffoldingTest(unittest.TestCase):
+    """`roots:` pointing documents/photos/inbox OUTSIDE the archive must never
+    leave a purposeless empty placeholder folder behind - at install time, or
+    lingering from before a later `fha update-tools` (#124). A genealogist who
+    keeps documents/photos on an external drive should never see an empty
+    documents/ or photos/ folder inside the archive with nothing in it and no
+    explanation for why it's there.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self.repo = _make_fake_repo_with_asset_dirs(self.tmp / 'repo')
+        self.archive = self.tmp / 'archive'
+        # A real folder outside both repo/ and archive/ - genuinely external.
+        self.external = self.tmp / 'external'
+        (self.external / 'docs').mkdir(parents=True)
+        (self.external / 'pix').mkdir(parents=True)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _stamp(self):
+        return json.loads((self.archive / '.plaintext-version').read_text(encoding='utf-8'))
+
+    # ── (a) fresh install, multiple aliases external ────────────────────────
+
+    def test_fresh_install_skips_every_configured_external_placeholder(self):
+        docs_ext = (self.external / 'docs').as_posix()
+        pix_ext = (self.external / 'pix').as_posix()
+        _write(self.repo / 'archive-template' / 'fha.yaml',
+               f'roots:\n  documents: {docs_ext}\n  photos: {pix_ext}\n')
+        scaffold._write_manifest(self.repo)
+        rc = scaffold.run_install(self.archive, self.repo)
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertFalse((self.archive / 'documents').exists())
+        self.assertFalse((self.archive / 'photos').exists())
+        # inbox was left at its internal default - scaffolded as normal.
+        self.assertTrue((self.archive / 'inbox' / '.gitkeep').is_file())
+        stamp = self._stamp()
+        self.assertNotIn('documents/.gitkeep', stamp['files'])
+        self.assertNotIn('photos/.gitkeep', stamp['files'])
+        self.assertIn('inbox/.gitkeep', stamp['files'])
+
+    # ── (b) fresh install, only one alias external ──────────────────────────
+
+    def test_fresh_install_skips_only_the_external_alias(self):
+        docs_ext = (self.external / 'docs').as_posix()
+        _write(self.repo / 'archive-template' / 'fha.yaml',
+               f'roots:\n  documents: {docs_ext}\n  photos: photos\n')
+        scaffold._write_manifest(self.repo)
+        rc = scaffold.run_install(self.archive, self.repo)
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertFalse((self.archive / 'documents').exists())
+        self.assertTrue((self.archive / 'photos' / '.gitkeep').is_file())
+
+    def test_install_dry_run_previews_the_skip(self):
+        docs_ext = (self.external / 'docs').as_posix()
+        _write(self.repo / 'archive-template' / 'fha.yaml',
+               f'roots:\n  documents: {docs_ext}\n  photos: photos\n')
+        scaffold._write_manifest(self.repo)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = scaffold.run_install(self.archive, self.repo, dry_run=True)
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertFalse(self.archive.exists())  # dry run writes nothing
+        self.assertIn('documents', out.getvalue())
+
+    # ── (c) already-installed empty placeholder is pruned once external ─────
+
+    def test_update_prunes_an_already_empty_placeholder_once_external(self):
+        scaffold.run_install(self.archive, self.repo)  # everything internal
+        self.assertTrue((self.archive / 'documents' / '.gitkeep').is_file())
+        docs_ext = (self.external / 'docs').as_posix()
+        _write(self.archive / 'fha.yaml', f'roots:\n  documents: {docs_ext}\n  photos: photos\n')
+        rc = scaffold.run_update_tools(self.archive, self.repo)
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertFalse((self.archive / 'documents').exists())
+        self.assertTrue((self.archive / 'photos').exists())  # still internal, untouched
+        self.assertNotIn('documents/.gitkeep', self._stamp()['files'])
+        # never backed up - a prune is not a customization
+        self.assertFalse((self.archive / '.plaintext-backup').exists())
+
+    def test_update_prunes_inbox_despite_its_non_dotfile_template_seed(self):
+        # inbox/ ships _TEMPLATE.notes.md alongside .gitkeep - no leading dot,
+        # but still the install's own seed, not the human's. The prune must
+        # recognize it as litter by NAME, not assume "no dot = real content".
+        scaffold.run_install(self.archive, self.repo)
+        self.assertTrue((self.archive / 'inbox' / '_TEMPLATE.notes.md').is_file())
+        (self.external / 'inbox_ext').mkdir()
+        inbox_ext = (self.external / 'inbox_ext').as_posix()
+        _write(self.archive / 'fha.yaml',
+               f'roots:\n  documents: documents\n  photos: photos\n  inbox: {inbox_ext}\n')
+        rc = scaffold.run_update_tools(self.archive, self.repo)
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertFalse((self.archive / 'inbox').exists())
+        self.assertNotIn('inbox/.gitkeep', self._stamp()['files'])
+        self.assertNotIn('inbox/_TEMPLATE.notes.md', self._stamp()['files'])
+
+    def test_inbox_with_real_content_alongside_its_template_seed_is_kept(self):
+        scaffold.run_install(self.archive, self.repo)
+        _write(self.archive / 'inbox' / 'grandmas-letter.jpg', 'not really a jpeg')
+        (self.external / 'inbox_ext').mkdir()
+        inbox_ext = (self.external / 'inbox_ext').as_posix()
+        _write(self.archive / 'fha.yaml',
+               f'roots:\n  documents: documents\n  photos: photos\n  inbox: {inbox_ext}\n')
+        rc = scaffold.run_update_tools(self.archive, self.repo)
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertTrue((self.archive / 'inbox' / 'grandmas-letter.jpg').is_file())
+        self.assertTrue((self.archive / 'inbox' / '_TEMPLATE.notes.md').is_file())
+        self.assertFalse((self.archive / '.plaintext-backup').exists())
+
+    def test_update_dry_run_previews_the_prune_without_touching_disk(self):
+        scaffold.run_install(self.archive, self.repo)
+        docs_ext = (self.external / 'docs').as_posix()
+        _write(self.archive / 'fha.yaml', f'roots:\n  documents: {docs_ext}\n  photos: photos\n')
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = scaffold.run_update_tools(self.archive, self.repo, dry_run=True)
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertTrue((self.archive / 'documents' / '.gitkeep').is_file())  # untouched
+        self.assertIn('would remove the now-purposeless documents/', out.getvalue())
+
+    def test_reverting_to_internal_recreates_the_placeholder(self):
+        scaffold.run_install(self.archive, self.repo)
+        docs_ext = (self.external / 'docs').as_posix()
+        _write(self.archive / 'fha.yaml', f'roots:\n  documents: {docs_ext}\n  photos: photos\n')
+        scaffold.run_update_tools(self.archive, self.repo)
+        self.assertFalse((self.archive / 'documents').exists())
+        _write(self.archive / 'fha.yaml', 'roots:\n  documents: documents\n  photos: photos\n')
+        scaffold.run_update_tools(self.archive, self.repo)
+        self.assertTrue((self.archive / 'documents' / '.gitkeep').is_file())
+
+    def test_still_external_placeholder_is_not_recreated_on_repeat_updates(self):
+        scaffold.run_install(self.archive, self.repo)
+        docs_ext = (self.external / 'docs').as_posix()
+        _write(self.archive / 'fha.yaml', f'roots:\n  documents: {docs_ext}\n  photos: photos\n')
+        scaffold.run_update_tools(self.archive, self.repo)  # prunes it
+        self.assertFalse((self.archive / 'documents').exists())
+        scaffold.run_update_tools(self.archive, self.repo)  # must NOT bring it back
+        self.assertFalse((self.archive / 'documents').exists())
+
+    # ── (d) a placeholder with real, unexpected content is left alone ───────
+
+    def test_placeholder_with_real_content_is_left_completely_alone(self):
+        scaffold.run_install(self.archive, self.repo)
+        _write(self.archive / 'documents' / 'grandpas_notes.txt', 'do not lose this')
+        docs_ext = (self.external / 'docs').as_posix()
+        _write(self.archive / 'fha.yaml', f'roots:\n  documents: {docs_ext}\n  photos: photos\n')
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = scaffold.run_update_tools(self.archive, self.repo)
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertEqual(
+            (self.archive / 'documents' / 'grandpas_notes.txt').read_text(encoding='utf-8'),
+            'do not lose this')
+        self.assertTrue((self.archive / 'documents' / '.gitkeep').is_file())
+        self.assertFalse((self.archive / '.plaintext-backup').exists())
+        self.assertNotIn('now-purposeless', out.getvalue())
+
+    # ── design question 1: a rename that stays inside the archive ───────────
+
+    def test_internal_rename_is_not_treated_as_external(self):
+        # documents: archive-docs is a RENAME, still inside the archive - the
+        # internal-folder concept still applies (just under a different
+        # name), so the literal documents/ skeleton folder installs as usual.
+        _write(self.repo / 'archive-template' / 'fha.yaml',
+               'roots:\n  documents: archive-docs\n  photos: photos\n')
+        scaffold._write_manifest(self.repo)
+        rc = scaffold.run_install(self.archive, self.repo)
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertTrue((self.archive / 'documents' / '.gitkeep').is_file())
+
+    # ── (e) a normal, fully-internal archive is unaffected ──────────────────
+
+    def test_fully_internal_archive_is_completely_unaffected(self):
+        rc = scaffold.run_install(self.archive, self.repo)
+        self.assertEqual(rc, EXIT_CLEAN)
+        for alias in ('documents', 'photos', 'inbox'):
+            self.assertTrue((self.archive / alias / '.gitkeep').is_file())
+        rc = scaffold.run_update_tools(self.archive, self.repo)
+        self.assertEqual(rc, EXIT_CLEAN)
+        for alias in ('documents', 'photos', 'inbox'):
+            self.assertTrue((self.archive / alias / '.gitkeep').is_file())
+        self.assertFalse((self.archive / '.plaintext-backup').exists())
 
 
 class CmdErrorPathTest(unittest.TestCase):
