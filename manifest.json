@@ -1,7 +1,7 @@
 {
   "manifest_version": "1",
   "spec_version": "1.2",
-  "generated": "2026-08-27",
+  "generated": "2026-08-28",
   "files": [
     {
       "path": ".claude/skills/README.md",
@@ -630,7 +630,7 @@
     {
       "path": ".fha/tools/reorganize.py",
       "category": "operating",
-      "sha256": "6802f310eb4d62d219c0504f91cd32dbb8a795eb617dff40a0fa3e73b485c8e1",
+      "sha256": "aad54ac11bed9606e01193418b3a0f7ceb0a3a2de6a4a1e3aad2a05b61657bea",
       "spec_version": "1.2",
       "src": "tools/reorganize.py"
     },
@@ -861,13 +861,13 @@
     {
       "path": "AGENTS.md",
       "category": "operating",
-      "sha256": "8ade61acb3c27e6cf5075b06f3a392418830eb056ed47e34fa79c30cbd3aab2f",
+      "sha256": "d8cf0d19b29a4bd99548af8afd008854b0eaa24713a10cb026d82afcef374f23",
       "spec_version": "1.2"
     },
     {
       "path": "CHEATSHEET.md",
       "category": "operating",
-      "sha256": "77f2599e640bb38a46c8f8f7d324ce5286540447ab0a0f5b0d09d0b2c1d35932",
+      "sha256": "efa006d8db8a2851a6df3932dd0cdef2bda7775ad1ed5869bfe228d429251e56",
       "spec_version": "1.2"
     },
     {
@@ -879,7 +879,7 @@
     {
       "path": "GETTING_STARTED.md",
       "category": "operating",
-      "sha256": "625b64c1affc10cdf39c1a038dbc77f16d030767664a5966ec2b0275268f685f",
+      "sha256": "0833cda0a285bce7a87d3d1f53262f38eef7f608e5526ad5a2aba74e9aea5484",
       "spec_version": "1.2"
     },
     {

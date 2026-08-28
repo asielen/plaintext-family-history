@@ -360,7 +360,10 @@ folders you like inside it - by type, by family line, by decade - anything you p
 folder keeps its spot when it's processed (something dropped loose at the drawer's top level
 gets filed into a type folder for you), and you can rearrange it later too: the ID tag in each
 filed item's name ties it to its evidence folder, so after a reshuffle one command
-(`fha reconcile`, or just ask the assistant) re-ties every moved file. (Photos are even freer: as you organize your library, the system never renames or moves them at all.) When
+(`fha reconcile`, or just ask the assistant) re-ties every moved file. If a big batch of imports
+ever leaves a real backlog of loose files behind, `fha reorganize` (or just ask) proposes the
+whole tidy-up at once - it only ever touches material still sitting exactly where a machine
+filed it, so anything you already organized by hand is left alone, untouched. (Photos are even freer: as you organize your library, the system never renames or moves them at all.) When
 you're not sure where a stray research note belongs, the "Where does a note go?" list in
 [`docs/FILING_CABINET.md`](docs/FILING_CABINET.md) answers it in four lines.
 

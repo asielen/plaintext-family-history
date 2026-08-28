@@ -113,7 +113,10 @@ itself never moves a photos-root file.
 CODE MAP
 --------
   _record_subdir              - source_type -> documents/{type} folder name (twin of process.py's)
+  _slugify                    - lowercase-hyphenate text into a slug (twin of process.py's)
   _filename_has_source_id     - the S-id embedded in a filed document's filename (twin of process.py's)
+  _canonical_path              - resolve a path for physical-identity comparison (duplicate-ownership guard)
+  _machine_generated_names    - every basename fha process could have produced for one files: entry
   _is_under                   - containment check (twin of process.py's)
   _move_file                  - move-with-copy+delete-fallback (twin of process.py's)
   _scalar_value / _rewrite_file_line / _file_line_count
@@ -122,6 +125,7 @@ CODE MAP
   _plan                       - compute the full move plan; nothing written (the survey)
   _apply_one_record           - atomic move+record-update+rollback for ONE record's files
   _chunk_records               - group planned records into bounded batches
+  _finish_apply                - the shared final-lint-then-finalize every apply return path shares
   run_reorganize               - engine: plan, and (with apply=True) execute in checked batches
   _cmd_reorganize / register / _standalone_main - CLI plumbing
 """
@@ -141,12 +145,16 @@ import yaml
 from _lib import (
     EXIT_FAILURE,
     EXIT_WARNINGS,
+    SOURCE_TYPES,
     FhaConfigError,
     Result,
     configure_utf8_stdout,
+    fmt_id_display,
+    format_source_type_error,
     frontmatter_fence_span,
     is_working_copy,
     load_fha_yaml,
+    normalize_id,
     read_record,
     read_text_exact,
     reapply_newline,
@@ -212,6 +220,79 @@ def _filename_has_source_id(file_path: Path) -> str | None:
     """
     m = _FILENAME_SOURCE_ID_RE.search(file_path.stem)
     return m.group(1).lower() if m else None
+
+
+def _slugify(text: str) -> str:
+    """Collapse arbitrary text to a lowercase-hyphenated slug (SPEC §13).
+
+    Twin of `process.py`'s own `_slugify` - needed here only to reproduce a
+    ROLE or COPY value's slug form exactly the way `fha process`/`process
+    refile`/bundle dissolution already do when they mint a `role`/`copy`
+    filename suffix (`_machine_generated_names` below).
+    """
+    text = (text or '').strip().lower()
+    slug = re.sub(r'[^a-z0-9]+', '-', text).strip('-')
+    return slug or 'source'
+
+
+def _canonical_path(path: Path) -> Path:
+    """`path`, resolved for a PHYSICAL-identity comparison.
+
+    Two lexically different aliases can still name the very same file on
+    disk (a redundant `./` segment, a doubled slash, a `sub/../` detour, a
+    case difference on a case-insensitive filesystem) - `Path.resolve()`
+    collapses all of that (Codex audit finding, PR #188 second pass): the
+    duplicate-ownership map below has to be keyed on WHAT a `files:` entry
+    physically points at, not on the exact characters it is spelled with,
+    or two spellings of the same file slip past the "claimed by more than
+    one entry" guard entirely. `resolve()` works fine on a path that does
+    not exist (the default `strict=False`), and any resolution failure
+    (a symlink loop, a locked component) falls back to the un-resolved
+    path - the same "not verifiably resolved is not verifiably different"
+    posture `_is_under` already takes for the exact same call.
+    """
+    try:
+        return path.resolve()
+    except (OSError, RuntimeError):
+        return path
+
+
+def _machine_generated_names(slug: str, display_sid: str, entry: dict, ext: str) -> set[str]:
+    """Every basename `fha process` (or `process refile`, or bundle
+    dissolution) could have machine-generated for THIS ONE `files:` entry
+    today - twin of `process.py`'s several filing paths, collapsed into the
+    two BASE conventions those paths actually use (P1 audit finding, PR
+    #188): a lone processed file (or its `-back` sibling, or a later `--to
+    documents` refile) is named off the RECORD's own slug (`process_
+    refile`'s own `new_name` computation: `{slug}[-{copy}][-{role}]_{S-id}
+    {ext}`); a bundle-dissolved attachment is instead named off ITS OWN
+    original filename (`process_bundle`'s per-asset `base = _slugify(asset
+    .stem)`, stored back onto the entry as `original_filename` since #59 -
+    every filing path since writes it).
+
+    Returning the SET of names either convention could have produced -
+    rather than picking one - is deliberate: nothing here can tell, after
+    the fact, which path filed a given entry, and treating a real bundle
+    attachment as "hand-renamed" merely because its name was never built
+    from the record's OWN slug would be exactly the false positive this
+    tool exists to avoid (a human's deliberately-organized-or-not file
+    mistaken for the other case). A basename outside BOTH candidates is the
+    genuinely unambiguous case: nothing `fha process` does today would ever
+    have produced it, so it reads as a human rename - excluded into
+    `excluded_human`, never touched (`_plan`'s eligibility check).
+    """
+    suffix = ''
+    role = entry.get('role')
+    if role and str(role) != 'primary':
+        suffix = f'-{_slugify(str(role))}'
+    copy = entry.get('copy')
+    if copy:
+        suffix = f'-{_slugify(str(copy))}{suffix}'
+    bases = {slug}
+    original_filename = entry.get('original_filename')
+    if original_filename:
+        bases.add(_slugify(Path(str(original_filename)).stem))
+    return {f'{base}{suffix}_{display_sid}{ext}' for base in bases}
 
 
 def _is_under(path: Path, root: Path) -> bool:
@@ -407,27 +488,44 @@ def _plan(archive_root: Path, fha_config: dict, documents_root: Path,
     unreadable folders named, and NOTHING is proposed - not even the files
     this run could see fine.
 
-    Pass 1 - build alias -> owning-record(s) map across every parseable
-    record's documents-alias `files:` entries. An alias claimed by MORE than
-    one record is pre-existing corruption (adversarial case: two records
-    pointing at the same physical path) - both records' claims on it are
-    refused into `problems`, and the file is never moved on the strength of
-    either one, rather than silently picking a side.
+    Pass 1 - build canonical-physical-path -> owning (record, alias) map
+    across every parseable record's documents-alias `files:` entries, keyed
+    by the RESOLVED path so two lexically different aliases naming the same
+    real file (a redundant `./`, a `sub/../` detour) still collide (see
+    `_canonical_path`). A path claimed by MORE than one entry is
+    pre-existing corruption (adversarial case: two records - or two aliases
+    in the SAME record - pointing at the same physical path) - every claim
+    on it is refused into `problems`, and the file is never moved on the
+    strength of any one of them, rather than silently picking a side.
 
-    Pass 2 - for each record, for each of its own documents-alias entries:
+    Pass 2 - for each record, first two whole-record identity guards run
+    before any of its files are looked at: the record's frontmatter `id:`
+    must agree with the S-id its OWN filename carries (a filename/frontmatter
+    drift, `fha lint`'s E003, means this record's identity cannot be
+    trusted from the filename alone - mirrors `site.py`'s
+    `_origin_frontmatter_id_mismatches`), and its `source_type` must be a
+    real entry in `_lib.SOURCE_TYPES` (an unvalidated value is a path
+    component moments later - `_record_subdir` - and a hostile or typo'd
+    one could walk a destination outside the documents root entirely).
+    Either failing refuses the WHOLE record into `problems`, nothing of its
+    planned. For each surviving record's own documents-alias entries:
     resolve it, confirm it is really on disk, confirm its OWN filename
     still carries this record's S-id (the same identity-drift guard `fha
     process refile` uses - a `files:` entry that resolves cleanly is not
     automatically pointing at the right file), then judge ELIGIBILITY by
-    path shape alone: depth 0 under documents/ (flat at the root), or depth
-    1 in a folder matching this record's OWN `_record_subdir(source_type)`,
-    is eligible; anything else (a different folder name, any folder within
-    a folder) is presumptively human-organized and goes to `excluded_human`,
-    never touched, never even proposed. Eligible files are grouped per
-    record; a destination is computed only once eligibility is settled, and
-    a proposed destination that already exists on disk (adversarial case: a
-    name collision for an unrelated reason) is refused into `problems`
-    rather than silently overwritten or merged.
+    path SHAPE (depth 0 under documents/, or depth 1 in this record's OWN
+    `_record_subdir(source_type)` folder) AND by basename: the file's
+    actual name must match one of the shapes `fha process` itself could
+    have produced for this entry (`_machine_generated_names` - a lone file
+    is named off the record's own slug, a bundle attachment off its own
+    `original_filename`). Failing either check reads as "a human already
+    curated this" and goes to `excluded_human`, never touched, never even
+    proposed. Eligible files are grouped per record; a destination is
+    computed only once eligibility is settled, checked that it still lands
+    inside the documents root (belt-and-braces, given the source_type guard
+    above), and a proposed destination that already exists on disk
+    (adversarial case: a name collision for an unrelated reason) is refused
+    into `problems` rather than silently overwritten or merged.
     """
     unreadable: list[Path] = []
     for _ in walk_files(documents_root, on_error=unreadable_dir_recorder(unreadable)):
@@ -441,8 +539,14 @@ def _plan(archive_root: Path, fha_config: dict, documents_root: Path,
 
     records = list(_iter_source_records(archive_root, result))
 
-    # Pass 1: alias -> owning record(s), documents-alias entries only.
-    alias_owners: dict[str, list[Path]] = {}
+    # Pass 1: canonical (resolved) physical path -> owning (record, alias)
+    # pair(s), documents-alias entries only. Keyed by the RESOLVED path, not
+    # the raw alias text (Codex audit finding, PR #188 second pass): two
+    # lexically different aliases that name the SAME file (a redundant
+    # `./`, a `sub/../` detour, a case difference) must still collide here,
+    # or the second one slips through unrefused while the first one's move
+    # quietly stranded it - see `_canonical_path`.
+    canonical_owners: dict[Path, list[tuple[Path, str]]] = {}
     for rec_path, meta in records:
         for entry in (meta.get('files') or []):
             if not isinstance(entry, dict):
@@ -450,7 +554,8 @@ def _plan(archive_root: Path, fha_config: dict, documents_root: Path,
             alias = str(entry.get('file', '') or '').replace('\\', '/')
             if not alias or alias.split('/', 1)[0] != 'documents':
                 continue
-            alias_owners.setdefault(alias, []).append(rec_path)
+            canonical = _canonical_path(resolve_path(alias, fha_config, archive_root))
+            canonical_owners.setdefault(canonical, []).append((rec_path, alias))
 
     problems: list[str] = []
     excluded_human: list[tuple[str, str]] = []
@@ -476,8 +581,40 @@ def _plan(archive_root: Path, fha_config: dict, documents_root: Path,
         rec_sid = m.group(1).lower()
         display_sid = m.group(1)[0].upper() + m.group(1)[1:].lower()
         slug = rec_stem[:m.start()]
+
+        # Identity guard (P1 audit finding, PR #188): `rec_sid` above comes
+        # ONLY from the record's own FILENAME - a record whose filename and
+        # frontmatter `id:` have drifted apart (a real, lint-flagged E003
+        # state) must not be trusted just because its filename LOOKS right.
+        # Same posture as `site.py`'s `_origin_frontmatter_id_mismatches`
+        # (#117 audit): fail closed and refuse every one of this record's
+        # files rather than silently proceeding under whichever identity
+        # turns out to be wrong.
+        frontmatter_id = normalize_id(str(meta.get('id') or ''))
+        if frontmatter_id != rec_sid:
+            problems.append(
+                f'{rec_path.name}: the filename names {display_sid} but its own `id:` '
+                f'says {fmt_id_display(frontmatter_id) if frontmatter_id else "(none)"} '
+                "- `fha lint`'s E003 flags this mismatch. Refusing to move any of its "
+                'files until the identity is fixed by hand (`fha lint` names the spot), '
+                'then re-run. Not touched.')
+            continue
+
         source_type = str(meta.get('source_type') or _DEFAULT_DOCUMENT_TYPE).strip()
         source_type = source_type or _DEFAULT_DOCUMENT_TYPE
+        # Path-traversal guard (P1 audit finding, PR #188): `source_type` is
+        # a hand-editable frontmatter field, trusted below as a PATH
+        # COMPONENT (`_record_subdir`) with no other check in between. An
+        # unknown value could be a typo (an unsupported folder) or, worse,
+        # something like `../family` that walks `dest_dir` straight out of
+        # the configured documents root. Refuse the WHOLE record before any
+        # destination is computed from it - never after.
+        if source_type not in SOURCE_TYPES:
+            problems.append(
+                f'{rec_path.name}: {format_source_type_error(source_type)} Refusing to '
+                'plan any move for this record until its source_type is fixed. Not '
+                'touched.')
+            continue
         type_dir = _record_subdir(source_type)
 
         eligible: list[tuple[str, Path]] = []
@@ -490,15 +627,24 @@ def _plan(archive_root: Path, fha_config: dict, documents_root: Path,
             if str(entry.get('status', '')) == 'missing-fixture':
                 continue
 
-            owners = alias_owners.get(alias, [])
+            abs_path = resolve_path(alias, fha_config, archive_root)
+            canonical = _canonical_path(abs_path)
+            owners = canonical_owners.get(canonical, [])
             if len(owners) > 1:
-                shown = ', '.join(sorted(p.name for p in owners))
-                problems.append(
-                    f'{alias}: listed by more than one source record ({shown}) - '
-                    'fix the duplicate files: entry by hand, then re-run. Not touched.')
+                owner_names = sorted(set(p.name for p, _a in owners))
+                if len(owner_names) == 1:
+                    other_aliases = sorted(set(a for _p, a in owners if a != alias))
+                    problems.append(
+                        f'{rec_path.name}: {alias!r} and {other_aliases!r} both resolve '
+                        'to the same file, listed more than once - fix the duplicate '
+                        'files: entry by hand, then re-run. Not touched.')
+                else:
+                    problems.append(
+                        f'{alias}: listed by more than one source record '
+                        f'({", ".join(owner_names)}) - fix the duplicate files: entry by '
+                        'hand, then re-run. Not touched.')
                 continue
 
-            abs_path = resolve_path(alias, fha_config, archive_root)
             if not _is_under(abs_path, documents_root):
                 problems.append(
                     f'{rec_path.name}: {alias!r} does not resolve inside the '
@@ -523,7 +669,17 @@ def _plan(archive_root: Path, fha_config: dict, documents_root: Path,
             rel = PurePosixPath(alias[len('documents/'):])
             parts = rel.parts[:-1]
             depth = len(parts)
-            if depth == 0 or (depth == 1 and parts[0] == type_dir):
+            shape_ok = depth == 0 or (depth == 1 and parts[0] == type_dir)
+            # Hand-renamed guard (P1 audit finding, PR #188): path SHAPE
+            # alone is not enough - a human can rename a file in place,
+            # keeping its `_S-id` suffix and its eligible folder, and that
+            # is JUST as much "a human already curated this" as moving it
+            # would be. Compare the actual basename against every shape
+            # `fha process` itself could have produced for this entry; only
+            # an EXACT match is still "sitting exactly where a machine put
+            # it" (`_machine_generated_names`).
+            if shape_ok and abs_path.name in _machine_generated_names(
+                    slug, display_sid, entry, abs_path.suffix):
                 eligible.append((alias, abs_path))
             else:
                 excluded_human.append((alias, rec_path.name))
@@ -541,6 +697,16 @@ def _plan(archive_root: Path, fha_config: dict, documents_root: Path,
             new_abs = dest_dir / abs_path.name
             if new_abs == abs_path:
                 no_op_count += 1
+                continue
+            if not _is_under(new_abs, documents_root):
+                # Belt-and-braces: `source_type` is already validated above,
+                # so `type_dir` can never itself carry a `..` segment - but
+                # a computed destination is cheap insurance against this
+                # exact hazard (moving a real file OUTSIDE the documents
+                # root) never being silently reintroduced by a future edit.
+                problems.append(
+                    f'{rec_path.name}: {alias} would compute a destination outside the '
+                    'documents root - refusing. Not touched.')
                 continue
             if new_abs.exists() or new_abs in planned_destinations:
                 problems.append(
@@ -562,7 +728,7 @@ def _plan(archive_root: Path, fha_config: dict, documents_root: Path,
 
 def _apply_one_record(
     record_path: Path, pairs: list[tuple[str, str, Path, Path]],
-) -> tuple[bool, str]:
+) -> tuple[bool, str, bool]:
     """Move every planned file for ONE record and rewrite its files: entries,
     or leave both completely untouched. Never a partial result.
 
@@ -589,14 +755,24 @@ def _apply_one_record(
     read-only mid-move), says exactly what is left inconsistent and where,
     rather than claiming a clean rollback that did not happen.
 
-    Returns (True, description) on success; (False, reason) when this
-    record's move was skipped - reason always says plainly whether nothing
-    changed or the archive needs a look.
+    Returns (ok, description, unrecoverable). `ok=True` is success; the
+    third element only ever matters when `ok=False` and is the return
+    contract's own answer to "was this a CLEAN failure, or one that left
+    the archive genuinely inconsistent" (P1 audit finding, PR #188) - both
+    used to come back as an indistinguishable `(False, message)`, which let
+    the caller treat a rollback that could not fully finish as an ordinary
+    skip-and-continue instead of the whole-run halt it actually demands.
+    `unrecoverable=True` only when a best-effort rollback (`_undo_moves`, or
+    the final text restore) did not fully finish - the archive is left
+    genuinely inconsistent for THIS record and the caller must stop the
+    whole run, not just skip to the next one; every other `ok=False` path
+    is a clean "nothing changed" the caller may treat as an ordinary,
+    contained failure.
     """
     try:
         before = read_text_exact(record_path)
     except OSError as e:
-        return False, f'{record_path.name}: could not be read ({e}) - skipped, nothing changed.'
+        return False, f'{record_path.name}: could not be read ({e}) - skipped, nothing changed.', False
 
     after = before
     for old_alias, new_alias, _old_abs, _new_abs in pairs:
@@ -605,12 +781,14 @@ def _apply_one_record(
             what = 'not found' if count == 0 else 'listed on more than one line'
             return False, (
                 f'{record_path.name}: the files: line for {old_alias!r} was {what} - '
-                'skipped, nothing changed. Fix it by hand or run `fha lint`, then re-run.')
+                'skipped, nothing changed. Fix it by hand or run `fha lint`, then re-run.'
+            ), False
     if _file_line_count(after) != _file_line_count(before):
         return False, (
             f'{record_path.name}: rewriting its files: entries would change the shape '
             'of the list - skipped, nothing changed. Fix it by hand (`fha lint` names '
-            'the spot), then re-run.')
+            'the spot), then re-run.'
+        ), False
 
     moved: list[tuple[Path, Path]] = []
     created_dirs: list[Path] = []
@@ -621,6 +799,21 @@ def _apply_one_record(
                 created_dirs.append(probe)
                 probe = probe.parent
             new_abs.parent.mkdir(parents=True, exist_ok=True)
+            if new_abs.exists():
+                # TOCTOU guard (P1 audit finding, PR #188): `_plan` checked
+                # this destination was free only ONCE, well before this
+                # batch actually runs - real time passes for the [y/N]
+                # confirmation, for earlier batches, for `fha reconcile`
+                # shelling out between them. Re-check immediately before
+                # THIS move, right next to where `_move_file`'s
+                # `Path.rename` would otherwise silently clobber whatever
+                # showed up there since - raising here (caught by the
+                # `except OSError` below) refuses and rolls back cleanly,
+                # the same as any other mid-move problem, rather than
+                # overwriting a file this run never planned to touch.
+                raise OSError(
+                    f'{new_abs.name} now exists at the planned destination (it did not '
+                    'when this run was planned) - refusing to overwrite it')
             _move_file(old_abs, new_abs)
             moved.append((old_abs, new_abs))
     except OSError as e:
@@ -628,10 +821,11 @@ def _apply_one_record(
         if undo_failed:
             return False, (
                 f'{record_path.name}: moving its files failed ({e}), and the rollback '
-                f'could not fully finish: {"; ".join(undo_failed)}. The archive may be '
-                f'inconsistent for this record - run `fha doctor`, then `fha reconcile` '
-                'to see exactly what is where.')
-        return False, f'{record_path.name}: moving its files failed ({e}) - rolled back, nothing changed.'
+                f'could not fully finish: {"; ".join(undo_failed)}. The archive is '
+                f'INCONSISTENT for this record - run `fha doctor`, then `fha reconcile` '
+                'to see exactly what is where.'
+            ), True
+        return False, f'{record_path.name}: moving its files failed ({e}) - rolled back, nothing changed.', False
 
     try:
         write_text_exact_atomic(record_path, reapply_newline(after, before))
@@ -642,10 +836,12 @@ def _apply_one_record(
                 f'{record_path.name}: its files were moved but the record could not be '
                 f'written ({e}), and the rollback could not fully finish: '
                 f'{"; ".join(undo_failed)}. The archive is INCONSISTENT for this record - '
-                'run `fha doctor`, then fix it by hand before continuing.')
+                'run `fha doctor`, then fix it by hand before continuing.'
+            ), True
         return False, (
             f'{record_path.name}: could not be written ({e}) - files moved back, '
-            'nothing changed.')
+            'nothing changed.'
+        ), False
 
     reparsed = read_record(record_path)
     reparsed_files = {
@@ -669,14 +865,16 @@ def _apply_one_record(
             return False, (
                 f'{record_path.name}: the rewritten files: entry did not read back '
                 f'correctly, and the rollback could not fully finish ({"; ".join(parts)}). '
-                'The archive is INCONSISTENT for this record - run `fha doctor`.')
+                'The archive is INCONSISTENT for this record - run `fha doctor`.'
+            ), True
         return False, (
             f'{record_path.name}: the rewritten files: entry did not read back correctly '
             '(likely a folder name with a stray "#" or ":") - rolled back, nothing '
-            'changed. Fix the folder name, then re-run.')
+            'changed. Fix the folder name, then re-run.'
+        ), False
 
     names = '; '.join(f'{old} -> {new}' for old, new, _oa, _na in pairs)
-    return True, f'{record_path.name}: {names}'
+    return True, f'{record_path.name}: {names}', False
 
 
 def _undo_moves(moved: list[tuple[Path, Path]], created_dirs: list[Path]) -> list[str]:
@@ -751,6 +949,29 @@ def _finalize(result: Result) -> Result:
     return result
 
 
+def _finish_apply(result: Result, archive_root: Path, fha_config: dict) -> Result:
+    """The one finalization every `--apply` return path must go through:
+    the promised final `fha lint` pass, then `_finalize`.
+
+    TOOLING §9a: "A final `fha lint` pass after the whole run (or after a
+    halt) reports its error/warning counts for the human's awareness." The
+    normal-completion path always reached this; every halt branch (a
+    reconcile regression, a reconcile crash, an unrecoverable rollback) used
+    to `return _finalize(result)` directly instead, so a halted run's own
+    summary silently dropped the one promised check that would tell the
+    human what state the rest of the archive is in (P2 audit finding, PR
+    #188) - routing every one of those returns through here closes that gap
+    once, rather than in each branch separately.
+    """
+    final_lint = lint.run_lint(archive_root, fha_config)
+    n_err = int((final_lint.data or {}).get('n_errors') or 0)
+    n_warn = int((final_lint.data or {}).get('n_warnings') or 0)
+    result.add('info',
+               f'fha lint after reorganizing: {n_err} error(s), {n_warn} warning(s) '
+               '(run `fha lint` for the detail).')
+    return _finalize(result)
+
+
 def _stdin_is_interactive() -> bool:
     """Whether a [y/N] confirmation can actually be answered (tests patch
     this) - the same seam `process.py` uses for its own confirm gate."""
@@ -775,11 +996,13 @@ def run_reorganize(
     reports - nothing is ever written.
 
     The Result's `data` carries `{'status', 'planned', 'no_op',
-    'excluded_human', 'problems', 'moved', 'failed', 'halted'}`. Exit code
-    follows the messages (`_finalize`): a clean plan or clean apply is 0;
-    pre-existing problems or a mid-run halt are 1; a record left in a
-    non-obvious inconsistent state after a rollback that could not fully
-    finish is 3.
+    'excluded_human', 'problems', 'moved', 'moved_records', 'failed',
+    'halted'}` - `moved` is a FILE count, `moved_records` the (never
+    larger) count of records that actually succeeded, distinct from how
+    many were merely attempted. Exit code follows the messages
+    (`_finalize`): a clean plan or clean apply is 0; pre-existing problems
+    or a mid-run halt are 1; a record left in a non-obvious inconsistent
+    state after a rollback that could not fully finish is 3.
 
     **How a batch halt is decided** (the tool's own adversarial-review
     answer to "what if fha reconcile finds a problem this run did not
@@ -799,8 +1022,8 @@ def run_reorganize(
     archive is self-consistent up to the halt point - halting stops FURTHER
     change, it does not undo correct completed work.
     """
-    result = Result(data={'status': 'ok', 'planned': 0, 'moved': 0, 'failed': 0,
-                          'no_op': 0, 'excluded_human': 0, 'problems': 0,
+    result = Result(data={'status': 'ok', 'planned': 0, 'moved': 0, 'moved_records': 0,
+                          'failed': 0, 'no_op': 0, 'excluded_human': 0, 'problems': 0,
                           'halted': False})
 
     if is_working_copy(archive_root):
@@ -816,6 +1039,22 @@ def run_reorganize(
                    f'The documents folder is not reachable at {documents_root} - if it '
                    'lives on an external drive, plug it in; if the location changed, '
                    'update roots: in fha.yaml.')
+        return _finalize(result)
+
+    # False-success guard (P2 audit finding, PR #188): `sources/` missing
+    # entirely used to fall all the way through to "nothing to reorganize -
+    # every eligible document is already tidy" (exit 0) - `walk_files` and
+    # `_iter_source_records` both silently yield nothing for a root that
+    # will not even list, rather than treating it as the unreachable-root
+    # problem it actually is. Refuse plainly instead, mirroring how the
+    # documents root's own unreachability is handled just above.
+    sources_dir = archive_root / 'sources'
+    if not sources_dir.is_dir():
+        result.add('warning',
+                   f'The sources folder is not reachable at {sources_dir} - every record '
+                   'there has to be read to know what can safely move; without it, '
+                   'nothing can be planned. If it lives on an external drive, plug it in; '
+                   'if the location changed, check fha.yaml. Nothing was planned.')
         return _finalize(result)
 
     plan = _plan(archive_root, fha_config, documents_root, result,
@@ -846,24 +1085,47 @@ def run_reorganize(
                    'they belong - nothing to do for them.')
 
     record_order = sorted(plan['moves'].keys())
+    limit_emptied_a_real_plan = False
     if limit is not None:
+        original_order = record_order
         trimmed: list[Path] = []
         count = 0
         for rp in record_order:
-            if count >= limit:
+            # A hard file cap (P2 audit finding, PR #188): checking `count`
+            # only BEFORE appending a whole record let a single multi-file
+            # record push well past `--limit` (`--limit 1` still planned
+            # every file of a ten-file first record). `_apply_one_record`'s
+            # per-record atomicity means a record's files always move
+            # together or not at all, so honoring the cap exactly means
+            # skipping the WHOLE record that would cross it, never
+            # splitting it - not silently exceeding the number the human
+            # asked for.
+            n = len(plan['moves'][rp])
+            if count + n > limit:
                 break
             trimmed.append(rp)
-            count += len(plan['moves'][rp])
-        if len(trimmed) < len(record_order):
+            count += n
+        if not trimmed and original_order:
+            limit_emptied_a_real_plan = True
+            smallest = min(len(plan['moves'][rp]) for rp in original_order)
+            result.add('info',
+                       f'--limit {limit} is smaller than the smallest remaining record\'s '
+                       f'own file count ({smallest}) - a record\'s files always move '
+                       'together, so nothing fits under the cap without splitting one. '
+                       'Raise --limit (or drop it) to include at least one record, then '
+                       're-run.')
+        elif len(trimmed) < len(original_order):
             result.add('info',
                        f'--limit {limit} applied: only the first {count} file(s) across '
-                       f'{len(trimmed)} record(s) are planned this run.')
+                       f'{len(trimmed)} record(s) are planned this run (a record whose '
+                       'own files would cross the limit is skipped whole, never split).')
         record_order = trimmed
         total_moves = sum(len(plan['moves'][rp]) for rp in record_order)
 
     result.data['planned'] = total_moves
     if not total_moves:
-        result.add('info', 'Nothing to reorganize - every eligible document is already tidy.')
+        if not limit_emptied_a_real_plan:
+            result.add('info', 'Nothing to reorganize - every eligible document is already tidy.')
         return _finalize(result)
 
     for rp in record_order:
@@ -898,63 +1160,109 @@ def run_reorganize(
             result.add('info', 'Not reorganized - nothing changed.')
             return _finalize(result)
 
-    baseline = reconcile.run_reconcile(archive_root, fha_config, dry_run=True)
-    if any(m.level == 'error' for m in baseline.messages):
+    try:
+        baseline = reconcile.run_reconcile(archive_root, fha_config, dry_run=True)
+    except Exception as e:
         result.add('error',
-                   'fha reconcile could not run cleanly before this run started - fix '
-                   'that first (see its own messages), then re-run fha reorganize. '
-                   'Nothing was moved.')
+                   f'fha reconcile crashed while establishing a baseline before this run '
+                   f'started ({e}) - fix that first, then re-run fha reorganize. Nothing '
+                   'was moved. Run `fha reconcile` yourself to see the detail.')
+        return _finalize(result)
+    if any(m.level == 'error' for m in baseline.messages):
+        # Surface the real reason (P2 audit finding, PR #188): this used to
+        # point at "its own messages" without ever rendering any of them,
+        # and named no concrete next command - fixed by inlining reconcile's
+        # own error text AND naming `fha reconcile` explicitly.
+        detail = '; '.join(m.text for m in baseline.messages if m.level == 'error')
+        result.add('error',
+                   f'fha reconcile could not run cleanly before this run started '
+                   f'({detail}) - fix that first, then re-run fha reorganize. Nothing '
+                   'was moved. Run `fha reconcile` yourself to see the full detail.')
         return _finalize(result)
     prev_issue_count = _issue_count(baseline)
 
     batches = _chunk_records(record_order, plan['moves'], batch_size)
     moved_total = 0
+    moved_records = 0
     failed_total = 0
     for batch_idx, batch in enumerate(batches, start=1):
         for rp in batch:
-            ok, msg = _apply_one_record(rp, plan['moves'][rp])
+            ok, msg, unrecoverable = _apply_one_record(rp, plan['moves'][rp])
             if ok:
                 moved_total += len(plan['moves'][rp])
+                moved_records += 1
                 result.note_changed(rp)
                 result.add('info', f'Moved: {msg}')
+            elif unrecoverable:
+                # An unrecoverable rollback (P1 audit finding, PR #188) must
+                # stop the WHOLE run right here - no further records in
+                # this batch, no further batches - not be folded into an
+                # ordinary warning-and-continue the way a clean failure is:
+                # this one record is left genuinely inconsistent, and
+                # letting the run keep changing OTHER records while that is
+                # true is exactly the hazard the audit named. 'error' (not
+                # 'warning') is what makes `_finalize` return exit code 3,
+                # the documented "left inconsistent" contract.
+                failed_total += 1
+                result.data.update({'moved': moved_total, 'moved_records': moved_records,
+                                    'failed': failed_total, 'halted': True})
+                result.add('error', msg)
+                return _finish_apply(result, archive_root, fha_config)
             else:
                 failed_total += 1
                 result.add('warning', msg)
 
-        check = reconcile.run_reconcile(archive_root, fha_config, dry_run=True)
+        try:
+            check = reconcile.run_reconcile(archive_root, fha_config, dry_run=True)
+        except Exception as e:
+            # A crashed verification step must not swallow the report of
+            # what already moved (P2 audit finding, PR #188, second pass):
+            # halt exactly like a reconcile-detected regression below, but
+            # keep the accumulated moved/failed counts instead of letting
+            # the exception escape uncaught past this whole function.
+            result.data.update({'moved': moved_total, 'moved_records': moved_records,
+                                'failed': failed_total, 'halted': True})
+            result.add('error',
+                       f'fha reconcile crashed while re-checking after batch {batch_idx} '
+                       f'({e}) - halting here. {moved_total} file(s) moved so far are '
+                       'safe (each record was updated atomically); the rest of the plan '
+                       'was not attempted. Run `fha reconcile` yourself to see what is '
+                       'happening, fix it, then re-run `fha reorganize`.')
+            return _finish_apply(result, archive_root, fha_config)
         if any(m.level == 'error' for m in check.messages):
-            result.data.update({'moved': moved_total, 'failed': failed_total, 'halted': True})
+            result.data.update({'moved': moved_total, 'moved_records': moved_records,
+                                'failed': failed_total, 'halted': True})
             result.add('error',
                        f'fha reconcile could not run cleanly after batch {batch_idx} - '
                        f'halting here. {moved_total} file(s) moved so far are safe (each '
                        'record was updated atomically); the rest of the plan was not '
                        'attempted. Run `fha reconcile` to see the detail, fix it, then '
                        're-run `fha reorganize`.')
-            return _finalize(result)
+            return _finish_apply(result, archive_root, fha_config)
         cur_issue_count = _issue_count(check)
         if cur_issue_count > prev_issue_count:
-            result.data.update({'moved': moved_total, 'failed': failed_total, 'halted': True})
+            result.data.update({'moved': moved_total, 'moved_records': moved_records,
+                                'failed': failed_total, 'halted': True})
             result.add('warning',
                        f'fha reconcile found {cur_issue_count - prev_issue_count} new '
                        f'issue(s) after batch {batch_idx} - halting here so nothing else '
                        f'changes. {moved_total} file(s) moved so far are safe; the rest '
                        'of the plan was not attempted. Run `fha reconcile` for the '
                        'detail, then re-run `fha reorganize` once it is clear.')
-            return _finalize(result)
+            return _finish_apply(result, archive_root, fha_config)
         prev_issue_count = cur_issue_count
 
-    result.data.update({'moved': moved_total, 'failed': failed_total})
+    result.data.update({'moved': moved_total, 'moved_records': moved_records,
+                        'failed': failed_total})
     if moved_total:
+        # Only records that actually succeeded (P2 audit finding, PR #188):
+        # `len(record_order)` counted every record ATTEMPTED, including any
+        # that failed and were cleanly rolled back - a partial run's own
+        # summary must not claim a failed-and-reverted record as "moved".
         result.add('info',
-                   f'Moved {moved_total} file(s) across {len(record_order)} record(s). '
+                   f'Moved {moved_total} file(s) across {moved_records} record(s). '
                    'Run `fha index` so searches see the new locations.')
-    final_lint = lint.run_lint(archive_root, fha_config)
-    n_err = int((final_lint.data or {}).get('n_errors') or 0)
-    n_warn = int((final_lint.data or {}).get('n_warnings') or 0)
-    result.add('info',
-               f'fha lint after reorganizing: {n_err} error(s), {n_warn} warning(s) '
-               '(run `fha lint` for the detail).')
-    return _finalize(result)
+    return _finish_apply(result, archive_root, fha_config)
 
 
 # -- CLI ----------------------------------------------------------------------
@@ -999,6 +1307,16 @@ def _cmd_reorganize(args: argparse.Namespace) -> int:
     batch_size = max(1, int(getattr(args, 'batch_size', None) or _DEFAULT_BATCH_SIZE))
     group_threshold = max(1, int(getattr(args, 'group_threshold', None) or _DEFAULT_GROUP_THRESHOLD))
     limit = getattr(args, 'limit', None)
+    if limit is not None and limit < 0:
+        # A mistyped `--limit -1` used to exit cleanly and claim "every
+        # eligible document is already tidy" (P2 audit finding, PR #188,
+        # second pass): the trimming loop's `count` starts at 0, so a
+        # negative limit made its own boundary check true immediately,
+        # trimming the plan to nothing without ever saying why. Reject it
+        # here instead, at the CLI boundary, with a plain correction.
+        print(f'ERROR: --limit must be zero or a positive number of files (got {limit}).',
+              file=sys.stderr)
+        return EXIT_FAILURE
     dry_run = bool(getattr(args, 'dry_run', False))
     apply_ = bool(getattr(args, 'apply', False)) and not dry_run
 
@@ -1039,8 +1357,9 @@ def register(subparsers: argparse._SubParsersAction) -> None:
                    help='A source with more than N eligible files gets its own '
                         f'subfolder (default {_DEFAULT_GROUP_THRESHOLD})')
     p.add_argument('--limit', type=int, default=None, metavar='N',
-                   help='Only plan/apply the first N eligible files this run '
-                        '(default: no cap)')
+                   help='Only plan/apply the first N eligible files this run, whole '
+                        'records only - a record whose own files would cross N is '
+                        'skipped, never split (default: no cap)')
     p.set_defaults(func=_cmd_reorganize)
 
 
