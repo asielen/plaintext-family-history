@@ -494,8 +494,19 @@ _FILE_KEY_LINE_RE = re.compile(r'(?m)^([ \t]*(?:-[ \t]+)?file[ \t]*:[ \t]*)([^\r
 # single post-merge review pass found after six already-patched rounds on
 # this redaction surface). An optional explicit indentation indicator
 # digit and/or chomping indicator (`|-`, `|2+`, …) and a trailing comment
-# are all valid YAML here, so all three are allowed.
-_BLOCK_SCALAR_VALUE_RE = re.compile(r'^[|>][+-]?\d*\s*(#.*)?$')
+# are all valid YAML here, so all three are allowed - and (round-11 audit,
+# post-merge Codex review of #197, finding 1) EITHER ORDER of the two
+# modifiers is valid YAML too (`|2-` and `|-2` are both the same literal
+# block scalar, indentation-2 chomp-strip): the previous pattern only
+# accepted chomping-then-digit and silently fell through to treating
+# `|2-` as an ordinary one-line scalar VALUE instead - meaning
+# `_rewrite_file_key_in_entry` didn't refuse the rewrite at all, it
+# "succeeded", replacing the `file: |2-` header with the redacted value
+# while leaving the real path sitting untouched on the continuation line
+# right below it. Matching both orders explicitly closes that gap; every
+# case this used to catch is still caught (the two orders are simply two
+# branches of the same alternation).
+_BLOCK_SCALAR_VALUE_RE = re.compile(r'^[|>](?:[+-]?\d?|\d?[+-]?)\s*(#.*)?$')
 
 
 def _rewrite_file_key_in_entry(entry_text: str, new_value: str) -> tuple[str, int]:
@@ -576,8 +587,19 @@ def _redact_frontmatter_files_field(fm_text: str) -> tuple[str, int] | None:
     don't line up with the parsed entries at all. A missing record in a
     packet is recoverable, a
     leaked local path is not (the same posture `_redact_source_record_text`
-    already takes for an unparseable Claims block)."""
-    key_re = re.compile(r'^files\s*:\s*(.*)$')
+    already takes for an unparseable Claims block).
+
+    The key line is matched as EITHER bare `files:` or quoted `"files":`/
+    `'files':` (round-11 audit, post-merge Codex review of #197, finding
+    4): `yaml.safe_load` resolves a quoted scalar key to the identical
+    plain string `'files'`, so a hand edit that quotes the key changes
+    nothing about how the record actually parses - but this function finds
+    the key line itself by textual search BEFORE handing anything to
+    PyYAML, and the old search only ever looked for the bare spelling. A
+    quoted key therefore looked like "no `files:` key present at all",
+    which reads identically to the genuinely-absent case above and passed
+    the whole entry through uninspected, non-portable path included."""
+    key_re = re.compile(r'^(?:"files"|\'files\'|files)\s*:\s*(.*)$')
     lines = fm_text.splitlines(keepends=True)
     key_idx = None
     key_start = 0
@@ -625,7 +647,23 @@ def _redact_frontmatter_files_field(fm_text: str) -> tuple[str, int] | None:
         redacted = 0
         new_value = []
         for item in value:
-            if isinstance(item, dict) and isinstance(item.get('file'), str):
+            if not isinstance(item, dict):
+                # A list entry that is not a `{file: ..., role: ...}`
+                # mapping at all - a bare scalar (`files: [/Users/alice/
+                # Secret/private.pdf]`) is the shape round-11 audit finding
+                # 2 names, but any other non-mapping shape (a nested list,
+                # say) is just as unreadable here - is silently skipped by
+                # every check below, which only ever inspects `item.get(...)`
+                # after already confirming `isinstance(item, dict)`. That
+                # skip is not "nothing to redact", it is "never even
+                # looked": a raw path spelled directly as a list element
+                # instead of wrapped in a `file:` mapping shipped completely
+                # unexamined, in both README.txt and the copied record. Fail
+                # CLOSED the same way an unparseable Claims entry already
+                # does (`_redact_source_record_text`) rather than trusting a
+                # shape this function cannot even check for a `file:` key.
+                return None
+            if isinstance(item.get('file'), str):
                 new_file = _redact_asset_path(item['file'])
                 if new_file != item['file']:
                     item = {**item, 'file': new_file}
@@ -675,7 +713,16 @@ def _redact_frontmatter_files_field(fm_text: str) -> tuple[str, int] | None:
     parts: list[str] = []
     for item, (s, e) in zip(value, spans):
         entry_text = block[s:e]
-        if isinstance(item, dict) and isinstance(item.get('file'), str):
+        if not isinstance(item, dict):
+            # The block-form twin of the inline-form check above (round-11
+            # audit, finding 2): a bullet entry that is not a `{file: ...}`
+            # mapping at all - `files:\n  - /Users/alice/Secret/private.pdf`
+            # (a bare scalar bullet, no `file:` key) - has no `.get('file')`
+            # for the check below to even ask, so it always fell through
+            # silently unexamined, raw path and all. Fail closed rather
+            # than ship an entry this function never actually inspected.
+            return None
+        if isinstance(item.get('file'), str):
             raw_file = item['file']
             new_file = _redact_asset_path(raw_file)
             if new_file != raw_file:
@@ -1534,7 +1581,30 @@ def _redact_asset_path(raw: str) -> str:
     # off) rather than the full string - otherwise `file:` itself would be
     # misread as a bogus leading path segment and could leak into the
     # "basename".
-    file_uri_match = re.match(r'(?i)^file://+', normalized)
+    #
+    # The scheme marker consumed here is EXACTLY two slashes - `file://` -
+    # never `file://+` (round-11 audit, post-merge Codex review of #197,
+    # finding 3): the three-slash form's third slash is not part of the
+    # scheme separator at all, it is the LEADING slash of the absolute
+    # path that follows an empty authority (`file://` + `` + `/Users/alice`
+    # per the URI grammar). A greedy `+` swallowed that slash along with
+    # the scheme marker, so `file:///Users/alice` handed
+    # `_is_bare_directory_reference`/the basename extraction below the
+    # PATH PART `Users/alice` - two components, indistinguishable from an
+    # ordinary relative alias - instead of the rooted `/Users/alice` the
+    # URI actually names. `_is_bare_directory_reference`'s directory-root
+    # check (`PureWindowsPath(raw).parts` having exactly three components:
+    # the anchor, `Users`, and the name) depends entirely on that leading
+    # slash surviving; without it, `file:///Users/alice` (no trailing
+    # slash - a directory reference, nothing safe to show at all) fell
+    # through to an ordinary basename extraction and returned the bare
+    # username `alice` instead of `(unnamed path)`. Consuming only the
+    # fixed two-slash marker leaves any further leading slash exactly
+    # where the URI grammar puts it, for both forms alike - a real
+    # `file://host/path` two-slash value is unaffected either way, since
+    # it never has a third consecutive slash for `+` to have over-consumed
+    # in the first place.
+    file_uri_match = re.match(r'(?i)^file://', normalized)
     looks_foreign = (
         normalized[0] in ('/', '\\')
         or normalized[0] == '~'

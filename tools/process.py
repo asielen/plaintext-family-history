@@ -4442,16 +4442,38 @@ def process_refile(
     # does not actually land beneath the root it claims to be under -
     # otherwise refile would move (or, on the copy+unlink fallback, delete)
     # a file that was never part of this archive.
+    #
+    # The symlink-loop check runs FIRST, unconditionally - not only inside
+    # the `not _is_under(...)` branch below - as of round-11 audit
+    # (post-merge Codex review of #197, finding 5): on Python 3.13+,
+    # `Path.resolve()`'s non-strict mode (what `_is_under` uses) stopped
+    # raising for a genuine symlink loop at all - it silently returns a
+    # best-effort, still-unresolved path instead (see
+    # `_resolve_hits_symlink_loop`'s own docstring). A broken inventory
+    # symlink can leave that best-effort path textually unchanged and
+    # still sitting under `claimed_root`, so `_is_under` reports it
+    # contained (True) even though nothing was actually resolved through
+    # the loop - and since `not _is_under(...)` is then False, the loop
+    # check that used to live inside this branch never ran at all. Control
+    # fell through to `if not src.is_file():` below, whose `.is_file()`
+    # DOES follow the loop for real (a genuine OS-level stat) and fails,
+    # producing "is not on disk" - true only in the sense that nothing
+    # could be reached, but the wrong diagnosis and the wrong remedy: the
+    # file is likely sitting exactly where it belongs, and what needs
+    # fixing is the broken symlink, not a `files:` entry or a missing
+    # drive. Checking the loop before ever consulting `_is_under`'s result
+    # - success or failure alike - closes that gap for both Python's
+    # resolve() eras at once.
     claimed_root = resolve_path(alias_root, fha_config, archive_root)
+    if _resolve_hits_symlink_loop(src) or _resolve_hits_symlink_loop(claimed_root):
+        raise ProcessError(
+            f'{stored_alias} could not be checked against the configured '
+            f'{alias_root} root - this looks like a symlink loop, most '
+            'likely from a corrupted or maliciously crafted filesystem '
+            f'entry, not a mistyped files: entry in {record_path.name}. '
+            'Find and fix or remove the offending symlink, then retry. '
+            'Nothing was moved.')
     if not _is_under(src, claimed_root):
-        if _resolve_hits_symlink_loop(src) or _resolve_hits_symlink_loop(claimed_root):
-            raise ProcessError(
-                f'{stored_alias} could not be checked against the configured '
-                f'{alias_root} root - this looks like a symlink loop, most '
-                'likely from a corrupted or maliciously crafted filesystem '
-                f'entry, not a mistyped files: entry in {record_path.name}. '
-                'Find and fix or remove the offending symlink, then retry. '
-                'Nothing was moved.')
         raise ProcessError(
             f'{stored_alias} resolves outside the configured {alias_root} '
             f'folder ({claimed_root}) - this looks like a hand-edited files: '
