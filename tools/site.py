@@ -941,18 +941,38 @@ _DATE_BEFORE_RE = re.compile(r'\[\.\.(\d{4})(?:-(\d{2}))?(?:-(\d{2}))?\]')
 # shape in each plain-side position (order doesn't actually matter here -
 # `\d{4}` can never match a literal trailing `X`, so the two alternatives
 # never compete for the same text - but decade-first mirrors how a human
-# reads the shape). Guarded by its own trailing `(?!\d)`, the same
-# discipline the year/month/day alternative already applies, so a decade
-# bound can't silently swallow an adjacent stray digit either. A decade
-# bound never carries a `?`/`~` qualifier in this dialect - `_EDTF_PATTERNS`'s
-# `\d{3}X` pattern allows no suffix - so `pdec1`/`pdec2` have no qualifier
-# groups of their own the way `py1`/`py2` do.
+# reads the shape). A decade bound never carries a `?`/`~` qualifier in
+# this dialect - `_EDTF_PATTERNS`'s `\d{3}X` pattern allows no suffix - so
+# `pdec1`/`pdec2` have no qualifier groups of their own the way `py1`/`py2`
+# do.
+#
+# Boundary (second post-merge Codex review of PR #174/#190): a plain-side
+# match must not be followed by ANOTHER identifier character - not just
+# "not another digit". `[..1900]/191XX` (a doubled, malformed decade
+# marker) or `[..1900]/191Xfoo` used to pass `pdec1`'s old `(?!\d)` check
+# clean (the character right after "191X" is a letter, never a digit), so
+# the FIRST alternative - which has nothing anchoring it after the plain
+# bound, unlike the second alternative's required trailing `/\[\.\.` -
+# matched only the well-formed "191X" prefix and silently left the rest
+# ("X", "foo") dangling as untouched trailing text, translating a
+# genuinely malformed interval into garbled prose ("before 1900 to
+# 1910sX") instead of leaving it alone entirely, as `_scrub_internal_
+# encoding`'s own contract promises for anything that ISN'T a real,
+# complete EDTF shape. `(?![0-9A-Za-z])` closes this for both digits and
+# letters; applied to `pdec1`'s AND `py1`'s trailing checks (both share the
+# same "nothing anchors the end of this alternative" gap), and mirrored on
+# `pdec2`/`py2` for consistency even though the second alternative's own
+# required trailing `/\[\.\.` already rejects this shape by construction
+# today (a `191XX/[..1900]` never reaches this boundary check at all, since
+# `\d{3}X` only consumes "191X" and the very next character has to be `/`,
+# not another letter, for the alternative to match anywhere) - defense in
+# depth against a future change loosening that trailing requirement.
 _DATE_BEFORE_SLASH_RE = re.compile(
     r'\[\.\.(?P<by1>\d{4})(?:-(?P<bm1>\d{2}))?(?:-(?P<bd1>\d{2}))?\]'
-    r'/(?:(?P<pdec1>\d{3}X)(?!\d)'
+    r'/(?:(?P<pdec1>\d{3}X)(?![0-9A-Za-z])'
     r'|(?P<py1>\d{4})(?:-(?P<pmq1>~)?(?P<pm1>\d{2}))?'
-    r'(?:-(?P<pdq1>~)?(?P<pd1>\d{2}))?(?P<pq1>[?~])?(?!\d))'
-    r'|(?<!\d)(?:(?P<pdec2>\d{3}X)(?!\d)'
+    r'(?:-(?P<pdq1>~)?(?P<pd1>\d{2}))?(?P<pq1>[?~])?(?![0-9A-Za-z]))'
+    r'|(?<!\d)(?:(?P<pdec2>\d{3}X)(?![0-9A-Za-z])'
     r'|(?P<py2>\d{4})(?:-(?P<pmq2>~)?(?P<pm2>\d{2}))?'
     r'(?:-(?P<pdq2>~)?(?P<pd2>\d{2}))?(?P<pq2>[?~])?)'
     r'/\[\.\.(?P<by2>\d{4})(?:-(?P<bm2>\d{2}))?(?:-(?P<bd2>\d{2}))?\]',

@@ -5351,6 +5351,29 @@ class ProseConverterTests(unittest.TestCase):
         self.assertIn('5191X/[..1900]', out2)
         self.assertNotIn('before', out2)
 
+    def test_before_bracket_interval_decade_bound_not_swallowed_by_a_following_letter(self):
+        # Second post-merge Codex review of PR #174/#190: the original
+        # digit-adjacency guard above (`test_..._digit_run_not_mistaken`)
+        # only checked a following DIGIT - but a malformed decade marker
+        # followed by a LETTER slipped past it. `[..1900]/191XX` (a doubled
+        # marker) or `[..1900]/191Xfoo` used to match only the well-formed
+        # "191X" prefix and leave the rest dangling, translating a genuinely
+        # malformed interval into garbled prose ("before 1900 to 1910sX")
+        # instead of leaving the whole thing untouched.
+        out = site._scrub_internal_encoding('Span: [..1900]/191XX, per the deed.')
+        self.assertIn('[..1900]/191XX', out)
+        self.assertNotIn('before', out)
+        self.assertNotIn('1910sX', out)
+        out2 = site._scrub_internal_encoding('Span: [..1900]/191Xfoo, per the deed.')
+        self.assertIn('[..1900]/191Xfoo', out2)
+        self.assertNotIn('before', out2)
+        # The mirrored (leading-decade) shape is already protected by its
+        # own required trailing `/[..` anchor, but pin it too - defense in
+        # depth against that anchor ever loosening.
+        out3 = site._scrub_internal_encoding('Span: 191XX/[..1900], per the deed.')
+        self.assertIn('191XX/[..1900]', out3)
+        self.assertNotIn('before', out3)
+
     def test_standalone_before_bracket_still_translates(self):
         # Guards that the finding-5 interval fix doesn't overreach: a
         # bracket that is NOT adjacent to a slash still translates normally.
