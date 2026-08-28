@@ -50,6 +50,7 @@ fha find --text "Rose Hartley" --root my-family-archive   # search everything
 fha doctor   --root my-family-archive   # health check - run this when stuck
 fha lint     --root my-family-archive   # "is my archive shaped right?"
 fha reconcile --dry-run --root my-family-archive  # after reorganizing documents: preview re-ties, run without --dry-run to apply
+fha reorganize --root my-family-archive  # preview folding loose documents/ files into type folders; add --apply --yes to do it
 fha backup   --root my-family-archive   # dated zip beside the archive - restore = unzip
 fha update-tools --dry-run --repo . --root my-family-archive  # preview a tools update (docs/UPDATING.md)
 fha relate P-aaaa P-bbbb --root my-family-archive   # how are these two related?
