@@ -49,11 +49,19 @@ what's usable from Ethel's interview." **Nothing mines silently** (AGENTS.md, TO
 
    Two things fall out of the comparison, and both matter:
 
-   - **Where they disagree on a name, the whisper reading usually wins — but say so in the claim.** Quote
-     the whisper text as the evidence, note what the app transcript had, and cite the whisper timestamp.
-     A real case (names changed): `"Sue walkie"` in the app transcript was drafted as *a person
-     called Sue*; whisper has *Suwałki* — the town — plus a following sentence the app had lost
-     entirely explaining that this is where the family emigrated from.
+   - **Where they disagree on a name, the whisper reading usually wins — but say so in the claim's
+     `notes:`, never in `value:`.** `value:` is what a family member reads verbatim on the generated
+     Timeline/Biography (AGENTS.md §"Speculation and storytelling" → "Keep the archive's own paperwork
+     out of the family's story") — "whisper transcript" and "app transcript" are this codebase's own
+     tooling names for two machine transcription passes, not words a reader has ever met, so a
+     value-line comparing them reads as either a typo or a stranger's name. Put the comparison where it
+     belongs and nowhere else reads it: quote the whisper text as the evidence, note what the app
+     transcript had, and cite the whisper timestamp, all inside `notes:`; `value:` gets only the plain
+     fact the evidence settles. A real case (names changed): `"Sue walkie"` in the app transcript was
+     drafted as *a person called Sue*; whisper has *Suwałki* — the town — plus a following sentence the
+     app had lost entirely explaining that this is where the family emigrated from. The claim's
+     `value:` reads "The family emigrated from Suwałki"; the reconciliation of *why* — the app's
+     mishearing, the whisper correction, the timestamp — lives in `notes:`.
    - **Where one transcript covers material the other lacks, mine the fuller one and check why.** A
      recording app can attach the *same* transcript file to two different recordings, or truncate one at
      a fixed size — in one real archive a 5001-byte transcript stopped at roughly the eight-minute mark and

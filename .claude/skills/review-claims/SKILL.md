@@ -83,6 +83,14 @@ its claims to the people asked about and leave the rest for later sessions.
    - the **Mills fields** in plain terms when they matter ("this is *secondary* evidence — inferred from
      the age column, not a birth record"), so a shaky inference reads as shaky.
 
+   While you're reading a claim's `value:` aloud, this is also the moment to catch it if a draft (yours
+   or a hand-typed one) wandered into the archive's own bookkeeping instead of the family's story —
+   which transcription pass produced a reading, who verified something and when, a first-person note
+   about the research process itself (AGENTS.md §"Speculation and storytelling" →
+   "Keep the archive's own paperwork out of the family's story"). That content belongs in `notes:`, not
+   `value:` — an **edit** (below) moves it there before you accept, rather than publishing it onto the
+   Timeline a family member reads.
+
    Then ask for his decision: **accept / dispute / edit / reject / park** — plus any claim he wants to
    *add* by hand that the draft missed.
 

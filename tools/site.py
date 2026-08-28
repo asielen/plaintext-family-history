@@ -3756,6 +3756,21 @@ class _SiteBuilder:
         (biography_html, stories_html, research_html, biography_raw,
          stories_entries, research_entries) = self._person_prose(row, page_dir)
         timeline = self._person_timeline(pid, page_dir)
+        # #130: whether this page shows the "low confidence" and/or
+        # "unconfirmed" badges at all - person.html's own legend paragraph
+        # only earns its place on a page that actually carries one of them
+        # (a reader who has never met this vocabulary should not be handed
+        # an explanation for marks that are not even on the page). Checked
+        # across BOTH surfaces a badge can appear on: the Born/Died/Married
+        # summary block (low-confidence only - `_person_summary` is
+        # accepted-only, so `needs-review`/unconfirmed never reaches it) and
+        # the Timeline (both marks). `.get` on the summary row because a
+        # missing/provisional row carries no 'confidence' key at all.
+        has_qa_badges = (
+            any(row_out.get('confidence') == 'low' for row_out in summary)
+            or any(e['status'] == 'needs-review' or e['confidence'] == 'low'
+                   for group in timeline for e in group['entries'])
+        )
         sources = self._person_sources(pid, page_dir)
         family = self._person_family(pid, page_dir)
         photos = self._person_photos(pid, page_dir)
@@ -3837,6 +3852,7 @@ class _SiteBuilder:
                                for q in (self._person_open_questions(pid, page_dir)
                                          if self.linked else [])],
             'timeline': timeline, 'sources': sources, 'family': family, 'photos': photos,
+            'has_qa_badges': has_qa_badges,
             # Workbench-only fields (harmless in standalone - the template gates
             # every use on `workbench`): the record's on-disk relpath for the
             # "open file" button and living value for the "change..." affordance.
