@@ -296,6 +296,18 @@ class ProcessTestCase(unittest.TestCase):
         )
         return path
 
+    def _parked_path(self, original: Path) -> Path:
+        """Where #109's `_relocate_from_inbox` parks `original`'s pre-move
+        bytes: `inbox/processed/<the same path it had inside inbox/>`."""
+        inbox = self.archive / 'inbox'
+        return inbox / 'processed' / original.relative_to(inbox)
+
+    def _assert_inbox_holds_only_processed(self) -> None:
+        """After a clean inbox relocation, inbox/'s one top-level entry is
+        `processed/` - #109's audit-trail holding pen for already-filed
+        originals - never an empty inbox and never anything else left over."""
+        self.assertEqual([p.name for p in (self.archive / 'inbox').iterdir()], ['processed'])
+
     # ── M7.1 documents ────────────────────────────────────────────────────────
 
     def test_document_mints_renames_scaffolds(self) -> None:
@@ -396,7 +408,11 @@ class ProcessTestCase(unittest.TestCase):
         rc = self._run([str(asset)])
         self.assertEqual(rc, EXIT_CLEAN)
         self.assertFalse(asset.exists())
-        self.assertEqual(list((self.archive / 'inbox').iterdir()), [])
+        # #109: the original is parked at inbox/processed/, not deleted.
+        self._assert_inbox_holds_only_processed()
+        parked = self._parked_path(asset)
+        self.assertTrue(parked.is_file())
+        self.assertEqual(parked.read_text(encoding='utf-8'), 'inbox body')
         # Owner decision 2026-07-22: an inbox single files into documents/{type}/
         # (default 'other'), never flat at the documents root top level.
         renamed = list((self.archive / 'documents' / 'other').glob('note_S-*.txt'))
@@ -431,7 +447,10 @@ class ProcessTestCase(unittest.TestCase):
 
         rc = self._run([str(sidecar)])
         self.assertEqual(rc, EXIT_CLEAN)
-        self.assertEqual(list((self.archive / 'inbox').iterdir()), [])
+        # #109: both the asset and its sidecar are parked, not just deleted.
+        self._assert_inbox_holds_only_processed()
+        self.assertTrue(self._parked_path(asset).is_file())
+        self.assertTrue(self._parked_path(sidecar).is_file())
         renamed = list((self.archive / 'documents' / 'other').glob('newspaper-clipping_S-*.txt'))
         self.assertEqual(len(renamed), 1)
         records = list((self.archive / 'sources').rglob('*_S-*.md'))
@@ -448,7 +467,9 @@ class ProcessTestCase(unittest.TestCase):
 
         rc = self._run([str(sidecar)])
         self.assertEqual(rc, EXIT_CLEAN)
-        self.assertEqual(list((self.archive / 'inbox').iterdir()), [])
+        self._assert_inbox_holds_only_processed()
+        self.assertTrue(self._parked_path(asset).is_file())
+        self.assertTrue(self._parked_path(sidecar).is_file())
         self.assertEqual(list((self.archive / 'photos').glob('census*')), [])
         renamed = list((self.archive / 'documents' / 'census').glob('census_S-*.jpg'))
         self.assertEqual(len(renamed), 1)
@@ -457,8 +478,10 @@ class ProcessTestCase(unittest.TestCase):
 
     def test_inbox_relocation_rolled_back_on_downstream_refusal(self) -> None:
         # A dna-typed asset relocated out of inbox/ into documents/ (flat) still
-        # fails process_document's documents/dna/ requirement; the move itself
-        # must be undone, not leave the asset filed outside the inbox.
+        # fails process_document's documents/dna/ requirement; the relocation
+        # (#109: a destination copy AND a inbox/processed/ park) must be fully
+        # undone - both halves - not leave the asset filed outside the inbox
+        # or a stray copy/park behind.
         (self.archive / 'inbox').mkdir()
         asset = self.archive / 'inbox' / 'kit.txt'
         asset.write_text('kit body', encoding='utf-8')
@@ -466,8 +489,11 @@ class ProcessTestCase(unittest.TestCase):
         rc = self._run([str(asset), '--type', 'dna'])
         self.assertEqual(rc, EXIT_ERRORS)
         self.assertTrue(asset.exists())
+        self.assertEqual(asset.read_text(encoding='utf-8'), 'kit body')
         self.assertEqual(list((self.archive / 'documents').glob('kit*')), [])
         self.assertEqual(list((self.archive / 'sources').rglob('*.md')), [])
+        # Nothing left behind: no stray inbox/processed/ folder, no parked copy.
+        self.assertEqual(list((self.archive / 'inbox').iterdir()), [asset])
 
     def test_photo_relocated_out_of_inbox(self) -> None:
         store = self._install_photo_store()
@@ -502,6 +528,92 @@ class ProcessTestCase(unittest.TestCase):
         self.assertEqual(rc, EXIT_ERRORS)
         self.assertTrue(asset.exists())
 
+    # ── #109: processing an inbox file parks the original, never deletes it ──
+
+    def test_issue_109_acceptance_processed_original_is_findable(self) -> None:
+        # Issue #109's own repro/acceptance test: stage inbox/sub/x.jpg, run
+        # `fha process inbox/sub/x.jpg`, and confirm BOTH halves hold: (i) the
+        # asset is filed under its S-id in the correct root, AND (ii) the
+        # ORIGINAL remains at inbox/processed/sub/ - not a receipt, the actual
+        # bytes - findable back to the S-id and the destination it names.
+        store = self._install_photo_store()
+        (self.archive / 'inbox' / 'sub').mkdir(parents=True)
+        asset = self.archive / 'inbox' / 'sub' / 'x.jpg'
+        asset.write_text('original photo bytes', encoding='utf-8')
+
+        rc = self._run([str(asset)])
+        self.assertEqual(rc, EXIT_CLEAN)
+
+        # (i) filed under its S-id in the correct root (photos: never renamed,
+        # identity carried by the embedded SOURCE: keyword instead).
+        filed = self.archive / 'photos' / 'x.jpg'
+        self.assertTrue(filed.exists())
+        self.assertEqual(filed.read_text(encoding='utf-8'), 'original photo bytes')
+        keywords = store.read(filed)
+        self.assertEqual(len(keywords), 1)
+        sid = keywords[0].removeprefix('SOURCE: ')
+        record = next((self.archive / 'sources' / 'photos').glob(f'*_{sid}.md'))
+        self.assertIn(sid, record.read_text(encoding='utf-8'))
+
+        # (ii) the original remains, folder structure preserved, at
+        # inbox/processed/sub/ - byte-identical to what was staged, and
+        # nothing left directly in inbox/ any more - findable back to both
+        # the S-id (via the record's own files: entry) and the destination
+        # (documented right there beside it, TOOLING.md #109).
+        self.assertFalse(asset.exists())
+        parked = self.archive / 'inbox' / 'processed' / 'sub' / 'x.jpg'
+        self.assertTrue(parked.is_file())
+        self.assertEqual(parked.read_text(encoding='utf-8'), 'original photo bytes')
+        self.assertEqual(list((self.archive / 'inbox' / 'sub').iterdir()), [])
+        record_files = read_record(record)['meta']['files']
+        self.assertEqual(record_files[0]['file'], 'photos/x.jpg')
+
+    def test_inbox_processed_park_refuses_on_collision(self) -> None:
+        # Design question 1: a same-named file already parked at the
+        # inbox/processed/ destination (e.g. a second run against a file
+        # sharing a name with one already processed once) must refuse
+        # cleanly, matching the wording the documents/photos collision check
+        # already uses - never silently overwrite the earlier audit trail.
+        (self.archive / 'inbox').mkdir()
+        asset = self.archive / 'inbox' / 'note.txt'
+        asset.write_text('second inbox body', encoding='utf-8')
+        already_parked = self.archive / 'inbox' / 'processed' / 'note.txt'
+        already_parked.parent.mkdir(parents=True)
+        already_parked.write_text('first run body', encoding='utf-8')
+
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            rc = self._run([str(asset)])
+        self.assertEqual(rc, EXIT_ERRORS)
+        self.assertIn('destination already exists', err.getvalue())
+        # Refused before anything was written: the new inbox file is
+        # untouched, the earlier parked copy is untouched, and nothing landed
+        # in documents/.
+        self.assertTrue(asset.exists())
+        self.assertEqual(asset.read_text(encoding='utf-8'), 'second inbox body')
+        self.assertEqual(already_parked.read_text(encoding='utf-8'), 'first run body')
+        self.assertEqual(list((self.archive / 'documents').glob('note*')), [])
+
+    def test_inbox_relocation_dry_run_names_processed_destination(self) -> None:
+        # Design question 2/4: --dry-run must simulate the park too - naming
+        # the inbox/processed/ destination in the preview - without creating
+        # it or touching disk anywhere.
+        (self.archive / 'inbox' / 'sub').mkdir(parents=True)
+        asset = self.archive / 'inbox' / 'sub' / 'preview.txt'
+        asset.write_text('inbox body', encoding='utf-8')
+        before = self._snapshot_tree(self.archive)
+
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = self._run([str(asset), '--dry-run'])
+        self.assertEqual(rc, EXIT_CLEAN)
+        text = out.getvalue()
+        self.assertIn('inbox/processed/sub/preview.txt', text.replace('\\', '/'))
+
+        # Nothing on disk changed at all - not even an empty processed/ folder.
+        self.assertEqual(self._snapshot_tree(self.archive), before)
+        self.assertFalse((self.archive / 'inbox' / 'processed').exists())
+
     def test_inbox_photo_dry_run_previews_single_photo_plan(self) -> None:
         # P1 regression: the dry-run relocation returns a destination that does
         # not exist yet; variation grouping must not come back empty and crash
@@ -519,7 +631,8 @@ class ProcessTestCase(unittest.TestCase):
 
         self.assertEqual(rc, EXIT_CLEAN)
         text = out.getvalue()
-        self.assertIn('[dry-run] Would move scan.jpg out of inbox/ into photos/', text)
+        self.assertIn('[dry-run] Would copy scan.jpg out of inbox/ into photos/', text)
+        self.assertIn('parking the original at inbox/processed/scan.jpg', text)
         self.assertIn('[dry-run] Would mint S-', text)
         self.assertIn('Would embed SOURCE: S-', text)
         self.assertIn('in scan.jpg (no rename)', text)
@@ -1195,7 +1308,10 @@ class ProcessTestCase(unittest.TestCase):
         rc = self._run([str(primary), '--type', 'census'])
         self.assertEqual(rc, EXIT_CLEAN)
 
-        self.assertEqual(list((self.archive / 'inbox').iterdir()), [])
+        # #109: both the primary and its auto-pulled back sibling are parked.
+        self._assert_inbox_holds_only_processed()
+        self.assertTrue(self._parked_path(primary).is_file())
+        self.assertTrue(self._parked_path(back).is_file())
         record = next((self.archive / 'sources' / 'census').glob('*_S-*.md'))
         files = read_record(record)['meta']['files']
         self.assertEqual(len(files), 2)
@@ -1337,8 +1453,12 @@ class ProcessTestCase(unittest.TestCase):
 
         rc = self._run([str(renamed), '--more', str(back), 'back'])
         self.assertEqual(rc, EXIT_CLEAN)
-        self.assertFalse(back.exists())  # moved out of inbox and renamed
-        self.assertEqual(list((self.archive / 'inbox').iterdir()), [])
+        self.assertFalse(back.exists())  # filed out of inbox and renamed
+        # #109: both the earlier primary (front) and this --more file (back)
+        # end up parked - the --more path gets the same audit trail.
+        self._assert_inbox_holds_only_processed()
+        self.assertTrue(self._parked_path(front).is_file())
+        self.assertTrue(self._parked_path(back).is_file())
         attached = list((self.archive / 'documents' / 'census').glob(f'*back*_{sid}.txt'))
         self.assertEqual(len(attached), 1)
         record = next((self.archive / 'sources' / 'census').glob('*_S-*.md'))
@@ -1362,7 +1482,11 @@ class ProcessTestCase(unittest.TestCase):
 
         rc = self._run([str(filed_front), '--more', str(back), 'back'])
         self.assertEqual(rc, EXIT_CLEAN)
-        self.assertEqual(list((self.archive / 'inbox').iterdir()), [])
+        # #109: both the earlier primary (front) and this --more file (back)
+        # end up parked.
+        self._assert_inbox_holds_only_processed()
+        self.assertTrue(self._parked_path(front).is_file())
+        self.assertTrue(self._parked_path(back).is_file())
         filed_back = self.archive / 'photos' / 'inbox-back.jpg'
         self.assertTrue(filed_back.exists())
         self.assertEqual(len(store.read(filed_back)), 1)
@@ -1387,7 +1511,10 @@ class ProcessTestCase(unittest.TestCase):
         rc = self._run([str(renamed1), '--more', str(page2), 'page-2'])
         self.assertEqual(rc, EXIT_FAILURE)
         self.assertTrue(page2.exists())  # relocation undone, back in inbox/
+        self.assertEqual(page2.read_text(encoding='utf-8'), 'p2')
         self.assertEqual(list((self.archive / 'documents' / 'census').glob('*page-2*')), [])
+        # #109: nothing left behind - no stray inbox/processed/ folder or copy.
+        self.assertEqual(list((self.archive / 'inbox').iterdir()), [page2])
 
     # ── #108: --more accepts a file already matching this source's S-id ──────
 
@@ -2167,9 +2294,10 @@ class ProcessTestCase(unittest.TestCase):
         def _refuse(record_text, *, record_label=None):
             raise process.ProcessError('refusing: simulated unsafe restricted: rewrite')
 
-        # Path.rename is how BOTH the inbox relocation (_relocate_from_inbox)
-        # and the engine's own document-branch move do their work - spying
-        # on it here catches either one, and the assertion below insists on
+        # #109: the inbox relocation now copies (shutil.copy2) into the
+        # destination root and parks the original via _move_file (which tries
+        # Path.rename first) - spying on BOTH catches the relocation firing at
+        # all, however it does its work, and the assertion below insists on
         # neither ever having fired, not "fired then undone".
         rename_calls: list[tuple[str, str]] = []
         orig_rename = Path.rename
@@ -2178,9 +2306,17 @@ class ProcessTestCase(unittest.TestCase):
             rename_calls.append((str(self_path), str(target)))
             return orig_rename(self_path, target)
 
+        copy_calls: list[tuple[str, str]] = []
+        orig_copy2 = shutil.copy2
+
+        def _spy_copy2(src, dst, *args, **kwargs):
+            copy_calls.append((str(src), str(dst)))
+            return orig_copy2(src, dst, *args, **kwargs)
+
         orig_force = process._force_dna_restriction_text
         process._force_dna_restriction_text = _refuse
-        with unittest.mock.patch.object(Path, 'rename', _spy_rename):
+        with unittest.mock.patch.object(Path, 'rename', _spy_rename), \
+             unittest.mock.patch.object(shutil, 'copy2', _spy_copy2):
             try:
                 err = io.StringIO()
                 with contextlib.redirect_stderr(err):
@@ -2193,6 +2329,7 @@ class ProcessTestCase(unittest.TestCase):
         self.assertIn('simulated unsafe restricted', err.getvalue())
         # The inbox relocation must never even have been attempted.
         self.assertEqual(rename_calls, [])
+        self.assertEqual(copy_calls, [])
         self.assertTrue(kit.exists())  # still sitting in inbox/, not moved-then-undone
         self.assertNotIn('restricted', read_record(record)['meta'])
         self.assertEqual(len(read_record(record)['meta']['files']), 1)  # no new entry
@@ -3154,9 +3291,9 @@ class InputPathResolutionTestCase(unittest.TestCase):
             rc = self._run(['inbox/scan-note.txt', '--dry-run'])
 
         self.assertEqual(rc, EXIT_CLEAN)
-        # The retry fed the preview (the plan names the inbox move), and the
-        # preview stayed a preview: nothing moved, renamed, or scaffolded.
-        self.assertIn('Would move scan-note.txt out of inbox/', out.getvalue())
+        # The retry fed the preview (the plan names the inbox copy+park), and
+        # the preview stayed a preview: nothing moved, renamed, or scaffolded.
+        self.assertIn('Would copy scan-note.txt out of inbox/', out.getvalue())
         self.assertTrue(asset.exists())
         self.assertEqual(list((self.archive / 'documents').glob('*.txt')), [])
         self.assertEqual(list((self.archive / 'sources').rglob('*_S-*.md')), [])

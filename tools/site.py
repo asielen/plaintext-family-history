@@ -2065,6 +2065,38 @@ def _render_pedigree_svg(labels: dict, spouses: list[dict] | None = None,
     ordered_children = [i for lane in child_groups for i in lane]
     n_children = len(children)
     family_mid = (subject_row + spouse_rows[-1]) / 2 if spouse_rows else subject_row
+    # #120 (reopened twice after the original stagger fix): whenever 2+
+    # co-parent lanes share the children gap - a subject-alone lane plus a
+    # drawn spouse, or 2+ drawn spouses - the combined children band's own
+    # row grid can land EXACTLY on a row a DIFFERENT lane already uses for
+    # something else: the subject's own row, a spouse's own row, or the
+    # first marriage's branch-to-children point (always subject_row + 0.5,
+    # since spouse_rows[0] is always subject_row + 1 - see `branch_y`
+    # below). That happens because `family_mid` sits at subject_row +
+    # len(spouses)/2, which is always a whole or half ROW step - the SAME
+    # grid every one of those reserved rows lives on. A foreign child
+    # landing on a reserved row makes that row's OTHER line (a couple
+    # bracket's final leg into the spouse's card, or a branch stub) run
+    # collinear with that child's own spoke line into the children column -
+    # three real, reported overlaps, found one at a time on real charts
+    # (subject-alone-vs-spouse-0 bracket departure, fixed separately above
+    # via `stagger`; the first marriage's branch point vs a subject-alone
+    # child; a spouse's own card row vs a subject-alone child).
+    #
+    # Nudging the WHOLE children band off that grid by a small constant -
+    # not tied to the spouse count's parity, so it can never re-align by
+    # coincidence the way a per-case patch would - removes every row a
+    # FOREIGN lane could ever land on. A lane's OWN branch/trunk vertical
+    # already spans from its branch point to its own children's extremes
+    # regardless of whether any one child sits exactly on that point (see
+    # `span` below), so shifting a same-lane child a few px off its own
+    # lane's branch row is still correct, ordinary geometry - not a
+    # collision fix undone. A single lane (no drawn spouse, or one spouse
+    # with no subject-alone kids) has no other lane to land on top of, so
+    # the nudge only applies once there are 2+ lanes drawn - every chart
+    # this bug never touched keeps its exact pre-existing row numbers.
+    if n_lanes >= 2:
+        family_mid += 0.25
     children_rows = [family_mid + (i - (n_children - 1) / 2) for i in range(n_children)]
     # Row of each child by its ORIGINAL index (cards and ticks look rows up here).
     child_row_of = {orig: children_rows[pos] for pos, orig in enumerate(ordered_children)}
