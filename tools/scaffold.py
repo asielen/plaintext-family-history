@@ -103,10 +103,15 @@ CODE MAP
     _placeholder_only_scaffold_litter - recursive, byte-for-byte: does a
                                  placeholder folder hold nothing but this
                                  install's own shipped bytes?
+    _alias_seed_shas            - an alias's own skeleton checksums, preferring
+                                 this archive's OWN installed baseline (its
+                                 .plaintext-version stamp) over today's manifest
     _prune_external_root_placeholders - update-time: remove (or preview removing)
                                  an already-installed placeholder that just went
                                  external and holds nothing but scaffold litter;
                                  reports any removal that failed
+    _prune_orphaned_literal_root_folders - update-time: same treatment for the
+                                 literal alias folder an INTERNAL rename orphaned
     _restore_pruned_placeholders - best-effort undo of a prune whose removal
                                  the stamp write then failed to record
 
@@ -144,6 +149,7 @@ from _lib import (
     EXIT_FAILURE,
     EXIT_WARNINGS,
     VENDOR_DIR,
+    FhaConfigError,
     Result,
     configure_utf8_stdout,
     external_asset_roots,
@@ -606,24 +612,49 @@ def _internal_root_renames(fha_config: dict, archive_root: Path) -> dict[str, st
     literal, purposeless `documents/` folder this feature exists to avoid comes
     back through the gap.
 
-    Only returns an alias whose `roots:` value is a plain relative path that
+    Only returns an alias whose folder ends up a plain relative path that
     stays contained under the archive root (`_contained_relative` - the same
     guard the manifest's own paths are checked against) and actually differs
     from the alias's own name; a redundant `documents: documents` needs no
-    remap, and anything odder (absolute, `..`-bearing, or a target
-    `external_asset_roots` already calls external) falls back to the literal
-    `documents/` placeholder rather than guess at a destination the rest of
-    the manifest-safety machinery cannot vouch for.
+    remap, and anything this cannot vouch for (a `..`-bearing relative value,
+    or an absolute value that does not actually resolve inside the archive)
+    falls back to the literal `documents/` placeholder rather than guess at a
+    destination the rest of the manifest-safety machinery cannot verify.
+
+    A `roots:` value can also be a VALID ABSOLUTE path that happens to
+    resolve INSIDE the archive (`documents: /home/me/archive/archive-docs`,
+    with `archive_root` = `/home/me/archive`) - `external_asset_roots`
+    already classifies that correctly as internal (it resolves inside), but
+    the folder it actually names is `archive-docs`, not the string you get by
+    stripping the leading `/` (`home/me/archive/archive-docs` - a bogus
+    relative path this function used to hand back before ever checking
+    whether the value was absolute at all, #124 review round 3, finding 1).
+    So an absolute value is detected and resolved for REAL - the same way
+    `resolve_path`/`external_asset_roots` do - before any string surgery,
+    never by stripping characters off it.
     """
     roots = get_roots(fha_config)
     if not isinstance(roots, dict):
         return {}
     external = external_asset_roots(fha_config, archive_root)
+    archive_root_resolved = Path(archive_root).resolve()
     renames: dict[str, str] = {}
     for alias in ASSET_ROOT_ALIASES:
         if alias not in roots or alias in external:
             continue
-        value = str(roots[alias]).strip().replace('\\', '/').strip('/')
+        raw = str(roots[alias]).strip()
+        if not raw:
+            continue
+        if os.path.isabs(raw):
+            # Resolved the real way (matches resolve_path/external_asset_roots,
+            # which is how this alias got classified "internal" in the first
+            # place) rather than by stripping the leading slash off the text.
+            try:
+                value = Path(raw).resolve().relative_to(archive_root_resolved).as_posix()
+            except (ValueError, OSError, RuntimeError):
+                continue  # cannot establish where inside the archive this is
+        else:
+            value = raw.replace('\\', '/').strip('/')
         if not value or value == alias or not _contained_relative(value):
             continue
         renames[alias] = value
@@ -707,8 +738,41 @@ def _placeholder_only_scaffold_litter(
     return True
 
 
+def _alias_seed_shas(
+    alias: str, manifest: dict, recorded: dict[str, str],
+) -> dict[str, str]:
+    """Literal manifest path -> the checksum THIS ARCHIVE actually received for
+    `alias`'s own skeleton entries, preferring the archive's own installed
+    baseline over the current manifest (#124 review round 3, finding 3).
+
+    A litter check that compares on-disk bytes must compare them against what
+    was really shipped to THIS archive, not against what today's release
+    would ship: if a skeleton seed's content changed upstream between this
+    archive's install and the run doing the comparing, the two can legitimately
+    differ even though nothing local ever touched the file. Getting the
+    baseline wrong cuts both ways - an untouched OLD seed reads as "real
+    content" (never pruned) when compared against a NEW release's checksum,
+    while a human edit that happens to coincidentally match the NEW release's
+    stock bytes reads as "still pristine" (safe to prune) even though it
+    genuinely differs from what this archive was actually given.
+
+    `recorded` is the archive's OWN `.plaintext-version` stamp (`_stamp_file_map`)
+    - the ground truth for what it received. Only a path the stamp never
+    recorded at all - a skeleton entry first delivered to this archive during
+    THIS very run, with nothing yet to compare against - falls back to the
+    current manifest's checksum, since there is no earlier baseline to prefer.
+    """
+    return {
+        e['path']: recorded.get(e['path'], e.get('sha256'))
+        for e in manifest['files']
+        if e.get('category') == 'skeleton'
+        and e['path'].split('/', 1)[0] == alias
+    }
+
+
 def _prune_external_root_placeholders(
-    archive_root: Path, fha_config: dict, manifest: dict, *, dry_run: bool = False,
+    archive_root: Path, fha_config: dict, manifest: dict, recorded: dict[str, str],
+    *, dry_run: bool = False,
 ) -> tuple[list[str], list[tuple[str, str]]]:
     """Remove (or preview removing) an internal placeholder that just went external.
 
@@ -718,15 +782,17 @@ def _prune_external_root_placeholders(
     disappears but nothing before this function ever cleaned it up (#124).
 
     Only a folder holding NOTHING BUT this install's own shipped bytes,
-    verified recursively and byte-for-byte (`_placeholder_only_scaffold_litter`),
-    is a candidate - matching this project's own safety rule (TOOLING: never
-    destroy something that might be a human's data without being sure). One
-    real file, an edited seed, a subfolder with real content nested inside it
-    (however deep, however hidden), or anything this walk could not read takes
-    the whole folder out of consideration: it is left exactly as it is - not
-    removed, not flagged as customized, not backed up. `fha update-tools`
-    narrates that decision but never acts on it; the human decides what to do
-    with a folder that surprised the tools.
+    verified recursively and byte-for-byte (`_placeholder_only_scaffold_litter`,
+    compared against `recorded` - this archive's own `.plaintext-version`
+    baseline, via `_alias_seed_shas` - not blindly against today's manifest,
+    #124 review round 3, finding 3), is a candidate - matching this project's
+    own safety rule (TOOLING: never destroy something that might be a human's
+    data without being sure). One real file, an edited seed, a subfolder with
+    real content nested inside it (however deep, however hidden), or anything
+    this walk could not read takes the whole folder out of consideration: it
+    is left exactly as it is - not removed, not flagged as customized, not
+    backed up. `fha update-tools` narrates that decision but never acts on it;
+    the human decides what to do with a folder that surprised the tools.
 
     Returns `(removed, failed)`:
       - `removed` - the alias names actually removed (or, under `dry_run`,
@@ -748,14 +814,63 @@ def _prune_external_root_placeholders(
         if not folder.is_dir():
             continue
         # This alias's own skeleton entries, keyed by the FULL archive-relative
-        # path (not just the filename) with the sha256 the manifest recorded
-        # for each - what `_placeholder_only_scaffold_litter` verifies every
-        # file it finds against, byte for byte.
-        seed_shas = {
-            e['path']: e.get('sha256') for e in manifest['files']
-            if e.get('category') == 'skeleton'
-            and e['path'].split('/', 1)[0] == alias
-        }
+        # path (not just the filename), with the checksum THIS ARCHIVE actually
+        # received for each (`_alias_seed_shas`) - what
+        # `_placeholder_only_scaffold_litter` verifies every file it finds
+        # against, byte for byte.
+        seed_shas = _alias_seed_shas(alias, manifest, recorded)
+        if not _placeholder_only_scaffold_litter(folder, archive_root, seed_shas):
+            continue  # real content, an edited seed, or unreadable - not ours to touch
+        if not dry_run:
+            try:
+                shutil.rmtree(folder)
+            except OSError as exc:
+                failed.append((alias, str(exc)))
+                continue
+        removed.append(alias)
+    return removed, failed
+
+
+def _prune_orphaned_literal_root_folders(
+    archive_root: Path, fha_config: dict, manifest: dict, recorded: dict[str, str],
+    *, dry_run: bool = False,
+) -> tuple[list[str], list[tuple[str, str]]]:
+    """Remove (or preview removing) the literal alias folder an INTERNAL rename
+    just orphaned (TOOLING §13c, #124 review round 3, finding 2).
+
+    `roots: documents: archive-docs` moves an internal alias's placeholder to
+    `archive-docs/.gitkeep` (`_internal_root_renames`, install time or a later
+    `_plan_update`) - but an archive that was already installed at the literal
+    `documents/` folder before the rename (or that was installed by a version
+    which always seeds the literal name first) still has `documents/.gitkeep`
+    sitting there afterward, since nothing before this function ever cleaned
+    it up. TOOLING §13c promises the placeholder lives ONLY at the renamed
+    folder, not both places at once - a literal `documents/` folder with
+    nothing in it but the shipped seed is exactly as purposeless, for exactly
+    the same reason, as an internal placeholder whose alias went external
+    (`_prune_external_root_placeholders`), so it gets the identical treatment.
+
+    Only a literal folder holding nothing but this install's own shipped
+    bytes, verified recursively and byte-for-byte against what THIS ARCHIVE
+    actually received (`_placeholder_only_scaffold_litter` + `_alias_seed_shas`,
+    same as the external-root prune), is ever removed - real content, an
+    edited seed, or anything unreadable leaves the folder alone, unremoved and
+    unflagged, matching every other prune in this file.
+
+    An alias that is CURRENTLY external is left to `_prune_external_root_placeholders`
+    instead (it prunes the literal `alias` folder too, by a different route),
+    so this function only ever considers a rename that stays inside the
+    archive. Returns `(removed, failed)` in the same shape as
+    `_prune_external_root_placeholders`.
+    """
+    renames = _internal_root_renames(fha_config, archive_root)
+    removed: list[str] = []
+    failed: list[tuple[str, str]] = []
+    for alias in sorted(renames):
+        folder = archive_root / alias
+        if not folder.is_dir():
+            continue
+        seed_shas = _alias_seed_shas(alias, manifest, recorded)
         if not _placeholder_only_scaffold_litter(folder, archive_root, seed_shas):
             continue  # real content, an edited seed, or unreadable - not ours to touch
         if not dry_run:
@@ -1094,6 +1209,54 @@ def _refuse_directory_destinations(archive_root: Path, files: list[dict]) -> Non
         )
 
 
+def _refuse_remapped_root_conflicts(files: list[dict], renames: dict[str, str]) -> None:
+    """Refuse before any mutation if two files' REMAPPED destinations collide -
+    one needing a path to be a directory, another needing that exact path to
+    be a plain file (#124 review round 3, finding 6).
+
+    A conflicting internal remap like `documents: fha.yaml/assets` is
+    syntactically valid and stays inside the archive - `_contained_relative`
+    passes it - and is invisible to `_refuse_directory_destinations`, which
+    only ever checks the manifest's UNREMAPPED literal paths against what
+    already exists on disk before this run touches anything. But it makes the
+    documents seed's remapped destination (`fha.yaml/assets/.gitkeep`) require
+    `fha.yaml` to be a DIRECTORY - the exact path another manifest entry (the
+    real config file itself) needs to write as a plain FILE. Nothing needs to
+    exist on disk yet for this to be a genuine conflict: it is a property of
+    the computed destination SET alone, so it is checked before the install
+    loop copies a single byte, rather than discovered mid-loop with a
+    half-installed archive and no stamp - the documents seed creating
+    `fha.yaml/` as a directory, a later copy step failing to write the real
+    config through it, and a retry then failing the same way because
+    `fha.yaml` is now a directory, not a writable file.
+    """
+    dest_paths = [
+        _remap_skeleton_path(e['path'], renames) if e.get('category') == 'skeleton'
+        else e['path']
+        for e in files
+    ]
+    dest_set = set(dest_paths)
+    conflicts: set[str] = set()
+    for dest in dest_paths:
+        parts = PurePosixPath(dest).parts
+        for depth in range(1, len(parts)):
+            ancestor = '/'.join(parts[:depth])
+            if ancestor in dest_set:
+                conflicts.add(ancestor)
+                conflicts.add(dest)
+    if not conflicts:
+        return
+    listing = '\n  '.join(sorted(conflicts)[:10])
+    more = '' if len(conflicts) <= 10 else f'\n  …and {len(conflicts) - 10} more'
+    raise ScaffoldError(
+        f"fha.yaml's roots: maps two different tool files to the same path once "
+        f"the rename is applied - one needs it to be a FOLDER, another needs it "
+        f"to be that exact FILE:\n  {listing}{more}\n"
+        f"Nothing has been written. Point roots: at a folder that does not "
+        f"collide with another tool file, then re-run install."
+    )
+
+
 def _resolve_repo_root(repo_arg: str | None) -> Path:
     """Resolve the public-repo directory holding manifest.json.
 
@@ -1286,7 +1449,12 @@ def run_install(
     RENAMES but stays inside the archive (`documents: archive-docs`) still gets
     its placeholder, just at the renamed folder (`_internal_root_renames`,
     TOOLING §13c) rather than the literal `documents/` it would otherwise land
-    at unused.
+    at unused - unless that rename would put the placeholder somewhere it
+    structurally CONFLICTS with another tool file's own destination (one
+    needing a folder, the other that same path as a file); that is refused
+    before anything is written, not discovered mid-install with a
+    half-installed archive (`_refuse_remapped_root_conflicts`, #124 review
+    round 3, finding 6).
 
     Returns a `Result` (Result == int, so callers/tests comparing against EXIT_*
     keep working): EXIT_CLEAN on success (even with the exiftool/PyYAML
@@ -1356,6 +1524,13 @@ def run_install(
     # Validate every source exists BEFORE writing anything, so a broken/partial
     # clone fails cleanly instead of leaving a half-installed archive.
     files = [e for e in manifest['files'] if e['path'] not in skip_paths]
+
+    # A structurally CONFLICTING remap (`documents: fha.yaml/assets`, which
+    # would need `fha.yaml` to be both a folder and the real config file) must
+    # be caught before anything is written, not discovered mid-loop with a
+    # half-installed archive and no stamp (#124 review round 3, finding 6).
+    _refuse_remapped_root_conflicts(files, renames)
+
     missing: list[str] = []
     for entry in files:
         src = repo_root / entry.get('src', entry['path'])
@@ -1622,6 +1797,8 @@ def _plan_update(
     manifest: dict,
     stamp: dict | None,
     fha_config: dict,
+    *,
+    roots_config_readable: bool = True,
 ) -> dict:
     """Classify every operating-layer file without writing anything.
 
@@ -1647,10 +1824,26 @@ def _plan_update(
     all three agree on where a renamed alias's skeleton entries live).
     Pruning an already-installed placeholder that just WENT external is a
     separate step (`_prune_external_root_placeholders`, run by the caller).
+
+    `roots_config_readable=False` (fha.yaml could not be parsed at all this
+    run - PyYAML missing, or a genuine syntax error, #124 review round 3,
+    finding 5) means `fha_config` is a `{}` fallback that must NOT be trusted
+    as "nothing configured": treating it that way is exactly what would let an
+    already-pruned external placeholder get silently RECREATED the moment its
+    real `roots:` value cannot be read. So every documents/photos/inbox alias
+    is withheld from delivery below, the same way a genuinely-external one
+    already is - no scaffolding mutation is planned for any of them until the
+    config can be read again.
     """
     recorded: dict[str, str] = _stamp_file_map(stamp)
     external_now = external_asset_roots(fha_config, archive_root)
     renames_now = _internal_root_renames(fha_config, archive_root)
+    # See the `roots_config_readable=False` note above - every alias is
+    # treated as off-limits for delivery, exactly like a genuinely external
+    # one, whenever this run could not actually read what `roots:` says.
+    withheld_from_delivery = (
+        external_now if roots_config_readable else set(ASSET_ROOT_ALIASES)
+    )
 
     plan = {'added': [], 'current': [], 'stock': [], 'customized': [], 'retired': []}
 
@@ -1714,7 +1907,10 @@ def _plan_update(
         # genuinely-never-delivered seed otherwise. Re-pointing the alias
         # back inside the archive drops it out of `external_now`, and the
         # very next update recreates the placeholder through this same path.
-        if manifest_path.split('/', 1)[0] in external_now:
+        # Also true, deliberately, of every alias while `roots:` could not be
+        # read at all this run (`withheld_from_delivery` - finding 5): a
+        # `{}` fallback config must never be mistaken for "nothing configured".
+        if manifest_path.split('/', 1)[0] in withheld_from_delivery:
             continue
         # A still-renamed-but-internal alias (`documents: archive-docs`) is
         # checked, and delivered, at the folder it actually lives at - not the
@@ -1740,10 +1936,42 @@ def _plan_update(
         manifest_all_paths.add(e['path'])
         if e.get('category') == 'skeleton':
             manifest_all_paths.add(_remap_skeleton_path(e['path'], renames_now))
+
+    # A documents/photos/inbox alias renamed MORE THAN ONCE leaves its EARLIER
+    # rename target recorded on the stamp too (`inbox: old-inbox`, later
+    # changed to `inbox: new-inbox`) - a folder name that is neither the
+    # literal alias nor the CURRENT rename target, so `manifest_all_paths`
+    # above never recognizes it. `old-inbox/_TEMPLATE.notes.md` was a genuine
+    # install-once seed at ITS OWN time, and the owner may have written real
+    # notes into it since - exactly the kind of content this project's safety
+    # philosophy says must never be swept into `.plaintext-backup/` on a mere
+    # path-absence check that never even looks at the bytes (#124 review
+    # round 3, finding 4). There is no persisted history of every past rename
+    # value to consult, so this recognizes the SHAPE instead of the name: any
+    # recorded path whose portion after its first segment matches the portion
+    # after the alias in one of THIS alias's own skeleton entries is a
+    # plausible current or former home for that skeleton identity, whatever
+    # its first segment happens to be - and is therefore never eligible for
+    # the unverified sweep below, no matter how many renames separate it from
+    # today's config. (The litter-VERIFIED prunes -
+    # `_prune_external_root_placeholders`, `_prune_orphaned_literal_root_folders`
+    # - are the only things allowed to remove a folder like this, and only
+    # after proving byte-for-byte that nothing but the shipped seed is in it.)
+    alias_skeleton_tails: set[str] = set()
+    for e in manifest['files']:
+        if e.get('category') != 'skeleton':
+            continue
+        seg0, sep, rest = e['path'].partition('/')
+        if sep and seg0 in ASSET_ROOT_ALIASES:
+            alias_skeleton_tails.add(rest)
+
     retired: list[str] = []
     for archive_path in recorded:
         if archive_path in manifest_all_paths:
             continue
+        _seg0, _sep, rest = archive_path.partition('/')
+        if _sep and rest in alias_skeleton_tails:
+            continue  # a current or former documents/photos/inbox home - never swept here
         if (archive_root / archive_path).exists():
             retired.append(archive_path)
 
@@ -1818,31 +2046,42 @@ def run_update_tools(
 
     Also removes an already-installed documents/photos/inbox placeholder
     folder whose alias just went external in fha.yaml, but ONLY if nothing but
-    this install's own shipped bytes - verified recursively and byte-for-byte,
-    never by name alone - is inside it; real content, an edited seed, or a
-    folder this run could not fully read is left completely alone
-    (`_prune_external_root_placeholders`, #124). A folder that WAS eligible but
-    failed to remove (locked file, permission denied), and a `.plaintext-version`
-    write that failed right after a successful prune (disk and the stamp are
-    put back in agreement by restoring what was just removed), both surface as
-    a reported failure rather than a silent no-op. An alias renamed but kept
-    inside the archive (`documents: archive-docs`) gets its placeholder at the
-    renamed folder, matching `run_install` and `_plan_update` (TOOLING §13c).
-    Without PyYAML this whole check is skipped and reported (#124 review) -
-    every OTHER part of this run still applies normally.
+    this install's own shipped bytes - verified recursively and byte-for-byte
+    against what THIS ARCHIVE actually received, never against today's
+    manifest and never by name alone (`_placeholder_only_scaffold_litter` +
+    `_alias_seed_shas`, #124 review round 3 finding 3) - is inside it; real
+    content, an edited seed, or a folder this run could not fully read is left
+    completely alone (`_prune_external_root_placeholders`, #124). The literal
+    alias folder an INTERNAL rename orphans (`documents: archive-docs` leaving
+    `documents/` behind) gets the identical litter-verified treatment
+    (`_prune_orphaned_literal_root_folders`, finding 2). A folder that WAS
+    eligible but failed to remove (locked file, permission denied), and a
+    `.plaintext-version` write that failed right after a successful prune
+    (disk and the stamp are put back in agreement by restoring what was just
+    removed), both surface as a reported failure rather than a silent no-op.
+    An alias renamed but kept inside the archive (`documents: archive-docs`)
+    gets its placeholder at the renamed folder, matching `run_install` and
+    `_plan_update` (TOOLING §13c). A recorded path that is a current OR FORMER
+    documents/photos/inbox home (an alias renamed more than once) is never
+    swept into `.plaintext-backup/` by the generic retired-file path, which
+    never checks bytes at all - only the litter-verified prunes above may
+    remove one (finding 4). Without PyYAML, or with a fha.yaml that fails to
+    parse at all, this whole check withholds every alias from delivery,
+    pruning, and re-pruning and is reported, not silently treated as "nothing
+    configured" (#124 review; finding 5 for the parse-failure case) - every
+    OTHER part of this run still applies normally.
 
     Returns a `Result` (Result == int, so callers/tests comparing against EXIT_*
     keep working): EXIT_CLEAN on a clean update or dry run, EXIT_WARNINGS when
     one or more files could not be updated OR the #124 external-root check
-    could not run (PyYAML missing, or a placeholder failed to remove or
-    restore), with the files actually installed (plus the rewritten stamp)
-    listed in `changed` (empty under --dry-run). The update narration is
-    printed inline. Raises ScaffoldError on any can't-run condition.
+    could not run (PyYAML missing, fha.yaml unparseable, or a placeholder
+    failed to remove or restore), with the files actually installed (plus the
+    rewritten stamp) listed in `changed` (empty under --dry-run). The update
+    narration is printed inline. Raises ScaffoldError on any can't-run condition.
     """
     archive_root = Path(archive_root).resolve()
     manifest = load_manifest(repo_root)
     stamp = _load_version_stamp(archive_root)
-    fha_config = load_fha_yaml(archive_root)
 
     # This archive HAS an fha.yaml (that is what makes it an archive -
     # `find_archive_root`), so a missing PyYAML here is never "there was
@@ -1864,6 +2103,41 @@ def run_update_tools(
         f"run. Install it with `{pip_command('pyyaml')}`, then run "
         f"`fha update-tools` again."
     )
+
+    # A SYNTAX ERROR in fha.yaml is a different failure than "PyYAML is not
+    # installed", and the permissive `load_fha_yaml` used everywhere else in
+    # this file cannot tell the two apart from "nothing configured" - it
+    # returns `{}` for all three. Read that as "no roots:" and an external
+    # alias whose placeholder was already correctly pruned gets it silently
+    # RECREATED the moment an unrelated edit happens to break the YAML syntax
+    # elsewhere in the file (#124 review round 3, finding 5). So this one
+    # check gets its OWN strict read - the same `strict=True` `doctor.py`
+    # already uses to fail loudly rather than silently drop configured roots -
+    # specifically to tell "genuinely broken" apart from "genuinely empty".
+    # Skipped when PyYAML itself is missing: `yaml_missing` already covers
+    # that case with its own note, and a strict load would raise for the same
+    # underlying reason, muddying the two into one message.
+    config_broken = False
+    config_broken_note = ''
+    fha_config: dict = {}
+    if yaml_missing:
+        fha_config = {}
+    else:
+        try:
+            fha_config = load_fha_yaml(archive_root, strict=True)
+        except FhaConfigError as exc:
+            config_broken = True
+            config_broken_note = (
+                f"{archive_root / 'fha.yaml'} has a problem and could not be read, "
+                f"so this run could not check its roots: for a documents/photos/"
+                f"inbox folder pointed outside the archive - the placeholder "
+                f"skip/prune (#124) was not checked this run. {exc} Fix fha.yaml, "
+                f"then run `fha update-tools` again."
+            )
+    # Either gap withholds every documents/photos/inbox alias from delivery,
+    # pruning, and re-pruning below (`roots_config_readable`) - a `{}`
+    # fallback must never be mistaken for "nothing configured".
+    roots_config_readable = not (yaml_missing or config_broken)
 
     # The same refusal `install` makes, for the same reason - and it has to be
     # here too, because this is the command an owner of a hand-copied archive is
@@ -1915,8 +2189,13 @@ def run_update_tools(
         )
         print()
 
-    plan = _plan_update(archive_root, repo_root, manifest, stamp, fha_config)
+    plan = _plan_update(archive_root, repo_root, manifest, stamp, fha_config,
+                        roots_config_readable=roots_config_readable)
     date_str = datetime.date.today().isoformat()
+    # This archive's OWN installed baseline - what `_alias_seed_shas` compares
+    # a placeholder's on-disk bytes against (finding 3), rather than blindly
+    # against today's manifest.
+    recorded_checksums = _stamp_file_map(stamp)
 
     # A broken/partial clone must fail before any mutation - otherwise a
     # customized file could be moved to backup and then have no stock to replace
@@ -1951,11 +2230,17 @@ def run_update_tools(
             print(f'[dry-run] would remove the now-empty folder {gone}/ '
                   f'(everything in it is being retired).')
         would_prune_external, _would_fail_external = _prune_external_root_placeholders(
-            archive_root, fha_config, manifest, dry_run=True)
+            archive_root, fha_config, manifest, recorded_checksums, dry_run=True)
         for alias in would_prune_external:
             print(f'[dry-run] would remove the now-purposeless {alias}/ folder '
                   f'(fha.yaml roots: already points {alias} outside this archive, '
                   f'and nothing but the install placeholder is inside it).')
+        would_prune_orphaned, _would_fail_orphaned = _prune_orphaned_literal_root_folders(
+            archive_root, fha_config, manifest, recorded_checksums, dry_run=True)
+        for alias in would_prune_orphaned:
+            print(f'[dry-run] would remove the now-orphaned {alias}/ folder '
+                  f'(fha.yaml roots: already renames {alias} elsewhere inside this '
+                  f'archive, and nothing but the install placeholder is inside it).')
         would_repair, _ = _restore_exec_bits(
             archive_root, repo_root, manifest, dry_run=True)
         for repaired in would_repair:
@@ -1964,6 +2249,8 @@ def run_update_tools(
                   f'are already up to date).')
         if yaml_missing:
             print(f'[dry-run] {yaml_missing_note}')
+        if config_broken:
+            print(f'[dry-run] {config_broken_note}')
         print(
             f'Plan: {n_added} to add, {n_stock} to update, {n_custom} to back up '
             f'and update, {n_retired} retired, {n_current} already up to date'
@@ -2116,7 +2403,7 @@ def run_update_tools(
     # emptied directory is removed above, just triggered by the CURRENT
     # fha.yaml rather than by what retired this run.
     pruned_external, prune_failed = _prune_external_root_placeholders(
-        archive_root, fha_config, manifest)
+        archive_root, fha_config, manifest, recorded_checksums)
     for alias in pruned_external:
         print(f'Removed the now-purposeless {alias}/ folder - fha.yaml roots: '
               f'already points {alias} outside this archive.')
@@ -2131,12 +2418,32 @@ def run_update_tools(
         failures.append(
             f'{alias}/: could not remove the now-purposeless folder ({reason}). '
             f'fha.yaml roots: still points {alias} outside this archive.')
+
+    # The literal alias folder an INTERNAL rename just orphaned (`documents:
+    # archive-docs` leaving `documents/` behind) is exactly as purposeless,
+    # for the same reason, and gets the identical litter-verified treatment
+    # (#124 review round 3, finding 2).
+    pruned_orphaned, prune_orphaned_failed = _prune_orphaned_literal_root_folders(
+        archive_root, fha_config, manifest, recorded_checksums)
+    for alias in pruned_orphaned:
+        print(f'Removed the now-orphaned {alias}/ folder - fha.yaml roots: '
+              f'already renames {alias} elsewhere inside this archive.')
+    for alias, reason in prune_orphaned_failed:
+        failures.append(
+            f'{alias}/: could not remove the now-orphaned folder ({reason}). '
+            f'fha.yaml roots: still renames {alias} elsewhere inside this archive.')
+
     if yaml_missing:
         # The rest of this run (refreshing the operating layer) still applies
         # normally - only the #124 external-root check was skipped - but that
         # is a real, reportable gap, not a silent no-op: fold it into the same
         # warning-status reporting every other per-run failure uses.
         failures.append(yaml_missing_note)
+    if config_broken:
+        # Same reasoning as yaml_missing above, for a fha.yaml that IS
+        # readable by the interpreter but does not parse as valid YAML
+        # (#124 review round 3, finding 5).
+        failures.append(config_broken_note)
     # Its skeleton entries (documents/.gitkeep, …) must NOT be carried over in
     # the stamp rewrite below - "recorded" is what stops the seed-delivery
     # loop in `_plan_update` from ever offering it back, so a removed
