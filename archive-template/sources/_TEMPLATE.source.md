@@ -15,7 +15,7 @@ aliases:           # OPTIONAL - the code, repeated, plus any nickname you like t
 title: A short name for this source   # e.g. "1880 census, Hartley household"
 source_type: photo                    # one of: photo, census, vital-record, newspaper, letter,
                                       # interview, military-record, land-record, probate, directory,
-                                      # dna, book, website, artifact, proof-argument, other
+                                      # dna, book, website, artifact, proof-argument, ephemera, other
 source_date: 1880          # OPTIONAL - when the source was made. A year is fine; "about 1880" too.
 repository: unknown        # OPTIONAL - where the original lives (an attic, a courthouse, a website)
 citation: >                # OPTIONAL - a sentence saying exactly what this is, in your own words
@@ -90,6 +90,19 @@ created: 2026-01-01        # the date you added this (any date is fine)
 #   subtype: member-of           # or "employer" for a workplace
 #   roles: {member: P-__________}
 #   value_org: "Cherokee Nation" # the organization, in plain text (a church, unit, lodge, ...)
+#   status: suggested
+#   confidence: high
+
+# A DEATH or BURIAL naming more than one person - say who died with "roles: deceased:".
+# Most death/burial records name more than the person who died (a spouse, an
+# informant, a grandchild who visited the grave); roles: deceased: says which one(s)
+# it was. List more than one ID if two people died or were buried together (a house
+# fire, a shipwreck) with nobody else named on the record at all.
+# - value: "Thomas Hartley died 3 March 1912, Fairview, Kansas"
+#   type: death
+#   persons: [P-__________]            # everyone the record names - the deceased included
+#   id: C-__________
+#   roles: {deceased: [P-__________]}  # list more than one ID for a shared death/burial
 #   status: suggested
 #   confidence: high
 

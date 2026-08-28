@@ -515,11 +515,33 @@ class WikitreeRenderTests(unittest.TestCase):
                          'must not get his birthplace as her own infobox field')
         self.assertIn('{{Birth|place=Riverton}}', child)
 
-    def test_a_legacy_vital_with_no_roles_map_still_emits_its_infobox(self):
-        # Back-compatibility: a claim that never said keeps rendering as it did.
+    def test_a_legacy_vital_naming_two_people_with_no_roles_emits_no_infobox(self):
+        # Two people, no roles: map at all - the claim has not said which of
+        # them was born. Emitting the infobox for BOTH (or, as here, for the
+        # wrong one - the parent, not the child) is exactly this class's own
+        # bug reached through the unroled case instead of the miscast one:
+        # the old back-compatibility bargain used to guess "everyone" for a
+        # claim with zero role signal at all, restating #126 rather than
+        # fixing it (#126, reopened).
         conn = self._reopen()
         _add_person(conn, 'p-0000000004', 'Peter Smith', tier='stub', surname='Smith')
         _add_claim(conn, 'c-0000000014', 'birth', ['p-0000000004', 'p-0000000001'],
+                   place_text='Riverton', source_id='s-0000000001',
+                   status='accepted', value='born at Riverton')
+        conn.commit()
+        templates = {'birth': {'template': 'Birth', 'fields': {'place': 'place'}}}
+        parent = wikitree._render_templates(conn, self.root, 'p-0000000001', templates)
+        child = wikitree._render_templates(conn, self.root, 'p-0000000004', templates)
+        conn.close()
+        self.assertNotIn('{{Birth|place=Riverton}}', parent)
+        self.assertNotIn('{{Birth|place=Riverton}}', child)
+
+    def test_a_legacy_vital_naming_only_the_subject_still_emits_its_infobox(self):
+        # One person named, no roles: map - nobody to be ambiguous about, so
+        # the pre-#126 "a claim that never said keeps rendering as it did"
+        # back-compatibility bargain is still exactly right here.
+        conn = self._reopen()
+        _add_claim(conn, 'c-0000000014', 'birth', ['p-0000000001'],
                    place_text='Riverton', source_id='s-0000000001',
                    status='accepted', value='born at Riverton')
         conn.commit()

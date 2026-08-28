@@ -121,6 +121,7 @@ from _lib import (
     normalize_date,
     normalize_id,
     parse_filename,
+    read_places_registry,
     read_record,
     read_text_exact,
     read_text_or_report,
@@ -911,43 +912,34 @@ def _walk_archive(archive_root: Path, registry: Registry, findings: list[Finding
     so their L-ids are available when Pass 2 checks place references in claims.
     """
 
-    # Places
+    # Places. Delegates the actual parsing to `_lib.read_places_registry` -
+    # the exact function `fha claim`'s write-time place lookup uses - so the
+    # two never again classify the same file differently (Codex review, PR
+    # #150 follow-up: a valid-YAML-but-wrong-shape file, e.g. `not_a_list:
+    # true`, used to be silently coerced to zero places here with no
+    # finding at all, while the write path separately reported it as
+    # malformed - `fha lint` said "no issues" on the exact archive state
+    # that told the human something else was broken). Reported under the
+    # same E010 parse-problem code every other "this record can't be read"
+    # finding in this module uses. Still wrapped in `except Exception`: an
+    # undecodable-bytes places.yaml raises `UnicodeDecodeError`, which is a
+    # `ValueError` rather than the `OSError` `read_places_registry` itself
+    # catches (#68's known gap for `except OSError` in this codebase), and
+    # lint must never crash on a bad archive.
     places_path = archive_root / 'places' / 'places.yaml'
-    if places_path.exists():
-        try:
-            with open(places_path, encoding='utf-8') as f:
-                places = yaml.safe_load(f)
-            if places is None:
-                # Comment-only (or otherwise all-whitespace) file - the
-                # shipped seed state (archive-template/places/places.yaml,
-                # SPEC §15's "empty to start" registry). A normal empty
-                # registry, not a finding.
-                places = []
-            elif not isinstance(places, list):
-                # Valid YAML, but the wrong shape (e.g. `not_a_list: true`) -
-                # this used to be silently treated as zero places with no
-                # finding at all, so `fha lint` reported "no issues" on a
-                # registry that `fha claim`'s write-time place lookup (issue
-                # #79 point 3, `_lib.read_places_registry`) was separately
-                # reporting as malformed - sending the human to a lint run
-                # that told them nothing was wrong (Codex review, PR #150
-                # follow-up). Report it here too, under the same E010 parse-
-                # problem code every other "this record can't be read"
-                # finding in this module uses.
-                findings.append(Finding(
-                    'E', 'E010', places_path,
-                    'places.yaml is not a list at the top level (see SPEC §15 for the '
-                    'registry shape) - every place record it might contain is unreadable '
-                    'until this is fixed.'))
-                places = []
-            for place in places:
-                if isinstance(place, dict):
-                    pid = normalize_id(str(place.get('id', '')))
-                    if pid and pid.startswith('l-'):
-                        registry.place_ids.add(pid)
-                        registry.all_record_ids[pid] = places_path
-        except Exception as e:
-            findings.append(Finding('E', 'E010', places_path, f'places.yaml parse error: {e}'))
+    try:
+        places_rows, places_error = read_places_registry(archive_root)
+    except Exception as e:
+        findings.append(Finding('E', 'E010', places_path, f'places.yaml could not be read: {e}'))
+        places_rows, places_error = [], None
+    else:
+        if places_error is not None:
+            findings.append(Finding('E', 'E010', places_path, places_error))
+    for place in places_rows:
+        pid = normalize_id(str(place.get('id', '')))
+        if pid and pid.startswith('l-'):
+            registry.place_ids.add(pid)
+            registry.all_record_ids[pid] = places_path
 
     # `walk_files`/read recorders, not rglob + bare read_text: lint's whole
     # product is the sentence "your archive matches the spec", and either
@@ -1531,7 +1523,8 @@ def _build_child_edges(registry: Registry) -> dict[str, dict[str, set[str]]]:
         A `roles:` entry naming somebody left out of `persons:` is a broken map,
         not a secret extra parent, and reading first-role-per-person is also
         what makes `roles: {child: [P-a], parent: [P-a]}` derive nothing rather
-        than filing a man as his own father.
+        than filing a man as his own father. That broken-map shape is itself
+        reported, for any role on any claim, by W133.
 
     A parent/child edge is identified by its `roles:` map (it names both a
     `child` and a `parent`), NOT by `subtype:` - `subtype` names the *nature* of
@@ -2274,7 +2267,8 @@ def _claim_spouse_pids(
 
     Only people actually named in `persons:` can carry a role, matching how the
     index builds `claim_persons`: a `roles:` entry naming somebody left out of
-    `persons:` is a broken map, not a secret extra spouse.
+    `persons:` is a broken map, not a secret extra spouse - and that broken-map
+    shape is itself reported, for any role on any claim, by W133.
 
     Every role is passed through, not just `spouse`. The rule's two-person
     fallback turns on whether the OTHER person carries an explicit role, so a
@@ -2307,6 +2301,27 @@ def _claim_parentage_pids(
     children, parents = parentage_parties(
         (pid, by_person.get(pid)) for pid in named)
     return set(children), set(parents)
+
+
+def _claim_vital_subjects(
+    claim: dict, alias_map: dict[str, str] | None = None,
+) -> list[str] | None:
+    """Whose own Born/Died/Married this claim supplies, read the way the index
+    reads it - the registry-world twin of `_lib.claim_is_own_vital` (which
+    reads `claim_persons` off the SQL index) for the lint paths that work from
+    the raw claim dict instead: the needs-sourcing backlog
+    (`_accepted_vital_pids`) and the W104 summary-citation check
+    (`_check_summary_line`).
+
+    Resolves `persons:`/`roles:` through `_lib.resolve_claim_persons_with_roles`
+    and hands the pairs to `_lib.vital_subjects`, exactly the two calls the
+    W101 vitals-gap check above already makes on the same claim dict shape -
+    one rule, one home, so a person's own needs-sourcing backlog entry and
+    W104 summary check can no longer credit a claim that `claim_is_own_vital`
+    rejects for every site/GEDCOM/WikiTree/chart consumer (#126 reopened,
+    #136)."""
+    persons_with_roles = resolve_claim_persons_with_roles(claim, alias_map)
+    return vital_subjects(str(claim.get('type', '')), persons_with_roles)
 
 
 def _claim_backs_edge(
@@ -2681,6 +2696,50 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
                         'Check the spelling, add the name as an alias on the right '
                         'person, or create the person - or leave it if it is only a note.'))
 
+            # W133: a roles: value resolves to a person absent from the
+            # claim's own persons: list (#126 review, #173 follow-up) - a
+            # broken map, typically from a hand-edit that added a roles:
+            # line without also adding that person to persons: (write
+            # `roles: {deceased: [P-dead]}` and forget `persons: [..., P-dead]`).
+            # Every place that turns roles: into (pid, role) pairs -
+            # `_lib.resolve_claim_persons_with_roles`, index.py's
+            # `_index_source` - only walks persons: entries and asks each one
+            # "does any role name you", so a role target absent from
+            # persons: is never looked at at all: the pair is dropped before
+            # `vital_subjects`/`spouse_parties`/`parentage_parties` ever see
+            # it, exactly the "broken map, not a secret extra parent/spouse"
+            # treatment `_build_child_edges` and `_claim_spouse_pids` already
+            # document above. For most role words that is a quiet no-op. For
+            # `roles: deceased:` (or any other claim where dropping the
+            # role's target leaves the claim's remaining people all unroled)
+            # it is worse than a no-op: it can leave a SURVIVOR - the widow,
+            # say - as the only named person left, and `vital_subjects`'s
+            # single-person legacy fallback (case 2) then reads HER as the
+            # one who died. That is the #126 bug W132 exists to catch,
+            # reintroduced through a hand-edit mistake the deceased: role
+            # itself invites. Checked on every claim regardless of type or
+            # status: a broken roles:/persons: pairing is a hand-edit mistake
+            # the moment it is written, not only once the claim is accepted,
+            # so the human sees it before review rather than after.
+            if isinstance(claim.get('roles'), dict):
+                claim_person_ids = set(_claim_person_ids(claim, alias_map))
+                for role_name in claim['roles']:
+                    for pid in sorted(_role_pids(claim, role_name, alias_map)):
+                        if pid in claim_person_ids:
+                            continue
+                        findings.append(Finding('W', 'W133', src_path,
+                            f'Claim {claim.get("id","?")} roles: {role_name}: names '
+                            f'{fmt_id_display(pid)} but persons: does not include '
+                            f'them, so this role target is silently dropped rather '
+                            "than read as a participant in this claim - if the "
+                            "record derives anything from this role (a death's "
+                            "subject, a marriage's spouse, a birth's parent), the "
+                            'derivation reads as though the role were never given, '
+                            'which can leave whoever else the claim left unroled '
+                            "wrongly read as the record's own subject instead. Add "
+                            f'{fmt_id_display(pid)} to persons: too, or remove this '
+                            'roles: entry if it does not belong on this claim.'))
+
             # W125: a marriage/divorce naming more than two people without
             # saying which two were the couple. Certificates routinely name the
             # couple AND both sets of parents, and listing all six in persons:
@@ -2846,6 +2905,78 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
                             'parents too, and that is right) and add a roles: map - '
                             '`roles:` then indented `child: [P-…]` and '
                             '`parent: [P-…, P-…]` lines.'))
+
+            # W132: an accepted death/burial/baptism claim naming 2+ people
+            # with NO roles: map at all - the zero-role-signal shape
+            # `_lib.vital_subjects` (#126, reopened) now answers [] for
+            # rather than guessing "everyone named is their own record".
+            # Birth already has W126 and marriage/divorce already have W125;
+            # death/burial/baptism never had a claim-specific warning at all
+            # (W101 only covers death, only for curated people, and never
+            # names the claim itself), so without this a claim shaped like
+            # this can silently drop out of every `claim_is_own_vital`
+            # consumer - the site's summary block and chart nodes, the
+            # GEDCOM writer's BIRT/DEAT, the WikiTree infoboxes, the tree
+            # view's node labels - with nothing telling the human to add a
+            # roles: map.
+            #
+            # Deliberately NARROWER than W125/W126's own condition: this
+            # fires only on `vital_subjects`' case 2a (no named person
+            # carries ANY role, and 2+ are named), never on its case 5
+            # (SOME role is present, but nobody is left unroled - "every
+            # person named was named as somebody else"). Case 5 is a claim
+            # that DID answer the question, just not in any of these
+            # people's favor - `roles: {spouse: [widow], child: [informant]}`
+            # on a claim naming only the widow and the informant, say - and
+            # SPEC's silence there is deliberate (`vital_subjects`'s own
+            # docstring, cases 2a vs 5), not a gap this warning exists to
+            # surface. Testing `not any(role for _, role in
+            # persons_with_roles)` alongside `subjects == []` is what tells
+            # the two apart without re-deriving vital_subjects' own headcount
+            # logic inline.
+            if claim_type in ('death', 'burial', 'baptism') and derives_edges:
+                persons_with_roles = resolve_claim_persons_with_roles(claim, alias_map)
+                subjects = vital_subjects(claim_type, persons_with_roles)
+                has_any_role = any(role for _pid, role in persons_with_roles)
+                if subjects == [] and not has_any_role:
+                    named = _claim_person_ids(claim, alias_map)
+                    distinct = {pid: None for pid in named}   # ordered, deduplicated
+                    where_it_goes = (
+                        " - it is not recorded as anyone's own record and will "
+                        'not appear in anyone\'s summary box, chart node, GEDCOM, '
+                        'or WikiTree profile. ')
+                    if claim_type == 'baptism':
+                        # Baptism shares birth's subject-role vocabulary
+                        # (VITAL_SUBJECT_ROLES: child), so the repair mirrors
+                        # W126's own: a child: line says who was baptized.
+                        findings.append(Finding('W', 'W132', src_path,
+                            f'Claim {claim.get("id","?")} (type: baptism) names '
+                            f'{len(distinct)} people but does not say who was '
+                            f'baptized{where_it_goes}'
+                            'Add a roles: map - an indented `child: [P-…]` line '
+                            'naming who was baptized (and, if useful, `parent: '
+                            '[P-…, P-…]` for the parents alongside).'))
+                    else:
+                        # death/burial: `roles: deceased:` (SPEC §8.3, #173
+                        # follow-up) names the subject(s) directly - the
+                        # only shape that can represent two people who died
+                        # in one event with nobody else on the record to
+                        # leave unroled. The older convention (say who
+                        # everyone ELSE was and leave the subject unroled,
+                        # _lib.vital_subjects case 4) still works and is
+                        # offered as the alternative for the ordinary,
+                        # single-decedent-plus-informant shape.
+                        verb = 'died' if claim_type == 'death' else 'was buried'
+                        findings.append(Finding('W', 'W132', src_path,
+                            f'Claim {claim.get("id","?")} (type: {claim_type}) names '
+                            f'{len(distinct)} people but does not say which of them '
+                            f'{verb}{where_it_goes}'
+                            f'Add a roles: map - either `deceased: [P-…]` naming '
+                            f'directly who {verb} (list more than one id if they '
+                            f'{verb} together), or leave the person who {verb} '
+                            'unroled and name who everyone else is instead - '
+                            '`spouse: [P-…]`, `child: [P-…]`, `parent: [P-…]`, or '
+                            '`witness: [P-…]`.'))
 
             # place reference - forgiving (PR 05): never reject a place the human
             # typed.  A well-formed L-id (bare or [[wrapped]]) that doesn't
@@ -3657,6 +3788,24 @@ def _check_summary_line(
             if normalize_id(str(c.get('_source_id', ''))) == normalize_id(sid)
             and str(c.get('type', '')) in expected_types
         ]
+        if label in ('Born', 'Died', 'Married'):
+            # A claim citing the right source and the right type can still be
+            # a RELATIVE's vital, not this person's own (#126 reopened, #136):
+            # a death claim also names the widow, a birth claim the parents,
+            # and a claim naming 2+ people with no roles: map at all has not
+            # said whose vital it is either. Only a claim `_lib.vital_subjects`
+            # actually resolves to profile_pid backs the line - the same rule
+            # `claim_is_own_vital` applies for the site/GEDCOM/WikiTree/chart
+            # consumers, so a profile's own summary block can no longer accept
+            # a citation those exporters would themselves reject. (Parents/
+            # Children are deliberately NOT filtered here - that is a
+            # parentage question, not a vital-subject one, and E013 below
+            # already scopes it through `_build_children_of`.)
+            matching = [
+                c for c in matching
+                if (subjects := _claim_vital_subjects(c, registry.alias_map)) is None
+                or profile_pid in subjects
+            ]
         if not matching and expected_types:
             findings.append(Finding('W', 'W104', profile_path,
                 f'Summary **{label}:** cites [S-{sid.split("-", 1)[-1]}] but no accepted '
@@ -4127,7 +4276,8 @@ def _friendly_to(to_raw: object) -> str:
 
 
 def _accepted_vital_pids(registry: Registry) -> set[tuple[str, str]]:
-    """{(P-id, 'birth'|'death')} for every accepted vital claim naming a person.
+    """{(P-id, 'birth'|'death')} for every accepted vital claim naming a person
+    AS ITS OWN SUBJECT.
 
     A sourced, accepted vital claim SUPERSEDES the provisional `birth:`/`death:`
     field, so the needs-sourcing backlog stops listing that field once one exists.
@@ -4135,7 +4285,16 @@ def _accepted_vital_pids(registry: Registry) -> set[tuple[str, str]]:
     Negated claims do NOT supersede: a `--negated` birth ("not born in 1900")
     is a confirmed absence, not the settled date the provisional field records,
     so it must not silence the needs-sourcing reminder for a real provisional
-    date. Same polarity rule as the W101 vitals-gap check above."""
+    date. Same polarity rule as the W101 vitals-gap check above.
+
+    Scoped through `_claim_vital_subjects` (`_lib.vital_subjects`), the same
+    rule W101 and `_check_summary_line`'s W104 check apply: a claim naming
+    pid only as a parent/witness/informant on a RELATIVE's birth/death record
+    must not supersede pid's own provisional date, and (#126 reopened) a
+    claim naming 2+ people with no `roles:` map at all has not said whose
+    birth/death it is either - crediting either shape here left the backlog
+    silently agreeing with a claim `claim_is_own_vital` already rejects
+    everywhere else (#136)."""
     out: set[tuple[str, str]] = set()
     for claims in registry.source_claims.values():
         for claim in claims:
@@ -4145,7 +4304,10 @@ def _accepted_vital_pids(registry: Registry) -> set[tuple[str, str]]:
             if (ctype in PROVISIONAL_VITAL_FIELDS
                     and str(claim.get('status', '')) == 'accepted'
                     and claim.get('negated') not in (True, 'true')):
+                subjects = _claim_vital_subjects(claim, registry.alias_map)
                 for ppid in _claim_person_ids(claim, registry.alias_map):
+                    if subjects is not None and ppid not in subjects:
+                        continue   # named on the claim but not its actual subject (#126/#136)
                     out.add((ppid, ctype))
     return out
 

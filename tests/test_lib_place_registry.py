@@ -32,6 +32,7 @@ absent - only warn honestly about which of the two happened.
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 import yaml
@@ -39,6 +40,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
 
+import _lib
 from _lib import (
     expand_place_abbreviations,
     match_place_text_to_registry,
@@ -65,6 +67,46 @@ class ReadPlacesRegistryTests(unittest.TestCase):
         self.assertEqual(rows, [])
         self.assertIsNone(error)
 
+    def test_places_yaml_as_a_directory_is_a_distinguishable_error(self) -> None:
+        # Adversarial review of PR #168: this shared helper replaced
+        # lint.py's own inline places-parsing block, which used to check
+        # `.exists()` and catch a places.yaml that is actually a DIRECTORY
+        # on disk (a hand-created `mkdir places.yaml`, or a sync tool that
+        # resolved a conflict by making a folder) - that check was lost in
+        # the refactor. `path.is_file()` is False for a directory just like
+        # it is for a missing path, so without a distinct branch this used
+        # to fall into the "nothing here yet" empty-registry case with NO
+        # error at all - silently proceeding as if there were simply no
+        # registry, instead of pointing the human at the real problem.
+        (self.root / 'places' / 'places.yaml').mkdir(parents=True)
+        rows, error = read_places_registry(self.root)
+        self.assertEqual(rows, [])
+        self.assertIsNotNone(error)
+        self.assertIn('directory', error)
+
+    def test_utf8_bom_only_file_is_still_a_normal_empty_registry(self) -> None:
+        # Adversarial review of PR #168: `_yaml_source_is_blank` is supposed
+        # to treat a genuinely-empty-of-content file as the ordinary empty
+        # registry (same as missing), but a leading UTF-8 byte-order-mark -
+        # written by some editors/exports, invisible in most viewers - is
+        # not whitespace to `str.strip()`. A BOM-only file used to have its
+        # one non-blank "line" (the BOM itself) mistaken for real content,
+        # misrouting a totally empty file down the explicit-null malformed
+        # path instead of the ordinary empty-seed one.
+        _write_registry(self.root, '﻿')
+        rows, error = read_places_registry(self.root)
+        self.assertEqual(rows, [])
+        self.assertIsNone(error)
+
+    def test_utf8_bom_prefixed_registry_still_parses_normally(self) -> None:
+        # The other direction of the same fix: a BOM prefixing REAL content
+        # must not be mistaken for "nothing here" either - the registry
+        # behind it still has to parse.
+        _write_registry(self.root, '﻿- id: L-aaaaaaaaaa\n  name: Springfield\n')
+        rows, error = read_places_registry(self.root)
+        self.assertIsNone(error)
+        self.assertEqual([r['id'] for r in rows], ['L-aaaaaaaaaa'])
+
     def test_unparseable_yaml_reports_a_distinguishable_error(self) -> None:
         # A malformed-but-EXISTING places.yaml (e.g. mid hand-edit) must not
         # look identical to a missing/empty registry (Codex review, PR #150) -
@@ -76,11 +118,73 @@ class ReadPlacesRegistryTests(unittest.TestCase):
         self.assertIsNotNone(error)
         self.assertIn('YAML', error)
 
+    def test_unparseable_yaml_error_message_has_no_pyyaml_jargon(self) -> None:
+        # Issue #168 finding 1 (Codex review, PR #159's follow-up on PR
+        # #150): the raw `yaml.YAMLError` text used to be interpolated
+        # straight into the user-facing message - `<unicode string>`
+        # markers, position carets, parser-internals vocabulary a
+        # genealogist hand-editing places.yaml has no way to act on. The
+        # message must explain the problem in plain language, name the
+        # failing line when PyYAML reports one, and show a concrete valid
+        # example - never the raw exception text.
+        _write_registry(self.root, '- id: L-aaaaaaaaaa\n  name: [unterminated\n')
+        rows, error = read_places_registry(self.root)
+        self.assertEqual(rows, [])
+        self.assertIsNotNone(error)
+        for jargon in ('<unicode string>', '^', 'stream end', 'flow sequence'):
+            self.assertNotIn(jargon, error)
+        self.assertRegex(error, r'line \d+')   # names the failing line...
+        self.assertIn('id: L-', error)         # ...and a concrete valid example
+
     def test_non_list_top_level_reports_a_distinguishable_error(self) -> None:
         _write_registry(self.root, 'not_a_list: true\n')
         rows, error = read_places_registry(self.root)
         self.assertEqual(rows, [])
         self.assertIsNotNone(error)
+
+    def test_explicit_null_is_treated_as_a_malformed_registry(self) -> None:
+        # Issue #168 finding 2 (Codex review, PR #159): `yaml.safe_load`
+        # returns None for BOTH a genuinely empty/comment-only file AND a
+        # file whose real content is the explicit YAML literal `null` - a
+        # plausible hand-edit meaning "nothing here yet". The parsed value
+        # alone can't tell those apart, so this must come from the source
+        # text: an explicit null is NOT a valid registry and must be
+        # reported, not silently treated as a normal empty one.
+        _write_registry(self.root, 'null\n')
+        rows, error = read_places_registry(self.root)
+        self.assertEqual(rows, [])
+        self.assertIsNotNone(error)
+        self.assertIn('null', error)
+
+    def test_explicit_tilde_null_is_also_treated_as_malformed(self) -> None:
+        _write_registry(self.root, '~\n')
+        rows, error = read_places_registry(self.root)
+        self.assertEqual(rows, [])
+        self.assertIsNotNone(error)
+
+    def test_null_alongside_comments_is_still_malformed(self) -> None:
+        # A comment above the null must not accidentally make the
+        # comment-stripping check see "nothing left" - the null itself is
+        # real, non-comment content.
+        _write_registry(self.root, '# nothing here yet\nnull\n')
+        rows, error = read_places_registry(self.root)
+        self.assertEqual(rows, [])
+        self.assertIsNotNone(error)
+
+    def test_genuinely_empty_file_is_still_a_normal_empty_registry(self) -> None:
+        # Must not regress (issue #168's explicit ask): a totally empty
+        # (0-byte) file is the same ordinary case as the comment-only seed
+        # file below, not the explicit-null malformed case above.
+        _write_registry(self.root, '')
+        rows, error = read_places_registry(self.root)
+        self.assertEqual(rows, [])
+        self.assertIsNone(error)
+
+    def test_whitespace_only_file_is_still_a_normal_empty_registry(self) -> None:
+        _write_registry(self.root, '\n\n   \n')
+        rows, error = read_places_registry(self.root)
+        self.assertEqual(rows, [])
+        self.assertIsNone(error)
 
     def test_comment_only_seed_file_is_a_valid_empty_registry_not_malformed(self) -> None:
         # Codex review, PR #150 follow-up: archive-template/places/places.yaml
@@ -228,6 +332,18 @@ class MatchPlaceTextToRegistryTests(unittest.TestCase):
         self.assertIsNone(m['tier'])
         self.assertIsNotNone(m['registry_error'])
         self.assertIn('YAML', m['registry_error'])
+        self.assertNotIn('<unicode string>', m['registry_error'])
+
+    def test_explicit_null_registry_degrades_to_no_match_with_an_error(self) -> None:
+        # Issue #168 finding 2: an explicit `null` places.yaml must warn
+        # the human via the same registry_error channel a malformed
+        # non-list registry does - not silently behave as an empty,
+        # error-free registry (which would leave place_text unlinked with
+        # no explanation at all).
+        _write_registry(self.root, 'null\n')
+        m = match_place_text_to_registry(self.root, 'Topeka, Kansas')
+        self.assertIsNone(m['tier'])
+        self.assertIsNotNone(m['registry_error'])
 
     def test_place_id_that_is_not_an_l_id_is_ignored(self) -> None:
         # A hand-edited places.yaml with a malformed id: line should not
@@ -235,6 +351,70 @@ class MatchPlaceTextToRegistryTests(unittest.TestCase):
         _write_registry(self.root, '- id: not-an-id\n  name: Topeka, Kansas\n')
         m = match_place_text_to_registry(self.root, 'Topeka, Kansas')
         self.assertIsNone(m['tier'])
+
+
+class MatchPlaceTextToRegistryPreparsedRegistryTests(unittest.TestCase):
+    """Issue #166 finding 2: a caller looking up many place_texts in one
+    pass (report.py's §6b listing and its escalation banner, one call per
+    place-text cluster) used to force this function to re-read and
+    re-parse the whole `places/places.yaml` registry from scratch on every
+    single call - a report with N clusters read the same never-changing
+    file N times over for no reason a human would ever see, only feel as a
+    report that is slower the larger the archive gets. The `registry`
+    keyword lets a caller pass `read_places_registry(archive_root)`'s own
+    `(rows, error)` result in once and reuse it for every lookup instead."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        # A real, valid, ON-DISK registry that WOULD match "Topeka, Kansas"
+        # if this function ever fell back to reading it - every test below
+        # passes a `registry=` override instead, so a match/miss can only
+        # be explained by the override actually being used.
+        _write_registry(self.root, '- id: L-baba9801fa\n  name: Topeka, Kansas\n')
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_registry_param_is_used_instead_of_the_real_on_disk_file(self) -> None:
+        # setUp's on-disk registry has a match for this text; overriding
+        # with an empty registry must produce a miss - if the parameter were
+        # silently ignored, this would come back 'exact' from disk instead.
+        m = match_place_text_to_registry(self.root, 'Topeka, Kansas', registry=([], None))
+        self.assertIsNone(m['tier'])
+        self.assertIsNone(m['place_id'])
+
+    def test_registry_param_supplies_a_match_with_no_file_on_disk_at_all(self) -> None:
+        empty_tmp = tempfile.TemporaryDirectory()
+        try:
+            root = Path(empty_tmp.name)   # no places/places.yaml exists here
+            rows = [{'id': 'L-cccccccccc', 'name': 'Topeka, Kansas'}]
+            m = match_place_text_to_registry(root, 'Topeka, Kansas', registry=(rows, None))
+            self.assertEqual(m['tier'], 'exact')
+            self.assertEqual(m['place_id'], 'L-cccccccccc')
+        finally:
+            empty_tmp.cleanup()
+
+    def test_registry_param_forwards_its_own_error_without_rereading(self) -> None:
+        m = match_place_text_to_registry(
+            self.root, 'Topeka, Kansas',
+            registry=([], 'places/places.yaml is not a list at the top level'))
+        self.assertIsNone(m['tier'])
+        self.assertEqual(
+            m['registry_error'], 'places/places.yaml is not a list at the top level')
+
+    def test_registry_param_never_touches_read_places_registry(self) -> None:
+        with unittest.mock.patch.object(_lib, 'read_places_registry') as spy:
+            match_place_text_to_registry(self.root, 'Topeka, Kansas', registry=([], None))
+        spy.assert_not_called()
+
+    def test_omitted_registry_param_reads_the_file_exactly_as_before(self) -> None:
+        # No behavior change for the many callers (claim.py's single
+        # write-time lookup, and every pre-existing test above) that never
+        # pass `registry` at all.
+        m = match_place_text_to_registry(self.root, 'Topeka, Kansas')
+        self.assertEqual(m['tier'], 'exact')
+        self.assertEqual(m['place_id'], 'L-baba9801fa')
 
 
 class ClusterKeySharedWithPlacesTests(unittest.TestCase):

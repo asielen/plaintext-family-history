@@ -4707,21 +4707,186 @@ class ProseConverterTests(unittest.TestCase):
         self.assertIn('before February 28, 1900', out)
         self.assertNotIn('[..1900-02-28]', out)
 
-    def test_before_bracket_as_interval_start_left_whole_untouched(self):
-        # Finding 5: one bound of a two-sided EDTF interval must not be
-        # translated on its own - `[..1900]/1910` (uncertain start, certain
-        # end) translating only the bracketed half produces the broken
-        # hybrid "before 1900/1910", half English and half raw. The whole
-        # interval is left exactly as written instead.
+    def test_before_bracket_as_interval_start_is_translated_in_full(self):
+        # #144 finding 5 originally had `_translate_date_before` leave the
+        # WHOLE interval untouched here, since translating only the
+        # bracketed half would have produced the broken hybrid
+        # "before 1900/1910", half English and half raw. #167 finding 3
+        # completes the job instead of just avoiding the broken hybrid:
+        # `_translate_date_before_slash` now renders BOTH bounds in plain
+        # English, so raw `[..1900]/1910`-style notation no longer reaches
+        # the reader-facing page for this shape. This replaces the old
+        # "left untouched" expectation, which is intentionally no longer
+        # true for this exact input.
         out = site._scrub_internal_encoding('They lived there [..1900]/1910, per the deed.')
-        self.assertIn('[..1900]/1910', out)
+        self.assertIn('before 1900 to 1910', out)
+        self.assertNotIn('[..1900]/1910', out)
+
+    def test_before_bracket_as_interval_end_is_translated_in_full(self):
+        # #167 finding 3, the mirrored shape: certain start, uncertain end.
+        out = site._scrub_internal_encoding('They lived there 1900/[..1910], per the deed.')
+        self.assertIn('1900 to before 1910', out)
+        self.assertNotIn('1900/[..1910]', out)
+
+    def test_before_bracket_interval_with_month_day_both_sides(self):
+        # #167 finding 3: the month/day formatting used for a lone bracket
+        # (`_format_edtf_ymd`, shared with `_translate_date_before`) applies
+        # to EACH side of the interval independently.
+        out = site._scrub_internal_encoding(
+            'Span: [..1900-05-03]/1910-06, per the deed.')
+        self.assertIn('before May 3, 1900 to June 1910', out)
+        out2 = site._scrub_internal_encoding(
+            'Span: 1900-06/[..1910-05-03], per the deed.')
+        self.assertIn('June 1900 to before May 3, 1910', out2)
+
+    def test_before_bracket_interval_invalid_bracket_side_left_whole_untouched(self):
+        # #167 finding 3: the same calendar validation `_translate_date_before`
+        # applies to a lone bracket applies to the bracketed side of an
+        # interval - an impossible date (no month 13) leaves the WHOLE
+        # interval untouched rather than translate a bogus bound.
+        out = site._scrub_internal_encoding(
+            'Span: [..1900-13-01]/1910, per the deed.')
+        self.assertIn('[..1900-13-01]/1910', out)
         self.assertNotIn('before', out)
 
-    def test_before_bracket_as_interval_end_left_whole_untouched(self):
-        # Finding 5, the mirrored shape: certain start, uncertain end.
-        out = site._scrub_internal_encoding('They lived there 1900/[..1910], per the deed.')
-        self.assertIn('1900/[..1910]', out)
+    def test_before_bracket_interval_invalid_plain_side_left_whole_untouched(self):
+        # #167 finding 3, mirrored: an impossible date on the PLAIN side
+        # (no day 31 in February) also leaves the whole interval untouched.
+        out = site._scrub_internal_encoding(
+            'Span: [..1900]/1910-02-31, per the deed.')
+        self.assertIn('[..1900]/1910-02-31', out)
         self.assertNotIn('before', out)
+
+    def test_before_bracket_interval_both_sides_bracketed_left_untouched(self):
+        # #167 finding 3: `[..YYYY]/[..YYYY]` (both sides bracketed) is
+        # deliberately OUT of scope - `_lib.humanize_edtf`, the model for
+        # this project's interval wording, has no established phrasing for
+        # a bracket on both sides of a slash - so this shape still falls
+        # through to `_translate_date_before`'s own adjacency guard and is
+        # left exactly as written, same as before this fix.
+        out = site._scrub_internal_encoding(
+            'They lived there [..1900]/[..1910], per the deed.')
+        self.assertIn('[..1900]/[..1910]', out)
+        self.assertNotIn('before', out)
+
+    def test_before_bracket_interval_digit_run_not_mistaken_for_bound(self):
+        # #167 finding 3: the plain side's year must not swallow (or be
+        # swallowed by) an adjacent digit that isn't really part of the
+        # date - guards against a regex that's too loose about where the
+        # plain bound starts/ends.
+        out = site._scrub_internal_encoding('X [..1900]/19105 Y')
+        self.assertIn('[..1900]/19105', out)
+        self.assertNotIn('before', out)
+        out2 = site._scrub_internal_encoding('X 21900/[..1910] Y')
+        self.assertIn('21900/[..1910]', out2)
+        self.assertNotIn('before', out2)
+
+    # -- adversarial review follow-up on #167 finding 3 (plain-side qualifier) --
+
+    def test_before_bracket_interval_trailing_plain_qualifier_uncertain(self):
+        # Codex's exact repro: the plain RIGHT-hand bound carries a trailing
+        # `?` (uncertain). Before this fix the regex's plain-side
+        # alternative matched only the unqualified `1910` prefix, leaving
+        # the `?` dangling, unconsumed, surviving literally in the output
+        # right after "1910". The qualifier must now be consumed as part of
+        # the match and humanized with this archive's existing "(unconfirmed)"
+        # wording (`_lib._humanize_edtf_bound`), not left dangling.
+        out = site._scrub_internal_encoding('They lived there [..1900]/1910?, per the deed.')
+        self.assertIn('before 1900 to 1910 (unconfirmed)', out)
+        self.assertNotIn('[..1900]/1910?', out)
+        self.assertNotIn('1910?', out)
+
+    def test_before_bracket_interval_leading_plain_qualifier_uncertain(self):
+        # Codex's mirrored repro: the plain LEFT-hand bound carries the `?`.
+        # Codex reports this shape was "left untouched" entirely - the
+        # un-widened plain-side pattern could not reach past the `?` to find
+        # the `/` right after it, so `_DATE_BEFORE_SLASH_RE` never matched
+        # here at all.
+        out = site._scrub_internal_encoding('They lived there 1900?/[..1910], per the deed.')
+        self.assertIn('1900 (unconfirmed) to before 1910', out)
+        self.assertNotIn('1900?/[..1910]', out)
+        self.assertNotIn('1900?', out)
+
+    def test_before_bracket_interval_plain_qualifier_approximate(self):
+        # The archive's OTHER qualifier character, `~` (approximate), reads
+        # as "about ..." (`_lib._humanize_edtf_bound`) rather than
+        # "(unconfirmed)" - both qualifier characters, not just `?`, must be
+        # consumed and humanized.
+        out = site._scrub_internal_encoding('They lived there [..1900]/1910~, per the deed.')
+        self.assertIn('before 1900 to about 1910', out)
+        self.assertNotIn('1910~', out)
+
+    def test_before_bracket_interval_qualified_plain_side_invalid_date_left_whole_untouched(self):
+        # The existing "invalid date leaves the whole match untouched" guard
+        # must still hold with a qualifier present alongside a genuinely
+        # invalid date component (no month 13) - the qualifier is a
+        # confidence marker, not part of calendar validity, so it does not
+        # change which side is invalid or rescue the invalid one. The WHOLE
+        # match, qualifier included, is left exactly as written.
+        out = site._scrub_internal_encoding(
+            'Span: [..1900]/1910-13-01?, per the deed.')
+        self.assertIn('[..1900]/1910-13-01?', out)
+        self.assertNotIn('before', out)
+
+    # -- further adversarial review of #167 finding 3 (component-level qualifier) --
+
+    def test_before_bracket_interval_component_level_approximate_month(self):
+        # Codex's fresh repro: the plain bound's `~` sits COMPONENT-LEVEL,
+        # attached to just the month ("1910-~06" = "1910, approximately
+        # June" - the year is certain, only the month is a guess), not
+        # trailing the whole date the way `pq1`/`pq2` already handled. Before
+        # this fix the plain-side pattern stopped at the unqualified `1910`
+        # prefix, leaving `-~06` dangling and untranslated right after it.
+        out = site._scrub_internal_encoding(
+            'They lived there [..1900]/1910-~06, per the deed.')
+        self.assertIn('before 1900 to about June 1910', out)
+        self.assertNotIn('[..1900]/1910-~06', out)
+        self.assertNotIn('~06', out)
+
+    def test_before_bracket_interval_component_level_approximate_month_mirrored(self):
+        # Codex's mirrored repro: the plain LEFT-hand bound carries the
+        # component-level `~`. Before this fix `_DATE_BEFORE_SLASH_RE` could
+        # not reach past `-~06` to find the `/`, so this shape did not match
+        # at all and stayed raw.
+        out = site._scrub_internal_encoding(
+            'They lived there 1910-~06/[..1900], per the deed.')
+        self.assertIn('about June 1910 to before 1900', out)
+        self.assertNotIn('1910-~06/[..1900]', out)
+        self.assertNotIn('~06', out)
+
+    def test_before_bracket_interval_component_level_approximate_day(self):
+        # The same component-level `~` also legally attaches to just the DAY
+        # (`_lib._EDTF_PATTERNS`'s `~?` before either the month OR the day
+        # digit pair) with the month plain and certain.
+        out = site._scrub_internal_encoding(
+            'Span: [..1900]/1910-06-~15, per the deed.')
+        self.assertIn('before 1900 to about June 15, 1910', out)
+        self.assertNotIn('~15', out)
+
+    def test_before_bracket_interval_component_qualifier_and_trailing_uncertain(self):
+        # A trailing `?` and a leading component-level `~` are not mutually
+        # exclusive in this dialect ("1910-~06?" is syntactically valid) -
+        # when both are present, "unconfirmed" wins over "about", the same
+        # precedence `_lib._humanize_edtf_bound` already applies when one
+        # component carries both markers at once.
+        out = site._scrub_internal_encoding(
+            'Span: [..1900]/1910-~06?, per the deed.')
+        self.assertIn('before 1900 to June 1910 (unconfirmed)', out)
+        self.assertNotIn('about', out)
+        self.assertNotIn('~06?', out)
+
+    def test_before_bracket_interval_invalid_component_qualifier_left_whole_untouched(self):
+        # The existing "invalid date leaves the whole match untouched" guard
+        # extends to a component-level qualifier too: a `~` attached to a
+        # genuinely impossible month (no month 13) is still calendrically
+        # invalid regardless of the marker, and `is_valid_edtf` rejects it -
+        # so the WHOLE match, marker included, is left exactly as written
+        # rather than rendering the nonsensical "about 1910-~13" reading.
+        out = site._scrub_internal_encoding(
+            'Span: [..1900]/1910-~13, per the deed.')
+        self.assertIn('[..1900]/1910-~13', out)
+        self.assertNotIn('before', out)
+        self.assertNotIn('about', out)
 
     def test_standalone_before_bracket_still_translates(self):
         # Guards that the finding-5 interval fix doesn't overreach: a
@@ -4793,6 +4958,336 @@ class ProseConverterTests(unittest.TestCase):
         self.assertNotIn('C-4kx9m2p7qr', out)
         self.assertEqual(seen['tok'], 'S-1111111111')       # target untouched
         self.assertNotIn('C-4kx9m2p7qr', seen['disp'] or '')
+
+    # -- #167 (Codex P2 findings left over from PR #158) --
+
+    def test_wikilink_label_with_date_bracket_notation_still_links(self):
+        # #167 finding 2 (privacy-adjacent): a wikilink display label that
+        # legitimately contains SPEC §11 before-date notation, e.g.
+        # `record filed [..1905]`, used to trip `_INLINE_RE`'s `wdisp` group
+        # (`[^\[\]]*` cannot match ANY bracket character) - the whole
+        # `[[...]]` construct then failed to match as a wikilink at all and
+        # fell through as ordinary literal text, which only gets HTML-
+        # escaped, never scanned for bare ids. The raw internal source id
+        # leaked onto the page, unlinked and unscrubbed. Assert the FULL
+        # pipeline: a real citation link is produced (render_token is
+        # actually called, proving `_INLINE_RE` matched the wikilink
+        # alternative), its label comes back scrubbed AND humanized, and the
+        # raw id string appears nowhere unlinked in the output.
+        seen = {}
+
+        def render_token(tok, disp=None):
+            seen['tok'], seen['disp'] = tok, disp
+            return f'<a href="../sources/{tok}.html">{disp}</a>'
+
+        out = site._prose_to_html(
+            '[[S-1111111111|record filed [..1905]]]', render_token)
+        self.assertEqual(seen['tok'], 'S-1111111111')
+        self.assertEqual(seen['disp'], 'record filed before 1905')
+        self.assertIn('<a href="../sources/S-1111111111.html">record filed before 1905</a>', out)
+        # The raw id must not appear anywhere OUTSIDE the link render_token
+        # itself produced - i.e. not leaked as unlinked literal text.
+        self.assertEqual(out.count('S-1111111111'), 1)
+        self.assertNotIn('[..1905]', out)
+
+    def test_wikilink_plain_label_unaffected_by_bracket_tolerant_wdisp(self):
+        # #167 finding 2 regression guard: an ordinary label with no
+        # brackets at all must behave exactly as before the `wdisp` widening.
+        seen = {}
+
+        def render_token(tok, disp=None):
+            seen['tok'], seen['disp'] = tok, disp
+            return f'TOK({tok}|{disp})'
+
+        out = site._prose_to_html('[[S-1111111111|plain label]]', render_token)
+        self.assertEqual(seen['tok'], 'S-1111111111')
+        self.assertEqual(seen['disp'], 'plain label')
+        self.assertIn('TOK(S-1111111111|plain label)', out)
+
+    def test_wikilink_bracket_label_does_not_swallow_following_text(self):
+        # #167 finding 2, greediness guard: the bracket-tolerant `wdisp`
+        # must stop at the wikilink's OWN closing `]]` rather than reach
+        # past it into unrelated bracketed text later in the same block.
+        def render_token(tok, disp=None):
+            return f'TOK({tok}|{disp})'
+
+        out = site._prose_to_html(
+            '[[S-1111111111|see [bar] here]] and then [S-2222222222] too.', render_token)
+        self.assertIn('TOK(S-1111111111|see [bar] here)', out)
+        self.assertIn('TOK(S-2222222222|None)', out)     # legacy [ID] token still parses after
+
+    # -- adversarial review follow-up on #167 (both findings incomplete) --
+
+    def test_wikilink_missing_close_bracket_does_not_leak_id(self):
+        # Problem 1 repro 1: `wdisp`'s one-level bracket tolerance (#167
+        # finding 2) does not save a construct with genuinely UNBALANCED
+        # brackets - here the label's own `[oops]` closes, but the
+        # wikilink's own trailing `]]` is missing one `]`. No fixed-depth
+        # regex can match this as a wikilink, so it falls through as
+        # literal text; the DEFENSE-IN-DEPTH backstop (`_BARE_ID_RE`) must
+        # still keep the raw source id off the page.
+        out = site._inline_html('[[S-1111111111|text [oops]]', lambda t, d=None: t)
+        self.assertNotIn('S-1111111111', out)
+        self.assertIn('[record]', out)
+
+    def test_wikilink_swapped_bracket_order_does_not_leak_id(self):
+        # Problem 1 repro 2: `][` in that order (not a balanced `[...]`
+        # unit at all) - same failure mode, same backstop.
+        out = site._inline_html('[[S-1111111111|text ][ stuff]]', lambda t, d=None: t)
+        self.assertNotIn('S-1111111111', out)
+        self.assertIn('[record]', out)
+
+    def test_wikilink_nested_two_levels_does_not_leak_id(self):
+        # Problem 1 repro 3: nesting two levels deep is past what ANY
+        # fixed-depth regex (including the one-level-tolerant `wdisp`) can
+        # balance - same failure mode, same backstop.
+        out = site._inline_html('[[S-1111111111|text [a[b]c]]]', lambda t, d=None: t)
+        self.assertNotIn('S-1111111111', out)
+        self.assertIn('[record]', out)
+
+    def test_markdown_link_label_bracket_notation_does_not_leak_id(self):
+        # Problem 1 repro 4: the IDENTICAL vulnerability in `ltext` (a
+        # markdown link's label), which - unlike `wdisp` - had never been
+        # widened at all before this fix. Widening `ltext` the same way
+        # `wdisp` was widened (#167 finding 2 continued) means this
+        # particular one-level-nested shape now matches as a REAL, WORKING
+        # link - a strictly better outcome than falling through to the
+        # backstop - with the label's bare id still caught and redacted by
+        # the same backstop that protects a failed-match run.
+        out = site._inline_html(
+            '[see S-1111111111 [..1905]](https://example.test/x)', lambda t, d=None: t)
+        self.assertNotIn('S-1111111111', out)
+        self.assertEqual(
+            out, '<a href="https://example.test/x">see [record] before 1905</a>')
+
+    # -- Codex review of #167 finding 3 (wikilink-vs-markdown-link precedence) --
+
+    def test_wikilink_followed_by_parens_not_swallowed_as_markdown_link(self):
+        # Codex's exact repro: the `ltext` bracket-nesting widening (above)
+        # made a `[[S-id|source]]` wikilink immediately followed by `(note)`
+        # look, from the markdown-link alternative's perspective, like a
+        # label consisting of one balanced-bracket unit followed by a URL -
+        # `<a href="note">[S-1111111111|source]</a>`, losing the internal
+        # citation entirely. Precedence must go to the wikilink: the citation
+        # renders through `render_token` and `(note)` survives as literal
+        # trailing text, matching the pre-widening behaviour.
+        def render_token(tok, disp=None):
+            return f'<a href="../sources/{tok}.html">{disp}</a>'
+
+        out = site._inline_html('[[S-1111111111|source]](note)', render_token)
+        self.assertEqual(
+            out, '<a href="../sources/S-1111111111.html">source</a>(note)')
+
+    def test_genuine_markdown_link_still_works_after_wikilink_precedence_fix(self):
+        # An ordinary markdown link (no embedded `[[...]]` at all) must be
+        # completely unaffected by giving the wikilink alternative
+        # precedence.
+        out = site._inline_html('[label](https://example.test/x)', lambda t, d=None: t)
+        self.assertEqual(out, '<a href="https://example.test/x">label</a>')
+
+    def test_markdown_link_label_with_single_bracket_date_notation_still_works(self):
+        # The tension the precedence fix has to resolve: a markdown-link
+        # label that legitimately STARTS with one bracketed unit (the #167
+        # finding-2-continued widening's whole point) - here SPEC §11
+        # before-date notation right at the front of the label - must still
+        # match as a markdown link, not be mistaken for a wikilink start
+        # just because it also begins with `[`. The wikilink alternative
+        # requires an immediate `]]` to close, which this shape never has
+        # (only one `]` follows the date bracket, then more label text), so
+        # it correctly falls through to the markdown-link alternative.
+        out = site._inline_html('[see [..1900] record](url)', lambda t, d=None: t)
+        self.assertEqual(out, '<a href="url">see before 1900 record</a>')
+
+    def test_bare_id_backstop_does_not_fire_inside_a_matched_targets_own_id(self):
+        # The backstop must never re-touch or corrupt an id `_INLINE_RE`
+        # already correctly turned into a real citation link - it only ever
+        # sees a construct's LABEL (or literal text between constructs),
+        # never a link/wikilink/token's own TARGET. A wikilink whose LABEL
+        # happens to mention a *different* id as plain descriptive text
+        # exercises both halves of that invariant at once: the real target
+        # (`S-2222222222`) must resolve to a normal working link, while the
+        # incidental bare id sitting in the label text still gets redacted.
+        seen = {}
+
+        def render_token(tok, disp=None):
+            seen['tok'], seen['disp'] = tok, disp
+            return f'TOK({tok}|{disp})'
+
+        out = site._inline_html(
+            '[[S-2222222222|S-1111111111 mentioned]]', render_token)
+        self.assertEqual(seen['tok'], 'S-2222222222')          # target untouched
+        self.assertNotIn('S-1111111111', out)
+        self.assertIn('[record] mentioned', out)
+
+    def test_claim_id_paren_before_bold_keeps_separating_space(self):
+        # #167 finding 1: `_scrub_internal_encoding` runs per literal-text
+        # RUN inside `_inline_html`'s loop. When a claim-id parenthetical
+        # sits at the very END of a run that is immediately followed - with
+        # no space of its own - by a DIFFERENT matched inline construct
+        # (here, `**bold**`), the substring handed to
+        # `_scrub_internal_encoding` ends exactly at the match, so
+        # `_strip_claim_id_paren`'s own "what follows?" check saw nothing
+        # and dropped the separating space entirely - "record" and
+        # "confirms" welded together with no space between them.
+        ident = lambda t, d=None: t  # noqa: E731
+        out = site._inline_html('The record (C-4kx9m2p7qr)**confirms**', ident)
+        self.assertEqual(out, 'The record <strong>confirms</strong>')
+
+    def test_claim_id_paren_before_markdown_link_keeps_separating_space(self):
+        # #167 finding 1, the symmetric case named in the issue: the same
+        # glue happens right before a markdown link.
+        ident = lambda t, d=None: t  # noqa: E731
+        out = site._inline_html(
+            'The record (C-4kx9m2p7qr)[confirms](https://example.test)', ident)
+        self.assertEqual(out, 'The record <a href="https://example.test">confirms</a>')
+
+    def test_claim_id_paren_before_wikilink_keeps_separating_space(self):
+        # #167 finding 1: the adjacency bug applies to ANY matched inline
+        # construct following with no gap, not just bold/markdown-link -
+        # including a wikilink, whose rendered HTML is opaque to
+        # `_inline_html` (it cannot peek inside `render_token`'s output).
+        def render_token(tok, disp=None):
+            return f'<a>{tok}</a>'
+
+        out = site._inline_html('The record (C-4kx9m2p7qr)[[S-1111111111]]', render_token)
+        self.assertEqual(out, 'The record <a>S-1111111111</a>')
+
+    def test_claim_id_paren_spacing_fix_does_not_double_space_at_boundary(self):
+        # #167 finding 1 must not overcorrect: when a real space already
+        # separates the parenthetical from the following construct, no
+        # second space is inserted.
+        ident = lambda t, d=None: t  # noqa: E731
+        out = site._inline_html('The record (C-4kx9m2p7qr) **confirms**', ident)
+        self.assertEqual(out, 'The record <strong>confirms</strong>')
+
+    def test_claim_id_paren_at_true_end_of_block_still_drops_cleanly(self):
+        # #167 finding 1 regression guard: when nothing follows the
+        # parenthetical at all (the TRUE end of the block, not merely the
+        # end of one internal literal-text run), the old "drop with no
+        # trailing space" behavior is unaffected - there is no boundary
+        # character to consult and none is invented.
+        ident = lambda t, d=None: t  # noqa: E731
+        out = site._inline_html('The record (C-4kx9m2p7qr)', ident)
+        self.assertEqual(out, 'The record')
+
+    # -- adversarial review follow-up on #167 finding 1 (boundary sentinel) --
+
+    def test_claim_id_paren_before_bold_starting_with_punctuation_no_space(self):
+        # Problem 2 repro 1: the prior fix's `_INLINE_BOUNDARY_CHAR`
+        # sentinel always claimed "a word character follows," so a space
+        # got inserted even when the bold text's REAL first character is
+        # punctuation. The real first character (`m.group('bold')[0]`) must
+        # be used instead, so no space is added before "!important".
+        ident = lambda t, d=None: t  # noqa: E731
+        out = site._inline_html('(C-4kx9m2p7qr)**!important**', ident)
+        self.assertEqual(out, '<strong>!important</strong>')
+
+    def test_claim_id_paren_before_markdown_link_starting_with_punctuation_no_space(self):
+        # Problem 2 repro 2: same regression, a markdown link whose label
+        # starts with punctuation.
+        ident = lambda t, d=None: t  # noqa: E731
+        out = site._inline_html('(C-4kx9m2p7qr)[!see](https://example.test)', ident)
+        self.assertEqual(out, '<a href="https://example.test">!see</a>')
+
+    def test_claim_id_paren_before_wikilink_label_starting_with_punctuation_no_space(self):
+        # Problem 2 repro 3: same regression, a wikilink whose display
+        # label starts with punctuation.
+        def render_token(tok, disp=None):
+            return f'<a>{disp}</a>'
+
+        out = site._inline_html('(C-4kx9m2p7qr)[[S-1111111111|!see]]', render_token)
+        self.assertEqual(out, '<a>!see</a>')
+
+    # -- Codex review of #167 finding 2 (boundary sentinel used the RAW label) --
+
+    def test_claim_id_paren_before_markdown_link_label_starting_with_date_bracket(self):
+        # Codex's exact repro: the boundary check used to peek `ltext`'s RAW
+        # first character (here `[`, from embedded `[..1905]` date
+        # notation - not alphanumeric) instead of the SCRUBBED label's first
+        # character (`b`, from "before 1905" - alphanumeric, once
+        # `_DATE_BEFORE_RE` has translated the bracket). The raw peek wrongly
+        # concluded no space was needed, so "The record" and "before 1905
+        # confirms" ran together with no separating space. The boundary must
+        # be computed from the scrubbed label, exactly as the wikilink
+        # branch already does for `wdisp`.
+        ident = lambda t, d=None: t  # noqa: E731
+        out = site._inline_html(
+            'The record (C-4kx9m2p7qr)[[..1905] confirms](https://x)', ident)
+        self.assertEqual(
+            out, 'The record <a href="https://x">before 1905 confirms</a>')
+
+    def test_claim_id_paren_before_bold_starting_with_date_bracket(self):
+        # Codex: "the bold branch has the same defect" - identical repro,
+        # `**bold**` instead of a markdown link.
+        ident = lambda t, d=None: t  # noqa: E731
+        out = site._inline_html('(C-4kx9m2p7qr)**[..1905] confirms**', ident)
+        self.assertEqual(out, ' <strong>before 1905 confirms</strong>')
+
+    def test_bare_id_redaction_reinserts_missing_space(self):
+        # `_BARE_ID_LABEL` is never dropped to nothing (unlike a claim-id
+        # paren), but it still ends in a non-word `]` - the same welding
+        # risk applies when a bare id sits at the very end of a literal-text
+        # run immediately followed by a different matched construct with no
+        # gap of its own.
+        ident = lambda t, d=None: t  # noqa: E731
+        out = site._inline_html('See S-1111111111**note**', ident)
+        self.assertEqual(out, 'See [record] <strong>note</strong>')
+
+    def test_bare_id_redaction_does_not_double_space(self):
+        # Mirrors `_strip_claim_id_paren`'s own no-double-space guard: when
+        # a real space (or punctuation) already follows the bare id, no
+        # second space is inserted.
+        out = site._scrub_internal_encoding('See S-1111111111 mentioned.')
+        self.assertEqual(out, 'See [record] mentioned.')
+        out2 = site._scrub_internal_encoding('See S-1111111111.')
+        self.assertEqual(out2, 'See [record].')
+
+    def test_two_bare_ids_glued_together_both_redact(self):
+        # Adversarial review: a plain non-alphanumeric boundary treats a
+        # SECOND id butted directly against the first, with no separator at
+        # all, as "embedded inside a longer word" - the same shape the
+        # boundary is deliberately guarding an ordinary word against - so
+        # neither id's lookaround could ever close and BOTH leaked verbatim.
+        out = site._scrub_internal_encoding('S-1111111111S-2222222222')
+        self.assertEqual(out, '[record] [record]')
+
+    def test_three_bare_ids_glued_together_all_redact(self):
+        out = site._scrub_internal_encoding('S-1111111111P-3333333333C-4444444444')
+        self.assertEqual(out, '[record] [record] [record]')
+
+    def test_bare_id_still_ignored_inside_an_ordinary_word(self):
+        # The zero-separator adjacency fix must not reopen the hole it's
+        # named after: an id-shaped substring genuinely embedded inside a
+        # longer alphanumeric run (not another complete id butted against
+        # it) stays untouched.
+        out = site._scrub_internal_encoding('wordS-1111111111word')
+        self.assertEqual(out, 'wordS-1111111111word')
+
+    def test_boundary_char_reads_the_actual_render_not_the_label(self):
+        # Adversarial review, round 3: `render_token` does not always honor
+        # the display text it's handed - a wikilink naming a redacted living
+        # person ignores `in_display` entirely and substitutes fixed
+        # replacement markup instead. The label here (a bare citation id)
+        # scrubs to `[record]`, starting with `[` - not a word character -
+        # but the ACTUAL render is "Living Person", which very much is one.
+        # Computing the boundary from the label said no space was needed;
+        # computing it from the render (what a reader truly sees) says one
+        # is. Without the fix, "The record" and "Living Person" run
+        # together with no space between them.
+        render_token = lambda t, d=None: '<span class="redacted">Living Person</span>'  # noqa: E731
+        out = site._inline_html(
+            'The record (C-4kx9m2p7qr)[[P-1111111111|S-2222222222]]', render_token)
+        self.assertEqual(
+            out, 'The record <span class="redacted">Living Person</span>')
+
+    def test_boundary_char_from_render_does_not_double_space(self):
+        # Mirror of the no-double-space guard: when the actual render starts
+        # with punctuation (not a word character), no space is inserted -
+        # even though the discarded label (starting with the word character
+        # "M", from "Margaret") would have said one was needed.
+        render_token = lambda t, d=None: '<span class="redacted">!withheld</span>'  # noqa: E731
+        out = site._inline_html('The record (C-4kx9m2p7qr)[[S-1111111111|Margaret]]', render_token)
+        self.assertEqual(out, 'The record<span class="redacted">!withheld</span>')
 
 
 class WorkbenchModeTests(_Base):
@@ -5130,6 +5625,19 @@ class WorkbenchModeTests(_Base):
         self.assertNotIn('<option>certificate</option>', wb)
         self.assertIn('<option>vital-record</option>', wb)
 
+    def test_ephemera_source_type_option_offered(self):
+        # #114 follow-up (Codex review, PR #178): `ephemera` joined the
+        # SOURCE_TYPES controlled vocabulary but the two "file it as a
+        # source" modals (single file and bundle) still offered only the
+        # older, fixed option list - a genealogist filing from the browser
+        # workbench had no way to pick it. Both selects must offer it now.
+        self._seed_person('p-aaaaaaaaaa', name='Test Person', living='false', tier='curated')
+        self._run_wb()
+        wb = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertEqual(wb.count('<option>ephemera</option>'), 2,
+                          'both the single-file and bundle "file as a source" '
+                          'modals must offer ephemera')
+
     def test_living_modal_prefills_current_value_not_a_hardcoded_default(self):
         # P2 codex finding (round 3, PR #30): the Change-living modal always
         # defaulted its radio group to "deceased" regardless of the actual
@@ -5369,18 +5877,24 @@ class WorkbenchModeTests(_Base):
 
 class OpenQuestionsSectionTests(_Base):
     """Issue #117: a person referenced by a `## Q:` block's `refs:` sees that
-    question on their own page. Workbench-only (same gate `open_review_count`
-    uses) until `## Q:` blocks carry their own `restricted:` field - a
-    question's `context:` can hold sensitive detail about a living third
-    party that nothing here has vetted, so this stays off the public AND
-    plain `--linked` builds for now, not just the standalone one."""
+    question on their own page. Gated on `linked` (workbench always implies
+    linked, see the _SiteBuilder constructor), not narrowed to `workbench`
+    alone: a `## Q:` block still carries no `restricted:` field of its own,
+    but `--linked` is this codebase's own established boundary for
+    real-but-not-yet-publishable content (`drop_private=not self.linked`,
+    `_person_is_redacted`'s `self.linked` check, both elsewhere on this same
+    page) - an owner's own local `--linked` preview never leaves their
+    machine, so it is treated the same way. The STANDALONE (published) build
+    is the one place this must never appear (issue #117's reopening: it was
+    gated so narrowly - workbench-only - that even the reporter's own
+    unredacted `--linked` preview build showed nothing)."""
 
     def _write_questions_md(self, text: str) -> None:
         path = self.archive_root / 'notes' / 'questions.md'
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding='utf-8')
 
-    def test_open_question_shows_in_workbench_only(self):
+    def test_open_question_shows_in_linked_and_workbench_not_standalone(self):
         self._seed_person('p-aaaaaaaaaa', 'Jane Doe', tier='curated')
         self._write_questions_md(
             '# Open Questions\n\n'
@@ -5399,24 +5913,29 @@ class OpenQuestionsSectionTests(_Base):
         self.assertIn('Census says 1880', html)
         self.assertIn('notes/questions.md', html)   # provenance caption
 
-        # Standalone (public) build of the SAME archive: none of it.
+        # Plain `--linked` (no workbench) - the archive owner's own
+        # unredacted local preview: the same section, same content. This is
+        # the case issue #117's reopening found broken (nothing rendered).
         import shutil as _sh
-        _sh.rmtree(self.out_dir, ignore_errors=True)
-        std = self._run(linked=False)
-        self.assertTrue(std.ok, std.messages)
-        std_html = self._read('persons/p-aaaaaaaaaa.html')
-        self.assertNotIn('When did Jane arrive in Kansas?', std_html)
-        self.assertNotIn('Census says 1880', std_html)
-
-        # Plain `--linked` (no workbench): also none of it - the safe
-        # default this PR ships stays narrower than "any unredacted build",
-        # matching the one existing workbench-only count/section precedent
-        # (`open_review_count`) rather than a new `linked`-only gate.
         _sh.rmtree(self.out_dir, ignore_errors=True)
         lo = self._run(linked=True, workbench=False)
         self.assertTrue(lo.ok, lo.messages)
         lo_html = self._read('persons/p-aaaaaaaaaa.html')
-        self.assertNotIn('When did Jane arrive in Kansas?', lo_html)
+        self.assertIn('Open Questions', lo_html)
+        self.assertIn('When did Jane arrive in Kansas?', lo_html)
+        self.assertIn('Census says 1880', lo_html)
+        self.assertIn('notes/questions.md', lo_html)
+
+        # Standalone (public) build of the SAME archive: none of it. The
+        # privacy boundary that matters - published output never carries an
+        # un-vetted question about a possibly-living third party - must hold.
+        _sh.rmtree(self.out_dir, ignore_errors=True)
+        std = self._run(linked=False)
+        self.assertTrue(std.ok, std.messages)
+        std_html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertNotIn('Open Questions', std_html)
+        self.assertNotIn('When did Jane arrive in Kansas?', std_html)
+        self.assertNotIn('Census says 1880', std_html)
 
     def test_a_ref_naming_the_same_person_twice_does_not_double_render(self):
         # A `refs:` list is free-text-typed by a human; `refs: [P-x, P-x]` is
@@ -5461,6 +5980,11 @@ class OpenQuestionsSectionTests(_Base):
         # `_lib.parse_questions` reading every person's research file, not a
         # new decision made in site.py. This was a live open question in the
         # issue, not a settled contract - flagged again in the PR body.
+        #
+        # Run under plain `--linked` (no workbench), not just workbench: the
+        # #117 reopening's whole finding was that a plain `--linked` preview
+        # showed nothing, so the cross-reference case needs to be proven in
+        # exactly the mode that was reported broken, not only in workbench.
         self._seed_person('p-aaaaaaaaaa', 'Jane Doe', tier='curated')
         self._seed_person('p-bbbbbbbbbb', 'Bob Roe', tier='curated', surname='Roe')
         research_path = self.archive_root / 'people' / 'roe__test_research_p-bbbbbbbbbb.md'
@@ -5475,8 +5999,8 @@ class OpenQuestionsSectionTests(_Base):
             '  - (human, 2026-06-01) Both lived in the same county in 1880.\n'
             '\n## Hypotheses\n\n*(none yet)*\n\n## Research Log\n\n*(none yet)*\n',
             encoding='utf-8')
-        wb = self._run(linked=True, workbench=True)
-        self.assertTrue(wb.ok, wb.messages)
+        lo = self._run(linked=True, workbench=False)
+        self.assertTrue(lo.ok, lo.messages)
         for pid in ('p-aaaaaaaaaa', 'p-bbbbbbbbbb'):
             html = self._read(f'persons/{pid}.html')
             self.assertIn('Are Jane and Bob related?', html, pid)
@@ -5491,6 +6015,179 @@ class OpenQuestionsSectionTests(_Base):
             # emits it), so its presence at all means the trim regressed.
             self.assertNotIn('Hypotheses', html, pid)
             self.assertNotIn('Research Log', html, pid)
+
+    def test_by_request_persons_own_question_is_withheld_from_every_page(self):
+        # PR #179 review, finding 1 (P1, privacy leak): `restricted:
+        # by-request` is SPEC §19's one no-override tier ("honored by every
+        # export path with no opt-in") - stronger than the plain
+        # restricted/living gates every OTHER check in this class relaxes
+        # under `--linked` (a deliberate, tested design:
+        # UnreadableRecordPrivacyTests.test_linked_mode_is_unchanged pins it
+        # for a by-request person's own name/vitals/bio, and this fix does
+        # not reopen that). Before this fix, `_load_open_questions` read a
+        # `## Q:` block's home research file with no restriction check at
+        # all, so Rae's own private research note - `refs:`-naming both
+        # herself AND a different, unrestricted relative - rendered in full
+        # on BOTH pages under a plain `--linked` preview: exactly the leak
+        # this pins closed, on both sides (her own page, and the
+        # cross-referenced relative's).
+        self._seed_person('p-aaaaaaaaaa', 'Reticent Rae', surname='Rae',
+                          frontmatter_extra='restricted: by-request')
+        self._seed_person('p-bbbbbbbbbb', 'Open Otto', surname='Otto')
+        research_path = self.archive_root / 'people' / 'rae__test_research_p-aaaaaaaaaa.md'
+        research_path.write_text(
+            '---\nid: p-aaaaaaaaaa\ncreated: 2026-06-01\n---\n\n'
+            '## Open Questions\n\n'
+            "## Q: Was Rae really Otto's half-sibling?\n"
+            '- origin: human\n'
+            '- status: open\n'
+            '- refs: [P-aaaaaaaaaa, P-bbbbbbbbbb]\n'
+            '- context:\n'
+            '  - (human, 2026-06-01) A sealed adoption record hints at this; '
+            'Rae asked never to have it discussed.\n',
+            encoding='utf-8')
+        lo = self._run(linked=True, workbench=False)
+        self.assertTrue(lo.ok, lo.messages)
+        for pid in ('p-aaaaaaaaaa', 'p-bbbbbbbbbb'):
+            html = self._read(f'persons/{pid}.html')
+            self.assertNotIn('half-sibling', html, pid)
+            self.assertNotIn('sealed adoption record', html, pid)
+            self.assertNotIn('Open Questions', html, pid)
+
+    def test_by_request_person_named_only_in_a_refs_list_is_still_withheld(self):
+        # Adversarial review of PR #179, round 2: the finding above pins the
+        # case where the by-request person's OWN file is the question's
+        # home. This is the reverse - the home file belongs to an ORDINARY,
+        # unrestricted person (Otto), and the question merely `refs:` Rae, a
+        # by-request relative, on top of him. Before this fix, only the
+        # home file's owner was checked, so a question homed anywhere else
+        # could still fan a by-request person's private research onto HER
+        # page via `refs:` alone. Otto's own page is unaffected - the leak
+        # was specifically Rae's page rendering research she asked not to
+        # have discussed.
+        self._seed_person('p-aaaaaaaaaa', 'Reticent Rae', surname='Rae',
+                          frontmatter_extra='restricted: by-request')
+        self._seed_person('p-bbbbbbbbbb', 'Open Otto', surname='Otto')
+        research_path = self.archive_root / 'people' / 'otto__test_research_p-bbbbbbbbbb.md'
+        research_path.write_text(
+            '---\nid: p-bbbbbbbbbb\ncreated: 2026-06-01\n---\n\n'
+            '## Open Questions\n\n'
+            "## Q: Was Rae really Otto's half-sibling?\n"
+            '- origin: human\n'
+            '- status: open\n'
+            '- refs: [P-bbbbbbbbbb, P-aaaaaaaaaa]\n'
+            '- context:\n'
+            '  - (human, 2026-06-01) A sealed adoption record hints at this; '
+            'Rae asked never to have it discussed.\n',
+            encoding='utf-8')
+        lo = self._run(linked=True, workbench=False)
+        self.assertTrue(lo.ok, lo.messages)
+        rae_html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertNotIn('half-sibling', rae_html)
+        self.assertNotIn('sealed adoption record', rae_html)
+        otto_html = self._read('persons/p-bbbbbbbbbb.html')
+        self.assertIn('half-sibling', otto_html)
+        self.assertIn('sealed adoption record', otto_html)
+
+    def test_research_file_whose_frontmatter_id_disagrees_with_its_filename_fails_closed(self):
+        # Adversarial review of PR #179, round 2: a research companion's
+        # filename and its own `id:` field are supposed to always agree
+        # (`fha lint`'s E003 flags a mismatch as an archive error), but
+        # while that inconsistency sits unresolved, the origin by-request
+        # check must not trust the filename alone - it cannot tell which of
+        # the two persons this file really belongs to, so it withholds
+        # rather than guess. This file's NAME claims Otto (unrestricted);
+        # its own `id:` says Rae (by-request) - the mismatch itself, either
+        # direction, must fail closed.
+        self._seed_person('p-aaaaaaaaaa', 'Reticent Rae', surname='Rae',
+                          frontmatter_extra='restricted: by-request')
+        self._seed_person('p-bbbbbbbbbb', 'Open Otto', surname='Otto')
+        mismatched = self.archive_root / 'people' / 'otto__test_research_p-bbbbbbbbbb.md'
+        mismatched.write_text(
+            '---\nid: p-aaaaaaaaaa\ncreated: 2026-06-01\n---\n\n'
+            '## Open Questions\n\n'
+            '## Q: Mismatched filename vs frontmatter id\n'
+            '- origin: human\n'
+            '- status: open\n'
+            '- refs: [P-bbbbbbbbbb]\n'
+            '- context:\n'
+            '  - (human, 2026-06-01) Should never render while this mismatch stands.\n',
+            encoding='utf-8')
+        lo = self._run(linked=True, workbench=False)
+        self.assertTrue(lo.ok, lo.messages)
+        html = self._read('persons/p-bbbbbbbbbb.html')
+        self.assertNotIn('Mismatched filename vs frontmatter id', html)
+        self.assertNotIn('Should never render', html)
+        messages = lo['messages']
+        self.assertTrue(any('E003' in m or 'mismatch' in m.lower() for m in messages), messages)
+
+    def test_plain_restricted_persons_question_still_renders_under_linked(self):
+        # Not over-broadened: by-request is SPEC §19's ONE no-override tier.
+        # A plain `restricted: true` origin - a lesser tier other export
+        # paths can unlock via --include-restricted - must still surface
+        # their open questions under `--linked`, exactly as `--linked`
+        # already shows that same person's own restricted claims/sources/
+        # name in full (SourcePageTests.
+        # test_standalone_shows_accepted_only_linked_shows_everything, etc.).
+        self._seed_person('p-aaaaaaaaaa', 'Plainly Restricted Pat', surname='Pat',
+                          frontmatter_extra='restricted: true')
+        research_path = self.archive_root / 'people' / 'pat__test_research_p-aaaaaaaaaa.md'
+        research_path.write_text(
+            '---\nid: p-aaaaaaaaaa\ncreated: 2026-06-01\n---\n\n'
+            '## Open Questions\n\n'
+            '## Q: Where was Pat actually born?\n'
+            '- status: open\n'
+            '- refs: [P-aaaaaaaaaa]\n'
+            '- context:\n'
+            '  - (human, 2026-06-01) Two conflicting county records.\n',
+            encoding='utf-8')
+        lo = self._run(linked=True, workbench=False)
+        self.assertTrue(lo.ok, lo.messages)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('Where was Pat actually born?', html)
+        self.assertIn('Two conflicting county records', html)
+
+    def test_undecodable_questions_md_is_skipped_with_a_warning_not_a_crash(self):
+        # PR #179 review, finding 2 (P2, crash/availability): `_lib.
+        # parse_questions` used to read notes/questions.md with a plain
+        # `path.read_text(encoding='utf-8')` behind an `except OSError` -
+        # `UnicodeDecodeError` is a `ValueError`, so it escaped straight out
+        # of `_load_open_questions`, through `prepare()`, and out of
+        # `run_site` itself, which promises to always return a `Result`.
+        self._seed_person('p-aaaaaaaaaa', 'Jane Doe')
+        bad = self.archive_root / 'notes' / 'questions.md'
+        bad.parent.mkdir(parents=True, exist_ok=True)
+        bad.write_bytes('## Q: Kraków connection?\n- status: open\n'.encode('cp1252'))
+        res = self._run(linked=True)
+        self.assertTrue(res.ok, res.messages)
+        messages = res['messages']
+        self.assertTrue(
+            any('notes/questions.md' in m and "isn't saved as UTF-8 text" in m
+                for m in messages), messages)
+        # One bad file costs only its own content - every other page builds fine.
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertNotIn('Kraków connection', html)
+
+    def test_undecodable_research_file_is_skipped_others_still_index(self):
+        self._seed_person('p-aaaaaaaaaa', 'Jane Doe', surname='Doe')
+        self._seed_person('p-bbbbbbbbbb', 'Bob Roe', surname='Roe')
+        bad_research = self.archive_root / 'people' / 'roe__test_research_p-bbbbbbbbbb.md'
+        bad_research.write_bytes(
+            ('---\nid: p-bbbbbbbbbb\n---\n\n## Open Questions\n\n'
+             '## Q: Kraków connection?\n- status: open\n- refs: [P-bbbbbbbbbb]\n')
+            .encode('cp1252'))
+        self._write_questions_md(
+            '## Q: Healthy question?\n- status: open\n- refs: [P-aaaaaaaaaa]\n'
+            '- context:\n  - (human, 2026-06-01) Still readable.\n'
+        )
+        res = self._run(linked=True)
+        self.assertTrue(res.ok, res.messages)
+        messages = res['messages']
+        self.assertTrue(
+            any('roe__test_research_p-bbbbbbbbbb.md' in m
+                and "isn't saved as UTF-8 text" in m for m in messages), messages)
+        html_a = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('Healthy question?', html_a)
 
 
 # ── A person's vitals are their OWN, not their relatives' (#126) ─────────────
@@ -5544,13 +6241,34 @@ class VitalSubjectScopingTests(_Base):
         self.assertIn('<dt>Born</dt>', self._read(f'persons/{self.SON}.html'))
         self.assertNotIn('<dt>Born</dt>', self._read(f'persons/{self.MOM}.html'))
 
-    def test_a_legacy_claim_with_no_roles_map_keeps_its_old_behaviour(self):
-        # Back-compatibility: a claim written before `roles:` was expected has
-        # not answered the question, so nothing is withheld. Emptying those
-        # archives' summary boxes would be a worse bug than the one being fixed.
+    def test_a_legacy_claim_naming_two_people_with_no_roles_gets_neither_a_born_row(
+            self) -> None:
+        # Two people, no roles: map at all - the claim has not said which of
+        # them was born. Showing it as BOTH of their own births is exactly
+        # this class's own bug (a mother's `Born: 1888` copied off her son's
+        # birth certificate), reached through the unroled case instead of the
+        # miscast one: the old back-compatibility bargain used to guess
+        # "everyone" for a claim with zero role signal at all, which is #126
+        # restated rather than fixed (#126, reopened - this exact shape is
+        # what let the Died/Buried fields keep showing a relative's record
+        # after the roled cases were already scoped correctly). A missing
+        # Born row is recoverable by adding roles:; a false one is not.
         self._seed_birth_certificate(None)
         self._run(linked=True)
-        self.assertIn('<dt>Born</dt>', self._read(f'persons/{self.MOM}.html'))
+        self.assertNotIn('<dt>Born</dt>', self._read(f'persons/{self.MOM}.html'))
+        self.assertNotIn('<dt>Born</dt>', self._read(f'persons/{self.SON}.html'))
+
+    def test_a_legacy_claim_naming_only_the_child_keeps_its_old_behaviour(self) -> None:
+        # One person named, no roles: map - nobody to be ambiguous about, so
+        # the pre-#126 "the claim never said, so nothing is withheld"
+        # back-compatibility bargain is still exactly right here.
+        self._seed_person(self.SON, 'Peter Marr')
+        self._seed_source('s-1111111111', 'Birth certificate',
+                          source_type='vital-record')
+        self._seed_claim('c-1111111111', 's-1111111111', 'birth',
+                         'Born at Riverton', status='accepted', date_edtf='1888',
+                         place_text='Riverton', persons=(self.SON,), roles=None)
+        self._run(linked=True)
         self.assertIn('<dt>Born</dt>', self._read(f'persons/{self.SON}.html'))
 
     def test_chart_node_shows_only_the_subjects_own_life_dates(self):

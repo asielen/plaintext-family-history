@@ -1,3 +1,6 @@
+import argparse
+import contextlib
+import io
 import os
 import subprocess
 import sqlite3
@@ -145,6 +148,112 @@ class XrefTests(unittest.TestCase):
 
         result = xref.run_xref(self.archive_root)
         self.assertEqual(result['groups'], [])
+
+    def test_death_claim_with_no_roles_at_all_naming_two_people_enters_neither_bucket(
+            self) -> None:
+        # #126, reopened: a death claim naming two people with NO roles: map
+        # at all (not even a partial one, unlike the roled parent/child shape
+        # above) has not said which of them died - `vital_subjects` now
+        # answers [] for this shape rather than "everyone named". Neither
+        # person's own death bucket may be entered by a claim that has not
+        # actually said it is about them.
+        #
+        # #172: unlike before, this claim must not just vanish - it is the
+        # vital twin of the roles-less marriage certificate, and gets the
+        # same `unscoped` treatment so a human can see it and add a roles:
+        # map.
+        self._seed_persons_sources()
+        self.conn.execute("INSERT INTO persons(id, name, living, tier, path) VALUES "
+                           "('p-bbbbbbbbbb','Kin','false','curated','y.md')")
+        _insert_claim(self.conn, 'c-aaaaaaaaaa', 's-1111111111', 'death',
+                       'died 1940', date_edtf='1940', persons=['p-aaaaaaaaaa'])
+        _insert_claim(self.conn, 'c-bbbbbbbbbb', 's-2222222222', 'death',
+                       'visited the grave in 1940, no roles noted',
+                       date_edtf='1940', persons=['p-aaaaaaaaaa', 'p-bbbbbbbbbb'])
+        self.conn.commit()
+
+        result = xref.run_xref(self.archive_root)
+        self.assertEqual(result['groups'], [])
+        unscoped_ids = [item['claim']['id'] for item in result['unscoped']]
+        self.assertEqual(unscoped_ids, ['c-bbbbbbbbbb'])
+        self.assertEqual(
+            sorted(result['unscoped'][0]['persons']),
+            sorted(['Test Person', 'Kin']),
+        )
+
+    def test_needs_review_vital_claim_with_no_roles_also_added_to_unscoped(self) -> None:
+        # #172's specific gap over `fha lint`'s W132: W132 fires only on
+        # ACCEPTED, non-negated claims (the derivation bargain W125/W126
+        # share), but `fha xref` compares BOTH accepted and needs-review
+        # claims (the module's own `_run_xref_queries` query). A needs-review
+        # claim of the identical zero-role-signal shape must still be
+        # reported here, even though it never trips W132.
+        self._seed_persons_sources()
+        self.conn.execute("INSERT INTO persons(id, name, living, tier, path) VALUES "
+                           "('p-bbbbbbbbbb','Kin','false','curated','y.md')")
+        _insert_claim(self.conn, 'c-aaaaaaaaaa', 's-1111111111', 'death',
+                       'died 1940, status still under review', date_edtf='1940',
+                       status='needs-review', persons=['p-aaaaaaaaaa', 'p-bbbbbbbbbb'])
+        self.conn.commit()
+
+        result = xref.run_xref(self.archive_root)
+        self.assertEqual(result['groups'], [])
+        unscoped_ids = [item['claim']['id'] for item in result['unscoped']]
+        self.assertEqual(unscoped_ids, ['c-aaaaaaaaaa'])
+
+    def test_birth_claim_with_no_roles_at_all_added_to_unscoped(self) -> None:
+        # Finding 2's scope explicitly includes birth, not just
+        # death/burial/baptism (W132 covers only the latter three - birth
+        # already has its own W126 built on a different rule,
+        # `_lib.parentage_parties` - but `_OTHER_VITAL_TYPES` in this file
+        # includes birth, and the same zero-role-signal shape must not
+        # silently drop out of `fha xref` for it either).
+        self._seed_persons_sources()
+        self.conn.execute("INSERT INTO persons(id, name, living, tier, path) VALUES "
+                           "('p-bbbbbbbbbb','Sibling','false','curated','y.md')")
+        _insert_claim(self.conn, 'c-aaaaaaaaaa', 's-1111111111', 'birth',
+                       'birth record names two people, no roles', date_edtf='1900',
+                       persons=['p-aaaaaaaaaa', 'p-bbbbbbbbbb'])
+        self.conn.commit()
+
+        result = xref.run_xref(self.archive_root)
+        self.assertEqual(result['groups'], [])
+        unscoped_ids = [item['claim']['id'] for item in result['unscoped']]
+        self.assertEqual(unscoped_ids, ['c-aaaaaaaaaa'])
+
+    def test_death_claim_with_shared_deceased_role_not_added_to_unscoped(self) -> None:
+        # SPEC §8.3's `roles: deceased:` (this branch's #173 follow-up) names
+        # both subjects of a shared death directly - `vital_subjects` case 3,
+        # resolved fine. This must NOT land in `unscoped`: the claim answered
+        # the question, it just answered it for two people at once.
+        self._seed_persons_sources()
+        self.conn.execute("INSERT INTO persons(id, name, living, tier, path) VALUES "
+                           "('p-bbbbbbbbbb','Co-victim','false','curated','y.md')")
+        _insert_claim(self.conn, 'c-aaaaaaaaaa', 's-1111111111', 'death',
+                       'both died in the same accident, 1940', date_edtf='1940',
+                       persons=['p-aaaaaaaaaa', 'p-bbbbbbbbbb'],
+                       roles={'p-aaaaaaaaaa': 'deceased', 'p-bbbbbbbbbb': 'deceased'})
+        self.conn.commit()
+
+        result = xref.run_xref(self.archive_root)
+        self.assertEqual(result['unscoped'], [])
+
+    def test_death_claim_with_old_unroled_convention_not_added_to_unscoped(self) -> None:
+        # The older, still-valid convention (`vital_subjects` case 4): name
+        # everyone else's part and leave the decedent unroled. The claim
+        # answered the question via silence-about-one-person, not
+        # silence-about-everyone, so it must not be reported as unscoped.
+        self._seed_persons_sources()
+        self.conn.execute("INSERT INTO persons(id, name, living, tier, path) VALUES "
+                           "('p-bbbbbbbbbb','Widow','false','curated','y.md')")
+        _insert_claim(self.conn, 'c-aaaaaaaaaa', 's-1111111111', 'death',
+                       'died 1940, survived by his wife', date_edtf='1940',
+                       persons=['p-aaaaaaaaaa', 'p-bbbbbbbbbb'],
+                       roles={'p-bbbbbbbbbb': 'spouse'})
+        self.conn.commit()
+
+        result = xref.run_xref(self.archive_root)
+        self.assertEqual(result['unscoped'], [])
 
     def test_same_source_pair_excluded(self) -> None:
         self._seed_persons_sources()
@@ -838,6 +947,54 @@ class XrefTests(unittest.TestCase):
             result['unscoped'][0]['persons'],
             ['Test Person', 'Bride', 'Father'],
         )
+
+    def test_cmd_xref_prints_separate_sections_for_couple_and_vital_unscoped_claims(
+            self) -> None:
+        # #172: the CLI's "could not be scoped for comparison" section used
+        # to name only marriage/divorce claims. With a roles-less certificate
+        # AND a zero-role-signal death claim both unscoped in the same run,
+        # the printed output must call out both kinds - each with its own
+        # count and its own repair wording, not one sentence stretched to
+        # cover both.
+        self._seed_persons_sources()
+        self.conn.execute("INSERT INTO persons(id, name, living, tier, path) VALUES "
+                           "('p-bbbbbbbbbb','Bride','false','curated','y.md')")
+        self.conn.execute("INSERT INTO persons(id, name, living, tier, path) VALUES "
+                           "('p-cccccccccc','Kin','false','curated','z.md')")
+        self.conn.execute("INSERT INTO persons(id, name, living, tier, path) VALUES "
+                           "('p-dddddddddd','Bride Father','false','curated','w.md')")
+        self.conn.execute("INSERT INTO sources(id, title, path) VALUES "
+                           "('s-3333333333','Certificate','c.md')")
+        # Three people, no roles: map at all - spouse_parties cannot tell the
+        # couple from the third person, so this stays ambiguous (a plain
+        # two-person, no-roles claim would resolve fine and never reach
+        # `unscoped` at all).
+        _insert_claim(
+            self.conn, 'c-aaaaaaaaaa', 's-3333333333', 'marriage',
+            'married, certificate names three people, no roles', date_edtf='1880',
+            persons=['p-aaaaaaaaaa', 'p-bbbbbbbbbb', 'p-dddddddddd'],
+        )
+        _insert_claim(
+            self.conn, 'c-bbbbbbbbbb', 's-1111111111', 'death',
+            'died 1940, no roles noted', date_edtf='1940',
+            persons=['p-aaaaaaaaaa', 'p-cccccccccc'],
+        )
+        self.conn.commit()
+        (self.archive_root / 'fha.yaml').write_text('roots: {}\n', encoding='utf-8')
+        write_path_manifest(index_manifest_path(self.archive_root),
+                             record_path_manifest(self.archive_root))
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            exit_code = xref._cmd_xref(argparse.Namespace(root=str(self.archive_root)))
+        output = buf.getvalue()
+
+        self.assertEqual(exit_code, xref.EXIT_CLEAN)
+        self.assertIn('1 marriage/divorce claim(s) could not be scoped for comparison', output)
+        self.assertIn('1 birth/death/baptism/burial claim(s) could not be scoped for comparison',
+                       output)
+        self.assertIn('which two of them were the couple', output)
+        self.assertIn('which of them died', output)
 
 
 class XrefStdoutIsValidUtf8Tests(unittest.TestCase):
