@@ -1902,21 +1902,36 @@ def _render_pedigree_svg(labels: dict, spouses: list[dict] | None = None,
     'Unknown' slot so the bracket reads as a pedigree - children get no such
     placeholder (you cannot enumerate someone's unknown children).
 
-    ANCESTOR-GENERATION COUPLES (#115, reopened) also get an explicit
-    shared-vertex bracket, the mirror image of the spouse routing above:
-    whenever a slot's own two parent slots (Ahnentafel 2N/2N+1 - always a
-    couple by the numbering itself) are BOTH drawn as real people, one path
-    touches their shared column at both ends (bracket) and a second stub
-    leaves its midpoint toward the child, landing exactly on the bracket's
-    own vertical segment (`row_index` centers the child at the average of
-    its two parents' rows). This is drawn with the `ped-link-couple` class;
-    when either half of the pair is a workbench-only hypothesis tie it reuses
-    `ped-link-later`'s dashed vocabulary instead of a plain solid line. A
-    pair with only ONE known parent (the other still an 'Unknown' slot)
-    keeps the plain single-parent elbow unchanged - there is no marriage to
-    bracket until both halves of it are on the chart. See the render loop's
-    own comment for the exact geometry and why it is pixel-identical to the
-    two independent elbows this replaces.
+    ANCESTOR-GENERATION COUPLES (#115, reopened; evidence-gated after a
+    post-merge Codex review of #187, issue #115 reopened again) also get an
+    explicit shared-vertex bracket, the mirror image of the spouse routing
+    above: whenever a slot's own two parent slots (Ahnentafel 2N/2N+1 -
+    always co-parents of the same child by the numbering itself) are BOTH
+    drawn as real people AND `_build_ahnentafel` found actual marriage
+    evidence between them (`labels[N]['parents_married']`, set from the
+    SAME `relationships` table query - `rel='spouse'` - `_build_family_wings`
+    already uses for the hub's own bracket, so a negated marriage claim or a
+    `no_known_marriages` flag never reaches this table and reads back here
+    as no evidence, no code needed), one path touches their shared column at
+    both ends (bracket) and a second stub leaves its midpoint toward the
+    child, landing exactly on the bracket's own vertical segment
+    (`row_index` centers the child at the average of its two parents' rows).
+    This is drawn with the `ped-link-couple` class; when either half of the
+    pair is a workbench-only hypothesis-PLACED parent, or the marriage
+    evidence itself is only a workbench-only hypothesis tie
+    (`parents_married == 'hypothesis'`), it reuses `ped-link-later`'s dashed
+    vocabulary instead of a plain solid line. TWO known co-parents with NO
+    marriage evidence at all - the common real-world case: an unmarried
+    couple, a co-parent who was never a spouse, or simply never researched -
+    fall back to the exact old two-elbow rendering with no bracket; a pair
+    with only ONE known parent (the other still an 'Unknown' slot) keeps
+    that same plain single-parent elbow unchanged too - there is no marriage
+    to assert until both halves of a couple are on the chart AND the archive
+    actually says they married. See the render loop's own comment for the
+    exact bracket geometry and why, evidence permitting, it is pixel-
+    identical to the two independent elbows it replaces (`.ped-link-couple`
+    also carries its own distinguishing stroke in design/styles.css, so a
+    reader can actually tell the two shapes apart - see that rule's comment).
 
     A 4th column (children) needs more on-screen width than the 620px the
     ancestors-only chart is capped at, so that case gets the `pedigree-family`
@@ -2246,41 +2261,63 @@ def _render_pedigree_svg(labels: dict, spouses: list[dict] | None = None,
         # for a well-sourced ancestor marriage (the reopening review's own
         # finding - the "falls out for free" design note in the original
         # issue described the RIGHT shape but it was never actually wired
-        # up). When BOTH parent slots are a real, drawn person, route the
-        # same four points through the mirror image of the spouse bracket
-        # `_build_family_wings` already draws below (`M{subj_x} H{junction}
-        # V{spouse_y} H{subj_x}`): one continuous path touches the couple's
-        # own shared column (`x2` - both parents are always the same
-        # generation, hence the same column) at BOTH ends, with its vertical
-        # spine at the same midpoint column (`midx`) the old two-elbow
-        # version already used - then a single stub leaves that spine toward
-        # the child. The stub attaches at `yc`, the child's own row, which
-        # `row_index` guarantees is exactly the average of the two parents'
-        # rows (the centering invariant `PedigreeGeometryGuardTests` already
-        # pins), so it lands precisely on the bracket's own vertical
-        # segment - a real shared-vertex T-junction, not a coincidence.
-        # Pixel-for-pixel this covers the exact same area the two old
-        # elbows drew (their shared "child to midpoint" leg used to be drawn
-        # twice, once per elbow, harmlessly overlapping) - the only visible
-        # change is the bracket now reads as one connected shape and carries
-        # its own `ped-link-couple` class. Never drawn when either slot is
-        # an 'Unknown' placeholder (or unplaced) - a bracket to a slot
-        # nobody has researched would assert a pairing this chart has no
-        # evidence for.
-        if l_kind == 'person' and r_kind == 'person':
+        # up). When BOTH parent slots are a real, drawn person AND the
+        # archive actually has marriage evidence for them - `lab`'s own
+        # `parents_married`, set by `_build_ahnentafel` from the same
+        # `relationships` (`rel='spouse'`) query `_build_family_wings` uses
+        # for the hub's own bracket, never from "both are co-parents of a
+        # child" alone (co-parentage is evidence of parentage, not of
+        # marriage - a P1 post-merge Codex review finding on #187: the
+        # bracket used to draw for ANY known pair, which could visually
+        # assert a marriage a `no_known_marriages` flag or a negated
+        # marriage claim explicitly denies, or that was simply never
+        # researched) - route the same four points through the mirror image
+        # of the spouse bracket `_build_family_wings` already draws below
+        # (`M{subj_x} H{junction} V{spouse_y} H{subj_x}`): one continuous
+        # path touches the couple's own shared column (`x2` - both parents
+        # are always the same generation, hence the same column) at BOTH
+        # ends, with its vertical spine at the same midpoint column (`midx`)
+        # the old two-elbow version already used - then a single stub leaves
+        # that spine toward the child. The stub attaches at `yc`, the
+        # child's own row, which `row_index` guarantees is exactly the
+        # average of the two parents' rows (the centering invariant
+        # `PedigreeGeometryGuardTests` already pins), so it lands precisely
+        # on the bracket's own vertical segment - a real shared-vertex
+        # T-junction, not a coincidence. Pixel-for-pixel this covers the
+        # exact same area the two old elbows drew (their shared "child to
+        # midpoint" leg used to be drawn twice, once per elbow, harmlessly
+        # overlapping) - the only visible change is the bracket now reads as
+        # one connected shape and carries its own `ped-link-couple` class
+        # (styled distinctly in design/styles.css, so that shape change is
+        # actually visible - a plain `.ped-link` alone would have made this
+        # whole fix pixel-identical to no fix at all). Never drawn when
+        # either slot is an 'Unknown' placeholder (or unplaced), nor when
+        # both are known people with no recorded marriage between them - a
+        # bracket asserting a pairing this chart has no evidence for.
+        # `lab` is None for an 'empty' (unresearched/redacted) slot - guard
+        # before `.get()`, since the `and married` short-circuit below only
+        # skips evaluating it once l_kind/r_kind have ALREADY proven the
+        # current slot's own kind is 'person' (see the render-population
+        # loop above: a slot can only appear as pl/pr's own KEY in `render`
+        # at all once ITS parent slot - this one - already rendered
+        # 'person'), so this guard is defensive, not load-bearing.
+        married = lab.get('parents_married') if lab else None
+        if l_kind == 'person' and r_kind == 'person' and married:
             x2 = col_x(pl.bit_length() - 1)
             lab_l, lab_r = render[pl][1], render[pr][1]
             y_l, y_r = y_center(row_index(pl)), y_center(row_index(pr))
             midx = (x + CW + x2) / 2
-            # Workbench-only: either half of the pair being an unsourced
-            # frontmatter hypothesis (`_build_ahnentafel` - never true
-            # outside workbench) makes the WHOLE pairing exactly as
-            # unconfirmed as its weaker half, so it reuses ped-link-later's
-            # own "lower confidence reads as dashed" vocabulary across BOTH
-            # the bracket and its stub - mirroring how a later marriage's
-            # own dashed class already covers its bracket AND its children
-            # stubs below, not just the bracket alone.
-            hyp = bool(lab_l.get('hypothesis') or lab_r.get('hypothesis'))
+            # Workbench-only: either half of the PAIR PLACEMENT being an
+            # unsourced frontmatter hypothesis (`_build_ahnentafel` - never
+            # true outside workbench), or the MARRIAGE evidence itself being
+            # only a workbench-only hypothesis tie rather than an accepted
+            # spouse relationship (`married == 'hypothesis'`), makes the
+            # WHOLE pairing exactly as unconfirmed as its weakest part, so it
+            # reuses ped-link-later's own "lower confidence reads as dashed"
+            # vocabulary across BOTH the bracket and its stub - mirroring how
+            # a later marriage's own dashed class already covers its bracket
+            # AND its children stubs below, not just the bracket alone.
+            hyp = bool(lab_l.get('hypothesis') or lab_r.get('hypothesis') or married == 'hypothesis')
             cls = 'ped-link ped-link-hypothesis' if hyp else 'ped-link'
             links.append(f'<path class="{cls} ped-link-couple" d="M{x2:.0f},{y_l:.0f} '
                          f'H{midx:.0f} V{y_r:.0f} H{x2:.0f}"/>')
@@ -5965,6 +6002,64 @@ class _SiteBuilder:
         return {'name': meta['name'] or fmt_id_display(pid), 'url': url,
                 'redacted': False, 'dates': self._person_vitals(pid)}
 
+    def _ancestor_couple_evidence(self, pid1: str, pid2: str) -> str | None:
+        """Marriage evidence between two ancestors, for `_build_ahnentafel`'s
+        `parents_married` flag (#115 reopened again - P1 post-merge Codex
+        review of #187: the ancestor-generation bracket used to draw for ANY
+        pair of known co-parents, with no check that the archive actually
+        holds a marriage between them - co-parentage is evidence of
+        PARENTAGE, not of marriage, and this archive can hold an unmarried
+        couple, a co-parent who was never a spouse, or a relationship
+        explicitly recorded as NOT a marriage just as easily as a documented
+        one).
+
+        Returns 'confirmed' when an accepted, non-negated `rel='spouse'` edge
+        exists between the two in the `relationships` table - the EXACT same
+        table and rel `_build_family_wings`'s own `collect('spouse')` reads
+        for the hub's own spouse bracket, so this is the identical evidence
+        bar, not a new or weaker one. That table is rebuilt at index time
+        from `WHERE c.status='accepted' AND COALESCE(c.negated,0)=0` claims
+        only (`index.py`'s relationship derivation) - a `no_known_marriages`
+        person-flag never creates an edge in the first place, and an
+        accepted NEGATED marriage claim ("these two did NOT marry") is
+        explicitly excluded from ever creating one - so both read back here
+        as no evidence with no extra negation-checking code needed.
+
+        Returns 'hypothesis' (workbench only - unsourced ties never publish)
+        when no accepted relationship exists but EITHER person's own record
+        carries an unindexed frontmatter `relationships: type: spouse`
+        hypothesis naming the other - checked from both sides since a
+        hand-authored tie is not necessarily reciprocal, unlike an indexed
+        claim edge. Mirrors the same `_hypothesis_tie_ids_from_meta` groups
+        `_build_family_wings`'s own workbench branch already reads to extend
+        a person's spouse/child wings with unsourced ties.
+
+        Returns None - "no bracket" - when neither is true, which covers
+        both "never researched" and "researched and found not to be true";
+        the render loop cannot and must not tell those two apart."""
+        row = self.conn.execute(
+            "SELECT 1 FROM relationships WHERE person_id = ? AND rel = 'spouse' "
+            "AND other_id = ? LIMIT 1", (pid1, pid2)).fetchone()
+        if row is not None:
+            return 'confirmed'
+        if not self.workbench:
+            return None
+        for a, b in ((pid1, pid2), (pid2, pid1)):
+            row_meta = self.person_meta.get(a)
+            if row_meta is None:
+                continue
+            try:
+                rec = read_record(self.archive_root / row_meta['path'],
+                                   on_decode_error=_ignore_decode_error)
+            except Exception:  # noqa: BLE001 - an unreadable record contributes nothing here
+                continue
+            if rec.get('undecodable'):
+                continue
+            for group, target in self._hypothesis_tie_ids_from_meta(rec['meta'], a):
+                if group == 'spouses' and target == b:
+                    return 'hypothesis'
+        return None
+
     def _build_ahnentafel(self, seed: str, max_gen: int, page_dir: Path) -> tuple[dict, dict]:
         """Ahnentafel map {number: {'name','url','redacted', 'sex_derived'}} for
         the fan chart, walking `parent` edges from the seed, plus a second map
@@ -6008,7 +6103,20 @@ class _SiteBuilder:
         costs nothing extra here and so the field stays meaningful if a future
         caller ever wants it deeper. `_render_pedigree_svg` reads it (via the
         labels dict) to withhold branch coloring from a slot whose parity was
-        never actually evidenced by a `sex:` value."""
+        never actually evidenced by a `sex:` value.
+
+        MARRIAGE EVIDENCE (#115 reopened again, post-merge Codex review of
+        #187, P1). Once BOTH of a slot's own two parents are placed, the
+        CHILD's own label - `labels[num]`, already present by the time that
+        slot is processed - gets `parents_married` set to whatever
+        `_ancestor_couple_evidence` found for that pair ('confirmed',
+        'hypothesis', or left unset for no evidence at all). This is a fact
+        about the PAIR, not either individual, so it rides on the shared
+        child slot rather than being duplicated onto both parent slots.
+        `_render_pedigree_svg` reads it to decide whether that pair's two
+        parent slots earn the shared-vertex couple bracket or fall back to
+        the plain two-elbow rendering - two known co-parents are evidence of
+        PARENTAGE, never of marriage, by themselves."""
         labels: dict[int, dict] = {1: self._chart_entry(seed, page_dir)}
         missing_parent_of: dict[int, str] = {}
         queue: deque[tuple[int, str]] = deque([(1, seed)])
@@ -6095,6 +6203,20 @@ class _SiteBuilder:
                 if ppid not in seen:          # pedigree collapse: show, don't re-walk
                     seen.add(ppid)
                     queue.append((slot_num, ppid))
+            # #115 reopened again (P1, post-merge Codex review of #187): both
+            # parent slots being placed above is evidence these two are
+            # PARENTS of `pid` - it says nothing about whether the archive
+            # holds a marriage between THEM. Only record `parents_married` on
+            # `pid`'s own already-existing label (`labels[num]`, set either
+            # as the walk's own seed entry or when `num` was originally
+            # discovered as somebody else's parent slot) when both halves of
+            # the couple actually made it onto the chart; `_render_pedigree_
+            # svg`'s bracket check reads this same key to decide bracket vs.
+            # plain elbows for slots `2*num`/`2*num+1`.
+            if father and mother:
+                evidence = self._ancestor_couple_evidence(father, mother)
+                if evidence:
+                    labels[num]['parents_married'] = evidence
         return labels, missing_parent_of
 
     def _build_family_wings(self, pid: str, page_dir: Path, *,
