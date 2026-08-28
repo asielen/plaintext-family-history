@@ -778,8 +778,14 @@ class PersonPageTests(_Base):
         # "Millbrook" in the sentence - Dutchess County and New York
         # vanished from the page with no link anywhere to recover them,
         # a real loss of information the record actually contains. The
-        # fix prints the label's own remainder as a plain continuation of
-        # the sentence instead.
+        # fix prints the label's own remainder as a continuation of the
+        # sentence instead.
+        #
+        # #180 post-merge follow-up, finding 2: the remainder is spliced in
+        # right after "Millbrook" - the word it actually qualifies - not
+        # tacked onto the very end of the sentence (after "to farm"), which
+        # used to read as though "to farm" were somewhere in Dutchess
+        # County rather than the county being a fact about Millbrook.
         self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley')
         self._seed_source('s-1111111111', 'Record', people=('p-aaaaaaaaaa',))
         self._seed_claim('c-1111111111', 's-1111111111', 'residence',
@@ -788,7 +794,8 @@ class PersonPageTests(_Base):
                          persons=('p-aaaaaaaaaa',))
         self._run(linked=True)
         html = self._read('persons/p-aaaaaaaaaa.html')
-        self.assertIn('Moved to Millbrook to farm, Dutchess County, New York', html)
+        self.assertIn('Moved to Millbrook, Dutchess County, New York to farm', html)
+        self.assertNotIn('Moved to Millbrook to farm, Dutchess County, New York', html)  # not appended past "to farm"
         self.assertNotIn('at Millbrook, Dutchess County, New York', html)  # not a second "at" repeat
         self.assertEqual(html.count('Millbrook'), 1)      # named once, not doubled
 
@@ -800,9 +807,12 @@ class PersonPageTests(_Base):
         # "new" fact being appended.
         #
         # Finding 1 follow-up: no place_id here either, so the county/state
-        # qualifier is not simply dropped - it prints as a continuation
-        # tacked onto the end of the sentence (where the old trailing tag
-        # used to go), not re-inserted next to "the family home" itself.
+        # qualifier is not simply dropped.
+        #
+        # #180 post-merge follow-up, finding 2: the qualifier is spliced in
+        # right after "the family home" itself, not tacked onto the very
+        # end of the sentence (after "at age 79") - the old placement would
+        # have made "at age 79" read as part of the Cook County qualifier.
         self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley')
         self._seed_source('s-1111111111', 'Record', people=('p-aaaaaaaaaa',))
         self._seed_claim('c-1111111111', 's-1111111111', 'residence',
@@ -812,9 +822,9 @@ class PersonPageTests(_Base):
                          persons=('p-aaaaaaaaaa',))
         self._run(linked=True)
         html = self._read('persons/p-aaaaaaaaaa.html')
-        self.assertIn('Resided at the family home as of the 1920 census, at age 79, '
-                      'Cook County, Illinois', html)             # remainder continues the sentence
-        self.assertNotIn('at the family home, Cook County, Illinois', html)  # not a second "at" repeat
+        self.assertIn('Resided at the family home, Cook County, Illinois as of the '
+                      '1920 census, at age 79', html)             # remainder sits right after the mention
+        self.assertNotIn('at age 79, Cook County, Illinois', html)  # not appended past the whole sentence
         self.assertEqual(html.count('the family home'), 1)       # named once, not doubled
 
     def test_timeline_place_tag_omitted_for_reordered_compound_place_list(self):
@@ -937,6 +947,115 @@ class PersonPageTests(_Base):
         self.assertIn('Born in Trinidad, and Tobago', html)
         self.assertNotIn('at Trinidad and Tobago, Caribbean', html)
         self.assertEqual(html.count('Trinidad'), 1)   # named once, not doubled
+
+    def test_timeline_place_tag_not_omitted_when_leading_name_matches_an_unrelated_word(self):
+        # #180 post-merge follow-up, finding 1 (P1, THE serious one): the
+        # leading-component fallback above only ever tested whether the
+        # place's leading name's WORDS occurred somewhere in the sentence -
+        # with no check that the occurrence was actually functioning as a
+        # PLACE there. Codex's concrete, real failure: a place's leading
+        # name can just as easily be a person's SURNAME. "Washington" is
+        # both the leading name of "Washington, D.C." and an ordinary
+        # surname, so "Met George Washington while visiting" satisfied the
+        # old bare word search on "George Washington" even though the
+        # sentence never names any place at all - the claim's real
+        # (different, unstated) location would be silently suppressed with
+        # nothing printed in its place. (The sibling failure - a place-page
+        # link wrongly wrapped around the person's own name when the place
+        # is registered - is pinned in PlacePageTests below, where a
+        # registered place is available to link.) Requiring a
+        # place-indicating preposition ("in"/"at"/"to"/"from"/etc.)
+        # immediately before the match closes this: "George Washington" has
+        # no such word before "Washington" (it is "George", not "in"), so
+        # the match must not count as a place mention - the full trailing
+        # place tag has to print, exactly as if no leading-component match
+        # had ever been found.
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley')
+        self._seed_source('s-1111111111', 'Record', people=('p-aaaaaaaaaa',))
+        self._seed_claim('c-1111111111', 's-1111111111', 'event',
+                         'Met George Washington while visiting', status='accepted',
+                         date_edtf='1900', place_text='Washington, D.C.',
+                         persons=('p-aaaaaaaaaa',))
+        self._run(linked=True)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('Met George Washington while visiting', html)
+        self.assertIn('at Washington, D.C.', html)   # full tag still prints - never silently suppressed
+
+    def test_timeline_place_tag_still_omitted_when_leading_name_has_real_place_context(self):
+        # Companion to the test above, pinning that finding 1's fix does not
+        # over-tighten: a genuine place-indicating preposition right before
+        # the same leading name still counts as a real mention, exactly as
+        # every other test in this class already established for "to
+        # Millbrook"/"at the family home"/etc. shaped sentences. No place_id
+        # here (unlinkable), so "D.C." - the label's own droppable qualifier
+        # - still has to survive as a spliced-in remainder (finding 2) right
+        # after "Washington", not vanish and not print as a second, separate
+        # "at Washington, D.C." tag.
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley')
+        self._seed_source('s-1111111111', 'Record', people=('p-aaaaaaaaaa',))
+        self._seed_claim('c-1111111111', 's-1111111111', 'event',
+                         'Attended a ceremony in Washington while visiting',
+                         status='accepted', date_edtf='1900',
+                         place_text='Washington, D.C.', persons=('p-aaaaaaaaaa',))
+        self._run(linked=True)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('Attended a ceremony in Washington, D.C. while visiting', html)
+        self.assertNotIn('while visiting at Washington, D.C.', html)  # not a second, separate trailing tag
+        self.assertEqual(html.count('Washington'), 1)
+
+    def test_timeline_place_remainder_spliced_after_mention_not_after_a_later_place(self):
+        # #180 post-merge follow-up, finding 2 (P1, the other serious one):
+        # Codex's concrete, real failure - a claim's sentence names the
+        # claim's own (unlinked) place and THEN a second, unrelated place
+        # later in the same sentence. The old code appended the unlinkable
+        # place's remainder after the WHOLE rendered sentence rather than
+        # after the mention it actually describes, so a value like "She
+        # moved from Millbrook to Boston" with unlinked place_text
+        # "Millbrook, Dutchess County, New York" rendered "...to Boston,
+        # Dutchess County, New York" - read naturally, that says BOSTON is
+        # in Dutchess County, New York, a wrong and misleading attribution
+        # of a qualifier that was only ever about Millbrook. (Codex's own
+        # example phrased this as "She left Millbrook for Boston" - adapted
+        # here to "moved from ... to ..." so the claim's sentence still
+        # carries the "from"-context finding 1 above now requires before a
+        # leading-component match counts as a place mention at all; the
+        # misattribution bug itself is identical either way.) The fix
+        # splices the remainder in immediately after "Millbrook".
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley')
+        self._seed_source('s-1111111111', 'Record', people=('p-aaaaaaaaaa',))
+        self._seed_claim('c-1111111111', 's-1111111111', 'residence',
+                         'She moved from Millbrook to Boston', status='accepted',
+                         date_edtf='1900', place_text='Millbrook, Dutchess County, New York',
+                         persons=('p-aaaaaaaaaa',))
+        self._run(linked=True)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('She moved from Millbrook, Dutchess County, New York to Boston', html)
+        self.assertNotIn('to Boston, Dutchess County, New York', html)  # never misattributed to Boston
+        self.assertEqual(html.count('Millbrook'), 1)
+
+    def test_timeline_place_remainder_keeps_a_genuine_parenthetical(self):
+        # #180 post-merge follow-up, finding 3 (P2): the remainder used to
+        # be built from the SAME blanket parenthetical-stripping regex that
+        # keeps a coordinated compound's own elaboration list ("(Rome,
+        # Milan, Paris, Lyon)") from being mistaken for a hierarchy's
+        # top-level comma - but a parenthetical sitting right in a place's
+        # OWN leading name can be genuine, meaningful historical
+        # information, not internal encoding to scrub (that is
+        # `_scrub_internal_encoding`'s separate, unrelated job, and it has
+        # already run on this text by the time the remainder is computed).
+        # "Millbrook (formerly Oakville)" used to lose "(formerly Oakville)"
+        # from the rendered remainder entirely, with no link anywhere on an
+        # unlinkable claim to recover it.
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley')
+        self._seed_source('s-1111111111', 'Record', people=('p-aaaaaaaaaa',))
+        self._seed_claim('c-1111111111', 's-1111111111', 'residence',
+                         'Moved to Millbrook', status='accepted', date_edtf='1900',
+                         place_text='Millbrook (formerly Oakville), Dutchess County, New York',
+                         persons=('p-aaaaaaaaaa',))
+        self._run(linked=True)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('Moved to Millbrook (formerly Oakville), Dutchess County, New York', html)
+        self.assertEqual(html.count('Millbrook'), 1)   # named once, not doubled
 
     def test_timeline_place_text_internal_encoding_is_scrubbed_from_the_trailing_remainder(self):
         # Adversarial review, round 4 audit (#140's own concern, extended):
@@ -2686,6 +2805,59 @@ class PlacePageTests(_Base):
         self.assertNotIn('Dutchess County', person_html)   # qualifier not force-printed
         self.assertEqual(person_html.count('Millbrook'), 1)   # named once, not doubled
 
+    def test_timeline_place_link_not_hung_on_an_unrelated_name_match(self):
+        # #180 post-merge follow-up, finding 1 (P1, THE serious one), the
+        # reader-VISIBLE half of the bug (the PersonPageTests sibling of
+        # this test pins the unlinkable half - a silently vanished real
+        # location). When the place IS registered and linkable, the old
+        # leading-component match - with no check that the match was
+        # actually functioning as a place - would hang the place-page link
+        # on whatever matched words it found, even a person's own SURNAME
+        # that happens to share the place's leading name: "Washington" in
+        # "Met George Washington while visiting" against registered place
+        # "Washington, D.C.". A reader would see the person's own name
+        # linked to a place page with no place relationship justifying it,
+        # while the sentence's real, unstated location silently vanished
+        # from the page entirely. Requiring a place-indicating preposition
+        # immediately before the match (finding 1's fix) rejects this
+        # match for lack of context, so the sentence's own words stay
+        # unlinked prose and the full trailing tag - itself linked to the
+        # place page, exactly where the link belongs - prints instead.
+        self._seed_person('p-aaaaaaaaaa', 'Jane')
+        self._seed_source('s-1111111111', 'Census', people=('p-aaaaaaaaaa',))
+        self._seed_place('l-1111111111', 'Washington, D.C.')
+        self._seed_claim_at_place('c-1111111111', 's-1111111111', 'l-1111111111',
+                                  'Met George Washington while visiting', ('p-aaaaaaaaaa',))
+        self._run(linked=True)
+        person_html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('Met George Washington while visiting at '
+                      '<a href="../places/l-1111111111.html">Washington, D.C.</a>', person_html)
+        self.assertNotIn('Met George <a href="../places/l-1111111111.html">', person_html)
+        self.assertNotIn('<a href="../places/l-1111111111.html">Washington</a> while', person_html)
+
+    def test_timeline_place_link_covers_the_whole_coordinated_compound(self):
+        # #180 post-merge follow-up, finding 4 (P2): when a registered
+        # compound place name is recognized via the coordinated-parts
+        # fallback matcher - a leading component like "Trinidad and Tobago"
+        # that names two peer parts joined by "and" - the matched span used
+        # to cover only the FIRST part's own words ("Trinidad"), even
+        # though the suppression decision itself was for the whole
+        # compound. Hanging the place-page link on only "Trinidad" left
+        # "and Tobago" sitting outside the link, right next to it, for a
+        # place registered under the full two-word compound name - a
+        # confusingly narrow link a reader would not expect. The fix hangs
+        # the link on the complete coordinated expression.
+        self._seed_person('p-aaaaaaaaaa', 'Jane')
+        self._seed_source('s-1111111111', 'Census', people=('p-aaaaaaaaaa',))
+        self._seed_place('l-1111111111', 'Trinidad and Tobago, Caribbean')
+        self._seed_claim_at_place('c-1111111111', 's-1111111111', 'l-1111111111',
+                                  'Born in Trinidad and Tobago', ('p-aaaaaaaaaa',))
+        self._run(linked=True)
+        person_html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('Born in <a href="../places/l-1111111111.html">Trinidad and Tobago</a>',
+                      person_html)
+        self.assertNotIn('</a> and Tobago', person_html)   # link isn't cut short at "Trinidad"
+
     def test_freetext_place_without_id_is_not_linked(self):
         self._seed_person('p-aaaaaaaaaa', 'Jane')
         self._seed_source('s-1111111111', 'Census', people=('p-aaaaaaaaaa',))
@@ -3357,10 +3529,27 @@ class AncestorCoupleBracketTests(unittest.TestCase):
     same claim as "the parents are bracketed to each other" the issue asked
     for). This class pins the exact bracket geometry the fix adds, using
     the same real-coordinate-parsing rigor as `PedigreeGeometryGuardTests`
-    rather than eyeballing markup."""
+    rather than eyeballing markup.
+
+    REOPENED AGAIN (post-merge Codex review of #187, P1): the fix above drew
+    the bracket for ANY pair of known co-parents, with no check that the
+    archive actually holds a marriage between them - two known co-parents
+    are evidence of PARENTAGE, never of marriage, by themselves. Every test
+    below that wants the bracket now has to say so explicitly via the
+    `parents_married` label key `_build_ahnentafel` sets from real evidence
+    (`_ancestor_couple_evidence` - see `AncestorCoupleMarriageEvidenceTests`
+    for the DB-level tests proving THAT wiring); tests that construct a
+    couple with no such key are proving the opposite - that co-parentage
+    alone is not enough."""
 
     def _full_labels(self, max_slot: int) -> dict:
-        return {n: {'name': f'A{n}', 'url': None, 'redacted': False, 'dates': {}}
+        # `parents_married: True` on every slot is harmless for a leaf slot
+        # (nothing ever reads the key off a slot with no children in range)
+        # and gives every INTERNAL slot's pair confirmed marriage evidence,
+        # so these fully-known fixtures keep exercising the bracket geometry/
+        # collision-guard tests below exactly as before the evidence gate.
+        return {n: {'name': f'A{n}', 'url': None, 'redacted': False, 'dates': {},
+                    'parents_married': True}
                 for n in range(1, max_slot + 1)}
 
     def test_subject_own_parents_get_a_shared_vertex_bracket(self):
@@ -3373,7 +3562,8 @@ class AncestorCoupleBracketTests(unittest.TestCase):
         # to the child's own row (yc=147) - which is where BOTH old elbows'
         # first "H204" leg used to land, redundantly drawn twice.
         labels = {
-            1: {'name': 'Subject', 'url': None, 'redacted': False, 'dates': {}},
+            1: {'name': 'Subject', 'url': None, 'redacted': False, 'dates': {},
+                'parents_married': True},
             2: {'name': 'Father', 'url': None, 'redacted': False, 'dates': {}},
             3: {'name': 'Mother', 'url': None, 'redacted': False, 'dates': {}},
         }
@@ -3388,6 +3578,47 @@ class AncestorCoupleBracketTests(unittest.TestCase):
         # Card/row geometry is provably untouched by this link-only change -
         # the exact legacy viewBox this shape has always produced.
         self.assertIn('viewBox="0 0 624 294.0"', svg)
+
+    def test_two_known_co_parents_with_no_marriage_evidence_get_plain_elbows(self):
+        # THE core correctness fix (P1, post-merge Codex review of #187) and
+        # the most common real-world shape it affects: two people the
+        # archive knows are BOTH parents of the subject, with no marriage
+        # relationship recorded between them at all - never researched, an
+        # unmarried couple, or a co-parent who was simply never a spouse.
+        # Identical to the fixture above MINUS `parents_married` - this is
+        # exactly what a fixture like that used to render as a bracket
+        # before this fix, which is precisely the bug: co-parentage alone
+        # must never draw a marriage bracket. Must fall back to the old,
+        # pre-#187 two-independent-elbow shape, byte for byte.
+        labels = {
+            1: {'name': 'Subject', 'url': None, 'redacted': False, 'dates': {}},
+            2: {'name': 'Father', 'url': None, 'redacted': False, 'dates': {}},
+            3: {'name': 'Mother', 'url': None, 'redacted': False, 'dates': {}},
+        }
+        svg = site._render_pedigree_svg(labels)
+        self.assertNotIn('ped-link-couple', svg)
+        self.assertIn('<path class="ped-link" d="M184,147 H204 V75 H224"/>', svg)
+        self.assertIn('<path class="ped-link" d="M184,147 H204 V219 H224"/>', svg)
+
+    def test_negated_marriage_evidence_also_falls_back_to_plain_elbows(self):
+        # An accepted marriage claim the archive holds as NEGATED ("these two
+        # did NOT marry", SPEC §8.6) is not a different code path at this
+        # layer - `_build_ahnentafel` never sets `parents_married` for it in
+        # the first place, because `index.py` never creates a `relationships`
+        # row for a negated claim (see `_ancestor_couple_evidence`'s own
+        # docstring) - so the render function sees the exact same "no
+        # evidence" input as the never-researched case above and must
+        # produce the exact same output. Pinned separately anyway: this is
+        # the shape a `no_known_marriages: true` flag or a negated marriage
+        # claim actually produces end to end, and `AncestorCoupleMarriage
+        # EvidenceTests` proves the DB wiring that gets it here.
+        labels = {
+            1: {'name': 'Subject', 'url': None, 'redacted': False, 'dates': {}},
+            2: {'name': 'Father', 'url': None, 'redacted': False, 'dates': {}},
+            3: {'name': 'Mother', 'url': None, 'redacted': False, 'dates': {}},
+        }
+        svg = site._render_pedigree_svg(labels)
+        self.assertNotIn('ped-link-couple', svg)
 
     def test_bracket_drawn_at_every_internal_generation_not_just_the_subjects_own_parents(self):
         # A fully-known 3-generation tree (15 slots, 7 internal/non-leaf
@@ -3434,9 +3665,14 @@ class AncestorCoupleBracketTests(unittest.TestCase):
         # assert "this real ancestor is married to whoever is behind this
         # card" even with the name withheld - so this must fall through to
         # the plain single-parent elbow, the same as any other slot with
-        # only one known occupant, never a couple bracket.
+        # only one known occupant, never a couple bracket. `parents_married`
+        # is set here on purpose (the archive DOES hold real marriage
+        # evidence for this pair) to prove redaction wins even over real
+        # evidence - the l_kind/r_kind gate must short-circuit before the
+        # evidence check ever gets a say.
         labels = {
-            1: {'name': 'Subject', 'url': None, 'redacted': False, 'dates': {}},
+            1: {'name': 'Subject', 'url': None, 'redacted': False, 'dates': {},
+                'parents_married': True},
             2: {'name': 'Father', 'url': None, 'redacted': False, 'dates': {}},
             3: {'name': '', 'url': None, 'redacted': True, 'dates': {}},
         }
@@ -3456,14 +3692,64 @@ class AncestorCoupleBracketTests(unittest.TestCase):
         self.assertNotIn('ped-link-couple', svg)
         self.assertEqual(svg.count('ped-empty'), 2)
 
-    def test_workbench_hypothesis_parent_dashes_the_whole_pairing(self):
-        # A workbench-only unsourced hypothesis tie makes the WHOLE pairing
-        # exactly as unconfirmed as its weaker half - both the bracket AND
-        # its stub render with ped-link-later's own dashed vocabulary,
-        # mirroring how a later marriage's dashing already covers its
-        # bracket and its children stubs together, not the bracket alone.
+    def test_workbench_hypothesis_parent_placement_alone_is_not_marriage_evidence(self):
+        # Adversarial self-review question this guards against: does gating
+        # on marriage evidence still hold once a parent SLOT itself is only
+        # a workbench hypothesis placement (the add-family flow's whole
+        # output, `_hypothesis_parent_ids` - a claim about who the parents
+        # ARE, not about whether they married)? Before this fix, PR #187's
+        # own test for this shape had NO `parents_married` evidence in its
+        # fixture at all and still expected a (dashed) bracket - i.e. it was
+        # inadvertently proving "placement hypothesis alone draws a bracket",
+        # exactly the under-evidenced shape this whole follow-up closes. A
+        # hypothesis-placed parent pair with zero marriage evidence must get
+        # the plain elbows, same as any other unevidenced pair.
         labels = {
             1: {'name': 'Subject', 'url': None, 'redacted': False, 'dates': {}},
+            2: {'name': 'Father', 'url': None, 'redacted': False, 'dates': {}, 'hypothesis': True},
+            3: {'name': 'Mother', 'url': None, 'redacted': False, 'dates': {}},
+        }
+        svg = site._render_pedigree_svg(labels, workbench=True)
+        self.assertNotIn('ped-link-couple', svg)
+        self.assertIn('<path class="ped-link" d="M184,147 H204 V75 H224"/>', svg)
+        self.assertIn('<path class="ped-link" d="M184,147 H204 V219 H224"/>', svg)
+
+    def test_workbench_hypothesis_marriage_tie_dashes_the_whole_pairing(self):
+        # The other half of the same adversarial question: a workbench-only
+        # unsourced *marriage* tie (`_ancestor_couple_evidence` finding a
+        # frontmatter `relationships: type: spouse, status: hypothesis` on
+        # either parent's own record, with no accepted claim behind it) is
+        # real - if weak - evidence, and must still draw the bracket, dashed
+        # with ped-link-later's own "lower confidence reads as dashed"
+        # vocabulary across both the bracket AND its stub - mirroring how a
+        # later marriage's dashing already covers its bracket and its
+        # children stubs together, not the bracket alone. Neither parent
+        # slot here is itself a hypothesis placement - this isolates the
+        # marriage-evidence dashing from the placement-hypothesis dashing
+        # the test above already covers separately.
+        labels = {
+            1: {'name': 'Subject', 'url': None, 'redacted': False, 'dates': {},
+                'parents_married': 'hypothesis'},
+            2: {'name': 'Father', 'url': None, 'redacted': False, 'dates': {}},
+            3: {'name': 'Mother', 'url': None, 'redacted': False, 'dates': {}},
+        }
+        svg = site._render_pedigree_svg(labels, workbench=True)
+        self.assertIn(
+            '<path class="ped-link ped-link-hypothesis ped-link-couple" d="M224,75 H204 V219 H224"/>', svg)
+        self.assertIn('<path class="ped-link ped-link-hypothesis" d="M204,147 H184"/>', svg)
+
+    def test_hypothesis_parent_placement_dashes_even_a_confirmed_marriage(self):
+        # A hypothesis-placed parent pair (the CHILD-parent tie is unsourced)
+        # whose marriage to each other is otherwise fully confirmed
+        # elsewhere in the archive - real, if unusual: the couple is
+        # well-documented, but placing THEM as this particular child's
+        # parents is still just a guess. The whole pairing's placement in
+        # THIS spot on the chart is unconfirmed, so it must still dash, same
+        # as the pure marriage-hypothesis case above - confirmed marriage
+        # evidence does not override an unconfirmed placement.
+        labels = {
+            1: {'name': 'Subject', 'url': None, 'redacted': False, 'dates': {},
+                'parents_married': True},
             2: {'name': 'Father', 'url': None, 'redacted': False, 'dates': {}, 'hypothesis': True},
             3: {'name': 'Mother', 'url': None, 'redacted': False, 'dates': {}},
         }
@@ -3500,6 +3786,106 @@ class AncestorCoupleBracketTests(unittest.TestCase):
                 svg = site._render_pedigree_svg(labels, ancestor_generations=depth)
                 self.assertEqual(svg.count('ped-link-couple'), (1 << depth) - 1)
                 self.assertEqual(_ped_link_row_collisions(svg), [])
+
+
+class AncestorCoupleMarriageEvidenceTests(_Base):
+    """DB-level proof that `_build_ahnentafel`'s `_ancestor_couple_evidence`
+    correctly wires real marriage evidence - the SAME `relationships`
+    (`rel='spouse'`) table `_build_family_wings` already reads for the hub's
+    own bracket - into the ancestor-generation bracket's `parents_married`
+    gate, end to end through a real (synthetic) index and an actual
+    person-page render. `AncestorCoupleBracketTests` above pins the pure
+    `_render_pedigree_svg` geometry from hand-built label dicts; these prove
+    the DB → `_build_ahnentafel` → labels wiring that fills that key in for
+    a real archive, including the negated-claim case those pure tests
+    cannot express (negated and never-researched are indistinguishable
+    INPUTS to the renderer by design - see that class's own comment)."""
+
+    def _seed_co_parents(self):
+        self._seed_person('p-aaaaaaaaaa', 'Subject Hartley', surname='Hartley')
+        self._seed_person('p-bbbbbbbbbb', 'Father Hartley', surname='Hartley', sex='M')
+        self._seed_person('p-cccccccccc', 'Mother Hartley', surname='Hartley', sex='F')
+        self._seed_rel('p-aaaaaaaaaa', 'parent', 'p-bbbbbbbbbb')
+        self._seed_rel('p-bbbbbbbbbb', 'child', 'p-aaaaaaaaaa')
+        self._seed_rel('p-aaaaaaaaaa', 'parent', 'p-cccccccccc')
+        self._seed_rel('p-cccccccccc', 'child', 'p-aaaaaaaaaa')
+
+    def test_two_known_co_parents_with_no_marriage_relationship_get_no_bracket(self):
+        # The most common real-world case this bug affects (P1, post-merge
+        # Codex review of #187): the archive knows both of the subject's
+        # parents, but holds NO marriage relationship between them at all -
+        # never researched, or a real unmarried couple. Before this fix,
+        # both being known was already enough to draw the bracket.
+        self._seed_co_parents()
+        self._run(linked=True)
+        page = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('Father Hartley', page)
+        self.assertIn('Mother Hartley', page)
+        self.assertNotIn('ped-link-couple', page)
+
+    def test_accepted_negated_marriage_claim_gets_no_bracket(self):
+        # An accepted claim recording that Father and Mother did NOT marry
+        # (SPEC §8.6, `negated: true`) must read back exactly like "never
+        # researched" above, never like a marriage. `index.py`'s
+        # relationship derivation never creates a `relationships` row for a
+        # negated claim in the first place (`WHERE ... AND
+        # COALESCE(c.negated, 0) = 0`), so this claim is seeded here for
+        # documentation and regression coverage - if a future change made
+        # `_ancestor_couple_evidence` read the `claims` table directly
+        # instead of `relationships`, forgetting to filter `negated` would
+        # only be caught by a test that actually seeds one, not by the
+        # "no relationship row at all" test above.
+        self._seed_co_parents()
+        self._seed_source('s-1111111111', 'Family Bible - marriage inquiry',
+                          people=('p-bbbbbbbbbb', 'p-cccccccccc'))
+        self._seed_claim('c-1111111111', 's-1111111111', 'marriage', 'Not married',
+                         status='accepted', negated=1,
+                         persons=('p-bbbbbbbbbb', 'p-cccccccccc'),
+                         roles={'p-bbbbbbbbbb': 'spouse', 'p-cccccccccc': 'spouse'})
+        self._run(linked=True)
+        page = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertNotIn('ped-link-couple', page)
+
+    def test_accepted_confirmed_spouse_relationship_gets_the_bracket(self):
+        # The archive holds a real, accepted marriage between the subject's
+        # two parents - the bracket is now correctly evidence-backed instead
+        # of merely assumed from co-parentage. `_seed_rel` mirrors
+        # `index.py`'s derived edge shape (FamilyChartTests' own docstring):
+        # one direction is enough for a page built from the subject's point
+        # of view, same as `_build_family_wings`'s own spouse query relies on.
+        self._seed_co_parents()
+        self._seed_rel('p-bbbbbbbbbb', 'spouse', 'p-cccccccccc')
+        self._run(linked=True)
+        page = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('ped-link ped-link-couple', page)
+
+
+class PedLinkCoupleStyleTests(unittest.TestCase):
+    """#115 reopened again (P2, post-merge Codex review of #187): the first
+    cut of `.ped-link-couple` (PR #187) carried no rule of its own - a
+    correctly evidence-backed bracket rendered pixel-identical to no bracket
+    at all, because the class it carried was purely cosmetic marker with no
+    stylesheet rule behind it. A class-name-only assertion ("ped-link-couple
+    appears in the markup") would have passed against that no-op stylesheet
+    just as easily - Codex's own critique - so these read the stylesheet
+    itself and require an actual property that differs from the plain
+    `.ped-link` baseline, following `FanChartStyleTests`' established
+    stylesheet-assertion pattern."""
+
+    def test_ped_link_couple_has_its_own_distinguishing_rule(self):
+        css = (ROOT / 'design' / 'styles.css').read_text(encoding='utf-8')
+        base = re.search(r'^\.ped-link\s*\{([^}]*)\}', css, re.M)
+        self.assertIsNotNone(base, '.ped-link rule not found in design/styles.css')
+        couple = re.search(r'^\.ped-link-couple\s*\{([^}]*)\}', css, re.M)
+        self.assertIsNotNone(couple, '.ped-link-couple rule not found in design/styles.css')
+        self.assertTrue(couple.group(1).strip(), '.ped-link-couple rule is empty - a no-op')
+        base_props = dict(re.findall(r'([\w-]+)\s*:\s*([^;]+);', base.group(1)))
+        couple_props = dict(re.findall(r'([\w-]+)\s*:\s*([^;]+);', couple.group(1)))
+        self.assertTrue(
+            any(couple_props.get(k, '').strip() != v.strip() for k, v in base_props.items())
+            or any(k not in base_props for k in couple_props),
+            '.ped-link-couple has no computed property that actually differs from .ped-link - '
+            'a reader could not tell a marriage bracket apart from a plain elbow.')
 
 
 class PedigreeAxisLabelCenteringTests(unittest.TestCase):
@@ -3858,10 +4244,35 @@ class HomePedigreeTests(_Base):
         # in ancestor who is not themself a blood descendant of the apex
         # never appeared. Confirm the fix reaches the actual generated home
         # page (AncestorCoupleBracketTests already pins the exact geometry
-        # in isolation) - the hub's own two parents are both known and
-        # public, so the built page must carry a shared-vertex bracket
-        # (`ped-link-couple`), the same idiom `_build_family_wings`'s own
-        # spouse bracket already uses one column over.
+        # in isolation) - the hub's own two parents are both known, public,
+        # AND (post-merge Codex review of #187, P1) actually recorded as
+        # married to each other - a real `spouse` relationship, the same
+        # evidence `_build_family_wings`'s own spouse bracket already
+        # requires one column over - so the built page must carry a
+        # shared-vertex bracket (`ped-link-couple`).
+        self._seed_person('p-aaaaaaaaaa', 'Hub Person')
+        self._seed_person('p-bbbbbbbbbb', 'Father Person', sex='M')
+        self._seed_person('p-cccccccccc', 'Mother Person', sex='F')
+        self._seed_rel('p-aaaaaaaaaa', 'parent', 'p-bbbbbbbbbb')
+        self._seed_rel('p-bbbbbbbbbb', 'child', 'p-aaaaaaaaaa')
+        self._seed_rel('p-aaaaaaaaaa', 'parent', 'p-cccccccccc')
+        self._seed_rel('p-cccccccccc', 'child', 'p-aaaaaaaaaa')
+        self._seed_rel('p-bbbbbbbbbb', 'spouse', 'p-cccccccccc')
+        self._seed_home()
+        self._run(linked=True)
+        ped = self._pedigree_section(self._read('index.html'))
+        self.assertIn('ped-link-couple', ped)
+        self.assertIn('Father Person', ped)
+        self.assertIn('Mother Person', ped)
+
+    def test_home_page_withholds_the_bracket_with_no_marriage_evidence(self):
+        # The other half of the same fix: the hub's own two parents being
+        # known co-parents is NOT, by itself, evidence they married each
+        # other - the shape #115's reopening review actually found (a real
+        # unmarried couple, or simply never researched). Identical fixture to
+        # the test above MINUS the `spouse` relationship - the home page,
+        # this archive's highest-traffic page, must not visually assert a
+        # marriage the archive does not actually record.
         self._seed_person('p-aaaaaaaaaa', 'Hub Person')
         self._seed_person('p-bbbbbbbbbb', 'Father Person', sex='M')
         self._seed_person('p-cccccccccc', 'Mother Person', sex='F')
@@ -3872,7 +4283,7 @@ class HomePedigreeTests(_Base):
         self._seed_home()
         self._run(linked=True)
         ped = self._pedigree_section(self._read('index.html'))
-        self.assertIn('ped-link-couple', ped)
+        self.assertNotIn('ped-link-couple', ped)
         self.assertIn('Father Person', ped)
         self.assertIn('Mother Person', ped)
 
