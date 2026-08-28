@@ -81,11 +81,20 @@ CODE MAP
     _inline_html               - inline pass: links, [ID] tokens, **bold**;
                                  also where `_scrub_internal_encoding` runs
                                  (per literal span, after links are matched)
+    _rendered_boundary_char    - the real first visible character of a
+                                 construct's OWN rendered HTML, not its
+                                 pre-render label - `_inline_html`'s spacing
+                                 decisions read this, not a guess
     _scrub_internal_encoding   - drop a bare (C-xxxx) parenthetical / translate
-                                 a [..YYYY] "before" bracket in free-text claim
-                                 values, wherever one reaches a reader-facing
-                                 page (prose, timeline, source/place claims
-                                 tables, person summary vitals)
+                                 a [..YYYY] "before" bracket (or a two-sided
+                                 [..YYYY]/YYYY interval) / redact a bare
+                                 [PSCLH]-xxxxxxxxxx citation id (`_BARE_ID_RE`,
+                                 a defense-in-depth backstop for a citation
+                                 that leaked past `_INLINE_RE` unmatched) in
+                                 free-text claim values, wherever one reaches
+                                 a reader-facing page (prose, timeline,
+                                 source/place claims tables, person summary
+                                 vitals)
     _extract_section           - pull one `## Heading` section body from a record
     _question_block_body       - a '## Q:' block's body, heading dropped, cut
                                  before the next heading of any kind (#117)
@@ -507,10 +516,49 @@ def _safe_link_href(raw_url: str) -> str | None:
     return html.escape(raw_url, quote=True)
 
 
-# Inline constructs, tried left to right. A markdown link `[text](url)` is
-# matched before a token so a token never half-matches a link; the `[[ ]]`
-# wikilink is matched before the legacy single-bracket `[ID]`; bold is last.
-# Anything not matched is literal text and gets escaped.
+# Inline constructs, tried left to right. The `[[ ]]` wikilink is matched
+# before the markdown link `[text](url)` (see the paragraph below - #167
+# finding 3), which in turn is matched before the legacy single-bracket
+# `[ID]` token so a token never half-matches a link; bold is last. Anything
+# not matched is literal text and gets escaped.
+#
+# Wikilink-before-markdown-link is NOT the original order - it was flipped
+# for #167 finding 3 (regression from the `ltext` bracket-nesting widening
+# below): once `ltext` tolerates one balanced `[...]` unit inside a
+# markdown-link label, a `[[S-id|display]]` wikilink immediately followed by
+# `(text)` - e.g. `[[S-1111111111|source]](note)` - looks, from `ltext`'s
+# perspective, exactly like a label consisting of one bracketed unit
+# (`[S-1111111111|source]`) followed by a link URL (`note`): the wikilink's
+# own OUTER `[` becomes `ltext`'s opening bracket, the nested unit swallows
+# `[S-1111111111|source]` as a single balanced-bracket repetition, and the
+# wikilink's own second closing `]` becomes `ltext`'s closing bracket - a
+# complete, well-formed (but WRONG) markdown-link match. Since alternation
+# tries alternatives in listed order at each starting position, having the
+# markdown-link alternative listed first let it win here even though the
+# text is unambiguously a wikilink, silently losing the citation (Codex
+# review of #167).
+#
+# A negative lookahead on `ltext`'s opening bracket (reject a `[` directly
+# followed by another `[`) was considered first and rejected: it also
+# blocks the legitimate widened case `[see [..1900] record](url)`, whose
+# very first content IS a single bracketed unit starting with `[` - that
+# shape and the wikilink-stealing shape both start with two consecutive
+# `[` characters, so a lookahead that only peeks one character ahead cannot
+# tell them apart, and correctly telling them apart requires re-deriving
+# the wikilink grammar (target/`#anchor`/`|display`, ending `]]`) inside the
+# lookahead - fragile, easy to drift from the real `wtarget`/`wdisp` pattern
+# next time either changes. Reordering instead relies on the wikilink
+# alternative's OWN stricter shape to self-select correctly: it only
+# matches when an immediate `]]` genuinely closes the construct, which is
+# true for `[[S-1111111111|source]](note)` (wins the wikilink alternative,
+# leaving `(note)` as literal text - restoring the pre-widening behaviour
+# Codex's report describes) but false for `[see [..1900] record](url)`
+# (only one `]` follows the nested date unit, not two, so the wikilink
+# alternative fails outright and falls through to the markdown-link
+# alternative exactly as before). No other alternative overlaps with the
+# wikilink's own `[[` prefix (the legacy token's `[` is immediately
+# followed by an id character, never another `[`), so this reordering
+# changes nothing else about what matches where.
 # `lurl` allows one level of BALANCED parens inside the URL (P2, PR #158
 # follow-up) - a plain `[^)\s]+` stops at a URL's own first `)`, which is
 # wrong the moment the URL legitimately contains one, e.g. a claim-id
@@ -523,9 +571,47 @@ def _safe_link_href(raw_url: str) -> str | None:
 # non-paren/non-space characters OR one complete `(...)` unit at a time, so
 # a `(...)` pair inside the URL is consumed whole and only the link's OWN
 # closing paren (matched separately, right after this group) ends the URL.
+# `wdisp` (a wikilink's `|display` label) needs the SAME one-level-of-
+# balancing trick, for square brackets instead of parens (#167 finding 2,
+# privacy-adjacent): a plain `[^\[\]]*` cannot match ANY `[` or `]`, so a
+# label that legitimately contains SPEC §11 before-date notation, e.g.
+# `[[S-1111111111|record filed [..1905]]]`, made the WHOLE wikilink
+# alternative fail to match at that position - `_INLINE_RE` then had no
+# alternative left that matched, so the entire construct fell through as
+# ordinary literal text. Literal text only gets HTML-escaped and scrubbed
+# of claim-id-parens/date-brackets (`_scrub_internal_encoding`); it is NOT
+# scanned for bare `S-xxxx`/etc. id tokens (that is `render_token`'s job,
+# reached only through a MATCHED `[[...]]`/`[ID]` construct) - so the raw
+# `S-1111111111` id leaked onto the page verbatim, unlinked and unscrubbed.
+# `(?:[^\[\]]|\[[^\[\]]*\])*` mirrors `lurl`'s technique: a non-bracket
+# char, OR one complete `[...]` unit with no brackets of its own inside it,
+# repeated. A lone `]` (including the first `]` of the wikilink's own
+# terminating `]]`) matches neither alternative, so the group always stops
+# there - it cannot swallow the construct's own closing `]]`.
+#
+# `ltext` (a markdown link's `[text](url)` label) gets the identical
+# treatment for the identical reason (adversarial review of PR #158's own
+# `wdisp` fix, #167 finding 2 continued): it was left as the original
+# `[^\]]+` - a single unmatched `]` inside the label, e.g.
+# `[see S-1111111111 [..1905]](url)`, broke the WHOLE markdown-link
+# alternative the same way `wdisp`'s did, and the raw id leaked the same
+# way, still unlinked. `+` (not `*`) keeps the pre-existing "label is
+# non-empty" requirement.
+#
+# Neither widening is a complete fix by itself - no FIXED-DEPTH regex can
+# balance brackets nested arbitrarily deep (two-plus levels, e.g.
+# `[[S-id|a[b[c]d]e]]`), or genuinely unbalanced ones (a stray `[` or `]`
+# with no partner at all) - the construct still falls through as ordinary
+# literal text for those shapes, exactly as before either widening existed.
+# `_BARE_ID_RE` (see `_scrub_internal_encoding`) is the DEFENSE-IN-DEPTH
+# backstop for that residual case: literal text - unlike a link/wikilink
+# TARGET, which is never scrubbed - is always scanned for a bare id shape
+# before it reaches the page, so even a construct `_INLINE_RE` never
+# recognizes as a link can no longer leak its raw citation id verbatim.
 _INLINE_RE = re.compile(
-    r'\[(?P<ltext>[^\]]+)\]\((?P<lurl>(?:[^()\s]|\([^()\s]*\))+)\)'  # [text](url)
-    r'|\[\[(?P<wtarget>[^\[\]|#]+)(?:#[^\[\]|]*)?(?:\|(?P<wdisp>[^\[\]]*))?\]\]'  # [[target|disp]]
+    r'\[\[(?P<wtarget>[^\[\]|#]+)(?:#[^\[\]|]*)?'
+    r'(?:\|(?P<wdisp>(?:[^\[\]]|\[[^\[\]]*\])*))?\]\]'            # [[target|disp]]
+    r'|\[(?P<ltext>(?:[^\[\]]|\[[^\[\]]*\])+)\]\((?P<lurl>(?:[^()\s]|\([^()\s]*\))+)\)'  # [text](url)
     r'|\[(?P<token>[PSCLH]-[0-9a-hjkmnp-tv-z]{10})\]'            # legacy [ID] token
     r'|\*\*(?P<bold>.+?)\*\*',                                    # **bold**
     re.I,
@@ -565,28 +651,91 @@ def _inline_html(text: str, render_token) -> str:
     id left unscrubbed in a wikilink's label leaked straight onto the
     reader-facing page even though the equivalent markdown-link label
     (`ltext`) was already covered.
+
+    Each literal-text run is scrubbed independently (#167 finding 1): when a
+    claim-id parenthetical (or, since the adversarial-review follow-up, a
+    bare citation-id token - see `_BARE_ID_RE`) sits at the very END of a
+    run - e.g. "The record (C-4kx9m2p7qr)" immediately followed by a matched
+    `**bold**` or `[link](url)` with no space of its own -
+    `_strip_claim_id_paren` (see its docstring) has no way to see what comes
+    next in the FULL original text; the substring it is handed simply ends
+    at the match. Left alone, it drops the separating space it would
+    otherwise reinsert, welding the two surrounding words together
+    ("record**confirms**" -> no space before "confirms"). A boundary
+    character - "what does a reader see right after this run?" - is passed
+    for every run EXCEPT the last (nothing follows the block's final
+    literal-text run).
+
+    That boundary character is the ACTUAL next rendered character, read back
+    from `rendered` itself AFTER it's been produced - not guessed from any
+    pre-render label (adversarial review, round 3: even a SCRUBBED label can
+    still disagree with what actually renders). `render_token` does not
+    always honor the display text it's handed: a wikilink naming a redacted
+    living person, or a withheld/restricted source, ignores `in_display`
+    entirely and substitutes fixed replacement markup instead - "Living
+    Person", "Restricted - not included in this publication", or a bare
+    footnote digit - regardless of what the label said or how it scrubbed.
+    `"The record(C-xxx)[[P-id|S-2222222222]]"`, where `S-2222222222` is a
+    bare id that itself gets scrubbed to `[record]` and `P-id` resolves to a
+    redacted living person, used to compute its boundary from the scrubbed
+    LABEL's first character (`[`, not a word character) and correctly-but-
+    coincidentally skip a space - the same shape with an ordinary label
+    (`[[P-id|Margaret]]`) computed boundary from `M` (a word character) and
+    inserted one - even though BOTH actually render as "Living Person" (a
+    word character): one of the two was always going to disagree with the
+    real output, because neither ever looked at it. `_rendered_boundary_char`
+    strips markup off whatever `rendered` turned out to be for every one of
+    `_INLINE_RE`'s four branches and reads the first VISIBLE character from
+    THAT, so it can never disagree with the page a reader actually sees,
+    regardless of whether `render_token` honored, ignored, or overrode the
+    label it was given. The one case this can't help is a construct whose
+    own render comes back empty (a dangling source citation drops out to
+    `''`) - `_INLINE_BOUNDARY_CHAR`, the same conservative "assume a word
+    character follows" sentinel as before, is the fallback there.
     """
     out: list[str] = []
     pos = 0
     for m in _INLINE_RE.finditer(text):
-        out.append(_escape(_scrub_internal_encoding(text[pos:m.start()])))
-        pos = m.end()
+        # Compute this match's own rendered output first - the boundary
+        # character its literal-text predecessor should see is read back
+        # from THAT (see this function's docstring for why: the rendered
+        # HTML is the only thing that can't disagree with itself).
         if m.group('wtarget') is not None:
-            out.append(render_token(m.group('wtarget').strip(),
-                                     _scrub_internal_encoding(m.group('wdisp'))))
+            scrubbed_wdisp = _scrub_internal_encoding(m.group('wdisp'))
+            rendered = render_token(m.group('wtarget').strip(), scrubbed_wdisp)
         elif m.group('token'):
-            out.append(render_token(m.group('token')))
+            rendered = render_token(m.group('token'))
         elif m.group('ltext') is not None:
+            scrubbed_ltext = _scrub_internal_encoding(m.group('ltext'))
             href = _safe_link_href(m.group('lurl'))
-            label = _escape(_scrub_internal_encoding(m.group('ltext')))
-            if href is not None:
-                out.append(f'<a href="{href}">{label}</a>')
-            else:
-                out.append(label)
+            label = _escape(scrubbed_ltext)
+            rendered = f'<a href="{href}">{label}</a>' if href is not None else label
         else:  # bold
-            out.append(f'<strong>{_escape(_scrub_internal_encoding(m.group("bold")))}</strong>')
+            scrubbed_bold = _scrub_internal_encoding(m.group('bold'))
+            rendered = f'<strong>{_escape(scrubbed_bold)}</strong>'
+        boundary = _rendered_boundary_char(rendered)
+        out.append(_escape(_scrub_internal_encoding(text[pos:m.start()], boundary)))
+        pos = m.end()
+        out.append(rendered)
     out.append(_escape(_scrub_internal_encoding(text[pos:])))
     return ''.join(out)
+
+
+_HTML_TAG_RE = re.compile(r'<[^>]*>')
+
+
+def _rendered_boundary_char(rendered: str) -> str:
+    """The first VISIBLE (non-markup) character of `rendered`, for
+    `_inline_html`'s boundary-spacing decision (adversarial review, round 3
+    - see `_inline_html`'s docstring for the bug this replaced: a boundary
+    character guessed from a label instead of read back from the render
+    itself). Strips HTML tags rather than parsing them - every `rendered`
+    value here is markup this module built a line above, never third-party
+    HTML, so a plain tag-strip is exact, not an approximation. Falls back to
+    `_INLINE_BOUNDARY_CHAR` when nothing visible remains (a dangling source
+    citation renders as `''`)."""
+    visible = _HTML_TAG_RE.sub('', rendered)
+    return visible[0] if visible else _INLINE_BOUNDARY_CHAR
 
 
 _HEADING_RE = re.compile(r'^(#{1,6})\s+(.*)$')
@@ -603,6 +752,82 @@ _EMBED_RE = re.compile(r'^!\[\[\s*([^\]|]+?)\s*(?:\|\s*([^\]]*?)\s*)?\]\]\s*$')
 # id-char class `_INLINE_RE`'s legacy token uses (Crockford Base32, SPEC §10).
 _CLAIM_ID_PAREN_RE = re.compile(r'\s?\(C-[0-9a-hjkmnp-tv-z]{10}\)', re.I)
 
+# A bare `[PSCLH]-xxxxxxxxxx`-shaped citation id sitting in literal prose
+# text, NOT wrapped in a construct `_INLINE_RE` actually matched (#167
+# finding 2 continued, adversarial review of PR #158's fix - privacy-
+# critical). `_INLINE_RE`'s `wdisp`/`ltext` label groups now tolerate one
+# level of bracket nesting (see `_INLINE_RE`'s own comment), but no FIXED-
+# DEPTH regex can balance brackets nested arbitrarily deep, or genuinely
+# unbalanced ones - `[[S-1111111111|text [oops]]` (missing a `]`),
+# `[[S-1111111111|text ][ stuff]]`, `[[S-1111111111|text [a[b]c]]]` (nested
+# two deep), and the markdown-link equivalent
+# `[see S-1111111111 [..1905]](url)` all still make the WHOLE construct fail
+# to match, falling through as ordinary literal text. Literal text is
+# HTML-escaped and scrubbed of claim-id-parens/date-brackets, but - before
+# this fix - never inspected for a bare id shape, so the raw id leaked onto
+# the reader-facing page verbatim: exactly the class of leak the `wdisp`
+# widening (this same file, same review round) was meant to close, just not
+# fully. This is a DEFENSE-IN-DEPTH backstop, not a replacement for
+# `_INLINE_RE` matching real constructs correctly: `_scrub_internal_encoding`
+# is never called on a link/wikilink/token's own TARGET (`lurl`/`wtarget`/
+# `token` - see `_inline_html`, which never routes those through it), only
+# on literal text and a matched construct's own visible LABEL, so this can
+# never re-touch or corrupt an id `_INLINE_RE` already correctly turned into
+# a real citation link. Same id-char class as `_INLINE_RE`'s legacy `[ID]`
+# token (Crockford Base32, SPEC §10); the lookarounds keep it from matching
+# a hyphenated id-shaped substring embedded inside a longer alphanumeric run
+# (rather than matching only bracket-delimited ids, since the whole point is
+# these tokens are NOT reliably bracket-delimited once they've leaked here).
+#
+# Zero-separator adjacency (adversarial review of this same backstop): a
+# plain `(?<![0-9A-Za-z])`/`(?![0-9A-Za-z])` boundary treats a SECOND id
+# butted directly against the first one, with no separator of any kind, as
+# "embedded inside a longer alphanumeric run" - the same shape the guard
+# above is deliberately protecting against for an ordinary word. That is
+# wrong here: `S-1111111111S-2222222222` is two id-shaped tokens back to
+# back, not one word, but the first id's trailing lookahead sees the
+# second id's leading `S` (alphanumeric) and refuses to close, while the
+# second id's leading lookbehind sees the first id's trailing `1`
+# (alphanumeric) and refuses to open - each id fails to match because of
+# the OTHER, and BOTH raw ids leak onto the page verbatim, unredacted, with
+# no warning. Each boundary is therefore widened to accept not just "not
+# alphanumeric" but also "immediately preceded/followed by another
+# complete id-shaped token" (a second, fixed-width 12-character lookaround
+# alternative - `[PSCLH]-[0-9a-hjkmnp-tv-z]{10}` is always exactly 12
+# characters, so this stays a legal fixed-width Python lookbehind) - so two
+# (or more) glued-together ids now redact individually in one left-to-right
+# sweep, while a bare id embedded inside an ordinary longer word (this
+# guard's original, still-intact purpose) is still correctly left alone.
+_BARE_ID_RE = re.compile(
+    r'(?:(?<![0-9A-Za-z])|(?<=[PSCLH]-[0-9a-hjkmnp-tv-z]{10}))'
+    r'[PSCLH]-[0-9a-hjkmnp-tv-z]{10}'
+    r'(?:(?![0-9A-Za-z])|(?=[PSCLH]-[0-9a-hjkmnp-tv-z]{10}))', re.I)
+
+# Replacement text for a `_BARE_ID_RE` match (M8 UX bar, `_LIVING_LABEL`/
+# `_RESTRICTED_LABEL`'s own rule: redacted content is NAMED, never silently
+# dropped to a blank). `render_token`'s own "unresolved token" convention
+# (`<mark>[X-xxxx]</mark>`, `render_token`'s final fallback) is NOT reused
+# here on purpose - it still shows the raw id text, which is exactly what
+# this backstop exists to stop leaking; a generic, non-identifying
+# placeholder is used instead. Deliberately plain text, not markup:
+# `_scrub_internal_encoding` returns plain text that its caller HTML-escapes
+# afterward (`_inline_html`), so - unlike `render_token`'s HTML, built and
+# returned directly, never re-escaped - anything but plain text here would
+# come out as visible, broken `&lt;span&gt;`-style tags. The bracket
+# punctuation mirrors `render_token`'s bracketed look without needing markup.
+_BARE_ID_LABEL = '[record]'
+
+# Sentinel passed as `_scrub_internal_encoding`'s `next_char` for the
+# literal-text run immediately preceding a matched inline construct whose
+# own first rendered character is NOT knowable without calling
+# `render_token` (`_inline_html`, #167 finding 1; see its docstring for the
+# full boundary-character picture) - any alphanumeric character works,
+# `_strip_claim_id_paren`/`_redact_bare_id` only ever call `.isalnum()` on
+# it. Its actual value never reaches rendered output; it exists purely to
+# say "yes, a word character follows here with no gap" for a run whose OWN
+# text happens to end exactly where the match begins.
+_INLINE_BOUNDARY_CHAR = 'x'
+
 # A raw `[..YYYY[-MM[-DD]]]` "before" date (SPEC §11's bracket form) embedded
 # mid-sentence in prose (#140) - the same notation base.html's shared footer
 # legend explains (#131) when it appears as a standalone structured date, but
@@ -610,13 +835,71 @@ _CLAIM_ID_PAREN_RE = re.compile(r'\s?\(C-[0-9a-hjkmnp-tv-z]{10}\)', re.I)
 # context and the sentence reads as broken. Translated in place instead.
 _DATE_BEFORE_RE = re.compile(r'\[\.\.(\d{4})(?:-(\d{2}))?(?:-(\d{2}))?\]')
 
+# The two-sided-interval shape `_translate_date_before` deliberately leaves
+# alone (see its docstring): one bound written as a `[..YYYY[-MM[-DD]]]`
+# bracket, the OTHER a plain `YYYY[-MM[-DD]]` with no bracket, joined by `/`
+# (#167 finding 3). `(?<!\d)`/`(?!\d)` bound the plain side so it can't
+# silently swallow (or be swallowed by) an adjacent digit run that isn't
+# really part of this date - the bracket side needs no such guard since `[`
+# and `]` are already unambiguous delimiters. Two full alternatives (rather
+# than one pattern with the bracket "on either side") because Python `re`
+# cannot reuse the same group name twice in one pattern; `by`/`bm`/`bd` name
+# the bracketed year/month/day, `py`/`pm`/`pd` the plain ones, suffixed `1`
+# for "bracket comes first" and `2` for "plain comes first".
+#
+# `pq1`/`pq2` (adversarial review of #167 finding 3) let the plain side also
+# carry a trailing EDTF uncertainty/approximation qualifier - `?` or `~`,
+# the only two this archive's EDTF dialect uses (`_lib._EDTF_PATTERNS`;
+# `_lib.humanize_edtf`/`_humanize_edtf_bound` read them as "(unconfirmed)"
+# and "about ..." respectively, see `_translate_date_before_slash`). Without
+# this, a plain bound already valid per `is_valid_edtf` (which accepts a
+# trailing `?`/`~` on the year/month/day component - `_EDTF_PATTERNS`) but
+# carrying one, e.g. `[..1900]/1910?`, matched only the unqualified `1910`
+# prefix: the `?` fell outside the match entirely and survived untranslated
+# in reader-facing prose, and the mirrored `1900?/[..1910]` did not match at
+# all, since the un-widened plain-side pattern could never reach past the
+# `?` to find the `/` right after it. The qualifier is bound to the SAME
+# `(?!\d)`/lookahead discipline as the rest of the plain side: `pq1` sits
+# before the existing `(?!\d)` (so a stray digit still can't follow), and
+# `pq2` sits directly before the literal `/` (the only thing allowed to
+# follow the plain side in that alternative). The bracket side never carries
+# a qualifier in this dialect (`_EDTF_PATTERNS`'s bracket form allows no
+# `?`/`~` inside `[..]` at all), so only the plain side needs this.
+#
+# `pmq1`/`pdq1` (`pmq2`/`pdq2` for the plain-first alternative) extend this
+# further (fresh Codex finding on the same #167 finding-3 pipeline, after the
+# trailing-qualifier fix above shipped): this archive's EDTF dialect also
+# lets a `~` sit COMPONENT-LEVEL, immediately before the month or day digits,
+# rather than trailing the whole date - "1910-~06" reads "1910, approximately
+# June": the year is certain, only the month is a guess
+# (`_EDTF_PATTERNS`'s `~?` sitting directly before each `\d{2}` component).
+# Unlike the trailing marker, `?` is never valid in this leading position -
+# `_EDTF_PATTERNS` only ever writes `~?` there, never `[?~]?` - so `pmq`/`pdq`
+# only ever capture a literal tilde. Before this, `[..1900]/1910-~06` matched
+# only the unqualified `1910` prefix - the exact same bug `pq1`/`pq2` fixed
+# above, but for the mid-date form instead of the trailing one - and the
+# mirrored `1910-~06/[..1900]` did not match at all, for the identical
+# reason `pq2` was needed: the plain side could not reach past `-~06` to
+# find the `/`. A trailing `pq`/`pq2` marker and a leading `pmq`/`pdq` marker
+# are not mutually exclusive in the grammar (`1910-~06?` is syntactically
+# valid too), so both are captured independently rather than as alternatives;
+# `_translate_date_before_slash` reconciles the two into one wording.
+_DATE_BEFORE_SLASH_RE = re.compile(
+    r'\[\.\.(?P<by1>\d{4})(?:-(?P<bm1>\d{2}))?(?:-(?P<bd1>\d{2}))?\]'
+    r'/(?P<py1>\d{4})(?:-(?P<pmq1>~)?(?P<pm1>\d{2}))?'
+    r'(?:-(?P<pdq1>~)?(?P<pd1>\d{2}))?(?P<pq1>[?~])?(?!\d)'
+    r'|(?<!\d)(?P<py2>\d{4})(?:-(?P<pmq2>~)?(?P<pm2>\d{2}))?'
+    r'(?:-(?P<pdq2>~)?(?P<pd2>\d{2}))?(?P<pq2>[?~])?'
+    r'/\[\.\.(?P<by2>\d{4})(?:-(?P<bm2>\d{2}))?(?:-(?P<bd2>\d{2}))?\]',
+)
+
 _MONTH_NAMES = ('January', 'February', 'March', 'April', 'May', 'June', 'July',
                 'August', 'September', 'October', 'November', 'December')
 
 
-def _strip_claim_id_paren(match: re.Match) -> str:
+def _strip_claim_id_paren(match: re.Match, boundary_next_char: str | None = None) -> str:
     """One `(C-xxxxxxxxxx)` match -> '' (dropped) or a single space (#144
-    review finding 1).
+    review finding 1; #167 finding 1 extends it to the block-level boundary).
 
     The regex eats an optional single LEADING space along with the
     parenthetical, so a trailing sentence like " (C-xxx)." collapses cleanly
@@ -628,12 +911,100 @@ def _strip_claim_id_paren(match: re.Match) -> str:
     character right after the match is an ordinary word character (not
     whitespace, not punctuation, not the end of the string) restores that
     separator without ever double-spacing the already-correct case where a
-    space or punctuation mark already follows."""
+    space or punctuation mark already follows.
+
+    `boundary_next_char` covers the one case this match's OWN string can't
+    answer: `_scrub_internal_encoding` is called per literal-text SPAN
+    inside `_inline_html`'s loop, so a claim-id-paren sitting at the very
+    END of a span that is immediately followed - in the FULL original text -
+    by a different matched inline construct (`**bold**`, a markdown link, a
+    wikilink) has nothing after it within `match.string`; `end < len(text)`
+    is false even though, in the real text, a word character effectively
+    follows right away. `end == len(text)` is exactly the "this match is at
+    the true end of whatever string it was given" case, so only then do we
+    fall back to the caller-supplied boundary character - any match that
+    has real trailing text within its own string (including an earlier
+    claim-id-paren followed by more claim-id-parens) is unaffected and
+    keeps deciding from its own `text[end]` as before."""
     end = match.end()
     text = match.string
-    if end < len(text) and text[end].isalnum():
+    if end < len(text):
+        next_char = text[end]
+    else:
+        next_char = boundary_next_char
+    if next_char is not None and next_char.isalnum():
         return ' '
     return ''
+
+
+def _redact_bare_id(match: re.Match, boundary_next_char: str | None = None) -> str:
+    """One bare `[PSCLH]-xxxxxxxxxx` match -> `_BARE_ID_LABEL` (#167 finding
+    2 continued - see `_BARE_ID_RE`'s docstring for why this backstop
+    exists).
+
+    Unlike `_strip_claim_id_paren`'s match, this one is never dropped to
+    nothing - but `_BARE_ID_LABEL` still ends in a non-word glyph (`]`), so
+    the exact same welding risk `_strip_claim_id_paren` guards against
+    applies here too: a bare id sitting at the very END of a literal-text
+    run that is immediately followed - in the FULL original text - by a
+    different matched inline construct with no gap of its own would
+    otherwise leave `_BARE_ID_LABEL`'s closing `]` jammed directly against
+    the next word with no separating space
+    ("...S-1111111111**note**" -> "...[record]note"). Same boundary logic
+    as `_strip_claim_id_paren`: consult the match's own trailing text first,
+    falling back to the caller-supplied `boundary_next_char` only when this
+    match sits at the true end of whatever string it was given."""
+    end = match.end()
+    text = match.string
+    if end < len(text):
+        next_char = text[end]
+    else:
+        next_char = boundary_next_char
+    if next_char is not None and next_char.isalnum():
+        return _BARE_ID_LABEL + ' '
+    return _BARE_ID_LABEL
+
+
+def _format_edtf_ymd(year: str, month: str | None, day: str | None) -> str:
+    """Plain English reading of one already-validated YYYY[-MM[-DD]]
+    component - '1900', 'May 1900', or 'May 3, 1900'. Shared by
+    `_translate_date_before` (a single bracket-qualified "before" bound) and
+    `_translate_date_before_slash` (#167 finding 3, a two-sided interval
+    with one bracketed bound), so both phrase a month/day the same way. Not
+    to be confused with `_lib._humanize_edtf_bound`, which reads a raw EDTF
+    token and uses "3 May 1900" day-before-month ordering with no comma -
+    this keeps site.py's own pre-existing "May 3, 1900" wording, established
+    by `_translate_date_before` before this helper was split out, so no
+    already-shipped rendering changes shape."""
+    if month:
+        month_name = _MONTH_NAMES[int(month) - 1]
+        if day:
+            return f'{month_name} {int(day)}, {year}'
+        return f'{month_name} {year}'
+    return year
+
+
+def _apply_edtf_qualifier(label: str, qualifier: str | None) -> str:
+    """Wrap an already-`_format_edtf_ymd`-formatted label with this
+    archive's EDTF qualifier wording (adversarial review of #167 finding 3):
+    `?` (uncertain) -> '<label> (unconfirmed)', `~` (approximate) ->
+    'about <label>'. These are the only two qualifier characters this
+    archive's EDTF dialect recognises (`_lib._EDTF_PATTERNS`); `None` (no
+    qualifier) returns `label` unchanged.
+
+    Reuses `_lib._humanize_edtf_bound`'s existing wording verbatim rather
+    than inventing new phrasing, but does NOT call that function directly -
+    it reads a raw EDTF token and renders day-before-month with no comma
+    ("3 May 1900"), while `_format_edtf_ymd` deliberately keeps site.py's
+    own pre-existing "May 3, 1900" ordering (see its own docstring). This
+    helper applies just the qualifier VOCABULARY on top of a label already
+    formatted the site.py way, so the two date orderings never mix within
+    one rendered phrase."""
+    if qualifier == '?':
+        return f'{label} (unconfirmed)'
+    if qualifier == '~':
+        return f'about {label}'
+    return label
 
 
 def _translate_date_before(match: re.Match) -> str:
@@ -653,11 +1024,19 @@ def _translate_date_before(match: re.Match) -> str:
         silently reduced to "before 1900" by just dropping the bad groups.
       - A bracket sitting directly against a `/` (`[..1900]/1910` or
         `1900/[..1910]`) is one bound of a two-sided EDTF interval, not a
-        standalone "before" date. Translating only the bracketed half would
-        leave the interval half English, half raw ("before 1900/1910") -
-        so the whole interval is left untouched instead; the regex only
-        ever matches a bracket that is NOT part of a `/` interval, one
-        component of which it doesn't understand.
+        standalone "before" date, and this function only ever renders a
+        single "before X" phrase - it has no way to also speak the OTHER
+        side of the interval. `_scrub_internal_encoding` runs
+        `_DATE_BEFORE_SLASH_RE`/`_translate_date_before_slash` FIRST (#167
+        finding 3), which recognizes and fully translates the specific
+        two-sided shape "one bracketed bound, one plain bound" - so by the
+        time this function's own regex (`_DATE_BEFORE_RE`, which cannot see
+        across the `/` at all) runs, that shape is already gone from the
+        text. This guard therefore now only ever fires for the shapes the
+        slash translator does NOT handle - chiefly `[..YYYY]/[..YYYY]` (both
+        sides bracketed), which stays deliberately out of scope (see
+        `_translate_date_before_slash`'s docstring) - and this bracket is
+        still left exactly as written rather than guessed at.
     """
     text = match.string
     start, end = match.start(), match.end()
@@ -671,26 +1050,155 @@ def _translate_date_before(match: re.Match) -> str:
             bare += f'-{day}'
     if not is_valid_edtf(bare):
         return match.group(0)
-    if month:
-        month_name = _MONTH_NAMES[int(month) - 1]
-        if day:
-            return f'before {month_name} {int(day)}, {year}'
-        return f'before {month_name} {year}'
-    return f'before {year}'
+    return f'before {_format_edtf_ymd(year, month, day)}'
 
 
-def _scrub_internal_encoding(text: str) -> str:
+def _translate_date_before_slash(match: re.Match) -> str:
+    """One two-sided EDTF interval, exactly one side a `[..YYYY[-MM[-DD]]]`
+    bracket and the other a plain `YYYY[-MM[-DD]]`, joined by `/` -> both
+    bounds in plain English (#167 finding 3), e.g. `[..1900]/1910` ->
+    "before 1900 to 1910" and `1900/[..1910]` -> "1900 to before 1910".
+
+    Before this, `_translate_date_before`'s own adjacency guard (see its
+    docstring) deliberately left the WHOLE interval untouched rather than
+    translate only the bracketed half and leave the other half raw - safe,
+    but incomplete: it never came back to finish the one shape it CAN render
+    completely and correctly. That left raw `[..YYYY]/YYYY`-style notation
+    on the reader-facing page for exactly the sentence the humanizer exists
+    to fix. This function is `_scrub_internal_encoding`'s FIRST date-bracket
+    pass (before `_DATE_BEFORE_RE`/`_translate_date_before`), so it sees -
+    and consumes - the bracket together with its `/` and the other bound
+    before the single-bracket translator or its "leave the whole interval
+    alone" guard ever gets a chance to fire on the now-already-handled
+    bracket.
+
+    `[..YYYY]/[..YYYY]` (BOTH sides bracketed) is NOT matched here and
+    stays out of scope, left untouched by `_translate_date_before`'s
+    existing guard exactly as before this fix: `_lib.humanize_edtf` - the
+    established model for this project's interval wording (a slash splits
+    on `/`, humanizes each side, joins as "X to Y") - has no existing
+    phrasing for a bracket on BOTH sides of a slash either, so this would be
+    inventing vocabulary with no precedent anywhere in the codebase rather
+    than reusing established wording; left as a clearly-flagged narrowing of
+    this fix's coverage rather than guessed at.
+
+    Each side is validated with `is_valid_edtf` exactly as
+    `_translate_date_before` validates its single bound - either side
+    failing validation (e.g. `[..1900-13-01]/1910`, no such month) leaves
+    the WHOLE match untouched rather than translate one real bound next to
+    one bogus one.
+
+    The plain side may also carry a trailing `?`/`~` EDTF qualifier
+    (adversarial review of #167 finding 3): `[..1900]/1910?` -> "before
+    1900 to 1910 (unconfirmed)", `1900?/[..1910]` -> "1900 (unconfirmed) to
+    before 1910" - see `_DATE_BEFORE_SLASH_RE`'s own comment for why the
+    regex needed widening to consume it at all, and
+    `_apply_edtf_qualifier` for the wording. Validation runs on the BARE
+    component (qualifier stripped) exactly as `_translate_date_before`
+    validates its single bound - the qualifier is a confidence marker, not
+    part of calendar validity, so `[..1900]/1910-13-01?` (invalid month,
+    qualifier or not) still leaves the WHOLE match - qualifier included -
+    untouched via `match.group(0)`. The bracket side never carries a
+    qualifier in this dialect (see `_DATE_BEFORE_SLASH_RE`'s comment), so
+    only the plain side's label is ever wrapped.
+
+    The plain side may ALSO carry a component-level `~` sitting before the
+    month or day instead of trailing the whole date (fresh Codex finding on
+    this same pipeline): `[..1900]/1910-~06` -> "before 1900 to about June
+    1910", `1910-~06/[..1900]` -> "about June 1910 to before 1900". This is
+    folded into the same wrap `_apply_edtf_qualifier` already does for a
+    trailing marker rather than given its own phrasing - `_lib.
+    _humanize_edtf_bound` already treats a component-level `~` exactly like
+    a trailing one (it only ever checks "is `~` present anywhere in this
+    token", never WHERE), so there is no established wording to invent here.
+    A trailing `?`/`~` and a component-level `~` are not mutually exclusive
+    in the grammar (`1910-~06?` is valid too); when both are present the
+    trailing `?` wins - the same "uncertain beats approximate" precedence
+    `_humanize_edtf_bound` already applies for a component carrying both
+    markers at once. Calendar validation still runs on the fully bare
+    component (both the leading and trailing markers stripped), so a
+    component-level `~` next to a genuinely impossible month/day - e.g.
+    `[..1900]/1910-~13` (no month 13) - still leaves the WHOLE match
+    untouched, exactly like the trailing-qualifier case above."""
+    g = match.groupdict()
+    bracket_first = g['by1'] is not None
+    if bracket_first:
+        b_year, b_month, b_day = g['by1'], g['bm1'], g['bd1']
+        p_year, p_month, p_day = g['py1'], g['pm1'], g['pd1']
+        p_trailing_qualifier = g['pq1']
+        p_has_component_approx = g['pmq1'] is not None or g['pdq1'] is not None
+    else:
+        p_year, p_month, p_day = g['py2'], g['pm2'], g['pd2']
+        b_year, b_month, b_day = g['by2'], g['bm2'], g['bd2']
+        p_trailing_qualifier = g['pq2']
+        p_has_component_approx = g['pmq2'] is not None or g['pdq2'] is not None
+
+    def _bare(year: str, month: str | None, day: str | None) -> str:
+        v = year
+        if month:
+            v += f'-{month}'
+            if day:
+                v += f'-{day}'
+        return v
+
+    if not is_valid_edtf(_bare(b_year, b_month, b_day)) or \
+            not is_valid_edtf(_bare(p_year, p_month, p_day)):
+        return match.group(0)
+
+    # Reconcile a trailing `?`/`~` with a leading component-level `~`
+    # (`pmq`/`pdq`) into the single qualifier `_apply_edtf_qualifier`
+    # already knows how to wrap - the two are not mutually exclusive in the
+    # grammar (`1910-~06?` is valid), so a bare "is either present" check
+    # would lose whichever the wording actually needs. `_lib.
+    # _humanize_edtf_bound` prefers "not sure at all" (`?`) over "roughly
+    # right" (`~`) when one component carries both; this mirrors that same
+    # precedence rather than inventing a new rule.
+    p_qualifier = p_trailing_qualifier
+    if p_qualifier != '?' and p_has_component_approx:
+        p_qualifier = '~'
+
+    before_label = f'before {_format_edtf_ymd(b_year, b_month, b_day)}'
+    plain_label = _apply_edtf_qualifier(
+        _format_edtf_ymd(p_year, p_month, p_day), p_qualifier)
+    if bracket_first:
+        return f'{before_label} to {plain_label}'
+    return f'{plain_label} to {before_label}'
+
+
+def _scrub_internal_encoding(text: str, next_char: str | None = None) -> str:
     """Remove/translate internal-only encoding that must never reach reader-
     facing prose (#140): a bare claim-id parenthetical is dropped outright
-    (spacing preserved, #144 finding 1), and a raw `[..YYYY]`-shaped "before"
-    date is translated to plain English when it validates as a real date and
-    stands alone (not one bound of a `/` interval - #144 findings 2 and 5).
-    Applied to raw value/notes/body text BEFORE any HTML escaping, so callers
-    doing their own index-based substitutions afterward (e.g. the timeline's
-    place-mention span) see only the already-scrubbed text."""
+    (spacing preserved, #144 finding 1; boundary-aware, #167 finding 1), a
+    bare `[PSCLH]-xxxxxxxxxx`-shaped citation id that reached here unlinked
+    is replaced with a generic placeholder (boundary-aware the same way -
+    #167 finding 2 continued, see `_BARE_ID_RE`'s docstring), a raw
+    `[..YYYY]`-shaped "before" date is translated to plain English when it
+    validates as a real date and stands alone (not one bound of a `/`
+    interval - #144 findings 2 and 5), and a two-sided interval with exactly
+    one bracketed bound is translated in full - both bounds in plain
+    English (#167 finding 3). Applied to raw value/notes/body text BEFORE
+    any HTML escaping, so callers doing their own index-based substitutions
+    afterward (e.g. the timeline's place-mention span) see only the
+    already-scrubbed text.
+
+    The claim-id-paren pass runs BEFORE the bare-id pass deliberately: a
+    well-formed `(C-xxxxxxxxxx)` parenthetical must be fully consumed - and
+    its own smart-spacing logic applied - as ONE unit first, or the bare-id
+    pass would rewrite the id INSIDE the parens first (`(C-xxx)` ->
+    `([record])`), and `_CLAIM_ID_PAREN_RE` would then no longer recognize
+    the now-different text as its own pattern at all, silently losing the
+    drop-the-whole-parenthetical behavior #144/#167 finding 1 established.
+
+    `next_char`, when given, is the character that immediately follows
+    `text` in the CALLER's full original string (not necessarily reflected
+    anywhere inside `text` itself) - see `_strip_claim_id_paren`'s docstring
+    for why `_inline_html` needs to pass this for a literal-text run that
+    ends exactly where a different matched inline construct begins."""
     if not text:
         return text
-    text = _CLAIM_ID_PAREN_RE.sub(_strip_claim_id_paren, text)
+    text = _CLAIM_ID_PAREN_RE.sub(lambda m: _strip_claim_id_paren(m, next_char), text)
+    text = _BARE_ID_RE.sub(lambda m: _redact_bare_id(m, next_char), text)
+    text = _DATE_BEFORE_SLASH_RE.sub(_translate_date_before_slash, text)
     text = _DATE_BEFORE_RE.sub(_translate_date_before, text)
     return text
 
