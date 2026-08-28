@@ -2045,6 +2045,62 @@ the fallback). Tests: `tests/test_media.py` (dedupe coverage-invariant fixtures,
 mocked-ffprobe-backend `run_media_probe` cases); `tests/test_doctor.py`
 (`MediaOptionalDependencyTests`).
 
+### M11.9 - `fha reorganize` (✓ shipped, issue #107)
+
+New `tools/reorganize.py`, registered as its own top-level subcommand (TOOLING §9a) - the
+bulk documents-root tidy-up the issue's own hundred-source migration had to do by hand,
+source by source. M11.2 (above) already stops NEW documents landing flat at the root going
+forward; this is the catch-up for everything that predates that fix, or was hand-dropped, or
+was never given the type-folder treatment.
+
+Survey (`_plan`) reads every `sources/` record's documents-alias `files:` entries and judges
+each ELIGIBLE only by path shape: flat at the documents root, or one level down in the folder
+its own `source_type` maps to (`_record_subdir` - the same mapping `sources/{type}/` already
+uses). Anything else - any other folder name, any nesting - is presumptively human-organized
+and excluded categorically, never even proposed; this is the tool's answer to the issue's own
+"nobody's organized this yet vs. a human already curated this" design question, resolved
+conservatively on purpose (a false positive here is worse than a false negative). Two more
+adversarial guards run before anything is judged eligible: an alias claimed by more than one
+record (pre-existing corruption) refuses both claims rather than picking one; a file whose OWN
+filename carries a different S-id than the record claiming it (inventory drift) refuses rather
+than moving the wrong file - the identical identity check `fha process refile` already performs.
+A proposed destination that collides with something already on disk for an unrelated reason
+refuses that one move rather than overwriting or merging into it.
+
+The rule set is three rules, not a general organizer: base destination `documents/{type}/`
+(mirrors `sources/{type}/`); a source with more than `--group-threshold` (default 3) eligible
+files gets its own `documents/{type}/{slug}_{S-id}/` subfolder; nothing eligible is left loose
+at the bare root once applied (a consequence of rule 1, not a separate check).
+
+`--apply` is required to write anything (stronger than the usual --dry-run convention, since
+one run can touch hundreds of files); `_apply_one_record` moves every one of a record's planned
+files and rewrites its `files:` entries as ONE atomic unit - modeled on `fha process refile`'s
+own move+record-update+rollback shape, narrowed to the same-root case and to `fha reconcile`'s
+lighter files:-only mutation (no Notes paragraph). Runs in bounded batches (`--batch-size`,
+default 25 files); `fha reconcile --dry-run` is re-run after every batch and its warning/error
+count compared against just before that batch - a count that rose can only be this batch's own
+doing (TOOLING §1's single-writer assumption) and halts the run immediately, while a flat count
+(pre-existing, unrelated) is left alone and the run continues. Files already moved before a halt
+are never rolled back - each is its own verified transaction, so halting stops further change
+without undoing correct completed work.
+
+Photos are out of scope by design: SPEC §12.1 identifies a photo by its embedded keyword, not
+its path, so there is no "loose vs. organized" question for a photo the way there is for a
+document. The issue's own flagged "related gap" - no photos-side reconcile equivalent - is
+already closed in current code (`fha reconcile`'s photo pass already calls
+`photoindex.run_reconcile`, TOOLING §9), so reorganize's own post-batch full `fha reconcile`
+call re-verifies the photo catalog as a side effect even though it never moves a photos-root
+file itself. No companion skill: fully deterministic (survey by rule, execute a confirmed plan),
+the same posture `fha reconcile` already takes with no skill of its own.
+
+Tests: `tests/test_reorganize.py` (dry-run plan correctness; every exclusion shape - nested,
+wrong-folder-name, already-correct; group-threshold subfolder vs. shared-folder boundary;
+two-records-same-path and destination-collision refusals; filename/record S-id drift refusal;
+atomic apply; rollback on a mid-record move failure and on a record-write failure; one record's
+clean failure not blocking the rest of its batch; batch-boundary halt on a NEW reconcile issue
+vs. no halt on a flat, pre-existing one; empty archive; working-copy no-op; CLI confirmation
+gate, including the non-interactive-without-`--yes` refusal).
+
 ---
 
 ## Testing invariants (all PRs)

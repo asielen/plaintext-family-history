@@ -413,7 +413,7 @@
     {
       "path": ".fha/tools/README.md",
       "category": "operating",
-      "sha256": "ef3b9cd0c38b43126630f42a06cbc300f388c3e1ae2495d0d7edca4087d923ce",
+      "sha256": "1fc728ddd3e494d349257eccb0ad0f5a50a4b00bb1534baa15b8c931f087222a",
       "spec_version": "1.2",
       "src": "tools/README.md"
     },
@@ -518,7 +518,7 @@
     {
       "path": ".fha/tools/fha.py",
       "category": "operating",
-      "sha256": "72ab2528b9ab5fdcd116167f86b557bcc0ed2b4c6ebe98fca8f4dc3b8a0d6ffc",
+      "sha256": "23de1d7d9ce88d0f0f211fb76edfcd72732e10722ffe5b24b345eeae5f955ff3",
       "spec_version": "1.2",
       "src": "tools/fha.py"
     },
@@ -626,6 +626,13 @@
       "sha256": "a778a4b94245eaaed840172e4e7881d761882815bc0b0417bd08e0b9d0d0b190",
       "spec_version": "1.2",
       "src": "tools/relate.py"
+    },
+    {
+      "path": ".fha/tools/reorganize.py",
+      "category": "operating",
+      "sha256": "70d69a21286d08a5c067492a73d633f6e5378f4f13e74ceb806c51ceaff991c5",
+      "spec_version": "1.2",
+      "src": "tools/reorganize.py"
     },
     {
       "path": ".fha/tools/report.py",
@@ -884,7 +891,7 @@
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "f2b7a40fe56382db4483dfb52a322981909aac73d575dcb3e13065b566a70abb",
+      "sha256": "2009719c0112490501bc7eb109c612a77ef16f4c4398ba9bd4d6a5643c38a9fc",
       "spec_version": "1.2"
     },
     {
