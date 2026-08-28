@@ -3873,6 +3873,53 @@ class HomePedigreeTests(_Base):
         self.assertIn('data-wb-open="tpl-add-family"', home)
 
 
+def _ped_link_row_collisions(svg):
+    """Every genuine collinear overlap between two DIFFERENT `ped-link`
+    horizontal segments in a pedigree/family SVG: same y, a real
+    (non-zero-length) shared x-range, and the two segments do NOT share a
+    common endpoint. A shared endpoint is the correct "one line forks here"
+    convention used throughout this chart - an ancestor elbow leaving the
+    same card toward two different grandparent slots, a couple bracket's own
+    branch-to-trunk stub meeting its own children's spokes at the trunk, and
+    so on - not a bug. #120's three reported collisions (subject-alone lane
+    vs. the first spouse's bracket departure; the first marriage's branch
+    point vs. a subject-alone child; a spouse's own row vs. a subject-alone
+    child) were all this OTHER shape: two segments with DIFFERENT origins
+    that still ran on top of each other along a real stretch. Used to check
+    quantitatively (real coordinates, not eyeballing markup) that no such
+    overlap remains."""
+    segs = []
+    for cls, d in re.findall(r'<path class="([^"]*)" d="([^"]+)"/>', svg):
+        if 'ped-link' not in cls:
+            continue
+        pts = []
+        cur = None
+        for op, val in re.findall(r'([MHV])(-?\d+(?:,-?\d+)?)', d):
+            if op == 'M':
+                x, y = map(int, val.split(','))
+                cur = (x, y)
+            elif op == 'H':
+                cur = (int(val), cur[1])
+            else:  # 'V'
+                cur = (cur[0], int(val))
+            pts.append(cur)
+        segs.extend(zip(pts, pts[1:]))
+    collisions = []
+    for i, (a1, b1) in enumerate(segs):
+        for a2, b2 in segs[i + 1:]:
+            if a1[1] != b1[1] or a2[1] != b2[1] or a1[1] != a2[1]:
+                continue                                   # not both horizontal on the same row
+            lo1, hi1 = sorted((a1[0], b1[0]))
+            lo2, hi2 = sorted((a2[0], b2[0]))
+            lo, hi = max(lo1, lo2), min(hi1, hi2)
+            if hi - lo <= 0:
+                continue                                   # touching at a point (or not at all)
+            if a1 in (a2, b2) or b1 in (a2, b2):
+                continue                                   # shared endpoint - an intentional fork
+            collisions.append(((a1, b1), (a2, b2)))
+    return collisions
+
+
 class FamilyChartTests(_Base):
     """Win 1 (plan 17): the person-page pedigree grows spouse + children
     columns (children left, subject + spouse(s), parents, grandparents right -
@@ -3985,6 +4032,120 @@ class FamilyChartTests(_Base):
         bracket_x, bracket_y = int(bracket.group(1)), int(bracket.group(2))
         self.assertEqual(alone_x, bracket_x)      # both leave the subject's own column
         self.assertNotEqual(alone_y, bracket_y)   # but not on the same row - no collinear overlap
+        self.assertEqual(_ped_link_row_collisions(svg), [])
+
+    def test_first_marriage_branch_point_does_not_collide_with_a_subject_alone_child(self):
+        # #120, reopened a second time after the stagger fix above: the first
+        # marriage's branch-to-children point is the arithmetic MIDPOINT of
+        # the subject's and spouse's rows - which, with exactly one spouse,
+        # is always the exact same row the combined children band centres
+        # on too (both are the midpoint of the same two rows). An ODD total
+        # child count then puts one child dead-centre on that row: two
+        # subject-alone kids (drawn first, nearest the subject) plus the
+        # spouse's own one kid is three children total, so the SECOND
+        # subject-alone child landed exactly on the branch point's row -
+        # the branch stub (a short horizontal leaving the couple junction
+        # toward the trunk) ran collinear with that child's own spoke line
+        # into the same children column.
+        svg = site._render_pedigree_svg(
+            {1: {'name': 'Subject', 'url': None, 'redacted': False, 'dates': {}}},
+            spouses=[{'name': 'Spouse', 'id': 'p-bbbbbbbbbb', 'url': None, 'dates': {}}],
+            children=[{'name': 'Alone Kid 1', 'co_parents': [], 'url': None, 'dates': {}},
+                      {'name': 'Alone Kid 2', 'co_parents': [], 'url': None, 'dates': {}},
+                      {'name': 'Spouse Kid', 'co_parents': ['p-bbbbbbbbbb'],
+                       'url': None, 'dates': {}}])
+        self.assertEqual(_ped_link_row_collisions(svg), [])
+        # Pin down the actual mechanism, not just the absence of a collision:
+        # the branch point is the couple bracket's own midpoint row (subj_y +
+        # spouse_y) / 2 - extract it from the bracket path itself and check
+        # it against the specific child that used to sit on it.
+        y_of = {}
+        for x, y, h, inner in re.findall(
+                r'<foreignObject x="(-?\d+)" y="(-?\d+)" width="\d+" height="(\d+)">(.*?)</foreignObject>',
+                svg, re.S):
+            m = re.search(r'ped-name[^>]*>([^<]+)<', inner)
+            if m:
+                y_of[m.group(1)] = int(y) + int(h) // 2
+        # The branch stub's y is the couple bracket's own midpoint row -
+        # extract it directly from the bracket path (subj_y + spouse_y) / 2.
+        bracket = re.search(r'<path class="ped-link" d="M(\d+),(\d+) H(\d+) V(\d+) H\1"/>', svg)
+        self.assertIsNotNone(bracket)
+        branch_y = (int(bracket.group(2)) + int(bracket.group(4))) // 2
+        self.assertNotEqual(branch_y, y_of['Alone Kid 2'])
+
+    def test_spouse_row_does_not_collide_with_a_subject_alone_child(self):
+        # #120, third instance: a spouse's OWN card (and the couple
+        # bracket's final leg routing into it) landed on the same row as a
+        # subject-alone child once enough subject-alone kids pushed the
+        # combined children band that far - five subject-alone children plus
+        # the spouse's own one child (six total) reproduces the reported
+        # shape (a real page with six children, five subject-alone).
+        children = [{'name': f'Alone Kid {i}', 'co_parents': [], 'url': None, 'dates': {}}
+                    for i in range(5)]
+        children.append({'name': 'Spouse Kid', 'co_parents': ['p-bbbbbbbbbb'],
+                          'url': None, 'dates': {}})
+        svg = site._render_pedigree_svg(
+            {1: {'name': 'Subject', 'url': None, 'redacted': False, 'dates': {}}},
+            spouses=[{'name': 'Spouse', 'id': 'p-bbbbbbbbbb', 'url': None, 'dates': {}}],
+            children=children)
+        self.assertEqual(_ped_link_row_collisions(svg), [])
+        y_of = {}
+        for x, y, h, inner in re.findall(
+                r'<foreignObject x="(-?\d+)" y="(-?\d+)" width="\d+" height="(\d+)">(.*?)</foreignObject>',
+                svg, re.S):
+            m = re.search(r'ped-name[^>]*>([^<]+)<', inner)
+            if m:
+                y_of[m.group(1)] = int(y) + int(h) // 2
+        self.assertNotEqual(y_of['Spouse'], y_of['Alone Kid 3'])
+
+    def test_two_spouses_and_subject_alone_lane_have_no_row_collisions(self):
+        # #120's own repro only requires ONE spouse; a blended family with
+        # TWO drawn marriages plus a subject-alone lane stacks three lanes
+        # into the same shared children band, giving the row grid even more
+        # chances to re-align with a reserved row one lane over. This exact
+        # shape (3 subject-alone kids, 1 kid by the first wife, 1 by the
+        # second) produces three separate collisions pre-fix - confirmed by
+        # running this same construction with the fix reverted.
+        svg = site._render_pedigree_svg(
+            {1: {'name': 'Subject', 'url': None, 'redacted': False, 'dates': {}}},
+            spouses=[{'name': 'Wife One', 'id': 'p-bbbbbbbbbb', 'url': None, 'dates': {}},
+                     {'name': 'Wife Two', 'id': 'p-cccccccccc', 'url': None, 'dates': {}}],
+            children=[{'name': 'Alone 1', 'co_parents': [], 'url': None, 'dates': {}},
+                      {'name': 'Alone 2', 'co_parents': [], 'url': None, 'dates': {}},
+                      {'name': 'Alone 3', 'co_parents': [], 'url': None, 'dates': {}},
+                      {'name': 'W1 Kid', 'co_parents': ['p-bbbbbbbbbb'],
+                       'url': None, 'dates': {}},
+                      {'name': 'W2 Kid', 'co_parents': ['p-cccccccccc'],
+                       'url': None, 'dates': {}}])
+        self.assertEqual(_ped_link_row_collisions(svg), [])
+
+    def test_single_lane_children_band_is_never_nudged(self):
+        # The multi-lane fix above must be a true no-op for any chart with
+        # only ONE co-parent lane in the children gap - there is no OTHER
+        # lane to land on top of, so nudging would just be an unrequested
+        # position change. A single spouse with their own 3 kids (no
+        # subject-alone lane) is exactly the shape where, pre-#120's first
+        # fix, the middle child already coincided with the couple's own
+        # branch point - which is fine (same lane, the "line forks here"
+        # convention), and must still coincide exactly after this fix, or
+        # the fix moved a chart it was never supposed to touch.
+        svg = site._render_pedigree_svg(
+            {1: {'name': 'Subject', 'url': None, 'redacted': False, 'dates': {}}},
+            spouses=[{'name': 'Spouse', 'id': 'p-bbbbbbbbbb', 'url': None, 'dates': {}}],
+            children=[{'name': 'Kid1', 'co_parents': ['p-bbbbbbbbbb'], 'url': None, 'dates': {}},
+                      {'name': 'Kid2', 'co_parents': ['p-bbbbbbbbbb'], 'url': None, 'dates': {}},
+                      {'name': 'Kid3', 'co_parents': ['p-bbbbbbbbbb'], 'url': None, 'dates': {}}])
+        y_of = {}
+        for x, y, h, inner in re.findall(
+                r'<foreignObject x="(-?\d+)" y="(-?\d+)" width="\d+" height="(\d+)">(.*?)</foreignObject>',
+                svg, re.S):
+            m = re.search(r'ped-name[^>]*>([^<]+)<', inner)
+            if m:
+                y_of[m.group(1)] = int(y) + int(h) // 2
+        bracket = re.search(r'<path class="ped-link" d="M(\d+),(\d+) H(\d+) V(\d+) H\1"/>', svg)
+        self.assertIsNotNone(bracket)
+        branch_y = (int(bracket.group(2)) + int(bracket.group(4))) // 2
+        self.assertEqual(branch_y, y_of['Kid2'])  # exact same-lane alignment, unchanged
 
     def test_family_chart_multiple_spouses_stack(self):
         self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley')
