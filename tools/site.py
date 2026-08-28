@@ -1902,6 +1902,22 @@ def _render_pedigree_svg(labels: dict, spouses: list[dict] | None = None,
     'Unknown' slot so the bracket reads as a pedigree - children get no such
     placeholder (you cannot enumerate someone's unknown children).
 
+    ANCESTOR-GENERATION COUPLES (#115, reopened) also get an explicit
+    shared-vertex bracket, the mirror image of the spouse routing above:
+    whenever a slot's own two parent slots (Ahnentafel 2N/2N+1 - always a
+    couple by the numbering itself) are BOTH drawn as real people, one path
+    touches their shared column at both ends (bracket) and a second stub
+    leaves its midpoint toward the child, landing exactly on the bracket's
+    own vertical segment (`row_index` centers the child at the average of
+    its two parents' rows). This is drawn with the `ped-link-couple` class;
+    when either half of the pair is a workbench-only hypothesis tie it reuses
+    `ped-link-later`'s dashed vocabulary instead of a plain solid line. A
+    pair with only ONE known parent (the other still an 'Unknown' slot)
+    keeps the plain single-parent elbow unchanged - there is no marriage to
+    bracket until both halves of it are on the chart. See the render loop's
+    own comment for the exact geometry and why it is pixel-identical to the
+    two independent elbows this replaces.
+
     A 4th column (children) needs more on-screen width than the 620px the
     ancestors-only chart is capped at, so that case gets the `pedigree-family`
     modifier class (a wider max-width in styles.css) plus tighter card/row
@@ -2216,12 +2232,66 @@ def _render_pedigree_svg(labels: dict, spouses: list[dict] | None = None,
     for slot, (kind, lab) in render.items():
         x = col_x(slot.bit_length() - 1)
         yc = y_center(row_index(slot))
-        for pslot in (2 * slot, 2 * slot + 1):       # elbow to each drawn ancestor's parent
-            if pslot in render:
-                x2, y2 = col_x(pslot.bit_length() - 1), y_center(row_index(pslot))
-                midx = (x + CW + x2) / 2
-                links.append(f'<path class="ped-link" d="M{x + CW:.0f},{yc:.0f} '
-                             f'H{midx:.0f} V{y2:.0f} H{x2:.0f}"/>')
+        pl, pr = 2 * slot, 2 * slot + 1
+        l_kind = render.get(pl, ('', None))[0]
+        r_kind = render.get(pr, ('', None))[0]
+        # #115 REOPENED: an ancestor-generation "couple" (a slot's own two
+        # parent slots, 2N/2N+1) pairs for free from Ahnentafel numbering
+        # alone - every rendered non-leaf slot's two children ARE its
+        # parents, by definition of the numbering - but simply drawing two
+        # independent elbows from the child to each parent (the `else`
+        # branch below, byte-identical to the pre-reopen code) never
+        # actually connected the parents to EACH OTHER: a hub with no spouse
+        # of their own showed zero visual marriage indicators anywhere, even
+        # for a well-sourced ancestor marriage (the reopening review's own
+        # finding - the "falls out for free" design note in the original
+        # issue described the RIGHT shape but it was never actually wired
+        # up). When BOTH parent slots are a real, drawn person, route the
+        # same four points through the mirror image of the spouse bracket
+        # `_build_family_wings` already draws below (`M{subj_x} H{junction}
+        # V{spouse_y} H{subj_x}`): one continuous path touches the couple's
+        # own shared column (`x2` - both parents are always the same
+        # generation, hence the same column) at BOTH ends, with its vertical
+        # spine at the same midpoint column (`midx`) the old two-elbow
+        # version already used - then a single stub leaves that spine toward
+        # the child. The stub attaches at `yc`, the child's own row, which
+        # `row_index` guarantees is exactly the average of the two parents'
+        # rows (the centering invariant `PedigreeGeometryGuardTests` already
+        # pins), so it lands precisely on the bracket's own vertical
+        # segment - a real shared-vertex T-junction, not a coincidence.
+        # Pixel-for-pixel this covers the exact same area the two old
+        # elbows drew (their shared "child to midpoint" leg used to be drawn
+        # twice, once per elbow, harmlessly overlapping) - the only visible
+        # change is the bracket now reads as one connected shape and carries
+        # its own `ped-link-couple` class. Never drawn when either slot is
+        # an 'Unknown' placeholder (or unplaced) - a bracket to a slot
+        # nobody has researched would assert a pairing this chart has no
+        # evidence for.
+        if l_kind == 'person' and r_kind == 'person':
+            x2 = col_x(pl.bit_length() - 1)
+            lab_l, lab_r = render[pl][1], render[pr][1]
+            y_l, y_r = y_center(row_index(pl)), y_center(row_index(pr))
+            midx = (x + CW + x2) / 2
+            # Workbench-only: either half of the pair being an unsourced
+            # frontmatter hypothesis (`_build_ahnentafel` - never true
+            # outside workbench) makes the WHOLE pairing exactly as
+            # unconfirmed as its weaker half, so it reuses ped-link-later's
+            # own "lower confidence reads as dashed" vocabulary across BOTH
+            # the bracket and its stub - mirroring how a later marriage's
+            # own dashed class already covers its bracket AND its children
+            # stubs below, not just the bracket alone.
+            hyp = bool(lab_l.get('hypothesis') or lab_r.get('hypothesis'))
+            cls = 'ped-link ped-link-hypothesis' if hyp else 'ped-link'
+            links.append(f'<path class="{cls} ped-link-couple" d="M{x2:.0f},{y_l:.0f} '
+                         f'H{midx:.0f} V{y_r:.0f} H{x2:.0f}"/>')
+            links.append(f'<path class="{cls}" d="M{midx:.0f},{yc:.0f} H{x + CW:.0f}"/>')
+        else:
+            for pslot in (pl, pr):       # elbow to each drawn ancestor's parent
+                if pslot in render:
+                    x2, y2 = col_x(pslot.bit_length() - 1), y_center(row_index(pslot))
+                    midx = (x + CW + x2) / 2
+                    links.append(f'<path class="ped-link" d="M{x + CW:.0f},{yc:.0f} '
+                                 f'H{midx:.0f} V{y2:.0f} H{x2:.0f}"/>')
         branch = None
         if branch_color and slot != 1 and kind == 'person':
             # #152 review fix (P2): a slot's branch color is only as good as

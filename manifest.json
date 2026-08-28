@@ -385,7 +385,7 @@
     {
       "path": ".fha/design/styles.css",
       "category": "operating",
-      "sha256": "8046cec47e4e8c161dad435551d7ed4a38592c86f26b070a0ac3669940f8f852",
+      "sha256": "695282c64a5ea1ca8a2ceb03fd2d4850cacfa7684c3067b28b807d329ca4ff33",
       "spec_version": "1.2",
       "src": "design/styles.css"
     },
@@ -665,7 +665,7 @@
     {
       "path": ".fha/tools/site.py",
       "category": "operating",
-      "sha256": "0f7613cf72762d4a1597eb9d894293aaa5f73ca6be98679aa2cea586c87d0c3b",
+      "sha256": "aca9d34889bf5d55bc5ca332b1566f81b0e0b4502393b0d1ce1db8f3967fdf32",
       "spec_version": "1.2",
       "src": "tools/site.py"
     },
@@ -891,7 +891,7 @@
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "2009719c0112490501bc7eb109c612a77ef16f4c4398ba9bd4d6a5643c38a9fc",
+      "sha256": "8cc2fcc1debd3b5eacc569e47229a949ad11f874df2049ca8f63ec905d4c1262",
       "spec_version": "1.2"
     },
     {
