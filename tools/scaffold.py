@@ -105,15 +105,22 @@ CODE MAP
                                  install's own shipped bytes?
     _alias_seed_shas            - an alias's own skeleton checksums, preferring
                                  this archive's OWN installed baseline (its
-                                 .plaintext-version stamp) over today's manifest
+                                 .plaintext-version stamp) over today's manifest;
+                                 can be keyed to a folder other than the literal
+                                 alias name
+    _recorded_alias_rename_targets - an alias's placeholder folder(s), besides
+                                 the literal name, that the STAMP (not the
+                                 current config) still shows it delivered to
     _prune_external_root_placeholders - update-time: remove (or preview removing)
                                  an already-installed placeholder that just went
-                                 external and holds nothing but scaffold litter;
-                                 reports any removal that failed
+                                 external and holds nothing but scaffold litter,
+                                 wherever an earlier internal rename actually
+                                 left it; reports any removal that failed
     _prune_orphaned_literal_root_folders - update-time: same treatment for the
                                  literal alias folder an INTERNAL rename orphaned
-    _restore_pruned_placeholders - best-effort undo of a prune whose removal
-                                 the stamp write then failed to record
+                                 (never a NESTED rename's own ancestor folder)
+    _restore_pruned_placeholders - best-effort undo of either prune's removal
+                                 when the stamp write that follows then fails
 
   Install (M9.1)
     _preflight                 - Python/exiftool checks → (ok, messages)
@@ -689,9 +696,9 @@ def _placeholder_only_scaffold_litter(
     read - which the caller treats the same as False: leave it alone, say
     nothing rather than guess).
 
-    A genealogist can lose real work here in two ways a name-only check cannot
-    see (the finding that made this function recursive and content-checking
-    rather than name-and-dotfile-only):
+    A genealogist can lose real work here in three ways a name-only check
+    cannot see (the finding that made this function recursive and
+    content-checking rather than name-and-dotfile-only):
       (a) she edited a shipped seed IN PLACE - `inbox/_TEMPLATE.notes.md` keeps
           its name but is no longer the tools' own bytes. Matching by filename
           alone would still call it litter and destroy her notes with the rest
@@ -700,6 +707,14 @@ def _placeholder_only_scaffold_litter(
           check only inspected the alias folder's own top-level entries, so
           anything nested inside a dotted subdirectory was invisible to it and
           got swept away by the same `rmtree` that removed genuine litter.
+      (c) a SYMLINK sits somewhere in the tree - her own organizational
+          structure, pointing wherever she chose on her own machine.
+          `Path.is_dir()` follows a symlink, so a directory link whose CURRENT
+          target happens to be empty would otherwise read as disposable
+          litter, and the caller's `rmtree` then destroys the link itself
+          (and, if `rmtree` walks through it, possibly what it points at too)
+          - the target may well survive on disk, but the human-made link
+          never does (#124 review round 5, finding 4).
 
     So every FILE found anywhere under `folder` - at any depth, dotted or not -
     must be a recognized skeleton entry for this alias (`seed_shas`, keyed by
@@ -710,12 +725,24 @@ def _placeholder_only_scaffold_litter(
     the folder through the files (or unreadable entries) inside it, so a
     directory that turns out to be genuinely empty (recursively) never blocks
     the prune - it is exactly as disposable as an empty alias folder would be.
+    A SYMLINK, of either kind, is never fine on its own - it disqualifies the
+    folder immediately and unconditionally, the same as a real file this walk
+    does not recognize.
     """
     try:
         entries = sorted(folder.iterdir(), key=lambda p: p.name)
     except OSError:
         return None  # can't tell what's in there - leave it, say nothing
     for entry in entries:
+        try:
+            is_link = entry.is_symlink()
+        except OSError:
+            return None
+        if is_link:
+            # Checked BEFORE is_dir(), which follows a symlink and would
+            # otherwise let a directory link's (possibly empty) current
+            # target stand in for the link itself - see (c) above.
+            return False
         try:
             is_dir = entry.is_dir()
         except OSError:
@@ -739,9 +766,9 @@ def _placeholder_only_scaffold_litter(
 
 
 def _alias_seed_shas(
-    alias: str, manifest: dict, recorded: dict[str, str],
+    alias: str, manifest: dict, recorded: dict[str, str], *, folder: str | None = None,
 ) -> dict[str, str]:
-    """Literal manifest path -> the checksum THIS ARCHIVE actually received for
+    """Archive-relative path -> the checksum THIS ARCHIVE actually received for
     `alias`'s own skeleton entries, preferring the archive's own installed
     baseline over the current manifest (#124 review round 3, finding 3).
 
@@ -761,25 +788,119 @@ def _alias_seed_shas(
     recorded at all - a skeleton entry first delivered to this archive during
     THIS very run, with nothing yet to compare against - falls back to the
     current manifest's checksum, since there is no earlier baseline to prefer.
+
+    `folder` keys the returned entries under a DIFFERENT archive-relative
+    folder than the literal alias name - the folder a PRIOR internal rename
+    actually delivered this alias's seed to, when checking THAT folder for
+    litter rather than the literal one (`_prune_external_root_placeholders`
+    resolving where an alias's placeholder REALLY lives before checking it,
+    #124 review round 5, finding 1). Defaults to the literal alias name,
+    matching every caller before this one - and the checksum lookup keys into
+    `recorded` under the SAME folder, so the archive's own baseline is still
+    read from where it was actually recorded, not from the literal name.
     """
-    return {
-        e['path']: recorded.get(e['path'], e.get('sha256'))
-        for e in manifest['files']
-        if e.get('category') == 'skeleton'
-        and e['path'].split('/', 1)[0] == alias
-    }
+    dest_root = alias if folder is None else folder
+    out: dict[str, str] = {}
+    for e in manifest['files']:
+        if e.get('category') != 'skeleton':
+            continue
+        seg0, sep, rest = e['path'].partition('/')
+        if seg0 != alias or not sep:
+            continue
+        key = f'{dest_root}/{rest}'
+        out[key] = recorded.get(key, e.get('sha256'))
+    return out
+
+
+def _recorded_alias_rename_targets(
+    alias: str, manifest: dict, recorded: dict[str, str],
+) -> set[str]:
+    """Folder name(s) - other than the literal alias - the STAMP shows this
+    alias's own skeleton entries recorded under (#124 review round 5, finding 1).
+
+    An alias that just went external (`external_asset_roots`) no longer has a
+    `roots:` value `_internal_root_renames` can read as an internal rename -
+    it now names the EXTERNAL target, not wherever an earlier internal rename
+    last placed the placeholder - so the stamp recorded BEFORE this run is the
+    only remaining record of where that placeholder actually lives. A prior
+    rename that was never cleaned up (`documents: archive-docs`, then later
+    `documents: /mnt/drive`) leaves the stamp still listing
+    `archive-docs/.gitkeep` as delivered; without resolving that, the prune
+    below only ever inspects the literal `documents/` folder - which was
+    never where the placeholder lived - and the folder the rename actually
+    used is left as orphaned litter forever, unrecorded and unrecognized the
+    moment this run's stamp rewrite drops the stale key.
+
+    Recognized by SHAPE, the same way `_plan_update`'s `alias_skeleton_tails`
+    recognizes a rename's earlier target: a recorded path whose portion after
+    its first segment matches the portion after `alias/` in one of this
+    alias's own skeleton entries, and whose first segment is not itself the
+    literal top-level folder of ANY skeleton category this project ships
+    (`documents`, `photos`, `inbox`, but also `sources`, `people`, `notes`,
+    `places`, …) - every one of those, not just the three asset-root aliases,
+    ships a plain `.gitkeep` seed, so a tail as generic as `.gitkeep` alone
+    would otherwise misattribute another category's own literal folder (e.g.
+    `sources/`) to this alias the moment ITS tail happens to match too. A
+    rename can never legitimately land on one of those names anyway -
+    `_refuse_remapped_root_conflicts` already refuses that config as a
+    destination collision - so excluding all of them costs nothing real.
+    Two DIFFERENT aliases can still legitimately ship an identical tail
+    (every alias's own `.gitkeep`) and both be genuinely renamed, so a tail
+    match alone does not yet prove ownership even after this exclusion - the
+    caller still verifies every file inside byte-for-byte, and separately
+    never considers a folder that is some OTHER alias's own CURRENTLY active
+    rename target.
+
+    Returns an empty set in the ordinary case: nothing was ever renamed, so
+    the literal alias name the caller checks separately is the only place
+    the placeholder could be.
+    """
+    tails: set[str] = set()
+    skeleton_roots: set[str] = set()
+    for e in manifest['files']:
+        if e.get('category') != 'skeleton':
+            continue
+        seg0, sep, rest = e['path'].partition('/')
+        skeleton_roots.add(seg0)
+        if seg0 == alias and sep:
+            tails.add(rest)
+    if not tails:
+        return set()
+    targets: set[str] = set()
+    for recorded_path in recorded:
+        seg0, sep, rest = recorded_path.partition('/')
+        if sep and seg0 != alias and seg0 not in skeleton_roots and rest in tails:
+            targets.add(seg0)
+    return targets
 
 
 def _prune_external_root_placeholders(
     archive_root: Path, fha_config: dict, manifest: dict, recorded: dict[str, str],
     *, dry_run: bool = False,
-) -> tuple[list[str], list[tuple[str, str]], dict[str, bytes]]:
+) -> tuple[list[tuple[str, str]], list[tuple[str, str]], dict[str, bytes]]:
     """Remove (or preview removing) an internal placeholder that just went external.
 
     An archive installed with the default internal `roots:` already has its
     `documents/`/`photos/`/`inbox/` folder on disk; if the human later
     re-points one of those at an external drive, the folder's purpose
     disappears but nothing before this function ever cleaned it up (#124).
+
+    The folder to check is not always the literal alias name. An alias can
+    have been internally RENAMED first (`documents: archive-docs`,
+    TOOLING §13c) and only later re-pointed external - the CURRENT `roots:`
+    value now names the external target, so `_internal_root_renames` can no
+    longer say where that earlier rename put the placeholder, and only the
+    archive's own stamp (`recorded`, via `_recorded_alias_rename_targets`)
+    still remembers `archive-docs/`. Checking only the literal `documents/`
+    folder would find nothing there to prune, and the stamp rewrite that
+    follows drops the stale `archive-docs/.gitkeep` key regardless - leaving
+    that folder sitting on disk, unrecorded, invisible to every future run
+    (#124 review round 5, finding 1). So every alias here checks the literal
+    name AND any folder its own stamp still shows it recorded under, except a
+    folder that is some OTHER alias's own CURRENTLY active rename target
+    (`active_rename_targets`) - two aliases can legitimately ship an
+    identical seed tail (every alias's own `.gitkeep`), and that folder is
+    not this alias's history to touch.
 
     Only a folder holding NOTHING BUT this install's own shipped bytes,
     verified recursively and byte-for-byte (`_placeholder_only_scaffold_litter`,
@@ -788,18 +909,21 @@ def _prune_external_root_placeholders(
     #124 review round 3, finding 3), is a candidate - matching this project's
     own safety rule (TOOLING: never destroy something that might be a human's
     data without being sure). One real file, an edited seed, a subfolder with
-    real content nested inside it (however deep, however hidden), or anything
-    this walk could not read takes the whole folder out of consideration: it
-    is left exactly as it is - not removed, not flagged as customized, not
-    backed up. `fha update-tools` narrates that decision but never acts on it;
-    the human decides what to do with a folder that surprised the tools.
+    real content nested inside it (however deep, however hidden), a symlink
+    anywhere in the tree (round 5, finding 4), or anything this walk could
+    not read takes the whole folder out of consideration: it is left exactly
+    as it is - not removed, not flagged as customized, not backed up.
+    `fha update-tools` narrates that decision but never acts on it; the human
+    decides what to do with a folder that surprised the tools.
 
-    Returns `(removed, failed)`:
-      - `removed` - the alias names actually removed (or, under `dry_run`,
-        that WOULD be removed). The caller uses this both to narrate the
-        action and to drop the matching skeleton entries from the rewritten
-        stamp - unrecorded is what lets a later revert to an internal root
-        recreate the placeholder (see the matching guard in `_plan_update`).
+    Returns `(removed, failed, snapshots)`:
+      - `removed` - `(alias, folder)` pairs actually removed (or, under
+        `dry_run`, that WOULD be removed) - `folder` is WHERE, which can
+        differ from `alias` itself for the reason above. The caller uses
+        this both to narrate the action and to drop the matching skeleton
+        entries from the rewritten stamp - unrecorded is what lets a later
+        revert to an internal root recreate the placeholder (see the
+        matching guard in `_plan_update`).
       - `failed` - `(alias, reason)` pairs for a folder that WAS eligible to
         remove but whose `shutil.rmtree` itself failed (locked file, denied
         permission) - never silently swallowed (#124 review): the caller
@@ -807,7 +931,7 @@ def _prune_external_root_placeholders(
         of claiming a cleanup that did not happen. Always empty under
         `dry_run`, which never calls `rmtree`.
       - `snapshots` - archive-relative path -> the exact bytes read from disk
-        immediately before this run's `rmtree`, for every file under an alias
+        immediately before this run's `rmtree`, for every file under a folder
         actually removed (never populated under `dry_run`, which removes
         nothing). This is the ONLY chance to capture what THIS run actually
         took away: if a skeleton seed changed upstream since this archive's
@@ -818,47 +942,56 @@ def _prune_external_root_placeholders(
         the (still unwritten) OLD stamp's checksum for this path would no
         longer describe (#124 review round 4, finding 1).
     """
-    removed: list[str] = []
+    removed: list[tuple[str, str]] = []
     failed: list[tuple[str, str]] = []
     snapshots: dict[str, bytes] = {}
+    # A folder some OTHER alias is still actively, internally renamed to
+    # RIGHT NOW belongs to that alias, whatever an unrelated tail-shape
+    # coincidence might suggest - never a candidate for this one.
+    active_rename_targets = set(_internal_root_renames(fha_config, archive_root).values())
     for alias in sorted(external_asset_roots(fha_config, archive_root)):
-        folder = archive_root / alias
-        if not folder.is_dir():
-            continue
-        # This alias's own skeleton entries, keyed by the FULL archive-relative
-        # path (not just the filename), with the checksum THIS ARCHIVE actually
-        # received for each (`_alias_seed_shas`) - what
-        # `_placeholder_only_scaffold_litter` verifies every file it finds
-        # against, byte for byte.
-        seed_shas = _alias_seed_shas(alias, manifest, recorded)
-        if not _placeholder_only_scaffold_litter(folder, archive_root, seed_shas):
-            continue  # real content, an edited seed, or unreadable - not ours to touch
-        if not dry_run:
-            # Snapshot every file this prune is about to remove, in memory,
-            # while it is still readable - the exact bytes the stamp's
-            # checksum for this path was recorded against, whatever today's
-            # repo happens to ship now.
-            for file_path in folder.rglob('*'):
-                if not file_path.is_file():
-                    continue
-                try:
-                    rel = file_path.relative_to(archive_root).as_posix()
-                    snapshots[rel] = file_path.read_bytes()
-                except OSError:
-                    pass  # best-effort - a later restore just can't cover this one
-            try:
-                shutil.rmtree(folder)
-            except OSError as exc:
-                failed.append((alias, str(exc)))
+        candidates = {alias} | (
+            _recorded_alias_rename_targets(alias, manifest, recorded) - active_rename_targets
+        )
+        for folder_name in sorted(candidates):
+            folder = archive_root / folder_name
+            if not folder.is_dir():
                 continue
-        removed.append(alias)
+            # This alias's own skeleton entries, keyed by the FULL
+            # archive-relative path under THIS folder (not just the
+            # filename), with the checksum THIS ARCHIVE actually received
+            # for each (`_alias_seed_shas`) - what
+            # `_placeholder_only_scaffold_litter` verifies every file it
+            # finds against, byte for byte.
+            seed_shas = _alias_seed_shas(alias, manifest, recorded, folder=folder_name)
+            if not _placeholder_only_scaffold_litter(folder, archive_root, seed_shas):
+                continue  # real content, an edited seed, or unreadable - not ours to touch
+            if not dry_run:
+                # Snapshot every file this prune is about to remove, in memory,
+                # while it is still readable - the exact bytes the stamp's
+                # checksum for this path was recorded against, whatever today's
+                # repo happens to ship now.
+                for file_path in folder.rglob('*'):
+                    if not file_path.is_file():
+                        continue
+                    try:
+                        rel = file_path.relative_to(archive_root).as_posix()
+                        snapshots[rel] = file_path.read_bytes()
+                    except OSError:
+                        pass  # best-effort - a later restore just can't cover this one
+                try:
+                    shutil.rmtree(folder)
+                except OSError as exc:
+                    failed.append((alias, str(exc)))
+                    continue
+            removed.append((alias, folder_name))
     return removed, failed, snapshots
 
 
 def _prune_orphaned_literal_root_folders(
     archive_root: Path, fha_config: dict, manifest: dict, recorded: dict[str, str],
     *, dry_run: bool = False,
-) -> tuple[list[str], list[tuple[str, str]]]:
+) -> tuple[list[str], list[tuple[str, str]], dict[str, bytes]]:
     """Remove (or preview removing) the literal alias folder an INTERNAL rename
     just orphaned (TOOLING §13c, #124 review round 3, finding 2).
 
@@ -878,19 +1011,54 @@ def _prune_orphaned_literal_root_folders(
     bytes, verified recursively and byte-for-byte against what THIS ARCHIVE
     actually received (`_placeholder_only_scaffold_litter` + `_alias_seed_shas`,
     same as the external-root prune), is ever removed - real content, an
-    edited seed, or anything unreadable leaves the folder alone, unremoved and
-    unflagged, matching every other prune in this file.
+    edited seed, a symlink anywhere in the tree (round 5, finding 4), or
+    anything unreadable leaves the folder alone, unremoved and unflagged,
+    matching every other prune in this file.
+
+    A rename whose new home is NESTED INSIDE the old literal folder
+    (`documents: documents/archive-docs`) is never a candidate here at all -
+    that literal folder is not orphaned litter in that case, it is the new
+    placeholder's own ANCESTOR. The live run always delivers the nested seed
+    (`_plan_update`'s "added" step) before this prune ever runs, so the
+    literal folder already holds real content (the new placeholder) by the
+    time the litter check would look - it is naturally never pruned live. A
+    DRY RUN never delivers anything first, though, so without this exclusion
+    it would see only the stale pre-delivery state and preview a removal the
+    live run never actually performs. Excluding it universally - rather than
+    only from the dry-run preview - keeps dry-run and live in permanent
+    agreement instead of depending on that ordering (#124 review round 5,
+    finding 3).
 
     An alias that is CURRENTLY external is left to `_prune_external_root_placeholders`
     instead (it prunes the literal `alias` folder too, by a different route),
     so this function only ever considers a rename that stays inside the
-    archive. Returns `(removed, failed)` in the same shape as
-    `_prune_external_root_placeholders`.
+    archive.
+
+    Returns `(removed, failed, snapshots)`:
+      - `removed`, `failed` - the same shape as `_prune_external_root_placeholders`
+        (alias names here, since this prune always targets the literal alias
+        folder - no remapped location to track).
+      - `snapshots` - archive-relative path -> the exact bytes read from disk
+        immediately before this run's `rmtree`, in the same shape and for the
+        same reason `_prune_external_root_placeholders` already captures them
+        (round 4, finding 1): a `.plaintext-version` write that fails right
+        after this prune needs something to restore from, or the removed
+        folder stays gone for good even after the owner reverts the rename -
+        the stale (unwritten) stamp still claims it was delivered, so
+        `_plan_update` never recreates what it believes is already there
+        (#124 review round 5, finding 2 - this prune had no snapshot at all
+        until now, unlike the external-root one).
     """
     renames = _internal_root_renames(fha_config, archive_root)
     removed: list[str] = []
     failed: list[tuple[str, str]] = []
+    snapshots: dict[str, bytes] = {}
     for alias in sorted(renames):
+        # The new home is INSIDE the old literal folder - that folder is the
+        # nested placeholder's own ancestor now, never orphaned litter
+        # (finding 3, see the docstring above).
+        if renames[alias].partition('/')[0] == alias:
+            continue
         folder = archive_root / alias
         if not folder.is_dir():
             continue
@@ -898,13 +1066,23 @@ def _prune_orphaned_literal_root_folders(
         if not _placeholder_only_scaffold_litter(folder, archive_root, seed_shas):
             continue  # real content, an edited seed, or unreadable - not ours to touch
         if not dry_run:
+            # Same snapshot-before-rmtree treatment as the external-root prune
+            # (round 4, finding 1) - see this function's own docstring, finding 2.
+            for file_path in folder.rglob('*'):
+                if not file_path.is_file():
+                    continue
+                try:
+                    rel = file_path.relative_to(archive_root).as_posix()
+                    snapshots[rel] = file_path.read_bytes()
+                except OSError:
+                    pass  # best-effort - a later restore just can't cover this one
             try:
                 shutil.rmtree(folder)
             except OSError as exc:
                 failed.append((alias, str(exc)))
                 continue
         removed.append(alias)
-    return removed, failed
+    return removed, failed, snapshots
 
 
 def _restore_pruned_placeholders(
@@ -2147,27 +2325,38 @@ def run_update_tools(
     this install's own shipped bytes - verified recursively and byte-for-byte
     against what THIS ARCHIVE actually received, never against today's
     manifest and never by name alone (`_placeholder_only_scaffold_litter` +
-    `_alias_seed_shas`, #124 review round 3 finding 3) - is inside it; real
-    content, an edited seed, or a folder this run could not fully read is left
-    completely alone (`_prune_external_root_placeholders`, #124). The literal
-    alias folder an INTERNAL rename orphans (`documents: archive-docs` leaving
+    `_alias_seed_shas`, #124 review round 3 finding 3), and never through a
+    symlink encountered anywhere in the walk (round 5, finding 4) - is inside
+    it; real content, an edited seed, a symlink, or a folder this run could
+    not fully read is left completely alone
+    (`_prune_external_root_placeholders`, #124). The folder checked is not
+    always the literal alias name: a PRIOR internal rename can have left the
+    placeholder somewhere the current (now-external) `roots:` value no longer
+    names, discovered instead from the archive's own stamp
+    (`_recorded_alias_rename_targets`, round 5 finding 1). The literal alias
+    folder an INTERNAL rename orphans (`documents: archive-docs` leaving
     `documents/` behind) gets the identical litter-verified treatment
-    (`_prune_orphaned_literal_root_folders`, finding 2). A folder that WAS
+    (`_prune_orphaned_literal_root_folders`, finding 2) - except a NESTED
+    rename (`documents: documents/archive-docs`), whose old literal folder is
+    the new placeholder's own ancestor, never orphaned litter, so dry-run and
+    the live run always agree about it (round 5, finding 3). A folder that WAS
     eligible but failed to remove (locked file, permission denied), and a
     `.plaintext-version` write that failed right after a successful prune
     (disk and the stamp are put back in agreement by restoring what was just
-    removed), both surface as a reported failure rather than a silent no-op.
-    An alias renamed but kept inside the archive (`documents: archive-docs`)
-    gets its placeholder at the renamed folder, matching `run_install` and
-    `_plan_update` (TOOLING §13c). A recorded path that is a current OR FORMER
-    documents/photos/inbox home (an alias renamed more than once) is never
-    swept into `.plaintext-backup/` by the generic retired-file path, which
-    never checks bytes at all - only the litter-verified prunes above may
-    remove one (finding 4). Without PyYAML, or with a fha.yaml that fails to
-    parse at all, this whole check withholds every alias from delivery,
-    pruning, and re-pruning and is reported, not silently treated as "nothing
-    configured" (#124 review; finding 5 for the parse-failure case) - every
-    OTHER part of this run still applies normally.
+    removed, now for EITHER prune mechanism - round 5, finding 2 closed the
+    gap where only the external one had this safety net), both surface as a
+    reported failure rather than a silent no-op. An alias renamed but kept
+    inside the archive (`documents: archive-docs`) gets its placeholder at the
+    renamed folder, matching `run_install` and `_plan_update` (TOOLING §13c).
+    A recorded path that is a current OR FORMER documents/photos/inbox home
+    (an alias renamed more than once) is never swept into
+    `.plaintext-backup/` by the generic retired-file path, which never checks
+    bytes at all - only the litter-verified prunes above may remove one
+    (round 3, finding 4). Without PyYAML, or with a fha.yaml that fails to parse at
+    all, this whole check withholds every alias from delivery, pruning, and
+    re-pruning and is reported, not silently treated as "nothing configured"
+    (#124 review; finding 5 for the parse-failure case) - every OTHER part of
+    this run still applies normally.
 
     Returns a `Result` (Result == int, so callers/tests comparing against EXIT_*
     keep working): EXIT_CLEAN on a clean update or dry run, EXIT_WARNINGS when
@@ -2329,11 +2518,11 @@ def run_update_tools(
                   f'(everything in it is being retired).')
         would_prune_external, _would_fail_external, _would_snapshot = _prune_external_root_placeholders(
             archive_root, fha_config, manifest, recorded_checksums, dry_run=True)
-        for alias in would_prune_external:
-            print(f'[dry-run] would remove the now-purposeless {alias}/ folder '
+        for alias, folder_name in would_prune_external:
+            print(f'[dry-run] would remove the now-purposeless {folder_name}/ folder '
                   f'(fha.yaml roots: already points {alias} outside this archive, '
                   f'and nothing but the install placeholder is inside it).')
-        would_prune_orphaned, _would_fail_orphaned = _prune_orphaned_literal_root_folders(
+        would_prune_orphaned, _would_fail_orphaned, _would_snapshot_orphaned = _prune_orphaned_literal_root_folders(
             archive_root, fha_config, manifest, recorded_checksums, dry_run=True)
         for alias in would_prune_orphaned:
             print(f'[dry-run] would remove the now-orphaned {alias}/ folder '
@@ -2502,8 +2691,8 @@ def run_update_tools(
     # fha.yaml rather than by what retired this run.
     pruned_external, prune_failed, pruned_snapshots = _prune_external_root_placeholders(
         archive_root, fha_config, manifest, recorded_checksums)
-    for alias in pruned_external:
-        print(f'Removed the now-purposeless {alias}/ folder - fha.yaml roots: '
+    for alias, folder_name in pruned_external:
+        print(f'Removed the now-purposeless {folder_name}/ folder - fha.yaml roots: '
               f'already points {alias} outside this archive.')
     for alias, reason in prune_failed:
         # An eligible placeholder that FAILED to remove (locked file, denied
@@ -2521,7 +2710,7 @@ def run_update_tools(
     # archive-docs` leaving `documents/` behind) is exactly as purposeless,
     # for the same reason, and gets the identical litter-verified treatment
     # (#124 review round 3, finding 2).
-    pruned_orphaned, prune_orphaned_failed = _prune_orphaned_literal_root_folders(
+    pruned_orphaned, prune_orphaned_failed, pruned_orphaned_snapshots = _prune_orphaned_literal_root_folders(
         archive_root, fha_config, manifest, recorded_checksums)
     for alias in pruned_orphaned:
         print(f'Removed the now-orphaned {alias}/ folder - fha.yaml roots: '
@@ -2548,11 +2737,33 @@ def run_update_tools(
     # placeholder has to become "never delivered" again, the same as a fresh
     # install that skipped it outright. That is also exactly what lets a
     # later revert to an internal root recreate it.
-    pruned_skeleton_paths = {
-        e['path'] for e in manifest['files']
-        if e.get('category') == 'skeleton'
-        and e['path'].split('/', 1)[0] in pruned_external
-    }
+    #
+    # Built by ALIAS (not by folder) so the stamp-write-failure restore below
+    # can tell whether every path a given alias's prune removed actually came
+    # back - and covers BOTH prune mechanisms, keyed under wherever each one
+    # actually removed content: the external-root prune's folder is not
+    # always the literal alias name any more (#124 review round 5, finding
+    # 1), and the internal-rename prune now needs the identical
+    # snapshot/restore safety net the external one already had (finding 2).
+    pruned_paths_by_alias: dict[str, set[str]] = {}
+    for alias, folder_name in pruned_external:
+        for e in manifest['files']:
+            if e.get('category') != 'skeleton':
+                continue
+            seg0, sep, rest = e['path'].partition('/')
+            if seg0 == alias and sep:
+                pruned_paths_by_alias.setdefault(alias, set()).add(f'{folder_name}/{rest}')
+    for alias in pruned_orphaned:
+        for e in manifest['files']:
+            if e.get('category') != 'skeleton':
+                continue
+            seg0, sep, rest = e['path'].partition('/')
+            if seg0 == alias and sep:
+                pruned_paths_by_alias.setdefault(alias, set()).add(e['path'])
+    pruned_skeleton_paths: set[str] = set()
+    for _alias, _paths in pruned_paths_by_alias.items():
+        pruned_skeleton_paths |= _paths
+    pruned_snapshots_all = {**pruned_snapshots, **pruned_orphaned_snapshots}
 
     if verbose:
         for archive_path, _src in plan['current']:
@@ -2583,9 +2794,11 @@ def run_update_tools(
             # §13c). A no-op for every entry that isn't under a renamed alias.
             archive_path = _remap_skeleton_path(manifest_path, renames_now)
             if archive_path in pruned_skeleton_paths:
-                # Just removed above because its alias went external and held
-                # only scaffold litter - leave it OUT of the stamp entirely
-                # (see the comment where pruned_skeleton_paths is built).
+                # Just removed above - either the alias went external, or an
+                # internal rename orphaned its old literal folder - and held
+                # only scaffold litter either way: leave it OUT of the stamp
+                # entirely (see the comment where pruned_skeleton_paths is
+                # built).
                 continue
             # A seed delivered THIS RUN must be recorded, or install-once is not
             # kept: unrecorded means "never delivered", so a later run would
@@ -2658,18 +2871,25 @@ def run_update_tools(
             # agreement with the stamp that is actually on disk, so the
             # ordinary revert-to-internal path keeps working.
             still_missing = _restore_pruned_placeholders(
-                archive_root, pruned_skeleton_paths, pruned_snapshots)
-            # An alias counts as restored only if EVERY one of its skeleton
-            # paths came back - a partial restore leaves the folder in a state
-            # nothing here can vouch for, so it is reported as still-missing
-            # below rather than narrated as a clean restore.
-            missing_aliases = {p.split('/', 1)[0] for p in still_missing}
-            pruned_aliases = {p.split('/', 1)[0] for p in pruned_skeleton_paths}
-            restored = sorted(pruned_aliases - missing_aliases)
+                archive_root, pruned_skeleton_paths, pruned_snapshots_all)
+            # An alias counts as restored only if EVERY path THIS run removed
+            # for it came back - a partial restore leaves the folder in a
+            # state nothing here can vouch for, so it is reported as
+            # still-missing below rather than narrated as a clean restore.
+            # Keyed by alias via `pruned_paths_by_alias` (not by splitting the
+            # path's first segment) so this still works correctly when the
+            # external prune's folder is a renamed one, not the literal alias
+            # name (#124 review round 5, finding 1).
+            missing_paths = set(still_missing)
+            restored = sorted(
+                alias for alias, paths in pruned_paths_by_alias.items()
+                if paths and not (paths & missing_paths)
+            )
             if restored:
                 # Not pruned any more by the time this run ends - correct
                 # the narration/data below to say so.
-                pruned_external = [a for a in pruned_external if a not in restored]
+                pruned_external = [(a, f) for a, f in pruned_external if a not in restored]
+                pruned_orphaned = [a for a in pruned_orphaned if a not in restored]
                 print(
                     f'Restored {", ".join(restored)}/ so it matches the baseline '
                     f'that is still recorded - run `fha update-tools` again to '
@@ -2703,12 +2923,12 @@ def run_update_tools(
                    if p not in installed_ok)
     # A removed placeholder folder is a mutation too, for the same reason a
     # restored executable bit is - a headless caller's audit should see it.
-    changed.extend(str(archive_root / alias) for alias in pruned_external)
+    changed.extend(str(archive_root / folder_name) for _alias, folder_name in pruned_external)
     changed.append(str(archive_root / VERSION_FILE))
     update_data = {
         'added': n_added_ok, 'stock': n_stock_ok, 'customized': n_custom_ok,
         'retired': n_retired_ok, 'current': n_current,
-        'external_roots_pruned': pruned_external,
+        'external_roots_pruned': sorted({alias for alias, _folder in pruned_external}),
     }
     if failures:
         print(file=sys.stderr)

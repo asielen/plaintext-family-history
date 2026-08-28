@@ -2830,6 +2830,305 @@ class FreshInstallTemplateConfigStrictTest(unittest.TestCase):
         self.assertTrue((self.archive / 'fha.yaml').is_file())
 
 
+class RenamedThenExternalPlaceholderTest(unittest.TestCase):
+    """A placeholder that was internally RENAMED and only later re-pointed
+    EXTERNAL must still be found and pruned - the CURRENT `roots:` value now
+    names the external target, not the folder the earlier rename actually
+    used, so only the archive's own stamp still remembers where it is
+    (#124 review round 5, finding 1).
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self.repo = _make_fake_repo_with_asset_dirs(self.tmp / 'repo')
+        self.archive = self.tmp / 'archive'
+        self.external = self.tmp / 'external'
+        (self.external / 'docs').mkdir(parents=True)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _stamp(self):
+        return json.loads((self.archive / '.plaintext-version').read_text(encoding='utf-8'))
+
+    def _install_with_documents_renamed(self):
+        _write(self.repo / 'archive-template' / 'fha.yaml',
+               'roots:\n  documents: archive-docs\n  photos: photos\n')
+        scaffold._write_manifest(self.repo)
+        scaffold.run_install(self.archive, self.repo)
+        self.assertTrue((self.archive / 'archive-docs' / '.gitkeep').is_file())
+        self.assertIn('archive-docs/.gitkeep', self._stamp()['files'])
+
+    def test_the_renamed_folder_is_found_and_pruned(self):
+        self._install_with_documents_renamed()
+        # The owner re-points the SAME alias at an external drive - the
+        # rename value is gone from fha.yaml, replaced by the external path,
+        # so nothing in the CURRENT config says "archive-docs" any more.
+        docs_ext = (self.external / 'docs').as_posix()
+        _write(self.archive / 'fha.yaml', f'roots:\n  documents: {docs_ext}\n  photos: photos\n')
+        rc = scaffold.run_update_tools(self.archive, self.repo)
+        self.assertEqual(rc, EXIT_CLEAN)
+        # The renamed folder - not the literal `documents/`, which never
+        # existed in this archive - must be the one that is actually gone.
+        self.assertFalse((self.archive / 'archive-docs').exists())
+        self.assertFalse((self.archive / 'documents').exists())
+        self.assertNotIn('archive-docs/.gitkeep', self._stamp()['files'])
+        self.assertFalse((self.archive / '.plaintext-backup').exists())
+
+    def test_the_prune_is_narrated_by_its_real_folder_name(self):
+        self._install_with_documents_renamed()
+        docs_ext = (self.external / 'docs').as_posix()
+        _write(self.archive / 'fha.yaml', f'roots:\n  documents: {docs_ext}\n  photos: photos\n')
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = scaffold.run_update_tools(self.archive, self.repo)
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertIn('archive-docs', out.getvalue())
+
+    def test_real_content_in_the_renamed_folder_survives(self):
+        self._install_with_documents_renamed()
+        _write(self.archive / 'archive-docs' / 'grandpas_notes.txt', 'do not lose this')
+        docs_ext = (self.external / 'docs').as_posix()
+        _write(self.archive / 'fha.yaml', f'roots:\n  documents: {docs_ext}\n  photos: photos\n')
+        rc = scaffold.run_update_tools(self.archive, self.repo)
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertEqual(
+            (self.archive / 'archive-docs' / 'grandpas_notes.txt').read_text(encoding='utf-8'),
+            'do not lose this')
+        self.assertFalse((self.archive / '.plaintext-backup').exists())
+
+    def test_reverting_to_the_internal_rename_recreates_the_placeholder(self):
+        # The point of correctly dropping the stale stamp key: a later revert
+        # must recreate the placeholder, not find a phantom "already
+        # delivered" record for a folder that this run actually removed.
+        self._install_with_documents_renamed()
+        docs_ext = (self.external / 'docs').as_posix()
+        _write(self.archive / 'fha.yaml', f'roots:\n  documents: {docs_ext}\n  photos: photos\n')
+        scaffold.run_update_tools(self.archive, self.repo)
+        self.assertFalse((self.archive / 'archive-docs').exists())
+        _write(self.archive / 'fha.yaml',
+               'roots:\n  documents: archive-docs\n  photos: photos\n')
+        rc = scaffold.run_update_tools(self.archive, self.repo)
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertTrue((self.archive / 'archive-docs' / '.gitkeep').is_file())
+
+    def test_an_unrelated_skeleton_folder_sharing_the_gitkeep_tail_is_never_touched(self):
+        # sources/.gitkeep (from the base fixture) is not documents' rename
+        # history - just another skeleton category that happens to ship the
+        # same generic seed filename. A shape-only match must never
+        # misattribute it.
+        self._install_with_documents_renamed()
+        self.assertTrue((self.archive / 'sources' / '.gitkeep').is_file())
+        docs_ext = (self.external / 'docs').as_posix()
+        _write(self.archive / 'fha.yaml', f'roots:\n  documents: {docs_ext}\n  photos: photos\n')
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = scaffold.run_update_tools(self.archive, self.repo)
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertTrue((self.archive / 'sources' / '.gitkeep').is_file())
+        self.assertNotIn('sources', out.getvalue())
+
+    def test_another_aliass_active_rename_target_is_never_touched(self):
+        # photos is actively, currently renamed to renamed-photos, which
+        # ships an identical .gitkeep tail to documents' own seed - a
+        # shape-only match must never let documents' external-prune reach
+        # into photos' own live placeholder.
+        _write(self.repo / 'archive-template' / 'fha.yaml',
+               'roots:\n  documents: documents\n  photos: renamed-photos\n')
+        scaffold._write_manifest(self.repo)
+        scaffold.run_install(self.archive, self.repo)
+        self.assertTrue((self.archive / 'renamed-photos' / '.gitkeep').is_file())
+        docs_ext = (self.external / 'docs').as_posix()
+        _write(self.archive / 'fha.yaml',
+               f'roots:\n  documents: {docs_ext}\n  photos: renamed-photos\n')
+        rc = scaffold.run_update_tools(self.archive, self.repo)
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertTrue((self.archive / 'renamed-photos' / '.gitkeep').is_file())
+        self.assertFalse((self.archive / 'documents').exists())
+
+
+class OrphanedRenamePruneStampFailureRestoreTest(unittest.TestCase):
+    """A `.plaintext-version` write that fails right after the INTERNAL-rename
+    orphan prune removes the old literal folder must be recoverable the same
+    way the external-root prune already was (round 4, finding 1) - otherwise
+    the folder stays gone for good, and a later revert to the literal name
+    finds a stale stamp that still claims it was delivered, so `_plan_update`
+    never recreates what it believes is already there (#124 review round 5,
+    finding 2).
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self.repo = _make_fake_repo_with_asset_dirs(self.tmp / 'repo')
+        self.archive = self.tmp / 'archive'
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _rename_documents_and_fail_the_stamp_write(self):
+        _write(self.archive / 'fha.yaml',
+               'roots:\n  documents: archive-docs\n  photos: photos\n')
+        with mock.patch.object(scaffold, '_write_version_stamp',
+                               side_effect=OSError(28, 'No space left on device')):
+            with contextlib.redirect_stdout(io.StringIO()), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                scaffold.run_update_tools(self.archive, self.repo)
+
+    def test_failed_stamp_write_restores_the_orphaned_folder(self):
+        scaffold.run_install(self.archive, self.repo)  # documents/.gitkeep, plain internal
+        original_bytes = (self.archive / 'documents' / '.gitkeep').read_bytes()
+        self._rename_documents_and_fail_the_stamp_write()
+        # The new placeholder was delivered - that part of the run did
+        # succeed; the OLD one, just orphaned and pruned, must be back too.
+        self.assertTrue((self.archive / 'archive-docs' / '.gitkeep').is_file())
+        restored = self.archive / 'documents' / '.gitkeep'
+        self.assertTrue(restored.is_file())
+        self.assertEqual(restored.read_bytes(), original_bytes)
+
+    def test_restore_uses_the_bytes_this_run_removed_not_todays_repo(self):
+        scaffold.run_install(self.archive, self.repo)
+        original_bytes = (self.archive / 'documents' / '.gitkeep').read_bytes()
+        # The seed changes upstream after this archive was installed - a
+        # later release ships different content than what this archive
+        # actually received.
+        _write(self.repo / 'archive-template' / 'documents' / '.gitkeep',
+               'a newer release seed\n')
+        scaffold._write_manifest(self.repo)
+        self._rename_documents_and_fail_the_stamp_write()
+        restored = self.archive / 'documents' / '.gitkeep'
+        self.assertTrue(restored.is_file())
+        self.assertEqual(
+            restored.read_bytes(), original_bytes,
+            'the restore wrote the CURRENT repo bytes instead of the bytes '
+            'this run actually removed')
+
+    def test_a_restored_orphaned_folder_still_reads_as_pristine_next_run(self):
+        # The real proof this matters: with the folder back and the (still
+        # unwritten) OLD stamp still recording it, disk and the stamp agree
+        # again, so the ordinary rename-prune completes normally next time.
+        scaffold.run_install(self.archive, self.repo)
+        self._rename_documents_and_fail_the_stamp_write()
+        self.assertTrue((self.archive / 'documents' / '.gitkeep').is_file())
+        with contextlib.redirect_stdout(io.StringIO()):
+            rc = scaffold.run_update_tools(self.archive, self.repo)
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertFalse((self.archive / 'documents').exists())
+        self.assertTrue((self.archive / 'archive-docs' / '.gitkeep').is_file())
+
+
+class NestedRenameAncestorDryRunTest(unittest.TestCase):
+    """A NESTED internal rename (`documents: documents/archive-docs`) must
+    never have `--dry-run` PROMISE removing the ancestor `documents/` folder.
+    The live run always delivers the nested seed first, which the litter
+    check then (correctly) reads as real content, so it never actually
+    removes that folder - dry-run must agree instead of previewing a
+    deletion the live run never performs (#124 review round 5, finding 3).
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self.repo = _make_fake_repo_with_asset_dirs(self.tmp / 'repo')
+        self.archive = self.tmp / 'archive'
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_dry_run_does_not_promise_removing_the_nested_ancestor(self):
+        scaffold.run_install(self.archive, self.repo)  # documents/.gitkeep, plain internal
+        _write(self.archive / 'fha.yaml',
+               'roots:\n  documents: documents/archive-docs\n  photos: photos\n')
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = scaffold.run_update_tools(self.archive, self.repo, dry_run=True)
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertNotIn('now-orphaned documents/', out.getvalue())
+        self.assertTrue((self.archive / 'documents' / '.gitkeep').is_file())  # untouched
+
+    def test_live_run_never_removes_the_nested_ancestor_either(self):
+        # Proof dry-run and live now agree, not just that dry-run stopped
+        # lying: the live run must genuinely never remove the ancestor once
+        # the nested seed has been delivered into it.
+        scaffold.run_install(self.archive, self.repo)
+        _write(self.archive / 'fha.yaml',
+               'roots:\n  documents: documents/archive-docs\n  photos: photos\n')
+        rc = scaffold.run_update_tools(self.archive, self.repo)
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertTrue((self.archive / 'documents' / 'archive-docs' / '.gitkeep').is_file())
+        self.assertTrue((self.archive / 'documents').is_dir())  # the ancestor, still there
+        self.assertFalse((self.archive / '.plaintext-backup').exists())
+
+    def test_a_sibling_rename_is_still_pruned_normally(self):
+        # The exclusion must be scoped to NESTED renames only - a plain
+        # sibling rename is unaffected and still previewed/pruned as before.
+        scaffold.run_install(self.archive, self.repo)
+        _write(self.archive / 'fha.yaml',
+               'roots:\n  documents: archive-docs\n  photos: photos\n')
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = scaffold.run_update_tools(self.archive, self.repo, dry_run=True)
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertIn('would remove the now-orphaned documents/', out.getvalue())
+
+
+class SymlinkInPlaceholderBlocksPruneTest(unittest.TestCase):
+    """A symlink inside a placeholder folder is the human's own organizational
+    structure, however empty its CURRENT target looks - `Path.is_dir()`
+    follows a symlink, so without an explicit check a directory link reads as
+    disposable litter and the prune's `rmtree` destroys the link itself
+    (#124 review round 5, finding 4).
+    """
+
+    def setUp(self):
+        if os.name == 'nt':
+            self.skipTest('POSIX symlinks')
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self.repo = _make_fake_repo_with_asset_dirs(self.tmp / 'repo')
+        self.archive = self.tmp / 'archive'
+        self.external = self.tmp / 'external'
+        (self.external / 'docs').mkdir(parents=True)
+        # Somewhere else on the human's own machine the link points to -
+        # empty right now, which is exactly the trap: an empty CURRENT
+        # target must not make the link itself look like disposable litter.
+        self.link_target = self.tmp / 'elsewhere'
+        self.link_target.mkdir()
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _point_documents_external(self):
+        docs_ext = (self.external / 'docs').as_posix()
+        _write(self.archive / 'fha.yaml',
+               f'roots:\n  documents: {docs_ext}\n  photos: photos\n')
+
+    def test_a_directory_symlink_survives_the_prune(self):
+        scaffold.run_install(self.archive, self.repo)
+        os.symlink(self.link_target, self.archive / 'documents' / 'my-link')
+        self._point_documents_external()
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = scaffold.run_update_tools(self.archive, self.repo)
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertTrue((self.archive / 'documents').exists())
+        self.assertTrue((self.archive / 'documents' / 'my-link').is_symlink())
+        self.assertFalse((self.archive / '.plaintext-backup').exists())
+        self.assertNotIn('now-purposeless', out.getvalue())
+
+    def test_a_file_symlink_also_survives_the_prune(self):
+        scaffold.run_install(self.archive, self.repo)
+        outside_file = self.tmp / 'outside.txt'
+        _write(outside_file, 'not scaffold litter')
+        os.symlink(outside_file, self.archive / 'documents' / 'my-link.txt')
+        self._point_documents_external()
+        rc = scaffold.run_update_tools(self.archive, self.repo)
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertTrue((self.archive / 'documents').exists())
+        self.assertTrue((self.archive / 'documents' / 'my-link.txt').is_symlink())
+
+
 class CmdErrorPathTest(unittest.TestCase):
     """The argparse bridges return friendly exit codes, never tracebacks."""
 
