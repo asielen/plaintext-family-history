@@ -164,7 +164,9 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import errno
 import json
+import os
 import re
 import shutil
 import stat
@@ -327,6 +329,20 @@ def _is_under(path: Path, root: Path) -> bool:
         return False
 
 
+# Windows has no POSIX `ELOOP`: `errno.ELOOP` there is a repurposed Winsock
+# code (WSAELOOP) that a real filesystem loop never raises. What Windows
+# actually raises once path resolution exceeds its internal reparse-point
+# traversal cap - true whether the reparse chain is a genuine cycle or just
+# deep - is a bare `OSError` carrying this `winerror`: `ERROR_CANT_RESOLVE_
+# FILENAME`, "The name of the file cannot be resolved by the system".
+# Verified empirically against a real, unprivileged, on-disk NTFS junction
+# loop (see `tests/test_process.py`'s `_build_real_symlink_loop`) - a real
+# symlink loop hits the identical failure, since the OS's traversal cap is
+# not specific to symlinks vs. junctions (issue #170 finding 2, round-9
+# audit, post-merge Codex review of #176).
+_WINDOWS_SYMLINK_LOOP_WINERROR = 1921
+
+
 def _resolve_hits_symlink_loop(path: Path) -> bool:
     """True if resolving `path` alone hits a symlink loop specifically.
 
@@ -351,13 +367,45 @@ def _resolve_hits_symlink_loop(path: Path) -> bool:
     a symlink loop on a configured root silently became a generic "not
     under the root; file it there" refusal, which cannot be acted on when
     the file may already be exactly where it belongs and the real problem
-    is a corrupted symlink."""
+    is a corrupted symlink.
+
+    Detection needs `strict=True` and cannot use the module's usual
+    non-strict `.resolve()` (post-merge Codex review, round-9 audit, issue
+    #170 finding 2 follow-up): on Python < 3.13, pathlib's own pure-Python
+    resolver detects a repeated component itself and raises `RuntimeError`
+    for a loop in strict AND non-strict mode alike, which is what this
+    function originally (and still) catches - but 3.13 rewrote `resolve()`
+    to delegate straight to `os.path.realpath()`, and that implementation's
+    NON-strict mode silently swallows any `OSError` a loop raises and
+    returns a best-effort (frequently still-unresolved) path instead of
+    raising anything at all. On 3.13+ a real loop therefore no longer
+    raises `RuntimeError` - non-strict `.resolve()` returns cleanly, and
+    this function would wrongly report "not a loop" for a genuine one
+    (verified empirically on 3.14: a real on-disk loop's non-strict
+    `.resolve()` returns the chain unresolved rather than raising). Only
+    `strict=True` still forces the underlying loop failure to surface as an
+    exception on every supported version.
+    """
     try:
-        path.resolve()
+        path.resolve(strict=True)
         return False
     except RuntimeError:
         return True
-    except (ValueError, OSError):
+    except FileNotFoundError:
+        # `resolve(strict=True)` raises this for an ordinary missing target
+        # too (nothing to do with a loop) - `os.path.realpath` maps a
+        # resolvable-but-absent path to the same exception a loop's own
+        # "file not found at the resolved name" case can produce, so this
+        # must be checked before the broader `OSError` branch below, not
+        # folded into it.
+        return False
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            return True
+        if os.name == 'nt' and getattr(exc, 'winerror', None) == _WINDOWS_SYMLINK_LOOP_WINERROR:
+            return True
+        return False
+    except ValueError:
         return False
 
 
@@ -4394,16 +4442,38 @@ def process_refile(
     # does not actually land beneath the root it claims to be under -
     # otherwise refile would move (or, on the copy+unlink fallback, delete)
     # a file that was never part of this archive.
+    #
+    # The symlink-loop check runs FIRST, unconditionally - not only inside
+    # the `not _is_under(...)` branch below - as of round-11 audit
+    # (post-merge Codex review of #197, finding 5): on Python 3.13+,
+    # `Path.resolve()`'s non-strict mode (what `_is_under` uses) stopped
+    # raising for a genuine symlink loop at all - it silently returns a
+    # best-effort, still-unresolved path instead (see
+    # `_resolve_hits_symlink_loop`'s own docstring). A broken inventory
+    # symlink can leave that best-effort path textually unchanged and
+    # still sitting under `claimed_root`, so `_is_under` reports it
+    # contained (True) even though nothing was actually resolved through
+    # the loop - and since `not _is_under(...)` is then False, the loop
+    # check that used to live inside this branch never ran at all. Control
+    # fell through to `if not src.is_file():` below, whose `.is_file()`
+    # DOES follow the loop for real (a genuine OS-level stat) and fails,
+    # producing "is not on disk" - true only in the sense that nothing
+    # could be reached, but the wrong diagnosis and the wrong remedy: the
+    # file is likely sitting exactly where it belongs, and what needs
+    # fixing is the broken symlink, not a `files:` entry or a missing
+    # drive. Checking the loop before ever consulting `_is_under`'s result
+    # - success or failure alike - closes that gap for both Python's
+    # resolve() eras at once.
     claimed_root = resolve_path(alias_root, fha_config, archive_root)
+    if _resolve_hits_symlink_loop(src) or _resolve_hits_symlink_loop(claimed_root):
+        raise ProcessError(
+            f'{stored_alias} could not be checked against the configured '
+            f'{alias_root} root - this looks like a symlink loop, most '
+            'likely from a corrupted or maliciously crafted filesystem '
+            f'entry, not a mistyped files: entry in {record_path.name}. '
+            'Find and fix or remove the offending symlink, then retry. '
+            'Nothing was moved.')
     if not _is_under(src, claimed_root):
-        if _resolve_hits_symlink_loop(src) or _resolve_hits_symlink_loop(claimed_root):
-            raise ProcessError(
-                f'{stored_alias} could not be checked against the configured '
-                f'{alias_root} root - this looks like a symlink loop, most '
-                'likely from a corrupted or maliciously crafted filesystem '
-                f'entry, not a mistyped files: entry in {record_path.name}. '
-                'Find and fix or remove the offending symlink, then retry. '
-                'Nothing was moved.')
         raise ProcessError(
             f'{stored_alias} resolves outside the configured {alias_root} '
             f'folder ({claimed_root}) - this looks like a hand-edited files: '

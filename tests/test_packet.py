@@ -1760,6 +1760,49 @@ class PacketTests(unittest.TestCase):
             packet._redact_asset_path('photos/1900s/family_S-2222222222.jpg'),
             'photos/1900s/family_S-2222222222.jpg')
 
+    def test_redact_asset_path_strips_leading_whitespace_before_classifying(self):
+        """A hand-edit made through a YAML editor can leave the value quoted
+        with surrounding whitespace preserved, e.g. `" /Users/andrew/Secret/
+        scan.pdf"` (a space before the leading `/`). Every character-position
+        check in `_redact_asset_path` reads `normalized[0]`/`[1]`
+        positionally, so the leading space alone used to defeat all of them
+        at once and let the whole absolute path - username and directory
+        layout included - through unredacted (post-merge Codex review of
+        #176, round-9 audit, issue #170 finding 1 follow-up)."""
+        self.assertEqual(
+            packet._redact_asset_path(' /Users/andrew_sielen/Secret/scan.pdf'),
+            'scan.pdf')
+        self.assertEqual(
+            packet._redact_asset_path('\t/Users/andrew_sielen/Secret/scan.pdf'),
+            'scan.pdf')
+        self.assertEqual(
+            packet._redact_asset_path('  C:\\Users\\andrew_sielen\\Secret Folder\\private-scan.tif  '),
+            'private-scan.tif')
+        self.assertEqual(
+            packet._redact_asset_path(' ~andrew_sielen/Documents/secret.pdf'),
+            'secret.pdf')
+        # Whitespace-padded bare-directory and lookalike-separator shapes
+        # must still be recognized once stripped, not just the plain case.
+        self.assertEqual(
+            packet._redact_asset_path(' /Users/andrew_sielen/'), '(unnamed path)')
+        self.assertEqual(
+            packet._redact_asset_path(' /Users⁄andrew_sielen⁄secret.pdf'),
+            'secret.pdf')
+
+    def test_redact_asset_path_preserves_whitespace_on_a_genuine_alias(self):
+        """The fix for the leading-whitespace leak must not start silently
+        rewriting an ORDINARY alias's spelling - only classification and
+        basename extraction run against a stripped copy; a portable, non-
+        foreign entry (whitespace and all) is returned completely
+        unchanged, exactly as `_redact_asset_path`'s no-op contract already
+        promises for a normal alias."""
+        self.assertEqual(
+            packet._redact_asset_path(' documents/census/scan.jpg'),
+            ' documents/census/scan.jpg')
+        self.assertEqual(
+            packet._redact_asset_path('photos/1880/portrait.jpg  '),
+            'photos/1880/portrait.jpg  ')
+
     def test_unreadable_source_is_left_out_with_its_files(self):
         """A source whose own record cannot be read takes its assets with it.
 
@@ -1961,6 +2004,711 @@ class PacketTests(unittest.TestCase):
         copied = next((result['packet_dir'] / 'sources').glob('*.md')).read_text(encoding='utf-8')
         self.assertNotIn('yours to write', copied)
         self.assertNotIn('suicide', copied)   # the restricted claim itself is still cut
+
+    def test_non_portable_files_entry_redacted_in_the_copied_source_record(self):
+        """The P1 half of issue #170 finding 1 that #176's fix missed
+        (post-merge Codex review, round-9 audit): `_redact_asset_path`
+        protected the missing-asset SENTENCE in README.txt, but the source's
+        own RECORD - copied verbatim into the packet's sources/ folder -
+        still carried the raw `files:` entry in its frontmatter untouched.
+        This is the "build the real thing and grep the real output" proof:
+        an actual packet, built from a source record whose `files:` entry
+        is a real absolute path off the archive owner's machine, must not
+        leak that path anywhere in its OWN COPIED RECORD FILE - not just in
+        README.txt (already covered by
+        `test_absolute_files_entry_path_redacted_to_basename_in_readme`
+        above).
+
+        This source has no restricted claim, so it takes the ordinary
+        `_copy_source_with_scaffolding_stripped` path, not
+        `_copy_redacted_source` - the leak's more common branch, since most
+        sources carry nothing to withhold.
+        """
+        self._seed_person()
+        src_path = self._seed_source('s-1111111111', 'Ordinary Title')
+        src_path.write_text(
+            '---\n'
+            'id: s-1111111111\n'
+            'title: Ordinary Title\n'
+            'source_type: letter\n'
+            'files:\n'
+            '  - file: C:\\Users\\andrew_sielen\\Secret Folder\\private-scan.tif\n'
+            '    role: primary\n'
+            '    original_filename: private-scan.tif\n'
+            '---\n'
+            '## Claims\n```yaml\n```\n\n'
+            '## Notes\nA note about the letter.\n',
+            encoding='utf-8',
+        )
+        self._commit_fresh()
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir, no_photos=True)
+
+        self.assertEqual(result['status'], 'ok')
+        copied = next((result['packet_dir'] / 'sources').glob('*.md')).read_text(encoding='utf-8')
+        self.assertNotIn('andrew_sielen', copied)
+        self.assertNotIn('Secret Folder', copied)
+        self.assertNotIn('C:\\Users', copied)
+        # The record is still a real, useful record: everything else about
+        # the entry - and the rest of the file - is untouched.
+        self.assertIn('file: private-scan.tif', copied)
+        self.assertIn('role: primary', copied)
+        self.assertIn('original_filename: private-scan.tif', copied)
+        self.assertIn('A note about the letter.', copied)
+        readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
+        self.assertNotIn('andrew_sielen', readme)
+        self.assertNotIn('Secret Folder', readme)
+
+    def test_non_portable_files_entry_redacted_alongside_claim_redaction(self):
+        """Same leak, the OTHER copy branch: a source WITH a restricted
+        claim goes through `_copy_redacted_source` instead of
+        `_copy_source_with_scaffolding_stripped` - the files: redaction
+        must run there too, not just on the more common ordinary-source
+        path above."""
+        self._seed_person()
+        src_path = self._seed_source('s-1111111111', 'Restricted Source', restricted=0)
+        src_path.write_text(
+            '---\n'
+            'id: s-1111111111\n'
+            'title: Restricted Source\n'
+            'source_type: letter\n'
+            'files:\n'
+            '  - file: /Users/andrew_sielen/Documents/private-scan.tif\n'
+            '    role: primary\n'
+            '---\n'
+            '## Claims\n```yaml\n'
+            '- value: "Cause of death: suicide"\n'
+            '  type: death\n'
+            '  persons: [p-aaaaaaaaaa]\n'
+            '  id: c-1111111111\n'
+            '  status: accepted\n'
+            '  restricted: true\n'
+            '```\n',
+            encoding='utf-8',
+        )
+        self._commit_fresh()
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir, no_photos=True)
+
+        self.assertEqual(result['status'], 'ok')
+        copied = next((result['packet_dir'] / 'sources').glob('*.md')).read_text(encoding='utf-8')
+        self.assertNotIn('andrew_sielen', copied)
+        self.assertNotIn('suicide', copied)   # the restricted claim is still cut too
+        self.assertIn('file: private-scan.tif', copied)
+        self.assertIn('role: primary', copied)
+
+    # ── Round-10 audit: four more bypasses of the files: redaction surface ─────
+    #
+    # Four more P1 findings landed on this exact surface in a single post-merge
+    # review pass, after six already-patched rounds (#170 finding 1's own
+    # docstrings, round-3 through round-9). Each test below is the same "build
+    # a real packet and grep the real output" proof the earlier rounds used:
+    # a source record carrying one specific disguised shape of a foreign
+    # `files:` path, and an assertion that the raw path is absent from BOTH
+    # README.txt and the copied source record - or, for the two shapes that
+    # cannot be safely rewritten at all, that the record was left out of
+    # sources/ entirely rather than shipped unredacted.
+
+    def test_multiline_block_scalar_files_entry_is_left_out_not_half_redacted(self):
+        """Finding 1: a hand-edited `file:` value written as a YAML literal
+        block scalar (`file: |` with the real path on an INDENTED
+        CONTINUATION line) parses correctly - `yaml.safe_load` joins the
+        continuation into one string, and that combined value is classified
+        as foreign exactly like any other absolute path - but the old
+        `_rewrite_file_key_in_entry` only ever rewrote the `file: |` HEADER
+        line, leaving the continuation line (and the real path it still
+        holds) completely untouched in the exported record. The fix refuses
+        to line-surgery a block scalar at all and fails the whole record
+        closed instead, so nothing half-redacted - still carrying its raw
+        path on a leftover continuation line - ever reaches sources/."""
+        self._seed_person()
+        src_path = self._seed_source('s-1111111111', 'Ordinary Title')
+        src_path.write_text(
+            '---\n'
+            'id: s-1111111111\n'
+            'title: Ordinary Title\n'
+            'source_type: letter\n'
+            'files:\n'
+            '  - file: |\n'
+            '      /Users/andrew_sielen/Secret Folder/private-scan.tif\n'
+            '    role: primary\n'
+            '---\n'
+            '## Claims\n```yaml\n```\n',
+            encoding='utf-8',
+        )
+        self._commit_fresh()
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir, no_photos=True)
+
+        self.assertEqual(result['status'], 'ok')
+        sources_dir = result['packet_dir'] / 'sources'
+        self.assertEqual(list(sources_dir.glob('*.md')) if sources_dir.exists() else [], [])
+        self.assertTrue(any(
+            'could not be safely rewritten' in m for m in result['messages']
+        ))
+        readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
+        self.assertNotIn('andrew_sielen', readme)
+        self.assertNotIn('Secret Folder', readme)
+
+    def test_source_record_unreadable_at_copy_time_is_left_out_not_byte_copied(self):
+        """Finding 2: `_source_copy_plan` reads each included source's record
+        once, early, through `read_record`, to decide redact/unsafe/byte-copy
+        - but the actual COPY step reads the same file a SECOND time, moments
+        later, through `read_text_exact`. If the record becomes undecodable
+        in that window (a race, or a genuinely corrupted/foreign-encoded
+        file), the old fallback here byte-copied the ORIGINAL bytes
+        unchanged - which means the files: redaction never even ran, so a
+        foreign `files:` entry in a record this function could not decode
+        still shipped raw. The fix fails closed: an unreadable record is
+        left out of sources/ with a warning, never byte-copied around a
+        redaction it could not perform.
+
+        `read_text_exact` (not `read_record`'s own decode) is patched to
+        fail for only this one file, simulating the record going bad in the
+        window between the two reads without disturbing `_source_copy_plan`'s
+        earlier, successful read of the same file.
+        """
+        self._seed_person()
+        src_path = self._seed_source('s-1111111111', 'Ordinary Title')
+        src_path.write_text(
+            '---\n'
+            'id: s-1111111111\n'
+            'title: Ordinary Title\n'
+            'source_type: letter\n'
+            'files:\n'
+            '  - file: C:\\Users\\andrew_sielen\\Secret Folder\\private-scan.tif\n'
+            '    role: primary\n'
+            '---\n'
+            '## Claims\n```yaml\n```\n',
+            encoding='utf-8',
+        )
+        self._commit_fresh()
+
+        real_read_text_exact = packet.read_text_exact
+
+        def _flaky_read(path):
+            if Path(path).name == 's-1111111111.md':
+                raise UnicodeDecodeError(
+                    'utf-8', b'\xff', 0, 1, 'simulated post-plan corruption')
+            return real_read_text_exact(path)
+
+        with unittest.mock.patch('packet.read_text_exact', side_effect=_flaky_read):
+            result = packet.run_packet(
+                self.archive_root, 'p-aaaaaaaaaa', self.out_dir, no_photos=True)
+
+        self.assertEqual(result['status'], 'ok')
+        sources_dir = result['packet_dir'] / 'sources'
+        self.assertEqual(list(sources_dir.glob('*.md')) if sources_dir.exists() else [], [])
+        self.assertTrue(any('could not be read' in m for m in result['messages']))
+        readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
+        self.assertNotIn('andrew_sielen', readme)
+        self.assertNotIn('Secret Folder', readme)
+
+    def test_source_record_unreadable_at_copy_time_alongside_claim_redaction(self):
+        """Same race as above, the OTHER copy branch: a source WITH a
+        restricted claim goes through `_copy_redacted_source` instead of
+        `_copy_source_with_scaffolding_stripped` - that branch already
+        failed closed on a read error before this round (it never had the
+        byte-copy fallback bug), but this pins it stays that way alongside
+        the sibling function's fix."""
+        self._seed_person()
+        src_path = self._seed_source('s-1111111111', 'Restricted Source', restricted=0)
+        src_path.write_text(
+            '---\n'
+            'id: s-1111111111\n'
+            'title: Restricted Source\n'
+            'source_type: letter\n'
+            'files:\n'
+            '  - file: /Users/andrew_sielen/Documents/private-scan.tif\n'
+            '    role: primary\n'
+            '---\n'
+            '## Claims\n```yaml\n'
+            '- value: "Cause of death: suicide"\n'
+            '  type: death\n'
+            '  persons: [p-aaaaaaaaaa]\n'
+            '  id: c-1111111111\n'
+            '  status: accepted\n'
+            '  restricted: true\n'
+            '```\n',
+            encoding='utf-8',
+        )
+        self._commit_fresh()
+
+        real_read_text_exact = packet.read_text_exact
+
+        def _flaky_read(path):
+            if Path(path).name == 's-1111111111.md':
+                raise UnicodeDecodeError(
+                    'utf-8', b'\xff', 0, 1, 'simulated post-plan corruption')
+            return real_read_text_exact(path)
+
+        with unittest.mock.patch('packet.read_text_exact', side_effect=_flaky_read):
+            result = packet.run_packet(
+                self.archive_root, 'p-aaaaaaaaaa', self.out_dir, no_photos=True)
+
+        self.assertEqual(result['status'], 'ok')
+        sources_dir = result['packet_dir'] / 'sources'
+        self.assertEqual(list(sources_dir.glob('*.md')) if sources_dir.exists() else [], [])
+        self.assertTrue(any('could not be read' in m for m in result['messages']))
+
+    def test_files_entry_as_a_mapping_instead_of_a_list_is_left_out(self):
+        """Finding 3: a hand-edited archive where `files:` holds a MAPPING
+        (`files:` followed by an indented `file: /path` with no leading
+        `- `, YAML-parsed shape as `{'file': '/path'}`) rather than the list
+        every reader downstream expects. `yaml.safe_load` happily returns a
+        dict here, and the old check treated 'present but not a list'
+        identically to 'absent' - returning the frontmatter completely
+        unchanged - so this shape shipped its raw path straight through, in
+        both README.txt and the copied record. The fix distinguishes
+        'genuinely absent' from 'present but malformed' and fails the
+        record closed for the latter."""
+        self._seed_person()
+        src_path = self._seed_source('s-1111111111', 'Ordinary Title')
+        src_path.write_text(
+            '---\n'
+            'id: s-1111111111\n'
+            'title: Ordinary Title\n'
+            'source_type: letter\n'
+            'files:\n'
+            '  file: /Users/andrew_sielen/Secret Folder/private-scan.tif\n'
+            '---\n'
+            '## Claims\n```yaml\n```\n',
+            encoding='utf-8',
+        )
+        self._commit_fresh()
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir, no_photos=True)
+
+        self.assertEqual(result['status'], 'ok')
+        sources_dir = result['packet_dir'] / 'sources'
+        self.assertEqual(list(sources_dir.glob('*.md')) if sources_dir.exists() else [], [])
+        self.assertTrue(any(
+            'could not be safely rewritten' in m for m in result['messages']
+        ))
+        readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
+        self.assertNotIn('andrew_sielen', readme)
+        self.assertNotIn('Secret Folder', readme)
+
+    def test_file_uri_files_entry_redacted_to_basename(self):
+        """Finding 4: a hand-edited `file:` value written as a `file://`
+        URI (`file:///Users/alice/Secret/private.pdf` - the form a
+        browser's address bar or a "Copy as URI" menu item produces) is not
+        recognized as foreign by any of the leading-character checks: it
+        starts with `f`, has no colon at the drive-letter position, and
+        `Path(...).is_absolute()` does not consider a URI string absolute
+        either. Recognizing the `file://` scheme closes this: the value
+        redacts to a basename only, exactly like every other foreign shape,
+        in both README.txt and the copied source record."""
+        self._seed_person()
+        src_path = self._seed_source('s-1111111111', 'Ordinary Title')
+        src_path.write_text(
+            '---\n'
+            'id: s-1111111111\n'
+            'title: Ordinary Title\n'
+            'source_type: letter\n'
+            'files:\n'
+            '  - file: file:///Users/andrew_sielen/Secret Folder/private-scan.tif\n'
+            '    role: primary\n'
+            '---\n'
+            '## Claims\n```yaml\n```\n',
+            encoding='utf-8',
+        )
+        self._commit_fresh()
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir, no_photos=True)
+
+        self.assertEqual(result['status'], 'ok')
+        copied = next((result['packet_dir'] / 'sources').glob('*.md')).read_text(encoding='utf-8')
+        self.assertNotIn('andrew_sielen', copied)
+        self.assertNotIn('Secret Folder', copied)
+        self.assertNotIn('file://', copied)
+        self.assertIn('file: private-scan.tif', copied)
+        readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
+        self.assertNotIn('andrew_sielen', readme)
+        self.assertNotIn('Secret Folder', readme)
+
+    def test_redact_asset_path_recognizes_file_uri_scheme(self):
+        """Unit-level pin of `_redact_asset_path`'s new `file://` check
+        (finding 4) across the two realistic URI shapes: the triple-slash
+        absolute form (empty authority) and the two-slash host-relative
+        form. Neither the scheme name nor any host component ever survives
+        into the returned basename."""
+        self.assertEqual(
+            packet._redact_asset_path('file:///Users/andrew_sielen/Secret/private.pdf'),
+            'private.pdf',
+        )
+        self.assertEqual(
+            packet._redact_asset_path('FILE:///Users/andrew_sielen/Secret/private.pdf'),
+            'private.pdf',
+        )
+        self.assertEqual(
+            packet._redact_asset_path('file://myserver/share/private.pdf'),
+            'private.pdf',
+        )
+        self.assertEqual(
+            packet._redact_asset_path('file:///Users/andrew_sielen/'),
+            '(unnamed path)',
+        )
+
+    def test_files_entry_with_two_file_key_lines_is_left_out_not_guessed(self):
+        """Adversarial pass, round-10: an entry where a SECOND line also
+        matches `file:`-shaped syntax (here, inside a `notes:` block scalar
+        that happens to start a line with the literal text `file: ...`) is
+        ambiguous - which one is the real `files:` key is not this line-
+        surgery function's call to make. The old code silently rewrote
+        whichever match `re.subn(..., count=1)` found FIRST and never
+        checked for a second one; picking the wrong line, or picking the
+        right line while leaving a second real path-shaped line untouched,
+        are both a leak. The fix counts every match and fails closed unless
+        there is exactly one."""
+        self._seed_person()
+        src_path = self._seed_source('s-1111111111', 'Ordinary Title')
+        src_path.write_text(
+            '---\n'
+            'id: s-1111111111\n'
+            'title: Ordinary Title\n'
+            'source_type: letter\n'
+            'files:\n'
+            '  - file: /Users/andrew_sielen/Secret Folder/private-scan.tif\n'
+            '    role: primary\n'
+            '    notes: |\n'
+            '      file: this line also matches file: syntax\n'
+            '---\n'
+            '## Claims\n```yaml\n```\n',
+            encoding='utf-8',
+        )
+        self._commit_fresh()
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir, no_photos=True)
+
+        self.assertEqual(result['status'], 'ok')
+        sources_dir = result['packet_dir'] / 'sources'
+        self.assertEqual(list(sources_dir.glob('*.md')) if sources_dir.exists() else [], [])
+        readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
+        self.assertNotIn('andrew_sielen', readme)
+        self.assertNotIn('Secret Folder', readme)
+
+    def test_leading_zero_width_space_does_not_defeat_classification(self):
+        """Adversarial pass, round-10, this function's own extra pass after
+        the four Codex-found bypasses above: a ZERO-WIDTH SPACE (U+200B) -
+        or a byte-order mark, or any other Unicode FORMAT character -
+        sitting at the very start of the value is not whitespace by
+        Python's own `str.isspace()`, so it survives `.strip()` untouched
+        and defeats the leading-character classification checks exactly
+        like the round-9 leading-SPACE bug, just invisibly. Not a
+        contrived shape: a UTF-8-with-BOM save or a browser-address-bar
+        copy-paste leaves exactly this."""
+        self._seed_person()
+        src_path = self._seed_source('s-1111111111', 'Ordinary Title')
+        zwsp = chr(0x200b)   # ZERO WIDTH SPACE - invisible in a text editor
+        src_path.write_text(
+            '---\n'
+            'id: s-1111111111\n'
+            'title: Ordinary Title\n'
+            'source_type: letter\n'
+            'files:\n'
+            f'  - file: "{zwsp}/Users/andrew_sielen/Secret Folder/private-scan.tif"\n'
+            '    role: primary\n'
+            '---\n'
+            '## Claims\n```yaml\n```\n',
+            encoding='utf-8',
+        )
+        self._commit_fresh()
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir, no_photos=True)
+
+        self.assertEqual(result['status'], 'ok')
+        copied = next((result['packet_dir'] / 'sources').glob('*.md')).read_text(encoding='utf-8')
+        self.assertNotIn('andrew_sielen', copied)
+        self.assertNotIn('Secret Folder', copied)
+        self.assertIn('file: private-scan.tif', copied)
+        readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
+        self.assertNotIn('andrew_sielen', readme)
+        self.assertNotIn('Secret Folder', readme)
+
+    def test_redact_asset_path_strips_invisible_format_chars_before_classifying(self):
+        """Unit-level pin of `_strip_invisible_format_chars`: a zero-width
+        space, a byte-order mark, and a left-to-right mark in front of an
+        absolute path all redact to a basename, exactly like a visible
+        leading space already does; the same characters embedded in an
+        ORDINARY portable alias (not at a classification-relevant position)
+        must not trigger any rewrite at all."""
+        zwsp = chr(0x200b)      # ZERO WIDTH SPACE
+        bom = chr(0xfeff)       # BYTE ORDER MARK / ZERO WIDTH NO-BREAK SPACE
+        ltr_mark = chr(0x200e)  # LEFT-TO-RIGHT MARK
+        self.assertEqual(
+            packet._redact_asset_path(f'{zwsp}/Users/andrew_sielen/secret.pdf'),
+            'secret.pdf',
+        )
+        self.assertEqual(
+            packet._redact_asset_path(f'{bom}/Users/andrew_sielen/secret.pdf'),
+            'secret.pdf',
+        )
+        self.assertEqual(
+            packet._redact_asset_path(f'{ltr_mark}/Users/andrew_sielen/secret.pdf'),
+            'secret.pdf',
+        )
+        ordinary = f'documents/receipts/1{zwsp}dividend.pdf'
+        self.assertEqual(packet._redact_asset_path(ordinary), ordinary)
+
+    # ── Round-11 audit: four more bypasses, post-merge Codex review of #197 ────
+    #
+    # Same surface, same posture (fail closed rather than half-redact or ship
+    # unexamined), a fourth review pass after round-10's own four findings.
+    # Each test below is again "build a real packet and grep the real output".
+
+    def test_block_scalar_reversed_modifier_order_is_left_out_not_half_redacted(self):
+        """Finding 1: a YAML block scalar header may write its indentation
+        indicator and its chomping indicator in EITHER order - `|2-` and
+        `|-2` are both legal spellings of the same "indent 2, strip"
+        literal block scalar, and `yaml.safe_load` accepts both identically.
+        The old `_BLOCK_SCALAR_VALUE_RE` only matched chomping-then-digit
+        (`|-2`), so `|2-` did not read as a block scalar header at all - it
+        fell through to the ordinary single-line rewrite path, which
+        replaced the `file: |2-` HEADER with the redacted value and
+        reported success (one substitution), while the real absolute path
+        kept sitting untouched on the continuation line right below it.
+        That is worse than the round-10 bug it sits beside: it is not a
+        record merely left out, it is a record that ships CLAIMING to have
+        been redacted while still carrying the leak. The fix recognizes
+        both orders and refuses the rewrite for either, so the whole
+        record fails closed instead - out of sources/ entirely, never
+        half-redacted."""
+        self._seed_person()
+        src_path = self._seed_source('s-1111111111', 'Ordinary Title')
+        src_path.write_text(
+            '---\n'
+            'id: s-1111111111\n'
+            'title: Ordinary Title\n'
+            'source_type: letter\n'
+            'files:\n'
+            '  - file: |2-\n'
+            '      /Users/andrew_sielen/Secret Folder/private-scan.tif\n'
+            '    role: primary\n'
+            '---\n'
+            '## Claims\n```yaml\n```\n',
+            encoding='utf-8',
+        )
+        self._commit_fresh()
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir, no_photos=True)
+
+        self.assertEqual(result['status'], 'ok')
+        sources_dir = result['packet_dir'] / 'sources'
+        self.assertEqual(list(sources_dir.glob('*.md')) if sources_dir.exists() else [], [])
+        self.assertTrue(any(
+            'could not be safely rewritten' in m for m in result['messages']
+        ))
+        readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
+        self.assertNotIn('andrew_sielen', readme)
+        self.assertNotIn('Secret Folder', readme)
+
+    def test_files_entry_bare_scalar_in_list_is_left_out_not_skipped(self):
+        """Finding 2: a hand-edited `files:` list whose entries are bare
+        scalars (`files: [/Users/alice/Secret/private.pdf]`) instead of
+        `{file: ..., role: ...}` mappings. Every check in the old redaction
+        loop only ever looked at `item.get('file')` AFTER already assuming
+        `item` was a dict - a bare string entry has no `.get` to call, so
+        the old code's `isinstance(item, dict) and ...` guard just quietly
+        evaluated False and moved on to the next entry, never even
+        recognizing there was a raw path sitting right there to check. The
+        fix distinguishes 'nothing to redact in this entry' from 'this
+        entry could not even be examined' and fails the record closed for
+        the latter, the same posture already used for a malformed Claims
+        entry."""
+        self._seed_person()
+        src_path = self._seed_source('s-1111111111', 'Ordinary Title')
+        src_path.write_text(
+            '---\n'
+            'id: s-1111111111\n'
+            'title: Ordinary Title\n'
+            'source_type: letter\n'
+            'files: [/Users/andrew_sielen/Secret Folder/private-scan.tif]\n'
+            '---\n'
+            '## Claims\n```yaml\n```\n',
+            encoding='utf-8',
+        )
+        self._commit_fresh()
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir, no_photos=True)
+
+        self.assertEqual(result['status'], 'ok')
+        sources_dir = result['packet_dir'] / 'sources'
+        self.assertEqual(list(sources_dir.glob('*.md')) if sources_dir.exists() else [], [])
+        self.assertTrue(any(
+            'could not be safely rewritten' in m for m in result['messages']
+        ))
+        readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
+        self.assertNotIn('andrew_sielen', readme)
+        self.assertNotIn('Secret Folder', readme)
+
+    def test_files_entry_bare_scalar_block_list_is_left_out_not_skipped(self):
+        """Same as above, the block-list shape (`files:` / `  - /path`, no
+        `- file:` mapping at all) rather than the inline flow shape - the
+        old redaction loop's block-form arm has the identical
+        `isinstance(item, dict) and ...` guard, and the identical silent
+        pass-through for a bare bullet."""
+        self._seed_person()
+        src_path = self._seed_source('s-1111111111', 'Ordinary Title')
+        src_path.write_text(
+            '---\n'
+            'id: s-1111111111\n'
+            'title: Ordinary Title\n'
+            'source_type: letter\n'
+            'files:\n'
+            '  - /Users/andrew_sielen/Secret Folder/private-scan.tif\n'
+            '---\n'
+            '## Claims\n```yaml\n```\n',
+            encoding='utf-8',
+        )
+        self._commit_fresh()
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir, no_photos=True)
+
+        self.assertEqual(result['status'], 'ok')
+        sources_dir = result['packet_dir'] / 'sources'
+        self.assertEqual(list(sources_dir.glob('*.md')) if sources_dir.exists() else [], [])
+        self.assertTrue(any(
+            'could not be safely rewritten' in m for m in result['messages']
+        ))
+        readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
+        self.assertNotIn('andrew_sielen', readme)
+        self.assertNotIn('Secret Folder', readme)
+
+    def test_redact_asset_path_file_uri_directory_reference_without_trailing_slash(self):
+        """Finding 3: `file:///Users/alice` (empty-authority URI, no
+        trailing slash) must redact the same way the bare path
+        `/Users/alice` already does - to `'(unnamed path)'`, since it names
+        a directory (a user's home) with nothing safe to show as a
+        basename. The old `file_uri_match` regex consumed every leading
+        slash greedily (`file://+`), which strips the scheme's own two
+        slashes AND the absolute path's leading slash together for the
+        empty-authority form - turning `/Users/alice` into the path part
+        `Users/alice`, two components instead of three, which
+        `_is_bare_directory_reference`'s directory-root check does not
+        recognize as rooted at all. It fell through to a plain basename
+        extraction and returned the bare username `alice`. The
+        WITH-trailing-slash sibling of this shape already passed before
+        this fix (the trailing-slash check does not need the leading slash
+        to work), which is exactly why this narrower no-trailing-slash
+        case slipped through review until now."""
+        self.assertEqual(
+            packet._redact_asset_path('file:///Users/andrew_sielen'),
+            '(unnamed path)',
+        )
+        self.assertEqual(
+            packet._redact_asset_path('file:///home/andrew_sielen'),
+            '(unnamed path)',
+        )
+        # The two-slash host-relative form, and an ordinary file living
+        # under a URI-spelled home directory, must be unaffected by the
+        # narrower slash-consumption - still redact to a normal basename.
+        self.assertEqual(
+            packet._redact_asset_path('file://myserver/share/private.pdf'),
+            'private.pdf',
+        )
+        self.assertEqual(
+            packet._redact_asset_path('file:///Users/andrew_sielen/secret.pdf'),
+            'secret.pdf',
+        )
+
+    def test_file_uri_directory_reference_redacted_end_to_end(self):
+        """The "build a real packet and grep the real output" proof for
+        finding 3: a `files:` entry spelled as a directory-only `file://`
+        URI must not leak the owner's username into either the copied
+        source record or README.txt."""
+        self._seed_person()
+        src_path = self._seed_source('s-1111111111', 'Ordinary Title')
+        src_path.write_text(
+            '---\n'
+            'id: s-1111111111\n'
+            'title: Ordinary Title\n'
+            'source_type: letter\n'
+            'files:\n'
+            '  - file: file:///Users/andrew_sielen\n'
+            '    role: primary\n'
+            '---\n'
+            '## Claims\n```yaml\n```\n',
+            encoding='utf-8',
+        )
+        self._commit_fresh()
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir, no_photos=True)
+
+        self.assertEqual(result['status'], 'ok')
+        copied = next((result['packet_dir'] / 'sources').glob('*.md')).read_text(encoding='utf-8')
+        self.assertNotIn('andrew_sielen', copied)
+        self.assertIn('file: (unnamed path)', copied)
+        readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
+        self.assertNotIn('andrew_sielen', readme)
+
+    def test_quoted_files_key_frontmatter_still_redacted(self):
+        """Finding 4: a hand edit that spells the frontmatter key
+        `"files":` (quoted) instead of the bare `files:` every scaffolded
+        record actually writes. `yaml.safe_load` resolves both spellings
+        to the identical key `'files'`, so the record parses exactly the
+        same either way - but the old textual key search that locates the
+        `files:` LINE (to know which span of `fm_text` to hand to the YAML
+        reader) only ever matched the bare spelling. A quoted key therefore
+        looked exactly like 'no files: key present at all', which is the
+        legitimate absent-key no-op case, so the whole entry - including
+        its real local path - passed through completely unexamined and
+        unredacted, in both README.txt and the copied record."""
+        self._seed_person()
+        src_path = self._seed_source('s-1111111111', 'Ordinary Title')
+        src_path.write_text(
+            '---\n'
+            'id: s-1111111111\n'
+            'title: Ordinary Title\n'
+            'source_type: letter\n'
+            '"files":\n'
+            '  - file: C:\\Users\\andrew_sielen\\Secret Folder\\private-scan.tif\n'
+            '    role: primary\n'
+            '---\n'
+            '## Claims\n```yaml\n```\n',
+            encoding='utf-8',
+        )
+        self._commit_fresh()
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir, no_photos=True)
+
+        self.assertEqual(result['status'], 'ok')
+        copied = next((result['packet_dir'] / 'sources').glob('*.md')).read_text(encoding='utf-8')
+        self.assertNotIn('andrew_sielen', copied)
+        self.assertNotIn('Secret Folder', copied)
+        self.assertIn('file: private-scan.tif', copied)
+        readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
+        self.assertNotIn('andrew_sielen', readme)
+        self.assertNotIn('Secret Folder', readme)
+
+    def test_quoted_files_key_inline_flow_still_redacted(self):
+        """Same as above, the inline-flow key-line shape
+        (`"files": [{file: ..., role: ...}]`) - the quoted-key search feeds
+        both the block-form and inline-form arms of
+        `_redact_frontmatter_files_field`, so both must recognize it."""
+        self._seed_person()
+        src_path = self._seed_source('s-1111111111', 'Ordinary Title')
+        src_path.write_text(
+            '---\n'
+            'id: s-1111111111\n'
+            'title: Ordinary Title\n'
+            'source_type: letter\n'
+            "'files': [{file: /Users/andrew_sielen/Secret Folder/private-scan.tif, role: primary}]\n"
+            '---\n'
+            '## Claims\n```yaml\n```\n',
+            encoding='utf-8',
+        )
+        self._commit_fresh()
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir, no_photos=True)
+
+        self.assertEqual(result['status'], 'ok')
+        copied = next((result['packet_dir'] / 'sources').glob('*.md')).read_text(encoding='utf-8')
+        self.assertNotIn('andrew_sielen', copied)
+        self.assertNotIn('Secret Folder', copied)
+        readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
+        self.assertNotIn('andrew_sielen', readme)
+        self.assertNotIn('Secret Folder', readme)
 
     def test_pre_75_source_with_no_purpose_block_ships_unchanged(self):
         # No backfill/migration tooling: an older-shaped source record that
