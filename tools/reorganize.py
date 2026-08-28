@@ -121,6 +121,8 @@ CODE MAP
   _move_file                  - move-with-copy+delete-fallback (twin of process.py's)
   _scalar_value / _rewrite_file_line / _file_line_count
                                - value-exact `files:` line surgery (twin of process.py's)
+  _files_shape_error          - is a record's raw files: value the SPEC §13 shape? (mapping /
+                               scalar-list detector, folded into the same fail-closed path)
   _iter_source_records        - yield (path, meta) for every parseable sources/ record;
                                collects unparseable-record names for _plan to fail closed on
   _plan                       - compute the full move plan; nothing written (the survey)
@@ -427,6 +429,41 @@ def _file_line_count(text: str) -> int:
                if ln.strip().startswith(('file:', '- file:')))
 
 
+def _files_shape_error(files_value) -> str | None:
+    """Return a human-readable problem description if `files_value` (a
+    record's raw `files:` frontmatter value) is not the SPEC §13 shape - a
+    list of `{file: ..., ...}` mappings - or None when it is (including
+    when the key is simply absent, meta.get('files') is None).
+
+    Syntactically valid YAML can still be shaped wrong two ways a plain
+    `read_record` parse never catches (Codex review round 5, PR #188 P1):
+    `files:` written as a MAPPING instead of a list, or a list whose
+    members are bare SCALARS instead of `{file: ...}` mappings. Both used
+    to reach the ownership-building loop and have every one of their
+    entries silently skipped one at a time (`if not isinstance(entry,
+    dict): continue`, both in Pass 1's `canonical_owners` build and Pass
+    2's eligibility loop) rather than refusing the record - so a record
+    with this shape never contributed ANY of its own claims to
+    `canonical_owners`, even though the physical file(s) it (in spirit)
+    names are real and may be claimed by a DIFFERENT, well-formed record
+    too. That different record's move then went ahead unrefused, as if
+    there were no conflict at all, leaving the malformed record's own
+    reference pointing at the file's now-stale old path - the exact
+    "torn ownership" hazard `_iter_source_records`'s unparseable-record
+    handling already exists to prevent for outright parse failures.
+    """
+    if files_value is None:
+        return None
+    if not isinstance(files_value, list):
+        return f'files: is a {type(files_value).__name__}, not a list'
+    bad = sum(1 for e in files_value if not isinstance(e, dict))
+    if bad:
+        noun = 'entry' if bad == 1 else 'entries'
+        return (f'files: has {bad} {noun} that are not `file: ...` mappings '
+                '(a bare scalar in the list)')
+    return None
+
+
 def _iter_source_records(archive_root: Path, result: Result, *,
                           unparseable: list[str] | None = None):
     """Yield (record_path, meta) for every parseable record under sources/.
@@ -450,6 +487,13 @@ def _iter_source_records(archive_root: Path, result: Result, *,
     a broken record there is one more finding among many; this tool's job
     is to decide what is SAFE TO MOVE, and an incomplete ownership map can
     never be trusted for that.
+
+    A record that PARSES fine but whose `files:` value is the wrong SHAPE
+    (a mapping, or a list of bare scalars - `_files_shape_error`) is folded
+    into this SAME `unparseable` path (Codex review round 5, PR #188 P1):
+    it is just as invisible to `canonical_owners` as an outright parse
+    failure, so it must fail the whole survey closed the same way, not
+    merely skip its own malformed entries one at a time.
     """
     sources_dir = archive_root / 'sources'
     if not sources_dir.is_dir():
@@ -469,7 +513,13 @@ def _iter_source_records(archive_root: Path, result: Result, *,
                 unparseable.append(
                     f'{rec_path.name} has malformed YAML ({detail}).')
             continue
-        yield rec_path, rec.get('meta') or {}
+        meta = rec.get('meta') or {}
+        shape_error = _files_shape_error(meta.get('files'))
+        if shape_error:
+            if unparseable is not None:
+                unparseable.append(f'{rec_path.name} has a malformed files: entry ({shape_error}).')
+            continue
+        yield rec_path, meta
 
 
 def _display_path(path: Path, archive_root: Path) -> str:
@@ -947,8 +997,14 @@ def _chunk_records(
     A single record's moves are never split across two batches (its own
     atomicity is already per-record; splitting would gain nothing and would
     make the post-batch reconcile check's "this batch's own work" framing
-    ambiguous) - a record with more files than `batch_size` alone simply
-    gets a batch of its own.
+    ambiguous). A record that alone owns MORE files than `batch_size` is
+    no longer handed to this function at all (P2 audit finding, Codex
+    review round 5, PR #188): `run_reorganize` filters it out of
+    `record_order` before calling this, reporting it as skipped rather
+    than letting it silently exceed the advertised bound in a batch of its
+    own. If one somehow still reached here, the loop below would still
+    give it a batch entirely its own rather than crash or split it - cheap
+    belt-and-braces, not the sanctioned way to exceed the bound.
     """
     batches: list[list[Path]] = []
     current: list[Path] = []
@@ -989,6 +1045,34 @@ def _finalize(result: Result) -> Result:
     return result
 
 
+def _reindex_reminder(result: Result, moved_total: int) -> None:
+    """Add the "go run `fha index`" reminder if this run has moved ANY file
+    so far - the one thing every halt branch below must do, not just the
+    normal-completion path (P2 audit finding, Codex review round 5, PR
+    #188).
+
+    `source_files` rows stay keyed to a moved document's OLD alias until
+    `fha index` re-reads the record that now names its new one, so search
+    and site builds answer from a stale path until a human runs it -
+    exactly as true after a HALTED run as after a clean one. Before this
+    fix, only the normal-completion path (the bottom of `run_reorganize`)
+    said so; every halt branch above it (an unrecoverable rollback, a
+    post-batch reconcile crash, a post-batch reconcile error, a post-batch
+    issue-count regression) told the human only to run `fha reconcile` and
+    retry `fha reorganize` - but a retry right after a halt on the FINAL
+    planned batch can legitimately find nothing left to move (everything
+    already moved) and finish "cleanly" without ever reaching the one
+    branch that used to say this. Called with `moved_total == 0` this is a
+    silent no-op - nothing moved, nothing to reindex.
+    """
+    if not moved_total:
+        return
+    result.add('info',
+               f'{moved_total} file(s) already moved this run - run `fha index` so '
+               'search and site builds see their new location(s), even though the rest '
+               'of the plan was not attempted.')
+
+
 def _finish_apply(result: Result, archive_root: Path, fha_config: dict) -> Result:
     """The one finalization every `--apply` return path must go through:
     the promised final `fha lint` pass, then `_finalize`.
@@ -1002,8 +1086,29 @@ def _finish_apply(result: Result, archive_root: Path, fha_config: dict) -> Resul
     human what state the rest of the archive is in (P2 audit finding, PR
     #188) - routing every one of those returns through here closes that gap
     once, rather than in each branch separately.
+
+    The `lint.run_lint` call itself is caught (P2 audit finding, Codex
+    review round 5, PR #188): before this fix, a crash inside `fha lint`
+    (e.g. a record that turned unreadable partway through this very run)
+    escaped straight past `_finish_apply` - and therefore past every caller
+    of it, `run_reorganize` AND `_cmd_reorganize` - as a raw exception. The
+    accumulated `result` this function was about to render (every batch's
+    moved-file count and paths, the halt reason if this was a halt, the
+    specific INCONSISTENT warning after an unrecoverable rollback) was lost
+    with it: the CLI showed only a generic top-level traceback, and a human
+    reading it had no way to tell how much of the run had already
+    succeeded. A crashed final lint pass is folded into the SAME `result`
+    as a warning instead, so everything collected so far still prints.
     """
-    final_lint = lint.run_lint(archive_root, fha_config)
+    try:
+        final_lint = lint.run_lint(archive_root, fha_config)
+    except Exception as e:
+        result.add('warning',
+                   f'fha lint crashed while running its final pass after reorganizing '
+                   f'({e}) - the report above (what moved, and why this run stopped, if '
+                   'it did) is still accurate; only this last health check could not '
+                   'finish. Run `fha lint` yourself to see the archive\'s current state.')
+        return _finalize(result)
     n_err = int((final_lint.data or {}).get('n_errors') or 0)
     n_warn = int((final_lint.data or {}).get('n_warnings') or 0)
     result.add('info',
@@ -1061,6 +1166,21 @@ def run_reorganize(
     was its own atomic, verified transaction (`_apply_one_record`), so the
     archive is self-consistent up to the halt point - halting stops FURTHER
     change, it does not undo correct completed work.
+
+    **`--batch-size` is a real bound, not a suggestion** (P2 audit finding,
+    Codex review round 5, PR #188): a record that alone owns more eligible
+    files than `--batch-size` is skipped this run - reported by name, never
+    silently moved in one oversized batch - rather than exceeding the
+    number of files a human actually asked to be moved between reconcile
+    checks. Raising `--batch-size` (or simply re-running later) includes it.
+
+    **A halt after the moves reminds the human to reindex too** (P2 audit
+    finding, Codex review round 5, PR #188): every halt branch below - not
+    just the normal-completion path - adds the `fha index` reminder the
+    instant `moved_total` is nonzero, because a retry immediately after a
+    halt can legitimately find nothing left to plan (everything already
+    moved) and complete "cleanly" without ever reaching the normal path's
+    own reminder.
     """
     result = Result(data={'status': 'ok', 'planned': 0, 'moved': 0, 'moved_records': 0,
                           'failed': 0, 'no_op': 0, 'excluded_human': 0, 'problems': 0,
@@ -1190,11 +1310,39 @@ def run_reorganize(
                        f'{len(trimmed)} record(s) are planned this run (a record whose '
                        'own files would cross the limit is skipped whole, never split).')
         record_order = trimmed
-        total_moves = sum(len(plan['moves'][rp]) for rp in record_order)
+
+    # Enforce the advertised batch-size bound (P2 audit finding, Codex
+    # review round 5, PR #188): `--batch-size`'s own CLI help text, TOOLING
+    # §9a, and tools/README.md all promise "N files per batch" - but a
+    # single record that OWNS more eligible files than `--batch-size` used
+    # to get a batch entirely its own anyway, silently exceeding the bound
+    # a human actually asked for and delaying the post-batch `fha
+    # reconcile` safety re-check until MORE files than that bound had
+    # already moved. `_chunk_records`'s per-record atomicity (a record's
+    # files always move together, SPEC-consistent with `_apply_one_record`)
+    # means the fix cannot be "split it" - so it is skipped instead, same
+    # "skip the record that does not fit, keep scanning for ones that do"
+    # posture `--limit` already takes just above (a different guard: this
+    # one is a stated numeric promise, not the ownership-map integrity
+    # concern finding 1's fail-closed refusal protects) - reported plainly
+    # so the human can raise --batch-size (or just re-run later) to include
+    # it, rather than the bound being silently violated.
+    batch_oversized = [rp for rp in record_order if len(plan['moves'][rp]) > batch_size]
+    if batch_oversized:
+        for rp in sorted(batch_oversized):
+            n = len(plan['moves'][rp])
+            result.add('info',
+                       f'{rp.name}: this record owns {n} eligible file(s), more than '
+                       f'--batch-size {batch_size} - a record\'s files always move '
+                       'together, so it is skipped this run rather than moved in one '
+                       f'oversized batch. Raise --batch-size to at least {n} (or just '
+                       're-run later) to include it.')
+        record_order = [rp for rp in record_order if rp not in batch_oversized]
+    total_moves = sum(len(plan['moves'][rp]) for rp in record_order)
 
     result.data['planned'] = total_moves
     if not total_moves:
-        if not limit_emptied_a_real_plan:
+        if not limit_emptied_a_real_plan and not batch_oversized:
             result.add('info', 'Nothing to reorganize - every eligible document is already tidy.')
         return _finalize(result)
 
@@ -1288,6 +1436,7 @@ def run_reorganize(
                 result.data.update({'moved': moved_total, 'moved_records': moved_records,
                                     'failed': failed_total, 'halted': True})
                 result.add('error', msg)
+                _reindex_reminder(result, moved_total)
                 return _finish_apply(result, archive_root, fha_config)
             else:
                 failed_total += 1
@@ -1323,6 +1472,7 @@ def run_reorganize(
                        'safe (each record was updated atomically); the rest of the plan '
                        'was not attempted. Run `fha reconcile` yourself to see what is '
                        'happening, fix it, then re-run `fha reorganize`.')
+            _reindex_reminder(result, moved_total)
             return _finish_apply(result, archive_root, fha_config)
         if any(m.level == 'error' for m in check.messages):
             # 'warning' (exit 1), not 'error' (exit 3) - same reasoning as
@@ -1337,6 +1487,7 @@ def run_reorganize(
                        'record was updated atomically); the rest of the plan was not '
                        'attempted. Run `fha reconcile` to see the detail, fix it, then '
                        're-run `fha reorganize`.')
+            _reindex_reminder(result, moved_total)
             return _finish_apply(result, archive_root, fha_config)
         cur_issue_count = _issue_count(check)
         if cur_issue_count > prev_issue_count:
@@ -1348,6 +1499,7 @@ def run_reorganize(
                        f'changes. {moved_total} file(s) moved so far are safe; the rest '
                        'of the plan was not attempted. Run `fha reconcile` for the '
                        'detail, then re-run `fha reorganize` once it is clear.')
+            _reindex_reminder(result, moved_total)
             return _finish_apply(result, archive_root, fha_config)
         prev_issue_count = cur_issue_count
 

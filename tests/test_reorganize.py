@@ -361,6 +361,77 @@ class ReorganizeSurveyTests(unittest.TestCase):
         self.assertEqual(result.exit_code, EXIT_WARNINGS)
         self.assertTrue(asset.exists(), 'the shared file must never have been moved')
 
+    def test_malformed_files_mapping_refuses_the_whole_survey(self) -> None:
+        """Codex review round 5 (PR #188, P1): syntactically valid YAML
+        where `files:` is a MAPPING (not a list) used to reach the
+        ownership-building loop and have every "entry" (really a dict key)
+        silently skipped one at a time by the existing `if not
+        isinstance(entry, dict): continue` guards, rather than refusing
+        the whole record the way an outright-unparseable record already
+        does. This record's own (mis-shaped) ownership claim over
+        `documents/other_{SID_B}.pdf` must still block the whole survey
+        closed - a perfectly clean, unrelated record's move must not be
+        planned either while this record's files: cannot be trusted."""
+        _write_file(self.archive, f'documents/thing_{SID_A}.pdf')
+        _write_record(self.archive, SID_A, 'census', [f'documents/thing_{SID_A}.pdf'])
+        rec_b_dir = self.archive / 'sources' / 'letter'
+        rec_b_dir.mkdir(parents=True, exist_ok=True)
+        rec_b = rec_b_dir / f'other_{SID_B}.md'
+        rec_b.write_text(
+            '---\n'
+            f'id: {SID_B}\n'
+            f'title: Title for {SID_B}\n'
+            'source_type: letter\n'
+            'files:\n'
+            f'  documents/other_{SID_B}.pdf: primary\n'  # a MAPPING, not a list
+            '---\n\n## Claims\n```yaml\n[]\n```\n',
+            encoding='utf-8')
+
+        result = self._run()
+
+        self.assertEqual(result.data['planned'], 0)
+        self.assertEqual(result.exit_code, EXIT_WARNINGS)
+        text = ' '.join(m.text for m in result.messages)
+        self.assertIn(rec_b.name, text)
+        self.assertNotIn(f'documents/thing_{SID_A}.pdf ->', text,
+                          "the clean record's move must not sneak through either")
+
+    def test_malformed_files_scalar_list_blocks_a_different_records_move_of_a_shared_file(
+        self,
+    ) -> None:
+        """The literal hazard the finding names, reproduced with the OTHER
+        malformed shape: a `files:` LIST whose members are bare SCALARS,
+        not `{file: ...}` mappings. Before this fix, each scalar entry was
+        silently skipped one at a time rather than refusing the record, so
+        this record's own ownership claim over the SHARED physical file
+        never entered `canonical_owners` - letting the other, well-formed
+        record's move of that same file go ahead unrefused, and stranding
+        this record's own reference at the file's now-stale old path. Now:
+        fail closed, the shared file is never touched."""
+        shared = f'documents/thing_{SID_A}.pdf'
+        asset = _write_file(self.archive, shared)
+        _write_record(self.archive, SID_A, 'census', [shared], slug='thing')
+        rec_b_dir = self.archive / 'sources' / 'letter'
+        rec_b_dir.mkdir(parents=True, exist_ok=True)
+        rec_b = rec_b_dir / f'thing-dup_{SID_B}.md'
+        rec_b.write_text(
+            '---\n'
+            f'id: {SID_B}\n'
+            f'title: Title for {SID_B}\n'
+            'source_type: letter\n'
+            'files:\n'
+            f'  - {shared}\n'  # a bare scalar, not a {file: ...} mapping
+            '---\n\n## Claims\n```yaml\n[]\n```\n',
+            encoding='utf-8')
+
+        result = self._run()
+
+        self.assertEqual(result.data['planned'], 0)
+        self.assertEqual(result.exit_code, EXIT_WARNINGS)
+        text = ' '.join(m.text for m in result.messages)
+        self.assertIn(rec_b.name, text)
+        self.assertTrue(asset.exists(), 'the shared file must never have been moved')
+
     def test_invalid_source_type_refuses_the_whole_record(self) -> None:
         """P1 audit finding (PR #188): a hand-edited record's source_type
         must be validated against `_lib.SOURCE_TYPES` before it is trusted
@@ -623,6 +694,39 @@ class ReorganizeApplyTests(unittest.TestCase):
         self.assertTrue(asset.exists())
         self.assertIn('dry-run', out)
 
+    def test_oversized_record_is_skipped_never_exceeding_the_batch_size_bound(self) -> None:
+        """P2 audit finding (Codex review round 5, PR #188): a single
+        source record that owns MORE eligible files than --batch-size used
+        to be put into one batch anyway - silently exceeding the bound
+        --batch-size's own CLI help text and TOOLING §9a both promise
+        ("files per batch"), and delaying the post-batch fha reconcile
+        safety re-check until more files than the requested bound had
+        already moved. A record's files always move together (never split
+        across batches - `_chunk_records`'s own per-record atomicity), so
+        the fix is to skip the oversized record entirely rather than
+        exceed the bound: this 4-file record must not move at all under
+        --batch-size 2, while a separate, smaller record that fits still
+        does."""
+        aliases = [f'documents/thing-{c}_{SID_A}.pdf' for c in ('a', 'b', 'c', 'd')]
+        for a in aliases:
+            _write_file(self.archive, a)
+        _write_record(self.archive, SID_A, 'census', aliases, slug='thing',
+                       copies=['a', 'b', 'c', 'd'])
+        _write_file(self.archive, f'documents/other_{SID_B}.pdf')
+        _write_record(self.archive, SID_B, 'letter', [f'documents/other_{SID_B}.pdf'], slug='other')
+
+        result = self._run(batch_size=2)
+
+        self.assertEqual(result.data['moved'], 1, 'only the small, non-oversized record moves')
+        for a in aliases:
+            self.assertTrue((self.archive / a).exists(),
+                             f'{a} must not have moved - its record exceeds --batch-size')
+        type_dir = reorganize._record_subdir('letter')
+        new_small = self.archive / 'documents' / type_dir / f'other_{SID_B}.pdf'
+        self.assertTrue(new_small.exists())
+        text = ' '.join(m.text for m in result.messages)
+        self.assertIn('--batch-size 2', text)
+
     def _cli(self, argv: list[str]) -> tuple[int, str, str]:
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
@@ -776,6 +880,114 @@ class ReorganizeApplyTests(unittest.TestCase):
         self.assertIn('could not run cleanly after batch', text)
         self.assertIn('fha lint after reorganizing', text,
                        'the promised final lint pass must still run after a halt')
+
+    def test_halt_after_moving_files_reminds_to_reindex(self) -> None:
+        """P2 audit finding (Codex review round 5, PR #188): if the FINAL
+        planned batch moves successfully but the post-batch `fha
+        reconcile` re-check then errors (or crashes), the halt path used
+        to tell the human only to run `fha reconcile` and retry `fha
+        reorganize` - but retrying right after everything already moved
+        legitimately finds NOTHING left to plan, so it can complete
+        "successfully" without ever reaching the normal-completion path's
+        own `fha index` reminder. `source_files` rows stay keyed to the
+        moved documents' OLD aliases until a human independently guesses
+        to run `fha index`. Every halt with moved_total > 0 must carry the
+        same reminder the normal-completion path already gives."""
+        _write_file(self.archive, f'documents/thing-a_{SID_A}.pdf')
+        _write_record(self.archive, SID_A, 'census', [f'documents/thing-a_{SID_A}.pdf'], slug='thing-a')
+        a2 = _write_file(self.archive, f'documents/thing-b_{SID_B}.pdf')
+        _write_record(self.archive, SID_B, 'letter', [f'documents/thing-b_{SID_B}.pdf'], slug='thing-b')
+
+        clean = Result(data={})
+        calls = {'n': 0}
+
+        def crashing_reconcile(archive_root, fha_config, **kw):
+            calls['n'] += 1
+            if calls['n'] == 1:
+                return clean
+            raise RuntimeError('simulated sqlite error reading the photo catalog')
+        reconcile.run_reconcile = crashing_reconcile
+
+        result = self._run(batch_size=1)
+
+        self.assertTrue(result.data['halted'])
+        self.assertEqual(result.data['moved'], 1)
+        self.assertTrue(a2.exists(), 'batch 2 must never have been attempted')
+        text = ' '.join(m.text for m in result.messages)
+        self.assertIn('fha index', text,
+                       'a halt with files already moved must still remind the human to reindex')
+
+    def test_reindex_reminder_shown_after_unrecoverable_rollback_halt_with_prior_moves(
+        self,
+    ) -> None:
+        """The SAME reminder (Codex review round 5, PR #188) must also
+        reach the unrecoverable-rollback halt - a different code path,
+        still inside one batch - when an EARLIER record in that batch
+        already moved cleanly before a LATER record's rollback fails.
+        Record order sorts SID_D's single-file record before SID_A's
+        two-file record, so SID_D's file has already moved (and counts
+        toward moved_total) by the time SID_A's second move fails and its
+        own rollback also fails, halting the whole run."""
+        c1 = _write_file(self.archive, f'documents/aaa-lead_{SID_D}.pdf')
+        _write_record(self.archive, SID_D, 'census', [f'documents/aaa-lead_{SID_D}.pdf'],
+                       slug='aaa-lead')
+        a1 = _write_file(self.archive, f'documents/thing-a_{SID_A}.pdf', b'aaa')
+        a2 = _write_file(self.archive, f'documents/thing-a-b_{SID_A}.pdf', b'bbb')
+        _write_record(
+            self.archive, SID_A, 'census',
+            [f'documents/thing-a_{SID_A}.pdf', f'documents/thing-a-b_{SID_A}.pdf'],
+            slug='thing-a', copies=[None, 'b'])
+
+        real_move = reorganize._move_file
+        calls = {'n': 0}
+
+        def flaky_move(src, dest):
+            calls['n'] += 1
+            if calls['n'] == 3:
+                raise OSError('simulated failure moving the second file')
+            if calls['n'] == 4:
+                raise OSError('simulated failure UNDOING the first move too')
+            return real_move(src, dest)
+
+        reorganize._move_file = flaky_move
+
+        result = self._run()
+
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertTrue(result.data['halted'])
+        self.assertEqual(result.data['moved'], 1, "SID_D's own file moved cleanly before the halt")
+        self.assertFalse(c1.exists())
+        new_c1 = self.archive / 'documents' / 'census' / f'aaa-lead_{SID_D}.pdf'
+        self.assertTrue(new_c1.exists())
+        text = ' '.join(m.text for m in result.messages)
+        self.assertIn('fha index', text,
+                       'moved_total is nonzero at this halt too - the reminder must still show')
+
+    def test_final_lint_crash_preserves_the_apply_report(self) -> None:
+        """P2 audit finding (Codex review round 5, PR #188): `_finish_apply`'s
+        own promised final `fha lint` pass used to call `lint.run_lint`
+        uncaught - if lint itself crashed (e.g. reading a record that
+        turned unreadable partway through this very run) AFTER a batch had
+        already moved real files, the exception escaped `_finish_apply`
+        (and therefore `run_reorganize` and `_cmd_reorganize`) entirely, so
+        the CLI showed only a generic top-level traceback and the
+        accumulated moved-file report this run had already collected was
+        lost. The crash must be caught and folded into the SAME
+        accumulated Result instead."""
+        _write_file(self.archive, f'documents/thing-a_{SID_A}.pdf')
+        _write_record(self.archive, SID_A, 'census', [f'documents/thing-a_{SID_A}.pdf'], slug='thing-a')
+
+        def crashing_lint(archive_root, fha_config, **kw):
+            raise RuntimeError('simulated crash linting an unreadable record')
+
+        with unittest.mock.patch.object(reorganize.lint, 'run_lint', crashing_lint):
+            result = self._run()
+
+        self.assertEqual(result.data['moved'], 1)
+        text = ' '.join(m.text for m in result.messages)
+        self.assertIn('crashed', text)
+        self.assertIn(f'documents/thing-a_{SID_A}.pdf', text,
+                       "the accumulated apply report (what moved) must survive a lint crash")
 
     def test_reconcile_baseline_crash_refuses_to_start(self) -> None:
         """Symmetric with the post-batch case above: a baseline `fha
