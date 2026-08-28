@@ -2074,6 +2074,160 @@ class ProcessTestCase(unittest.TestCase):
         self.assertEqual(reparsed['restricted'], 'dna')
         self.assertEqual(reparsed['note'], 'dna')
 
+    # ── Issue #169 followup review round 2 (post-merge Codex pass, #175) ──
+    # Fresh evidence beyond every round-1 finding above: an EXPLICIT
+    # indentation indicator on the block-scalar header (`restricted: |2`)
+    # DECLARES the content's indentation outright, rather than leaving it to
+    # be inferred from the first continuation line. A valid hand-authored
+    # scalar can have its first content line indented DEEPER than the
+    # declared value, with a LATER line sitting exactly at the declared
+    # indent - both legitimately belong to the scalar under real YAML rules,
+    # but deriving content_indent from the first line's own (deeper)
+    # indentation instead made the shallower second line look outdented and
+    # wrongly ended the span early, leaving part of the old value behind
+    # after the rewrite - the safety re-parse then read a corrupted value
+    # like "dna true" and wrongly refused the DNA attachment on valid
+    # hand-authored frontmatter.
+
+    def test_force_dna_restriction_text_honors_explicit_indentation_indicator(self) -> None:
+        block_scalar = (
+            '---\nid: s-1234567890\ntitle: A Letter\n'
+            'restricted: |2\n    deeper first line\n  true\nnote: kept\n---\n## Claims\n'
+        )
+        # Confirm the premise: the explicit `2` makes BOTH lines - the
+        # deeper-indented first line and the exactly-2-space second line -
+        # legitimately part of the scalar's content under real YAML rules,
+        # even though the second line is LESS indented than the first.
+        before = process.parse_frontmatter_strict(block_scalar)
+        self.assertIsNotNone(before)
+        self.assertEqual(before['restricted'], '  deeper first line\ntrue\n')
+
+        new_text, changed = process._force_dna_restriction_text(block_scalar)
+        self.assertTrue(changed)
+        reparsed = process.parse_frontmatter_strict(new_text)
+        self.assertIsNotNone(reparsed)
+        self.assertEqual(reparsed['restricted'], 'dna')
+        self.assertEqual(reparsed['note'], 'kept')
+        lines = new_text.split('\n')
+        self.assertEqual(
+            [ln for ln in lines if ln.strip() == 'restricted: dna'],
+            ['restricted: dna'])
+        # Neither continuation line survives - the whole declared-indent span
+        # was replaced as one unit, not just the header or the first line.
+        self.assertNotIn('deeper first line', new_text)
+        self.assertNotIn('  true', lines)
+
+    def test_force_dna_restriction_text_honors_explicit_indent_with_chomp(self) -> None:
+        # The explicit indicator can share the header with a chomping
+        # indicator, in either order (`|2-` / `|-2`) - confirm the digit is
+        # still read correctly when it is not alone.
+        block_scalar = (
+            '---\nid: s-1234567890\ntitle: A Letter\n'
+            'restricted: |-2\n    deeper first line\n  true\nnote: kept\n---\n## Claims\n'
+        )
+        before = process.parse_frontmatter_strict(block_scalar)
+        self.assertIsNotNone(before)
+        self.assertEqual(before['restricted'], '  deeper first line\ntrue')  # strip chomping
+
+        new_text, changed = process._force_dna_restriction_text(block_scalar)
+        self.assertTrue(changed)
+        reparsed = process.parse_frontmatter_strict(new_text)
+        self.assertIsNotNone(reparsed)
+        self.assertEqual(reparsed['restricted'], 'dna')
+        self.assertEqual(reparsed['note'], 'kept')
+        self.assertNotIn('deeper first line', new_text)
+
+    # A quoted scalar (single- or double-quoted) can also wrap across
+    # multiple physical lines - `restricted: "dead` on one line, an indented
+    # `name"` closing it on the next, is valid hand-authored YAML. Neither
+    # quote style was recognized as continuing before this fix, so the span
+    # stopped at the header line and the rewrite left the dangling quote
+    # continuation behind - the safety re-parse then refused the DNA
+    # attachment even though the original frontmatter was perfectly valid.
+
+    def test_force_dna_restriction_text_replaces_multiline_double_quoted_span(self) -> None:
+        block_scalar = (
+            '---\nid: s-1234567890\ntitle: A Letter\n'
+            'restricted: "dead\n  name"\nnote: kept\n---\n## Claims\n'
+        )
+        before = process.parse_frontmatter_strict(block_scalar)
+        self.assertIsNotNone(before)
+        self.assertEqual(before['restricted'], 'dead name')  # YAML folds the line break
+
+        new_text, changed = process._force_dna_restriction_text(block_scalar)
+        self.assertTrue(changed)
+        reparsed = process.parse_frontmatter_strict(new_text)
+        self.assertIsNotNone(reparsed)
+        self.assertEqual(reparsed['restricted'], 'dna')
+        self.assertEqual(reparsed['note'], 'kept')
+        lines = new_text.split('\n')
+        self.assertEqual(
+            [ln for ln in lines if ln.strip() == 'restricted: dna'],
+            ['restricted: dna'])
+        # No dangling continuation line - the whole quoted span was replaced.
+        self.assertNotIn('dead', new_text)
+        self.assertNotIn('name"', new_text)
+
+    def test_force_dna_restriction_text_replaces_multiline_single_quoted_span(self) -> None:
+        block_scalar = (
+            '---\nid: s-1234567890\ntitle: A Letter\n'
+            "restricted: 'dead\n  name'\nnote: kept\n---\n## Claims\n"
+        )
+        before = process.parse_frontmatter_strict(block_scalar)
+        self.assertIsNotNone(before)
+        self.assertEqual(before['restricted'], 'dead name')
+
+        new_text, changed = process._force_dna_restriction_text(block_scalar)
+        self.assertTrue(changed)
+        reparsed = process.parse_frontmatter_strict(new_text)
+        self.assertIsNotNone(reparsed)
+        self.assertEqual(reparsed['restricted'], 'dna')
+        self.assertEqual(reparsed['note'], 'kept')
+        self.assertNotIn('dead', new_text)
+        self.assertNotIn("name'", new_text)
+
+    def test_force_dna_restriction_text_single_line_quoted_value_unaffected(self) -> None:
+        # A quoted value that CLOSES on the same physical line must still
+        # take the plain single-line path - confirms the new multiline-quote
+        # handling does not over-match and swallow a following, unrelated
+        # line that happens to be indented (e.g. a sibling field).
+        block_scalar = (
+            '---\nid: s-1234567890\ntitle: A Letter\n'
+            'restricted: "deadname"\nnote: kept\n---\n## Claims\n'
+        )
+        before = process.parse_frontmatter_strict(block_scalar)
+        self.assertEqual(before['restricted'], 'deadname')
+
+        new_text, changed = process._force_dna_restriction_text(block_scalar)
+        self.assertTrue(changed)
+        reparsed = process.parse_frontmatter_strict(new_text)
+        self.assertEqual(reparsed['restricted'], 'dna')
+        self.assertEqual(reparsed['note'], 'kept')
+
+    def test_force_dna_restriction_text_double_quoted_escaped_quote_not_mistaken_for_close(
+            self) -> None:
+        # A backslash-escaped quote inside a double-quoted scalar (`\"`) does
+        # NOT close it - if the span detection mistook it for the real
+        # closing quote, it would stop one character early and the rewrite
+        # would leave the true remainder of the value (and its real closing
+        # quote, on the next line) behind.
+        block_scalar = (
+            '---\nid: s-1234567890\ntitle: A Letter\n'
+            'restricted: "dead \\"nick\\"\n  name"\nnote: kept\n---\n## Claims\n'
+        )
+        before = process.parse_frontmatter_strict(block_scalar)
+        self.assertIsNotNone(before)
+        self.assertEqual(before['restricted'], 'dead "nick" name')
+
+        new_text, changed = process._force_dna_restriction_text(block_scalar)
+        self.assertTrue(changed)
+        reparsed = process.parse_frontmatter_strict(new_text)
+        self.assertIsNotNone(reparsed)
+        self.assertEqual(reparsed['restricted'], 'dna')
+        self.assertEqual(reparsed['note'], 'kept')
+        self.assertNotIn('nick', new_text)
+        self.assertNotIn('name"', new_text)
+
     def test_more_type_dna_forces_restriction_on_unrestricted_source(self) -> None:
         # The P1 scenario itself: attach a DNA file, via --more --type dna,
         # to an EXISTING source that started out unrestricted.
