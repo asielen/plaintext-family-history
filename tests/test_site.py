@@ -5362,6 +5362,19 @@ class WorkbenchModeTests(_Base):
         self.assertNotIn('<option>certificate</option>', wb)
         self.assertIn('<option>vital-record</option>', wb)
 
+    def test_ephemera_source_type_option_offered(self):
+        # #114 follow-up (Codex review, PR #178): `ephemera` joined the
+        # SOURCE_TYPES controlled vocabulary but the two "file it as a
+        # source" modals (single file and bundle) still offered only the
+        # older, fixed option list - a genealogist filing from the browser
+        # workbench had no way to pick it. Both selects must offer it now.
+        self._seed_person('p-aaaaaaaaaa', name='Test Person', living='false', tier='curated')
+        self._run_wb()
+        wb = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertEqual(wb.count('<option>ephemera</option>'), 2,
+                          'both the single-file and bundle "file as a source" '
+                          'modals must offer ephemera')
+
     def test_living_modal_prefills_current_value_not_a_hardcoded_default(self):
         # P2 codex finding (round 3, PR #30): the Change-living modal always
         # defaulted its radio group to "deceased" regardless of the actual
@@ -5776,13 +5789,34 @@ class VitalSubjectScopingTests(_Base):
         self.assertIn('<dt>Born</dt>', self._read(f'persons/{self.SON}.html'))
         self.assertNotIn('<dt>Born</dt>', self._read(f'persons/{self.MOM}.html'))
 
-    def test_a_legacy_claim_with_no_roles_map_keeps_its_old_behaviour(self):
-        # Back-compatibility: a claim written before `roles:` was expected has
-        # not answered the question, so nothing is withheld. Emptying those
-        # archives' summary boxes would be a worse bug than the one being fixed.
+    def test_a_legacy_claim_naming_two_people_with_no_roles_gets_neither_a_born_row(
+            self) -> None:
+        # Two people, no roles: map at all - the claim has not said which of
+        # them was born. Showing it as BOTH of their own births is exactly
+        # this class's own bug (a mother's `Born: 1888` copied off her son's
+        # birth certificate), reached through the unroled case instead of the
+        # miscast one: the old back-compatibility bargain used to guess
+        # "everyone" for a claim with zero role signal at all, which is #126
+        # restated rather than fixed (#126, reopened - this exact shape is
+        # what let the Died/Buried fields keep showing a relative's record
+        # after the roled cases were already scoped correctly). A missing
+        # Born row is recoverable by adding roles:; a false one is not.
         self._seed_birth_certificate(None)
         self._run(linked=True)
-        self.assertIn('<dt>Born</dt>', self._read(f'persons/{self.MOM}.html'))
+        self.assertNotIn('<dt>Born</dt>', self._read(f'persons/{self.MOM}.html'))
+        self.assertNotIn('<dt>Born</dt>', self._read(f'persons/{self.SON}.html'))
+
+    def test_a_legacy_claim_naming_only_the_child_keeps_its_old_behaviour(self) -> None:
+        # One person named, no roles: map - nobody to be ambiguous about, so
+        # the pre-#126 "the claim never said, so nothing is withheld"
+        # back-compatibility bargain is still exactly right here.
+        self._seed_person(self.SON, 'Peter Marr')
+        self._seed_source('s-1111111111', 'Birth certificate',
+                          source_type='vital-record')
+        self._seed_claim('c-1111111111', 's-1111111111', 'birth',
+                         'Born at Riverton', status='accepted', date_edtf='1888',
+                         place_text='Riverton', persons=(self.SON,), roles=None)
+        self._run(linked=True)
         self.assertIn('<dt>Born</dt>', self._read(f'persons/{self.SON}.html'))
 
     def test_chart_node_shows_only_the_subjects_own_life_dates(self):

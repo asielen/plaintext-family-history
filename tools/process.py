@@ -296,12 +296,112 @@ def _derive_slug(slug: str | None, title: str | None, file_path: Path) -> str:
 # ── Asset classification ──────────────────────────────────────────────────────
 
 def _is_under(path: Path, root: Path) -> bool:
-    """True if `path` is inside `root` (both resolved); False on unrelated trees."""
+    """True if `path` is inside `root` (both resolved); False on unrelated trees.
+
+    Also False - rather than a raised `RuntimeError` - when either side's
+    `.resolve()` hits a symlink loop (issue #170 finding 2, round-3 audit):
+    `Path.resolve()` raises `RuntimeError` for that case, distinct from the
+    `ValueError`/`OSError` an ordinary unresolvable path raises, and every one
+    of this function's ~11 call sites already treats a plain False as "not
+    verifiably contained" and produces its own clean refusal (or a silent
+    skip) - none needs to tell a symlink loop apart from an everyday
+    containment failure. Folding RuntimeError in here, once, turns what used
+    to be a raw traceback out of `process_refile`'s containment guard (added
+    in PR #163's own P1 fix, which only caught ValueError/OSError) into that
+    same clean refusal at every call site, live and `--dry-run` alike -
+    instead of hand-wrapping each call individually.
+    """
     try:
         path.resolve().relative_to(root.resolve())
         return True
+    except (ValueError, OSError, RuntimeError):
+        return False
+
+
+def _resolve_hits_symlink_loop(path: Path) -> bool:
+    """True if resolving `path` alone hits a symlink loop specifically.
+
+    `_is_under`'s widened except tuple folds a symlink loop into the same
+    `False` as an everyday containment miss for all ~11 of its callers
+    uniformly - right for most of them, since a plain refusal is enough
+    (Codex review, round-5 audit). `process_refile`'s own containment
+    refusal was the first exception: its message already NAMES a symlink
+    loop as a possible cause alongside a `..` segment or doubled slash, but
+    then gives one universal remedy - "fix the files: entry by hand" - that
+    is actively wrong when the entry is correct and an on-disk symlink is
+    what actually needs repairing. This is the targeted re-check that call
+    site uses to tell the two apart and give the right remedy for each, the
+    same way `packet.py`'s `_resolve_source_files` already does for its own
+    identical containment check.
+
+    `_is_under_strict`/`_require_contained` below reuse this same primitive
+    to extend that same distinction to every OTHER user-facing containment
+    check in this file (issue #170 finding 2, extended - Codex review
+    round-8 audit): `classify_asset`, `process_document`, `process_photo`,
+    `process_photo_group`, and `attach_more` all had the identical gap -
+    a symlink loop on a configured root silently became a generic "not
+    under the root; file it there" refusal, which cannot be acted on when
+    the file may already be exactly where it belongs and the real problem
+    is a corrupted symlink."""
+    try:
+        path.resolve()
+        return False
+    except RuntimeError:
+        return True
     except (ValueError, OSError):
         return False
+
+
+def _containment_loop_error(offending: Path, root_label: str) -> ProcessError:
+    """The message for a containment check that could not be verified
+    because resolving the candidate path or the root itself hit a symlink
+    loop - naming the loop as the thing to fix, not a genuine "elsewhere"
+    answer (issue #170 finding 2, extended - Codex review round-8 audit).
+    Shared by `_is_under_strict` (and, through it, `_require_contained`) so
+    every call site below phrases this the same way `process_refile`'s own
+    hand-written version of the same distinction already does."""
+    return ProcessError(
+        f'{offending.name} could not be checked against the configured '
+        f'{root_label} - this looks like a symlink loop, not a misfiled '
+        'asset. Find and fix (or remove) the broken symlink, then retry.'
+    )
+
+
+def _is_under_strict(path: Path, root: Path, *, root_label: str) -> bool:
+    """Like `_is_under`, but raises `ProcessError` instead of returning
+    `False` when a symlink loop - not genuine non-containment - is what
+    stopped resolution (issue #170 finding 2, extended - Codex review
+    round-8 audit).
+
+    `classify_asset` calls this directly: a plain `_is_under` False there
+    is not just "not verifiably contained", it feeds a fallback decision
+    (stated `source_type`, then file extension) that can misfile a document
+    into the photo library, or vice versa, permanently - silently treating
+    "could not verify because of a broken symlink" the same as "genuinely
+    elsewhere" is not safe there the way it is for `_is_under`'s other,
+    purely refuse-or-continue callers.
+    """
+    if _is_under(path, root):
+        return True
+    if _resolve_hits_symlink_loop(path) or _resolve_hits_symlink_loop(root):
+        raise _containment_loop_error(path, root_label)
+    return False
+
+
+def _require_contained(path: Path, root: Path, *, root_label: str, message: str) -> None:
+    """Raise `ProcessError` unless `path` is verifiably under `root`.
+
+    `message` is the caller's own genuine "not under root" wording - each
+    call site phrases the remedy a little differently ('before processing',
+    'before attaching it', 'file the whole set there', ...) - this only
+    decides WHICH message is right: a symlink loop on either side raises
+    `_containment_loop_error` instead (via `_is_under_strict`), since that
+    is a different, unrelated failure with a different fix (issue #170
+    finding 2, extended - Codex review round-8 audit).
+    """
+    if _is_under_strict(path, root, root_label=root_label):
+        return
+    raise ProcessError(message)
 
 
 def classify_asset(file_path: Path, fha_config: dict, archive_root: Path,
@@ -341,12 +441,19 @@ def classify_asset(file_path: Path, fha_config: dict, archive_root: Path,
 
     **Then the file itself:** a known photo extension is a photo, everything
     else a document.
+
+    A symlink loop on either configured root is not treated as "genuinely
+    not under this root" - `_is_under_strict` raises instead of falling
+    through, because a silent guess here (stated `source_type`, then
+    extension) could misfile a document into the photo library, or a photo
+    into documents, with no way back short of `fha process refile` (issue
+    #170 finding 2, extended - Codex review round-8 audit).
     """
     documents_root = resolve_path('documents', fha_config, archive_root)
-    if _is_under(file_path, documents_root):
+    if _is_under_strict(file_path, documents_root, root_label='documents root'):
         return 'document'
     photos_root = resolve_path(_PHOTO_DIR, fha_config, archive_root)
-    if _is_under(file_path, photos_root):
+    if _is_under_strict(file_path, photos_root, root_label='photos root'):
         return 'photo'
     stated = str(source_type).strip().lower() if source_type else ''
     if stated and stated != _PHOTO_SOURCE_TYPE:
@@ -1540,12 +1647,14 @@ def process_document(
         )
 
     documents_root = resolve_path('documents', fha_config, archive_root)
-    if not _is_under(file_path, documents_root):
-        raise ProcessError(
+    _require_contained(
+        file_path, documents_root, root_label='documents root',
+        message=(
             f'{file_path.name} is not under the configured documents root '
             f'({_rel(documents_root, archive_root)}); file it there before processing - '
             'a record outside the asset roots cannot be expressed as a portable alias path.'
-        )
+        ),
+    )
 
     final_title = title or _slugify(file_path.stem).replace('-', ' ')
     sidecar = _find_sidecar(real_path if real_path is not None else file_path)
@@ -1580,11 +1689,13 @@ def process_document(
     # source the linter would immediately flag.
     if source_type == 'dna':
         dna_root = documents_root / 'dna'
-        if not _is_under(file_path, dna_root):
-            raise ProcessError(
+        _require_contained(
+            file_path, dna_root, root_label='documents/dna root',
+            message=(
                 f'{file_path.name} is source_type dna but is not under '
                 f'{_rel(dna_root, archive_root)}; file DNA originals there before processing.'
-            )
+            ),
+        )
 
     sid = _mint_one_source_id(archive_root, source_id=source_id)
     if report is not None:
@@ -1886,12 +1997,14 @@ def process_photo(
     report-back pair - see its docstring.
     """
     photos_root = resolve_path(_PHOTO_DIR, fha_config, archive_root)
-    if not _is_under(file_path, photos_root):
-        raise ProcessError(
+    _require_contained(
+        file_path, photos_root, root_label='photos root',
+        message=(
             f'{file_path.name} is not under the configured photos root '
             f'({_rel(photos_root, archive_root)}); file it there before processing - '
             'a record outside the asset roots cannot be expressed as a portable alias path.'
-        )
+        ),
+    )
     on_disk = real_path if real_path is not None else file_path
 
     # Read all keywords at once: one exiftool call detects a pre-existing SOURCE:
@@ -2094,11 +2207,13 @@ def process_photo_group(
     real_paths = real_paths or {}
     photos_root = resolve_path(_PHOTO_DIR, fha_config, archive_root)
     for m in members:
-        if not _is_under(m, photos_root):
-            raise ProcessError(
+        _require_contained(
+            m, photos_root, root_label='photos root',
+            message=(
                 f'{m.name} is not under the configured photos root '
                 f'({_rel(photos_root, archive_root)}); file the whole set there before processing.'
-            )
+            ),
+        )
 
     # Refuse the set if any member is already processed, and collect per-member
     # existing P-id keywords so rollback only removes the ones this run added.
@@ -2722,7 +2837,138 @@ def _restricted_type_of(value) -> str | None:
     return str(value).strip().lower() or 'plain'
 
 
-def _force_dna_restriction_text(record_text: str) -> tuple[str, bool]:
+
+# YAML permits the block scalar's chomping indicator (`+`/`-`) and its
+# explicit indentation indicator (a digit 1-9) in EITHER order - `|2-` and
+# `|-2` are the same header. `[+-]?\d*` alone only accepted chomp-then-digit
+# (adversarial review, round-2 audit: `|2-` failed to match, so
+# `_frontmatter_key_span` fell back to header-only replacement for that
+# order - the original bug, for that narrower shape; caught in practice by
+# `_force_dna_restriction_text`'s own re-parse safety net rather than by
+# this regex, which is the point of tightening it here rather than relying
+# on that net to keep catching it by accident). `(?:[+-]?\d?|\d[+-]?)`
+# accepts both orders, each indicator at most once.
+#
+# YAML also lets a "node property" - an anchor (`&name`) and/or a type tag
+# (`!!str`, a bare `!`, or a custom `!tag`) - precede the block indicator on
+# the same line, in EITHER order (the YAML grammar allows both
+# tag-then-anchor and anchor-then-tag): `restricted: &privacy >-` or
+# `restricted: !!str |` are both valid hand-authored YAML (issue #169
+# followup, finding 2 - a Codex P2 against this branch's own round-1 fix).
+# Without recognizing these, `_frontmatter_key_span` never even detects a
+# block scalar is opening, falls back to header-only replacement, and the
+# re-parse safety net below correctly refuses rather than corrupt - but that
+# means a VALID restricted: shape gets a false "cannot safely rewrite"
+# refusal instead of a clean upgrade. `(?:&\S+|!\S*)` matches either
+# property form; up to two tokens (one of each kind, in either order) are
+# accepted before the indicator. This is deliberately permissive rather than
+# a full YAML grammar - anything it does not confidently recognize still
+# falls through to the existing safe single-line treatment, and the
+# re-parse safety net below still refuses rather than corrupts if this ever
+# over-matches.
+_NODE_PROPERTY = r'(?:&\S+|!\S*)'
+_BLOCK_SCALAR_HEADER_RE = re.compile(
+    r'^(?:' + _NODE_PROPERTY + r'\s+){0,2}[|>](?:[+-]?\d?|\d[+-]?)(\s*#.*)?$'
+)
+_NODE_PROPERTY_TOKEN_RE = re.compile(r'^' + _NODE_PROPERTY + r'$')
+
+
+def _leading_yaml_anchor(value_body: str) -> str | None:
+    """Return the anchor name (without its leading `&`) if `value_body` -
+    the text of a `key:` line after the colon - opens with a YAML anchor
+    node property, else None.
+
+    A human can put an anchor on ANY value, not just a block scalar's own
+    header (`restricted: &privacy >-`, but just as validly a one-line
+    `restricted: &privacy true`) - up to two node properties (an anchor
+    and/or a type tag), in either order, may precede the actual scalar per
+    the YAML grammar `_BLOCK_SCALAR_HEADER_RE` already leans on. Scanning
+    stops at the first token that is not itself a node property, so a plain
+    value's own text is never mistaken for one - `_leading_yaml_anchor('true')`
+    is None, and `_leading_yaml_anchor('&privacy true')` is `'privacy'`.
+
+    A caller that REPLACES the whole value outright (issue #169 followup
+    review, finding 1) needs this to keep any alias ELSEWHERE in the same
+    document valid: `note: *privacy` resolves to whatever `&privacy` points
+    at, so dropping the anchor along with the old value leaves that alias
+    referencing nothing - not a corruption THIS value caused, but one this
+    value's replacement would inflict on a different field entirely. Only
+    the anchor is returned - a type tag has no alias pointing at it, so
+    there is nothing about it that a value replacement needs to preserve.
+    """
+    anchor = None
+    for tok in value_body.split():
+        if not _NODE_PROPERTY_TOKEN_RE.match(tok):
+            break
+        if tok.startswith('&'):
+            anchor = tok[1:]
+    return anchor
+
+
+def _frontmatter_key_span(lines: list[str], start: int, end: int, key: str) -> tuple[int, int] | None:
+    """Return the (first, last) line indexes - inclusive, within [start, end) -
+    of a top-level frontmatter key's FULL value, or None if `key:` is absent.
+
+    Most frontmatter scalars live on one line, but YAML also lets a value
+    open a block scalar (`key: >-` / `|` / `|-` / `|+`, or a bare trailing
+    colon that opens a nested block) whose real text continues on the
+    following more-indented - or blank - lines. A caller that touches only
+    the header line and drops the continuation produces frontmatter that
+    still STARTS with a valid-looking `key: value` line but is malformed YAML
+    underneath (issue #169, finding 1) - exactly the failure this span-aware
+    lookup exists to avoid, by handing the caller the whole span to replace
+    as one unit. `source_type:` never takes this shape (SOURCE_TYPES is a
+    closed set of single tokens a human cannot author as a block scalar), so
+    `_rewrite_source_type_line` has no matching gap and does not need this
+    helper; `restricted:` does, since a human can hand-author any YAML scalar
+    there, block form included.
+
+    A block scalar's content sits at ONE fixed indentation level - established
+    by its own first non-blank continuation line, not by the parent `key:`'s
+    column - and only lines indented at least that far (or genuinely blank)
+    belong to it. A line indented less than that, but still indented more
+    than column 0, sits OUTSIDE the scalar: valid YAML, most often a comment
+    a human placed there at a shallower indent than the value itself (issue
+    #169 followup review, finding 5). The old loop below swallowed every
+    whitespace-prefixed line into the span regardless of how little it was
+    indented, so replacing the span silently deleted that comment even though
+    it was never part of the value - and the belt-and-suspenders re-parse in
+    `_force_dna_restriction_text` could not catch the loss, since the
+    resulting YAML (comment gone, everything else intact) is perfectly valid.
+    Tracking the established content indentation and stopping the moment a
+    non-blank line falls short of it keeps that comment (and anything else
+    genuinely outside the scalar) out of the deleted span.
+    """
+    for i in range(start, end):
+        raw = lines[i].rstrip('\r')
+        if not raw.startswith(key + ':'):
+            continue
+        body = raw[len(key) + 1:].strip()
+        last = i
+        if body == '' or _BLOCK_SCALAR_HEADER_RE.match(body):
+            content_indent = None
+            j = i + 1
+            while j < end:
+                nxt = lines[j].rstrip('\r')
+                if nxt.strip() == '':
+                    j += 1
+                    continue
+                if nxt[:1] not in (' ', '\t'):
+                    break
+                indent = len(nxt) - len(nxt.lstrip(' \t'))
+                if content_indent is None:
+                    content_indent = indent
+                elif indent < content_indent:
+                    break       # outdented relative to the scalar's own content - not part of it
+                last = j
+                j += 1
+        return i, last
+    return None
+
+
+def _force_dna_restriction_text(
+    record_text: str, *, record_label: str | None = None,
+) -> tuple[str, bool]:
     """Set the record's `restricted:` marker to `dna`, unless it already
     carries one that protects at least as well. Returns (new_text, changed).
 
@@ -2743,6 +2989,30 @@ def _force_dna_restriction_text(record_text: str) -> tuple[str, bool]:
     never comes out with a bare-LF island exactly where the edit landed. A
     record with no parseable frontmatter fence is left untouched (nothing
     safe to edit) rather than guessed at.
+
+    The `restricted:` value may itself be a multi-line YAML block scalar
+    (e.g. `restricted: >-` with an indented `true` on the next line) -
+    `_frontmatter_key_span` locates the WHOLE span so it can be replaced as
+    one unit, rather than leaving an orphaned continuation line behind
+    (issue #169, finding 1: a Codex P2 from PR #161's review that was
+    tracked rather than fixed in the moment). Belt-and-suspenders past that:
+    the rewritten text is re-parsed before it is trusted, and this function
+    refuses (raises ProcessError, original text untouched) rather than hand
+    the caller frontmatter that would not actually read back as
+    `restricted: dna` - the same "refuse rather than corrupt" posture
+    `process_refile` applies to its own record surgery via its own
+    `parse_frontmatter_strict(final_text)` re-parse.
+
+    When the value being replaced carried a YAML anchor (`restricted:
+    &privacy >-`), the replacement line keeps it (`restricted: &privacy
+    dna`) instead of dropping it (issue #169 followup review, finding 1):
+    valid hand-authored YAML can point an alias at that anchor from ANOTHER
+    field entirely (`note: *privacy`), and an alias with no matching anchor
+    is itself invalid YAML - the belt-and-suspenders re-parse below would
+    then refuse a document whose human-authored shape was never wrong in
+    the first place. `&privacy dna` still parses to the plain string `dna`
+    for THIS field, and now leaves `*privacy` resolving to that same string
+    rather than to nothing.
     """
     meta = parse_frontmatter_strict(record_text) or {}
     if _restricted_type_of(meta.get('restricted')) in ('dna', 'by-request'):
@@ -2753,12 +3023,98 @@ def _force_dna_restriction_text(record_text: str) -> tuple[str, bool]:
     if len(fence_idx) < 2:
         return record_text, False
     start, end = fence_idx[0], fence_idx[1]
-    for i in range(start + 1, end):
-        if lines[i].rstrip('\r').startswith('restricted:'):
-            lines[i] = 'restricted: dna' + cr
-            return '\n'.join(lines), True
-    lines[end:end] = ['restricted: dna' + cr]
-    return '\n'.join(lines), True
+    span = _frontmatter_key_span(lines, start + 1, end, 'restricted')
+    if span is None:
+        new_lines = list(lines)
+        new_lines[end:end] = ['restricted: dna' + cr]
+    else:
+        first, last = span
+        old_body = lines[first].rstrip('\r')[len('restricted') + 1:].strip()
+        anchor = _leading_yaml_anchor(old_body)
+        replacement = f'restricted: &{anchor} dna' if anchor else 'restricted: dna'
+        new_lines = lines[:first] + [replacement + cr] + lines[last + 1:]
+    new_text = '\n'.join(new_lines)
+    reparsed = parse_frontmatter_strict(new_text)
+    if reparsed is None or _restricted_type_of(reparsed.get('restricted')) != 'dna':
+        where = f' in {record_label}' if record_label else ''
+        raise ProcessError(
+            f'refusing: forcing restricted: dna{where} would not read back '
+            'cleanly - the restricted: value may use a YAML form this '
+            'surgical rewrite could not safely replace. Fix restricted: by '
+            'hand to a plain `restricted: dna` line, then re-run. '
+            'Nothing was written.'
+        )
+    return new_text, True
+
+
+def _preflight_dna_restriction_before_relocation(
+    archive_root: Path,
+    fha_config: dict,
+    primary_path: Path,
+    real_path: Path | None,
+    *,
+    dry_run: bool,
+    source_type: str | None,
+) -> None:
+    """Best-effort preflight for `attach_more`: when `--type dna` is in play,
+    validate the record's `restricted:` rewrite BEFORE `_relocate_from_inbox`
+    ever moves an inbox-sourced `--more` file out of `inbox/`.
+
+    `_attach_more_engine`'s own photo/document branches already preflight
+    `_force_dna_restriction_text` ahead of their own irreversible-ish
+    mutations (the exiftool embed / the rename) - but by the time execution
+    reaches EITHER branch, `attach_more`'s own wrapper has already relocated
+    an inbox-sourced `--more` file into its asset root (issue #169 followup
+    review, finding 2). A refusal from `_force_dna_restriction_text` still
+    gets the relocation undone - `attach_more`'s `except Exception:` around
+    the engine call below already does that - but recovery then depends on
+    THAT undo (another filesystem move) succeeding too; an undo that itself
+    hits an OSError would leave a failed command's attachment stranded
+    outside the inbox regardless of how carefully the engine ordered its own
+    mutations. Running this validation-only pass first means the relocation
+    - and any dependency on undoing it - never happens at all when the
+    rewrite would refuse.
+
+    This resolves the primary's S-id and its record the same way
+    `_attach_more_engine` does, but ONLY to learn whether
+    `_force_dna_restriction_text` would refuse; the rewritten text is
+    discarded, and the engine re-reads the record fresh afterward. Every
+    OTHER failure mode this touches - primary not processed, no record
+    found, record unreadable - is swallowed here rather than raised: those
+    are unrelated to this finding and already get their own undo-on-failure
+    handling exactly as before, so raising early for them here would only
+    change their existing messages/exit codes for no reason this finding
+    asks for. Only `_force_dna_restriction_text`'s own refusal - the one
+    mutation-ordering hazard this preflight exists to catch - is allowed to
+    propagate out of this function.
+    """
+    if (source_type or '').strip().lower() != 'dna':
+        return
+    try:
+        primary_on_disk = real_path if real_path is not None else primary_path
+        if dry_run and classify_asset(primary_path, fha_config, archive_root) == 'photo':
+            try:
+                raw_sid = _read_source_keyword(primary_on_disk)
+            except RuntimeError:
+                return
+        else:
+            raw_sid = _source_id_of(primary_path, fha_config, archive_root)
+        if raw_sid is None:
+            return
+        sid = fmt_id_display(raw_sid)
+        record_path = _find_record_for_sid(archive_root, sid)
+        if record_path is None:
+            return
+        record_text = read_text_exact(record_path)
+    except (OSError, UnicodeDecodeError, ProcessError):
+        return
+    meta = parse_frontmatter_strict(record_text) or {}
+    if _restricted_type_of(meta.get('restricted')) in ('dna', 'by-request'):
+        return
+    # Validation only: the rewritten text is discarded. A refusal here IS the
+    # ordering hazard this preflight exists to catch, and propagates to
+    # `attach_more`'s caller before anything has been relocated.
+    _force_dna_restriction_text(record_text, record_label=_rel(record_path, archive_root))
 
 
 def attach_more(
@@ -2810,7 +3166,18 @@ def attach_more(
     undoes the relocation, so a failed attach never leaves the file stranded
     outside the inbox with nothing to show for it (the same "undo the move
     too" rule `_run_process` already applies to the primary).
+
+    `_preflight_dna_restriction_before_relocation` runs BEFORE that
+    relocation, not after (issue #169 followup review, finding 2): an
+    explicit `--type dna` whose `restricted:` rewrite would refuse must not
+    depend on the relocation's own undo succeeding to keep an inbox-sourced
+    file from being stranded outside `inbox/` - see that function's
+    docstring for why "moved then undone" is not equivalent to "never
+    moved" here.
     """
+    _preflight_dna_restriction_before_relocation(
+        archive_root, fha_config, primary_path, real_path,
+        dry_run=dry_run, source_type=source_type)
     pre_move_more = more_file
     more_file, _, more_relocate_undo = _relocate_from_inbox(
         archive_root, fha_config, more_file, None,
@@ -2926,11 +3293,13 @@ def _attach_more_engine(
 
     if more_kind == 'photo':
         photos_root = resolve_path(_PHOTO_DIR, fha_config, archive_root)
-        if not _is_under(more_file, photos_root):
-            raise ProcessError(
+        _require_contained(
+            more_file, photos_root, root_label='photos root',
+            message=(
                 f'{more_file.name} is not under the configured photos root '
                 f'({_rel(photos_root, archive_root)}); file it there before attaching it.'
-            )
+            ),
+        )
         if dry_run:
             try:
                 more_existing = _read_source_keyword(more_on_disk)
@@ -2950,7 +3319,8 @@ def _attach_more_engine(
             _open_backup(archive_root, fha_config, backup)
             print(f'[dry-run] Would embed SOURCE: {sid} in {more_file.name} (no rename)')
             if needs_dna_upgrade:
-                _, dna_would_change = _force_dna_restriction_text(record_text_for_check)
+                _, dna_would_change = _force_dna_restriction_text(
+                    record_text_for_check, record_label=_rel(record_path, archive_root))
                 if dna_would_change:
                     print(f'[dry-run] Would set restricted: dna on '
                           f'{_rel(record_path, archive_root)} (required for the attached '
@@ -2967,18 +3337,40 @@ def _attach_more_engine(
             print(f'ERROR: could not read {_rel(record_path, archive_root)}: {e}',
                   file=sys.stderr)
             return EXIT_FAILURE
+        # Compute and validate the rewritten record BEFORE the exiftool embed
+        # below - an irreversible-ish filesystem mutation that would
+        # otherwise depend on rollback if the rewrite then turned out to be
+        # unsafe. `_force_dna_restriction_text` can refuse (raise
+        # ProcessError) on a `restricted:` value it cannot rewrite with
+        # confidence (issue #169, finding 2); preflighting it here - before
+        # any mutation - means that refusal no longer depends on the
+        # exiftool-remove rollback below succeeding (issue #169 followup
+        # review, finding 4). Nothing has touched the photo or the record if
+        # this raises.
+        new_text = old_text
+        dna_restriction_set = False
+        if needs_dna_upgrade:
+            new_text, dna_restriction_set = _force_dna_restriction_text(
+                new_text, record_label=_rel(record_path, archive_root))
+        try:
+            new_text = _append_file_entry(new_text, entry)
+        except Exception as e:
+            # Also preflighted, ahead of the embed: an unparseable record
+            # (e.g. malformed frontmatter) can only be discovered by actually
+            # trying to append the entry, but discovering it HERE - before
+            # anything has touched the photo - means there is nothing to roll
+            # back; the old ordering embedded the keyword first and would
+            # have had to undo it for this same failure.
+            print(f'ERROR: could not add files: entry to '
+                  f'{_rel(record_path, archive_root)}: {e}', file=sys.stderr)
+            return EXIT_FAILURE
         backup = _open_backup(archive_root, fha_config, backup)
         err = _run_exiftool_embed_source(more_file, sid, backup=backup)
         if err is not None:
             print(f'ERROR: exiftool could not embed SOURCE keyword in {more_file.name}: {err}',
                   file=sys.stderr)
             return EXIT_FAILURE
-        dna_restriction_set = False
         try:
-            new_text = old_text
-            if needs_dna_upgrade:
-                new_text, dna_restriction_set = _force_dna_restriction_text(new_text)
-            new_text = _append_file_entry(new_text, entry)
             # Atomic, unlike the scaffolding writes above: those CREATE a record
             # and their undo unlinks the partial, but this one REPLACES a
             # complete source record to add one files: entry. A truncating write
@@ -3026,11 +3418,13 @@ def _attach_more_engine(
         )
     already_named = existing_doc_sid is not None
     documents_root = resolve_path('documents', fha_config, archive_root)
-    if not _is_under(more_file, documents_root):
-        raise ProcessError(
+    _require_contained(
+        more_file, documents_root, root_label='documents root',
+        message=(
             f'{more_file.name} is not under the configured documents root '
             f'({_rel(documents_root, archive_root)}); file it there before attaching it.'
-        )
+        ),
+    )
     if already_named:
         # Already named exactly right (#108) - keep the name as-is rather than
         # recomputing base+suffix+sid, which would either duplicate the role
@@ -3106,7 +3500,8 @@ def _attach_more_engine(
             # the hole exactly as it was.
             if not needs_move:
                 if needs_dna_upgrade:
-                    new_text, changed = _force_dna_restriction_text(record_text_for_check)
+                    new_text, changed = _force_dna_restriction_text(
+                        record_text_for_check, record_label=_rel(record_path, archive_root))
                     if dry_run:
                         if changed:
                             print(f'[dry-run] Would set restricted: dna on '
@@ -3173,8 +3568,22 @@ def _attach_more_engine(
         else:
             print(f"[dry-run] {more_file.name} already carries this source's S-id; keeping its name.")
         if needs_dna_upgrade:
-            print(f'[dry-run] Would set restricted: dna on {_rel(record_path, archive_root)} '
-                  '(required for the attached DNA file).')
+            # Validate the rewrite here too, not just on the live path
+            # (issue #169 followup review, finding 3): `_force_dna_
+            # restriction_text` can refuse (raise ProcessError) on a
+            # `restricted:` value it cannot rewrite with confidence, and
+            # running that validation only live let `--dry-run` promise an
+            # update it could not actually deliver - the live run would
+            # begin the rename, then fail and roll it back, while the
+            # preview had reported clean. This call is pure text surgery (no
+            # filesystem side effects), so calling it here for its outcome
+            # is safe during a dry run; a refusal now shows up identically
+            # in preview and in the live run.
+            _, dna_would_change = _force_dna_restriction_text(
+                record_text_for_check, record_label=_rel(record_path, archive_root))
+            if dna_would_change:
+                print(f'[dry-run] Would set restricted: dna on {_rel(record_path, archive_root)} '
+                      '(required for the attached DNA file).')
         print(f'[dry-run] Would add files: entry (role: {role}) to '
               f'{_rel(record_path, archive_root)}')
         return EXIT_CLEAN
@@ -3185,17 +3594,34 @@ def _attach_more_engine(
     except (OSError, UnicodeDecodeError) as e:
         print(f'ERROR: could not read {_rel(record_path, archive_root)}: {e}', file=sys.stderr)
         return EXIT_FAILURE
+    # Compute and validate the rewritten record BEFORE the rename below - the
+    # documents-root counterpart to the photo branch's own preflight above
+    # (issue #169 followup review, finding 4): a refusal from
+    # `_force_dna_restriction_text` must not depend on the rename-undo below
+    # succeeding. Nothing on disk has moved yet if this raises.
+    new_text = old_text
     dna_restriction_set = False
+    if needs_dna_upgrade:
+        new_text, dna_restriction_set = _force_dna_restriction_text(
+            new_text, record_label=_rel(record_path, archive_root))
+    try:
+        new_text = _append_file_entry(new_text, entry)
+    except Exception as e:
+        # Also preflighted, ahead of the rename: an unparseable record (e.g.
+        # malformed frontmatter) can only be discovered by actually trying to
+        # append the entry, but discovering it HERE - before anything on
+        # disk has moved - means there is nothing to roll back; the old
+        # ordering renamed the file first and would have had to undo that
+        # for this same failure.
+        print(f'ERROR: could not add files: entry to '
+              f'{_rel(record_path, archive_root)}: {e}', file=sys.stderr)
+        return EXIT_FAILURE
     try:
         if needs_move:
             new_path.parent.mkdir(parents=True, exist_ok=True)
             more_file.rename(new_path)
             undo.append((f'move {new_path.name} back to {more_file.name}',
                          lambda: new_path.rename(more_file)))
-        new_text = old_text
-        if needs_dna_upgrade:
-            new_text, dna_restriction_set = _force_dna_restriction_text(new_text)
-        new_text = _append_file_entry(new_text, entry)
         # Atomic for the same reason as the photos branch above: an existing
         # source record is being replaced, not created.
         write_text_exact_atomic(record_path, reapply_newline(new_text, old_text))
@@ -3460,7 +3886,13 @@ def _validate_dest_subpath(root: Path, dest: str, root_label: str) -> Path:
     dest_dir = root.joinpath(*parts)
     try:
         dest_dir.resolve().relative_to(root.resolve())
-    except (ValueError, OSError):
+    except (ValueError, OSError, RuntimeError):
+        # RuntimeError joins ValueError/OSError here for the same reason as
+        # `_is_under` above (issue #170 finding 2): a symlink loop under
+        # --dest raises RuntimeError from `.resolve()`, not ValueError/
+        # OSError, and without it here this refusal was a raw traceback
+        # instead of the clean message every other containment failure
+        # already gets.
         raise ProcessError(
             f'--dest {dest!r} does not resolve to a folder inside the '
             f'{root_label} root - name a plain subfolder, e.g. {example}.')
@@ -3718,10 +4150,18 @@ def process_refile(
     # a file that was never part of this archive.
     claimed_root = resolve_path(alias_root, fha_config, archive_root)
     if not _is_under(src, claimed_root):
+        if _resolve_hits_symlink_loop(src) or _resolve_hits_symlink_loop(claimed_root):
+            raise ProcessError(
+                f'{stored_alias} could not be checked against the configured '
+                f'{alias_root} root - this looks like a symlink loop, most '
+                'likely from a corrupted or maliciously crafted filesystem '
+                f'entry, not a mistyped files: entry in {record_path.name}. '
+                'Find and fix or remove the offending symlink, then retry. '
+                'Nothing was moved.')
         raise ProcessError(
             f'{stored_alias} resolves outside the configured {alias_root} '
             f'folder ({claimed_root}) - this looks like a hand-edited files: '
-            f'entry gone wrong (a `..` segment, or a doubled slash). Fix the '
+            f'entry gone wrong (a `..` segment or a doubled slash). Fix the '
             f'entry in {record_path.name} by hand, then retry. Nothing was '
             'moved.')
 
@@ -3812,6 +4252,14 @@ def process_refile(
                 'moved.') from e
         conflicting = sorted({s for s in embedded_sids if s != sid.lower()})
         if conflicting:
+            # Same dead-end shape as the documents-root branch above (issue
+            # #170 finding 3, round-3 audit): `fha reconcile`'s document pass
+            # only considers documents-alias entries (its own docstring:
+            # "the photos side has its own [machinery]"), and its photo pass
+            # only re-ties `fha photoindex`'s own catalog to files on disk -
+            # neither one touches THIS record's `files:` entry. Suggesting it
+            # here would run clean and change nothing, leaving the human to
+            # retry forever. Name the exact entry to fix by hand instead.
             carried = ', '.join(fmt_id_display(s) for s in conflicting)
             raise ProcessError(
                 f"{stored_alias}'s own embedded SOURCE keyword(s) carry "
@@ -3819,8 +4267,15 @@ def process_refile(
                 f"{record_path.name}'s files: entry looks like inventory "
                 f'drift (it names a file that belongs to a different '
                 f'source), and moving it would relocate the WRONG photo. '
-                'Run `fha reconcile` to re-tie sources to their actual '
-                'files, then retry. Nothing was moved.')
+                '`fha reconcile` cannot fix this: its document pass ignores '
+                'photos/ aliases, and its photo pass only re-ties the photo '
+                f'catalog, not this record. Fix it by hand: open '
+                f'{record_path.name}, find the `files:` entry `file: '
+                f'{stored_alias}`, and either point it at the correct '
+                f'on-disk photo for this source (untagged, or whose '
+                f'embedded SOURCE keyword already names {sid} - either is '
+                f'fine) or delete the entry if no such photo exists. '
+                'Nothing was moved.')
 
     # The source's type, resolved. A type that is wrong for the destination
     # root is part of the misfiling this verb corrects, so refile carries the
@@ -4377,10 +4832,26 @@ def _mint_one_source_id(archive_root: Path, source_id: str | None = None) -> str
 
 
 def _rel(path: Path, archive_root: Path) -> str:
-    """Display a path relative to the archive root when possible, else as posix."""
+    """Display a path relative to the archive root when possible, else as posix.
+
+    Also falls back on `RuntimeError` (issue #170 finding 2, extended -
+    Codex review round-8 audit), not just `ValueError`/`OSError`: every
+    "not under the configured root" `ProcessError` message in this file
+    calls `_rel(root, archive_root)` to show the root's location, and that
+    call is built EAGERLY as part of the message string - even when the
+    containment check that triggered it (`_require_contained`/
+    `_is_under_strict`) is about to prefer a different, symlink-specific
+    error instead. Before this, a symlink loop on `root` itself made this
+    display call raise an uncaught `RuntimeError` while constructing the
+    (ultimately discarded) genuine-failure message, crashing with a raw
+    traceback instead of ever reaching the clean symlink-loop refusal -
+    the exact failure mode `_is_under` was already fixed to avoid (round-3
+    audit), reached here through a different function. A path that cannot
+    be resolved for display, loop or otherwise, is shown as-is.
+    """
     try:
         return path.resolve().relative_to(archive_root.resolve()).as_posix()
-    except (ValueError, OSError):
+    except (ValueError, OSError, RuntimeError):
         return path.as_posix()
 
 
@@ -4423,16 +4894,35 @@ def _resolve_input_file(
     Returns (resolved_path, None) on a hit, or (None, message) on a miss; the
     message names every location searched plus the next step, because a bare
     "file not found" leaves a non-technical user nowhere to go.
+
+    Raises `ProcessError` instead when RESOLVING the path itself - not
+    finding it - is what fails: a symlink loop under either candidate
+    location (adversarial review of PR #170, extended - every other
+    containment/resolution check in this file already distinguishes "not
+    there" from "could not even be checked because of a broken symlink" via
+    `_resolve_hits_symlink_loop`; this is the one caller of a bare
+    `Path.resolve()` in the whole module that still did not, so a symlink
+    loop under the very first file a user names crashed with a raw,
+    unhelpful `RuntimeError` before any of that hardening ever ran).
     """
     def found(p: Path) -> bool:
         return p.is_file() if require_file else p.exists()
 
+    def resolved(p: Path, *, where: str) -> Path:
+        if _resolve_hits_symlink_loop(p):
+            raise ProcessError(
+                f'{what} could not be resolved {where}: {raw} - this looks '
+                'like a symlink loop, not a missing file. Find and fix (or '
+                'remove) the broken symlink, then retry.'
+            )
+        return p.resolve()
+
     raw_path = Path(raw)
-    primary = raw_path.resolve()
+    primary = resolved(raw_path, where='as typed')
     if found(primary):
         return primary, None
     if not raw_path.is_absolute():
-        retry = (archive_root / raw_path).resolve()
+        retry = resolved(archive_root / raw_path, where='inside your archive')
         # retry == primary when the command already runs from the archive root
         # itself; a second look at the same spot would name one place twice.
         if retry != primary:
@@ -4668,7 +5158,11 @@ def _run_process(args: argparse.Namespace) -> int:
     # is forgiving: a relative path that misses from here is retried under the
     # archive root, so the cheat-sheet spelling ("inbox/scan.jpg" typed from
     # the workshop folder) just works.
-    file_path, path_error = _resolve_input_file(args.file, archive_root)
+    try:
+        file_path, path_error = _resolve_input_file(args.file, archive_root)
+    except ProcessError as e:
+        print(f'ERROR: {e}', file=sys.stderr)
+        return EXIT_ERRORS
     if file_path is None:
         print(f'ERROR: {path_error}', file=sys.stderr)
         return EXIT_ERRORS

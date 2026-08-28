@@ -644,15 +644,22 @@ def parentage_parties(
 # The role a claim's OWN SUBJECT carries, per vital claim type. `birth` and
 # `baptism` name the person the record is about as the `child`; `marriage` and
 # `divorce` name them as `spouse` (and on those two, `spouse_parties` answers
-# first - see `vital_subjects` case 2). `death` and `burial` are absent on
-# purpose: SPEC §8.3's role vocabulary has no word for the deceased, so a death
-# claim can only say who the OTHER people are (the widow, the children, the
-# informant), and the subject is the one the claim left unroled.
+# first - see `vital_subjects` case 1); `death` and `burial` name them as
+# `deceased` (SPEC §8.3, added #126/#173 follow-up specifically so a claim
+# recording two people who died in the same event - a shipwreck, a house
+# fire - with no other party named at all can say so explicitly, rather than
+# reading as the same "ambiguous, nobody named" shape as a claim that
+# genuinely hasn't said which of several people it's about). A claim that
+# names nobody `deceased:` still falls through to the pre-existing
+# convention: the subject is whoever the claim left unroled, once someone
+# ELSE present (the widow, the children, the informant) has a role.
 VITAL_SUBJECT_ROLES: dict[str, str] = {
     'birth': 'child',
     'baptism': 'child',
     'marriage': 'spouse',
     'divorce': 'spouse',
+    'death': 'deceased',
+    'burial': 'deceased',
 }
 
 
@@ -685,42 +692,91 @@ def vital_subjects(
 
     Returns, in order:
 
-      1. **None** when NO named person carries a role at all. The claim never
-         answered the question, so the caller keeps whatever it did before this
-         rule existed - ordinarily "everyone named". This is the legacy claim,
-         written before `roles:` was expected on vitals, and the whole
-         back-compatibility bargain: a rule that silently emptied those
-         archives' summary boxes would be a worse bug than the one it fixes.
-      2. On a **couple claim** (`marriage`/`divorce`), whoever
-         `spouse_parties` says married each other. That rule - not this one -
-         is the archive's single answer to "who married whom": the index mints
-         the spouse edge from it, `fha gedcom` picks the FAM from it, and
-         `fha lint` W115/W125 read it. Deciding the question a second way here
-         made the two disagree on the claim `spouse_parties` documents as its
-         typo case (`roles: {spouse: [P-a]}` with the partner left unroled, from
-         a mistyped id or a name that stopped resolving): the index recorded the
+      1. On a **couple claim** (`marriage`/`divorce`), whoever
+         `spouse_parties` says married each other, checked FIRST, before the
+         no-role-at-all shortcut below - because `spouse_parties` already has
+         its own correct answer for the all-unroled case (exactly two people
+         named, neither marked as anything else, are each other's spouse; SPEC
+         is symmetric here, there is nothing to disambiguate). Running the
+         no-role check first would hand that same pair to case 2 below with
+         the wrong reasoning and, worse, would hand a FOUR-person all-unroled
+         marriage claim (a couple plus both sets of parents, none of them
+         roled) to case 2 as well - which is exactly the #58/#126 bug this
+         rule exists to prevent. That rule - not this one - is the archive's
+         single answer to "who married whom": the index mints the spouse edge
+         from it, `fha gedcom` picks the FAM from it, and `fha lint` W115/W125
+         read it. Deciding the question a second way here made the two
+         disagree on the claim `spouse_parties` documents as its typo case
+         (`roles: {spouse: [P-a]}` with the partner left unroled, from a
+         mistyped id or a name that stopped resolving): the index recorded the
          marriage while the partner's own summary box and WikiTree profile
          quietly dropped it. One rule, one home.
+      2. **None** when NO named person carries a role at all AND exactly one
+         person is named. The claim never answered the question, but there is
+         nobody to disambiguate FROM, so the caller keeps whatever it did
+         before this rule existed - "the one person named is who this is
+         about". This is the legacy single-subject claim, written before
+         `roles:` was expected on vitals, and the narrow slice of the old
+         back-compatibility bargain that is actually safe: a rule that
+         silently emptied THIS claim shape's summary boxes would be a worse
+         bug than the one it fixes.
+         This case cannot tell "genuinely, simply about one person" apart from
+         "one person left over because a `roles:` value named somebody outside
+         `persons:` and vanished before `pairs` was built" (`resolve_claim_
+         persons_with_roles`'s own note) - a hand-edit that wrote `roles:
+         {deceased: [P-dead]}` without adding `P-dead` to `persons:` leaves
+         exactly this shape, and reads the survivor left behind as her own
+         death. `pairs` carries nothing that distinguishes the two by the time
+         it reaches here, so this function does not try; TOOLING's W133
+         catches the orphaned `roles:` value directly against the raw claim,
+         upstream of this call, instead.
+      2a. **Empty** when NO named person carries a role at all and TWO OR MORE
+         people are named (and case 1 found no couple). A claim that named
+         several people and marked none of their parts has not, in fact, said
+         which of them it is a record of - guessing "everyone" here is the
+         mother's `Born: 1888` bug restated for a claim with no role signal
+         at all: a burial claim naming the deceased alongside a grandchild
+         who visited the grave, with no `roles:` map at all, used to read as
+         BOTH of their own burials (#126, reopened - the Died/Buried field
+         and a chart node both still showed a relative's record after the
+         first pass of this fix only reached claims that had SOME role
+         signal to work with). Silence is recoverable; the archive's bargain
+         throughout this file is that a missing fact beats a false one. A
+         death/burial claim that IS legitimately about two people at once (a
+         shared death) is not this case - it says so via `roles: deceased:`
+         (case 3) instead of relying on silence. Note case 2a deliberately
+         behaves differently from case 2 purely on headcount, not on claim
+         type - a two-person `marriage`/`divorce` claim never reaches here at
+         all, because case 1 already resolved it.
       3. The people named under this type's **subject role** (`VITAL_SUBJECT_ROLES`
-         - `child` for birth/baptism, `spouse` for marriage/divorce) when the
-         claim names any. The claim said outright who it is about. On a couple
-         claim this is reached only where `spouse_parties` found no couple -
-         `roles: {spouse: [P-a], parent: [P-b]}`, which names P-a's own
-         marriage while refusing to marry him to P-b.
+         - `child` for birth/baptism, `spouse` for marriage/divorce, `deceased`
+         for death/burial) when the claim names any. The claim said outright
+         who it is about. On a couple claim this is reached only where
+         `spouse_parties` found no couple - `roles: {spouse: [P-a], parent:
+         [P-b]}`, which names P-a's own marriage while refusing to marry him
+         to P-b. On a death/burial claim, `roles: {deceased: [P-a, P-b]}` is
+         how two people who died in the same event are named as joint
+         subjects explicitly, rather than relying on case 4 below.
       4. Otherwise the people the claim left **unroled**. This is the ordinary
-         death record (`roles: {spouse: [widow], child: [informant]}` - nobody
-         can be marked "deceased", so the deceased is the one with no part to
-         play) and the birth claim written `roles: {parent: [mother, father]}`
-         with the baby unmarked.
-      5. Which can be **empty**, and that is an answer too: every person named
-         was named as somebody else on the record, so it is nobody's own vital.
-         An empty list is exactly the mother-on-her-son's-birth-certificate
-         case, and returning her son's date for her is the bug.
+         death record written the OLD way, before `deceased:` existed
+         (`roles: {spouse: [widow], child: [informant]}` - nobody marked
+         "deceased", so the deceased is the one with no part to play) and the
+         birth claim written `roles: {parent: [mother, father]}` with the
+         baby unmarked. Reached only when at least one person on the claim
+         DOES carry a role (case 2a's zero-role, multi-person shape already
+         returned above), so "unroled" here is always a genuine, narrower
+         subset of `persons:`, never the whole list by accident.
+      5. Which can be **empty** here too, and that is an answer too: every
+         person named was named as somebody else on the record, so it is
+         nobody's own vital. An empty list is exactly the mother-on-her-son's-
+         birth-certificate case, and returning her son's date for her is the
+         bug.
 
-    Case 5 is deliberately silent rather than falling back to "everyone named":
-    a death claim whose `roles:` map casts every person it names as somebody
-    else yields no death date at all, and the archive's bargain throughout this
-    file is that a missing fact is recoverable where a false one is not.
+    Cases 2a and 5 are deliberately silent rather than falling back to
+    "everyone named": a death claim whose `roles:` map casts every person it
+    names as somebody else, or says nothing about any of them, yields no death
+    date at all, and the archive's bargain throughout this file is that a
+    missing fact is recoverable where a false one is not.
     """
     first_role: dict[str, str] = {}
     for pid, role in persons_with_roles:
@@ -728,14 +784,15 @@ def vital_subjects(
             first_role[pid] = str(role or '').strip().lower()
     pairs = list(first_role.items())
 
-    if not any(role for _pid, role in pairs):
-        return None
-
     subject_role = VITAL_SUBJECT_ROLES.get(str(claim_type or '').strip().lower())
     if subject_role == 'spouse':
         couple = spouse_parties(pairs)
         if couple:
             return couple
+
+    if not any(role for _pid, role in pairs):
+        return None if len(pairs) <= 1 else []
+
     if subject_role:
         named = [pid for pid, role in pairs if role == subject_role]
         if named:
@@ -763,9 +820,14 @@ def claim_is_own_vital(
     this once per vital claim per person; keyed on the claim alone, one cache
     is safely shared across every person in a build.
 
-    True for a claim whose `roles:` map says nothing (`vital_subjects` returns
-    None) - the legacy claim, where the caller keeps the behaviour it has
-    always had.
+    True for a claim `vital_subjects` returns None for - a claim naming at
+    most one person with no `roles:` map at all, the one legacy shape safe to
+    read as "the caller keeps the behaviour it has always had" (nothing to
+    disambiguate). A claim naming several people with no `roles:` map is a
+    DIFFERENT case (`vital_subjects` returns `[]`, not None) and this
+    returns False for every one of them - guessing "everyone" there is the
+    #126 bug this rule exists to prevent, not the legacy behaviour to
+    preserve. See `vital_subjects`'s own docstring for the full case list.
     """
     if cache is not None and claim_id in cache:
         subjects = cache[claim_id]
@@ -803,7 +865,27 @@ def resolve_claim_persons_with_roles(
     ID) is dropped rather than paired with a role - the same inert-note-link
     treatment `_index_source` and `_claim_person_ids` both give it (TOOLING
     §3 E004): a garbage id in `(pid, role)` would answer the vitals/social
-    questions above about a person the archive cannot actually name."""
+    questions above about a person the archive cannot actually name.
+
+    A DIFFERENT thing is dropped just as silently: a `roles:` value that
+    resolves perfectly well but names somebody absent from `persons:` (a hand
+    edit that added `roles: {deceased: [P-dead]}` without adding `P-dead` to
+    `persons:` too). This function only ever walks `persons:` entries and asks
+    each one whether some role names it, so that person is never looked at at
+    all - not "dropped for being unresolvable", simply never a candidate.  Most
+    of the time that is a quiet no-op (TOOLING §3, `_build_child_edges`'s "a
+    broken map, not a secret extra parent"). It stops being a no-op exactly
+    when dropping the role target leaves every OTHER named person unroled: the
+    single-person legacy fallback below then reads whoever is left - the
+    widow, say - as the claim's own subject, which is the #126 bug restated
+    through a hand-edit mistake this very function cannot see, because by the
+    time it runs the target already never appears in its input. Catching that
+    shape is TOOLING's W133, checked directly against the raw claim (roles:
+    values that resolve to somebody outside persons:) rather than here: this
+    function's contract - drop what does not resolve into `persons:` order -
+    is unchanged, and every one of its callers (`vital_subjects`,
+    `spouse_parties`, `parentage_parties`, `social_parties`) keeps reading
+    exactly the pairs it always has."""
     roles_map = claim.get('roles') or {}
     resolved_roles: list[tuple[str, set[str]]] = []
     if isinstance(roles_map, dict):
@@ -983,7 +1065,7 @@ _CLAIM_MARKER_KEYS: frozenset[str] = frozenset({'id', 'type', 'value', 'persons'
 SOURCE_TYPES: frozenset[str] = frozenset({
     'census', 'vital-record', 'newspaper', 'photo', 'interview', 'letter',
     'military-record', 'land-record', 'probate', 'directory', 'dna', 'book',
-    'website', 'artifact', 'proof-argument', 'other',
+    'website', 'artifact', 'proof-argument', 'ephemera', 'other',
 })
 
 EDTF_EXAMPLE_TEXT = 'like 1880, 1880-06-15, or 188X for "the 1880s"'
@@ -1249,7 +1331,18 @@ GENERATED_COMPANION_KINDS: frozenset[str] = frozenset({'timeline', 'sources-inde
 # A v6 index lacks it - every row would read NULL forever, indistinguishable
 # from a file that genuinely carries no per-file date:, until a rebuild -
 # so bump to force `fha index` to run (same rationale as v3/v4).
-INDEX_SCHEMA_VERSION = 7
+# 8: `_derive_relationships`'s death branch now reads `_lib.vital_subjects` for
+# the zero-role, multi-person shape as [] rather than None (#126, reopened) -
+# a claim naming several relatives on a death record with no roles: map at
+# all no longer closes every one of their marriages, only nobody's. A v7
+# index's `relationships` rows were materialized under the OLD rule, so a
+# cache built before this fix can still show a multi-person unroled death
+# wrongly closing a living relative's marriage even after the tools are
+# updated, until somebody happens to run a full `fha index`. Bump to force
+# that rebuild (same rationale as v2/v3/v4/v5/v7) - freshness here is a
+# schema-version gate, not a file-timestamp one, so updating the TOOLS alone
+# (no record file touched) would otherwise never invalidate the stale cache.
+INDEX_SCHEMA_VERSION = 8
 PHOTOINDEX_SCHEMA_VERSION = 1
 CACHE_SCHEMA_KEY = 'schema_version'
 
@@ -5156,6 +5249,40 @@ def place_text_cluster_key(text: str) -> str:
     return ' '.join(tokens)
 
 
+_PLACES_REGISTRY_EXAMPLE = '- id: L-0123456789\n  name: Fairview'
+
+
+def _yaml_source_is_blank(text: str) -> bool:
+    """Whether `text` has no real content once full-line `#` comments and
+    surrounding whitespace are stripped away.
+
+    Used to tell a genuinely empty/comment-only file apart from one whose
+    actual content happens to parse to `None` anyway (an explicit YAML
+    `null`/`~`) - `yaml.safe_load` returns `None` for both, so the parsed
+    value alone can't distinguish "nothing here yet" (no file content) from
+    "the human typed the word null" (real content, just a null literal).
+    Only whole-line comments count; a trailing `# comment` on a content line
+    does not blank the line out, but that never matters for our callers -
+    every case that reaches here is a file that parsed to `None`, so no
+    remaining line can carry non-comment content anyway.
+
+    A leading UTF-8 byte-order-mark (`﻿`, from `path.read_text()` on a
+    file saved by an editor that writes one) is stripped first. `str.strip()`
+    does not treat `﻿` as whitespace, so without this a BOM-only file's
+    first "line" is the lone BOM character - non-blank, doesn't start with
+    `#` - and this function would wrongly report real content where there is
+    none, sending a totally empty (BOM-only) places.yaml down the "explicit
+    null" malformed-registry path instead of the ordinary empty-registry one.
+    """
+    if text.startswith('﻿'):
+        text = text[1:]
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped and not stripped.startswith('#'):
+            return False
+    return True
+
+
 def read_places_registry(archive_root: str | Path) -> tuple[list[dict], str | None]:
     """
     Parse `places/places.yaml` into a plain list of place dicts (each at
@@ -5184,12 +5311,48 @@ def read_places_registry(archive_root: str | Path) -> tuple[list[dict], str | No
     valid list is NOT a registry-level error - the file parsed fine as a
     list of places, one entry is just junk - so those rows are quietly
     skipped and `error` stays `None`.
+
+    Two follow-ups from PR #159's Codex review (issue #168):
+
+    - A YAML parse failure used to interpolate PyYAML's raw exception text
+      straight into `error` - `<unicode string>` markers, position carets,
+      parser-internals vocabulary the target user (a genealogist hand-
+      editing a plain-text file) has no way to act on. The raw text never
+      reaches `error` now; instead, the line/column PyYAML reports (when it
+      reports one - `yaml.MarkedYAMLError.problem_mark`) is named in plain
+      language, alongside a concrete minimal example of a valid entry.
+
+    - An explicit `null` (or `~`) hand-typed into `places.yaml` - a natural
+      way to write "nothing here yet" - parses to `None`, exactly like a
+      genuinely empty/comment-only file, so the two used to be
+      indistinguishable and an explicit `null` silently behaved as a valid
+      empty registry. `_yaml_source_is_blank` now checks the SOURCE TEXT
+      (comments/whitespace stripped) rather than the parsed value: truly
+      no content left is still the ordinary empty-seed case (`error` stays
+      `None`, unchanged from before); real content that merely parses to
+      `None` - `null`, `~` - falls through to the non-list rejection below
+      with a message naming the null explicitly.
     """
     if yaml is None:
         return [], None
     path = Path(archive_root) / 'places' / 'places.yaml'
-    if not path.is_file():
+    if not path.exists():
         return [], None
+    if not path.is_file():
+        # Something other than an ordinary file sits at this path - most
+        # plausibly a directory, from a hand-created `mkdir places.yaml` or
+        # a sync tool that resolved a conflict by making a folder. This is
+        # NOT the "nothing here yet" case above (adversarial review of PR
+        # #168: lint.py's own places-parsing block used to check this
+        # explicitly before it was folded into this shared helper, and lost
+        # the check in the process - a places.yaml directory silently read
+        # back as an ordinary empty registry, no finding at all, rather
+        # than the clear repair pointer a human actually needs here).
+        return [], (
+            'places/places.yaml is a directory, not a file - remove or '
+            'rename it, then create places/places.yaml as an ordinary text '
+            'file (see SPEC §15 for the registry shape).'
+        )
     try:
         text = path.read_text(encoding='utf-8')
     except OSError as e:
@@ -5197,8 +5360,14 @@ def read_places_registry(archive_root: str | Path) -> tuple[list[dict], str | No
     try:
         data = yaml.safe_load(text)
     except yaml.YAMLError as e:
-        return [], f'places/places.yaml has a YAML error: {e}'
-    if data is None:
+        loc = _yaml_problem_location(e)
+        return [], (
+            f'places/places.yaml is not valid YAML{loc} - a list, mapping, '
+            'or quote is probably not closed correctly. A place entry '
+            f'looks like:\n{_PLACES_REGISTRY_EXAMPLE}\n'
+            '(see SPEC §15 for the registry shape).'
+        )
+    if data is None and _yaml_source_is_blank(text):
         # A comment-only (or otherwise all-whitespace) file parses to None,
         # not []/a list - and that is exactly the shipped seed state
         # (archive-template/places/places.yaml, SPEC §15's "empty to start"
@@ -5210,17 +5379,50 @@ def read_places_registry(archive_root: str | Path) -> tuple[list[dict], str | No
         # seed file gets misclassified as malformed on every place-text edit.
         return [], None
     if not isinstance(data, list):
-        return [], 'places/places.yaml is not a list at the top level (see SPEC §15 for the registry shape)'
+        if data is None:
+            # Real content (issue #168) - an explicit `null`/`~`, not a
+            # blank/comment-only file - that merely happens to parse to the
+            # same None a genuinely empty file does. Named explicitly so
+            # the human doesn't have to guess why a typed-out "nothing
+            # here yet" reads as broken.
+            reason = 'contains an explicit `null`/`~`, which is not a valid registry'
+        else:
+            reason = 'is not a list at the top level'
+        return [], (
+            f'places/places.yaml {reason} (see SPEC §15 for the registry '
+            'shape). A valid registry is either empty (blank or comments '
+            f'only) or a YAML list of place entries, for example:\n'
+            f'{_PLACES_REGISTRY_EXAMPLE}'
+        )
     return [row for row in data if isinstance(row, dict) and row.get('id')], None
 
 
-def match_place_text_to_registry(archive_root: str | Path, place_text: str) -> dict:
+def match_place_text_to_registry(
+    archive_root: str | Path,
+    place_text: str,
+    *,
+    registry: tuple[list[dict], str | None] | None = None,
+) -> dict:
     """
     Match one claim's free-text place against the registered places
     (`places/places.yaml`) - the write-time resolution issue #79 point 3
     asked for: "when a claim is drafted with place_text, look it up against
     the registry; on an exact or near match, attach the place_id; on a
     miss, note it as a candidate."
+
+    `registry` lets a caller that is about to do this lookup many times in
+    one pass - report.py's §6b listing and its escalation banner, one call
+    per place-text cluster - pass in `read_places_registry(archive_root)`'s
+    own `(rows, error)` result instead of making this function re-read and
+    re-parse `places/places.yaml` from scratch on every single call. Before
+    this existed, a report with N unlinked-place clusters re-read and
+    re-scanned the whole registry N times over - quadratic in (clusters x
+    registry size) for work that only ever needed the file read once per
+    report run (issue #166 finding 2; a synthetic 200-cluster/200-place
+    fixture measured ~6.9s in this section alone). Omitted (every existing
+    caller, including `claim.py`'s single-lookup write path), the lookup
+    reads the registry itself exactly as before - this is additive, not a
+    behavior change for anyone who only ever calls this once.
 
     Two tiers, built from the SAME normalization `fha places candidates`
     clusters unlinked place_text with (`place_text_cluster_key` above) - a
@@ -5278,7 +5480,10 @@ def match_place_text_to_registry(archive_root: str | Path, place_text: str) -> d
 
     exact_hits: dict[str, str] = {}
     near_hits: dict[str, str] = {}
-    rows, registry_error = read_places_registry(archive_root)
+    if registry is None:
+        rows, registry_error = read_places_registry(archive_root)
+    else:
+        rows, registry_error = registry
     for place in rows:
         pid = place.get('id')
         if not (isinstance(pid, str) and is_valid_id(pid) and id_type_of(pid) == 'L'):

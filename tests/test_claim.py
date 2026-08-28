@@ -1637,6 +1637,117 @@ class RunClaimFieldEditTests(unittest.TestCase):
         self.assertEqual(self._claims()['C-bb22cc33dd']['status'], 'rejected')
 
 
+# ── #126/#173 follow-up: `--persons` must not silently orphan a roles: target ──
+
+class PersonsReplaceRolesGuardTests(unittest.TestCase):
+    """`--persons` REPLACES the whole `persons:` list (issue #50's own scope
+    note). A claim minted by hand can already carry a `roles:` map, and this
+    file never amends `roles:` alongside it - so before this guard, a
+    `--persons` replace that dropped someone the map still named would
+    silently orphan that role target: the exact #126/#173 hand-edit mistake
+    W133 (`fha lint`) exists to catch (`persons: [P-widow]`, `roles: {deceased:
+    [P-dead]}` with P-dead just missing from the new list), just reached
+    through the sanctioned edit verb instead of a typo. `run_claim` now
+    refuses that specific edit before writing it.
+    """
+
+    WIDOW = 'P-d4d4d4d4d4'
+    DEAD = 'P-d5d5d5d5d5'
+    OTHER = 'P-d6d6d6d6d6'
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        _write_person(self.root, self.WIDOW, 'Widow Smith')
+        _write_person(self.root, self.DEAD, 'Dead Smith')
+        _write_person(self.root, self.OTHER, 'Other Smith')
+        self.source = self.root / 'sources' / 'notes' / 'rec_s-9999999999.md'
+        self.source.parent.mkdir(parents=True, exist_ok=True)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _claims(self) -> dict:
+        return {c['id']: c for c in read_record(self.source)['claims']}
+
+    def _write(self, roles_block: str) -> None:
+        self.source.write_text(
+            '---\nid: S-9999999999\ntitle: Rec\nsource_type: vital-record\n---\n\n'
+            '## Claims\n```yaml\n'
+            '- value: "a death"\n'
+            '  id: C-3333333333\n'
+            '  type: death\n'
+            f'  persons: [{self.WIDOW}, {self.DEAD}]\n'
+            '  status: accepted\n  reviewed: 2026-01-01\n  confidence: high\n'
+            '  date: 1902-04-17\n  information: primary\n  evidence: direct\n'
+            '  notes: x.\n'
+            + roles_block
+            + '```\n', encoding='utf-8')
+
+    def test_dropping_the_deceased_role_target_is_refused(self) -> None:
+        self._write(f'  roles:\n    deceased: [{self.DEAD}]\n')
+        before = self.source.read_text(encoding='utf-8')
+        result = claim.run_claim(self.root, claim_id='C-3333333333', persons=[self.WIDOW])
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertEqual(result['status'], 'refused')
+        text = ' '.join(m.text for m in result.messages)
+        self.assertIn(self.DEAD, text)
+        self.assertIn('W133', text)
+        self.assertIn('#126', text)
+        # Nothing written.
+        self.assertEqual(self.source.read_text(encoding='utf-8'), before)
+
+    def test_keeping_the_roled_person_in_the_new_list_succeeds(self) -> None:
+        self._write(f'  roles:\n    deceased: [{self.DEAD}]\n')
+        result = claim.run_claim(
+            self.root, claim_id='C-3333333333', persons=[self.DEAD, self.OTHER])
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertEqual(self._claims()['C-3333333333']['persons'], [self.DEAD, self.OTHER])
+
+    def test_multiple_orphaned_targets_are_all_named(self) -> None:
+        self._write(f'  roles:\n    deceased: [{self.DEAD}]\n    witness: [{self.OTHER}]\n')
+        result = claim.run_claim(self.root, claim_id='C-3333333333', persons=[self.WIDOW])
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        text = ' '.join(m.text for m in result.messages)
+        self.assertIn(self.DEAD, text)
+        self.assertIn(self.OTHER, text)
+
+    def test_empty_roles_dict_is_unaffected(self) -> None:
+        self._write('  roles: {}\n')
+        result = claim.run_claim(self.root, claim_id='C-3333333333', persons=[self.WIDOW])
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+
+    def test_no_roles_at_all_is_unaffected(self) -> None:
+        self._write('')
+        result = claim.run_claim(self.root, claim_id='C-3333333333', persons=[self.WIDOW])
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+
+    def test_list_shorthand_roles_never_crashes(self) -> None:
+        self._write('  roles: [spouse, child]\n')
+        result = claim.run_claim(self.root, claim_id='C-3333333333', persons=[self.WIDOW])
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+
+    def test_a_name_link_role_target_is_a_documented_blind_spot(self) -> None:
+        # This file edits one claim straight off sources/, never a built
+        # index/registry (_find_claim_record's own contract) - so there is no
+        # alias map here to resolve a name-link role value through. Same
+        # boundary W133 itself draws (an unresolvable NAME is a different,
+        # pre-existing problem); `fha lint` remains the backstop for this
+        # narrower shape.
+        self._write('  roles:\n    deceased: ["[[Dead Smith]]"]\n')
+        result = claim.run_claim(self.root, claim_id='C-3333333333', persons=[self.WIDOW])
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+
+    def test_dry_run_still_refuses_and_writes_nothing(self) -> None:
+        self._write(f'  roles:\n    deceased: [{self.DEAD}]\n')
+        before = self.source.read_text(encoding='utf-8')
+        result = claim.run_claim(
+            self.root, claim_id='C-3333333333', persons=[self.WIDOW], dry_run=True)
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertEqual(result['status'], 'refused')
+        self.assertEqual(self.source.read_text(encoding='utf-8'), before)
+
+
 # ── Issue #79 point 3: write-time place resolution on `fha claim <C-id>` ────────
 
 class RunClaimFieldEditPlaceResolutionTests(unittest.TestCase):
