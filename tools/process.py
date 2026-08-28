@@ -3015,10 +3015,75 @@ def _restricted_type_of(value) -> str | None:
 # re-parse safety net below still refuses rather than corrupts if this ever
 # over-matches.
 _NODE_PROPERTY = r'(?:&\S+|!\S*)'
+# The indentation digit is captured under two different group names - one
+# per order the chomp/indent indicators can appear in (`indent_a` for
+# chomp-then-digit, `indent_b` for digit-then-chomp) - rather than one
+# shared name, since Python's `re` (unlike the third-party `regex` module)
+# rejects a duplicate group name even across alternation branches that can
+# never both match. `_explicit_block_indent` reads whichever one matched.
 _BLOCK_SCALAR_HEADER_RE = re.compile(
-    r'^(?:' + _NODE_PROPERTY + r'\s+){0,2}[|>](?:[+-]?\d?|\d[+-]?)(\s*#.*)?$'
+    r'^(?:' + _NODE_PROPERTY + r'\s+){0,2}[|>]'
+    r'(?:[+-]?(?P<indent_a>\d)?|(?P<indent_b>\d)[+-]?)'
+    r'(?:\s*#.*)?$'
 )
 _NODE_PROPERTY_TOKEN_RE = re.compile(r'^' + _NODE_PROPERTY + r'$')
+
+
+def _explicit_block_indent(header_match: re.Match) -> int | None:
+    """Return the explicit indentation indicator (the `2` in `|2`, `>2-`, or
+    `|-2`) from an already-matched `_BLOCK_SCALAR_HEADER_RE` header, or None
+    if the header carries no explicit indentation indicator - in which case
+    the content's indentation is established by its own first continuation
+    line instead (issue #169 followup review round 2, post-merge Codex pass
+    on #175 - distinct from this file's own round-1 "finding N" comments,
+    which numbered a different, earlier batch).
+
+    Reading the digit out of the REGEX MATCH - rather than, say, scanning
+    `body` for any digit character - matters because a node property token
+    can itself legally contain digits (`&privacy2`): a bare digit-scan over
+    the whole header body would mistake that anchor's own name for an
+    indentation indicator. The match's `indent_a`/`indent_b` groups are
+    anchored to the block indicator's own position in the grammar, so they
+    can only ever capture the real indentation digit, never a node
+    property's text.
+    """
+    digit = header_match.group('indent_a') or header_match.group('indent_b')
+    return int(digit) if digit else None
+
+
+def _quote_closes_in(text: str, quote: str) -> bool:
+    """True if `text` - everything after a YAML quoted scalar's OPENING
+    quote character, whether that is the rest of the same physical line or
+    an entire later continuation line - contains that scalar's closing
+    `quote` character.
+
+    A quoted scalar can wrap across multiple physical lines (issue #169
+    followup review round 2, post-merge Codex pass on #175: `restricted:
+    "dead` on one line, an indented `name"` closing it on the next - valid
+    hand-authored YAML), so knowing the header line's own quote is
+    unterminated is not enough; each following line has to be checked the
+    same way until the real close is found. The two quote styles disagree
+    on how a LITERAL quote character
+    is escaped inside the scalar, so both rules are honored here: a
+    double-quoted scalar escapes one with a backslash (`\\"`, which does not
+    close the scalar - skip both characters), while a single-quoted scalar
+    escapes one by doubling it (`''`, also skipped as a pair) and gives
+    backslash no special meaning at all.
+    """
+    i = 0
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if quote == '"' and ch == '\\':
+            i += 2
+            continue
+        if ch == quote:
+            if quote == "'" and i + 1 < n and text[i + 1] == "'":
+                i += 2
+                continue
+            return True
+        i += 1
+    return False
 
 
 def _leading_yaml_anchor(value_body: str) -> str | None:
@@ -3086,6 +3151,29 @@ def _frontmatter_key_span(lines: list[str], start: int, end: int, key: str) -> t
     Tracking the established content indentation and stopping the moment a
     non-blank line falls short of it keeps that comment (and anything else
     genuinely outside the scalar) out of the deleted span.
+
+    That "established by its own first continuation line" rule has one
+    exception the YAML grammar itself carves out: an EXPLICIT indentation
+    indicator on the header (`restricted: |2`) declares the content
+    indentation outright, rather than leaving it to be inferred from the
+    first continuation line (issue #169 followup review round 2, post-merge
+    Codex pass on #175). A valid hand-authored scalar can then have its
+    first content line indented deeper than the declared value (say, 4
+    spaces) with a LATER line sitting exactly at the declared indent (2) -
+    both legitimately belong to the scalar, but deriving content_indent from
+    the first line's own 4-space indentation instead of the declared 2 made
+    the second line look outdented and wrongly ended the span early,
+    leaving part of the old value behind after the rewrite. When the header
+    carries an explicit indicator, `content_indent` is seeded from THAT
+    value before the loop runs, instead of from the first continuation
+    line's own indentation.
+
+    A block scalar is not the only way a value can span multiple physical
+    lines: a QUOTED scalar (single- or double-quoted) can also wrap, with
+    the closing quote arriving on a later, indented line (`restricted:
+    "dead` / `name"` - issue #169 followup review round 2). Neither quote
+    style was recognized as continuing before, so the span stopped at the
+    header line and the rewrite left the dangling continuation behind.
     """
     for i in range(start, end):
         raw = lines[i].rstrip('\r')
@@ -3093,8 +3181,9 @@ def _frontmatter_key_span(lines: list[str], start: int, end: int, key: str) -> t
             continue
         body = raw[len(key) + 1:].strip()
         last = i
-        if body == '' or _BLOCK_SCALAR_HEADER_RE.match(body):
-            content_indent = None
+        header_match = _BLOCK_SCALAR_HEADER_RE.match(body)
+        if body == '' or header_match:
+            content_indent = _explicit_block_indent(header_match) if header_match else None
             j = i + 1
             while j < end:
                 nxt = lines[j].rstrip('\r')
@@ -3109,6 +3198,15 @@ def _frontmatter_key_span(lines: list[str], start: int, end: int, key: str) -> t
                 elif indent < content_indent:
                     break       # outdented relative to the scalar's own content - not part of it
                 last = j
+                j += 1
+        elif body and body[0] in ('"', "'") and not _quote_closes_in(body[1:], body[0]):
+            quote = body[0]
+            j = i + 1
+            while j < end:
+                nxt = lines[j].rstrip('\r')
+                last = j
+                if _quote_closes_in(nxt, quote):
+                    break
                 j += 1
         return i, last
     return None
