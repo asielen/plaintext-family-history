@@ -5374,6 +5374,29 @@ class ProseConverterTests(unittest.TestCase):
         self.assertIn('191XX/[..1900]', out3)
         self.assertNotIn('before', out3)
 
+    def test_before_bracket_interval_decade_bound_rejects_qualifier_and_underscore(self):
+        # Third post-merge Codex review of PR #174/#190/#197: the previous
+        # round's `[0-9A-Za-z]`-based boundary still let a decade bound be
+        # followed by a `?`/`~` qualifier or an underscore (neither is a
+        # digit or an ASCII letter) and garble the result -
+        # "[..1900]/191X?" became "before 1900 to 1910s?", even though a
+        # decade never legitimately carries a qualifier in this dialect (an
+        # ordinary year/month/day DOES, via its own pq1/pq2 group, which is
+        # why py1/py2's boundary must still allow one THROUGH after it's
+        # already been consumed - only pdec1/pdec2 reject `?`/`~` outright).
+        # A non-ASCII letter is the same gap by a different route (`\w` is
+        # Unicode-aware, `[0-9A-Za-z]` never was).
+        for suffix in ('?', '~', '_', 'é'):
+            out = site._scrub_internal_encoding(f'Span: [..1900]/191X{suffix}, per the deed.')
+            self.assertIn(f'[..1900]/191X{suffix}', out, suffix)
+            self.assertNotIn('before', out, suffix)
+        # The legitimate case must still translate: an ordinary year DOES
+        # carry a real `?`/`~` qualifier in this dialect, consumed by pq1
+        # before this boundary ever runs.
+        out = site._scrub_internal_encoding('Span: [..1900]/1910?, per the deed.')
+        self.assertIn('before 1900 to 1910', out)
+        self.assertIn('unconfirmed', out)
+
     def test_standalone_before_bracket_still_translates(self):
         # Guards that the finding-5 interval fix doesn't overreach: a
         # bracket that is NOT adjacent to a slash still translates normally.

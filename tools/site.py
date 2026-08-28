@@ -967,12 +967,32 @@ _DATE_BEFORE_RE = re.compile(r'\[\.\.(\d{4})(?:-(\d{2}))?(?:-(\d{2}))?\]')
 # `\d{3}X` only consumes "191X" and the very next character has to be `/`,
 # not another letter, for the alternative to match anywhere) - defense in
 # depth against a future change loosening that trailing requirement.
+#
+# `(?![\w?~])` on `pdec1`/`pdec2` specifically (third post-merge Codex
+# review of PR #174/#190/#197): `[0-9A-Za-z]` was still an incomplete
+# boundary - `[..1900]/191X?` and `[..1900]/191X_` both garbled into
+# plausible-looking prose ("before 1900 to 1910s?"/"...1910s_") because
+# neither `?` nor `_` is an ASCII letter or digit, so the old lookahead let
+# them through clean. A decade bound never carries a `?`/`~` qualifier in
+# this dialect (unlike `py1`/`py2`, which legitimately do - their own
+# `pq1`/`pq2` group already CONSUMES a real qualifier before either
+# boundary check below ever runs, so a decade's trailing `?`/`~` is always
+# unconsumed, invalid trailing junk, never a legitimate part of the token).
+# `\w` is Python's own default (Unicode-aware, no `re.ASCII`) word-character
+# class - it also closes the identical gap for an underscore or a non-ASCII
+# letter, neither of which `[0-9A-Za-z]` ever caught either. `py1`/`py2`
+# move to the same `\w`-based rejection for the identical reason (a
+# trailing underscore or non-ASCII letter after an ordinary year/month/day
+# is exactly as invalid as a trailing ASCII letter always was) - `?`/`~`
+# stay excluded from THEIR lookahead only, since by the time either
+# boundary runs, a real qualifier there has already been consumed by
+# `pq1`/`pq2` and is behind the match, not ahead of it.
 _DATE_BEFORE_SLASH_RE = re.compile(
     r'\[\.\.(?P<by1>\d{4})(?:-(?P<bm1>\d{2}))?(?:-(?P<bd1>\d{2}))?\]'
-    r'/(?:(?P<pdec1>\d{3}X)(?![0-9A-Za-z])'
+    r'/(?:(?P<pdec1>\d{3}X)(?![\w?~])'
     r'|(?P<py1>\d{4})(?:-(?P<pmq1>~)?(?P<pm1>\d{2}))?'
-    r'(?:-(?P<pdq1>~)?(?P<pd1>\d{2}))?(?P<pq1>[?~])?(?![0-9A-Za-z]))'
-    r'|(?<!\d)(?:(?P<pdec2>\d{3}X)(?![0-9A-Za-z])'
+    r'(?:-(?P<pdq1>~)?(?P<pd1>\d{2}))?(?P<pq1>[?~])?(?!\w))'
+    r'|(?<!\d)(?:(?P<pdec2>\d{3}X)(?![\w?~])'
     r'|(?P<py2>\d{4})(?:-(?P<pmq2>~)?(?P<pm2>\d{2}))?'
     r'(?:-(?P<pdq2>~)?(?P<pd2>\d{2}))?(?P<pq2>[?~])?)'
     r'/\[\.\.(?P<by2>\d{4})(?:-(?P<bm2>\d{2}))?(?:-(?P<bd2>\d{2}))?\]',
