@@ -2906,9 +2906,9 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
                             '`roles:` then indented `child: [P-…]` and '
                             '`parent: [P-…, P-…]` lines.'))
 
-            # W132: an accepted death/burial/baptism claim naming 2+ people
-            # with NO roles: map at all - the zero-role-signal shape
-            # `_lib.vital_subjects` (#126, reopened) now answers [] for
+            # W132: an accepted-or-needs-review death/burial/baptism claim
+            # naming 2+ people with NO roles: map at all - the zero-role-signal
+            # shape `_lib.vital_subjects` (#126, reopened) now answers [] for
             # rather than guessing "everyone named is their own record".
             # Birth already has W126 and marriage/divorce already have W125;
             # death/burial/baptism never had a claim-specific warning at all
@@ -2934,7 +2934,39 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
             # persons_with_roles)` alongside `subjects == []` is what tells
             # the two apart without re-deriving vital_subjects' own headcount
             # logic inline.
-            if claim_type in ('death', 'burial', 'baptism') and derives_edges:
+            #
+            # Deliberately WIDER than W125/W126 on status and on `negated`
+            # (#173 follow-up, second round). W125/W126 gate on
+            # `derives_edges` (accepted, non-negated) because they warn about
+            # a TREE EDGE a claim of this shape would otherwise have created -
+            # a `suggested`/`needs-review` claim has not earned one yet (W102
+            # tracks that backlog instead) and a negated claim never derives
+            # one at all (SPEC §8.6). Case 2a's ambiguity is a different
+            # problem: it is the exact shape `xref.py` puts in its own
+            # `unscoped_vital_claim_ids` (see that module's docstring), and
+            # `fha xref` compares both accepted and needs-review claims, of
+            # EITHER polarity. A negated claim naming two zero-role people
+            # ("neither A nor B died, contrary to a rumor") has the identical
+            # bystander-vs-joint-subject ambiguity a positive claim of the
+            # same shape has - negation says the event didn't happen, not
+            # which named person it didn't happen to - so a confirmed
+            # positive death for the bystander can read as "contradicting" a
+            # negation that was never really about them. An earlier version
+            # of this fix (in xref.py) treated a negated case 2a claim as
+            # automatically "about everyone named", modeled on how a
+            # counterpart-less marriage/divorce negation is handled - but
+            # marriage is symmetric (the claim IS about the relationship
+            # BETWEEN the people it names) and a vital event happens to
+            # exactly one person, so that model does not transfer. Matching
+            # `status in ('accepted', 'needs-review')` and dropping the
+            # `negated` check here (instead of reusing `derives_edges`) keeps
+            # W132 and `fha xref`'s own scoping in lockstep, so a human always
+            # has exactly one path - `roles: deceased:`/`child:` - to resolve
+            # an ambiguous claim of this shape, whichever tool surfaces it
+            # first and whichever polarity the claim has.
+            claim_status = str(claim.get('status', '')).strip()
+            w132_in_scope = claim_status in ('accepted', 'needs-review')
+            if claim_type in ('death', 'burial', 'baptism') and w132_in_scope:
                 persons_with_roles = resolve_claim_persons_with_roles(claim, alias_map)
                 subjects = vital_subjects(claim_type, persons_with_roles)
                 has_any_role = any(role for _pid, role in persons_with_roles)

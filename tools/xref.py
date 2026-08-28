@@ -102,19 +102,30 @@ the claim is about; `vital_subjects` returns `[]` for that shape (#126,
 reopened) and the claim enters neither person's bucket - reported instead
 in the Result's `unscoped` list (#172), the same treatment the ambiguous
 marriage/divorce case above already gets, so the human sees it rather than
-watching it vanish from every bucket with no trace. EXCEPT when that
-zero-role, 2+-person claim is `negated: true` (#173 follow-up, mirroring
-the marriage/divorce bullet above): a confirmed "neither of them died"
-has answered the question it's ABOUT for every person it names, it just
-hasn't answered it in the affirmative - so it stays comparable against
-everyone it names (broad bucketing, same as the legacy single-person case)
-instead of being excluded into `unscoped`, where its own roles: repair
-advice would otherwise invert the claim's actual meaning. This scoping is deliberately
-NOT applied to a substantive type (`census`, `residence`, `occupation`, ...):
-those claims legitimately role every person on the record (`head`/
-`household_member`, ...), so `vital_subjects` would find nobody unroled and
-wrongly empty every such claim's bucket archive-wide; substantive types keep
-their original unscoped same-type bucketing.
+watching it vanish from every bucket with no trace. This applies EQUALLY
+when that zero-role, 2+-person claim is `negated: true` (#173 follow-up,
+second round). An earlier version of this fix treated a negated claim of
+this shape as automatically "about everyone named" (modeled on the
+marriage/divorce negation bullet above) - but that model does not transfer:
+a marriage genuinely is a relationship BETWEEN the two people it names, so
+treating a counterpart-less marriage claim as being about both is correct,
+while a vital event (birth, death, baptism, burial) happens to exactly ONE
+person. Negation flips the assertion's polarity, not which named person the
+claim is about - a negated certificate naming the real subject alongside an
+incidental bystander ("it wasn't A who died - B just happened to be there
+too") is exactly as ambiguous as the positive version of the same claim, and
+guessing "definitely about both" let a bystander's own unrelated, accepted
+death claim read as "contradicting" a negation that was never about them.
+So a negated case-2a claim is excluded into `unscoped` exactly like its
+positive counterpart, until `roles: deceased:`/`child:` says who it is
+actually about.
+
+This scoping is deliberately NOT applied to a substantive type (`census`,
+`residence`, `occupation`, ...): those claims legitimately role every
+person on the record (`head`/`household_member`, ...), so `vital_subjects`
+would find nobody unroled and wrongly empty every such claim's bucket
+archive-wide; substantive types keep their original unscoped same-type
+bucketing.
 
 CODE MAP
 --------
@@ -419,31 +430,31 @@ def _run_xref_queries(conn: sqlite3.Connection) -> dict:
     # resolving to no subject either - a claim that DID answer the question,
     # just not in any of these people's favor); testing `not any(role for
     # _, role in persons_with_roles)` alongside it is what W132 does to tell
-    # the two apart, reused here rather than re-derived a third time. Unlike
-    # W132 (accepted, non-negated claims only), this covers `needs-review`
-    # claims too, matching every other comparison `fha xref` makes - a claim
-    # that dropped out of every bucket here is a claim this tool compared
-    # nothing against, whether or not it has cleared review yet.
+    # the two apart, reused here rather than re-derived a third time.
     #
-    # A NEGATED case 2a claim ("neither A nor B died, contrary to a rumor")
-    # is excluded from `unscoped_vital_claim_ids` the same way a negated,
-    # counterpart-less marriage/divorce claim is excluded from
-    # `unscoped_claim_ids` above (#173 follow-up, post-merge review): it is
-    # not an ambiguous certificate that failed to say whose vital it is - a
-    # confirmed ABSENCE of the event, by its own `negated: true`, is already
-    # about every person it names. Routing it into `unscoped_vital_claim_ids`
-    # instead would both drop it from every comparison bucket below (so a
-    # contradicting positive death claim for A never gets flagged) and, if
-    # ever surfaced through `_vital_unscoped_advice`'s roles: repair text,
-    # mislead the owner into thinking the fix is to say who died - inverting
-    # a claim that is precisely about nobody dying. Recorded as `None` in
-    # `claim_vital_subjects` instead, reusing the same "keep the broad
-    # legacy behaviour" signal `vital_subjects` itself uses for a single
-    # unroled person (case 2), so the per-person loop below enters it into
-    # every named person's `(claim['type'],)` bucket - unlike marriage/
-    # divorce, a vital claim's single per-type bucket already IS the "compare
-    # against everything of this type" bucket, so no separate no_counterpart
-    # split is needed here.
+    # Applies identically regardless of the claim's `negated` field (#173
+    # follow-up, second round - see the module docstring's "OTHER VITAL-TYPE
+    # BUCKETING" section for the full reasoning). A first pass at #173's
+    # follow-up let a negated case 2a claim skip this set entirely, modeled
+    # on the marriage/divorce negation bullet above - but a negated claim
+    # naming a genuine subject and an incidental bystander with no `roles:`
+    # map is exactly as ambiguous as the positive version of the same shape;
+    # negation says the event didn't happen, not which named person it
+    # didn't happen TO. Guessing "about everyone named" there let a
+    # bystander's own real, accepted death claim read as contradicting a
+    # negation that was never about them - so this stays a plain headcount
+    # test with no polarity check, and `claim_vital_subjects[cid]` is always
+    # `subjects` as `vital_subjects` returned it, never overridden to `None`.
+    #
+    # Covers both `accepted` and `needs-review` claims, matching every other
+    # comparison `fha xref` makes (the module-level query above already
+    # restricts `claims_by_id` to those two statuses) - a claim that dropped
+    # out of every bucket here is a claim this tool compared nothing
+    # against, whether or not it has cleared review yet. `fha lint`'s W132
+    # matches this same accepted-or-needs-review, either-polarity scope for
+    # its own case 2a check, so a human always has exactly one path (`roles:
+    # deceased:`/`child:`) to resolve an ambiguous claim of this shape,
+    # whichever tool surfaces it first.
     _OTHER_VITAL_TYPES = _VITAL_TYPES - _COUNTERPART_VITAL_TYPES
     claim_vital_subjects: dict[str, list[str] | None] = {}
     unscoped_vital_claim_ids: set[str] = set()
@@ -456,10 +467,7 @@ def _run_xref_queries(conn: sqlite3.Connection) -> dict:
         subjects = vital_subjects(claim['type'], persons_with_roles)
         claim_vital_subjects[cid] = subjects
         if subjects == [] and not any(role for _pid, role in persons_with_roles):
-            if claim['negated']:
-                claim_vital_subjects[cid] = None
-            else:
-                unscoped_vital_claim_ids.add(cid)
+            unscoped_vital_claim_ids.add(cid)
 
     groups = []
     for person_id, claim_ids in sorted(claims_by_person.items()):
@@ -544,25 +552,24 @@ def _run_xref_queries(conn: sqlite3.Connection) -> dict:
                     # person's own birth/death/etc., so it does not enter
                     # their vitals bucket at all (#126's xref twin, same
                     # skip the marriage/divorce branch above already takes
-                    # for spouse_parties). `None` here means one of two
-                    # things: a legacy vital claim naming at most one person
-                    # with no roles: map (or any non-vital substantive type
-                    # never looked up above), which keeps the old broad
-                    # behavior unchanged; or a NEGATED case 2a claim (#173
-                    # follow-up), deliberately overridden to `None` above so
-                    # a confirmed absence stays comparable against everyone
-                    # it names rather than being funneled into the unscoped
-                    # list meant for genuine ambiguity. A NON-negated vital
-                    # claim naming two or more people with no roles: map at
-                    # all is NOT this case: `subjects` stays `[]`, so the
-                    # `continue` above fires for everyone it names (#126,
-                    # reopened) - the claim has not said whose vital it is.
-                    # That zero-role-signal shape (case 2a,
-                    # `unscoped_vital_claim_ids` above) is already reported in
-                    # the Result's `unscoped` list rather than just dropped
-                    # here (#172) - this `continue` still empties every
-                    # person's bucket for it, but the claim itself is no
-                    # longer untraceable.
+                    # for spouse_parties). `None` here is the legacy vital
+                    # claim naming at most one person with no roles: map (or
+                    # any non-vital substantive type never looked up above),
+                    # which keeps the old broad behavior unchanged - there is
+                    # nobody else to be ambiguous about, negated or not
+                    # (`vital_subjects` case 2). A vital claim naming two or
+                    # more people with no roles: map at all - negated or
+                    # positive alike (#173 follow-up, second round) - is NOT
+                    # this case: `subjects` stays `[]`, so the `continue`
+                    # above fires for everyone it names (#126, reopened) -
+                    # the claim has not said whose vital it is, and negation
+                    # only flips whether the event happened, not which named
+                    # person it happened to. That zero-role-signal shape
+                    # (case 2a, `unscoped_vital_claim_ids` above) is already
+                    # reported in the Result's `unscoped` list rather than
+                    # just dropped here (#172) - this `continue` still
+                    # empties every person's bucket for it, but the claim
+                    # itself is no longer untraceable.
                     continue
                 key = (claim['type'],)
                 by_group.setdefault(key, []).append(cid)
