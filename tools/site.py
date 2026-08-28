@@ -2772,6 +2772,20 @@ class _SiteBuilder:
         # record read, and its "unreadable" warning (if any) appended, once
         # per build rather than once per reference.
         self._by_request_person_cache: dict[str, bool] = {}
+        # PR #193 post-merge review, round 3, finding 1 (P2): the "no
+        # profile at all" branch of `_person_is_by_request` phrases its
+        # warning differently depending on `is_origin` - but the VERDICT
+        # cache above is keyed only by pid, so whichever caller (an origin
+        # check, or a per-ref check) reaches a given pid FIRST decides the
+        # wording for every later caller too, via the cache hit. A pid that
+        # is legitimately BOTH some question's `refs:` target AND a
+        # DIFFERENT research file's own claimed owner needs both callers to
+        # see their own correct advice ("fix refs:" vs. "restore the
+        # profile"), not whichever one happened to run first. Tracked
+        # separately, keyed by `(pid, is_origin)`, so the expensive part
+        # (the profile lookup itself) still only happens once per pid, but
+        # each DISTINCT calling context still gets its own warning once.
+        self._by_request_no_profile_warned: set[tuple[str, bool]] = set()
         self.alias_map: dict[str, str] = {}     # lowercased name/stem → canonical id
         self.person_pages: set[str] = set()   # normalized pids that get a page
         self.source_pages: set[str] = set()   # normalized sids that get a page
@@ -3362,12 +3376,20 @@ class _SiteBuilder:
             return True
         pid = normalize_id(str(rec['meta'].get('id') or ''))
         if not pid.startswith('p-'):
+            # PR #193 post-merge review, round 3, finding 2 (P2): this is a
+            # supported, real state (a hand-authored research file whose
+            # filename never carried an id and whose frontmatter never got
+            # one minted either) with an existing, one-command repair - the
+            # message used to stop at naming the problem, leaving the owner
+            # with no way to make her withheld questions reappear.
             self.messages.append(
                 f'WARNING: {file_rel} carries no parseable person id in its '
                 "filename OR its own frontmatter `id:` - there is no way to "
                 'tell whether it belongs to a person who asked to be left out '
                 '(restricted: by-request); its open questions are withheld '
-                'rather than shown without being able to check.'
+                'rather than shown without being able to check. Run `fha '
+                'lint --fix-ids` to mint and record a real id for this file, '
+                'then run `fha site` again.'
             )
             self._by_request_origin_file_cache[file_rel] = True
             return True
@@ -3476,33 +3498,14 @@ class _SiteBuilder:
         re-warning about it, over and over.
         """
         if pid in self._by_request_person_cache:
-            return self._by_request_person_cache[pid]
+            no_profile, verdict = self._by_request_person_cache[pid]
+            if no_profile:
+                self._warn_by_request_no_profile(pid, question_origin, is_origin)
+            return verdict
         row = self.person_meta.get(pid)
         if row is None or not row['path']:
-            origin_desc = question_origin or 'the open-questions log'
-            if is_origin:
-                self.messages.append(
-                    f'WARNING: {origin_desc} is a research companion for '
-                    f'{fmt_id_display(pid)}, but no readable profile record exists '
-                    f"for that id - it is being treated as though that person had "
-                    "asked to be left out (restricted: by-request), so its open "
-                    "questions are withheld rather than shown without being able "
-                    f"to check. Restore or create the profile record for "
-                    f"{fmt_id_display(pid)} that this research file belongs to, "
-                    "or run `fha index` in case the person's id changed and the "
-                    "index is just stale."
-                )
-            else:
-                self.messages.append(
-                    f'WARNING: {fmt_id_display(pid)} is referenced by an open question in '
-                    f'{origin_desc}, but no readable profile record exists for that id - '
-                    "it is being treated as if that person had asked to be left out "
-                    "(restricted: by-request), so the question is withheld rather than "
-                    f"shown without being able to check. Check {origin_desc} for a "
-                    "typo'd P-id in its `refs:` list, or run `fha index` in case "
-                    f"{fmt_id_display(pid)} used to exist and the index is just stale."
-                )
-            self._by_request_person_cache[pid] = True
+            self._by_request_person_cache[pid] = (True, True)
+            self._warn_by_request_no_profile(pid, question_origin, is_origin)
             return True
         try:
             rec = read_record(self.archive_root / row['path'], on_decode_error=_ignore_decode_error)
@@ -3510,6 +3513,11 @@ class _SiteBuilder:
         except Exception as e:   # noqa: BLE001 - any failure is the same failure here
             rec, trouble = None, str(e)
         if trouble is not None or (rec is not None and rec.get('undecodable')):
+            # Unlike the "no profile at all" branch above, this message
+            # never mentions refs:/origin - the profile DOES exist, it just
+            # can't be read - so the same wording is correct for every
+            # caller regardless of is_origin; one warning per pid (not per
+            # (pid, is_origin)) is still the right amount, not a regression.
             name = row['name'] or fmt_id_display(pid)
             self.messages.append(
                 f'WARNING: could not read {row["path"]} to check whether '
@@ -3518,11 +3526,51 @@ class _SiteBuilder:
                 'without being able to check. Fix or restore that file and '
                 'run `fha site` again.'
             )
-            self._by_request_person_cache[pid] = True
+            self._by_request_person_cache[pid] = (False, True)
             return True
         verdict = _restricted_type(rec['meta'].get('restricted')) == 'by-request'
-        self._by_request_person_cache[pid] = verdict
+        self._by_request_person_cache[pid] = (False, verdict)
         return verdict
+
+    def _warn_by_request_no_profile(
+        self, pid: str, question_origin: str | None, is_origin: bool,
+    ) -> None:
+        """The "no readable profile record exists for this pid" warning,
+        phrased for whichever of the two distinct calling contexts asked
+        (PR #193 post-merge review, round 3, finding 1) - emitted at most
+        once per `(pid, is_origin)` pair, never per pid alone: a pid can
+        legitimately be BOTH some question's `refs:` target (needing "fix
+        refs:" advice) AND a different research file's own claimed owner
+        (needing "restore the profile" advice) in the same build, and each
+        context deserves its own correct guidance, not whichever one
+        happened to ask first."""
+        warn_key = (pid, is_origin)
+        if warn_key in self._by_request_no_profile_warned:
+            return
+        self._by_request_no_profile_warned.add(warn_key)
+        origin_desc = question_origin or 'the open-questions log'
+        if is_origin:
+            self.messages.append(
+                f'WARNING: {origin_desc} is a research companion for '
+                f'{fmt_id_display(pid)}, but no readable profile record exists '
+                f"for that id - it is being treated as though that person had "
+                "asked to be left out (restricted: by-request), so its open "
+                "questions are withheld rather than shown without being able "
+                f"to check. Restore or create the profile record for "
+                f"{fmt_id_display(pid)} that this research file belongs to, "
+                "or run `fha index` in case the person's id changed and the "
+                "index is just stale."
+            )
+        else:
+            self.messages.append(
+                f'WARNING: {fmt_id_display(pid)} is referenced by an open question in '
+                f'{origin_desc}, but no readable profile record exists for that id - '
+                "it is being treated as if that person had asked to be left out "
+                "(restricted: by-request), so the question is withheld rather than "
+                f"shown without being able to check. Check {origin_desc} for a "
+                "typo'd P-id in its `refs:` list, or run `fha index` in case "
+                f"{fmt_id_display(pid)} used to exist and the index is just stale."
+            )
 
     def _open_photos(self) -> None:
         """Open the photo index once if it is fresh, for the person photo strips.

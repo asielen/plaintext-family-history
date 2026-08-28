@@ -7217,6 +7217,56 @@ class OpenQuestionsSectionTests(_Base):
         self.assertIn('profile', msg)
         self.assertNotIn('refs', msg, f'origin case still points at refs:: {origin_msgs[0]}')
 
+    def test_same_missing_pid_as_both_a_ref_target_and_an_origin_gets_both_repair_steps(self):
+        # PR #193 post-merge review, round 3, finding 1 (P2): the SAME pid
+        # can legitimately be both a `refs:` target (needing "fix refs:"
+        # advice) AND a different research file's own claimed owner
+        # (needing "restore the profile" advice) within one build. The
+        # shared per-pid verdict cache used to let whichever caller reached
+        # this pid FIRST decide the warning's wording for every later
+        # caller too - so fixing the refs: entry named here would do
+        # nothing to unblock the OTHER file's own withheld questions, with
+        # no warning ever telling the owner that.
+        self._seed_person('p-bbbbbbbbbb', 'Open Otto', surname='Otto')
+        # p-zzzzzzzzzz has no profile record anywhere in this archive.
+        referencing = self.archive_root / 'notes' / 'questions.md'
+        referencing.parent.mkdir(parents=True, exist_ok=True)
+        referencing.write_text(
+            '# Open Questions\n\n'
+            '## Q: A stray reference to a ghost\n'
+            '- origin: human\n'
+            '- status: open\n'
+            '- refs: [P-bbbbbbbbbb, P-zzzzzzzzzz]\n'
+            '- context:\n'
+            '  - (human, 2026-06-01) Should be withheld either way.\n',
+            encoding='utf-8')
+        ghost_research = self.archive_root / 'people' / 'ghost__missing_research_p-zzzzzzzzzz.md'
+        ghost_research.write_text(
+            '---\nid: p-zzzzzzzzzz\ncreated: 2026-06-01\n---\n\n'
+            '## Open Questions\n\n'
+            '## Q: Whose file is this anyway?\n'
+            '- origin: human\n'
+            '- status: open\n'
+            '- refs: [P-bbbbbbbbbb]\n'
+            '- context:\n'
+            '  - (human, 2026-06-01) Also should be withheld - no profile for the owner.\n',
+            encoding='utf-8')
+        res = self._run(linked=True, workbench=False)
+        self.assertTrue(res.ok, res.messages)
+        messages = res['messages']
+        origin_msgs = [
+            m for m in messages
+            if 'p-zzzzzzzzzz' in m.lower() and 'ghost__missing_research' in m
+        ]
+        ref_msgs = [
+            m for m in messages
+            if 'p-zzzzzzzzzz' in m.lower() and 'questions.md' in m
+        ]
+        self.assertEqual(len(origin_msgs), 1, messages)
+        self.assertIn('profile', origin_msgs[0].lower())
+        self.assertEqual(len(ref_msgs), 1, messages)
+        self.assertIn('refs', ref_msgs[0].lower())
+
     def test_id_less_origin_companion_with_many_questions_warns_once_not_per_question(self):
         # PR #193 post-merge review, finding 3 (P2, perf): the ID-less
         # origin fallback (`_origin_id_from_frontmatter_is_by_request`) has
