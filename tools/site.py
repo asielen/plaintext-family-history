@@ -103,8 +103,29 @@ CODE MAP
     _decade_header             - EDTF date → "1880s" decade label (timeline grouping)
 
   Places
+    _place_leading_component   - a place label's text before its first top-level
+                                 comma (parentheticals stripped first) - "Millbrook"
+                                 out of "Millbrook, Dutchess County, New York"
+    _place_leading_parts       - the leading component split on "and" into its
+                                 coordinate names ("Trinidad and Tobago" ->
+                                 ["Trinidad", "Tobago"]), or the component itself
+                                 when it names one place, not a compound
+    _match_place_words         - whole-word, loose-punctuation search for one
+                                 label's words in a sentence; span or None
+    _match_coordinated_place_parts - like `_match_place_words`, but for >= 2
+                                 coordinate parts: requires them to appear in
+                                 order as ONE "part1 ... and ... part2" mention
+                                 (parenthetical elaboration allowed around the
+                                 "and"), not just anywhere independently (#127
+                                 reopened, finding 2 follow-up)
     _place_mention_span        - where a claim's own sentence already names its
                                  place (so the timeline prints it once, linked)
+    _place_trailing_remainder  - the label's droppable qualifier ("Dutchess
+                                 County, New York") to print as a sentence
+                                 continuation when the place has no linkable
+                                 page - the fuller name would otherwise vanish
+                                 with no link to recover it (#127 reopened,
+                                 finding 1 follow-up)
 
   Image derivatives
     _PIL_AVAILABLE             - is Pillow importable?
@@ -1357,13 +1378,154 @@ def _decade_header(date_edtf: str | None) -> str | None:
 
 # ── Places ──────────────────────────────────────────────────────────────────
 
+# A place label's leading hierarchical component (#127 reopened) is bounded
+# by its first top-level COMMA only - "Millbrook" out of "Millbrook, Dutchess
+# County, New York". Any parenthetical is elaboration (a nested list of
+# narrower places), never a new hierarchy level, so it is stripped before
+# that comma search runs: "Rome, Milan, Paris, Lyon" inside "Italy and
+# France (Rome, Milan, Paris, Lyon)" must never be mistaken for the label's
+# OWN top-level comma. See `_place_leading_parts` for what happens to the
+# word "and" inside that leading component.
+_PLACE_PARENTHETICAL_RE = re.compile(r'\([^()]*\)')
+_PLACE_AND_RE = re.compile(r'\band\b', re.IGNORECASE)
+
+
+def _place_leading_component(place_label: str) -> str:
+    """`place_label`'s leading hierarchical component - the text before its
+    first top-level comma (parentheticals stripped first) - or the label
+    unchanged when it has no top-level comma at all. See
+    `_place_leading_parts` and `_place_mention_span`."""
+    label = place_label or ''
+    without_parens = _PLACE_PARENTHETICAL_RE.sub('', label)
+    comma = without_parens.find(',')
+    leading = without_parens[:comma] if comma != -1 else without_parens
+    return leading.strip()
+
+
+def _place_leading_parts(place_label: str) -> list[str]:
+    """The name(s) that must ALL be found - as one coordinated expression,
+    not merely anywhere independently (#127 reopened, finding 2 follow-up;
+    see `_match_coordinated_place_parts`) - before the leading component
+    counts as "already stated" (#127 reopened, adversarial-review
+    follow-up).
+
+    Comma marks a HIERARCHY in this codebase's free-text `place_text`
+    convention (city, county, state - each broader than the last), so
+    `_place_leading_component` already cuts there: dropping the broader
+    units only loses precision, never identity, so a match on the leading
+    piece alone is enough.
+
+    "and" inside that leading component is different - it marks
+    COORDINATION, not hierarchy: two peer entities forming one compound name
+    ("Trinidad and Tobago", "Bosnia and Herzegovina") or a genuine list of
+    two different places ("Italy and France"). Matching just the first of
+    those and suppressing the whole tag does not lose precision, it changes
+    what place is actually named - "born in Trinidad" is not the same fact
+    as "born in Trinidad and Tobago" (there is also a Trinidad, Colorado and
+    a Trinidad, Cuba). So every coordinate part returned here must appear
+    together, in order, as the label's own "part1 ... and ... part2"
+    expression (`_match_coordinated_place_parts`) before suppression is
+    safe; two parts scattered across unrelated clauses of the sentence do
+    not count, and neither does one part missing outright - the full
+    trailing tag still has to print rather than silently drop (or
+    misattribute) the part the sentence never actually named as one place.
+
+    "Italy and France (Rome, Milan, Paris, Lyon)" still resolves to
+    `["Italy", "France"]` - the parenthetical never reaches this function at
+    all, having already been stripped out in `_place_leading_component`."""
+    leading = _place_leading_component(place_label)
+    if not leading:
+        return []
+    if not _PLACE_AND_RE.search(leading):
+        return [leading]
+    parts = [p.strip() for p in _PLACE_AND_RE.split(leading)]
+    return [p for p in parts if p]
+
+
+def _match_place_words(value: str, label: str) -> tuple[int, int] | None:
+    """Whole-word, loose-punctuation search for `label`'s words in `value`
+    (the matching rules `_place_mention_span` documents); span in `value`'s
+    coordinates, or None."""
+    words = re.findall(r'\w+', label or '')
+    if not words or not value:
+        return None
+    pattern = r'\b' + r'\W+'.join(re.escape(w) for w in words) + r'\b'
+    match = re.search(pattern, value, re.IGNORECASE)
+    return match.span() if match else None
+
+
+# A coordinated pair's connective, permissive enough to bridge the shapes
+# already known to occur between two coordinate place names - an elaborating
+# parenthetical sitting right against the "and" ("Italy (Rome, Milan) and
+# France (Paris, Lyon)"), and an Oxford-style comma immediately before it
+# ("Trinidad, and Tobago") - but nothing looser than that: no unrelated
+# clause, no second sentence, may sit between the two names. This is what
+# makes "part1 ... and ... part2" a genuinely bounded, coordinated mention
+# rather than "part1 appears somewhere, part2 appears somewhere else" (#127
+# reopened, finding 2 follow-up).
+#
+# The optional comma closes a real regression (adversarial review, round 4
+# audit): `_match_place_words` - the WHOLE-label matcher `_place_mention_span`
+# always tries first - joins a label's words with a loose `\W+`, so "Trinidad,
+# and Tobago" already matched a bare "Trinidad and Tobago" label outright,
+# never even reaching this function. But the identical sentence, matched
+# against a label carrying a trailing qualifier ("Trinidad and Tobago,
+# Caribbean" - the whole-label match fails on the un-stated ", Caribbean",
+# falling through to THIS coordinated-parts path), used to be silently
+# rejected: the ordinary, everyday comma-before-"and" phrasing that already
+# worked for the simpler label shape stopped working the moment a qualifier
+# was added, with no user-visible reason why - the sentence still repeated
+# the compound name in full instead of suppressing it. The comma allowed
+# here is exactly as narrow as the parenthetical already was: right against
+# "and", nothing else permitted around it, so a real clause boundary
+# (semicolon, "a witness later traveled to") still correctly fails to match.
+_PLACE_AND_GAP_RE = r'(?:\s*\([^()]*\))?\s*,?\s*\band\b\s*(?:\([^()]*\))?\s*'
+
+
+def _match_coordinated_place_parts(value: str, parts: list[str]) -> tuple[int, int] | None:
+    """Whether `parts` (>= 2 coordinate names from `_place_leading_parts`,
+    e.g. `["Trinidad", "Tobago"]`) appear in `value` as ONE coordinated
+    mention - "part1 ... and ... part2 ..." in that order, each part's own
+    words matched whole-word/loose-punctuation exactly as
+    `_match_place_words` does - rather than each part merely appearing
+    somewhere in the sentence with no relationship to the other (#127
+    reopened, finding 2 follow-up).
+
+    Two independent `_match_place_words` calls satisfied Codex's adversarial
+    example - "Born in Trinidad; a witness later traveled to Tobago" finds
+    both "Trinidad" and "Tobago", even though the sentence never once names
+    the compound country "Trinidad and Tobago" as the event's place, only
+    two unrelated islands in two unrelated clauses. Requiring the label's
+    OWN connective word ("and") to actually sit between the two matched
+    names - permitting only the parenthetical elaboration the WORKING
+    compound-list case already relies on (`_PLACE_AND_GAP_RE`) - rules that
+    out while still matching "Italy (Rome, Milan) and France (Paris, Lyon)".
+
+    Returns the span of the FIRST part's own words (same convention
+    `_place_mention_span` has always used for hanging the place-page link),
+    or None when no such coordinated mention exists."""
+    word_patterns = []
+    for part in parts:
+        words = re.findall(r'\w+', part or '')
+        if not words:
+            return None
+        word_patterns.append(r'\b' + r'\W+'.join(re.escape(w) for w in words) + r'\b')
+    pattern = _PLACE_AND_GAP_RE.join(f'({p})' for p in word_patterns)
+    match = re.search(pattern, value, re.IGNORECASE)
+    return match.span(1) if match else None
+
+
 def _place_mention_span(value: str, place_label: str) -> tuple[int, int] | None:
     """Where `value` already names `place_label` in its own words, or None.
 
     The person timeline prints the claim's sentence and then the claim's
     place, so a sentence that already says where it happened ("moved to
-    Millbrook to farm") used to read "... to farm @ Millbrook" (#127).
-    Deciding that needs more than `label in value`:
+    Millbrook to farm") used to read "... to farm @ Millbrook" (#127), then
+    "... to farm at Millbrook, Dutchess County, New York" once that first fix
+    shipped (#127 reopened) - only the connector word had changed; the reader
+    still saw "Millbrook" twice, once in their own sentence and once tacked
+    on after it. Deciding what counts as "already named" needs more than
+    `label in value`:
 
       - Whole words only. "Hampton" is a substring of "Southampton", and a
         plain containment test would read "married at Southampton" as already
@@ -1373,21 +1535,127 @@ def _place_mention_span(value: str, place_label: str) -> tuple[int, int] | None:
         because one place gets written both ways in practice: the registry
         says "Millbrook, NY" and the sentence says "Millbrook NY".
 
-    The whole label has to appear. A sentence naming only part of it ("moved
-    to Millbrook", place "Millbrook, Dutchess County, New York") is not
-    redundant - the rest of the label is information the reader does not have
-    yet - so the timeline still prints the fuller place after the sentence.
+    A match against the WHOLE label is tried first - unchanged from #127's
+    original fix, and still the only test a single-component label (no
+    comma, no "and") ever gets. When that fails, a second try uses only the
+    label's LEADING component (`_place_leading_component`): "Millbrook" out
+    of "Millbrook, Dutchess County, New York", or "Italy" and "France" out
+    of "Italy and France (Rome, Milan, Paris, Lyon)" (see
+    `_place_leading_parts`). This is what #127 reopened changes - a sentence
+    naming just that leading, reader-recognizable name now counts as already
+    naming the place, even when a trailing qualifier (a county, a state)
+    never gets restated in the tag. Dropping that qualifier from the
+    timeline SENTENCE is no longer a dropped FACT (finding 1 follow-up):
+    the matched words carry the place-page link when the place is
+    registered and linkable (below), and when it is not,
+    `_place_trailing_remainder` prints the qualifier itself as a plain
+    continuation of the sentence instead of a duplicate "at Placename" -
+    see that function for why a free-text `place_text` label's own first
+    comma is a reliable enough boundary to carve a "leading name" from a
+    "droppable qualifier" after all, contrary to this fix's own earlier,
+    now-superseded call that no such boundary could be trusted.
+
+    That comma-hierarchy handling breaks down, though, when the leading
+    component itself coordinates two peer names with "and" - "Trinidad and
+    Tobago", "Bosnia and Herzegovina" - rather than naming one place with a
+    trailing qualifier (adversarial-review follow-up to #127 reopened). A
+    sentence that says only "born in Trinidad" does not already name
+    "Trinidad and Tobago" - Trinidad and Tobago is one specific country, and
+    "Trinidad" alone is a different, ambiguous place (there is also a
+    Trinidad, Colorado and a Trinidad, Cuba). Suppressing the tag there
+    would not trim a qualifier, it would silently rewrite the archive's own
+    recorded country into a different one. So when the leading component
+    contains "and", EVERY coordinate part it names (`_place_leading_parts`)
+    must appear together as one coordinated "part1 ... and ... part2"
+    mention (`_match_coordinated_place_parts`, finding 2 follow-up) before
+    suppression is safe - "Italy and France (Rome, Milan, Paris, Lyon)"
+    only suppresses when the sentence names both "Italy" and "France" as
+    that one coordinated expression, not when the two names merely occur
+    somewhere, anywhere, in the sentence's unrelated clauses (Codex's
+    adversarial example: "Born in Trinidad; a witness later traveled to
+    Tobago" - two independent mentions of two different, unrelated facts,
+    not one mention of the compound country). If the coordinated mention
+    is not found at all, the full trailing tag still prints; printing a
+    qualifier the reader can already half-guess is a far smaller cost than
+    silently dropping - or misattributing - half of a two-part place name.
+    A coordinated compound also has no natural "remainder" the way a
+    hierarchy does (there is no sensible "born in Trinidad, and Tobago" the
+    way there is a "moved to Millbrook, Dutchess County, New York"), so
+    this shape is always either fully suppressed or fully printed, never
+    given a remainder - see `_place_trailing_remainder`.
 
     Returning the span rather than a bare yes/no is what lets the caller hang
     the place-page link on the words already in the sentence instead of
-    losing that link along with the repeated place name.
+    losing that link along with the repeated place name. When the leading
+    component coordinates several parts, the link hangs on the first one -
+    the same span this function has always returned for a leading-component
+    match.
     """
-    words = re.findall(r'\w+', place_label or '')
-    if not words or not value:
+    match = _match_place_words(value, place_label)
+    if match is not None:
+        return match
+    parts = _place_leading_parts(place_label or '')
+    if not parts or parts == [(place_label or '').strip()]:
         return None
-    pattern = r'\b' + r'\W+'.join(re.escape(w) for w in words) + r'\b'
-    match = re.search(pattern, value, re.IGNORECASE)
-    return match.span() if match else None
+    if len(parts) == 1:
+        return _match_place_words(value, parts[0])
+    return _match_coordinated_place_parts(value, parts)
+
+
+def _place_trailing_remainder(value: str, place_label: str,
+                               mention: tuple[int, int] | None, linkable: bool) -> str:
+    """The text to print as a sentence CONTINUATION in place of the
+    fully-suppressed trailing place tag, when suppressing the whole tag
+    would otherwise erase real information the reader has no other way to
+    recover (#127 reopened, finding 1 follow-up).
+
+    `_place_mention_span` suppresses the trailing tag once a sentence
+    already names a place's leading component ("Millbrook" out of
+    "Millbrook, Dutchess County, New York") - safe when the place is
+    registered and `linkable`, because the fuller label is one click away
+    on the place's own page (`_timeline_value_html` hangs that link on the
+    matched words). But most one-off residence/travel claims never get a
+    place formally registered (SPEC.md), so for an UNLINKABLE claim, full
+    suppression does not trim a qualifier - it deletes "Dutchess County,
+    New York" from the archive's own record with no link anywhere to get
+    it back. Printing "..., Dutchess County, New York" is the smaller
+    cost: the reader's own sentence still doesn't repeat "Millbrook", and
+    the county/state the record actually contains stays on the page.
+
+    This only ever fires for the comma-HIERARCHY shape. `place_label`'s
+    "leading name + droppable qualifier" structure only exists once its
+    first top-level comma has been found (`_place_leading_component`) - the
+    complementary remainder is everything from that comma onward,
+    parentheticals stripped the same way the leading component strips them
+    (so a coordination's own elaboration list, e.g. "(Rome, Milan, Paris,
+    Lyon)", is never mistaken for a hierarchy's trailing qualifier). A
+    label whose leading component instead coordinates peer names with
+    "and" ("Trinidad and Tobago") has no such natural remainder - you
+    cannot sensibly continue a sentence with "born in Trinidad, and
+    Tobago" the way you can continue one with "moved to Millbrook,
+    Dutchess County, New York" - so that shape keeps the prior commit's
+    all-or-nothing behavior unchanged: fully suppressed when the whole
+    coordinated expression is found, fully printed otherwise.
+
+    Returns:
+      - '' when there is nothing to add: no mention at all (the caller
+        prints the full tag), the place IS linkable (the old behavior:
+        full suppression, fuller name one click away), the sentence
+        already stated the WHOLE label verbatim (nothing left to add), or
+        the leading component coordinates peer names with "and" (no clean
+        remainder for that shape - see above).
+      - the label's own remainder text, comma included (e.g. ", Dutchess
+        County, New York"), for an unlinkable claim whose sentence names
+        only the label's leading hierarchical component."""
+    if mention is None or linkable:
+        return ''
+    if _match_place_words(value, place_label) is not None:
+        return ''   # the whole label was already stated verbatim
+    if len(_place_leading_parts(place_label or '')) != 1:
+        return ''   # "and"-coordination: no clean remainder for this shape
+    without_parens = _PLACE_PARENTHETICAL_RE.sub('', place_label or '')
+    comma = without_parens.find(',')
+    return without_parens[comma:].strip() if comma != -1 else ''
 
 
 # ── Image derivatives ─────────────────────────────────────────────────────────
@@ -3038,8 +3306,20 @@ class _SiteBuilder:
         text (free-text `place_text` with no registry id stays unlinked). Returns
         a Markup so the template renders the link; an empty Markup when there is
         no place at all (so `{% if %}` guards still treat it as absent). Mirrors
-        the `[L-id]`-token link in prose - the symmetry the review flagged."""
-        label = self._place_label(place_text, place_id)
+        the `[L-id]`-token link in prose - the symmetry the review flagged.
+
+        `label` is scrubbed the same way every other reader-facing free-text
+        field on this page already is (#140, adversarial review round 4
+        audit): `place_text` is ordinary hand-typed prose - "Millbrook,
+        Dutchess County, New York" - not exempt from the same accidental
+        leak `_scrub_internal_encoding` exists to catch everywhere else (a
+        pasted-in bare citation id, an unedited `[..YYYY]` bracket). This
+        was the one reader-facing free-text field on this page that never
+        ran through it - `value_raw`/`place_text_raw`'s WORKBENCH edit-form
+        siblings deliberately stay unscrubbed (the human must see their real
+        stored text to edit it), but this is the read-only render, not an
+        edit form, so it gets no such exemption."""
+        label = _scrub_internal_encoding(self._place_label(place_text, place_id))
         if not label:
             return self._markup('')
         if place_id and place_id in self.place_pages:
@@ -4034,12 +4314,30 @@ class _SiteBuilder:
           - #127: each entry carries `place_redundant` - true when the claim's
             own value text already names the place naturally ("moved to
             Millbrook to farm"), decided by `_place_mention_span` (whole
-            words, loose punctuation - not a bare substring test). The
-            template only appends a trailing place mention when this is
-            false, so a place already stated in the sentence is never doubled
-            up as a bare "@ Place" tag. When it IS stated in the sentence,
-            `_timeline_value_html` moves the place-page link onto those
-            words, so suppressing the repeat never costs the reader the link.
+            words, loose punctuation, and - #127 reopened - a match on just
+            the place label's LEADING component counts too, so "resided at
+            the family home" does not get a redundant trailing "at the
+            family home, Cook County, Illinois"; see that function's
+            docstring for the full reasoning). The template only appends a
+            trailing place mention when this is false, so a place already
+            stated in the sentence is never doubled up as a bare "@ Place"
+            tag (or, post-#127-reopened, as a same-named "at Place" repeat
+            either). When it IS stated in the sentence, `_timeline_value_html`
+            moves the place-page link onto those words, so suppressing the
+            repeat never costs the reader the link when the place is
+            registered and linkable. Most one-off residence/travel claims
+            never get a place registered at all (SPEC.md), so `place_id in
+            self.place_pages` also gates a SECOND field, `place_remainder`
+            (#127 reopened, finding 1 follow-up): for an unlinkable claim,
+            `_place_trailing_remainder` returns the label's own droppable
+            qualifier (e.g. ", Dutchess County, New York") instead of
+            nothing, and the template prints it as a plain continuation of
+            the sentence rather than either a full duplicate "at Placename"
+            or - the prior commit's own behavior - silently dropping the
+            qualifier with no page to recover it from. A coordinated
+            compound ("Trinidad and Tobago") has no such remainder and
+            keeps the prior commit's all-or-nothing behavior regardless of
+            `place_id` - see `_place_trailing_remainder`'s docstring.
           - #128: the SQL sorts rows by `date_min` (a widened, sortable value)
             but decade grouping reads `date_edtf` via `_decade_header` - a
             DIFFERENT field, deliberately (see that function's docstring): an
@@ -4100,18 +4398,26 @@ class _SiteBuilder:
                     groups.append({'decade': None if current == '\x00' else current, 'entries': entries})
                 current = decade
                 entries = []
-            place_label = self._place_label(r['place_text'], r['place_id'])
+            # Scrubbed the same as value_text below (adversarial review,
+            # round 4 audit): place_label feeds `_place_trailing_remainder`,
+            # whose OWN output prints straight onto the page as a sentence
+            # continuation (person.html: `{{ e.place_remainder }}`) with no
+            # further scrub of its own - an unscrubbed place_text carrying a
+            # bare citation id or date bracket reached the reader unchanged.
+            place_label = _scrub_internal_encoding(self._place_label(r['place_text'], r['place_id']))
             # #140: scrub BEFORE the place-mention span is computed, so a
             # length change from stripping a claim-id parenthetical or
             # expanding a `[..YYYY]` date never desyncs `mention`'s indices
             # from the text `_timeline_value_html` actually renders.
             value_text = _scrub_internal_encoding(r['value'] or '')
             mention = _place_mention_span(value_text, place_label)
+            place_linkable = bool(r['place_id']) and r['place_id'] in self.place_pages
             entries.append({
                 'date': r['date_edtf'] or '(undated)', 'type': r['type'],
                 'value': self._timeline_value_html(value_text, mention, r['place_id'], page_dir),
                 'place': self._place_html(r['place_text'], r['place_id'], page_dir),
                 'place_redundant': mention is not None,
+                'place_remainder': _place_trailing_remainder(value_text, place_label, mention, place_linkable),
                 'source_html': self._markup(self._source_link(r['source_id'], page_dir)) if r['source_id'] else '',
                 'status': r['status'], 'confidence': r['confidence'] or '',
                 'parked': r['reviewed'] or '',

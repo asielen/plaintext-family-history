@@ -659,6 +659,251 @@ class PersonPageTests(_Base):
         self.assertIn('Moved to Millbrook NY to farm', html)
         self.assertNotIn('at Millbrook, NY', html)
 
+    def test_timeline_place_tag_omitted_when_sentence_states_only_the_leading_name(self):
+        # #127 reopened (reopening comment example 1, paraphrased/genericized
+        # per this project's convention of never using real family data in
+        # test fixtures): PR #134's fix only changed the connector from "@"
+        # to "at" - it never touched the underlying rule that the WHOLE
+        # place label had to appear before the trailing tag was suppressed.
+        # A sentence naming just a place's leading/common name (here, the
+        # city) while the registry's fuller label adds a state qualifier
+        # still read as "...in Millbrook at Millbrook, New York" - the city
+        # named twice.
+        #
+        # Finding 1 follow-up: this claim carries no place_id (the common
+        # case - most one-off claims never get a place registered), so
+        # fully suppressing the trailing tag would delete "New York" from
+        # the page with no link anywhere to recover it. The fix instead
+        # prints the label's own remainder - everything from its first
+        # comma onward - as a plain continuation of the sentence, not a
+        # second "at Millbrook, New York" repeat.
+        # ctype is deliberately NOT one of the vital types (_person_summary's
+        # 'birth'/'death'/'marriage'/'baptism'/'burial') - those get their own
+        # separate, structured summary row that also prints the place, which
+        # would double-count "Millbrook" for a reason unrelated to this bug.
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley')
+        self._seed_source('s-1111111111', 'Record', people=('p-aaaaaaaaaa',))
+        self._seed_claim('c-1111111111', 's-1111111111', 'event',
+                         'The birth certificate was delivered at the Grange Hall '
+                         'in Millbrook', status='accepted', date_edtf='1900',
+                         place_text='Millbrook, New York', persons=('p-aaaaaaaaaa',))
+        self._run(linked=True)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('The birth certificate was delivered at the Grange Hall '
+                      'in Millbrook, New York', html)     # remainder appended, not dropped
+        self.assertNotIn('at Millbrook, New York', html)  # never a second, separate "at" tag
+        self.assertEqual(html.count('Millbrook'), 1)      # named once, not doubled
+
+    def test_timeline_place_tag_shows_remainder_for_unlinked_hierarchy_place(self):
+        # Finding 1 (P1, #127 reopened round-3 review): a genealogist writes
+        # "Moved to Millbrook to farm" for a claim whose actual place is
+        # "Millbrook, Dutchess County, New York" - but most one-off
+        # residence/travel claims never get a place formally registered
+        # (SPEC.md), so this claim carries `place_text` only, no
+        # `place_id`. Before this fix, the prior commit's suppression
+        # logic dropped the trailing tag entirely once it recognized
+        # "Millbrook" in the sentence - Dutchess County and New York
+        # vanished from the page with no link anywhere to recover them,
+        # a real loss of information the record actually contains. The
+        # fix prints the label's own remainder as a plain continuation of
+        # the sentence instead.
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley')
+        self._seed_source('s-1111111111', 'Record', people=('p-aaaaaaaaaa',))
+        self._seed_claim('c-1111111111', 's-1111111111', 'residence',
+                         'Moved to Millbrook to farm', status='accepted',
+                         date_edtf='1900', place_text='Millbrook, Dutchess County, New York',
+                         persons=('p-aaaaaaaaaa',))
+        self._run(linked=True)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('Moved to Millbrook to farm, Dutchess County, New York', html)
+        self.assertNotIn('at Millbrook, Dutchess County, New York', html)  # not a second "at" repeat
+        self.assertEqual(html.count('Millbrook'), 1)      # named once, not doubled
+
+    def test_timeline_place_tag_omitted_when_sentence_states_the_home_name(self):
+        # #127 reopened (reopening comment example 2, paraphrased): a
+        # sentence already naming "the family home" still grew a trailing
+        # "at the family home, Cook County, Illinois" - the home named
+        # twice, once naturally and once as the leading words of the
+        # "new" fact being appended.
+        #
+        # Finding 1 follow-up: no place_id here either, so the county/state
+        # qualifier is not simply dropped - it prints as a continuation
+        # tacked onto the end of the sentence (where the old trailing tag
+        # used to go), not re-inserted next to "the family home" itself.
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley')
+        self._seed_source('s-1111111111', 'Record', people=('p-aaaaaaaaaa',))
+        self._seed_claim('c-1111111111', 's-1111111111', 'residence',
+                         'Resided at the family home as of the 1920 census, at age 79',
+                         status='accepted', date_edtf='1920',
+                         place_text='the family home, Cook County, Illinois',
+                         persons=('p-aaaaaaaaaa',))
+        self._run(linked=True)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('Resided at the family home as of the 1920 census, at age 79, '
+                      'Cook County, Illinois', html)             # remainder continues the sentence
+        self.assertNotIn('at the family home, Cook County, Illinois', html)  # not a second "at" repeat
+        self.assertEqual(html.count('the family home'), 1)       # named once, not doubled
+
+    def test_timeline_place_tag_omitted_for_reordered_compound_place_list(self):
+        # #127 reopened (reopening comment example 3, paraphrased): a
+        # "traveled through" sentence already spells out both countries and
+        # all their cities, but the trailing tag repeated the exact same
+        # place list verbatim - "...and France (Paris, Lyon) in 1920 ... at
+        # Italy and France (Rome, Milan, Paris, Lyon)". This is not the
+        # punctuation-only gap #127's original fix handled (a real word,
+        # "and", separates the two countries in the sentence, and the two
+        # sides are in different positions relative to their city lists), so
+        # the old whole-label contiguous match could never bridge it. Once
+        # the sentence already states the label's leading name ("Italy"),
+        # the whole tag - reordering and all - is redundant. (Finding 1
+        # follow-up: an "and"-coordinated compound has no natural
+        # "remainder" the way a hierarchy does, so this shape keeps its
+        # full-suppress-when-matched behavior even with no place_id here.)
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley')
+        self._seed_source('s-1111111111', 'Record', people=('p-aaaaaaaaaa',))
+        self._seed_claim('c-1111111111', 's-1111111111', 'event',
+                         'Traveled through Italy (Rome, Milan) and France (Paris, Lyon) '
+                         'in 1920', status='accepted', date_edtf='1920',
+                         place_text='Italy and France (Rome, Milan, Paris, Lyon)',
+                         persons=('p-aaaaaaaaaa',))
+        self._run(linked=True)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('Traveled through Italy (Rome, Milan) and France (Paris, Lyon) in 1920', html)
+        self.assertNotIn('at Italy and France (Rome, Milan, Paris, Lyon)', html)
+        self.assertEqual(html.count('Italy'), 1)   # named once, not doubled
+
+    def test_timeline_place_tag_not_omitted_for_and_conjoined_place_name(self):
+        # Adversarial-review follow-up to #127 reopened: the leading-component
+        # fallback above treats a comma and the word "and" as the same kind of
+        # split, both marking a droppable trailing qualifier. That is right for
+        # a hierarchy (a county, a state - broader, so dropping it only loses
+        # precision) but wrong for a coordinate pair like "Trinidad and
+        # Tobago", where the two names TOGETHER are one country's name -
+        # "Trinidad" alone is a different, ambiguous place (there is also a
+        # Trinidad, Colorado and a Trinidad, Cuba). A sentence that only says
+        # "Born in Trinidad" does not already name "Trinidad and Tobago", so
+        # the trailing tag must still print in full rather than silently
+        # narrowing the record's own country of origin down to one island.
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley')
+        self._seed_source('s-1111111111', 'Record', people=('p-aaaaaaaaaa',))
+        self._seed_claim('c-1111111111', 's-1111111111', 'immigration',
+                         'Born in Trinidad', status='accepted', date_edtf='1900',
+                         place_text='Trinidad and Tobago', persons=('p-aaaaaaaaaa',))
+        self._run(linked=True)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('Born in Trinidad', html)
+        self.assertIn('at Trinidad and Tobago', html)   # full tag still prints
+        self.assertIn('Tobago', html)                   # never silently dropped
+
+    def test_timeline_place_tag_not_omitted_when_and_conjoined_part_unmentioned(self):
+        # Same root cause as the Trinidad/Tobago case above, on the exact
+        # shape #127 reopened's own compound-list fix
+        # (test_timeline_place_tag_omitted_for_reordered_compound_place_list,
+        # above) was designed for: that test's sentence names BOTH countries
+        # ("...Italy (Rome, Milan) and France (Paris, Lyon)..."), which was
+        # the only shape it ever exercised. A sentence naming only ONE side
+        # of an "and"-joined label ("Traveled to Italy", nothing about
+        # France) must not have "France" suppressed along with the
+        # already-stated "Italy" - only when EVERY coordinate part is
+        # actually found in the sentence is the whole tag safe to drop.
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley')
+        self._seed_source('s-1111111111', 'Record', people=('p-aaaaaaaaaa',))
+        self._seed_claim('c-1111111111', 's-1111111111', 'event',
+                         'Traveled to Italy in 1920', status='accepted', date_edtf='1920',
+                         place_text='Italy and France', persons=('p-aaaaaaaaaa',))
+        self._run(linked=True)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('Traveled to Italy in 1920', html)
+        self.assertIn('at Italy and France', html)   # full tag still prints
+        self.assertIn('France', html)                # never silently dropped
+
+    def test_timeline_place_tag_not_omitted_for_scattered_and_conjoined_mentions(self):
+        # Codex's adversarial follow-up to #127 reopened (finding 2): the
+        # coordinate-part check above only required each part of an
+        # "and"-joined label to be found SOMEWHERE in the sentence
+        # independently, with no requirement that they name the SAME event's
+        # place together. "Born in Trinidad; a witness later traveled to
+        # Tobago" satisfies two independent searches for "Trinidad" and
+        # "Tobago" even though the sentence never once identifies the
+        # compound country "Trinidad and Tobago" as the birthplace - it
+        # names one island as the birthplace and a wholly different,
+        # unrelated island in an unrelated later clause. The parts must
+        # form one coordinated "part1 ... and ... part2" mention, not two
+        # scattered, unrelated ones, before the trailing tag is safe to
+        # suppress.
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley')
+        self._seed_source('s-1111111111', 'Record', people=('p-aaaaaaaaaa',))
+        self._seed_claim('c-1111111111', 's-1111111111', 'immigration',
+                         'Born in Trinidad; a witness later traveled to Tobago',
+                         status='accepted', date_edtf='1900',
+                         place_text='Trinidad and Tobago', persons=('p-aaaaaaaaaa',))
+        self._run(linked=True)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('Born in Trinidad; a witness later traveled to Tobago', html)
+        self.assertIn('at Trinidad and Tobago', html)   # full tag still prints, not suppressed
+
+    def test_timeline_place_tag_omitted_for_oxford_comma_and_conjoined_mention(self):
+        # Adversarial review, round 4 audit: an ordinary Oxford-style comma
+        # before "and" ("Trinidad, and Tobago") already matched fine against
+        # a BARE compound label with no trailing qualifier - the whole-label
+        # matcher joins words with a loose "any punctuation" gap. But the
+        # identical phrasing, against a label carrying a trailing qualifier
+        # ("Trinidad and Tobago, Caribbean" - falling through to the
+        # coordinate-parts matcher since the whole label is never fully
+        # stated), used to be silently rejected: the connective regex
+        # allowed an elaborating parenthetical before "and" but not a plain
+        # comma, so the tag never suppressed and the compound name printed
+        # twice for no reason the sentence's own wording explains.
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley')
+        self._seed_source('s-1111111111', 'Record', people=('p-aaaaaaaaaa',))
+        self._seed_claim('c-1111111111', 's-1111111111', 'immigration',
+                         'Born in Trinidad, and Tobago', status='accepted', date_edtf='1900',
+                         place_text='Trinidad and Tobago, Caribbean', persons=('p-aaaaaaaaaa',))
+        self._run(linked=True)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('Born in Trinidad, and Tobago', html)
+        self.assertNotIn('at Trinidad and Tobago, Caribbean', html)
+        self.assertEqual(html.count('Trinidad'), 1)   # named once, not doubled
+
+    def test_timeline_place_text_internal_encoding_is_scrubbed_from_the_trailing_remainder(self):
+        # Adversarial review, round 4 audit (#140's own concern, extended):
+        # every OTHER reader-facing free-text field on this page already
+        # runs through `_scrub_internal_encoding` before it can reach a
+        # rendered page - a claim's `value` text does, a source's prose
+        # does - but `place_text` reached the trailing-remainder text (the
+        # unlinkable-hierarchy continuation this branch's own earlier round
+        # introduced) completely unscrubbed. A bare citation-id
+        # parenthetical or an unedited `[..YYYY]` date bracket accidentally
+        # left in place_text used to leak straight onto the page.
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley')
+        self._seed_source('s-1111111111', 'Record', people=('p-aaaaaaaaaa',))
+        self._seed_claim('c-1111111111', 's-1111111111', 'residence',
+                         'Moved to Millbrook to farm', status='accepted',
+                         date_edtf='1900',
+                         place_text='Millbrook (C-4kx9m2p7qr), Dutchess County, [..1900]',
+                         persons=('p-aaaaaaaaaa',))
+        self._run(linked=True)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('Dutchess County, before 1900', html)
+        self.assertNotIn('C-4kx9m2p7qr', html)
+        self.assertNotIn('[..1900]', html)
+
+    def test_place_cell_internal_encoding_is_scrubbed(self):
+        # Same leak, the OTHER reader-facing surface `_place_html` feeds
+        # (the claims-table "place" cell, distinct from the timeline's
+        # remainder text above) - a claim whose place is linkable (so the
+        # timeline tag suppresses instead of printing a remainder) still
+        # shows its place in the source's own claims table.
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley')
+        self._seed_source('s-1111111111', 'Record', people=('p-aaaaaaaaaa',))
+        self._seed_claim('c-1111111111', 's-1111111111', 'residence',
+                         'Moved somewhere to farm', status='accepted', date_edtf='1900',
+                         place_text='Somewhere (C-4kx9m2p7qr)', persons=('p-aaaaaaaaaa',))
+        self._run(linked=True)
+        html = self._read('sources/s-1111111111.html')
+        self.assertNotIn('C-4kx9m2p7qr', html)
+        self.assertIn('Somewhere', html)
+
     def test_timeline_strips_bare_claim_id_parenthetical(self):
         # #140: same rendering bug as the Biography case, on the Timeline's
         # separate render path (_timeline_value_html) - a bare `(C-xxxxxxxxxx)`
@@ -2334,12 +2579,28 @@ class PlacePageTests(_Base):
         self.assertIn('Married at Southampton at '
                       '<a href="../places/l-1111111111.html">Hampton</a>', person_html)
 
-    def test_timeline_place_partly_named_by_the_sentence_still_renders_in_full(self):
-        # The suppression is conservative on purpose: a sentence naming only
-        # the town ("Moved to Millbrook") does not make the registry's fuller
-        # "Millbrook, Dutchess County, New York" redundant - the county and
-        # state are information the reader does not have yet - so the full
-        # place still follows the sentence, linked.
+    def test_timeline_place_partly_named_by_the_sentence_is_still_redundant(self):
+        # #127 reopened: this used to be the OLD, too-strict policy's pinned
+        # case - a sentence naming only the town ("Moved to Millbrook") did
+        # NOT make the registry's fuller "Millbrook, Dutchess County, New
+        # York" redundant, so the timeline printed "Moved to Millbrook at
+        # Millbrook, Dutchess County, New York" - the reader sees "Millbrook"
+        # twice, which is exactly the reopened bug report's shape (a city or
+        # a home named once naturally, then repeated verbatim as the leading
+        # word of the trailing tag). The county/state qualifier is real new
+        # information, but forcing it onto the sentence is worse than the
+        # near-duplicate it produces; the fuller name is still one click away
+        # via the place-page link, which the caller moves onto "Millbrook" in
+        # the sentence instead of losing it.
+        #
+        # Finding 1 follow-up (#127 reopened round-3 review): this is the
+        # REGISTERED, linkable counterpart to
+        # test_timeline_place_tag_shows_remainder_for_unlinked_hierarchy_place
+        # above, which seeds the identical label/sentence with no place_id.
+        # Full suppression stays correct here specifically because the
+        # place page exists to send the reader to - see
+        # `_place_trailing_remainder`'s docstring for why that link is what
+        # makes suppression safe only in this (place_id-present) case.
         self._seed_person('p-aaaaaaaaaa', 'Jane')
         self._seed_source('s-1111111111', 'Census', people=('p-aaaaaaaaaa',))
         self._seed_place('l-1111111111', 'Millbrook, Dutchess County, New York')
@@ -2347,8 +2608,10 @@ class PlacePageTests(_Base):
                                   'Moved to Millbrook', ('p-aaaaaaaaaa',))
         self._run(linked=True)
         person_html = self._read('persons/p-aaaaaaaaaa.html')
-        self.assertIn('Moved to Millbrook at <a href="../places/l-1111111111.html">'
-                      'Millbrook, Dutchess County, New York</a>', person_html)
+        self.assertIn('Moved to <a href="../places/l-1111111111.html">Millbrook</a>',
+                      person_html)
+        self.assertNotIn('Dutchess County', person_html)   # qualifier not force-printed
+        self.assertEqual(person_html.count('Millbrook'), 1)   # named once, not doubled
 
     def test_freetext_place_without_id_is_not_linked(self):
         self._seed_person('p-aaaaaaaaaa', 'Jane')
