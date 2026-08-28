@@ -1271,6 +1271,24 @@ def format_yaml_dependency_error() -> str:
     )
 
 
+def yaml_available() -> bool:
+    """Whether PyYAML actually imported (see the module-level `import yaml` guard above).
+
+    `fha install`/`fha update-tools` are deliberately usable before PyYAML is on the
+    machine (fha.py intercepts them ahead of the bulk import block that would otherwise
+    crash), so they cannot simply call `_require_yaml()`/`load_fha_yaml(strict=True)` and
+    fail loudly like every other tool - a hard stop here would break the one command a
+    fresh install needs to run first. But `load_fha_yaml()`'s permissive `{}` fallback
+    means a caller cannot tell "no fha.yaml" apart from "fha.yaml exists but couldn't be
+    read because PyYAML is missing" - and for `roots:`-driven behavior (#124's external
+    asset root skip/prune) that difference matters: silently treating "can't check" as
+    "nothing configured" can leave a genealogist's external `roots:` unrecognized with no
+    explanation. Callers that need to tell the two apart check this first and say so
+    plainly, rather than let the gap stay silent.
+    """
+    return yaml is not None
+
+
 def archive_root_missing_message() -> str:
     """Return the one archive-root recovery message shared by every entry point."""
     return (

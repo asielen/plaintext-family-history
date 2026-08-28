@@ -1,7 +1,7 @@
 {
   "manifest_version": "1",
   "spec_version": "1.2",
-  "generated": "2026-08-27",
+  "generated": "2026-08-28",
   "files": [
     {
       "path": ".claude/skills/README.md",
@@ -420,7 +420,7 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "f85c8c66d708444fa0396e98ede5865eb8f9ed7cdd1f60c6d46e7d2e30130726",
+      "sha256": "60510bc194239f245fb6ac462c927c68bccce256f0f145ffedf9cc9a8b98a667",
       "spec_version": "1.2",
       "src": "tools/_lib.py"
     },
@@ -644,7 +644,7 @@
     {
       "path": ".fha/tools/scaffold.py",
       "category": "operating",
-      "sha256": "eb87c2b0f9f627a05d3c41887db406abd08d494f3d0964088ea56d18d52bd861",
+      "sha256": "f16478386b39993b80fc435f30e00513b4acd544560f64443c4e02d12bf45ea9",
       "spec_version": "1.2",
       "src": "tools/scaffold.py"
     },
@@ -860,7 +860,7 @@
     {
       "path": "CHEATSHEET.md",
       "category": "operating",
-      "sha256": "77f2599e640bb38a46c8f8f7d324ce5286540447ab0a0f5b0d09d0b2c1d35932",
+      "sha256": "2c1551786556a573953ba26b577ebe2b2e60d5d0b118f60a1dfd432bb752a01f",
       "spec_version": "1.2"
     },
     {
@@ -872,7 +872,7 @@
     {
       "path": "GETTING_STARTED.md",
       "category": "operating",
-      "sha256": "625b64c1affc10cdf39c1a038dbc77f16d030767664a5966ec2b0275268f685f",
+      "sha256": "8f61b76e0033562a08a2d98db8cb939e69389c386749c9dcdd03048b39ceb35d",
       "spec_version": "1.2"
     },
     {
@@ -884,7 +884,7 @@
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "bb3f45f4ed31b5a5a9938b0afd3c5828540512af4abcd9a9a3fb0cb0fb53d4cc",
+      "sha256": "7f7fcd5057b19d3852a967109043bb3844fd09f1a4154dd285fc7d0fd94e2563",
       "spec_version": "1.2"
     },
     {
@@ -902,7 +902,7 @@
     {
       "path": "docs/FAQ.md",
       "category": "operating",
-      "sha256": "ee71f9e54e724ebf6a957ded178b97a80eef5a576228c0867ec474b062e2e29e",
+      "sha256": "29bb3866f39bae1a23a9b02591e230626e299dd50ad74d231d8d2de742c12810",
       "spec_version": "1.2"
     },
     {
@@ -926,7 +926,7 @@
     {
       "path": "docs/SETUP_FROM_ZIP.md",
       "category": "operating",
-      "sha256": "7c9f88118abad1a3c0962b0e5238f9c947fd6a866f1f8247f02203edf418e177",
+      "sha256": "ce5871ce608a4bf2b3e3574ebdf2d5136c2818913b008bce04114ee960d7a341",
       "spec_version": "1.2"
     },
     {

@@ -393,6 +393,10 @@ When a newer version comes out, `fha update-tools` refreshes that copy. Be clear
   stops being in effect until you re-apply it.
 - **Never deleted:** anything the update retires is moved aside and reported, never thrown away.
   You are always the one who throws things away.
+- **One folder can disappear, on purpose:** if `fha.yaml` points `documents:`, `photos:`, or
+  `inbox:` at somewhere outside the archive, the matching empty placeholder folder is removed too
+  (it would never hold anything) - that's expected, not data loss. Point the setting back inside
+  the archive and the next `fha update-tools` brings the folder back.
 
 The full ritual - preview, apply, review - is in [`docs/UPDATING.md`](docs/UPDATING.md).
 

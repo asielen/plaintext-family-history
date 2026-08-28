@@ -60,13 +60,22 @@ fha install PATH-TO-YOUR-ARCHIVE --repo .        # Windows Command Prompt
 (Run it from inside this clone. The `fha` launcher sits right here beside this
 README, but a fresh clone is not on your `PATH` - hence the `./`.)
 
+> Already know your photos/documents live outside the archive (an external drive, an existing
+> library)? Edit `archive-template/fha.yaml`'s `roots:` in **this clone** before running
+> `install`, and the matching internal placeholder folder is never created in the first place.
+> Otherwise, install with the defaults and edit `fha.yaml` inside your new archive afterward -
+> `fha update-tools` removes the now-unneeded placeholder the next time you run it.
+
 That copies the whole operating layer - the program, its design package, the rulebooks, and the
 owner-facing docs - into the archive and records what it wrote, so `fha update-tools` can refresh
 it later. What "refresh" means is worth being precise about: your records,
 `fha.yaml`, your place registry, and your stylesheet are never touched. Tool
 files and rulebooks ARE replaced - if you edited one, your version is moved to
 `.plaintext-backup/` first and the new stock file takes its place, so the edit
-survives but stops being in effect until you re-apply it. The machinery lands in a hidden `.fha/` folder
+survives but stops being in effect until you re-apply it. One folder can also disappear on
+purpose: if `fha.yaml` points `documents:`, `photos:`, or `inbox:` outside the archive, its
+now-purposeless empty placeholder is removed too (recreated if you ever point it back inside).
+The machinery lands in a hidden `.fha/` folder
 so the archive root shows your genealogy rather than the program; your records, the rulebooks,
 `GETTING_STARTED.md`, `CHEATSHEET.md`, and `docs/` stay in plain sight. The archive is then
 **self-contained**: it works on any machine, offline, forever, even if this repo disappears.
