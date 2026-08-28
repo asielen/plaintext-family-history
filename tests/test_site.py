@@ -5614,18 +5614,24 @@ class WorkbenchModeTests(_Base):
 
 class OpenQuestionsSectionTests(_Base):
     """Issue #117: a person referenced by a `## Q:` block's `refs:` sees that
-    question on their own page. Workbench-only (same gate `open_review_count`
-    uses) until `## Q:` blocks carry their own `restricted:` field - a
-    question's `context:` can hold sensitive detail about a living third
-    party that nothing here has vetted, so this stays off the public AND
-    plain `--linked` builds for now, not just the standalone one."""
+    question on their own page. Gated on `linked` (workbench always implies
+    linked, see the _SiteBuilder constructor), not narrowed to `workbench`
+    alone: a `## Q:` block still carries no `restricted:` field of its own,
+    but `--linked` is this codebase's own established boundary for
+    real-but-not-yet-publishable content (`drop_private=not self.linked`,
+    `_person_is_redacted`'s `self.linked` check, both elsewhere on this same
+    page) - an owner's own local `--linked` preview never leaves their
+    machine, so it is treated the same way. The STANDALONE (published) build
+    is the one place this must never appear (issue #117's reopening: it was
+    gated so narrowly - workbench-only - that even the reporter's own
+    unredacted `--linked` preview build showed nothing)."""
 
     def _write_questions_md(self, text: str) -> None:
         path = self.archive_root / 'notes' / 'questions.md'
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding='utf-8')
 
-    def test_open_question_shows_in_workbench_only(self):
+    def test_open_question_shows_in_linked_and_workbench_not_standalone(self):
         self._seed_person('p-aaaaaaaaaa', 'Jane Doe', tier='curated')
         self._write_questions_md(
             '# Open Questions\n\n'
@@ -5644,24 +5650,29 @@ class OpenQuestionsSectionTests(_Base):
         self.assertIn('Census says 1880', html)
         self.assertIn('notes/questions.md', html)   # provenance caption
 
-        # Standalone (public) build of the SAME archive: none of it.
+        # Plain `--linked` (no workbench) - the archive owner's own
+        # unredacted local preview: the same section, same content. This is
+        # the case issue #117's reopening found broken (nothing rendered).
         import shutil as _sh
-        _sh.rmtree(self.out_dir, ignore_errors=True)
-        std = self._run(linked=False)
-        self.assertTrue(std.ok, std.messages)
-        std_html = self._read('persons/p-aaaaaaaaaa.html')
-        self.assertNotIn('When did Jane arrive in Kansas?', std_html)
-        self.assertNotIn('Census says 1880', std_html)
-
-        # Plain `--linked` (no workbench): also none of it - the safe
-        # default this PR ships stays narrower than "any unredacted build",
-        # matching the one existing workbench-only count/section precedent
-        # (`open_review_count`) rather than a new `linked`-only gate.
         _sh.rmtree(self.out_dir, ignore_errors=True)
         lo = self._run(linked=True, workbench=False)
         self.assertTrue(lo.ok, lo.messages)
         lo_html = self._read('persons/p-aaaaaaaaaa.html')
-        self.assertNotIn('When did Jane arrive in Kansas?', lo_html)
+        self.assertIn('Open Questions', lo_html)
+        self.assertIn('When did Jane arrive in Kansas?', lo_html)
+        self.assertIn('Census says 1880', lo_html)
+        self.assertIn('notes/questions.md', lo_html)
+
+        # Standalone (public) build of the SAME archive: none of it. The
+        # privacy boundary that matters - published output never carries an
+        # un-vetted question about a possibly-living third party - must hold.
+        _sh.rmtree(self.out_dir, ignore_errors=True)
+        std = self._run(linked=False)
+        self.assertTrue(std.ok, std.messages)
+        std_html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertNotIn('Open Questions', std_html)
+        self.assertNotIn('When did Jane arrive in Kansas?', std_html)
+        self.assertNotIn('Census says 1880', std_html)
 
     def test_a_ref_naming_the_same_person_twice_does_not_double_render(self):
         # A `refs:` list is free-text-typed by a human; `refs: [P-x, P-x]` is
@@ -5706,6 +5717,11 @@ class OpenQuestionsSectionTests(_Base):
         # `_lib.parse_questions` reading every person's research file, not a
         # new decision made in site.py. This was a live open question in the
         # issue, not a settled contract - flagged again in the PR body.
+        #
+        # Run under plain `--linked` (no workbench), not just workbench: the
+        # #117 reopening's whole finding was that a plain `--linked` preview
+        # showed nothing, so the cross-reference case needs to be proven in
+        # exactly the mode that was reported broken, not only in workbench.
         self._seed_person('p-aaaaaaaaaa', 'Jane Doe', tier='curated')
         self._seed_person('p-bbbbbbbbbb', 'Bob Roe', tier='curated', surname='Roe')
         research_path = self.archive_root / 'people' / 'roe__test_research_p-bbbbbbbbbb.md'
@@ -5720,8 +5736,8 @@ class OpenQuestionsSectionTests(_Base):
             '  - (human, 2026-06-01) Both lived in the same county in 1880.\n'
             '\n## Hypotheses\n\n*(none yet)*\n\n## Research Log\n\n*(none yet)*\n',
             encoding='utf-8')
-        wb = self._run(linked=True, workbench=True)
-        self.assertTrue(wb.ok, wb.messages)
+        lo = self._run(linked=True, workbench=False)
+        self.assertTrue(lo.ok, lo.messages)
         for pid in ('p-aaaaaaaaaa', 'p-bbbbbbbbbb'):
             html = self._read(f'persons/{pid}.html')
             self.assertIn('Are Jane and Bob related?', html, pid)
@@ -5736,6 +5752,179 @@ class OpenQuestionsSectionTests(_Base):
             # emits it), so its presence at all means the trim regressed.
             self.assertNotIn('Hypotheses', html, pid)
             self.assertNotIn('Research Log', html, pid)
+
+    def test_by_request_persons_own_question_is_withheld_from_every_page(self):
+        # PR #179 review, finding 1 (P1, privacy leak): `restricted:
+        # by-request` is SPEC §19's one no-override tier ("honored by every
+        # export path with no opt-in") - stronger than the plain
+        # restricted/living gates every OTHER check in this class relaxes
+        # under `--linked` (a deliberate, tested design:
+        # UnreadableRecordPrivacyTests.test_linked_mode_is_unchanged pins it
+        # for a by-request person's own name/vitals/bio, and this fix does
+        # not reopen that). Before this fix, `_load_open_questions` read a
+        # `## Q:` block's home research file with no restriction check at
+        # all, so Rae's own private research note - `refs:`-naming both
+        # herself AND a different, unrestricted relative - rendered in full
+        # on BOTH pages under a plain `--linked` preview: exactly the leak
+        # this pins closed, on both sides (her own page, and the
+        # cross-referenced relative's).
+        self._seed_person('p-aaaaaaaaaa', 'Reticent Rae', surname='Rae',
+                          frontmatter_extra='restricted: by-request')
+        self._seed_person('p-bbbbbbbbbb', 'Open Otto', surname='Otto')
+        research_path = self.archive_root / 'people' / 'rae__test_research_p-aaaaaaaaaa.md'
+        research_path.write_text(
+            '---\nid: p-aaaaaaaaaa\ncreated: 2026-06-01\n---\n\n'
+            '## Open Questions\n\n'
+            "## Q: Was Rae really Otto's half-sibling?\n"
+            '- origin: human\n'
+            '- status: open\n'
+            '- refs: [P-aaaaaaaaaa, P-bbbbbbbbbb]\n'
+            '- context:\n'
+            '  - (human, 2026-06-01) A sealed adoption record hints at this; '
+            'Rae asked never to have it discussed.\n',
+            encoding='utf-8')
+        lo = self._run(linked=True, workbench=False)
+        self.assertTrue(lo.ok, lo.messages)
+        for pid in ('p-aaaaaaaaaa', 'p-bbbbbbbbbb'):
+            html = self._read(f'persons/{pid}.html')
+            self.assertNotIn('half-sibling', html, pid)
+            self.assertNotIn('sealed adoption record', html, pid)
+            self.assertNotIn('Open Questions', html, pid)
+
+    def test_by_request_person_named_only_in_a_refs_list_is_still_withheld(self):
+        # Adversarial review of PR #179, round 2: the finding above pins the
+        # case where the by-request person's OWN file is the question's
+        # home. This is the reverse - the home file belongs to an ORDINARY,
+        # unrestricted person (Otto), and the question merely `refs:` Rae, a
+        # by-request relative, on top of him. Before this fix, only the
+        # home file's owner was checked, so a question homed anywhere else
+        # could still fan a by-request person's private research onto HER
+        # page via `refs:` alone. Otto's own page is unaffected - the leak
+        # was specifically Rae's page rendering research she asked not to
+        # have discussed.
+        self._seed_person('p-aaaaaaaaaa', 'Reticent Rae', surname='Rae',
+                          frontmatter_extra='restricted: by-request')
+        self._seed_person('p-bbbbbbbbbb', 'Open Otto', surname='Otto')
+        research_path = self.archive_root / 'people' / 'otto__test_research_p-bbbbbbbbbb.md'
+        research_path.write_text(
+            '---\nid: p-bbbbbbbbbb\ncreated: 2026-06-01\n---\n\n'
+            '## Open Questions\n\n'
+            "## Q: Was Rae really Otto's half-sibling?\n"
+            '- origin: human\n'
+            '- status: open\n'
+            '- refs: [P-bbbbbbbbbb, P-aaaaaaaaaa]\n'
+            '- context:\n'
+            '  - (human, 2026-06-01) A sealed adoption record hints at this; '
+            'Rae asked never to have it discussed.\n',
+            encoding='utf-8')
+        lo = self._run(linked=True, workbench=False)
+        self.assertTrue(lo.ok, lo.messages)
+        rae_html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertNotIn('half-sibling', rae_html)
+        self.assertNotIn('sealed adoption record', rae_html)
+        otto_html = self._read('persons/p-bbbbbbbbbb.html')
+        self.assertIn('half-sibling', otto_html)
+        self.assertIn('sealed adoption record', otto_html)
+
+    def test_research_file_whose_frontmatter_id_disagrees_with_its_filename_fails_closed(self):
+        # Adversarial review of PR #179, round 2: a research companion's
+        # filename and its own `id:` field are supposed to always agree
+        # (`fha lint`'s E003 flags a mismatch as an archive error), but
+        # while that inconsistency sits unresolved, the origin by-request
+        # check must not trust the filename alone - it cannot tell which of
+        # the two persons this file really belongs to, so it withholds
+        # rather than guess. This file's NAME claims Otto (unrestricted);
+        # its own `id:` says Rae (by-request) - the mismatch itself, either
+        # direction, must fail closed.
+        self._seed_person('p-aaaaaaaaaa', 'Reticent Rae', surname='Rae',
+                          frontmatter_extra='restricted: by-request')
+        self._seed_person('p-bbbbbbbbbb', 'Open Otto', surname='Otto')
+        mismatched = self.archive_root / 'people' / 'otto__test_research_p-bbbbbbbbbb.md'
+        mismatched.write_text(
+            '---\nid: p-aaaaaaaaaa\ncreated: 2026-06-01\n---\n\n'
+            '## Open Questions\n\n'
+            '## Q: Mismatched filename vs frontmatter id\n'
+            '- origin: human\n'
+            '- status: open\n'
+            '- refs: [P-bbbbbbbbbb]\n'
+            '- context:\n'
+            '  - (human, 2026-06-01) Should never render while this mismatch stands.\n',
+            encoding='utf-8')
+        lo = self._run(linked=True, workbench=False)
+        self.assertTrue(lo.ok, lo.messages)
+        html = self._read('persons/p-bbbbbbbbbb.html')
+        self.assertNotIn('Mismatched filename vs frontmatter id', html)
+        self.assertNotIn('Should never render', html)
+        messages = lo['messages']
+        self.assertTrue(any('E003' in m or 'mismatch' in m.lower() for m in messages), messages)
+
+    def test_plain_restricted_persons_question_still_renders_under_linked(self):
+        # Not over-broadened: by-request is SPEC §19's ONE no-override tier.
+        # A plain `restricted: true` origin - a lesser tier other export
+        # paths can unlock via --include-restricted - must still surface
+        # their open questions under `--linked`, exactly as `--linked`
+        # already shows that same person's own restricted claims/sources/
+        # name in full (SourcePageTests.
+        # test_standalone_shows_accepted_only_linked_shows_everything, etc.).
+        self._seed_person('p-aaaaaaaaaa', 'Plainly Restricted Pat', surname='Pat',
+                          frontmatter_extra='restricted: true')
+        research_path = self.archive_root / 'people' / 'pat__test_research_p-aaaaaaaaaa.md'
+        research_path.write_text(
+            '---\nid: p-aaaaaaaaaa\ncreated: 2026-06-01\n---\n\n'
+            '## Open Questions\n\n'
+            '## Q: Where was Pat actually born?\n'
+            '- status: open\n'
+            '- refs: [P-aaaaaaaaaa]\n'
+            '- context:\n'
+            '  - (human, 2026-06-01) Two conflicting county records.\n',
+            encoding='utf-8')
+        lo = self._run(linked=True, workbench=False)
+        self.assertTrue(lo.ok, lo.messages)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('Where was Pat actually born?', html)
+        self.assertIn('Two conflicting county records', html)
+
+    def test_undecodable_questions_md_is_skipped_with_a_warning_not_a_crash(self):
+        # PR #179 review, finding 2 (P2, crash/availability): `_lib.
+        # parse_questions` used to read notes/questions.md with a plain
+        # `path.read_text(encoding='utf-8')` behind an `except OSError` -
+        # `UnicodeDecodeError` is a `ValueError`, so it escaped straight out
+        # of `_load_open_questions`, through `prepare()`, and out of
+        # `run_site` itself, which promises to always return a `Result`.
+        self._seed_person('p-aaaaaaaaaa', 'Jane Doe')
+        bad = self.archive_root / 'notes' / 'questions.md'
+        bad.parent.mkdir(parents=True, exist_ok=True)
+        bad.write_bytes('## Q: Kraków connection?\n- status: open\n'.encode('cp1252'))
+        res = self._run(linked=True)
+        self.assertTrue(res.ok, res.messages)
+        messages = res['messages']
+        self.assertTrue(
+            any('notes/questions.md' in m and "isn't saved as UTF-8 text" in m
+                for m in messages), messages)
+        # One bad file costs only its own content - every other page builds fine.
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertNotIn('Kraków connection', html)
+
+    def test_undecodable_research_file_is_skipped_others_still_index(self):
+        self._seed_person('p-aaaaaaaaaa', 'Jane Doe', surname='Doe')
+        self._seed_person('p-bbbbbbbbbb', 'Bob Roe', surname='Roe')
+        bad_research = self.archive_root / 'people' / 'roe__test_research_p-bbbbbbbbbb.md'
+        bad_research.write_bytes(
+            ('---\nid: p-bbbbbbbbbb\n---\n\n## Open Questions\n\n'
+             '## Q: Kraków connection?\n- status: open\n- refs: [P-bbbbbbbbbb]\n')
+            .encode('cp1252'))
+        self._write_questions_md(
+            '## Q: Healthy question?\n- status: open\n- refs: [P-aaaaaaaaaa]\n'
+            '- context:\n  - (human, 2026-06-01) Still readable.\n'
+        )
+        res = self._run(linked=True)
+        self.assertTrue(res.ok, res.messages)
+        messages = res['messages']
+        self.assertTrue(
+            any('roe__test_research_p-bbbbbbbbbb.md' in m
+                and "isn't saved as UTF-8 text" in m for m in messages), messages)
+        html_a = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('Healthy question?', html_a)
 
 
 # ── A person's vitals are their OWN, not their relatives' (#126) ─────────────

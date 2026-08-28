@@ -420,7 +420,7 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "416579445afb5c728f1897975efeca0a9f6074f6e30e154403fa78b7251351a8",
+      "sha256": "2411836135e7187ca96853ba71b33410e66d4fe99add2ef1a73ef2c90345b3a5",
       "spec_version": "1.2",
       "src": "tools/_lib.py"
     },
@@ -658,7 +658,7 @@
     {
       "path": ".fha/tools/site.py",
       "category": "operating",
-      "sha256": "66385f43838766fc47eb4a97ed09628c40dc337d5daae462b21040079dedfdc9",
+      "sha256": "f94d5d8f46bbb71615090a0237c99c0de938893d7062f0a293e609d114237164",
       "spec_version": "1.2",
       "src": "tools/site.py"
     },
@@ -728,7 +728,7 @@
     {
       "path": ".fha/tools/templates/person.html",
       "category": "operating",
-      "sha256": "6f49777a7d4c0421130fcc32f4b679b46e0a15278479edacc8c679d287e58ccd",
+      "sha256": "b3115dfa371bf0edde567ca44711729fdebdd048a5d370035cd8d1319afa4c1c",
       "spec_version": "1.2",
       "src": "tools/templates/person.html"
     },

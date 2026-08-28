@@ -155,7 +155,7 @@ CODE MAP
     _SiteBuilder               - holds conn, mode, maps, page sets, jinja env
       .prepare                 - load persons/sources, decide which pages exist
       ._load_open_questions    - index open '## Q:' blocks by referenced person
-                                 id (#117; workbench-only, see build_person_page)
+                                 id (#117; linked-or-workbench, see build_person_page)
       ._claim_is_own_vital     - is this vital claim a record OF this person,
                                  or of a relative it also names? (roles:, #126)
       ._person_summary         - the Born/Died/Married infobox, own vitals only
@@ -216,6 +216,7 @@ from _lib import (
     load_fha_yaml,
     normalize_id,
     open_index_db,
+    parse_filename,
     parse_questions,
     person_section_is_unfilled,
     photoindex_status,
@@ -479,6 +480,26 @@ def _is_restricted_value(value) -> bool:
     booleans to `'true'`/`'false'`.) Public output has no opt-in - even
     `restricted: by-request` is honored - so a single truthiness test suffices."""
     return value not in (None, False, '', 'false')
+
+
+def _restricted_type(value) -> str | None:
+    """Normalize a raw `restricted:` value to its type, or None when unrestricted.
+
+    Duplicated from `packet.py`'s own `_restricted_type` (tools never import
+    tools, TOOLING §15) - the two must agree exactly on the contract. Every
+    OTHER restriction check in this module only needs the open yes/no
+    `_is_restricted_value` test above, because every other check is gated on
+    `not self.linked` (a plain `--linked` preview has no privacy contract to
+    keep, `UnreadableRecordPrivacyTests.test_linked_mode_is_unchanged`). The
+    one exception is the `by-request` no-override tier (SPEC §19: "honored by
+    every export path with no opt-in") consulted by `_person_is_by_request`,
+    which runs precisely when `self.linked` and so needs to tell `by-request`
+    apart from a plain or other-typed restriction, not just detect one."""
+    if value in (None, False, '', 'false'):
+        return None
+    if value in (True, 'true'):
+        return 'plain'
+    return str(value).strip().lower() or 'plain'
 
 
 # ── Prose / HTML ────────────────────────────────────────────────────────────
@@ -2199,9 +2220,17 @@ class _SiteBuilder:
         self.place_meta: dict[str, sqlite3.Row] = {}
         self.place_names: dict[str, str] = {}   # id → display name (token rendering)
         # pid -> its open '## Q:' blocks (issue #117), built once in prepare()
-        # by _load_open_questions - only when self.workbench (see
-        # build_person_page for why this never reaches a public build).
+        # by _load_open_questions - only when self.linked (see
+        # build_person_page for why this never reaches a public/standalone
+        # build).
         self.person_questions: dict[str, list[dict]] = {}
+        # A research file's OWN pid -> whether ITS person carries `restricted:
+        # by-request` (memoized so a person with several open questions in
+        # their research file has their profile read once, not once per
+        # question). Filled lazily by `_person_is_by_request`, consulted by
+        # `_question_origin_is_by_request` - see `_load_open_questions` for
+        # why this check cannot reuse `self.restricted_persons`.
+        self._by_request_origin_cache: dict[str, bool] = {}
         self.alias_map: dict[str, str] = {}     # lowercased name/stem → canonical id
         self.person_pages: set[str] = set()   # normalized pids that get a page
         self.source_pages: set[str] = set()   # normalized sids that get a page
@@ -2393,10 +2422,16 @@ class _SiteBuilder:
             if self.linked or not self._person_is_redacted(row):
                 self.person_pages.add(pid)
 
-        # Workbench-only (build_person_page): parsing/indexing every open
-        # question is skipped entirely on a standalone or plain --linked
-        # build, where the section never renders anyway.
-        if self.workbench:
+        # linked-or-workbench (build_person_page): parsing/indexing every
+        # open question is skipped entirely on a standalone (public) build,
+        # where the section never renders. A `## Q:` block still carries no
+        # `restricted:` field of its own (issue #117 follow-up, unresolved as
+        # of this fix), but `--linked` is this codebase's own established
+        # boundary for "real content, not yet safe to publish" - the same
+        # trust boundary `drop_private=not self.linked` and
+        # `_person_is_redacted` already rely on - so a `## Q:` block gets the
+        # same treatment rather than a narrower, workbench-only carve-out.
+        if self.linked:
             self._load_open_questions()
 
         self._open_photos()
@@ -2541,14 +2576,56 @@ class _SiteBuilder:
         A widely-referenced question naming several people legitimately
         appears on several pages; that is not a duplication bug.
 
-        Called only when self.workbench (see build_person_page): a '## Q:'
+        Called only when self.linked (see build_person_page): a '## Q:'
         block carries no `restricted:` field of its own yet, and its
         `context:` can legitimately hold sensitive detail about a living
-        third party that nothing here has vetted, so this stays on the
-        private local-preview surface until that field exists.
+        third party that nothing here has vetted - but `--linked` is
+        already this codebase's boundary for exactly that kind of
+        real-but-unvetted content (the same one `drop_private=not
+        self.linked` and `_person_is_redacted` rely on), so this stays off
+        the standalone/public build only, not off every unredacted one.
+
+        ONE exception to that "unredacted" bargain: a question block whose
+        HOME file is a `restricted: by-request` person's own research
+        companion is excluded here entirely - never filed under any pid,
+        including that person's own. `by-request` is SPEC §19's one
+        no-override restriction ("honored by every export path with no
+        opt-in"), stronger than the plain `restricted`/`living` gates every
+        other check in this class relaxes under `--linked` (that relaxation
+        is a deliberate, tested design - `UnreadableRecordPrivacyTests.
+        test_linked_mode_is_unchanged` pins it for a person's own
+        name/vitals/bio - not something this fix reopens). What is new and
+        NOT covered by that precedent: a `## Q:` block is not the
+        by-request person's own record content, it is private research
+        ABOUT them, and `refs:` can fan it out onto a DIFFERENT,
+        unrestricted relative's page who never asked for any of
+        `--linked`'s reduced redaction. See `_question_origin_is_by_request`.
+
+        THE OTHER DIRECTION of that same exception (adversarial review of
+        #117): the origin check above only ever asks about the HOME file's
+        own owner - it says nothing about a question that is homed in an
+        ordinary, unrestricted person's research file but also `refs:` a
+        DIFFERENT person who herself asked to be left out. Filing under
+        `refs:` fans exactly that question onto her page too, so each ref is
+        checked on its own via `_person_is_by_request` right below, in
+        addition to (not instead of) the origin check above - a by-request
+        person's private research stays off her own page whether the leak
+        would have come from HER file being the home, or from someone
+        ELSE's file merely mentioning her.
+
+        Also guards the read itself: a research file (or notes/questions.md)
+        saved in a non-UTF-8 encoding used to raise `UnicodeDecodeError`
+        straight out of `_lib.parse_questions` and take the whole `fha site
+        --linked` build down with it (that function only caught `OSError`).
+        `on_decode_error` turns that into a per-file skip-and-warn instead -
+        every other file's questions still index normally.
         """
-        for _key, info in sorted(parse_questions(self.archive_root).items()):
+        undecodable: list[Path] = []
+        for _key, info in sorted(
+                parse_questions(self.archive_root, on_decode_error=undecodable.append).items()):
             if info['status'] != 'open':
+                continue
+            if self._question_origin_is_by_request(info):
                 continue
             # set(): a `refs:` list naming the same person twice (a plausible
             # copy-paste slip, e.g. `refs: [P-x, P-x]`) must not double-file
@@ -2557,7 +2634,154 @@ class _SiteBuilder:
             # the same question legitimately appearing on SEVERAL people's
             # pages.
             for ref in {r for r in info['refs'] if r.startswith('p-')}:
+                # Per-ref check (adversarial review of #117, see this
+                # method's docstring): the origin check above only ever
+                # covers the HOME file's own owner - a question homed in an
+                # unrestricted person's file can still name a DIFFERENT,
+                # by-request person here, and only checking each ref
+                # individually catches that direction of the same leak.
+                if self._person_is_by_request(normalize_id(ref)):
+                    continue
                 self.person_questions.setdefault(ref, []).append(info)
+        for path in undecodable:
+            try:
+                rel = path.relative_to(self.archive_root).as_posix()
+            except ValueError:
+                rel = path.as_posix()
+            self.messages.append(
+                f"WARNING: could not read {rel} (this file isn't saved as "
+                "UTF-8 text - a Windows editor's default encoding, often "
+                "cp1252, is the usual cause); its open questions are "
+                'omitted from this build - every other page is unaffected. '
+                'Open it and save it again choosing UTF-8, then run `fha '
+                'site` again.'
+            )
+
+    def _question_origin_is_by_request(self, info: dict) -> bool:
+        """True when `info`'s home file is a person's own research companion
+        and that person's OWN profile carries `restricted: by-request`.
+
+        `notes/questions.md` names no single person - it is never filtered
+        here, only a research-file-homed question is. The origin pid is read
+        straight off the companion's filename (SPEC §13:
+        `{surname}__{given}[_research]_{P-id}.md` - the trailing id is
+        unambiguous even when the kind slot itself is, `parse_filename`'s own
+        `kind_ambiguous` case), not off `self.restricted_persons`: that set
+        is filled by `_load_restriction_markers`, which `prepare()` never
+        calls when `self.linked` - and `_load_open_questions` runs precisely
+        when `self.linked` - so it is always empty here. Cross-checked
+        against the file's own frontmatter `id:` by
+        `_origin_frontmatter_id_mismatches` (adversarial review of #117) -
+        see that method for why trusting the filename alone is not enough on
+        its own when the two disagree.
+
+        This only ever gates the ORIGIN (home) file - the by-request check
+        that matters for a specific `refs:` target is a separate, per-pid
+        check `_load_open_questions` applies to each ref individually (see
+        its own comment): a question homed in an unrestricted person's file
+        can still `refs:` a DIFFERENT, by-request person, and this method
+        alone would never catch that - it only ever asks about the file's
+        own owner.
+        """
+        file_rel = info.get('file') or ''
+        if file_rel == 'notes/questions.md':
+            return False
+        parsed = parse_filename(Path(file_rel))
+        if parsed is None or parsed.get('id_type') != 'P':
+            return False   # not a person research file - nothing to check
+        pid = normalize_id(parsed['id_str'])
+        if pid not in self._by_request_origin_cache:
+            self._by_request_origin_cache[pid] = (
+                self._person_is_by_request(pid)
+                or self._origin_frontmatter_id_mismatches(file_rel, pid)
+            )
+        return self._by_request_origin_cache[pid]
+
+    def _origin_frontmatter_id_mismatches(self, file_rel: str, filename_pid: str) -> bool:
+        """True when `file_rel`'s own frontmatter `id:` disagrees with (or
+        cannot be read against) the P-id its FILENAME claims - defense in
+        depth for `_question_origin_is_by_request` (adversarial review of
+        #117).
+
+        A research companion's filename and its own `id:` field are SUPPOSED
+        to always agree (`archive-template/people/_TEMPLATE.research.md`:
+        "the person's code, same as on their profile") - SPEC §13's self-
+        identifying-filename invariant, and `fha lint`'s E003 already flags
+        a mismatch as an archive-level error the owner is expected to fix.
+        But while that inconsistency sits unresolved (a hand-rename or a
+        copied file, `id:` and filename edited independently), trusting the
+        filename alone to answer "does this by-request check apply to the
+        right person" means a mismatched file can no longer be told apart
+        from an ordinary one by name alone - the wrong person's by-request
+        status governs the real one's private research. Fails CLOSED the
+        same way `_person_is_by_request` already does for its own other
+        "can't verify" cases (unreadable, undecodable, no profile), rather
+        than trusting either signal on its own when they disagree.
+        """
+        try:
+            rec = read_record(self.archive_root / file_rel, on_decode_error=_ignore_decode_error)
+            trouble = rec['parse_errors'][0][1] if rec['parse_errors'] else None
+        except Exception as e:   # noqa: BLE001 - any failure is the same failure here
+            rec, trouble = None, str(e)
+        if trouble is not None or (rec is not None and rec.get('undecodable')):
+            self.messages.append(
+                f'WARNING: could not read {file_rel} to confirm it really belongs to '
+                f"{fmt_id_display(filename_pid)} (its filename) before publishing its "
+                'open questions - withheld rather than shown without being able to check.'
+            )
+            return True
+        frontmatter_id = normalize_id(str(rec['meta'].get('id') or ''))
+        if frontmatter_id != filename_pid:
+            self.messages.append(
+                f"WARNING: {file_rel}'s filename names {fmt_id_display(filename_pid)} but "
+                f"its own `id:` says "
+                f"{fmt_id_display(frontmatter_id) if frontmatter_id else '(none)'} - "
+                "`fha lint`'s E003 flags this mismatch; its open questions are withheld "
+                'rather than shown under whichever person turns out to be wrong. Fix the '
+                'mismatch (see `fha lint`) and run `fha site` again.'
+            )
+            return True
+        return False
+
+    def _person_is_by_request(self, pid: str) -> bool:
+        """Read one person's OWN profile record and say whether it carries
+        `restricted: by-request` - independent of `self.linked` and of
+        `self.restricted_persons` (see `_question_origin_is_by_request`).
+
+        Fails CLOSED like `_load_restriction_markers` does for the exact same
+        reason (see its docstring): a pid this build cannot resolve to a
+        readable profile - no person row, no path, an unreadable or
+        undecodable file - is treated as if it HAD asked to be left out
+        rather than shown without being able to check, because a missing
+        marker reads exactly like a person who never asked. Each failure is
+        still reported by name, never silent.
+        """
+        row = self.person_meta.get(pid)
+        if row is None or not row['path']:
+            self.messages.append(
+                f'WARNING: an open question is filed under {fmt_id_display(pid)}\'s '
+                "research companion, but no readable profile record exists for "
+                "that id - it is being treated as if that person had asked to "
+                "be left out (restricted: by-request), so its open questions "
+                "are withheld rather than shown without being able to check."
+            )
+            return True
+        try:
+            rec = read_record(self.archive_root / row['path'], on_decode_error=_ignore_decode_error)
+            trouble = rec['parse_errors'][0][1] if rec['parse_errors'] else None
+        except Exception as e:   # noqa: BLE001 - any failure is the same failure here
+            rec, trouble = None, str(e)
+        if trouble is not None or (rec is not None and rec.get('undecodable')):
+            name = row['name'] or fmt_id_display(pid)
+            self.messages.append(
+                f'WARNING: could not read {row["path"]} to check whether '
+                f'{name} asked to be left out (restricted: by-request) before '
+                "publishing their open questions - withheld rather than shown "
+                'without being able to check. Fix or restore that file and '
+                'run `fha site` again.'
+            )
+            return True
+        return _restricted_type(rec['meta'].get('restricted')) == 'by-request'
 
     def _open_photos(self) -> None:
         """Open the photo index once if it is fresh, for the person photo strips.
@@ -3282,17 +3506,24 @@ class _SiteBuilder:
                                 for e in stories_entries],
             'research_entries': [{'html': self._markup(e['html']), 'raw': e['raw']}
                                  for e in research_entries],
-            # Workbench-only (issue #117): open questions naming this person,
-            # from notes/questions.md and every person's own research file
-            # alike. Gated on `workbench`, not merely `linked`, because a
-            # '## Q:' block carries no `restricted:` field of its own yet and
-            # its `context:` can hold sensitive detail about a living third
-            # party - the same safe-default gate `open_review_count` below
-            # uses for workbench-only content, until that field lands.
+            # Linked-or-workbench (issue #117): open questions naming this
+            # person, from notes/questions.md and every person's own research
+            # file alike. Gated on `linked` (workbench always implies
+            # linked - see the constructor), not narrowed to `workbench`
+            # alone: a '## Q:' block still carries no `restricted:` field of
+            # its own, and its `context:` can hold sensitive detail about a
+            # living third party, but `--linked` is already this codebase's
+            # trust boundary for real-but-unvetted content (same one
+            # `drop_private=not self.linked` and `_person_is_redacted` rely
+            # on) - an owner's own local `--linked` preview never leaves
+            # their machine, so it is an acceptable home for this until a
+            # privacy field lands. Narrower than that (`open_review_count`
+            # below): that field is a workbench editing-queue affordance, not
+            # unvetted research content, so it stays workbench-only.
             'open_questions': [{'heading': q['heading'], 'file': q['file'],
                                 'html': self._markup(q['html'])}
                                for q in (self._person_open_questions(pid, page_dir)
-                                         if self.workbench else [])],
+                                         if self.linked else [])],
             'timeline': timeline, 'sources': sources, 'family': family, 'photos': photos,
             # Workbench-only fields (harmless in standalone - the template gates
             # every use on `workbench`): the record's on-disk relpath for the
@@ -3770,9 +4001,10 @@ class _SiteBuilder:
         Reads `self.person_questions`, built once for the whole build by
         `_load_open_questions` - never called here, so a person with no
         indexed questions costs one dict lookup, not a re-scan of the log.
-        Only called from build_person_page when self.workbench (see there
-        for why); `dp` still reads `not self.linked` rather than a bare
-        `False` so this stays correct if that ever changes.
+        Only called from build_person_page when self.linked (see there for
+        why - workbench always implies linked, so this covers both); `dp`
+        reads `not self.linked` for the same reason every other unredacted
+        surface on this page does.
         """
         render = lambda tok, disp=None: self.render_token(tok, page_dir, disp)  # noqa: E731
         embed = lambda t, c: self._render_embed(t, c, page_dir)  # noqa: E731
