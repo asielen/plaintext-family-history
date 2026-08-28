@@ -1,7 +1,7 @@
 {
   "manifest_version": "1",
   "spec_version": "1.2",
-  "generated": "2026-08-27",
+  "generated": "2026-08-28",
   "files": [
     {
       "path": ".claude/skills/README.md",
@@ -511,7 +511,7 @@
     {
       "path": ".fha/tools/doctor.py",
       "category": "operating",
-      "sha256": "16eb81b9e7fa7afaedf12b0bb26871067aa3a567bf6fbad1def5538e3d5c6ad5",
+      "sha256": "87fcf05d9fe2f4a40de689188a237a3a84fd6ec9214341a7c719d72f432494c8",
       "spec_version": "1.2",
       "src": "tools/doctor.py"
     },
@@ -609,7 +609,7 @@
     {
       "path": ".fha/tools/process.py",
       "category": "operating",
-      "sha256": "3a550b6befd3cba75786fa2e11869a3f66706618efd6ee4b8a432a41b7d3e9d0",
+      "sha256": "dc4cebd4a3bbdb52473367e9a47dde7eeb1695658f47eda3809217ccdba23291",
       "spec_version": "1.2",
       "src": "tools/process.py"
     },
