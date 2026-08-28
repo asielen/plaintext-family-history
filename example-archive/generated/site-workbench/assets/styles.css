@@ -529,14 +529,28 @@ a.fan-link, a.fan-link:hover { text-decoration: none; }
    vocabulary (6 3 = legal bond, 1 3 = other): this dash means "a later
    marriage", not a different kind of bond. */
 .ped-link-later { stroke-dasharray: 3 3; }
-/* #115 reopened: an ancestor-generation couple (Ahnentafel slots 2N/2N+1 -
-   always co-parents of the same child by the numbering itself) gets the same
-   shared-vertex bracket idiom the spouse routing above already uses
-   (site.py `_render_pedigree_svg`). `.ped-link-couple` carries no rule of
-   its own - a plain solid `.ped-link` tick, same as every other confirmed
-   connector on this chart - unless the tie is a workbench-only hypothesis,
-   which reuses `.ped-link-later`'s own "lower confidence reads as dashed"
-   dasharray rather than inventing a second dash vocabulary for the same idea. */
+/* #115 reopened, then reopened again (P2 post-merge Codex review of #187):
+   an ancestor-generation couple, now evidence-gated (site.py
+   `_render_pedigree_svg` only emits `.ped-link-couple` when
+   `_build_ahnentafel` actually found a marriage - see its own comment), gets
+   the same shared-vertex bracket idiom the spouse routing above already
+   uses. The FIRST cut of this class carried no rule of its own on the theory
+   that "a plain solid `.ped-link` tick, same as every other confirmed
+   connector" was consistent with the hub's own bracket - but the hub's own
+   bracket is visually distinguishable by its SHAPE (subject+spouse joined
+   directly, nothing else on the chart looks like that); this bracket's
+   shape is pixel-identical to the two independent elbows it replaces (see
+   site.py), so with no stroke of its own it communicated nothing at all - a
+   correctly evidence-backed marriage looked exactly like no evidence.
+   A heavier, accent-tinted stroke gives a reader an actual visual cue
+   ("these two are shown as a couple") without touching the hub's own
+   spouse bracket (untouched, plain `.ped-link`, elsewhere in this file) or
+   inventing a second dash vocabulary: `.ped-link-hypothesis` below still
+   layers its own dasharray on top for the workbench-only unconfirmed case,
+   so solid-accent = confirmed marriage, dashed-accent = hypothesis tie -
+   the same solid-vs-dashed convention this chart already uses everywhere
+   else, just now paired with a color/weight cue strong enough to notice. */
+.ped-link-couple { stroke: var(--accent); stroke-width: 2; }
 .ped-link-hypothesis { stroke-dasharray: 3 3; }
 .ped-node { box-sizing: border-box; height: 100%; display: flex; flex-direction: column;
             justify-content: center; gap: 1px; padding: 3px 9px; overflow: hidden;
