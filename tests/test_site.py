@@ -3341,6 +3341,167 @@ class PedigreeGeometryGuardTests(unittest.TestCase):
         self.assertEqual(pos['Mother'][1], 39 + 2.5 * 72)
 
 
+class AncestorCoupleBracketTests(unittest.TestCase):
+    """#115, REOPENED after #152 merged: the issue's own "Marriages" design
+    called for two mechanisms - the hub's own spouse(s) via the existing
+    couples-first bracket (shipped in #152), AND every ancestor-generation
+    couple (Ahnentafel slots 2N/2N+1, always a couple by the numbering
+    itself) getting a shared-vertex bracket "the same way the per-person
+    chart already does". Only the first mechanism actually shipped: the
+    ancestor-grid loop drew two independent elbows from a child to each of
+    its two parent slots with nothing connecting the parents to EACH OTHER,
+    so a hub with no spouse of their own showed zero visual marriage
+    indicators anywhere - confirmed by reading the pre-fix renderer, not
+    just by the reopening comment's say-so (the two elbows DO happen to
+    share their starting vertex at the CHILD's own edge, which is not the
+    same claim as "the parents are bracketed to each other" the issue asked
+    for). This class pins the exact bracket geometry the fix adds, using
+    the same real-coordinate-parsing rigor as `PedigreeGeometryGuardTests`
+    rather than eyeballing markup."""
+
+    def _full_labels(self, max_slot: int) -> dict:
+        return {n: {'name': f'A{n}', 'url': None, 'redacted': False, 'dates': {}}
+                for n in range(1, max_slot + 1)}
+
+    def test_subject_own_parents_get_a_shared_vertex_bracket(self):
+        # Pinned against the actual pre-fix two-elbow output for this exact
+        # shape (M184,147 H204 V75 H224 / M184,147 H204 V219 H224 - verified
+        # by direct inspection before this fix landed): the new bracket
+        # covers the identical pixels (touches the parents' own shared
+        # column x2=224 at both y=75 and y=219, vertical spine at the same
+        # midx=204 the old elbows used), plus a single stub from that spine
+        # to the child's own row (yc=147) - which is where BOTH old elbows'
+        # first "H204" leg used to land, redundantly drawn twice.
+        labels = {
+            1: {'name': 'Subject', 'url': None, 'redacted': False, 'dates': {}},
+            2: {'name': 'Father', 'url': None, 'redacted': False, 'dates': {}},
+            3: {'name': 'Mother', 'url': None, 'redacted': False, 'dates': {}},
+        }
+        svg = site._render_pedigree_svg(labels)
+        self.assertIn('<path class="ped-link ped-link-couple" d="M224,75 H204 V219 H224"/>', svg)
+        self.assertIn('<path class="ped-link" d="M204,147 H184"/>', svg)
+        # The old two-independent-elbow shape must be GONE for this pair -
+        # replaced, not merely supplemented (a leftover old-style elbow
+        # alongside the new bracket would double-draw the line).
+        self.assertNotIn('<path class="ped-link" d="M184,147 H204 V75 H224"/>', svg)
+        self.assertNotIn('<path class="ped-link" d="M184,147 H204 V219 H224"/>', svg)
+        # Card/row geometry is provably untouched by this link-only change -
+        # the exact legacy viewBox this shape has always produced.
+        self.assertIn('viewBox="0 0 624 294.0"', svg)
+
+    def test_bracket_drawn_at_every_internal_generation_not_just_the_subjects_own_parents(self):
+        # A fully-known 3-generation tree (15 slots, 7 internal/non-leaf
+        # slots: 1 subject-parents pair + 2 grandparent pairs + 4
+        # great-grandparent pairs) must get exactly 7 brackets - one per
+        # internal slot - proving the mechanism generalizes to every
+        # generation the #115 depth default (5) will actually draw, not
+        # just the shallow 2-generation case above.
+        labels = self._full_labels(15)
+        svg = site._render_pedigree_svg(labels, ancestor_generations=3)
+        self.assertEqual(svg.count('ped-link-couple'), 7)
+        # Every bracket must have exactly one matching stub (a bracket with
+        # no stub, or a stub with no bracket, would mean the couple's own
+        # child never actually connects to the pairing it belongs to).
+        # The stub is the only OTHER 'ped-link'-classed path with a plain
+        # 'M... H...' two-point shape (no V segment) - count those and
+        # confirm it matches the bracket count.
+        stubs = re.findall(r'<path class="ped-link" d="M\d+,\d+ H\d+"/>', svg)
+        self.assertEqual(len(stubs), 7)
+
+    def test_lone_known_parent_keeps_the_plain_elbow_no_bracket_asserted(self):
+        # Only Father is known; Mother's slot (3) is still a faint 'Unknown'
+        # placeholder with a real child (the subject) - the pedigree draws
+        # it, but there is no marriage to bracket since only one half of the
+        # pair is actually on the chart. Same for Father's own parents
+        # (slots 4/5), both fully unresearched.
+        labels = {
+            1: {'name': 'Subject', 'url': None, 'redacted': False, 'dates': {}},
+            2: {'name': 'Father', 'url': None, 'redacted': False, 'dates': {}},
+        }
+        svg = site._render_pedigree_svg(labels)
+        self.assertNotIn('ped-link-couple', svg)
+        # The old-style plain elbow to Father (real) and to Mother's slot
+        # (Unknown) both still draw, unchanged.
+        self.assertIn('<path class="ped-link" d="M184,147 H204 V75 H224"/>', svg)
+        self.assertIn('<path class="ped-link" d="M184,147 H204 V219 H224"/>', svg)
+
+    def test_redacted_parent_beside_a_known_parent_never_gets_a_bracket(self):
+        # Adversarial self-review: a redacted (living/restricted) ancestor
+        # already renders as an ordinary 'Unknown' placeholder, never its
+        # real name (`_chart_entry` blanks the name, which makes its slot's
+        # `kind` 'empty' - the exact same code path an unresearched slot
+        # takes). A bracket drawn beside that blank card would still visibly
+        # assert "this real ancestor is married to whoever is behind this
+        # card" even with the name withheld - so this must fall through to
+        # the plain single-parent elbow, the same as any other slot with
+        # only one known occupant, never a couple bracket.
+        labels = {
+            1: {'name': 'Subject', 'url': None, 'redacted': False, 'dates': {}},
+            2: {'name': 'Father', 'url': None, 'redacted': False, 'dates': {}},
+            3: {'name': '', 'url': None, 'redacted': True, 'dates': {}},
+        }
+        svg = site._render_pedigree_svg(labels)
+        self.assertNotIn('ped-link-couple', svg)
+        self.assertIn('Father', svg)
+        # 3 Unknowns: slot 3 itself (redacted -> blanked to 'empty', its own
+        # children never placed since it is not a real drawn person) plus
+        # Father's own two unresearched parent slots (4/5).
+        self.assertEqual(svg.count('ped-empty'), 3)
+
+    def test_two_unresearched_parent_slots_never_get_a_bracket(self):
+        # A subject with NO known parents at all: both ancestor slots are
+        # 'Unknown' placeholders - no couple to assert either.
+        labels = {1: {'name': 'Subject', 'url': None, 'redacted': False, 'dates': {}}}
+        svg = site._render_pedigree_svg(labels)
+        self.assertNotIn('ped-link-couple', svg)
+        self.assertEqual(svg.count('ped-empty'), 2)
+
+    def test_workbench_hypothesis_parent_dashes_the_whole_pairing(self):
+        # A workbench-only unsourced hypothesis tie makes the WHOLE pairing
+        # exactly as unconfirmed as its weaker half - both the bracket AND
+        # its stub render with ped-link-later's own dashed vocabulary,
+        # mirroring how a later marriage's dashing already covers its
+        # bracket and its children stubs together, not the bracket alone.
+        labels = {
+            1: {'name': 'Subject', 'url': None, 'redacted': False, 'dates': {}},
+            2: {'name': 'Father', 'url': None, 'redacted': False, 'dates': {}, 'hypothesis': True},
+            3: {'name': 'Mother', 'url': None, 'redacted': False, 'dates': {}},
+        }
+        svg = site._render_pedigree_svg(labels, workbench=True)
+        self.assertIn(
+            '<path class="ped-link ped-link-hypothesis ped-link-couple" d="M224,75 H204 V219 H224"/>', svg)
+        self.assertIn('<path class="ped-link ped-link-hypothesis" d="M204,147 H184"/>', svg)
+
+    def test_deep_fully_known_tree_has_no_new_link_collisions(self):
+        # Adversarial self-review: the bracket+stub restructuring must not
+        # reintroduce a #120-shaped collinear overlap at the DEFAULT home
+        # pedigree depth (5) once every generation is actually drawing
+        # brackets, not just the shallow 2-generation case the pinned tests
+        # above check by hand. Reuses `_ped_link_row_collisions` (built for
+        # #120's family-wing collisions) against a fully-populated depth-5
+        # ancestor grid - the densest case this renderer can produce.
+        max_slot = (1 << 6) - 1   # depth 5: slots 1..63
+        labels = self._full_labels(max_slot)
+        svg = site._render_pedigree_svg(labels, ancestor_generations=5)
+        self.assertEqual(svg.count('ped-link-couple'), (1 << 5) - 1)   # 31 internal slots
+        self.assertEqual(_ped_link_row_collisions(svg), [])
+
+    def test_four_and_six_generation_depths_also_bracket_every_internal_slot(self):
+        # The adversarial question this guards against: does the bracket
+        # mechanism only happen to work at the default depth (5), or does
+        # it generalize the same way `row_index` itself was proven to at
+        # 3/4/5 generations? A fully-known tree at each depth must produce
+        # exactly one bracket per internal slot (2**D - 1) and zero
+        # collisions, for a depth both above and below the default.
+        for depth in (4, 6):
+            with self.subTest(depth=depth):
+                max_slot = (1 << (depth + 1)) - 1
+                labels = self._full_labels(max_slot)
+                svg = site._render_pedigree_svg(labels, ancestor_generations=depth)
+                self.assertEqual(svg.count('ped-link-couple'), (1 << depth) - 1)
+                self.assertEqual(_ped_link_row_collisions(svg), [])
+
+
 class PedigreeAxisLabelCenteringTests(unittest.TestCase):
     """#152 review fix (minor, cosmetic): the axis-label caption used to sit
     at `col_x(1)` - the left edge of just the FIRST ancestor generation's
@@ -3690,6 +3851,30 @@ class HomePedigreeTests(_Base):
         self.assertIn('ped-branch-1', self._read('index.html'))
         self.assertNotIn('ped-branch-1', self._read('persons/p-aaaaaaaaaa.html'))
         self.assertNotIn('ped-branch-2', self._read('persons/p-aaaaaaaaaa.html'))
+
+    def test_home_page_shows_a_couple_bracket_for_the_hub_own_parents(self):
+        # #115 REOPENED: the whole point of replacing the old descendant fan
+        # was showing marriages the fan could never show at all - a married-
+        # in ancestor who is not themself a blood descendant of the apex
+        # never appeared. Confirm the fix reaches the actual generated home
+        # page (AncestorCoupleBracketTests already pins the exact geometry
+        # in isolation) - the hub's own two parents are both known and
+        # public, so the built page must carry a shared-vertex bracket
+        # (`ped-link-couple`), the same idiom `_build_family_wings`'s own
+        # spouse bracket already uses one column over.
+        self._seed_person('p-aaaaaaaaaa', 'Hub Person')
+        self._seed_person('p-bbbbbbbbbb', 'Father Person', sex='M')
+        self._seed_person('p-cccccccccc', 'Mother Person', sex='F')
+        self._seed_rel('p-aaaaaaaaaa', 'parent', 'p-bbbbbbbbbb')
+        self._seed_rel('p-bbbbbbbbbb', 'child', 'p-aaaaaaaaaa')
+        self._seed_rel('p-aaaaaaaaaa', 'parent', 'p-cccccccccc')
+        self._seed_rel('p-cccccccccc', 'child', 'p-aaaaaaaaaa')
+        self._seed_home()
+        self._run(linked=True)
+        ped = self._pedigree_section(self._read('index.html'))
+        self.assertIn('ped-link-couple', ped)
+        self.assertIn('Father Person', ped)
+        self.assertIn('Mother Person', ped)
 
     def test_ahnentafel_excludes_non_genetic_parent(self):
         # #152 review fix (P2, SPEC §12.2): a parent-child edge whose backing

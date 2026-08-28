@@ -529,6 +529,15 @@ a.fan-link, a.fan-link:hover { text-decoration: none; }
    vocabulary (6 3 = legal bond, 1 3 = other): this dash means "a later
    marriage", not a different kind of bond. */
 .ped-link-later { stroke-dasharray: 3 3; }
+/* #115 reopened: an ancestor-generation couple (Ahnentafel slots 2N/2N+1 -
+   always co-parents of the same child by the numbering itself) gets the same
+   shared-vertex bracket idiom the spouse routing above already uses
+   (site.py `_render_pedigree_svg`). `.ped-link-couple` carries no rule of
+   its own - a plain solid `.ped-link` tick, same as every other confirmed
+   connector on this chart - unless the tie is a workbench-only hypothesis,
+   which reuses `.ped-link-later`'s own "lower confidence reads as dashed"
+   dasharray rather than inventing a second dash vocabulary for the same idea. */
+.ped-link-hypothesis { stroke-dasharray: 3 3; }
 .ped-node { box-sizing: border-box; height: 100%; display: flex; flex-direction: column;
             justify-content: center; gap: 1px; padding: 3px 9px; overflow: hidden;
             border: 1px solid var(--rule); background: var(--surface);
