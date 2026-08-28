@@ -5808,6 +5808,85 @@ class ProseConverterTests(unittest.TestCase):
         self.assertIn('before 1900 to 1910', out)
         self.assertIn('unconfirmed', out)
 
+    # -- round 4 (this round's Codex finding): a hyphen isn't `\w`/`?`/`~`,
+    # -- and a leading LETTER was never checked at all - rounds 1-3 each
+    # -- taught the boundary one more forbidden character and each round
+    # -- left another gap. `_DATE_BEFORE_SLASH_RE` no longer tries to
+    # -- enumerate forbidden boundary characters at all: it captures the
+    # -- plain side permissively and lets `is_valid_edtf` - the same
+    # -- authoritative validator this whole feature exists to respect -
+    # -- decide validity on the fully-captured span.
+
+    def test_before_bracket_interval_decade_bound_rejects_trailing_hyphen_suffix(self):
+        # This round's fresh finding: `[..1900]/191X-05` - a decade marker
+        # with a dangling, month-shaped `-05` suffix that is not a real EDTF
+        # continuation of a decade at all - used to slip past the old
+        # `(?![\w?~])` boundary (a hyphen is neither a word character nor
+        # `?`/`~`) and render as the nonsensical "before 1900 to 1910s-05".
+        # The permissive capture now sweeps `-05` into the same candidate
+        # span as `191X`, `is_valid_edtf('191X-05')` rejects it (a decade
+        # never takes a `-MM` suffix), and the WHOLE match is left untouched.
+        out = site._scrub_internal_encoding('Span: [..1900]/191X-05, per the deed.')
+        self.assertIn('[..1900]/191X-05', out)
+        self.assertNotIn('before', out)
+        self.assertNotIn('1910s', out)
+
+    def test_before_bracket_interval_decade_bound_not_swallowed_by_a_leading_letter(self):
+        # This round's other fresh finding: `A191X/[..1900]` - a decade
+        # token glued to a PRECEDING letter, e.g. mid-identifier. The old
+        # `(?<!\d)` boundary only ever rejected a preceding DIGIT, never a
+        # preceding letter or underscore, so this shape's own decade token
+        # was recognized and translated on its own even though it plainly
+        # isn't standing alone as a real date value - "A1910s to before
+        # 1900". The permissive capture now sweeps the leading `A` into the
+        # same candidate span as `191X`, `is_valid_edtf('A191X')` rejects it,
+        # and the WHOLE match is left untouched.
+        out = site._scrub_internal_encoding('Span: A191X/[..1900], per the deed.')
+        self.assertIn('A191X/[..1900]', out)
+        self.assertNotIn('before', out)
+        self.assertNotIn('1910s', out)
+        # Same shape with an ordinary year instead of a decade, and with an
+        # underscore instead of a letter, to confirm this isn't decade- or
+        # letter-specific.
+        out2 = site._scrub_internal_encoding('Span: foo1910/[..1900], per the deed.')
+        self.assertIn('foo1910/[..1900]', out2)
+        self.assertNotIn('before', out2)
+        out3 = site._scrub_internal_encoding('Span: _1910/[..1900], per the deed.')
+        self.assertIn('_1910/[..1900]', out3)
+        self.assertNotIn('before', out3)
+
+    def test_before_bracket_interval_trailing_letters_glued_onto_valid_year_left_untouched(self):
+        # Mirrors the decade-specific hyphen-suffix finding above for the
+        # ordinary year/month/day shape: `[..1900]/1910-foo` is not a real
+        # EDTF continuation (`-foo` is not a valid month), so the whole
+        # interval - not just a "before 1900 to 1910" reading with "-foo"
+        # dangling after it - is left exactly as written.
+        out = site._scrub_internal_encoding('Span: [..1900]/1910-foo, per the deed.')
+        self.assertIn('[..1900]/1910-foo', out)
+        self.assertNotIn('before', out)
+
+    def test_before_bracket_interval_extra_trailing_component_left_untouched(self):
+        # A fourth `-06` after a complete year-month-day is not valid EDTF
+        # (only year, year-month, and year-month-day are recognised) - the
+        # permissive capture sweeps it in and `is_valid_edtf` rejects the
+        # whole thing, rather than translating just the first three
+        # components and leaving "-06" dangling.
+        out = site._scrub_internal_encoding('Span: [..1900]/1910-05-15-06, per the deed.')
+        self.assertIn('[..1900]/1910-05-15-06', out)
+        self.assertNotIn('before', out)
+
+    def test_before_bracket_interval_valid_bound_not_over_consumed_by_following_prose(self):
+        # The other direction this redesign must get right: the permissive
+        # capture must stop at the first character that can never be part of
+        # a real EDTF token, so a valid interval immediately followed by
+        # ordinary prose - including the word "to", which also appears in
+        # this function's OWN "X to Y" wording - never has that prose swept
+        # into the date token itself.
+        out = site._scrub_internal_encoding('They lived there [..1900]/1910 to Fairview.')
+        self.assertIn('before 1900 to 1910 to Fairview', out)
+        out2 = site._scrub_internal_encoding('Span: [..1900]/1910, Fairview nearby.')
+        self.assertIn('before 1900 to 1910, Fairview nearby', out2)
+
     def test_standalone_before_bracket_still_translates(self):
         # Guards that the finding-5 interval fix doesn't overreach: a
         # bracket that is NOT adjacent to a slash still translates normally.

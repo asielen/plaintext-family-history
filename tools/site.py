@@ -879,123 +879,74 @@ _DATE_BEFORE_RE = re.compile(r'\[\.\.(\d{4})(?:-(\d{2}))?(?:-(\d{2}))?\]')
 
 # The two-sided-interval shape `_translate_date_before` deliberately leaves
 # alone (see its docstring): one bound written as a `[..YYYY[-MM[-DD]]]`
-# bracket, the OTHER a plain `YYYY[-MM[-DD]]` with no bracket, joined by `/`
-# (#167 finding 3). `(?<!\d)`/`(?!\d)` bound the plain side so it can't
-# silently swallow (or be swallowed by) an adjacent digit run that isn't
-# really part of this date - the bracket side needs no such guard since `[`
-# and `]` are already unambiguous delimiters. Two full alternatives (rather
-# than one pattern with the bracket "on either side") because Python `re`
-# cannot reuse the same group name twice in one pattern; `by`/`bm`/`bd` name
-# the bracketed year/month/day, `py`/`pm`/`pd` the plain ones, suffixed `1`
-# for "bracket comes first" and `2` for "plain comes first".
+# bracket, the OTHER a plain `YYYY[-MM[-DD]]` (or `\d{3}X` decade, or either
+# shape carrying a `?`/`~` uncertainty marker) with no bracket, joined by `/`
+# (#167 finding 3). Two full alternatives (rather than one pattern with the
+# bracket "on either side") because Python `re` cannot reuse the same group
+# name twice in one pattern; `by`/`bm`/`bd` name the bracketed year/month/
+# day, suffixed `1` for "bracket comes first" and `2` for "plain comes
+# first".
 #
-# `pq1`/`pq2` (adversarial review of #167 finding 3) let the plain side also
-# carry a trailing EDTF uncertainty/approximation qualifier - `?` or `~`,
-# the only two this archive's EDTF dialect uses (`_lib._EDTF_PATTERNS`;
-# `_lib.humanize_edtf`/`_humanize_edtf_bound` read them as "(unconfirmed)"
-# and "about ..." respectively, see `_translate_date_before_slash`). Without
-# this, a plain bound already valid per `is_valid_edtf` (which accepts a
-# trailing `?`/`~` on the year/month/day component - `_EDTF_PATTERNS`) but
-# carrying one, e.g. `[..1900]/1910?`, matched only the unqualified `1910`
-# prefix: the `?` fell outside the match entirely and survived untranslated
-# in reader-facing prose, and the mirrored `1900?/[..1910]` did not match at
-# all, since the un-widened plain-side pattern could never reach past the
-# `?` to find the `/` right after it. The qualifier is bound to the SAME
-# `(?!\d)`/lookahead discipline as the rest of the plain side: `pq1` sits
-# before the existing `(?!\d)` (so a stray digit still can't follow), and
-# `pq2` sits directly before the literal `/` (the only thing allowed to
-# follow the plain side in that alternative). The bracket side never carries
-# a qualifier in this dialect (`_EDTF_PATTERNS`'s bracket form allows no
-# `?`/`~` inside `[..]` at all), so only the plain side needs this.
+# Round 4 redesign (#167/#174/#190/#197, this round's Codex finding):
+# rounds 1-3 each taught the plain side's boundary lookahead/lookbehind one
+# more forbidden character - reject a following digit, then a following
+# letter too, then a following `?`/`~`/underscore/non-ASCII-letter too - and
+# each round's fix left another gap the next round found: `[..1900]/191X-05`
+# still slipped a dangling `-05` past the old `(?![\w?~])` (a hyphen is
+# neither `\w` nor `?`/`~`), and `A191X/[..1900]` still slipped past the old
+# `(?<!\d)` (a leading LETTER was never checked at all, only a leading
+# digit). That pattern - three rounds of "add one more character to the
+# blacklist," each missing another - means the blacklist shape of the fix
+# was the actual problem, not any one round's specific list.
 #
-# `pmq1`/`pdq1` (`pmq2`/`pdq2` for the plain-first alternative) extend this
-# further (fresh Codex finding on the same #167 finding-3 pipeline, after the
-# trailing-qualifier fix above shipped): this archive's EDTF dialect also
-# lets a `~` sit COMPONENT-LEVEL, immediately before the month or day digits,
-# rather than trailing the whole date - "1910-~06" reads "1910, approximately
-# June": the year is certain, only the month is a guess
-# (`_EDTF_PATTERNS`'s `~?` sitting directly before each `\d{2}` component).
-# Unlike the trailing marker, `?` is never valid in this leading position -
-# `_EDTF_PATTERNS` only ever writes `~?` there, never `[?~]?` - so `pmq`/`pdq`
-# only ever capture a literal tilde. Before this, `[..1900]/1910-~06` matched
-# only the unqualified `1910` prefix - the exact same bug `pq1`/`pq2` fixed
-# above, but for the mid-date form instead of the trailing one - and the
-# mirrored `1910-~06/[..1900]` did not match at all, for the identical
-# reason `pq2` was needed: the plain side could not reach past `-~06` to
-# find the `/`. A trailing `pq`/`pq2` marker and a leading `pmq`/`pdq` marker
-# are not mutually exclusive in the grammar (`1910-~06?` is syntactically
-# valid too), so both are captured independently rather than as alternatives;
-# `_translate_date_before_slash` reconciles the two into one wording.
+# So the plain side is no longer matched by a hand-built shape (decade vs.
+# year/month/day, with its own qualifier sub-groups and boundary
+# lookarounds) at all. Instead `plain1`/`plain2` greedily capture ANY run of
+# `[\w?~-]` - every character that legitimately appears inside a real plain
+# EDTF bound (digits, the decade's `X`, `?`/`~` qualifiers, and the `-`
+# that separates year/month/day) PLUS every character a malformed or
+# glued-on neighbor could plausibly contribute (ordinary letters, `_`,
+# non-ASCII letters, a stray trailing `-05`). A run stops only at a
+# character that could never be part of any real EDTF token (whitespace,
+# `/`, `,`, `.`, `[`, `]`, ...), so ordinary prose immediately after a valid
+# date - "[..1900]/1910 to Fairview" - is never swept in (the space stops
+# the run), while a glued-on malformed continuation - "191X-05", "A191X" -
+# IS swept in, because there is no such boundary character between the
+# malformed text and the real date shape for a blacklist to have anchored
+# on in the first place.
 #
-# `pdec1`/`pdec2` (post-merge Codex review of PR #174, #167 finding 3
-# continued): the plain side may ALSO be written in this archive's decade
-# shape, `\d{3}X` (`_lib._EDTF_PATTERNS`'s own `185X`-style alternative -
-# e.g. "the 1850s" written as an EDTF bound), not just a four-digit year.
-# `is_valid_edtf('[..1900]/191X')` was already True before this - the
-# validator has always accepted a decade on either side of an otherwise
-# valid interval - but neither plain-side alternative above could match a
-# bare `\d{3}X` at all (a decade has no year/month/day shape to capture),
-# so a genuinely valid `[..1900]/191X`-style interval fell through BOTH
-# alternatives untouched and the raw bracket notation leaked into
-# reader-facing prose. Tried as an alternative ahead of the year/month/day
-# shape in each plain-side position (order doesn't actually matter here -
-# `\d{4}` can never match a literal trailing `X`, so the two alternatives
-# never compete for the same text - but decade-first mirrors how a human
-# reads the shape). A decade bound never carries a `?`/`~` qualifier in
-# this dialect - `_EDTF_PATTERNS`'s `\d{3}X` pattern allows no suffix - so
-# `pdec1`/`pdec2` have no qualifier groups of their own the way `py1`/`py2`
-# do.
-#
-# Boundary (second post-merge Codex review of PR #174/#190): a plain-side
-# match must not be followed by ANOTHER identifier character - not just
-# "not another digit". `[..1900]/191XX` (a doubled, malformed decade
-# marker) or `[..1900]/191Xfoo` used to pass `pdec1`'s old `(?!\d)` check
-# clean (the character right after "191X" is a letter, never a digit), so
-# the FIRST alternative - which has nothing anchoring it after the plain
-# bound, unlike the second alternative's required trailing `/\[\.\.` -
-# matched only the well-formed "191X" prefix and silently left the rest
-# ("X", "foo") dangling as untouched trailing text, translating a
-# genuinely malformed interval into garbled prose ("before 1900 to
-# 1910sX") instead of leaving it alone entirely, as `_scrub_internal_
-# encoding`'s own contract promises for anything that ISN'T a real,
-# complete EDTF shape. `(?![0-9A-Za-z])` closes this for both digits and
-# letters; applied to `pdec1`'s AND `py1`'s trailing checks (both share the
-# same "nothing anchors the end of this alternative" gap), and mirrored on
-# `pdec2`/`py2` for consistency even though the second alternative's own
-# required trailing `/\[\.\.` already rejects this shape by construction
-# today (a `191XX/[..1900]` never reaches this boundary check at all, since
-# `\d{3}X` only consumes "191X" and the very next character has to be `/`,
-# not another letter, for the alternative to match anywhere) - defense in
-# depth against a future change loosening that trailing requirement.
-#
-# `(?![\w?~])` on `pdec1`/`pdec2` specifically (third post-merge Codex
-# review of PR #174/#190/#197): `[0-9A-Za-z]` was still an incomplete
-# boundary - `[..1900]/191X?` and `[..1900]/191X_` both garbled into
-# plausible-looking prose ("before 1900 to 1910s?"/"...1910s_") because
-# neither `?` nor `_` is an ASCII letter or digit, so the old lookahead let
-# them through clean. A decade bound never carries a `?`/`~` qualifier in
-# this dialect (unlike `py1`/`py2`, which legitimately do - their own
-# `pq1`/`pq2` group already CONSUMES a real qualifier before either
-# boundary check below ever runs, so a decade's trailing `?`/`~` is always
-# unconsumed, invalid trailing junk, never a legitimate part of the token).
-# `\w` is Python's own default (Unicode-aware, no `re.ASCII`) word-character
-# class - it also closes the identical gap for an underscore or a non-ASCII
-# letter, neither of which `[0-9A-Za-z]` ever caught either. `py1`/`py2`
-# move to the same `\w`-based rejection for the identical reason (a
-# trailing underscore or non-ASCII letter after an ordinary year/month/day
-# is exactly as invalid as a trailing ASCII letter always was) - `?`/`~`
-# stay excluded from THEIR lookahead only, since by the time either
-# boundary runs, a real qualifier there has already been consumed by
-# `pq1`/`pq2` and is behind the match, not ahead of it.
+# `_translate_date_before_slash` then hands the WHOLE captured span to
+# `is_valid_edtf` - the same authoritative validator `process.py`/`claim.py`
+# use for `--date`, and the one this whole humanizing pass already exists to
+# respect (`_translate_date_before`'s own guard does the same for its single
+# bracket). A captured span that is exactly a real plain EDTF bound passes
+# and gets formatted; anything else - a real bound with extra junk swept in
+# on either side, or no real bound there at all - fails validation and the
+# ENTIRE match (bracket, slash, and whatever was captured) is returned
+# unchanged. There is no boundary character list left to be incomplete:
+# validity is decided by parsing the value, not by guessing which neighbor
+# characters are suspicious.
 _DATE_BEFORE_SLASH_RE = re.compile(
     r'\[\.\.(?P<by1>\d{4})(?:-(?P<bm1>\d{2}))?(?:-(?P<bd1>\d{2}))?\]'
-    r'/(?:(?P<pdec1>\d{3}X)(?![\w?~])'
-    r'|(?P<py1>\d{4})(?:-(?P<pmq1>~)?(?P<pm1>\d{2}))?'
-    r'(?:-(?P<pdq1>~)?(?P<pd1>\d{2}))?(?P<pq1>[?~])?(?!\w))'
-    r'|(?<!\d)(?:(?P<pdec2>\d{3}X)(?![\w?~])'
-    r'|(?P<py2>\d{4})(?:-(?P<pmq2>~)?(?P<pm2>\d{2}))?'
-    r'(?:-(?P<pdq2>~)?(?P<pd2>\d{2}))?(?P<pq2>[?~])?)'
+    r'/(?P<plain1>[\w?~-]+)'
+    r'|(?P<plain2>[\w?~-]+)'
     r'/\[\.\.(?P<by2>\d{4})(?:-(?P<bm2>\d{2}))?(?:-(?P<bd2>\d{2}))?\]',
+)
+
+# Parses a plain bound already CONFIRMED valid (`is_valid_edtf`) by
+# `_translate_date_before_slash` into the pieces `_format_edtf_decade`/
+# `_format_edtf_ymd`/`_apply_edtf_qualifier` need for wording - never used to
+# DECIDE validity (that is `is_valid_edtf`'s job alone; see
+# `_DATE_BEFORE_SLASH_RE`'s comment). Structurally mirrors the non-bracket
+# entries of `_lib._EDTF_PATTERNS` (decade, and year with optional
+# component-level `~` before month/day plus an optional trailing `?`/`~`),
+# so anything `is_valid_edtf` accepts as a plain bound is guaranteed to
+# match one of this pattern's two alternatives - `_translate_date_before_
+# slash` asserts that invariant rather than silently trusting it.
+_PLAIN_BOUND_SHAPE_RE = re.compile(
+    r'^(?P<decade>\d{3}X)$'
+    r'|^(?P<year>\d{4})(?:-(?P<mq>~)?(?P<month>\d{2}))?'
+    r'(?:-(?P<dq>~)?(?P<day>\d{2}))?(?P<tq>[?~])?$'
 )
 
 _MONTH_NAMES = ('January', 'February', 'March', 'April', 'May', 'June', 'July',
@@ -1217,21 +1168,23 @@ def _translate_date_before_slash(match: re.Match) -> str:
     `_translate_date_before` validates its single bound - either side
     failing validation (e.g. `[..1900-13-01]/1910`, no such month) leaves
     the WHOLE match untouched rather than translate one real bound next to
-    one bogus one.
+    one bogus one. As of the round-4 redesign (see `_DATE_BEFORE_SLASH_RE`'s
+    comment), the plain side's validation runs on the ENTIRE captured
+    `plain1`/`plain2` span exactly as captured - not a hand-reconstructed
+    "bare" string - so any malformed neighbor text the regex's permissive
+    capture swept in (a dangling `-05`, a glued-on leading letter) makes
+    that `is_valid_edtf` call fail and the whole match is left untouched,
+    with no separate boundary check needed.
 
     The plain side may also carry a trailing `?`/`~` EDTF qualifier
     (adversarial review of #167 finding 3): `[..1900]/1910?` -> "before
     1900 to 1910 (unconfirmed)", `1900?/[..1910]` -> "1900 (unconfirmed) to
-    before 1910" - see `_DATE_BEFORE_SLASH_RE`'s own comment for why the
-    regex needed widening to consume it at all, and
-    `_apply_edtf_qualifier` for the wording. Validation runs on the BARE
-    component (qualifier stripped) exactly as `_translate_date_before`
-    validates its single bound - the qualifier is a confidence marker, not
-    part of calendar validity, so `[..1900]/1910-13-01?` (invalid month,
-    qualifier or not) still leaves the WHOLE match - qualifier included -
-    untouched via `match.group(0)`. The bracket side never carries a
-    qualifier in this dialect (see `_DATE_BEFORE_SLASH_RE`'s comment), so
-    only the plain side's label is ever wrapped.
+    before 1910" - `is_valid_edtf` itself accepts a trailing `?`/`~` on a
+    year/month/day component (`_lib._EDTF_PATTERNS`), so the qualifier is
+    part of what gets validated, not stripped first. `_apply_edtf_qualifier`
+    supplies the wording. The bracket side never carries a qualifier in
+    this dialect (`_EDTF_PATTERNS`'s bracket form allows no `?`/`~` inside
+    `[..]` at all), so only the plain side's label is ever wrapped.
 
     The plain side may ALSO carry a component-level `~` sitting before the
     month or day instead of trailing the whole date (fresh Codex finding on
@@ -1246,41 +1199,31 @@ def _translate_date_before_slash(match: re.Match) -> str:
     in the grammar (`1910-~06?` is valid too); when both are present the
     trailing `?` wins - the same "uncertain beats approximate" precedence
     `_humanize_edtf_bound` already applies for a component carrying both
-    markers at once. Calendar validation still runs on the fully bare
-    component (both the leading and trailing markers stripped), so a
-    component-level `~` next to a genuinely impossible month/day - e.g.
-    `[..1900]/1910-~13` (no month 13) - still leaves the WHOLE match
-    untouched, exactly like the trailing-qualifier case above.
+    markers at once. `is_valid_edtf` calendar-validates the whole qualified
+    string via `edtf_bounds`, so a component-level `~` next to a genuinely
+    impossible month/day - e.g. `[..1900]/1910-~13` (no month 13) - still
+    leaves the WHOLE match untouched, exactly like the trailing-qualifier
+    case above.
 
     The plain side may ALSO be written in this archive's decade shape
     (post-merge Codex review of PR #174, #167 finding 3 continued):
     `[..1900]/191X` -> "before 1900 to 1910s", `191X/[..1900]` -> "1910s to
     before 1900". `is_valid_edtf` already accepted a decade bound here
     before this fix - `_lib._EDTF_PATTERNS`'s `\\d{3}X` alternative is a
-    standalone valid EDTF shape - but `_DATE_BEFORE_SLASH_RE`'s plain-side
-    alternatives only ever matched a four-digit year, so a genuinely valid
-    decade interval fell through untranslated and leaked raw bracket
-    notation onto the page, exactly the class of leak this whole function
-    exists to close. Formatted via `_format_edtf_decade` (see its own
-    docstring for why this reuses `_decade_header`'s established "1910s"
-    wording by value rather than importing `_lib._humanize_edtf_bound`
-    directly). A decade bound never carries a `?`/`~` qualifier in this
-    dialect, so it skips `_apply_edtf_qualifier` entirely rather than being
-    wrapped with one."""
+    standalone valid EDTF shape. Formatted via `_format_edtf_decade` (see
+    its own docstring for why this reuses `_decade_header`'s established
+    "1910s" wording by value rather than importing `_lib._humanize_edtf_
+    bound` directly). A decade bound never carries a `?`/`~` qualifier in
+    this dialect, so it skips `_apply_edtf_qualifier` entirely rather than
+    being wrapped with one."""
     g = match.groupdict()
     bracket_first = g['by1'] is not None
     if bracket_first:
         b_year, b_month, b_day = g['by1'], g['bm1'], g['bd1']
-        p_decade = g['pdec1']
-        p_year, p_month, p_day = g['py1'], g['pm1'], g['pd1']
-        p_trailing_qualifier = g['pq1']
-        p_has_component_approx = g['pmq1'] is not None or g['pdq1'] is not None
+        plain_text = g['plain1']
     else:
-        p_decade = g['pdec2']
-        p_year, p_month, p_day = g['py2'], g['pm2'], g['pd2']
+        plain_text = g['plain2']
         b_year, b_month, b_day = g['by2'], g['bm2'], g['bd2']
-        p_trailing_qualifier = g['pq2']
-        p_has_component_approx = g['pmq2'] is not None or g['pdq2'] is not None
 
     def _bare(year: str, month: str | None, day: str | None) -> str:
         v = year
@@ -1290,33 +1233,44 @@ def _translate_date_before_slash(match: re.Match) -> str:
                 v += f'-{day}'
         return v
 
-    # The plain side's bare component for validation is the decade token
-    # itself (e.g. '191X') when the decade alternative matched, since a
-    # decade has no year/month/day shape to reassemble via `_bare`.
-    p_bare = p_decade if p_decade is not None else _bare(p_year, p_month, p_day)
-    if not is_valid_edtf(_bare(b_year, b_month, b_day)) or not is_valid_edtf(p_bare):
+    # `plain_text` is exactly what `_DATE_BEFORE_SLASH_RE` captured - qualifier
+    # markers, decade `X`, and any malformed neighbor text all included, none
+    # of it pre-stripped - so this one `is_valid_edtf` call both decides
+    # whether the plain side is a genuine bound AND rejects anything the
+    # permissive capture swept in that isn't (see this function's docstring).
+    if not is_valid_edtf(_bare(b_year, b_month, b_day)) or not is_valid_edtf(plain_text):
         return match.group(0)
 
     before_label = f'before {_format_edtf_ymd(b_year, b_month, b_day)}'
-    if p_decade is not None:
+
+    # `plain_text` just passed `is_valid_edtf`, which recognizes exactly the
+    # shapes `_PLAIN_BOUND_SHAPE_RE` parses (see that pattern's comment) - so
+    # `shape` matching is a guaranteed consequence of the check above, not a
+    # fresh gate; the assert documents that invariant instead of quietly
+    # trusting it.
+    shape = _PLAIN_BOUND_SHAPE_RE.match(plain_text)
+    assert shape is not None, f'is_valid_edtf accepted {plain_text!r} but _PLAIN_BOUND_SHAPE_RE did not'
+    decade = shape.group('decade')
+    if decade is not None:
         # A decade bound never carries a `?`/`~` qualifier in this dialect
         # (see this function's docstring), so it skips
         # `_apply_edtf_qualifier` entirely.
-        plain_label = _format_edtf_decade(p_decade)
+        plain_label = _format_edtf_decade(decade)
     else:
-        # Reconcile a trailing `?`/`~` with a leading component-level `~`
-        # (`pmq`/`pdq`) into the single qualifier `_apply_edtf_qualifier`
+        # Reconcile a trailing `?`/`~` (`tq`) with a leading component-level
+        # `~` (`mq`/`dq`) into the single qualifier `_apply_edtf_qualifier`
         # already knows how to wrap - the two are not mutually exclusive in
         # the grammar (`1910-~06?` is valid), so a bare "is either present"
         # check would lose whichever the wording actually needs. `_lib.
         # _humanize_edtf_bound` prefers "not sure at all" (`?`) over
         # "roughly right" (`~`) when one component carries both; this
         # mirrors that same precedence rather than inventing a new rule.
-        p_qualifier = p_trailing_qualifier
-        if p_qualifier != '?' and p_has_component_approx:
+        p_qualifier = shape.group('tq')
+        if p_qualifier != '?' and (shape.group('mq') or shape.group('dq')):
             p_qualifier = '~'
         plain_label = _apply_edtf_qualifier(
-            _format_edtf_ymd(p_year, p_month, p_day), p_qualifier)
+            _format_edtf_ymd(shape.group('year'), shape.group('month'), shape.group('day')),
+            p_qualifier)
     if bracket_first:
         return f'{before_label} to {plain_label}'
     return f'{plain_label} to {before_label}'
