@@ -6481,9 +6481,18 @@ class OpenQuestionsSectionTests(_Base):
         # by-request relative, on top of him. Before this fix, only the
         # home file's owner was checked, so a question homed anywhere else
         # could still fan a by-request person's private research onto HER
-        # page via `refs:` alone. Otto's own page is unaffected - the leak
-        # was specifically Rae's page rendering research she asked not to
-        # have discussed.
+        # page via `refs:` alone.
+        #
+        # PR #179 POST-MERGE review, finding 1 (P1, privacy leak): this test
+        # used to assert that Otto's own page kept showing the block in
+        # full - the per-ref loop only skipped Rae's OWN listing, so the
+        # identical unredacted text (Rae's sealed adoption record, exactly
+        # the sensitive detail she asked never to have discussed) still
+        # rendered on Otto's page. That was the bug, not a documented
+        # boundary: a `## Q:` block naming a by-request person anywhere in
+        # its `refs:` is one indivisible piece of private research about
+        # her, and it must be withheld from EVERY page it would otherwise
+        # have appeared on, Otto's included - not just kept off her own.
         self._seed_person('p-aaaaaaaaaa', 'Reticent Rae', surname='Rae',
                           frontmatter_extra='restricted: by-request')
         self._seed_person('p-bbbbbbbbbb', 'Open Otto', surname='Otto')
@@ -6505,8 +6514,41 @@ class OpenQuestionsSectionTests(_Base):
         self.assertNotIn('half-sibling', rae_html)
         self.assertNotIn('sealed adoption record', rae_html)
         otto_html = self._read('persons/p-bbbbbbbbbb.html')
-        self.assertIn('half-sibling', otto_html)
-        self.assertIn('sealed adoption record', otto_html)
+        self.assertNotIn('half-sibling', otto_html)
+        self.assertNotIn('sealed adoption record', otto_html)
+        self.assertNotIn('Open Questions', otto_html)
+
+    def test_mixed_refs_question_is_withheld_from_every_page_it_names(self):
+        # PR #179 post-merge review, finding 1 (P1, privacy leak),
+        # dedicated regression: a single question naming THREE people -
+        # Rae (by-request) plus two ordinary, unrestricted relatives - must
+        # vanish from all three pages, not just Rae's own. The bug this
+        # pins was in the per-ref loop filtering DESTINATIONS one at a time
+        # (skip only the by-request ref's own listing) rather than the
+        # question itself (any by-request ref voids the whole block,
+        # everywhere) - a question naming more than two people makes that
+        # distinction unambiguous: it is not enough for the fix to work
+        # for one unrestricted bystander, it has to hold for all of them.
+        self._seed_person('p-aaaaaaaaaa', 'Reticent Rae', surname='Rae',
+                          frontmatter_extra='restricted: by-request')
+        self._seed_person('p-bbbbbbbbbb', 'Open Otto', surname='Otto')
+        self._seed_person('p-cccccccccc', 'Candid Cora', surname='Cora')
+        self._write_questions_md(
+            "## Q: Were Rae, Otto, and Cora all siblings?\n"
+            '- origin: human\n'
+            '- status: open\n'
+            '- refs: [P-bbbbbbbbbb, P-aaaaaaaaaa, P-cccccccccc]\n'
+            '- context:\n'
+            '  - (human, 2026-06-01) A sealed adoption record ties the three '
+            'together; Rae asked never to have it discussed.\n'
+        )
+        lo = self._run(linked=True, workbench=False)
+        self.assertTrue(lo.ok, lo.messages)
+        for pid in ('p-aaaaaaaaaa', 'p-bbbbbbbbbb', 'p-cccccccccc'):
+            html = self._read(f'persons/{pid}.html')
+            self.assertNotIn('siblings', html, pid)
+            self.assertNotIn('sealed adoption record', html, pid)
+            self.assertNotIn('Open Questions', html, pid)
 
     def test_research_file_whose_frontmatter_id_disagrees_with_its_filename_fails_closed(self):
         # Adversarial review of PR #179, round 2: a research companion's
@@ -6539,6 +6581,148 @@ class OpenQuestionsSectionTests(_Base):
         self.assertNotIn('Should never render', html)
         messages = lo['messages']
         self.assertTrue(any('E003' in m or 'mismatch' in m.lower() for m in messages), messages)
+
+    def test_by_request_persons_id_less_research_companion_still_fails_closed(self):
+        # PR #179 post-merge review, finding 2 (P1, privacy leak): a
+        # research companion named BEFORE its id was minted
+        # (`{surname}__{given}_research.md`, no trailing `_P-...` - Codex's
+        # own example is `rae__reticent_research.md`) is a real,
+        # `is_person_file_kind`-documented state, and `_lib.parse_questions`
+        # already reads such a file's own frontmatter `id:` to know whose
+        # research it is. The origin by-request check used to read only the
+        # FILENAME for that id, get `parse_filename() is None`, and treat
+        # that as "not a person research file - nothing to check" - so
+        # Rae's by-request research published in full on Otto's page,
+        # solely because her companion happened to be named before she
+        # (or her id) existed on disk in filename form. Her own id lives
+        # only in frontmatter here, and the question's `refs:` names only
+        # Otto - not Rae herself - so this isolates the ORIGIN-file check
+        # specifically (finding 1's per-ref fix would not catch this on its
+        # own, since Rae's id never appears in `refs:` at all).
+        self._seed_person('p-aaaaaaaaaa', 'Reticent Rae', surname='Rae',
+                          frontmatter_extra='restricted: by-request')
+        self._seed_person('p-bbbbbbbbbb', 'Open Otto', surname='Otto')
+        id_less = self.archive_root / 'people' / 'rae__reticent_research.md'
+        id_less.write_text(
+            '---\nid: p-aaaaaaaaaa\ncreated: 2026-06-01\n---\n\n'
+            '## Open Questions\n\n'
+            "## Q: Was Otto really involved in Rae's sealed adoption?\n"
+            '- origin: human\n'
+            '- status: open\n'
+            '- refs: [P-bbbbbbbbbb]\n'
+            '- context:\n'
+            '  - (human, 2026-06-01) A sealed adoption record hints at this; '
+            'Rae asked never to have it discussed.\n',
+            encoding='utf-8')
+        lo = self._run(linked=True, workbench=False)
+        self.assertTrue(lo.ok, lo.messages)
+        otto_html = self._read('persons/p-bbbbbbbbbb.html')
+        self.assertNotIn("sealed adoption", otto_html)
+        self.assertNotIn('Open Questions', otto_html)
+        rae_html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertNotIn('sealed adoption', rae_html)
+
+    def test_id_less_research_companion_with_unreadable_frontmatter_fails_closed(self):
+        # The other half of finding 2: when the filename carries no P-id AND
+        # its own frontmatter cannot supply one either (undecodable file, or
+        # simply no `id:` field at all), there is no owner to check against
+        # at all - this must withhold rather than publish on a guess,
+        # matching every other "can't verify" case in this class.
+        self._seed_person('p-bbbbbbbbbb', 'Open Otto', surname='Otto')
+        id_less = self.archive_root / 'people' / 'ghost__unminted_research.md'
+        id_less.write_text(
+            '---\ncreated: 2026-06-01\n---\n\n'
+            '## Open Questions\n\n'
+            '## Q: No id anywhere at all\n'
+            '- origin: human\n'
+            '- status: open\n'
+            '- refs: [P-bbbbbbbbbb]\n'
+            '- context:\n'
+            '  - (human, 2026-06-01) Should never render without a resolvable owner.\n',
+            encoding='utf-8')
+        lo = self._run(linked=True, workbench=False)
+        self.assertTrue(lo.ok, lo.messages)
+        otto_html = self._read('persons/p-bbbbbbbbbb.html')
+        self.assertNotIn('No id anywhere at all', otto_html)
+        self.assertNotIn('Should never render', otto_html)
+
+    def test_dangling_ref_names_the_actual_origin_with_a_repair_step_once(self):
+        # PR #179 post-merge review, finding 3 (P2): a `refs:` P-id absent
+        # from `person_meta` (a typo, or a stale index) used to produce a
+        # warning claiming the question was "filed under {pid}'s research
+        # companion" - accurate only when pid IS a research file's own
+        # owner (the origin check), and simply wrong for a `refs:` TARGET
+        # that was never any file's own owner. The fix must name the
+        # question's real origin file and an accurate repair step (check
+        # that file's `refs:` list for a typo, or run `fha index` in case
+        # the index is stale) instead.
+        #
+        # Also covers finding 4 (P2, perf): the SAME dangling id is
+        # referenced from TWO different files here (notes/questions.md and
+        # Jane's own research companion) - unmemoized, that used to mean
+        # two full profile-lookup attempts and two appended warnings; this
+        # asserts exactly one.
+        self._seed_person('p-aaaaaaaaaa', 'Jane Doe', surname='Doe')
+        self._write_questions_md(
+            '## Q: Is the mystery cousin related?\n'
+            '- status: open\n'
+            '- refs: [P-aaaaaaaaaa, P-zzzzzzzzzz]\n'
+            '- context:\n'
+            "  - (human, 2026-06-01) Probably a typo'd id.\n"
+        )
+        research_path = self.archive_root / 'people' / 'doe__test_research_p-aaaaaaaaaa.md'
+        research_path.write_text(
+            '---\nid: p-aaaaaaaaaa\ncreated: 2026-06-01\n---\n\n'
+            '## Open Questions\n\n'
+            '## Q: A second, unrelated mention of the same dangling id\n'
+            '- status: open\n'
+            '- refs: [P-aaaaaaaaaa, P-zzzzzzzzzz]\n'
+            '- context:\n'
+            '  - (human, 2026-06-01) Same dangling id, a different file entirely.\n',
+            encoding='utf-8')
+        res = self._run(linked=True, workbench=False)
+        self.assertTrue(res.ok, res.messages)
+        messages = res['messages']
+        dangling = [m for m in messages if 'p-zzzzzzzzzz' in m.lower()]
+        self.assertEqual(
+            len(dangling), 1,
+            'the dangling-ref warning must be memoized per pid, not repeated '
+            f'once per reference to it: {messages}')
+        msg = dangling[0].lower()
+        # Names an actual file - either question's real origin is a correct
+        # answer here (whichever one this build happened to check first) -
+        # never a claim that the dangling id owns some research companion
+        # of its own.
+        self.assertTrue(
+            'notes/questions.md' in msg or 'doe__test_research_p-aaaaaaaaaa.md' in msg,
+            dangling[0])
+        self.assertTrue('refs' in msg or 'fha index' in msg, dangling[0])
+        # Neither question survives - both are voided by the same dangling,
+        # fail-closed ref, exactly as a real by-request ref would void them.
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertNotIn('mystery cousin', html)
+        self.assertNotIn('unrelated mention', html)
+
+    def test_person_is_by_request_reads_the_profile_once_per_pid(self):
+        # PR #179 post-merge review, finding 4 (P2, perf): before this fix,
+        # only the ORIGIN check was memoized (`_by_request_origin_cache`) -
+        # `_person_is_by_request` itself re-read and re-parsed the same
+        # profile record from scratch on every call. A `refs:` check runs
+        # once per person named on every open question, so an archive where
+        # hundreds of questions all name one central, heavily-connected
+        # ancestor used to re-read that one file hundreds of times over a
+        # single build. Same pattern as
+        # PersonPageTests.test_provisional_vital_reads_the_record_once_per_person.
+        self._seed_person('p-aaaaaaaaaa', 'Central Ancestor', surname='Ancestor')
+        builder = site._SiteBuilder(self.conn, self.archive_root, {}, self.out_dir,
+                                    linked=True, workbench=True)
+        builder.prepare()
+        with unittest.mock.patch.object(
+            site, 'read_record', wraps=site.read_record
+        ) as spy:
+            for _ in range(5):
+                self.assertFalse(builder._person_is_by_request('p-aaaaaaaaaa'))
+        self.assertEqual(spy.call_count, 1)
 
     def test_plain_restricted_persons_question_still_renders_under_linked(self):
         # Not over-broadened: by-request is SPEC §19's ONE no-override tier.

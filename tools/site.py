@@ -2594,13 +2594,24 @@ class _SiteBuilder:
         # build_person_page for why this never reaches a public/standalone
         # build).
         self.person_questions: dict[str, list[dict]] = {}
-        # A research file's OWN pid -> whether ITS person carries `restricted:
-        # by-request` (memoized so a person with several open questions in
-        # their research file has their profile read once, not once per
-        # question). Filled lazily by `_person_is_by_request`, consulted by
+        # A research file's OWN pid -> whether that FILE's origin check
+        # passes (person-level by-request OR a filename/frontmatter id
+        # mismatch, `_origin_frontmatter_id_mismatches`) - memoized so a
+        # person with several open questions in their research file has that
+        # combined check run once, not once per question. Filled lazily by
         # `_question_origin_is_by_request` - see `_load_open_questions` for
         # why this check cannot reuse `self.restricted_persons`.
         self._by_request_origin_cache: dict[str, bool] = {}
+        # One pid -> whether ITS OWN profile carries `restricted: by-request`
+        # (PR #179 review, finding 4). Distinct from the cache above: this one
+        # holds only the plain per-PERSON verdict `_person_is_by_request`
+        # computes, shared by both the origin check (above) and every
+        # per-ref check in `_load_open_questions` - the two conceptually
+        # different lookups end up reading the same profile record, so a
+        # central ancestor named by hundreds of open questions has that
+        # record read, and its "unreadable" warning (if any) appended, once
+        # per build rather than once per reference.
+        self._by_request_person_cache: dict[str, bool] = {}
         self.alias_map: dict[str, str] = {}     # lowercased name/stem → canonical id
         self.person_pages: set[str] = set()   # normalized pids that get a page
         self.source_pages: set[str] = set()   # normalized sids that get a page
@@ -2975,13 +2986,22 @@ class _SiteBuilder:
         #117): the origin check above only ever asks about the HOME file's
         own owner - it says nothing about a question that is homed in an
         ordinary, unrestricted person's research file but also `refs:` a
-        DIFFERENT person who herself asked to be left out. Filing under
-        `refs:` fans exactly that question onto her page too, so each ref is
-        checked on its own via `_person_is_by_request` right below, in
-        addition to (not instead of) the origin check above - a by-request
-        person's private research stays off her own page whether the leak
-        would have come from HER file being the home, or from someone
-        ELSE's file merely mentioning her.
+        DIFFERENT person who herself asked to be left out. Every ref is
+        therefore checked via `_person_is_by_request` right below, in
+        addition to (not instead of) the origin check above - but the
+        whole BLOCK is what gets withheld when any one of them fails that
+        check, not just that one ref's own page (PR #179 post-merge review,
+        finding 1, P1 - this was a real leak: a question `refs:`-ing BOTH a
+        by-request person and an unrestricted one used to skip only the
+        by-request person's OWN listing while still filing the identical,
+        unredacted block under the unrestricted person's page - the by-
+        request person's private research, named right there in the same
+        block, published in full on a relative's page who never asked for
+        any of it). A `## Q:` block is one indivisible unit of private
+        research; `refs:` says who it is ABOUT, not how to split it apart,
+        so one by-request name anywhere in that list makes the whole block
+        unpublishable everywhere `--linked` would otherwise have shown it -
+        including on the unrestricted ref's own page.
 
         Also guards the read itself: a research file (or notes/questions.md)
         saved in a non-UTF-8 encoding used to raise `UnicodeDecodeError`
@@ -3003,15 +3023,23 @@ class _SiteBuilder:
             # render it twice on their page - a real duplication bug, unlike
             # the same question legitimately appearing on SEVERAL people's
             # pages.
-            for ref in {r for r in info['refs'] if r.startswith('p-')}:
-                # Per-ref check (adversarial review of #117, see this
-                # method's docstring): the origin check above only ever
-                # covers the HOME file's own owner - a question homed in an
-                # unrestricted person's file can still name a DIFFERENT,
-                # by-request person here, and only checking each ref
-                # individually catches that direction of the same leak.
-                if self._person_is_by_request(normalize_id(ref)):
-                    continue
+            refs = {r for r in info['refs'] if r.startswith('p-')}
+            # Per-ref check (adversarial review of #117, see this method's
+            # docstring): the origin check above only ever covers the HOME
+            # file's own owner - a question homed in an unrestricted
+            # person's file can still name a DIFFERENT, by-request person
+            # here. PR #179 post-merge review, finding 1 (P1, privacy leak):
+            # this must gate the WHOLE block, not just that one ref's own
+            # listing - a mixed `refs:` list naming both a by-request person
+            # and an unrestricted one used to still file the identical,
+            # unredacted block under the unrestricted person's page. any():
+            # one by-request name anywhere in the list withholds the block
+            # from EVERY page it would otherwise have appeared on, including
+            # the unrestricted refs' own pages - never filed under any pid.
+            if any(self._person_is_by_request(normalize_id(ref), question_origin=info.get('file'))
+                   for ref in refs):
+                continue
+            for ref in refs:
                 self.person_questions.setdefault(ref, []).append(info)
         for path in undecodable:
             try:
@@ -3032,8 +3060,8 @@ class _SiteBuilder:
         and that person's OWN profile carries `restricted: by-request`.
 
         `notes/questions.md` names no single person - it is never filtered
-        here, only a research-file-homed question is. The origin pid is read
-        straight off the companion's filename (SPEC §13:
+        here, only a research-file-homed question is. The origin pid is
+        normally read straight off the companion's filename (SPEC §13:
         `{surname}__{given}[_research]_{P-id}.md` - the trailing id is
         unambiguous even when the kind slot itself is, `parse_filename`'s own
         `kind_ambiguous` case), not off `self.restricted_persons`: that set
@@ -3044,6 +3072,26 @@ class _SiteBuilder:
         `_origin_frontmatter_id_mismatches` (adversarial review of #117) -
         see that method for why trusting the filename alone is not enough on
         its own when the two disagree.
+
+        A filename with NO parseable P-id at all - `parse_filename` returns
+        None, or a type other than 'P' - used to be read as "not a person
+        research file, nothing to check" (PR #179 post-merge review, finding
+        2, P1, privacy leak). That reasoning does not hold: `info` exists
+        ONLY because `_lib.parse_questions` already decided, by CONTENT, that
+        this file is a genuine person research companion (its own
+        `is_person_file_kind(path, 'research', meta)` check, run before
+        `info` was ever built) - and `is_person_file_kind`'s own docstring
+        names exactly this shape as a real, legitimate state: a mid-
+        graduation companion named before its id was minted
+        (`smith__anne_research.md`, no trailing `_P-…` yet), whose real
+        identity lives in its OWN frontmatter `id:` instead. Treating a
+        missing filename id as proof of "no owner to check" let a by-request
+        person's questions publish through this one specific filename shape.
+        Falls back to `_origin_id_from_frontmatter_is_by_request`, which
+        reads that frontmatter `id:` directly and fails CLOSED if even that
+        cannot be resolved - the filename-mismatch case above already
+        establishes that frontmatter-over-filename trust is this function's
+        own model for exactly this kind of disagreement.
 
         This only ever gates the ORIGIN (home) file - the by-request check
         that matters for a specific `refs:` target is a separate, per-pid
@@ -3058,14 +3106,62 @@ class _SiteBuilder:
             return False
         parsed = parse_filename(Path(file_rel))
         if parsed is None or parsed.get('id_type') != 'P':
-            return False   # not a person research file - nothing to check
+            # No parseable P-id in the filename - NOT proof this file has no
+            # owner to check (see docstring above): fall back to its own
+            # frontmatter `id:` rather than waving the file through.
+            return self._origin_id_from_frontmatter_is_by_request(file_rel)
         pid = normalize_id(parsed['id_str'])
         if pid not in self._by_request_origin_cache:
             self._by_request_origin_cache[pid] = (
-                self._person_is_by_request(pid)
+                self._person_is_by_request(pid, question_origin=file_rel)
                 or self._origin_frontmatter_id_mismatches(file_rel, pid)
             )
         return self._by_request_origin_cache[pid]
+
+    def _origin_id_from_frontmatter_is_by_request(self, file_rel: str) -> bool:
+        """Fallback for `_question_origin_is_by_request` when `file_rel`'s
+        FILENAME carries no parseable P-id (PR #179 post-merge review,
+        finding 2, P1) - a mid-graduation research companion named before
+        its id was minted (`smith__anne_research.md`), which `_lib.
+        parse_questions` already verified is a genuine person research file
+        by its CONTENT before this was ever called, so a missing filename id
+        is not license to skip the check - only a reason to read the owner
+        somewhere else.
+
+        Reads `file_rel`'s own frontmatter `id:` directly, the same field
+        `_origin_frontmatter_id_mismatches` already trusts over a
+        disagreeing filename for the mismatch case - this is that same
+        frontmatter-over-filename trust with no filename id to disagree
+        with in the first place. Fails CLOSED (withheld) the same way every
+        other "can't verify" case in this class does: an unreadable file, or
+        one whose frontmatter carries no usable person id either, is treated
+        as though it belonged to someone who asked to be left out, rather
+        than published on a guess.
+        """
+        try:
+            rec = read_record(self.archive_root / file_rel, on_decode_error=_ignore_decode_error)
+            trouble = rec['parse_errors'][0][1] if rec['parse_errors'] else None
+        except Exception as e:   # noqa: BLE001 - any failure is the same failure here
+            rec, trouble = None, str(e)
+        if trouble is not None or (rec is not None and rec.get('undecodable')):
+            self.messages.append(
+                f'WARNING: could not read {file_rel} to identify whose research '
+                "companion it is (its filename carries no parseable person id) "
+                'before publishing its open questions - withheld rather than '
+                'shown without being able to check.'
+            )
+            return True
+        pid = normalize_id(str(rec['meta'].get('id') or ''))
+        if not pid.startswith('p-'):
+            self.messages.append(
+                f'WARNING: {file_rel} carries no parseable person id in its '
+                "filename OR its own frontmatter `id:` - there is no way to "
+                'tell whether it belongs to a person who asked to be left out '
+                '(restricted: by-request); its open questions are withheld '
+                'rather than shown without being able to check.'
+            )
+            return True
+        return self._person_is_by_request(pid, question_origin=file_rel)
 
     def _origin_frontmatter_id_mismatches(self, file_rel: str, filename_pid: str) -> bool:
         """True when `file_rel`'s own frontmatter `id:` disagrees with (or
@@ -3113,7 +3209,7 @@ class _SiteBuilder:
             return True
         return False
 
-    def _person_is_by_request(self, pid: str) -> bool:
+    def _person_is_by_request(self, pid: str, *, question_origin: str | None = None) -> bool:
         """Read one person's OWN profile record and say whether it carries
         `restricted: by-request` - independent of `self.linked` and of
         `self.restricted_persons` (see `_question_origin_is_by_request`).
@@ -3125,16 +3221,50 @@ class _SiteBuilder:
         rather than shown without being able to check, because a missing
         marker reads exactly like a person who never asked. Each failure is
         still reported by name, never silent.
+
+        Memoized per pid in `self._by_request_person_cache` (PR #179 post-
+        merge review, finding 4, P2/perf): this is called once per `refs:`
+        entry on every open question, in addition to once per research
+        companion at its own origin check - an archive with hundreds of
+        questions all naming one central, heavily-connected ancestor used to
+        re-read and re-parse that SAME profile record hundreds of times over
+        one build, and re-append the SAME "unreadable" warning just as many
+        times if that profile happened to be broken. Caching the verdict by
+        pid - shared across both the origin check and every per-ref check,
+        since both are ultimately asking the same "does this person's own
+        profile say by-request" question - means the read happens once and
+        any warning is appended once, no matter how many questions or refs
+        name that person.
+
+        `question_origin` is the relative path of the file that led to THIS
+        call - a research companion's own filename (the origin check) or the
+        file a `refs:` entry was found in (a per-ref check) - used only to
+        phrase the "no readable profile" warning below (PR #179 post-merge
+        review, finding 3, P2): naming the question's actual source and a
+        repair step that fits it, rather than the stale claim - true only for
+        the origin-check caller, wrong whenever this runs for a mere `refs:`
+        target - that the question was necessarily filed under PID's own
+        research companion. Because the verdict is memoized, only the FIRST
+        caller for a given pid decides the warning's exact wording; every
+        caller is reporting the same underlying problem (pid does not
+        resolve to a readable profile), so that is an acceptable trade for
+        not re-reading a broken file, and re-warning about it, over and over.
         """
+        if pid in self._by_request_person_cache:
+            return self._by_request_person_cache[pid]
         row = self.person_meta.get(pid)
         if row is None or not row['path']:
+            origin_desc = question_origin or 'the open-questions log'
             self.messages.append(
-                f'WARNING: an open question is filed under {fmt_id_display(pid)}\'s '
-                "research companion, but no readable profile record exists for "
-                "that id - it is being treated as if that person had asked to "
-                "be left out (restricted: by-request), so its open questions "
-                "are withheld rather than shown without being able to check."
+                f'WARNING: {fmt_id_display(pid)} is referenced by an open question in '
+                f'{origin_desc}, but no readable profile record exists for that id - '
+                "it is being treated as if that person had asked to be left out "
+                "(restricted: by-request), so the question is withheld rather than "
+                f"shown without being able to check. Check {origin_desc} for a "
+                "typo'd P-id in its `refs:` list, or run `fha index` in case "
+                f"{fmt_id_display(pid)} used to exist and the index is just stale."
             )
+            self._by_request_person_cache[pid] = True
             return True
         try:
             rec = read_record(self.archive_root / row['path'], on_decode_error=_ignore_decode_error)
@@ -3150,8 +3280,11 @@ class _SiteBuilder:
                 'without being able to check. Fix or restore that file and '
                 'run `fha site` again.'
             )
+            self._by_request_person_cache[pid] = True
             return True
-        return _restricted_type(rec['meta'].get('restricted')) == 'by-request'
+        verdict = _restricted_type(rec['meta'].get('restricted')) == 'by-request'
+        self._by_request_person_cache[pid] = verdict
+        return verdict
 
     def _open_photos(self) -> None:
         """Open the photo index once if it is fresh, for the person photo strips.
