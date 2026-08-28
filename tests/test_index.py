@@ -35,7 +35,7 @@ sys.path.insert(0, str(ROOT / 'tools'))
 import index
 from _lib import (
     EXIT_CLEAN, EXIT_FAILURE, EXIT_WARNINGS, claim_is_own_vital,
-    social_parties, spouse_parties, sqlite_cache_schema_status,
+    open_index_db, social_parties, spouse_parties, sqlite_cache_schema_status,
     vital_subjects,
 )
 
@@ -1558,10 +1558,12 @@ class IndexSchemaVersionBumpTests(unittest.TestCase):
     def tearDown(self) -> None:
         self._tmp.cleanup()
 
-    def test_schema_version_is_7(self) -> None:
-        # Pins the bump itself - a silent regression back to 6 would defeat
-        # every check below without failing any of them on its own.
-        self.assertEqual(index.INDEX_SCHEMA_VERSION, 7)
+    def test_schema_version_is_8(self) -> None:
+        # Pins the bump itself - a silent regression back to 6 or 7 would
+        # defeat every check below without failing any of them on its own.
+        # (#126 reopened bumped 7 -> 8 after this class was written for the
+        # 6 -> 7 bump; see IndexSchemaVersionV8BumpTests below for that one.)
+        self.assertEqual(index.INDEX_SCHEMA_VERSION, 8)
 
     def test_v6_stamped_cache_reads_as_old_schema(self) -> None:
         status, _detail = sqlite_cache_schema_status(
@@ -1599,6 +1601,91 @@ class IndexSchemaVersionBumpTests(unittest.TestCase):
         finally:
             conn.close()
         self.assertEqual(row[0], '1916-02-26')
+
+
+_V7_SCHEMA_STAMP_SQL = (
+    "PRAGMA user_version=7;"
+    "CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);"
+    "INSERT INTO meta(key, value) VALUES ('schema_version', '7');"
+    "CREATE TABLE persons(id TEXT, name TEXT, path TEXT);"
+    "CREATE TABLE sources(id TEXT, title TEXT, path TEXT);"
+    "CREATE TABLE claims(id TEXT, source_id TEXT);"
+    "CREATE TABLE relationships(person_id TEXT, rel TEXT, other_id TEXT, "
+    "claim_id TEXT, date_start TEXT, date_end TEXT);"
+)
+
+
+class IndexSchemaVersionV8BumpTests(unittest.TestCase):
+    """#126, reopened: `_derive_relationships`'s death branch now reads a
+    zero-role, multi-person death claim as [] rather than None
+    (`_lib.vital_subjects`), so it no longer closes every named relative's
+    marriage - only nobody's. But a `relationships` row a v7-era `fha index`
+    already wrote under the OLD rule (a living relative's marriage wrongly
+    closed by a multi-person unroled death claim) sits in `.cache/index.
+    sqlite` untouched by that fix: nothing about updating the TOOLS touches a
+    record file's mtime or the path manifest, so the existing freshness check
+    would read a v7 cache as current forever. Bumping `INDEX_SCHEMA_VERSION`
+    (7 -> 8) is what makes `sqlite_cache_schema_status` - and `open_index_db`,
+    which every index-reading tool calls before trusting a row - call a
+    v7-stamped cache 'old-schema' and refuse it, same rationale `_lib.py`'s
+    own comment block documents for the v2/v3/v4/v5/v7 bumps. A hand-stamped
+    v7 cache (schema_version='7' in `meta`, matching `PRAGMA user_version`,
+    with a `relationships` row shaped like the stale bug) stands in for
+    'whatever a pre-#126-reopened `fha index` run actually wrote'."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        (self.root / '.cache').mkdir(parents=True)
+        self.db_path = self.root / '.cache' / 'index.sqlite'
+        conn = sqlite3.connect(str(self.db_path))
+        conn.executescript(_V7_SCHEMA_STAMP_SQL)
+        # A `relationships` row shaped exactly like the bug this bump exists
+        # to invalidate: a spouse edge closed by a death claim that (under
+        # the OLD, pre-#126-reopened rule) treated a multi-person unroled
+        # death as everyone's own death.
+        conn.execute(
+            "INSERT INTO relationships VALUES "
+            "('P-1111111111', 'spouse', 'P-2222222222', 'C-3333333333', "
+            "'1950', '1990')")
+        conn.commit()
+        conn.close()
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_v7_stamped_cache_reads_as_old_schema(self) -> None:
+        status, _detail = sqlite_cache_schema_status(
+            self.db_path, index.INDEX_SCHEMA_VERSION,
+            ('persons', 'sources', 'claims'))
+        self.assertEqual(status, 'old-schema')
+
+    def test_open_index_db_refuses_the_stale_v7_cache(self) -> None:
+        # The real caller path (`fha serve`, `fha site`, `fha gedcom`, ...):
+        # every index-reading tool opens the cache through `open_index_db`,
+        # never `sqlite_cache_schema_status` directly. Confirms the schema
+        # gate actually reaches them, not just the lower-level helper.
+        conn = open_index_db(self.root, ('persons', 'sources', 'claims'),
+                              strict=True)
+        self.assertIsNone(conn)
+
+    def test_full_rebuild_replaces_the_stale_relationships_row(self) -> None:
+        # `fha index` (the fix a human is pointed at, and what `fha serve`
+        # triggers automatically on a stale/missing cache - see serve.py)
+        # must not merely refuse the v7 cache - it has to actually rebuild,
+        # dropping the stale row rather than leaving it beside fresh ones.
+        # A minimal archive (no claims at all) is enough: the OLD row must
+        # not survive into the rebuilt table.
+        index.build_index(self.root, {})
+        conn = sqlite3.connect(str(self.db_path))
+        try:
+            rows = conn.execute('SELECT * FROM relationships').fetchall()
+            version = conn.execute(
+                "SELECT value FROM meta WHERE key='schema_version'").fetchone()
+        finally:
+            conn.close()
+        self.assertEqual(rows, [])
+        self.assertEqual(version[0], str(index.INDEX_SCHEMA_VERSION))
 
 
 _EXTRACT_SID = 'S-7a7a7a7a7a'
@@ -3182,8 +3269,35 @@ class VitalSubjectsRuleTests(unittest.TestCase):
     (`persons:` is who a claim involves; `roles:` is who plays what), not from
     what the implementation happens to return."""
 
-    def test_no_roles_at_all_returns_none_meaning_the_claim_never_said(self) -> None:
-        self.assertIsNone(vital_subjects('birth', [('p-a', None), ('p-b', '')]))
+    def test_no_roles_at_all_with_one_person_returns_none_meaning_the_claim_never_said(
+            self) -> None:
+        # Nobody to disambiguate FROM - the one person named is safely who
+        # this is about, exactly the legacy pre-roles: claim this fallback
+        # exists for.
+        self.assertIsNone(vital_subjects('birth', [('p-a', None)]))
+
+    def test_no_roles_at_all_with_several_people_yields_nobody(self) -> None:
+        # #126 (reopened): a claim naming two or more people with NO roles:
+        # map at all has not said which of them it is a record of. Guessing
+        # "everyone" here is the mother's `Born: 1888` bug restated for a
+        # claim with zero role signal to work with - the case the first pass
+        # of this fix missed, since it only reached claims with SOME role
+        # present. This is deliberately different from the single-person case
+        # above on headcount alone, not on anything about `birth` specifically.
+        self.assertEqual(
+            vital_subjects('birth', [('p-a', None), ('p-b', '')]), [])
+
+    def test_no_roles_at_all_with_several_people_yields_nobody_for_death_too(
+            self) -> None:
+        # The shape that actually reproduced #126's reopened Died/Buried bug:
+        # a burial claim naming the deceased alongside a relative who visited
+        # the grave, with no roles: map at all. SPEC has no subject-role word
+        # for death/burial, so before this fix the claim fell straight into
+        # the old "nobody said anything, assume everyone" fallback and showed
+        # the grandfather's burial as his grandchild's own.
+        self.assertEqual(
+            vital_subjects('burial', [('p-grandfather', None), ('p-grandchild', '')]),
+            [])
 
     def test_the_subject_role_wins_when_the_claim_names_it(self) -> None:
         self.assertEqual(
@@ -3212,10 +3326,28 @@ class VitalSubjectsRuleTests(unittest.TestCase):
         self.assertEqual(
             vital_subjects('birth', [('p-a', ' Child '), ('p-b', 'parent')]), ['p-a'])
 
-    def test_an_unknown_claim_type_falls_back_to_the_unroled_people(self) -> None:
-        # No subject role is defined for `burial`, so the rule is the death one.
+    def test_a_burial_claim_falls_back_to_the_unroled_people_when_nobody_is_marked_deceased(
+            self) -> None:
+        # `deceased:` is defined for `burial` (#126/#173 follow-up), but this
+        # claim doesn't use it - nobody is marked `deceased:`, so case 3 finds
+        # no match and the rule falls through to the pre-existing convention:
+        # the unroled person is the subject.
         self.assertEqual(
             vital_subjects('burial', [('p-a', None), ('p-b', 'spouse')]), ['p-a'])
+
+    def test_a_burial_claim_with_deceased_role_names_the_subject_directly(self) -> None:
+        self.assertEqual(
+            vital_subjects('burial', [('p-a', 'deceased'), ('p-b', 'spouse')]), ['p-a'])
+
+    def test_a_joint_death_claim_names_both_deceased_as_subjects(self) -> None:
+        # #173 follow-up: two people who died in the same event (a shipwreck,
+        # a house fire), with no other party named on the record at all -
+        # genuinely not ambiguous to a human, but shaped exactly like the
+        # zero-role case 2a rule exists to refuse. `roles: deceased:` says so
+        # outright instead of relying on silence.
+        self.assertEqual(
+            vital_subjects('death', [('p-a', 'deceased'), ('p-b', 'deceased')]),
+            ['p-a', 'p-b'])
 
     def test_a_couple_claim_answers_with_the_same_couple_spouse_parties_does(self) -> None:
         # `spouse_parties` is the archive's one rule for who married whom - the
@@ -3245,6 +3377,26 @@ class VitalSubjectsRuleTests(unittest.TestCase):
             vital_subjects('marriage', [('p-a', None), ('p-b', None),
                                         ('p-c', 'parent'), ('p-d', 'parent')]),
             ['p-a', 'p-b'])
+
+    def test_a_couple_claim_with_no_roles_at_all_still_reads_as_a_couple(self) -> None:
+        # `spouse_parties` runs BEFORE the no-role-at-all headcount check, so
+        # a plain "married" claim naming exactly the couple, with no roles:
+        # map needed at all, keeps working - marriage is symmetric for
+        # exactly two people, so there is nothing to disambiguate.
+        pairs = [('p-a', None), ('p-b', None)]
+        self.assertEqual(spouse_parties(pairs), ['p-a', 'p-b'])
+        self.assertEqual(vital_subjects('marriage', pairs), ['p-a', 'p-b'])
+
+    def test_a_couple_claim_with_no_roles_and_extra_people_yields_nobody(self) -> None:
+        # Four people (a couple plus both sets of parents), none of them
+        # roled: `spouse_parties` cannot pick the couple out of four
+        # unmarked names (its own len==2 rule doesn't apply), and headcount
+        # alone rules out the single-person legacy fallback. This is the
+        # #58-shaped version of #126's reopened bug: without this, all four
+        # people would have shown this claim's marriage date as their own.
+        pairs = [('p-a', None), ('p-b', None), ('p-c', None), ('p-d', None)]
+        self.assertEqual(spouse_parties(pairs), [])
+        self.assertEqual(vital_subjects('marriage', pairs), [])
 
 
 class SocialPartiesRuleTests(unittest.TestCase):
@@ -3543,12 +3695,64 @@ class DeathClaimRoleScopingTests(unittest.TestCase):
             'a death claim must not close the marriage of a relative it names; '
             "only the deceased's spouse edges end")
 
-    def test_a_legacy_death_claim_with_no_roles_still_ends_marriages(self) -> None:
-        # No roles: map, so the claim never said who died. The old behaviour
-        # stands rather than silently losing every legacy date_end.
+    def test_a_legacy_death_claim_naming_two_people_with_no_roles_ends_nobodys_marriage(
+            self) -> None:
+        # No roles: map, and TWO people named (the deceased and his son, who
+        # reported the death) - the claim has genuinely not said which of
+        # them died. Ending either marriage would be a guess: the old
+        # behaviour ("no roles: means everyone") ended the SON's marriage too,
+        # which is the exact bug this class's own docstring names ("a death
+        # claim ends the marriage of the person who died, not of the
+        # relatives who signed the certificate") - #126, reopened, found this
+        # same shape still live via the summary/chart fields, and the fix
+        # applies equally here: a missing date_end is recoverable by adding
+        # roles:, a false one closing a living relative's marriage is not.
         self._write_death(roles=None)
         index.build_index(self.root, {})
-        self.assertEqual(self._son_marriage_end(), '1920-01-01')
+        self.assertIsNone(
+            self._son_marriage_end(),
+            'an unroled, multi-person death claim must not guess whose '
+            'marriage to end')
+
+    def test_a_legacy_death_claim_naming_only_the_deceased_still_ends_their_marriage(
+            self) -> None:
+        # A death claim naming JUST the deceased, no roles: map, no second
+        # person to be ambiguous about - the pre-#126 "no roles: means
+        # everyone" fallback is still exactly right and safe for this shape,
+        # since "everyone" here is one person.
+        text = ('- id: C-4444444444\n'
+                '  value: "died"\n'
+                '  type: death\n'
+                f'  persons: [{_DTH_DEAD}]\n'
+                '  status: accepted\n'
+                '  reviewed: 2026-01-01\n'
+                '  date: 1920\n')
+        _write(self.root / 'sources' / 'death_S-7777777777.md',
+               '---\nid: S-7777777777\ntitle: Death record\n'
+               'source_type: vital-record\n---\n\n'
+               f'## Claims\n```yaml\n{text}```\n')
+        # The deceased's OWN marriage (not the son's - the son isn't even
+        # named on this claim) should still close.
+        _write(self.root / 'sources' / 'wedding_S-8888888888.md',
+               '---\nid: S-8888888888\ntitle: Marriage record\n'
+               'source_type: vital-record\n---\n\n## Claims\n```yaml\n'
+               '- id: C-3333333333\n'
+               '  value: "married"\n'
+               '  type: marriage\n'
+               f'  persons: [{_DTH_DEAD}, {_DTH_WIFE}]\n'
+               '  status: accepted\n'
+               '  reviewed: 2026-01-01\n'
+               '  date: 1890\n```\n')
+        index.build_index(self.root, {})
+        conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
+        try:
+            row = conn.execute(
+                "SELECT date_end FROM relationships WHERE rel = 'spouse' "
+                'AND person_id = ? AND other_id = ?',
+                (_DTH_DEAD.lower(), _DTH_WIFE.lower())).fetchone()
+        finally:
+            conn.close()
+        self.assertEqual(row[0] if row else 'NO EDGE', '1920-01-01')
 
 
 # ── Blank-vs-omitted None bug sweep (proactive audit past #157/PR #157) ─────

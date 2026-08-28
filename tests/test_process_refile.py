@@ -16,6 +16,7 @@ import io
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -448,6 +449,92 @@ class ProcessRefileTestCase(unittest.TestCase):
         self.assertTrue(outside.exists(), 'a file outside the archive must never be touched')
         self.assertFalse((self.archive / 'documents' / 'photos').exists())
 
+    def _patch_resolve_to_loop_on(self, target_name: str):
+        """Make `Path.resolve()` raise `RuntimeError` for any path whose
+        final component is `target_name`, and behave normally for every
+        other path.
+
+        A real symlink loop needs a privilege this Windows test environment
+        does not have (mirrors test_packet.py's own note on the same
+        constraint for its `_is_under_root` symlink-loop test); `.resolve()`
+        raising `RuntimeError` is the documented pathlib contract a real loop
+        triggers, so patching it directly - scoped to one specific filename
+        so every OTHER `.resolve()` call refile makes along the way (the
+        record path, the archive root, the destination root, ...) is
+        unaffected - reproduces the same failure a loop would.
+        """
+        real_resolve = Path.resolve
+
+        def looping_resolve(path_self, *args, **kwargs):
+            if path_self.name == target_name:
+                raise RuntimeError(f'Symlink loop resolving {target_name}')
+            return real_resolve(path_self, *args, **kwargs)
+
+        return unittest.mock.patch.object(Path, 'resolve', looping_resolve)
+
+    def test_source_asset_symlink_loop_refused_cleanly_live(self) -> None:
+        # Issue #170 finding 2 (round-3 audit): `_is_under`'s containment
+        # check calls `.resolve()` on both the candidate source path and the
+        # claimed root; a symlink loop on either side makes `.resolve()`
+        # raise `RuntimeError`, which - before the fix - only the guard's
+        # `except (ValueError, OSError):` clause did NOT catch, letting it
+        # escape uncaught. It must be refused cleanly, not a crash - and
+        # (Codex review, round-5 audit) with a message that names the
+        # symlink loop as the thing to fix, not the ordinary "edit the
+        # files: entry by hand" advice `test_stored_alias_escaping_documents_root_refused`
+        # above gets for a genuine escaping-path entry: that advice is wrong
+        # here, since the entry may be perfectly correct and an on-disk
+        # symlink is what actually needs repairing.
+        self._install_photo_store()
+        asset, record = self._write_doc_source()
+
+        with self._patch_resolve_to_loop_on(asset.name):
+            rc, _out, err = self._run_captured([SID, '--to', 'photos', '--dest', '1880s'])
+
+        self.assertEqual(rc, EXIT_FAILURE)
+        self.assertNotIn('Traceback', err)
+        self.assertIn('symlink loop', err)
+        self.assertNotIn('resolves outside', err)
+        self.assertTrue(asset.exists(),
+                         'a file whose containment could not be verified must never move')
+
+    def test_source_asset_symlink_loop_refused_cleanly_dry_run(self) -> None:
+        # Same as the live case above, but --dry-run: the containment check
+        # runs unconditionally before process_refile's own dry-run branch, so
+        # a symlink loop must be refused the same clean way in preview too,
+        # never a crash that leaves the human unsure whether anything moved.
+        self._install_photo_store()
+        asset, record = self._write_doc_source()
+
+        with self._patch_resolve_to_loop_on(asset.name):
+            rc, _out, err = self._run_captured(
+                [SID, '--to', 'photos', '--dest', '1880s', '--dry-run'])
+
+        self.assertEqual(rc, EXIT_FAILURE)
+        self.assertNotIn('Traceback', err)
+        self.assertIn('symlink loop', err)
+        self.assertNotIn('resolves outside', err)
+        self.assertTrue(asset.exists(), 'a dry-run must never move anything, loop or not')
+
+    def test_dest_subpath_symlink_loop_refused_cleanly(self) -> None:
+        # Issue #170 finding 2 (round-3 audit): `_validate_dest_subpath`'s own
+        # containment check (--dest under the target root) had the identical
+        # narrow `except (ValueError, OSError):` gap - a symlink loop while
+        # resolving the DESTINATION folder must get the same clean
+        # `--dest ... does not resolve to a folder inside the ... root`
+        # refusal every other bad --dest already gets, not a crash.
+        self._install_photo_store()
+        asset, record = self._write_doc_source()
+
+        with self._patch_resolve_to_loop_on('very-unique-dest-xyz'):
+            rc, _out, err = self._run_captured(
+                [SID, '--to', 'photos', '--dest', 'very-unique-dest-xyz'])
+
+        self.assertEqual(rc, EXIT_FAILURE)
+        self.assertNotIn('Traceback', err)
+        self.assertIn('does not resolve to a folder inside', err)
+        self.assertTrue(asset.exists(), 'a file must never move on a --dest refusal')
+
     def test_documents_asset_belonging_to_different_source_refused(self) -> None:
         # Inventory drift: this source's files: entry names a documents-root
         # file whose OWN filename (SPEC #13's `_{S-id}` suffix) says it belongs
@@ -516,6 +603,18 @@ class ProcessRefileTestCase(unittest.TestCase):
         self.assertIn('inventory drift', err)
         self.assertIn(other_sid, err)
         self.assertTrue(asset.exists(), "another source's photo must never move")
+        # Issue #170 finding 3 (round-3 audit): the photo branch of this same
+        # conflict used to suggest `fha reconcile`, which cannot fix it -
+        # its document pass ignores photos/ aliases and its photo pass only
+        # re-ties the photo catalog, not this record. It must name the exact
+        # files: entry to fix by hand instead, mirroring the documents-root
+        # branch's own fix (test_documents_asset_belonging_to_different_
+        # source_refused above).
+        self.assertNotIn('Run `fha reconcile`', err)
+        self.assertIn('cannot fix this', err)
+        self.assertIn('Fix it by hand', err)
+        self.assertIn(record.name, err)
+        self.assertIn('photos/1880/portrait.jpg', err)
 
     def test_photo_asset_with_no_keyword_still_proceeds(self) -> None:
         # A photo with no embedded SOURCE: keyword at all (or one that cannot
@@ -595,6 +694,14 @@ class ProcessRefileTestCase(unittest.TestCase):
         self.assertIn('inventory drift', err)
         self.assertIn(other_sid, err)
         self.assertTrue(asset.exists(), 'an ambiguously-marked photo must never move')
+        self.assertIn('cannot fix this', err)
+        # Codex review, round-6 audit: the fix-by-hand advice must not
+        # contradict existing behavior, which deliberately also accepts an
+        # UNTAGGED photo (embedded_sids empty -> conflicting empty -> this
+        # whole refusal branch never fires on retry) as a valid target -
+        # telling the owner it must carry a matching keyword would risk
+        # them discarding a perfectly good, merely-untagged photo.
+        self.assertIn('untagged', err)
 
     def test_working_copy_refusal(self) -> None:
         (self.archive / 'WORKING_COPY').write_text('marker', encoding='utf-8')

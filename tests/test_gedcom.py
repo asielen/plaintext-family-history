@@ -798,11 +798,31 @@ class BirthDeathRoleScopingTests(unittest.TestCase):
         self.assertIn('BIRT', indi[self.SON])
         self.assertIn('Riverton', indi[self.SON])
 
-    def test_a_legacy_claim_with_no_roles_map_keeps_its_old_behaviour(self):
-        # The claim never said, so nothing is withheld - the same
-        # back-compatibility bargain the index and the site build strike.
+    def test_a_legacy_claim_naming_two_people_with_no_roles_exports_neither_birth(self):
+        # Two people, no roles: map at all - the claim has not said which of
+        # them was born. This is the exact class-docstring bug (a mother's
+        # own BIRT event copied off her son's birth certificate) reached
+        # through the unroled case instead of the miscast one: the old
+        # back-compatibility bargain used to guess "everyone" here too, which
+        # is #126 restated with the roles: map simply absent rather than
+        # wrong (#126, reopened). Withholding both is the same "missing beats
+        # false" call `test_mother_named_as_parent_exports_no_birth_of_her_own`
+        # already makes for the roled case.
         indi = self._export(None)
-        self.assertIn('BIRT', indi[self.MOM])
+        self.assertNotIn('BIRT', indi[self.MOM])
+        self.assertNotIn('BIRT', indi[self.SON])
+
+    def test_a_legacy_claim_naming_only_the_child_keeps_its_old_behaviour(self):
+        # One person named, no roles: map - nobody to be ambiguous about, so
+        # the pre-#126 "the claim never said, so nothing is withheld"
+        # back-compatibility bargain is still exactly right here.
+        _add_claim(self.conn, 'c-0000000001', 'birth', [self.SON],
+                   date_edtf='1888', place_text='Riverton', roles=None)
+        self.conn.commit()
+        self.conn.close()
+        r = gedcom.run_gedcom(self.root, self.SON, mode='connected')
+        self.assertEqual(r['status'], 'ok')
+        indi = _individuals(r['text'])
         self.assertIn('BIRT', indi[self.SON])
 
     def test_a_relative_on_a_death_record_exports_no_death_of_her_own(self):

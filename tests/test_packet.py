@@ -1476,6 +1476,264 @@ class PacketTests(unittest.TestCase):
         self.assertIn('loop.tif', readme)
         self.assertIn('symlink loop', readme)
 
+    def test_symlink_loop_message_omits_raw_exception_text(self):
+        """The symlink-loop note must not echo `Path.resolve()`'s own
+        exception text into README.txt (issue #170 finding 1, round-3
+        audit).
+
+        `.resolve()` raises `RuntimeError` carrying the absolute, OS-resolved
+        filename it looped on - which can be just as revealing of the
+        owner's username or drive layout as the raw `files:` entry the
+        symlink-loop branch already stopped interpolating verbatim. Before
+        the fix, the branch below wrote `{e}` straight into the note; now it
+        is a fixed, generic phrase with no exception text at all.
+        """
+        self._seed_person()
+        self._seed_source(
+            's-1111111111', 'Loop Source',
+            asset_rel='documents/other/loop.tif', create_asset=False,
+        )
+        self._commit_fresh()
+
+        real_is_under_root = packet._is_under_root
+        leaky_text = r'C:\Users\andrew\AppData\Local\Temp\loop-junction\loop.tif'
+
+        def looping_is_under_root(path, root):
+            if path.name == 'loop.tif':
+                raise RuntimeError(
+                    f"[WinError 1921] Symbolic link loop: '{leaky_text}'")
+            return real_is_under_root(path, root)
+
+        with unittest.mock.patch.object(packet, '_is_under_root',
+                                        side_effect=looping_is_under_root):
+            result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir,
+                                       no_photos=True)
+
+        self.assertEqual(result['status'], 'ok')
+        readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
+        self.assertIn('symlink loop', readme)
+        self.assertNotIn(leaky_text, readme)
+        self.assertNotIn('andrew', readme)
+        self.assertNotIn('WinError', readme)
+
+    def test_absolute_files_entry_path_redacted_to_basename_in_readme(self):
+        """A `files:` entry that is a hand-edited absolute local path (not a
+        portable alias) must appear in README.txt as a basename only, never
+        the full path (issue #170 finding 1, round-3 audit).
+
+        `_resolve_source_files` already keeps the asset itself out of the
+        packet (it resolves outside the configured roots), but before the
+        fix it still copied the raw absolute string verbatim into the
+        'resolves outside' note - disclosing the owner's username and drive
+        layout to whoever the packet is handed to. An ordinary relative
+        alias (the '..'-traversal case covered by
+        `test_traversal_files_entry_excluded_not_bundled` above) is a
+        different case and must still print in full - only a string that
+        actually looks like an absolute filesystem path is redacted.
+        """
+        self._seed_person()
+        absolute_path = r'C:\Users\andrew\Secret Folder\private-scan.tif'
+        self._seed_source(
+            's-1111111111', 'Absolute Path Source',
+            asset_rel=absolute_path, create_asset=False,
+        )
+        self._commit_fresh()
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir,
+                                   no_photos=True)
+
+        self.assertEqual(result['status'], 'ok')
+        files_dir = result['packet_dir'] / 'files'
+        if files_dir.exists():
+            self.assertNotIn('private-scan.tif', [p.name for p in files_dir.rglob('*')])
+        readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
+        self.assertIn('resolves outside', readme)
+        self.assertIn('private-scan.tif', readme)
+        self.assertNotIn('andrew', readme)
+        self.assertNotIn('Secret Folder', readme)
+        self.assertNotIn(absolute_path, readme)
+
+    def test_redact_asset_path_leaves_ordinary_aliases_untouched(self):
+        """`_redact_asset_path` is a no-op on the normal, portable alias
+        forms `files:` entries are meant to hold - only something that
+        actually looks like an absolute filesystem path is redacted
+        (issue #170 finding 1). A plain alias is useful diagnostic
+        information for a hand-fix, not a leak.
+        """
+        self.assertEqual(
+            packet._redact_asset_path('documents/census/scan.jpg'),
+            'documents/census/scan.jpg')
+        self.assertEqual(
+            packet._redact_asset_path('documents/../../outside-secret.tif'),
+            'documents/../../outside-secret.tif')
+        self.assertEqual(
+            packet._redact_asset_path('photos/1880/portrait.jpg'),
+            'photos/1880/portrait.jpg')
+
+    def test_redact_asset_path_basenames_absolute_and_drive_relative_paths(self):
+        """Both a fully-rooted absolute path and a Windows drive-relative
+        one ('C:foo', no separator after the colon - the same escape
+        `_validate_dest_subpath` in process.py already guards against) are
+        redacted to a basename (issue #170 finding 1)."""
+        self.assertEqual(
+            packet._redact_asset_path(r'C:\Users\andrew\Secret Folder\private-scan.tif'),
+            'private-scan.tif')
+        self.assertEqual(
+            packet._redact_asset_path(r'C:private-scan.tif'),
+            'private-scan.tif')
+
+    def test_redact_asset_path_basenames_home_directory_shorthand(self):
+        """`~user/...` leaks a literal username through the exact same gap
+        as an absolute path, on any OS - `pathlib` never treats `~` as
+        meaningful on its own, and nothing here expands it (adversarial
+        review, round-4 audit)."""
+        self.assertEqual(
+            packet._redact_asset_path('~andrew_sielen/Documents/secret.pdf'),
+            'secret.pdf')
+        self.assertEqual(
+            packet._redact_asset_path('~/Documents/secret.pdf'),
+            'secret.pdf')
+
+    def test_redact_asset_path_basenames_bare_home_shorthand_with_no_path(self):
+        """A BARE `~user` (or `~user/`, or `~`) with no further path
+        component has nothing real for PureWindowsPath to extract - `.name`
+        returns the shorthand itself unchanged, so it still leaked the
+        username even after the round-5 fix above handled `~user/...`
+        (Codex review, round-6 audit)."""
+        self.assertEqual(packet._redact_asset_path('~andrew_sielen'), '(unnamed path)')
+        self.assertEqual(packet._redact_asset_path('~andrew_sielen/'), '(unnamed path)')
+        self.assertEqual(packet._redact_asset_path('~/'), '(unnamed path)')
+
+    def test_redact_asset_path_basenames_posix_absolute_path_on_windows(self):
+        """A POSIX-style absolute path ('/Users/name/...', no drive letter)
+        is NOT `is_absolute()` under `WindowsPath` - Windows "absolute"
+        requires a drive or UNC root - so it used to sail through
+        `_redact_asset_path` whole and unredacted on a Windows archive
+        owner's machine (adversarial review, round-4 audit)."""
+        self.assertEqual(
+            packet._redact_asset_path('/Users/andrew_sielen/Documents/secret.pdf'),
+            'secret.pdf')
+
+    def test_redact_asset_path_basenames_windows_backslash_leading_separator(self):
+        """A bare leading backslash with no drive letter ('\\Users\\...',
+        drive-relative-to-current-drive) is also foreign to a portable
+        alias and must not pass through unredacted."""
+        self.assertEqual(
+            packet._redact_asset_path('\\Users\\andrew_sielen\\secret.pdf'),
+            'secret.pdf')
+
+    def test_redact_asset_path_basenames_trailing_separator_home_directory(self):
+        """A genuine absolute path (no `~` anywhere) that ends AT a home
+        directory, with a trailing separator and nothing after it, has no
+        real file component - `PureWindowsPath('/Users/andrew_sielen/').name`
+        still returns `'andrew_sielen'`, the username, because whatever
+        follows the last separator in a path ending WITH one is empty by
+        definition. Neither of these starts with `~`, so the round-6
+        bare-shorthand check never saw them (Codex review, round-7 audit,
+        issue #170 finding 1)."""
+        self.assertEqual(
+            packet._redact_asset_path('/Users/andrew_sielen/'), '(unnamed path)')
+        self.assertEqual(
+            packet._redact_asset_path('C:\\Users\\andrew_sielen\\'), '(unnamed path)')
+
+    def test_redact_asset_path_basenames_home_directory_no_trailing_separator(self):
+        """The same leak as the trailing-separator shape above, reached by
+        simply dropping the trailing slash: `/Users/andrew_sielen` and
+        `C:\\Users\\andrew_sielen` still end EXACTLY at the home directory,
+        with nothing real after it, so `.name` is still just the username.
+        This is not literally what Codex's finding quoted, but it is the
+        same bug one keystroke away, and there is no `~` sigil here either
+        to lean on - `_is_bare_directory_reference` recognizes the shape
+        directly by checking that the path stops exactly at a `Users`/`home`
+        child of its root, with nothing beyond it (round-7 audit)."""
+        self.assertEqual(
+            packet._redact_asset_path('/Users/andrew_sielen'), '(unnamed path)')
+        self.assertEqual(
+            packet._redact_asset_path(r'C:\Users\andrew_sielen'), '(unnamed path)')
+        self.assertEqual(
+            packet._redact_asset_path('/home/andrew_sielen'), '(unnamed path)')
+
+    def test_redact_asset_path_home_directory_check_does_not_over_redact(self):
+        """The home-directory-root check must not fire on a real file that
+        merely lives somewhere under a home directory (still a normal,
+        useful basename), nor on an unrelated absolute path that happens to
+        have a `Users`- or `home`-named directory somewhere in its middle
+        (not immediately under the root, and not the last component)."""
+        self.assertEqual(
+            packet._redact_asset_path('/Users/andrew_sielen/Documents/secret.pdf'),
+            'secret.pdf')
+        self.assertEqual(
+            packet._redact_asset_path(r'C:\Users\andrew_sielen\Documents\secret.pdf'),
+            'secret.pdf')
+        self.assertEqual(
+            packet._redact_asset_path('/data/home/report.pdf'), 'report.pdf')
+
+    def test_redact_asset_path_macos_volume_mount_point_root(self):
+        """`/Volumes/<name>` is a macOS mount point, exactly as guaranteed
+        to be a directory - never a file - as `/Users/<name>`: every mounted
+        volume (local or network) appears there. Adversarial review, round 8
+        audit: this shape used to fall through to the ordinary basename
+        extraction, showing the volume's own name as if it were a file."""
+        self.assertEqual(
+            packet._redact_asset_path('/Volumes/andrew_sielen'), '(unnamed path)')
+        self.assertEqual(
+            packet._redact_asset_path('/Volumes/andrew_sielen/'), '(unnamed path)')
+        # A real file living ON a mounted volume is unaffected - still just
+        # a normal, useful basename.
+        self.assertEqual(
+            packet._redact_asset_path('/Volumes/ExternalDrive/report.pdf'), 'report.pdf')
+
+    def test_redact_asset_path_unicode_separator_lookalikes_still_redact(self):
+        """A Unicode character that visually resembles `/` or `\\` but isn't
+        one defeats `PureWindowsPath`'s parsing and the leading-character
+        checks alike, which recognize only the two real ASCII separators -
+        collapsing a multi-component path into what looks like a single
+        opaque "basename" and shipping the owner's username and full
+        directory structure straight through instead of a redacted basename
+        (adversarial review, round 8 audit). Each of these starts with a
+        REAL `/`, so `looks_foreign` already catches it - the leak is
+        specifically in how much of the path counts as the "basename" once
+        the homoglyph separators inside it are (or aren't) recognized."""
+        self.assertEqual(
+            packet._redact_asset_path('/Users⁄andrew_sielen⁄secret.pdf'),
+            'secret.pdf')
+        self.assertEqual(
+            packet._redact_asset_path('/Users／andrew_sielen／secret.pdf'),
+            'secret.pdf')
+        self.assertEqual(
+            packet._redact_asset_path('/Users∕andrew_sielen∕secret.pdf'),
+            'secret.pdf')
+
+    def test_redact_asset_path_unicode_separator_lookalike_as_the_very_first_character(self):
+        """The harder direction of the same bug: a path that is ENTIRELY
+        homoglyph-separated, with no real ASCII separator anywhere - not
+        even leading - never trips `looks_foreign` at all without
+        normalizing first, so the whole thing used to pass through
+        completely unredacted rather than merely under-redacted."""
+        self.assertEqual(
+            packet._redact_asset_path('⁄Users⁄andrew_sielen⁄secret.pdf'),
+            'secret.pdf')
+
+    def test_redact_asset_path_unicode_lookalike_in_an_ordinary_alias_is_untouched(self):
+        """The normalization used to classify/split a foreign path must
+        never leak into what is actually SHOWN for an ordinary, already-
+        portable alias - a relative alias containing one of these
+        characters as genuine text (not functioning as a separator) is
+        returned completely unchanged, not silently rewritten."""
+        self.assertEqual(
+            packet._redact_asset_path('documents/receipts/1⁄dividend.pdf'),
+            'documents/receipts/1⁄dividend.pdf')
+
+    def test_redact_asset_path_still_passes_through_ordinary_aliases(self):
+        """The character-level check must not become so eager it starts
+        redacting normal, safe relative aliases."""
+        self.assertEqual(
+            packet._redact_asset_path('documents/census/1900_S-1111111111.jpg'),
+            'documents/census/1900_S-1111111111.jpg')
+        self.assertEqual(
+            packet._redact_asset_path('photos/1900s/family_S-2222222222.jpg'),
+            'photos/1900s/family_S-2222222222.jpg')
+
     def test_unreadable_source_is_left_out_with_its_files(self):
         """A source whose own record cannot be read takes its assets with it.
 

@@ -1666,6 +1666,23 @@ class EstimateTests(unittest.TestCase):
         self.assertEqual(len(warnings), 1)
         self.assertIn('accepted birth claim', warnings[0].text)
 
+    def test_a_birth_claim_naming_two_people_with_no_roles_at_all_does_not_warn(
+            self) -> None:
+        # #126, reopened: a birth claim naming her AND another person, with NO
+        # roles: map at all (not even a partial one, unlike the roled-parent
+        # case above), has not said which of them was born. Warning that "a
+        # sourced claim already supersedes her estimate" would be exactly as
+        # wrong here as it was for the roled-parent case if the claim turns
+        # out to actually be the other person's own birth record.
+        self._build_fresh_index_with_accepted_birth_claim(
+            roles={'p-cccccccccc': None})
+        result = person.run_estimate(self.root, PID, birth='1875')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertFalse(
+            [m for m in result.messages if m.level == 'warning'],
+            'a claim naming two people with no roles: map at all has not '
+            'said whose birth it is')
+
 
 class EditTests(unittest.TestCase):
     """fha person edit: replace (default) or append to one prose section."""

@@ -779,9 +779,9 @@ class OrphanedBackPhotosTests(unittest.TestCase):
     def _fha_config(self) -> dict:
         return {'roots': {'photos': 'photos', 'documents': 'documents'}}
 
-    def _finding(self, result):
+    def _finding(self, result, check_id: str = 'orphaned_back_photos'):
         return next(
-            (c for c in result.data['checks'] if c['id'] == 'orphaned_back_photos'),
+            (c for c in result.data['checks'] if c['id'] == check_id),
             None,
         )
 
@@ -980,6 +980,200 @@ class OrphanedBackPhotosTests(unittest.TestCase):
         self.assertNotIn("<that source's primary file>", report)
         self.assertIn(doctor.shell_quote('photos/my album/scan 001.jpg'), report)
         self.assertIn(doctor.shell_quote('photos/my album/scan 001-back.jpg'), report)
+
+    # ── Issue #169, finding 2 ──────────────────────────────────────────────
+
+    def test_ambiguous_back_siblings_are_flagged_not_silently_clean(self) -> None:
+        # Finding #2: when a listed primary has TWO DIFFERENT unlisted back
+        # candidates on disk (e.g. differing in case or extension, as in the
+        # issue's own examples), `_find_back_on_disk` used to collapse that
+        # ambiguity into the same None as "no back scan at all" - so `fha
+        # doctor` reported clean even though both files were orphaned. The
+        # fix must name every candidate in its own finding instead.
+        (self.root / 'photos' / 'x-00500.jpg').write_bytes(b'front')
+        (self.root / 'photos' / 'x-00500-back.jpg').write_bytes(b'back candidate one')
+        (self.root / 'photos' / 'x-00500_back.jpeg').write_bytes(b'back candidate two')
+        _write(self.root / 'sources' / 'photos' / 'ambiguous_S-9999999999.md', _SOURCE.format(
+            sid='S-9999999999', title='Ambiguous',
+            line='files:\n  - file: photos/x-00500.jpg\n    role: primary\n'))
+
+        result = doctor.run_doctor(self.root, self._fha_config())
+        report = '\n'.join(result.data['lines'])
+
+        # Not the old silent-pass outcome: this must warn, not read clean.
+        self.assertIn('ambiguous back scan', report)
+        self.assertIn('photos/x-00500-back.jpg', report)
+        self.assertIn('photos/x-00500_back.jpeg', report)
+        # Neither candidate is silently attached/recommended as THE back -
+        # doctor must not guess which one is real.
+        self.assertNotIn('orphaned back scan', report)
+        # Issue #169 followup review, finding 5: a purely-ambiguous run
+        # reports under its OWN 'ambiguous_back_photos' check, not folded
+        # into 'orphaned_back_photos' (whose "attach each" next_step would
+        # be wrong advice here).
+        self.assertIsNone(self._finding(result, 'orphaned_back_photos'))
+        check = self._finding(result, 'ambiguous_back_photos')
+        self.assertIsNotNone(check, 'doctor must report an ambiguous_back_photos finding')
+        self.assertEqual(check['status'], 'warn')
+        self.assertEqual(check['detail'], '1 primary(ies) with 2+ unlisted back-shaped '
+                         'candidates on disk')
+        self.assertNotIn('attach each', check['next_step'])
+        self.assertGreaterEqual(result.exit_code, EXIT_WARNINGS)
+
+    def test_ambiguous_back_scan_finding_never_tells_owner_to_rename_a_photo(self) -> None:
+        # Issue #169 followup review, finding 1 (P1): following the recovery
+        # advice by renaming one of the ambiguous candidates on disk would
+        # break the external photo catalog that the archive's no-rename rule
+        # (AGENTS.md: "NEVER rename or move anything under the photos root")
+        # protects. The finding must direct the owner to a non-renaming fix
+        # (attach the correct candidate) instead.
+        (self.root / 'photos' / 'x-00501.jpg').write_bytes(b'front')
+        (self.root / 'photos' / 'x-00501-back.jpg').write_bytes(b'back candidate one')
+        (self.root / 'photos' / 'x-00501_back.jpeg').write_bytes(b'back candidate two')
+        _write(self.root / 'sources' / 'photos' / 'ambiguous2_S-9999999998.md', _SOURCE.format(
+            sid='S-9999999998', title='Ambiguous 2',
+            line='files:\n  - file: photos/x-00501.jpg\n    role: primary\n'))
+
+        result = doctor.run_doctor(self.root, self._fha_config())
+        report = '\n'.join(result.data['lines'])
+
+        self.assertIn('ambiguous back scan', report)
+        self.assertNotIn('remove or rename', report)
+        self.assertNotIn('rename the other', report)
+        # The structured next_step must not INSTRUCT a rename either (it may
+        # mention "never rename" as a safeguard - that is a prohibition, not
+        # an instruction to do it).
+        check = self._finding(result, 'ambiguous_back_photos')
+        self.assertIsNotNone(check)
+        self.assertNotIn('remove or rename', check['next_step'])
+        self.assertNotIn('rename the other', check['next_step'])
+
+    def test_missing_primary_with_ambiguous_backs_routes_to_reconcile(self) -> None:
+        # Issue #169 followup review, finding 6: when the listed primary is
+        # ITSELF missing from disk AND its directory holds 2+ unlisted
+        # back-shaped candidates, the ambiguity branch used to run BEFORE
+        # the missing-primary check, so it fired first and suggested `fha
+        # process <missing primary> --more ...` - a command that fails
+        # immediately because its positional FILE argument does not exist.
+        # The missing-primary check must win regardless of candidate count,
+        # matching the single-candidate case's own correct behavior.
+        (self.root / 'photos' / 'x-00700-back.jpg').write_bytes(b'back candidate one')
+        (self.root / 'photos' / 'x-00700_back.jpeg').write_bytes(b'back candidate two')
+        # x-00700.jpg (the listed primary) is deliberately never created.
+        _write(self.root / 'sources' / 'photos' / 'card7_S-1313131313.md', _SOURCE.format(
+            sid='S-1313131313', title='Card 7',
+            line='files:\n  - file: photos/x-00700.jpg\n    role: primary\n'))
+
+        result = doctor.run_doctor(self.root, self._fha_config())
+        report = '\n'.join(result.data['lines'])
+
+        # Both candidates are still named, and the guidance is the
+        # reconciliation/manual-repair path - never a dead `fha process`
+        # command naming the nonexistent primary.
+        self.assertIn('missing from disk', report)
+        self.assertIn('reconcile', report)
+        self.assertIn('photos/x-00700-back.jpg', report)
+        self.assertIn('photos/x-00700_back.jpeg', report)
+        self.assertNotIn(
+            f'{doctor._LAUNCHER} process {doctor.shell_quote("photos/x-00700.jpg")}', report)
+        # This is the missing-primary shape, not the "doctor cannot tell
+        # which is real" ambiguity message - the two are different failures.
+        self.assertNotIn('ambiguous back scan', report)
+        self.assertIsNone(self._finding(result, 'ambiguous_back_photos'))
+        check = self._finding(result, 'orphaned_back_photos')
+        self.assertIsNotNone(check)
+        self.assertEqual(check['status'], 'warn')
+
+    def test_ambiguous_back_siblings_ignore_a_candidate_already_listed(self) -> None:
+        # A candidate that is already listed in files: (just under some OTHER
+        # role, e.g. attached as a plain 'attachment' rather than 'back') is
+        # not itself orphaned - it must be dropped before judging ambiguity,
+        # so a genuinely lone unlisted candidate still reports as a normal
+        # single "orphaned back scan", not as "ambiguous".
+        (self.root / 'photos' / 'x-00600.jpg').write_bytes(b'front')
+        (self.root / 'photos' / 'x-00600-back.jpg').write_bytes(b'already listed elsewhere')
+        (self.root / 'photos' / 'x-00600_back.jpeg').write_bytes(b'genuinely unlisted')
+        _write(self.root / 'sources' / 'photos' / 'partial_S-1212121212.md', _SOURCE.format(
+            sid='S-1212121212', title='Partial',
+            line=('files:\n'
+                  '  - file: photos/x-00600.jpg\n    role: primary\n'
+                  '  - file: photos/x-00600-back.jpg\n    role: attachment\n')))
+
+        result = doctor.run_doctor(self.root, self._fha_config())
+        report = '\n'.join(result.data['lines'])
+
+        self.assertNotIn('ambiguous back scan', report)
+        self.assertIn('orphaned back scan', report)
+        self.assertIn('photos/x-00600_back.jpeg', report)
+        # Exactly one orphan reported - the already-listed candidate must
+        # not also show up as a second, spurious finding.
+        self.assertEqual(report.count('orphaned back scan'), 1)
+
+    # ── Issue #169 followup review, finding 3 ─────────────────────────────
+
+    def test_second_unlisted_back_still_flagged_after_first_is_attached(self) -> None:
+        # The old `has_back` group-skip stopped checking a (folder, base_id)
+        # group entirely the moment ANY back was listed for it - so once the
+        # owner followed THIS very check's own advice and attached one of
+        # two originally-unlisted back candidates, the second, still-unlisted
+        # one became permanently invisible on every later run instead of
+        # surfacing on its own as the ambiguous finding's message promises.
+        # Start from the ambiguous shape (two unlisted back-shaped files),
+        # then attach ONE of them under role: back, and confirm the OTHER is
+        # now reported - as a plain orphan (only one candidate remains), not
+        # as still-ambiguous, and not silently dropped.
+        (self.root / 'photos' / 'x-00650.jpg').write_bytes(b'front')
+        (self.root / 'photos' / 'x-00650-back.jpg').write_bytes(b'now attached')
+        (self.root / 'photos' / 'x-00650_back.jpeg').write_bytes(b'still unlisted')
+        _write(self.root / 'sources' / 'photos' / 'twoback_S-1414141414.md', _SOURCE.format(
+            sid='S-1414141414', title='Two Back',
+            line=('files:\n'
+                  '  - file: photos/x-00650.jpg\n    role: primary\n'
+                  '  - file: photos/x-00650-back.jpg\n    role: back\n')))
+
+        result = doctor.run_doctor(self.root, self._fha_config())
+        report = '\n'.join(result.data['lines'])
+
+        self.assertNotIn('ambiguous back scan', report)
+        self.assertIn('orphaned back scan', report)
+        self.assertIn('photos/x-00650_back.jpeg', report)
+        # The already-attached back must not itself be re-reported as orphan.
+        self.assertNotIn('photos/x-00650-back.jpg sits on disk', report)
+        check = self._finding(result)
+        self.assertIsNotNone(check, 'the leftover unlisted back must still be reported')
+        self.assertEqual(check['status'], 'warn')
+
+    # ── Issue #169 followup review, finding 4 ─────────────────────────────
+
+    def test_ambiguous_back_scan_finding_has_no_unsubstituted_placeholder(self) -> None:
+        # The ambiguous-back-scan finding used to splice the literal text
+        # "<the file>" into the middle of an otherwise-real `fha process`
+        # command - even though this report's own preamble promises "every
+        # `next:` below is a command you can copy". Copying that command
+        # verbatim hands a shell `<the` as input redirection, and `fha` never
+        # even runs. Every candidate's real alias is already known, so the
+        # fix names a complete, runnable command for each one instead of a
+        # fill-in-the-blank placeholder.
+        (self.root / 'photos' / 'x-00660.jpg').write_bytes(b'front')
+        (self.root / 'photos' / 'x-00660-back.jpg').write_bytes(b'back candidate one')
+        (self.root / 'photos' / 'x-00660_back.jpeg').write_bytes(b'back candidate two')
+        _write(self.root / 'sources' / 'photos' / 'placeholder_S-1515151515.md', _SOURCE.format(
+            sid='S-1515151515', title='Placeholder',
+            line='files:\n  - file: photos/x-00660.jpg\n    role: primary\n'))
+
+        result = doctor.run_doctor(self.root, self._fha_config())
+        report = '\n'.join(result.data['lines'])
+
+        self.assertIn('ambiguous back scan', report)
+        self.assertNotIn('<the file>', report)
+        # A real, fully-quoted, runnable command names EACH candidate - not
+        # just the ambiguity itself.
+        cmd_one = (f'{doctor._LAUNCHER} process {doctor.shell_quote("photos/x-00660.jpg")} '
+                   f'--more {doctor.shell_quote("photos/x-00660-back.jpg")} back')
+        cmd_two = (f'{doctor._LAUNCHER} process {doctor.shell_quote("photos/x-00660.jpg")} '
+                   f'--more {doctor.shell_quote("photos/x-00660_back.jpeg")} back')
+        self.assertIn(cmd_one, report)
+        self.assertIn(cmd_two, report)
 
 
 class RenderTests(unittest.TestCase):

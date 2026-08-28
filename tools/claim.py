@@ -169,7 +169,14 @@ would interact with `--persons` in ways that are not obvious - does setting a
 role auto-add the person to `persons:` if absent, and does removing the last
 role for a person imply removing them from `persons:` too? None of that is
 settled by SPEC or by the issue itself, so it stays a hand-edit of the claim
-block for now, same as minting a `relationship` claim does.
+block for now, same as minting a `relationship` claim does. One direction of
+that interaction IS settled, though (#126/#173 follow-up): `--persons`
+REPLACES the whole list, and a replacement that drops someone the claim's
+EXISTING `roles:` map still names would silently orphan that role target -
+the same hand-edit mistake W133 (`fha lint`) catches, reached through this
+tool instead of a typo. `run_claim` refuses that specific edit
+(`_existing_role_target_pids`) rather than writing it and waiting for the
+next `fha lint` to notice.
 
 CODE MAP
 --------
@@ -189,6 +196,8 @@ CODE MAP
 
   fha claim <C-id> [<C-id> ...] (review + field edit; batch = status-only)
     _find_claim_record        - scan sources/ for the .md holding one C-id
+    _existing_role_target_pids - P-ids an existing roles: map already names
+                                (#126/#173: a --persons REPLACE must not orphan one)
     _own_key_indent / _own_id_key_line - which id: line is an item's OWN key
     _apply_claim_review       - surgical `## Claims` block edit (status/value/date/
                                 type/place/persons/confidence/information/
@@ -242,6 +251,7 @@ from _lib import (
     format_edtf_error,
     id_type_of,
     is_valid_id,
+    link_field_refs,
     match_place_text_to_registry,
     mint_ids,
     normalize_date,
@@ -335,6 +345,44 @@ def _claim_type_problem(claim_type: str) -> str | None:
 def _invalid_person_ids(raw_ids: list[str]) -> list[str]:
     """Return the entries of `raw_ids` that are not shaped like a P-id."""
     return [p for p in raw_ids if not (is_valid_id(p) and id_type_of(p) == 'P')]
+
+
+def _existing_role_target_pids(claim: dict) -> set[str]:
+    """Every P-id-SHAPED value already named under this claim's `roles:` map.
+
+    `--persons` REPLACES the whole `persons:` list (module docstring, issue
+    #50), and this file never amends `roles:` - but a claim minted by hand
+    can already carry one, and a REPLACE that drops someone `roles:` still
+    names is exactly the #126/#173 hand-edit mistake W133 (`fha lint`) exists
+    to catch, just reached through the sanctioned edit verb instead of a typo:
+    `_lib.resolve_claim_persons_with_roles`/`index.py`'s `_index_source` only
+    ever walk `persons:` entries asking each one whether some role names it,
+    so a role target `--persons` just orphaned is never a candidate again -
+    dropped before `vital_subjects` ever sees it, and if that leaves every
+    OTHER named person unroled, its single-person legacy fallback reads
+    whoever is left as the claim's own subject (a death, say, silently
+    reassigned to the widow). `run_claim` uses this to refuse the edit before
+    it can create that shape, rather than writing it and waiting for the next
+    `fha lint` to notice.
+
+    Deliberately ID-shaped only, not a full `resolve_claim_persons_with_roles`
+    walk: this file edits one claim straight off `sources/`, never a built
+    index/registry (`_find_claim_record`'s own contract), so there is no
+    alias map here to resolve a name-link role value through - `roles: {deceased:
+    ["[[Grandpa Smith]]"]}` is invisible to this check the same way an
+    unresolvable NAME is invisible to W133 itself. `fha lint` remains the
+    backstop for that narrower shape; every reported case of this bug so far
+    (the Codex reproduction) used a bare P-id, which this catches.
+    """
+    roles = claim.get('roles')
+    if not isinstance(roles, dict):
+        return set()
+    out: set[str] = set()
+    for role_val in roles.values():
+        for ref in link_field_refs(role_val):
+            if id_type_of(ref) == 'P':
+                out.add(normalize_id(ref))
+    return out
 
 
 def _unresolvable_person_ids(archive_root: Path, ids: list[str]) -> list[str]:
@@ -1064,7 +1112,11 @@ def run_claim(
     §15) - each sets only its own, never removing the other, and both may be
     given together; `persons` REPLACES the whole
     list and every P-id must already resolve to a record (SPEC §9) or the call
-    refuses naming the missing id and the fix. `information`/`evidence` are
+    refuses naming the missing id and the fix; a replacement that would drop
+    someone the claim's existing `roles:` map still names is refused too
+    (#126/#173 follow-up: `_existing_role_target_pids` - a bare P-id in
+    `roles:` only, no name-link resolution, see its own docstring), naming
+    who would be orphaned and the fix. `information`/`evidence` are
     validated against SPEC §8.5's closed vocabularies; `anchor`/`notes` are
     free text (issue #50) - all four REPLACE their field, same as `value`/
     `place_text`. The success message names the re-index next step
@@ -1174,6 +1226,26 @@ def run_claim(
     before_status = str(claim.get('status') or '')
     result.data['before_status'] = before_status
     result.data['source'] = str(record_path)
+
+    # `--persons` REPLACES the whole persons: list, and this file never
+    # amends roles: (module docstring, issue #50) - so a claim that already
+    # carries a roles: map naming someone the new list drops would silently
+    # orphan that role target, the #126/#173 hand-edit mistake W133 (`fha
+    # lint`) exists to catch, reached here through the sanctioned edit verb
+    # instead of a typo. Refuse before writing rather than create the shape
+    # and wait for the next `fha lint` to notice it.
+    if persons_norm is not None:
+        orphaned = _existing_role_target_pids(claim) - set(persons_norm)
+        if orphaned:
+            named = ', '.join(fmt_id_display(p) for p in sorted(orphaned))
+            return _fail(result, 'refused',
+                         f'--persons would drop {named}, whom this claim\'s roles: map '
+                         f'already names - removing them from persons: without also '
+                         f'fixing the roles: entry can leave whoever is left misread as '
+                         f'this record\'s own subject (fha lint W133; #126/#173). Include '
+                         f'{named} in --persons too, or fix the roles: map by hand first '
+                         '(and rerun `fha lint` to confirm), then retry.')
+
     # Publish the canonical `S-…` id of the holding source alongside its path.
     # A downstream reindexer (`fha serve`) reads `data['source_id']` to know
     # which source to refresh. Derived from the record's `_{S-id}.md` filename
