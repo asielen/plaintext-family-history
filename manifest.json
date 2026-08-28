@@ -90,7 +90,7 @@
     {
       "path": ".claude/skills/process-source/SKILL.md",
       "category": "operating",
-      "sha256": "b8635ca6e5c02fade48f06a1d438bfece946b379707288504e7cbdf32aba4ce5",
+      "sha256": "7e84d7f39cb9bb9d4bf789995ef6537c7090059f9fb133cf7ed2bc990ae83acd",
       "spec_version": "1.2"
     },
     {
@@ -878,13 +878,13 @@
     {
       "path": "SPEC.md",
       "category": "operating",
-      "sha256": "057bc62afea8532cc606e9b6d249a9449c05da582771c47d2ce3d756da3f905e",
+      "sha256": "47a9cc05d26f8b9f5244d305c8bc568bbc269a8ba052f50aeabdbd0b3242a50e",
       "spec_version": "1.2"
     },
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "40c8ced70eda90ccfc9ed038badb9fe20293583e639cf5f11ba6acb157457289",
+      "sha256": "b6bf2b62adcab972491857481d49cee04a1d85b225d152daccf65b985a4c2512",
       "spec_version": "1.2"
     },
     {
@@ -902,7 +902,7 @@
     {
       "path": "docs/FAQ.md",
       "category": "operating",
-      "sha256": "768c4354416093a542438077356f2f09977913b0c09e5fda6f63eed96b2921cd",
+      "sha256": "31322e0f5196ff0d2040a8017e5b9391c311e95c13969b13caadccea621ca6c4",
       "spec_version": "1.2"
     },
     {

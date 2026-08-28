@@ -471,6 +471,32 @@ class PacketTests(unittest.TestCase):
         self.assertIn('Included sources', readme)
         self.assertTrue(any((result['packet_dir'] / 'sources').iterdir()))
 
+    def test_ephemera_source_with_only_a_claim_link_still_gathered(self):
+        # SPEC #14 (round-3 Codex finding, PR #191 follow-up): an ephemera
+        # source is invisible on person-scoped surfaces "as long as its
+        # `## Claims` block also stays person-free too" - the promise is
+        # NOT unconditional on an empty frontmatter `people:` alone.
+        # `_source_ids_for_person` selects a source through claim_persons
+        # (any claim's own `persons:`) UNION source_people (the frontmatter
+        # `people:` list), so a source with no source_people row at all -
+        # empty `people:`, the ephemera shape - but one claim naming the
+        # person is still gathered into their packet. This documents the
+        # actual mechanism (not a bug): only a `people:`-empty AND
+        # claims-empty ephemera source - the ordinary, expected case - stays
+        # truly unreachable from a person's packet.
+        self._seed_person()
+        self._seed_source('s-1111111111', 'Old Clipping', source_type='ephemera', persons=())
+        _insert_claim(self.conn, 'c-aaaaaaaaaa', 's-1111111111', 'note',
+                      'Mentions the family in passing', status='accepted',
+                      persons=['p-aaaaaaaaaa'])
+        self._commit_fresh()
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir, no_photos=True)
+        self.assertEqual(result['status'], 'ok')
+        readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
+        self.assertIn('Included sources', readme)
+        self.assertTrue(any((result['packet_dir'] / 'sources').iterdir()))
+
     def test_dna_source_excluded_even_with_include_restricted(self):
         self._seed_person()
         self._seed_source('s-1111111111', 'DNA Source', restricted=1, source_type='dna')

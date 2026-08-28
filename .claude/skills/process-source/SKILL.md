@@ -271,18 +271,25 @@ sweep. Works one item at a time; for a full inbox, triage and confirm each with 
    optional cross-link (SPEC §14) and should still be filled in when the source is genuinely tied to
    a registered place.)
 
-   **A clipping that names no one in the family at all** — period news, local color, general history
-   kept on purpose for texture or a future biography, not because it evidences anyone — is
-   `source_type: ephemera` (#114, SPEC §14), not `newspaper`/`other`. It is the one type where
-   `people:` is required to stay strictly **empty**, not merely near-empty, and `## Claims` staying
-   empty too is the *expected* shape, not a gap to chase; a piece that later turns out to name someone
-   after all, even in passing, no longer qualifies — retype it to whatever fits and link that person.
+   **A clipping that names no one already tracked in the archive** — period news, local color, general
+   history kept on purpose for texture or a future biography, not because it evidences anyone — is
+   `source_type: ephemera` (#114, SPEC §14), not `newspaper`/`other`. The boundary isn't whether any
+   name appears in the prose; it's whether the source links to an archive person at all — a period
+   mayor or a neighbor mentioned in passing, with no record of their own and none worth minting just
+   for this, does **not** disqualify it, and naming such a person is not itself a reason to go create a
+   stub for them. It is the one type where `people:` is required to stay strictly **empty**, not
+   merely near-empty, and `## Claims` staying empty too is the *expected* shape, not a gap to chase; a
+   piece that turns out to name someone who already has an archive record — or clearly warrants one on
+   its own merits, independent of this mention — no longer qualifies: retype it to whatever fits and
+   link that person.
    `places:` is a different, optional cross-link (SPEC §14) that carries no such restriction — fill it
    in as usual when the source is genuinely tied to a registered place; only `people:` is the
    strict-empty field. Because it carries no `people:` link, it won't appear on anyone's profile,
    source list, or packet — those are all reached by following a person's links, and this source
-   deliberately has none. Find it again via the generated site's homepage Sources list (grouped by
-   decade) or full-text search over its `## Notes`.
+   deliberately has none — **as long as `## Claims` also stays empty**, per the `## Claims`-empty
+   guidance above; a stray claim naming someone (`persons:`) would still surface the source on their
+   page even with `people:` empty. Find it again via the generated site's homepage Sources list
+   (grouped by decade) or full-text search over its `## Notes`.
 
    One flavor of this deserves special respect: **material kept because it was investigated and
    rejected** — a debunked lineage pamphlet, a mail-order surname history, a disproven family legend.
