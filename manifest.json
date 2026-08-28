@@ -630,7 +630,7 @@
     {
       "path": ".fha/tools/reorganize.py",
       "category": "operating",
-      "sha256": "70d69a21286d08a5c067492a73d633f6e5378f4f13e74ceb806c51ceaff991c5",
+      "sha256": "6802f310eb4d62d219c0504f91cd32dbb8a795eb617dff40a0fa3e73b485c8e1",
       "spec_version": "1.2",
       "src": "tools/reorganize.py"
     },
