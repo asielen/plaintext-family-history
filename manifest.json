@@ -1,7 +1,7 @@
 {
   "manifest_version": "1",
   "spec_version": "1.2",
-  "generated": "2026-08-27",
+  "generated": "2026-08-28",
   "files": [
     {
       "path": ".claude/skills/README.md",
@@ -581,7 +581,7 @@
     {
       "path": ".fha/tools/packet.py",
       "category": "operating",
-      "sha256": "1aeaab163066a84fe8ff2e47dd73b756bf3488fb819798844bbdbdef084fcf74",
+      "sha256": "d444b9d20bafd443d0a81356c9a4977ae684d64df9e4886815b4a082d8f3665b",
       "spec_version": "1.2",
       "src": "tools/packet.py"
     },
@@ -609,7 +609,7 @@
     {
       "path": ".fha/tools/process.py",
       "category": "operating",
-      "sha256": "3a550b6befd3cba75786fa2e11869a3f66706618efd6ee4b8a432a41b7d3e9d0",
+      "sha256": "ff38f7101a8f3104d6a6cd22c16d8fe52436f2209ab8394348720cef6af739c3",
       "spec_version": "1.2",
       "src": "tools/process.py"
     },

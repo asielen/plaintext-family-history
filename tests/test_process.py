@@ -52,6 +52,69 @@ def _make_archive(tmp: Path) -> Path:
     return archive
 
 
+def _build_real_symlink_loop(base: Path) -> Path:
+    """Create a genuine on-disk symlink/junction loop under `base` and return
+    a path whose `.resolve()` actually hits it - not a stand-in for the
+    failure a real loop causes (post-merge Codex review of #176, round-9
+    audit). Every OTHER symlink-loop test in this file only ever
+    monkeypatches `Path.resolve()` to raise `RuntimeError` - the pre-3.13
+    pathlib behavior - which stayed green even after 3.13 rewrote
+    `resolve()` on top of `os.path.realpath()` and stopped raising
+    `RuntimeError` for a real loop at all (it delegates straight through;
+    see `_resolve_hits_symlink_loop`'s docstring in tools/process.py). That
+    masked exactly the regression this helper exists to catch: this repo's
+    own `_resolve_hits_symlink_loop`, unpatched, run against a REAL loop,
+    under whatever Python actually ships in CI.
+
+    POSIX: an unprivileged, single-hop self-referencing symlink (`loop`,
+    whose target is the bare relative name `'loop'` - itself) is the
+    textbook infinite loop and needs no elevated privilege to create.
+
+    Windows: a real *symlink* loop needs `SeCreateSymbolicLinkPrivilege`
+    (Developer Mode or admin) that this dev environment does not have -
+    the same constraint the other tests' monkeypatch comments already
+    note - but an NTFS *junction* needs no privilege at all, and
+    `_winapi.CreateJunction` (what CPython's own test suite uses to build
+    junctions in tests) creates one outright. A single mutual junction pair
+    is not enough on its own: `Path.resolve()` only substitutes as many
+    reparse hops as the query path actually names, so a short, finite
+    chain resolves down cleanly no matter how many times two junctions
+    reference each other - confirmed empirically while building this
+    helper. Alternating through a long chain of DISTINCT junction pairs
+    instead forces Windows' own path resolver past its internal
+    reparse-point traversal cap - the exact failure a true infinite loop
+    also hits (`OSError` winerror 1921, `ERROR_CANT_RESOLVE_FILENAME`),
+    also confirmed empirically against this exact construction.
+    """
+    if os.name != 'nt':
+        loop = base / 'loop'
+        loop.symlink_to('loop')  # relative target naming itself
+        return loop / 'unreachable'
+
+    import _winapi
+
+    a_dir = base / 'loop_a'
+    b_dir = base / 'loop_b'
+    a_dir.mkdir()
+    b_dir.mkdir()
+    abs_a = str(a_dir.resolve())
+    abs_b = str(b_dir.resolve())
+    hops = 50  # comfortably past the ~28-32 hop crossover observed locally
+    for i in range(hops):
+        _winapi.CreateJunction(abs_b, str(a_dir / f'to_b_{i}'))
+        _winapi.CreateJunction(abs_a, str(b_dir / f'to_a_{i}'))
+    parts = [str(a_dir)]
+    cur = 'a'
+    for i in range(hops):
+        if cur == 'a':
+            parts.append(f'to_b_{i}')
+            cur = 'b'
+        else:
+            parts.append(f'to_a_{i}')
+            cur = 'a'
+    return Path(*parts, 'unreachable.txt')
+
+
 class FakePhotoStore:
     """In-memory stand-in for embedded photo keywords, keyed by absolute path.
 
@@ -1034,6 +1097,49 @@ class ProcessTestCase(unittest.TestCase):
 
         self.assertEqual(rc, EXIT_ERRORS)
         text = err.getvalue()
+        self.assertIn('symlink loop', text)
+        self.assertEqual(list((self.archive / 'sources').rglob('*.md')), [])
+
+    def test_resolve_hits_symlink_loop_detects_a_real_on_disk_loop(self) -> None:
+        # Post-merge Codex review of #176, round-9 audit (P2): every OTHER
+        # symlink-loop test in this file only proves the message-plumbing
+        # given a MOCKED `RuntimeError` - the pre-3.13 pathlib contract.
+        # 3.13 rewrote `Path.resolve()` to delegate to `os.path.realpath()`,
+        # whose non-strict mode never raises for a loop at all (it silently
+        # returns a best-effort, often still-unresolved path instead) - so
+        # `_resolve_hits_symlink_loop`'s old `except RuntimeError` alone
+        # returned False for every REAL loop on 3.13+, and every mocked test
+        # here kept passing regardless, masking the regression. This is the
+        # direct check against the unpatched function and a genuine on-disk
+        # loop (`_build_real_symlink_loop`), so it only passes if the fix's
+        # `strict=True` + `OSError`/errno handling actually works under
+        # whatever pathlib semantics the running interpreter has.
+        loop_path = _build_real_symlink_loop(self.tmp)
+        self.assertTrue(process._resolve_hits_symlink_loop(loop_path))
+
+        # And a completely ordinary missing path - no loop involved - must
+        # still read as "not a loop", not get swept up by a broad catch.
+        ordinary_missing = self.tmp / 'never-existed' / 'nested' / 'file.txt'
+        self.assertFalse(process._resolve_hits_symlink_loop(ordinary_missing))
+
+    def test_file_argument_real_symlink_loop_names_the_loop_end_to_end(self) -> None:
+        # Same scenario as `test_file_argument_symlink_loop_names_the_loop_
+        # not_a_raw_crash` above, but driven through a REAL on-disk loop
+        # instead of a monkeypatched `Path.resolve()` (post-merge Codex
+        # review of #176, round-9 audit): proves the whole pipeline -
+        # `_resolve_input_file` through to the CLI's error report - gives
+        # the actionable "symlink loop" refusal for a genuine loop, not the
+        # generic "missing or misfiled asset" wording a silently-swallowed
+        # loop would fall through to on Python 3.13+.
+        loop_path = _build_real_symlink_loop(self.tmp)
+
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            rc = self._run([str(loop_path)])
+
+        self.assertEqual(rc, EXIT_ERRORS)
+        text = err.getvalue()
+        self.assertNotIn('Traceback', text)
         self.assertIn('symlink loop', text)
         self.assertEqual(list((self.archive / 'sources').rglob('*.md')), [])
 

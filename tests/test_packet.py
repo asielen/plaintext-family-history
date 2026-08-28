@@ -1734,6 +1734,49 @@ class PacketTests(unittest.TestCase):
             packet._redact_asset_path('photos/1900s/family_S-2222222222.jpg'),
             'photos/1900s/family_S-2222222222.jpg')
 
+    def test_redact_asset_path_strips_leading_whitespace_before_classifying(self):
+        """A hand-edit made through a YAML editor can leave the value quoted
+        with surrounding whitespace preserved, e.g. `" /Users/andrew/Secret/
+        scan.pdf"` (a space before the leading `/`). Every character-position
+        check in `_redact_asset_path` reads `normalized[0]`/`[1]`
+        positionally, so the leading space alone used to defeat all of them
+        at once and let the whole absolute path - username and directory
+        layout included - through unredacted (post-merge Codex review of
+        #176, round-9 audit, issue #170 finding 1 follow-up)."""
+        self.assertEqual(
+            packet._redact_asset_path(' /Users/andrew_sielen/Secret/scan.pdf'),
+            'scan.pdf')
+        self.assertEqual(
+            packet._redact_asset_path('\t/Users/andrew_sielen/Secret/scan.pdf'),
+            'scan.pdf')
+        self.assertEqual(
+            packet._redact_asset_path('  C:\\Users\\andrew_sielen\\Secret Folder\\private-scan.tif  '),
+            'private-scan.tif')
+        self.assertEqual(
+            packet._redact_asset_path(' ~andrew_sielen/Documents/secret.pdf'),
+            'secret.pdf')
+        # Whitespace-padded bare-directory and lookalike-separator shapes
+        # must still be recognized once stripped, not just the plain case.
+        self.assertEqual(
+            packet._redact_asset_path(' /Users/andrew_sielen/'), '(unnamed path)')
+        self.assertEqual(
+            packet._redact_asset_path(' /Users⁄andrew_sielen⁄secret.pdf'),
+            'secret.pdf')
+
+    def test_redact_asset_path_preserves_whitespace_on_a_genuine_alias(self):
+        """The fix for the leading-whitespace leak must not start silently
+        rewriting an ORDINARY alias's spelling - only classification and
+        basename extraction run against a stripped copy; a portable, non-
+        foreign entry (whitespace and all) is returned completely
+        unchanged, exactly as `_redact_asset_path`'s no-op contract already
+        promises for a normal alias."""
+        self.assertEqual(
+            packet._redact_asset_path(' documents/census/scan.jpg'),
+            ' documents/census/scan.jpg')
+        self.assertEqual(
+            packet._redact_asset_path('photos/1880/portrait.jpg  '),
+            'photos/1880/portrait.jpg  ')
+
     def test_unreadable_source_is_left_out_with_its_files(self):
         """A source whose own record cannot be read takes its assets with it.
 
@@ -1935,6 +1978,98 @@ class PacketTests(unittest.TestCase):
         copied = next((result['packet_dir'] / 'sources').glob('*.md')).read_text(encoding='utf-8')
         self.assertNotIn('yours to write', copied)
         self.assertNotIn('suicide', copied)   # the restricted claim itself is still cut
+
+    def test_non_portable_files_entry_redacted_in_the_copied_source_record(self):
+        """The P1 half of issue #170 finding 1 that #176's fix missed
+        (post-merge Codex review, round-9 audit): `_redact_asset_path`
+        protected the missing-asset SENTENCE in README.txt, but the source's
+        own RECORD - copied verbatim into the packet's sources/ folder -
+        still carried the raw `files:` entry in its frontmatter untouched.
+        This is the "build the real thing and grep the real output" proof:
+        an actual packet, built from a source record whose `files:` entry
+        is a real absolute path off the archive owner's machine, must not
+        leak that path anywhere in its OWN COPIED RECORD FILE - not just in
+        README.txt (already covered by
+        `test_absolute_files_entry_path_redacted_to_basename_in_readme`
+        above).
+
+        This source has no restricted claim, so it takes the ordinary
+        `_copy_source_with_scaffolding_stripped` path, not
+        `_copy_redacted_source` - the leak's more common branch, since most
+        sources carry nothing to withhold.
+        """
+        self._seed_person()
+        src_path = self._seed_source('s-1111111111', 'Ordinary Title')
+        src_path.write_text(
+            '---\n'
+            'id: s-1111111111\n'
+            'title: Ordinary Title\n'
+            'source_type: letter\n'
+            'files:\n'
+            '  - file: C:\\Users\\andrew_sielen\\Secret Folder\\private-scan.tif\n'
+            '    role: primary\n'
+            '    original_filename: private-scan.tif\n'
+            '---\n'
+            '## Claims\n```yaml\n```\n\n'
+            '## Notes\nA note about the letter.\n',
+            encoding='utf-8',
+        )
+        self._commit_fresh()
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir, no_photos=True)
+
+        self.assertEqual(result['status'], 'ok')
+        copied = next((result['packet_dir'] / 'sources').glob('*.md')).read_text(encoding='utf-8')
+        self.assertNotIn('andrew_sielen', copied)
+        self.assertNotIn('Secret Folder', copied)
+        self.assertNotIn('C:\\Users', copied)
+        # The record is still a real, useful record: everything else about
+        # the entry - and the rest of the file - is untouched.
+        self.assertIn('file: private-scan.tif', copied)
+        self.assertIn('role: primary', copied)
+        self.assertIn('original_filename: private-scan.tif', copied)
+        self.assertIn('A note about the letter.', copied)
+        readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
+        self.assertNotIn('andrew_sielen', readme)
+        self.assertNotIn('Secret Folder', readme)
+
+    def test_non_portable_files_entry_redacted_alongside_claim_redaction(self):
+        """Same leak, the OTHER copy branch: a source WITH a restricted
+        claim goes through `_copy_redacted_source` instead of
+        `_copy_source_with_scaffolding_stripped` - the files: redaction
+        must run there too, not just on the more common ordinary-source
+        path above."""
+        self._seed_person()
+        src_path = self._seed_source('s-1111111111', 'Restricted Source', restricted=0)
+        src_path.write_text(
+            '---\n'
+            'id: s-1111111111\n'
+            'title: Restricted Source\n'
+            'source_type: letter\n'
+            'files:\n'
+            '  - file: /Users/andrew_sielen/Documents/private-scan.tif\n'
+            '    role: primary\n'
+            '---\n'
+            '## Claims\n```yaml\n'
+            '- value: "Cause of death: suicide"\n'
+            '  type: death\n'
+            '  persons: [p-aaaaaaaaaa]\n'
+            '  id: c-1111111111\n'
+            '  status: accepted\n'
+            '  restricted: true\n'
+            '```\n',
+            encoding='utf-8',
+        )
+        self._commit_fresh()
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir, no_photos=True)
+
+        self.assertEqual(result['status'], 'ok')
+        copied = next((result['packet_dir'] / 'sources').glob('*.md')).read_text(encoding='utf-8')
+        self.assertNotIn('andrew_sielen', copied)
+        self.assertNotIn('suicide', copied)   # the restricted claim is still cut too
+        self.assertIn('file: private-scan.tif', copied)
+        self.assertIn('role: primary', copied)
 
     def test_pre_75_source_with_no_purpose_block_ships_unchanged(self):
         # No backfill/migration tooling: an older-shaped source record that
