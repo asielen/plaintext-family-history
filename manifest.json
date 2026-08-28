@@ -1,7 +1,7 @@
 {
   "manifest_version": "1",
   "spec_version": "1.2",
-  "generated": "2026-08-27",
+  "generated": "2026-08-28",
   "files": [
     {
       "path": ".claude/skills/README.md",
@@ -90,7 +90,7 @@
     {
       "path": ".claude/skills/process-source/SKILL.md",
       "category": "operating",
-      "sha256": "8039b617e190168bb766fe638acd495f98dd6ff0543e9bd9cbca5af4756609b3",
+      "sha256": "81a9ce5937fc407a150219c200a2b2205aa2cc147dba7283a51ea40e9c7ef692",
       "spec_version": "1.2"
     },
     {
@@ -878,7 +878,7 @@
     {
       "path": "SPEC.md",
       "category": "operating",
-      "sha256": "722826ca9d382534b15b33223a55e4c5d4c784d2271918f191c8965f96e089d0",
+      "sha256": "057bc62afea8532cc606e9b6d249a9449c05da582771c47d2ce3d756da3f905e",
       "spec_version": "1.2"
     },
     {
@@ -902,7 +902,7 @@
     {
       "path": "docs/FAQ.md",
       "category": "operating",
-      "sha256": "ee71f9e54e724ebf6a957ded178b97a80eef5a576228c0867ec474b062e2e29e",
+      "sha256": "bb08d15385d5c8a5e772934bc9aac81321867a4f47e8dec2d6243e674fa89ea3",
       "spec_version": "1.2"
     },
     {
