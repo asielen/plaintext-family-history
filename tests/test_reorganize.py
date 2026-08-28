@@ -307,6 +307,60 @@ class ReorganizeSurveyTests(unittest.TestCase):
         self.assertIn('sources', text.lower())
         self.assertNotIn('Nothing to reorganize', text)
 
+    def test_unparseable_record_refuses_the_whole_survey(self) -> None:
+        """P1 audit finding (PR #188, third pass): a record with malformed
+        frontmatter/Claims YAML used to be warned about and SKIPPED,
+        letting the survey continue planning moves for every OTHER
+        record - but that means the malformed record's OWN files:
+        ownership claims never enter `canonical_owners`, so the duplicate-
+        ownership guard is working from an incomplete picture. Fix: fail
+        the WHOLE survey closed - a perfectly clean, unrelated record's
+        move must not be planned either while ANY record in the archive
+        cannot be parsed."""
+        _write_file(self.archive, f'documents/thing_{SID_A}.pdf')
+        _write_record(self.archive, SID_A, 'census', [f'documents/thing_{SID_A}.pdf'])
+        # A second, unrelated record with malformed frontmatter (an
+        # unterminated quote breaks the YAML block) - same shape
+        # `reconcile.py`'s own malformed-record tests use.
+        rec_b = _write_record(self.archive, SID_B, 'letter',
+                               [f'documents/other_{SID_B}.pdf'], slug='other')
+        text_b = rec_b.read_text(encoding='utf-8').replace(
+            f'title: Title for {SID_B}', 'title: "unterminated')
+        rec_b.write_text(text_b, encoding='utf-8')
+
+        result = self._run()
+
+        # Fail closed: NOTHING is planned, including for the clean record.
+        self.assertEqual(result.data['planned'], 0)
+        self.assertEqual(result.exit_code, EXIT_WARNINGS)
+        text = ' '.join(m.text for m in result.messages)
+        self.assertIn(rec_b.name, text)
+        self.assertNotIn(f'documents/thing_{SID_A}.pdf ->', text,
+                          "the clean record's move must not sneak through either")
+
+    def test_unparseable_record_blocks_a_different_records_move_of_a_shared_file(self) -> None:
+        """The literal failure mode the audit finding names: a malformed
+        record and a DIFFERENT, parseable record both (in reality) list
+        the SAME physical file. Before this fix, skipping the malformed
+        record silently dropped its ownership claim from
+        `canonical_owners`, so the parseable record's move went ahead as
+        if there were no conflict at all - leaving the malformed record's
+        own `files:` entry pointing at a file that had just moved out from
+        under it. Now: fail closed, the shared file is never touched."""
+        shared = f'documents/thing_{SID_A}.pdf'
+        asset = _write_file(self.archive, shared)
+        _write_record(self.archive, SID_A, 'census', [shared], slug='thing')
+        rec_b = _write_record(self.archive, SID_B, 'letter', [shared], slug='thing-dup')
+        text_b = rec_b.read_text(encoding='utf-8').replace(
+            f'title: Title for {SID_B}', 'title: "unterminated')
+        rec_b.write_text(text_b, encoding='utf-8')
+
+        result = self._run()
+
+        self.assertEqual(result.data['planned'], 0)
+        self.assertEqual(result.exit_code, EXIT_WARNINGS)
+        self.assertTrue(asset.exists(), 'the shared file must never have been moved')
+
     def test_invalid_source_type_refuses_the_whole_record(self) -> None:
         """P1 audit finding (PR #188): a hand-edited record's source_type
         must be validated against `_lib.SOURCE_TYPES` before it is trusted
@@ -414,13 +468,16 @@ class ReorganizeSurveyTests(unittest.TestCase):
         self.assertEqual(result.data['planned'], 0)
         self.assertGreaterEqual(result.data['problems'], 1)
 
-    def test_limit_skips_whole_record_that_would_cross_the_cap(self) -> None:
-        """P2 audit finding (PR #188): the trimming loop checked the
-        accumulated count only BEFORE appending a whole record, so a
-        multi-file record could push the total well past --limit.
-        `_apply_one_record`'s per-record atomicity means a record's files
-        always move together or not at all - the fix skips the WHOLE
-        record that would cross the cap rather than split it."""
+    def test_limit_skips_an_oversized_record_but_still_plans_a_smaller_one(self) -> None:
+        """P2 audit finding (PR #188, third pass): the trimming loop used to
+        `break` the instant ONE record did not fit under --limit, stopping
+        the scan entirely instead of skipping that record and checking
+        whether a LATER, smaller record would fit. Concrete failure this
+        reproduces: a three-file record first, a one-file record second,
+        --limit 1 - the old code broke on the first (3 > 1) and planned
+        NOTHING, even though the second record (1 file) fits the cap
+        exactly. The whole record is still skipped (never split) - only
+        the "stop scanning entirely" part was the bug."""
         aliases = [f'documents/thing-{c}_{SID_A}.pdf' for c in ('a', 'b', 'c')]
         for a in aliases:
             _write_file(self.archive, a)
@@ -430,12 +487,35 @@ class ReorganizeSurveyTests(unittest.TestCase):
 
         result = self._run(limit=1)
 
-        # The 3-file record (first in record order) would cross the cap on
-        # its own - skipped whole, not split; nothing fits under limit=1.
+        # The 3-file record (first in record order, 'census' < 'letters')
+        # is skipped whole - it would cross the cap on its own - but the
+        # scan continues past it and the 1-file record that follows still
+        # fits and IS planned.
+        self.assertEqual(result.data['planned'], 1)
+        text = ' '.join(m.text for m in result.messages)
+        self.assertIn(f'documents/other_{SID_B}.pdf', text)
+        self.assertNotIn(f'documents/thing-a_{SID_A}.pdf', text)
+        self.assertIn('--limit 1', text)
+
+    def test_limit_too_small_for_every_record_plans_nothing(self) -> None:
+        """The genuinely-nothing-fits case must still come back empty and
+        say so by name - continuing past an oversized record must not
+        paper over a --limit that is too small for every remaining record
+        too (distinct from the case above, where a LATER record fits)."""
+        aliases = [f'documents/thing-{c}_{SID_A}.pdf' for c in ('a', 'b', 'c')]
+        for a in aliases:
+            _write_file(self.archive, a)
+        _write_record(self.archive, SID_A, 'census', aliases, copies=['a', 'b', 'c'])
+        other_aliases = [f'documents/other-{c}_{SID_B}.pdf' for c in ('a', 'b')]
+        for a in other_aliases:
+            _write_file(self.archive, a)
+        _write_record(self.archive, SID_B, 'letter', other_aliases, slug='other', copies=['a', 'b'])
+
+        result = self._run(limit=1)
+
         self.assertEqual(result.data['planned'], 0)
         text = ' '.join(m.text for m in result.messages)
-        self.assertNotIn('Nothing to reorganize', text)
-        self.assertIn('--limit 1', text)
+        self.assertIn('smaller than the smallest remaining', text)
 
     def test_limit_includes_multiple_records_when_they_fit_together(self) -> None:
         """The hard-cap fix must not become OVER-conservative: several
@@ -490,6 +570,37 @@ class ReorganizeApplyTests(unittest.TestCase):
         self.assertEqual(new_asset.read_bytes(), b'hello')
         meta = read_record(record)['meta']
         self.assertEqual(meta['files'][0]['file'], f'documents/census/thing_{SID_A}.pdf')
+        # P2 audit finding (PR #188, third pass): `Result.changed` is this
+        # codebase's established "what did this operation create/write/
+        # rename/embed into" contract (see e.g. `confirm.py`'s dismiss-pair
+        # rename, `source.py extract`'s asset+record pair) - a headless
+        # caller reading `as_dict()` must be able to see the MOVED DOCUMENT
+        # itself, not just the rewritten record.
+        changed = [str(p) for p in result.changed]
+        self.assertIn(str(record), changed)
+        self.assertIn(str(new_asset), changed)
+
+    def test_apply_reports_every_moved_document_in_result_changed(self) -> None:
+        """The multi-file case: every document a record moves must show up
+        in `Result.changed`, not just the record it belongs to."""
+        a1 = _write_file(self.archive, f'documents/thing_{SID_A}.pdf', b'aaa')
+        a2 = _write_file(self.archive, f'documents/thing-b_{SID_A}.pdf', b'bbb')
+        record = _write_record(
+            self.archive, SID_A, 'census',
+            [f'documents/thing_{SID_A}.pdf', f'documents/thing-b_{SID_A}.pdf'],
+            copies=[None, 'b'])
+
+        result = self._run()
+
+        self.assertEqual(result.data['moved'], 2)
+        new_a1 = self.archive / 'documents' / 'census' / f'thing_{SID_A}.pdf'
+        new_a2 = self.archive / 'documents' / 'census' / f'thing-b_{SID_A}.pdf'
+        self.assertTrue(new_a1.exists())
+        self.assertTrue(new_a2.exists())
+        changed = [str(p) for p in result.changed]
+        self.assertIn(str(record), changed)
+        self.assertIn(str(new_a1), changed)
+        self.assertIn(str(new_a2), changed)
 
     def test_apply_is_a_noop_without_apply_flag(self) -> None:
         asset = _write_file(self.archive, f'documents/thing_{SID_A}.pdf')
@@ -595,7 +706,16 @@ class ReorganizeApplyTests(unittest.TestCase):
         reconcile call itself RAISES (not just reports warnings/errors
         through its normal Result - a real crash, e.g. a SQLite error
         reading the photo catalog), the exception must not escape uncaught
-        and lose the report of what already moved before it."""
+        and lose the report of what already moved before it.
+
+        Exit code 1, not 3 (P2 audit finding, PR #188 third pass): TOOLING
+        §9a and tools/README.md both reserve exit 3 for a record left
+        genuinely inconsistent after a failed rollback, or for `fha
+        reconcile` failing to run BEFORE the first batch. This crash
+        happens AFTER batch 1 completed cleanly (each of its moves was its
+        own verified atomic transaction) - the archive is self-consistent,
+        verification just could not finish - so it is the documented exit-1
+        "mid-run halt, archive left consistent either way" case."""
         _write_file(self.archive, f'documents/thing-a_{SID_A}.pdf')
         _write_record(self.archive, SID_A, 'census', [f'documents/thing-a_{SID_A}.pdf'], slug='thing-a')
         a2 = _write_file(self.archive, f'documents/thing-b_{SID_B}.pdf')
@@ -616,9 +736,44 @@ class ReorganizeApplyTests(unittest.TestCase):
         self.assertTrue(result.data['halted'])
         self.assertEqual(result.data['moved'], 1)
         self.assertTrue(a2.exists(), 'batch 2 must never have been attempted')
-        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertEqual(result.exit_code, EXIT_WARNINGS)
         text = ' '.join(m.text for m in result.messages)
         self.assertIn('crashed', text)
+        self.assertIn('fha lint after reorganizing', text,
+                       'the promised final lint pass must still run after a halt')
+
+    def test_reconcile_error_after_batch_halts_at_exit_one_not_three(self) -> None:
+        """P2 audit finding (PR #188, third pass): distinct from the crash
+        case above - here the post-batch `fha reconcile` call returns
+        CLEANLY but its own Result carries an error-level message (e.g. an
+        unreadable photo catalog it detected, not an exception). This used
+        to add an 'error'-level message here too, pushing `_finalize` to
+        exit 3 - the same documented-contract violation as the crash case,
+        fixed the same way: the batch that already ran is safe, so this is
+        an exit-1 halt, not an exit-3 unrecoverable state."""
+        _write_file(self.archive, f'documents/thing-a_{SID_A}.pdf')
+        _write_record(self.archive, SID_A, 'census', [f'documents/thing-a_{SID_A}.pdf'], slug='thing-a')
+        a2 = _write_file(self.archive, f'documents/thing-b_{SID_B}.pdf')
+        _write_record(self.archive, SID_B, 'letter', [f'documents/thing-b_{SID_B}.pdf'], slug='thing-b')
+
+        clean = Result(data={})
+        broken = Result(data={}, ok=False)
+        broken.add('error', 'photos: the photo catalog is unreadable')
+        calls = {'n': 0}
+
+        def flaky_reconcile(archive_root, fha_config, **kw):
+            calls['n'] += 1
+            return clean if calls['n'] == 1 else broken
+        reconcile.run_reconcile = flaky_reconcile
+
+        result = self._run(batch_size=1)
+
+        self.assertTrue(result.data['halted'])
+        self.assertEqual(result.data['moved'], 1)
+        self.assertTrue(a2.exists(), 'batch 2 must never have been attempted')
+        self.assertEqual(result.exit_code, EXIT_WARNINGS)
+        text = ' '.join(m.text for m in result.messages)
+        self.assertIn('could not run cleanly after batch', text)
         self.assertIn('fha lint after reorganizing', text,
                        'the promised final lint pass must still run after a halt')
 
@@ -882,6 +1037,65 @@ class ReorganizeCliTests(unittest.TestCase):
         self.assertIn('--limit', err)
         self.assertNotIn('already tidy', out)
         self.assertTrue(asset.exists())
+
+    def test_batch_size_zero_is_rejected_not_silently_defaulted(self) -> None:
+        """P2 audit finding (PR #188, third pass): `--batch-size 0` used to
+        be silently rewritten to the default (25) rather than validated -
+        a human who typed 0 got a completely different batch size with no
+        warning. Reject it plainly at the CLI boundary instead."""
+        asset = _write_file(self.archive, f'documents/thing_{SID_A}.pdf')
+        _write_record(self.archive, SID_A, 'census', [f'documents/thing_{SID_A}.pdf'])
+
+        rc, out, err = self._cli(['--batch-size', '0'])
+
+        self.assertEqual(rc, EXIT_FAILURE)
+        self.assertIn('--batch-size', err)
+        self.assertTrue(asset.exists())
+
+    def test_batch_size_negative_is_rejected_not_silently_clamped(self) -> None:
+        """Same finding as above: a negative --batch-size used to be
+        silently clamped to 1 rather than refused."""
+        asset = _write_file(self.archive, f'documents/thing_{SID_A}.pdf')
+        _write_record(self.archive, SID_A, 'census', [f'documents/thing_{SID_A}.pdf'])
+
+        rc, out, err = self._cli(['--batch-size', '-5'])
+
+        self.assertEqual(rc, EXIT_FAILURE)
+        self.assertIn('--batch-size', err)
+        self.assertTrue(asset.exists())
+
+    def test_group_threshold_negative_is_rejected(self) -> None:
+        """P2 audit finding (PR #188, third pass): a negative
+        --group-threshold has no coherent meaning of its own (it would
+        behave identically to 0) - reject it rather than silently
+        substituting the default."""
+        asset = _write_file(self.archive, f'documents/thing_{SID_A}.pdf')
+        _write_record(self.archive, SID_A, 'census', [f'documents/thing_{SID_A}.pdf'])
+
+        rc, out, err = self._cli(['--group-threshold', '-1'])
+
+        self.assertEqual(rc, EXIT_FAILURE)
+        self.assertIn('--group-threshold', err)
+        self.assertTrue(asset.exists())
+
+    def test_group_threshold_zero_is_honored_as_always_subfolder(self) -> None:
+        """P2 audit finding (PR #188, third pass): `--group-threshold 0`
+        used to be silently rewritten to the default (3), even though 0
+        has its own coherent, DIFFERENT meaning - every non-empty source
+        group exceeds the threshold, i.e. always give a source its own
+        subfolder, never leave a couple of files loose in the shared type
+        folder. A record with exactly ONE eligible file would normally
+        stay in the shared type folder (1 is not > the default 3 - see
+        `test_group_threshold_not_exceeded_stays_in_shared_type_folder`);
+        with --group-threshold 0 it must get its own subfolder instead,
+        proving 0 was actually honored rather than silently replaced."""
+        _write_file(self.archive, f'documents/thing_{SID_A}.pdf')
+        _write_record(self.archive, SID_A, 'census', [f'documents/thing_{SID_A}.pdf'])
+
+        rc, out, err = self._cli(['--group-threshold', '0'])
+
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertIn(f'documents/census/thing_{SID_A}/thing_{SID_A}.pdf', out)
 
 
 if __name__ == '__main__':

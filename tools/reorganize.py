@@ -121,7 +121,8 @@ CODE MAP
   _move_file                  - move-with-copy+delete-fallback (twin of process.py's)
   _scalar_value / _rewrite_file_line / _file_line_count
                                - value-exact `files:` line surgery (twin of process.py's)
-  _iter_source_records        - yield (path, meta) for every parseable sources/ record
+  _iter_source_records        - yield (path, meta) for every parseable sources/ record;
+                               collects unparseable-record names for _plan to fail closed on
   _plan                       - compute the full move plan; nothing written (the survey)
   _apply_one_record           - atomic move+record-update+rollback for ONE record's files
   _chunk_records               - group planned records into bounded batches
@@ -426,14 +427,29 @@ def _file_line_count(text: str) -> int:
                if ln.strip().startswith(('file:', '- file:')))
 
 
-def _iter_source_records(archive_root: Path, result: Result):
+def _iter_source_records(archive_root: Path, result: Result, *,
+                          unparseable: list[str] | None = None):
     """Yield (record_path, meta) for every parseable record under sources/.
 
-    An unparseable record is warned about, by name, and skipped rather than
-    failing the whole survey - reorganize's job is planning safe moves, and
-    one broken record must not block planning for every other one. Twin of
-    `reconcile.py`'s own `_iter_source_records`, narrowed to what this tool
-    needs (no reverse "unlisted" pass here).
+    An unparseable record's NAME is appended to `unparseable` (when the
+    caller passes a list) rather than merely warned-and-skipped (P1 audit
+    finding, PR #188, third pass): `_plan`'s duplicate-ownership guard
+    (Pass 1, `canonical_owners`) depends on seeing EVERY record's `files:`
+    claims to catch two records fighting over the same physical file - a
+    broken record silently skipped here means its OWN alias-ownership
+    claims never enter that map, so a DIFFERENT, parseable record that
+    happens to list the same physical file moves it as if there were no
+    conflict at all, leaving the broken record's `files:` entry pointing
+    at a file that is no longer there. `_plan` fails the WHOLE survey
+    closed the instant this list is non-empty - see its Pass 0 - so the
+    per-record `continue` below never has to be safe on its own; it only
+    has to not crash the generator. Twin of `reconcile.py`'s own
+    `_iter_source_records`, narrowed to what this tool needs (no reverse
+    "unlisted" pass here) and diverging from it on exactly this point -
+    reconcile's job is to REPORT every problem it can find in one pass, so
+    a broken record there is one more finding among many; this tool's job
+    is to decide what is SAFE TO MOVE, and an incomplete ownership map can
+    never be trusted for that.
     """
     sources_dir = archive_root / 'sources'
     if not sources_dir.is_dir():
@@ -442,16 +458,16 @@ def _iter_source_records(archive_root: Path, result: Result):
         try:
             rec = read_record(rec_path)
         except Exception:
-            result.add('warning',
-                       f'{rec_path.name} could not be parsed - skipped. '
-                       'Run `fha lint` for the specifics.')
+            if unparseable is not None:
+                unparseable.append(
+                    f'{rec_path.name} could not be parsed. Run `fha lint` for the '
+                    'specifics.')
             continue
         if rec.get('parse_errors'):
             detail = '; '.join(msg for _, msg in rec['parse_errors'])
-            result.add('warning',
-                       f'{rec_path.name} has malformed YAML ({detail}) - skipped, '
-                       'so its files were not checked or planned. Fix the record '
-                       '(`fha lint` names the spot), then re-run.')
+            if unparseable is not None:
+                unparseable.append(
+                    f'{rec_path.name} has malformed YAML ({detail}).')
             continue
         yield rec_path, rec.get('meta') or {}
 
@@ -474,7 +490,8 @@ def _plan(archive_root: Path, fha_config: dict, documents_root: Path,
        'no_op_count': int,          # eligible files already exactly where they belong
        'excluded_human': [(alias, record_name), ...],  # presumptively human-organized
        'problems': [str, ...],      # pre-existing drift/corruption needing a human
-       'unreadable_dirs': [Path, ...]}
+       'unreadable_dirs': [Path, ...],
+       'unparseable_records': [str, ...]}  # malformed frontmatter/Claims - survey refused
 
     Three passes, in order, each closing a hazard a plain "walk and move"
     would miss:
@@ -486,7 +503,18 @@ def _plan(archive_root: Path, fha_config: dict, documents_root: Path,
     file, or hide the human-organized folder a file actually lives in. When
     either walk is incomplete, the whole plan comes back empty with the
     unreadable folders named, and NOTHING is proposed - not even the files
-    this run could see fine.
+    this run could see fine. The same fail-closed posture covers a record
+    that LISTS fine but does not PARSE (malformed frontmatter or Claims
+    YAML, P1 audit finding PR #188 third pass): `_iter_source_records`
+    used to warn and skip just that one record, but Pass 1's
+    duplicate-ownership map is only trustworthy when it has seen EVERY
+    record's `files:` claims - a broken record's own alias claims silently
+    missing from that map means a DIFFERENT, parseable record listing the
+    SAME physical file gets waved through as if there were no conflict,
+    and the broken record is left with a `files:` entry pointing at a file
+    that just moved out from under it. So ANY unparseable record also
+    empties the whole plan (the unparseable records named) rather than
+    proceeding on an incomplete map.
 
     Pass 1 - build canonical-physical-path -> owning (record, alias) map
     across every parseable record's documents-alias `files:` entries, keyed
@@ -535,9 +563,21 @@ def _plan(archive_root: Path, fha_config: dict, documents_root: Path,
         pass
     if unreadable:
         return {'moves': {}, 'no_op_count': 0, 'excluded_human': [],
-                'problems': [], 'unreadable_dirs': unreadable}
+                'problems': [], 'unreadable_dirs': unreadable,
+                'unparseable_records': []}
 
-    records = list(_iter_source_records(archive_root, result))
+    # Fail closed on ANY unparseable record (P1 audit finding, PR #188 third
+    # pass) - see `_iter_source_records`'s own docstring and Pass 0 above for
+    # why an incomplete `canonical_owners` map below can never be trusted:
+    # the whole plan comes back empty, with every unparseable record named,
+    # rather than silently planning moves against a partial ownership
+    # picture.
+    unparseable: list[str] = []
+    records = list(_iter_source_records(archive_root, result, unparseable=unparseable))
+    if unparseable:
+        return {'moves': {}, 'no_op_count': 0, 'excluded_human': [],
+                'problems': [], 'unreadable_dirs': [],
+                'unparseable_records': unparseable}
 
     # Pass 1: canonical (resolved) physical path -> owning (record, alias)
     # pair(s), documents-alias entries only. Keyed by the RESOLVED path, not
@@ -723,7 +763,7 @@ def _plan(archive_root: Path, fha_config: dict, documents_root: Path,
 
     return {'moves': moves, 'no_op_count': no_op_count,
             'excluded_human': excluded_human, 'problems': problems,
-            'unreadable_dirs': []}
+            'unreadable_dirs': [], 'unparseable_records': []}
 
 
 def _apply_one_record(
@@ -1068,6 +1108,27 @@ def run_reorganize(
                    'access to the folder), then re-run.')
         return _finalize(result)
 
+    # Fail closed on any unparseable record (P1 audit finding, PR #188 third
+    # pass): `_plan`'s duplicate-ownership guard can only be trusted when it
+    # has seen every record's own files: claims, so a record that will not
+    # even parse must block planning for EVERY record, not just itself - see
+    # `_iter_source_records`'s docstring for the concrete failure this
+    # prevents (a broken record's ownership claim silently vanishing from
+    # `canonical_owners` while a different record moves the file it shares).
+    if plan['unparseable_records']:
+        shown = '; '.join(sorted(plan['unparseable_records'])[:5])
+        more = len(plan['unparseable_records']) - 5
+        if more > 0:
+            shown += f'; and {more} more'
+        result.add('warning',
+                   f'{len(plan["unparseable_records"])} source record(s) could not be '
+                   f'parsed, so nothing was planned for ANY record: {shown}. A broken '
+                   "record's own files: claims would be invisible to the duplicate-"
+                   'ownership check that keeps two records from fighting over the same '
+                   'file, so the whole survey refuses until every record parses cleanly. '
+                   'Fix the record(s) by hand (`fha lint` names the spot), then re-run.')
+        return _finalize(result)
+
     for alias, rec_name in plan['excluded_human']:
         result.add('info',
                    f'Left in place (already organized by hand): {alias} ({rec_name})')
@@ -1100,9 +1161,18 @@ def run_reorganize(
             # skipping the WHOLE record that would cross it, never
             # splitting it - not silently exceeding the number the human
             # asked for.
+            #
+            # `continue`, not `break` (P2 audit finding, PR #188 third
+            # pass): a `break` stopped scanning the instant ONE record did
+            # not fit, so a big record sorted before a small one emptied
+            # the whole plan even when the smaller, later record would fit
+            # exactly under the same cap (three-file record first, one-file
+            # record second, `--limit 1` used to plan nothing at all).
+            # Keep scanning past an oversized record so a later, smaller
+            # one still gets its chance.
             n = len(plan['moves'][rp])
             if count + n > limit:
-                break
+                continue
             trimmed.append(rp)
             count += n
         if not trimmed and original_order:
@@ -1192,6 +1262,17 @@ def run_reorganize(
                 moved_total += len(plan['moves'][rp])
                 moved_records += 1
                 result.note_changed(rp)
+                # Every moved DOCUMENT, not just the rewritten record (P2
+                # audit finding, PR #188 third pass): `Result.changed` is
+                # this codebase's established contract for "which paths did
+                # this operation create/write/rename/embed into" (see e.g.
+                # `confirm.py`'s dismiss-pair rename noting both old and new
+                # path, `source.py extract`'s asset+record pair) - a
+                # headless/structured caller reading `as_dict()` needs to
+                # know which actual asset files moved, not just that some
+                # record's text changed.
+                for _old_alias, _new_alias, _old_abs, new_abs in plan['moves'][rp]:
+                    result.note_changed(new_abs)
                 result.add('info', f'Moved: {msg}')
             elif unrecoverable:
                 # An unrecoverable rollback (P1 audit finding, PR #188) must
@@ -1220,9 +1301,23 @@ def run_reorganize(
             # halt exactly like a reconcile-detected regression below, but
             # keep the accumulated moved/failed counts instead of letting
             # the exception escape uncaught past this whole function.
+            #
+            # 'warning' (exit 1), not 'error' (exit 3) - P2 audit finding,
+            # PR #188 third pass: TOOLING §9a and tools/README.md both
+            # reserve exit 3 for a record left genuinely INCONSISTENT after
+            # an unrecoverable rollback, or for `fha reconcile` failing to
+            # run BEFORE the first batch (nothing moved yet). A crash HERE
+            # happens AFTER a batch that itself completed - every file move
+            # in it was its own verified atomic transaction
+            # (`_apply_one_record`) - so the archive is self-consistent;
+            # verification just could not finish checking it. That is the
+            # documented exit-1 "mid-run halt (the archive is left
+            # consistent either way)" case, the same as the reconcile-
+            # regression halt just below it, not the worst-case exit-3
+            # honesty a genuinely broken record deserves.
             result.data.update({'moved': moved_total, 'moved_records': moved_records,
                                 'failed': failed_total, 'halted': True})
-            result.add('error',
+            result.add('warning',
                        f'fha reconcile crashed while re-checking after batch {batch_idx} '
                        f'({e}) - halting here. {moved_total} file(s) moved so far are '
                        'safe (each record was updated atomically); the rest of the plan '
@@ -1230,9 +1325,13 @@ def run_reorganize(
                        'happening, fix it, then re-run `fha reorganize`.')
             return _finish_apply(result, archive_root, fha_config)
         if any(m.level == 'error' for m in check.messages):
+            # 'warning' (exit 1), not 'error' (exit 3) - same reasoning as
+            # the crash branch just above: this batch itself already
+            # completed safely, so the archive is self-consistent even
+            # though reconcile could not finish confirming it.
             result.data.update({'moved': moved_total, 'moved_records': moved_records,
                                 'failed': failed_total, 'halted': True})
-            result.add('error',
+            result.add('warning',
                        f'fha reconcile could not run cleanly after batch {batch_idx} - '
                        f'halting here. {moved_total} file(s) moved so far are safe (each '
                        'record was updated atomically); the rest of the plan was not '
@@ -1304,8 +1403,32 @@ def _cmd_reorganize(args: argparse.Namespace) -> int:
               '`fha reorganize`.', file=sys.stderr)
         return EXIT_FAILURE
 
-    batch_size = max(1, int(getattr(args, 'batch_size', None) or _DEFAULT_BATCH_SIZE))
-    group_threshold = max(1, int(getattr(args, 'group_threshold', None) or _DEFAULT_GROUP_THRESHOLD))
+    # Reject rather than silently rewrite (P2 audit finding, PR #188 third
+    # pass): `--batch-size 0` used to become the default 25, a negative
+    # batch size became 1, and `--group-threshold 0` became the default 3 -
+    # even though 0 has a coherent, DIFFERENT meaning a human might
+    # genuinely type: every non-empty source group exceeds the threshold,
+    # i.e. "always give a source its own subfolder, never leave 2-3 files
+    # loose in the type folder". Silently substituting the default there
+    # applies a materially different folder layout than what was actually
+    # requested, with no warning. `--group-threshold` therefore honors 0 as
+    # a real, meaningful value (only negative is rejected); `--batch-size`
+    # has no such reading for 0 or below (a batch of zero files can never
+    # make progress), so any non-positive value is rejected outright - same
+    # CLI-boundary posture as `--limit`'s own negative-value refusal below.
+    batch_size = getattr(args, 'batch_size', None)
+    batch_size = _DEFAULT_BATCH_SIZE if batch_size is None else int(batch_size)
+    if batch_size < 1:
+        print(f'ERROR: --batch-size must be a positive number of files (got {batch_size}).',
+              file=sys.stderr)
+        return EXIT_FAILURE
+    group_threshold = getattr(args, 'group_threshold', None)
+    group_threshold = (_DEFAULT_GROUP_THRESHOLD if group_threshold is None
+                        else int(group_threshold))
+    if group_threshold < 0:
+        print('ERROR: --group-threshold must be zero or a positive number of files '
+              f'(got {group_threshold}).', file=sys.stderr)
+        return EXIT_FAILURE
     limit = getattr(args, 'limit', None)
     if limit is not None and limit < 0:
         # A mistyped `--limit -1` used to exit cleanly and claim "every
@@ -1355,7 +1478,9 @@ def register(subparsers: argparse._SubParsersAction) -> None:
                         f'(default {_DEFAULT_BATCH_SIZE})')
     p.add_argument('--group-threshold', type=int, default=_DEFAULT_GROUP_THRESHOLD, metavar='N',
                    help='A source with more than N eligible files gets its own '
-                        f'subfolder (default {_DEFAULT_GROUP_THRESHOLD})')
+                        f'subfolder (default {_DEFAULT_GROUP_THRESHOLD}; 0 means every '
+                        'non-empty source gets its own subfolder, never a shared type '
+                        'folder)')
     p.add_argument('--limit', type=int, default=None, metavar='N',
                    help='Only plan/apply the first N eligible files this run, whole '
                         'records only - a record whose own files would cross N is '
