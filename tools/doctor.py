@@ -664,6 +664,33 @@ def _check_orphaned_back_photos(archive_root: Path, fha_config: dict,
     finding 1) - photos-root files are never renamed by this tool
     (AGENTS.md), so the fix is always to attach the correct candidate, never
     to touch the other one to make the finding go away.
+    `ambiguous_back_photos`'s own structured `next_step` names `{_LAUNCHER}`
+    and `--root` the same way its detailed report text does (issue #169
+    followup review round 2, post-merge Codex pass on #175) - a headless
+    consumer that reads only that field, not the human-readable report, used
+    to get a bare `fha process ...` that cannot run from a shell without
+    `fha` on PATH.
+
+    A GROUP that already lists a `role: back` entry is no longer skipped
+    entirely once its OTHER candidates are considered (the removal of the
+    old `has_back` group-skip, above, means a leftover unlisted candidate
+    now resurfaces instead of staying invisible forever) - but that leftover
+    candidate reaching the single-candidate branch does NOT mean it is safe
+    to hand a ready "next: attach it" command the way a genuinely un-backed
+    group's orphan gets (issue #169 followup review round 2): the owner may
+    have already resolved an earlier ambiguous pairing by attaching the
+    OTHER candidate, in which case this one is exactly the file they
+    implicitly rejected. Its own `duplicate_back_photos` finding instead
+    reports it for investigation, naming the already-listed back scan so a
+    human can compare the two by hand.
+
+    Finally, `sample_path` records whichever entry's OWN `role:` is
+    `primary` for a group's `disk_path`, not simply whichever entry the
+    `files:` list happens to name FIRST (issue #169 followup review round
+    2): a hand-authored list that orders `role: back` ahead of `role:
+    primary` for the same base_id would otherwise leave the BACK file as
+    `disk_path`, and every existence check and repair command below would
+    then silently operate as though the back scan were the primary.
     """
     sources_dir = archive_root / 'sources'
     if not sources_dir.is_dir():
@@ -735,6 +762,11 @@ def _check_orphaned_back_photos(archive_root: Path, fha_config: dict,
     # needs its own count and instruction for each, not one shared bucket
     # that silently mislabels the ambiguous ones.
     n_ambiguous = 0
+    # A THIRD bucket, distinct from both of the above (issue #169 followup
+    # review round 2): a single leftover unlisted candidate in a group that
+    # ALREADY lists a back is not the same situation as a group with no back
+    # at all - see `duplicate_back_photos` below.
+    n_needs_investigation = 0
     for record_path in sorted(sources_dir.rglob('*.md')):
         rec = read_record(record_path, on_decode_error=lambda p: None)
         if rec.get('undecodable') or rec.get('parse_errors'):
@@ -747,6 +779,13 @@ def _check_orphaned_back_photos(archive_root: Path, fha_config: dict,
         # (parent folder, base_id) -> one on-disk Path sharing that key, so two
         # same-named siblings from different folders are tracked independently.
         sample_path: dict[tuple[Path, str], Path] = {}
+        # Which keys already list a `role: back` entry, and under which
+        # alias(es) - issue #169 followup review round 2 (see this function's
+        # own docstring): the group is no longer skipped outright just
+        # because it has a listed back, but a leftover unlisted candidate in
+        # such a group still needs to be told apart from one in a group with
+        # no back at all.
+        back_aliases: dict[tuple[Path, str], list[str]] = {}
         for item in entries:
             if not isinstance(item, dict):
                 continue
@@ -762,9 +801,25 @@ def _check_orphaned_back_photos(archive_root: Path, fha_config: dict,
             if parsed.variant_id is not None:
                 continue            # a copy-letter print - never a back candidate (#113)
             key = (on_disk.parent, grouping_stem(parsed))
-            sample_path.setdefault(key, on_disk)
+            role = str(item.get('role') or '').strip().lower()
+            if role == 'back':
+                back_aliases.setdefault(key, []).append(str(file_alias))
+            # An explicit `role: primary` entry always claims `disk_path` for
+            # its key, even when a differently-roled entry for the same
+            # base_id was listed EARLIER in the files: list (issue #169
+            # followup review round 2): plain `setdefault` instead kept
+            # whichever entry came first, so a hand-authored list ordering
+            # `role: back` ahead of `role: primary` silently left the BACK
+            # file as `disk_path` - every existence check and repair command
+            # below then operated as though the back scan were the primary.
+            # A non-primary entry only fills the slot as a fallback, so a
+            # group that never labels a `role: primary` at all keeps its old
+            # first-entry-wins behavior.
+            if role == 'primary' or key not in sample_path:
+                sample_path[key] = on_disk
 
         for (parent_dir, base_id), disk_path in sample_path.items():
+            key = (parent_dir, base_id)
             candidates = _find_back_on_disk(parent_dir, base_id)
             # A candidate already listed under some OTHER role (an
             # `attachment`, say, rather than `back`) is not orphaned - drop
@@ -851,6 +906,33 @@ def _check_orphaned_back_photos(archive_root: Path, fha_config: dict,
                 continue
 
             candidate_alias = candidate_aliases[0]
+            if key in back_aliases:
+                # Issue #169 followup review round 2: this group ALREADY
+                # lists a back scan - this leftover unlisted candidate may
+                # be exactly the wrong/duplicate file an owner implicitly
+                # rejected when they resolved an earlier ambiguous pairing
+                # by attaching the OTHER candidate. A ready "next: attach
+                # it" command here would read as doctor vouching for this
+                # file being the real back scan, which is a judgment doctor
+                # cannot make from a filename alone - so it gets its own,
+                # investigate-first finding instead of the plain orphan
+                # finding below.
+                n_needs_investigation += 1
+                already = ', '.join(sorted(back_aliases[key]))
+                findings.append(
+                    f'unlisted back-shaped file: {candidate_alias} sits on disk but is '
+                    f"not listed in {record_path.name}'s files: - a back scan is "
+                    f'ALREADY listed for {primary_alias} ({already})  next: needs '
+                    'investigation, not an automatic attach - this may be a duplicate '
+                    'scan or an incorrect candidate already rejected when an earlier '
+                    'ambiguous pairing was resolved; compare it by hand against the '
+                    f'listed back scan, and only attach it (`{_LAUNCHER} process '
+                    f'{shell_quote(primary_alias)} --more {shell_quote(candidate_alias)} '
+                    f'back --root "{archive_root}"`) if it turns out to be the correct '
+                    'one after all.'
+                )
+                continue
+
             findings.append(
                 f'orphaned back scan: {candidate_alias} sits on disk but is not '
                 f'listed in {record_path.name}\'s files:  next: attach it - '
@@ -861,12 +943,31 @@ def _check_orphaned_back_photos(archive_root: Path, fha_config: dict,
     if not findings:
         return EXIT_CLEAN
     lines.extend(findings)
-    n_orphaned = len(findings) - n_ambiguous
+    n_orphaned = len(findings) - n_ambiguous - n_needs_investigation
     if n_orphaned:
         checks.append({
             'id': 'orphaned_back_photos', 'status': 'warn',
             'detail': f'{n_orphaned} back scan(s) on disk but unlisted',
             'next_step': 'attach each with `fha process <primary> --more <back file> back`',
+        })
+    if n_needs_investigation:
+        # A separate check id again, for the same reason ambiguous_back_
+        # photos gets its own below (issue #169 followup review round 2):
+        # "attach each" is exactly as wrong here as it is for a genuinely
+        # ambiguous pair - a leftover unlisted candidate in a group that
+        # ALREADY lists a back may be a rejected duplicate, so a headless
+        # consumer of this field must not read it as a ready-to-run attach.
+        # Non-command prose (finding 3's own alternative, applied here from
+        # the start) rather than a `fha process ...` template, since this
+        # bucket's whole point is that attaching is NOT the default action.
+        checks.append({
+            'id': 'duplicate_back_photos', 'status': 'warn',
+            'detail': f'{n_needs_investigation} unlisted back-shaped file(s) where a '
+                     'back scan is already listed',
+            'next_step': ('investigate by hand before attaching anything - see the '
+                          'detailed report for each candidate and its already-listed '
+                          'back scan; it may be a duplicate or a previously-rejected '
+                          'file'),
         })
     if n_ambiguous:
         # A separate check id, not folded into orphaned_back_photos above
@@ -875,13 +976,23 @@ def _check_orphaned_back_photos(archive_root: Path, fha_config: dict,
         # attached without a human first deciding which one is the real back
         # scan, so a headless consumer of Result.data['checks'] needs its
         # own count and its own, non-"attach each" next step here.
+        #
+        # The command template names `{_LAUNCHER}` and `--root` (issue #169
+        # followup review round 2, post-merge Codex pass on #175), matching
+        # the detailed report's own per-candidate commands above - a bare
+        # `fha process ...` is a command-not-found on macOS, on Linux, and
+        # in PowerShell (`fha` is a launcher FILE at the archive root, not a
+        # program on PATH), so a headless consumer that renders or executes
+        # only this structured field, never the human-readable report, used
+        # to receive guidance that could not be copied as promised.
         checks.append({
             'id': 'ambiguous_back_photos', 'status': 'warn',
             'detail': f'{n_ambiguous} primary(ies) with 2+ unlisted back-shaped '
                      'candidates on disk',
             'next_step': ('resolve each by hand - see report for the candidate filenames; '
-                          'attach the correct one via `fha process <primary> --more '
-                          '<file> back` - never rename a photos-root file to disambiguate'),
+                          f'attach the correct one via `{_LAUNCHER} process <primary> '
+                          f'--more <file> back --root "{archive_root}"` - never rename a '
+                          'photos-root file to disambiguate'),
         })
     return EXIT_WARNINGS
 

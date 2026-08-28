@@ -1120,8 +1120,13 @@ class OrphanedBackPhotosTests(unittest.TestCase):
         # surfacing on its own as the ambiguous finding's message promises.
         # Start from the ambiguous shape (two unlisted back-shaped files),
         # then attach ONE of them under role: back, and confirm the OTHER is
-        # now reported - as a plain orphan (only one candidate remains), not
-        # as still-ambiguous, and not silently dropped.
+        # now reported - not silently dropped.
+        #
+        # It must NOT read as a plain, ready-to-attach orphan though (issue
+        # #169 followup review round 2): the group already lists a back, so
+        # this leftover candidate may be exactly the wrong/duplicate file the
+        # owner implicitly rejected when they attached the OTHER one - it
+        # gets its own "needs investigation" finding instead.
         (self.root / 'photos' / 'x-00650.jpg').write_bytes(b'front')
         (self.root / 'photos' / 'x-00650-back.jpg').write_bytes(b'now attached')
         (self.root / 'photos' / 'x-00650_back.jpeg').write_bytes(b'still unlisted')
@@ -1135,13 +1140,20 @@ class OrphanedBackPhotosTests(unittest.TestCase):
         report = '\n'.join(result.data['lines'])
 
         self.assertNotIn('ambiguous back scan', report)
-        self.assertIn('orphaned back scan', report)
+        self.assertNotIn('orphaned back scan', report)
+        self.assertIn('unlisted back-shaped file', report)
         self.assertIn('photos/x-00650_back.jpeg', report)
-        # The already-attached back must not itself be re-reported as orphan.
+        self.assertIn('needs investigation', report)
+        # The already-listed back is named as context, not re-reported as its
+        # own orphan.
+        self.assertIn('photos/x-00650-back.jpg', report)
         self.assertNotIn('photos/x-00650-back.jpg sits on disk', report)
-        check = self._finding(result)
+        self.assertIsNone(self._finding(result, 'orphaned_back_photos'))
+        self.assertIsNone(self._finding(result, 'ambiguous_back_photos'))
+        check = self._finding(result, 'duplicate_back_photos')
         self.assertIsNotNone(check, 'the leftover unlisted back must still be reported')
         self.assertEqual(check['status'], 'warn')
+        self.assertNotIn('fha process', check['next_step'])
 
     # ── Issue #169 followup review, finding 4 ─────────────────────────────
 
@@ -1174,6 +1186,109 @@ class OrphanedBackPhotosTests(unittest.TestCase):
                    f'--more {doctor.shell_quote("photos/x-00660_back.jpeg")} back')
         self.assertIn(cmd_one, report)
         self.assertIn(cmd_two, report)
+
+    # ── Issue #169 followup review round 2 (post-merge Codex pass, #175) ──
+
+    def test_duplicate_back_candidate_needs_investigation_not_a_ready_attach(self) -> None:
+        # Finding: once an owner resolves an ambiguous pair by attaching the
+        # CORRECT candidate under role: back, the group's leftover unlisted
+        # candidate must not be handed the same ready "next: attach it"
+        # command a genuinely un-backed group's orphan gets - it may be
+        # exactly the wrong/duplicate file the owner implicitly rejected.
+        # It gets its own finding text and its own check id, and it names
+        # the already-listed back scan so a human can compare the two.
+        (self.root / 'photos' / 'x-00900.jpg').write_bytes(b'front')
+        (self.root / 'photos' / 'x-00900-back.jpg').write_bytes(b'the real one, attached')
+        (self.root / 'photos' / 'x-00900_back.jpeg').write_bytes(b'rejected duplicate')
+        _write(self.root / 'sources' / 'photos' / 'dup_S-1717171717.md', _SOURCE.format(
+            sid='S-1717171717', title='Duplicate',
+            line=('files:\n'
+                  '  - file: photos/x-00900.jpg\n    role: primary\n'
+                  '  - file: photos/x-00900-back.jpg\n    role: back\n')))
+
+        result = doctor.run_doctor(self.root, self._fha_config())
+        report = '\n'.join(result.data['lines'])
+
+        self.assertNotIn('orphaned back scan', report)
+        self.assertNotIn('ambiguous back scan', report)
+        self.assertIn('needs investigation', report)
+        self.assertIn('photos/x-00900_back.jpeg', report)
+        # The already-listed back is named as context for the comparison.
+        self.assertIn('photos/x-00900-back.jpg', report)
+        self.assertIsNone(self._finding(result, 'orphaned_back_photos'))
+        self.assertIsNone(self._finding(result, 'ambiguous_back_photos'))
+        check = self._finding(result, 'duplicate_back_photos')
+        self.assertIsNotNone(check)
+        self.assertEqual(check['status'], 'warn')
+        self.assertEqual(
+            check['detail'],
+            '1 unlisted back-shaped file(s) where a back scan is already listed')
+        # The structured next_step must not read as a ready-to-run attach -
+        # it must not even open with "attach", the shape a headless consumer
+        # would most likely mistake for the definitive fix.
+        self.assertFalse(check['next_step'].lower().startswith('attach'))
+        self.assertIn('investigate', check['next_step'].lower())
+
+    def test_ambiguous_back_photos_next_step_names_the_launcher_and_root(self) -> None:
+        # Finding: the structured `ambiguous_back_photos` check's own
+        # `next_step` (read by headless/workbench consumers, distinct from
+        # the human-readable detailed report which already gets this right)
+        # must not hand back a bare `fha process ...` - `fha` is not on PATH
+        # on macOS, on Linux, or in PowerShell, so a consumer that renders or
+        # runs only this field could not copy it as promised.
+        (self.root / 'photos' / 'x-00910.jpg').write_bytes(b'front')
+        (self.root / 'photos' / 'x-00910-back.jpg').write_bytes(b'candidate one')
+        (self.root / 'photos' / 'x-00910_back.jpeg').write_bytes(b'candidate two')
+        _write(self.root / 'sources' / 'photos' / 'launcher_S-1818181818.md', _SOURCE.format(
+            sid='S-1818181818', title='Launcher',
+            line='files:\n  - file: photos/x-00910.jpg\n    role: primary\n'))
+
+        result = doctor.run_doctor(self.root, self._fha_config())
+        check = self._finding(result, 'ambiguous_back_photos')
+
+        self.assertIsNotNone(check)
+        self.assertIn(f'{doctor._LAUNCHER} process', check['next_step'])
+        self.assertIn('--root', check['next_step'])
+        self.assertNotIn(' fha process', check['next_step'])
+
+    def test_primary_role_wins_disk_path_even_when_listed_after_back(self) -> None:
+        # Finding: a valid files: list may order its role: back entry BEFORE
+        # its role: primary entry. `sample_path` must still pick the entry
+        # whose OWN role is primary for `disk_path` - not whichever entry
+        # happened to be listed first - or the existence check and repair
+        # commands below silently treat the back scan as the primary.
+        #
+        # Shape: the listed primary is MISSING from disk, the listed back is
+        # PRESENT, and a genuinely unlisted back-shaped file also sits on
+        # disk. Getting `disk_path` wrong here means doctor thinks the
+        # (present) back is the primary and skips straight to a bogus
+        # single-candidate finding that names the back as though it were the
+        # primary - instead of the correct missing-primary/reconcile advice.
+        (self.root / 'photos' / 'x-00920-back.jpg').write_bytes(b'back present')
+        (self.root / 'photos' / 'x-00920_back.jpeg').write_bytes(b'unlisted candidate')
+        # x-00920.jpg (the listed primary) is deliberately never created.
+        _write(self.root / 'sources' / 'photos' / 'reordered_S-1919191919.md', _SOURCE.format(
+            sid='S-1919191919', title='Reordered',
+            line=('files:\n'
+                  '  - file: photos/x-00920-back.jpg\n    role: back\n'
+                  '  - file: photos/x-00920.jpg\n    role: primary\n')))
+
+        result = doctor.run_doctor(self.root, self._fha_config())
+        report = '\n'.join(result.data['lines'])
+
+        # The real, missing primary is named and routed to reconcile advice.
+        self.assertIn('photos/x-00920.jpg', report)
+        self.assertIn('missing from disk', report)
+        self.assertIn('reconcile', report)
+        # The back scan must never be mistaken for the primary in the
+        # generated command - `--more` naming the back as though it were
+        # the primary file argument would be exactly backwards.
+        self.assertNotIn(
+            f'{doctor._LAUNCHER} process {doctor.shell_quote("photos/x-00920-back.jpg")} '
+            '--more', report)
+        check = self._finding(result, 'orphaned_back_photos')
+        self.assertIsNotNone(check)
+        self.assertEqual(check['status'], 'warn')
 
 
 class RenderTests(unittest.TestCase):
