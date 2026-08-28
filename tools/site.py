@@ -926,10 +926,28 @@ _DATE_BEFORE_RE = re.compile(r'\[\.\.(\d{4})(?:-(\d{2}))?(?:-(\d{2}))?\]')
 # unchanged. There is no boundary character list left to be incomplete:
 # validity is decided by parsing the value, not by guessing which neighbor
 # characters are suspicious.
+#
+# `/` joins that same permissive class (post-merge Codex review, round 5):
+# `[..1900]/191X/192X` (a genuinely malformed THREE-part value - EDTF
+# intervals are two-sided, never three) used to have `plain1` stop dead at
+# the SECOND slash, capturing only "191X" - a real, validly-shaped decade
+# on its own, so it translated clean and left "/192X" dangling untouched
+# next to it ("before 1900 to 1910s/192X"). The same class of gap the
+# round-4 redesign closed for glued-on letters/hyphens/qualifiers applies
+# identically here: `/` was still an unexamined stopping character a
+# malformed continuation could hide behind. Including it in the run means
+# `plain1` now captures "191X/192X" whole, `is_valid_edtf` correctly
+# rejects that (not a valid single bound), and the entire match is left
+# alone - exactly the outcome every other malformed-neighbor shape already
+# gets. This does not reopen a way to swallow ordinary prose: prose never
+# glues a `/`-joined, space-free run of word/hyphen/qualifier characters
+# onto a date with nothing between them, so a genuine "... to Fairview"
+# continuation (with its own leading space) still stops the run exactly as
+# before.
 _DATE_BEFORE_SLASH_RE = re.compile(
     r'\[\.\.(?P<by1>\d{4})(?:-(?P<bm1>\d{2}))?(?:-(?P<bd1>\d{2}))?\]'
-    r'/(?P<plain1>[\w?~-]+)'
-    r'|(?P<plain2>[\w?~-]+)'
+    r'/(?P<plain1>[\w?~/-]+)'
+    r'|(?P<plain2>[\w?~/-]+)'
     r'/\[\.\.(?P<by2>\d{4})(?:-(?P<bm2>\d{2}))?(?:-(?P<bd2>\d{2}))?\]',
 )
 
@@ -1238,7 +1256,20 @@ def _translate_date_before_slash(match: re.Match) -> str:
     # of it pre-stripped - so this one `is_valid_edtf` call both decides
     # whether the plain side is a genuine bound AND rejects anything the
     # permissive capture swept in that isn't (see this function's docstring).
-    if not is_valid_edtf(_bare(b_year, b_month, b_day)) or not is_valid_edtf(plain_text):
+    #
+    # The plain side must be a single BOUND, never an interval of its own -
+    # `is_valid_edtf` alone doesn't enforce that (post-merge Codex review,
+    # round 5): capturing `/` widened the net to catch `[..1900]/191X/192X`
+    # (three parts - never a valid EDTF shape at all), but `is_valid_edtf`
+    # happily accepts "191X/192X" as a perfectly valid two-sided interval IN
+    # ITS OWN RIGHT (decade to decade, no brackets needed) - a true fact
+    # about that substring alone, just not the question being asked here.
+    # Rejecting outright on any `/` still inside `plain_text` closes this
+    # without weakening the check for every other malformed shape: a real
+    # single bound (year, decade, with its own optional qualifier) never
+    # legitimately contains a slash.
+    if ('/' in plain_text or not is_valid_edtf(_bare(b_year, b_month, b_day))
+            or not is_valid_edtf(plain_text)):
         return match.group(0)
 
     before_label = f'before {_format_edtf_ymd(b_year, b_month, b_day)}'

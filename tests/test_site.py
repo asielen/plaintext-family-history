@@ -5887,6 +5887,39 @@ class ProseConverterTests(unittest.TestCase):
         out2 = site._scrub_internal_encoding('Span: [..1900]/1910, Fairview nearby.')
         self.assertIn('before 1900 to 1910, Fairview nearby', out2)
 
+    def test_before_bracket_interval_extra_slash_segment_left_untouched(self):
+        # Round 5 (post-merge Codex review): `[..1900]/191X/192X` is a
+        # genuinely malformed THREE-part value - EDTF intervals are always
+        # two-sided - but the round-4 capture stopped dead at the SECOND
+        # slash (`/` was not yet part of the permissive character class),
+        # so it captured only "191X" - a real, validly-shaped decade all on
+        # its own - and translated it clean, leaving "/192X" dangling next
+        # to the result ("before 1900 to 1910s/192X"). Including `/` in the
+        # capture closes the gap the same way every other round did, but
+        # with one extra wrinkle this test also pins: `is_valid_edtf`
+        # alone is not enough to validate the plain side once `/` can be
+        # part of what it captures, because "191X/192X" (decade to decade,
+        # no brackets) is a perfectly valid EDTF interval IN ITS OWN RIGHT
+        # - a true fact about that substring, just not the question being
+        # asked here (the plain side must be a single BOUND, never a
+        # nested interval). A bare `/` anywhere in the captured plain text
+        # is rejected outright before `is_valid_edtf` is even consulted.
+        out = site._scrub_internal_encoding('Span: [..1900]/191X/192X, per the deed.')
+        self.assertIn('[..1900]/191X/192X', out)
+        self.assertNotIn('before', out)
+        self.assertNotIn('1910s', out)
+        # Same shape with ordinary years instead of decades.
+        out2 = site._scrub_internal_encoding('Span: [..1900]/1910/1920, per the deed.')
+        self.assertIn('[..1900]/1910/1920', out2)
+        self.assertNotIn('before', out2)
+        # Two SEPARATE, genuinely valid intervals near each other in one
+        # sentence must still each translate independently - the fix must
+        # not make one bleed into or block the other.
+        out3 = site._scrub_internal_encoding(
+            'The family lived there [..1900]/1910 and traveled 1920/[..1930] too.')
+        self.assertIn('before 1900 to 1910', out3)
+        self.assertIn('1920 to before 1930', out3)
+
     def test_standalone_before_bracket_still_translates(self):
         # Guards that the finding-5 interval fix doesn't overreach: a
         # bracket that is NOT adjacent to a slash still translates normally.
