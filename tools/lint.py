@@ -2988,7 +2988,38 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
                     # box and (if the owner has mapped that type in
                     # wikitree_templates.yaml) a WikiTree infobox field, so
                     # those two are the only ones named for them.
-                    if claim_type == 'death':
+                    # A claim that is `needs-review` (not yet accepted) or
+                    # `negated` (a confirmed ABSENCE, never meant to display
+                    # as a positive vital fact) independently never reaches
+                    # any of the consumers named below, whether or not
+                    # `roles:` names a subject (post-merge Codex review of
+                    # #173/#192, round 3): the summary box, chart node,
+                    # GEDCOM export, and WikiTree profile all separately
+                    # require an ACCEPTED, non-negated claim before they will
+                    # show anything at all. Promising "add roles: and it will
+                    # appear here" to an owner whose claim is still pending
+                    # review, or who wrote a deliberate negation, describes a
+                    # repair that cannot deliver what it says - `roles:`
+                    # alone only makes the claim ATTRIBUTABLE to a specific
+                    # person and eligible for `fha xref`'s own comparison
+                    # (the reason W132 covers this shape at all - #126/#173),
+                    # not a guarantee it will render anywhere yet.
+                    is_negated = bool(claim.get('negated'))
+                    will_display = claim_status == 'accepted' and not is_negated
+                    if not will_display:
+                        why = (
+                            'once accepted' if claim_status == 'needs-review' and not is_negated
+                            else 'a negated claim never does, by design' if is_negated
+                            else 'once accepted and not negated'
+                        )
+                        where_it_goes = (
+                            " - it is not attributable to anyone yet, so `fha xref` "
+                            "cannot compare it against other claims about the same "
+                            f"person. Adding roles: fixes that attribution now; it "
+                            f"will not additionally appear in any summary box, chart "
+                            f"node, GEDCOM, or WikiTree output until {why}. "
+                        )
+                    elif claim_type == 'death':
                         where_it_goes = (
                             " - it is not recorded as anyone's own record and will "
                             'not appear in anyone\'s summary box, chart node, GEDCOM, '

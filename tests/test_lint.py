@@ -3267,6 +3267,44 @@ class UnscopedDeathBurialBaptismW132Tests(unittest.TestCase):
         self.assertIn('summary box', w[0].message)
         self.assertIn('WikiTree profile', w[0].message)
 
+    def test_needs_review_impact_text_promises_attribution_not_display(
+            self) -> None:
+        # #173 follow-up, third round: a genealogist who follows this
+        # warning on a needs-review claim and adds `roles:` gets
+        # attribution - the claim becomes comparable in `fha xref` - but NOT
+        # a summary box, chart node, GEDCOM, or WikiTree entry, since every
+        # one of those consumers independently requires `accepted`. The old
+        # unconditional wording promised the display outcome even here;
+        # this checks the branch that stops making that promise.
+        w = self._w132(self._build(status='needs-review'))
+        self.assertEqual(len(w), 1)
+        self.assertIn('not attributable to anyone yet', w[0].message)
+        self.assertIn('fha xref', w[0].message)
+        self.assertIn('once accepted', w[0].message)
+
+    def test_negated_impact_text_says_a_negated_claim_never_displays(
+            self) -> None:
+        # An accepted-but-negated claim has the same problem for a different
+        # reason: `xref.py`/`gedcom.py`/`views.py` all require a positive
+        # claim, so no amount of accepting will ever put a negated claim in
+        # front of any of those consumers. The wording must say so plainly
+        # rather than dangling an "once accepted" that this claim can never
+        # satisfy.
+        w = self._w132(self._build(negated=True))
+        self.assertEqual(len(w), 1)
+        self.assertIn('not attributable to anyone yet', w[0].message)
+        self.assertIn('a negated claim never does, by design', w[0].message)
+
+    def test_needs_review_negated_impact_text_leads_with_negation(
+            self) -> None:
+        # Both extensions at once: negation, not review status, is the
+        # reason display will never happen, so the negated wording must win
+        # even though the claim is also needs-review.
+        w = self._w132(self._build(status='needs-review', negated=True))
+        self.assertEqual(len(w), 1)
+        self.assertIn('a negated claim never does, by design', w[0].message)
+        self.assertNotIn('once accepted and not negated', w[0].message)
+
 
 class OrphanedRoleTargetW133Tests(unittest.TestCase):
     """W133 (#126 review, #173 follow-up): a `roles:` value that resolves to a
