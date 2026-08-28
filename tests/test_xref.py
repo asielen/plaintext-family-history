@@ -255,6 +255,50 @@ class XrefTests(unittest.TestCase):
         result = xref.run_xref(self.archive_root)
         self.assertEqual(result['unscoped'], [])
 
+    def test_negated_death_claim_naming_two_people_no_roles_still_compares_broadly(
+            self) -> None:
+        # #173 follow-up (post-merge Codex review, finding 1): a `negated:
+        # true` death/burial/baptism claim naming 2+ people with NO roles:
+        # map at all is a confirmed ABSENCE of the event ("neither A nor B
+        # died, contrary to a rumor"), not an ambiguous certificate that
+        # failed to say whose death it records. Unlike the non-negated
+        # sibling shape (test_death_claim_with_no_roles_at_all_naming_two_
+        # people_enters_neither_bucket above), it must not be dropped from
+        # every comparison bucket or reported as `unscoped` - a confirmed
+        # negative stays comparable against a positive claim about the same
+        # event, mirroring the `and not claim['negated']` guard the marriage/
+        # divorce branch already applies to its own unscoped_claim_ids.
+        self._seed_persons_sources()
+        self.conn.execute("INSERT INTO persons(id, name, living, tier, path) VALUES "
+                           "('p-bbbbbbbbbb','Kin','false','curated','y.md')")
+        _insert_claim(self.conn, 'c-aaaaaaaaaa', 's-1111111111', 'death',
+                       'neither died, contrary to a rumor', date_edtf='1940',
+                       negated=1, persons=['p-aaaaaaaaaa', 'p-bbbbbbbbbb'])
+        _insert_claim(self.conn, 'c-bbbbbbbbbb', 's-2222222222', 'death',
+                       'died 1940', date_edtf='1940', persons=['p-aaaaaaaaaa'])
+        self.conn.commit()
+
+        result = xref.run_xref(self.archive_root)
+        # Not funneled into `unscoped`: the claim answered the question (in
+        # the negative) for everyone it names, so there is no roles: repair
+        # to suggest and no ambiguity to report.
+        self.assertEqual(result['unscoped'], [])
+        # Instead it lands in Test Person's death bucket and is compared
+        # directly against the positive death claim, surfacing exactly the
+        # contradiction a human needs to see - which the pre-fix behavior
+        # (dropping the negated claim from every bucket) reported as nothing
+        # at all.
+        self.assertEqual(len(result['groups']), 1)
+        group = result['groups'][0]
+        self.assertEqual(group['person_name'], 'Test Person')
+        self.assertEqual(len(group['pairs']), 1)
+        pair = group['pairs'][0]
+        self.assertEqual(pair['kind'], 'contradicts')
+        self.assertEqual(
+            {pair['claim_a']['id'], pair['claim_b']['id']},
+            {'c-aaaaaaaaaa', 'c-bbbbbbbbbb'},
+        )
+
     def test_same_source_pair_excluded(self) -> None:
         self._seed_persons_sources()
         _insert_claim(self.conn, 'c-aaaaaaaaaa', 's-1111111111', 'birth',

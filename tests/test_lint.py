@@ -3169,6 +3169,44 @@ class UnscopedDeathBurialBaptismW132Tests(unittest.TestCase):
         self.assertEqual(len(w), 1)
         self.assertNotIn(str(root), w[0].message)
 
+    def test_death_impact_text_names_chart_node_and_gedcom(self) -> None:
+        # #173 follow-up (post-merge Codex review, finding 2): `death` is the
+        # one type among W132's three that genuinely reaches every consumer
+        # named here - `gedcom._load_vitals` and `views._build_nodes_bulk`
+        # both query `c.type IN ('birth', 'death')`, so a death claim IS read
+        # by the GEDCOM writer and the tree's chart nodes once `roles:` scopes
+        # it. The full impact list stays accurate for this type.
+        w = self._w132(self._build(ctype='death'))
+        self.assertEqual(len(w), 1)
+        self.assertIn('chart node', w[0].message)
+        self.assertIn('GEDCOM', w[0].message)
+        self.assertIn('summary box', w[0].message)
+        self.assertIn('WikiTree profile', w[0].message)
+
+    def test_burial_impact_text_omits_chart_node_and_gedcom(self) -> None:
+        # The false-diagnosis Codex flagged: `gedcom._load_vitals` and
+        # `views._build_nodes_bulk` both hard-code `c.type IN ('birth',
+        # 'death')`, so a burial claim is never read by either one, roles:
+        # or no roles:. Promising the owner that adding `roles:` will restore
+        # a chart-node date or a GEDCOM BIRT/DEAT is a repair her fix cannot
+        # deliver - the impact text for burial must not name either consumer.
+        w = self._w132(self._build(ctype='burial', persons=[self.A, self.B]))
+        self.assertEqual(len(w), 1)
+        self.assertNotIn('chart node', w[0].message)
+        self.assertNotIn('GEDCOM', w[0].message)
+        self.assertIn('summary box', w[0].message)
+        self.assertIn('WikiTree profile', w[0].message)
+
+    def test_baptism_impact_text_omits_chart_node_and_gedcom(self) -> None:
+        # Same false-diagnosis as burial, for baptism - the type Codex's
+        # example named explicitly.
+        w = self._w132(self._build(ctype='baptism'))
+        self.assertEqual(len(w), 1)
+        self.assertNotIn('chart node', w[0].message)
+        self.assertNotIn('GEDCOM', w[0].message)
+        self.assertIn('summary box', w[0].message)
+        self.assertIn('WikiTree profile', w[0].message)
+
 
 class OrphanedRoleTargetW133Tests(unittest.TestCase):
     """W133 (#126 review, #173 follow-up): a `roles:` value that resolves to a

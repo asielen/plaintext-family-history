@@ -2915,10 +2915,10 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
             # (W101 only covers death, only for curated people, and never
             # names the claim itself), so without this a claim shaped like
             # this can silently drop out of every `claim_is_own_vital`
-            # consumer - the site's summary block and chart nodes, the
-            # GEDCOM writer's BIRT/DEAT, the WikiTree infoboxes, the tree
-            # view's node labels - with nothing telling the human to add a
-            # roles: map.
+            # consumer it actually reaches - the site's summary block, the
+            # GEDCOM writer's BIRT/DEAT, the WikiTree infoboxes, and (death
+            # only - see `where_it_goes` below) the tree view's chart node
+            # labels - with nothing telling the human to add a roles: map.
             #
             # Deliberately NARROWER than W125/W126's own condition: this
             # fires only on `vital_subjects`' case 2a (no named person
@@ -2941,10 +2941,30 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
                 if subjects == [] and not has_any_role:
                     named = _claim_person_ids(claim, alias_map)
                     distinct = {pid: None for pid in named}   # ordered, deduplicated
-                    where_it_goes = (
-                        " - it is not recorded as anyone's own record and will "
-                        'not appear in anyone\'s summary box, chart node, GEDCOM, '
-                        'or WikiTree profile. ')
+                    # The impact sentence is branched by claim type rather
+                    # than shared, because "chart node" and "GEDCOM" are not
+                    # true of every type here (#173 follow-up, post-merge
+                    # review): `gedcom._load_vitals` and
+                    # `views._build_nodes_bulk` both hard-code
+                    # `c.type IN ('birth', 'death')`, so a baptism or burial
+                    # claim is never read by either one - adding `roles:`
+                    # cannot restore something those two consumers never
+                    # looked at in the first place, and telling a
+                    # non-technical owner it will is a false promise. Only
+                    # `death` genuinely reaches every consumer named below;
+                    # `burial` and `baptism` reach just the site's summary
+                    # box and (if the owner has mapped that type in
+                    # wikitree_templates.yaml) a WikiTree infobox field, so
+                    # those two are the only ones named for them.
+                    if claim_type == 'death':
+                        where_it_goes = (
+                            " - it is not recorded as anyone's own record and will "
+                            'not appear in anyone\'s summary box, chart node, GEDCOM, '
+                            'or WikiTree profile. ')
+                    else:
+                        where_it_goes = (
+                            " - it is not recorded as anyone's own record and will "
+                            'not appear in anyone\'s summary box or WikiTree profile. ')
                     if claim_type == 'baptism':
                         # Baptism shares birth's subject-role vocabulary
                         # (VITAL_SUBJECT_ROLES: child), so the repair mirrors
