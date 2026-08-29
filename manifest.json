@@ -560,7 +560,7 @@
     {
       "path": ".fha/tools/lint.py",
       "category": "operating",
-      "sha256": "dc1ee6f98ea6d10b2cf830b29ff1bbf09f898b49fa4861aaad1001ef0dc236cd",
+      "sha256": "b8b0dbddf15054cf4939e6d2850ddb268498942aabe999caefc24af24ca32a64",
       "spec_version": "1.2",
       "src": "tools/lint.py"
     },
@@ -879,7 +879,7 @@
     {
       "path": "GETTING_STARTED.md",
       "category": "operating",
-      "sha256": "82c6a99014d5ef32d04a2579ff927d65627a72172c1aca445000a062cb14b03f",
+      "sha256": "8e1a62fb37cf2c7c1f8414fb4f50c792b4125dc0519b8a6a9311a226c74445eb",
       "spec_version": "1.2"
     },
     {

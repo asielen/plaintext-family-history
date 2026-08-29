@@ -4787,6 +4787,27 @@ class EphemeraPeopleW134Tests(unittest.TestCase):
         w134 = [f for f in self._lint(root) if f.code == 'W134']
         self.assertEqual(len(w134), 1)
 
+    def test_the_message_leads_with_retype_not_clear(self) -> None:
+        # #191 follow-up, round 4: the message used to offer "clear people:"
+        # as an unconditional first option - but per SPEC §14/the FAQ, naming
+        # someone genuinely in the archive (even in passing) disqualifies
+        # ephemera outright, so clearing the link there would just discard
+        # real evidence rather than fix the misclassification. "Clear" is
+        # only right for an erroneous or untracked-name entry - the message
+        # must lead with retype-and-keep and condition "clear" explicitly,
+        # not hand out "clear" as the first-listed, seemingly safe default.
+        root = Path(tempfile.mkdtemp())
+        self._build(root, source_type='ephemera', people=self.LISTED)
+        w134 = [f for f in self._lint(root) if f.code == 'W134']
+        self.assertEqual(len(w134), 1)
+        message = w134[0].message
+        retype_pos = message.index('re-type it')
+        clear_pos = message.index('clear people:')
+        self.assertLess(retype_pos, clear_pos,
+                         'retype-and-keep must be offered before clear people:')
+        self.assertIn('genuinely in your archive', message)
+        self.assertIn('does not really belong here', message)
+
 
 if __name__ == '__main__':
     unittest.main()

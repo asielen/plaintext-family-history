@@ -351,8 +351,10 @@ Do this at the end of any session where you added something you'd hate to lose.
 family - period news, local color, general history kept on purpose for texture - files as
 `source_type: ephemera` instead of an ordinary source. It's still kept and still searchable, but it
 won't appear on any person's page, packet, or timeline (those are all reached by following a
-person's link, and this kind of item deliberately has none). Find it again through the generated
-site's homepage Sources list or full-text search - see [`docs/FAQ.md`](docs/FAQ.md) for the full rule.
+person's link, or a claim naming them - so this holds as long as its `## Claims` block, if any,
+also stays person-free, the ordinary shape for a clipping like this). Find it again through the
+generated site's homepage Sources list or full-text search - see [`docs/FAQ.md`](docs/FAQ.md) for
+the full rule.
 
 Everything is plain text or standard image files. You can open any of it with Notepad, TextEdit,
 or a photo viewer - no tool required, now or in fifty years. The tools only ever help; they're

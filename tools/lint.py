@@ -1320,10 +1320,11 @@ def _process_source_file(path: Path, registry: Registry, findings: list[Finding]
         findings.append(Finding('W', 'W134', path,
             f'source_type: ephemera requires people: to stay empty (SPEC §14), '
             f'but this source lists {count} {"entry" if count == 1 else "entries"}: '
-            f'{", ".join(str(r) for r in people_refs)}. An ephemera source that '
-            'names someone no longer qualifies as ephemera - either clear people: '
-            '(if the name is incidental prose, not evidence) or re-type the source '
-            'to whatever fits (newspaper, book, ...) and keep the people: link.'))
+            f'{", ".join(str(r) for r in people_refs)}. If this is someone genuinely '
+            'in your archive, ephemera is the wrong type for this source - re-type it '
+            'to whatever fits (newspaper, book, ...) and keep the people: link. Only '
+            'clear people: instead if this entry does not really belong here (a '
+            'mistaken link, or a name not actually tied to anyone in your archive).'))
 
     # E017: DNA sources must be restricted AND keep their raw files under
     # documents/dna/ (SPEC §8.5.5). The `restricted` marker is open (SPEC §19,
