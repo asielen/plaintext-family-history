@@ -27,6 +27,9 @@ And it works in the other direction too: coming *from* Ancestry (or any app), do
 They're never renamed or moved while they live in your photo library (so your catalog stays intact) - the one exception, `fha process refile` for a photo that turned out to be a record, asks you first and reminds you to remove it from your catalog.
 They can live anywhere - an external drive, your existing library - and `fha.yaml` maps to them.
 Identity rides in embedded metadata (a keyword), not the filename, so reorganizing them never breaks anything.
+Pointing `photos:` (or `documents:`/`inbox:`) outside the archive this way also removes the empty
+`photos/` placeholder folder that would otherwise sit inside the archive holding nothing - one
+less thing to wonder about. Point it back inside later and the folder returns.
 
 ### Does every photo or document need to become a source?
 No. There are three perfectly good resting states, and most files stay in the first forever:

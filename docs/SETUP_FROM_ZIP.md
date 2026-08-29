@@ -88,6 +88,9 @@ TextEdit on Mac - not Word). It tells the tools where your files live.
 - **Already have folders of photos or documents?** Copy-paste examples for a plain local folder,
   an external drive, and an existing photo library are commented right inside `fha.yaml` itself,
   just above the settings they explain - uncomment the one that matches you and edit the path.
+  (If you set this up with `fha install` instead of copying `archive-template/` by hand, pointing
+  a setting outside the archive also removes its now-empty placeholder folder - expected, not a
+  problem, and it comes back if you ever point the setting back inside.)
 
 ---
 

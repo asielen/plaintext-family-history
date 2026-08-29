@@ -525,6 +525,8 @@ Narrowing `roots: photos` to a subfolder is **not** the way to exclude material:
 
 Every record path keeps the alias form (`photos/1880/…`); tools resolve the first segment through the mapping (absolute → used as-is, relative → joined to the archive root, missing → an internal folder of that name).
 Moving a library is a one-line edit and **no record changes**.
+
+*Decision log:* an alias whose `roots:` value resolves genuinely OUTSIDE the archive folder gets no internal `documents:`/`photos:`/`inbox:` placeholder folder at all - it would never hold anything (#124). `fha install` skips creating it; `fha update-tools` removes an already-installed one once it goes external, but only while it is still genuinely empty (nothing inside but the scaffolding's own placeholder litter - TOOLING §13c). A `roots:` value that renames the internal folder but keeps it inside the archive (`documents: archive-docs`) is unaffected - it still names a real internal folder, just under a different name.
 The spec's internal structure (`photos/{year}`, `documents/{type}`) describes the tree *under each root*, wherever it lives.
 
 The design fact this establishes: **the archive is a records core plus mapped asset libraries.** The git-versioned core travels as plain text; the assets are referenced wherever they live.

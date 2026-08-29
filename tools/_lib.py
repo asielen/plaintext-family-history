@@ -118,6 +118,11 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    get_roots                 - extract roots mapping from config
 #    resolve_path              - alias path ('photos/…') → absolute Path via fha.yaml
 #    path_to_alias             - absolute Path → alias path ('photos/…'), the inverse
+#    ASSET_ROOT_ALIASES        - photos/documents/inbox, the 3 remappable asset
+#                                 aliases (shared with serve.py's /root/ confinement
+#                                 and site.py's workbench hrefs)
+#    external_asset_roots      - which of those resolve OUTSIDE the archive (#124) -
+#                                 scaffold.py skips/prunes their internal placeholder
 #
 #  Index database access
 #    db_mtime                  - mtime of a cache db file, or None if absent/unreadable
@@ -1196,6 +1201,10 @@ def default_confidence(source_type: object) -> str:
 # outside the archive by fha.yaml `roots:`; inbox is the drop folder). serve.py
 # uses this for /root/<alias>/ confinement and site.py mirrors it when writing
 # workbench-mode hrefs - one constant so the two can never drift apart.
+# `external_asset_roots` (below) reuses it for a related but distinct question:
+# not "which aliases may be remapped" but "which ones currently ARE, outside
+# the archive" - the set scaffold.py's install/update skip-and-prune a
+# purposeless internal placeholder folder for (#124).
 ASSET_ROOT_ALIASES: tuple[str, ...] = ('photos', 'documents', 'inbox')
 
 
@@ -1260,6 +1269,24 @@ def format_yaml_dependency_error() -> str:
         'This tool needs PyYAML to read archive YAML files. Install it with '
         f'`{pip_command("pyyaml")}`, then run `fha doctor` to check your archive.'
     )
+
+
+def yaml_available() -> bool:
+    """Whether PyYAML actually imported (see the module-level `import yaml` guard above).
+
+    `fha install`/`fha update-tools` are deliberately usable before PyYAML is on the
+    machine (fha.py intercepts them ahead of the bulk import block that would otherwise
+    crash), so they cannot simply call `_require_yaml()`/`load_fha_yaml(strict=True)` and
+    fail loudly like every other tool - a hard stop here would break the one command a
+    fresh install needs to run first. But `load_fha_yaml()`'s permissive `{}` fallback
+    means a caller cannot tell "no fha.yaml" apart from "fha.yaml exists but couldn't be
+    read because PyYAML is missing" - and for `roots:`-driven behavior (#124's external
+    asset root skip/prune) that difference matters: silently treating "can't check" as
+    "nothing configured" can leave a genealogist's external `roots:` unrecognized with no
+    explanation. Callers that need to tell the two apart check this first and say so
+    plainly, rather than let the gap stay silent.
+    """
+    return yaml is not None
 
 
 def archive_root_missing_message() -> str:
@@ -1614,6 +1641,44 @@ def path_to_alias(path: str | Path, alias: str, fha_config: dict, archive_root: 
     except ValueError:
         return path.as_posix()
     return f'{alias}/{rel.as_posix()}' if str(rel) != '.' else alias
+
+
+def external_asset_roots(fha_config: dict, archive_root: str | Path) -> set[str]:
+    """Which of ASSET_ROOT_ALIASES (photos/documents/inbox) resolve OUTSIDE
+    the archive itself (#124).
+
+    An alias absent from `roots:` defaults to the internal folder of that name
+    (resolve_path) - never external. Present but still naming a path INSIDE
+    archive_root (a rename like `documents: archive-docs`, or a redundant
+    `documents: documents`) is also not external: the internal-folder concept
+    still applies, just under a different name, so its skeleton placeholder
+    keeps its purpose. Only a `roots:` value whose resolved absolute path
+    falls genuinely outside the archive tree counts - the case where the
+    skeleton's `documents/`/`photos/`/`inbox/` placeholder folder serves no
+    purpose at all and scaffold.py skips creating (or prunes) it.
+
+    Resolves both sides with `.resolve()` before comparing - the same
+    containment pattern as process.py's `_is_under` / packet.py's
+    `_is_under_root` (each tool keeps its own twin per TOOLING §15; this one
+    lives here because every caller already reaches `resolve_path`/`get_roots`
+    through `_lib`). A target that does not exist yet (a human configuring an
+    external drive before first use) still resolves and compares correctly -
+    `Path.resolve()` does not require the path to exist.
+    """
+    archive_root = Path(archive_root).resolve()
+    roots = get_roots(fha_config)
+    if not isinstance(roots, dict):
+        return set()
+    external: set[str] = set()
+    for alias in ASSET_ROOT_ALIASES:
+        if alias not in roots:
+            continue
+        target = resolve_path(alias, fha_config, archive_root)
+        try:
+            target.resolve().relative_to(archive_root)
+        except (ValueError, OSError, RuntimeError):
+            external.add(alias)
+    return external
 
 
 # The last `roots:` mapping the tools ran against, remembered so a change can

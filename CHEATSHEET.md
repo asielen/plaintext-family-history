@@ -131,7 +131,7 @@ just jot it as a hunch; the assistant keeps the unproved ones on the "still to s
 | `people/` | The people in your tree, in numbered family-couple folders. |
 | `places/` | The list of places, with their locations. |
 | `notes/` | Research in progress and your running questions. |
-| `fha.yaml` | The one settings file - where your photos and documents live. |
+| `fha.yaml` | The one settings file - where your photos and documents live. Point one outside the archive and its now-empty placeholder folder disappears too (that's expected). |
 | `.fha/` | The machinery (the program, its design package, the browser add-on). Hidden on purpose; never hand-edited. |
 | `generated/` | Built things - website, printable views, galleries. Rebuildable, never truth. |
 
