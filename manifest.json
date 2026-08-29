@@ -90,7 +90,7 @@
     {
       "path": ".claude/skills/process-source/SKILL.md",
       "category": "operating",
-      "sha256": "8039b617e190168bb766fe638acd495f98dd6ff0543e9bd9cbca5af4756609b3",
+      "sha256": "7e84d7f39cb9bb9d4bf789995ef6537c7090059f9fb133cf7ed2bc990ae83acd",
       "spec_version": "1.2"
     },
     {
@@ -413,7 +413,7 @@
     {
       "path": ".fha/tools/README.md",
       "category": "operating",
-      "sha256": "1fc728ddd3e494d349257eccb0ad0f5a50a4b00bb1534baa15b8c931f087222a",
+      "sha256": "a29ede5f30c8c28ec8db99375b7830a350ed5607ca5c1880f3991373ea8416a5",
       "spec_version": "1.2",
       "src": "tools/README.md"
     },
@@ -560,7 +560,7 @@
     {
       "path": ".fha/tools/lint.py",
       "category": "operating",
-      "sha256": "9c7902d730a2633fdff031266262f0361202b3ccf1f7553a3440a2996e14775a",
+      "sha256": "b8b0dbddf15054cf4939e6d2850ddb268498942aabe999caefc24af24ca32a64",
       "spec_version": "1.2",
       "src": "tools/lint.py"
     },
@@ -867,7 +867,7 @@
     {
       "path": "CHEATSHEET.md",
       "category": "operating",
-      "sha256": "efa006d8db8a2851a6df3932dd0cdef2bda7775ad1ed5869bfe228d429251e56",
+      "sha256": "9fdee2835b2be3d77893e08f1065b57698d2904cf714ec2b37573ff224a71c02",
       "spec_version": "1.2"
     },
     {
@@ -879,19 +879,19 @@
     {
       "path": "GETTING_STARTED.md",
       "category": "operating",
-      "sha256": "0833cda0a285bce7a87d3d1f53262f38eef7f608e5526ad5a2aba74e9aea5484",
+      "sha256": "8e1a62fb37cf2c7c1f8414fb4f50c792b4125dc0519b8a6a9311a226c74445eb",
       "spec_version": "1.2"
     },
     {
       "path": "SPEC.md",
       "category": "operating",
-      "sha256": "722826ca9d382534b15b33223a55e4c5d4c784d2271918f191c8965f96e089d0",
+      "sha256": "47a9cc05d26f8b9f5244d305c8bc568bbc269a8ba052f50aeabdbd0b3242a50e",
       "spec_version": "1.2"
     },
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "213233e9065f8a26691a1d5baaf73e34574aa502e58fc3c8b09d11af65d50b82",
+      "sha256": "6e5af5a793df2486e436f989fa02a0eb88f1ff3e1050a623e143ab9c3b07e375",
       "spec_version": "1.2"
     },
     {
@@ -909,7 +909,7 @@
     {
       "path": "docs/FAQ.md",
       "category": "operating",
-      "sha256": "ee71f9e54e724ebf6a957ded178b97a80eef5a576228c0867ec474b062e2e29e",
+      "sha256": "31322e0f5196ff0d2040a8017e5b9391c311e95c13969b13caadccea621ca6c4",
       "spec_version": "1.2"
     },
     {

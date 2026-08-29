@@ -491,6 +491,27 @@ class PersonPageTests(_Base):
         # Stories section rendered
         self.assertIn('A tale worth keeping.', html)
 
+    def test_ephemera_source_with_only_a_claim_link_still_surfaces(self):
+        # SPEC #14 (round-3 Codex finding, PR #191 follow-up): an ephemera
+        # source is invisible on person-scoped surfaces "as long as its
+        # `## Claims` block also stays person-free too" - not unconditionally
+        # just because frontmatter `people:` is empty. `_person_sources`
+        # selects through claim_persons (any claim's own `persons:`) UNION
+        # source_people (the frontmatter `people:` list) - so a source with
+        # no source_people row (empty `people:`, the ephemera shape) but one
+        # claim naming the person still shows up in that person's Sources
+        # list. This documents the actual mechanism, not a bug: W134 only
+        # flags a non-empty `people:` and cannot see this case; only a
+        # `people:`-empty AND claims-empty ephemera source (the ordinary,
+        # expected shape) is truly unreachable from any person's page.
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley')
+        self._seed_source('s-1111111111', 'Old Clipping', source_type='ephemera')  # people=() by default
+        self._seed_claim('c-1111111111', 's-1111111111', 'note', 'Mentions Thomas in passing',
+                         status='accepted', persons=('p-aaaaaaaaaa',))
+        self._run(linked=True)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('Old Clipping', html)
+
     def test_negated_vital_not_rendered_as_positive_summary(self):
         # A --negated birth ("not born 1900") is a confirmed absence, not a
         # settled headline fact: `_person_summary` must not render it as

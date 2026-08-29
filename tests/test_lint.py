@@ -4723,5 +4723,91 @@ class ReadExifKeywordsMemoryScopeTests(unittest.TestCase):
             self.assertLessEqual(len(batch), lint._KEYWORD_BATCH_SIZE)
 
 
+class EphemeraPeopleW134Tests(unittest.TestCase):
+    """W134 (#191 follow-up, #114): source_type: ephemera requires people: to
+    stay strictly empty (SPEC §14). Before this check, a hand-edited (or
+    AI-drafted) ephemera source with a non-empty people: list passed lint
+    silently, got indexed into source_people, and wrongly surfaced on that
+    person's page/packet/timeline - exactly what the ephemera type exists to
+    promise never happens.
+    """
+
+    LISTED = 'P-1111111111'
+    SID = 'S-4444444444'
+
+    def _build(self, root: Path, *, source_type: str = 'ephemera',
+               people: str = '') -> None:
+        (root / 'fha.yaml').write_text('roots:\n  documents: documents\n',
+                                        encoding='utf-8')
+        (root / 'people').mkdir(parents=True, exist_ok=True)
+        (root / 'sources').mkdir(parents=True, exist_ok=True)
+        (root / 'people' / f'smith__ken_{self.LISTED}.md').write_text(
+            f'---\nid: {self.LISTED}\nname: Ken Smith\ntier: stub\n'
+            'living: false\n---\n\n# Ken Smith\n', encoding='utf-8')
+        people_line = f'people: [{people}]\n' if people else ''
+        (root / 'sources' / f'clipping_{self.SID.lower()}.md').write_text(
+            f'---\nid: {self.SID}\ntitle: Clipping\nsource_type: {source_type}\n'
+            f'{people_line}---\n\n## Notes\nLocal color, names no one.\n',
+            encoding='utf-8')
+
+    def _lint(self, root: Path):
+        from _lib import load_fha_yaml
+        findings, _reg = lint._run_lint_core(root, load_fha_yaml(root))
+        return findings
+
+    def test_ephemera_with_a_person_link_warns(self) -> None:
+        root = Path(tempfile.mkdtemp())
+        self._build(root, source_type='ephemera', people=self.LISTED)
+        w134 = [f for f in self._lint(root) if f.code == 'W134']
+        self.assertEqual(len(w134), 1)
+        self.assertIn('ephemera', w134[0].message)
+        self.assertIn(self.LISTED, w134[0].message)
+        self.assertIn('SPEC', w134[0].message)
+
+    def test_ephemera_with_empty_people_is_clean(self) -> None:
+        root = Path(tempfile.mkdtemp())
+        self._build(root, source_type='ephemera', people='')
+        w134 = [f for f in self._lint(root) if f.code == 'W134']
+        self.assertEqual(w134, [])
+
+    def test_non_ephemera_source_with_a_person_link_is_unaffected(self) -> None:
+        # The same people: link on an ordinary source type is exactly the
+        # normal, expected shape - W134 must never fire outside ephemera.
+        root = Path(tempfile.mkdtemp())
+        self._build(root, source_type='newspaper', people=self.LISTED)
+        w134 = [f for f in self._lint(root) if f.code == 'W134']
+        self.assertEqual(w134, [])
+
+    def test_ephemera_with_an_unresolved_name_link_still_warns(self) -> None:
+        # A people: entry that names nobody in the archive still contradicts
+        # the strict-empty rule the moment it's written - W134 does not wait
+        # for E005/resolution to judge it, unlike the index's own consumption.
+        root = Path(tempfile.mkdtemp())
+        self._build(root, source_type='ephemera', people='"[[Nobody Registered]]"')
+        w134 = [f for f in self._lint(root) if f.code == 'W134']
+        self.assertEqual(len(w134), 1)
+
+    def test_the_message_leads_with_retype_not_clear(self) -> None:
+        # #191 follow-up, round 4: the message used to offer "clear people:"
+        # as an unconditional first option - but per SPEC §14/the FAQ, naming
+        # someone genuinely in the archive (even in passing) disqualifies
+        # ephemera outright, so clearing the link there would just discard
+        # real evidence rather than fix the misclassification. "Clear" is
+        # only right for an erroneous or untracked-name entry - the message
+        # must lead with retype-and-keep and condition "clear" explicitly,
+        # not hand out "clear" as the first-listed, seemingly safe default.
+        root = Path(tempfile.mkdtemp())
+        self._build(root, source_type='ephemera', people=self.LISTED)
+        w134 = [f for f in self._lint(root) if f.code == 'W134']
+        self.assertEqual(len(w134), 1)
+        message = w134[0].message
+        retype_pos = message.index('re-type it')
+        clear_pos = message.index('clear people:')
+        self.assertLess(retype_pos, clear_pos,
+                         'retype-and-keep must be offered before clear people:')
+        self.assertIn('genuinely in your archive', message)
+        self.assertIn('does not really belong here', message)
+
+
 if __name__ == '__main__':
     unittest.main()
