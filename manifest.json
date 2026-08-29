@@ -413,7 +413,7 @@
     {
       "path": ".fha/tools/README.md",
       "category": "operating",
-      "sha256": "367b343e7b550fdbcfae1d4b5da39a393ef6d8ea78ecf7c4d15c878b61df6d0d",
+      "sha256": "a29ede5f30c8c28ec8db99375b7830a350ed5607ca5c1880f3991373ea8416a5",
       "spec_version": "1.2",
       "src": "tools/README.md"
     },
@@ -518,7 +518,7 @@
     {
       "path": ".fha/tools/fha.py",
       "category": "operating",
-      "sha256": "72ab2528b9ab5fdcd116167f86b557bcc0ed2b4c6ebe98fca8f4dc3b8a0d6ffc",
+      "sha256": "23de1d7d9ce88d0f0f211fb76edfcd72732e10722ffe5b24b345eeae5f955ff3",
       "spec_version": "1.2",
       "src": "tools/fha.py"
     },
@@ -626,6 +626,13 @@
       "sha256": "a778a4b94245eaaed840172e4e7881d761882815bc0b0417bd08e0b9d0d0b190",
       "spec_version": "1.2",
       "src": "tools/relate.py"
+    },
+    {
+      "path": ".fha/tools/reorganize.py",
+      "category": "operating",
+      "sha256": "992a57c1d932d48185b903d3c554dc8b5e7b2fa40cc93ce7b48a5f2ad4480d64",
+      "spec_version": "1.2",
+      "src": "tools/reorganize.py"
     },
     {
       "path": ".fha/tools/report.py",
@@ -854,13 +861,13 @@
     {
       "path": "AGENTS.md",
       "category": "operating",
-      "sha256": "8ade61acb3c27e6cf5075b06f3a392418830eb056ed47e34fa79c30cbd3aab2f",
+      "sha256": "d8cf0d19b29a4bd99548af8afd008854b0eaa24713a10cb026d82afcef374f23",
       "spec_version": "1.2"
     },
     {
       "path": "CHEATSHEET.md",
       "category": "operating",
-      "sha256": "c306201fb50e74d92f191ae504db2a68624cf2fadedcaa9395b9cda4880fc907",
+      "sha256": "9fdee2835b2be3d77893e08f1065b57698d2904cf714ec2b37573ff224a71c02",
       "spec_version": "1.2"
     },
     {
@@ -872,7 +879,7 @@
     {
       "path": "GETTING_STARTED.md",
       "category": "operating",
-      "sha256": "87dac7714e8401ad97e340d42657bff29120153a6bec03061286867012323c25",
+      "sha256": "82c6a99014d5ef32d04a2579ff927d65627a72172c1aca445000a062cb14b03f",
       "spec_version": "1.2"
     },
     {
@@ -884,7 +891,7 @@
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "235001bc114f8c030ab914f76da78c6a7c9ef1e4faa5a37bcdd498151f99f31e",
+      "sha256": "6e5af5a793df2486e436f989fa02a0eb88f1ff3e1050a623e143ab9c3b07e375",
       "spec_version": "1.2"
     },
     {
