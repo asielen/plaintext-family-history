@@ -5920,6 +5920,96 @@ class ProseConverterTests(unittest.TestCase):
         self.assertIn('before 1900 to 1910', out3)
         self.assertIn('1920 to before 1930', out3)
 
+    def test_before_plain_first_interval_extra_slash_segment_left_untouched(self):
+        # Round 6 (post-merge Codex review, finding 1): the mirror image of
+        # the test above. Round 5 rejected `[..1900]/191X/192X`
+        # (bracket-first, extra trailing part) outright because `plain1` is
+        # unanchored on the right and swallows the whole remaining run into
+        # one span that fails validation. But `1910/[..1900]/1920`
+        # (PLAIN-first, with a trailing `/1920` after the bracket) has no
+        # such right-side anchor on the old `plain2` alternative, which
+        # stopped looking the moment it found ANY prefix immediately
+        # followed by `/[..1900]` - so it used to translate the leading
+        # "1910" and the bracket together and leave "/1920" dangling right
+        # next to the result ("1910 to before 1900/1920"), a hybrid exactly
+        # as broken as the shape round 5 fixed. The fix must leave the WHOLE
+        # malformed value untouched, not just stop the partial translation
+        # from happening via one specific code path - a bracket-first
+        # attempt starting mid-string (ignoring the leading "1910/") could
+        # otherwise produce the same class of partial translation through
+        # the OTHER alternative instead.
+        out = site._scrub_internal_encoding('Span: 1910/[..1900]/1920, per the deed.')
+        self.assertIn('1910/[..1900]/1920', out)
+        self.assertNotIn('before', out)
+        # Same shape with ordinary years instead of decades, and with the
+        # extra segment on the LEADING side (two plain parts before one
+        # bracket) - both already covered by the existing embedded-`/`
+        # rejection, pinned here for the plain-first orientation too.
+        out2 = site._scrub_internal_encoding('Span: 1920/[..1900]/1910, per the deed.')
+        self.assertIn('1920/[..1900]/1910', out2)
+        self.assertNotIn('before', out2)
+        out3 = site._scrub_internal_encoding('Span: 1920/1910/[..1900], per the deed.')
+        self.assertIn('1920/1910/[..1900]', out3)
+        self.assertNotIn('before', out3)
+        # Two SEPARATE, genuinely valid intervals of this orientation near
+        # each other in one sentence must still each translate
+        # independently.
+        out4 = site._scrub_internal_encoding(
+            'The family lived there 1900/[..1910] and traveled 1920/[..1930] too.')
+        self.assertIn('1900 to before 1910', out4)
+        self.assertIn('1920 to before 1930', out4)
+
+    def test_before_plain_first_long_unmatched_run_is_not_quadratic(self):
+        # Round 6 (post-merge Codex review, finding 2): the old `plain2`
+        # alternative was `(?P<plain2>[\w?~/-]+)/\[\.\.` - an unanchored
+        # greedy capture with a required literal suffix. On a long run of
+        # eligible characters with no real bracket anywhere in reach (a
+        # garbled OCR line, a pasted URL-like string - plausible content for
+        # a hand-typed source note), the regex engine greedily consumed the
+        # rest of the run and backtracked it one character at a time at
+        # EVERY one of the run's start positions looking for a `/[..` that
+        # was never going to appear - O(n) work repeated at O(n) positions,
+        # O(n^2) overall. Measured at ~3s for a 20,000-character run on the
+        # pre-fix code (versus ~2ms after the fix below) - long enough that
+        # a source note containing a few such runs could make `fha site`
+        # appear to hang.
+        #
+        # First, a structural pin directly on the fix rather than on
+        # timing: the plain-first alternative no longer captures its
+        # leading text inside the regex at all (see
+        # `_DATE_BEFORE_SLASH_RE`'s comment and
+        # `_translate_date_before_slash`'s docstring for why - the prefix is
+        # recovered afterward by a plain backward walk instead), so the
+        # `plain2` group name this backtracking used to hang off of no
+        # longer exists.
+        self.assertNotIn('plain2', site._DATE_BEFORE_SLASH_RE.groupindex)
+
+        # Second, the real-world symptom: a long non-matching run must
+        # scrub in well under a second, not several seconds. The bound here
+        # is deliberately generous (the fixed code actually finishes in a
+        # couple of milliseconds) so this isn't sensitive to a slow CI
+        # machine - it only needs to be tight enough to fail decisively on
+        # the old O(n^2) behavior.
+        long_run = 'a1' * 10000  # 20,000 chars: letters, digits, no bracket
+        start = time.perf_counter()
+        out = site._scrub_internal_encoding(long_run)
+        elapsed = time.perf_counter() - start
+        self.assertEqual(out, long_run)  # nothing to translate - left as-is
+        self.assertLess(elapsed, 2.0,
+                         f'scrubbing a {len(long_run)}-char non-matching run took {elapsed:.2f}s')
+
+        # A real interval must still translate correctly even when
+        # surrounded by a large volume of this same kind of noise on both
+        # sides - the fix must not have traded speed for a correctness
+        # regression on the shape it still needs to recognize.
+        noisy = 'a1' * 5000 + ' 1900/[..1910] ' + 'a1' * 5000
+        start = time.perf_counter()
+        out2 = site._scrub_internal_encoding(noisy)
+        elapsed2 = time.perf_counter() - start
+        self.assertIn('1900 to before 1910', out2)
+        self.assertLess(elapsed2, 2.0,
+                         f'scrubbing noise around one real interval took {elapsed2:.2f}s')
+
     def test_standalone_before_bracket_still_translates(self):
         # Guards that the finding-5 interval fix doesn't overreach: a
         # bracket that is NOT adjacent to a slash still translates normally.

@@ -944,11 +944,63 @@ _DATE_BEFORE_RE = re.compile(r'\[\.\.(\d{4})(?:-(\d{2}))?(?:-(\d{2}))?\]')
 # onto a date with nothing between them, so a genuine "... to Fairview"
 # continuation (with its own leading space) still stops the run exactly as
 # before.
+#
+# Round 6 (post-merge Codex review, two findings on this same pattern):
+#
+# Finding 1 - round 5's fix above only closed the gap for the BRACKET-first
+# alternative, because `plain1` is unanchored on the right: it swallows the
+# ENTIRE remaining eligible run, extra slash-joined parts included, into one
+# span that then fails validation as a whole. The mirror-image malformed
+# value - `1910/[..1900]/1920` (PLAIN-first, with a trailing `/1920` after
+# the bracket) - has no equivalent right-side anchor: the old `plain2`
+# alternative only had to find SOME prefix immediately followed by
+# `/\[\.\.YYYY...\]`, and stopped looking the moment it found one, leaving
+# `/1920` dangling next to a real-looking translation ("1910 to before
+# 1900/1920"). Adding a "no continuation" check to the right of `plain2`'s
+# bracket (a `(?![\w?~/-])` lookahead after the closing `]`) closes that gap
+# - but on its own is NOT sufficient: with only that lookahead added, this
+# same string still partially translates, just via the OTHER alternative -
+# `[..1900]/1920` (ignoring the leading `1910/` entirely) is a well-formed
+# bracket-first match in its own right, and nothing stopped the
+# bracket-first alternative from starting mid-string, oblivious to the
+# `1910/` sitting immediately before it. So the fix is two lookarounds, not
+# one: the bracket-first alternative also gains a `(?<![\w?~/-])` lookbehind
+# immediately before its own `\[\.\.`, refusing to start a match when
+# directly glued (no separating space) to more of this same permissive
+# class on its left. With both lookarounds in place, `1910/[..1900]/1920`
+# has no position left where either alternative can match at all, and the
+# whole malformed value is left exactly as written - the same outcome
+# round 5 already established for its own mirror shape.
+#
+# Finding 2 - the OLD `plain2` alternative
+# (`(?P<plain2>[\w?~/-]+)/\[\.\.`) made the plain-first orientation
+# quadratic on a long run of eligible characters with no real bracket
+# anywhere in reach (a garbled OCR line, a pasted URL-like string): at
+# EVERY one of the run's ~n start positions, the engine greedily consumed
+# the rest of the run and then backtracked it one character at a time
+# looking for a `/\[\.\.` that was never going to appear - an O(n) failure
+# repeated at O(n) positions, O(n^2) overall (measured at ~3.5s for a
+# 20,000-character run, versus ~1ms for the bracket-first alternative on
+# the same input, which fails FAST at almost every position because it is
+# anchored on a 4-character literal prefix instead of an open-ended
+# backtrack). The fix removes the backtracking rather than tuning it: the
+# plain-first alternative no longer captures its own leading plain text
+# inside the regex at all - it matches only the small, structurally-bounded
+# anchor `/\[\.\.YYYY...\]` (the same shape that already makes the
+# bracket-first alternative cheap), which fails in O(1) at almost every
+# position in a long non-matching run for the same reason the bracket-first
+# alternative already did. `_translate_date_before_slash` recovers the
+# plain prefix afterward with a plain Python backward walk from the match's
+# own start (see its docstring) - work proportional to the length of a REAL
+# prefix next to a REAL bracket, never to the length of an unrelated run
+# that was never going to match anyway. `_apply_date_before_slash`
+# (replacing a direct `.sub()` call - see its own docstring) exists because
+# widening a match backward like this is something `re.sub` itself cannot
+# do: it only ever replaces the literal span its regex matched.
 _DATE_BEFORE_SLASH_RE = re.compile(
-    r'\[\.\.(?P<by1>\d{4})(?:-(?P<bm1>\d{2}))?(?:-(?P<bd1>\d{2}))?\]'
+    r'(?<![\w?~/-])\[\.\.(?P<by1>\d{4})(?:-(?P<bm1>\d{2}))?(?:-(?P<bd1>\d{2}))?\]'
     r'/(?P<plain1>[\w?~/-]+)'
-    r'|(?P<plain2>[\w?~/-]+)'
-    r'/\[\.\.(?P<by2>\d{4})(?:-(?P<bm2>\d{2}))?(?:-(?P<bd2>\d{2}))?\]',
+    r'|/\[\.\.(?P<by2>\d{4})(?:-(?P<bm2>\d{2}))?(?:-(?P<bd2>\d{2}))?\](?![\w?~/-])',
 )
 
 # Parses a plain bound already CONFIRMED valid (`is_valid_edtf`) by
@@ -966,6 +1018,15 @@ _PLAIN_BOUND_SHAPE_RE = re.compile(
     r'|^(?P<year>\d{4})(?:-(?P<mq>~)?(?P<month>\d{2}))?'
     r'(?:-(?P<dq>~)?(?P<day>\d{2}))?(?P<tq>[?~])?$'
 )
+
+# Single-character membership test for the same permissive class
+# `_DATE_BEFORE_SLASH_RE`'s `plain1` (and, before round 6, `plain2`)
+# captures - used by `_translate_date_before_slash`'s backward walk (round 6
+# finding 2) to recover the plain-first alternative's leading bound one
+# character at a time, replicating exactly what the old `plain2` capture
+# group would have matched, without that group's own quadratic
+# backtracking (see `_DATE_BEFORE_SLASH_RE`'s comment).
+_PLAIN_BOUND_CHAR_RE = re.compile(r'[\w?~/-]')
 
 _MONTH_NAMES = ('January', 'February', 'March', 'April', 'May', 'June', 'July',
                 'August', 'September', 'October', 'November', 'December')
@@ -1153,11 +1214,16 @@ def _translate_date_before(match: re.Match) -> str:
     return f'before {_format_edtf_ymd(year, month, day)}'
 
 
-def _translate_date_before_slash(match: re.Match) -> str:
+def _translate_date_before_slash(match: re.Match) -> tuple[str, int, int]:
     """One two-sided EDTF interval, exactly one side a `[..YYYY[-MM[-DD]]]`
-    bracket and the other a plain `YYYY[-MM[-DD]]`, joined by `/` -> both
-    bounds in plain English (#167 finding 3), e.g. `[..1900]/1910` ->
-    "before 1900 to 1910" and `1900/[..1910]` -> "1900 to before 1910".
+    bracket and the other a plain `YYYY[-MM[-DD]]`, joined by `/` -> a
+    `(replacement, start, end)` triple: both bounds in plain English (#167
+    finding 3), e.g. `[..1900]/1910` -> "before 1900 to 1910" and
+    `1900/[..1910]` -> "1900 to before 1910", plus the span of `match.string`
+    that replacement covers. `_apply_date_before_slash` is the caller that
+    actually performs the substitution using that span (see its docstring
+    for why `start`/`end` are returned rather than always trusting
+    `match.span()`).
 
     Before this, `_translate_date_before`'s own adjacency guard (see its
     docstring) deliberately left the WHOLE interval untouched rather than
@@ -1233,15 +1299,49 @@ def _translate_date_before_slash(match: re.Match) -> str:
     "1910s" wording by value rather than importing `_lib._humanize_edtf_
     bound` directly). A decade bound never carries a `?`/`~` qualifier in
     this dialect, so it skips `_apply_edtf_qualifier` entirely rather than
-    being wrapped with one."""
+    being wrapped with one.
+
+    Round 6 (see `_DATE_BEFORE_SLASH_RE`'s comment): the plain-first
+    alternative (`by2`/`bm2`/`bd2` matched, `by1` is `None`) no longer
+    captures its own leading plain bound inside the regex - only the anchor
+    `/[..YYYY...]` is matched, so `match.start()` lands on the separating
+    `/` itself. The plain bound is recovered here by walking backward
+    through `match.string` one character at a time while each character
+    belongs to the same permissive class the old `plain2` group captured
+    (`_PLAIN_BOUND_CHAR_RE`), stopping at the first character that doesn't -
+    exactly the extent the old greedy-with-backtrack `plain2` capture would
+    have found, computed without ever backtracking (that backtracking, at
+    every start position across a long non-matching run, is what made the
+    plain-first orientation quadratic - see `_DATE_BEFORE_SLASH_RE`'s
+    comment). When the walk finds no eligible character immediately before
+    the anchor's `/` (an empty recovered bound), that mirrors what the old
+    `plain2` alternative - which required one or more characters (`+`) -
+    would never have matched in the first place, so the anchor is left
+    exactly as written rather than treated as a bound with an empty label.
+    """
+    text = match.string
+    start, end = match.start(), match.end()
     g = match.groupdict()
     bracket_first = g['by1'] is not None
     if bracket_first:
         b_year, b_month, b_day = g['by1'], g['bm1'], g['bd1']
         plain_text = g['plain1']
     else:
-        plain_text = g['plain2']
         b_year, b_month, b_day = g['by2'], g['bm2'], g['bd2']
+        # `start` is the separating `/` (see this function's docstring) -
+        # walk backward from just before it to recover the plain bound the
+        # old `plain2` capture group would have matched, without that
+        # group's own quadratic backtracking.
+        i = start
+        while i > 0 and _PLAIN_BOUND_CHAR_RE.match(text[i - 1]):
+            i -= 1
+        plain_text = text[i:start]
+        start = i
+        if not plain_text:
+            # No eligible character immediately precedes the anchor - the
+            # old `plain2` alternative (one-or-more, `+`) would never have
+            # matched here either. Leave the anchor exactly as written.
+            return text[start:end], start, end
 
     def _bare(year: str, month: str | None, day: str | None) -> str:
         v = year
@@ -1251,11 +1351,13 @@ def _translate_date_before_slash(match: re.Match) -> str:
                 v += f'-{day}'
         return v
 
-    # `plain_text` is exactly what `_DATE_BEFORE_SLASH_RE` captured - qualifier
-    # markers, decade `X`, and any malformed neighbor text all included, none
-    # of it pre-stripped - so this one `is_valid_edtf` call both decides
-    # whether the plain side is a genuine bound AND rejects anything the
-    # permissive capture swept in that isn't (see this function's docstring).
+    # `plain_text` is exactly what the backward walk (or, for the
+    # bracket-first alternative, `_DATE_BEFORE_SLASH_RE` itself) recovered -
+    # qualifier markers, decade `X`, and any malformed neighbor text all
+    # included, none of it pre-stripped - so this one `is_valid_edtf` call
+    # both decides whether the plain side is a genuine bound AND rejects
+    # anything the permissive capture swept in that isn't (see this
+    # function's docstring).
     #
     # The plain side must be a single BOUND, never an interval of its own -
     # `is_valid_edtf` alone doesn't enforce that (post-merge Codex review,
@@ -1270,7 +1372,7 @@ def _translate_date_before_slash(match: re.Match) -> str:
     # legitimately contains a slash.
     if ('/' in plain_text or not is_valid_edtf(_bare(b_year, b_month, b_day))
             or not is_valid_edtf(plain_text)):
-        return match.group(0)
+        return text[start:end], start, end
 
     before_label = f'before {_format_edtf_ymd(b_year, b_month, b_day)}'
 
@@ -1303,8 +1405,49 @@ def _translate_date_before_slash(match: re.Match) -> str:
             _format_edtf_ymd(shape.group('year'), shape.group('month'), shape.group('day')),
             p_qualifier)
     if bracket_first:
-        return f'{before_label} to {plain_label}'
-    return f'{plain_label} to {before_label}'
+        return f'{before_label} to {plain_label}', start, end
+    return f'{plain_label} to {before_label}', start, end
+
+
+def _apply_date_before_slash(text: str) -> str:
+    """Runs `_DATE_BEFORE_SLASH_RE` over `text` and applies
+    `_translate_date_before_slash` to each match, replacing a plain
+    `_DATE_BEFORE_SLASH_RE.sub(_translate_date_before_slash, text)` call
+    (round 6, see `_DATE_BEFORE_SLASH_RE`'s comment and
+    `_translate_date_before_slash`'s docstring). `re.sub` can only ever
+    replace the exact span its own regex matched; the plain-first
+    alternative's match span no longer includes its leading plain bound
+    (recovered separately by a backward walk, to avoid that capture group's
+    own quadratic backtracking), so the replaced span for that alternative
+    must be WIDENED beyond what the regex itself matched - something
+    `re.sub` has no way to do. This function performs that widening by
+    hand: it walks `_DATE_BEFORE_SLASH_RE`'s matches left to right and, for
+    each one, uses the `(replacement, start, end)` triple
+    `_translate_date_before_slash` returns - `start`/`end`, not
+    `match.span()` - to decide how much of `text` the replacement covers.
+
+    `start < pos` (the widened start reaching back before the end of the
+    previous replacement) should never happen: whatever immediately
+    follows any successful match here is guaranteed NOT to belong to the
+    shared permissive character class - the bracket-first alternative's
+    `plain1` is greedy and unbounded, so it would already have swallowed
+    such a character itself, and the plain-first alternative's own
+    trailing `(?![\\w?~/-])` lookahead (round 6) requires it directly. That
+    in turn means a later match's backward walk can never reach back past
+    an earlier match's end. The check is defensive - skip rather than
+    corrupt output if that invariant is ever wrong - not a case this is
+    known to hit."""
+    pieces = []
+    pos = 0
+    for m in _DATE_BEFORE_SLASH_RE.finditer(text):
+        replacement, start, end = _translate_date_before_slash(m)
+        if start < pos:
+            continue
+        pieces.append(text[pos:start])
+        pieces.append(replacement)
+        pos = end
+    pieces.append(text[pos:])
+    return ''.join(pieces)
 
 
 def _scrub_internal_encoding(text: str, next_char: str | None = None) -> str:
@@ -1342,7 +1485,7 @@ def _scrub_internal_encoding(text: str, next_char: str | None = None) -> str:
         return text
     text = _CLAIM_ID_PAREN_RE.sub(lambda m: _strip_claim_id_paren(m, next_char), text)
     text = _BARE_ID_RE.sub(lambda m: _redact_bare_id(m, next_char), text)
-    text = _DATE_BEFORE_SLASH_RE.sub(_translate_date_before_slash, text)
+    text = _apply_date_before_slash(text)
     text = _DATE_BEFORE_RE.sub(_translate_date_before, text)
     return text
 
