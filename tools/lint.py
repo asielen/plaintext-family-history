@@ -1303,6 +1303,29 @@ def _process_source_file(path: Path, registry: Registry, findings: list[Finding]
         findings.append(Finding('W', 'W109', path,
             format_source_type_error(source_type)))
 
+    # W134 (#191 follow-up, #114): source_type: ephemera requires people: to
+    # stay strictly empty (SPEC §14) - it is the one source_type whose entire
+    # point is "kept for texture, names no one in the family," so a non-empty
+    # people: list here is not a research gap to fill, it is the invariant
+    # the type exists to promise being broken - by a hand edit, or an AI pass
+    # that filled the field out of habit before checking the source_type. Left
+    # unchecked, a resolved entry indexes straight into source_people
+    # (index.py reads people: regardless of source_type) and the source then
+    # wrongly appears on that person's page, packet, and timeline, exactly
+    # what `ephemera` exists to avoid. Fires on ANY entry, resolved or not -
+    # an unresolved name link would dodge E005 too, and it still contradicts
+    # the strict-empty rule the moment it's written.
+    if source_type == 'ephemera' and people_refs:
+        count = len(people_refs)
+        findings.append(Finding('W', 'W134', path,
+            f'source_type: ephemera requires people: to stay empty (SPEC §14), '
+            f'but this source lists {count} {"entry" if count == 1 else "entries"}: '
+            f'{", ".join(str(r) for r in people_refs)}. If this is someone genuinely '
+            'in your archive, ephemera is the wrong type for this source - re-type it '
+            'to whatever fits (newspaper, book, ...) and keep the people: link. Only '
+            'clear people: instead if this entry does not really belong here (a '
+            'mistaken link, or a name not actually tied to anyone in your archive).'))
+
     # E017: DNA sources must be restricted AND keep their raw files under
     # documents/dna/ (SPEC §8.5.5). The `restricted` marker is open (SPEC §19,
     # TOOLING §3): any non-empty value satisfies the rule - the plain boolean,
@@ -2906,19 +2929,19 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
                             '`roles:` then indented `child: [P-…]` and '
                             '`parent: [P-…, P-…]` lines.'))
 
-            # W132: an accepted death/burial/baptism claim naming 2+ people
-            # with NO roles: map at all - the zero-role-signal shape
-            # `_lib.vital_subjects` (#126, reopened) now answers [] for
+            # W132: an accepted-or-needs-review death/burial/baptism claim
+            # naming 2+ people with NO roles: map at all - the zero-role-signal
+            # shape `_lib.vital_subjects` (#126, reopened) now answers [] for
             # rather than guessing "everyone named is their own record".
             # Birth already has W126 and marriage/divorce already have W125;
             # death/burial/baptism never had a claim-specific warning at all
             # (W101 only covers death, only for curated people, and never
             # names the claim itself), so without this a claim shaped like
             # this can silently drop out of every `claim_is_own_vital`
-            # consumer - the site's summary block and chart nodes, the
-            # GEDCOM writer's BIRT/DEAT, the WikiTree infoboxes, the tree
-            # view's node labels - with nothing telling the human to add a
-            # roles: map.
+            # consumer it actually reaches - the site's summary block, the
+            # GEDCOM writer's BIRT/DEAT, the WikiTree infoboxes, and (death
+            # only - see `where_it_goes` below) the tree view's chart node
+            # labels - with nothing telling the human to add a roles: map.
             #
             # Deliberately NARROWER than W125/W126's own condition: this
             # fires only on `vital_subjects`' case 2a (no named person
@@ -2934,17 +2957,100 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
             # persons_with_roles)` alongside `subjects == []` is what tells
             # the two apart without re-deriving vital_subjects' own headcount
             # logic inline.
-            if claim_type in ('death', 'burial', 'baptism') and derives_edges:
+            #
+            # Deliberately WIDER than W125/W126 on status and on `negated`
+            # (#173 follow-up, second round). W125/W126 gate on
+            # `derives_edges` (accepted, non-negated) because they warn about
+            # a TREE EDGE a claim of this shape would otherwise have created -
+            # a `suggested`/`needs-review` claim has not earned one yet (W102
+            # tracks that backlog instead) and a negated claim never derives
+            # one at all (SPEC §8.6). Case 2a's ambiguity is a different
+            # problem: it is the exact shape `xref.py` puts in its own
+            # `unscoped_vital_claim_ids` (see that module's docstring), and
+            # `fha xref` compares both accepted and needs-review claims, of
+            # EITHER polarity. A negated claim naming two zero-role people
+            # ("neither A nor B died, contrary to a rumor") has the identical
+            # bystander-vs-joint-subject ambiguity a positive claim of the
+            # same shape has - negation says the event didn't happen, not
+            # which named person it didn't happen to - so a confirmed
+            # positive death for the bystander can read as "contradicting" a
+            # negation that was never really about them. An earlier version
+            # of this fix (in xref.py) treated a negated case 2a claim as
+            # automatically "about everyone named", modeled on how a
+            # counterpart-less marriage/divorce negation is handled - but
+            # marriage is symmetric (the claim IS about the relationship
+            # BETWEEN the people it names) and a vital event happens to
+            # exactly one person, so that model does not transfer. Matching
+            # `status in ('accepted', 'needs-review')` and dropping the
+            # `negated` check here (instead of reusing `derives_edges`) keeps
+            # W132 and `fha xref`'s own scoping in lockstep, so a human always
+            # has exactly one path - `roles: deceased:`/`child:` - to resolve
+            # an ambiguous claim of this shape, whichever tool surfaces it
+            # first and whichever polarity the claim has.
+            claim_status = str(claim.get('status', '')).strip()
+            w132_in_scope = claim_status in ('accepted', 'needs-review')
+            if claim_type in ('death', 'burial', 'baptism') and w132_in_scope:
                 persons_with_roles = resolve_claim_persons_with_roles(claim, alias_map)
                 subjects = vital_subjects(claim_type, persons_with_roles)
                 has_any_role = any(role for _pid, role in persons_with_roles)
                 if subjects == [] and not has_any_role:
                     named = _claim_person_ids(claim, alias_map)
                     distinct = {pid: None for pid in named}   # ordered, deduplicated
-                    where_it_goes = (
-                        " - it is not recorded as anyone's own record and will "
-                        'not appear in anyone\'s summary box, chart node, GEDCOM, '
-                        'or WikiTree profile. ')
+                    # The impact sentence is branched by claim type rather
+                    # than shared, because "chart node" and "GEDCOM" are not
+                    # true of every type here (#173 follow-up, post-merge
+                    # review): `gedcom._load_vitals` and
+                    # `views._build_nodes_bulk` both hard-code
+                    # `c.type IN ('birth', 'death')`, so a baptism or burial
+                    # claim is never read by either one - adding `roles:`
+                    # cannot restore something those two consumers never
+                    # looked at in the first place, and telling a
+                    # non-technical owner it will is a false promise. Only
+                    # `death` genuinely reaches every consumer named below;
+                    # `burial` and `baptism` reach just the site's summary
+                    # box and (if the owner has mapped that type in
+                    # wikitree_templates.yaml) a WikiTree infobox field, so
+                    # those two are the only ones named for them.
+                    # A claim that is `needs-review` (not yet accepted) or
+                    # `negated` (a confirmed ABSENCE, never meant to display
+                    # as a positive vital fact) independently never reaches
+                    # any of the consumers named below, whether or not
+                    # `roles:` names a subject (post-merge Codex review of
+                    # #173/#192, round 3): the summary box, chart node,
+                    # GEDCOM export, and WikiTree profile all separately
+                    # require an ACCEPTED, non-negated claim before they will
+                    # show anything at all. Promising "add roles: and it will
+                    # appear here" to an owner whose claim is still pending
+                    # review, or who wrote a deliberate negation, describes a
+                    # repair that cannot deliver what it says - `roles:`
+                    # alone only makes the claim ATTRIBUTABLE to a specific
+                    # person and eligible for `fha xref`'s own comparison
+                    # (the reason W132 covers this shape at all - #126/#173),
+                    # not a guarantee it will render anywhere yet.
+                    is_negated = bool(claim.get('negated'))
+                    will_display = claim_status == 'accepted' and not is_negated
+                    if not will_display:
+                        why = (
+                            'once accepted' if claim_status == 'needs-review' and not is_negated
+                            else 'a negated claim never does, by design' if is_negated
+                            else 'once accepted and not negated'
+                        )
+                        where_it_goes = (
+                            " - it is not attributable to anyone yet, so `fha xref` "
+                            "cannot compare it against other claims about the same "
+                            f"person. Adding roles: fixes that attribution now; it "
+                            f"will not additionally appear in any summary box, chart "
+                            f"node, GEDCOM, or WikiTree output until {why}. "
+                        )
+                    elif claim_type == 'death':
+                        where_it_goes = (
+                            " - it is not recorded as anyone's own record and will "
+                            'not appear in anyone\'s summary box, chart node, GEDCOM, '
+                            'or WikiTree profile. ')
+                    else:
+                        where_it_goes = (
+                            " - it is not recorded as anyone's own record and will "
+                            'not appear in anyone\'s summary box or WikiTree profile. ')
                     if claim_type == 'baptism':
                         # Baptism shares birth's subject-role vocabulary
                         # (VITAL_SUBJECT_ROLES: child), so the repair mirrors

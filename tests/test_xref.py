@@ -255,6 +255,108 @@ class XrefTests(unittest.TestCase):
         result = xref.run_xref(self.archive_root)
         self.assertEqual(result['unscoped'], [])
 
+    def test_negated_death_claim_naming_two_people_no_roles_stays_unscoped(
+            self) -> None:
+        # #173 follow-up, SECOND round (post-merge Codex review): the first
+        # round's fix treated a `negated: true`, zero-role, 2+-person vital
+        # claim as automatically "about everyone named" (modeled on the
+        # marriage/divorce negation bullet), reasoning that a confirmed
+        # "neither of them died" has answered the question for everyone it
+        # names. Codex's follow-up review caught the over-correction: that
+        # reasoning only holds for a GENUINE joint negation. The identical
+        # zero-role shape is ALSO how a negated claim naming the real subject
+        # plus an incidental bystander looks ("it wasn't A who died - B just
+        # happened to be there too") - there is no way to tell the two apart
+        # from the claim alone, which is exactly `vital_subjects`'s case 2a
+        # ambiguity (#126), and negation only flips the assertion's polarity,
+        # not which named person the claim is about. So this shape reverts to
+        # the SAME `unscoped` treatment its positive counterpart already gets
+        # (test_death_claim_with_no_roles_at_all_naming_two_people_enters_
+        # neither_bucket above) - safe, consistent "ask a human via roles:"
+        # behavior, not a regression to the pre-#173 bug (which was about a
+        # POSITIVE ambiguous claim being silently mis-scoped as "everyone",
+        # a different problem than "an ambiguous claim isn't auto-compared
+        # until a human disambiguates it").
+        self._seed_persons_sources()
+        self.conn.execute("INSERT INTO persons(id, name, living, tier, path) VALUES "
+                           "('p-bbbbbbbbbb','Kin','false','curated','y.md')")
+        _insert_claim(self.conn, 'c-aaaaaaaaaa', 's-1111111111', 'death',
+                       'neither died, contrary to a rumor', date_edtf='1940',
+                       negated=1, persons=['p-aaaaaaaaaa', 'p-bbbbbbbbbb'])
+        _insert_claim(self.conn, 'c-bbbbbbbbbb', 's-2222222222', 'death',
+                       'died 1940', date_edtf='1940', persons=['p-aaaaaaaaaa'])
+        self.conn.commit()
+
+        result = xref.run_xref(self.archive_root)
+        # Excluded from every comparison bucket - no fabricated contradiction
+        # against Test Person's real death claim - and reported in `unscoped`
+        # instead so a human can add `roles: deceased:` to say which of them
+        # (if not both) the negation is actually about.
+        self.assertEqual(result['groups'], [])
+        unscoped_ids = [item['claim']['id'] for item in result['unscoped']]
+        self.assertEqual(unscoped_ids, ['c-aaaaaaaaaa'])
+
+    def test_negated_bystander_death_claim_does_not_contradict_bystanders_own_death(
+            self) -> None:
+        # The concrete failure case Codex's follow-up finding named: a
+        # negated claim naming the real subject (A) and an incidental
+        # bystander (B, "just happened to be there too") with no roles: map
+        # must not read as contradicting B's own, unrelated, accepted death
+        # claim. Guessing "about both" here (the over-corrected behavior)
+        # would flag B's real death record as contradicting a negation that
+        # was never about B in the first place.
+        self._seed_persons_sources()
+        self.conn.execute("INSERT INTO persons(id, name, living, tier, path) VALUES "
+                           "('p-bbbbbbbbbb','Bystander','false','curated','y.md')")
+        _insert_claim(self.conn, 'c-aaaaaaaaaa', 's-1111111111', 'death',
+                       "it wasn't Test Person who died - Bystander was just there too",
+                       date_edtf='1940', negated=1,
+                       persons=['p-aaaaaaaaaa', 'p-bbbbbbbbbb'])
+        _insert_claim(self.conn, 'c-bbbbbbbbbb', 's-2222222222', 'death',
+                       'Bystander died 1962, unrelated record', date_edtf='1962',
+                       persons=['p-bbbbbbbbbb'])
+        self.conn.commit()
+
+        result = xref.run_xref(self.archive_root)
+        # No group at all: the negated claim is unscoped (not in either
+        # person's bucket), so Bystander's own real death claim never gets
+        # compared against it.
+        self.assertEqual(result['groups'], [])
+        unscoped_ids = [item['claim']['id'] for item in result['unscoped']]
+        self.assertEqual(unscoped_ids, ['c-aaaaaaaaaa'])
+
+    def test_negated_death_claim_with_shared_deceased_role_compares_fine(self) -> None:
+        # A roled negation is NOT the ambiguous case 2a shape and must keep
+        # comparing normally either way: `roles: deceased:` (SPEC §8.3)
+        # explicitly names who a negation is about, the same as it does for a
+        # positive claim (test_death_claim_with_shared_deceased_role_not_
+        # added_to_unscoped above) - there is nothing left to disambiguate,
+        # so this is not affected by the case 2a reversion at all.
+        self._seed_persons_sources()
+        self.conn.execute("INSERT INTO persons(id, name, living, tier, path) VALUES "
+                           "('p-bbbbbbbbbb','Kin','false','curated','y.md')")
+        _insert_claim(self.conn, 'c-aaaaaaaaaa', 's-1111111111', 'death',
+                       'neither of them died in the wreck, contrary to reports',
+                       date_edtf='1940', negated=1,
+                       persons=['p-aaaaaaaaaa', 'p-bbbbbbbbbb'],
+                       roles={'p-aaaaaaaaaa': 'deceased', 'p-bbbbbbbbbb': 'deceased'})
+        _insert_claim(self.conn, 'c-bbbbbbbbbb', 's-2222222222', 'death',
+                       'died 1940', date_edtf='1940', persons=['p-aaaaaaaaaa'])
+        self.conn.commit()
+
+        result = xref.run_xref(self.archive_root)
+        self.assertEqual(result['unscoped'], [])
+        self.assertEqual(len(result['groups']), 1)
+        group = result['groups'][0]
+        self.assertEqual(group['person_name'], 'Test Person')
+        self.assertEqual(len(group['pairs']), 1)
+        pair = group['pairs'][0]
+        self.assertEqual(pair['kind'], 'contradicts')
+        self.assertEqual(
+            {pair['claim_a']['id'], pair['claim_b']['id']},
+            {'c-aaaaaaaaaa', 'c-bbbbbbbbbb'},
+        )
+
     def test_same_source_pair_excluded(self) -> None:
         self._seed_persons_sources()
         _insert_claim(self.conn, 'c-aaaaaaaaaa', 's-1111111111', 'birth',

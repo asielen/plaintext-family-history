@@ -60,13 +60,22 @@ fha install PATH-TO-YOUR-ARCHIVE --repo .        # Windows Command Prompt
 (Run it from inside this clone. The `fha` launcher sits right here beside this
 README, but a fresh clone is not on your `PATH` - hence the `./`.)
 
+> Already know your photos/documents live outside the archive (an external drive, an existing
+> library)? Edit `archive-template/fha.yaml`'s `roots:` in **this clone** before running
+> `install`, and the matching internal placeholder folder is never created in the first place.
+> Otherwise, install with the defaults and edit `fha.yaml` inside your new archive afterward -
+> `fha update-tools` removes the now-unneeded placeholder the next time you run it.
+
 That copies the whole operating layer - the program, its design package, the rulebooks, and the
 owner-facing docs - into the archive and records what it wrote, so `fha update-tools` can refresh
 it later. What "refresh" means is worth being precise about: your records,
 `fha.yaml`, your place registry, and your stylesheet are never touched. Tool
 files and rulebooks ARE replaced - if you edited one, your version is moved to
 `.plaintext-backup/` first and the new stock file takes its place, so the edit
-survives but stops being in effect until you re-apply it. The machinery lands in a hidden `.fha/` folder
+survives but stops being in effect until you re-apply it. One folder can also disappear on
+purpose: if `fha.yaml` points `documents:`, `photos:`, or `inbox:` outside the archive, its
+now-purposeless empty placeholder is removed too (recreated if you ever point it back inside).
+The machinery lands in a hidden `.fha/` folder
 so the archive root shows your genealogy rather than the program; your records, the rulebooks,
 `GETTING_STARTED.md`, `CHEATSHEET.md`, and `docs/` stay in plain sight. The archive is then
 **self-contained**: it works on any machine, offline, forever, even if this repo disappears.
@@ -118,7 +127,7 @@ The spec is written so that all of that tooling can be *regenerated* from the do
 
 ## What this is not
 
-- **Not a finished app.** Milestones 1-11 are implemented, including the intake pipeline (`fha process`, `fha capture`, `fha convert-mining`), the static-site generator (`fha site`), the installer/update tooling (`fha install`, `fha update-tools`), working-copy mode (`fha working-copy`), and the milestone 11 usage-feedback wave (`fha reconcile`, `fha source extract`, `fha process refile`, stub promotion).
+- **Not a finished app.** Milestones 1-11 are implemented, including the intake pipeline (`fha process`, `fha capture`, `fha convert-mining`), the static-site generator (`fha site`), the installer/update tooling (`fha install`, `fha update-tools`), working-copy mode (`fha working-copy`), and the milestone 11 usage-feedback wave (`fha reconcile`, `fha reorganize`, `fha source extract`, `fha process refile`, stub promotion).
 - **Not a database.** No server, no proprietary store. Files are the truth; the index is a disposable cache.
 - **Not a genealogy app that happens to store documents.** It is the inverse: an archive that *may* feed a genealogy app via export.
 - **Not a hosted service.** Your data lives on your disk, in formats you can read with a text editor.
@@ -140,6 +149,8 @@ Around those, a rebuildable **index** (SQLite, regenerated from the files) power
 The operating loop is simple: **capture → file → process → review → report**, with human review the only gate to an accepted fact.
 
 **One source, one piece of evidence.** A source's files are always copies or facets of *one* piece of evidence - fronts, backs, extra prints, pages, transcripts, even entries written across several sittings - never several separately published items bundled together just because they arrived at the same time (SPEC §7); two different letters, or two different newspaper clippings even about the same event, are two sources.
+
+**Kept for texture without becoming evidence.** A clipping or note that names no one in your family - period news, local color, general history kept on purpose for a future biography - files as `source_type: ephemera` (SPEC §14) rather than an ordinary source type. It's still kept and full-text searched, but it won't appear on any person's page, packet, or timeline as long as its `## Claims` block also stays person-free (the ordinary shape for a clipping like this - a claim naming someone reaches their page the same way a `people:` link would); find it through the generated site's homepage Sources list instead.
 
 **Linking, the human way.** You connect records by name. In any profile or note, cite a source or cross-link a person by writing the name in double brackets - `[[Grandpa Joe]]`, `[[Hartley family bible]]` - and a nickname works just as well. Don't worry about making an ID: name your file something sensible, link to it by name, and if you ever run the tools the linter quietly assigns the IDs and tidies everything. The five copy-paste templates in [`archive-template/`](archive-template/) give you a filled-in starting point for each record type.
 
@@ -228,9 +239,10 @@ the milestone 7 intake tools (`fha process`, `fha capture`, `fha convert-mining`
 the milestone 8 static-site generator (`fha site`), the milestone 9
 scaffolding tools (`fha install`/`fha update-tools`), the milestone 10 working-copy mode (`fha working-copy`),
 and the milestone 11 usage-feedback wave - `fha reconcile` (heal moved-document
-inventory paths), `fha source extract` (dump a PDF's text layer into a searchable
-companion), `fha process refile` (the sanctioned cross-root correction move), and
-stub promotion (`fha person promote` / `fha views brackets --fix-promote`).
+inventory paths), `fha reorganize` (bulk-tidy the documents root, never touching
+a human-organized folder), `fha source extract` (dump a PDF's text layer into a
+searchable companion), `fha process refile` (the sanctioned cross-root correction
+move), and stub promotion (`fha person promote` / `fha views brackets --fix-promote`).
 Plan 17 (2026-07) added a second front door onto the same tools: `fha serve`, the localhost
 workbench, plus the write-back verbs it drives - `fha claim new`, `fha person new`/`relate`/
 `estimate`/`edit`/`note`, `fha source note`, and `fha find --json`. The 2026-07 live review
@@ -266,7 +278,7 @@ milestone breakdown. The intended build sequence (detailed in `TOOLING.md` §15)
 - [x] working-copy mode - asset-less plain-text working copies synced to a second machine (toggle with `fha working-copy on/off`, which sets a git-ignored `WORKING_COPY` marker so the mode never syncs back): tools treat absent photos/documents as present-elsewhere (never "missing", never pruned), so you can write narratives and research against existing records anywhere (milestone 10 - SPEC §12.4 / TOOLING §13d)
 - [x] `fha backup` - one-command dated zip snapshot written outside the archive (records-only by default; `--include-assets` packs the mapped photo/document roots), verified after writing, with `fha doctor` reporting the real last-backup date; restore = unzip (2026-07 usability review, plan 04 - TOOLING §13e)
 - [x] `fha serve` - the localhost workbench: a private, editable browser front door onto the same tools, plus `fha claim new` (mint a claim by hand), `fha person new`/`relate`/`estimate`/`edit`/`note`, `fha source note`, and `fha find --json` (machine-readable search) (plan 17 - TOOLING_INTERFACE.md §1b)
-- [x] usage-feedback wave: `fha reconcile` (heal moved-document inventory paths, documents + photos in one command), `fha source extract` (dump a PDF's embedded text layer into a `role: extracted-text` companion, searchable after `fha index`), `fha process refile` (the sanctioned cross-root correction move, documents ⇄ photos), stub promotion (`fha person promote` / `fha views brackets --fix-promote`), grouped claim review (`fha claim` batch), and biography styles (milestone 11 - TOOLING §9/§14, SPEC §12.1/§13)
+- [x] usage-feedback wave: `fha reconcile` (heal moved-document inventory paths, documents + photos in one command), `fha reorganize` (bulk-tidy the documents root into `documents/{type}/`, checked in batches against `fha reconcile`, never touching a folder a human already organized by hand - issue #107), `fha source extract` (dump a PDF's embedded text layer into a `role: extracted-text` companion, searchable after `fha index`), `fha process refile` (the sanctioned cross-root correction move, documents ⇄ photos), stub promotion (`fha person promote` / `fha views brackets --fix-promote`), grouped claim review (`fha claim` batch), and biography styles (milestone 11 - TOOLING §9/§9a/§14, SPEC §12.1/§13)
 - [x] Ahnentafel realignment wave: couple-folder names gain their missing `+ second spouse` half (add-only, never rewrites a hand-crafted name), `fha views brackets --realign` (renames, moves, and stub promotions in ONE previewed pass - the recovery command after re-anchoring `root_person`, correcting a `sex:`, or accepting a new parent claim), W120 (a folder number that was silently guessed because a lone linked parent has no `sex:` recorded is now flagged with its one-line fix), and W127 (the anchor itself: a `root_person` who has a child on record numbers every couple folder one generation high, which no folder check can catch because the folders match that same count - reported by `fha lint` and `fha views brackets` alike, as a note rather than a defect); the capture browser extension now ships into every archive at `.fha/browser-companion/`, ready for chrome://extensions "Load unpacked" - no clone of this repo needed to use it (milestone 11.7 - TOOLING §7/§13c, SPEC §12.2)
 - [x] `root_generation` (`fha.yaml`): a researcher who anchors the archive at themselves no longer has to misname one of their own children as `root_person` to get the documented `#1 = the children, collectively` numbering (or has no way at all if childless) - `root_generation: self` (default, unchanged) keeps `root_person` at #1; `root_generation: children` anchors `root_person` at #2 instead, so their own generation numbers correctly without renaming who the archive is centred on. W127 (the anchor-too-high note) stands down the moment `root_generation: children` says the shape is deliberate; an unrecognized value is rejected with a plain fix rather than silently read as `self` (W129) (issue #72 - SPEC §12.2/§12.4)
 

@@ -310,6 +310,9 @@ fha views timeline|sources-index|brackets     regenerate views (--format html fo
 fha normalize-links          tidy citations/cross-links to the [[ ]] form (dry-run default)
 fha reconcile                re-tie moved files to their records (documents by filename S-id,
                             photos via the catalog) after the human reorganizes; --dry-run first
+fha reorganize [--apply]     bulk-tidy documents/: fold loose, still-machine-filed files into
+                            documents/{type}/ (never touches a folder a human already organized
+                            by hand); dry-run by default, fha reconcile re-checked after each batch
 fha photoindex find ...      query the photo library (never bulk-read photos/)
 fha photoindex gallery ...   the matching photos as one clickable HTML page under
                             generated/gallery/ (private, disposable, regenerate anytime)

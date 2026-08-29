@@ -3034,19 +3034,34 @@ class BirthClaimWithoutParentageW126Tests(unittest.TestCase):
 
 
 class UnscopedDeathBurialBaptismW132Tests(unittest.TestCase):
-    """W132 (#126, reopened): an accepted death/burial/baptism claim naming
-    two or more people with NO `roles:` map at all - `_lib.vital_subjects`'s
-    case 2a, where a claim like a burial record naming the deceased alongside
-    a grandchild who visited the grave used to read as both of their own
-    burials, and now (correctly) reads as neither's. Birth has W126 and
-    marriage/divorce have W125 for the equivalent silence; death/burial/
-    baptism never had a claim-specific warning at all, so this is the third
-    leg of that same table.
+    """W132 (#126, reopened): an accepted-or-needs-review death/burial/baptism
+    claim naming two or more people with NO `roles:` map at all -
+    `_lib.vital_subjects`'s case 2a, where a claim like a burial record naming
+    the deceased alongside a grandchild who visited the grave used to read as
+    both of their own burials, and now (correctly) reads as neither's. Birth
+    has W126 and marriage/divorce have W125 for the equivalent silence;
+    death/burial/baptism never had a claim-specific warning at all, so this
+    is the third leg of that same table.
 
-    Deliberately narrower than W125/W126: fires ONLY on the zero-role shape,
-    never when some role IS present but resolves to no subject either
-    (`vital_subjects`'s case 5) - that shape answered the question, just not
-    in anyone's favor, and stays silent by design.
+    Deliberately narrower than W125/W126 on ROLE SHAPE: fires ONLY on the
+    zero-role shape, never when some role IS present but resolves to no
+    subject either (`vital_subjects`'s case 5) - that shape answered the
+    question, just not in anyone's favor, and stays silent by design.
+
+    Deliberately WIDER than W125/W126 on STATUS AND POLARITY (#173
+    follow-up, second round): W125/W126 wait for `accepted, non-negated`
+    because they warn about a missing TREE EDGE, which only a claim of that
+    shape could ever have created. W132's case 2a is a different problem -
+    it is the exact shape `xref.py` puts in its own `unscoped_vital_claim_ids`
+    - so it matches `fha xref`'s own scope instead: `accepted` OR
+    `needs-review`, and EITHER polarity. A negated claim naming a genuine
+    subject and an incidental bystander with no `roles:` map is exactly as
+    ambiguous as the positive version of the same shape (negation flips
+    whether the event happened, not which named person it happened to), so
+    it must get the same `roles:` nudge - see
+    `test_negated_claim_warns`/`test_needs_review_claim_warns` below. Only a
+    `suggested`, disputed, or rejected claim stays silent, since `fha xref`
+    never compares those either.
     """
 
     A = 'P-d1d1d1d1d1'
@@ -3133,15 +3148,60 @@ class UnscopedDeathBurialBaptismW132Tests(unittest.TestCase):
         self.assertEqual(self._w132(self._build(roles_block=roles)), [])
 
     def test_suggested_claim_does_not_warn(self) -> None:
+        # `fha xref` never compares a `suggested` claim either (its own
+        # query reads only `accepted`/`needs-review`), so there is nothing
+        # yet for a `roles:` map to unblock - review (W102's backlog) comes
+        # first.
         self.assertEqual(self._w132(self._build(status='suggested')), [])
 
-    def test_needs_review_claim_does_not_warn(self) -> None:
-        self.assertEqual(self._w132(self._build(status='needs-review')), [])
+    def test_needs_review_claim_warns(self) -> None:
+        # #173 follow-up, second round: W132's case 2a now matches
+        # `fha xref`'s own scope, which compares BOTH accepted and
+        # needs-review claims - unlike W125/W126, which stay accepted-only
+        # because they warn about a tree edge only an accepted claim could
+        # have created.
+        w = self._w132(self._build(status='needs-review'))
+        self.assertEqual(len(w), 1)
+        self.assertIn('died', w[0].message)
 
-    def test_negated_claim_does_not_warn(self) -> None:
-        # "We researched it and found no death record" (SPEC §8.6) - a
-        # researched absence, not a record to attribute to anyone.
-        self.assertEqual(self._w132(self._build(negated=True)), [])
+    def test_negated_claim_warns(self) -> None:
+        # #173 follow-up, second round: a negated, zero-role, 2+-person claim
+        # ("neither A nor B died, contrary to a rumor") has the SAME
+        # bystander-vs-joint-subject ambiguity a positive claim of this shape
+        # has - it does not say WHICH of them the claim is about, only that
+        # the event didn't happen. An earlier version of this fix treated
+        # negation as automatically resolving the ambiguity (modeled on how
+        # marriage/divorce handles its own counterpart-less negation) and
+        # silenced this warning - but a vital event happens to exactly one
+        # person, unlike a marriage (a relationship BETWEEN the people it
+        # names), so that model does not transfer. This must still warn so a
+        # human can add `roles: deceased:` to say who the negation is
+        # actually about.
+        w = self._w132(self._build(negated=True))
+        self.assertEqual(len(w), 1)
+        self.assertIn('died', w[0].message)
+
+    def test_negated_needs_review_claim_warns(self) -> None:
+        # Both extensions at once: a needs-review, negated, zero-role,
+        # 2+-person claim must not fall into the dead end this fix exists to
+        # close - excluded from every `fha xref` comparison bucket AND
+        # invisible to the one lint check that would tell a human how to fix
+        # it.
+        w = self._w132(self._build(status='needs-review', negated=True))
+        self.assertEqual(len(w), 1)
+
+    def test_negated_claim_with_shared_deceased_role_does_not_warn(self) -> None:
+        # A roled negation is not case 2a and must stay silent either way:
+        # `roles: deceased:` (SPEC §8.3) names the subject(s) directly, so
+        # there is nothing left to disambiguate - mirrors
+        # test_roles_map_that_resolves_a_subject_is_clean above, with
+        # negated: true added to confirm polarity plays no part once the
+        # claim has actually answered the question.
+        roles = f'  roles:\n    deceased: [{self.A}, {self.B}]\n'
+        self.assertEqual(
+            self._w132(self._build(
+                persons=[self.A, self.B], roles_block=roles, negated=True)),
+            [])
 
     def test_a_birth_claim_never_draws_this_warning(self) -> None:
         # Birth's equivalent silence is W126's business, not W132's.
@@ -3168,6 +3228,82 @@ class UnscopedDeathBurialBaptismW132Tests(unittest.TestCase):
         w = self._w132(root)
         self.assertEqual(len(w), 1)
         self.assertNotIn(str(root), w[0].message)
+
+    def test_death_impact_text_names_chart_node_and_gedcom(self) -> None:
+        # #173 follow-up (post-merge Codex review, finding 2): `death` is the
+        # one type among W132's three that genuinely reaches every consumer
+        # named here - `gedcom._load_vitals` and `views._build_nodes_bulk`
+        # both query `c.type IN ('birth', 'death')`, so a death claim IS read
+        # by the GEDCOM writer and the tree's chart nodes once `roles:` scopes
+        # it. The full impact list stays accurate for this type.
+        w = self._w132(self._build(ctype='death'))
+        self.assertEqual(len(w), 1)
+        self.assertIn('chart node', w[0].message)
+        self.assertIn('GEDCOM', w[0].message)
+        self.assertIn('summary box', w[0].message)
+        self.assertIn('WikiTree profile', w[0].message)
+
+    def test_burial_impact_text_omits_chart_node_and_gedcom(self) -> None:
+        # The false-diagnosis Codex flagged: `gedcom._load_vitals` and
+        # `views._build_nodes_bulk` both hard-code `c.type IN ('birth',
+        # 'death')`, so a burial claim is never read by either one, roles:
+        # or no roles:. Promising the owner that adding `roles:` will restore
+        # a chart-node date or a GEDCOM BIRT/DEAT is a repair her fix cannot
+        # deliver - the impact text for burial must not name either consumer.
+        w = self._w132(self._build(ctype='burial', persons=[self.A, self.B]))
+        self.assertEqual(len(w), 1)
+        self.assertNotIn('chart node', w[0].message)
+        self.assertNotIn('GEDCOM', w[0].message)
+        self.assertIn('summary box', w[0].message)
+        self.assertIn('WikiTree profile', w[0].message)
+
+    def test_baptism_impact_text_omits_chart_node_and_gedcom(self) -> None:
+        # Same false-diagnosis as burial, for baptism - the type Codex's
+        # example named explicitly.
+        w = self._w132(self._build(ctype='baptism'))
+        self.assertEqual(len(w), 1)
+        self.assertNotIn('chart node', w[0].message)
+        self.assertNotIn('GEDCOM', w[0].message)
+        self.assertIn('summary box', w[0].message)
+        self.assertIn('WikiTree profile', w[0].message)
+
+    def test_needs_review_impact_text_promises_attribution_not_display(
+            self) -> None:
+        # #173 follow-up, third round: a genealogist who follows this
+        # warning on a needs-review claim and adds `roles:` gets
+        # attribution - the claim becomes comparable in `fha xref` - but NOT
+        # a summary box, chart node, GEDCOM, or WikiTree entry, since every
+        # one of those consumers independently requires `accepted`. The old
+        # unconditional wording promised the display outcome even here;
+        # this checks the branch that stops making that promise.
+        w = self._w132(self._build(status='needs-review'))
+        self.assertEqual(len(w), 1)
+        self.assertIn('not attributable to anyone yet', w[0].message)
+        self.assertIn('fha xref', w[0].message)
+        self.assertIn('once accepted', w[0].message)
+
+    def test_negated_impact_text_says_a_negated_claim_never_displays(
+            self) -> None:
+        # An accepted-but-negated claim has the same problem for a different
+        # reason: `xref.py`/`gedcom.py`/`views.py` all require a positive
+        # claim, so no amount of accepting will ever put a negated claim in
+        # front of any of those consumers. The wording must say so plainly
+        # rather than dangling an "once accepted" that this claim can never
+        # satisfy.
+        w = self._w132(self._build(negated=True))
+        self.assertEqual(len(w), 1)
+        self.assertIn('not attributable to anyone yet', w[0].message)
+        self.assertIn('a negated claim never does, by design', w[0].message)
+
+    def test_needs_review_negated_impact_text_leads_with_negation(
+            self) -> None:
+        # Both extensions at once: negation, not review status, is the
+        # reason display will never happen, so the negated wording must win
+        # even though the claim is also needs-review.
+        w = self._w132(self._build(status='needs-review', negated=True))
+        self.assertEqual(len(w), 1)
+        self.assertIn('a negated claim never does, by design', w[0].message)
+        self.assertNotIn('once accepted and not negated', w[0].message)
 
 
 class OrphanedRoleTargetW133Tests(unittest.TestCase):
@@ -3300,7 +3436,9 @@ class OrphanedRoleTargetW133Tests(unittest.TestCase):
     def test_fires_regardless_of_claim_status(self) -> None:
         # A broken roles:/persons: pairing is a hand-edit mistake the moment
         # it is written - it should surface before review, not only after
-        # acceptance (contrast with W125/W126/W132, which wait for accepted).
+        # acceptance (contrast with W125/W126, which wait for accepted, and
+        # W132, which waits for accepted-or-needs-review but still not
+        # suggested/disputed).
         roles = f'  roles:\n    deceased: [{self.DEAD}]\n'
         for status in ('suggested', 'needs-review', 'accepted', 'disputed'):
             with self.subTest(status=status):
@@ -4583,6 +4721,92 @@ class ReadExifKeywordsMemoryScopeTests(unittest.TestCase):
         self.assertEqual(len(calls), 3)   # 125 files -> 50 + 50 + 25
         for batch in calls:
             self.assertLessEqual(len(batch), lint._KEYWORD_BATCH_SIZE)
+
+
+class EphemeraPeopleW134Tests(unittest.TestCase):
+    """W134 (#191 follow-up, #114): source_type: ephemera requires people: to
+    stay strictly empty (SPEC §14). Before this check, a hand-edited (or
+    AI-drafted) ephemera source with a non-empty people: list passed lint
+    silently, got indexed into source_people, and wrongly surfaced on that
+    person's page/packet/timeline - exactly what the ephemera type exists to
+    promise never happens.
+    """
+
+    LISTED = 'P-1111111111'
+    SID = 'S-4444444444'
+
+    def _build(self, root: Path, *, source_type: str = 'ephemera',
+               people: str = '') -> None:
+        (root / 'fha.yaml').write_text('roots:\n  documents: documents\n',
+                                        encoding='utf-8')
+        (root / 'people').mkdir(parents=True, exist_ok=True)
+        (root / 'sources').mkdir(parents=True, exist_ok=True)
+        (root / 'people' / f'smith__ken_{self.LISTED}.md').write_text(
+            f'---\nid: {self.LISTED}\nname: Ken Smith\ntier: stub\n'
+            'living: false\n---\n\n# Ken Smith\n', encoding='utf-8')
+        people_line = f'people: [{people}]\n' if people else ''
+        (root / 'sources' / f'clipping_{self.SID.lower()}.md').write_text(
+            f'---\nid: {self.SID}\ntitle: Clipping\nsource_type: {source_type}\n'
+            f'{people_line}---\n\n## Notes\nLocal color, names no one.\n',
+            encoding='utf-8')
+
+    def _lint(self, root: Path):
+        from _lib import load_fha_yaml
+        findings, _reg = lint._run_lint_core(root, load_fha_yaml(root))
+        return findings
+
+    def test_ephemera_with_a_person_link_warns(self) -> None:
+        root = Path(tempfile.mkdtemp())
+        self._build(root, source_type='ephemera', people=self.LISTED)
+        w134 = [f for f in self._lint(root) if f.code == 'W134']
+        self.assertEqual(len(w134), 1)
+        self.assertIn('ephemera', w134[0].message)
+        self.assertIn(self.LISTED, w134[0].message)
+        self.assertIn('SPEC', w134[0].message)
+
+    def test_ephemera_with_empty_people_is_clean(self) -> None:
+        root = Path(tempfile.mkdtemp())
+        self._build(root, source_type='ephemera', people='')
+        w134 = [f for f in self._lint(root) if f.code == 'W134']
+        self.assertEqual(w134, [])
+
+    def test_non_ephemera_source_with_a_person_link_is_unaffected(self) -> None:
+        # The same people: link on an ordinary source type is exactly the
+        # normal, expected shape - W134 must never fire outside ephemera.
+        root = Path(tempfile.mkdtemp())
+        self._build(root, source_type='newspaper', people=self.LISTED)
+        w134 = [f for f in self._lint(root) if f.code == 'W134']
+        self.assertEqual(w134, [])
+
+    def test_ephemera_with_an_unresolved_name_link_still_warns(self) -> None:
+        # A people: entry that names nobody in the archive still contradicts
+        # the strict-empty rule the moment it's written - W134 does not wait
+        # for E005/resolution to judge it, unlike the index's own consumption.
+        root = Path(tempfile.mkdtemp())
+        self._build(root, source_type='ephemera', people='"[[Nobody Registered]]"')
+        w134 = [f for f in self._lint(root) if f.code == 'W134']
+        self.assertEqual(len(w134), 1)
+
+    def test_the_message_leads_with_retype_not_clear(self) -> None:
+        # #191 follow-up, round 4: the message used to offer "clear people:"
+        # as an unconditional first option - but per SPEC §14/the FAQ, naming
+        # someone genuinely in the archive (even in passing) disqualifies
+        # ephemera outright, so clearing the link there would just discard
+        # real evidence rather than fix the misclassification. "Clear" is
+        # only right for an erroneous or untracked-name entry - the message
+        # must lead with retype-and-keep and condition "clear" explicitly,
+        # not hand out "clear" as the first-listed, seemingly safe default.
+        root = Path(tempfile.mkdtemp())
+        self._build(root, source_type='ephemera', people=self.LISTED)
+        w134 = [f for f in self._lint(root) if f.code == 'W134']
+        self.assertEqual(len(w134), 1)
+        message = w134[0].message
+        retype_pos = message.index('re-type it')
+        clear_pos = message.index('clear people:')
+        self.assertLess(retype_pos, clear_pos,
+                         'retype-and-keep must be offered before clear people:')
+        self.assertIn('genuinely in your archive', message)
+        self.assertIn('does not really belong here', message)
 
 
 if __name__ == '__main__':

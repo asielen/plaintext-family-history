@@ -347,6 +347,15 @@ Do this at the end of any session where you added something you'd hate to lose.
 | `.fha/` | The machinery: the program itself, its design package, and the browser add-on. Hidden on purpose, so the archive root shows your genealogy rather than the tooling. You never edit anything in here. |
 | `generated/` | Built things - the family website, printable views, galleries. All rebuildable, none of it truth. |
 
+**One filing wrinkle worth knowing up front.** A clipping or note that doesn't name anyone in your
+family - period news, local color, general history kept on purpose for texture - files as
+`source_type: ephemera` instead of an ordinary source. It's still kept and still searchable, but it
+won't appear on any person's page, packet, or timeline (those are all reached by following a
+person's link, or a claim naming them - so this holds as long as its `## Claims` block, if any,
+also stays person-free, the ordinary shape for a clipping like this). Find it again through the
+generated site's homepage Sources list or full-text search - see [`docs/FAQ.md`](docs/FAQ.md) for
+the full rule.
+
 Everything is plain text or standard image files. You can open any of it with Notepad, TextEdit,
 or a photo viewer - no tool required, now or in fifty years. The tools only ever help; they're
 never the thing holding your archive together.
@@ -360,7 +369,10 @@ folders you like inside it - by type, by family line, by decade - anything you p
 folder keeps its spot when it's processed (something dropped loose at the drawer's top level
 gets filed into a type folder for you), and you can rearrange it later too: the ID tag in each
 filed item's name ties it to its evidence folder, so after a reshuffle one command
-(`fha reconcile`, or just ask the assistant) re-ties every moved file. (Photos are even freer: as you organize your library, the system never renames or moves them at all.) When
+(`fha reconcile`, or just ask the assistant) re-ties every moved file. If a big batch of imports
+ever leaves a real backlog of loose files behind, `fha reorganize` (or just ask) proposes the
+whole tidy-up at once - it only ever touches material still sitting exactly where a machine
+filed it, so anything you already organized by hand is left alone, untouched. (Photos are even freer: as you organize your library, the system never renames or moves them at all.) When
 you're not sure where a stray research note belongs, the "Where does a note go?" list in
 [`docs/FILING_CABINET.md`](docs/FILING_CABINET.md) answers it in four lines.
 
@@ -393,6 +405,10 @@ When a newer version comes out, `fha update-tools` refreshes that copy. Be clear
   stops being in effect until you re-apply it.
 - **Never deleted:** anything the update retires is moved aside and reported, never thrown away.
   You are always the one who throws things away.
+- **One folder can disappear, on purpose:** if `fha.yaml` points `documents:`, `photos:`, or
+  `inbox:` at somewhere outside the archive, the matching empty placeholder folder is removed too
+  (it would never hold anything) - that's expected, not data loss. Point the setting back inside
+  the archive and the next `fha update-tools` brings the folder back.
 
 The full ritual - preview, apply, review - is in [`docs/UPDATING.md`](docs/UPDATING.md).
 

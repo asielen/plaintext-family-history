@@ -50,6 +50,7 @@ fha find --text "Rose Hartley" --root my-family-archive   # search everything
 fha doctor   --root my-family-archive   # health check - run this when stuck
 fha lint     --root my-family-archive   # "is my archive shaped right?"
 fha reconcile --dry-run --root my-family-archive  # after reorganizing documents: preview re-ties, run without --dry-run to apply
+fha reorganize --root my-family-archive  # preview folding loose documents/ files into type folders; add --apply --yes to do it
 fha backup   --root my-family-archive   # dated zip beside the archive - restore = unzip
 fha update-tools --dry-run --repo . --root my-family-archive  # preview a tools update (docs/UPDATING.md)
 fha relate P-aaaa P-bbbb --root my-family-archive   # how are these two related?
@@ -130,13 +131,17 @@ just jot it as a hunch; the assistant keeps the unproved ones on the "still to s
 | `people/` | The people in your tree, in numbered family-couple folders. |
 | `places/` | The list of places, with their locations. |
 | `notes/` | Research in progress and your running questions. |
-| `fha.yaml` | The one settings file - where your photos and documents live. |
+| `fha.yaml` | The one settings file - where your photos and documents live. Point one outside the archive and its now-empty placeholder folder disappears too (that's expected). |
 | `.fha/` | The machinery (the program, its design package, the browser add-on). Hidden on purpose; never hand-edited. |
 | `generated/` | Built things - website, printable views, galleries. Rebuildable, never truth. |
 
 Everything is plain text or standard image files. Open any of it with Notepad, TextEdit, or a
 photo viewer - no tool required, now or in fifty years. It opens in **Obsidian** as-is too:
 Markdown, frontmatter, `[[wikilinks]]`, no import step.
+
+**A people-free clipping is `ephemera`, not lost.** A clipping or note that names no one in your
+family files as `source_type: ephemera` - kept and searchable, but it won't show up on any person's
+page. Find it via the site's homepage Sources list or `fha find --text`.
 
 ---
 

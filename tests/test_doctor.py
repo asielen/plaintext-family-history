@@ -1291,6 +1291,106 @@ class OrphanedBackPhotosTests(unittest.TestCase):
         self.assertEqual(check['status'], 'warn')
 
 
+class UnresolvedCompanionOwnerTests(unittest.TestCase):
+    """#193/#179 followup, round 4, finding 4: a mid-graduation research
+    companion (named before its id was minted, no trailing `_P-…` in its
+    filename) whose own frontmatter DOES carry a syntactically valid id,
+    but that id names no profile anywhere in the archive.
+
+    `fha site`'s Open Questions build already detects this exact state
+    (site.py's `_origin_id_from_frontmatter_is_by_request`) and withholds
+    the companion's questions with a "restore or create the profile"
+    warning - but that only reaches someone who runs `fha site`. lint.py's
+    own `is_companion` test requires `parse_filename` to succeed on the
+    FILENAME first, so an id-less filename never reaches it - the file
+    gets registered as the pid's PROFILE instead and lint reports E010
+    "missing required field", a genuinely different, misleading problem.
+    This is the standing doctor check that names the real one, for anyone
+    who runs `fha doctor` first (or instead of `fha site`)."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        _write(self.root / 'fha.yaml', 'roots: {}\n')
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _finding(self, result, check_id: str = 'unresolved_companion_owners'):
+        return next(
+            (c for c in result.data['checks'] if c['id'] == check_id),
+            None,
+        )
+
+    def test_id_less_companion_with_no_matching_profile_is_flagged(self) -> None:
+        _write(
+            self.root / 'people' / 'ghost__missing_research.md',
+            '---\nid: p-zzzzzzzzzz\ncreated: 2026-06-01\n---\n\n## Open Questions\n')
+
+        result = doctor.run_doctor(self.root, {})
+        report = '\n'.join(result.data['lines'])
+
+        self.assertIn('unresolved companion owner', report)
+        self.assertIn('ghost__missing_research.md', report)
+        self.assertIn('P-zzzzzzzzzz', report)
+        check = self._finding(result)
+        self.assertIsNotNone(
+            check, 'doctor must report an unresolved_companion_owners finding')
+        self.assertEqual(check['status'], 'warn')
+        self.assertGreaterEqual(result.exit_code, EXIT_WARNINGS)
+
+    def test_id_less_companion_with_a_real_profile_is_clean(self) -> None:
+        _write(self.root / 'people' / 'smith__alice_P-aaaaaaaaaa.md',
+               _PERSON.format(pid='P-aaaaaaaaaa', name='Alice Smith', living='true'))
+        _write(
+            self.root / 'people' / 'smith__alice_research.md',
+            '---\nid: p-aaaaaaaaaa\ncreated: 2026-06-01\n---\n\n## Open Questions\n')
+
+        result = doctor.run_doctor(self.root, {})
+
+        self.assertIsNone(
+            self._finding(result),
+            'a companion whose id resolves to a real profile must not be flagged')
+
+    def test_malformed_id_is_not_this_check(self) -> None:
+        # A malformed id: (fails is_valid_id) is a DIFFERENT, already-named
+        # problem - fha lint's own E002 - never this check's job.
+        _write(
+            self.root / 'people' / 'stray__owner_research.md',
+            '---\nid: P-abc\ncreated: 2026-06-01\n---\n\n## Open Questions\n')
+
+        result = doctor.run_doctor(self.root, {})
+
+        self.assertIsNone(self._finding(result))
+
+    def test_no_id_at_all_is_not_this_check(self) -> None:
+        # No id anywhere is the auto-mintable idless_records state (`fha
+        # lint --fix-ids` once the owner supplies the real id) - a
+        # different, already-served problem, not this check's job.
+        _write(
+            self.root / 'people' / 'ghost__unminted_research.md',
+            '---\ncreated: 2026-06-01\n---\n\n## Open Questions\n')
+
+        result = doctor.run_doctor(self.root, {})
+
+        self.assertIsNone(self._finding(result))
+
+    def test_hand_authored_idless_profile_is_not_this_check(self) -> None:
+        # A real, hand-authored profile with no filename id yet (its own
+        # frontmatter carries the SPEC §9 person-record fields) is a
+        # different, already-mintable state - never misread as an
+        # unresolved companion just because its stem ends in a companion-
+        # kind word (Marie Timeline Hartley's own shape, carries_person_
+        # record_fields's whole reason for existing).
+        _write(
+            self.root / 'people' / 'new__person_research.md',
+            '---\nname: New Person\nliving: true\n---\n\n# New Person\n')
+
+        result = doctor.run_doctor(self.root, {})
+
+        self.assertIsNone(self._finding(result))
+
+
 class RenderTests(unittest.TestCase):
     """_cmd_doctor renders data['lines'] verbatim and returns the exit code."""
 
