@@ -64,6 +64,15 @@ root; the launcher finds them there, and `update-tools` refreshes them in place.
    [`../GETTING_STARTED.md`](../GETTING_STARTED.md) and [`../CHEATSHEET.md`](../CHEATSHEET.md)
    at your archive's root are what replace it.)
 
+   **One folder can disappear, on purpose.** If `fha.yaml` points `documents:`, `photos:`, or
+   `inbox:` at somewhere outside the archive, the matching empty placeholder folder is *removed*
+   (not moved to `.plaintext-backup/`) the next time you update - it would never hold anything, so
+   there's nothing to move aside. That's expected, not data loss: it only ever happens to a folder
+   holding nothing but the tools' own starting scaffolding, verified byte-for-byte first, and
+   anything real inside it - a file you added, an edit to the starting note - leaves the folder
+   untouched. Point the setting back inside the archive and the next `fha update-tools` brings the
+   folder back.
+
 5. **If your archive is a git repository, commit the update** as its own commit, so tool
    updates never mix with record changes:
 

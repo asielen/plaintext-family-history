@@ -651,7 +651,7 @@
     {
       "path": ".fha/tools/scaffold.py",
       "category": "operating",
-      "sha256": "f0d517a76b4b55f72d34c67916c44f24eba760e10213deabfe094dba2eb157b6",
+      "sha256": "5f8faea6ee5735db78a520b5cb276818c3a6f59d39aceb9b7dfa87048fde5326",
       "spec_version": "1.2",
       "src": "tools/scaffold.py"
     },
@@ -945,7 +945,7 @@
     {
       "path": "docs/UPDATING.md",
       "category": "operating",
-      "sha256": "8b3bb78225c2089b355e497b00011171cf46d05dcb915c7a43ae2fd27a51c2c0",
+      "sha256": "dbb50a29a4bdb405e04a85457d7bef5f3f2d4ece9af8ad2cf0d86a37d7ac8909",
       "spec_version": "1.2"
     },
     {

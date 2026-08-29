@@ -2169,6 +2169,91 @@ class ExternalRootPruneFailureReportingTest(unittest.TestCase):
         self.assertTrue((self.archive / 'documents' / '.gitkeep').is_file())
 
 
+class PartialRmtreeFailureRestoresContentTest(unittest.TestCase):
+    """`shutil.rmtree` deletes one entry at a time - a locked file (antivirus,
+    a cloud-sync client, an open editor: all common on Windows specifically,
+    this project's own maintainer OS) can make it fail PARTWAY through,
+    after it has already deleted some of the placeholder folder's real
+    content. The old code only recorded a warning and left the folder
+    half-deleted - some content gone, the stamp still claiming the seed was
+    delivered intact, recoverable by neither a retry nor pointing the root
+    back. A partial failure must roll back to the pre-rmtree state instead
+    (#124 review round 6, finding 3).
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self.repo = _make_fake_repo_with_asset_dirs(self.tmp / 'repo')
+        self.archive = self.tmp / 'archive'
+        self.external = self.tmp / 'external'
+        (self.external / 'docs').mkdir(parents=True)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _point_documents_external(self):
+        docs_ext = (self.external / 'docs').as_posix()
+        _write(self.archive / 'fha.yaml', f'roots:\n  documents: {docs_ext}\n  photos: photos\n')
+
+    def _partial_rmtree(self, path, *args, **kwargs):
+        """Stand in for `shutil.rmtree`: delete one real entry, as a real
+        rmtree walk would, then fail as though it hit a locked file next.
+        """
+        target = Path(path) / '.gitkeep'
+        target.unlink()
+        raise OSError(13, 'Permission denied')
+
+    def test_partial_failure_restores_the_deleted_content(self):
+        scaffold.run_install(self.archive, self.repo)
+        original_bytes = (self.archive / 'documents' / '.gitkeep').read_bytes()
+        self._point_documents_external()
+
+        buf = io.StringIO()
+        with mock.patch.object(scaffold.shutil, 'rmtree',
+                               side_effect=self._partial_rmtree):
+            with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+                rc = scaffold.run_update_tools(self.archive, self.repo)
+        self.assertEqual(rc.exit_code, EXIT_WARNINGS)
+        self.assertIn('documents', buf.getvalue())
+
+        # The folder must not be left half-deleted: the file rmtree actually
+        # removed before failing is put back, with the exact bytes it had.
+        restored = self.archive / 'documents' / '.gitkeep'
+        self.assertTrue(restored.is_file())
+        self.assertEqual(restored.read_bytes(), original_bytes)
+
+    def test_partial_failure_does_not_claim_success_in_the_stamp(self):
+        # The failed alias must not silently vanish from the stamp's record
+        # of what this archive still has - it was rolled back, not removed.
+        scaffold.run_install(self.archive, self.repo)
+        self._point_documents_external()
+        with mock.patch.object(scaffold.shutil, 'rmtree',
+                               side_effect=self._partial_rmtree):
+            with contextlib.redirect_stdout(io.StringIO()), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                scaffold.run_update_tools(self.archive, self.repo)
+        stamp = json.loads((self.archive / '.plaintext-version').read_text(encoding='utf-8'))
+        self.assertIn('documents/.gitkeep', stamp['files'])
+
+    def test_recovers_cleanly_once_the_lock_clears(self):
+        # The real proof: once whatever was locking the file clears up, a
+        # normal retry finds the (restored) placeholder exactly as it was
+        # and prunes it cleanly - nothing was lost in between.
+        scaffold.run_install(self.archive, self.repo)
+        self._point_documents_external()
+        with mock.patch.object(scaffold.shutil, 'rmtree',
+                               side_effect=self._partial_rmtree):
+            with contextlib.redirect_stdout(io.StringIO()), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                scaffold.run_update_tools(self.archive, self.repo)
+        self.assertTrue((self.archive / 'documents' / '.gitkeep').is_file())
+        with contextlib.redirect_stdout(io.StringIO()):
+            rc = scaffold.run_update_tools(self.archive, self.repo)  # rmtree unmocked now
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertFalse((self.archive / 'documents').exists())
+
+
 class RestorePrunedPlaceholderUsesOldBytesTest(unittest.TestCase):
     """A stamp-write failure right after a prune must restore the exact bytes
     THIS RUN removed - not today's release, which can differ from what this
@@ -2654,6 +2739,84 @@ class RootsConfigBrokenTest(unittest.TestCase):
         self.assertFalse((self.archive / 'documents').exists())
 
 
+class RootsShapeInvalidTest(unittest.TestCase):
+    """A `roots:` value that parses as valid YAML but is the WRONG SHAPE - a
+    list instead of a mapping, or a mapping with a null value for one alias -
+    must not read as "readable" either: both are plausible hand-edit mistakes
+    (converting from a different format, a bad copy-paste), and both cause
+    real damage if trusted (#124 review round 6, finding 4).
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self.repo = _make_fake_repo_with_asset_dirs(self.tmp / 'repo')
+        self.archive = self.tmp / 'archive'
+        self.external = self.tmp / 'external'
+        (self.external / 'docs').mkdir(parents=True)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_list_shaped_roots_does_not_recreate_an_already_pruned_placeholder(self):
+        # roots: [documents] parses cleanly as a YAML list. Without the shape
+        # check, `external_asset_roots`/`_internal_root_renames` degrade a
+        # non-dict `roots:` to "nothing configured" - which would silently
+        # RECREATE a placeholder this archive owner deliberately pruned for
+        # an external root, the moment she mis-edits fha.yaml this way.
+        scaffold.run_install(self.archive, self.repo)
+        docs_ext = (self.external / 'docs').as_posix()
+        _write(self.archive / 'fha.yaml', f'roots:\n  documents: {docs_ext}\n  photos: photos\n')
+        scaffold.run_update_tools(self.archive, self.repo)  # prunes it
+        self.assertFalse((self.archive / 'documents').exists())
+
+        _write(self.archive / 'fha.yaml', 'roots: [documents]\n')
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+            rc = scaffold.run_update_tools(self.archive, self.repo)
+        self.assertEqual(rc.exit_code, EXIT_WARNINGS)
+        self.assertIn('roots', buf.getvalue())
+        self.assertFalse((self.archive / 'documents').exists())
+
+    def test_null_valued_alias_does_not_create_a_literal_none_folder(self):
+        # roots: {documents: null} is a perfectly fine MAPPING - the
+        # isinstance(roots, dict) guard alone lets it straight through - but
+        # str(None) == 'None' downstream would otherwise remap the
+        # placeholder onto a bogus literal `None/` folder.
+        scaffold.run_install(self.archive, self.repo)
+        _write(self.archive / 'fha.yaml', 'roots:\n  documents:\n  photos: photos\n')
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+            rc = scaffold.run_update_tools(self.archive, self.repo)
+        self.assertEqual(rc.exit_code, EXIT_WARNINGS)
+        self.assertIn('roots', buf.getvalue())
+        self.assertFalse((self.archive / 'None').exists())
+        # The ordinary literal placeholder is left alone, not remapped away.
+        self.assertTrue((self.archive / 'documents' / '.gitkeep').is_file())
+
+    def test_wrong_shape_still_updates_the_operating_layer(self):
+        scaffold.run_install(self.archive, self.repo)
+        _write(self.archive / 'fha.yaml', 'roots: [documents]\n')
+        (self.repo / 'tools' / 'atool.py').write_text('print("a newer tool")\n',
+                                                       encoding='utf-8')
+        scaffold._write_manifest(self.repo)
+        with contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(io.StringIO()):
+            rc = scaffold.run_update_tools(self.archive, self.repo)
+        self.assertEqual(rc.exit_code, EXIT_WARNINGS)  # the #124 gap alone
+        self.assertEqual(
+            (self.archive / '.fha' / 'tools' / 'atool.py').read_text(encoding='utf-8'),
+            'print("a newer tool")\n')
+
+    def test_a_properly_shaped_roots_is_unaffected(self):
+        scaffold.run_install(self.archive, self.repo)
+        docs_ext = (self.external / 'docs').as_posix()
+        _write(self.archive / 'fha.yaml', f'roots:\n  documents: {docs_ext}\n  photos: photos\n')
+        rc = scaffold.run_update_tools(self.archive, self.repo)
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertFalse((self.archive / 'documents').exists())
+
+
 class RemappedDestinationConflictTest(unittest.TestCase):
     """A syntactically valid but structurally CONFLICTING internal remap
     (`documents: fha.yaml/assets`, which would need `fha.yaml` to be both a
@@ -2768,6 +2931,91 @@ class RemappedDestinationAncestorFileTest(unittest.TestCase):
         rc = scaffold.run_install(self.archive, self.repo)
         self.assertEqual(rc, EXIT_CLEAN)
         self.assertTrue((self.archive / 'occupied' / 'assets' / '.gitkeep').is_file())
+
+
+class RemappedDestinationConflictOnUpdateTest(unittest.TestCase):
+    """The same structural-collision / blocked-ancestor preflight
+    (`RemappedDestinationConflictTest`, `RemappedDestinationAncestorFileTest`
+    above) must also run before `fha update-tools` mutates anything - not
+    just before a fresh `fha install` - because this is the path a real
+    archive owner is far more likely to hit: hand-editing an EXISTING
+    archive's `fha.yaml` to rename a root, onto something that happens to
+    collide, then running the update she runs routinely (#124 review round
+    6, finding 2). Without this preflight wired into update too, the run
+    would copy several unrelated operating files before finally failing the
+    remapped seed's own `mkdir` - a partial mutation and a raw filesystem
+    error instead of a clean, specific refusal before anything changed.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self.repo = _make_fake_repo_with_asset_dirs(self.tmp / 'repo')
+        self.archive = self.tmp / 'archive'
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _atool_path(self):
+        return self.archive / '.fha' / 'tools' / 'atool.py'
+
+    def test_conflicting_remap_is_refused_before_any_update_mutation(self):
+        scaffold.run_install(self.archive, self.repo)
+        original_atool = self._atool_path().read_text(encoding='utf-8')
+        # The owner hand-edits her ALREADY-INSTALLED archive's fha.yaml, not
+        # the workshop's template - the same edit RemappedDestinationConflictTest
+        # makes to archive-template/fha.yaml before a fresh install, but here
+        # made to a real, existing archive before an update.
+        _write(self.archive / 'fha.yaml',
+               'roots:\n  documents: fha.yaml/assets\n  photos: photos\n')
+        # If the collision were only caught after some files had already
+        # been copied, this changed tool would be one of them.
+        (self.repo / 'tools' / 'atool.py').write_text('print("a newer tool")\n',
+                                                       encoding='utf-8')
+        scaffold._write_manifest(self.repo)
+
+        with self.assertRaises(scaffold.ScaffoldError) as ctx:
+            scaffold.run_update_tools(self.archive, self.repo)
+        self.assertIn('fha.yaml', str(ctx.exception))
+        # Nothing changed: fha.yaml is still a plain file (not turned into a
+        # directory), and the tool that would have been updated by this run
+        # still has its ORIGINAL content, proving the refusal fired before
+        # any file was touched.
+        self.assertTrue((self.archive / 'fha.yaml').is_file())
+        self.assertFalse((self.archive / 'fha.yaml').is_dir())
+        self.assertEqual(self._atool_path().read_text(encoding='utf-8'), original_atool)
+
+    def test_conflicting_remap_is_refused_under_dry_run_too(self):
+        scaffold.run_install(self.archive, self.repo)
+        _write(self.archive / 'fha.yaml',
+               'roots:\n  documents: fha.yaml/assets\n  photos: photos\n')
+        with self.assertRaises(scaffold.ScaffoldError):
+            scaffold.run_update_tools(self.archive, self.repo, dry_run=True)
+
+    def test_blocked_ancestor_is_refused_before_any_update_mutation(self):
+        scaffold.run_install(self.archive, self.repo)
+        original_atool = self._atool_path().read_text(encoding='utf-8')
+        _write(self.archive / 'occupied', 'not a folder')
+        _write(self.archive / 'fha.yaml',
+               'roots:\n  documents: occupied/assets\n  photos: photos\n')
+        (self.repo / 'tools' / 'atool.py').write_text('print("a newer tool")\n',
+                                                       encoding='utf-8')
+        scaffold._write_manifest(self.repo)
+
+        with self.assertRaises(scaffold.ScaffoldError) as ctx:
+            scaffold.run_update_tools(self.archive, self.repo)
+        self.assertIn('occupied', str(ctx.exception))
+        self.assertEqual((self.archive / 'occupied').read_text(encoding='utf-8'),
+                          'not a folder')
+        self.assertEqual(self._atool_path().read_text(encoding='utf-8'), original_atool)
+
+    def test_non_conflicting_rename_via_update_is_unaffected(self):
+        scaffold.run_install(self.archive, self.repo)
+        _write(self.archive / 'fha.yaml',
+               'roots:\n  documents: archive-docs\n  photos: photos\n')
+        rc = scaffold.run_update_tools(self.archive, self.repo)
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertTrue((self.archive / 'archive-docs' / '.gitkeep').is_file())
 
 
 class FreshInstallTemplateConfigStrictTest(unittest.TestCase):
@@ -2946,6 +3194,86 @@ class RenamedThenExternalPlaceholderTest(unittest.TestCase):
         self.assertEqual(rc, EXIT_CLEAN)
         self.assertTrue((self.archive / 'renamed-photos' / '.gitkeep').is_file())
         self.assertFalse((self.archive / 'documents').exists())
+
+
+class NestedRenameThenExternalPlaceholderTest(unittest.TestCase):
+    """The same scenario as `RenamedThenExternalPlaceholderTest` above, but
+    the earlier internal rename put the placeholder at a NESTED folder
+    (`assets/archive-docs`, two segments) rather than a single top-level
+    name. Recognizing the former rename target by partitioning the recorded
+    stamp path at its FIRST slash only ever recovers a one-segment folder -
+    so for a nested rename this looked for `.gitkeep` under the wrong
+    reconstructed path, never found it, and the generic retired-file sweep
+    (which never checks bytes at all) then moved the archive owner's real
+    seed folder - potentially holding her own edited `_TEMPLATE.notes.md` -
+    into `.plaintext-backup/` as an ordinary retired tool file, unprotected
+    by the byte-verified prune logic that exists precisely to avoid that
+    (#124 review round 6, finding 1).
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self.repo = _make_fake_repo_with_asset_dirs(self.tmp / 'repo')
+        self.archive = self.tmp / 'archive'
+        self.external = self.tmp / 'external'
+        (self.external / 'docs').mkdir(parents=True)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _stamp(self):
+        return json.loads((self.archive / '.plaintext-version').read_text(encoding='utf-8'))
+
+    def _install_with_documents_nested_rename(self):
+        _write(self.repo / 'archive-template' / 'fha.yaml',
+               'roots:\n  documents: assets/archive-docs\n  photos: photos\n')
+        scaffold._write_manifest(self.repo)
+        scaffold.run_install(self.archive, self.repo)
+        self.assertTrue((self.archive / 'assets' / 'archive-docs' / '.gitkeep').is_file())
+        self.assertIn('assets/archive-docs/.gitkeep', self._stamp()['files'])
+
+    def test_the_nested_folder_is_found_and_pruned_not_retired(self):
+        self._install_with_documents_nested_rename()
+        docs_ext = (self.external / 'docs').as_posix()
+        _write(self.archive / 'fha.yaml', f'roots:\n  documents: {docs_ext}\n  photos: photos\n')
+        rc = scaffold.run_update_tools(self.archive, self.repo)
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertFalse((self.archive / 'assets' / 'archive-docs').exists())
+        self.assertNotIn('assets/archive-docs/.gitkeep', self._stamp()['files'])
+        # The proof this was PRUNED (byte-verified) and not swept as an
+        # ordinary "retired operating file": a retired file lands in
+        # .plaintext-backup/, a litter-verified prune just removes it.
+        self.assertFalse((self.archive / '.plaintext-backup').exists())
+
+    def test_real_content_in_the_nested_folder_survives(self):
+        self._install_with_documents_nested_rename()
+        _write(self.archive / 'assets' / 'archive-docs' / '_TEMPLATE.notes.md',
+               'grandpas real notes - do not lose this')
+        docs_ext = (self.external / 'docs').as_posix()
+        _write(self.archive / 'fha.yaml', f'roots:\n  documents: {docs_ext}\n  photos: photos\n')
+        rc = scaffold.run_update_tools(self.archive, self.repo)
+        self.assertEqual(rc, EXIT_CLEAN)
+        # Real content blocks the prune - the folder (and the owner's note)
+        # must survive, not vanish into .plaintext-backup/ via the generic
+        # retired-file sweep either.
+        self.assertEqual(
+            (self.archive / 'assets' / 'archive-docs' / '_TEMPLATE.notes.md')
+            .read_text(encoding='utf-8'),
+            'grandpas real notes - do not lose this')
+        self.assertFalse((self.archive / '.plaintext-backup').exists())
+
+    def test_reverting_to_the_nested_internal_rename_recreates_the_placeholder(self):
+        self._install_with_documents_nested_rename()
+        docs_ext = (self.external / 'docs').as_posix()
+        _write(self.archive / 'fha.yaml', f'roots:\n  documents: {docs_ext}\n  photos: photos\n')
+        scaffold.run_update_tools(self.archive, self.repo)
+        self.assertFalse((self.archive / 'assets' / 'archive-docs').exists())
+        _write(self.archive / 'fha.yaml',
+               'roots:\n  documents: assets/archive-docs\n  photos: photos\n')
+        rc = scaffold.run_update_tools(self.archive, self.repo)
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertTrue((self.archive / 'assets' / 'archive-docs' / '.gitkeep').is_file())
 
 
 class OrphanedRenamePruneStampFailureRestoreTest(unittest.TestCase):
