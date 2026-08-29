@@ -347,6 +347,15 @@ Do this at the end of any session where you added something you'd hate to lose.
 | `.fha/` | The machinery: the program itself, its design package, and the browser add-on. Hidden on purpose, so the archive root shows your genealogy rather than the tooling. You never edit anything in here. |
 | `generated/` | Built things - the family website, printable views, galleries. All rebuildable, none of it truth. |
 
+**One filing wrinkle worth knowing up front.** A clipping or note that doesn't name anyone in your
+family - period news, local color, general history kept on purpose for texture - files as
+`source_type: ephemera` instead of an ordinary source. It's still kept and still searchable, but it
+won't appear on any person's page, packet, or timeline (those are all reached by following a
+person's link, or a claim naming them - so this holds as long as its `## Claims` block, if any,
+also stays person-free, the ordinary shape for a clipping like this). Find it again through the
+generated site's homepage Sources list or full-text search - see [`docs/FAQ.md`](docs/FAQ.md) for
+the full rule.
+
 Everything is plain text or standard image files. You can open any of it with Notepad, TextEdit,
 or a photo viewer - no tool required, now or in fifty years. The tools only ever help; they're
 never the thing holding your archive together.
