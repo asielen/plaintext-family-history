@@ -274,44 +274,12 @@
   // resolution and stages one bundle per clipping (each its own source).
 
   const NP_URL_LABEL = 'Newspapers.com page + clipping (saved automatically)';
-  const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-
-  function npActive() {
-    return !!(state.np && state.np.ownClips && state.np.ownClips.length);
-  }
-
-  function npDate(iso) {
-    const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(iso || ''));
-    return m ? Number(m[3]) + ' ' + MONTHS[Number(m[2]) - 1] + ' ' + m[1] : String(iso || '');
-  }
-
-  function npPub(clip, np) {
-    return clip.publication || np.publication || { name: null, location: null };
-  }
-
-  function npTitle(clip, np) {
-    const pub = npPub(clip, np);
-    const bits = [];
-    if (pub.name) bits.push(pub.name);
-    const d = clip.pageDate || np.pageDate;
-    if (d) bits.push(npDate(d));
-    const pg = clip.pageNo || np.pageNo;
-    if (pg) bits.push('p. ' + pg);
-    return (clip.title || 'Newspapers.com clipping') + (bits.length ? ' - ' + bits.join(', ') : '');
-  }
-
-  function npCaption(clip, np) {
-    const pub = npPub(clip, np);
-    const bits = [];
-    if (pub.name) bits.push(pub.name + (pub.location ? ' (' + pub.location + ')' : ''));
-    const d = clip.pageDate || np.pageDate;
-    if (d) bits.push(npDate(d));
-    const pg = clip.pageNo || np.pageNo;
-    if (pg) bits.push('page ' + pg);
-    bits.push('Newspapers.com');
-    return [clip.title || 'Newspapers.com clipping', bits.join('  ·  ')];
-  }
-
+  // Titles, dates and citations live in lib/newspapers.js, where they are tested.
+  const npPub = (clip, np) => FHA.newspapers.publicationOf(clip, np);
+  const npTitle = (clip, np) => FHA.newspapers.title(clip, np);
+  const npCaption = (clip, np) => FHA.newspapers.caption(clip, np);
+  const npCitations = (clip, np) =>
+    FHA.newspapers.citations(clip, np, captureJson.accessedDate());
   // The machine-and-human-readable record of where the clipping sits, so the
   // combined view can be rebuilt later and the crop is never a mystery.
   function npNotes(clip, np, page) {
@@ -490,34 +458,6 @@
     }
   }
 
-  const LONG_MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July',
-    'August', 'September', 'October', 'November', 'December'];
-
-  function npLongDate(iso) {
-    const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(iso || ''));
-    return m ? LONG_MONTHS[Number(m[2]) - 1] + ' ' + Number(m[3]) + ', ' + m[1] : String(iso || '');
-  }
-
-  // The four styles Newspapers.com's own "Source Citation" button offers, in its
-  // exact wording (copied from the site's dialog, 2026-10-08).
-  function npCitations(clip, np) {
-    const pub = npPub(clip, np).name || 'Newspapers.com';
-    const date = npLongDate(clip.pageDate || np.pageDate);
-    const pg = clip.pageNo || np.pageNo;
-    const url = clip.url || '';
-    const title = clip.title || 'Clipping';
-    const accessed = npLongDate(captureJson.accessedDate());
-    return {
-      genealogy:
-        pub + ', ' + date + (pg ? ', Page ' + pg : '') + '. via Newspapers.com (' + url +
-        ' : accessed ' + accessed + '), clip page for ' + title +
-        (clip.username ? ' by user ' + clip.username : ''),
-      apa: pub + '. (' + date + '). ' + title + '. Newspapers.com. Retrieved ' + accessed + ', from ' + url,
-      mla: '"' + title + '" Newspapers.com, ' + pub + ', ' + date + ', ' + url,
-      chicago: '"' + title + '" Newspapers.com. ' + pub + ', ' + date + '. ' + url + '.',
-    };
-  }
-
   function npClipData(clip, np, ocr) {
     const pub = npPub(clip, np);
     return {
@@ -630,6 +570,7 @@
           : (clip.pageDate || np.pageDate || ''),
         sourceType: $('f-type').value || 'newspaper',
         repository: single ? $('f-repo').value.trim() : (npPub(clip, np).name || 'Newspapers.com'),
+        citation: npCitations(clip, np).genealogy,
         people: checkedPeople(),
         notes: [gatherNotes(false), npNotes(clip, np, page)].filter((t) => t && t.trim()).join('\n\n'),
         recipeHint: 'newspapers',
