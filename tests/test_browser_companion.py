@@ -85,6 +85,7 @@ class ManifestTestCase(unittest.TestCase):
             'src/lib/capture-json.js',
             'src/lib/bundle.js',
             'src/lib/native-host.js',
+            'src/lib/newspapers.js',
         ):
             self.assertTrue((COMPANION / rel).is_file(), f'missing {rel}')
 

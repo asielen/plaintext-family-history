@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Plaintext Family History (Capture)",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Stage an open genealogy record page into your archive's inbox as a capture bundle. Fast, forgiving capture now; structured review later.",
   "icons": {
     "16": "icons/icon16.png",

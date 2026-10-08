@@ -96,6 +96,41 @@ to turn if a step does not behave.
 
 ---
 
+## Newspapers.com clippings
+
+On Newspapers.com the add-on saves more than the page you see. Open a clipping
+(anyone's: opening it is the choice), or a newspaper page that has your own
+clippings on it, and click the toolbar button. The file-address box will say "Newspapers.com page + clipping
+(saved automatically)".
+
+When you click **Capture**, the add-on rebuilds the whole newspaper page at full
+resolution from the site's own image pieces. It fetches them one at a time with
+short random pauses, so a page takes about a minute; the panel shows its progress.
+Then it cuts out your clipping. Each clipping becomes its own source with three
+pictures:
+
+- `clipping.jpg` - the item itself, sharp enough to transcribe.
+- `page.jpg` - the whole page, so the date and the neighbouring items are kept.
+- `annotated.jpg` - the clipping on top and the page below, with the item boxed in
+  red. The box is ours, not the newspaper's.
+
+It also keeps `clipping-data.json`: who clipped it, its tags, the paper, place,
+date and page, all four of the site's "Source Citation" styles, and the site's
+machine-read text of the clipping. That text is often wrong, so it is kept out of
+the archive's search and is for finding words only - transcribe from the picture.
+The Genealogy citation and the tags also go into the source's notes.
+
+On a clipping page, that clipping is saved, whoever made it; your own other
+clippings on the same page appear as tick boxes you can add. On the page viewer,
+only your own clippings are offered, and other members' clippings are skipped.
+Each clipping you tick is saved as its own source. If Newspapers.com asks the add-on to slow down, it waits and tries
+again, and stops with a plain message if the site keeps refusing.
+
+Your page's image pass lasts a day, so if a capture is refused, reload the page
+and try again.
+
+---
+
 ## What it will not do
 
 - It only reads the page you are looking at, in your own browser session, when

@@ -436,6 +436,21 @@ class CaptureTestCase(unittest.TestCase):
         # (proves the harvest_date path still fires).
         self.assertEqual(meta['source_date'], '1898')
 
+    def test_newspapers_article_url_keeps_the_clip_link(self) -> None:
+        # Today's clipping address is /article/{slug}/{id}/; the upstream clip
+        # link must still be recovered from it, as from the older /clip/{id}/.
+        from capture_recipes.newspapers import _clip_id
+        self.assertEqual(_clip_id(
+            'https://www.newspapers.com/article/the-daily-news-obit-smith/123456/'), '123456')
+        self.assertEqual(_clip_id('https://www.newspapers.com/article/123456/'), '123456')
+        self.assertEqual(_clip_id('https://www.newspapers.com/clip/42/x/'), '42')
+        self.assertIsNone(_clip_id('https://www.newspapers.com/image/1046785212/'))
+        rc = self._capture(_sample('newspapers'),
+                           url='https://www.newspapers.com/article/the-gazette-x/987654/')
+        self.assertEqual(rc, EXIT_CLEAN)
+        urls = [l['url'] for l in read_record(self._only_stub())['meta']['external_links']]
+        self.assertIn('https://www.newspapers.com/clip/987654/', urls)
+
     def test_newspapers_wholepage_full_date_and_clean_citation(self) -> None:
         # EX3 shape: nav-style og:title, full date in og:description, no clip id.
         rc = self._capture(_sample('newspapers-wholepage'),
