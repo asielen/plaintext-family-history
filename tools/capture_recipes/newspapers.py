@@ -68,14 +68,17 @@ def _parse_full_date(text: str | None) -> tuple[str | None, str | None]:
 
 
 def _clip_id(url: str | None) -> str | None:
-    """The Newspapers.com clipping id from a `clipping_id=` param or `/clip/<id>/`."""
+    """The Newspapers.com clipping id from a `clipping_id=` param, `/clip/<id>/`,
+    or today's `/article/<slug>/<id>/` (also `/article/<id>/`) - the address a
+    clipping opened on the site now carries, so its upstream link is kept."""
     if not url:
         return None
     parsed = urllib.parse.urlparse(url)
     qs = urllib.parse.parse_qs(parsed.query)
     if qs.get('clipping_id'):
         return qs['clipping_id'][0]
-    m = re.search(r'/clip/(\d+)', parsed.path)
+    m = (re.search(r'/clip/(\d+)', parsed.path)
+         or re.match(r'/article/(?:[^/]+/)?(\d+)/?$', parsed.path))
     return m.group(1) if m else None
 
 
