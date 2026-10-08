@@ -187,7 +187,13 @@ no-op, the bundles land in `inbox/` directly.
   never on any other site (the hand-test plan is
   [`ANCESTRY-AUTOFETCH-TEST.md`](ANCESTRY-AUTOFETCH-TEST.md)). A page whose image
   is served over the open IIIF standard gets the same one-image treatment,
-  fetched without credentials.
+  fetched without credentials. A second scoped exception, Newspapers.com only:
+  opening the panel on a clipping or page reads the page's list of clippings
+  (the same request its viewer makes, at most a few pages of 25), and Capture
+  rebuilds that one newspaper page from the viewer's own image tiles - one tile
+  at a time with 1.5-4 s pauses, backing off when the site asks - plus one
+  request per extra clipping you ticked, for its text. One page per Capture,
+  only the clippings you chose; never your whole clippings list.
 - No local machine paths leak, `capture.json` carries the page URL, never a disk
   path.
 - Everything enters review as **pre-source**. The S-id, the claims, the person
@@ -216,10 +222,12 @@ src/
     iiif.js            IIIF Image-API URL rewriting (canonical; ditto)
     people-harvest.js  JSON-LD person harvest (canonical; ditto)
     capture-readiness.js  the "record detail looks empty" phrases (canonical; ditto)
+    newspapers-page-data.js  reads a Newspapers.com page's embedded data (canonical; ditto)
+    newspapers.js      rebuilds a Newspapers.com page from tiles; clipping, annotated view, citations
 test-bundle/           an example "both" bundle in the exact output shape (round-trip test)
 ```
 
-content.js is an injected classic script, so it cannot `import`: the four
+content.js is an injected classic script, so it cannot `import`: the five
 canonical modules above have hand-kept copies inside it, and
 `tests/test-sync.js` re-runs both sides through the same battery so a drift is a
 failing build rather than a hope.

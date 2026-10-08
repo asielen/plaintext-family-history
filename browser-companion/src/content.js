@@ -621,10 +621,15 @@
   // resolution from tiles and cut each clipping out of it (see lib/newspapers.js).
   // This side only READS: the embedded data, plus the one same-origin list of
   // clippings on the page the viewer itself requests on load.
+  // The pure parsers below are a COPY of lib/newspapers-page-data.js (the
+  // canonical, tested module); tests/test-sync.js fails if they drift.
+  // FHA-SYNC-BEGIN newspapers
+  // Which kind of Newspapers.com address this is: a clipping page (`article`,
+  // also the older /clip/{id}/) or the page viewer (`image`); null otherwise.
   function npPageKind(href) {
     let u;
     try {
-      u = new URL(href || location.href);
+      u = new URL(href);
     } catch (e) {
       return null;
     }
@@ -645,8 +650,7 @@
   }
 
   // The site is a Next.js app: its data rides in `self.__next_f.push([1,"…"])`
-  // script strings. Decoding those strings yields plain JSON text to search;
-  // the raw DOM with its escaped quotes undone is the fallback.
+  // script strings. Decoding those strings yields plain JSON text to search.
   function npFlightFrom(scriptTexts) {
     let out = '';
     const re = /self\.__next_f\.push\(\[\d+,("(?:[^"\\]|\\.)*")\]\)/g;
@@ -665,22 +669,8 @@
     return out;
   }
 
-  function npFlightText() {
-    const live = npFlightFrom([...document.scripts].map((s) => s.textContent || ''));
-    return live || document.documentElement.outerHTML.replace(/\\"/g, '"');
-  }
-
-  // The site navigates between clippings and pages without reloading, so the
-  // data embedded at first load can describe an EARLIER record. When it does not
-  // match the address bar, re-read the current address (one same-origin GET).
-  async function npFreshFlightText() {
-    const resp = await fetch(location.href, { credentials: 'include' });
-    if (!resp.ok) return '';
-    const html = await resp.text();
-    return npFlightFrom([html]) || html.replace(/\\"/g, '"');
-  }
-
-  // The JSON object starting at text[start] (a '{'), parsed, or null.
+  // The JSON object starting at text[start] (a '{'), parsed, or null. Braces
+  // inside strings do not count, so a title holding "}" cannot cut it short.
   function npObjectAt(text, start) {
     let depth = 0;
     let inStr = false;
@@ -722,7 +712,9 @@
     }
   }
 
-  function npClip(c) {
+  // One clipping, from the page data or the clipping list, in the shape the
+  // panel uses. `toAbs` makes the site's relative clipping url absolute.
+  function npClip(c, toAbs) {
     const raw = Array.isArray(c.rectangles) && c.rectangles.length ? c.rectangles : [c.rectangle];
     const rects = raw
       .filter((r) => r && r.width > 0 && r.height > 0)
@@ -749,9 +741,9 @@
       publication: c.publication
         ? { name: c.publication.name || null, location: c.publication.location || null }
         : null,
-      url: c.url ? absUrl(c.url) : null,
+      url: c.url ? (toAbs ? toAbs(c.url) : c.url) : null,
       // The site's machine OCR of the clipping: a "$<id>" pointer to a text
-      // chunk in the page data (resolved by npOcrText), or occasionally inline.
+      // chunk in the page data (resolved by npTextChunk), or occasionally inline.
       ocrRef: typeof c.ocr === 'string' && c.ocr.charAt(0) === '$' ? c.ocr.slice(1) : null,
       ocr: typeof c.ocr === 'string' && c.ocr.charAt(0) !== '$' ? c.ocr : null,
     };
@@ -760,7 +752,7 @@
   // Resolve a "$<id>" text chunk in the page data: `<id>:T<hex byte length>,<text>`.
   // The length counts UTF-8 bytes, so walk characters until the bytes run out.
   function npTextChunk(text, ref) {
-    if (!ref) return null;
+    if (!ref || !/^[0-9a-z]+$/i.test(ref)) return null;
     const re = new RegExp('(?:^|[^0-9a-z])' + ref + ':T([0-9a-f]+),');
     const m = re.exec(text);
     if (!m) return null;
@@ -773,6 +765,46 @@
       i += cp > 0xffff ? 2 : 1;
     }
     return text.slice(start, i);
+  }
+
+  // Did the signed-in member make this clipping? By user id, else by username.
+  function npIsMine(c, me) {
+    return (
+      (!!me.id && c.userId === me.id) ||
+      (!!me.username && !!c.username && c.username.toLowerCase() === me.username.toLowerCase())
+    );
+  }
+
+  // Which clippings to offer (owner decision, 2026-10-08):
+  //   - on a clipping page, THAT clipping, whoever made it - opening it is the
+  //     choice - first, then your own other clippings on the page;
+  //   - on the page viewer (`opened` null), only your own clippings.
+  // Returns { offered, otherClipCount, focusOwner } where focusOwner names the
+  // clipper of an opened clipping that is not yours.
+  function npOffered(clips, opened, me) {
+    const offered = clips.filter((c) => npIsMine(c, me));
+    if (opened && !npIsMine(opened, me)) offered.unshift(opened);
+    return {
+      offered,
+      otherClipCount: clips.filter((c) => !offered.some((o) => o.id === c.id)).length,
+      focusOwner: opened && !npIsMine(opened, me) ? opened.username || 'another member' : null,
+    };
+  }
+  // FHA-SYNC-END newspapers
+
+  function npFlightText() {
+    const live = npFlightFrom([...document.scripts].map((s) => s.textContent || ''));
+    return live || document.documentElement.outerHTML.replace(/\\"/g, '"');
+  }
+
+  // The site navigates between clippings and pages without reloading, so the
+  // data embedded at first load can describe an EARLIER record. When it does not
+  // match the address bar, re-read the current address (one same-origin GET).
+  async function npFreshFlightText() {
+    const resp = await fetch(location.href, { credentials: 'include' });
+    if (!resp.ok) return '';
+    const html = await resp.text();
+    return npFlightFrom([html]) || html.replace(/\\"/g, '"');
   }
 
   // The clipping's OCR from page data `text` (full chunk), else the page's
@@ -801,7 +833,7 @@
       const raw = npObjectAfter(text, 'clipping');
       if (!raw || raw.clipping_id !== clippingId) return { ok: false, error: 'clipping page did not match' };
       const doc = new DOMParser().parseFromString(html, 'text/html');
-      const ocr = npOcrText(text, npClip(raw), doc);
+      const ocr = npOcrText(text, npClip(raw, absUrl), doc);
       return { ok: true, ocr };
     } catch (e) {
       return { ok: false, error: String(e) };
@@ -857,11 +889,13 @@
 
     const clips = [];
     let pageId = where.pageId;
-    const own = npObjectAfter(text, 'clipping');
-    if (own && own.clipping_id) {
-      const c = npClip(own);
-      clips.push(c);
-      pageId = pageId || c.pageId;
+    // The clipping this page's data describes. It is the first entry in
+    // `clips`, and the same object is offered, so its OCR travels with it.
+    const ownRaw = npObjectAfter(text, 'clipping');
+    const focusClip = ownRaw && ownRaw.clipping_id ? npClip(ownRaw, absUrl) : null;
+    if (focusClip) {
+      clips.push(focusClip);
+      pageId = pageId || focusClip.pageId;
     }
     if (!pageId) {
       return { ok: false, error: 'could not find which newspaper page this clipping is on - reload and try again' };
@@ -884,7 +918,7 @@
         const j = await r.json();
         const batch = (j && j.clippings) || [];
         for (const c of batch) {
-          if (!clips.some((x) => x.id === c.clipping_id)) clips.push(npClip(c));
+          if (!clips.some((x) => x.id === c.clipping_id)) clips.push(npClip(c, absUrl));
         }
         if (batch.length < NP_LIST_PAGE) break;
       }
@@ -930,29 +964,18 @@
     const pagePub = pageObj && pageObj.publicationTitle
       ? { name: pageObj.publicationTitle, location: pageObj.location || null }
       : null;
-    const mine = (c) =>
-      (!!me.id && c.userId === me.id) ||
-      (!!me.username && c.username.toLowerCase() === me.username.toLowerCase());
-    const focusOwnClip = own && own.clipping_id ? npClip(own) : null;
-    // Which clippings to offer (owner decision, 2026-10-08):
-    //   • on a clipping page, THAT clipping, whoever made it - opening it is the
-    //     choice - plus your own other clippings on the page, unticked;
-    //   • on the page viewer, only your own clippings.
-    const opened = where.kind === 'article' && focusOwnClip ? focusOwnClip : null;
+    // Which clippings to offer is npOffered's rule (owner decision): on a
+    // clipping page, the one opened plus your own; on the viewer, your own.
+    const opened = where.kind === 'article' ? focusClip : null;
     if (opened) {
       const live = npOcrText(text, opened, document);
       if (live) opened.ocrText = live;
-      const inList = clips.find((c) => c.id === opened.id);
-      if (inList && live) inList.ocrText = live;
     }
-    const offered = clips.filter(mine);
-    if (opened && !mine(opened)) offered.unshift(opened);
-    // npClip objects are fresh per list entry; make sure the opened one carries its text.
-    for (const c of offered) if (opened && c.id === opened.id && !c.ocrText) c.ocrText = opened.ocrText;
+    const { offered, otherClipCount, focusOwner } = npOffered(clips, opened, me);
     return {
       ok: true,
       kind: where.kind,
-      focusClipId: where.clippingId || (focusOwnClip && focusOwnClip.id) || null,
+      focusClipId: where.clippingId || (focusClip && focusClip.id) || null,
       pageId,
       pageWidth,
       pageHeight,
@@ -962,9 +985,8 @@
       pageDate: (pageObj && pageObj.date) || first.pageDate || null,
       pageNo: (pageObj && pageObj.title) || first.pageNo || null,
       ownClips: offered,
-      otherClipCount: clips.filter((c) => !offered.some((o) => o.id === c.id)).length,
-      focusOwner:
-        focusOwnClip && !mine(focusOwnClip) ? focusOwnClip.username || 'another member' : null,
+      otherClipCount,
+      focusOwner,
     };
   }
 

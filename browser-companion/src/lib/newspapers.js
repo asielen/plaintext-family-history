@@ -59,6 +59,18 @@
     );
   }
 
+  // The page cut into the viewer's own tile grid: [x, y, w, h] in page pixels,
+  // row by row, the last column and row trimmed to the page edge.
+  function tileGrid(W, H) {
+    const tiles = [];
+    for (let y = 0; y < H; y += TILE_H) {
+      for (let x = 0; x < W; x += TILE_W) {
+        tiles.push([x, y, Math.min(TILE_W, W - x), Math.min(TILE_H, H - y)]);
+      }
+    }
+    return tiles;
+  }
+
   // One tile, with backoff on "slow down" answers. onWait(seconds, status) lets
   // the panel say why it has gone quiet.
   async function fetchTile(url, onWait) {
@@ -110,12 +122,7 @@
     ctx.fillStyle = '#fff';
     ctx.fillRect(0, 0, W, H);
 
-    const tiles = [];
-    for (let y = 0; y < H; y += TILE_H) {
-      for (let x = 0; x < W; x += TILE_W) {
-        tiles.push([x, y, Math.min(TILE_W, W - x), Math.min(TILE_H, H - y)]);
-      }
-    }
+    const tiles = tileGrid(W, H);
     let reduced = 0;
     for (let i = 0; i < tiles.length; i++) {
       if (i) await sleep(between(PAUSE_MS[0], PAUSE_MS[1]));
@@ -234,9 +241,82 @@
     return out;
   }
 
+  // ── Words: titles, captions, citations ─────────────────────────────────────
+  // Pure (no canvas, no network), so tests/test-newspapers.js can drive them.
+
+  const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const LONG_MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July',
+    'August', 'September', 'October', 'November', 'December'];
+
+  // "1931-03-03" -> "3 Mar 1931"; anything else comes back as given.
+  function shortDate(iso) {
+    const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(iso || ''));
+    return m ? Number(m[3]) + ' ' + MONTHS[Number(m[2]) - 1] + ' ' + m[1] : String(iso || '');
+  }
+
+  // "1931-03-03" -> "March 3, 1931", the form the site's citations use.
+  function longDate(iso) {
+    const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(iso || ''));
+    return m ? LONG_MONTHS[Number(m[2]) - 1] + ' ' + Number(m[3]) + ', ' + m[1] : String(iso || '');
+  }
+
+  // The clipping's paper, else the page's, else nothing known.
+  function publicationOf(clip, info) {
+    return clip.publication || info.publication || { name: null, location: null };
+  }
+
+  // "{clip title} - {paper}, {D Mon YYYY}, p. {n}"
+  function title(clip, info) {
+    const pub = publicationOf(clip, info);
+    const bits = [];
+    if (pub.name) bits.push(pub.name);
+    const d = clip.pageDate || info.pageDate;
+    if (d) bits.push(shortDate(d));
+    const pg = clip.pageNo || info.pageNo;
+    if (pg) bits.push('p. ' + pg);
+    return (clip.title || 'Newspapers.com clipping') + (bits.length ? ' - ' + bits.join(', ') : '');
+  }
+
+  // The two caption lines drawn on top of the annotated view.
+  function caption(clip, info) {
+    const pub = publicationOf(clip, info);
+    const bits = [];
+    if (pub.name) bits.push(pub.name + (pub.location ? ' (' + pub.location + ')' : ''));
+    const d = clip.pageDate || info.pageDate;
+    if (d) bits.push(shortDate(d));
+    const pg = clip.pageNo || info.pageNo;
+    if (pg) bits.push('page ' + pg);
+    bits.push('Newspapers.com');
+    return [clip.title || 'Newspapers.com clipping', bits.join('  ·  ')];
+  }
+
+  // The four styles Newspapers.com's own "Source Citation" button offers, in its
+  // exact wording (copied from the site's dialog, 2026-10-08). `accessed` is
+  // the capture day, YYYY-MM-DD.
+  function citations(clip, info, accessed) {
+    const pub = publicationOf(clip, info).name || 'Newspapers.com';
+    const date = longDate(clip.pageDate || info.pageDate);
+    const pg = clip.pageNo || info.pageNo;
+    const url = clip.url || '';
+    const name = clip.title || 'Clipping';
+    const when = longDate(accessed);
+    return {
+      genealogy:
+        pub + ', ' + date + (pg ? ', Page ' + pg : '') + '. via Newspapers.com (' + url +
+        ' : accessed ' + when + '), clip page for ' + name +
+        (clip.username ? ' by user ' + clip.username : ''),
+      apa: pub + '. (' + date + '). ' + name + '. Newspapers.com. Retrieved ' + when + ', from ' + url,
+      mla: '"' + name + '" Newspapers.com, ' + pub + ', ' + date + ', ' + url,
+      chicago: '"' + name + '" Newspapers.com. ' + pub + ', ' + date + '. ' + url + '.',
+    };
+  }
+
   function toJpeg(canvas) {
     return canvas.convertToBlob({ type: 'image/jpeg', quality: JPEG_QUALITY });
   }
 
-  FHA.newspapers = { fullPage, clipCanvas, combined, toJpeg };
+  FHA.newspapers = {
+    fullPage, clipCanvas, combined, toJpeg, tileGrid,
+    shortDate, longDate, publicationOf, title, caption, citations,
+  };
 })();

@@ -302,6 +302,9 @@
     if (fields.sourceDate) out.source_date = fields.sourceDate;
     if (fields.sourceType) out.source_type = fields.sourceType;
     if (fields.repository && fields.repository.trim()) out.repository = fields.repository.trim();
+    // A citation the page itself supplied (a site's own "cite this"), which
+    // ingest prefers over the recipe's assembled guess.
+    if (fields.citation && fields.citation.trim()) out.citation = fields.citation.trim();
 
     // Normalize the asset list: drop entries with no file, keep role/mode and a
     // provisional flag only when true (omit the noise). The list is always
