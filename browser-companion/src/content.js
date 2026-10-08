@@ -23,8 +23,12 @@
   // Guard against double-injection: invoking the panel twice on one page must
   // not register two message listeners (which would send two responses and
   // trip "message channel closed" errors).
-  if (window.__fhaCaptureInjected) return;
-  window.__fhaCaptureInjected = true;
+  // Versioned: a page that still holds a content script from an EARLIER copy
+  // of the extension (reloading the extension does not unload it) gets this
+  // newer one registered too; the orphaned old one can no longer answer.
+  const FHA_CONTENT_VERSION = '0.2.0-newspapers';
+  if (window.__fhaCaptureInjected === FHA_CONTENT_VERSION) return;
+  window.__fhaCaptureInjected = FHA_CONTENT_VERSION;
 
   // Bounds for the single-file inliner so an image-heavy page can't spin
   // forever or bloat the snapshot past what a download can hold. Honest limits,
@@ -607,6 +611,385 @@
     return { ok: false, error: lastError };
   }
 
+
+  // ── Newspapers.com clippings (page + clipping, full resolution) ──────────────
+  // Newspapers.com has no downloadable original: its "Download PDF" fetches a
+  // 2048px JPEG and builds the PDF in the browser, and its viewer draws the page
+  // from tiles. What it DOES expose, in the page's own embedded data, is every
+  // clipping's rectangle on the page, the page's full size, and a day-long page
+  // pass that its tile service accepts. So the panel can rebuild the page at full
+  // resolution from tiles and cut each clipping out of it (see lib/newspapers.js).
+  // This side only READS: the embedded data, plus the one same-origin list of
+  // clippings on the page the viewer itself requests on load.
+  // The pure parsers below are a COPY of lib/newspapers-page-data.js (the
+  // canonical, tested module); tests/test-sync.js fails if they drift.
+  // FHA-SYNC-BEGIN newspapers
+  // Which kind of Newspapers.com address this is: a clipping page (`article`,
+  // also the older /clip/{id}/) or the page viewer (`image`); null otherwise.
+  function npPageKind(href) {
+    let u;
+    try {
+      u = new URL(href);
+    } catch (e) {
+      return null;
+    }
+    if (!/(^|\.)newspapers\.com$/i.test(u.hostname)) return null;
+    let m = u.pathname.match(/^\/article\/[^/]+\/(\d+)\/?/);
+    if (m) return { kind: 'article', clippingId: Number(m[1]), pageId: null };
+    m = u.pathname.match(/^\/(?:article|clip)\/(\d+)\/?/);
+    if (m) return { kind: 'article', clippingId: Number(m[1]), pageId: null };
+    m = u.pathname.match(/^\/image\/(\d+)\/?/);
+    if (m) {
+      return {
+        kind: 'image',
+        pageId: Number(m[1]),
+        clippingId: Number(u.searchParams.get('clipping_id')) || null,
+      };
+    }
+    return null;
+  }
+
+  // The site is a Next.js app: its data rides in `self.__next_f.push([1,"…"])`
+  // script strings. Decoding those strings yields plain JSON text to search.
+  function npFlightFrom(scriptTexts) {
+    let out = '';
+    const re = /self\.__next_f\.push\(\[\d+,("(?:[^"\\]|\\.)*")\]\)/g;
+    for (const t of scriptTexts) {
+      if (!t || t.indexOf('__next_f') < 0) continue;
+      let m;
+      re.lastIndex = 0;
+      while ((m = re.exec(t))) {
+        try {
+          out += JSON.parse(m[1]);
+        } catch (e) {
+          /* skip a chunk that is not a plain string */
+        }
+      }
+    }
+    return out;
+  }
+
+  // The JSON object starting at text[start] (a '{'), parsed, or null. Braces
+  // inside strings do not count, so a title holding "}" cannot cut it short.
+  function npObjectAt(text, start) {
+    let depth = 0;
+    let inStr = false;
+    for (let k = start; k < text.length; k++) {
+      const c = text[k];
+      if (inStr) {
+        if (c === '\\') k++;
+        else if (c === '"') inStr = false;
+        continue;
+      }
+      if (c === '"') inStr = true;
+      else if (c === '{') depth++;
+      else if (c === '}') {
+        depth--;
+        if (depth === 0) {
+          try {
+            return JSON.parse(text.slice(start, k + 1));
+          } catch (e) {
+            return null;
+          }
+        }
+      }
+    }
+    return null;
+  }
+
+  function npObjectAfter(text, key, from) {
+    const needle = '"' + key + '":{';
+    const i = text.indexOf(needle, from || 0);
+    return i < 0 ? null : npObjectAt(text, i + needle.length - 1);
+  }
+
+  function npJwtPayload(token) {
+    try {
+      const part = String(token).split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+      return JSON.parse(atob(part + '==='.slice((part.length + 3) % 4)));
+    } catch (e) {
+      return null;
+    }
+  }
+
+  // One clipping, from the page data or the clipping list, in the shape the
+  // panel uses. `toAbs` makes the site's relative clipping url absolute.
+  function npClip(c, toAbs) {
+    const raw = Array.isArray(c.rectangles) && c.rectangles.length ? c.rectangles : [c.rectangle];
+    const rects = raw
+      .filter((r) => r && r.width > 0 && r.height > 0)
+      .map((r) => ({
+        x: Math.max(0, Math.round(r.x)),
+        y: Math.max(0, Math.round(r.y)),
+        w: Math.round(r.width),
+        h: Math.round(r.height),
+        rotation: r.rotation || 0,
+      }));
+    return {
+      id: c.clipping_id,
+      pageId: c.page_id,
+      title: String(c.title || '').trim(),
+      tags: c.tags || '',
+      rects,
+      userId: c.user_id,
+      username: c.user_username || '',
+      created: c.created || null,
+      pageDate: c.page_date || null,
+      pageNo: c.page_title || null,
+      pageWidth: c.page_width || null,
+      pageHeight: c.page_height || null,
+      publication: c.publication
+        ? { name: c.publication.name || null, location: c.publication.location || null }
+        : null,
+      url: c.url ? (toAbs ? toAbs(c.url) : c.url) : null,
+      // The site's machine OCR of the clipping: a "$<id>" pointer to a text
+      // chunk in the page data (resolved by npTextChunk), or occasionally inline.
+      ocrRef: typeof c.ocr === 'string' && c.ocr.charAt(0) === '$' ? c.ocr.slice(1) : null,
+      ocr: typeof c.ocr === 'string' && c.ocr.charAt(0) !== '$' ? c.ocr : null,
+    };
+  }
+
+  // Resolve a "$<id>" text chunk in the page data: `<id>:T<hex byte length>,<text>`.
+  // The length counts UTF-8 bytes, so walk characters until the bytes run out.
+  function npTextChunk(text, ref) {
+    if (!ref || !/^[0-9a-z]+$/i.test(ref)) return null;
+    const re = new RegExp('(?:^|[^0-9a-z])' + ref + ':T([0-9a-f]+),');
+    const m = re.exec(text);
+    if (!m) return null;
+    let bytes = parseInt(m[1], 16);
+    let i = m.index + m[0].length;
+    const start = i;
+    while (bytes > 0 && i < text.length) {
+      const cp = text.codePointAt(i);
+      bytes -= cp < 0x80 ? 1 : cp < 0x800 ? 2 : cp < 0x10000 ? 3 : 4;
+      i += cp > 0xffff ? 2 : 1;
+    }
+    return text.slice(start, i);
+  }
+
+  // Did the signed-in member make this clipping? By user id, else by username.
+  function npIsMine(c, me) {
+    return (
+      (!!me.id && c.userId === me.id) ||
+      (!!me.username && !!c.username && c.username.toLowerCase() === me.username.toLowerCase())
+    );
+  }
+
+  // Which clippings to offer (owner decision, 2026-10-08):
+  //   - on a clipping page, THAT clipping, whoever made it - opening it is the
+  //     choice - first, then your own other clippings on the page;
+  //   - on the page viewer (`opened` null), only your own clippings.
+  // Returns { offered, otherClipCount, focusOwner } where focusOwner names the
+  // clipper of an opened clipping that is not yours.
+  function npOffered(clips, opened, me) {
+    const offered = clips.filter((c) => npIsMine(c, me));
+    if (opened && !npIsMine(opened, me)) offered.unshift(opened);
+    return {
+      offered,
+      otherClipCount: clips.filter((c) => !offered.some((o) => o.id === c.id)).length,
+      focusOwner: opened && !npIsMine(opened, me) ? opened.username || 'another member' : null,
+    };
+  }
+  // FHA-SYNC-END newspapers
+
+  function npFlightText() {
+    const live = npFlightFrom([...document.scripts].map((s) => s.textContent || ''));
+    return live || document.documentElement.outerHTML.replace(/\\"/g, '"');
+  }
+
+  // The site navigates between clippings and pages without reloading, so the
+  // data embedded at first load can describe an EARLIER record. When it does not
+  // match the address bar, re-read the current address (one same-origin GET).
+  async function npFreshFlightText() {
+    const resp = await fetch(location.href, { credentials: 'include' });
+    if (!resp.ok) return '';
+    const html = await resp.text();
+    return npFlightFrom([html]) || html.replace(/\\"/g, '"');
+  }
+
+  // The clipping's OCR from page data `text` (full chunk), else the page's
+  // visible preview in `doc` (the first few paragraphs only).
+  function npOcrText(text, clip, doc) {
+    const full = clip.ocr || npTextChunk(text, clip.ocrRef);
+    if (full && full.trim()) return { text: full.trim(), complete: true };
+    const el = doc && doc.querySelector('[class*="OCRText"]');
+    if (el) {
+      const paras = [...el.querySelectorAll('p')].map((p) => p.textContent.trim()).filter(Boolean);
+      const preview = (paras.length ? paras.join('\n\n') : el.textContent).trim();
+      if (preview) return { text: preview, complete: false };
+    }
+    return null;
+  }
+
+  // The OCR for one clipping, by reading its own clipping page (one same-origin
+  // GET), for clippings offered from the page viewer whose text is not here.
+  async function npClipText(url, clippingId) {
+    if (!url) return { ok: false, error: 'no clipping address' };
+    try {
+      const resp = await fetch(url, { credentials: 'include' });
+      if (!resp.ok) return { ok: false, error: 'HTTP ' + resp.status };
+      const html = await resp.text();
+      const text = npFlightFrom([html]);
+      const raw = npObjectAfter(text, 'clipping');
+      if (!raw || raw.clipping_id !== clippingId) return { ok: false, error: 'clipping page did not match' };
+      const doc = new DOMParser().parseFromString(html, 'text/html');
+      const ocr = npOcrText(text, npClip(raw, absUrl), doc);
+      return { ok: true, ocr };
+    } catch (e) {
+      return { ok: false, error: String(e) };
+    }
+  }
+
+  async function newspapersInfo() {
+    const where = npPageKind(location.href);
+    if (!where) return { ok: false, error: 'this is not a Newspapers.com page or clipping' };
+    let text = npFlightText();
+    const describesThisRecord = (t) => {
+      if (where.kind === 'article') {
+        const c = npObjectAfter(t, 'clipping');
+        return !!(c && c.clipping_id === where.clippingId);
+      }
+      const im = t.match(/"iat":"(eyJ[\w.-]+)"/);
+      const pl = im ? npJwtPayload(im[1]) : null;
+      return !!(pl && Number(pl.p) === where.pageId);
+    };
+    if (!describesThisRecord(text)) {
+      try {
+        const fresh = await npFreshFlightText();
+        if (fresh && describesThisRecord(fresh)) text = fresh;
+        else return { ok: false, error: 'the page data does not match this address - reload the page and try again' };
+      } catch (e) {
+        return { ok: false, error: 'could not re-read this page - reload it and try again' };
+      }
+    }
+
+    // The page pass the tile service accepts: `page_token` on a clipping page,
+    // `iat` on the page viewer. Both last a day from page load.
+    const tokenMatch =
+      text.match(/"page_token":"(eyJ[\w.-]+)"/) || text.match(/"iat":"(eyJ[\w.-]+)"/);
+    const token = tokenMatch ? tokenMatch[1] : null;
+    if (!token) {
+      return {
+        ok: false,
+        error: 'Newspapers.com did not give this page an image pass - make sure you are signed in, then reload the page',
+      };
+    }
+
+    // Who is signed in: the site's own `"user":{"id":…}` object, else the viewer
+    // pass's `u`. Used to keep only the clippings YOU made.
+    let me = { id: null, username: null };
+    const um = text.match(/"user":\{"id":(\d+)/);
+    if (um) {
+      const obj = npObjectAt(text, um.index + '"user":'.length);
+      me = { id: Number(um[1]), username: (obj && obj.username) || null };
+    } else {
+      const pl = npJwtPayload(token);
+      if (pl && pl.u) me = { id: Number(pl.u), username: null };
+    }
+
+    const clips = [];
+    let pageId = where.pageId;
+    // The clipping this page's data describes. It is the first entry in
+    // `clips`, and the same object is offered, so its OCR travels with it.
+    const ownRaw = npObjectAfter(text, 'clipping');
+    const focusClip = ownRaw && ownRaw.clipping_id ? npClip(ownRaw, absUrl) : null;
+    if (focusClip) {
+      clips.push(focusClip);
+      pageId = pageId || focusClip.pageId;
+    }
+    if (!pageId) {
+      return { ok: false, error: 'could not find which newspaper page this clipping is on - reload and try again' };
+    }
+
+    // Every member's clippings on this page: the same same-origin list the page
+    // viewer requests when it loads. The API serves at most 25 per request, so
+    // page through it - gently, and never more than a few pages.
+    const NP_LIST_PAGE = 25;
+    const NP_LIST_MAX_PAGES = 8;
+    try {
+      for (let pg = 0; pg < NP_LIST_MAX_PAGES; pg++) {
+        if (pg) await new Promise((r) => setTimeout(r, 800 + Math.random() * 1200));
+        const r = await fetch(
+          '/api/clipping/page?page_id=' + encodeURIComponent(pageId) +
+            '&start=' + pg * NP_LIST_PAGE + '&count=' + NP_LIST_PAGE,
+          { credentials: 'include', headers: { accept: 'application/json' } }
+        );
+        if (!r.ok) break;
+        const j = await r.json();
+        const batch = (j && j.clippings) || [];
+        for (const c of batch) {
+          if (!clips.some((x) => x.id === c.clipping_id)) clips.push(npClip(c, absUrl));
+        }
+        if (batch.length < NP_LIST_PAGE) break;
+      }
+    } catch (e) {
+      /* the list is a convenience; the page's own clipping still works */
+    }
+
+    // The page viewer describes the page in an `"image":{imageId, width, height,
+    // date, title (the page number), publicationTitle, location}` object.
+    let pageObj = null;
+    for (let at = text.indexOf('"image":{'); at >= 0; at = text.indexOf('"image":{', at + 1)) {
+      const o = npObjectAt(text, at + '"image":'.length);
+      if (o && Number(o.imageId) === Number(pageId)) {
+        pageObj = o;
+        break;
+      }
+    }
+
+    // Page size: from any clipping that carries it, else the page's own data.
+    let pageWidth = pageObj && pageObj.width ? Number(pageObj.width) : null;
+    let pageHeight = pageObj && pageObj.height ? Number(pageObj.height) : null;
+    for (const c of clips) {
+      if (pageWidth) break;
+      if (c.pageWidth && c.pageHeight) {
+        pageWidth = c.pageWidth;
+        pageHeight = c.pageHeight;
+        break;
+      }
+    }
+    if (!pageWidth) {
+      const wm = text.match(/"page_width":(\d+)/);
+      const hm = text.match(/"page_height":(\d+)/);
+      if (wm && hm) {
+        pageWidth = Number(wm[1]);
+        pageHeight = Number(hm[1]);
+      }
+    }
+    if (!pageWidth || !pageHeight) {
+      return { ok: false, error: 'could not read the newspaper page size from this page' };
+    }
+
+    const first = clips.find((c) => c.publication) || clips[0] || {};
+    const pagePub = pageObj && pageObj.publicationTitle
+      ? { name: pageObj.publicationTitle, location: pageObj.location || null }
+      : null;
+    // Which clippings to offer is npOffered's rule (owner decision): on a
+    // clipping page, the one opened plus your own; on the viewer, your own.
+    const opened = where.kind === 'article' ? focusClip : null;
+    if (opened) {
+      const live = npOcrText(text, opened, document);
+      if (live) opened.ocrText = live;
+    }
+    const { offered, otherClipCount, focusOwner } = npOffered(clips, opened, me);
+    return {
+      ok: true,
+      kind: where.kind,
+      focusClipId: where.clippingId || (focusClip && focusClip.id) || null,
+      pageId,
+      pageWidth,
+      pageHeight,
+      token,
+      me,
+      publication: first.publication || pagePub,
+      pageDate: (pageObj && pageObj.date) || first.pageDate || null,
+      pageNo: (pageObj && pageObj.title) || first.pageNo || null,
+      ownClips: offered,
+      otherClipCount,
+      focusOwner,
+    };
+  }
+
   function buildPrefill() {
     const url = location.href;
     const canonical = absUrl(
@@ -637,6 +1020,9 @@
       pdfUrl: detectPdf(),
       recipeHint: recipeHint(url),
       ancestryImageViewer: !!ancestry,
+      // A Newspapers.com page or clipping: the panel asks for newspapersInfo
+      // and saves the full page plus your clippings on it automatically.
+      newspapers: !!npPageKind(url),
       // A public archive whose full image can be fetched automatically (IIIF);
       // the panel can offer the one-click fetch instead of a manual download.
       iiif: !!detectIiifImageUrl(),
@@ -1593,6 +1979,16 @@
       case 'iiifImage':
         // Full-res IIIF image fetch (open archives) for the current page.
         fetchIiifFullImage()
+          .then(sendResponse)
+          .catch((e) => sendResponse({ ok: false, error: String(e) }));
+        return true; // async response
+      case 'newspapersClipText':
+        npClipText(msg.url, msg.clippingId)
+          .then(sendResponse)
+          .catch((e) => sendResponse({ ok: false, error: String(e) }));
+        return true; // async response
+      case 'newspapersInfo':
+        newspapersInfo()
           .then(sendResponse)
           .catch((e) => sendResponse({ ok: false, error: String(e) }));
         return true; // async response

@@ -155,6 +155,9 @@ function build(fields) {
   if (fields.sourceDate) out.source_date = fields.sourceDate;
   if (fields.sourceType) out.source_type = fields.sourceType;
   if (fields.repository && fields.repository.trim()) out.repository = fields.repository.trim();
+  // A citation the page itself supplied (a site's own "cite this"), which
+  // ingest prefers over the recipe's assembled guess.
+  if (fields.citation && fields.citation.trim()) out.citation = fields.citation.trim();
 
   const assets = (fields.assets || [])
     .filter((a) => a && a.file)

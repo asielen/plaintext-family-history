@@ -1,7 +1,7 @@
 {
   "manifest_version": "1",
   "spec_version": "1.2",
-  "generated": "2026-08-28",
+  "generated": "2026-10-08",
   "files": [
     {
       "path": ".claude/skills/README.md",
@@ -168,7 +168,7 @@
     {
       "path": ".fha/browser-companion/README.md",
       "category": "operating",
-      "sha256": "d94412bd9f8e98b8d2fb7392411bbee266bed305b3da10cd0df6a9387c97dff8",
+      "sha256": "5048b6439a532d12ace9b5089ea5fb1aaedd3f6b4930d94125d0477e3cb21b7a",
       "spec_version": "1.2",
       "src": "browser-companion/README-ARCHIVE.md"
     },
@@ -203,7 +203,7 @@
     {
       "path": ".fha/browser-companion/manifest.json",
       "category": "operating",
-      "sha256": "a4472939363b92b0e2ee888ff16ddf6f1b89e668b04f4399fa5953da314cef04",
+      "sha256": "a67a93876db9af7966bf1a401b92712c9948c8df46cab046f46a9d378ef30030",
       "spec_version": "1.2",
       "src": "browser-companion/manifest.json"
     },
@@ -217,7 +217,7 @@
     {
       "path": ".fha/browser-companion/src/content.js",
       "category": "operating",
-      "sha256": "881c1561c2c78d85fedd7c70b9ad168e1c919b1ed47bb26f955a0c9dda5da277",
+      "sha256": "f563883a5b7a4229e55979c7414a4b8c4e58dc7548a96a500b62f0dccf161391",
       "spec_version": "1.2",
       "src": "browser-companion/src/content.js"
     },
@@ -231,14 +231,14 @@
     {
       "path": ".fha/browser-companion/src/lib/capture-json-pure.js",
       "category": "operating",
-      "sha256": "70ee32b819d18ae07b59ae8f39c1af67afc505268af2a3edbf9726da80af12f2",
+      "sha256": "0bcf0f0fadb001abfb4d51007f067b6c398c577f6998c3bc0e500c9a10df4c74",
       "spec_version": "1.2",
       "src": "browser-companion/src/lib/capture-json-pure.js"
     },
     {
       "path": ".fha/browser-companion/src/lib/capture-json.js",
       "category": "operating",
-      "sha256": "845f7eace0c81d1a7b9ee4dafba55aa82261810a54396d0c8fcc941e489065bf",
+      "sha256": "ff69dae650f0050b11901d70d4d6254fd366e9698ef14aa80bd90c42ef9bb1ab",
       "spec_version": "1.2",
       "src": "browser-companion/src/lib/capture-json.js"
     },
@@ -264,6 +264,20 @@
       "src": "browser-companion/src/lib/native-host.js"
     },
     {
+      "path": ".fha/browser-companion/src/lib/newspapers-page-data.js",
+      "category": "operating",
+      "sha256": "2e919c5ab625d4f1060a09ce095a9580243a5de61c9900c17348d88e7c74e7b1",
+      "spec_version": "1.2",
+      "src": "browser-companion/src/lib/newspapers-page-data.js"
+    },
+    {
+      "path": ".fha/browser-companion/src/lib/newspapers.js",
+      "category": "operating",
+      "sha256": "d5d63b79c547ef49814512d8a561eabb5fc87af5244a400be6f26c87e20fe88d",
+      "spec_version": "1.2",
+      "src": "browser-companion/src/lib/newspapers.js"
+    },
+    {
       "path": ".fha/browser-companion/src/lib/people-harvest.js",
       "category": "operating",
       "sha256": "8620f6370de3ffe05fd76d3e002f106bded2f55997dcd0aa684f13d3c7f045d4",
@@ -280,21 +294,21 @@
     {
       "path": ".fha/browser-companion/src/panel.css",
       "category": "operating",
-      "sha256": "02daa8bbe8613c7328423a8c17d9574b270fb826ffcd5f16430110655e1f79da",
+      "sha256": "ed91fb2490745ead1f51559cbcffd91bda276f0b369c45e70fa77b342a3d5374",
       "spec_version": "1.2",
       "src": "browser-companion/src/panel.css"
     },
     {
       "path": ".fha/browser-companion/src/panel.html",
       "category": "operating",
-      "sha256": "a626da944a3f84640c57325e747f6adc0f714a469c819fc9f8ed1317fb1433d4",
+      "sha256": "b67ba3774165e8dd0dfc84f6e5f58f3532151b9fa8ffadf4f7e5f9056863ae27",
       "spec_version": "1.2",
       "src": "browser-companion/src/panel.html"
     },
     {
       "path": ".fha/browser-companion/src/panel.js",
       "category": "operating",
-      "sha256": "6182d143306bbe4cacd8c99ca63d60b42b02d16df0fd0433ca06b389003b6409",
+      "sha256": "704587f9d1d479ea08f5df4d02d604ce84fb343ed870a678a18e799bfe1c0261",
       "spec_version": "1.2",
       "src": "browser-companion/src/panel.js"
     },
@@ -434,7 +448,7 @@
     {
       "path": ".fha/tools/capture.py",
       "category": "operating",
-      "sha256": "2bde438a6805eac53f6f941353d5e548122a72bae887a3c7d25be35c53a811cc",
+      "sha256": "424f4350a28dc8e133347720d428f1afed5661db12f84418d5ba9810afff2426",
       "spec_version": "1.2",
       "src": "tools/capture.py"
     },
@@ -476,7 +490,7 @@
     {
       "path": ".fha/tools/capture_recipes/newspapers.py",
       "category": "operating",
-      "sha256": "71eaecaae7cb0020095a334aabbc215831bc62ea4d65de4834aa8b7e294aaac1",
+      "sha256": "5d087eb0cecabb8ad7820c29bb24228713316cc9acdf9deed28e25dd69786d03",
       "spec_version": "1.2",
       "src": "tools/capture_recipes/newspapers.py"
     },

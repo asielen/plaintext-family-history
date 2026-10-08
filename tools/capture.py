@@ -768,6 +768,7 @@ def _resolve_recipe_result(
     notes: str | None,
     people: list[str] | None,
     repository: str | None = None,
+    citation: str | None = None,
 ) -> tuple[str, RecipeResult]:
     """Choose a recipe and apply the explicit/override fields (the human's nudge).
 
@@ -785,6 +786,10 @@ def _resolve_recipe_result(
         # A human correction to "Where it's from" wins over the recipe/host
         # guess, like --title/--type/--date.
         result.repository = repository
+    if citation and citation.strip():
+        # A citation the page itself supplied (a site's own "cite this", sent
+        # in capture.json) is better than the one the recipe assembles.
+        result.citation = citation.strip()
     if source_type:
         st = source_type.strip().lower()
         if st not in SOURCE_TYPES:
@@ -850,6 +855,7 @@ def run_capture(
     notes: str | None = None,
     people: list[str] | None = None,
     repository: str | None = None,
+    citation: str | None = None,
     dry_run: bool = False,
 ) -> Result:
     """Capture a page into an inbox source stub and log the search (TOOLING §13b).
@@ -867,11 +873,13 @@ def run_capture(
     scrape the same way `--title`/`--type`/`--date` do - `accessed` is the date
     the human actually viewed the page, `notes` is their free-text body, and
     `people` are their curated name hints (unioned ahead of any recipe-found
-    names, deduplicated).
+    names, deduplicated). `citation` is one the page itself supplied (a site's
+    own "cite this"), which replaces the recipe's assembled guess.
     """
     recipe_name, result = _resolve_recipe_result(
         url=url, title=title, source_type=source_type, source_date=source_date,
         html=html, notes=notes, people=people, repository=repository,
+        citation=citation,
     )
 
     accessed = accessed or _today()
@@ -1183,6 +1191,7 @@ def _ingest_bundle_folder(
     people: list[str] | None,
     repository: str | None,
     assets: list[tuple[Path, str]],
+    citation: str | None = None,
     dry_run: bool = False,
 ) -> Result:
     """File a multi-asset capture as a §12.1 inbox BUNDLE FOLDER (the "both" case).
@@ -1201,6 +1210,7 @@ def _ingest_bundle_folder(
     recipe_name, result = _resolve_recipe_result(
         url=url, title=title, source_type=source_type, source_date=source_date,
         html=html, notes=notes, people=people, repository=repository,
+        citation=citation,
     )
     accessed = accessed or _today()
     if not result.title:
@@ -1401,7 +1411,7 @@ def _read_bundle(bundle: Path) -> tuple[dict, str, list[tuple[Path, str]]]:
     # contract. Scalars are str()-coerced (forgiving: `1880` → "1880"); a
     # list/dict where text belongs is structurally wrong → reported BundleError.
     for key in ('url', 'title', 'source_type', 'source_date', 'accessed', 'notes',
-                'repository'):
+                'repository', 'citation'):
         val = cap.get(key)
         if val is None or isinstance(val, str):
             continue
@@ -1619,6 +1629,7 @@ def run_ingest(
                     notes=cap.get('notes'),
                     people=cap.get('people'),
                     repository=cap.get('repository'),
+                    citation=cap.get('citation'),
                     assets=assets,
                     dry_run=dry_run,
                 )
@@ -1635,6 +1646,7 @@ def run_ingest(
                     notes=cap.get('notes'),
                     people=cap.get('people'),
                     repository=cap.get('repository'),
+                    citation=cap.get('citation'),
                     dry_run=dry_run,
                 )
         except (CaptureError, CaptureWriteError) as e:
