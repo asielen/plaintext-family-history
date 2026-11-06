@@ -83,6 +83,7 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    SOURCE_TYPES              - controlled vocabulary for source_type field
 #    PERSON_SEX_VALUES         - controlled vocabulary for a person record's sex field (SPEC §9)
 #    PHOTO_EXTENSIONS          - recognised photo/scan file extensions (photoindex + process)
+#    is_catalogued_photo_name  - does the photo catalog keep this file? (scan + freshness)
 #    TEXT_COMPANION_ROLES      - files: roles that hold a source's words as text
 #    SEARCHABLE_TEXT_SUFFIXES  - file extensions the text search actually reads
 #    COMPANION_KINDS           - generated file kinds that share a P-id with their profile
@@ -1305,6 +1306,25 @@ PHOTO_EXTENSIONS: frozenset[str] = frozenset({
     '.cr2', '.nef', '.dng', '.arw', '.orf', '.rw2',
 })
 
+
+def is_catalogued_photo_name(name: str) -> bool:
+    """True when the photo catalog stores a file with this name.
+
+    The one rule for "is this a photo the catalog keeps", shared by the scan's
+    walk (`photoindex._iter_photo_files`) and the freshness check
+    (`photoindex_status`). The two used to decide separately, and they
+    disagreed (#202). A real photo library holds a Thumbs.db that Windows
+    writes, scanner PDFs and `.tif_original` backups. The scan rightly skipped
+    them, but the freshness check counted each one as a photo the catalog had
+    never seen. So the catalog read out of date straight after a clean scan and
+    stayed that way, however often `fha photoindex` ran. Every check that waits
+    for a current catalog was switched off with it: the shareable site's
+    living-person photo check, tagging who is in a photo, photos in a packet,
+    and caption search. Both walks ask this one question so that cannot
+    happen again.
+    """
+    return Path(name).suffix.lower() in PHOTO_EXTENSIONS
+
 # The `files:` roles whose companion holds a source's words as text: the
 # `transcript` role SPEC §12.1 lists among the filename suffixes, and the
 # `extracted-text` role `fha source extract` stamps on a PDF text-layer dump.
@@ -2331,9 +2351,14 @@ def photoindex_status(archive_root: str | Path, fha_config: dict) -> tuple[str, 
             if patterns:
                 dirnames[:] = [d for d in dirnames if not is_ignored(f'{prefix}{d}')]
             candidates = [Path(dirpath)]
+            # Only files the scan would catalogue (#202). A Thumbs.db, a PDF
+            # or a `.tif_original` is never in the stored manifest, so counting
+            # it here made every clean catalog read stale forever. Folder
+            # mtimes above stay in, so a deleted photo is still noticed.
             candidates += [
                 Path(dirpath) / name for name in filenames
-                if not (patterns and is_ignored(f'{prefix}{name}'))
+                if is_catalogued_photo_name(name)
+                and not (patterns and is_ignored(f'{prefix}{name}'))
             ]
             for p in candidates:
                 try:

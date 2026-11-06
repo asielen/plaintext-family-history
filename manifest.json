@@ -1,7 +1,7 @@
 {
   "manifest_version": "1",
   "spec_version": "1.2",
-  "generated": "2026-08-28",
+  "generated": "2026-11-06",
   "files": [
     {
       "path": ".claude/skills/README.md",
@@ -420,7 +420,7 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "60510bc194239f245fb6ac462c927c68bccce256f0f145ffedf9cc9a8b98a667",
+      "sha256": "c1371376ccde8546ba7ca75cb5a72b7c2239ba648276241f2bd98617e3c2d944",
       "spec_version": "1.2",
       "src": "tools/_lib.py"
     },
@@ -595,7 +595,7 @@
     {
       "path": ".fha/tools/photoindex.py",
       "category": "operating",
-      "sha256": "b6efc3d8de62c7d2a8a9e9dd49965cbb616db2bfd49838a9782e08c92a880fc8",
+      "sha256": "8cc2b231aa9a35c2825e70f8db4df990cc82a1b7a630b91f57399158845a9cf1",
       "spec_version": "1.2",
       "src": "tools/photoindex.py"
     },
@@ -891,7 +891,7 @@
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "26fff498255fb04ab9db30a0e189ea30f2ec3ca7e6945b8b95269469ec97f9e3",
+      "sha256": "57d8944b43c91d1a60c57981a43ee095c9a19624255dbf6ac7723d0964d139f4",
       "spec_version": "1.2"
     },
     {
