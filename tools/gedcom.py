@@ -97,6 +97,7 @@ from _lib import (
     resolve_root_arg,
     spouse_parties,
     strip_generational_suffix,
+    vital_pick_key,
 )
 
 configure_utf8_stdout()
@@ -516,13 +517,20 @@ def _load_vitals(
     conn: sqlite3.Connection, pids: set[str],
     is_public: 'Callable[[sqlite3.Row], bool] | None' = None,
 ) -> dict[tuple[str, str], sqlite3.Row]:
-    """First public-safe accepted birth/death claim per (person_id, type).
+    """The best public-safe accepted birth/death claim per (person_id, type).
+
+    "Best" is `_lib.vital_pick_key` (#201): the most exact date, then
+    confidence, then claim id - the same pick the site and `fha views` make,
+    so BIRT/DEAT match the dates the family sees on the site. The old rule
+    here, earliest `date_min`, systematically exported the vaguest date,
+    because an "about 1940" range starts before the certificate's
+    19 Jan 1941.
 
     Filtering joins through `sources` here rather than later during emission so
     a restricted/DNA fact cannot leak as an event with the source pointer merely
     omitted. `is_public`, when given, also rejects free-text-restricted and
-    per-claim-restricted rows BEFORE the per-key pick, so an earlier-dated
-    restricted claim cannot evict (and thereby suppress) a publishable later one.
+    per-claim-restricted rows BEFORE the per-key pick, so a better-ranked
+    restricted claim cannot evict (and thereby suppress) a publishable one.
 
     The claim must also be a record OF that person, not merely one that names
     them (`_lib.claim_is_own_vital`, #126). A birth certificate names the baby, both
@@ -539,7 +547,7 @@ def _load_vitals(
     it exports no BIRT/DEAT for anyone it names.
 
     The scoping test runs BEFORE the per-key pick, for the reason `is_public`
-    does: a relative's earlier-dated record would otherwise take the slot and
+    does: a relative's better-ranked record would otherwise take the slot and
     suppress the person's own.
     """
     if not pids:
@@ -547,7 +555,8 @@ def _load_vitals(
     placeholders = ','.join('?' * len(pids))
     rows = conn.execute(
         f"""
-        SELECT cp.person_id, c.id, c.type, c.date_edtf, c.place_id, c.place_text, c.source_id
+        SELECT cp.person_id, c.id, c.type, c.date_edtf, c.date_min, c.date_max, c.confidence,
+               c.place_id, c.place_text, c.source_id
         FROM claim_persons cp
         JOIN claims c ON cp.claim_id = c.id
         JOIN sources s ON s.id = c.source_id
@@ -556,15 +565,12 @@ def _load_vitals(
           AND c.status = 'accepted'
           AND COALESCE(c.negated, 0) = 0
           AND {_public_source_filter_sql()}
-        ORDER BY
-            CASE WHEN c.date_min IS NULL OR c.date_min = '' THEN 1 ELSE 0 END,
-            c.date_min ASC
         """,
         list(pids),
     ).fetchall()
     subjects: dict[str, list[str] | None] = {}
     out: dict[tuple[str, str], sqlite3.Row] = {}
-    for r in rows:
+    for r in sorted(rows, key=vital_pick_key):
         if is_public is not None and not is_public(r):
             continue
         if not claim_is_own_vital(conn, r['person_id'], r['id'], r['type'], subjects):

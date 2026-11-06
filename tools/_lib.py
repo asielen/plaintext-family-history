@@ -106,6 +106,8 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    claim_is_own_vital        - the same question against the index: is claim X
 #                                 a record OF person Y? read by site, gedcom,
 #                                 views and wikitree
+#    vital_pick_key            - which of a person's own accepted vitals is the
+#                                 headline: most exact date, then confidence (#201)
 #    social_parties            - who a friend/associate/neighbor claim says knew
 #                                 EACH OTHER; read by index
 #
@@ -804,6 +806,49 @@ def vital_subjects(
         if named:
             return named
     return [pid for pid, role in pairs if not role]
+
+
+_VITAL_CONFIDENCE_RANK = {'high': 0, 'medium': 1, 'low': 2}
+
+
+def vital_pick_key(claim: Any) -> tuple[int, int, int, str]:
+    """Sort key for choosing which of a person's accepted vital claims is
+    the headline Born/Died/Married date (#201).
+
+    A person often has several accepted claims for one event that disagree:
+    a death certificate's "19 Jan 1941" beside a relative's memory of "about
+    1940". The headline used to be whichever claim id sorted first, and ids
+    are random, so the family memory could win over the certificate with
+    nothing to say so. GEDCOM export took the earliest `date_min`, which
+    systematically favoured the vaguest date, because a wide range starts
+    early.
+
+    The rule, in order:
+      1. a dated claim before an undated one;
+      2. the narrowest `date_min`..`date_max` span - an exact day beats a
+         month, a month beats a year, a year beats "about" or "before";
+      3. confidence: high, medium, low, then unstated;
+      4. claim id, so the pick never changes between builds.
+
+    Exactness comes before confidence on purpose. Ranking confidence first
+    was tried on a real archive and mostly swapped an exact date for a
+    year range (`1825-06` lost to `1824/1825`).
+
+    `claim` is any mapping or sqlite3.Row with `date_min`, `date_max`,
+    `confidence` and `id`. Callers still filter first (own vitals only,
+    publishable only) and then take the first row of each type.
+    """
+    span = 0
+    undated = 1
+    if claim['date_min'] and claim['date_max']:
+        try:
+            span = (datetime.date.fromisoformat(str(claim['date_max'])[:10])
+                    - datetime.date.fromisoformat(str(claim['date_min'])[:10])).days
+            undated = 0
+        except ValueError:
+            pass
+    rank = _VITAL_CONFIDENCE_RANK.get(claim['confidence'] or '', 3)
+    return (undated, span, rank, str(claim['id']))
 
 
 def claim_is_own_vital(

@@ -167,6 +167,7 @@ from _lib import (
     spouse_extended_base,    # add-only `+ second spouse` folder-name rule - shared with lint W103,
     sync_generated_view_rows,   # keep notes_fts/person_files in step with view writes/deletes,
     unreadable_dir_recorder,  # os.walk error seam - a shut folder is not an empty one,
+    vital_pick_key,       # which accepted vital is the node label: most exact first (#201),
     walk_files,           # rglob replacement that HAS that error seam,
     write_generated_file,    # marker-guarded write shared with photoindex gallery,
     write_generated_region,  # rewrite a `## Heading` section as one GENERATED-BEGIN/END
@@ -3348,10 +3349,11 @@ def _build_nodes_bulk(conn: sqlite3.Connection, pids: list[str]) -> dict[str, di
     `vital_subjects` scopes it to none of them (#126, reopened) - no node
     label picks up a date from it.
 
-    `ORDER BY c.id` with first-one-wins makes the pick deterministic. More than
-    one accepted claim of a vital type per person is not expected, but nothing
-    forbids it, and without an order sqlite's rowid order silently decided which
-    date the tree showed.
+    A person often has several accepted claims for one vital, a certificate
+    and a family memory say, and they can disagree. The most exact one labels
+    the node (`_lib.vital_pick_key`, #201: narrowest date, then confidence,
+    then claim id), the same pick the site makes, so the tree and the site
+    never show different dates for one person.
     """
     if not pids:
         return {}
@@ -3367,9 +3369,9 @@ def _build_nodes_bulk(conn: sqlite3.Connection, pids: list[str]) -> dict[str, di
 
     vitals_map: dict[str, dict] = {p: {'birth': None, 'death': None} for p in pids}
     subjects: dict[str, list[str] | None] = {}
-    for row in conn.execute(
+    for row in sorted(conn.execute(
         f"""
-        SELECT cp.person_id, c.id, c.type, c.date_edtf
+        SELECT cp.person_id, c.id, c.type, c.date_edtf, c.date_min, c.date_max, c.confidence
         FROM claims c JOIN claim_persons cp ON c.id = cp.claim_id
         WHERE cp.person_id IN ({placeholders})
           AND c.type IN ('birth', 'death') AND c.status = 'accepted'
@@ -3377,7 +3379,7 @@ def _build_nodes_bulk(conn: sqlite3.Connection, pids: list[str]) -> dict[str, di
         ORDER BY c.id
         """,
         pids,
-    ).fetchall():
+    ).fetchall(), key=vital_pick_key):
         if not claim_is_own_vital(
                 conn, row['person_id'], row['id'], row['type'], subjects):
             continue
