@@ -2338,6 +2338,55 @@ class LivingPhotoCheckUnavailableTests(_Base):
         self.assertEqual(len(warnings), 1, res['messages'])
         self.assertIn('out of date', warnings[0])
 
+    def _stale_catalog_tagging(self, person_ref=None):
+        """A catalog that knows pic.png, optionally tagged to `person_ref`,
+        dated well before the photo so it reads stale."""
+        pconn = sqlite3.connect(str(self.archive_root / '.cache' / 'photos.sqlite'))
+        pconn.executescript(PHOTOS_DDL)
+        pconn.execute(
+            'INSERT INTO photos(path, group_id, is_primary, caption) VALUES (?,?,?,?)',
+            ('photos/1880/pic.png', 'g1', 1, ''))
+        if person_ref:
+            pconn.execute(
+                'INSERT INTO photo_people(path, person_ref, via) VALUES (?,?,?)',
+                ('photos/1880/pic.png', person_ref, 'pid-keyword'))
+        pconn.commit()
+        pconn.close()
+        long_ago = time.time() - 10_000
+        os.utime(self.archive_root / '.cache' / 'photos.sqlite', (long_ago, long_ago))
+
+    @unittest.skipUnless(site._PIL_AVAILABLE, 'Pillow not installed')
+    def test_a_stale_catalog_still_withholds_a_photo_it_knows_names_someone_living(self):
+        # Out of date is not unknown. The catalog tagged this photo to a
+        # living person at its last scan; skipping the check because some
+        # other file changed since would publish it anyway.
+        self._seed_person('p-aaaaaaaaaa', 'Living Larry', living='true')
+        self._seed_photo_source()
+        self._stale_catalog_tagging('p-aaaaaaaaaa')
+        res = self._run(linked=False)
+        html = self._read('sources/s-1111111111.html')
+        self.assertIn('image omitted - tagged to a living person', html)
+        self.assertNotIn('media/', html)
+        # Nothing went out unchecked on this page, so there is no warning.
+        self.assertEqual(self._warnings(res), [], res['messages'])
+
+    @unittest.skipUnless(site._PIL_AVAILABLE, 'Pillow not installed')
+    def test_a_stale_catalog_check_says_what_it_could_not_see(self):
+        # The photo carries no living tag the old catalog knows of, so it
+        # publishes. The warning must not claim nothing was checked: it was,
+        # against the old tags. It names the gap that remains instead.
+        self._seed_photo_source()
+        self._stale_catalog_tagging()
+        res = self._run(linked=False)
+        self.assertIn('media/', self._read('sources/s-1111111111.html'))
+        warnings = self._warnings(res)
+        self.assertEqual(len(warnings), 1, res['messages'])
+        self.assertIn('out of date', warnings[0])
+        self.assertIn('only against the tags it held', warnings[0])
+        self.assertIn('added since then was NOT seen', warnings[0])
+        self.assertIn('someone still living', warnings[0])
+        self.assertIn('fha photoindex', warnings[0])
+
     def test_a_source_with_no_images_says_nothing(self):
         # Nothing was published that the gate would have looked at, so there is
         # nothing to warn about - the transcript stays in the archive either way.

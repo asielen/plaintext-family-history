@@ -3103,6 +3103,14 @@ class _SiteBuilder:
         # build without a catalog - so the one thing the build owes the
         # researcher is to say which check did not run, and why.
         self.photos_status: str = 'absent'
+        # The same catalog opened for the living-person photo gate ONLY, when
+        # it is out of date (#202 follow-up). An out-of-date catalog still
+        # knows every tag it held at the last scan, and skipping the check
+        # would publish all of those photos too. It stays out of the photo
+        # strips and hero/profile lookups, which keep their fresh-only rule:
+        # there a stale answer would change what a page shows, not just
+        # what it withholds.
+        self.photos_gate_conn: sqlite3.Connection | None = None
         self._living_photo_warning_sent = False
         # discoveries.md is read for both the discoveries page and the home
         # teaser; memoize so the file is parsed once per build.
@@ -3924,10 +3932,24 @@ class _SiteBuilder:
         The status is kept on `self.photos_status` because one thing reading
         this catalog is NOT enrichment: the living-person photo gate. It fails
         open, so the build warns once and names which of these states stopped it
-        (`_warn_living_photo_check_unavailable`).
+        (`_warn_living_photo_check_unavailable`). A stale catalog is the one
+        state that still answers that gate, through `self.photos_gate_conn`:
+        it knows every tag it held at the last scan, so the gate uses it and the
+        warning narrows to the tags added since.
         """
         status, _lag = photoindex_status(self.archive_root, self.fha_config)
         self.photos_status = status
+        if status == 'stale':
+            # Out of date is not unknown: the tags it holds were true at the
+            # last scan, so the living-person gate still asks it. Only a tag
+            # added since then goes unseen, and the build's warning says so.
+            try:
+                conn = sqlite3.connect(str(self.archive_root / '.cache' / 'photos.sqlite'))
+                conn.row_factory = sqlite3.Row
+                self.photos_gate_conn = conn
+            except sqlite3.DatabaseError:
+                self.photos_gate_conn = None
+            return
         if status != 'fresh':
             return
         try:
@@ -3944,6 +3966,9 @@ class _SiteBuilder:
         if self.photos_conn is not None:
             self.photos_conn.close()
             self.photos_conn = None
+        if self.photos_gate_conn is not None:
+            self.photos_gate_conn.close()
+            self.photos_gate_conn = None
 
     def _source_is_redacted(self, row: sqlite3.Row) -> bool:
         """A source is withheld from a standalone snapshot when restricted, DNA,
@@ -5504,11 +5529,17 @@ class _SiteBuilder:
         until someone runs `fha photoindex` costs more than it saves. What the
         build owes the researcher instead is to say so, once, in words - which
         is `_warn_living_photo_check_unavailable`'s whole job. Watching for that
-        warning is how this stays safe."""
-        if self.photos_conn is None:
+        warning is how this stays safe.
+
+        An OUT-OF-DATE catalog is still asked (`photos_gate_conn`). Its tags
+        were true at the last scan, and skipping it would publish every photo it
+        already knows names a living person. Only a tag added since then goes
+        unseen, and the warning says exactly that."""
+        conn = self.photos_conn if self.photos_conn is not None else self.photos_gate_conn
+        if conn is None:
             return False
         try:
-            rows = self.photos_conn.execute(
+            rows = conn.execute(
                 'SELECT person_ref FROM photo_people WHERE path = ? OR path = ?',
                 (alias_path, f'{_MISSING_PREFIX}{_live_alias(alias_path)}'),
             ).fetchall()
@@ -5546,6 +5577,20 @@ class _SiteBuilder:
         if self._living_photo_warning_sent:
             return
         self._living_photo_warning_sent = True
+        if self.photos_status == 'stale' and self.photos_gate_conn is not None:
+            # The check ran, against the tags the catalog held at its last
+            # scan. Say what it could not see, not that nothing was checked.
+            self.messages.append(
+                'WARNING: the photo catalog is out of date, so the photos '
+                'published in this site were checked for tags naming living '
+                'people only against the tags it held when `fha photoindex` '
+                'last ran - a tag added since then was NOT seen, so a '
+                'photograph of someone still living may be in it. Run '
+                '`fha photoindex`, then `fha site` again, to check against '
+                'every tag; until then, look through the images on the source '
+                'pages yourself before you share this site.'
+            )
+            return
         reason = _PHOTO_CATALOG_TROUBLE.get(
             self.photos_status, 'the photo catalog is not available')
         self.messages.append(
