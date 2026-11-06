@@ -163,6 +163,7 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    write_text_exact_atomic    - the record writer: temp + fsync + os.replace
 #    reapply_newline           - restore a record's CRLF/LF convention after a text edit
 #    yaml_inline                - single-line quoted YAML scalar (every surgical writer's rule)
+#    yaml_edtf                  - an EDTF date line: bare, quoted only when YAML would misread it
 #    _coerce_yaml              - normalise YAML scalar types for consistent comparisons
 #    read_record               - parse frontmatter + claims + body from a .md file
 #    claim_item_key_indent     - one claim item's real mapping-key column (surgical edits)
@@ -3255,6 +3256,31 @@ def yaml_inline(value: str) -> str:
     if rendered.endswith('...'):          # safe_dump tags a bare scalar document
         rendered = rendered[:-3].strip()
     return rendered
+
+
+def yaml_edtf(value: str) -> str:
+    """Render an EDTF date for a `date:`/`birth:`/`death:` line (#205).
+
+    Bare, the way the archive has always written dates (`date: 1880`,
+    `date: 1850~`), unless YAML would read the bare text as something other
+    than that string. The bracket forms are the case that bites. A genealogist
+    who records "before 1 Oct 1884" gets `[..1884-10-01]`, and YAML reads that
+    bare text as a one-item list. The tool confirmed the write, and the next
+    `fha lint` then rejected the very claim it had just fixed (E014). The same
+    goes for `{1850,1860}`, which reads as a mapping. Those, and anything YAML
+    cannot parse at all, are quoted through `yaml_inline`.
+
+    Plain dates stay bare on purpose: `yaml_inline` would quote every one
+    (`'1880'`), restyling every claim a tool touches for no reader's benefit,
+    since the reader already turns a bare year or date back into its string.
+    """
+    try:
+        parsed = yaml.safe_load(value)
+    except yaml.YAMLError:
+        return yaml_inline(value)
+    if isinstance(parsed, (list, dict)):
+        return yaml_inline(value)
+    return value
 
 
 def _coerce_yaml(obj: Any) -> Any:
@@ -7838,10 +7864,12 @@ def render_stub_content(
     offered instead as a commented-out hint (`# birth:   # …`) so it stays
     discoverable without faking an unsourced fact. Each of the two is decided
     independently - a stub can carry a real `birth:` and a still-commented
-    `# death:`. Values are written verbatim: this function renders text, it
-    does not validate EDTF shape (the caller - the CLI layer - normalises and
-    validates the date before it ever reaches here, the same division of
-    labor `process.py`'s scaffold renderer uses).
+    `# death:`. Values are written as given, quoted only where YAML would
+    misread the bare text (`yaml_edtf`, #205: `[..1920]` reads as a list).
+    This function renders text, it does not validate EDTF shape (the
+    caller - the CLI layer - normalises and validates the date before it ever
+    reaches here, the same division of labor `process.py`'s scaffold renderer
+    uses).
     """
     if sex is not None and sex not in PERSON_SEX_VALUES:
         raise ValueError(format_person_sex_error(sex))
@@ -7859,7 +7887,7 @@ def render_stub_content(
         lines.append(f'gender: {yaml_inline(gender)}')
     lines.append('living: unknown')
     if birth is not None:
-        lines.append(f'birth: {birth}   # unsourced estimate - a tool will remind you to add a source')
+        lines.append(f'birth: {yaml_edtf(birth)}   # unsourced estimate - a tool will remind you to add a source')
     else:
         lines.append('# birth:   # an honest guess is fine - a tool will remind you to add a source later')
     # Optional place beside each provisional vital (plan-17 wireframe: the mint
@@ -7869,7 +7897,7 @@ def render_stub_content(
     if birth_place:
         lines.append(f'birth_place: {yaml_inline(str(birth_place).strip())}   # unsourced, goes with the birth estimate')
     if death is not None:
-        lines.append(f'death: {death}   # unsourced estimate - a tool will remind you to add a source')
+        lines.append(f'death: {yaml_edtf(death)}   # unsourced estimate - a tool will remind you to add a source')
     else:
         lines.append('# death:   # same here; leave commented until you know')
     if death_place:
