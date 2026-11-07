@@ -941,6 +941,9 @@
     // page through it - gently, and never more than a few pages.
     const NP_LIST_PAGE = 25;
     const NP_LIST_MAX_PAGES = 8;
+    // Why the list could not be read, if it could not. An unread list is not
+    // evidence that none of the clippings are yours (#211 review).
+    let listError = null;
     try {
       for (let pg = 0; pg < NP_LIST_MAX_PAGES; pg++) {
         if (pg) await new Promise((r) => setTimeout(r, 800 + Math.random() * 1200));
@@ -949,7 +952,11 @@
             '&start=' + pg * NP_LIST_PAGE + '&count=' + NP_LIST_PAGE,
           { credentials: 'include', headers: { accept: 'application/json' } }
         );
-        if (!r.ok) break;
+        if (!r.ok) {
+          listError = 'Newspapers.com would not send the list of clippings on this page (HTTP ' +
+            r.status + ')';
+          break;
+        }
         const j = await r.json();
         const batch = (j && j.clippings) || [];
         for (const c of batch) {
@@ -958,7 +965,8 @@
         if (batch.length < NP_LIST_PAGE) break;
       }
     } catch (e) {
-      /* the list is a convenience; the page's own clipping still works */
+      // The page's own clipping still works; only the list is missing.
+      listError = 'the list of clippings on this page could not be read';
     }
 
     // The page viewer describes the page in an `"image":{imageId, width, height,
@@ -1021,6 +1029,7 @@
       pageDate: (pageObj && pageObj.date) || first.pageDate || null,
       pageNo: npPageNo(pageObj && pageObj.title) || first.pageNo || null,
       ownClips: offered,
+      listError,
       unusable,
       openedUnusable,
       otherClipCount,

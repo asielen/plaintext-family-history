@@ -91,6 +91,13 @@
     // under this page's form. npSeq numbers each read, so an answer that comes
     // back after the tab has moved on is dropped, never installed.
     npLoading: false,
+    // Form fields the human has typed in since this record's prefill. The
+    // newspaper data arriving later must not overwrite them (#211 review).
+    userEdited: new Set(),
+    // True from the moment the tab moves to a new address until the panel
+    // has read the new page. Capture refuses meanwhile, or it would pair the
+    // old clipping with the new page and form (#211 audit).
+    navInFlight: false,
     npSeq: 0,
     // The URL the form was last pre-filled for, so the batch-capture refresh
     // (re-running prefill when the tab navigates to a new record) can tell a
@@ -201,6 +208,7 @@
     // so this fires only on a genuine new record - and on the first prefill,
     // where it is a harmless no-op on the fresh form.
     if (!sameRecordUrl(prefill.url, state.prefilledUrl)) clearEvidenceSelection();
+    state.userEdited = new Set();
     state.prefill = prefill;
     state.iiif = !!prefill.iiif;
     state.prefilledUrl = prefill.url || null;
@@ -293,6 +301,11 @@
     if (state.npError) {
       return 'automatic saving is not available here: ' + state.npError +
         '. Reload the page and open the panel again, or drop in a file.';
+    }
+    if (np && np.listError && !np.ownClips.length) {
+      return 'automatic saving is not available here: ' + np.listError +
+        ', so the panel cannot tell which clippings are yours. Reload the page and open ' +
+        'the panel again; if it keeps happening, wait a few minutes, or drop in a file.';
     }
     if (np && (np.openedUnusable || (np.unusable && np.unusable.length))) {
       return (np.openedUnusable ? 'this clipping marks' : 'your clippings on this page mark') +
@@ -394,7 +407,9 @@
       note.style.display = 'none';
       if (urlInput.readOnly) {
         urlInput.readOnly = false;
-        urlInput.value = '';
+        // Only our own label: by now applyPrefill may have put the next
+        // record's detected file address here (#211 review).
+        if (urlInput.value === NP_URL_LABEL) urlInput.value = '';
       }
       updateAssetStatus();
       return;
@@ -473,19 +488,25 @@
     const np = state.np;
     if (!np) return;
     const chosen = np.ownClips.filter((c) => state.npSelected.has(c.id));
-    $('f-type').value = 'newspaper';
+    // A field the human typed in keeps what they typed: the clippings can
+    // arrive seconds after the panel opens, and a correction made meanwhile
+    // must not be silently replaced by the site's own value (#211 review).
+    const put = (id, value) => {
+      if (!state.userEdited.has(id)) $(id).value = value;
+    };
+    put('f-type', 'newspaper');
     if (chosen.length === 1) {
       const c = chosen[0];
-      $('f-title').value = npTitle(c, np);
+      put('f-title', npTitle(c, np));
       $('f-title').placeholder = '';
-      $('f-date').value = c.pageDate || np.pageDate || '';
-      $('f-repo').value = npPub(c, np).name || 'Newspapers.com';
-      if (c.url) $('f-url').value = c.url;
+      put('f-date', c.pageDate || np.pageDate || '');
+      put('f-repo', npPub(c, np).name || 'Newspapers.com');
+      if (c.url) put('f-url', c.url);
     } else if (chosen.length > 1) {
-      $('f-title').value = '';
+      put('f-title', '');
       $('f-title').placeholder = 'Each clipping gets its own title';
-      $('f-date').value = np.pageDate || '';
-      $('f-repo').value = (np.publication && np.publication.name) || 'Newspapers.com';
+      put('f-date', np.pageDate || '');
+      put('f-repo', (np.publication && np.publication.name) || 'Newspapers.com');
     }
   }
 
@@ -551,6 +572,18 @@
   // and only the unsaved ones stay ticked for another try.
   async function captureNewspapers(pageHtml, wantPageCopy) {
     const np = state.np;
+    // The form as it is NOW. The page download below takes about 20 seconds,
+    // and nothing that happens to the form meanwhile may reach these bundles
+    // (#211 audit).
+    const form = {
+      title: $('f-title').value.trim(),
+      date: $('f-date').value.trim(),
+      repo: $('f-repo').value.trim(),
+      url: $('f-url').value.trim(),
+      type: $('f-type').value,
+      people: checkedPeople(),
+      notes: gatherNotes(false),
+    };
     const chosen = np.ownClips.filter((c) => state.npSelected.has(c.id));
     if (!chosen.length) throw new Error('tick at least one of your clippings');
     // The tab's page copy is a copy of the record open in the tab; build it
@@ -574,10 +607,10 @@
     const results = [];
     const single = chosen.length === 1;
     for (const clip of chosen) {
-      const title = single ? ($('f-title').value.trim() || npTitle(clip, np)) : npTitle(clip, np);
+      const title = single ? (form.title || npTitle(clip, np)) : npTitle(clip, np);
       try {
         const st = await stageNpClip(clip, np, page, pageBlob, {
-          title, single, pageHtml, texts,
+          title, single, pageHtml, texts, form,
           pageCopy: pageCopy && copyFits(clip) ? pageCopy : null,
           copyNote: wantPageCopy && !copyFits(clip)
             ? 'No copy of the web page was kept for this clipping: the page open in the browser ' +
@@ -644,17 +677,17 @@
       assets.push({ filename: o.pageCopy.filename, blob: o.pageCopy.blob, role: 'webpage', mode: 'singlefile' });
     }
     const fields = {
-      url: clip.url || $('f-url').value.trim() || (state.prefill && state.prefill.url),
+      url: clip.url || o.form.url || (state.prefill && state.prefill.url),
       title: o.title,
       accessed: captureJson.accessedDate(),
       sourceDate: o.single
-        ? ($('f-date').value.trim() || clip.pageDate || np.pageDate || '')
+        ? (o.form.date || clip.pageDate || np.pageDate || '')
         : (clip.pageDate || np.pageDate || ''),
-      sourceType: $('f-type').value || 'newspaper',
-      repository: o.single ? $('f-repo').value.trim() : (npPub(clip, np).name || 'Newspapers.com'),
+      sourceType: o.form.type || 'newspaper',
+      repository: o.single ? o.form.repo : (npPub(clip, np).name || 'Newspapers.com'),
       citation: npCitations(clip, np).genealogy,
-      people: checkedPeople(),
-      notes: [gatherNotes(false), npNotes(clip, np, page, o.copyNote)]
+      people: o.form.people,
+      notes: [o.form.notes, npNotes(clip, np, page, o.copyNote)]
         .filter((t) => t && t.trim()).join('\n\n'),
       recipeHint: 'newspapers',
       assets: assets.map((a) => ({ file: a.filename, role: a.role, mode: a.mode, provisional: false })),
@@ -976,6 +1009,10 @@
 
   async function capture() {
     if (state.busy) return;
+    if (state.navInFlight) {
+      setStageResult('The page in the tab just changed - reading it now. Press Capture again in a moment.', 'warn');
+      return;
+    }
 
     const wantPageCopy = pageCopyOn();
     const wantEvidence = evidenceMode() === 'yes';
@@ -1223,20 +1260,35 @@
       state.pendingNav = true;
       return;
     }
-    const tab = await getTab(tabId);
-    if (!tab || !/^https?:/i.test(tab.url || '')) return;
-    // Same-record compare, not exact compare: in-page viewers (BookReader's
-    // #page arrows) move only the #fragment without changing the record, and
-    // a re-prefill on that wipes the human's typed notes/people for nothing.
-    // The staleness banner (warnIfFormStale) already compares this way.
-    if (sameRecordUrl(tab.url, state.prefilledUrl)) return;
+    // From here until the new page is read, Capture waits (capture() checks
+    // navInFlight). And after every wait below, a capture that started
+    // anyway parks this refresh instead of rewriting its form (#211 audit).
+    const seq = (state.navSeq = (state.navSeq || 0) + 1);
+    state.navInFlight = true;
+    const parked = () => {
+      if (!state.busy) return false;
+      state.pendingNav = true;
+      return true;
+    };
     try {
-      await injectContent(tabId);
-      const resp = await sendToTab(tabId, { action: 'prefill' });
-      if (resp && resp.ok) applyPrefill(resp.prefill);
-    } catch (e) {
-      // A restricted/again-loading page: don't clobber the form with an error;
-      // the human can still type, and the next 'complete' may succeed.
+      const tab = await getTab(tabId);
+      if (!tab || !/^https?:/i.test(tab.url || '') || parked()) return;
+      // Same-record compare, not exact compare: in-page viewers (BookReader's
+      // #page arrows) move only the #fragment without changing the record, and
+      // a re-prefill on that wipes the human's typed notes/people for nothing.
+      // The staleness banner (warnIfFormStale) already compares this way.
+      if (sameRecordUrl(tab.url, state.prefilledUrl)) return;
+      try {
+        await injectContent(tabId);
+        const resp = await sendToTab(tabId, { action: 'prefill' });
+        if (parked()) return;
+        if (resp && resp.ok) applyPrefill(resp.prefill);
+      } catch (e) {
+        // A restricted/again-loading page: don't clobber the form with an error;
+        // the human can still type, and the next 'complete' may succeed.
+      }
+    } finally {
+      if (seq === state.navSeq) state.navInFlight = false;
     }
   }
 
@@ -1372,6 +1424,12 @@
       })
     );
     $('f-asset-url').addEventListener('input', updateAssetStatus);
+    // Remember which fields the human typed in, so newspaper data arriving
+    // later never overwrites a correction (state.userEdited, #211 review).
+    for (const id of ['f-title', 'f-date', 'f-repo', 'f-url', 'f-type']) {
+      $(id).addEventListener('input', () => state.userEdited.add(id));
+      $(id).addEventListener('change', () => state.userEdited.add(id));
+    }
     $('f-provisional').addEventListener('change', updateAssetStatus);
     $('btn-capture').addEventListener('click', capture);
     $('btn-copy-cmd').addEventListener('click', () => copyCmd($('btn-copy-cmd')));

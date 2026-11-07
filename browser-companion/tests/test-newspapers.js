@@ -423,3 +423,32 @@ test('summarizeStaged: all saved to the archive, or none saved at all', () => {
   assert.strictEqual(s.cls, 'error');
   assert.strictEqual(s.showHandoff, false);
 });
+
+// ── Retry-After is a minimum (#211 review) ────────────────────────────────────
+
+test('retryAfterSeconds reads both forms of the header', () => {
+  assert.strictEqual(lib.retryAfterSeconds('120'), 120);
+  const now = Date.parse('2026-11-06T12:00:00Z');
+  assert.strictEqual(lib.retryAfterSeconds('Fri, 06 Nov 2026 12:10:00 GMT', now), 600);
+  assert.strictEqual(lib.retryAfterSeconds('not a date', now), 0);
+  assert.strictEqual(lib.retryAfterSeconds(null, now), 0);
+});
+
+test('fetchTile never retries before the site\'s Retry-After', async () => {
+  const calls = { fetches: 0, sleeps: [] };
+  const deps = {
+    async fetch() {
+      if (calls.fetches++ === 0) {
+        return { ok: false, status: 429, headers: { get: (h) => (h === 'retry-after' ? '120' : null) } };
+      }
+      return { ok: true, status: 200, blob: async () => ({ type: 'image/jpeg' }) };
+    },
+    async sleep(ms) { calls.sleeps.push(ms); },
+  };
+  for (let i = 0; i < 20; i++) {
+    calls.fetches = 0;
+    calls.sleeps = [];
+    await lib.fetchTile('u', null, deps);
+    assert.ok(calls.sleeps[0] >= 120000, 'waited ' + calls.sleeps[0] + ' ms');
+  }
+});

@@ -58,6 +58,17 @@
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const between = (lo, hi) => lo + Math.random() * (hi - lo);
 
+  // Seconds a 429/503 asked us to wait, from either form of Retry-After:
+  // a number of seconds, or an HTTP date. 0 when absent or unreadable.
+  function retryAfterSeconds(value, nowMs) {
+    if (value == null || value === '') return 0;
+    const text = String(value).trim();
+    if (/^\d+(\.\d+)?$/.test(text)) return Number(text);
+    const at = Date.parse(text);
+    if (Number.isNaN(at)) return 0;
+    return Math.max(0, (at - (nowMs == null ? Date.now() : nowMs)) / 1000);
+  }
+
   // The last stitched page, so sibling clippings on the same page reuse it.
   let cached = null; // { pageId, canvas, reduced }
 
@@ -129,9 +140,16 @@
             'stopped. Nothing was saved for this page; try again in a few minutes'
         );
       }
-      const retryAfter =
-        resp.headers && resp.headers.get ? Number(resp.headers.get('retry-after')) : 0;
-      const waitS = (retryAfter > 0 ? retryAfter : BACKOFF_S[attempt]) * between(0.7, 1.3);
+      // The site's own Retry-After is a minimum: waiting less invites another
+      // 429 and spends a retry for nothing. Jitter only adds to it. Only our
+      // built-in steps, used when the site names no time, are spread both
+      // ways (#211 review).
+      const retryAfter = retryAfterSeconds(
+        resp.headers && resp.headers.get ? resp.headers.get('retry-after') : null,
+        deps && deps.now ? deps.now() : undefined);
+      const waitS = retryAfter > 0
+        ? retryAfter * between(1.0, 1.3)
+        : BACKOFF_S[attempt] * between(0.7, 1.3);
       if (onWait) onWait(Math.round(waitS), status);
       await wait(waitS * 1000);
     }
@@ -413,6 +431,6 @@
   FHA.newspapers = {
     fullPage, fetchTile, clipCanvas, combined, toJpeg, tileGrid,
     shortDate, longDate, publicationOf, title, caption, citations,
-    pageCopyFits, summarizeStaged,
+    pageCopyFits, summarizeStaged, retryAfterSeconds,
   };
 })();

@@ -437,3 +437,86 @@ test('a clipping with no marked area says so and saves nothing automatically', a
   assert.strictEqual(p.written.length, 0);
   assert.match(p.result(), /marks no area/);
 });
+
+// ── #211 review and audit ────────────────────────────────────────────────────
+
+test('moving from a clipping to an ordinary record keeps that record\'s file address', async () => {
+  // Leaving Newspapers.com cleared the address box AFTER the next record's
+  // detected image had been put in it, so Capture had nothing to save.
+  const OTHER = 'https://example.org/records/9';
+  const respond = (msg, tab) => {
+    if (tab.url === OTHER) {
+      if (msg.action === 'prefill') {
+        return { ok: true, prefill: { url: OTHER, title: 'A record', people: [],
+          imageUrl: 'https://example.org/scans/9.jpg' } };
+      }
+      return { ok: false };
+    }
+    return scripted({ [URL_A]: { title: 'Obituary',
+      info: npInfo('article', [clipObj(101, 'Obituary for Calvin Hartley')]) } })(msg, tab);
+  };
+  const p = await openPanel({ url: URL_A, respond });
+  await p.navigate(OTHER);
+  await settle();
+  assert.strictEqual(p.$('f-asset-url').value, 'https://example.org/scans/9.jpg');
+  assert.strictEqual(p.$('f-asset-url').readOnly, false);
+});
+
+test('a refused clipping list is reported as a refusal, not as "none are yours"', async () => {
+  const p = await openOn(URL_PAGE, {
+    [URL_PAGE]: { title: 'The Fairview Gazette, page 5', info: npInfo('image', [], {
+      listError: 'Newspapers.com would not send the list of clippings on this page (HTTP 429)',
+    }) },
+  });
+  await p.capture();
+  assert.strictEqual(p.written.length, 0);
+  assert.match(p.result(), /HTTP 429/);
+  assert.doesNotMatch(p.result(), /none of the clippings on this page are yours/);
+});
+
+test('a title typed while the clippings load is kept', async () => {
+  let release;
+  const p = await openOn(URL_A, {
+    [URL_A]: { title: 'Obituary', info: () => new Promise((r) => {
+      release = () => r(npInfo('article', [clipObj(101, 'Obituary for Calvin Hartley')]));
+    }) },
+  });
+  p.$('f-title').value = 'Calvin Hartley obituary (corrected)';
+  await p.$('f-title').fire('input');
+  release();
+  await settle();
+  assert.strictEqual(p.$('f-title').value, 'Calvin Hartley obituary (corrected)');
+  await p.capture();
+  assert.strictEqual(p.written.length, 1);
+  assert.strictEqual(p.capJson(p.written[0]).title, 'Calvin Hartley obituary (corrected)');
+});
+
+test('Capture waits while the tab is moving to the next clipping', async () => {
+  // The panel had not yet read the new address, so Capture paired clipping
+  // A's images with clipping B's page and form.
+  let releasePrefill;
+  const pages = {
+    [URL_A]: { title: 'Obituary', info: npInfo('article', [clipObj(101, 'Obituary for Calvin Hartley')]) },
+    [URL_B]: { title: 'Wedding', info: npInfo('article', [clipObj(202, 'Hartley - Webb wedding')]) },
+  };
+  const base = scripted(pages);
+  const respond = (msg, tab) => {
+    if (msg.action === 'prefill' && tab.url === URL_B && !releasePrefill) {
+      return new Promise((r) => { releasePrefill = () => r(base(msg, tab)); });
+    }
+    return base(msg, tab);
+  };
+  const p = await openPanel({ url: URL_A, respond });
+  p.tab.url = URL_B;
+  const nav = p.navigate(URL_B);
+  await settle();
+  await p.capture();
+  assert.strictEqual(p.written.length, 0, 'nothing may be staged while the tab moves');
+  assert.match(p.result(), /page in the tab just changed/);
+  releasePrefill();
+  await nav;
+  await settle();
+  await p.capture();
+  assert.strictEqual(p.written.length, 1);
+  assert.match(p.capJson(p.written[0]).title, /^Hartley - Webb wedding/);
+});

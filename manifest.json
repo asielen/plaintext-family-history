@@ -217,7 +217,7 @@
     {
       "path": ".fha/browser-companion/src/content.js",
       "category": "operating",
-      "sha256": "2d9971326f6ae23b85f3d4894d0830054bbab69d48b625ebb85c27ee017a93f7",
+      "sha256": "62a0faebd7497648c587663535037fd307150e6a92f5b2b4868c609c91941113",
       "spec_version": "1.2",
       "src": "browser-companion/src/content.js"
     },
@@ -273,7 +273,7 @@
     {
       "path": ".fha/browser-companion/src/lib/newspapers.js",
       "category": "operating",
-      "sha256": "b29295fbb0e9753cc5a561b7e38930f78cb839621e4115a5dc6e05da75868f13",
+      "sha256": "95aa9b330b6740cce17cb748af8ecb086285c2425da466f496e2e269753280a4",
       "spec_version": "1.2",
       "src": "browser-companion/src/lib/newspapers.js"
     },
@@ -308,7 +308,7 @@
     {
       "path": ".fha/browser-companion/src/panel.js",
       "category": "operating",
-      "sha256": "423acd4017f335dc2f8bd6c2d8ad13de5cfcd8cd7a7b96aa1266086c2a62aa64",
+      "sha256": "039b36bafeffebe4a89b6a4a81909723366537b6e77d6b7f0d05267a00f75b16",
       "spec_version": "1.2",
       "src": "browser-companion/src/panel.js"
     },
