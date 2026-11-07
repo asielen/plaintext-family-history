@@ -6761,17 +6761,27 @@ class ContentFingerprintTests(unittest.TestCase):
         self._tmp.cleanup()
 
     @staticmethod
-    def _picture(seed: int, size: int = 200_000) -> bytes:
-        """JPEG-shaped bytes: start-of-image, random 'scan data', end-of-image -
-        what the fingerprint reads (it checks the JPEG signature, #220 audit)."""
-        import random
-        return b'\xff\xd8' + random.Random(seed).randbytes(size) + b'\xff\xd9'
+    def _segment(marker: int, body: bytes) -> bytes:
+        return bytes([0xFF, marker]) + (len(body) + 2).to_bytes(2, 'big') + body
 
-    @staticmethod
-    def _with_new_header(picture: bytes) -> bytes:
-        """The same picture after a metadata write: new segments after the
-        start-of-image marker, the scan data untouched."""
-        return picture[:2] + b'\xff\xe1 new keywords block ' * 40 + picture[2:]
+    @classmethod
+    def _picture(cls, seed: int, size: int = 200_000, qtable: bytes = b'\x00' + bytes(range(1, 65))) -> bytes:
+        """A JPEG-shaped file the fingerprint can walk: start-of-image, a
+        quantization table, a frame header, a Huffman table, start-of-scan,
+        random "scan data", end-of-image (#220 audit, Codex round 3)."""
+        import random
+        return (b'\xff\xd8' + cls._segment(0xDB, qtable)
+                + cls._segment(0xC0, b'\x08\x01\x2c\x01\x90\x03\x01\x22\x00\x02\x11\x01\x03\x11\x01')
+                + cls._segment(0xC4, b'\x00' + bytes(16) + b'')
+                + cls._segment(0xDA, b'\x03\x01\x00\x02\x11\x03\x11\x00\x3f\x00')
+                + random.Random(seed).randbytes(size) + b'\xff\xd9')
+
+    @classmethod
+    def _with_new_header(cls, picture: bytes) -> bytes:
+        """The same picture after a metadata write: a new APP1 segment after
+        the start-of-image marker, everything that decodes the picture
+        untouched."""
+        return picture[:2] + cls._segment(0xE1, b'Exif\x00\x00' + b'new keywords block ' * 40) + picture[2:]
 
     def _put(self, name: str, data: bytes, caption: str = '') -> Path:
         path = self.photos / name
@@ -7108,6 +7118,94 @@ class ContentFingerprintTests(unittest.TestCase):
         self._downgrade_to_schema_1()
         result = photoindex.run_find(self.archive, self.CFG, keyword='x')
         self.assertEqual(result['status'], 'old-schema')
+
+
+    # ── #220 Codex round 3 ──────────────────────────────────────────────────
+
+    def test_the_scan_keeps_a_missing_row_whose_copy_belongs_to_another_source(self) -> None:
+        # Source A's photo vanishes (MISSING:); an identical picture filed
+        # as source B is scanned in. It is not A coming back: A's row stays.
+        picture = self._picture(40)
+        keywords = {'a.jpg': 'SOURCE: S-111111111a', 'b.jpg': 'SOURCE: S-222222222b'}
+
+        def with_source(paths: list[Path]) -> list[dict]:
+            return [{'SourceFile': str(p), 'Keywords': [keywords[p.name]]}
+                    if p.name in keywords else {'SourceFile': str(p)} for p in paths]
+
+        photoindex._run_exiftool = with_source
+        self._put('a.jpg', picture)
+        photoindex.run_scan(self.archive, self.CFG)
+        (self.photos / 'a.jpg').unlink()
+        photoindex.run_reconcile(self.archive, self.CFG, with_exif=True)
+        self._put('b.jpg', picture)
+        photoindex.run_reconcile(self.archive, self.CFG, with_exif=True)
+        photoindex.run_scan(self.archive, self.CFG)
+        self.assertIn('MISSING:photos/a.jpg', self._rows())
+
+    def test_a_sourced_row_is_not_re_tied_by_content_without_the_keyword_read(self) -> None:
+        # Without --with-exif nothing says whose file the new one is.
+        def with_source(paths: list[Path]) -> list[dict]:
+            return [{'SourceFile': str(p), 'Keywords': ['SOURCE: S-111111111a']}
+                    if p.name == 'deed.jpg' else {'SourceFile': str(p)} for p in paths]
+
+        photoindex._run_exiftool = with_source
+        self._put('deed.jpg', self._picture(41))
+        photoindex.run_scan(self.archive, self.CFG)
+        (self.photos / 'deed.jpg').rename(self.photos / 'deed2.jpg')
+        result = photoindex.run_reconcile(self.archive, self.CFG)
+        self.assertEqual(result['rematched'], [])
+
+    def test_an_indexed_png_with_another_palette_is_another_picture(self) -> None:
+        import random
+        import struct
+        import zlib
+
+        def chunk(kind: bytes, data: bytes) -> bytes:
+            return (struct.pack('>I', len(data)) + kind + data
+                    + struct.pack('>I', zlib.crc32(kind + data)))
+
+        idat = random.Random(42).randbytes(120_000)    # identical palette INDICES
+
+        def png(palette: bytes) -> bytes:
+            ihdr = struct.pack('>IIBBBBB', 400, 300, 8, 3, 0, 0, 0)   # colour type 3
+            return (b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', ihdr) + chunk(b'PLTE', palette)
+                    + chunk(b'IDAT', idat) + chunk(b'IEND', b''))
+
+        grey_up = bytes(v for i in range(256) for v in (i, i, i))
+        grey_down = bytes(v for i in range(255, -1, -1) for v in (i, i, i))
+        f1 = photoindex._photo_fingerprint(self._put('light.png', png(grey_up)))
+        f2 = photoindex._photo_fingerprint(self._put('dark.png', png(grey_down)))
+        self.assertTrue(photoindex._is_real_fingerprint(f1))
+        self.assertNotEqual(f1, f2)
+
+    def test_a_jpeg_with_other_tables_is_another_picture(self) -> None:
+        # Identical scan bytes, different quantization: different pixels.
+        f1 = photoindex._photo_fingerprint(self._put('q1.jpg', self._picture(43)))
+        f2 = photoindex._photo_fingerprint(self._put(
+            'q2.jpg', self._picture(43, qtable=b'\x00' + bytes(range(65, 129)))))
+        self.assertTrue(photoindex._is_real_fingerprint(f1))
+        self.assertNotEqual(f1, f2)
+
+    def test_a_value_stored_under_an_older_rule_is_never_compared(self) -> None:
+        self.assertFalse(photoindex._is_real_fingerprint('png-idat64k-v1:' + 'a' * 32))
+        self.assertFalse(photoindex._is_real_fingerprint('jpeg-scan64k-v1:' + 'a' * 32))
+        self.assertFalse(photoindex._is_real_fingerprint('tail64k-v1:' + 'a' * 32))
+        self.assertTrue(photoindex._is_real_fingerprint(
+            photoindex._photo_fingerprint(self._put('ok.jpg', self._picture(44)))))
+
+    def test_the_upgrade_by_reconcile_leaves_a_scan_due(self) -> None:
+        # Codex round 3: the upgrade's commit time must not make the catalog
+        # read fresh - a person search would then trust photo_people that no
+        # scan has refreshed. It reads stale until a real scan runs.
+        self._put('farm.jpg', self._picture(45))
+        photoindex.run_scan(self.archive, self.CFG)
+        self._downgrade_to_schema_1()
+        photoindex.run_reconcile(self.archive, self.CFG)
+        self.assertEqual(photoindex_status(self.archive, self.CFG)[0], 'stale')
+        found = photoindex.run_find(self.archive, self.CFG, person='P-aaaaaaaaaa')
+        self.assertEqual(found['status'], 'stale')
+        photoindex.run_scan(self.archive, self.CFG)
+        self.assertNotEqual(photoindex_status(self.archive, self.CFG)[0], 'stale')
 
 
 if __name__ == '__main__':

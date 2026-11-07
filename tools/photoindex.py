@@ -227,6 +227,7 @@ from _lib import (
     GeneratedFileRefused,
     INDEX_SCHEMA_VERSION,
     PHOTOINDEX_CONFIG_KEY,
+    PHOTOINDEX_SCAN_DUE_KEY,
     PHOTOINDEX_SCHEMA_VERSION,
     BackupRefused,
     OriginalBackup,
@@ -384,25 +385,74 @@ _NO_FINGERPRINT = 'none:v1'
 _JPEG_SUFFIXES = frozenset({'.jpg', '.jpeg', '.jpe', '.jfif'})
 _PNG_SUFFIXES = frozenset({'.png'})
 _PNG_SIGNATURE = b'\x89PNG\r\n\x1a\n'
+_JPEG_SCHEME = 'jpeg-scan64k-v2'
+_PNG_SCHEME = 'png-idat64k-v2'
 # A PNG split into more chunks than this is not something a camera, scanner
 # or photo library writes; stop walking rather than read a pathological file.
 _PNG_MAX_CHUNKS = 200_000
 
 
-def _jpeg_picture_window(handle, size: int) -> bytes | None:
-    """The last 64 KiB of a JPEG's picture data: the bytes ending at its last
-    end-of-image marker (FF D9).
+# JPEG segments that decide what the scan data decodes TO: frame header
+# (size, components, sampling), quantization and Huffman tables, restart
+# interval, and Adobe's APP14 colour-transform flag. No metadata write touches
+# them; two files with identical scan bytes but different tables are
+# different pictures (#220, Codex round 3). SOF0-SOF15 minus DHT/JPG/DAC.
+_JPEG_INTERPRETATION_MARKERS = frozenset(
+    {0xC4, 0xDB, 0xDD} | {m for m in range(0xC0, 0xD0) if m not in (0xC4, 0xC8, 0xCC)})
+_JPEG_MAX_SEGMENTS = 1000
 
-    The entropy-coded scan - the picture itself - runs right up to that
+
+def _jpeg_picture_window(handle, size: int) -> tuple[bytes, bytes] | None:
+    """(interpretation, window) for a JPEG, or None.
+
+    `interpretation` is every segment before the scan that decides how the
+    scan decodes (`_JPEG_INTERPRETATION_MARKERS`, plus an Adobe APP14 block);
+    `window` is the last 64 KiB of picture data - the bytes ending at the last
+    end-of-image marker (FF D9). The entropy-coded scan runs right up to that
     marker, and every metadata write (keywords, captions, ICC profiles) lands
-    in the segments at the FRONT of the file, so this window is picture data
-    whatever the metadata says. A trailer after the marker (some cameras and
-    tools append one) is skipped by ending the window at the marker; a trailer
-    longer than the window, or a file with no marker, gets no fingerprint.
+    in APPn/COM segments at the FRONT, which are skipped, so neither part
+    moves when metadata does. A trailer after the marker is skipped by ending
+    the window there; a trailer longer than the window, a file with no
+    marker, or one whose segments do not reach a start-of-scan gets no
+    fingerprint.
     """
     handle.seek(0)
     if handle.read(2) != b'\xff\xd8':
         return None                      # not actually a JPEG, whatever its name
+    interpretation: list[bytes] = []
+    for _ in range(_JPEG_MAX_SEGMENTS):
+        lead = handle.read(1)
+        while lead == b'\xff':
+            lead = handle.read(1)        # fill bytes before a marker code
+        if not lead:
+            return None
+        marker = lead[0]
+        if marker == 0xDA:               # start of scan: the picture data follows
+            break
+        if marker in (0x01, *range(0xD0, 0xD8)):
+            continue                     # stand-alone markers carry no length
+        raw_len = handle.read(2)
+        if len(raw_len) < 2:
+            return None
+        length = int.from_bytes(raw_len, 'big') - 2
+        if length < 0:
+            return None
+        if marker in _JPEG_INTERPRETATION_MARKERS:
+            interpretation.append(bytes([marker]) + handle.read(length))
+        elif marker == 0xEE:
+            body = handle.read(length)
+            if body.startswith(b'Adobe'):
+                interpretation.append(b'\xee' + body[:12])   # incl. the transform flag
+        else:
+            handle.seek(length, os.SEEK_CUR)
+        # Every byte between a marker and the next must be a segment: a
+        # stray byte here means this is not a JPEG we can read reliably.
+        nxt = handle.read(1)
+        if nxt != b'\xff':
+            return None
+        handle.seek(-1, os.SEEK_CUR)
+    else:
+        return None
     tail_len = min(size, _FINGERPRINT_WINDOW)
     handle.seek(size - tail_len)
     tail = handle.read(tail_len)
@@ -413,23 +463,34 @@ def _jpeg_picture_window(handle, size: int) -> bytes | None:
     if end < _FINGERPRINT_WINDOW + 2:
         return None                      # picture too small to tell apart
     handle.seek(end - _FINGERPRINT_WINDOW)
-    return handle.read(_FINGERPRINT_WINDOW)
+    return b''.join(interpretation), handle.read(_FINGERPRINT_WINDOW)
 
 
-def _png_picture_window(handle) -> bytes | None:
-    """The last 64 KiB of a PNG's image data: its IDAT chunks, concatenated.
+# PNG chunks that decide what the image data decodes TO: the header (size,
+# bit depth, colour type, interlace), the palette, and transparency. An
+# indexed-colour PNG's IDAT holds palette INDICES, so two pictures with the
+# same indices and different palettes are different pictures (#220, Codex
+# round 3) - the palette must be part of the identity.
+_PNG_INTERPRETATION_CHUNKS = frozenset({b'IHDR', b'PLTE', b'tRNS'})
 
-    A PNG's metadata chunks (text, XMP, ICC) may sit before OR after the image
-    data, so the file's raw tail can be pure metadata, identical across two
-    different pictures (#220 audit, Codex review). Walking the chunk headers
-    and taking only IDAT bytes - the compressed pixels - makes the window
-    picture data whatever metadata surrounds it. Less than 64 KiB of image
-    data gets no fingerprint.
+
+def _png_picture_window(handle) -> tuple[bytes, bytes] | None:
+    """(interpretation, window) for a PNG, or None.
+
+    `window` is the last 64 KiB of the IDAT chunks, concatenated - the
+    compressed pixels. A PNG's metadata chunks (text, XMP, ICC) may sit
+    before OR after the image data, so the file's raw tail can be pure
+    metadata, identical across two different pictures (#220 audit); walking
+    the chunk headers and taking only IDAT bytes avoids it. `interpretation`
+    is the IHDR, PLTE and tRNS chunks (`_PNG_INTERPRETATION_CHUNKS`), which
+    change what those bytes mean. Less than 64 KiB of image data gets no
+    fingerprint.
     """
     handle.seek(0)
     if handle.read(8) != _PNG_SIGNATURE:
         return None
     spans: list[tuple[int, int]] = []    # (offset, length) of each IDAT's data
+    interpretation: list[bytes] = []
     for _ in range(_PNG_MAX_CHUNKS):
         header = handle.read(8)
         if len(header) < 8:
@@ -439,6 +500,8 @@ def _png_picture_window(handle) -> bytes | None:
         offset = handle.tell()
         if kind == b'IDAT':
             spans.append((offset, length))
+        elif kind in _PNG_INTERPRETATION_CHUNKS:
+            interpretation.append(kind + handle.read(length))
         elif kind == b'IEND':
             break
         handle.seek(offset + length + 4)  # data + CRC
@@ -455,19 +518,25 @@ def _png_picture_window(handle) -> bytes | None:
         wanted -= take
         if not wanted:
             break
-    return b''.join(reversed(pieces))
+    return b''.join(interpretation), b''.join(reversed(pieces))
 
 
 def _photo_fingerprint(path: Path) -> str | None:
     """A cheap content identity for one photo, `_NO_FINGERPRINT` when it can
     have none, or None when the file could not be read (retry later).
 
-    The hash of the last 64 KiB of the PICTURE DATA - not of the file. A
+    The hash of the last 64 KiB of the PICTURE DATA - not of the file -
+    together with the format's own description of how that data decodes. A
     whole-file hash changes the moment anything writes metadata (the
     archive's own `tag-person` and `set-summary`, or Lightroom), and a hash
     that breaks on the operations that matter is worse than none. So the
     window is the end of the JPEG scan (`_jpeg_picture_window`) or of the PNG
-    image data (`_png_picture_window`), which no metadata write touches.
+    image data (`_png_picture_window`), which no metadata write touches, and
+    the hash also covers the segments that decide the pixels: JPEG frame
+    header, quantization and Huffman tables, restart interval and Adobe
+    colour transform; PNG header, palette and transparency. Identical
+    compressed bytes under a different palette or table are a different
+    picture (#220, Codex round 3), and none of those segments is metadata.
 
     Only JPEG and PNG, checked by their own signature bytes, not only by
     name. Every other format gets `_NO_FINGERPRINT`, so it gets no help but
@@ -484,8 +553,12 @@ def _photo_fingerprint(path: Path) -> str | None:
     stored twice (true duplicate copies), which reconcile's one-holder rule
     refuses to guess between.
 
-    Cost: one or two seeks and one 64 KiB read for a JPEG; a PNG adds one
-    short read per chunk header.
+    The scheme tags are versioned (`-v2` since the interpretation segments
+    joined the hash) so a value stored under an older rule is never compared
+    with a new one; `_is_real_fingerprint` accepts only the current tags.
+
+    Cost: a walk over the segment headers (APP segments are skipped, not
+    read) and one 64 KiB read.
     """
     suffix = path.suffix.lower()
     if suffix not in _JPEG_SUFFIXES and suffix not in _PNG_SUFFIXES:
@@ -496,20 +569,27 @@ def _photo_fingerprint(path: Path) -> str | None:
             if size < _FINGERPRINT_WINDOW:
                 return _NO_FINGERPRINT
             if suffix in _JPEG_SUFFIXES:
-                window, scheme = _jpeg_picture_window(handle, size), 'jpeg-scan64k-v1'
+                parts, scheme = _jpeg_picture_window(handle, size), _JPEG_SCHEME
             else:
-                window, scheme = _png_picture_window(handle), 'png-idat64k-v1'
+                parts, scheme = _png_picture_window(handle), _PNG_SCHEME
     except OSError:
         return None
-    if (not window or len(window) < _FINGERPRINT_WINDOW
+    if not parts:
+        return _NO_FINGERPRINT
+    interpretation, window = parts
+    if (len(window) < _FINGERPRINT_WINDOW
             or len(set(window)) < _FINGERPRINT_MIN_DISTINCT_BYTES):
         return _NO_FINGERPRINT
-    return f'{scheme}:{hashlib.sha256(window).hexdigest()[:32]}'
+    digest = hashlib.sha256(interpretation + b'\x00' + window).hexdigest()[:32]
+    return f'{scheme}:{digest}'
 
 
 def _is_real_fingerprint(value: object) -> bool:
-    """True for a fingerprint reconcile may compare - not NULL, not the sentinel."""
-    return bool(value) and value != _NO_FINGERPRINT
+    """True for a fingerprint reconcile may compare: one made by the CURRENT
+    rule. NULL, the sentinel, and a value stored under an older scheme tag
+    (computed before the decoding segments joined the hash) are never
+    compared - an old-rule value cannot vouch for the new rule's identity."""
+    return isinstance(value, str) and value.split(':', 1)[0] in (_JPEG_SCHEME, _PNG_SCHEME)
 
 
 # ── exiftool integration ──────────────────────────────────────────────────
@@ -3095,6 +3175,16 @@ def _scrape_source_ids(paths: list[Path]) -> dict[Path, str]:
     return out
 
 
+def _same_source(a: str | None, b: str | None) -> bool:
+    """Whether two rows carry the same source identity: the same S-id, or
+    no S-id on either. Every place that folds one photo's row onto another
+    file asks this first (#220, Codex), so a different source's copy of the
+    same picture never inherits - or erases - this source's history."""
+    if not a and not b:
+        return True
+    return bool(a and b) and normalize_id(a) == normalize_id(b)
+
+
 def _content_rematches(
     conn: sqlite3.Connection, missing: dict[str, str | None], untracked: dict[str, Path],
     untracked_source_ids: dict[Path, str] | None = None,
@@ -3112,10 +3202,13 @@ def _content_rematches(
         the read failed) and whose size matches might be another copy of the
         same picture, so the fingerprinted row of that size is not paired
         (F4);
-      - an untracked file whose own SOURCE: keyword names a different source
-        than the vanished row's is another source's file, whatever its
-        pixels (F5, Codex review) - it stays untracked and is reported under
-        that source.
+      - the two must have the same source identity (`_same_source`): a
+        file whose own SOURCE: keyword names a different source, or none,
+        is not that source's file, whatever its pixels (F5, Codex review) -
+        it stays untracked and is reported under its own source. A vanished
+        row filed as a source is never re-tied by content without the
+        `--with-exif` keyword read (`untracked_source_ids` None), because
+        nothing then says whose file the new one is.
 
     Untracked files are fingerprinted here, lazily, and only when some
     vanished row has a fingerprint to compare with. `_photo_fingerprint`
@@ -3149,9 +3242,14 @@ def _content_rematches(
             continue
         if old_size.get(old) in unknown_sizes:
             continue
-        new_source = source_of.get(untracked[news[0]])
         old_source = missing.get(old)
-        if new_source and old_source and normalize_id(new_source) != normalize_id(old_source):
+        if old_source and untracked_source_ids is None:
+            # A row filed as a source, and no read of the new file's own
+            # SOURCE: keyword (no --with-exif): it could be a different
+            # source's copy of the same picture. The keyword pass is how a
+            # sourced photo is healed; content alone does not decide it.
+            continue
+        if not _same_source(old_source, source_of.get(untracked[news[0]])):
             continue
         pairs.append((old, news[0]))
     return sorted(pairs)
@@ -3377,7 +3475,8 @@ def run_reconcile(
             rematched_by_content: list[tuple[str, str]] = []
             if missing and untracked:
                 for old_path, new_path in _content_rematches(
-                        conn, missing, untracked, candidate_source_ids):
+                        conn, missing, untracked,
+                        candidate_source_ids if with_exif else None):
                     if not dry_run:
                         _move_cached_path(conn, old_path, new_path)
                         gid = _group_id_of(conn, new_path)
@@ -4319,6 +4418,15 @@ def _migrate_v1_catalog(conn: sqlite3.Connection) -> None:
     columns = {row[1] for row in conn.execute('PRAGMA table_info(photos)')}
     if columns and 'fingerprint' not in columns:
         conn.execute('ALTER TABLE photos ADD COLUMN fingerprint TEXT')
+        # The upgrade commits a new file time, which on its own would let
+        # `photoindex_status` call the catalog fresh - while no scan has yet
+        # filled in fingerprints, and anything that was already due (an
+        # index.sqlite rebuilt after the last scan, so photo_people never
+        # saw it) is now hidden behind that time (#220, Codex). So the
+        # upgrade says outright that a scan is due; only a completed scan
+        # clears it.
+        write_cache_meta(conn, PHOTOINDEX_SCAN_DUE_KEY,
+                         'catalog upgraded to schema 2; run `fha photoindex`')
 
 
 def _open_and_apply_schema(
@@ -4639,16 +4747,24 @@ def run_scan(archive_root: Path, fha_config: dict, full: bool = False) -> Result
         # alias" below. Left in place it lingered forever, and as a second
         # holder of the fingerprint it blocked every later content re-tie of
         # that picture (#220 audit F2).
-        live_holders: dict[str, int] = {}
-        missing_fp: dict[str, str] = {}
-        for path_key, fingerprint in conn.execute('SELECT path, fingerprint FROM photos'):
+        # The live row must also carry the same source identity
+        # (`_same_source`): a different source's copy of the same picture is
+        # not this row's photo coming back, and dropping the row would erase
+        # a source's history for another's file (#220, Codex).
+        live_holders: dict[str, list[str | None]] = {}
+        missing_fp: dict[str, tuple[str, str | None]] = {}
+        for path_key, fingerprint, row_source in conn.execute(
+                'SELECT path, fingerprint, source_id FROM photos'):
             if not _is_real_fingerprint(fingerprint):
                 continue
             if _is_missing_key(path_key):
-                missing_fp[path_key] = fingerprint
+                missing_fp[path_key] = (fingerprint, row_source)
             elif path_key in alias_on_disk:
-                live_holders[fingerprint] = live_holders.get(fingerprint, 0) + 1
-        recatalogued = {k for k, fp in missing_fp.items() if live_holders.get(fp) == 1}
+                live_holders.setdefault(fingerprint, []).append(row_source)
+        recatalogued = {
+            k for k, (fp, src) in missing_fp.items()
+            if len(live_holders.get(fp, [])) == 1 and _same_source(src, live_holders[fp][0])
+        }
         for path_key in list(existing):
             # A 'MISSING:'-prefixed key is reconcile's own bookkeeping, not a
             # stale cache entry: it never matches a real on-disk alias (the
@@ -4757,6 +4873,8 @@ def run_scan(archive_root: Path, fha_config: dict, full: bool = False) -> Result
         # those commands must not claim the catalog has caught up.
         write_cache_meta(
             conn, PHOTOINDEX_CONFIG_KEY, photoindex_config_fingerprint(fha_config))
+        # A completed scan is what a schema upgrade's "scan due" waits for.
+        conn.execute('DELETE FROM meta WHERE key=?', (PHOTOINDEX_SCAN_DUE_KEY,))
 
         conn.commit()
     finally:

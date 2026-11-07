@@ -462,7 +462,7 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "9e65dc35ba64d5187302d54f1b4962b38b9be497cdc4d4514c9a487b8a60ec09",
+      "sha256": "acf24e1cea4c5fce8e0ecabcd1d4574ad4a1a7a931e6c24217f3985c2af1198a",
       "spec_version": "1.2",
       "src": "tools/_lib.py"
     },
@@ -637,7 +637,7 @@
     {
       "path": ".fha/tools/photoindex.py",
       "category": "operating",
-      "sha256": "ed626620ada434fca2a65fe862ab14a00ba9fe3ac5688b5ba707167fad7b6ecb",
+      "sha256": "229a1ad8c33d742eea90627ad5d86312dbf12c2df09dc9703ddd082ec561cb74",
       "spec_version": "1.2",
       "src": "tools/photoindex.py"
     },
@@ -933,7 +933,7 @@
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "ec289f2af3cfddcaa0007524dd269505a41b6c1445f808db1cc20e23a85f97c4",
+      "sha256": "75ea9e765f0e31fca8ed2e380ee0404cde9f8f31c37c54e1ae313f53056d75b3",
       "spec_version": "1.2"
     },
     {
