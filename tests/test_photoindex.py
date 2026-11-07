@@ -7325,10 +7325,18 @@ class ContentFingerprintTests(unittest.TestCase):
         self.assertEqual(photoindex._photo_fingerprint(self._put('a.png', plain)),
                          photoindex._photo_fingerprint(self._put('b.png', tagged)))
 
+    def _set_fingerprint(self, path_key: str, value) -> None:
+        conn = sqlite3.connect(self.archive / '.cache' / 'photos.sqlite')
+        conn.execute('UPDATE photos SET fingerprint=? WHERE path=?', (value, path_key))
+        conn.commit()
+        conn.close()
+
     def test_fingerprint_reading_is_rationed_per_scan(self) -> None:
-        # Over budget: the rows stay NULL (no re-match) and the next scan,
-        # with time to spare, fills them in.
+        # Only the BACKFILL of rows already held without one is rationed:
+        # over budget they stay unknown, and a later scan fills them in.
         self._put('farm.jpg', self._picture(63))
+        photoindex.run_scan(self.archive, self.CFG)
+        self._set_fingerprint('photos/farm.jpg', None)       # as after the upgrade
         saved = photoindex._FINGERPRINT_BUDGET_SECONDS
         photoindex._FINGERPRINT_BUDGET_SECONDS = 0.0
         try:
@@ -7420,6 +7428,158 @@ class ContentFingerprintTests(unittest.TestCase):
                 self.assertIsNone(summary['rebuilt_reason'])
                 self.assertEqual(self._rows()['MISSING:photos/lost.jpg'][0], 'Grandma, 1931')
                 self.assertEqual(photoindex_status(self.archive, self.CFG)[0], 'fresh')
+
+
+    # ── #220 audit round 2 ──────────────────────────────────────────────────
+
+    def test_a_full_rescan_with_slow_exiftool_keeps_every_fingerprint(self) -> None:
+        # F1/F5: exiftool's own time never eats the fingerprint budget, and a
+        # rescrape of an unchanged file keeps its stored fingerprint.
+        import time as _time
+        self._put('farm.jpg', self._picture(70))
+        photoindex.run_scan(self.archive, self.CFG)
+        before = self._rows()['photos/farm.jpg'][1]
+        fast = photoindex._run_exiftool
+
+        def slow(paths):
+            _time.sleep(0.3)
+            return fast(paths)
+
+        photoindex._run_exiftool = slow
+        saved = photoindex._FINGERPRINT_BUDGET_SECONDS
+        photoindex._FINGERPRINT_BUDGET_SECONDS = 0.1
+        try:
+            photoindex.run_scan(self.archive, self.CFG, full=True)
+        finally:
+            photoindex._FINGERPRINT_BUDGET_SECONDS = saved
+        self.assertEqual(self._rows()['photos/farm.jpg'][1], before)
+
+    def test_new_files_are_fingerprinted_whatever_the_budget(self) -> None:
+        saved = photoindex._FINGERPRINT_BUDGET_SECONDS
+        photoindex._FINGERPRINT_BUDGET_SECONDS = 0.0
+        try:
+            self._put('new.jpg', self._picture(71))
+            photoindex.run_scan(self.archive, self.CFG)
+        finally:
+            photoindex._FINGERPRINT_BUDGET_SECONDS = saved
+        self.assertTrue(photoindex._is_real_fingerprint(self._rows()['photos/new.jpg'][1]))
+
+    def test_an_unreadable_untracked_copy_means_no_content_match_this_run(self) -> None:
+        # F2 / Codex: two untracked copies, one unreadable - the readable one
+        # alone must not look like an unambiguous replacement.
+        picture = self._picture(72)
+        self._put('farm.jpg', picture, caption='The farm')
+        photoindex.run_scan(self.archive, self.CFG)
+        (self.photos / 'farm.jpg').rename(self.photos / 'a-copy1.jpg')
+        self._put('z-copy2.jpg', picture)
+        real = photoindex._photo_fingerprint
+        photoindex._photo_fingerprint = (
+            lambda path: None if path.name == 'z-copy2.jpg' else real(path))
+        try:
+            result = photoindex.run_reconcile(self.archive, self.CFG)
+        finally:
+            photoindex._photo_fingerprint = real
+        self.assertEqual(result['rematched'], [])
+        self.assertEqual(result['content_unchecked'], ['photos/z-copy2.jpg'])
+        self.assertNotEqual(result.exit_code, 0)
+
+    def test_reconcile_reads_every_untracked_candidate_with_no_budget(self) -> None:
+        # Reconcile is not rationed: a rationed one would re-read the same
+        # files every run and never finish, or decide on a partial reading.
+        self._put('farm.jpg', self._picture(73))
+        photoindex.run_scan(self.archive, self.CFG)
+        (self.photos / 'farm.jpg').rename(self.photos / 'farm2.jpg')
+        saved = photoindex._FINGERPRINT_BUDGET_SECONDS
+        photoindex._FINGERPRINT_BUDGET_SECONDS = 0.0
+        try:
+            result = photoindex.run_reconcile(self.archive, self.CFG)
+        finally:
+            photoindex._FINGERPRINT_BUDGET_SECONDS = saved
+        self.assertEqual(result['rematched_by_content'], [('photos/farm.jpg', 'photos/farm2.jpg')])
+
+    def test_a_file_too_large_for_memory_is_unknown_not_a_crash(self) -> None:
+        # F3: MemoryError reads as "not known yet", never aborts the scan.
+        path = self._put('huge.jpg', self._picture(74))
+        with mock.patch.object(photoindex, '_jpeg_picture_hash', side_effect=MemoryError):
+            self.assertIsNone(photoindex._photo_fingerprint(path))
+            photoindex.run_scan(self.archive, self.CFG)
+        self.assertEqual(self._rows()['photos/huge.jpg'][1], photoindex._FINGERPRINT_RETRY)
+
+    def test_an_animated_png_gets_no_fingerprint(self) -> None:
+        import struct
+        import zlib
+
+        def chunk(kind: bytes, data: bytes) -> bytes:
+            return (struct.pack('>I', len(data)) + kind + data
+                    + struct.pack('>I', zlib.crc32(kind + data)))
+
+        apng = (photoindex._PNG_SIGNATURE
+                + chunk(b'IHDR', struct.pack('>IIBBBBB', 10, 10, 8, 2, 0, 0, 0))
+                + chunk(b'acTL', struct.pack('>II', 2, 0))
+                + chunk(b'IDAT', zlib.compress(bytes(310))) + chunk(b'IEND', b''))
+        self.assertEqual(photoindex._photo_fingerprint(self._put('anim.png', apng)),
+                         photoindex._NO_FINGERPRINT)
+
+    def test_a_late_first_read_still_clears_the_stale_missing_row(self) -> None:
+        # F6: back.jpg (farm's picture again) could not be read when it was
+        # catalogued; when a later scan reads it, MISSING:farm is cleared, so
+        # nothing is left blocking back.jpg's own later re-tie.
+        picture = self._picture(75)
+        self._put('farm.jpg', picture, caption='The farm')
+        photoindex.run_scan(self.archive, self.CFG)
+        (self.photos / 'farm.jpg').unlink()
+        photoindex.run_reconcile(self.archive, self.CFG)
+        self._put('back.jpg', picture)
+        real = photoindex._photo_fingerprint
+        photoindex._photo_fingerprint = lambda path: None if path.name == 'back.jpg' else real(path)
+        try:
+            photoindex.run_scan(self.archive, self.CFG)
+        finally:
+            photoindex._photo_fingerprint = real
+        self.assertEqual(self._rows()['photos/back.jpg'][1], photoindex._FINGERPRINT_RETRY)
+        photoindex.run_scan(self.archive, self.CFG)
+        self.assertNotIn('MISSING:photos/farm.jpg', self._rows())
+        (self.photos / 'back.jpg').rename(self.photos / 'moved.jpg')
+        result = photoindex.run_reconcile(self.archive, self.CFG)
+        self.assertEqual(result['rematched_by_content'], [('photos/back.jpg', 'photos/moved.jpg')])
+
+    def test_a_failed_upgrade_in_reconcile_never_says_rebuild(self) -> None:
+        # F7: a lock (or full disk) during the in-place upgrade: plain words,
+        # nothing changed, retry the same command - never "unreadable".
+        self._put('farm.jpg', self._picture(76))
+        photoindex.run_scan(self.archive, self.CFG)
+        self._downgrade_to_schema_1()
+        with mock.patch.object(photoindex, '_open_and_apply_schema',
+                               side_effect=sqlite3.OperationalError('database is locked')):
+            with self.assertRaises(RuntimeError) as ctx:
+                photoindex.run_reconcile(self.archive, self.CFG)
+        message = str(ctx.exception)
+        self.assertIn('Nothing in it was changed or lost', message)
+        self.assertIn('run the same command again', message)
+        self.assertNotIn('unreadable', message)
+        self.assertEqual(photoindex_status(self.archive, self.CFG)[0], 'old-schema')
+
+    def test_a_value_from_an_older_rule_is_recomputed(self) -> None:
+        # F8: a stale tag is "unknown" - the backfill recomputes it.
+        self._put('farm.jpg', self._picture(77))
+        photoindex.run_scan(self.archive, self.CFG)
+        good = self._rows()['photos/farm.jpg'][1]
+        self._set_fingerprint('photos/farm.jpg', 'jpeg-scan64k-v2:' + 'a' * 32)
+        photoindex.run_scan(self.archive, self.CFG)
+        self.assertEqual(self._rows()['photos/farm.jpg'][1], good)
+
+    def test_a_live_copy_not_yet_fingerprinted_blocks_the_re_tie(self) -> None:
+        # F9: live L is a copy of A, its fingerprint not known yet; A is
+        # deleted and a third copy N appears - L might be a second holder.
+        picture = self._picture(78)
+        self._put('A.jpg', picture, caption='A')
+        self._put('L.jpg', picture, caption='L')
+        photoindex.run_scan(self.archive, self.CFG)
+        self._set_fingerprint('photos/L.jpg', None)
+        (self.photos / 'A.jpg').unlink()
+        self._put('N.jpg', picture)
+        result = photoindex.run_reconcile(self.archive, self.CFG)
+        self.assertEqual(result['rematched'], [])
 
 
 if __name__ == '__main__':

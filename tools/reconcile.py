@@ -694,6 +694,13 @@ def run_reconcile(
         # clean catalog.
         d = photo_result.data or {}
         photo_status = str(d.get('status') or '')
+        if d.get('content_unchecked'):
+            # Some new photos could not be read, so photoindex took no
+            # content match at all this run (#220 audit F2) - say so.
+            result.add('warning',
+                       f"photos: {len(d['content_unchecked'])} new photo(s) could not be "
+                       'read just now, so none was matched by its content this run. '
+                       'Close any program using them, then run `fha reconcile` again.')
         if photo_status in ('absent', 'unreadable', 'old-schema'):
             # The catalog exists on disk but photoindex refused it (corrupt,
             # or a schema too old to upgrade in place - a schema-1 catalog
