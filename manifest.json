@@ -217,14 +217,14 @@
     {
       "path": ".fha/browser-companion/src/batch.js",
       "category": "operating",
-      "sha256": "e2cafcd3381fb37c351ce3d0da0811c04171dbdeb3820e067cd947bb4e037e91",
+      "sha256": "873b37498dd665f31597b362d8c323719f65a1cfc036035577bbefc042beddb2",
       "spec_version": "1.2",
       "src": "browser-companion/src/batch.js"
     },
     {
       "path": ".fha/browser-companion/src/content.js",
       "category": "operating",
-      "sha256": "9aa00510b4547ccb47726f97cdd54a9ee49ffbcf75bd27a881c59e7f33e5f7d4",
+      "sha256": "ab6b4a9799f9729bf09b62a8e7963fdee38eac67813106ca33c65714e78d0d38",
       "spec_version": "1.2",
       "src": "browser-companion/src/content.js"
     },
@@ -252,7 +252,7 @@
     {
       "path": ".fha/browser-companion/src/lib/capture-batch.js",
       "category": "operating",
-      "sha256": "10618d1d350e26f3d0ebdf1775e7f4403236c824b1351219fb7f4cf0428378e6",
+      "sha256": "c5cd65433d3fbb169e46eb16c39132646432e741bde7e4c32c6ec8f63d102984",
       "spec_version": "1.2",
       "src": "browser-companion/src/lib/capture-batch.js"
     },
@@ -280,7 +280,7 @@
     {
       "path": ".fha/browser-companion/src/lib/familysearch-record.js",
       "category": "operating",
-      "sha256": "d11d9989e92a2484c0c93e3006751482b0e9e05fc3cb215dbc9968b319b6dd6f",
+      "sha256": "578bb7da5d5193069db071a0ce1c10b920fa7ebf4d0c2778d66b63ed330449e1",
       "spec_version": "1.2",
       "src": "browser-companion/src/lib/familysearch-record.js"
     },
@@ -294,7 +294,7 @@
     {
       "path": ".fha/browser-companion/src/lib/findagrave.js",
       "category": "operating",
-      "sha256": "f10581814145bc179162f1b05c5fd379e73424f891a9423a48a01d1256390a49",
+      "sha256": "3881c97a700a415586018f257822b6e6e38ca891e366dca971ce70eeffc9245b",
       "spec_version": "1.2",
       "src": "browser-companion/src/lib/findagrave.js"
     },
@@ -357,7 +357,7 @@
     {
       "path": ".fha/browser-companion/src/panel.js",
       "category": "operating",
-      "sha256": "0d5e40128600f88fa966aaa4af778a89a52b47dac42df03b8b79e8a0cb0fdece",
+      "sha256": "dc9fc8e200066c37797d9b980300251716103cba94052a8224f9dcd47d8c479e",
       "spec_version": "1.2",
       "src": "browser-companion/src/panel.js"
     },
