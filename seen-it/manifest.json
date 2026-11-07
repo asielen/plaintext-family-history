@@ -25,6 +25,7 @@
       ],
       "js": [
         "cliplist.js",
+        "searchrun.js",
         "content.js"
       ],
       "css": [

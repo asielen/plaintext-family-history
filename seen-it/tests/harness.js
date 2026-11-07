@@ -83,7 +83,13 @@ function load(opts = {}) {
     TextEncoder,
     URL,
   });
-  const file = path.join(__dirname, '..', 'background.js');
+  // A service worker's global is `self`, and importScripts runs a file in it.
+  const addon = path.join(__dirname, '..');
+  context.self = context;
+  context.importScripts = (...files) => {
+    for (const f of files) vm.runInContext(fs.readFileSync(path.join(addon, f), 'utf8'), context, { filename: f });
+  };
+  const file = path.join(addon, 'background.js');
   vm.runInContext(fs.readFileSync(file, 'utf8'), context, { filename: file });
 
   const settle = async (rounds = 20) => {

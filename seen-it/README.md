@@ -84,7 +84,8 @@ two ways:
   number - no titles, no searches) to your other computers if you are signed in to Chrome with
   sync on. That is Chrome's own sync to your own Google account; turn off "Extensions" in
   Chrome's sync settings to stop it.
-- **Backups are files you save yourself,** into your Downloads folder.
+- **Backups are files you save yourself,** into your Downloads folder. A backup, like the shared
+  data-folder file, holds what you looked at and marked - never this computer's folder names.
 - **In Advanced mode the helper only reads your archive.** It never writes to, moves or changes
   anything in it. It writes only its own settings file and the data folder you choose.
 
@@ -224,7 +225,7 @@ answer's `missing` lists archive folders the last read could not reach.
 |---|---|
 | `manifest.json` | the add-on's description for Chrome |
 | `background.js` | the one place data is written; history import, sync, backups, the helper link |
-| `content.js`, `cliplist.js`, `content.css` | Newspapers.com (`cliplist.js` keeps your clippings list) |
+| `content.js`, `cliplist.js`, `searchrun.js`, `content.css` | Newspapers.com (`cliplist.js` keeps your clippings list; `searchrun.js` decides when a search counts as run again) |
 | `content-ancestry.js`, `content-familysearch.js`, `content-findagrave.js`, `content-ancestry.css` | Ancestry, FamilySearch, Find a Grave |
 | `researchlog.js` | the research-log export and newspaper coverage |
 | `treefile.js` | reads an Ancestry tree file (GEDCOM) |

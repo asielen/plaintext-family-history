@@ -32,7 +32,6 @@
   const PAGE_CLIPS_FORCED_MIN = 5 * 1000;    // a save, or the Check button
   // The site's own notice when a clipping is saved (its text is "Clipping saved").
   const CLIP_SAVED_RE = /\bclip(?:ping)? saved\b|saved to (?:your )?clippings/i;
-  const LOCK_STALE = 5 * 60 * 1000;
   const OVERLAP_MIN = 0.5; // share of the smaller clipping covered by the other
   // Search parameters that do not change WHICH results a search finds.
   const VOLATILE_PARAMS = new Set(['page', 'search-id', 'searchId', 'offset', 'sort', 'match', 'start']);
@@ -143,17 +142,16 @@
   // The list logic itself is in cliplist.js (window.SeenItClips), so it can be tested.
   const clipEntry = (c) => SeenItClips.clipEntry(c, location.origin);
 
+  // Every write goes through the background writer (background.js): a tab
+  // that read the store, waited minutes on the network and wrote it all back
+  // would erase whatever was recorded in between.
   async function withLock(fn) {
-    const { meta = {} } = await chrome.storage.local.get('meta');
-    if (meta.lock && Date.now() - meta.lock < LOCK_STALE) return;
-    meta.lock = Date.now();
-    await chrome.storage.local.set({ meta });
+    const lock = await send({ type: 'clipLock' });
+    if (!lock || !lock.ok || !lock.got) return;
     try {
       await fn();
     } finally {
-      const { meta: m2 = {} } = await chrome.storage.local.get('meta');
-      delete m2.lock;
-      await chrome.storage.local.set({ meta: m2 });
+      await send({ type: 'clipUnlock' });
     }
   }
 
@@ -183,7 +181,7 @@
         fetchPage: (cursor) => fetchJson('/api/clipping/list?user=' + encodeURIComponent(user.username) +
           '&visibility=all&count=24&cursor_mark=' + encodeURIComponent(cursor) + '&product_id=1'),
       });
-      await chrome.storage.local.set({ clips: r.clips, meta: r.meta });
+      await send({ type: 'clipList', result: { clips: r.clips, changes: r.changes, replace: r.replace } });
     }).catch((e) => console.warn('seen-it: clippings refresh', e));
   }
 
@@ -207,14 +205,9 @@
     const user = signedInUser() || (data.meta.user ? { username: data.meta.user } : null);
     if (!user) return;
     try {
-      const all = [];
-      for (let start = 0; start < 100; start += 25) {
-        if (start) await sleep(between(800, 2000));
-        const j = await fetchJson('/api/clipping/page?page_id=' + pageId + '&start=' + start + '&count=25');
-        const batch = (j && j.clippings) || [];
-        all.push(...batch);
-        if (batch.length < 25) break;
-      }
+      const { all, complete } = await SeenItClips.readPageClips(
+        (start) => fetchJson('/api/clipping/page?page_id=' + pageId + '&start=' + start + '&count=25'),
+        () => sleep(between(800, 2000)));
       const isMine = (c) => (c.user_username || '').toLowerCase() === user.username.toLowerCase();
       const mine = all.filter(isMine);
       const overlaps = [];
@@ -230,10 +223,10 @@
           });
         }
       }
-      const { clips = {} } = await chrome.storage.local.get('clips');
-      if (mine.length) clips[pageId] = mine.map(clipEntry);
-      else delete clips[pageId];
-      await chrome.storage.local.set({ clips });
+      // Only a read that reached the end of the page's list may drop one of
+      // your clippings; a page crowded with other members' clippings is read
+      // in part, and a part adds without removing.
+      await send({ type: 'pageClips', pageId, entries: mine.map(clipEntry), complete });
       await send({ type: 'overlaps', pageId, overlaps });
     } catch (e) {
       /* the badge shows what is already known */
@@ -283,8 +276,9 @@
       count = resultCount();
       if (count == null) await sleep(500);
     }
-    if (searchLogged === s.key + '|' + count) return;
-    searchLogged = s.key + '|' + count;
+    // Not twice in one sitting - but the same search run again later is a new run.
+    if (SeenItSearch.isRepeat(searchLogged, s.key, count, Date.now())) return;
+    searchLogged = { key: s.key, count, at: Date.now() };
     await send({ type: 'search', key: s.key, params: s.params, url: location.href.split('#')[0], count });
   }
 
@@ -638,6 +632,7 @@
     } else {
       currentSearchKey = null;
       priorRuns = [];
+      searchLogged = null; // left the results: coming back is a new run
     }
     if (pageId || isSearch) maybeRefreshClips();
     scheduleRender();

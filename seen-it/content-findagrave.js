@@ -242,10 +242,17 @@
   window.addEventListener('pagehide', dwellFlush);
   setInterval(dwellFlush, 30000);
 
-  let lastKey = null;
+  // `undefined` until the first check. (null would match the key of every
+  // page that is not a memorial - search results, cemetery listings - so the
+  // first check found "nothing changed" and never drew the pills there.)
+  let lastPath;
+  let lastKey;
   function onLocation() {
+    if (location.pathname === lastPath) return;
+    lastPath = location.pathname;
+    scheduleRender();
     const key = keyFromPath(location.pathname);
-    if (key === lastKey) return;
+    if (key === lastKey) return; // a memorial's photo page: the same memorial
     lastKey = key;
     dwellFlush();
     dwellKey = key;

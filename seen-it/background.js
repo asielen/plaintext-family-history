@@ -59,6 +59,9 @@
 // computer - without it, Chrome's synced storage would not be shared, and the
 // helper (which answers only that ID) could not be found.
 
+// The clippings-list merge rules are shared with content.js (cliplist.js).
+importScripts('cliplist.js');
+
 const GAP_MS = 30 * 60 * 1000;
 const MAX_LOOKS_KEPT = 200;
 const SEARCH_ATTRIBUTION_MS = 3 * 60 * 60 * 1000;
@@ -162,6 +165,44 @@ function recordOverlaps(pageId, overlaps) {
     const p = pages[pageId] || { dwellMs: 0, fromSearches: [], terms: [], mark: null, overlaps: [] };
     p.overlaps = overlaps || [];
     pages[pageId] = p;
+  });
+}
+
+// ── your clippings (content.js reads them from the site; this writes them) ──
+// A clippings-list pass takes minutes of reading. Its result is merged into
+// the store as it is when the pass ends - only the clipping fields of meta
+// change - so nothing recorded meanwhile (a search, an export date, sync
+// bookkeeping) is overwritten by the copy the pass started from.
+const CLIP_LOCK_STALE = 5 * 60 * 1000;
+
+// One tab at a time reads the clippings list.
+function clipLock() {
+  return update(['meta'], ({ meta }) => {
+    if (meta.lock && Date.now() - meta.lock < CLIP_LOCK_STALE) return { got: false };
+    meta.lock = Date.now();
+    return { got: true };
+  });
+}
+
+function clipUnlock() {
+  return update(['meta'], ({ meta }) => { delete meta.lock; });
+}
+
+function recordClipList(result) {
+  return update(['clips', 'meta'], (o) => {
+    const merged = SeenItClips.mergeClipList(o.clips, result || {});
+    o.clips = merged;
+    const changes = (result && result.changes) || {};
+    Object.assign(o.meta, changes.set || {});
+    for (const f of changes.clear || []) delete o.meta[f];
+    o.meta.clipCount = Object.values(merged).reduce((n, l) => n + l.length, 0);
+    return { clipCount: o.meta.clipCount };
+  });
+}
+
+function recordPageClips(pageId, entries, complete) {
+  return update(['clips'], (o) => {
+    o.clips = SeenItClips.mergePageClips(o.clips, pageId, entries || [], !!complete);
   });
 }
 
@@ -474,9 +515,19 @@ chrome.storage.onChanged.addListener((changes, area) => {
 });
 
 // ── export / import ─────────────────────────────────────────────────────────
+// What of `meta` may leave this computer, in a backup file or in the shared
+// data-folder file. An allowlist, not a blocklist: most of meta is this
+// computer's own bookkeeping, and several fields hold its folder paths
+// (dataDir, backupFile, knownMissing, and error messages that name a folder)
+// - a file that is synced or handed to someone must carry none of that.
+// Only the tree-file stamp is read back (importAll), so only it travels.
+const PORTABLE_META = ['treeFile'];
+
 async function exportAll() {
   const o = await chrome.storage.local.get(['views', 'pages', 'passes', 'searches', 'clips', 'anc', 'ancPeople', 'meta']);
-  if (o.meta) delete o.meta.lock;
+  const meta = {};
+  for (const k of PORTABLE_META) if (o.meta && o.meta[k] !== undefined) meta[k] = o.meta[k];
+  o.meta = meta;
   return { app: 'newspapers-seen-it', version: 3, exported: new Date().toISOString(), ...o };
 }
 
@@ -608,13 +659,13 @@ function helperError(e) {
 const FOLDER_CHECK_MINUTES = 15;
 const REWRITE_ANYWAY_MS = 24 * 60 * 60 * 1000;
 
-async function deviceId() {
-  const { meta = {} } = await chrome.storage.local.get('meta');
-  if (!meta.device) {
-    meta.device = Math.random().toString(36).slice(2, 8);
-    await chrome.storage.local.set({ meta });
-  }
-  return meta.device;
+function deviceId() {
+  // Through the writer like every other meta change: a bare get-then-set
+  // here could overwrite a meta update landing in between.
+  return update(['meta'], ({ meta }) => {
+    if (!meta.device) meta.device = Math.random().toString(36).slice(2, 8);
+    return meta.device;
+  });
 }
 
 function hostCall(msg) {
@@ -810,6 +861,18 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       return reply(recordMark(String(msg.pageId), msg.mark).then((mark) => ({ mark })));
     case 'overlaps':
       return reply(recordOverlaps(String(msg.pageId), msg.overlaps));
+    case 'clipLock':
+      return reply(clipLock());
+    case 'clipUnlock':
+      return reply(clipUnlock());
+    case 'clipList':
+      return reply(recordClipList(msg.result));
+    case 'pageClips':
+      return msg.pageId ? reply(recordPageClips(String(msg.pageId), msg.entries, msg.complete)) : undefined;
+    case 'logExported':
+      return reply(update(['meta'], ({ meta }) => { meta.logExportedAt = Number(msg.at) || Date.now(); }));
+    case 'requestFullClipRefresh':
+      return reply(update(['meta'], ({ meta }) => { meta.fullRefreshRequested = true; }));
     case 'passed':
       return reply(recordPass(String(msg.pageId), msg.key || null, Date.now()));
     case 'search':

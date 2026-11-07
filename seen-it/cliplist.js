@@ -13,7 +13,12 @@
 // (meta.clipsFullResume) instead of starting over. Only a full pass that
 // reads the whole list from the start may drop anything.
 //
-// Classic script (window.SeenItClips, loaded before content.js) and CommonJS (tests).
+// content.js only reads; the background writer (background.js, which loads
+// this file too) merges each result into the store as it is at that moment:
+// mergeClipList for a list pass, mergePageClips for one newspaper page.
+//
+// Classic script (window.SeenItClips before content.js, self.SeenItClips in
+// the background service worker) and CommonJS (tests).
 
 (function (root) {
   const MAX_PAGES = 60;
@@ -87,24 +92,68 @@
     }
 
     let clips = fresh;
-    m.user = username;
-    m.clipsAt = Date.now();
+    // `changes` is what the pass decided about the clipping fields of meta -
+    // and nothing else. The background writer applies exactly these to the
+    // meta as it is THEN (not as it was before minutes of network waits), so
+    // a search logged or a research log exported meanwhile is not undone.
+    const changes = { set: { user: username, clipsAt: Date.now() }, clear: [] };
     if (full && complete) {
-      m.clipsFullAt = Date.now();
-      delete m.fullRefreshRequested;
-      delete m.clipsFullResume;
+      changes.set.clipsFullAt = Date.now();
+      changes.clear.push('fullRefreshRequested', 'clipsFullResume');
     } else if (full) {
       // Stopped at the cap with more to read: keep everything already known
       // (a clipping this pass did not reach is not gone) and carry on from
       // here next time. Not marked as fully refreshed.
       clips = addAll(copyLists(stored), fresh);
-      m.clipsFullResume = cursor;
+      changes.set.clipsFullResume = cursor;
     }
+    Object.assign(m, changes.set);
+    for (const f of changes.clear) delete m[f];
     m.clipCount = Object.values(clips).reduce((n, l) => n + l.length, 0);
-    return { clips, meta: m, complete };
+    // `replace`: only a full pass that read the whole list from the start
+    // may stand in for the stored list (and so drop a deleted clipping).
+    return { clips, meta: m, changes, complete, replace: full && complete && resume == null };
   }
 
-  const api = { refreshClipList, clipEntry, MAX_PAGES };
+  // The stored list after a pass, merged into the list as it is NOW: other
+  // tabs (a newspaper page's own clippings check) may have added to it while
+  // the pass was reading.
+  function mergeClipList(latest, result) {
+    return result.replace ? copyLists(result.clips) : addAll(copyLists(latest), result.clips);
+  }
+
+  // A newspaper page's clippings, read in batches of 25 (at most `maxBatches`).
+  // `complete` says whether the read reached the end of the page's list.
+  async function readPageClips(fetchBatch, pause, maxBatches) {
+    const all = [];
+    const limit = maxBatches || 4;
+    for (let i = 0; i < limit; i++) {
+      if (i && pause) await pause();
+      const j = await fetchBatch(i * 25);
+      const batch = (j && j.clippings) || [];
+      all.push(...batch);
+      if (batch.length < 25) return { all, complete: true };
+    }
+    return { all, complete: false };
+  }
+
+  // Your clippings on one page, merged into the stored list. Only a complete
+  // read may drop one (it was deleted on the site); a read cut short by the
+  // batch limit - a page with many other members' clippings - only adds.
+  function mergePageClips(clips, pageId, entries, complete) {
+    const out = copyLists(clips);
+    const pid = String(pageId);
+    if (complete) {
+      if (entries.length) out[pid] = entries.slice();
+      else delete out[pid];
+    } else if (entries.length) {
+      addAll(out, { [pid]: entries });
+    }
+    return out;
+  }
+
+  const api = { refreshClipList, mergeClipList, readPageClips, mergePageClips, clipEntry, MAX_PAGES };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   if (root) root.SeenItClips = api;
-})(typeof window !== 'undefined' ? window : null);
+  // window in a content script, self in the background service worker
+})(typeof window !== 'undefined' ? window : typeof self !== 'undefined' ? self : null);

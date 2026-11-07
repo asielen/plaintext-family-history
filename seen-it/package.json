@@ -4,7 +4,7 @@
   "description": "Seen It browser add-on: marks the records and newspaper pages you have already looked at. Tests only - the add-on has no build step.",
   "private": true,
   "scripts": {
-    "test": "node --test tests/test-researchlog.js tests/test-treefile.js tests/test-cliplist.js tests/test-background.js"
+    "test": "node --test tests/test-researchlog.js tests/test-treefile.js tests/test-cliplist.js tests/test-background.js tests/test-content.js"
   },
   "engines": {
     "node": ">=18"

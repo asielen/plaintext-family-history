@@ -117,10 +117,9 @@ async function exportLog(all) {
   const { count, text } = SeenItLog.build(store, since);
   if (!count) return say(all ? 'Nothing logged yet.' : 'Nothing new since the last export.');
   download(text, 'newspapers-research-log-' + SeenItLog.day(Date.now()) + '.md', 'text/markdown');
-  if (!all) {
-    meta.logExportedAt = Date.now();
-    await chrome.storage.local.set({ meta });
-  }
+  // Through the background writer: writing back the whole meta read above
+  // would undo anything the background recorded meanwhile.
+  if (!all) await chrome.runtime.sendMessage({ type: 'logExported', at: Date.now() });
   say(count + ' entr' + (count === 1 ? 'y' : 'ies') + ' saved to your downloads folder' + (all ? '.' : ' (new since the last export).'));
   show();
 }
@@ -297,9 +296,7 @@ $('b-history').addEventListener('click', async () => {
 });
 
 $('b-refresh').addEventListener('click', async () => {
-  const { meta = {} } = await chrome.storage.local.get('meta');
-  meta.fullRefreshRequested = true;
-  await chrome.storage.local.set({ meta });
+  await chrome.runtime.sendMessage({ type: 'requestFullClipRefresh' });
   say('Your full clippings list will be re-read the next time you open a Newspapers.com search or page.');
   show();
 });

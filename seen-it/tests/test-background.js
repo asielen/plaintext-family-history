@@ -170,3 +170,76 @@ test('an add-on that names the keys it cares about is told only about those', as
   await h.local.set({ settings: { advanced: false } });
   assert.deepStrictEqual((await h.sendExternal({ type: 'knownKeys', prefix: '' })).keys, {});
 });
+
+// ── PR #212 review: backups and the shared data file carry no local paths ──
+const LOCAL_PATH = /(^|[^A-Za-z])[A-Za-z]:[\\/]|\/(?:Users|home)\/|AppData|\.local\/share/;
+
+test('a backup or data-folder file carries none of this computer\'s folder paths', async () => {
+  const h = load();
+  await h.send({ type: 'loadTreeFile', file: 'hartley.ged', people: [{ id: 'I1', name: 'Thomas Hartley', keys: ['rec:1:2'] }] });
+  const { meta } = await h.local.get('meta');
+  Object.assign(meta, {
+    dataDir: 'C:\\Users\\you\\OneDrive\\Seen It data',
+    backupFile: 'C:\\Users\\you\\OneDrive\\Seen It data\\seen-it-abc123.json',
+    knownMissing: ['/Volumes/Hartley Docs', '/home/you/Hartley Inbox'],
+    knownError: 'the archive folder C:\\Users\\you\\Hartley Family Archive was not found',
+    folderError: 'cannot write /home/you/.local/share/seen-it',
+    lock: 123,
+  });
+  await h.local.set({ meta, views: { 101: { t: [Date.now()], last: Date.now() } } });
+  const r = await h.send({ type: 'export' });
+  const text = JSON.stringify(r.data);
+  assert.doesNotMatch(text, LOCAL_PATH, 'a local path left this computer');
+  assert.deepStrictEqual(Object.keys(r.data.meta), ['treeFile']);
+  assert.strictEqual(r.data.meta.treeFile.name, 'hartley.ged');
+  assert.ok(r.data.views['101']);
+  // the originals stay in this computer's own storage
+  assert.strictEqual((await h.local.get('meta')).meta.dataDir, 'C:\\Users\\you\\OneDrive\\Seen It data');
+  // and the Chrome Sync summary never carried any
+  await h.fireAlarm('pushSync');
+  assert.doesNotMatch(JSON.stringify(await h.sync.get(null)), LOCAL_PATH);
+});
+
+// ── PR #212 review: a clippings pass must not undo what happened meanwhile ─
+test('a clippings list pass changes only the clipping fields of meta, merged at the end', async () => {
+  const h = load();
+  await h.local.set({ clips: { 9001: [{ id: 501 }] }, meta: { device: 'abc123' } });
+  assert.deepStrictEqual((await h.send({ type: 'clipLock' })).got, true);
+  assert.deepStrictEqual((await h.send({ type: 'clipLock' })).got, false, 'one tab at a time');
+  // while the pass is reading: a search is run, the research log exported,
+  // and the page's own check adds a clipping
+  await h.send({ type: 'search', key: 'k1', params: { keyword: 'Hartley' }, url: 'https://www.newspapers.com/search/?query=Hartley', count: 12 });
+  await h.send({ type: 'logExported', at: 1234 });
+  await h.send({ type: 'pageClips', pageId: '9003', entries: [{ id: 503 }], complete: true });
+  // the pass ends: an incremental read that found one new clipping
+  await h.send({ type: 'clipList', result: {
+    clips: { 9001: [{ id: 501 }], 9002: [{ id: 502 }] },
+    changes: { set: { user: 'hartleyfan', clipsAt: 99 }, clear: [] }, replace: false } });
+  await h.send({ type: 'clipUnlock' });
+  const { meta, clips } = await h.local.get(['meta', 'clips']);
+  assert.strictEqual(meta.lastSearch.key, 'k1');
+  assert.strictEqual(meta.logExportedAt, 1234);
+  assert.strictEqual(meta.device, 'abc123');
+  assert.strictEqual(meta.user, 'hartleyfan');
+  assert.strictEqual(meta.clipCount, 3);
+  assert.strictEqual(meta.lock, undefined);
+  assert.deepStrictEqual(Object.keys(clips).sort(), ['9001', '9002', '9003']);
+});
+
+test('a page read cut short never removes your clippings on that page', async () => {
+  const h = load();
+  await h.local.set({ clips: { 9001: [{ id: 501 }] } });
+  await h.send({ type: 'pageClips', pageId: '9001', entries: [], complete: false });
+  assert.deepStrictEqual((await h.local.get('clips')).clips['9001'], [{ id: 501 }]);
+  await h.send({ type: 'pageClips', pageId: '9001', entries: [], complete: true });
+  assert.ok(!('9001' in (await h.local.get('clips')).clips));
+});
+
+test('the toolbar window asks the writer to stamp an export or a full re-read', async () => {
+  const h = load();
+  await h.local.set({ meta: { lastSearch: { key: 'k1', at: 5 } } });
+  await h.send({ type: 'logExported', at: 777 });
+  await h.send({ type: 'requestFullClipRefresh' });
+  const { meta } = await h.local.get('meta');
+  assert.deepStrictEqual([meta.logExportedAt, meta.fullRefreshRequested, meta.lastSearch.key], [777, true, 'k1']);
+});
