@@ -168,7 +168,7 @@
     {
       "path": ".fha/browser-companion/README.md",
       "category": "operating",
-      "sha256": "c30a3ef7a22c38652d2f5dd5e8a83d3d52eb541e0f81dddffd93d974d2a49f16",
+      "sha256": "1113f06b47e4830a2da3abbed217f658fc3ac7b41dbbef80c13a00ee175e0619",
       "spec_version": "1.2",
       "src": "browser-companion/README-ARCHIVE.md"
     },
@@ -203,7 +203,7 @@
     {
       "path": ".fha/browser-companion/manifest.json",
       "category": "operating",
-      "sha256": "02e8749728f8111799132f5e78e67cb6aff7df173b5be666df20f8cf311b137b",
+      "sha256": "267233839415fbca87cc40a8b40372af8772903aa3f50488ffad6f7d0947f85c",
       "spec_version": "1.2",
       "src": "browser-companion/manifest.json"
     },
@@ -217,14 +217,14 @@
     {
       "path": ".fha/browser-companion/src/content.js",
       "category": "operating",
-      "sha256": "c033919d6ad5c7bd10604562fa0a19ab8bd8f168d00ca564ab5a36c033e53de6",
+      "sha256": "800517a7250055c7ab12fae51b28b47c7f2165da2c3094243c1bf5903aeac648",
       "spec_version": "1.2",
       "src": "browser-companion/src/content.js"
     },
     {
       "path": ".fha/browser-companion/src/lib/ancestry-record.js",
       "category": "operating",
-      "sha256": "586ed96460c9ee4eb678888a4d1d0d98c42d8f52bf98d6d7b9c630375886bf5b",
+      "sha256": "b7fb06711b6916fc9f98d37aa6e45d8d29355968a4df4e11e5f95f6c0de5e23b",
       "spec_version": "1.2",
       "src": "browser-companion/src/lib/ancestry-record.js"
     },
@@ -238,14 +238,14 @@
     {
       "path": ".fha/browser-companion/src/lib/capture-json-pure.js",
       "category": "operating",
-      "sha256": "cd0fa09b18f22803824bea320c2df80022d8894eae47cd2830612903a23b3399",
+      "sha256": "0d32c35eaffe553a425a2e54b61409b6b03adf618160d4e185bfed202e1a095f",
       "spec_version": "1.2",
       "src": "browser-companion/src/lib/capture-json-pure.js"
     },
     {
       "path": ".fha/browser-companion/src/lib/capture-json.js",
       "category": "operating",
-      "sha256": "64d551052d591384f9afb904c41e145e8369472134d4b30930d5fb4ef70c7020",
+      "sha256": "96864f8288b8dba84cdddd20041a460bab8d3b57edcefdee50ae8c1e5af91e4e",
       "spec_version": "1.2",
       "src": "browser-companion/src/lib/capture-json.js"
     },
@@ -262,6 +262,20 @@
       "sha256": "d11d9989e92a2484c0c93e3006751482b0e9e05fc3cb215dbc9968b319b6dd6f",
       "spec_version": "1.2",
       "src": "browser-companion/src/lib/familysearch-record.js"
+    },
+    {
+      "path": ".fha/browser-companion/src/lib/findagrave-record.js",
+      "category": "operating",
+      "sha256": "6a771fc44c79e8c69a34cc1317d24909030b2ba415cfb5f53ce905e0a1d28b16",
+      "spec_version": "1.2",
+      "src": "browser-companion/src/lib/findagrave-record.js"
+    },
+    {
+      "path": ".fha/browser-companion/src/lib/findagrave.js",
+      "category": "operating",
+      "sha256": "f10581814145bc179162f1b05c5fd379e73424f891a9423a48a01d1256390a49",
+      "spec_version": "1.2",
+      "src": "browser-companion/src/lib/findagrave.js"
     },
     {
       "path": ".fha/browser-companion/src/lib/iiif.js",
@@ -287,7 +301,7 @@
     {
       "path": ".fha/browser-companion/src/lib/newspapers.js",
       "category": "operating",
-      "sha256": "95aa9b330b6740cce17cb748af8ecb086285c2425da466f496e2e269753280a4",
+      "sha256": "2f0123875831d6368540dc5e63857ad8e99c8b395bf0ba12875c92dbefc05cbd",
       "spec_version": "1.2",
       "src": "browser-companion/src/lib/newspapers.js"
     },
@@ -315,14 +329,14 @@
     {
       "path": ".fha/browser-companion/src/panel.html",
       "category": "operating",
-      "sha256": "b67ba3774165e8dd0dfc84f6e5f58f3532151b9fa8ffadf4f7e5f9056863ae27",
+      "sha256": "7e7d9a0080866195031068601bb88c961c117d2170fdf78fc8146d54c225081c",
       "spec_version": "1.2",
       "src": "browser-companion/src/panel.html"
     },
     {
       "path": ".fha/browser-companion/src/panel.js",
       "category": "operating",
-      "sha256": "d7e08f2a2a46dd8f6fe2d6c641251939bc726924a1038011c749af788d824f32",
+      "sha256": "5f243fa1adcd021f8b87407387772b54ef29a2c4b6516cd86738b08f875375a9",
       "spec_version": "1.2",
       "src": "browser-companion/src/panel.js"
     },
@@ -462,7 +476,7 @@
     {
       "path": ".fha/tools/capture.py",
       "category": "operating",
-      "sha256": "6a3b1c7fdab8883adc2070f0db9d386d089c65936e97a7cde757a09bcb46e7f2",
+      "sha256": "f637e3f277a6d01e1a46ea0015a6607ad1254ef1d0f68e023f643b7e721783b2",
       "spec_version": "1.2",
       "src": "tools/capture.py"
     },
@@ -476,7 +490,7 @@
     {
       "path": ".fha/tools/capture_recipes/_common.py",
       "category": "operating",
-      "sha256": "ae6259ca7ea6b06f50d58b999d7e98bce3e778d01efa327e2efed3933be972fb",
+      "sha256": "5f10c0d3371d08eb08ddd2d2d45b80585bfeb0bfb951568b2b149e31587a1e5d",
       "spec_version": "1.2",
       "src": "tools/capture_recipes/_common.py"
     },
@@ -497,7 +511,7 @@
     {
       "path": ".fha/tools/capture_recipes/findagrave.py",
       "category": "operating",
-      "sha256": "86cbce5dc5c4ff3cb18994399a2b03ba3d21e8dee917316c6698213098513566",
+      "sha256": "ad55ae2603b94647bfbb17d9f9274739dad55f9260aa9e59426336c78cdbbb1d",
       "spec_version": "1.2",
       "src": "tools/capture_recipes/findagrave.py"
     },

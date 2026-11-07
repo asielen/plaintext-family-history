@@ -67,6 +67,44 @@ class IngestTestCase(unittest.TestCase):
     def _stubs(self) -> list[Path]:
         return sorted((self.archive / 'inbox').glob('*.notes.md'))
 
+    def test_the_file_a_capture_marks_as_main_is_the_one_filing_picks(self) -> None:
+        # PR #221 audit (F13): a Find a Grave memorial's gravestone, not the
+        # family photo that sorts first by name, is the source's main file.
+        import argparse
+        import process
+        bundle = _make_bundle(
+            self.staging, 'calvin-memorial', page_html=_sample('findagrave-memorial'),
+            capture_json={
+                'schema': 2, 'url': 'https://www.findagrave.com/memorial/900000001/calvin-george-hartley',
+                'title': 'Calvin George Hartley (1842-1918) - Find a Grave memorial', 'source_type': 'website',
+                'assets': [{'file': 'family-1.png', 'role': 'family-1'},
+                           {'file': 'grave-1.jpg', 'role': 'grave-1', 'is_primary': True},
+                           {'file': 'record-data.json', 'role': 'site-data'}],
+            })
+        (bundle / 'family-1.png').write_bytes(b'png')
+        (bundle / 'grave-1.jpg').write_bytes(b'jpg')
+        (bundle / 'record-data.json').write_text('{}', encoding='utf-8')
+        self.assertEqual(self._ingest().exit_code, EXIT_CLEAN)
+        folder = next(p for p in (self.archive / 'inbox').iterdir() if p.is_dir())
+        notes = (folder / 'notes.md').read_text(encoding='utf-8')
+        self.assertIn('  - file: grave-1.jpg\n    role: grave-1\n    is_primary: true\n', notes)
+        self.assertEqual(notes.count('is_primary'), 1)
+        args = argparse.Namespace(root=str(self.archive), file=str(folder), source_type=None, title=None,
+                                  slug=None, source_date=None, more=None, people=None, dry_run=False)
+        with mock.patch('sys.stdout', new_callable=io.StringIO):
+            self.assertEqual(process.run_process(args).exit_code, EXIT_CLEAN)
+        record = read_record(next((self.archive / 'sources').rglob('*_S-*.md')))
+        primary = [f for f in record['meta']['files'] if f.get('is_primary')]
+        self.assertEqual(len(primary), 1)
+        self.assertIn('grave-1', primary[0]['file'])
+        self.assertEqual(primary[0]['role'], 'grave-1')
+
+    def test_a_main_file_mark_on_a_file_not_in_the_bundle_is_ignored(self) -> None:
+        self.assertIsNone(capture._bundle_primary(
+            {'assets': [{'file': 'grave-1.jpg', 'is_primary': True}]}, [(Path('family-1.png'), 'family-1')]))
+        self.assertIsNone(capture._bundle_primary({'assets': [{'file': 'grave-1.jpg', 'is_primary': 'yes'}]},
+                                                  [(Path('grave-1.jpg'), 'grave-1')]))
+
     def _two_clean_bundles(self) -> None:
         _make_bundle(
             self.staging, 'census-20260624',

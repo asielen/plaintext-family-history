@@ -323,7 +323,9 @@ class ScanKnown(_TempHome):
         _json(ext_docs / 'vital' / 'fs' / 'record-site-data.json',
               {'record': {'fsId': 'abcd-123', 'imageId': 'wxyz-9'}})
         _write(ext_docs / 'vital' / 'fs' / 'record.jpg', 'jpg')
-        _json(ext_docs / 'burial' / 'x' / 'memorial-site-data.json', {'record': {'memorialId': 5505}})
+        _json(ext_docs / 'burial' / 'x' / 'memorial-site-data.json',
+              {'record': {'memorialId': 5505}, 'photos': [{'photoId': 77, 'file': 'grave-1.jpg'}], 'photosTotal': 1})
+        _write(ext_docs / 'burial' / 'x' / 'grave-1.jpg', 'jpg')
         _write(ext_docs / 'broken' / 'bad-site-data.json', '{nope')
         # sources: a record that cites a memorial it has not captured yet
         _write(archive / 'sources' / 'burial' / ('thomas-hartley-grave_%s.md' % SID_A),
@@ -357,12 +359,13 @@ class ScanKnown(_TempHome):
         self.assertNotIn('sid', items['fsrec:ABCD-123'])
         self.assertEqual(items['fsimg:WXYZ-9']['state'], 'filed')
         self.assertEqual(items['fag:5505']['state'], 'filed')
+        self.assertEqual(items['fagphoto:77']['state'], 'filed')
         self.assertEqual(items['fagidx:6606'], {'state': 'filed', 'where': 'burial', 'sid': SID_A})
         self.assertEqual(items['clip:7707']['state'], 'captured')
         self.assertEqual(items['fsrec:EFGH-456']['state'], 'processed')
         self.assertEqual(items['rec:7602:8808']['state'], 'captured')
         self.assertEqual(items['rec:7602:9909']['state'], 'captured')  # a -* chunk folder
-        self.assertEqual(len(items), 12)
+        self.assertEqual(len(items), 13)
 
     def test_where_is_a_folder_name_never_a_path(self):
         _archive, settings = self.build()
@@ -382,7 +385,7 @@ class ScanKnown(_TempHome):
         data = host.resolve_data_dir(settings)
         with mock.patch.object(host, 'KNOWN_PAGE', 5):
             first = host.handle({'op': 'known', 'offset': 0}, settings)
-            self.assertEqual(first['total'], 12)
+            self.assertEqual(first['total'], 13)
             self.assertEqual(len(first['items']), 5)
             # later pages reuse the cached scan: a file added now is not seen
             _json(Path(settings['capture_staging']) / 'late' / 'capture.json',
@@ -393,7 +396,7 @@ class ScanKnown(_TempHome):
                 page = host.handle({'op': 'known', 'offset': offset}, settings)
                 got.update(page['items'])
                 offset = page['next']
-        self.assertEqual(len(got), 12)
+        self.assertEqual(len(got), 13)
         self.assertTrue((self.conf / 'known-cache.json').is_file())
         self.assertFalse((data / 'known-cache.json').exists(), 'the cache stays out of the synced data folder')
 
@@ -479,7 +482,7 @@ class Messages(_TempHome):
         out = io.BytesIO(r.stdout)
         config, known, ping = host.read_message(out), host.read_message(out), host.read_message(out)
         self.assertTrue(config['ok'], config)
-        self.assertEqual(known['items'], {'fag:42': {'state': 'captured', 'where': 'b'}})
+        self.assertEqual(known['items'], {'fagidx:42': {'state': 'captured', 'where': 'b'}})
         self.assertEqual(Path(ping['dir']).resolve(), host.default_data_dir().resolve())
 
     def test_setup_from_the_command_line(self):
@@ -936,19 +939,69 @@ class ImagesCountOnlyWhenSaved(_TempHome):
 
     def test_a_memorial_whose_photos_were_not_saved_is_not_fully_captured(self):
         # Sweep (#6), Find a Grave: the memorial's facts were saved but a photo
-        # failed, or the gallery could not be read - the batch must still fetch
-        # the photos, so it is fagidx: (known), not fag: (captured).
-        ok = {'record': {'memorialId': 5505}, 'photosTotal': 2,
-              'photos': [{'photoId': 1, 'file': 'headstone-1.jpg'}, {'photoId': 2, 'file': None, 'skipped': 'over the limit'}]}
+        # failed, was over the limit, or the gallery could not be read - its
+        # photos are still to come, so it is fagidx: (known), not fag:
+        # (captured). Only the memorial's facts and no photo list (an older
+        # capture) is never fag: either: no saved file says the photos are.
+        all_saved = {'record': {'memorialId': 5504}, 'photosTotal': 2,
+                     'photos': [{'photoId': 1, 'file': 'grave-1.jpg'},
+                                {'photoId': 9, 'file': None, 'same_image_as': {'where': 'archive', 'source': SID_A}}]}
+        over = {'record': {'memorialId': 5505}, 'photosTotal': 2,
+                'photos': [{'photoId': 1, 'file': 'grave-1.jpg'}, {'photoId': 2, 'file': None, 'skipped': 'over the limit'}]}
         failed = {'record': {'memorialId': 5506}, 'photosTotal': 1, 'photos': [{'photoId': 3, 'file': None}]}
         unread = {'record': {'memorialId': 5507}, 'photosTotal': None, 'photos': []}
         none = {'record': {'memorialId': 5508}, 'photosTotal': 0, 'photos': []}
         older = {'record': {'memorialId': 5509}}
-        self.assertEqual(host._keys_from_site_data(ok), ['fag:5505'])
+        short = {'record': {'memorialId': 5510}, 'photosTotal': 3, 'photos': [{'photoId': 4, 'file': 'grave-1.jpg'}]}
+        self.assertEqual(host._keys_from_site_data(all_saved), ['fag:5504', 'fagphoto:1'])
+        self.assertEqual(host._keys_from_site_data(over), ['fagidx:5505', 'fagphoto:1'])
         self.assertEqual(host._keys_from_site_data(failed), ['fagidx:5506'])
         self.assertEqual(host._keys_from_site_data(unread), ['fagidx:5507'])
         self.assertEqual(host._keys_from_site_data(none), ['fag:5508'])
-        self.assertEqual(host._keys_from_site_data(older), ['fag:5509'])
+        self.assertEqual(host._keys_from_site_data(older), ['fagidx:5509'])
+        self.assertEqual(host._keys_from_site_data(short), ['fagidx:5510', 'fagphoto:4'],
+                         'a gallery listing fewer photos than the memorial shows is not all of them')
+        # a photo the data names but no saved file backs is not saved
+        self.assertEqual(host._keys_from_site_data(all_saved, None, lambda name: False), ['fagidx:5504'])
+
+    def test_a_memorial_photo_counts_only_from_its_saved_file(self):
+        # The capture companion's memorial bundle, staged: capture.json lists
+        # every file; a photo is saved only when it is listed and present.
+        archive = self.make_archive()
+        staging = self.tmp / 'Downloads' / 'fha-inbox'
+        b = staging / 'calvin-george-hartley-20261106-abc123'
+        data = {'record': {'memorialId': 900000001}, 'photosTotal': 2,
+                'photos': [{'photoId': 990000101, 'file': 'grave-1.jpg'}, {'photoId': 990000102, 'file': 'person-1.jpg'}]}
+        _json(b / 'record-data.json', data)
+        _write(b / 'grave-1.jpg', 'jpg')
+        _json(b / 'capture.json', {'url': 'https://www.findagrave.com/memorial/900000001/calvin-george-hartley',
+                                   'assets': [{'file': 'grave-1.jpg', 'role': 'grave-1'},
+                                              {'file': 'person-1.jpg', 'role': 'person-1'},
+                                              {'file': 'record-data.json', 'role': 'site-data'}]})
+        items, _ = host.scan_known(host.scan_folders({'archive': str(archive), 'capture_staging': str(staging)}))
+        self.assertEqual(sorted(items), ['fagidx:900000001', 'fagphoto:990000101'],
+                         'person-1.jpg never arrived: the memorial is not captured, and that photo is not saved')
+        _write(b / 'person-1.jpg', 'jpg')
+        items, _ = host.scan_known(host.scan_folders({'archive': str(archive), 'capture_staging': str(staging)}))
+        self.assertEqual(sorted(items), ['fag:900000001', 'fagidx:900000001', 'fagphoto:990000101', 'fagphoto:990000102'])
+        self.assertEqual(items['fag:900000001'], {'state': 'captured', 'where': b.name})
+
+    def test_a_filed_memorial_photo_is_found_by_the_name_filing_gave_it(self):
+        # `fha process` renames a bundle's files {old name}-{role}_{S-id}: the
+        # photo saved as grave-1.jpg is grave-1-grave-1_S-….jpg in the source's
+        # folder, which other sources share.
+        archive = self.make_archive()
+        docs = archive / 'documents' / 'website'
+        _json(docs / ('record-data-site-data_%s.json' % SID_A),
+              {'record': {'memorialId': 900000001}, 'photosTotal': 2,
+               'photos': [{'photoId': 990000101, 'file': 'grave-1.jpg'}, {'photoId': 990000102, 'file': 'grave-10.jpg'}]})
+        _write(docs / ('grave-1-grave-1_%s.jpg' % SID_A), 'jpg')
+        _write(docs / ('grave-10-grave-10_%s.jpg' % SID_B), 'jpg')  # another source's photo
+        items, _ = host.scan_known(host.scan_folders({'archive': str(archive)}))
+        self.assertEqual(items['fagphoto:990000101'], {'state': 'filed', 'where': 'website', 'sid': SID_A})
+        self.assertNotIn('fagphoto:990000102', items)
+        self.assertNotIn('fag:900000001', items)
+        self.assertEqual(items['fagidx:900000001']['sid'], SID_A)
 
     def test_without_a_folder_check_only_imageSaved_counts(self):
         self.assertEqual(host._keys_from_site_data({'record': self.REC}), ['rec:90001:1000001'])
@@ -974,7 +1027,8 @@ class OddFolderNames(_TempHome):
               {'url': 'https://www.ancestry.com/search/collections/76/records/88'})
         items, missing = host.scan_known(host.scan_folders({'archive': str(archive), 'capture_staging': str(staging)}))
         self.assertEqual(missing, [])
-        self.assertEqual(sorted(items), ['clip:77', 'fag:42', 'rec:76:88'])
+        # a memorial's page address alone is known, not captured: its photos may be missing
+        self.assertEqual(sorted(items), ['clip:77', 'fagidx:42', 'rec:76:88'])
 
     def test_dollar_and_percent_are_not_environment_variables(self):
         with mock.patch.dict(os.environ, {'SEENIT_T': 'elsewhere'}):
@@ -985,7 +1039,7 @@ class OddFolderNames(_TempHome):
             info = host._set_config({'archive': str(archive)}, {})
             self.assertEqual(Path(info['archive']), archive)
             items, _ = host.scan_known(host.scan_folders(host.load_settings()))
-        self.assertIn('fag:42', items)
+        self.assertIn('fagidx:42', items)
 
 
 class RecordsFiledByTheArchiveTools(_TempHome):
@@ -1035,8 +1089,8 @@ class RecordsFiledByTheArchiveTools(_TempHome):
         _json(archive / 'inbox' / 'b' / 'capture.json', {'url': 'https://www.findagrave.com/memorial/42/x'})
         _json(archive / 'inbox' / 'processed' / 'c' / 'capture.json', {'url': 'https://www.findagrave.com/memorial/43/x'})
         items, _ = host.scan_known(host.scan_folders({'archive': str(archive)}))
-        self.assertEqual(items['fag:42']['state'], 'captured')
-        self.assertEqual(items['fag:43']['state'], 'processed')
+        self.assertEqual(items['fagidx:42']['state'], 'captured')
+        self.assertEqual(items['fagidx:43']['state'], 'processed')
 
     def test_an_inbox_on_a_drive_not_connected_is_reported(self):
         archive = self.make_archive('roots:\n  documents: documents\n  inbox: %s/Unplugged Inbox\n'
@@ -1047,6 +1101,43 @@ class RecordsFiledByTheArchiveTools(_TempHome):
 
 
 # ── not shipped into archives yet ───────────────────────────────────────────
+
+class FindAGravePartialCaptures(_TempHome):
+    """PR #221 audit and review: a memorial is captured only when all of it is."""
+
+    def test_a_photo_list_read_only_in_part_is_never_fag(self):
+        # F9/F12: page 2 of the gallery failed and the page gave no count -
+        # every photo listed is saved, but the list itself was only part.
+        part = {'record': {'memorialId': 900000001}, 'photosTotal': None, 'photosPartial': True,
+                'photos': [{'photoId': 1, 'file': 'grave-1.jpg'}, {'photoId': 2, 'file': 'grave-2.jpg'}]}
+        self.assertEqual(host._keys_from_site_data(part), ['fagidx:900000001', 'fagphoto:1', 'fagphoto:2'])
+        # even with a count that the listed photos happen to match
+        self.assertEqual(host._keys_from_site_data(dict(part, photosTotal=2))[0], 'fagidx:900000001')
+        self.assertEqual(host._keys_from_site_data(dict(part, photosPartial=False, photosTotal=2))[0], 'fag:900000001')
+
+    def test_an_unrelated_bare_file_in_a_shared_folder_is_not_a_filed_photo(self):
+        # Codex 4502262338: filed photos carry their source's S-id; a stray
+        # unprocessed grave-1.jpg beside another source's data is not one.
+        archive = self.make_archive()
+        docs = archive / 'documents' / 'website'
+        _json(docs / ('record-data-site-data_%s.json' % SID_A),
+              {'record': {'memorialId': 900000001}, 'photosTotal': 1,
+               'photos': [{'photoId': 990000101, 'file': 'grave-1.jpg'}]})
+        _write(docs / 'grave-1.jpg', 'jpg')
+        items, _ = host.scan_known(host.scan_folders({'archive': str(archive)}))
+        self.assertNotIn('fag:900000001', items)
+        self.assertNotIn('fagphoto:990000101', items)
+        self.assertIn('fagidx:900000001', items)
+        # an ingested inbox bundle (its data file names no S-id) keeps bare names
+        inbox = archive / 'inbox' / 'calvin-george-hartley'
+        _json(inbox / 'record-data.json', {'record': {'memorialId': 900000002}, 'photosTotal': 1,
+                                           'photos': [{'photoId': 990000201, 'file': 'grave-1.jpg'}]})
+        _write(inbox / 'grave-1.jpg', 'jpg')
+        _write(inbox / 'notes.md', '---\ntitle: x\n---\n')
+        items, _ = host.scan_known(host.scan_folders({'archive': str(archive)}))
+        self.assertEqual(items['fag:900000002']['state'], 'captured')
+        self.assertIn('fagphoto:990000201', items)
+
 
 class NotVendoredYet(unittest.TestCase):
 

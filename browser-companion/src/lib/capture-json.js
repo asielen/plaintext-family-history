@@ -293,7 +293,7 @@
   // ingest turns into `asset_elsewhere: true`.
   //
   // fields: { url, title, accessed, sourceDate, sourceType, people[], notes,
-  //           recipeHint, assets: [{file, role, mode, provisional?}] }
+  //           recipeHint, assets: [{file, role, mode, provisional?, primary?}] }
   function build(fields) {
     const out = { schema: CAPTURE_JSON_SCHEMA };
     if (fields.url) out.url = fields.url;
@@ -320,6 +320,8 @@
         if (a.role) entry.role = String(a.role);
         if (a.mode) entry.mode = String(a.mode);
         if (a.provisional) entry.provisional = true;
+        // The file to file as the source's main one (a memorial's gravestone).
+        if (a.primary) entry.is_primary = true;
         return entry;
       });
     out.assets = assets;

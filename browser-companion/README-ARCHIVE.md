@@ -209,6 +209,45 @@ reads it from the page each time, and never keeps or saves it.
 
 ---
 
+## Find a Grave memorials
+
+On a Find a Grave memorial (the page for one person's grave), click the toolbar
+button and then **Capture**. You do not need to be signed in: a memorial is
+public, and the add-on sends Find a Grave no sign-in, cookie or password. It
+saves:
+
+- every photo on the memorial at full size - the gravestone, the person, the
+  family, documents - each named for its kind: `grave-1.jpg`, `person-1.jpg`,
+  `family-1.jpg`, `document-1.jpg`. Photos are taken only from Find a Grave's
+  own picture server (images.findagrave.com), one at a time with a short pause.
+- `record-data.json` - what the memorial says: names, birth and death dates and
+  places, the cemetery and plot, the inscription and gravesite details, the
+  family members it links to, the bio, who made the memorial, the list of its
+  photos with their captions, and Find a Grave's own citation. A memorial is a
+  volunteer's work from the stone, records and family knowledge - useful, but
+  not the original record - so it files as a website and is marked derivative.
+- a copy of the page, if you keep one (always, when the capture would otherwise
+  hold no photo and no file of yours).
+
+The gravestone photo is the source's main picture (else the person's photo).
+The title is "Calvin George Hartley (1842-1918) - Find a Grave memorial" unless
+you type your own, and the date is the death date the memorial gives. Find a
+Grave gives no burial date, so none is made up, and the birth date never dates
+the memorial.
+
+A photo already saved is not downloaded again: one from an earlier capture in
+the same sitting, or one the Seen It add-on says the archive holds. When not
+every photo could be saved - Find a Grave asked the add-on to slow down, its
+photo list could be read only in part ("Find a Grave shows 12 photos; 8 are
+saved"), or the memorial has more than the 40 saved in one capture - the result
+line turns amber and says so: press Capture again later for the rest. That
+second capture is a capture of its own, not added to the first: when you file
+it, add its photos to the memorial's source. If a memorial has been removed or
+merged into another, Capture says so: search Find a Grave for the person and
+open the memorial it shows now.
+
+---
+
 ## What it will not do
 
 - It only reads the page you are looking at, in your own browser session, when
@@ -221,7 +260,7 @@ reads it from the page each time, and never keeps or saves it.
 - It sends nothing anywhere. Captures go to your Downloads folder and then into
   your archive - nowhere else, and never onto the public web. The one question it
   may ask the Seen It add-on, on your own computer, is whether the archive
-  already holds an Ancestry census page. What is published
+  already holds an Ancestry census page or a Find a Grave photo. What is published
   is decided later, by you, when you export something.
 
 ---

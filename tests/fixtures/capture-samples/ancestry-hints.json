@@ -1,5 +1,5 @@
 {
-  "_about": "One table for the two places that read an Ancestry record's own hints: the capture companion (browser-companion/src/lib/ancestry-record.js recordHints - used by ancHints and the FamilySearch fsHints - and ancDateToEdtf, at capture) and the recipes (tools/capture_recipes/_common.py record_hints, used by ancestry.py and familysearch.py, at ingest, for bundles captured before the companion sent them). tests/test_capture.py and browser-companion/tests/test-ancestry.js both run every row, so the two cannot drift apart (TI-066). Collections are real-shaped names; the field values are invented.",
+  "_about": "One table for the two places that read an Ancestry record's own hints: the capture companion (browser-companion/src/lib/ancestry-record.js recordHints - used by ancHints, the FamilySearch fsHints and the Find a Grave fagHints - and ancDateToEdtf, at capture) and the recipes (tools/capture_recipes/_common.py record_hints, used by ancestry.py, familysearch.py and findagrave.py, at ingest, for bundles captured before the companion sent them). tests/test_capture.py and browser-companion/tests/test-ancestry.js both run every row, so the two cannot drift apart (TI-066). Collections are real-shaped names; the field values are invented.",
   "dates": [
     [
       "7 Jan 1957",
@@ -206,8 +206,66 @@
         ]
       ],
       "expect": {
-        "sourceType": "vital-record",
+        "sourceType": "website",
         "sourceDate": "1901",
+        "sourceClass": "derivative"
+      }
+    },
+    {
+      "collection": "Find a Grave",
+      "fields": [
+        [
+          "Name",
+          "Calvin George Hartley"
+        ],
+        [
+          "Birth Date",
+          "12 Mar 1842"
+        ],
+        [
+          "Death Date",
+          "4 Jan 1918"
+        ]
+      ],
+      "expect": {
+        "sourceType": "website",
+        "sourceDate": "1918-01-04",
+        "sourceClass": "derivative"
+      }
+    },
+    {
+      "collection": "Find a Grave",
+      "fields": [
+        [
+          "Name",
+          "Calvin George Hartley"
+        ],
+        [
+          "Birth Date",
+          "12 Mar 1842"
+        ]
+      ],
+      "expect": {
+        "sourceType": "website",
+        "sourceDate": null,
+        "sourceClass": "derivative"
+      }
+    },
+    {
+      "collection": "Find a Grave",
+      "fields": [
+        [
+          "Name",
+          "Calvin George Hartley"
+        ],
+        [
+          "Death Date",
+          "unknown"
+        ]
+      ],
+      "expect": {
+        "sourceType": "website",
+        "sourceDate": null,
         "sourceClass": "derivative"
       }
     },

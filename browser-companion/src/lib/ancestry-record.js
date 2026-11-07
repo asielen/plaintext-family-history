@@ -328,12 +328,20 @@ const ANC_OBITUARY_RE = /\bobituar(y|ies)\b/i;
 // record's event happened, so its years never date the record.
 const ANC_RANGE_RE = /\b\d{4}s?\s*[-\u2013/]\s*(current|present|\d{2,4}s?)\b/i;
 
+// A Find a Grave memorial, or an index of them ("U.S., Find a Grave Index"):
+// a volunteer's page built from the stone, records and family knowledge. It
+// dates like a burial record but is a website, not a vital record - filed as
+// one, its claims would default to high confidence (SPEC §8.5) on a
+// stranger's transcription.
+const ANC_FINDAGRAVE_RE = /\bfind\s*a\s*grave\b/i;
+
 // What a record says about itself, for filing (TI-066), on any site: from
 // the collection name and `dateOf(event)` - the record's own date for "Death",
 // "Marriage", "Census"… as EDTF, or null - never from the rest of the page:
-//   sourceType  census for a census; vital-record for a birth, marriage,
-//               death, burial, baptism or divorce collection; newspaper for
-//               an obituary or newspaper index; else null (let filing decide);
+//   sourceType  census for a census; website for Find a Grave; vital-record
+//               for a birth, marriage, death, burial, baptism or divorce
+//               collection; newspaper for an obituary or newspaper index;
+//               else null (let filing decide);
 //   sourceDate  the record's own event date ("Death Date" in a death index;
 //               "Burial Date", else "Death Date", for a burial, cemetery or
 //               funeral record; "Death Date" for an obituary), else a census's
@@ -342,7 +350,7 @@ const ANC_RANGE_RE = /\b\d{4}s?\s*[-\u2013/]\s*(current|present|\d{2,4}s?)\b/i;
 //               1940-1997" or "Obituary Collection, 1930-Current" says when
 //               the collection runs, not when she died);
 //   sourceClass 'derivative' for an index (a compiled list, not the record
-//               itself), else null (filing's default, original).
+//               itself) or Find a Grave, else null (filing's default, original).
 function recordHints(collection, dateOf) {
   const c = String(collection || '');
   const ask = typeof dateOf === 'function' ? dateOf : () => null;
@@ -359,8 +367,10 @@ function recordHints(collection, dateOf) {
   const dateWords = census ? ['Census', 'Residence']
     : events.length ? events : ANC_OBITUARY_RE.test(c) ? ['Death'] : [];
 
+  const findagrave = ANC_FINDAGRAVE_RE.test(c);
   let sourceType = null;
   if (census) sourceType = 'census';
+  else if (findagrave) sourceType = 'website';
   else if (events.length) sourceType = 'vital-record';
   else if (/\bnewspapers?\b|\bobituar(y|ies)\b/i.test(c)) sourceType = 'newspaper';
 
@@ -378,7 +388,7 @@ function recordHints(collection, dateOf) {
   }
   if (!sourceDate && !census && years.length === 1 && !isRange) sourceDate = years[0];
 
-  const sourceClass = /\bindex(es)?\b/i.test(c) ? 'derivative' : null;
+  const sourceClass = findagrave || /\bindex(es)?\b/i.test(c) ? 'derivative' : null;
   return { sourceType, sourceDate, sourceClass };
 }
 
@@ -413,6 +423,9 @@ module.exports = {
   ancImageFromHref,
   ancIsSeenItNode,
   ancText,
+  ancElements,
+  ancById,
+  ancTag,
   ancRecordFrom,
   ancDateToEdtf,
   recordHints,

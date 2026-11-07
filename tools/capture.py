@@ -1161,8 +1161,13 @@ def _render_bundle_notes(
     *,
     accessed: str,
     assets: list[tuple[str, str]],
+    primary: str | None = None,
 ) -> str:
     """Render a §12.1 bundle `notes.md`: light hint frontmatter + per-file roles + prose.
+
+    `primary` names the one file the capture marked as the source's main file
+    (capture.json `is_primary`, e.g. a Find a Grave memorial's gravestone): it
+    is written `is_primary: true`, which `fha process` honours.
 
     `assets` is a list of `(filename, role)` pairs filed in the bundle folder. The
     frontmatter mirrors the lone-sidecar stub's hints (title/source_type/citation/
@@ -1202,6 +1207,8 @@ def _render_bundle_notes(
             lines.append(f'  - file: {_yaml_inline(filename)}')
             if role:
                 lines.append(f'    role: {_yaml_inline(role)}')
+            if primary and filename == primary:
+                lines.append('    is_primary: true')
     lines.append('---')
     lines.append('')
     body = result.body.strip()
@@ -1227,6 +1234,7 @@ def _ingest_bundle_folder(
     citation: str | None = None,
     source_class: str | None = None,
     dry_run: bool = False,
+    primary: str | None = None,
 ) -> Result:
     """File a multi-asset capture as a §12.1 inbox BUNDLE FOLDER (the "both" case).
 
@@ -1269,7 +1277,7 @@ def _ingest_bundle_folder(
         planned.append((src, dest_name, role))
 
     asset_hints = [(dest_name, role) for _, dest_name, role in planned]
-    notes_text = _render_bundle_notes(result, accessed=accessed, assets=asset_hints)
+    notes_text = _render_bundle_notes(result, accessed=accessed, assets=asset_hints, primary=primary)
 
     matched = 'generic recipe' if recipe_name == 'generic' else f'{recipe_name} recipe'
     notes_rel = _rel(folder / 'notes.md', archive_root)
@@ -1586,6 +1594,23 @@ def _resolve_bundle_assets(bundle: Path, cap: dict) -> list[tuple[Path, str]]:
     return [(asset, _DEFAULT_ASSET_ROLE)] if asset is not None else []
 
 
+def _bundle_primary(cap: dict, assets: list[tuple[Path, str]]) -> str | None:
+    """The file a schema-2 capture marks as the source's main one
+    (`assets[].is_primary: true` - the capture companion marks a Find a Grave
+    memorial's gravestone, which would otherwise lose to `family-1` by name).
+    The first marked file that is really in the bundle; None when none is."""
+    listed = cap.get('assets')
+    present = {path.name for path, _role in assets}
+    if not isinstance(listed, list):
+        return None
+    for item in listed:
+        if isinstance(item, dict) and item.get('is_primary') is True:
+            name = Path(str(item.get('file') or '')).name
+            if name in present:
+                return name
+    return None
+
+
 def _park_ingested(bundle: Path, ingested_dir: Path) -> None:
     """Move a swept bundle into `.ingested/` (never hard-delete)."""
     ingested_dir.mkdir(parents=True, exist_ok=True)
@@ -1667,6 +1692,7 @@ def run_ingest(
                     source_class=cap.get('source_class'),
                     assets=assets,
                     dry_run=dry_run,
+                    primary=_bundle_primary(cap, assets),
                 )
             else:
                 result = run_capture(
