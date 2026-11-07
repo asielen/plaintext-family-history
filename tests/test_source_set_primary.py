@@ -123,6 +123,30 @@ class SetPrimarySwapTests(unittest.TestCase):
         self.assertEqual(self.record.read_bytes().decode('utf-8'), FIXED)
         self.assertIn(str(self.record), result.changed)
 
+    def test_handwritten_comments_on_changed_lines_are_kept(self) -> None:
+        # #210 review: a note on a role:/is_primary: line was silently
+        # dropped, and the YAML referee cannot see comments.
+        commented = BUG_ERA.replace(
+            '    role: primary\n', '    role: primary   # caption transcribed by Aunt May\n', 1
+        ).replace(
+            '    is_primary: true\n', '    is_primary: true  # keep?\n', 1
+        ).replace(
+            '    role: farm-01400\n', '    role: farm-01400 # odd role from the old run\n', 1)
+        self.record.write_bytes(commented.encode('utf-8'))
+        result = self._run()
+        self.assertEqual(result.exit_code, EXIT_CLEAN, result.messages)
+        after = self.record.read_bytes().decode('utf-8')
+        self.assertIn('    role: back   # caption transcribed by Aunt May\n', after)
+        self.assertIn('    is_primary: false  # keep?\n', after)
+        self.assertIn('    role: primary # odd role from the old run\n', after)
+
+    def test_one_pasted_crlf_line_does_not_turn_the_frontmatter_crlf(self) -> None:
+        # #210 audit: the line ending was chosen for the whole file.
+        self.record.write_bytes((BUG_ERA + 'pasted line\r\nmore\n').encode('utf-8'))
+        self.assertEqual(self._run().exit_code, EXIT_CLEAN)
+        head = self.record.read_bytes().decode('utf-8').split('## Claims')[0]
+        self.assertNotIn('\r', head)
+
     def test_claims_and_every_other_field_are_byte_identical(self) -> None:
         self._run()
         after = self.record.read_bytes().decode('utf-8')

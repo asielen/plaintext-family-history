@@ -1485,6 +1485,52 @@ class WrongMainImageTests(unittest.TestCase):
                '  - file: photos/1950/smith-farm-01400.tif\n'
                '    role: farm-01400\n')
 
+    def test_a_front_with_a_trailing_letter_is_still_reported(self) -> None:
+        # #210 audit: '1950s' reads its 's' as a copy letter, so the old rank
+        # put front and back level and the bug-era record stayed silent.
+        self._record('files:\n'
+                     '  - file: photos/1950/Reunion-1950s-back.jpg\n'
+                     '    role: primary\n'
+                     '    is_primary: true\n'
+                     '  - file: photos/1950/Reunion-1950s.jpg\n'
+                     '    role: variant\n')
+        _result, _check, found = self._doctor()
+        self.assertEqual(len(found), 1)
+        self.assertIn('--file Reunion-1950s.jpg', found[0])
+
+    def test_a_print_b_pair_is_still_reported(self) -> None:
+        self._record('files:\n'
+                     '  - file: photos/1950/Smith-Farm-01400b-back.tif\n'
+                     '    role: primary\n'
+                     '    is_primary: true\n'
+                     '  - file: photos/1950/Smith-Farm-01400b.tif\n'
+                     '    role: variant\n')
+        _result, _check, found = self._doctor()
+        self.assertEqual(len(found), 1)
+        self.assertIn('--file Smith-Farm-01400b.tif', found[0])
+
+    def test_a_record_without_an_id_is_sent_to_lint_fix_ids(self) -> None:
+        # #210 audit: plain `fha lint` only reports, so the advice looped.
+        self.record = self.root / 'sources' / 'photos' / 'farm.md'
+        _write(self.record, _SOURCE.format(sid=self.SID, title='Farm', line=self.BUG_ERA)
+               .replace(f'id: {self.SID}\n', '').replace(f'aliases: [{self.SID}]\n', ''))
+        result, check, found = self._doctor()
+        self.assertEqual(len(found), 1, result.data['lines'])
+        fix = f'{doctor._LAUNCHER} lint --fix-ids --root "{self.root}"'
+        self.assertIn(fix, found[0])
+        self.assertEqual(check['next_step'], fix)
+
+    def test_a_front_named_like_a_document_gets_its_full_path(self) -> None:
+        # #210 review: set-primary matches --file against EVERY entry, so a
+        # documents-root file sharing the front's name made the bare name
+        # ambiguous and the suggested command was refused.
+        self._record(self.BUG_ERA
+                     + '  - file: documents/photos/smith-farm-01400.tif\n'
+                       '    role: transcript\n')
+        _result, _check, found = self._doctor()
+        self.assertEqual(len(found), 1)
+        self.assertIn('--file photos/1950/smith-farm-01400.tif', found[0])
+
     def test_bug_era_record_is_reported_with_a_runnable_fix(self) -> None:
         # Capitals differ between the two names on purpose: a scanner does not
         # keep them consistent, and they are still one photo (#200).

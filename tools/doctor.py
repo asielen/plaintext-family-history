@@ -1062,17 +1062,27 @@ def _check_orphaned_back_photos(archive_root: Path, fha_config: dict,
 def _main_image_rank(parsed) -> int:
     """How strongly a filename says "this is the photo's main image".
 
-    0 a plain scan, 1 a front (copy a or none), 2 anything else - the same
-    order `_lib.select_variation_primary` picks in, which takes the
-    alphabetically-first file of the best rank present. Two files of the same
-    rank are an even choice for the filename rule, so a record that names
-    either one is right by the rule's own lights.
+    0 a plain scan, 1 a front (copy a or none), 2 any other picture-side scan
+    (a front or plain scan with a copy letter: 'Reunion-1950s.jpg', print B),
+    3 anything else (a back, negative, crop, page, black-and-white copy) - the
+    same tiers `_lib.select_variation_primary` picks in, which takes the
+    alphabetically-first file of the best tier present. Two files of the same
+    tier are an even choice for the filename rule, so a record that names
+    either one is right by the rule's own lights. Tier 2 matters: without it a
+    bug-era record naming 'Reunion-1950s-back.jpg' over 'Reunion-1950s.jpg'
+    ranked even and was never reported (#210 audit). Members of one folder
+    group share a base name, so the selector's attachment rule never applies
+    here.
     """
-    if parsed.variant_id is None and parsed.part_kind == 'none' and not parsed.is_crop:
+    if parsed.is_crop:
+        return 3
+    if parsed.variant_id is None and parsed.part_kind == 'none':
         return 0
-    if parsed.variant_id in (None, 'a') and parsed.part_kind == 'front' and not parsed.is_crop:
+    if parsed.variant_id in (None, 'a') and parsed.part_kind == 'front':
         return 1
-    return 2
+    if parsed.part_kind in ('none', 'front'):
+        return 2
+    return 3
 
 
 def _what_the_scan_is(parsed) -> str:
@@ -1139,6 +1149,10 @@ def _check_wrong_main_image(archive_root: Path, lines: list[str],
 
     findings: list[str] = []
     commands: list[str] = []
+    # Plain `fha lint` only reports; `--fix-ids` is what gives a record its
+    # ID (#210 audit). Also the next step when that is the only finding.
+    lint_fix = f'{_LAUNCHER} lint --fix-ids --root "{archive_root}"'
+    needs_id = 0
     for record_path in sorted(sources_dir.rglob('*.md')):
         rec = read_record(record_path, on_decode_error=lambda p: None)
         if rec.get('undecodable') or rec.get('parse_errors'):
@@ -1149,9 +1163,15 @@ def _check_wrong_main_image(archive_root: Path, lines: list[str],
 
         aliases: list[str] = []
         marked: set[str] = set()
+        # Every listed file's name, documents-root entries included:
+        # `fha source set-primary --file NAME` matches against all of them,
+        # so a bare name is only safe to suggest when no entry of any root
+        # shares it (#210 review).
+        all_names: list[str] = []
         for item in entries:
             if not isinstance(item, dict) or not item.get('file'):
                 continue
+            all_names.append(PurePosixPath(str(item['file']).replace('\\', '/')).name.casefold())
             alias = str(item['file']).replace('\\', '/')
             if alias.split('/', 1)[0].lower() != 'photos':
                 continue            # a documents-root entry: renamed on import, no sibling grammar
@@ -1178,17 +1198,17 @@ def _check_wrong_main_image(archive_root: Path, lines: list[str],
             best_name = PurePosixPath(best).name
             # The bare filename when it is unique on the record (easier to read
             # and type); the full path when another listed file shares it.
-            same_name = [a for a in aliases if PurePosixPath(a).name.casefold() == best_name.casefold()]
-            file_arg = best_name if len(same_name) == 1 else best
+            file_arg = best_name if all_names.count(best_name.casefold()) == 1 else best
             parsed_id = parse_filename(record_path)
             sid = parsed_id.get('id_str') if parsed_id and parsed_id.get('id_type') == 'S' else None
             if sid is None:
+                needs_id += 1
                 findings.append(
                     f'main image: {record_path.name} names {_what_the_scan_is(_parsed(chosen))} '
                     f'({chosen_name}) as its main image, but the front scan {best_name} '
                     'is listed beside it  next: this record\'s filename carries no '
-                    f'source ID yet, so run `{_LAUNCHER} lint --root "{archive_root}"` '
-                    '(it gives the record one), then run doctor again for the fix.')
+                    f'source ID yet, so run `{lint_fix}` (add --dry-run first to '
+                    'preview; it gives the record one), then run doctor again for the fix.')
                 continue
             command = (f'{_LAUNCHER} source set-primary {fmt_id_display(sid)} '
                        f'--file {shell_quote(file_arg)} --root "{archive_root}"')
@@ -1208,7 +1228,8 @@ def _check_wrong_main_image(archive_root: Path, lines: list[str],
         'id': 'wrong_main_image', 'status': 'warn',
         'detail': f'{len(findings)} source(s) name a back or copy as the main image '
                   'while the front scan is listed beside it',
-        'next_step': (commands[0] if len(commands) == 1 else
+        'next_step': (commands[0] if len(commands) == 1 and not needs_id else
+                      lint_fix if needs_id and not commands else
                       f'{_LAUNCHER} source set-primary <S-id> --file <front scan> '
                       f'--root "{archive_root}" - one per record; see the report'),
     })

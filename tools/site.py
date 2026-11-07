@@ -4573,8 +4573,10 @@ class _SiteBuilder:
         thumbnail (win 2) out of the same pass.
 
         Returns `(entries, portrait)`. `portrait` is the `source_files` row
-        the head-of-record thumbnail should use: `role: front` if one such
-        image resolved to a viewable thumbnail, else the first image in
+        the head-of-record thumbnail should use: the image the record names
+        as its main one (`role: primary`, which `fha process` and `fha source
+        set-primary` write beside `is_primary: true`), else `role: front`, if
+        such an image resolved to a viewable thumbnail, else the first image in
         `source_files`' own row order (the table's insertion order - there is
         no separate sequence column, so "first" here means whatever order the
         SELECT below already returns). It is None whenever no image asset
@@ -4585,7 +4587,7 @@ class _SiteBuilder:
         entries rather than re-resolving the file, so a missing/omitted image
         degrades identically in both places."""
         entries: list[dict] = []
-        candidates: list[tuple[bool, dict]] = []   # (is_front, entry) for resolvable images
+        candidates: list[tuple[int, dict]] = []   # (rank, entry) for resolvable images
         for f in self.conn.execute(
             'SELECT path, role, copy, date_edtf FROM source_files WHERE source_id = ?', (sid,)
         ):
@@ -4618,7 +4620,12 @@ class _SiteBuilder:
             entries.append(entry)
             is_image = Path(f['path']).suffix.lower() in _IMAGE_SUFFIXES
             if is_image and entry.get('thumb_href'):
-                candidates.append(((f['role'] or '').strip().lower() == 'front', entry))
+                # The record's own main image first: without it, a record
+                # repaired by `fha source set-primary` still showed its back
+                # as the portrait, because the back was listed first (#210
+                # review).
+                role = (f['role'] or '').strip().lower()
+                candidates.append((0 if role == 'primary' else 1 if role == 'front' else 2, entry))
                 # An image is going into a shareable snapshot. If the living-
                 # person gate at the top of this loop had no catalog to ask,
                 # this is the moment the build learns it published something
@@ -4629,9 +4636,7 @@ class _SiteBuilder:
                 if not self.linked and self.photos_status != 'fresh':
                     self._warn_living_photo_check_unavailable(
                         unknown_to_catalog=self._gate_last_unknown)
-        portrait = next((e for is_front, e in candidates if is_front), None)
-        if portrait is None and candidates:
-            portrait = candidates[0][1]
+        portrait = min(candidates, key=lambda c: c[0])[1] if candidates else None
         return entries, portrait
 
     # - person page (M8.2) -

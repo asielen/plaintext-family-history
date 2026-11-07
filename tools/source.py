@@ -1187,6 +1187,49 @@ def _files_block_items(lines: list[str]) -> tuple[list[dict] | None, str | None]
     return items, None
 
 
+def _trailing_comment(line: str) -> str:
+    """The `# comment` (with the spaces before it) ending a `key: value`
+    line, or ''. A '#' inside a quoted value is not a comment, and neither is
+    one with no space before it (YAML requires the space)."""
+    text = line.rstrip('\r\n')
+    colon = text.find(':')
+    if colon < 0:
+        return ''
+    rest = text[colon + 1:]
+    quote = None
+    for k, ch in enumerate(rest):
+        if quote:
+            if ch == quote:
+                quote = None
+        elif ch in '\'"' and not rest[:k].strip():
+            quote = ch
+        elif ch == '#' and k and rest[k - 1] in ' \t':
+            start = k
+            while start and rest[start - 1] in ' \t':
+                start -= 1
+            return rest[start:]
+    return ''
+
+
+def _frontmatter_comments(lines: list[str]) -> list[str]:
+    """Every comment in a record's frontmatter, as text, so an edit can
+    prove it kept them all (#210 review: a handwritten note on a changed line
+    was silently dropped, and the YAML comparison cannot see comments)."""
+    span = frontmatter_fence_span(lines)
+    if span is None:
+        return []
+    out = []
+    for line in lines[span[0] + 1:span[1]]:
+        stripped = line.strip()
+        if stripped.startswith('#'):
+            out.append(stripped)
+        else:
+            comment = _trailing_comment(line).strip()
+            if comment:
+                out.append(comment)
+    return out
+
+
 def _set_entry_key(lines: list[str], item_no: int, key: str, value_text: str,
                    cr: str) -> tuple[list[str] | None, str | None]:
     """Set one key of one `files:` item to `value_text` (already YAML-quoted).
@@ -1196,6 +1239,11 @@ def _set_entry_key(lines: list[str], item_no: int, key: str, value_text: str,
     line after the nearest key before it in `_ENTRY_KEY_ORDER`, at the item's
     key column. Re-scans the block each call, so several edits in a row never
     work from stale line numbers. Returns (new lines, None) or (None, reason).
+
+    A handwritten `# comment` on the replaced line is kept (`role: primary  #
+    caption by Aunt May` becomes `role: back  # caption by Aunt May`). A value
+    running onto further lines that carry comments is refused rather than
+    guessed at (#210 review).
     """
     items, problem = _files_block_items(lines)
     if problem:
@@ -1205,13 +1253,21 @@ def _set_entry_key(lines: list[str], item_no: int, key: str, value_text: str,
     out = list(lines)
     if key in item['keys']:
         row, last = item['keys'][key]
-        out[row:last + 1] = [lines[row][:col] + f'{key}: {value_text}' + cr]
+        if any('#' in lines[r] for r in range(row + 1, last + 1)):
+            return None, (f'its {key}: value runs onto more lines with a note on them, '
+                          'and the note could not be kept safely')
+        comment = _trailing_comment(lines[row])
+        # The line's own ending, not the file's: one pasted CRLF line in
+        # Notes must not turn LF frontmatter lines into CRLF (#210 audit).
+        eol = '\r' if lines[row].endswith('\r') else ''
+        out[row:last + 1] = [lines[row][:col] + f'{key}: {value_text}' + comment + eol]
         return out, None
     if 'file' not in item['keys']:
         return None, 'one of its files: entries has no file: line where expected'
     earlier = _ENTRY_KEY_ORDER[:_ENTRY_KEY_ORDER.index(key)] if key in _ENTRY_KEY_ORDER else _ENTRY_KEY_ORDER
     anchor = max(item['keys'][k][1] for k in earlier if k in item['keys'])
-    out[anchor + 1:anchor + 1] = [' ' * col + f'{key}: {value_text}' + cr]
+    eol = '\r' if lines[anchor].endswith('\r') else ''
+    out[anchor + 1:anchor + 1] = [' ' * col + f'{key}: {value_text}' + eol]
     return out, None
 
 
@@ -1455,7 +1511,8 @@ def run_source_set_primary(
             or frontmatter_edit_problem(new_text, before_meta=before_meta,
                                         changed_keys={'files'}) is not None
             or old_span is None or new_span is None
-            or text_in.split('\n')[old_span[1]:] != lines[new_span[1]:]):
+            or text_in.split('\n')[old_span[1]:] != lines[new_span[1]:]
+            or _frontmatter_comments(text_in.split('\n')) != _frontmatter_comments(lines)):
         return _refuse(
             'refused',
             f'{path.name} is laid out in a way this tool could not edit '
