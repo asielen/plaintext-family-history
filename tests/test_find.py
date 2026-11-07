@@ -18,8 +18,16 @@ sys.path.insert(0, str(ROOT / 'tools'))
 import find
 from _lib import (
     EXIT_CLEAN, EXIT_ERRORS, EXIT_FAILURE, EXIT_WARNINGS,
+    PHOTOINDEX_SCHEMA_VERSION,
     index_manifest_path, record_path_manifest, write_path_manifest,
 )
+
+
+def _stamped_photo_schema(script: str) -> str:
+    """A hand-built photos.sqlite script, stamped with the CURRENT catalog
+    schema version - these fixtures test the freshness gate, not an upgrade,
+    so they must not read as an old catalog when the schema moves on (#49)."""
+    return script.replace('PHOTOINDEX_SCHEMA_VERSION', str(PHOTOINDEX_SCHEMA_VERSION))
 from index import _DDL
 
 
@@ -609,11 +617,11 @@ class PhotoIndexFreshnessInRelatedTests(unittest.TestCase):
         # Build the minimal schema the queries touch so we'd surface rows
         # if the freshness gate were absent - the test then asserts we do not.
         pconn = sqlite3.connect(str(cache / 'photos.sqlite'))
-        pconn.executescript(
+        pconn.executescript(_stamped_photo_schema(
             '''
-            PRAGMA user_version=1;
+            PRAGMA user_version=PHOTOINDEX_SCHEMA_VERSION;
             CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
-            INSERT INTO meta(key, value) VALUES ('schema_version', '1');
+            INSERT INTO meta(key, value) VALUES ('schema_version', 'PHOTOINDEX_SCHEMA_VERSION');
             CREATE TABLE photos(path TEXT PRIMARY KEY, group_id INTEGER,
                                 gps_lat REAL, gps_lon REAL);
             CREATE TABLE photo_groups(group_id INTEGER PRIMARY KEY, primary_path TEXT);
@@ -625,7 +633,7 @@ class PhotoIndexFreshnessInRelatedTests(unittest.TestCase):
             INSERT INTO photos VALUES ('photos/old.jpg', 1, 39.0, -95.0);
             INSERT INTO photo_people VALUES ('photos/old.jpg', 'p-aaaaaaaaaa');
             '''
-        )
+        ))
         pconn.commit()
         pconn.close()
         # A photo file newer than the index → photoindex_status reports 'stale'.
@@ -768,11 +776,11 @@ class RelatedPhotoDateTests(unittest.TestCase):
         cache = self.archive_root / '.cache'
         cache.mkdir(exist_ok=True)
         pconn = sqlite3.connect(str(cache / 'photos.sqlite'))
-        pconn.executescript(
+        pconn.executescript(_stamped_photo_schema(
             '''
-            PRAGMA user_version=1;
+            PRAGMA user_version=PHOTOINDEX_SCHEMA_VERSION;
             CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
-            INSERT INTO meta(key, value) VALUES ('schema_version', '1');
+            INSERT INTO meta(key, value) VALUES ('schema_version', 'PHOTOINDEX_SCHEMA_VERSION');
             CREATE TABLE photos(path TEXT PRIMARY KEY, group_id INTEGER,
                                 gps_lat REAL, gps_lon REAL, edtf TEXT);
             CREATE TABLE photo_groups(group_id INTEGER PRIMARY KEY,
@@ -788,7 +796,7 @@ class RelatedPhotoDateTests(unittest.TestCase):
             INSERT INTO photo_people VALUES ('photos/p1880.jpg', 'p-aaaaaaaaaa');
             INSERT INTO photo_people VALUES ('photos/p1950.jpg', 'p-aaaaaaaaaa');
             '''
-        )
+        ))
         pconn.commit()
         pconn.close()
 
@@ -832,11 +840,11 @@ class RelatedPhotoMissingTests(unittest.TestCase):
         cache = self.archive_root / '.cache'
         cache.mkdir(exist_ok=True)
         pconn = sqlite3.connect(str(cache / 'photos.sqlite'))
-        pconn.executescript(
+        pconn.executescript(_stamped_photo_schema(
             '''
-            PRAGMA user_version=1;
+            PRAGMA user_version=PHOTOINDEX_SCHEMA_VERSION;
             CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
-            INSERT INTO meta(key, value) VALUES ('schema_version', '1');
+            INSERT INTO meta(key, value) VALUES ('schema_version', 'PHOTOINDEX_SCHEMA_VERSION');
             CREATE TABLE photos(path TEXT PRIMARY KEY, group_id INTEGER,
                                 gps_lat REAL, gps_lon REAL, edtf TEXT);
             CREATE TABLE photo_groups(group_id INTEGER PRIMARY KEY,
@@ -855,7 +863,7 @@ class RelatedPhotoMissingTests(unittest.TestCase):
             INSERT INTO photos VALUES ('MISSING:photos/gone.jpg', 2, 39.0, -95.0, '1890');
             INSERT INTO photo_people VALUES ('MISSING:photos/gone.jpg', 'p-aaaaaaaaaa');
             '''
-        )
+        ))
         pconn.commit()
         pconn.close()
 

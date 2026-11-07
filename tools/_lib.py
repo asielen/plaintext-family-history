@@ -1518,7 +1518,10 @@ GENERATED_COMPANION_KINDS: frozenset[str] = frozenset({'timeline', 'sources-inde
 # schema-version gate, not a file-timestamp one, so updating the TOOLS alone
 # (no record file touched) would otherwise never invalidate the stale cache.
 INDEX_SCHEMA_VERSION = 8
-PHOTOINDEX_SCHEMA_VERSION = 1
+# 2 (#49): photos.fingerprint, a content identity for re-tying moved photos.
+# A schema-1 catalog is upgraded in place, not rebuilt (photoindex
+# `_migrate_v1_catalog`).
+PHOTOINDEX_SCHEMA_VERSION = 2
 CACHE_SCHEMA_KEY = 'schema_version'
 
 # The `meta` row `fha photoindex` stamps with the fha.yaml settings the catalog
@@ -1532,6 +1535,11 @@ CACHE_SCHEMA_KEY = 'schema_version'
 # photoindex DDL's INSERT touches only the schema_version row, so this survives
 # every reopen until the next scan restamps it.
 PHOTOINDEX_CONFIG_KEY = 'build_config'
+# Set by a writer that changed the catalog without scanning - the schema-2
+# upgrade (#220) - and cleared only by a completed `fha photoindex` scan.
+# While it is there, `photoindex_status` reads 'stale' whatever the file
+# times say: the upgrade's own commit time must not stand in for a scan.
+PHOTOINDEX_SCAN_DUE_KEY = 'scan_due'
 
 # ── fha.yaml loading ──────────────────────────────────────────────────────────
 
@@ -2412,6 +2420,12 @@ def photoindex_status(archive_root: str | Path, fha_config: dict) -> tuple[str, 
     )
     if schema_status in {'unreadable', 'old-schema'}:
         return (schema_status, 0.0)
+
+    if read_cache_meta(db_path, PHOTOINDEX_SCAN_DUE_KEY):
+        # A writer changed the catalog without scanning (the schema-2
+        # upgrade): its commit time proves nothing about the photos, so the
+        # catalog stays stale until a real scan clears the marker (#220).
+        return ('stale', max(0.0, time.time() - mtime))
 
     if photoindex_config_drift(archive_root, fha_config) is not None:
         # A configuration change has no file mtime of its own to be behind, so

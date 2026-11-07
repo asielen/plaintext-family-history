@@ -37,8 +37,9 @@ BUILD.md M3.4 added `fha photoindex reconcile` and `fha photoindex
 tag-person`, the two sub-commands that touch on-disk state or embedded
 metadata, completing layer 3. `reconcile` heals drift between the catalog's
 stored paths and what is actually on disk (a file moved outside `fha` is
-re-matched by its embedded `SOURCE:` keyword, never by trusting the old
-path); `tag-person` writes a bare `P-id` keyword into specific photos -
+re-matched by its embedded `SOURCE:` keyword, or - for a photo that is not
+a source - by the content fingerprint each scan stores for it (#49), never
+by trusting the old path); `tag-person` writes a bare `P-id` keyword into specific photos -
 either explicit `--paths` or every photo carrying an ambiguous `--from-face-
 tag` name - making a human identification durable in the file itself.
 BUILD.md M3.5 adds `fha photoindex set-summary`, the second embedded-
@@ -51,6 +52,11 @@ CODE MAP
 --------
   Schema
     _DDL                      - CREATE TABLE statements for photos.sqlite
+    _photo_fingerprint        - content identity for one photo: a hash of ALL its JPEG/PNG
+                                 picture data, no metadata (#49), or the none:v1 sentinel
+    _jpeg_picture_hash / _png_picture_hash - that hash, per format
+    _is_real_fingerprint      - comparable fingerprint (current scheme tag only)
+    _FingerprintBudget        - per-run time allowance for fingerprint reads
 
   Cached-path vocabulary
     _MISSING_PREFIX           - reconcile's synthetic key for a vanished photo
@@ -142,7 +148,10 @@ CODE MAP
     _on_disk_aliases          - alias path -> absolute Path for every file under the photos root
                                  (+ optional collector for folders it could not read)
     _scrape_source_ids        - exiftool SOURCE: keyword read over untracked candidate files
-    run_reconcile             - re-match moved files by source_id, flag the rest as MISSING
+    _content_rematches        - pair vanished rows with untracked files by fingerprint:
+                                 one holder catalog-wide, one untracked file (#49, #220 audit)
+    run_reconcile             - re-match moved files by source_id, then by content
+                                 fingerprint; flag the rest as MISSING
 
   Tag-person (fha photoindex tag-person - M3.4)
     run_tag_person_plan       - resolve candidate paths (read-only; CLI previews this before writing)
@@ -169,6 +178,10 @@ CODE MAP
     run_set_summary           - WC refusal; per-file read-compose-write; photos/photo_fts mirror
 
   Scan orchestration
+    _migrate_v1_catalog       - upgrade a schema-1 / half-upgraded catalog in ONE transaction
+    _repairable_catalog       - upgradable in place (any 1/2 stamps) vs genuinely rebuild
+                                 (called by the scan's _get_db and by run_reconcile)
+    _unusable_status          - 'old-schema' vs 'unreadable' for a refused catalog
     _get_db                   - open (or create) .cache/photos.sqlite, apply DDL
     run_scan                  - top-level: walk photos root, scrape, group, report
 
@@ -215,6 +228,7 @@ from _lib import (
     GeneratedFileRefused,
     INDEX_SCHEMA_VERSION,
     PHOTOINDEX_CONFIG_KEY,
+    PHOTOINDEX_SCAN_DUE_KEY,
     PHOTOINDEX_SCHEMA_VERSION,
     BackupRefused,
     OriginalBackup,
@@ -302,7 +316,8 @@ CREATE TABLE IF NOT EXISTS photos(
   gps_lat REAL, gps_lon REAL,
   source_id TEXT,
   group_id TEXT, is_primary INTEGER DEFAULT 0,
-  variant_copy TEXT, variant_role TEXT
+  variant_copy TEXT, variant_role TEXT,
+  fingerprint TEXT            -- _photo_fingerprint: content identity (#49), NULL if none
 );
 -- photo_groups: variation groups and the selected primary photo.
 CREATE TABLE IF NOT EXISTS photo_groups(
@@ -334,6 +349,7 @@ CREATE INDEX IF NOT EXISTS idx_photos_group_id        ON photos(group_id);
 CREATE INDEX IF NOT EXISTS idx_photo_keywords_path    ON photo_keywords(path);
 CREATE INDEX IF NOT EXISTS idx_photo_people_path      ON photo_people(path);
 CREATE INDEX IF NOT EXISTS idx_photo_face_regions_path ON photo_face_regions(path);
+CREATE INDEX IF NOT EXISTS idx_photos_fingerprint     ON photos(fingerprint);
 """
 
 _REQUIRED_SCHEMA = {
@@ -341,7 +357,7 @@ _REQUIRED_SCHEMA = {
         'path', 'mtime', 'size', 'title', 'caption', 'user_comment', 'exif_date',
         'date_pattern', 'edtf', 'sublocation', 'city', 'state', 'country',
         'gps_lat', 'gps_lon', 'source_id', 'group_id', 'is_primary',
-        'variant_copy', 'variant_role',
+        'variant_copy', 'variant_role', 'fingerprint',
     },
     'photo_groups': {'group_id', 'primary_path', 'edtf_resolved', 'date_conflict', 'file_count'},
     'photo_keywords': {'path', 'keyword'},
@@ -349,6 +365,254 @@ _REQUIRED_SCHEMA = {
     'photo_people': {'path', 'person_ref', 'via'},
     'photo_fts': {'path', 'title', 'caption', 'user_comment', 'keywords'},
 }
+
+# ── Content fingerprint (#49) ─────────────────────────────────────────────
+
+# The photo library, not the archive, decides where a photo lives: Lightroom
+# or a cleanup pass may move or rename it (SPEC §12.1), so a path is not an
+# identity. A photo filed as a source carries one in its SOURCE: keyword; the
+# rest of the library had nothing, and a moved photo read as one row vanishing
+# and an unrelated one appearing. This fingerprint is that missing identity:
+# a hash of ALL of the photo's picture data and none of its metadata, so two
+# files share it only when their picture data is byte-identical.
+
+# Stored for a file that can never have a fingerprint - a format this does
+# not read, or one whose structure does not parse - so the scan does not
+# reopen it every run (#220 audit F10). NULL stays "not known yet" (never
+# tried, the read failed, or the scan's hashing budget ran out), and only NULL
+# is retried. Never compared by reconcile.
+_NO_FINGERPRINT = 'none:v1'
+# Stored on a MISSING: row whose fingerprint was never known: its file is
+# gone, so it can never be read. It does NOT hold reconcile's content gate
+# shut and does not count as a holder (owner decision, #220): the
+# whole-picture hash already rules out a DIFFERENT picture, so the only risk
+# such a row leaves is that it was another copy of the SAME picture - a
+# caption landing on an identical picture, rated P3. Set when a row goes
+# MISSING: with an unknown fingerprint, and for every such row the upgrade
+# (or any writer) finds, so the rule is visible in the data.
+_FINGERPRINT_GONE = 'gone:v1'
+# meta key: a catalog that gained `photo_face_regions` still needs every photo
+# rescraped once to fill it (see `_open_and_apply_schema`).
+_FACE_BACKFILL_KEY = 'face_backfill_due'
+# Stored when a JPEG/PNG could not be read (locked, vanished mid-scan, too
+# large for memory). It is "not known" exactly like NULL - retried by later
+# scans, and it holds reconcile's content gate shut until it is read - but it
+# records that a read was tried and failed, rather than never attempted.
+_FINGERPRINT_RETRY = 'retry:v1'
+_JPEG_SUFFIXES = frozenset({'.jpg', '.jpeg', '.jpe', '.jfif'})
+_PNG_SUFFIXES = frozenset({'.png'})
+_PNG_SIGNATURE = b'\x89PNG\r\n\x1a\n'
+# Versioned: a value stored under an older rule (the v1/v2 64 KiB windows,
+# #220 rounds 1-4) is never compared with one made by this rule.
+_JPEG_SCHEME = 'jpeg-picture-v3'
+_PNG_SCHEME = 'png-picture-v3'
+# PNG chunks that ARE the picture: its header (size, bit depth, colour type,
+# interlace), palette, transparency, and the image data. Everything else is
+# left out - text (tEXt/zTXt/iTXt), Exif (eXIf), time (tIME), and also the
+# colour-management chunks (gAMA, cHRM, sRGB, iCCP, sBIT): those tell a viewer
+# how to display the stored samples, they do not change them, and they are
+# exactly what metadata tools embed or strip (exiftool writes an ICC profile
+# as metadata). Leaving them in would break the identity on a profile edit.
+_PNG_PICTURE_CHUNKS = frozenset({b'IHDR', b'PLTE', b'tRNS', b'IDAT'})
+_PNG_MAX_CHUNKS = 200_000
+_JPEG_MAX_SEGMENTS = 100_000
+# Each scan's BACKFILL - fingerprinting rows the catalog already holds without
+# one, chiefly after the schema-2 upgrade - spends at most this long inside
+# `_photo_fingerprint`; past it, the rest stay unknown and the next scan
+# carries on. New and changed files are not rationed (the scan reads them
+# anyway), and neither is reconcile (see `_content_rematches`). See TOOLING
+# §9 for the measured rate and what it means for a large library.
+_FINGERPRINT_BUDGET_SECONDS = 30.0
+
+
+def _jpeg_picture_hash(data: bytes) -> str | None:
+    """sha256 over a JPEG's picture data: every segment except metadata, and
+    all entropy-coded data, through the end-of-image marker.
+
+    Left out: APPn segments (Exif, XMP, ICC, IPTC, Photoshop - where every
+    metadata write lands) and COM comments. Kept: everything else - frame
+    headers, quantization and Huffman tables, restart intervals, every
+    start-of-scan header and its scan data (all scans of a progressive
+    JPEG), and Adobe's APP14 block, whose colour-transform flag changes the
+    pixels. Bytes after the end-of-image marker (a camera or tool trailer) are
+    not part of the picture and are left out too. None when the bytes do not
+    parse as a JPEG.
+    """
+    if data[:2] != b'\xff\xd8':
+        return None
+    view = memoryview(data)              # hash slices without copying them (F3)
+    h = hashlib.sha256(b'\xff\xd8')
+    n = len(data)
+    pos = 2
+    for _ in range(_JPEG_MAX_SEGMENTS):
+        if pos >= n or data[pos] != 0xFF:
+            return None
+        while pos < n and data[pos] == 0xFF:
+            pos += 1                     # fill bytes before a marker code
+        if pos >= n:
+            return None
+        marker = data[pos]
+        pos += 1
+        if marker == 0xD9:               # end of image
+            h.update(b'\xff\xd9')
+            return h.hexdigest()[:32]
+        if marker == 0x01 or 0xD0 <= marker <= 0xD7:
+            h.update(bytes((0xFF, marker)))
+            continue                     # stand-alone markers carry no length
+        if pos + 2 > n:
+            return None
+        end = pos + int.from_bytes(data[pos:pos + 2], 'big')
+        if end > n or end < pos + 2:
+            return None
+        is_metadata = (marker == 0xFE or (0xE0 <= marker <= 0xEF and not (
+            marker == 0xEE and data[pos + 2:pos + 7] == b'Adobe')))
+        if not is_metadata:
+            h.update(bytes((0xFF, marker)))
+            h.update(view[pos:end])
+        pos = end
+        if marker == 0xDA:
+            # Entropy-coded scan data runs to the next marker that is not a
+            # stuffed byte (FF 00) or a restart marker (FF D0-D7).
+            scan_start = pos
+            while True:
+                i = data.find(b'\xff', pos)
+                if i < 0 or i + 1 >= n:
+                    return None
+                code = data[i + 1]
+                if code == 0x00 or 0xD0 <= code <= 0xD7:
+                    pos = i + 2
+                    continue
+                if code == 0xFF:
+                    pos = i + 1          # a fill byte ahead of the marker
+                    continue
+                break
+            h.update(view[scan_start:i])
+            pos = i
+    return None
+
+
+def _png_picture_hash(data: bytes) -> str | None:
+    """sha256 over a PNG's picture chunks (`_PNG_PICTURE_CHUNKS`), in file
+    order, type and data each; every metadata chunk left out. None when the
+    bytes do not parse as a PNG, hold no image data, or are an animated PNG
+    (APNG: an acTL chunk)."""
+    if data[:8] != _PNG_SIGNATURE:
+        return None
+    view = memoryview(data)              # hash slices without copying them (F3)
+    h = hashlib.sha256(_PNG_SIGNATURE)
+    pos, n, saw_idat = 8, len(data), False
+    for _ in range(_PNG_MAX_CHUNKS):
+        if pos + 8 > n:
+            return None                  # truncated before IEND
+        length = int.from_bytes(data[pos:pos + 4], 'big')
+        kind = data[pos + 4:pos + 8]
+        start, end = pos + 8, pos + 8 + length
+        if end + 4 > n:
+            return None
+        if kind == b'acTL':
+            # An animated PNG: its later frames live in fcTL/fdAT chunks, so
+            # two different animations sharing a first frame would hash
+            # alike. Not fingerprinted at all (#220 audit F4).
+            return None
+        if kind in _PNG_PICTURE_CHUNKS:
+            h.update(kind)
+            h.update(view[start:end])
+            saw_idat = saw_idat or kind == b'IDAT'
+        elif kind == b'IEND':
+            return h.hexdigest()[:32] if saw_idat else None
+        pos = end + 4                    # data + CRC
+    return None
+
+
+def _photo_fingerprint(path: Path) -> str | None:
+    """A content identity for one photo, `_NO_FINGERPRINT` when it can have
+    none, or None when the file could not be read (retry later).
+
+    A hash of ALL of the photo's picture data and none of its metadata
+    (`_jpeg_picture_hash`, `_png_picture_hash`), so two files share it only
+    when their picture data is byte-identical. A whole-file hash changes the
+    moment anything writes metadata (the archive's own `tag-person` and
+    `set-summary`, or Lightroom), so the metadata is what it leaves out.
+    Earlier versions hashed only the last 64 KiB; three rounds of review
+    (#220) built different pictures that agreed on that window - a trailing
+    metadata block, a palette, then identical compressed suffixes under
+    different upper pixels - so the identity now covers every picture byte.
+
+    Only JPEG and PNG, checked by their own signature bytes, not only by
+    name. Every other format gets `_NO_FINGERPRINT`, so it gets no help but
+    is never matched wrong: a compressed TIFF's tail is its directory and
+    embedded colour profile (two different pictures were measured with
+    identical tails, #220 audit F1), and HEIC, DNG and the rest are not
+    parsed here at all.
+
+    Cost: one read of the whole file, hashed at C speed - see TOOLING §9 for
+    the measured rate - so callers ration it (`_FINGERPRINT_BUDGET_SECONDS`).
+    """
+    suffix = path.suffix.lower()
+    if suffix in _JPEG_SUFFIXES:
+        parse, scheme = _jpeg_picture_hash, _JPEG_SCHEME
+    elif suffix in _PNG_SUFFIXES:
+        parse, scheme = _png_picture_hash, _PNG_SCHEME
+    else:
+        return _NO_FINGERPRINT
+    try:
+        data = path.read_bytes()
+        digest = parse(data)
+    except (OSError, MemoryError):
+        # Locked, vanished, or too large to hold in memory here: unknown, not
+        # "can never have one" - a later run may read it (#220 audit F3).
+        return None
+    return f'{scheme}:{digest}' if digest else _NO_FINGERPRINT
+
+
+def _fingerprint_unknown(value: object) -> bool:
+    """True for a stored value that says nothing YET: NULL, `_FINGERPRINT_RETRY`,
+    or a tag an older rule wrote (#220 audit F8) - each is recomputed by the
+    backfill. `_NO_FINGERPRINT` and `_FINGERPRINT_GONE` are settled answers,
+    not unknowns."""
+    return value not in (_NO_FINGERPRINT, _FINGERPRINT_GONE) and not _is_real_fingerprint(value)
+
+
+def _is_real_fingerprint(value: object) -> bool:
+    """True for a fingerprint reconcile may compare: one made by the CURRENT
+    rule. NULL, the sentinel, and a value stored under an older scheme tag
+    are never compared - an old-rule value cannot vouch for this rule's
+    identity."""
+    return isinstance(value, str) and value.split(':', 1)[0] in (_JPEG_SCHEME, _PNG_SCHEME)
+
+
+class _FingerprintBudget:
+    """An allowance of fingerprint-reading time for one scan's BACKFILL.
+
+    Only rows the catalog already holds without a known fingerprint (the
+    schema-2 upgrade's rows, a failed earlier read, a value an older rule
+    wrote) are rationed; a file the scan scrapes - new, or changed since the
+    last scan - is always fingerprinted, because that read costs less than
+    the exiftool pass already running on it (#220 audit F1/F5). The clock
+    counts only the time spent inside `_photo_fingerprint`, never the
+    scan's own exiftool time.
+    """
+
+    def __init__(self, seconds: float | None = None) -> None:
+        self.allowance = _FINGERPRINT_BUDGET_SECONDS if seconds is None else seconds
+        self.spent = 0.0
+
+    @property
+    def exhausted(self) -> bool:
+        return self.spent >= self.allowance
+
+    def take(self, path: Path) -> str | None:
+        """The fingerprint, `_NO_FINGERPRINT` (answered from the name, free),
+        or None when the read failed. Callers check `exhausted` first."""
+        suffix = path.suffix.lower()
+        if suffix not in _JPEG_SUFFIXES and suffix not in _PNG_SUFFIXES:
+            return _NO_FINGERPRINT
+        started = time.perf_counter()
+        try:
+            return _photo_fingerprint(path)
+        finally:
+            self.spent += time.perf_counter() - started
+
 
 # ── exiftool integration ──────────────────────────────────────────────────
 
@@ -1471,7 +1735,7 @@ def _query_photoindex(
     try:
         if not _schema_is_usable(conn):
             return Result(ok=False, exit_code=EXIT_FAILURE,
-                          data={'status': 'unreadable', **empty_payload})
+                          data={'status': _unusable_status(status), **empty_payload})
         try:
             return Result(data={'status': status, **query(conn)})
         except sqlite3.Error:
@@ -1594,7 +1858,8 @@ def run_find(
     conn.row_factory = sqlite3.Row
     try:
         if not _schema_is_usable(conn):
-            return Result(ok=False, exit_code=EXIT_FAILURE, data={'status': 'unreadable', 'rows': []})
+            return Result(ok=False, exit_code=EXIT_FAILURE,
+                          data={'status': _unusable_status(status), 'rows': []})
         try:
             matched_groups, group_key, all_paths = _matched_filter_groups(
                 conn, person, keyword, edtf, text, under=under, not_under=not_under,
@@ -2358,7 +2623,8 @@ def run_gallery(
     conn.row_factory = sqlite3.Row
     try:
         if not _schema_is_usable(conn):
-            return Result(ok=False, exit_code=EXIT_FAILURE, data={'status': 'unreadable'})
+            return Result(ok=False, exit_code=EXIT_FAILURE,
+                          data={'status': _unusable_status(status)})
 
         # ValueError (no filter / bad EDTF) and RuntimeError (bad FTS) propagate
         # out of the shared helper to the CLI; only a genuine sqlite fault below
@@ -2804,6 +3070,12 @@ def _move_cached_path(conn: sqlite3.Connection, old_path: str, new_path: str) ->
     """
     for table in _RECONCILE_TABLES:
         conn.execute(f'UPDATE {table} SET path=? WHERE path=?', (new_path, old_path))
+    if not _is_missing_key(new_path):
+        # Back on a live file: `gone:v1` meant "its file is gone", which is no
+        # longer true. Unknown again, so the backfill reads it and it counts
+        # in reconcile's gate (stand-in review D2).
+        conn.execute('UPDATE photos SET fingerprint=NULL WHERE path=? AND fingerprint=?',
+                     (new_path, _FINGERPRINT_GONE))
     conn.execute(
         'UPDATE photo_groups SET primary_path=? WHERE primary_path=?',
         (new_path, old_path),
@@ -2931,6 +3203,107 @@ def _scrape_source_ids(paths: list[Path]) -> dict[Path, str]:
     return out
 
 
+def _same_source(a: str | None, b: str | None) -> bool:
+    """Whether two rows carry the same source identity: the same S-id, or
+    no S-id on either. Every place that folds one photo's row onto another
+    file asks this first (#220, Codex), so a different source's copy of the
+    same picture never inherits - or erases - this source's history."""
+    if not a and not b:
+        return True
+    return bool(a and b) and normalize_id(a) == normalize_id(b)
+
+
+def _tag_gone_fingerprints(conn: sqlite3.Connection, keys: list[str]) -> None:
+    """Mark MISSING: rows whose fingerprint was never known as `_FINGERPRINT_GONE`.
+
+    Their file is gone, so no later run can read it; tagging makes the rule
+    visible in the data - such a row does not hold reconcile's content gate
+    and is not a holder - instead of leaving it to be inferred.
+    """
+    for key in keys:
+        row = conn.execute('SELECT fingerprint FROM photos WHERE path=?', (key,)).fetchone()
+        if row is not None and _fingerprint_unknown(row[0]):
+            conn.execute('UPDATE photos SET fingerprint=? WHERE path=?', (_FINGERPRINT_GONE, key))
+
+
+def _content_rematches(
+    conn: sqlite3.Connection, missing: dict[str, str | None], untracked: dict[str, Path],
+    untracked_source_ids: dict[Path, str] | None = None,
+) -> tuple[list[tuple[str, str]], list[str], int, int]:
+    """Vanished rows whose photo is back under a new name, matched by content
+    fingerprint (#49): (pairs, unread untracked aliases, unknown live rows,
+    unknown missing rows). Any non-empty refusal means no pair was taken.
+
+    **The gate.** No content pair is taken at all while any LIVE JPEG/PNG row
+    has an unknown fingerprint (NULL, `retry:v1`, or a tag an older rule
+    wrote). "The only holder" cannot be decided while some copies are
+    unread: an unread row may hold the same picture, whatever its size or
+    metadata (#220, Codex round 7 - this replaces the same-size heuristics).
+    The count comes back so the caller can say how far the backfill has to
+    go. A vanished or MISSING: row whose fingerprint was never known can
+    never be read (its file is gone); it is `_FINGERPRINT_GONE`, and it
+    neither holds the gate nor counts as a holder (owner decision: the
+    whole-picture hash rules out a different picture, so its only risk is a
+    copy of the same one). The SOURCE: keyword pass is unaffected.
+
+    Then one holder on each side, or no match: the fingerprint is held by
+    exactly ONE row in the whole catalog - the vanished one - and found on
+    exactly one untracked file (#220 audit F1). Every untracked JPEG/PNG is
+    read, with no budget; one that could not be read might be a second copy,
+    so then no pair is taken that run (F2, Codex). And the two must have the
+    same source identity (`_same_source`); a vanished row filed as a source is
+    never re-tied by content without the `--with-exif` keyword read
+    (`untracked_source_ids` None), because nothing then says whose file the
+    new one is.
+    """
+    holders: dict[str, int] = {}
+    old_by_fp: dict[str, str] = {}
+    unknown_live = 0
+    for path, fingerprint in conn.execute('SELECT path, fingerprint FROM photos'):
+        if _is_real_fingerprint(fingerprint):
+            holders[fingerprint] = holders.get(fingerprint, 0) + 1
+            if path in missing:
+                old_by_fp[fingerprint] = path
+        elif (_fingerprint_unknown(fingerprint)
+              and not (_is_missing_key(path) or path in missing)
+              and Path(path).suffix.lower() in _JPEG_SUFFIXES | _PNG_SUFFIXES):
+            # Only a LIVE row can still be read, so only a live unknown holds
+            # the gate. A vanished or MISSING: row whose fingerprint was never
+            # known can never become known (`_FINGERPRINT_GONE`): it neither
+            # holds the gate nor counts as a holder.
+            unknown_live += 1
+    if unknown_live:
+        return [], [], unknown_live, 0
+    candidates = {fp: old for fp, old in old_by_fp.items() if holders.get(fp) == 1}
+    if not candidates or not untracked:
+        return [], [], 0, 0
+    new_by_fp: dict[str, list[str]] = {}
+    unread: list[str] = []
+    for alias, abs_path in untracked.items():
+        if abs_path.suffix.lower() not in _JPEG_SUFFIXES | _PNG_SUFFIXES:
+            continue
+        fingerprint = _photo_fingerprint(abs_path)
+        if fingerprint is None:
+            unread.append(alias)
+        elif fingerprint in candidates:
+            new_by_fp.setdefault(fingerprint, []).append(alias)
+    if unread:
+        return [], sorted(unread), 0, 0
+    source_of = untracked_source_ids or {}
+    pairs = []
+    for fingerprint, old in candidates.items():
+        news = new_by_fp.get(fingerprint, [])
+        if len(news) != 1:
+            continue
+        old_source = missing.get(old)
+        if old_source and untracked_source_ids is None:
+            continue
+        if not _same_source(old_source, source_of.get(untracked[news[0]])):
+            continue
+        pairs.append((old, news[0]))
+    return sorted(pairs), [], 0, 0
+
+
 def run_reconcile(
     archive_root: Path, fha_config: dict, with_exif: bool = False, dry_run: bool = False,
 ) -> Result:
@@ -2945,7 +3318,14 @@ def run_reconcile(
         SOURCE: keyword equals a missing row's -> the row's path (and its
         photo_keywords/photo_face_regions/photo_people rows) move to the new
         path silently. Without --with-exif there is no way to read a
-        candidate's embedded keyword, so no re-match is attempted. Rows
+        candidate's embedded keyword, so no keyword re-match is attempted.
+      - re-tied by content (#49, with or without --with-exif): a row still
+        unmatched whose stored fingerprint (`_photo_fingerprint`) is held by
+        no other row in the catalog and found on exactly one untracked file
+        moves to that file the same way (`_content_rematches` lists every
+        refusal). This is what heals a photo that is NOT a
+        source - it has no SOURCE: keyword to match on. Listed again in
+        `rematched_by_content` so the report can say how it was matched. Rows
         already flagged 'MISSING:' from an earlier run remain eligible here
         too, so re-running with --with-exif after fixing/restoring the photo
         can still heal them.
@@ -3006,14 +3386,17 @@ def run_reconcile(
     up front and returns 'root_found': False instead of mass-flagging every
     row 'MISSING:'.
 
-    Returns {'status', 'root_found': bool, 'rematched': [(old, new), ...],
+    Returns {'status', 'root_found': bool, 'rematched': [(old, new), ...]
+    (by keyword or by content), 'rematched_by_content': [(old, new), ...],
     'missing': [path, ...], 'new_count': int,
     'new_sourced': {source_id: [path, ...]}, 'new_unsourced': [path, ...],
     'stale_hold_failed': bool, 'unreadable_dirs': [alias, ...],
     'held_unreadable': int}.
     """
     empty = {
-        'rematched': [], 'missing': [], 'new_count': 0,
+        'rematched': [], 'rematched_by_content': [], 'content_unchecked': [],
+        'content_waiting': {'unread': 0},
+        'missing': [], 'new_count': 0,
         'new_sourced': {}, 'new_unsourced': [], 'stale_hold_failed': False,
         'unreadable_dirs': [], 'held_unreadable': 0,
     }
@@ -3038,12 +3421,34 @@ def run_reconcile(
     on_disk = _on_disk_aliases(photos_root, fha_config, archive_root, unreadable_dirs)
 
     db_path = archive_root / '.cache' / 'photos.sqlite'
+    # A schema-1 catalog (before #49) is upgraded here, in place, exactly as
+    # the scan would (#220 audit F3/F9). Reconcile is already a writer, and
+    # calling a healthy catalog "unreadable" sent the human to a scan - which
+    # deletes every moved photo's row before reconcile could re-tie it. A dry
+    # run adds the column inside a transaction it then rolls back, so
+    # nothing is written.
+    migrate_v1 = status == 'old-schema' and _repairable_catalog(db_path)
+    if migrate_v1 and not dry_run:
+        try:
+            upgraded, _backfill = _open_and_apply_schema(db_path, migrate_v1=True)
+            upgraded.commit()
+            upgraded.close()
+        except sqlite3.DatabaseError as exc:
+            raise RuntimeError(_upgrade_failed_message(exc)) from exc
+        status = 'stale'   # upgraded, but no scan has filled in fingerprints yet
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
     try:
+        if migrate_v1 and dry_run:
+            try:
+                _migrate_v1_catalog(conn, commit=False)   # rolled back below
+            except sqlite3.DatabaseError as exc:
+                raise RuntimeError(_upgrade_failed_message(exc)) from exc
+            status = 'stale'
         if not _schema_is_usable(conn):
             return Result(ok=False, exit_code=EXIT_FAILURE,
-                          data={'status': 'unreadable', 'root_found': True, **empty})
+                          data={'status': _unusable_status(status), 'root_found': True,
+                                **empty})
         try:
             cached = {
                 row['path']: row['source_id']
@@ -3112,6 +3517,36 @@ def run_reconcile(
                 missing = {p: sid for p, sid in missing.items() if p not in rematched_old}
                 untracked = {a: p for a, p in untracked.items() if a not in claimed}
 
+            # Second pass, by content (#49): whatever the SOURCE: keyword
+            # could not place. Runs after it, so a keyword match - the
+            # source's own identity - always wins over a fingerprint.
+            rematched_by_content: list[tuple[str, str]] = []
+            content_unchecked: list[str] = []
+            content_waiting = {'unread': 0}
+            if missing and untracked:
+                (content_pairs, content_unchecked,
+                 waiting_live, _waiting_missing) = _content_rematches(
+                    conn, missing, untracked, candidate_source_ids if with_exif else None)
+                content_waiting = {'unread': waiting_live}
+                for old_path, new_path in content_pairs:
+                    if not dry_run:
+                        _move_cached_path(conn, old_path, new_path)
+                        gid = _group_id_of(conn, new_path)
+                        if gid:
+                            affected_group_ids.add(gid)
+                    rematched_by_content.append((old_path, new_path))
+                    rematched.append((old_path, new_path))
+                    rematched_paths.append(untracked[new_path])
+                content_old = {old for old, _new in rematched_by_content}
+                content_new = {new for _old, new in rematched_by_content}
+                missing = {p: sid for p, sid in missing.items() if p not in content_old}
+                untracked = {a: p for a, p in untracked.items() if a not in content_new}
+
+            if not dry_run:
+                # Rows already MISSING: whose fingerprint was never known -
+                # chiefly those missing before the schema-2 upgrade - are
+                # settled as `_FINGERPRINT_GONE` (see `_tag_gone_fingerprints`).
+                _tag_gone_fingerprints(conn, [k for k in missing if _is_missing_key(k)])
             now_missing: list[str] = []
             for old_path in missing:
                 if _is_missing_key(old_path):
@@ -3120,6 +3555,7 @@ def run_reconcile(
                 new_key = f'{_MISSING_PREFIX}{old_path}'
                 if not dry_run:
                     _move_cached_path(conn, old_path, new_key)
+                    _tag_gone_fingerprints(conn, [new_key])
                     gid = _group_id_of(conn, new_key)
                     if gid:
                         affected_group_ids.add(gid)
@@ -3142,11 +3578,22 @@ def run_reconcile(
             else:
                 if affected_group_ids:
                     _recompute_group_fields(conn, affected_group_ids)
+                if rematched_by_content:
+                    # A content re-tie can cross folders, and a photo's group
+                    # (STEM:<folder>:<name>) and variant fields are derived
+                    # from its path - unlike a SOURCE: group, which is
+                    # folder-independent. Regroup now, with the full scan's
+                    # own rule, rather than leave it in its old folder's
+                    # group until the next scan (#220 audit F7).
+                    _group_photos(conn)
                 conn.commit()
             result = {
                 'status': status,
                 'root_found': True,
                 'rematched': rematched,
+                'rematched_by_content': rematched_by_content,
+                'content_unchecked': content_unchecked,
+                'content_waiting': content_waiting,
                 'missing': now_missing,
                 'new_count': len(untracked),
                 'new_sourced': new_sourced,
@@ -3217,7 +3664,8 @@ def run_reconcile(
     # is on disk is incomplete by exactly that much.
     return Result(
         exit_code=(EXIT_WARNINGS
-                   if (result['missing'] or stale_hold_failed or unreadable_dirs)
+                   if (result['missing'] or stale_hold_failed or unreadable_dirs
+                       or result.get('content_unchecked'))
                    else EXIT_CLEAN),
         data=result,
     )
@@ -3263,7 +3711,8 @@ def run_tag_person_plan(
     try:
         if not _schema_is_usable(conn):
             return Result(ok=False, exit_code=EXIT_FAILURE, data={
-                'status': 'unreadable', 'person_id': person_id, 'candidates': [], 'already_tagged': []})
+                'status': _unusable_status(status), 'person_id': person_id,
+                'candidates': [], 'already_tagged': []})
         try:
             if from_face_tag:
                 # A vanished photo keeps its face regions in the cache
@@ -3814,7 +4263,8 @@ def run_set_summary_plan(
     conn.row_factory = sqlite3.Row
     try:
         if not _schema_is_usable(conn):
-            return Result(ok=False, exit_code=EXIT_FAILURE, data={**empty, 'status': 'unreadable'})
+            return Result(ok=False, exit_code=EXIT_FAILURE,
+                          data={**empty, 'status': _unusable_status(status)})
         try:
             if path:
                 targets = [_resolve_catalog_path(conn, archive_root, fha_config, path)]
@@ -4012,19 +4462,178 @@ def _delete_path_rows(conn: sqlite3.Connection, tables: tuple[str, ...], path_ke
         conn.execute(f'DELETE FROM {table} WHERE path=?', (path_key,))
 
 
-def _open_and_apply_schema(db_path: Path) -> tuple[sqlite3.Connection, bool]:
-    """Open db_path, apply the DDL, and report whether photo_face_regions pre-existed."""
+def _ddl_statements() -> list[str]:
+    """`_DDL` as separate statements, comments stripped, for running inside a
+    transaction (`executescript` commits first, so it cannot be used there).
+    The DDL holds no string literal containing `--` or `;`, so stripping
+    trailing comments and splitting on `;` is exact for it."""
+    text = '\n'.join(line.split('--', 1)[0] for line in _DDL.splitlines())
+    return [stmt.strip() for stmt in text.split(';') if stmt.strip()]
+
+
+def _migrate_v1_catalog(conn: sqlite3.Connection, *, commit: bool = True) -> None:
+    """Bring a schema-1 (or half-upgraded) catalog up to schema 2 in place (#49).
+
+    Schema 2 adds one column, `photos.fingerprint`. Rebuilding instead would
+    re-run exiftool over the whole library - the slow step, half an hour or
+    more on a large one - and throw away every MISSING: row, the vanished
+    photos' kept caption and date history, which no rescan can bring back.
+    So the column is added and left NULL; later scans fill it in for every
+    photo still on disk (see `run_scan`). A row already MISSING: cannot be
+    fingerprinted - its file is gone - so it still relies on its SOURCE:
+    keyword to be re-tied (#220 audit F6).
+
+    ONE transaction: the column, both version stamps (`meta.schema_version`
+    and `PRAGMA user_version` - both transactional in SQLite) and the
+    `scan_due` marker commit together or not at all (#220, Codex: a crash
+    between separately committed stamps left a file that looked unupgradable
+    and was rebuilt, erasing every MISSING: row). An older, half-stamped
+    file is finished the same way (`_repairable_catalog`). `commit=False`
+    leaves the transaction open for a dry run to roll back.
+
+    The `scan_due` marker keeps `photoindex_status` reading stale until a
+    real scan runs: the upgrade's own commit time must not stand in for one
+    (an index.sqlite rebuilt after the last scan would otherwise be hidden).
+    """
+    if not conn.in_transaction:
+        conn.execute('BEGIN')
+    try:
+        columns = {row[1] for row in conn.execute('PRAGMA table_info(photos)')}
+        if 'fingerprint' not in columns:
+            conn.execute('ALTER TABLE photos ADD COLUMN fingerprint TEXT')
+        # Rows already MISSING: can never be fingerprinted (#220): settled
+        # as gone, in the same transaction.
+        conn.execute("UPDATE photos SET fingerprint=? WHERE path LIKE 'MISSING:%' "
+                     "AND fingerprint IS NULL", (_FINGERPRINT_GONE,))
+        # Every table and index the current schema has, created here too -
+        # statement by statement, because `executescript` would commit -
+        # so the upgrade is whole inside this one transaction, and a dry
+        # run previews ALL of it, including a catalog old enough to predate
+        # `photo_face_regions` (#220, Codex). Such a catalog also needs
+        # every photo rescraped once to fill face regions: recorded here.
+        tables = {row[0] for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'")}
+        for statement in _ddl_statements():
+            conn.execute(statement)
+        if 'photo_face_regions' not in tables:
+            write_cache_meta(conn, _FACE_BACKFILL_KEY,
+                             'face regions not yet cached; every photo needs one rescrape')
+        conn.execute('INSERT OR REPLACE INTO meta(key, value) VALUES (?,?)',
+                     (CACHE_SCHEMA_KEY, str(PHOTOINDEX_SCHEMA_VERSION)))
+        write_cache_meta(conn, PHOTOINDEX_SCAN_DUE_KEY,
+                         'catalog upgraded to schema 2; run `fha photoindex`')
+        conn.execute(f'PRAGMA user_version={PHOTOINDEX_SCHEMA_VERSION}')
+    except sqlite3.DatabaseError:
+        conn.rollback()
+        raise
+    if commit:
+        conn.commit()
+
+
+def _content_waiting_message(waiting: dict) -> str:
+    """Plain words for the gate: why no photo was matched by its picture yet."""
+    parts = []
+    if waiting.get('unread'):
+        parts.append(
+            f"Matching moved photos by their picture starts once every photo has been "
+            f"read ({waiting['unread']} to go; each scan reads more - run `fha photoindex`).")
+    return ' '.join(parts)
+
+
+def _upgrade_failed_message(exc: Exception) -> str:
+    """The plain words for an in-place upgrade that did not go through.
+
+    The upgrade is one transaction, so nothing changed. The next step is to
+    retry the SAME command once whatever held the file lets go - never a
+    rebuild, which would erase the MISSING: rows (#220 audit F7).
+    """
+    return (f'the photo catalog could not be upgraded just now ({exc}). Nothing in '
+            'it was changed or lost. Close any other fha command or program that '
+            'may be using .cache/photos.sqlite, then run the same command again - '
+            'do not delete or rebuild the catalog, which would lose the history it '
+            'keeps for photos that are no longer on disk.')
+
+
+def _repairable_catalog(db_path: Path) -> bool:
+    """Whether an old-looking catalog can be upgraded in place, not rebuilt.
+
+    True when the file opens, has its `photos` and `meta` tables, and every
+    version stamp it carries says schema 1 or 2 - including the two disagreeing,
+    or one missing, which only an interrupted upgrade leaves (#220, Codex).
+    Anything else - a file SQLite cannot read, a pre-versioning catalog with
+    no `meta` table, a stamp from some other version - is not repairable here
+    and keeps the clean rebuild. Repairable is the safe default for the
+    versions this code wrote, because a rebuild erases MISSING: history.
+    """
+    try:
+        conn = sqlite3.connect(str(db_path))
+        try:
+            tables = {row[0] for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'")}
+            if not {'photos', 'meta'} <= tables:
+                return False
+            row = conn.execute('SELECT value FROM meta WHERE key=?',
+                               (CACHE_SCHEMA_KEY,)).fetchone()
+            user_version = int(conn.execute('PRAGMA user_version').fetchone()[0] or 0)
+        finally:
+            conn.close()
+        stamps = {int(row[0])} if row else set()
+    except (sqlite3.DatabaseError, TypeError, ValueError):
+        return False
+    if user_version:
+        stamps.add(user_version)
+    return bool(stamps) and stamps <= {1, PHOTOINDEX_SCHEMA_VERSION}
+
+
+def _open_and_apply_schema(
+    db_path: Path, *, migrate_v1: bool = False,
+) -> tuple[sqlite3.Connection, bool]:
+    """Open db_path, apply the DDL, and report whether photo_face_regions pre-existed.
+
+    `migrate_v1` first upgrades a schema-1 or half-upgraded catalog in one
+    committed transaction (`_migrate_v1_catalog`); without it, the DDL's
+    fingerprint index fails on a schema-1 file and `_get_db` rebuilds it.
+    """
     conn = sqlite3.connect(str(db_path))
     try:
         had_face_regions = conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='photo_face_regions'"
         ).fetchone() is not None
+        had_photos = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='photos'"
+        ).fetchone() is not None
+        if migrate_v1:
+            _migrate_v1_catalog(conn)
         conn.executescript(_DDL)
-        conn.execute('PRAGMA user_version=1')
-        return conn, not had_face_regions
+        conn.execute(f'PRAGMA user_version={PHOTOINDEX_SCHEMA_VERSION}')
+        if had_photos and not had_face_regions:
+            # An existing catalog that predates cached face regions: every
+            # photo must be rescraped once to fill them in. Whoever opens it
+            # first - a reconcile, not only the scan - records that, so the
+            # requirement survives until a scan has actually done it; a
+            # reconcile that created the table and dropped the flag left
+            # person searches missing those photos, marked fresh (#220,
+            # Codex round 7). Cleared by `run_scan` when it commits.
+            write_cache_meta(conn, _FACE_BACKFILL_KEY,
+                             'face regions not yet cached; every photo needs one rescrape')
+            conn.commit()
+        due = conn.execute('SELECT 1 FROM meta WHERE key=?',
+                           (_FACE_BACKFILL_KEY,)).fetchone() is not None
+        return conn, due or not had_face_regions
     except sqlite3.DatabaseError:
         conn.close()
         raise
+
+
+def _unusable_status(status: str) -> str:
+    """The status to report when `_schema_is_usable` refuses a catalog.
+
+    'old-schema' when `photoindex_status` already saw an older catalog (its
+    CLI message says "out of date - run fha photoindex", which upgrades it in
+    place), else 'unreadable'. A schema-1 catalog lacks only the #49
+    fingerprint column; calling it unreadable was wrong (#220 audit F3).
+    """
+    return 'old-schema' if status == 'old-schema' else 'unreadable'
 
 
 def _schema_is_usable(conn: sqlite3.Connection) -> bool:
@@ -4067,13 +4676,23 @@ def _get_db(cache_dir: Path) -> tuple[sqlite3.Connection, bool, str | None]:
         ),
     )
 
+    # A schema-1 catalog (before #49's fingerprint column), or one an
+    # interrupted upgrade left half-stamped, is upgraded in place rather than
+    # rebuilt - see `_migrate_v1_catalog` for why. The rebuild below is only
+    # for a file that is genuinely unreadable or not one this code wrote.
+    migrate_v1 = schema_status == 'old-schema' and _repairable_catalog(db_path)
     try:
-        conn, needs_face_backfill = _open_and_apply_schema(db_path)
-        if schema_status in {'absent', 'fresh'} and _schema_is_usable(conn):
+        conn, needs_face_backfill = _open_and_apply_schema(db_path, migrate_v1=migrate_v1)
+        if (schema_status in {'absent', 'fresh'} or migrate_v1) and _schema_is_usable(conn):
             return conn, needs_face_backfill, None
         conn.close()
-    except sqlite3.DatabaseError:
-        pass
+    except sqlite3.DatabaseError as exc:
+        if migrate_v1:
+            # The upgrade is one transaction, so a failure here (a locked
+            # file, a full disk) left the catalog exactly as it was. Say so
+            # and stop - falling through to the rebuild below would erase
+            # every MISSING: row over a problem that a retry fixes (#220).
+            raise RuntimeError(_upgrade_failed_message(exc)) from exc
 
     # photos.sqlite is a disposable cache. Recreate incompatible or corrupt
     # versions instead of letting old schemas crash midway through a scan.
@@ -4102,6 +4721,27 @@ _EMPTY_SCAN_SUMMARY = {
     'groups': 0, 'dated_groups': 0, 'nonspec_date_keywords': 0,
     'conflicts': 0, 'rebuilt_reason': None,
 }
+
+
+def _scrape_fingerprint(
+    path: Path, prior: tuple[float, int] | None, now: tuple[float, int], stored: str | None,
+    *, full: bool = False,
+) -> str:
+    """The fingerprint to store for a file the scan is scraping.
+
+    New or changed since the last scan (by mtime/size): read it now, with no
+    budget - the read costs less than the exiftool pass already running on
+    it, and a changed file's old value must not survive a pixel edit. A
+    failed read is stored as `_FINGERPRINT_RETRY`. Unchanged and rescraped
+    only for the face-region backfill: keep what is stored, so that rescrape
+    never throws away a known fingerprint (#220 audit F1/F5); an unknown
+    stored value is left for the backfill. An explicit `--full` always reads
+    again: the human asked for every file to be refreshed, and a picture can
+    be replaced without its size or time changing (#220, Codex round 7).
+    """
+    if not full and prior is not None and prior == now and stored is not None:
+        return stored
+    return _photo_fingerprint(path) or _FINGERPRINT_RETRY
 
 
 def run_scan(archive_root: Path, fha_config: dict, full: bool = False) -> Result:
@@ -4193,7 +4833,12 @@ def run_scan(archive_root: Path, fha_config: dict, full: bool = False) -> Result
             path: (mtime, size)
             for path, mtime, size in conn.execute('SELECT path, mtime, size FROM photos')
         }
+        existing_fingerprint = {
+            path: fingerprint
+            for path, fingerprint in conn.execute('SELECT path, fingerprint FROM photos')
+        }
 
+        backfill_missed: list[Path] = []   # rows the face backfill could not rescrape
         to_scrape: list[Path] = []
         for p, (mtime, size) in on_disk.items():
             prior = existing.get(alias_by_path[p])
@@ -4232,11 +4877,14 @@ def run_scan(archive_root: Path, fha_config: dict, full: bool = False) -> Result
                     'INSERT OR REPLACE INTO photos(path, mtime, size, title, caption, '
                     'user_comment, exif_date, date_pattern, edtf, sublocation, city, state, '
                     'country, gps_lat, gps_lon, source_id, group_id, is_primary, variant_copy, '
-                    'variant_role) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,0,NULL,NULL)',
+                    'variant_role, fingerprint) '
+                    'VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,0,NULL,NULL,?)',
                     (path_key, photo['mtime'], photo['size'], photo['title'], photo['caption'],
                      photo['user_comment'], photo['exif_date'], photo['date_pattern'],
                      photo['edtf'], photo['sublocation'], photo['city'], photo['state'],
-                     photo['country'], photo['gps_lat'], photo['gps_lon'], photo['source_id']),
+                     photo['country'], photo['gps_lat'], photo['gps_lon'], photo['source_id'],
+                     _scrape_fingerprint(p, existing.get(path_key), (mtime, size),
+                                         existing_fingerprint.get(path_key), full=full)),
                 )
 
                 _delete_path_rows(conn, ('photo_keywords', 'photo_face_regions'), path_key)
@@ -4250,6 +4898,31 @@ def run_scan(archive_root: Path, fha_config: dict, full: bool = False) -> Result
                         (path_key, name, region_type, area_json),
                     )
                 scraped += 1
+
+        # Rows the catalog already holds with no known fingerprint - a
+        # schema-1 catalog's rows after the upgrade, a read that failed, a
+        # value an older rule wrote (F8) - are filled in here, within a
+        # budget of fingerprint-reading time (`_FingerprintBudget`, only the
+        # time inside `_photo_fingerprint` counts). A large library's first
+        # backfill therefore takes several scans (TOOLING §9 has the rate);
+        # a row not reached stays unknown and gets no re-match until it is.
+        # Any non-JPEG/PNG file is answered from its name for free. Rows
+        # already MISSING: cannot be backfilled at all - their file is gone -
+        # so they still rely on their SOURCE: keyword. The pass commits with
+        # the rest of the scan: an interrupted scan repeats it.
+        path_by_alias = {alias: p for p, alias in alias_by_path.items()}
+        fingerprint_budget = _FingerprintBudget()
+        for path_key, stored in conn.execute('SELECT path, fingerprint FROM photos').fetchall():
+            if path_key not in path_by_alias or not _fingerprint_unknown(stored):
+                continue
+            target = path_by_alias[path_key]
+            if fingerprint_budget.exhausted and target.suffix.lower() in (
+                    _JPEG_SUFFIXES | _PNG_SUFFIXES):
+                continue
+            fingerprint = fingerprint_budget.take(target) or _FINGERPRINT_RETRY
+            if fingerprint != stored:
+                conn.execute('UPDATE photos SET fingerprint=? WHERE path=?',
+                             (fingerprint, path_key))
 
         removed = 0
         held_unreadable = 0
@@ -4362,6 +5035,31 @@ def run_scan(archive_root: Path, fha_config: dict, full: bool = False) -> Result
         # those commands must not claim the catalog has caught up.
         write_cache_meta(
             conn, PHOTOINDEX_CONFIG_KEY, photoindex_config_fingerprint(fha_config))
+        # A completed scan is what a schema upgrade's "scan due" waits for,
+        # and - when this scan rescraped every photo for it - what the
+        # face-region backfill waits for. A photo this scan could not read
+        # must not be lost track of (#220, Codex), but must not hold the
+        # markers forever either (stand-in review D1: one permanently corrupt
+        # photo made every scan a full rescrape, and the catalog stale for
+        # good). So, the unindexed rule the stale-hold below already uses:
+        #   - a miss with no row, or a changed row, is retried by every later
+        #     incremental scan anyway - it holds nothing;
+        #   - a row the face backfill needed but could not rescrape (its
+        #     stored mtime/size still match) gets its stored mtime cleared,
+        #     so later incremental scans retry exactly that row, and it is
+        #     counted with the unindexed misses that keep the catalog stale;
+        #   - only a folder the walk could not list holds the markers, since
+        #     nothing can say which rows under it still need a rescrape.
+        if needs_face_backfill:
+            for p in unreadable:
+                alias = alias_by_path[p]
+                if existing.get(alias) == on_disk[p]:
+                    conn.execute('UPDATE photos SET mtime=NULL WHERE path=?', (alias,))
+                    backfill_missed.append(p)
+        if not unreadable_dirs:
+            conn.execute('DELETE FROM meta WHERE key=?', (PHOTOINDEX_SCAN_DUE_KEY,))
+            if needs_face_backfill:
+                conn.execute('DELETE FROM meta WHERE key=?', (_FACE_BACKFILL_KEY,))
 
         conn.commit()
     finally:
@@ -4415,7 +5113,7 @@ def run_scan(archive_root: Path, fha_config: dict, full: bool = False) -> Result
     unindexed = [
         p for p in unreadable
         if existing.get(alias_by_path[p]) != on_disk[p]
-    ]
+    ] + backfill_missed
     behind = [on_disk[p][0] for p in unindexed]
     behind += _unreadable_dir_hold_mtimes(unreadable_dirs)
     behind += unreadable_dir_hold_mtimes(unreadable_source_dirs)
@@ -5063,10 +5761,22 @@ def _cmd_reconcile(args: argparse.Namespace) -> int:
     if getattr(args, 'dry_run', False):
         print('(dry run - no changes made)')
 
+    by_content = set(result.get('rematched_by_content') or [])
     for old, new in result['rematched']:
-        print(f'  RE-MATCHED  {old} -> {new}')
+        how = '  (same picture, found by its content)' if (old, new) in by_content else ''
+        print(f'  RE-MATCHED  {old} -> {new}{how}')
     for path in result['missing']:
         print(f'  MISSING     {_live_alias(path)}')
+    waiting = result.get('content_waiting') or {}
+    if waiting.get('unread'):
+        print(_content_waiting_message(waiting))
+    unchecked = result.get('content_unchecked') or []
+    if unchecked:
+        print(f'{len(unchecked)} new photo(s) could not be read just now '
+              f'({", ".join(unchecked[:5])}{" …" if len(unchecked) > 5 else ""}), so no '
+              'photo was matched by its content this run - nothing was moved on '
+              'their account. Close any program using them, then run `fha photoindex '
+              'reconcile` again.')
     for source_id, paths in sorted(result['new_sourced'].items()):
         print(f'  NEW (source {source_id})  ' + ', '.join(paths))
     if result['new_unsourced']:
@@ -5123,7 +5833,8 @@ def _cmd_reconcile(args: argparse.Namespace) -> int:
         print('reconcile: no drift between the catalog and disk.')
         return EXIT_CLEAN
 
-    return EXIT_WARNINGS if (result['missing'] or unreadable_dirs) else EXIT_CLEAN
+    return (EXIT_WARNINGS if (result['missing'] or unreadable_dirs or unchecked)
+            else EXIT_CLEAN)
 
 
 def _cmd_tag_person(args: argparse.Namespace) -> int:

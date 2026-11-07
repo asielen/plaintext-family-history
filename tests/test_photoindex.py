@@ -6731,5 +6731,1054 @@ class SetSummaryTests(unittest.TestCase):
             self.assertEqual(stored, f'Grandma wrote: June wedding.\n\nAI: {self.TEXT}')
 
 
+class ContentFingerprintTests(unittest.TestCase):
+    """#49: a photo the library moves keeps its catalog row.
+
+    Photos are never renamed by the archive, but Lightroom or a cleanup pass
+    may move them, and a photo that is not filed as a source has no SOURCE:
+    keyword to be re-matched by. Its row simply vanished and an unrelated one
+    appeared. Each scan now stores a cheap content fingerprint, and reconcile
+    re-ties a vanished row to the one new file with the same fingerprint.
+    """
+
+    CFG = {'roots': {'photos': 'photos'}}
+
+    def setUp(self) -> None:
+        self._orig_run_exiftool = photoindex._run_exiftool
+        self._tmp = tempfile.TemporaryDirectory()
+        self.archive = _copy_fixture(Path(self._tmp.name))
+        self.photos = self.archive / 'photos'
+        self.captions: dict[str, str] = {}
+
+        def fake_exiftool(paths: list[Path]) -> list[dict]:
+            return [{'SourceFile': str(p), 'Caption-Abstract': self.captions.get(p.name, '')}
+                    for p in paths]
+
+        photoindex._run_exiftool = fake_exiftool
+
+    def tearDown(self) -> None:
+        photoindex._run_exiftool = self._orig_run_exiftool
+        self._tmp.cleanup()
+
+    @staticmethod
+    def _segment(marker: int, body: bytes) -> bytes:
+        return bytes([0xFF, marker]) + (len(body) + 2).to_bytes(2, 'big') + body
+
+    @classmethod
+    def _picture(cls, seed: int, size: int = 200_000, qtable: bytes = b'\x00' + bytes(range(1, 65))) -> bytes:
+        """A JPEG-shaped file the fingerprint can walk: start-of-image, a
+        quantization table, a frame header, a Huffman table, start-of-scan,
+        random "scan data", end-of-image (#220 audit, Codex round 3)."""
+        import random
+        return (b'\xff\xd8' + cls._segment(0xDB, qtable)
+                + cls._segment(0xC0, b'\x08\x01\x2c\x01\x90\x03\x01\x22\x00\x02\x11\x01\x03\x11\x01')
+                + cls._segment(0xC4, b'\x00' + bytes(16) + b'')
+                + cls._segment(0xDA, b'\x03\x01\x00\x02\x11\x03\x11\x00\x3f\x00')
+                + cls._scan(random.Random(seed).randbytes(size)) + b'\xff\xd9')
+
+    @staticmethod
+    def _scan(raw: bytes) -> bytes:
+        """Entropy-coded data as a JPEG encoder writes it: every FF byte
+        stuffed with a 00, so no marker appears inside the scan."""
+        return raw.replace(b'\xff', b'\xff\x00')
+
+    @classmethod
+    def _with_new_header(cls, picture: bytes) -> bytes:
+        """The same picture after a metadata write: a new APP1 segment after
+        the start-of-image marker, everything that decodes the picture
+        untouched."""
+        return picture[:2] + cls._segment(0xE1, b'Exif\x00\x00' + b'new keywords block ' * 40) + picture[2:]
+
+    def _put(self, name: str, data: bytes, caption: str = '') -> Path:
+        path = self.photos / name
+        path.write_bytes(data)
+        if caption:
+            self.captions[name] = caption
+        return path
+
+    def _rows(self) -> dict[str, tuple]:
+        conn = sqlite3.connect(self.archive / '.cache' / 'photos.sqlite')
+        try:
+            return {r[0]: r[1:] for r in conn.execute(
+                'SELECT path, caption, fingerprint FROM photos')}
+        finally:
+            conn.close()
+
+    # ── the fingerprint itself ──────────────────────────────────────────────
+
+    def test_a_metadata_write_at_the_front_keeps_the_fingerprint(self) -> None:
+        # What tag-person / set-summary / Lightroom do to a JPEG: change the
+        # header (and so the size), leave the picture data at the end alone.
+        picture = self._picture(1)
+        before = photoindex._photo_fingerprint(self._put('a.jpg', picture))
+        after = photoindex._photo_fingerprint(
+            self._put('a.jpg', self._with_new_header(picture)))
+        self.assertIsNotNone(before)
+        self.assertEqual(before, after)
+        self.assertNotEqual(before, photoindex._photo_fingerprint(
+            self._put('b.jpg', self._picture(2))))
+
+    def test_no_fingerprint_where_it_could_not_tell_photos_apart(self) -> None:
+        none = photoindex._NO_FINGERPRINT
+        self.assertEqual(photoindex._photo_fingerprint(self._put('tiny.jpg', b'x' * 1000)), none)
+        # Bytes that do not parse as a JPEG (no segments after the signature).
+        self.assertEqual(photoindex._photo_fingerprint(
+            self._put('broken.jpg', b'\xff\xd8' + b'\x01' * 100_000)), none)
+        # Formats whose tail is not picture data are never fingerprinted (F1).
+        self.assertEqual(photoindex._photo_fingerprint(
+            self._put('scan.tif', self._picture(4))), none)
+        # A file named .jpg that is not a JPEG is not trusted by its name.
+        self.assertEqual(photoindex._photo_fingerprint(
+            self._put('fake.jpg', b'II*\x00' + self._picture(5)[2:])), none)
+        # Could not read it: unknown, so NULL - retried by the next scan.
+        self.assertIsNone(photoindex._photo_fingerprint(self.photos / 'nowhere.jpg'))
+
+    # ── scan stores it, reconcile re-ties by it ─────────────────────────────
+
+    def test_scan_stores_the_fingerprint(self) -> None:
+        self._put('farm.jpg', self._picture(4))
+        photoindex.run_scan(self.archive, self.CFG)
+        caption, fingerprint = self._rows()['photos/farm.jpg']
+        self.assertEqual(fingerprint,
+                         photoindex._photo_fingerprint(self.photos / 'farm.jpg'))
+
+    def test_a_moved_photo_is_re_tied_without_with_exif(self) -> None:
+        self._put('farm.jpg', self._picture(5), caption='The farm, 1952')
+        photoindex.run_scan(self.archive, self.CFG)
+        (self.photos / '1952').mkdir()
+        (self.photos / 'farm.jpg').rename(self.photos / '1952' / 'farm-house.jpg')
+        result = photoindex.run_reconcile(self.archive, self.CFG)
+        pair = ('photos/farm.jpg', 'photos/1952/farm-house.jpg')
+        self.assertEqual(result['rematched_by_content'], [pair])
+        self.assertIn(pair, result['rematched'])
+        self.assertEqual(result['missing'], [])
+        self.assertEqual(result['new_count'], 0)
+        rows = self._rows()
+        self.assertNotIn('photos/farm.jpg', rows)
+        self.assertEqual(rows['photos/1952/farm-house.jpg'][0], 'The farm, 1952')
+
+    def test_a_row_already_flagged_missing_is_re_tied_when_its_photo_turns_up(self) -> None:
+        picture = self._picture(6)
+        self._put('farm.jpg', picture, caption='The farm, 1952')
+        photoindex.run_scan(self.archive, self.CFG)
+        (self.photos / 'farm.jpg').unlink()
+        first = photoindex.run_reconcile(self.archive, self.CFG)
+        self.assertEqual(first['missing'], ['MISSING:photos/farm.jpg'])
+        # The library puts it back under a new name - after a metadata write.
+        self._put('farm-renamed.jpg', self._with_new_header(picture))
+        second = photoindex.run_reconcile(self.archive, self.CFG)
+        self.assertEqual(second['rematched_by_content'],
+                         [('MISSING:photos/farm.jpg', 'photos/farm-renamed.jpg')])
+        self.assertEqual(self._rows()['photos/farm-renamed.jpg'][0], 'The farm, 1952')
+
+    def test_duplicate_copies_are_never_guessed_between(self) -> None:
+        picture = self._picture(7)
+        self._put('copy1.jpg', picture, caption='first copy')
+        self._put('copy2.jpg', picture, caption='second copy')
+        photoindex.run_scan(self.archive, self.CFG)
+        (self.photos / 'copy1.jpg').rename(self.photos / 'moved1.jpg')
+        (self.photos / 'copy2.jpg').rename(self.photos / 'moved2.jpg')
+        result = photoindex.run_reconcile(self.archive, self.CFG)
+        self.assertEqual(result['rematched'], [])
+        self.assertEqual(sorted(result['missing']),
+                         ['MISSING:photos/copy1.jpg', 'MISSING:photos/copy2.jpg'])
+
+    def test_a_source_keyword_match_wins_over_content(self) -> None:
+        # The SOURCE: keyword is the source's own identity; a fingerprint is
+        # only for what the keyword cannot place.
+        self._put('deed.jpg', self._picture(8))
+        self.captions['deed.jpg'] = ''
+
+        def with_source(paths: list[Path]) -> list[dict]:
+            return [{'SourceFile': str(p), 'Keywords': ['SOURCE: S-123456789a']}
+                    for p in paths if p.name in ('deed.jpg', 'deed-moved.jpg')] + [
+                    {'SourceFile': str(p)} for p in paths
+                    if p.name not in ('deed.jpg', 'deed-moved.jpg')]
+
+        photoindex._run_exiftool = with_source
+        photoindex.run_scan(self.archive, self.CFG)
+        (self.photos / 'deed.jpg').rename(self.photos / 'deed-moved.jpg')
+        result = photoindex.run_reconcile(self.archive, self.CFG, with_exif=True)
+        self.assertEqual(result['rematched'], [('photos/deed.jpg', 'photos/deed-moved.jpg')])
+        self.assertEqual(result['rematched_by_content'], [])
+
+    def test_dry_run_reports_the_re_tie_and_changes_nothing(self) -> None:
+        self._put('farm.jpg', self._picture(9))
+        photoindex.run_scan(self.archive, self.CFG)
+        (self.photos / 'farm.jpg').rename(self.photos / 'farm2.jpg')
+        before = self._rows()
+        result = photoindex.run_reconcile(self.archive, self.CFG, dry_run=True)
+        self.assertEqual(result['rematched_by_content'],
+                         [('photos/farm.jpg', 'photos/farm2.jpg')])
+        self.assertEqual(self._rows(), before)
+
+    # ── upgrading a schema-1 catalog ────────────────────────────────────────
+
+    def test_a_schema_1_catalog_is_upgraded_in_place_and_backfilled(self) -> None:
+        self._put('farm.jpg', self._picture(10), caption='The farm')
+        photoindex.run_scan(self.archive, self.CFG)
+        db = self.archive / '.cache' / 'photos.sqlite'
+        conn = sqlite3.connect(db)
+        try:
+            # Turn it back into what a schema-1 build left: no fingerprint
+            # column, version 1 - plus a MISSING: row a rebuild would lose.
+            conn.execute('DROP INDEX IF EXISTS idx_photos_fingerprint')
+            conn.execute('ALTER TABLE photos DROP COLUMN fingerprint')
+            conn.execute("UPDATE meta SET value='1' WHERE key='schema_version'")
+            conn.execute('PRAGMA user_version=1')
+            conn.execute("INSERT INTO photos(path, caption) "
+                         "VALUES ('MISSING:photos/lost.jpg', 'Grandma, 1931')")
+            conn.commit()
+        finally:
+            conn.close()
+        self.assertEqual(photoindex_status(self.archive, self.CFG)[0], 'old-schema')
+
+        summary = photoindex.run_scan(self.archive, self.CFG)
+        self.assertIsNone(summary['rebuilt_reason'])
+        # The unchanged file was NOT re-sent to exiftool - only fingerprinted.
+        self.assertEqual(summary['scraped'], 0)
+        rows = self._rows()
+        self.assertEqual(rows['MISSING:photos/lost.jpg'][0], 'Grandma, 1931')
+        self.assertEqual(rows['photos/farm.jpg'][1],
+                         photoindex._photo_fingerprint(self.photos / 'farm.jpg'))
+        self.assertNotEqual(photoindex_status(self.archive, self.CFG)[0], 'old-schema')
+
+
+    # ── #220 audit ──────────────────────────────────────────────────────────
+
+    def test_a_trailing_metadata_block_never_makes_two_pictures_match(self) -> None:
+        # F1 / Codex: a JPEG trailer after end-of-image, or a big metadata
+        # block, identical on two DIFFERENT pictures, must not be the window.
+        trailer = b'TRAILER' + bytes(range(256)) * 160          # ~40 KiB
+        a = self._picture(20) + trailer
+        b = self._picture(21) + trailer
+        fa = photoindex._photo_fingerprint(self._put('a.jpg', a))
+        fb = photoindex._photo_fingerprint(self._put('b.jpg', b))
+        self.assertTrue(photoindex._is_real_fingerprint(fa))
+        self.assertNotEqual(fa, fb)
+        # Bytes after end-of-image are not picture data at all: however long
+        # the trailer, the same picture keeps the same identity.
+        huge = b'TRAILER' + bytes(range(256)) * 400
+        self.assertEqual(photoindex._photo_fingerprint(
+            self._put('c.jpg', self._picture(20) + huge)), fa)
+
+    def test_a_png_is_fingerprinted_by_its_image_data_not_its_tail(self) -> None:
+        import struct
+        import zlib
+
+        def chunk(kind: bytes, data: bytes) -> bytes:
+            return (struct.pack('>I', len(data)) + kind + data
+                    + struct.pack('>I', zlib.crc32(kind + data)))
+
+        def png(seed: int) -> bytes:
+            import random
+            ihdr = struct.pack('>IIBBBBB', 400, 300, 8, 2, 0, 0, 0)
+            idat = random.Random(seed).randbytes(120_000)
+            text = b'Comment\x00' + b'same trailing text ' * 6000
+            return (b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', ihdr) + chunk(b'IDAT', idat[:60_000])
+                    + chunk(b'IDAT', idat[60_000:]) + chunk(b'tEXt', text) + chunk(b'IEND', b''))
+
+        f1 = photoindex._photo_fingerprint(self._put('red.png', png(30)))
+        f2 = photoindex._photo_fingerprint(self._put('blue.png', png(31)))
+        self.assertTrue(f1.startswith(photoindex._PNG_SCHEME + ':'))
+        self.assertNotEqual(f1, f2)
+
+    def test_a_live_copy_of_the_picture_blocks_the_re_tie(self) -> None:
+        # F1: the one-holder rule counts the WHOLE catalog, not only the
+        # vanished rows. a is deleted, its copy z stays, and a copy of z
+        # appears as w: tying a to w would be a guess.
+        picture = self._picture(22)
+        self._put('a.jpg', picture, caption='first copy')
+        self._put('z.jpg', picture, caption='second copy')
+        photoindex.run_scan(self.archive, self.CFG)
+        (self.photos / 'a.jpg').unlink()
+        self._put('w.jpg', picture)
+        result = photoindex.run_reconcile(self.archive, self.CFG)
+        self.assertEqual(result['rematched'], [])
+        self.assertEqual(result['missing'], ['MISSING:photos/a.jpg'])
+
+    def test_a_tiff_is_never_re_tied_by_content(self) -> None:
+        self._put('scan.tif', self._picture(23), caption='a scan')
+        photoindex.run_scan(self.archive, self.CFG)
+        self.assertEqual(self._rows()['photos/scan.tif'][1], photoindex._NO_FINGERPRINT)
+        (self.photos / 'scan.tif').rename(self.photos / 'scan2.tif')
+        result = photoindex.run_reconcile(self.archive, self.CFG)
+        self.assertEqual(result['rematched'], [])
+
+    def test_the_scan_never_deletes_a_missing_row(self) -> None:
+        # Codex round 7: the scan used to drop a MISSING: row it judged
+        # "catalogued again" - an inference that could erase a real copy's
+        # history. It no longer deletes one on a guess. The cost: that row
+        # stays a second holder, so the picture's later move gets no content
+        # help - no help, never wrong (TOOLING §9).
+        picture = self._picture(24)
+        self._put('farm.jpg', picture, caption='The farm')
+        photoindex.run_scan(self.archive, self.CFG)
+        (self.photos / 'farm.jpg').unlink()
+        photoindex.run_reconcile(self.archive, self.CFG)
+        self._put('back.jpg', picture, caption='The farm')
+        photoindex.run_scan(self.archive, self.CFG)
+        self.assertEqual(self._rows()['MISSING:photos/farm.jpg'][0], 'The farm')
+        (self.photos / 'back.jpg').rename(self.photos / 'moved.jpg')
+        result = photoindex.run_reconcile(self.archive, self.CFG)
+        self.assertEqual(result['rematched_by_content'], [])
+        self.assertIn('MISSING:photos/farm.jpg', self._rows())
+
+    def test_another_sources_file_is_never_re_tied_by_content(self) -> None:
+        # F5 / Codex: the untracked file's own SOURCE: keyword names a
+        # different source; it stays untracked, reported under that source.
+        picture = self._picture(26)
+        self._put('deed.jpg', picture)
+        keywords = {'deed.jpg': 'SOURCE: S-111111111a', 'deed-moved.jpg': 'SOURCE: S-222222222b'}
+
+        def with_source(paths: list[Path]) -> list[dict]:
+            return [{'SourceFile': str(p), 'Keywords': [keywords[p.name]]}
+                    if p.name in keywords else {'SourceFile': str(p)} for p in paths]
+
+        photoindex._run_exiftool = with_source
+        photoindex.run_scan(self.archive, self.CFG)
+        (self.photos / 'deed.jpg').rename(self.photos / 'deed-moved.jpg')
+        result = photoindex.run_reconcile(self.archive, self.CFG, with_exif=True)
+        self.assertEqual(result['rematched'], [])
+        self.assertIn('photos/deed-moved.jpg', sum(result['new_sourced'].values(), []))
+
+    def test_a_scan_does_not_reopen_files_that_can_have_no_fingerprint(self) -> None:
+        # F10: a tiny or non-JPEG/PNG file is recorded once, not retried.
+        self._put('tiny.jpg', b'x' * 1000)
+        self._put('scan.tif', self._picture(27))
+        photoindex.run_scan(self.archive, self.CFG)
+        calls = []
+        real = photoindex._photo_fingerprint
+        photoindex._photo_fingerprint = lambda path: calls.append(path.name) or real(path)
+        try:
+            summary = photoindex.run_scan(self.archive, self.CFG)
+        finally:
+            photoindex._photo_fingerprint = real
+        self.assertEqual(summary['scraped'], 0)
+        self.assertEqual(calls, [])
+
+    def test_a_re_tie_across_folders_regroups_the_photo(self) -> None:
+        # F7: the group is derived from the folder; reconcile regroups at once.
+        self._put('smith.jpg', self._picture(28))
+        photoindex.run_scan(self.archive, self.CFG)
+        (self.photos / 'new').mkdir()
+        (self.photos / 'smith.jpg').rename(self.photos / 'new' / 'smith.jpg')
+        photoindex.run_reconcile(self.archive, self.CFG)
+        conn = sqlite3.connect(self.archive / '.cache' / 'photos.sqlite')
+        try:
+            group = conn.execute("SELECT group_id FROM photos WHERE path='photos/new/smith.jpg'"
+                                 ).fetchone()[0]
+        finally:
+            conn.close()
+        self.assertNotIn('STEM:photos:', group)
+
+    def _downgrade_to_schema_1(self) -> None:
+        conn = sqlite3.connect(self.archive / '.cache' / 'photos.sqlite')
+        try:
+            conn.execute('DROP INDEX IF EXISTS idx_photos_fingerprint')
+            conn.execute('ALTER TABLE photos DROP COLUMN fingerprint')
+            conn.execute("UPDATE meta SET value='1' WHERE key='schema_version'")
+            conn.execute('PRAGMA user_version=1')
+            conn.commit()
+        finally:
+            conn.close()
+
+    def test_reconcile_upgrades_a_schema_1_catalog_instead_of_calling_it_unreadable(self) -> None:
+        # F3/F9: reconcile runs first after the upgrade; it must keep the
+        # moved photo's row (MISSING: - it has no fingerprint yet), not exit
+        # "unreadable" and push the human toward a scan that deletes it.
+        self._put('farm.jpg', self._picture(29), caption='The farm')
+        photoindex.run_scan(self.archive, self.CFG)
+        self._downgrade_to_schema_1()
+        (self.photos / '1952').mkdir()
+        (self.photos / 'farm.jpg').rename(self.photos / '1952' / 'farm-house.jpg')
+        before = (self.archive / '.cache' / 'photos.sqlite').read_bytes()
+        dry = photoindex.run_reconcile(self.archive, self.CFG, dry_run=True)
+        self.assertNotEqual(dry['status'], 'unreadable')
+        self.assertEqual(dry['missing'], ['MISSING:photos/farm.jpg'])
+        self.assertEqual((self.archive / '.cache' / 'photos.sqlite').read_bytes(), before)
+        live = photoindex.run_reconcile(self.archive, self.CFG)
+        self.assertNotEqual(live['status'], 'unreadable')
+        self.assertEqual(live['missing'], ['MISSING:photos/farm.jpg'])
+        self.assertEqual(self._rows()['MISSING:photos/farm.jpg'][0], 'The farm')
+        self.assertNotEqual(photoindex_status(self.archive, self.CFG)[0], 'old-schema')
+
+    def test_the_other_commands_call_a_schema_1_catalog_out_of_date(self) -> None:
+        self._put('farm.jpg', self._picture(30))
+        photoindex.run_scan(self.archive, self.CFG)
+        self._downgrade_to_schema_1()
+        result = photoindex.run_find(self.archive, self.CFG, keyword='x')
+        self.assertEqual(result['status'], 'old-schema')
+
+
+    # ── #220 Codex round 3 ──────────────────────────────────────────────────
+
+    def test_the_scan_keeps_a_missing_row_whose_copy_belongs_to_another_source(self) -> None:
+        # Source A's photo vanishes (MISSING:); an identical picture filed
+        # as source B is scanned in. It is not A coming back: A's row stays.
+        picture = self._picture(40)
+        keywords = {'a.jpg': 'SOURCE: S-111111111a', 'b.jpg': 'SOURCE: S-222222222b'}
+
+        def with_source(paths: list[Path]) -> list[dict]:
+            return [{'SourceFile': str(p), 'Keywords': [keywords[p.name]]}
+                    if p.name in keywords else {'SourceFile': str(p)} for p in paths]
+
+        photoindex._run_exiftool = with_source
+        self._put('a.jpg', picture)
+        photoindex.run_scan(self.archive, self.CFG)
+        (self.photos / 'a.jpg').unlink()
+        photoindex.run_reconcile(self.archive, self.CFG, with_exif=True)
+        self._put('b.jpg', picture)
+        photoindex.run_reconcile(self.archive, self.CFG, with_exif=True)
+        photoindex.run_scan(self.archive, self.CFG)
+        self.assertIn('MISSING:photos/a.jpg', self._rows())
+
+    def test_a_sourced_row_is_not_re_tied_by_content_without_the_keyword_read(self) -> None:
+        # Without --with-exif nothing says whose file the new one is.
+        def with_source(paths: list[Path]) -> list[dict]:
+            return [{'SourceFile': str(p), 'Keywords': ['SOURCE: S-111111111a']}
+                    if p.name == 'deed.jpg' else {'SourceFile': str(p)} for p in paths]
+
+        photoindex._run_exiftool = with_source
+        self._put('deed.jpg', self._picture(41))
+        photoindex.run_scan(self.archive, self.CFG)
+        (self.photos / 'deed.jpg').rename(self.photos / 'deed2.jpg')
+        result = photoindex.run_reconcile(self.archive, self.CFG)
+        self.assertEqual(result['rematched'], [])
+
+    def test_an_indexed_png_with_another_palette_is_another_picture(self) -> None:
+        import random
+        import struct
+        import zlib
+
+        def chunk(kind: bytes, data: bytes) -> bytes:
+            return (struct.pack('>I', len(data)) + kind + data
+                    + struct.pack('>I', zlib.crc32(kind + data)))
+
+        idat = random.Random(42).randbytes(120_000)    # identical palette INDICES
+
+        def png(palette: bytes) -> bytes:
+            ihdr = struct.pack('>IIBBBBB', 400, 300, 8, 3, 0, 0, 0)   # colour type 3
+            return (b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', ihdr) + chunk(b'PLTE', palette)
+                    + chunk(b'IDAT', idat) + chunk(b'IEND', b''))
+
+        grey_up = bytes(v for i in range(256) for v in (i, i, i))
+        grey_down = bytes(v for i in range(255, -1, -1) for v in (i, i, i))
+        f1 = photoindex._photo_fingerprint(self._put('light.png', png(grey_up)))
+        f2 = photoindex._photo_fingerprint(self._put('dark.png', png(grey_down)))
+        self.assertTrue(photoindex._is_real_fingerprint(f1))
+        self.assertNotEqual(f1, f2)
+
+    def test_a_jpeg_with_other_tables_is_another_picture(self) -> None:
+        # Identical scan bytes, different quantization: different pixels.
+        f1 = photoindex._photo_fingerprint(self._put('q1.jpg', self._picture(43)))
+        f2 = photoindex._photo_fingerprint(self._put(
+            'q2.jpg', self._picture(43, qtable=b'\x00' + bytes(range(65, 129)))))
+        self.assertTrue(photoindex._is_real_fingerprint(f1))
+        self.assertNotEqual(f1, f2)
+
+    def test_a_value_stored_under_an_older_rule_is_never_compared(self) -> None:
+        self.assertFalse(photoindex._is_real_fingerprint('png-idat64k-v1:' + 'a' * 32))
+        self.assertFalse(photoindex._is_real_fingerprint('png-idat64k-v2:' + 'a' * 32))
+        self.assertFalse(photoindex._is_real_fingerprint('jpeg-scan64k-v2:' + 'a' * 32))
+        self.assertFalse(photoindex._is_real_fingerprint('jpeg-scan64k-v1:' + 'a' * 32))
+        self.assertFalse(photoindex._is_real_fingerprint('tail64k-v1:' + 'a' * 32))
+        self.assertTrue(photoindex._is_real_fingerprint(
+            photoindex._photo_fingerprint(self._put('ok.jpg', self._picture(44)))))
+
+    def test_the_upgrade_by_reconcile_leaves_a_scan_due(self) -> None:
+        # Codex round 3: the upgrade's commit time must not make the catalog
+        # read fresh - a person search would then trust photo_people that no
+        # scan has refreshed. It reads stale until a real scan runs.
+        self._put('farm.jpg', self._picture(45))
+        photoindex.run_scan(self.archive, self.CFG)
+        self._downgrade_to_schema_1()
+        photoindex.run_reconcile(self.archive, self.CFG)
+        self.assertEqual(photoindex_status(self.archive, self.CFG)[0], 'stale')
+        found = photoindex.run_find(self.archive, self.CFG, person='P-aaaaaaaaaa')
+        self.assertEqual(found['status'], 'stale')
+        photoindex.run_scan(self.archive, self.CFG)
+        self.assertNotEqual(photoindex_status(self.archive, self.CFG)[0], 'stale')
+
+
+    # ── #220 Codex round 4 ──────────────────────────────────────────────────
+
+    def test_an_already_catalogued_twin_never_drops_a_missing_copy(self) -> None:
+        # Two copies of one picture, both catalogued. One is deleted and
+        # flagged MISSING:; the next scan must keep that copy's history -
+        # its twin was already here, it is not the photo coming back.
+        picture = self._picture(50)
+        self._put('a.jpg', picture, caption='first copy')
+        self._put('z.jpg', self._with_new_header(picture), caption='second copy')
+        photoindex.run_scan(self.archive, self.CFG)
+        (self.photos / 'a.jpg').unlink()
+        photoindex.run_reconcile(self.archive, self.CFG)
+        photoindex.run_scan(self.archive, self.CFG)
+        rows = self._rows()
+        self.assertIn('MISSING:photos/a.jpg', rows)
+        self.assertEqual(rows['MISSING:photos/a.jpg'][0], 'first copy')
+
+    def test_several_missing_copies_are_not_dropped_for_one_new_arrival(self) -> None:
+        picture = self._picture(51)
+        self._put('a.jpg', picture, caption='A')
+        self._put('b.jpg', picture, caption='B')
+        photoindex.run_scan(self.archive, self.CFG)
+        (self.photos / 'a.jpg').unlink()
+        (self.photos / 'b.jpg').unlink()
+        photoindex.run_reconcile(self.archive, self.CFG)
+        self._put('c.jpg', picture)
+        photoindex.run_scan(self.archive, self.CFG)
+        rows = self._rows()
+        self.assertIn('MISSING:photos/a.jpg', rows)
+        self.assertIn('MISSING:photos/b.jpg', rows)
+
+    def test_reconcile_never_ties_a_missing_copy_to_its_already_catalogued_twins_copy(self) -> None:
+        # The same hole on the reconcile side: a is already MISSING:, its
+        # twin z is live, and another copy w appears. The catalog-wide
+        # one-holder rule (two holders: MISSING:a and z) refuses.
+        picture = self._picture(52)
+        self._put('a.jpg', picture, caption='first copy')
+        self._put('z.jpg', picture, caption='second copy')
+        photoindex.run_scan(self.archive, self.CFG)
+        (self.photos / 'a.jpg').unlink()
+        photoindex.run_reconcile(self.archive, self.CFG)
+        self._put('w.jpg', picture)
+        result = photoindex.run_reconcile(self.archive, self.CFG)
+        self.assertEqual(result['rematched'], [])
+        self.assertIn('MISSING:photos/a.jpg', result['missing'])
+
+
+    # ── #220 Codex round 5: the whole picture, and an atomic upgrade ───────
+
+    def test_pngs_differing_only_above_an_identical_compressed_suffix_differ(self) -> None:
+        # Codex's case: two pictures whose image data agree in its last
+        # 64 KiB (identical noisy bottom, different top - Codex built it as
+        # one stored-deflate stream with equal Adler sums). Here the top and
+        # bottom are separate IDAT chunks, which gives the same collision on
+        # the old 64 KiB window more simply. The whole-picture hash must
+        # tell them apart.
+        import random
+        import struct
+        import zlib
+
+        def chunk(kind: bytes, data: bytes) -> bytes:
+            return (struct.pack('>I', len(data)) + kind + data
+                    + struct.pack('>I', zlib.crc32(kind + data)))
+
+        bottom = random.Random(60).randbytes(90_000)       # identical, > 64 KiB
+
+        def png(top: bytes) -> bytes:
+            ihdr = struct.pack('>IIBBBBB', 400, 300, 8, 2, 0, 0, 0)
+            return (photoindex._PNG_SIGNATURE + chunk(b'IHDR', ihdr) + chunk(b'IDAT', top)
+                    + chunk(b'IDAT', bottom) + chunk(b'IEND', b''))
+
+        purple = png(bytes((128, 0, 128)) * 20_000)
+        green = png(bytes((0, 128, 0)) * 20_000)
+        f1 = photoindex._photo_fingerprint(self._put('purple.png', purple))
+        f2 = photoindex._photo_fingerprint(self._put('green.png', green))
+        self.assertTrue(photoindex._is_real_fingerprint(f1))
+        self.assertNotEqual(f1, f2)
+
+    def test_a_jpeg_retouched_only_near_the_top_differs(self) -> None:
+        picture = self._picture(61)
+        sos = picture.index(b'\xff\xda')
+        scan_start = sos + 2 + int.from_bytes(picture[sos + 2:sos + 4], 'big')
+        retouched = picture[:scan_start + 10] + b'\x42' + picture[scan_start + 11:]
+        self.assertNotEqual(photoindex._photo_fingerprint(self._put('a.jpg', picture)),
+                            photoindex._photo_fingerprint(self._put('b.jpg', retouched)))
+
+    def test_metadata_segments_and_chunks_never_change_the_identity(self) -> None:
+        import struct
+        import zlib
+        picture = self._picture(62)
+        with_meta = (picture[:2] + self._segment(0xE1, b'Exif\x00\x00keywords')
+                     + self._segment(0xE2, b'ICC_PROFILE\x00' + bytes(500))
+                     + self._segment(0xFE, b'a comment') + picture[2:])
+        self.assertEqual(photoindex._photo_fingerprint(self._put('a.jpg', picture)),
+                         photoindex._photo_fingerprint(self._put('b.jpg', with_meta)))
+
+        def chunk(kind: bytes, data: bytes) -> bytes:
+            return (struct.pack('>I', len(data)) + kind + data
+                    + struct.pack('>I', zlib.crc32(kind + data)))
+
+        core = chunk(b'IHDR', struct.pack('>IIBBBBB', 10, 10, 8, 2, 0, 0, 0))
+        idat = chunk(b'IDAT', zlib.compress(bytes(310)))
+        plain = b'\x89PNG\r\n\x1a\n' + core + idat + chunk(b'IEND', b'')
+        tagged = (b'\x89PNG\r\n\x1a\n' + core + chunk(b'iTXt', b'XML:com.adobe.xmp\x00' * 3)
+                  + chunk(b'gAMA', b'\x00\x00\xb1\x8f') + idat
+                  + chunk(b'tEXt', b'Comment\x00hi') + chunk(b'IEND', b''))
+        self.assertEqual(photoindex._photo_fingerprint(self._put('a.png', plain)),
+                         photoindex._photo_fingerprint(self._put('b.png', tagged)))
+
+    def _set_fingerprint(self, path_key: str, value) -> None:
+        conn = sqlite3.connect(self.archive / '.cache' / 'photos.sqlite')
+        conn.execute('UPDATE photos SET fingerprint=? WHERE path=?', (value, path_key))
+        conn.commit()
+        conn.close()
+
+    def test_fingerprint_reading_is_rationed_per_scan(self) -> None:
+        # Only the BACKFILL of rows already held without one is rationed:
+        # over budget they stay unknown, and a later scan fills them in.
+        self._put('farm.jpg', self._picture(63))
+        photoindex.run_scan(self.archive, self.CFG)
+        self._set_fingerprint('photos/farm.jpg', None)       # as after the upgrade
+        saved = photoindex._FINGERPRINT_BUDGET_SECONDS
+        photoindex._FINGERPRINT_BUDGET_SECONDS = 0.0
+        try:
+            photoindex.run_scan(self.archive, self.CFG)
+        finally:
+            photoindex._FINGERPRINT_BUDGET_SECONDS = saved
+        self.assertIsNone(self._rows()['photos/farm.jpg'][1])
+        photoindex.run_scan(self.archive, self.CFG)
+        self.assertTrue(photoindex._is_real_fingerprint(self._rows()['photos/farm.jpg'][1]))
+
+    def test_the_upgrade_is_one_transaction(self) -> None:
+        # ALTER TABLE, both version stamps and the scan_due marker commit
+        # together: rolled back, nothing of the upgrade remains.
+        self._put('farm.jpg', self._picture(64))
+        photoindex.run_scan(self.archive, self.CFG)
+        self._downgrade_to_schema_1()
+        db = self.archive / '.cache' / 'photos.sqlite'
+        conn = sqlite3.connect(db)
+        try:
+            photoindex._migrate_v1_catalog(conn, commit=False)
+            conn.rollback()
+            cols = {r[1] for r in conn.execute('PRAGMA table_info(photos)')}
+            self.assertNotIn('fingerprint', cols)
+            self.assertEqual(conn.execute('PRAGMA user_version').fetchone()[0], 1)
+            self.assertEqual(conn.execute(
+                "SELECT value FROM meta WHERE key='schema_version'").fetchone()[0], '1')
+        finally:
+            conn.close()
+
+    def test_an_upgrade_interrupted_between_statements_loses_nothing(self) -> None:
+        # Stop the upgrade after the column is added but before the stamps
+        # are written: the transaction rolls back, the scan says so instead
+        # of rebuilding, and the next scan upgrades with the MISSING: row
+        # (unrecoverable history) intact.
+        self._put('farm.jpg', self._picture(66))
+        photoindex.run_scan(self.archive, self.CFG)
+        db = self.archive / '.cache' / 'photos.sqlite'
+        conn = sqlite3.connect(db)
+        conn.execute("INSERT INTO photos(path, caption) VALUES ('MISSING:photos/lost.jpg', 'Grandma')")
+        conn.commit()
+        conn.close()
+        self._downgrade_to_schema_1()
+
+        def crash(*_a, **_k):
+            raise sqlite3.OperationalError('simulated stop between statements')
+
+        with mock.patch.object(photoindex, 'write_cache_meta', side_effect=crash):
+            with self.assertRaises(RuntimeError):
+                photoindex.run_scan(self.archive, self.CFG)
+        conn = sqlite3.connect(db)
+        try:
+            self.assertNotIn('fingerprint', {r[1] for r in conn.execute('PRAGMA table_info(photos)')})
+            self.assertEqual(conn.execute('PRAGMA user_version').fetchone()[0], 1)
+        finally:
+            conn.close()
+        summary = photoindex.run_scan(self.archive, self.CFG)
+        self.assertIsNone(summary['rebuilt_reason'])
+        self.assertEqual(self._rows()['MISSING:photos/lost.jpg'][0], 'Grandma')
+
+    def test_a_half_upgraded_catalog_is_finished_not_rebuilt(self) -> None:
+        # Codex: an older upgrade committed its statements one by one, and a
+        # crash between them left the stamps disagreeing. Every such state
+        # is finished in place - the MISSING: row (unrecoverable history)
+        # survives - never rebuilt.
+        for column, user_version, meta_version in (
+                (True, 2, '1'), (True, 1, '2'), (False, 2, '1'), (True, 0, '2'), (True, 2, None)):
+            with self.subTest(column=column, user_version=user_version, meta=meta_version):
+                shutil.rmtree(self.archive / '.cache', ignore_errors=True)
+                self._put('farm.jpg', self._picture(65))
+                photoindex.run_scan(self.archive, self.CFG)
+                db = self.archive / '.cache' / 'photos.sqlite'
+                conn = sqlite3.connect(db)
+                try:
+                    conn.execute("INSERT INTO photos(path, caption) "
+                                 "VALUES ('MISSING:photos/lost.jpg', 'Grandma, 1931')")
+                    if not column:
+                        conn.execute('DROP INDEX IF EXISTS idx_photos_fingerprint')
+                        conn.execute('ALTER TABLE photos DROP COLUMN fingerprint')
+                    if meta_version is None:
+                        conn.execute("DELETE FROM meta WHERE key='schema_version'")
+                    else:
+                        conn.execute("UPDATE meta SET value=? WHERE key='schema_version'",
+                                     (meta_version,))
+                    conn.execute(f'PRAGMA user_version={user_version}')
+                    conn.commit()
+                finally:
+                    conn.close()
+                summary = photoindex.run_scan(self.archive, self.CFG)
+                self.assertIsNone(summary['rebuilt_reason'])
+                self.assertEqual(self._rows()['MISSING:photos/lost.jpg'][0], 'Grandma, 1931')
+                self.assertEqual(photoindex_status(self.archive, self.CFG)[0], 'fresh')
+
+
+    # ── #220 audit round 2 ──────────────────────────────────────────────────
+
+    def test_a_full_rescan_with_slow_exiftool_keeps_every_fingerprint(self) -> None:
+        # F1/F5: exiftool's own time never eats the fingerprint budget, and a
+        # rescrape of an unchanged file keeps its stored fingerprint.
+        import time as _time
+        self._put('farm.jpg', self._picture(70))
+        photoindex.run_scan(self.archive, self.CFG)
+        before = self._rows()['photos/farm.jpg'][1]
+        fast = photoindex._run_exiftool
+
+        def slow(paths):
+            _time.sleep(0.3)
+            return fast(paths)
+
+        photoindex._run_exiftool = slow
+        saved = photoindex._FINGERPRINT_BUDGET_SECONDS
+        photoindex._FINGERPRINT_BUDGET_SECONDS = 0.1
+        try:
+            photoindex.run_scan(self.archive, self.CFG, full=True)
+        finally:
+            photoindex._FINGERPRINT_BUDGET_SECONDS = saved
+        self.assertEqual(self._rows()['photos/farm.jpg'][1], before)
+
+    def test_new_files_are_fingerprinted_whatever_the_budget(self) -> None:
+        saved = photoindex._FINGERPRINT_BUDGET_SECONDS
+        photoindex._FINGERPRINT_BUDGET_SECONDS = 0.0
+        try:
+            self._put('new.jpg', self._picture(71))
+            photoindex.run_scan(self.archive, self.CFG)
+        finally:
+            photoindex._FINGERPRINT_BUDGET_SECONDS = saved
+        self.assertTrue(photoindex._is_real_fingerprint(self._rows()['photos/new.jpg'][1]))
+
+    def test_an_unreadable_untracked_copy_means_no_content_match_this_run(self) -> None:
+        # F2 / Codex: two untracked copies, one unreadable - the readable one
+        # alone must not look like an unambiguous replacement.
+        picture = self._picture(72)
+        self._put('farm.jpg', picture, caption='The farm')
+        photoindex.run_scan(self.archive, self.CFG)
+        (self.photos / 'farm.jpg').rename(self.photos / 'a-copy1.jpg')
+        self._put('z-copy2.jpg', picture)
+        real = photoindex._photo_fingerprint
+        photoindex._photo_fingerprint = (
+            lambda path: None if path.name == 'z-copy2.jpg' else real(path))
+        try:
+            result = photoindex.run_reconcile(self.archive, self.CFG)
+        finally:
+            photoindex._photo_fingerprint = real
+        self.assertEqual(result['rematched'], [])
+        self.assertEqual(result['content_unchecked'], ['photos/z-copy2.jpg'])
+        self.assertNotEqual(result.exit_code, 0)
+
+    def test_reconcile_reads_every_untracked_candidate_with_no_budget(self) -> None:
+        # Reconcile is not rationed: a rationed one would re-read the same
+        # files every run and never finish, or decide on a partial reading.
+        self._put('farm.jpg', self._picture(73))
+        photoindex.run_scan(self.archive, self.CFG)
+        (self.photos / 'farm.jpg').rename(self.photos / 'farm2.jpg')
+        saved = photoindex._FINGERPRINT_BUDGET_SECONDS
+        photoindex._FINGERPRINT_BUDGET_SECONDS = 0.0
+        try:
+            result = photoindex.run_reconcile(self.archive, self.CFG)
+        finally:
+            photoindex._FINGERPRINT_BUDGET_SECONDS = saved
+        self.assertEqual(result['rematched_by_content'], [('photos/farm.jpg', 'photos/farm2.jpg')])
+
+    def test_a_file_too_large_for_memory_is_unknown_not_a_crash(self) -> None:
+        # F3: MemoryError reads as "not known yet", never aborts the scan.
+        path = self._put('huge.jpg', self._picture(74))
+        with mock.patch.object(photoindex, '_jpeg_picture_hash', side_effect=MemoryError):
+            self.assertIsNone(photoindex._photo_fingerprint(path))
+            photoindex.run_scan(self.archive, self.CFG)
+        self.assertEqual(self._rows()['photos/huge.jpg'][1], photoindex._FINGERPRINT_RETRY)
+
+    def test_an_animated_png_gets_no_fingerprint(self) -> None:
+        import struct
+        import zlib
+
+        def chunk(kind: bytes, data: bytes) -> bytes:
+            return (struct.pack('>I', len(data)) + kind + data
+                    + struct.pack('>I', zlib.crc32(kind + data)))
+
+        apng = (photoindex._PNG_SIGNATURE
+                + chunk(b'IHDR', struct.pack('>IIBBBBB', 10, 10, 8, 2, 0, 0, 0))
+                + chunk(b'acTL', struct.pack('>II', 2, 0))
+                + chunk(b'IDAT', zlib.compress(bytes(310))) + chunk(b'IEND', b''))
+        self.assertEqual(photoindex._photo_fingerprint(self._put('anim.png', apng)),
+                         photoindex._NO_FINGERPRINT)
+
+    def test_a_failed_upgrade_in_reconcile_never_says_rebuild(self) -> None:
+        # F7: a lock (or full disk) during the in-place upgrade: plain words,
+        # nothing changed, retry the same command - never "unreadable".
+        self._put('farm.jpg', self._picture(76))
+        photoindex.run_scan(self.archive, self.CFG)
+        self._downgrade_to_schema_1()
+        with mock.patch.object(photoindex, '_open_and_apply_schema',
+                               side_effect=sqlite3.OperationalError('database is locked')):
+            with self.assertRaises(RuntimeError) as ctx:
+                photoindex.run_reconcile(self.archive, self.CFG)
+        message = str(ctx.exception)
+        self.assertIn('Nothing in it was changed or lost', message)
+        self.assertIn('run the same command again', message)
+        self.assertNotIn('unreadable', message)
+        self.assertEqual(photoindex_status(self.archive, self.CFG)[0], 'old-schema')
+
+    def test_a_value_from_an_older_rule_is_recomputed(self) -> None:
+        # F8: a stale tag is "unknown" - the backfill recomputes it.
+        self._put('farm.jpg', self._picture(77))
+        photoindex.run_scan(self.archive, self.CFG)
+        good = self._rows()['photos/farm.jpg'][1]
+        self._set_fingerprint('photos/farm.jpg', 'jpeg-scan64k-v2:' + 'a' * 32)
+        photoindex.run_scan(self.archive, self.CFG)
+        self.assertEqual(self._rows()['photos/farm.jpg'][1], good)
+
+    def test_a_live_copy_not_yet_fingerprinted_blocks_the_re_tie(self) -> None:
+        # F9: live L is a copy of A, its fingerprint not known yet; A is
+        # deleted and a third copy N appears - L might be a second holder.
+        picture = self._picture(78)
+        self._put('A.jpg', picture, caption='A')
+        self._put('L.jpg', picture, caption='L')
+        photoindex.run_scan(self.archive, self.CFG)
+        self._set_fingerprint('photos/L.jpg', None)
+        (self.photos / 'A.jpg').unlink()
+        self._put('N.jpg', picture)
+        result = photoindex.run_reconcile(self.archive, self.CFG)
+        self.assertEqual(result['rematched'], [])
+
+
+    # ── #220 Codex round 7 ──────────────────────────────────────────────────
+
+    def test_a_copy_that_vanished_unread_is_gone_and_does_not_hold_the_gate(self) -> None:
+        # Copies A and B, same picture, different metadata; B's fingerprint
+        # never read, then B vanishes too. B can never be read again, so it
+        # is settled as gone:v1 and neither holds the gate nor counts as a
+        # holder (owner decision, #220): A's row goes to the one untracked
+        # file with A's picture - an identical picture either way.
+        picture = self._picture(80)
+        self._put('A.jpg', picture, caption='A')
+        self._put('B.jpg', self._with_new_header(picture), caption='B')
+        photoindex.run_scan(self.archive, self.CFG)
+        self._set_fingerprint('photos/B.jpg', None)
+        (self.photos / 'A.jpg').unlink()
+        (self.photos / 'B.jpg').rename(self.photos / 'N.jpg')
+        result = photoindex.run_reconcile(self.archive, self.CFG)
+        self.assertEqual(result['rematched_by_content'], [('photos/A.jpg', 'photos/N.jpg')])
+        self.assertEqual(result['content_waiting']['unread'], 0)
+        self.assertEqual(self._rows()['MISSING:photos/B.jpg'][1], photoindex._FINGERPRINT_GONE)
+
+    def test_a_pre_upgrade_missing_row_does_not_keep_matching_off(self) -> None:
+        # A schema-1 catalog with a photo already MISSING: (its fingerprint
+        # can never be known). After the upgrade and the backfill of the
+        # live rows, a moved photo is re-tied by its picture.
+        self._put('farm.jpg', self._picture(85), caption='The farm')
+        photoindex.run_scan(self.archive, self.CFG)
+        db = self.archive / '.cache' / 'photos.sqlite'
+        conn = sqlite3.connect(db)
+        conn.execute("INSERT INTO photos(path, caption, size) "
+                     "VALUES ('MISSING:photos/lost.jpg', 'Grandma, 1931', 200000)")
+        conn.commit()
+        conn.close()
+        self._downgrade_to_schema_1()
+        photoindex.run_scan(self.archive, self.CFG)               # upgrade + backfill
+        self.assertEqual(self._rows()['MISSING:photos/lost.jpg'],
+                         ('Grandma, 1931', photoindex._FINGERPRINT_GONE))
+        (self.photos / 'farm.jpg').rename(self.photos / 'farm2.jpg')
+        result = photoindex.run_reconcile(self.archive, self.CFG)
+        self.assertEqual(result['rematched_by_content'], [('photos/farm.jpg', 'photos/farm2.jpg')])
+        self.assertEqual(self._rows()['MISSING:photos/lost.jpg'][0], 'Grandma, 1931')
+
+    def test_the_gate_names_how_many_photos_are_left_to_read(self) -> None:
+        self._put('farm.jpg', self._picture(81), caption='The farm')
+        self._put('other.jpg', self._picture(82))
+        photoindex.run_scan(self.archive, self.CFG)
+        self._set_fingerprint('photos/other.jpg', None)       # still to be read
+        (self.photos / 'farm.jpg').rename(self.photos / 'farm2.jpg')
+        result = photoindex.run_reconcile(self.archive, self.CFG, dry_run=True)
+        self.assertEqual(result['rematched_by_content'], [])
+        self.assertEqual(result['content_waiting']['unread'], 1)
+        message = photoindex._content_waiting_message(result['content_waiting'])
+        self.assertIn('starts once every photo has been read (1 to go', message)
+        # Once the backfill has read it, the same move is re-tied.
+        self._set_fingerprint('photos/other.jpg',
+                              photoindex._photo_fingerprint(self.photos / 'other.jpg'))
+        result = photoindex.run_reconcile(self.archive, self.CFG)
+        self.assertEqual(result['rematched_by_content'],
+                         [('photos/farm.jpg', 'photos/farm2.jpg')])
+
+    def test_a_full_scan_recomputes_a_picture_replaced_in_place(self) -> None:
+        # Codex round 7: same size, same time, different pixels; --full must
+        # read it again, so reconcile never hands blue's caption to red.
+        import os as _os
+        red = self._picture(83)
+        sos = red.index(b'\xff\xda')
+        at = sos + 2 + int.from_bytes(red[sos + 2:sos + 4], 'big') + 100
+        while red[at] == 0xFF or red[at - 1] == 0xFF:
+            at += 1
+        blue = red[:at] + bytes([(red[at] + 1) % 0xFF]) + red[at + 1:]   # other pixels
+        self.assertEqual(len(red), len(blue))
+        path = self._put('photo.jpg', red, caption='red')
+        photoindex.run_scan(self.archive, self.CFG)
+        stat = path.stat()
+        path.write_bytes(blue)
+        self.captions['photo.jpg'] = 'blue'
+        _os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+        photoindex.run_scan(self.archive, self.CFG, full=True)
+        self.assertEqual(self._rows()['photos/photo.jpg'][1],
+                         photoindex._photo_fingerprint(path))
+        path.unlink()
+        self._put('elsewhere.jpg', red)
+        result = photoindex.run_reconcile(self.archive, self.CFG)
+        self.assertEqual(result['rematched_by_content'], [])
+
+    def test_the_face_region_backfill_survives_an_upgrade_by_reconcile(self) -> None:
+        # Codex round 7: a catalog from before cached face regions, upgraded
+        # by reconcile; the next ordinary scan must still rescrape every
+        # photo, so a person search finds the face-tagged photo.
+        from _lib import INDEX_SCHEMA_VERSION
+        people_dir = self.archive / 'people'
+        people_dir.mkdir(exist_ok=True)
+        (people_dir / 'grandma__example_P-aaaaaaaaaa.md').write_text(
+            '---\nid: P-aaaaaaaaaa\nname: Grandma\n---\n', encoding='utf-8')
+
+        def with_face(paths):
+            return [{'SourceFile': str(p), 'RegionInfo': {
+                'RegionList': [{'Name': 'Grandma', 'Type': 'Face'}]}}
+                if p.name == 'family_reunion.jpg' else {'SourceFile': str(p)} for p in paths]
+
+        photoindex._run_exiftool = with_face
+        photoindex.run_scan(self.archive, self.CFG)
+        index_db = self.archive / '.cache' / 'index.sqlite'
+        conn = sqlite3.connect(index_db)
+        conn.executescript(
+            f"""
+            PRAGMA user_version={INDEX_SCHEMA_VERSION};
+            CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            INSERT INTO meta(key, value) VALUES ('schema_version', '{INDEX_SCHEMA_VERSION}');
+            CREATE TABLE persons(id TEXT, name TEXT);
+            CREATE TABLE person_face_tags(person_id TEXT, tag TEXT);
+            CREATE TABLE person_variants(person_id TEXT, variant TEXT);
+            INSERT INTO persons(id, name) VALUES ('p-aaaaaaaaaa', 'Grandma');
+            INSERT INTO person_face_tags(person_id, tag) VALUES ('p-aaaaaaaaaa', 'Grandma');
+            """)
+        conn.commit()
+        conn.close()
+        write_path_manifest(index_manifest_path(self.archive), record_path_manifest(self.archive))
+        # Back to a catalog that predates both #49 and cached face regions.
+        db = self.archive / '.cache' / 'photos.sqlite'
+        conn = sqlite3.connect(db)
+        conn.execute('DROP TABLE photo_face_regions')
+        conn.commit()
+        conn.close()
+        self._downgrade_to_schema_1()
+        photoindex.run_reconcile(self.archive, self.CFG)
+        photoindex.run_scan(self.archive, self.CFG)
+        found = photoindex.run_find(self.archive, self.CFG, person='P-aaaaaaaaaa')
+        self.assertTrue(any('family_reunion' in str(r) for r in found['rows']), found['rows'])
+
+
+    # ── #220 Codex round 8 ──────────────────────────────────────────────────
+
+    def _downgrade_to_pre_face_regions(self) -> None:
+        db = self.archive / '.cache' / 'photos.sqlite'
+        conn = sqlite3.connect(db)
+        conn.execute('DROP TABLE photo_face_regions')
+        conn.commit()
+        conn.close()
+        self._downgrade_to_schema_1()
+
+    def _meta(self, key: str):
+        conn = sqlite3.connect(self.archive / '.cache' / 'photos.sqlite')
+        try:
+            row = conn.execute('SELECT value FROM meta WHERE key=?', (key,)).fetchone()
+        finally:
+            conn.close()
+        return row[0] if row else None
+
+    def _one_unreadable(self, name: str):
+        fake = photoindex._run_exiftool
+
+        def run(paths):
+            return [row if Path(row['SourceFile']).name != name
+                    else {'SourceFile': row['SourceFile'], 'Error': 'corrupt'}
+                    for row in fake(paths)]
+        return fake, run
+
+    def test_a_backfill_row_that_could_not_be_rescraped_alone_is_retried(self) -> None:
+        # A photo exiftool cannot read during the face-region backfill keeps
+        # its stored mtime/size, so the backfill clears its stored mtime:
+        # the markers are cleared (no endless full rescrape), the catalog is
+        # held stale, and the next ordinary scan retries exactly that photo.
+        self._put('farm.jpg', self._picture(90))
+        self._put('barn.jpg', self._picture(92))
+        photoindex.run_scan(self.archive, self.CFG)
+        self._downgrade_to_pre_face_regions()
+        photoindex.run_reconcile(self.archive, self.CFG)
+        self.assertIsNotNone(self._meta(photoindex._FACE_BACKFILL_KEY))
+        fake, run = self._one_unreadable('farm.jpg')
+        photoindex._run_exiftool = run
+        summary = photoindex.run_scan(self.archive, self.CFG)
+        photoindex._run_exiftool = fake
+        self.assertGreater(summary['unreadable'], 0)
+        self.assertIsNone(self._meta(photoindex._FACE_BACKFILL_KEY))
+        self.assertIsNone(self._meta('scan_due'))
+        self.assertEqual(photoindex_status(self.archive, self.CFG)[0], 'stale')
+        retry = photoindex.run_scan(self.archive, self.CFG)
+        self.assertEqual(retry['scraped'], 1)                    # farm.jpg alone
+
+    def test_a_permanently_corrupt_new_file_does_not_hold_the_markers(self) -> None:
+        # Stand-in review D1: a never-catalogued file that can never be read
+        # is retried by every incremental scan anyway - it must not keep the
+        # markers set and make every scan a full rescrape.
+        self._put('farm.jpg', self._picture(93))
+        photoindex.run_scan(self.archive, self.CFG)
+        self._downgrade_to_pre_face_regions()
+        photoindex.run_reconcile(self.archive, self.CFG)
+        self._put('corrupt.jpg', self._picture(94))
+        fake, run = self._one_unreadable('corrupt.jpg')
+        photoindex._run_exiftool = run
+        try:
+            photoindex.run_scan(self.archive, self.CFG)
+            second = photoindex.run_scan(self.archive, self.CFG)
+        finally:
+            photoindex._run_exiftool = fake
+        self.assertEqual(second['scraped'], 0)
+        self.assertIsNone(self._meta(photoindex._FACE_BACKFILL_KEY))
+        self.assertIsNone(self._meta('scan_due'))
+
+    def test_a_row_re_tied_by_its_keyword_is_no_longer_gone(self) -> None:
+        # Stand-in review D2: a MISSING: row tagged gone:v1 that its SOURCE:
+        # keyword puts back on a live file is unknown again, so the backfill
+        # reads it.
+        def with_source(paths):
+            return [{'SourceFile': str(p), 'Keywords': ['SOURCE: S-00000000ab']}
+                    if p.name == 'farm.jpg' else {'SourceFile': str(p)} for p in paths]
+
+        photoindex._run_exiftool = with_source
+        self._put('farm.jpg', self._picture(95), caption='Farm')
+        photoindex.run_scan(self.archive, self.CFG)
+        self._set_fingerprint('photos/farm.jpg', None)
+        (self.photos / 'sub').mkdir()
+        (self.photos / 'farm.jpg').rename(self.photos / 'sub' / 'farm.jpg')
+        photoindex.run_reconcile(self.archive, self.CFG)
+        self.assertEqual(self._rows()['MISSING:photos/farm.jpg'][1], photoindex._FINGERPRINT_GONE)
+        photoindex.run_reconcile(self.archive, self.CFG, with_exif=True)
+        self.assertIsNone(self._rows()['photos/sub/farm.jpg'][1])
+        photoindex.run_scan(self.archive, self.CFG)
+        self.assertTrue(photoindex._is_real_fingerprint(self._rows()['photos/sub/farm.jpg'][1]))
+
+    def test_a_dry_run_reconcile_previews_the_upgrade_of_a_very_old_catalog(self) -> None:
+        # A schema-1 catalog from before cached face regions: the dry run
+        # shows the plan (the moved photo kept as MISSING:) instead of
+        # "unreadable", and changes nothing on disk.
+        self._put('farm.jpg', self._picture(91), caption='The farm')
+        photoindex.run_scan(self.archive, self.CFG)
+        self._downgrade_to_pre_face_regions()
+        (self.photos / 'farm.jpg').rename(self.photos / 'farm2.jpg')
+        db = self.archive / '.cache' / 'photos.sqlite'
+        before = db.read_bytes()
+        result = photoindex.run_reconcile(self.archive, self.CFG, dry_run=True)
+        self.assertNotIn(result['status'], ('unreadable', 'old-schema'))
+        self.assertEqual(result['missing'], ['MISSING:photos/farm.jpg'])
+        self.assertEqual(db.read_bytes(), before)
+
+
 if __name__ == '__main__':
     unittest.main()
