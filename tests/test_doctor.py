@@ -1448,6 +1448,233 @@ class UnresolvedCompanionOwnerTests(unittest.TestCase):
         self.assertIsNone(self._finding(result))
 
 
+class WrongMainImageTests(unittest.TestCase):
+    """#200: a source record written while the filename bug was live names a
+    photo's back as its main image, with the front scan listed beside it.
+    Doctor reports it (read-only) and names the `fha source set-primary`
+    command that fixes it; running that command clears the finding. A record
+    that is right - or whose main image is an even choice a human may have
+    made by hand - stays silent."""
+
+    SID = 'S-2b3c4d5e6f'
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        _write(self.root / 'fha.yaml', 'roots:\n  photos: photos\n')
+        (self.root / 'photos').mkdir()
+        self.record = self.root / 'sources' / 'photos' / f'farm_{self.SID}.md'
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _record(self, files_block: str) -> None:
+        _write(self.record, _SOURCE.format(sid=self.SID, title='Farm', line=files_block))
+
+    def _doctor(self):
+        result = doctor.run_doctor(self.root, {'roots': {'photos': 'photos'}})
+        check = next((c for c in result.data['checks'] if c['id'] == 'wrong_main_image'), None)
+        found = [ln for ln in result.data['lines'] if ln.startswith('main image:')]
+        return result, check, found
+
+    # The shape `fha process` wrote for a front/back pair while #200 was live.
+    BUG_ERA = ('files:\n'
+               '  - file: photos/1950/Smith-Farm-01400-back.tif\n'
+               '    role: primary\n'
+               '    is_primary: true\n'
+               '  - file: photos/1950/smith-farm-01400.tif\n'
+               '    role: farm-01400\n')
+
+    def test_a_front_with_a_trailing_letter_is_still_reported(self) -> None:
+        # #210 audit: '1950s' reads its 's' as a copy letter, so the old rank
+        # put front and back level and the bug-era record stayed silent.
+        self._record('files:\n'
+                     '  - file: photos/1950/Reunion-1950s-back.jpg\n'
+                     '    role: primary\n'
+                     '    is_primary: true\n'
+                     '  - file: photos/1950/Reunion-1950s.jpg\n'
+                     '    role: variant\n')
+        _result, _check, found = self._doctor()
+        self.assertEqual(len(found), 1)
+        self.assertIn('--file Reunion-1950s.jpg', found[0])
+
+    def test_a_print_b_pair_is_still_reported(self) -> None:
+        self._record('files:\n'
+                     '  - file: photos/1950/Smith-Farm-01400b-back.tif\n'
+                     '    role: primary\n'
+                     '    is_primary: true\n'
+                     '  - file: photos/1950/Smith-Farm-01400b.tif\n'
+                     '    role: variant\n')
+        _result, _check, found = self._doctor()
+        self.assertEqual(len(found), 1)
+        self.assertIn('--file Smith-Farm-01400b.tif', found[0])
+
+    def test_a_record_without_an_id_is_sent_to_lint_fix_ids(self) -> None:
+        # #210 audit: plain `fha lint` only reports, so the advice looped.
+        self.record = self.root / 'sources' / 'photos' / 'farm.md'
+        _write(self.record, _SOURCE.format(sid=self.SID, title='Farm', line=self.BUG_ERA)
+               .replace(f'id: {self.SID}\n', '').replace(f'aliases: [{self.SID}]\n', ''))
+        result, check, found = self._doctor()
+        self.assertEqual(len(found), 1, result.data['lines'])
+        fix = f'{doctor._LAUNCHER} lint --fix-ids --root "{self.root}"'
+        self.assertIn(fix, found[0])
+        self.assertEqual(check['next_step'], fix)
+
+    def test_a_metadata_companion_is_never_suggested_as_the_main_image(self) -> None:
+        # #210 review: x-00100.xmp sorted ahead of the marked back scan.
+        self._record('files:\n'
+                     '  - file: photos/1950/x-00100-back.jpg\n'
+                     '    role: primary\n'
+                     '    is_primary: true\n'
+                     '  - file: photos/1950/x-00100.xmp\n'
+                     '    role: metadata\n')
+        _result, _check, found = self._doctor()
+        self.assertFalse(any('.xmp' in f for f in found), found)
+
+    def test_a_name_powershell_would_break_is_quoted(self) -> None:
+        # #210 audit: `.\fha` is pasted into PowerShell, where a bare
+        # O'Brien opens an unclosed string and (1950) is a subexpression.
+        self._record('files:\n'
+                     "  - file: photos/1950/O'Brien-Farm_(1950)-back.tif\n"
+                     '    role: primary\n'
+                     '    is_primary: true\n'
+                     "  - file: photos/1950/O'Brien-Farm_(1950).tif\n"
+                     '    role: variant\n')
+        _result, _check, found = self._doctor()
+        self.assertEqual(len(found), 1)
+        expected = ('"O\'Brien-Farm_(1950).tif"' if os.name == 'nt'
+                    else doctor.shell_quote("O'Brien-Farm_(1950).tif"))
+        self.assertIn(f'--file {expected} --root', found[0])
+
+    def test_a_record_whose_file_name_lost_its_id_is_told_to_rename_it(self) -> None:
+        # #210 audit: `--fix-ids` only mints missing IDs, so for a record
+        # that has one in its frontmatter the advice looped forever.
+        self.record = self.root / 'sources' / 'photos' / 'farm.md'
+        self._record(self.BUG_ERA)
+        result, check, found = self._doctor()
+        self.assertEqual(len(found), 1, result.data['lines'])
+        self.assertIn(f'ends in _{self.SID}.md', found[0])
+        self.assertNotIn('--fix-ids', found[0])
+
+    def test_a_front_named_like_a_document_gets_its_full_path(self) -> None:
+        # #210 review: set-primary matches --file against EVERY entry, so a
+        # documents-root file sharing the front's name made the bare name
+        # ambiguous and the suggested command was refused.
+        self._record(self.BUG_ERA
+                     + '  - file: documents/photos/smith-farm-01400.tif\n'
+                       '    role: transcript\n')
+        _result, _check, found = self._doctor()
+        self.assertEqual(len(found), 1)
+        self.assertIn('--file photos/1950/smith-farm-01400.tif', found[0])
+
+    def test_bug_era_record_is_reported_with_a_runnable_fix(self) -> None:
+        # Capitals differ between the two names on purpose: a scanner does not
+        # keep them consistent, and they are still one photo (#200).
+        self._record(self.BUG_ERA)
+        before = self.record.read_bytes()
+        result, check, found = self._doctor()
+
+        self.assertEqual(len(found), 1, result.data['lines'])
+        self.assertIn('the back of the photo (Smith-Farm-01400-back.tif)', found[0])
+        self.assertIn('the front scan smith-farm-01400.tif', found[0])
+        command = (f'{doctor._LAUNCHER} source set-primary {self.SID} '
+                   f'--file smith-farm-01400.tif --root "{self.root}"')
+        self.assertIn(command, found[0])
+        self.assertIsNotNone(check)
+        self.assertEqual(check['status'], 'warn')
+        self.assertEqual(check['next_step'], command)
+        self.assertGreaterEqual(result.exit_code, EXIT_WARNINGS)
+        self.assertEqual(self.record.read_bytes(), before, 'doctor must stay read-only')
+
+    def test_running_the_next_command_clears_the_finding(self) -> None:
+        import shlex
+        import fha
+        self._record(self.BUG_ERA)
+        _, check, _ = self._doctor()
+        command = check['next_step']
+        self.assertTrue(command.startswith(doctor._LAUNCHER + ' '), command)
+        # The launcher is stripped before splitting: POSIX shlex would read
+        # the backslash in Windows' `.\fha` as an escape. A double-quoted
+        # Windows path survives it (a backslash there only escapes $ ` " \).
+        argv = shlex.split(command[len(doctor._LAUNCHER) + 1:])
+        with redirect_stdout(io.StringIO()):
+            rc = fha.main(argv)
+        self.assertEqual(rc, 0)
+        _, check, found = self._doctor()
+        self.assertIsNone(check)
+        self.assertEqual(found, [])
+
+    def test_correct_record_is_silent(self) -> None:
+        self._record('files:\n'
+                     '  - file: photos/1950/smith-farm-01400.tif\n'
+                     '    role: primary\n'
+                     '    is_primary: true\n'
+                     '  - file: photos/1950/smith-farm-01400-back.tif\n'
+                     '    role: back\n')
+        _, check, found = self._doctor()
+        self.assertIsNone(check)
+        self.assertEqual(found, [])
+
+    def test_hand_chosen_plain_scan_is_silent(self) -> None:
+        # Two plain scans of one photo (an original and a rescan in another
+        # format). The filename rule would pick the alphabetically-first, but
+        # the other is just as plain - a human's choice, not the bug.
+        self._record('files:\n'
+                     '  - file: photos/1950/smith-farm-01400.jpg\n'
+                     '    role: variant\n'
+                     '  - file: photos/1950/smith-farm-01400.tif\n'
+                     '    role: primary\n'
+                     '    is_primary: true\n'
+                     '  - file: photos/1950/smith-farm-01400-back.tif\n'
+                     '    role: back\n')
+        _, check, found = self._doctor()
+        self.assertIsNone(check)
+        self.assertEqual(found, [])
+
+    def test_main_image_in_a_different_group_is_silent(self) -> None:
+        # Two different photos on one record: the main image is one of them,
+        # and the other photo's own front/back pair has no main-image mark to
+        # compare. Nothing to report.
+        self._record('files:\n'
+                     '  - file: photos/1950/smith-house.tif\n'
+                     '    role: primary\n'
+                     '    is_primary: true\n'
+                     '  - file: photos/1950/smith-farm-01400-back.tif\n'
+                     '    role: back\n'
+                     '  - file: photos/1950/smith-farm-01400.tif\n'
+                     '    role: variant\n')
+        _, check, found = self._doctor()
+        self.assertIsNone(check)
+        self.assertEqual(found, [])
+
+    def test_print_b_as_main_image_is_reported(self) -> None:
+        self._record('files:\n'
+                     '  - file: photos/x-00100b.jpg\n'
+                     '    role: primary\n'
+                     '    is_primary: true\n'
+                     '  - file: photos/x-00100.jpg\n'
+                     '    role: variant\n')
+        _, check, found = self._doctor()
+        self.assertIsNotNone(check)
+        self.assertIn('print B (a second copy) (x-00100b.jpg)', found[0])
+        self.assertIn('--file x-00100.jpg', check['next_step'])
+
+    def test_shared_bare_name_gets_the_full_path(self) -> None:
+        # Two listed files share the front's bare name in different folders,
+        # so `--file <name>` would be refused as ambiguous; the command names
+        # the full path instead.
+        self._record('files:\n'
+                     '  - file: photos/1950/x-00100-back.jpg\n'
+                     '    role: primary\n'
+                     '    is_primary: true\n'
+                     '  - file: photos/1950/x-00100.jpg\n'
+                     '    role: variant\n'
+                     '  - file: photos/album2/x-00100.jpg\n'
+                     '    role: variant\n')
+        _, check, _ = self._doctor()
+        self.assertIn('--file photos/1950/x-00100.jpg', check['next_step'])
+
+
 class RenderTests(unittest.TestCase):
     """_cmd_doctor renders data['lines'] verbatim and returns the exit code."""
 

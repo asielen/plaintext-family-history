@@ -2560,6 +2560,28 @@ class SourcePortraitTests(_Base):
         self.assertIn('second.jpg', block)
         self.assertNotIn('first.jpg', block)
 
+    def test_portrait_is_the_records_own_main_image(self):
+        # #210 review: after `fha source set-primary` repairs a bug-era record
+        # its back is still listed first, so "first image" kept showing the
+        # back. The entry the record marks `role: primary` wins.
+        self._seed_source('s-1111111111', 'Farm', source_type='photo')
+        for name in ('farm-back.jpg', 'farm.jpg'):
+            img = self.archive_root / 'photos' / '1950' / name
+            img.parent.mkdir(parents=True, exist_ok=True)
+            img.write_bytes(b'not-a-real-image-but-exists')
+        self.conn.execute(
+            'INSERT INTO source_files(source_id, path, role) VALUES (?,?,?)',
+            ('s-1111111111', 'photos/1950/farm-back.jpg', 'back'))
+        self.conn.execute(
+            'INSERT INTO source_files(source_id, path, role) VALUES (?,?,?)',
+            ('s-1111111111', 'photos/1950/farm.jpg', 'primary'))
+        self._run(linked=True)
+        html = self._read('sources/s-1111111111.html')
+        start = html.index('class="source-portrait"')
+        block = html[start:start + 400]
+        self.assertIn('farm.jpg', block)
+        self.assertNotIn('farm-back.jpg', block)
+
     def test_portrait_falls_back_to_first_image_without_front_role(self):
         self._seed_source('s-1111111111', 'Multi Image', source_type='photo')
         for name in ('first.jpg', 'second.jpg'):

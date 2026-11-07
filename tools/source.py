@@ -6,6 +6,7 @@ source.py - fha source: deterministic source-record write-backs (TOOLING §3c si
   fha source edit-note S-id --old-text TEXT --text TEXT [--dry-run] [--root PATH]
   fha source extract S-id [--pages RANGES] [--dry-run] [--root PATH]
   fha source clear-keyword S-id --keyword TEXT [--replace-with TEXT] [--file NAME] [--dry-run] [--root PATH]
+  fha source set-primary S-id --file NAME [--dry-run] [--root PATH]
 
 A source's `## Notes` section is the human-written free-text channel SPEC §14
 reserves for "the story behind it, context, or where the original is kept" -
@@ -16,12 +17,14 @@ phone, on the porch, mid-research-session, and the tool finds the record,
 appends the sentence as its own paragraph, and touches nothing else.
 
 This module deliberately opens the `fha source` namespace - future
-source-field verbs would live here. Four verbs ship now: `note` (append),
+source-field verbs would live here. Five verbs ship now: `note` (append),
 `edit-note` (rewrite one existing paragraph - the workbench's per-entry edit
 button; see run_source_edit_note), `extract` (dump a PDF's embedded text
 layer into a derived [Page N]-labeled companion - see run_source_extract),
-and `clear-keyword` (#112: correct a documents-root asset's embedded
-Keywords/Subject value - see run_source_clear_keyword).
+`clear-keyword` (#112: correct a documents-root asset's embedded
+Keywords/Subject value - see run_source_clear_keyword), and `set-primary`
+(#200: make a photo's front, not its back, the record's main image - see
+run_source_set_primary).
 
 DESIGN RULES (why the code looks the way it does)
 -------------------------------------------------
@@ -106,6 +109,14 @@ DESIGN RULES (why the code looks the way it does)
   code alone - a race between the pre-write read and the write itself (e.g.
   something else touching the same file) can otherwise leave exiftool
   reporting success while nothing really changed.
+- **`set-primary` edits a record's frontmatter, but only its `files:` list
+  (#200).** The body-only rule above is for the note verbs. set-primary moves
+  `is_primary: true` / `role: primary` from one entry to another, one
+  `key: value` line at a time, and lets the YAML parse referee the result:
+  the rewritten frontmatter must parse to exactly the planned list, with
+  every other field and everything below the frontmatter unchanged, or
+  nothing is written. A photo is never touched (it is a record fix, not an
+  embedded-metadata write).
 - **`SOURCE:` is not an ordinary keyword, and case-only corrections must not
   vanish (PR #147 review).** `clear-keyword` refuses a `--keyword`/
   `--replace-with` value matching the SPEC §20 rule 3 SOURCE: shape - that
@@ -135,14 +146,19 @@ CODE MAP
                                 one exiftool call, through OriginalBackup
   run_source_clear_keyword    - #112: clear/correct one documents-root asset
                                 keyword; returns a _lib.Result
+  _files_block_items          - #200: each files: entry's lines, for text surgery
+  _set_entry_key              - set one key line of one files: entry in place
+  run_source_set_primary      - #200: move is_primary/role: primary to the named
+                                photo; returns a _lib.Result
   _emit / _cmd_source_note / _cmd_source_edit_note / _cmd_source_extract /
-  _cmd_source_clear_keyword / _make_group_help
+  _cmd_source_clear_keyword / _cmd_source_set_primary / _make_group_help
   register / _standalone_main
 """
 
 from __future__ import annotations
 
 import argparse
+import copy
 import difflib
 import json
 import re
@@ -169,6 +185,7 @@ from _lib import (
     fmt_id_display,
     format_exiftool_error,
     FRONT_RE,
+    frontmatter_edit_problem,
     frontmatter_fence_span,
     id_type_of,
     is_valid_id,
@@ -176,6 +193,9 @@ from _lib import (
     load_fha_yaml,
     normalize_id,
     OriginalBackup,
+    parse_frontmatter_strict,
+    PHOTO_EXTENSIONS,
+    parse_media_filename,
     pip_command,
     read_record,
     read_text_exact,
@@ -185,6 +205,7 @@ from _lib import (
     resolve_root_arg,
     Result,
     result_fail,
+    variant_role,
     write_text_exact_atomic,
     yaml_inline,)
 
@@ -1016,6 +1037,601 @@ def run_source_clear_keyword(
     return result
 
 
+# ── fha source set-primary (#200) ────────────────────────────────────────────
+#
+# A record's `files:` list is edited as text, one `key: value` line at a time,
+# so everything the edit does not mean to touch (comments, key order, quoting,
+# CRLF endings, the ## Claims block) stays byte for byte. The YAML parse is the
+# referee: the edit is planned from the parsed list, and the rewritten text
+# must parse back to exactly that plan before anything is written.
+
+# `files:` at column zero; the rest of the line decides block vs inline form.
+_FILES_KEY_RE = re.compile(r'^files:(?P<rest>.*)$')
+# One list item's first line: `  - file: x` (or a bare `-` with its keys below).
+_ITEM_START_RE = re.compile(r'^(?P<indent> *)-(?P<gap> +|$)(?P<body>.*)$')
+# A `key:` at the start of an item's own key column.
+_ITEM_KEY_RE = re.compile(r'^(?P<key>[A-Za-z_][A-Za-z0-9_-]*):(?: |$)')
+# The order `fha process` writes an entry's keys in (_render_scaffold_file_entry);
+# a key this verb has to ADD goes after the nearest one before it here.
+_ENTRY_KEY_ORDER = ('file', 'role', 'copy', 'is_primary')
+
+
+def _is_true(value) -> bool:
+    """`is_primary` as a human or a tool might have written it.
+
+    `fha process` writes `true`; a hand edit may say `yes`, `True` or `"true"`,
+    and `read_record` hands every boolean back as the string 'true'. The same
+    spellings process.py's bundle hints accept."""
+    return value is True or str(value).strip().lower() in ('true', 'yes', '1')
+
+
+def _entry_alias(entry) -> str | None:
+    """The alias path one `files:` item names, slash-normalized, or None."""
+    if isinstance(entry, dict) and entry.get('file'):
+        return str(entry['file']).replace('\\', '/')
+    if isinstance(entry, str) and entry.strip():
+        return entry.strip().replace('\\', '/')
+    return None
+
+
+def _first_problem(problems: list) -> str:
+    """The first `read_record` parse problem, in words (they are (code, text) pairs)."""
+    first = problems[0]
+    return str(first[1] if isinstance(first, (list, tuple)) and len(first) > 1 else first)
+
+
+def _is_image_alias(alias: str | None) -> bool:
+    """True for a photos-root alias whose file is an image the photo catalog
+    keeps. A metadata companion such as `x-00100.xmp` sits in the photos root
+    too, and must never be made a photo's main image (#210 review)."""
+    return _is_photos_alias(alias) and PurePosixPath(str(alias)).suffix.lower() in PHOTO_EXTENSIONS
+
+
+def _is_photos_alias(alias: str | None) -> bool:
+    """True for a photos-root alias (`photos/1950/x.tif`). Aliases are written
+    with the root's NAME, never its on-disk location (SPEC §12.1), so this is a
+    text test - no fha.yaml needed."""
+    return bool(alias) and alias.split('/', 1)[0].lower() == 'photos'
+
+
+def _what_the_file_is(parsed) -> str:
+    """A plain description of a non-main scan, for messages: 'the back'."""
+    if parsed.part_kind == 'back':
+        return 'the back of the photo'
+    if parsed.part_kind == 'negative':
+        return 'the negative'
+    if parsed.part_kind == 'page':
+        return f'page {parsed.page_num}'
+    if parsed.variant_id:
+        return f'print {parsed.variant_id.upper()} (a second copy)'
+    if parsed.is_crop:
+        return 'a cropped copy'
+    if parsed.part_kind == 'bw':
+        return 'a black-and-white copy'
+    return 'another scan of the photo'
+
+
+def _files_block_items(lines: list[str]) -> tuple[list[dict] | None, str | None]:
+    """Find each `files:` list item's lines in a record's frontmatter.
+
+    Returns (items, None) or (None, a plain reason the list cannot be edited
+    as text). Each item is {'start', 'end', 'col', 'keys'}: its first line,
+    the line after its last, the column its keys start at, and {key: (first
+    line, last line)} for each of its own keys - the last line takes in a
+    value that runs onto deeper-indented lines below it.
+
+    Only the block form `fha process` writes is handled. The one-line form
+    (`files: [...]`) and an item written as `- {file: x, role: y}` are reported
+    rather than rewritten: normalizing them would change lines this verb has
+    no business touching. `lines` come from `text.split('\\n')`, so a CRLF
+    record's lines still carry their '\\r'.
+    """
+    span = frontmatter_fence_span(lines)
+    if span is None:
+        return None, 'its frontmatter (the block between the --- lines at the top) could not be found'
+    open_idx, close_idx = span
+    key_rows = [i for i in range(open_idx + 1, close_idx)
+                if _FILES_KEY_RE.match(lines[i].rstrip('\r'))]
+    if not key_rows:
+        return None, 'it has no files: list'
+    if len(key_rows) > 1:
+        return None, 'it has more than one files: line'
+    files_row = key_rows[0]
+    rest = _FILES_KEY_RE.match(lines[files_row].rstrip('\r')).group('rest').strip()
+    if rest and not rest.startswith('#'):
+        return None, 'its files: list is written on one line (files: [...])'
+
+    # The block runs until the next top-level key. A `- ` at column zero is
+    # still a list item (YAML allows `files:` followed by unindented dashes).
+    block_end = close_idx
+    for j in range(files_row + 1, close_idx):
+        ln = lines[j].rstrip('\r')
+        if ln and ln[0] not in ' -#':
+            block_end = j
+            break
+
+    starts: list[int] = []
+    list_indent: int | None = None
+    for j in range(files_row + 1, block_end):
+        m = _ITEM_START_RE.match(lines[j].rstrip('\r'))
+        if not m:
+            continue
+        indent = len(m.group('indent'))
+        if list_indent is None:
+            list_indent = indent       # the first dash is the first item
+        if indent == list_indent:
+            starts.append(j)           # a deeper dash is a nested list, not an item
+
+    items: list[dict] = []
+    for n, start in enumerate(starts):
+        end = starts[n + 1] if n + 1 < len(starts) else block_end
+        m = _ITEM_START_RE.match(lines[start].rstrip('\r'))
+        body = m.group('body')
+        if body.startswith('{'):
+            return None, 'one of its files: entries is written on one line ({file: ..., role: ...})'
+        if body:
+            col = len(m.group('indent')) + 1 + len(m.group('gap'))
+        else:
+            col = next((len(ln) - len(ln.lstrip(' '))
+                        for ln in (x.rstrip('\r') for x in lines[start + 1:end])
+                        if ln.strip()), len(m.group('indent')) + 2)
+        key_rows_in_item: list[tuple[str, int]] = []
+        for j in range(start, end):
+            ln = lines[j].rstrip('\r')
+            if j == start:
+                segment = body
+            elif len(ln) - len(ln.lstrip(' ')) == col:
+                segment = ln[col:]
+            else:
+                continue
+            km = _ITEM_KEY_RE.match(segment)
+            if km:
+                key_rows_in_item.append((km.group('key'), j))
+        keys: dict[str, tuple[int, int]] = {}
+        for k, (name, row) in enumerate(key_rows_in_item):
+            stop = key_rows_in_item[k + 1][1] if k + 1 < len(key_rows_in_item) else end
+            last = row
+            for t in range(row + 1, stop):
+                ln = lines[t].rstrip('\r')
+                if (ln.strip() and not ln.lstrip().startswith('#')
+                        and len(ln) - len(ln.lstrip(' ')) > col):
+                    last = t
+            keys.setdefault(name, (row, last))
+        items.append({'start': start, 'end': end, 'col': col, 'keys': keys})
+    return items, None
+
+
+def _trailing_comment(line: str) -> str:
+    """The `# comment` (with the spaces before it) ending a `key: value`
+    line, or ''. A '#' inside a quoted value is not a comment, and neither is
+    one with no space before it (YAML requires the space)."""
+    text = line.rstrip('\r\n')
+    colon = text.find(':')
+    if colon < 0:
+        return ''
+    rest = text[colon + 1:]
+    quote = None
+    for k, ch in enumerate(rest):
+        if quote:
+            if ch == quote:
+                quote = None
+        elif ch in '\'"' and not rest[:k].strip():
+            quote = ch
+        elif ch == '#' and k and rest[k - 1] in ' \t':
+            start = k
+            while start and rest[start - 1] in ' \t':
+                start -= 1
+            return rest[start:]
+    return ''
+
+
+def _frontmatter_comments(lines: list[str]) -> list[str]:
+    """Every comment in a record's frontmatter, as text, so an edit can
+    prove it kept them all (#210 review: a handwritten note on a changed line
+    was silently dropped, and the YAML comparison cannot see comments)."""
+    span = frontmatter_fence_span(lines)
+    if span is None:
+        return []
+    out = []
+    for line in lines[span[0] + 1:span[1]]:
+        stripped = line.strip()
+        if stripped.startswith('#'):
+            out.append(stripped)
+        else:
+            comment = _trailing_comment(line).strip()
+            if comment:
+                out.append(comment)
+    return out
+
+
+def _set_entry_key(lines: list[str], item_no: int, key: str, value_text: str,
+                   cr: str) -> tuple[list[str] | None, str | None]:
+    """Set one key of one `files:` item to `value_text` (already YAML-quoted).
+
+    An existing key line is replaced in place, keeping its own indent (or its
+    `  - ` prefix on the item's first line). A missing key is added on a new
+    line after the nearest key before it in `_ENTRY_KEY_ORDER`, at the item's
+    key column. Re-scans the block each call, so several edits in a row never
+    work from stale line numbers. Returns (new lines, None) or (None, reason).
+
+    A handwritten `# comment` on the replaced line is kept (`role: primary  #
+    caption by Aunt May` becomes `role: back  # caption by Aunt May`). A value
+    running onto further lines that carry comments is refused rather than
+    guessed at (#210 review).
+    """
+    items, problem = _files_block_items(lines)
+    if problem:
+        return None, problem
+    item = items[item_no]
+    col = item['col']
+    out = list(lines)
+    if key in item['keys']:
+        row, last = item['keys'][key]
+        if any('#' in lines[r] for r in range(row + 1, last + 1)):
+            return None, (f'its {key}: value runs onto more lines with a note on them, '
+                          'and the note could not be kept safely')
+        comment = _trailing_comment(lines[row])
+        # The line's own ending, not the file's: one pasted CRLF line in
+        # Notes must not turn LF frontmatter lines into CRLF (#210 audit).
+        eol = '\r' if lines[row].endswith('\r') else ''
+        out[row:last + 1] = [lines[row][:col] + f'{key}: {value_text}' + comment + eol]
+        return out, None
+    if 'file' not in item['keys']:
+        return None, 'one of its files: entries has no file: line where expected'
+    earlier = _ENTRY_KEY_ORDER[:_ENTRY_KEY_ORDER.index(key)] if key in _ENTRY_KEY_ORDER else _ENTRY_KEY_ORDER
+    anchor = max(item['keys'][k][1] for k in earlier if k in item['keys'])
+    eol = '\r' if lines[anchor].endswith('\r') else ''
+    out[anchor + 1:anchor + 1] = [' ' * col + f'{key}: {value_text}' + eol]
+    return out, None
+
+
+def run_source_set_primary(
+    archive_root: Path, source_id: str, *, file: str, dry_run: bool = False,
+) -> Result:
+    """Make one photo the main image of a source record; return a Result.
+
+    #200: while the filename bug was live, `fha process` read the plain front
+    scan `Smith-Farm-01400.tif` as photo `Smith` with a made-up role
+    `farm-01400`, so when the human answered "one" for a front/back pair, the
+    record it wrote named the BACK as the main image (`is_primary: true`,
+    `role: primary`) and the front as a variant. The parser is fixed, and the
+    photo catalog now picks the front by itself - but a record already on disk
+    keeps saying the back until someone corrects it. `fha doctor` finds those
+    records; this verb is the fix it names, one record at a time, on the
+    human's say-so.
+
+    What changes, and only in that record's `files:` list:
+      - the named file's entry gets `is_primary: true` and `role: primary`;
+      - the entry that WAS the main image gets `is_primary: false` and the
+        role its own filename spells (`variant_role` - `back`, `negative`,
+        `page-2`, ...; `variant` when the name spells none), plus `copy: B`-
+        style letter when its name carries one and the entry has none.
+    Every other entry is left exactly as written. That is the chosen rule for
+    the made-up roles the bug left behind: the only one it ever wrote on a
+    real pair is the front's, and the front is one of the two entries this
+    verb rewrites anyway. Guessing at a third entry's role would be editing a
+    line nobody asked about.
+
+    Files are never renamed or touched (photos never are - AGENTS.md), and
+    the record's title and filename stay as they are: they were the human's
+    or the tool's choice of words, not a fact this verb knows to be wrong.
+
+    `--file` matches an entry by its full alias (`photos/1950/x.tif`) or its
+    bare filename, exactly first and then ignoring capitals. Refusals: an
+    invalid id, no `--file`, no match, more than one match, a match outside
+    the photos root, an entry written in a one-line form this text surgery
+    will not rewrite, a record where two or more files other than the named one already
+    claim to be the main image (`is_primary: true` or `role: primary`), a current main file that is not a photo, or any result that would
+    not leave exactly one `is_primary: true`. The rewritten text must parse
+    back to exactly the planned list, with every other frontmatter field and
+    the whole body unchanged, before it is written; after the write it is
+    re-read with `read_record`, and a record that does not read back as
+    planned is restored and the run refused.
+
+    `data`: {'status': 'ok'|'dry-run'|'already'|'not-found'|'refused',
+    'source_id', 'path', 'primary', 'previous'}. Exit codes: 0 ok/dry-run/
+    already, 1 record not found (with the `fha find` next step), 3 refusals.
+    """
+    result = Result(data={'status': None, 'source_id': None, 'path': None,
+                          'primary': None, 'previous': None})
+
+    def _refuse(status: str, message: str, *, next_step: str | None = None) -> Result:
+        return result_fail(result, status, message, next_step=next_step)
+
+    if not (is_valid_id(source_id) and id_type_of(source_id) == 'S'):
+        return _refuse(
+            'refused',
+            f'{source_id!r} is not a valid source ID. S-ids look like '
+            'S-2b3c4d5e6f - an S followed by a dash and 10 characters from '
+            'the archive alphabet.')
+    sid = normalize_id(source_id)
+    shown_id = fmt_id_display(sid)
+    result.data['source_id'] = shown_id
+
+    wanted = (file or '').strip().replace('\\', '/')
+    if not wanted:
+        return _refuse(
+            'refused',
+            f'No file was named for {shown_id}. Say which photo should be the '
+            f'main image, e.g. `fha source set-primary {shown_id} --file '
+            '"Smith-Farm-01400.tif"`.')
+
+    path = find_source_record_path(archive_root, sid)
+    if path is None:
+        return result_fail(
+            result, 'not-found',
+            f'No source record found for {shown_id} under '
+            f'{archive_root / "sources"} - check the id with `fha find {shown_id}`.',
+            exit_code=EXIT_WARNINGS, level='warning',
+            next_step='fha find ' + shown_id)
+    result.data['path'] = str(path)
+
+    try:
+        text_in = read_text_exact(path)
+    except OSError as e:
+        return _refuse(
+            'refused', f'cannot read {path}: {e}',
+            next_step='Check the file is not open in another program and try again.')
+    label = _source_label(text_in, sid)
+
+    before_meta = parse_frontmatter_strict(text_in)
+    if before_meta is None:
+        return _refuse(
+            'refused',
+            f'The details at the top of {path.name} could not be read, so its '
+            'file list cannot be changed safely. Run `fha lint` to see what is '
+            'wrong there, fix it, then try again. Nothing was written.',
+            next_step='fha lint')
+    # A record already broken below its frontmatter (an unclosed quote in a
+    # claim, say) cannot pass the post-write check, so the real run would
+    # refuse and restore it. Refuse now, so a --dry-run never promises a
+    # fix the real run cannot make (#210 review).
+    existing = read_record(path)
+    if existing.get('parse_errors'):
+        return _refuse(
+            'refused',
+            f'{path.name} already has a problem elsewhere in it '
+            f'({_first_problem(existing["parse_errors"])}), so its file list will not be '
+            'changed until that is fixed. Run `fha lint` to see it, fix it, '
+            'then try again. Nothing was written.',
+            next_step='fha lint')
+    entries = before_meta.get('files')
+    if not isinstance(entries, list) or not entries:
+        return _refuse(
+            'refused',
+            f'{label} lists no files, so there is no main image to choose. '
+            f'Run `fha find {shown_id}` to see what it holds.')
+    aliases = [_entry_alias(e) for e in entries]
+
+    def _matches(fold: bool) -> list[int]:
+        target = wanted.casefold() if fold else wanted
+        hits = []
+        for i, alias in enumerate(aliases):
+            if alias is None:
+                continue
+            names = (alias, PurePosixPath(alias).name)
+            if target in ((n.casefold() for n in names) if fold else names):
+                hits.append(i)
+        return hits
+
+    photo_names = [PurePosixPath(a).name for a in aliases if _is_photos_alias(a)]
+    hits = _matches(False) or _matches(True)
+    if not hits:
+        listed = ', '.join(photo_names) if photo_names else 'none'
+        return _refuse(
+            'refused',
+            f'--file {file!r} does not match any file listed on {label}. '
+            f'The photos it lists: {listed}. Name one of those, e.g. '
+            f'`fha source set-primary {shown_id} --file '
+            f'"{photo_names[0] if photo_names else "front-scan.tif"}"`. '
+            'Nothing was written.')
+    if len(hits) > 1:
+        shown = ', '.join(aliases[i] for i in hits)
+        return _refuse(
+            'refused',
+            f'--file {file!r} matches more than one file listed on {label} '
+            f'({shown}). Name the one you mean by its full path, e.g. '
+            f'`--file "{aliases[hits[0]]}"`. Nothing was written.')
+    target_i = hits[0]
+    target_alias = aliases[target_i]
+    target_name = PurePosixPath(target_alias).name
+    if _is_photos_alias(target_alias) and not _is_image_alias(target_alias):
+        return _refuse(
+            'refused',
+            f'{target_alias} is not an image (it is a {PurePosixPath(target_alias).suffix} '
+            'file), so it cannot be the main image of a photo. Nothing was written.')
+    if not _is_photos_alias(target_alias):
+        return _refuse(
+            'refused',
+            f'{target_alias} is not in the photos folder. set-primary only '
+            'chooses which photo scan is the main image of a photo source; '
+            "a document's main file is set when `fha process` files it. "
+            'Nothing was written.')
+    target_entry = entries[target_i]
+    if not isinstance(target_entry, dict):
+        return _refuse(
+            'refused',
+            f'{target_alias} is listed on {label} in a short form (just the '
+            'path, with no role: line), so this tool will not rewrite it. '
+            f'Open {path} and write it as `- file: {target_alias}` with a '
+            '`role:` line under it, then try again. Nothing was written.')
+
+    # The entry that is the main image now: marked `is_primary: true`, or,
+    # in a hand-made record, only `role: primary`. Missing the role-only
+    # shape left two `role: primary` entries, and the source page shows the
+    # first of them (#210 review).
+    previous = [i for i, e in enumerate(entries)
+                if i != target_i and isinstance(e, dict)
+                and (_is_true(e.get('is_primary'))
+                     or str(e.get('role') or '').strip().lower() == 'primary')]
+    if len(previous) > 1:
+        shown = ', '.join(aliases[i] for i in previous)
+        return _refuse(
+            'refused',
+            f'{label} already marks more than one file as its main image '
+            f'({shown}), so this tool cannot tell which one to step down. Open '
+            f'{path}, leave `is_primary: true` and `role: primary` on just one file, run `fha lint`, '
+            'then try again. Nothing was written.')
+    prev_i = previous[0] if previous else None
+    if prev_i is None and _is_true(target_entry.get('is_primary')) \
+            and str(target_entry.get('role') or '').strip() == 'primary':
+        result.data['status'] = 'already'
+        result.data['primary'] = target_alias
+        result.add('info', f'{target_name} is already the main image of {label}. '
+                           'Nothing to change.')
+        return result
+    if prev_i is not None and not _is_image_alias(aliases[prev_i]):
+        return _refuse(
+            'refused',
+            f'The main file of {label} is {aliases[prev_i]}, which is not a '
+            'photo, so this tool will not replace it with a photo. If that is '
+            f'really what you want, change the is_primary: lines in {path} by '
+            'hand, then run `fha lint`. Nothing was written.')
+
+    # The plan: what the parsed list must read after the edit, and the
+    # line edits that get it there. An edit whose value is already in place
+    # is skipped, so a line that is already right is never rewritten.
+    planned = copy.deepcopy(entries)
+    edits: list[tuple[int, str, str]] = []
+
+    def _plan(i: int, key: str, value, value_text: str) -> None:
+        if entries[i].get(key) == value:
+            return
+        planned[i][key] = value
+        edits.append((i, key, value_text))
+
+    _plan(target_i, 'role', 'primary', 'primary')
+    _plan(target_i, 'is_primary', True, 'true')
+    prev_role = prev_copy = None
+    if prev_i is not None:
+        parsed = parse_media_filename(PurePosixPath(aliases[prev_i]).stem)
+        prev_role = variant_role(parsed) or 'variant'
+        _plan(prev_i, 'role', prev_role, yaml_inline(prev_role))
+        _plan(prev_i, 'is_primary', False, 'false')
+        # A negative's letter is not a print letter (TOOLING §9) - the same
+        # rule `fha process` follows when it writes copy:.
+        letter = None if parsed.part_kind == 'negative' else parsed.variant_id
+        if letter and not entries[prev_i].get('copy'):
+            prev_copy = letter
+            _plan(prev_i, 'copy', letter, yaml_inline(letter))
+
+    n_primary = sum(1 for e in planned if isinstance(e, dict) and _is_true(e.get('is_primary')))
+    if n_primary != 1:
+        return _refuse(
+            'refused',
+            f'Changing {label} this way would leave {n_primary} files marked as '
+            'the main image instead of exactly one, so nothing was written. '
+            f'Open {path} and check the is_primary: lines, then run `fha lint`.')
+
+    lines = text_in.split('\n')
+    cr = '\r' if '\r\n' in text_in else ''
+    hand_fix = (f'Open {path} and make the change by hand (is_primary: true and '
+                f'role: primary on {target_name}), then run `fha lint`. '
+                'Nothing was written.')
+    items, problem = _files_block_items(lines)
+    if problem is None and len(items) != len(entries):
+        problem = 'its files: list could not be lined up entry by entry'
+    if problem:
+        return _refuse('refused', f'{path.name} cannot be edited safely: {problem}. {hand_fix}')
+    for item_no, key, value_text in edits:
+        lines, problem = _set_entry_key(lines, item_no, key, value_text, cr)
+        if problem:
+            return _refuse('refused', f'{path.name} cannot be edited safely: {problem}. {hand_fix}')
+    new_text = '\n'.join(lines)
+
+    # The referee. The rewritten frontmatter must parse to exactly the plan,
+    # every other field must be untouched, and so must everything below the
+    # frontmatter (## Claims, ## Notes, ...).
+    after_meta = parse_frontmatter_strict(new_text)
+    old_span = frontmatter_fence_span(text_in.split('\n'))
+    new_span = frontmatter_fence_span(lines)
+    if (after_meta is None or after_meta.get('files') != planned
+            or frontmatter_edit_problem(new_text, before_meta=before_meta,
+                                        changed_keys={'files'}) is not None
+            or old_span is None or new_span is None
+            or text_in.split('\n')[old_span[1]:] != lines[new_span[1]:]
+            or _frontmatter_comments(text_in.split('\n')) != _frontmatter_comments(lines)):
+        return _refuse(
+            'refused',
+            f'{path.name} is laid out in a way this tool could not edit '
+            f'cleanly (the change did not read back as planned). {hand_fix}')
+
+    prev_name = PurePosixPath(aliases[prev_i]).name if prev_i is not None else None
+    result.data['primary'] = target_alias
+    result.data['previous'] = aliases[prev_i] if prev_i is not None else None
+
+    def _step_down(verb: str) -> str:
+        if prev_i is None:
+            return ''
+        parsed_prev = parse_media_filename(PurePosixPath(aliases[prev_i]).stem)
+        copy_note = f', copy: {prev_copy}' if prev_copy else ''
+        return (f'{prev_name} {verb} {_what_the_file_is(parsed_prev)} '
+                f'(role: {prev_role}{copy_note}).')
+
+    if dry_run:
+        result.data['status'] = 'dry-run'
+        result.add('info', f'[dry-run] Would make {target_name} the main image of {label}.')
+        if prev_i is not None:
+            result.add('info', '[dry-run] ' + _step_down('would be listed as'))
+        for dline in difflib.unified_diff(
+            text_in.splitlines(), new_text.splitlines(),
+            fromfile=f'{path} (before)', tofile=f'{path} (after)', lineterm='',
+        ):
+            result.add('info', dline)
+        result.add('info', '[dry-run] No file written. Re-run without --dry-run to apply.')
+        return result
+
+    try:
+        # Atomic: a source record is often the sole copy of its evidence, so a
+        # mid-write failure must leave it untouched, not truncated.
+        write_text_exact_atomic(path, reapply_newline(new_text, text_in))
+    except OSError as e:
+        return _refuse(
+            'refused',
+            f'cannot write {path}: {e}. Check the file is not open elsewhere '
+            'and the folder is writable, then retry.')
+
+    # Read it back the way every other tool will, and put the record back as
+    # it was if it does not say what was planned.
+    try:
+        reread = read_record(path)
+        files_back = (reread.get('meta') or {}).get('files') or []
+        sound = (
+            not reread.get('parse_errors')
+            and len(files_back) == len(planned)
+            and _is_true(files_back[target_i].get('is_primary'))
+            and str(files_back[target_i].get('role')) == 'primary'
+            and sum(1 for e in files_back
+                    if isinstance(e, dict) and _is_true(e.get('is_primary'))) == 1
+            and (prev_i is None or str(files_back[prev_i].get('role')) == prev_role))
+    except Exception:
+        sound = False
+    if not sound:
+        try:
+            write_text_exact_atomic(path, text_in)
+            restored = 'It was put back exactly as it was.'
+        except OSError as e:
+            restored = (f'Putting it back failed too ({e}) - restore it from your '
+                        'backup or git before doing anything else.')
+        return _refuse(
+            'refused',
+            f'{path.name} did not read back as planned after the change. '
+            f'{restored} Run `fha lint` to look for the cause.',
+            next_step='fha lint')
+
+    result.data['status'] = 'ok'
+    result.note_changed(path)
+    result.add('info', f'{target_name} is now the main image of {label}.', path=path)
+    if prev_i is not None:
+        result.add('info', _step_down('is now listed as'))
+    result.add('info', 'No photo was renamed or changed - only the record\'s file list.')
+    result.add('info',
+               'Next: run `fha index` when convenient so search and the '
+               'workbench show the change.',
+               next_step='fha index')
+    return result
+
+
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 def _emit(result: Result) -> int:
@@ -1134,6 +1750,51 @@ def _add_clear_keyword_arguments(sub: argparse._SubParsersAction) -> None:
     ck.add_argument('--dry-run', action='store_true', dest='dry_run',
                     help='Preview the change without writing.')
     ck.set_defaults(func=_cmd_source_clear_keyword)
+
+
+def _cmd_source_set_primary(args: argparse.Namespace) -> int:
+    archive_root = resolve_root_arg(args, command='fha source set-primary')
+    if archive_root is None:
+        return EXIT_FAILURE
+    # No fha.yaml load: the edit is to the record's own text, and a photos-root
+    # alias is recognized by its root NAME ('photos/...'), never by where that
+    # root lives on disk.
+    return _emit(run_source_set_primary(
+        archive_root, source_id=args.source_id, file=args.file,
+        dry_run=bool(getattr(args, 'dry_run', False))))
+
+
+_SET_PRIMARY_DESCRIPTION = """Choose which photo is the main image of a source - its front, not its back.
+
+  fha source set-primary S-2b3c4d5e6f --file "Smith-Farm-01400.tif" --dry-run
+  fha source set-primary S-2b3c4d5e6f --file "Smith-Farm-01400.tif"
+
+Changes only the source record's files: list: the named photo becomes the
+main image (is_primary: true, role: primary), and the photo that was the main
+image is listed by what its name says it is (role: back, say). No photo is
+renamed or touched, and the record's title and filename stay as they are.
+`fha doctor` names the records that need this (#200: an older `fha process`
+could make a photo's back its main image). Preview first with --dry-run."""
+
+
+def _add_set_primary_arguments(sub: argparse._SubParsersAction) -> None:
+    """Register the set-primary verb on a group subparser (shared by both mains)."""
+    sp = sub.add_parser(
+        'set-primary',
+        help="Choose which photo is a source's main image (e.g. its front, not its back).",
+        description=_SET_PRIMARY_DESCRIPTION,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    sp.add_argument('source_id', metavar='S-id',
+                    help='The source whose main image to change (e.g. S-2b3c4d5e6f).')
+    sp.add_argument('--file', metavar='NAME', required=True,
+                    help='The photo to make the main image: its filename, or its '
+                         'full files: path when two photos share a name.')
+    sp.add_argument('--root', metavar='PATH', default=argparse.SUPPRESS,
+                    help='Archive root (auto-detected if omitted).')
+    sp.add_argument('--dry-run', action='store_true', dest='dry_run',
+                    help='Preview the change without writing.')
+    sp.set_defaults(func=_cmd_source_set_primary)
 
 
 def _cmd_source_note(args: argparse.Namespace) -> int:
@@ -1595,6 +2256,7 @@ Update a source record directly - the deterministic source-field write-backs.
   fha source edit-note S-2b3c4d5e6f --old-text "..." --text "..."
   fha source extract S-2b3c4d5e6f [--pages 1-60]
   fha source clear-keyword S-2b3c4d5e6f --keyword "..." [--replace-with "..."]
+  fha source set-primary S-2b3c4d5e6f --file "front-scan.tif"
 
 note appends a hand-written paragraph to a source's ## Notes section;
 edit-note rewrites one existing paragraph there (named by its exact current
@@ -1602,7 +2264,8 @@ text) and leaves the rest untouched; extract dumps the source PDF's embedded
 text layer into a derived [Page N]-labeled companion file (needs the pypdf
 helper package); clear-keyword removes (or corrects) one embedded keyword on
 a documents-root file, the tool-mediated fix for a stray tag `fha lint
---with-exif` (W131) finds."""
+--with-exif` (W131) finds; set-primary chooses which photo is a source's main
+image (its front, not its back - the fix `fha doctor` names)."""
 
 _NOTE_DESCRIPTION = """\
 Add a note to a source - appended to the end of its ## Notes section.
@@ -1672,7 +2335,8 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
     p = subs.add_parser(
         'source',
         help='Source-record write-backs: note (append), edit-note (rewrite one), '
-             'extract (PDF text layer), clear-keyword (fix a stray keyword)',
+             'extract (PDF text layer), clear-keyword (fix a stray keyword), '
+             'set-primary (choose the main image)',
         description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -1682,6 +2346,7 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
     _add_edit_note_arguments(sub)
     _add_extract_arguments(sub)
     _add_clear_keyword_arguments(sub)
+    _add_set_primary_arguments(sub)
     p.set_defaults(func=_make_group_help(p))
     return p
 
@@ -1698,6 +2363,7 @@ def _standalone_main(argv: list[str] | None = None) -> int:
     _add_edit_note_arguments(sub)
     _add_extract_arguments(sub)
     _add_clear_keyword_arguments(sub)
+    _add_set_primary_arguments(sub)
     parser.set_defaults(func=_make_group_help(parser))
     args = parser.parse_args(argv)
     return args.func(args) or 0

@@ -427,14 +427,14 @@
     {
       "path": ".fha/tools/README.md",
       "category": "operating",
-      "sha256": "a29ede5f30c8c28ec8db99375b7830a350ed5607ca5c1880f3991373ea8416a5",
+      "sha256": "1e47739b377e604d28a6b07ede87db9ba3c097c02dd0d9282968e9848b93f29e",
       "spec_version": "1.2",
       "src": "tools/README.md"
     },
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "097f0707381d04dfe3c8e2f5dc7d4f0ecc63186b8f728a3faba287626b8664ef",
+      "sha256": "d95e3831cec520d02088ff752b730e43fca543c5a2a3e85cf1c21ddf524cb3d3",
       "spec_version": "1.2",
       "src": "tools/_lib.py"
     },
@@ -525,7 +525,7 @@
     {
       "path": ".fha/tools/doctor.py",
       "category": "operating",
-      "sha256": "b90adaf3c57c406a9637d01634047eb449d07c536fbcf6e342ca129a089cf631",
+      "sha256": "59f50b499e78bdda36c94a4d7cc7c24df66a60084a3ea1fb251ea18725bc0d68",
       "spec_version": "1.2",
       "src": "tools/doctor.py"
     },
@@ -679,14 +679,14 @@
     {
       "path": ".fha/tools/site.py",
       "category": "operating",
-      "sha256": "647dc8eb37be5cb5a04313519a5e866878b5c3569601dc9c1e9e7e526e38d99d",
+      "sha256": "ea6f6dcf4ec601bc548679845d3252a5b7e507e6c108f833c43810095b1c5fac",
       "spec_version": "1.2",
       "src": "tools/site.py"
     },
     {
       "path": ".fha/tools/source.py",
       "category": "operating",
-      "sha256": "2c3c07e92f505048b239948cd1b8aab46d80978de4d0acc94201654be57cceb7",
+      "sha256": "e5770f26ed9be3df9dff24437cbac9623e57a3d708584c10f5908cd0dd97e6b8",
       "spec_version": "1.2",
       "src": "tools/source.py"
     },
@@ -875,7 +875,7 @@
     {
       "path": "AGENTS.md",
       "category": "operating",
-      "sha256": "d8cf0d19b29a4bd99548af8afd008854b0eaa24713a10cb026d82afcef374f23",
+      "sha256": "a1a4a1df1e365a28b238237f8479d6a8a7b39c16169fbdced118091937cb8168",
       "spec_version": "1.2"
     },
     {
@@ -905,7 +905,7 @@
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "c665560e197b5a4dfc6b61a7fdc17e9ca61991f33e387c537df47bf2d2bab2d9",
+      "sha256": "72fd5164c70b83f8703affde1579153c7e4180d444db628106ad6fe3a05a4b2c",
       "spec_version": "1.2"
     },
     {
