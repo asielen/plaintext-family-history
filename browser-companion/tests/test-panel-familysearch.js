@@ -25,7 +25,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const { openPanel, settle } = require('./panel-harness.js');
+const { openPanel, settle, tick, holdFirst } = require('./panel-harness.js');
 const fsr = require('../src/lib/familysearch-record.js');
 
 const FIX = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'tests', 'fixtures',
@@ -116,8 +116,8 @@ function site(service) {
       }
       case 'familysearchImage':
         return fsr.fsImage(msg.imageId || fsr.fsImageIdFromHref(tab.url), deps);
-      case 'pagehtml': return { ok: true, html: '<html>FamilySearch page</html>' };
-      case 'singlefile': return { ok: true, html: '<html>copy</html>' };
+      case 'pagehtml': return { ok: true, html: '<html>FamilySearch page ' + tab.url + '</html>' };
+      case 'singlefile': return { ok: true, html: '<html>copy of ' + tab.url + '</html>' };
       default: return { ok: false, error: 'unexpected ' + msg.action };
     }
   };
@@ -125,7 +125,8 @@ function site(service) {
 
 async function open(url, opts = {}) {
   const service = opts.service || familysearch(opts.over);
-  const p = await openPanel({ url, respond: site(service), seenIt: opts.seenIt });
+  const respond = opts.wrap ? opts.wrap(site(service)) : site(service);
+  const p = await openPanel({ url, respond, seenIt: opts.seenIt });
   p.service = service;
   return p;
 }
@@ -364,4 +365,66 @@ test('a restricted bare image says so up front, and Capture keeps the page copy 
   await p.capture();
   assert.deepStrictEqual(p.files(p.written[0]), ['page-snapshot.html']);
   assert.match(p.result(), /restricted to a FamilySearch center or affiliate library/);
+});
+
+// ── PR #214 review: the tab moves mid-capture; a recapture ──────────────────
+
+async function untilHeld(h) {
+  for (let i = 0; i < 200 && !h.held; i++) await tick();
+  assert.ok(h.held, 'the held request was never made');
+}
+
+test('moving to the next record while the image downloads: the bundle is all the record captured (Codex 4500422485)', async () => {
+  let hold = null;
+  const p = await open(CALVIN, { wrap: (r) => { hold = holdFirst(r, 'familysearchImage'); return hold.respond; } });
+  const pending = p.capture();
+  await untilHeld(hold);
+  await p.navigate(ETHEL);              // she clicks on while the image comes down
+  hold.release();
+  await pending;
+  await settle();
+  assert.strictEqual(p.written.length, 1, p.result());
+  const b = p.written[0];
+  assert.strictEqual(b.captureJson.url, CALVIN);
+  assert.match(await asset(b, 'page-snapshot.html').blob.text(), /HRT1-CEN1/);
+  assert.doesNotMatch(await asset(b, 'page-snapshot.html').blob.text(), /HRT1-DTH1/);
+  assert.match(b.pageHtml, /HRT1-CEN1/);
+  assert.strictEqual((await recordData(b)).record.fsId, 'HRT1-CEN1');
+  assert.ok(p.files(b).includes('record.jpg'));
+});
+
+test('moving to another record while it is being read: nothing is saved, and the panel reads the new one', async () => {
+  let hold = null;
+  const p = await open(CALVIN, { wrap: (r) => { hold = holdFirst(r, 'familysearchRecordInfo'); return hold.respond; } });
+  const pending = p.capture();
+  await untilHeld(hold);
+  await p.navigate(ETHEL);
+  hold.release();
+  await pending;
+  await settle();
+  assert.strictEqual(p.written.length, 0, 'never Calvin\'s form with Ethel\'s record');
+  assert.match(p.result(), /^Could not capture: the page in the tab changed while this record was being saved, so nothing was saved/);
+  assert.strictEqual(p.$('f-title').value, 'Ethel Hartley - California Death Index, 1940-1997', 'the form now describes the new page');
+});
+
+test('a recapture of the same record keeps her corrections (Codex 4500422488)', async () => {
+  // The panel's own advice after a refused image: drop it in, press Capture again.
+  const p = await open(RESTRICTED);
+  p.$('f-title').value = 'Calvin Hartley, 1880, Fairview';
+  await p.$('f-title').fire('input');
+  p.$('f-date').value = '1880-06';
+  await p.$('f-date').fire('input');
+  await p.capture();
+  assert.strictEqual(p.written[0].captureJson.title, 'Calvin Hartley, 1880, Fairview');
+  const file = Object.assign(new Blob(['scan'], { type: 'image/jpeg' }), { name: 'calvin-1880.jpg' });
+  p.$('dropzone').listeners.drop[0]({ preventDefault() {}, dataTransfer: { files: [file] } });
+  await p.capture();
+  assert.strictEqual(p.written.length, 2);
+  assert.strictEqual(p.written[1].captureJson.title, 'Calvin Hartley, 1880, Fairview');
+  assert.strictEqual(p.written[1].captureJson.source_date, '1880-06');
+  assert.ok(p.files(p.written[1]).includes('record.jpg'));
+  // A different record starts fresh.
+  await p.navigate(ETHEL);
+  await settle();
+  assert.strictEqual(p.$('f-title').value, 'Ethel Hartley - California Death Index, 1940-1997');
 });

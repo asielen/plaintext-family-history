@@ -22,7 +22,7 @@ const TOKEN = 'fs-session-SECRET-0000';
 
 // A page with nothing on it but what a test hands in: its address, its
 // cookie, the links it shows, and how the network answers.
-function loadPage({ url, cookie = '', links = [], fetch } = {}) {
+function loadPage({ url, cookie = '', links = [], fetch, canonical } = {}) {
   const listeners = [];
   const el = (tag) => ({ tagName: tag, textContent: '', innerText: '', getAttribute: () => null, closest: () => null });
   const document = {
@@ -33,7 +33,8 @@ function loadPage({ url, cookie = '', links = [], fetch } = {}) {
     documentElement: { outerHTML: '<html></html>', cloneNode: () => ({ querySelectorAll: () => [], outerHTML: '<html></html>' }) },
     scripts: [],
     images: [],
-    querySelector: () => null,
+    querySelector: (sel) => (canonical && /canonical|og:url/.test(sel)
+      ? { getAttribute: (a) => (a === 'href' ? canonical : null) } : null),
     querySelectorAll: (sel) => (/3:1:/.test(sel) ? links : []),
     getElementById: () => null,
   };
@@ -162,4 +163,50 @@ test('signed out: no session is sent, and the refusal says to sign in', async ()
   const info = await page.ask({ action: 'familysearchRecordInfo' });
   assert.strictEqual(page.calls[0].auth, false);
   assert.match(info.error, /asked you to sign in \(HTTP 403\)/);
+});
+
+// ── PR #214 review ───────────────────────────────────────────────────────────
+
+const oneLink = (href) => [{ getAttribute: (a) => (a === 'href' ? href : null), closest: () => null }];
+
+test('a page elsewhere that links one FamilySearch image is not a FamilySearch viewer (Codex 4500422479)', async () => {
+  // A blog, a forum, a tree site: it keeps its own file, and nothing is asked of FamilySearch.
+  for (const url of ['https://blog.example.org/our-hartley-family', 'https://www.ancestry.com/boards/hartley/1']) {
+    const page = loadPage({ url, links: oneLink('https://www.familysearch.org/ark:/61903/3:1:HRT1-IMG1'), fetch: familysearch() });
+    const r = await page.ask({ action: 'prefill' });
+    assert.strictEqual(r.prefill.familysearchImageViewer, false, url);
+    assert.strictEqual(r.prefill.familysearchImageId, null, url);
+    assert.strictEqual(page.calls.length, 0, url);
+  }
+  // A FamilySearch page that is not a viewer (a search results page) is not one either.
+  const search = loadPage({ url: 'https://www.familysearch.org/search/record/results?q.surname=Hartley',
+    links: oneLink('/ark:/61903/3:1:HRT1-IMG1'), fetch: familysearch() });
+  assert.strictEqual((await search.ask({ action: 'prefill' })).prefill.familysearchImageViewer, false);
+  // The film viewer still finds its one image.
+  const film = loadPage({ url: 'https://www.familysearch.org/search/film/000000?i=3',
+    links: oneLink('/ark:/61903/3:1:HRT1-IMG1'), fetch: familysearch() });
+  assert.strictEqual((await film.ask({ action: 'prefill' })).prefill.familysearchImageId, 'HRT1-IMG1');
+});
+
+test('an unparseable canonical or og:url never fails the whole prefill (audit #7)', async () => {
+  const page = loadPage({ url: 'https://www.familysearch.org/search/film/000000?i=3',
+    canonical: 'https://[not a host/', links: oneLink('/ark:/61903/3:1:HRT1-IMG1'), fetch: familysearch() });
+  const r = await page.ask({ action: 'prefill' });
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(r.prefill.familysearchImageId, 'HRT1-IMG1');
+});
+
+test('an image request is never sent from a tab that has left the site (#214 sweep)', async () => {
+  // A capture whose tab moved off FamilySearch (or Ancestry) mid-way asks the
+  // content script there for the image: it refuses, and nothing goes to that host.
+  let page = loadPage({ url: 'https://blog.example.org/x', cookie: 'fssessionid=' + TOKEN, fetch: familysearch() });
+  let r = await page.ask({ action: 'familysearchImage', imageId: 'HRT1-IMG1' });
+  assert.strictEqual(r.ok, false);
+  assert.match(r.error, /no longer on FamilySearch/);
+  assert.strictEqual(page.calls.length, 0);
+  page = loadPage({ url: 'https://blog.example.org/x', fetch: familysearch() });
+  r = await page.ask({ action: 'ancestryImage', dbId: '90001', imageId: '4000123_00045' });
+  assert.strictEqual(r.ok, false);
+  assert.match(r.error, /no longer on Ancestry/);
+  assert.strictEqual(page.calls.length, 0);
 });

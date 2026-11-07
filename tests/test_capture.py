@@ -469,8 +469,8 @@ class CaptureTestCase(unittest.TestCase):
         meta = read_record(self._only_stub())['meta']
         self.assertEqual(meta['source_type'], 'census')
         self.assertEqual(meta['source_date'], '1860')
-        self.assertIn('William W Church', meta['people'])         # subject, not []
-        self.assertIn('Caleb C Church', meta['people'])           # household member
+        self.assertIn('William W Hartley', meta['people'])         # subject, not []
+        self.assertIn('Caleb C Hartley', meta['people'])           # household member
         self.assertNotIn('Given Name', meta['people'])            # label never leaks
 
     def test_familysearch_index_page_title_collection_split(self) -> None:
@@ -532,6 +532,45 @@ class CaptureTestCase(unittest.TestCase):
                 self.assertEqual(meta['source_type'], stype)
                 self.assertEqual(str(meta['source_date']) if 'source_date' in meta else None, sdate)
                 self.assertEqual(meta.get('source_class'), sclass)
+
+    def test_familysearch_label_colon_value_layout(self) -> None:
+        # PR #214 review (Codex 4500422483): FamilySearch also draws a record's
+        # facts one per line as "Label: Value" (the content panel,
+        # familysearch-content.html); the colon must not hide the date.
+        html = self._fs_record_page(
+            'Ethel Hartley', 'California Death Index, 1940-1997',
+            '<div>Event Type: Death</div><div>Event Date: 7 Jan 1957</div>'
+            '<div>Birth Date: 24 Mar 1902</div><div>Event Place: Riverside</div>')
+        rc = self._capture(html, url='https://www.familysearch.org/ark:/61903/1:1:HRT1-COL1')
+        self.assertEqual(rc, EXIT_CLEAN)
+        meta = read_record(self._only_stub())['meta']
+        self.assertEqual(str(meta['source_date']), '1957-01-07')
+        # ...and the documented content-panel fixture, opened as a record.
+        for stub in list((self.archive / 'inbox').glob('*.notes.md')):
+            stub.unlink()
+        from capture_recipes import familysearch
+        page = _sample('familysearch-content').replace(
+            '<div>Census Date: 1860</div>', '<div>Event Type: Residence</div><div>Residence Date: 1861</div>')
+        r = familysearch.extract(page, 'https://www.familysearch.org/ark:/61903/1:1:HRT1-COL2')
+        self.assertEqual(r['source_date'], '1861')   # its own Residence date, not the 1860 in its name
+
+    def test_familysearch_record_falls_back_to_its_own_description_date(self) -> None:
+        # PR #214 audit #5: a record whose facts give no date still has its own
+        # date in og:description ("Marriage on 14 June 1898 in Fairview.
+        # Collection: County Marriages, 1865-1950."): that, never the
+        # collection's years. The repo's familysearch.html fixture filed 1898.
+        rc = self._capture(_sample('familysearch'),
+                           url='https://www.familysearch.org/ark:/61903/1:1:ABCD-123')
+        self.assertEqual(rc, EXIT_CLEAN)
+        meta = read_record(self._only_stub())['meta']
+        self.assertEqual(str(meta['source_date']), '1898-06-14')
+        self.assertTrue(str(meta['source_date']).startswith('1898'))
+        from capture_recipes import familysearch
+        self.assertIsNone(familysearch._description_date(
+            'Collection: County Marriages, 1865-1950.', 'County Marriages, 1865-1950'))
+        self.assertIsNone(familysearch._description_date('Records from 1850-1952 and 1930-Current.', None))
+        self.assertEqual(familysearch._description_date('Death in 1957. Collection: X, 1940-1997', 'X, 1940-1997'),
+                         '1957')
 
     def test_familysearch_page_saved_with_seen_it_badges(self) -> None:
         # TI-067 on FamilySearch: Seen It's pills on a saved page are not the record.

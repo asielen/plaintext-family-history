@@ -80,10 +80,34 @@ _TESTID_RE = re.compile(r'data-testid="([^"]+)"')
 # A date as FamilySearch writes it on a record page: "21 Nov 1927",
 # "3 June 1913", "June 1913", "1920", with an optional "abt".
 _FS_DATE = r'(?:(?:abt\.?|about)\s+)?(?:\d{1,2}\s+[A-Z][a-z]+\.?\s+\d{4}|[A-Z][a-z]+\.?\s+\d{1,2},?\s+\d{4}|[A-Z][a-z]+\.?\s+\d{4}|\d{4})'
-_FS_EVENT_TYPE_RE = re.compile(r'\bEvent Type\s+([A-Z][A-Za-z]+)\b')
-_FS_EVENT_DATE_RE = re.compile(r'\bEvent Date\s+(' + _FS_DATE + r')\b')
+# Both layouts FamilySearch draws: "Event Date 21 Nov 1927" (label and value in
+# their own elements) and "Event Date: 21 Nov 1927" (one line, a colon).
+_FS_EVENT_TYPE_RE = re.compile(r'\bEvent Type:?\s+([A-Z][A-Za-z]+)\b')
+_FS_EVENT_DATE_RE = re.compile(r'\bEvent Date:?\s+(' + _FS_DATE + r')\b')
 _FS_NAMED_DATE_RE = re.compile(
-    r'\b(Birth|Death|Burial|Marriage|Christening|Baptism|Residence|Census|Divorce)\s+Date\s+(' + _FS_DATE + r')\b')
+    r'\b(Birth|Death|Burial|Marriage|Christening|Baptism|Residence|Census|Divorce)\s+Date:?\s+(' + _FS_DATE + r')\b')
+_FS_ANY_DATE_RE = re.compile(r'(?<![\d-])(' + _FS_DATE + r')(?![\d-])')
+_RANGE_TEXT_RE = re.compile(r'\b\d{4}s?\s*[-\u2013/]\s*(?:current|present|\d{2,4}s?)\b', re.I)
+
+
+def _description_date(description: str | None, collection: str | None) -> str | None:
+    """The record's own date as its og:description gives it ("Marriage on 14
+    June 1898 in Fairview. Collection: County Marriages, 1865-1950."), in EDTF.
+
+    The fallback when the record's facts on the page give none. The
+    collection's name and any year range are cut out first: they say when
+    the collection runs, never when the event happened (TI-066).
+    """
+    text = description or ''
+    if collection:
+        text = text.replace(collection, ' ')
+    text = re.sub(r'Collection:.*$', ' ', text, flags=re.I | re.S)
+    text = _RANGE_TEXT_RE.sub(' ', text)
+    for m in _FS_ANY_DATE_RE.finditer(text):
+        v = date_to_edtf(m.group(1))
+        if v:
+            return v
+    return None
 
 
 def _record_events(html: str, text: str) -> list[tuple[str, str]]:
@@ -229,7 +253,8 @@ def extract(html: str, url: str | None) -> dict:
     if title_person or _ark_record(url):
         hints = record_hints(collection, _fields_date_of(_record_events(html, page.text)))
     if hints is not None:
-        source_date = hints['source_date']
+        source_date = hints['source_date'] or _description_date(
+            meta_content(page, 'og:description'), collection)
         source_type = hints['source_type'] or source_type_from_text(f'{collection} {title}', 'website')
     else:
         source_date = harvest_date(

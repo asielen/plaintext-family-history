@@ -620,7 +620,7 @@
   // the throw). After that each clipping succeeds or fails on its own: the
   // report names where every bundle went and which, if any, were not saved,
   // and only the unsaved ones stay ticked for another try.
-  async function captureNewspapers(pageHtml, wantPageCopy) {
+  async function captureNewspapers(pageHtml, wantPageCopy, recordUrl) {
     const np = state.np;
     // The form as it is NOW. The page download below takes about 20 seconds,
     // and nothing that happens to the form meanwhile may reach these bundles
@@ -640,6 +640,9 @@
     // only if some chosen clipping is that record (lib pageCopyFits).
     const copyFits = (clip) => FHA.newspapers.pageCopyFits(np, clip);
     const pageCopy = wantPageCopy && chosen.some(copyFits) ? await buildPageCopy() : null;
+    // The last read of the tab: the page's tiles below are fetched by the
+    // page's own id, and each clipping's text by its own address.
+    await checkTabStillOn(recordUrl);
     const opened = np.ownClips.find((c) => c.id === np.focusClipId);
     const texts = await npGatherText(chosen);
 
@@ -693,7 +696,11 @@
     // again retries exactly those and never stages a saved one twice.
     const failed = results.filter((r) => !r.ok);
     if (failed.length) {
-      state.npSelected = new Set(failed.map((r) => r.id));
+      const next = new Set(failed.map((r) => r.id));
+      // Fewer clippings ticked now: the form describes a different set, so a
+      // correction typed for the old set does not follow (the #211 rule).
+      if (next.size !== state.npSelected.size) state.userEdited = new Set();
+      state.npSelected = next;
       renderNpClips();
       fillNpFields();
     }
@@ -801,7 +808,7 @@
     return 'a capture waiting in the inbox to be filed';
   }
 
-  async function captureAncestryRecord(pageHtml, wantPageCopy, form) {
+  async function captureAncestryRecord(pageHtml, wantPageCopy, form, recordUrl) {
     const info = await sendToTab(state.tabId, {
       action: 'ancestryRecordInfo', formTitle: form.title,
     });
@@ -809,6 +816,11 @@
     const rec = info.record;
     const hints = info.hints || {};
     const assets = [];
+    // Everything read from the tab, before the long scan download: the page
+    // copy is built now (kept below if wanted, or if there is no scan), and
+    // the tab must still be on this record (PR #214 review).
+    const pageCopy = await buildPageCopy();
+    await checkTabStillOn(recordUrl, [rec.recordId]);
 
     // A file the human dropped in is the record's image (her own download,
     // after Ancestry would not hand it over), saved WITH the index rather than
@@ -858,8 +870,7 @@
     // would lose both its role and its page (PR #213 audit #4).
     let forcedCopy = false;
     if (wantPageCopy || !assets.some((a) => a.role === 'record')) {
-      const pc = await buildPageCopy();
-      assets.unshift({ filename: pc.filename, blob: pc.blob, role: 'webpage', mode: 'singlefile' });
+      assets.unshift({ filename: pageCopy.filename, blob: pageCopy.blob, role: 'webpage', mode: 'singlefile' });
       forcedCopy = !wantPageCopy;
     }
 
@@ -985,7 +996,7 @@
     return { text: 'Record file: full image ' + id + ' (FamilySearch, auto)' };
   }
 
-  async function captureFamilySearchRecord(pageHtml, wantPageCopy, form) {
+  async function captureFamilySearchRecord(pageHtml, wantPageCopy, form, recordUrl) {
     const info = await sendToTab(state.tabId, {
       action: 'familysearchRecordInfo',
       // Only a title she typed; otherwise FamilySearch's own name for the record.
@@ -995,6 +1006,9 @@
     const rec = info.record;
     const hints = info.hints || {};
     const assets = [];
+    // Everything read from the tab, before the long image download (#214).
+    const pageCopy = await buildPageCopy();
+    await checkTabStillOn(recordUrl, ['1:1:' + rec.fsId]);
     const dropped = form.dropped;
     const provisional = !!dropped && form.provisional;
 
@@ -1034,8 +1048,7 @@
     // record's data is never filed as the source's main file.
     let forcedCopy = false;
     if (wantPageCopy || !assets.some((a) => a.role === 'record')) {
-      const pc = await buildPageCopy();
-      assets.unshift({ filename: pc.filename, blob: pc.blob, role: 'webpage', mode: 'singlefile' });
+      assets.unshift({ filename: pageCopy.filename, blob: pageCopy.blob, role: 'webpage', mode: 'singlefile' });
       forcedCopy = !wantPageCopy;
     }
     const data = {
@@ -1365,7 +1378,9 @@
       // FamilySearch image viewer: the page draws deep-zoom tiles, so the full
       // image (dist.jpg) comes from FamilySearch's own API in her session. No
       // id is sent: the page reads the image on screen now (a single-page app).
-      const resp = await sendToTab(state.tabId, { action: 'familysearchImage' });
+      const imageId = (state.prefill && state.prefill.familysearchImageId) ||
+        (state.fsCheck && state.fsCheck.imageId) || undefined;
+      const resp = await sendToTab(state.tabId, { action: 'familysearchImage', imageId });
       if (!resp || !resp.ok) {
         throw new Error(((resp && resp.error) || 'could not fetch the full image from FamilySearch') +
           '. You can use FamilySearch’s Download button and drop the file in.');
@@ -1421,11 +1436,43 @@
     if (!state.prefilledUrl) return; // no pre-fill baseline, nothing to compare
     const tab = await getTab(state.tabId);
     if (!tab || !tab.url || sameRecordUrl(tab.url, state.prefilledUrl)) return;
+    staleBanner();
+  }
+
+  function staleBanner() {
     const banner = $('recipe-banner');
     banner.textContent =
       'This page changed since the form was filled - check the title and web address before saving.';
     banner.classList.remove('recipe');
     banner.classList.add('warn');
+  }
+
+  // A capture reads the tab several times - its page, the record, the page
+  // copy - while she may already be clicking on to the next record. Every
+  // file in one bundle must come from the one record Capture was pressed on
+  // (PR #214 review): this is asked right after the LAST read of the tab, and
+  // anything that comes later (an image, the newspaper page's tiles) is
+  // fetched by its own id, not by "whatever the tab shows now". `expected` is
+  // the record's address; `ids` are parts its address must name (a record id
+  // the page's data gave). Throws, so nothing is staged, when the tab moved.
+  class TabMoved extends Error {}
+
+  async function checkTabStillOn(expected, ids) {
+    const tab = await getTab(state.tabId);
+    let here = tab && tab.url ? tab.url : '';
+    let want = String(expected || '');
+    try {
+      here = decodeURIComponent(here);
+      want = decodeURIComponent(want);
+    } catch (e) {
+      /* compare them as they are */
+    }
+    const sameRecord = !!expected && !!here && sameRecordUrl(here, want);
+    const named = (ids || []).every((id) => !id || want.toUpperCase().indexOf(String(id).toUpperCase()) >= 0);
+    if (!sameRecord || !named) {
+      throw new TabMoved('the page in the tab changed while this record was being saved, so nothing was ' +
+        'saved. The panel is reading the new page now - check it is the record you mean, then press Capture again');
+    }
   }
 
   // The form as it stands the moment Capture is pressed. A record capture
@@ -1488,8 +1535,16 @@
     $('btn-capture').disabled = true;
     setStageResult('Capturing…', '');
 
+    // The record this capture is of: the one the form was filled for.
+    const recordUrl = state.prefilledUrl;
+    const recordCapture = wantEvidence && !evidenceUrl() &&
+      ((npActive() && !state.droppedAsset) || state.ancRecord || state.fsRecord);
     try {
       await warnIfFormStale();
+      // A record capture saves the form's details with the record's own data
+      // from the tab: if the tab is no longer on that record, they would not
+      // match, so stop before reading anything.
+      if (recordCapture) await checkTabStillOn(recordUrl);
 
       // page.html is always saved - grab it fresh at capture time so any
       // late-settling content is in the raw DOM the recipe re-extracts from.
@@ -1497,11 +1552,12 @@
       if (!pageResp || !pageResp.ok || !pageResp.html) {
         throw new Error('could not read the page, reload it and try again');
       }
+      if (recordCapture) await checkTabStillOn(recordUrl);
 
       // Newspapers.com: the whole page + each chosen clipping, one bundle per
       // clipping. A dropped file still wins (the manual override).
       if (wantEvidence && npActive() && !state.droppedAsset) {
-        await captureNewspapers(pageResp.html, wantPageCopy);
+        await captureNewspapers(pageResp.html, wantPageCopy, recordUrl);
         resetForNext();
         return;
       }
@@ -1510,7 +1566,7 @@
       // linked scan - or the file she dropped in, saved with the index. A typed
       // file address still takes the ordinary path.
       if (wantEvidence && state.ancRecord && !evidenceUrl()) {
-        await captureAncestryRecord(pageResp.html, wantPageCopy, form);
+        await captureAncestryRecord(pageResp.html, wantPageCopy, form, recordUrl);
         resetForNext();
         return;
       }
@@ -1519,7 +1575,7 @@
       // own data and citation, plus its image - or the file she dropped in,
       // saved with the data.
       if (wantEvidence && state.fsRecord && !evidenceUrl()) {
-        await captureFamilySearchRecord(pageResp.html, wantPageCopy, form);
+        await captureFamilySearchRecord(pageResp.html, wantPageCopy, form, recordUrl);
         resetForNext();
         return;
       }
@@ -1535,12 +1591,17 @@
       // Compose the asset list (the "both" case): the page copy and/or the
       // record evidence. Each entry carries its role so ingest files it right.
       const assets = []; // { filename, blob, role, mode, provisional }
+      // The page these files come from, as the browser shows it now (the
+      // ordinary path keeps its warn-but-save rule for a stale form).
+      const startTab = await getTab(state.tabId);
+      const pageUrl = startTab && startTab.url;
       if (wantPageCopy) {
         const pc = await buildPageCopy();
         assets.push({
           filename: pc.filename, blob: pc.blob,
           role: 'webpage', mode: 'singlefile',
         });
+        await checkTabStillOn(pageUrl);
       }
       let evidenceWarning = null;
       if (wantEvidence) {
@@ -1555,16 +1616,20 @@
         if (autoOnly && wantPageCopy) {
           try {
             const ev = await buildEvidence();
+            await checkTabStillOn(pageUrl);
             assets.push({
               filename: ev.filename, blob: ev.blob,
               role: 'record', mode: ev.mode,
               provisional,
             });
           } catch (e) {
+            if (e instanceof TabMoved) throw e; // never another page's file
             evidenceWarning = e.message;
           }
         } else {
           const ev = await buildEvidence();
+          // An automatic file is read from the page itself: it must still be this page.
+          if (autoOnly) await checkTabStillOn(pageUrl);
           assets.push({
             filename: ev.filename, blob: ev.blob,
             role: 'record', mode: ev.mode || (state.droppedAsset ? 'manual' : 'fetch'),
@@ -1601,6 +1666,8 @@
       resetForNext();
     } catch (e) {
       setStageResult('Could not capture: ' + e.message, 'error');
+      // The form still describes the record she left: read the new one.
+      if (e instanceof TabMoved) state.pendingNav = true;
     } finally {
       state.busy = false;
       $('btn-capture').disabled = false;
@@ -1692,9 +1759,11 @@
     // repo) is refreshed when the human navigates to the next record - see
     // refreshOnNavigation - so it never carries one record's details onto the next.
     clearEvidenceSelection();
-    // The corrections were for the record just saved; the next capture on
-    // this page describes another clipping (#211 audit).
-    state.userEdited = new Set();
+    // Her corrections stay: they belong to the RECORD, not to one capture of
+    // it, and the panel itself may send her back ("drop the image in and press
+    // Capture again"). They are cleared when the record changes (applyPrefill)
+    // or the ticked clippings change (renderNpClips, the retry below) - PR
+    // #214 review, keeping #211's clipping rule.
     updateAssetStatus();
   }
 

@@ -282,3 +282,48 @@ test('every refusal is told in plain words, and none of them carries the login',
   const small = service({ 'dist.jpg': { ok: true, status: 200, blob: async () => new Blob(['tiny'], { type: 'image/jpeg' }) } });
   assert.match((await fsr.fsImage('HRT1-IMG1', small.deps)).error, /too small to be the full record/);
 });
+
+// ── PR #214 review ───────────────────────────────────────────────────────────
+
+test('a record with two principals is named and dated for the persona opened (audit #6)', () => {
+  // A marriage: the bride's entry and the groom's are both principals.
+  const persist = (id) => ({ 'http://gedcomx.org/Persistent': ['https://familysearch.org/ark:/61903/1:1:' + id] });
+  const g = {
+    persons: [
+      { id: 'p1', principal: true, identifiers: persist('HRT1-GRM1'),
+        names: [{ nameForms: [{ fullText: 'Calvin Hartley' }] }], facts: [] },
+      { id: 'p2', principal: true, identifiers: persist('HRT1-BRD1'),
+        names: [{ nameForms: [{ fullText: 'Harriet Webb' }] }],
+        facts: [{ type: 'http://gedcomx.org/Birth', date: { formal: '+1845' } }] },
+    ],
+    relationships: [{ person1: { resource: '#p1' }, person2: { resource: '#p2' },
+      facts: [{ type: 'http://gedcomx.org/Marriage', date: { formal: '+1866-10-12' } }] }],
+    sourceDescriptions: [
+      { about: 'https://familysearch.org/platform/records/collections/9000003', resourceType: 'http://gedcomx.org/Collection',
+        titles: [{ value: 'Kansas, County Marriages, 1855-1911' }] },
+    ],
+  };
+  const bride = fsr.fsRecordFrom(g, { fsId: 'HRT1-BRD1' });
+  assert.strictEqual(bride.record.name, 'Harriet Webb');
+  assert.strictEqual(fsr.fsRecordFrom(g, { fsId: 'HRT1-GRM1' }).record.name, 'Calvin Hartley');
+  assert.strictEqual(fsr.fsHints(bride.record, g).sourceDate, '1866-10-12');
+  assert.strictEqual(fsr.fsTitle(bride.record, ''), 'Harriet Webb - Kansas, County Marriages, 1855-1911');
+  // No identifiers at all: the principal, as before.
+  const bare = JSON.parse(JSON.stringify(g));
+  bare.persons.forEach((p) => delete p.identifiers);
+  assert.strictEqual(fsr.fsRecordFrom(bare, { fsId: 'HRT1-BRD1' }).record.name, 'Calvin Hartley');
+});
+
+test('a refused image description is told as the image, not the record (audit #8)', async () => {
+  let r = await fsr.fsImage('HRT1-IMG1', service({ '3:1:': 403 }).deps);
+  assert.match(r.error, /will not show this image here \(HTTP 403\)/);
+  assert.doesNotMatch(r.error, /record/);
+  r = await fsr.fsImage('HRT1-IMG1', service({ '3:1:': 404 }).deps);
+  assert.match(r.error, /no image at this address \(HTTP 404\)/);
+  const check = await fsr.fsImageCheck('HRT1-IMG1', service({ '3:1:': 403 }).deps);
+  assert.match(check.reason, /will not show this image/);
+  r = await fsr.fsImage('HRT1-IMG1', service({ '3:1:': { ok: true, status: 200, text: async () => '<html>' } }).deps);
+  assert.match(r.error, /something other than the image’s description/);
+  // The record's own refusal still says record.
+  assert.match((await fsr.fsRecordInfo(PAGE, service({ '1:1:': 403 }).deps)).error, /will not show this record/);
+});

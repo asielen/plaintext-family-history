@@ -1039,10 +1039,21 @@
   const fsTypeName = (t) => String(t || '').replace(/^.*[/#]/, '');
   const fsFirstTitle = (x) => (x && x.titles && x.titles[0] && x.titles[0].value) || null;
 
-  // The record's main person: the one FamilySearch marks principal, else the first.
-  function fsPrincipal(g) {
+  // The person this record entry IS: the one whose persistent identifier names
+  // ark 1:1:{fsId}. A marriage record has two principals - the bride's entry and
+  // the groom's - so "the first principal" would title the bride's record with
+  // the groom's name (PR #214 review). Failing an identifier, the principal,
+  // else the first person.
+  function fsOpenedPerson(g, fsId) {
     const persons = (g && Array.isArray(g.persons)) ? g.persons : [];
-    return persons.find((p) => p && p.principal) || persons[0] || null;
+    const want = '1:1:' + String(fsId || '').toUpperCase();
+    const names = (p) => {
+      const ids = (p && p.identifiers) || {};
+      return [].concat(...Object.values(ids).map((v) => (Array.isArray(v) ? v : [v])))
+        .map((x) => String(x || '').toUpperCase());
+    };
+    return (fsId && persons.find((p) => names(p).some((x) => x.indexOf(want) >= 0))) ||
+      persons.find((p) => p && p.principal) || persons[0] || null;
   }
 
   function fsPersonName(p) {
@@ -1073,17 +1084,17 @@
         recordArk: rec ? (/1:2:[A-Z0-9-]+/i.exec(about(rec)) || [])[0] || null : null,
         collectionId: coll ? (/collections\/(\d+)$/.exec(about(coll)) || [])[1] || null : null,
         collection: fsFirstTitle(coll),
-        name: fsPersonName(fsPrincipal(g)),
+        name: fsPersonName(fsOpenedPerson(g, ids.fsId)),
       },
       citation: cite ? String(cite).replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim() || null : null,
       title: fsFirstTitle(persona),
     };
   }
 
-  // recordHints over the record's own events: the main person's facts (and the
-  // couple's, for a marriage), by GEDCOM X type ("http://gedcomx.org/Death").
+  // recordHints over the record's own events: the opened person's facts (and
+  // the couple's, for a marriage), by GEDCOM X type ("http://gedcomx.org/Death").
   function fsHints(record, g) {
-    const main = fsPrincipal(g);
+    const main = fsOpenedPerson(g, record && record.fsId);
     const facts = [].concat((main && main.facts) || []);
     for (const r of (g && g.relationships) || []) {
       const ids = [r.person1, r.person2].map((x) => String((x && (x.resource || x.resourceId)) || '').replace(/^#/, ''));
@@ -1120,8 +1131,10 @@
   }
 
   // One GET of FamilySearch's data service. Throws an Error with
-  // fsStatusMessage's words (never the token or the address).
-  async function fsJson(path, accept, d) {
+  // fsStatusMessage's words (never the token or the address). `what` is what
+  // she is told was refused: 'record' (the default) or 'image' (an image's
+  // description), so a refused image is never reported as a refused record.
+  async function fsJson(path, accept, d, what) {
     const headers = Object.assign({ Accept: accept || 'application/x-gedcomx-v1+json' },
       fsAuthHeaders(path, d.base, d.token));
     let r;
@@ -1130,13 +1143,15 @@
     } catch (e) {
       throw new Error('could not reach FamilySearch - check your internet connection, then press Capture again');
     }
-    if (!r.ok) throw new Error(fsStatusMessage(r.status, 'record', !!d.token));
+    if (!r.ok) throw new Error(fsStatusMessage(r.status, what || 'record', !!d.token));
     if (r.status === 204) return {};
     const text = await r.text();
     try {
       return text ? JSON.parse(text) : {};
     } catch (e) {
-      throw new Error('FamilySearch sent something other than its record data - reload the page and press Capture again');
+      throw new Error('FamilySearch sent something other than ' +
+        (what === 'image' ? 'the image\u2019s description' : 'its record data') +
+        ' - reload the page and press Capture again');
     }
   }
 
@@ -1161,7 +1176,7 @@
     if (!imageId) return { ok: true, imageId: null, available: false, reason: 'there is no image for it on FamilySearch' };
     let link;
     try {
-      link = fsImageLink(await fsJson('/ark:/61903/3:1:' + imageId, null, d));
+      link = fsImageLink(await fsJson('/ark:/61903/3:1:' + imageId, null, d, 'image'));
     } catch (e) {
       return { ok: true, imageId, available: false, reason: e.message };
     }
@@ -1192,7 +1207,7 @@
     if (!imageId) return { ok: false, error: 'no image named' };
     let link;
     try {
-      link = fsImageLink(await fsJson('/ark:/61903/3:1:' + imageId, null, d));
+      link = fsImageLink(await fsJson('/ark:/61903/3:1:' + imageId, null, d, 'image'));
     } catch (e) {
       return { ok: false, error: e.message };
     }
@@ -1246,12 +1261,27 @@
   // in its address - the ONE 3:1 image the page links to. Two different
   // images on the page is not an identification, so that answers null. The
   // Seen It add-on's badges are not the page's links and are skipped.
+  // Only a FamilySearch viewer is read this way - an image address, or a film
+  // viewer (/search/film/…) - never any other page that merely LINKS one
+  // FamilySearch image (a blog, a forum, a tree site): that page is not a
+  // FamilySearch viewer, and treating it as one would drop its own file and
+  // send a request to the wrong host (PR #214 review).
+  const FS_VIEWER_PATH_RE = /\/ark:\/61903\/3:1:|^\/(?:[a-z]{2}\/)?search\/film\//i;
+
   function fsViewerImageId(href) {
     const own = fsImageIdFromHref(href || location.href);
     if (own) return own;
     if (href && href.split('#')[0] !== location.href.split('#')[0]) return null;
+    if (!FS_HOST_RE.test(location.hostname) || !FS_VIEWER_PATH_RE.test(location.pathname)) return null;
     const canon = document.querySelector('link[rel="canonical"], meta[property="og:url"]');
-    const fromCanon = canon && fsImageIdFromHref(new URL(canon.getAttribute('href') || canon.getAttribute('content') || '', location.href).href);
+    let fromCanon = null;
+    try {
+      // An unparseable canonical or og:url is the page's mistake, never a
+      // reason the whole prefill fails.
+      fromCanon = canon && fsImageIdFromHref(new URL(canon.getAttribute('href') || canon.getAttribute('content') || '', location.href).href);
+    } catch (e) {
+      fromCanon = null;
+    }
     if (fromCanon) return fromCanon;
     const found = new Set();
     for (const el of document.querySelectorAll('a[href*="3:1:"], input[value*="3:1:"]')) {
@@ -2820,6 +2850,11 @@
           .catch((e) => sendResponse({ ok: false, error: String((e && e.message) || e) }));
         return true; // async response
       case 'familysearchImage':
+        if (!FS_HOST_RE.test(location.hostname)) {
+          sendResponse({ ok: false, error: 'the tab is no longer on FamilySearch, so the image was not fetched - ' +
+            'go back to the record and press Capture again' });
+          return;
+        }
         // No id named: the image the viewer shows now (a single-page app, so
         // re-read at Capture rather than trust the prefill).
         fsImage(msg.imageId || fsViewerImageId(), fsDeps())
@@ -2836,6 +2871,11 @@
       case 'ancestryImage':
         // Full-res Ancestry record fetch for the current page, in-session.
         // Same result shape as fetchAsset so the panel handles both alike.
+        if (!/(^|\.)ancestry\.[a-z.]+$/i.test(location.hostname)) {
+          sendResponse({ ok: false, error: 'the tab is no longer on Ancestry, so the image was not fetched - ' +
+            'go back to the record and press Capture again' });
+          return;
+        }
         fetchAncestryFullImage(msg.dbId && msg.imageId ? { dbId: msg.dbId, imageId: msg.imageId } : null)
           .then(sendResponse)
           .catch((e) => sendResponse({ ok: false, error: String(e) }));

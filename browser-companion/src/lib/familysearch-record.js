@@ -41,6 +41,7 @@
 //   fsAuthHeaders        the login header, for FamilySearch https addresses only
 //   fsStatusMessage      what an HTTP answer means, and what to do next
 //   fsFormalToEdtf       GEDCOM X "+1957-01-07" / "A+1887" -> EDTF
+//   fsOpenedPerson       the person this record entry is (by its ark), not just a principal
 //   fsRecordFrom         the record, citation and title from FamilySearch's data
 //   fsHints              recordHints over the record's own GEDCOM X facts
 //   fsTitle              "{name} - {collection}", unless the human typed a title
@@ -139,10 +140,21 @@ function fsFormalToEdtf(formal) {
 const fsTypeName = (t) => String(t || '').replace(/^.*[/#]/, '');
 const fsFirstTitle = (x) => (x && x.titles && x.titles[0] && x.titles[0].value) || null;
 
-// The record's main person: the one FamilySearch marks principal, else the first.
-function fsPrincipal(g) {
+// The person this record entry IS: the one whose persistent identifier names
+// ark 1:1:{fsId}. A marriage record has two principals - the bride's entry and
+// the groom's - so "the first principal" would title the bride's record with
+// the groom's name (PR #214 review). Failing an identifier, the principal,
+// else the first person.
+function fsOpenedPerson(g, fsId) {
   const persons = (g && Array.isArray(g.persons)) ? g.persons : [];
-  return persons.find((p) => p && p.principal) || persons[0] || null;
+  const want = '1:1:' + String(fsId || '').toUpperCase();
+  const names = (p) => {
+    const ids = (p && p.identifiers) || {};
+    return [].concat(...Object.values(ids).map((v) => (Array.isArray(v) ? v : [v])))
+      .map((x) => String(x || '').toUpperCase());
+  };
+  return (fsId && persons.find((p) => names(p).some((x) => x.indexOf(want) >= 0))) ||
+    persons.find((p) => p && p.principal) || persons[0] || null;
 }
 
 function fsPersonName(p) {
@@ -173,17 +185,17 @@ function fsRecordFrom(g, ids) {
       recordArk: rec ? (/1:2:[A-Z0-9-]+/i.exec(about(rec)) || [])[0] || null : null,
       collectionId: coll ? (/collections\/(\d+)$/.exec(about(coll)) || [])[1] || null : null,
       collection: fsFirstTitle(coll),
-      name: fsPersonName(fsPrincipal(g)),
+      name: fsPersonName(fsOpenedPerson(g, ids.fsId)),
     },
     citation: cite ? String(cite).replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim() || null : null,
     title: fsFirstTitle(persona),
   };
 }
 
-// recordHints over the record's own events: the main person's facts (and the
-// couple's, for a marriage), by GEDCOM X type ("http://gedcomx.org/Death").
+// recordHints over the record's own events: the opened person's facts (and
+// the couple's, for a marriage), by GEDCOM X type ("http://gedcomx.org/Death").
 function fsHints(record, g) {
-  const main = fsPrincipal(g);
+  const main = fsOpenedPerson(g, record && record.fsId);
   const facts = [].concat((main && main.facts) || []);
   for (const r of (g && g.relationships) || []) {
     const ids = [r.person1, r.person2].map((x) => String((x && (x.resource || x.resourceId)) || '').replace(/^#/, ''));
@@ -220,8 +232,10 @@ function fsImageLink(j) {
 }
 
 // One GET of FamilySearch's data service. Throws an Error with
-// fsStatusMessage's words (never the token or the address).
-async function fsJson(path, accept, d) {
+// fsStatusMessage's words (never the token or the address). `what` is what
+// she is told was refused: 'record' (the default) or 'image' (an image's
+// description), so a refused image is never reported as a refused record.
+async function fsJson(path, accept, d, what) {
   const headers = Object.assign({ Accept: accept || 'application/x-gedcomx-v1+json' },
     fsAuthHeaders(path, d.base, d.token));
   let r;
@@ -230,13 +244,15 @@ async function fsJson(path, accept, d) {
   } catch (e) {
     throw new Error('could not reach FamilySearch - check your internet connection, then press Capture again');
   }
-  if (!r.ok) throw new Error(fsStatusMessage(r.status, 'record', !!d.token));
+  if (!r.ok) throw new Error(fsStatusMessage(r.status, what || 'record', !!d.token));
   if (r.status === 204) return {};
   const text = await r.text();
   try {
     return text ? JSON.parse(text) : {};
   } catch (e) {
-    throw new Error('FamilySearch sent something other than its record data - reload the page and press Capture again');
+    throw new Error('FamilySearch sent something other than ' +
+      (what === 'image' ? 'the image\u2019s description' : 'its record data') +
+      ' - reload the page and press Capture again');
   }
 }
 
@@ -261,7 +277,7 @@ async function fsImageCheck(imageId, d) {
   if (!imageId) return { ok: true, imageId: null, available: false, reason: 'there is no image for it on FamilySearch' };
   let link;
   try {
-    link = fsImageLink(await fsJson('/ark:/61903/3:1:' + imageId, null, d));
+    link = fsImageLink(await fsJson('/ark:/61903/3:1:' + imageId, null, d, 'image'));
   } catch (e) {
     return { ok: true, imageId, available: false, reason: e.message };
   }
@@ -292,7 +308,7 @@ async function fsImage(imageId, d) {
   if (!imageId) return { ok: false, error: 'no image named' };
   let link;
   try {
-    link = fsImageLink(await fsJson('/ark:/61903/3:1:' + imageId, null, d));
+    link = fsImageLink(await fsJson('/ark:/61903/3:1:' + imageId, null, d, 'image'));
   } catch (e) {
     return { ok: false, error: e.message };
   }
