@@ -168,7 +168,7 @@
     {
       "path": ".fha/browser-companion/README.md",
       "category": "operating",
-      "sha256": "f51c67e5c1962bb145896173b03be7905721b1d5b07461257fca481446ed8871",
+      "sha256": "1113f06b47e4830a2da3abbed217f658fc3ac7b41dbbef80c13a00ee175e0619",
       "spec_version": "1.2",
       "src": "browser-companion/README-ARCHIVE.md"
     },
@@ -217,7 +217,7 @@
     {
       "path": ".fha/browser-companion/src/content.js",
       "category": "operating",
-      "sha256": "695602f12fc00d77bfd4228a0e812cfdfe6b28009fc52e09b4dc9bf00824ed35",
+      "sha256": "800517a7250055c7ab12fae51b28b47c7f2165da2c3094243c1bf5903aeac648",
       "spec_version": "1.2",
       "src": "browser-companion/src/content.js"
     },
@@ -238,14 +238,14 @@
     {
       "path": ".fha/browser-companion/src/lib/capture-json-pure.js",
       "category": "operating",
-      "sha256": "cd0fa09b18f22803824bea320c2df80022d8894eae47cd2830612903a23b3399",
+      "sha256": "0d32c35eaffe553a425a2e54b61409b6b03adf618160d4e185bfed202e1a095f",
       "spec_version": "1.2",
       "src": "browser-companion/src/lib/capture-json-pure.js"
     },
     {
       "path": ".fha/browser-companion/src/lib/capture-json.js",
       "category": "operating",
-      "sha256": "64d551052d591384f9afb904c41e145e8369472134d4b30930d5fb4ef70c7020",
+      "sha256": "96864f8288b8dba84cdddd20041a460bab8d3b57edcefdee50ae8c1e5af91e4e",
       "spec_version": "1.2",
       "src": "browser-companion/src/lib/capture-json.js"
     },
@@ -266,14 +266,14 @@
     {
       "path": ".fha/browser-companion/src/lib/findagrave-record.js",
       "category": "operating",
-      "sha256": "c16d29aa6175b66c31a63997a209393cba5f4048c71b77a5ca1cb3edc3d8e334",
+      "sha256": "6a771fc44c79e8c69a34cc1317d24909030b2ba415cfb5f53ce905e0a1d28b16",
       "spec_version": "1.2",
       "src": "browser-companion/src/lib/findagrave-record.js"
     },
     {
       "path": ".fha/browser-companion/src/lib/findagrave.js",
       "category": "operating",
-      "sha256": "7a09699a2979e5d125d50a3ef99c1235f05cc80bc644105783bfc71ba88bc210",
+      "sha256": "f10581814145bc179162f1b05c5fd379e73424f891a9423a48a01d1256390a49",
       "spec_version": "1.2",
       "src": "browser-companion/src/lib/findagrave.js"
     },
@@ -301,7 +301,7 @@
     {
       "path": ".fha/browser-companion/src/lib/newspapers.js",
       "category": "operating",
-      "sha256": "95aa9b330b6740cce17cb748af8ecb086285c2425da466f496e2e269753280a4",
+      "sha256": "2f0123875831d6368540dc5e63857ad8e99c8b395bf0ba12875c92dbefc05cbd",
       "spec_version": "1.2",
       "src": "browser-companion/src/lib/newspapers.js"
     },
@@ -336,7 +336,7 @@
     {
       "path": ".fha/browser-companion/src/panel.js",
       "category": "operating",
-      "sha256": "8f1bdf8b06e7c16b974ac2530ea0001b78ea9d76901432c845f1d96112dc6d35",
+      "sha256": "5f243fa1adcd021f8b87407387772b54ef29a2c4b6516cd86738b08f875375a9",
       "spec_version": "1.2",
       "src": "browser-companion/src/panel.js"
     },
@@ -476,7 +476,7 @@
     {
       "path": ".fha/tools/capture.py",
       "category": "operating",
-      "sha256": "6a3b1c7fdab8883adc2070f0db9d386d089c65936e97a7cde757a09bcb46e7f2",
+      "sha256": "f637e3f277a6d01e1a46ea0015a6607ad1254ef1d0f68e023f643b7e721783b2",
       "spec_version": "1.2",
       "src": "tools/capture.py"
     },
@@ -511,7 +511,7 @@
     {
       "path": ".fha/tools/capture_recipes/findagrave.py",
       "category": "operating",
-      "sha256": "19e43c82b52a2ef10101f471a589e74a47e346431876d6b90268e635be1f5cc0",
+      "sha256": "ad55ae2603b94647bfbb17d9f9274739dad55f9260aa9e59426336c78cdbbb1d",
       "spec_version": "1.2",
       "src": "tools/capture_recipes/findagrave.py"
     },
