@@ -27,11 +27,14 @@ from capture import (
     visible_text,
 )
 from capture_recipes._common import (
+    date_to_edtf,
     harvest_date,
     is_field_label,
     looks_like_name,
     people_from_table,
+    record_hints,
     source_type_from_text,
+    strip_seen_it,
 )
 
 SOURCE_NAME = 'FamilySearch'
@@ -74,6 +77,91 @@ _SECTION_END_RE = re.compile(r'\b(?:Events?|Sources?|Record Information|New Even
 _TESTID_RE = re.compile(r'data-testid="([^"]+)"')
 
 
+# A date as FamilySearch writes it on a record page: "21 Nov 1927",
+# "3 June 1913", "June 1913", "1920", with an optional "abt".
+_FS_DATE = r'(?:(?:abt\.?|about)\s+)?(?:\d{1,2}\s+[A-Z][a-z]+\.?\s+\d{4}|[A-Z][a-z]+\.?\s+\d{1,2},?\s+\d{4}|[A-Z][a-z]+\.?\s+\d{4}|\d{4})'
+# Both layouts FamilySearch draws: "Event Date 21 Nov 1927" (label and value in
+# their own elements) and "Event Date: 21 Nov 1927" (one line, a colon).
+_FS_EVENT_TYPE_RE = re.compile(r'\bEvent Type:?\s+([A-Z][A-Za-z]+)\b')
+_FS_EVENT_DATE_RE = re.compile(r'\bEvent Date:?\s+(' + _FS_DATE + r')\b')
+_FS_NAMED_DATE_RE = re.compile(
+    r'\b(Birth|Death|Burial|Marriage|Christening|Baptism|Residence|Census|Divorce)\s+Date:?\s+(' + _FS_DATE + r')\b')
+_FS_ANY_DATE_RE = re.compile(r'(?<![\d-])(' + _FS_DATE + r')(?![\d-])')
+_RANGE_TEXT_RE = re.compile(r'\b\d{4}s?\s*[-\u2013/]\s*(?:current|present|\d{2,4}s?)\b', re.I)
+
+
+def _description_date(description: str | None, collection: str | None) -> str | None:
+    """The record's own date as its og:description gives it ("Marriage on 14
+    June 1898 in Fairview. Collection: County Marriages, 1865-1950."), in EDTF.
+
+    The fallback when the record's facts on the page give none. The
+    collection's name and any year range are cut out first: they say when
+    the collection runs, never when the event happened (TI-066).
+    """
+    text = description or ''
+    if collection:
+        text = text.replace(collection, ' ')
+    text = re.sub(r'Collection:.*$', ' ', text, flags=re.I | re.S)
+    text = _RANGE_TEXT_RE.sub(' ', text)
+    for m in _FS_ANY_DATE_RE.finditer(text):
+        v = date_to_edtf(m.group(1))
+        if v:
+            return v
+    return None
+
+
+def _record_events(html: str, text: str) -> list[tuple[str, str]]:
+    """The record's own dates as `(label, value)` - "Death Date", "21 Nov 1927" -
+    from a record page: its label/value table when it has one, else its text.
+
+    FamilySearch shows the record's event as "Event Type Death ... Event Date
+    21 Nov 1927", and other facts as "Birth Date 26 May 1887". The event's
+    date is the one the record is about (TI-066): it is what `record_hints`
+    asks for, never a year from the collection's name.
+    """
+    fields: list[tuple[str, str]] = []
+    pairs: dict[str, str] = {}
+    for rows in extract_tables(html):
+        for row in rows:
+            if len(row) == 2 and row[0] and row[1]:
+                pairs.setdefault(row[0].strip().lower(), row[1].strip())
+    event = pairs.get('event type')
+    event_date = pairs.get('event date')
+    if not event:
+        m = _FS_EVENT_TYPE_RE.search(text or '')
+        event = m.group(1) if m else None
+    if not event_date:
+        m = _FS_EVENT_DATE_RE.search(text or '')
+        event_date = m.group(1) if m else None
+    if event and event_date:
+        fields.append((f'{event} Date', event_date))
+    for label, value in pairs.items():
+        if label.endswith(' date') and label != 'event date':
+            fields.append((label.title(), value))
+    for m in _FS_NAMED_DATE_RE.finditer(text or ''):
+        fields.append((f'{m.group(1)} Date', m.group(2)))
+    return fields
+
+
+def _fields_date_of(fields: list[tuple[str, str]]):
+    def date_of(word: str):
+        for label, value in fields:
+            if label.lower() == f'{word} date'.lower():
+                v = date_to_edtf(value)
+                if v:
+                    return v
+        return None
+    return date_of
+
+
+_ARK_RECORD_RE = re.compile(r'familysearch\.org/(?:[a-z]{2}/)?ark:/61903/1:1:[A-Z0-9-]+', re.I)
+
+
+def _ark_record(url: str | None) -> bool:
+    """Is `url` a FamilySearch record entry (ark:/61903/1:1:{id})?"""
+    return bool(url and _ARK_RECORD_RE.search(url))
+
+
 def detect(html: str, url: str | None) -> bool:
     if 'familysearch.org' in domain_of(url):
         return True
@@ -85,7 +173,7 @@ def _split_title_collection(page) -> tuple[str, str, str | None]:
     """`(title, collection, title_person)`.
 
     On an index/landing page the `<title>` is the person with the collection in
-    a quoted tail (`Mark B Sielen, "California, Birth Index, 1905-1995"`);
+    a quoted tail (`Warren B Hartley, "California, Birth Index, 1905-1995"`);
     recover the collection (so date/type re-derive) and surface the person.
     Otherwise the title is the og:title/h1 and the collection comes from the
     meta/description sources.
@@ -132,6 +220,7 @@ def _household_from_html(html: str) -> list[str]:
 
 
 def extract(html: str, url: str | None) -> dict:
+    html = strip_seen_it(html)
     page = parse_html(html)
     title, collection, title_person = _split_title_collection(page)
 
@@ -155,10 +244,28 @@ def extract(html: str, url: str | None) -> dict:
         if subject and looks_like_name(subject):
             people = [subject]
 
-    source_date = harvest_date(
-        meta_content(page, 'og:description'), collection, title,
-    )
-    source_type = source_type_from_text(f'{collection} {title}', 'website')
+    # A record page names its collection (in its title's quoted tail, or its
+    # meta); the record's own event then types and dates it, and its index
+    # class follows its collection (TI-066: "California, County Marriages,
+    # 1850-1952" dated an 1866 marriage 1850). Elsewhere - a tree person, a
+    # page with no collection - the old reading stands.
+    hints = None
+    if title_person or _ark_record(url):
+        hints = record_hints(collection, _fields_date_of(_record_events(html, page.text)))
+    if hints is not None:
+        # The collection's own name is cut out of the description before its
+        # date is read - unless the "collection" IS the description (the
+        # fallback when the page names no collection): cutting that would
+        # erase the date with it (PR #214 review, Codex 4500491554).
+        description = meta_content(page, 'og:description')
+        cut = collection if collection and collection.strip() != (description or '').strip() else None
+        source_date = hints['source_date'] or _description_date(description, cut)
+        source_type = hints['source_type'] or source_type_from_text(f'{collection} {title}', 'website')
+    else:
+        source_date = harvest_date(
+            meta_content(page, 'og:description'), collection, title,
+        )
+        source_type = source_type_from_text(f'{collection} {title}', 'website')
 
     citation_bits = [title.rstrip('.')]
     if source_date:
@@ -179,4 +286,5 @@ def extract(html: str, url: str | None) -> dict:
         'body': visible_text(page),
         'collection': collection,
         'terms': '; '.join(people) if people else '',
+        'source_class': hints['source_class'] if hints else None,
     }

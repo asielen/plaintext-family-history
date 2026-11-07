@@ -1,0 +1,92 @@
+{
+  "_about": "FamilySearch data-service answers (GEDCOM X) for the capture tests, in the shapes the live service sends (sourceDescriptions for the persona, the record, the collection and the image; persons with facts; GEDCOM X formal dates). Fictional people - the Hartley family of Fairview, Kansas - and invented ids: every ARK here is made up (HRT...) and names nothing on FamilySearch.",
+  "records": {
+    "HRT1-DTH1": {
+      "description": "#sd1",
+      "persons": [
+        {
+          "id": "p1",
+          "principal": true,
+          "names": [{"nameForms": [{"fullText": "Ethel Hartley"}]}],
+          "facts": [
+            {"type": "http://gedcomx.org/Birth", "date": {"original": "24 Mar 1902", "formal": "+1902-03-24"}},
+            {"type": "http://gedcomx.org/Death", "date": {"original": "7 Jan 1957", "formal": "+1957-01-07"}}
+          ]
+        }
+      ],
+      "sourceDescriptions": [
+        {"id": "sd1", "about": "https://familysearch.org/ark:/61903/1:1:HRT1-DTH1", "resourceType": "http://gedcomx.org/Person",
+         "titles": [{"value": "Ethel Hartley, \"California Death Index, 1940-1997\""}],
+         "citations": [{"value": "\"California Death Index, 1940-1997,\" database, <i>FamilySearch</i> (https://familysearch.org/ark:/61903/1:1:HRT1-DTH1), Ethel Hartley, 07 Jan 1957; Department of Public Health Services, Sacramento."}]},
+        {"about": "https://familysearch.org/ark:/61903/1:2:HRT1-REC1", "resourceType": "http://gedcomx.org/Record"},
+        {"about": "https://familysearch.org/platform/records/collections/9000001", "resourceType": "http://gedcomx.org/Collection",
+         "titles": [{"value": "California Death Index, 1940-1997"}]}
+      ]
+    },
+    "HRT1-CEN1": {
+      "persons": [
+        {
+          "id": "p1",
+          "principal": true,
+          "names": [{"nameForms": [{"fullText": "Calvin Hartley"}]}],
+          "facts": [
+            {"type": "http://gedcomx.org/Birth", "date": {"original": "1838", "formal": "A+1838"}},
+            {"type": "http://gedcomx.org/Census", "date": {"original": "1880", "formal": "+1880"}}
+          ]
+        },
+        {"id": "p2", "names": [{"nameForms": [{"fullText": "Harriet Hartley"}]}], "facts": []}
+      ],
+      "sourceDescriptions": [
+        {"about": "https://familysearch.org/ark:/61903/1:1:HRT1-CEN1", "resourceType": "http://gedcomx.org/Person",
+         "titles": [{"value": "Calvin Hartley, \"United States, Census, 1880\""}],
+         "citations": [{"value": "\"United States, Census, 1880,\" database with images, <i>FamilySearch</i>, Calvin Hartley, Fairview, Breton, Kansas."}]},
+        {"about": "https://familysearch.org/ark:/61903/1:2:HRT1-REC2", "resourceType": "http://gedcomx.org/Record"},
+        {"about": "https://familysearch.org/platform/records/collections/9000002", "resourceType": "http://gedcomx.org/Collection",
+         "titles": [{"value": "United States, Census, 1880"}]},
+        {"about": "https://familysearch.org/ark:/61903/3:1:HRT1-IMG1", "resourceType": "http://gedcomx.org/DigitalArtifact"}
+      ]
+    },
+    "HRT1-CEN2": {
+      "persons": [
+        {
+          "id": "p2",
+          "principal": true,
+          "names": [{"nameForms": [{"fullText": "Harriet Hartley"}]}],
+          "facts": [{"type": "http://gedcomx.org/Census", "date": {"original": "1880", "formal": "+1880"}}]
+        }
+      ],
+      "sourceDescriptions": [
+        {"about": "https://familysearch.org/ark:/61903/1:1:HRT1-CEN2", "resourceType": "http://gedcomx.org/Person",
+         "titles": [{"value": "Harriet Hartley, \"United States, Census, 1880\""}],
+         "citations": [{"value": "\"United States, Census, 1880,\" database with images, <i>FamilySearch</i>, Harriet Hartley, Fairview, Breton, Kansas."}]},
+        {"about": "https://familysearch.org/platform/records/collections/9000002", "resourceType": "http://gedcomx.org/Collection",
+         "titles": [{"value": "United States, Census, 1880"}]},
+        {"about": "https://familysearch.org/ark:/61903/3:1:HRT1-IMG1", "resourceType": "http://gedcomx.org/DigitalArtifact"}
+      ]
+    },
+    "HRT1-MAR1": {
+      "persons": [
+        {"id": "p1", "principal": true, "names": [{"nameForms": [{"fullText": "Calvin Hartley"}]}],
+         "facts": [{"type": "http://gedcomx.org/Birth", "date": {"original": "1838", "formal": "+1838"}}]},
+        {"id": "p2", "names": [{"nameForms": [{"fullText": "Harriet Webb"}]}], "facts": []}
+      ],
+      "relationships": [
+        {"type": "http://gedcomx.org/Couple", "person1": {"resource": "#p1"}, "person2": {"resource": "#p2"},
+         "facts": [{"type": "http://gedcomx.org/Marriage", "date": {"original": "12 October 1866", "formal": "+1866-10-12"}}]}
+      ],
+      "sourceDescriptions": [
+        {"about": "https://familysearch.org/ark:/61903/1:1:HRT1-MAR1", "resourceType": "http://gedcomx.org/Person",
+         "titles": [{"value": "Calvin Hartley, \"Kansas, County Marriages, 1855-1911\""}]},
+        {"about": "https://familysearch.org/platform/records/collections/9000003", "resourceType": "http://gedcomx.org/Collection",
+         "titles": [{"value": "Kansas, County Marriages, 1855-1911"}]},
+        {"about": "https://familysearch.org/ark:/61903/3:1:HRT1-IMG3", "resourceType": "http://gedcomx.org/DigitalArtifact"}
+      ]
+    }
+  },
+  "images": {
+    "HRT1-IMG1": {"links": {"image-stream-image-dist": {"href": "https://www.familysearch.org/das/v2/HRT1-IMG1/dist.jpg?proxy=true"}}},
+    "HRT1-IMG2": {"links": {}},
+    "HRT1-IMG3": {"links": {"image": {"href": "/das/v2/HRT1-IMG3/dist.jpg"}}},
+    "HRT1-EVIL": {"links": {"image-stream-image-dist": {"href": "https://familysearch.org.evil.com/das/v2/HRT1-EVIL/dist.jpg"}}}
+  }
+}

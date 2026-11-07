@@ -193,7 +193,12 @@ test('every element Seen It creates is one the capture skips (seen-it/ drift gua
   const own = new Set();
   const ids = new Set();
   const toggled = new Set();
-  for (const f of fs.readdirSync(dir).filter((n) => /^content.*\.js$/.test(n))) {
+  const scripts = fs.readdirSync(dir).filter((n) => /^content.*\.js$/.test(n));
+  // Every site the capture reads: Ancestry, FamilySearch, Find a Grave, Newspapers.com.
+  for (const site of ['content-ancestry.js', 'content-familysearch.js', 'content-findagrave.js', 'content.js']) {
+    assert.ok(scripts.includes(site), 'Seen It\'s ' + site + ' not read - has seen-it/ moved?');
+  }
+  for (const f of scripts) {
     const src = fs.readFileSync(path.join(dir, f), 'utf8');
     for (const m of src.matchAll(/\b(?:className|cls)\s*=\s*(['"])([^'"]+)\1/g)) own.add(m[2].trim().split(/\s+/)[0]);
     for (const m of src.matchAll(/\.id\s*=\s*(['"])([^'"]+)\1/g)) ids.add(m[2]);
@@ -274,8 +279,8 @@ test('page.html and the page copy are saved without Seen It\'s badges, on every 
   // stripSeenIt out of it and run it over the fixture, with a small
   // querySelectorAll for the two selector shapes it builds.
   const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'content.js'), 'utf8');
-  const fn = /  function stripSeenIt\(root\) \{[\s\S]*?\n  \}\n/.exec(content);
-  assert.ok(fn, 'stripSeenIt not found in content.js');
+  const fn = /  function seenItSelector\(\) \{[\s\S]*?\n  \}\n  function stripSeenIt\(root\) \{[\s\S]*?\n  \}\n/.exec(content);
+  assert.ok(fn, 'seenItSelector / stripSeenIt not found in content.js');
   const stripSeenIt = new Function('ANC_SEEN_IT_CLASSES', fn[0] + 'return stripSeenIt;')(anc.ANC_SEEN_IT_CLASSES);
   // Both saved copies go through it.
   assert.match(content, /const page = document\.documentElement\.cloneNode\(true\);\n    stripSeenIt\(page\);/);

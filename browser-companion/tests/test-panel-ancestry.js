@@ -23,7 +23,7 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const { openPanel, read } = require('./panel-harness.js');
+const { openPanel, read, settle, tick, holdFirst } = require('./panel-harness.js');
 const anc = require('../src/lib/ancestry-record.js');
 const { parse } = require('./mini-dom.js');
 
@@ -63,7 +63,7 @@ function ancestrySite({ image } = {}) {
       case 'ancestryImage':
         return image || { ok: true, base64: 'AAAA', ext: 'jpg', contentType: 'image/jpeg' };
       case 'pagehtml': return { ok: true, html: '<html>' + doc.title + '</html>' };
-      case 'singlefile': return { ok: true, html: '<html>copy</html>' };
+      case 'singlefile': return { ok: true, html: '<html>copy of ' + tab.url + '</html>' };
       default: return { ok: false, error: 'unexpected ' + msg.action };
     }
   };
@@ -414,4 +414,89 @@ test('choosing "the page copy is the record" on a record page saves just the pag
   assert.strictEqual(p.written.length, 1);
   assert.ok(!p.sent.some((m) => m.action === 'ancestryRecordInfo'));
   assert.deepStrictEqual(p.files(p.written[0]), ['page-snapshot.html']);
+});
+
+// ── PR #214 review sweep: the tab moves mid-capture; a recapture ────────────
+
+async function untilHeld(h) {
+  for (let i = 0; i < 200 && !h.held; i++) await tick();
+  assert.ok(h.held, 'the held request was never made');
+}
+
+test('moving to the next record while the scan downloads: the bundle is all the record captured (#214 sweep)', async () => {
+  const hold = holdFirst(ancestrySite(), 'ancestryImage');
+  const p = await open(CALVIN, { respond: hold.respond });
+  const pending = p.capture();
+  await untilHeld(hold);
+  await p.navigate(ETHEL);
+  hold.release();
+  await pending;
+  await settle();
+  assert.strictEqual(p.written.length, 1, p.result());
+  const b = p.written[0];
+  assert.strictEqual(b.captureJson.url, CALVIN);
+  assert.match(await asset(b, 'page-snapshot.html').blob.text(), /records\/1000001/);
+  assert.strictEqual((await recordData(b)).record.recordId, '1000001');
+});
+
+test('moving to another record while it is being read: nothing is saved (#214 sweep)', async () => {
+  const hold = holdFirst(ancestrySite(), 'ancestryRecordInfo');
+  const p = await open(CALVIN, { respond: hold.respond });
+  const pending = p.capture();
+  await untilHeld(hold);
+  await p.navigate(ETHEL);
+  hold.release();
+  await pending;
+  await settle();
+  assert.strictEqual(p.written.length, 0);
+  assert.match(p.result(), /the page in the tab changed while this record was being saved, so nothing was saved/);
+});
+
+test('a recapture of the same record keeps her corrections (#214 sweep)', async () => {
+  const p = await open(CALVIN, { image: { ok: false, error: 'Ancestry refused (HTTP 403)' } });
+  p.$('f-title').value = 'Calvin Hartley, Fairview, 1880';
+  await p.$('f-title').fire('input');
+  p.$('f-date').value = '1880-06';
+  await p.$('f-date').fire('input');
+  await p.capture();
+  dropFile(p, 'calvin-1880.jpg');
+  await p.capture();
+  assert.strictEqual(p.written.length, 2);
+  assert.strictEqual(p.written[1].captureJson.title, 'Calvin Hartley, Fairview, 1880');
+  assert.strictEqual(p.written[1].captureJson.source_date, '1880-06');
+});
+
+// ── PR #214, second Codex round (sweep) ──────────────────────────────────────
+
+const failingSingleFile = (respond) => (msg, tab) =>
+  (msg.action === 'singlefile' ? { ok: false, error: 'the page is too large to copy' } : respond(msg, tab));
+
+test('a title she typed is filed as typed, even one ending like the tab\'s (#214 sweep)', async () => {
+  for (const typed of ['Calvin Hartley census page - Ancestry.com', 'Calvin in 1880 | Ancestry']) {
+    const p = await open(CALVIN);
+    p.$('f-title').value = typed;
+    await p.$('f-title').fire('input');
+    await p.capture();
+    assert.strictEqual(p.written[0].captureJson.title, typed);
+  }
+  const p = await open(CALVIN);   // untouched: the tab's title gives way
+  await p.capture();
+  assert.strictEqual(p.written[0].captureJson.title, 'Calvin Hartley - 1880 United States Federal Census');
+});
+
+test('page copy unticked and it cannot be made, but the scan is there: the record is still saved (#214 sweep)', async () => {
+  const p = await open(CALVIN, { respond: failingSingleFile(ancestrySite()) });
+  p.$('cb-pagecopy').checked = false;
+  await p.capture();
+  assert.strictEqual(p.written.length, 1, p.result());
+  assert.deepStrictEqual(p.files(p.written[0]), ['record.jpg', 'record-data.json']);
+  assert.ok(!p.sent.some((m) => m.action === 'singlefile'));
+});
+
+test('an index entry needs its page copy: if it cannot be made, nothing half-filed is saved (#214 sweep)', async () => {
+  const p = await open(ETHEL, { respond: failingSingleFile(ancestrySite()) });
+  p.$('cb-pagecopy').checked = false;
+  await p.capture();
+  assert.strictEqual(p.written.length, 0);
+  assert.match(p.result(), /the copy of the web page could not be made/);
 });

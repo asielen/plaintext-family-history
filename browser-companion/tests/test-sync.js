@@ -219,6 +219,20 @@ test('content.js Newspapers.com parsers are a verbatim copy of lib/newspapers-pa
   assert.strictEqual(copy, canon);
 });
 
+test('content.js FamilySearch readers are a verbatim copy of lib/familysearch-record.js', () => {
+  // Including the login rule (fsAuthHeaders): a drift there is the one that
+  // would send a researcher's session where it must not go.
+  const lib = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'lib', 'familysearch-record.js'), 'utf8');
+  const begin = '// FHA-SYNC-BEGIN familysearch\n';
+  const end = '// FHA-SYNC-END familysearch';
+  const canon = lib.slice(lib.indexOf(begin) + begin.length, lib.indexOf(end));
+  assert.ok(canon.length > 1000 && canon.includes('function fsAuthHeaders'), 'lib sync markers not found');
+  const copy = extractBlock(/\/\/ FHA-SYNC-BEGIN familysearch\n/, '  ' + end)
+    .split('\n').map((l) => l.replace(/^ {2}/, '')).join('\n');
+  assert.strictEqual(copy, canon);
+});
+
 test('content.js Ancestry record readers are a verbatim copy of lib/ancestry-record.js', () => {
   // Same literal comparison as the Newspapers.com block above; test-ancestry.js
   // drives the lib, so an identical copy is proven by construction.

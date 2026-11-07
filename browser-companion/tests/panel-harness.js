@@ -115,7 +115,8 @@ async function settle() { for (let i = 0; i < 20; i++) await tick(); }
 // to hold the answer back. `host` makes the archive connection answer.
 // `seenIt` is the Seen It add-on: { 'img:…': 'filed' | 'captured' |
 // { state, sid } } it knows, or undefined when it is not installed.
-async function openPanel({ url, respond, host, seenIt }) {
+// `fullPage` replaces the newspaper page download (to hold it back).
+async function openPanel({ url, respond, host, seenIt, fullPage }) {
   const doc = makeDocument();
   const tab = { id: 7, url };
   const sent = [];
@@ -165,9 +166,10 @@ async function openPanel({ url, respond, host, seenIt }) {
   const window = { FHA: {} };
   new Function('window', read('lib/capture-json.js'))(window);
   new Function('window', 'OffscreenCanvas', read('lib/newspapers.js'))(window, FakeCanvas);
-  window.FHA.newspapers.fullPage = async (info) => ({
-    pageId: info.pageId, canvas: new FakeCanvas(info.pageWidth, info.pageHeight), reduced: 0, tiles: 1,
-  });
+  window.FHA.newspapers.fullPage = async (info) => {
+    if (fullPage) await fullPage(info);
+    return { pageId: info.pageId, canvas: new FakeCanvas(info.pageWidth, info.pageHeight), reduced: 0, tiles: 1 };
+  };
   window.FHA.bundle = {
     base64ToBlob: (b, t) => new Blob([b], { type: t }),
     async writeBundle(spec) {
@@ -223,4 +225,24 @@ async function openPanel({ url, respond, host, seenIt }) {
   };
 }
 
-module.exports = { openPanel, settle, tick, read };
+// Wrap a scripted content script so the FIRST `action` message waits until
+// release() - the moment to move the tab while a capture is in flight. Later
+// messages answer at once. The answer is computed when released, from the tab
+// as it is THEN (a content script answers from the page it is on).
+function holdFirst(respond, action) {
+  const h = { held: false, release: null, used: false };
+  h.respond = (msg, tab) => {
+    if (msg.action !== action || h.used) return respond(msg, tab);
+    h.used = true;
+    h.held = true;
+    return new Promise((resolve) => {
+      h.release = () => {
+        h.held = false;
+        resolve(respond(msg, tab));
+      };
+    });
+  };
+  return h;
+}
+
+module.exports = { openPanel, settle, tick, read, holdFirst };

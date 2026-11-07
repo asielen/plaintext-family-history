@@ -176,6 +176,39 @@ as part of a record or a page copy.
 
 ---
 
+## FamilySearch records
+
+On a FamilySearch record (the page for one person in one collection), or on the
+image viewer you opened from one, click the toolbar button and then **Capture**.
+You need to be signed in to FamilySearch in that tab. The add-on saves:
+
+- `record.jpg` - the record's image, the full-size picture behind FamilySearch's
+  viewer, not the small tiles the viewer draws.
+- `record-data.json` - FamilySearch's own data for the record, with its
+  citation. This is FamilySearch's index of the record, not a reading of the
+  image.
+- a copy of the page, if you keep one (always, when there is no image).
+
+The title comes from FamilySearch's own name for the record ("Ethel Hartley -
+California Death Index, 1940-1997") unless you type your own. As for Ancestry, a
+census files as a census and a death index as a vital record dated by the death,
+and whatever you type wins.
+
+Many FamilySearch images can only be seen at a FamilySearch center or an
+affiliate library. The panel checks before you press Capture: if the image
+cannot be saved from where you are, the line under the file box turns amber and
+says "the record's data only", and the saved record carries a note saying which
+image it was and why it could not be downloaded. If you have the image another
+way, drop it into the panel.
+
+On an image viewer that was not opened from a record, Capture saves the full
+image the same way.
+
+The add-on uses your FamilySearch sign-in only to talk to FamilySearch itself,
+reads it from the page each time, and never keeps or saves it.
+
+---
+
 ## What it will not do
 
 - It only reads the page you are looking at, in your own browser session, when

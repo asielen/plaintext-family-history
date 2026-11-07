@@ -23,7 +23,7 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert');
-const { openPanel, settle } = require('./panel-harness.js');
+const { openPanel, settle, tick, holdFirst } = require('./panel-harness.js');
 
 // ── fictional Newspapers.com pages (the Hartley family, invented ids) ────────
 
@@ -446,4 +446,67 @@ test('a partly read clipping list says some clippings may be missing', async () 
     await p.capture();
     assert.strictEqual(p.written.length, 1, 'the clipping it does know is still saved');
   }
+});
+
+// ── PR #214 review sweep: the tab moves mid-capture; a recapture ────────────
+
+async function untilHeld(h) {
+  for (let i = 0; i < 200 && !h.held; i++) await tick();
+  assert.ok(h.held, 'the held request was never made');
+}
+
+const twoPages = () => ({
+  [URL_A]: { title: 'Obituary', info: npInfo('article', [clipObj(101, 'Obituary for Calvin Hartley')]) },
+  [URL_B]: { title: 'Wedding', info: npInfo('article', [clipObj(202, 'Hartley - Webb wedding')]) },
+});
+
+test('moving to another clipping while the page is read: nothing is saved (#214 sweep)', async () => {
+  const hold = holdFirst(scripted(twoPages()), 'pagehtml');
+  const p = await openOn(URL_A, twoPages(), { respond: hold.respond });
+  const pending = p.capture();
+  await untilHeld(hold);
+  await p.navigate(URL_B);
+  hold.release();
+  await pending;
+  await settle();
+  assert.strictEqual(p.written.length, 0, 'never the obituary with the wedding page');
+  assert.match(p.result(), /the page in the tab changed while this record was being saved, so nothing was saved/);
+});
+
+test('moving on while the newspaper page downloads: the bundle is all the clipping captured (#214 sweep)', async () => {
+  let release;
+  let held = false;
+  const p = await openOn(URL_A, twoPages(), {
+    fullPage: () => new Promise((r) => { held = true; release = r; }),
+  });
+  const pending = p.capture();
+  for (let i = 0; i < 200 && !held; i++) await tick();
+  assert.ok(held);
+  await p.navigate(URL_B);
+  release();
+  await pending;
+  await settle();
+  assert.strictEqual(p.written.length, 1, p.result());
+  const b = p.written[0];
+  assert.match(b.captureJson.url, /\/101\/$/);
+  assert.match(await b.assets.find((a) => a.filename === 'page-snapshot.html').blob.text(), /copy of Obituary/);
+  assert.match(b.pageHtml, /Obituary/);
+});
+
+test('a recapture of the same clipping keeps her corrections (#214 sweep)', async () => {
+  const p = await openOn(URL_A, twoPages());
+  p.$('f-title').value = 'Calvin Hartley obituary, Fairview Gazette';
+  await p.$('f-title').fire('input');
+  await p.capture();
+  await p.capture();
+  assert.strictEqual(p.written.length, 2);
+  for (const b of p.written) assert.strictEqual(b.captureJson.title, 'Calvin Hartley obituary, Fairview Gazette');
+});
+
+test('a title she typed is filed as typed, even one that names the site (#214 sweep)', async () => {
+  const p = await openOn(URL_A, twoPages());
+  p.$('f-title').value = 'Calvin Hartley obituary - Newspapers.com';
+  await p.$('f-title').fire('input');
+  await p.capture();
+  assert.strictEqual(p.written[0].captureJson.title, 'Calvin Hartley obituary - Newspapers.com');
 });

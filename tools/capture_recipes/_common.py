@@ -10,6 +10,7 @@ table-walking or keyword-mapping logic.
 from __future__ import annotations
 
 import re
+from html.parser import HTMLParser
 
 from capture import meta_content, parse_html  # host-provided HTML primitives
 
@@ -168,3 +169,223 @@ def published_time(html: str) -> str | None:
     """`article:published_time` / `og:updated_time` meta date, if the page set one."""
     page = parse_html(html)
     return meta_content(page, 'article:published_time', 'og:updated_time', 'date')
+
+
+# ── A record's own hints: type, date, class (TI-066, every site) ──────────────
+
+_MONTHS = {'jan': 1, 'feb': 2, 'mar': 3, 'apr': 4, 'may': 5, 'jun': 6, 'jul': 7, 'aug': 8,
+           'sep': 9, 'sept': 9, 'oct': 10, 'nov': 11, 'dec': 12}
+_FULL_MONTHS = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august',
+                'september', 'october', 'november', 'december']
+
+
+def _month(word: str) -> int | None:
+    w = (word or '').lower().rstrip('.')
+    n = _MONTHS.get('sept' if w == 'sept' else w[:3])
+    if not n:
+        return None
+    # A full name must really be that month ("Marchant" is not March).
+    return n if len(w) <= 4 or _FULL_MONTHS[n - 1] == w else None
+
+
+def date_to_edtf(value: str | None) -> str | None:
+    """An Ancestry index date in EDTF, or None for anything but the plain shapes.
+
+    "7 Jan 1950" -> "1950-01-07", "Jan 1950" -> "1950-01", "1950", and
+    "abt 1845" -> "1845~". "bef 1900", ranges and stray text give None: no date
+    beats a wrong one. Mirrors the companion's `ancDateToEdtf`; shared by the
+    recipes whose sites write dates this way (Ancestry, FamilySearch).
+    """
+    v = ' '.join(str(value or '').split())
+    approx = ''
+    m = re.match(r'^(?:abt\.?|about|circa|ca\.?|c\.)\s+(.+)$', v, re.I)
+    if m:
+        v, approx = m.group(1), '~'
+    m = re.match(r'^(\d{1,2}) ([A-Za-z]{3,9}\.?),? (\d{4})$', v)
+    if m:
+        mo, d = _month(m.group(2)), int(m.group(1))
+        return f'{m.group(3)}-{mo:02d}-{d:02d}{approx}' if mo and 1 <= d <= 31 else None
+    m = re.match(r'^([A-Za-z]{3,9}\.?) (\d{1,2}),? (\d{4})$', v)
+    if m:
+        mo, d = _month(m.group(1)), int(m.group(2))
+        return f'{m.group(3)}-{mo:02d}-{d:02d}{approx}' if mo and 1 <= d <= 31 else None
+    m = re.match(r'^([A-Za-z]{3,9}\.?) (\d{4})$', v)
+    if m:
+        mo = _month(m.group(1))
+        return f'{m.group(2)}-{mo:02d}{approx}' if mo else None
+    m = re.match(r'^(\d{4})$', v)
+    return f'{m.group(1)}{approx}' if m else None
+
+
+# The event a collection is about, as the words its date fields start with,
+# in the order to try them. A burial, cemetery or funeral-home record often
+# gives only the death date; an obituary's event is the death.
+_EVENTS = [
+    (re.compile(r'\bdeaths?\b|\bdied\b|\bmortality\b', re.I), ('Death',)),
+    (re.compile(r'\bburials?\b|\bgraves?\b|\bcemeter(y|ies)\b|\bfunerals?\b', re.I), ('Burial', 'Death')),
+    (re.compile(r'\bmarriages?\b|\bmarried\b', re.I), ('Marriage',)),
+    (re.compile(r'\bbirths?\b|\bborn\b', re.I), ('Birth',)),
+    (re.compile(r'\bbaptisms?\b', re.I), ('Baptism',)),
+    (re.compile(r'\bchristenings?\b', re.I), ('Christening',)),
+    (re.compile(r'\bdivorces?\b', re.I), ('Divorce',)),
+]
+_OBITUARY_RE = re.compile(r'\bobituar(y|ies)\b', re.I)
+
+# A collection that runs over years - "1940-1997", "1930-Current",
+# "1800s-present" - names when it was gathered, never the record's event.
+_RANGE_RE = re.compile(r'\b\d{4}s?\s*[-\u2013/]\s*(current|present|\d{2,4}s?)\b', re.I)
+
+
+def record_hints(collection: str | None, date_of) -> dict:
+    """What a record says about itself: source type, date and class (TI-066).
+
+    From the collection name and `date_of(event)` - the record's own date for
+    "Death", "Marriage", "Census"... in EDTF, or None - never the rest of the
+    page. Census -> census; a birth/marriage/death/burial/funeral/baptism/
+    divorce collection -> vital-record; an obituary or newspaper index ->
+    newspaper. The date is the record's own event date, trying every event the
+    collection names in turn ("Birth and Death Records": the death, else the
+    birth; a burial record's "Burial", else its "Death"; an obituary's
+    "Death"), for a census its "Census" then "Residence" date, else its year,
+    else the collection's one year when it names exactly one - never a year of
+    a range, closed or open ("Death Index, 1940-1997", "Obituary Collection,
+    1930-Current"). An index is `derivative`. Each is None when the record does
+    not say. One rule for every site (the companion's `recordHints`, run from
+    one shared case table).
+    """
+    c = collection or ''
+    census = bool(re.search(r'\bcensus\b', c, re.I))
+    events: list[str] = []
+    if not census:
+        for rx, names in _EVENTS:
+            if rx.search(c):
+                events.extend(n for n in names if n not in events)
+    if census:
+        date_words: tuple | list = ('Census', 'Residence')
+    elif events:
+        date_words = events
+    else:
+        date_words = ('Death',) if _OBITUARY_RE.search(c) else ()
+
+    source_type = None
+    if census:
+        source_type = 'census'
+    elif events:
+        source_type = 'vital-record'
+    elif re.search(r'\bnewspapers?\b|\bobituar(y|ies)\b', c, re.I):
+        source_type = 'newspaper'
+
+    source_date = None
+    for word in date_words:
+        source_date = date_of(word) or None
+        if source_date:
+            break
+    years = re.findall(r'\b(1[5-9]\d{2}|20\d{2})\b', c)
+    is_range = bool(_RANGE_RE.search(c))
+    if not source_date and census:
+        lead = re.match(r'^\s*(\d{4})\b', c)
+        if lead:
+            source_date = lead.group(1)
+        elif len(years) == 1:
+            source_date = years[0]
+    if not source_date and not census and len(years) == 1 and not is_range:
+        source_date = years[0]
+
+    source_class = 'derivative' if re.search(r'\bindex(es)?\b', c, re.I) else None
+    return {'source_type': source_type, 'source_date': source_date, 'source_class': source_class}
+
+
+def fields_date_of(fields):
+    """`date_of` over a record's labelled fields: "{Event} Date" / "{Event} Year"."""
+    def date_of(word: str):
+        rx = re.compile(rf'^{word} (date|year)$', re.I)
+        value = next((v for label, v in fields if rx.match(str(label).strip())), None)
+        return date_to_edtf(value)
+    return date_of
+
+
+# ── Seen It's injected badges (TI-067) ─────────────────────────────────────────
+
+# Seen It's own elements: its pills, marks and tree chips (by class) and its
+# badges and banners (ids starting "nsi-"). The "nsi-" modifier classes it
+# toggles on the site's own rows (nsi-ruled-out, nsi-was-seen, nsi-has-clip)
+# are NOT here: those rows are the record. Same list as the companion's
+# ANC_SEEN_IT_CLASSES (browser-companion/src/lib/ancestry-record.js). Used by
+# every recipe whose site Seen It marks (Ancestry, FamilySearch).
+_SEEN_IT_CLASSES = frozenset({'nsi-pills', 'nsi-pill', 'nsi-marks', 'nsi-mark', 'nsi-node-chip'})
+_VOID_TAGS = frozenset({'area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link',
+                        'meta', 'param', 'source', 'track', 'wbr'})
+
+
+def _is_seen_it(attrs: list) -> bool:
+    a = {k.lower(): (v or '') for k, v in attrs}
+    if a.get('id', '').startswith('nsi-'):
+        return True
+    return bool(_SEEN_IT_CLASSES.intersection(a.get('class', '').split()))
+
+
+class _SeenItStripper(HTMLParser):
+    """Re-emit a page without Seen It's elements (and everything inside them).
+
+    Only used when the page holds an "nsi-" marker at all. The output is for
+    this recipe's own readers, not a preservation copy, so re-serializing the
+    tags it keeps (attributes re-quoted) is fine.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=False)
+        self.out: list[str] = []
+        self._skip = 0  # depth inside a Seen It element
+
+    def handle_starttag(self, tag: str, attrs: list) -> None:
+        if self._skip:
+            if tag not in _VOID_TAGS:
+                self._skip += 1
+            return
+        if _is_seen_it(attrs) and tag not in _VOID_TAGS:
+            self._skip = 1
+            return
+        self.out.append(self.get_starttag_text() or f'<{tag}>')
+
+    def handle_startendtag(self, tag: str, attrs: list) -> None:
+        if not self._skip and not _is_seen_it(attrs):
+            self.out.append(self.get_starttag_text() or f'<{tag}/>')
+
+    def handle_endtag(self, tag: str) -> None:
+        if self._skip:
+            if tag not in _VOID_TAGS:
+                self._skip -= 1
+            return
+        self.out.append(f'</{tag}>')
+
+    def handle_data(self, data: str) -> None:
+        if not self._skip:
+            self.out.append(data)
+
+    def handle_entityref(self, name: str) -> None:
+        if not self._skip:
+            self.out.append(f'&{name};')
+
+    def handle_charref(self, name: str) -> None:
+        if not self._skip:
+            self.out.append(f'&#{name};')
+
+    def handle_comment(self, data: str) -> None:
+        if not self._skip:
+            self.out.append(f'<!--{data}-->')
+
+    def handle_decl(self, decl: str) -> None:
+        self.out.append(f'<!{decl}>')
+
+
+def strip_seen_it(html: str) -> str:
+    """`html` without the Seen It add-on's injected badges (TI-067)."""
+    if not html or 'nsi-' not in html:
+        return html or ''
+    parser = _SeenItStripper()
+    try:
+        parser.feed(html)
+        parser.close()
+    except Exception:  # noqa: BLE001 - a pathological page: read it as it came
+        return html
+    return ''.join(parser.out)
