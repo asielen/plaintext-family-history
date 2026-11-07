@@ -428,3 +428,50 @@ test('a recapture of the same record keeps her corrections (Codex 4500422488)', 
   await settle();
   assert.strictEqual(p.$('f-title').value, 'Ethel Hartley - California Death Index, 1940-1997');
 });
+
+// ── PR #214, second Codex round ──────────────────────────────────────────────
+
+// The content script, with one action answering "could not" (a page copy
+// that cannot be made: the page is too large, say).
+const failing = (action, error) => (respond) => (msg, tab) =>
+  (msg.action === action ? { ok: false, error } : respond(msg, tab));
+
+test('a title she typed is filed as typed, even one that looks like a tab title (Codex 4500491552)', async () => {
+  for (const typed of ['My death-index copy from FamilySearch', 'Ethel Hartley - death index • copy']) {
+    const p = await open(ETHEL);
+    p.$('f-title').value = typed;
+    await p.$('f-title').fire('input');
+    await p.capture();
+    assert.strictEqual(p.written[0].captureJson.title, typed);
+  }
+  // Untouched, the tab's title still gives way to FamilySearch's own name.
+  const p = await open(ETHEL);
+  await p.capture();
+  assert.strictEqual(p.written[0].captureJson.title, 'Ethel Hartley - California Death Index, 1940-1997');
+});
+
+test('page copy unticked and it cannot be made, but the image is there: the record is still saved (Codex 4500491557)', async () => {
+  const p = await open(CALVIN, { wrap: failing('singlefile', 'the page is too large to copy') });
+  p.$('cb-pagecopy').checked = false;
+  await p.capture();
+  assert.strictEqual(p.written.length, 1, p.result());
+  assert.deepStrictEqual(p.written[0].captureJson.assets.map((a) => a.role), ['record', 'site-data']);
+  assert.ok(!p.sent.some((m) => m.action === 'singlefile'), 'an unrequested copy is not even built when the image is there');
+});
+
+test('an index entry needs its page copy: if it cannot be made, nothing half-filed is saved', async () => {
+  const p = await open(ETHEL, { wrap: failing('singlefile', 'the page is too large to copy') });
+  p.$('cb-pagecopy').checked = false;
+  await p.capture();
+  assert.strictEqual(p.written.length, 0);
+  assert.match(p.result(), /^Could not capture: the copy of the web page could not be made \(the page is too large to copy\)/);
+});
+
+test('an image refused with the page copy unticked: the copy is made then, from the same record', async () => {
+  const p = await open(RESTRICTED);
+  p.$('cb-pagecopy').checked = false;
+  await p.capture();
+  assert.strictEqual(p.written.length, 1);
+  assert.deepStrictEqual(p.written[0].captureJson.assets.map((a) => a.role), ['webpage', 'site-data']);
+  assert.match(await asset(p.written[0], 'page-snapshot.html').blob.text(), /HRT1-RST1/);
+});

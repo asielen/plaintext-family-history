@@ -212,9 +212,11 @@ function fsHints(record, g) {
   });
 }
 
-// The bundle's title: what the human typed, unless the form still holds the
-// page's own title (`pageTitle`, the tab's - on FamilySearch often an earlier
-// record's) or nothing; then "{name} - {collection}" from FamilySearch's data.
+// The bundle's title from the form's UNTOUCHED prefill: that title, unless it
+// is the page's own title (`pageTitle`, the tab's - on FamilySearch often an
+// earlier record's) or looks like one, or is empty; then "{name} -
+// {collection}" from FamilySearch's data. A title she typed never comes here:
+// the panel uses it as typed (PR #214 review).
 function fsTitle(record, formTitle, pageTitle) {
   const r = record || {};
   const auto = [r.name, r.collection].filter(Boolean).join(' - ') || 'FamilySearch record ' + r.fsId;

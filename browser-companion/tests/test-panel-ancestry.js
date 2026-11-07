@@ -465,3 +465,38 @@ test('a recapture of the same record keeps her corrections (#214 sweep)', async 
   assert.strictEqual(p.written[1].captureJson.title, 'Calvin Hartley, Fairview, 1880');
   assert.strictEqual(p.written[1].captureJson.source_date, '1880-06');
 });
+
+// ── PR #214, second Codex round (sweep) ──────────────────────────────────────
+
+const failingSingleFile = (respond) => (msg, tab) =>
+  (msg.action === 'singlefile' ? { ok: false, error: 'the page is too large to copy' } : respond(msg, tab));
+
+test('a title she typed is filed as typed, even one ending like the tab\'s (#214 sweep)', async () => {
+  for (const typed of ['Calvin Hartley census page - Ancestry.com', 'Calvin in 1880 | Ancestry']) {
+    const p = await open(CALVIN);
+    p.$('f-title').value = typed;
+    await p.$('f-title').fire('input');
+    await p.capture();
+    assert.strictEqual(p.written[0].captureJson.title, typed);
+  }
+  const p = await open(CALVIN);   // untouched: the tab's title gives way
+  await p.capture();
+  assert.strictEqual(p.written[0].captureJson.title, 'Calvin Hartley - 1880 United States Federal Census');
+});
+
+test('page copy unticked and it cannot be made, but the scan is there: the record is still saved (#214 sweep)', async () => {
+  const p = await open(CALVIN, { respond: failingSingleFile(ancestrySite()) });
+  p.$('cb-pagecopy').checked = false;
+  await p.capture();
+  assert.strictEqual(p.written.length, 1, p.result());
+  assert.deepStrictEqual(p.files(p.written[0]), ['record.jpg', 'record-data.json']);
+  assert.ok(!p.sent.some((m) => m.action === 'singlefile'));
+});
+
+test('an index entry needs its page copy: if it cannot be made, nothing half-filed is saved (#214 sweep)', async () => {
+  const p = await open(ETHEL, { respond: failingSingleFile(ancestrySite()) });
+  p.$('cb-pagecopy').checked = false;
+  await p.capture();
+  assert.strictEqual(p.written.length, 0);
+  assert.match(p.result(), /the copy of the web page could not be made/);
+});

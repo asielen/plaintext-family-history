@@ -502,3 +502,11 @@ test('a recapture of the same clipping keeps her corrections (#214 sweep)', asyn
   assert.strictEqual(p.written.length, 2);
   for (const b of p.written) assert.strictEqual(b.captureJson.title, 'Calvin Hartley obituary, Fairview Gazette');
 });
+
+test('a title she typed is filed as typed, even one that names the site (#214 sweep)', async () => {
+  const p = await openOn(URL_A, twoPages());
+  p.$('f-title').value = 'Calvin Hartley obituary - Newspapers.com';
+  await p.$('f-title').fire('input');
+  await p.capture();
+  assert.strictEqual(p.written[0].captureJson.title, 'Calvin Hartley obituary - Newspapers.com');
+});

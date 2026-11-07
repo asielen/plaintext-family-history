@@ -253,8 +253,13 @@ def extract(html: str, url: str | None) -> dict:
     if title_person or _ark_record(url):
         hints = record_hints(collection, _fields_date_of(_record_events(html, page.text)))
     if hints is not None:
-        source_date = hints['source_date'] or _description_date(
-            meta_content(page, 'og:description'), collection)
+        # The collection's own name is cut out of the description before its
+        # date is read - unless the "collection" IS the description (the
+        # fallback when the page names no collection): cutting that would
+        # erase the date with it (PR #214 review, Codex 4500491554).
+        description = meta_content(page, 'og:description')
+        cut = collection if collection and collection.strip() != (description or '').strip() else None
+        source_date = hints['source_date'] or _description_date(description, cut)
         source_type = hints['source_type'] or source_type_from_text(f'{collection} {title}', 'website')
     else:
         source_date = harvest_date(

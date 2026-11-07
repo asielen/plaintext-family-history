@@ -572,6 +572,18 @@ class CaptureTestCase(unittest.TestCase):
         self.assertEqual(familysearch._description_date('Death in 1957. Collection: X, 1940-1997', 'X, 1940-1997'),
                          '1957')
 
+    def test_familysearch_description_date_when_no_collection_is_named(self) -> None:
+        # PR #214 review (Codex 4500491554): without its fs:collection tag the
+        # page's "collection" falls back to the whole og:description; cutting
+        # that out before reading the date erased the date with it.
+        html = _sample('familysearch').replace(
+            '<meta name="fs:collection" content="County Marriages, 1865-1950">', '')
+        self.assertNotIn('fs:collection', html)
+        rc = self._capture(html, url='https://www.familysearch.org/ark:/61903/1:1:ABCD-123')
+        self.assertEqual(rc, EXIT_CLEAN)
+        meta = read_record(self._only_stub())['meta']
+        self.assertEqual(str(meta['source_date']), '1898-06-14')
+
     def test_familysearch_page_saved_with_seen_it_badges(self) -> None:
         # TI-067 on FamilySearch: Seen It's pills on a saved page are not the record.
         html = self._fs_record_page(

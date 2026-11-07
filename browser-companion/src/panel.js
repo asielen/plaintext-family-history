@@ -810,16 +810,16 @@
 
   async function captureAncestryRecord(pageHtml, wantPageCopy, form, recordUrl) {
     const info = await sendToTab(state.tabId, {
-      action: 'ancestryRecordInfo', formTitle: form.title,
+      // A title she typed is hers and is used as typed (below); only the
+      // form's untouched prefill goes through ancTitle's "is this just the
+      // tab's own title?" test (PR #214 review).
+      action: 'ancestryRecordInfo', formTitle: form.edited.has('f-title') ? '' : form.title,
     });
     if (!info || !info.ok) throw new Error((info && info.error) || 'could not read the Ancestry record');
     const rec = info.record;
     const hints = info.hints || {};
     const assets = [];
-    // Everything read from the tab, before the long scan download: the page
-    // copy is built now (kept below if wanted, or if there is no scan), and
-    // the tab must still be on this record (PR #214 review).
-    const pageCopy = await buildPageCopy();
+    // The record was read from the tab: it must still be on this record.
     await checkTabStillOn(recordUrl, [rec.recordId]);
 
     // A file the human dropped in is the record's image (her own download,
@@ -835,6 +835,10 @@
     const imageKey = rec.imageId ? rec.dbId + ':' + rec.imageId : null;
     let sameImageAs = !dropped && imageKey ? state.ancImages[imageKey] || null : null;
     if (!dropped && imageKey && !sameImageAs) sameImageAs = await seenItImage('img:' + imageKey);
+    // Read the page copy from the tab now, before the long scan download,
+    // when it is sure to be kept (recordPageCopy).
+    const willHaveScan = !!dropped || (!sameImageAs && !!rec.imageId);
+    let pageCopy = await recordPageCopy('early', wantPageCopy || !willHaveScan, recordUrl, [rec.recordId]);
     let imageWarning = null;
     if (dropped) {
       assets.push({
@@ -868,8 +872,10 @@
     // copy unticked) keeps the page copy anyway: filed alone, the index file
     // would become the source's main file under a new name, and the record
     // would lose both its role and its page (PR #213 audit #4).
+    const hasScan = assets.some((a) => a.role === 'record');
+    if (!pageCopy && !hasScan) pageCopy = await recordPageCopy('late', true, recordUrl, [rec.recordId]);
     let forcedCopy = false;
-    if (wantPageCopy || !assets.some((a) => a.role === 'record')) {
+    if (pageCopy && (wantPageCopy || !hasScan)) {
       assets.unshift({ filename: pageCopy.filename, blob: pageCopy.blob, role: 'webpage', mode: 'singlefile' });
       forcedCopy = !wantPageCopy;
     }
@@ -889,7 +895,8 @@
       role: 'site-data',
       mode: 'ancestry-page-data',
     });
-    const title = info.title || ('Ancestry record ' + rec.dbId + ':' + rec.recordId);
+    const title = (form.edited.has('f-title') && form.title) || info.title ||
+      ('Ancestry record ' + rec.dbId + ':' + rec.recordId);
     const cite = info.citation || {};
     const sameNote = sameImageAs
       ? 'Same page (image ' + rec.imageId + ') as ' + describeSameImage(sameImageAs) +
@@ -999,15 +1006,15 @@
   async function captureFamilySearchRecord(pageHtml, wantPageCopy, form, recordUrl) {
     const info = await sendToTab(state.tabId, {
       action: 'familysearchRecordInfo',
-      // Only a title she typed; otherwise FamilySearch's own name for the record.
-      formTitle: form.edited.has('f-title') ? form.title : '',
+      // FamilySearch's own name for the record; a title she typed is used
+      // as typed below, never second-guessed (PR #214 review).
+      formTitle: '',
     });
     if (!info || !info.ok) throw new Error((info && info.error) || 'could not read the FamilySearch record');
     const rec = info.record;
     const hints = info.hints || {};
     const assets = [];
-    // Everything read from the tab, before the long image download (#214).
-    const pageCopy = await buildPageCopy();
+    // The record was read from the tab: it must still be on this record.
     await checkTabStillOn(recordUrl, ['1:1:' + rec.fsId]);
     const dropped = form.dropped;
     const provisional = !!dropped && form.provisional;
@@ -1018,6 +1025,10 @@
     const imageKey = rec.imageId || null;
     let sameImageAs = !dropped && imageKey ? state.fsImages[imageKey] || null : null;
     if (!dropped && imageKey && !sameImageAs) sameImageAs = await seenItImage('fsimg:' + imageKey);
+    // The page copy, from the tab before the long image download, when it is
+    // sure to be kept (recordPageCopy).
+    const willHaveImage = !!dropped || (!sameImageAs && !!imageKey);
+    let pageCopy = await recordPageCopy('early', wantPageCopy || !willHaveImage, recordUrl, ['1:1:' + rec.fsId]);
     let imageWarning = null;
     if (dropped) {
       assets.push({ filename: 'record.' + dropped.ext, blob: dropped.blob, role: 'record', mode: 'manual', provisional });
@@ -1046,8 +1057,10 @@
 
     // No image in the bundle: the page copy comes too, ticked or not, so the
     // record's data is never filed as the source's main file.
+    const hasImage = assets.some((a) => a.role === 'record');
+    if (!pageCopy && !hasImage) pageCopy = await recordPageCopy('late', true, recordUrl, ['1:1:' + rec.fsId]);
     let forcedCopy = false;
-    if (wantPageCopy || !assets.some((a) => a.role === 'record')) {
+    if (pageCopy && (wantPageCopy || !hasImage)) {
       assets.unshift({ filename: pageCopy.filename, blob: pageCopy.blob, role: 'webpage', mode: 'singlefile' });
       forcedCopy = !wantPageCopy;
     }
@@ -1067,7 +1080,8 @@
       role: 'site-data',
       mode: 'familysearch-record-data',
     });
-    const title = info.bundleTitle || ('FamilySearch record ' + rec.fsId);
+    const title = (form.edited.has('f-title') && form.title) || info.bundleTitle ||
+      ('FamilySearch record ' + rec.fsId);
     const imageArk = imageKey ? 'https://www.familysearch.org/ark:/61903/3:1:' + imageKey : '';
     const notes = [
       gatherNotes(provisional, form.notes),
@@ -1473,6 +1487,30 @@
       throw new TabMoved('the page in the tab changed while this record was being saved, so nothing was ' +
         'saved. The panel is reading the new page now - check it is the record you mean, then press Capture again');
     }
+  }
+
+  // The page copy for a record capture (PR #214 reviews). It is read from the
+  // tab, so it is built before any long download whenever it is sure to be
+  // kept - she asked for it, or the bundle is sure to hold no image (an index
+  // entry, a household member pointing at another capture), when it is what
+  // the record's data is filed with. `early` is that first chance: a copy
+  // that cannot be made then fails the capture only if it is one of those.
+  // `late` is the second, after the image download failed and the bundle
+  // would otherwise hold the data alone: then the copy is required, and the
+  // tab must still be on the record. Returns the copy, or null.
+  async function recordPageCopy(when, needed, recordUrl, ids) {
+    if (!needed) return null;
+    let pc;
+    try {
+      pc = await buildPageCopy();
+    } catch (e) {
+      throw new Error((when === 'late'
+        ? 'the record has no image, and the copy of the web page its data is filed with could not be made ('
+        : 'the copy of the web page could not be made (') +
+        e.message + '). Reload the page and press Capture again, or untick the page copy');
+    }
+    await checkTabStillOn(recordUrl, ids);
+    return pc;
   }
 
   // The form as it stands the moment Capture is pressed. A record capture

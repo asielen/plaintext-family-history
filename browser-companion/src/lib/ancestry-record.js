@@ -393,8 +393,9 @@ function ancHints(record, fields) {
   });
 }
 
-// The bundle's title: what the human typed, unless the form still holds the
-// tab's own title ("1920 United States Federal Census - Ancestry.com", which
+// The bundle's title from the form's UNTOUCHED prefill (a title she typed
+// never comes here - the panel uses it as typed, PR #214 review): that title,
+// unless the form still holds the tab's own title ("1920 United States Federal Census - Ancestry.com", which
 // names only the collection; on any Ancestry site, ANC_TITLE_SUFFIX_RE) or
 // nothing; then "{name} - {collection}".
 function ancTitle(record, formTitle) {
