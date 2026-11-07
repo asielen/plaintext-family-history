@@ -151,6 +151,17 @@ def _one_edtf_to_gedcom(s: str) -> str | None:
                 tail = f'{int(d)} {tail}'
         return f'BEF {tail}'
 
+    # Its mirror, [1920..] (#206) - a GEDCOM "after" date.
+    after = re.match(r'^\[(\d{4})(?:-(\d{2}))?(?:-(\d{2}))?\.{2}\]$', s)
+    if after:
+        y, m, d = after.group(1), after.group(2), after.group(3)
+        tail = y
+        if m and 1 <= int(m) <= 12:
+            tail = f'{_MONTHS[int(m) - 1]} {y}'
+            if d:
+                tail = f'{int(d)} {tail}'
+        return f'AFT {tail}'
+
     # Decade like 185X → approximate mid-decade.
     decade = re.match(r'^(\d{3})X$', s)
     if decade:
@@ -191,10 +202,10 @@ def _edtf_to_gedcom(edtf: str | None) -> str | None:
         ga = _one_edtf_to_gedcom(a)
         gb = _one_edtf_to_gedcom(b)
         if ga and gb:
-            # Strip ABT/BEF qualifiers inside a range - BET..AND already conveys
-            # the span's fuzziness.
-            ga_core = ga.split(' ', 1)[-1] if ga.startswith(('ABT ', 'BEF ')) else ga
-            gb_core = gb.split(' ', 1)[-1] if gb.startswith(('ABT ', 'BEF ')) else gb
+            # Strip ABT/BEF/AFT qualifiers inside a range - BET..AND already
+            # conveys the span's fuzziness.
+            ga_core = ga.split(' ', 1)[-1] if ga.startswith(('ABT ', 'BEF ', 'AFT ')) else ga
+            gb_core = gb.split(' ', 1)[-1] if gb.startswith(('ABT ', 'BEF ', 'AFT ')) else gb
             return f'BET {ga_core} AND {gb_core}'
         return ga or gb
     return _one_edtf_to_gedcom(edtf)

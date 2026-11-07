@@ -388,7 +388,10 @@ All dates in archive records use **EDTF (ISO 8601-2)**:
 | Month approximate | `1850-~05` or `1850-05~` (tilde before or after month - both valid EDTF Level 1) |
 | Uncertain | `1850?` |
 | Before | `[..1920]` |
+| After | `[1920..]` |
 | Interval | `1871-02/1871-03` |
+
+*Decision log:* an earlier revision of this table had a Before row and no After row, so "on or after" had no stored form at all - a burial record that gives only the death date ("buried on or after 30 Sep 1880") could either drop its date, saying less than the evidence, or invent an upper bound (`1880-09-30/1880-10-31`), saying more. Changed 2026-11-06 (#206) - added `[1920..]`, the EDTF open-ended set and the exact mirror of `[..1920]`, so each meaning has one spelling in one bracket convention. The EDTF Level 1 open interval `1920/..` is deliberately **not** accepted as a synonym: one spelling per meaning keeps the archive's date dialect small.
 
 The one exception is embedded photo metadata, which cannot hold partial dates; §20 defines the bidirectional mapping to the keyword-pattern system used there.
 

@@ -2783,5 +2783,166 @@ class BackwardsIntervalTests(unittest.TestCase):
         self.assertIn('runs backwards', e014[0])
 
 
+from _lib import edtf_bounds  # noqa: E402  (#206 tests)
+
+
+class OnOrAfterDateTests(unittest.TestCase):
+    """#206: "on or after", the mirror of [..X], is a date the archive keeps.
+
+    A burial record often gives only the death date, so the honest burial
+    date is "on or after 30 Sep 1880". The archive used to reject every way
+    of writing that (E014), leaving two bad choices: drop the date, or
+    invent an upper bound. SPEC §11 now has the After row, `[1920..]`.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.source = _write_source(self.root)
+        _write_person(self.root, 'P-aaaaaaaaaa', 'Anna Smith')
+        (self.root / 'fha.yaml').write_text('roots:\n  documents: documents\n',
+                                           encoding='utf-8')
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _claims(self) -> dict:
+        return {c['id']: c for c in read_record(self.source)['claims']}
+
+    def _e014(self) -> list[str]:
+        import lint
+        result = lint.run_lint(self.root, load_fha_yaml(self.root))
+        return [m.text for m in result.messages if m.code == 'E014']
+
+    def test_the_after_form_is_a_date_the_archive_reads(self) -> None:
+        for form in ('[1920..]', '[1920-06..]', '[1880-09-30..]'):
+            with self.subTest(form=form):
+                self.assertTrue(is_valid_edtf(form))
+                self.assertEqual(normalize_date(form), form)
+
+    def test_plain_words_after_normalize_like_before_does(self) -> None:
+        self.assertEqual(normalize_date('after 1920'), '[1920..]')
+        self.assertEqual(normalize_date('after 1920-06-15'), '[1920-06-15..]')
+        self.assertEqual(normalize_date('on or after 30 Sep 1880'), '[1880-09-30..]')
+        self.assertEqual(normalize_date('before 1920'), '[..1920]')
+
+    def test_the_open_interval_spelling_is_not_a_synonym(self) -> None:
+        # One spelling per meaning (SPEC §11 decision log).
+        self.assertFalse(is_valid_edtf('1920/..'))
+        self.assertIsNone(normalize_date('1920/..'))
+
+    def test_an_impossible_after_bound_is_refused(self) -> None:
+        self.assertFalse(is_valid_edtf('[1900-02-31..]'))
+        self.assertFalse(is_valid_edtf('[1900-13..]'))
+
+    def test_bounds_start_at_the_date_and_stay_open(self) -> None:
+        self.assertEqual(edtf_bounds('[1920..]'), ('1920-01-01', '9999-12-31'))
+        self.assertEqual(edtf_bounds('[1880-09-30..]'), ('1880-09-30', '9999-12-31'))
+
+    def test_the_open_forms_do_not_trip_the_backwards_check(self) -> None:
+        # #216's backwards-range refusal must never misfire on an open bound.
+        for form in ('[1920..]', '[..1920]', '1910/[1920..]', '[..1900]/1910'):
+            with self.subTest(form=form):
+                self.assertTrue(is_valid_edtf(form))
+        # ...but an interval that starts after it ends is still backwards.
+        self.assertFalse(is_valid_edtf('[1920..]/1910'))
+
+    def test_an_after_date_ranks_below_a_dated_claim_for_the_headline(self) -> None:
+        from _lib import vital_pick_key
+        exact = {'date_min': '1880-01-01', 'date_max': '1880-12-31',
+                 'confidence': 'low', 'id': 'C-zzzzzzzzzz'}
+        after_min, after_max = edtf_bounds('[1880..]')
+        after = {'date_min': after_min, 'date_max': after_max,
+                 'confidence': 'high', 'id': 'C-0000000000'}
+        self.assertLess(vital_pick_key(exact), vital_pick_key(after))
+
+    def test_it_reads_as_after_in_plain_words(self) -> None:
+        from _lib import humanize_edtf
+        self.assertEqual(humanize_edtf('[1920..]'), 'after 1920')
+
+    def test_fha_claim_date_round_trips_quoted_and_lint_is_clean(self) -> None:
+        for given, stored in (('[1920..]', '[1920..]'),
+                              ('after 1920-06-15', '[1920-06-15..]')):
+            with self.subTest(given=given):
+                result = claim.run_claim(self.root, claim_id='C-aa11bb22cc', date=given)
+                self.assertEqual(result.exit_code, EXIT_CLEAN, result.messages)
+                self.assertEqual(str(self._claims()['C-aa11bb22cc']['date']), stored)
+                # Bare, YAML would read the bracket as a list (#205).
+                self.assertIn(f"  date: '{stored}'\n",
+                              self.source.read_text(encoding='utf-8'))
+                self.assertEqual(self._e014(), [])
+
+    def test_fha_claim_new_round_trips(self) -> None:
+        result = claim.run_claim_new(
+            self.root, source_id='S-1111111111', claim_type='residence',
+            value='Lived in Topeka', date='after 1920')
+        self.assertEqual(result.exit_code, EXIT_CLEAN, result.messages)
+        self.assertEqual(str(self._claims()[result['claim_id']]['date']), '[1920..]')
+        self.assertEqual(self._e014(), [])
+
+    def test_a_burial_on_or_after_the_death_date(self) -> None:
+        # TI-068: the record gives only the death date (30 Sep 1880), so the
+        # burial is "on or after" it - kept as such, not dropped, not bounded.
+        result = claim.run_claim_new(
+            self.root, source_id='S-1111111111', claim_type='burial',
+            value='Buried after her death on 30 Sep 1880', persons=['P-aaaaaaaaaa'],
+            date='on or after 30 Sep 1880')
+        self.assertEqual(result.exit_code, EXIT_CLEAN, result.messages)
+        stored = str(self._claims()[result['claim_id']]['date'])
+        self.assertEqual(stored, '[1880-09-30..]')
+        self.assertEqual(edtf_bounds(stored)[0], '1880-09-30')
+        self.assertEqual(self._e014(), [])
+
+    def test_gedcom_exports_aft(self) -> None:
+        import gedcom
+        self.assertEqual(gedcom._edtf_to_gedcom('[1920..]'), 'AFT 1920')
+        self.assertEqual(gedcom._edtf_to_gedcom('[1880-09-30..]'), 'AFT 30 SEP 1880')
+        self.assertEqual(gedcom._edtf_to_gedcom('[..1920]'), 'BEF 1920')
+
+    def test_gedcom_import_reads_aft_back(self) -> None:
+        import gedcom_import
+        self.assertEqual(gedcom_import.gedcom_date_to_edtf('AFT 30 SEP 1880'), '[1880-09-30..]')
+
+    def test_site_prose_reads_a_stray_after_bracket_in_words(self) -> None:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('fha_site_206', ROOT / 'tools' / 'site.py')
+        site_mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(site_mod)
+        self.assertEqual(site_mod._scrub_internal_encoding('Buried [1880-09-30..] at Fairview'),
+                         'Buried after September 30, 1880 at Fairview')
+        # An impossible bound is left as written, never guessed at.
+        self.assertEqual(site_mod._scrub_internal_encoding('[1900-02-31..]'), '[1900-02-31..]')
+
+    def test_the_index_sorts_it_at_its_start_date(self) -> None:
+        # Timeline order is ORDER BY date_min: the after-form sorts where it
+        # starts, between a claim dated before it and one dated after it.
+        import index
+        claim.run_claim(self.root, claim_id='C-aa11bb22cc', date='1870')
+        claim.run_claim(self.root, claim_id='C-bb22cc33dd', date='1890')
+        new = claim.run_claim_new(
+            self.root, source_id='S-1111111111', claim_type='residence',
+            value='Lived in Topeka', date='[1880..]')
+        index.build_index(self.root, load_fha_yaml(self.root))
+        conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
+        try:
+            rows = conn.execute(
+                'SELECT id, date_min, date_max FROM claims ORDER BY date_min').fetchall()
+        finally:
+            conn.close()
+        self.assertEqual([r[0] for r in rows],
+                         ['c-aa11bb22cc', new['claim_id'].lower(), 'c-bb22cc33dd'])
+        self.assertEqual(rows[1][1:], ('1880-01-01', '9999-12-31'))
+
+    def test_lint_glosses_a_loose_after_date(self) -> None:
+        text = self.source.read_text(encoding='utf-8')
+        self.source.write_text(text.replace('  date: 1880\n', '  date: after 1880\n'),
+                               encoding='utf-8')
+        import lint
+        result = lint.run_lint(self.root, load_fha_yaml(self.root))
+        w109 = [m.text for m in result.messages if m.code == 'W109']
+        self.assertEqual(len(w109), 1, w109)
+        self.assertIn("'[1880..]' (on or after 1880)", w109[0])
+
+
 if __name__ == '__main__':
     unittest.main()

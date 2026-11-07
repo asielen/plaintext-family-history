@@ -71,6 +71,8 @@ You don't need real dates. Say it the way you'd say it out loud - the tool store
 | "about 1880" | `1880~` |
 | "the 1880s" | `188X` |
 | "sometime in 1898" | `1898` |
+| "before 1920" | `[..1920]` |
+| "after 1920" (a burial known only from the death date) | `[1920..]` |
 | "February or March 1871" | `1871-02/1871-03` |
 | "no idea" | nothing - it stays blank, honestly |
 

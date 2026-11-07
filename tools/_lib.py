@@ -1328,7 +1328,7 @@ def format_edtf_error(value: object, *, field: str = 'date') -> str:
     return (
         f'{field} {value!r} is not a date the archive can read. '
         f'Write it {EDTF_EXAMPLE_TEXT}, or in plain words like '
-        f'"about 1880", "before 1880", or "the 1880s".'
+        f'"about 1880", "before 1880", "after 1880", or "the 1880s".'
     )
 
 
@@ -4829,6 +4829,7 @@ _EDTF_PATTERNS = [
     re.compile(r'^\d{4}-~?\d{2}[~?]?$'),                     # 1850-05, 1850-~05, 1850-05~
     re.compile(r'^\d{4}-~?\d{2}-~?\d{2}[~?]?$'),             # 1850-05-20 and approximate variants
     re.compile(r'^\[\.{2}\d{4}(?:-\d{2})?(?:-\d{2})?\]$'),   # [..1920]
+    re.compile(r'^\[\d{4}(?:-\d{2})?(?:-\d{2})?\.{2}\]$'),   # [1920..] (#206)
 ]
 
 
@@ -4909,12 +4910,14 @@ def backwards_interval_halves(value: object) -> tuple[str, str] | None:
 #
 # Each prefix must be followed by whitespace so a bare word never swallows a year
 # that happens to start with the same letters.  "circa"/"about" → approximate (~);
-# "before"/"by" → the EDTF before-form ([..YYYY]); "maybe"/"possibly" → uncertain (?).
+# "before"/"by" → the EDTF before-form ([..YYYY]); "after" → its mirror, the
+# after-form ([YYYY..], #206); "maybe"/"possibly" → uncertain (?).
 _APPROX_PREFIX_RE = re.compile(
     r'^(?:c|ca|circa|abt|about|around|approx|approximately|roughly|est|estimated)\.?\s+',
     re.I,
 )
-_BEFORE_PREFIX_RE = re.compile(r'^(?:before|bef|prior to|by)\.?\s+', re.I)
+_BEFORE_PREFIX_RE = re.compile(r'^(?:on or before|before|bef|prior to|by)\.?\s+', re.I)
+_AFTER_PREFIX_RE = re.compile(r'^(?:on or after|after|aft|later than)\.?\s+', re.I)
 _UNCERTAIN_PREFIX_RE = re.compile(r'^(?:maybe|possibly|perhaps|probably)\.?\s+', re.I)
 _MONTH_NAMES = {
     'jan': 1, 'january': 1,
@@ -4932,8 +4935,9 @@ _MONTH_NAMES = {
 }
 
 
-def _loose_date_parts(raw: str) -> tuple[str, bool, bool, bool]:
-    """A loose date's text with its hedge words read off: (rest, approx, before, uncertain).
+def _loose_date_parts(raw: str) -> tuple[str, bool, bool, bool, bool]:
+    """A loose date's text with its hedge words read off:
+    (rest, approx, before, after, uncertain).
 
     The one reader both `normalize_date` and `backwards_interval_halves` use,
     so the two cannot disagree about which words are a hedge (#217 audit:
@@ -4952,15 +4956,17 @@ def _loose_date_parts(raw: str) -> tuple[str, bool, bool, bool]:
     if text.startswith('~'):
         text = 'circa ' + text[1:].strip()
 
-    approx = before = uncertain = False
+    approx = before = after = uncertain = False
     m = _APPROX_PREFIX_RE.match(text)
     if m:
         approx, text = True, text[m.end():].strip()
     elif (m := _BEFORE_PREFIX_RE.match(text)):
         before, text = True, text[m.end():].strip()
+    elif (m := _AFTER_PREFIX_RE.match(text)):
+        after, text = True, text[m.end():].strip()
     elif (m := _UNCERTAIN_PREFIX_RE.match(text)):
         uncertain, text = True, text[m.end():].strip()
-    return text, approx, before, uncertain
+    return text, approx, before, after, uncertain
 
 
 def normalize_date(s: str | None) -> str | None:
@@ -4975,7 +4981,8 @@ def normalize_date(s: str | None) -> str | None:
     Recognised loose forms (everything else → None):
       circa/ca/c./abt/about/around/approx/est 1870, ~1870  → 1870~  (approximate)
       maybe/possibly/perhaps 1870                          → 1870?  (uncertain)
-      before/bef/prior to/by 1920                          → [..1920]
+      before/bef/prior to/by/on or before 1920             → [..1920]
+      after/aft/later than/on or after 1920                → [1920..]  (#206)
       1870s, 1870's, 187x                                  → 187X   (decade)
       between 1870 and 1875, 1870 to 1875, 1870-1875       → 1870/1875 (interval)
       ("1875 to 1870" runs backwards → None, never silently swapped: either
@@ -4995,7 +5002,7 @@ def normalize_date(s: str | None) -> str | None:
     if is_valid_edtf(raw):
         return raw
 
-    text, approx, before, uncertain = _loose_date_parts(raw)
+    text, approx, before, after, uncertain = _loose_date_parts(raw)
 
     candidate: str | None = None
 
@@ -5040,6 +5047,8 @@ def normalize_date(s: str | None) -> str | None:
     if candidate and (date_m or month_year_m or month_day_year_m or day_month_year_m):
         if before:
             candidate = f'[..{candidate}]'
+        elif after:
+            candidate = f'[{candidate}..]'
         elif approx:
             candidate = f'{candidate}~'
         elif uncertain:
@@ -5083,6 +5092,15 @@ def edtf_bounds(s: str | None) -> tuple[str, str]:
     before_m = re.match(r'^\[\.{2}(\d{4}(?:-\d{2})?(?:-\d{2})?)\]$', s)
     if before_m:
         return ('0001-01-01', _pad_date(before_m.group(1), 'max'))
+
+    # After: [YYYY..] or [YYYY-MM..] or [YYYY-MM-DD..] (#206) - the mirror of
+    # the before-form: it starts at the stated date and is open to the
+    # archive's ceiling, the same '9999-12-31' an undated value gets. Read
+    # through the plain date's own bounds so an impossible month or day
+    # ('[1900-02-31..]') raises here and is refused, never padded through.
+    after_m = re.match(r'^\[(\d{4}(?:-\d{2})?(?:-\d{2})?)\.{2}\]$', s)
+    if after_m:
+        return (edtf_bounds(after_m.group(1))[0], '9999-12-31')
 
     # Decade: 185X
     decade_m = re.match(r'^(\d{3})X$', s)

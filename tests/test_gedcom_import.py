@@ -117,8 +117,8 @@ class DateTableTestCase(unittest.TestCase):
             self.assertTrue(is_valid_edtf(result))
         else:
             self.assertIsNone(result)
-        # Today's suite has no after-form pattern, so document the live outcome.
-        self.assertEqual(result, '[1850..]' if is_valid_edtf('[1850..]') else None)
+        # SPEC §11 now has the after-form (#206), so the probe lands it.
+        self.assertEqual(result, '[1850..]')
 
     def test_between_and_from_to(self) -> None:
         self.assertEqual(gedcom_import.gedcom_date_to_edtf('BET 1870 AND 1875'), '1870/1875')
@@ -249,9 +249,11 @@ class ApplyTestCase(_ArchiveCase):
         frances = by_name['Frances Thorsson'][1]
         self.assertEqual(frances['living'], 'unknown')         # b. 1990
         self.assertEqual(frances['birth'], '1990')
-        # AFT birth parses to no EDTF, so no provisional date and unknown.
+        # AFT birth parses to the SPEC §11 after-form (#206) and reads back as
+        # that string, not a YAML list. It is open-ended ("born after 1900":
+        # she could still be young), so the living heuristic stays unknown.
         ada = by_name['Ada Hartley'][1]
-        self.assertNotIn('birth', ada)
+        self.assertEqual(ada['birth'], '[1900..]')
         self.assertEqual(ada['living'], 'unknown')
         # Extra NAME lines land in name_variants; every stub is tier: stub.
         jon = by_name['Jon Thorsson'][1]

@@ -87,7 +87,8 @@ CODE MAP
                                  decisions read this, not a guess
     _scrub_internal_encoding   - drop a bare (C-xxxx) parenthetical / translate
                                  a [..YYYY] "before" bracket (or a two-sided
-                                 [..YYYY]/YYYY interval) / redact a bare
+                                 [..YYYY]/YYYY interval) or a standalone
+                                 [YYYY..] "after" bracket / redact a bare
                                  [PSCLH]-xxxxxxxxxx citation id (`_BARE_ID_RE`,
                                  a defense-in-depth backstop for a citation
                                  that leaked past `_INLINE_RE` unmatched) in
@@ -918,6 +919,12 @@ _INLINE_BOUNDARY_CHAR = 'x'
 # context and the sentence reads as broken. Translated in place instead.
 _DATE_BEFORE_RE = re.compile(r'\[\.\.(\d{4})(?:-(\d{2}))?(?:-(\d{2}))?\]')
 
+# Its mirror, the after-form `[YYYY[-MM[-DD]]..]` (SPEC §11, #206), read as
+# "after <date>" by `_translate_date_after`. Standalone only: unlike the
+# before-form there is no two-sided-interval translator for it, so a bracket
+# against a `/` is left as written rather than half-translated.
+_DATE_AFTER_RE = re.compile(r'\[(\d{4})(?:-(\d{2}))?(?:-(\d{2}))?\.\.\]')
+
 # The two-sided-interval shape `_translate_date_before` deliberately leaves
 # alone (see its docstring): one bound written as a `[..YYYY[-MM[-DD]]]`
 # bracket, the OTHER a plain `YYYY[-MM[-DD]]` (or `\d{3}X` decade, or either
@@ -1255,6 +1262,30 @@ def _translate_date_before(match: re.Match) -> str:
     return f'before {_format_edtf_ymd(year, month, day)}'
 
 
+def _translate_date_after(match: re.Match) -> str:
+    """One `[YYYY[-MM[-DD]]..]` match -> "after <date>", the word base.html's
+    date-notation legend uses for the after-form (SPEC §11, #206).
+
+    The same two guards as `_translate_date_before`, for the same reasons: an
+    impossible bound (`[1900-02-31..]`) fails `is_valid_edtf` and is left as
+    written, and a bracket sitting against a `/` is one bound of an interval
+    this one-phrase translator cannot speak for, so it is left alone too.
+    """
+    text = match.string
+    start, end = match.start(), match.end()
+    if (start > 0 and text[start - 1] == '/') or (end < len(text) and text[end] == '/'):
+        return match.group(0)
+    year, month, day = match.group(1), match.group(2), match.group(3)
+    bare = year
+    if month:
+        bare += f'-{month}'
+        if day:
+            bare += f'-{day}'
+    if not is_valid_edtf(bare):
+        return match.group(0)
+    return f'after {_format_edtf_ymd(year, month, day)}'
+
+
 def _translate_date_before_slash(match: re.Match) -> tuple[str, int, int]:
     """One two-sided EDTF interval, exactly one side a `[..YYYY[-MM[-DD]]]`
     bracket and the other a plain `YYYY[-MM[-DD]]`, joined by `/` -> a
@@ -1528,6 +1559,7 @@ def _scrub_internal_encoding(text: str, next_char: str | None = None) -> str:
     text = _BARE_ID_RE.sub(lambda m: _redact_bare_id(m, next_char), text)
     text = _apply_date_before_slash(text)
     text = _DATE_BEFORE_RE.sub(_translate_date_before, text)
+    text = _DATE_AFTER_RE.sub(_translate_date_after, text)
     return text
 
 
