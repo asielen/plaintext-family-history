@@ -4760,12 +4760,16 @@ def select_variation_primary(members: list, parsed_of) -> object:
         and parsed_of(m).part_kind == 'none'
         and not parsed_of(m).is_crop
     ]
-    if plain:
-        roots = [
-            m for m in plain
-            if not any(o is not m and _extends_name(parsed_of(m).base_id, parsed_of(o).base_id)
-                       for o in plain)
-        ] or plain
+    # A plain scan whose name extends ANY member's - a plain one, a front,
+    # a back - is that member's attachment, never the picture:
+    # 'portrait-envelope.jpg' beside 'portrait-front.jpg' as much as beside
+    # 'portrait.jpg' (#209 review).
+    roots = [
+        m for m in plain
+        if not any(o is not m and _extends_name(parsed_of(m).base_id, parsed_of(o).base_id)
+                   for o in members)
+    ]
+    if roots:
         unlabelled = [m for m in roots if parsed_of(m).freeform_role is None]
         return min(unlabelled or roots)
     fronts = [

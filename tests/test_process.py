@@ -3386,6 +3386,23 @@ class ProcessTestCase(unittest.TestCase):
         self.assertEqual(files['portrait-envelope.jpg']['role'], 'envelope')
         self.assertNotIn(files['portrait-envelope.jpg'].get('is_primary'), (True, 'true'))
 
+    def test_bundle_keeps_an_explicit_front_as_main_image_over_its_envelope(self) -> None:
+        # #209 review round 2: with 'portrait-front.jpg' the envelope was the
+        # only PLAIN file, so it won before the front tier was reached.
+        self._install_photo_store()
+        bundle = self.archive / 'inbox' / 'front-bundle'
+        bundle.mkdir(parents=True)
+        (bundle / 'notes.md').write_text(
+            '---\ntitle: Portrait of Ada\nsource_type: photo\n---\nIn an envelope.\n',
+            encoding='utf-8')
+        (bundle / 'portrait-front.jpg').write_bytes(b'\xff\xd8\xff')
+        (bundle / 'portrait-envelope.jpg').write_bytes(b'\xff\xd8\xff')
+        self.assertEqual(self._run([str(bundle)]), EXIT_CLEAN)
+        record = next((self.archive / 'sources').rglob('*_S-*.md'))
+        files = {Path(f['file']).name: f for f in read_record(record)['meta']['files']}
+        self.assertIn(files['portrait-front.jpg']['is_primary'], (True, 'true'))
+        self.assertEqual(files['portrait-envelope.jpg']['role'], 'envelope')
+
     def test_bundle_extracted_text_companion_stays_searchable(self) -> None:
         # #209 review: the last-word rule read 'record-extracted-text.txt' as
         # role 'text', which `fha index` does not load, so its words vanished

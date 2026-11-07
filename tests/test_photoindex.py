@@ -749,6 +749,13 @@ class PhotoindexTests(unittest.TestCase):
         self.assertEqual(rows['c/portrait-envelope.jpg'][3], 'envelope')
         self.assertEqual(rows['b/grandma-note.jpg'][3], 'note')
 
+    def test_a_processed_front_stays_main_image_over_its_envelope(self) -> None:
+        # #209 review round 2: an explicit '-front' beside an envelope.
+        rows = self._group([('d/portrait-front.jpg', 'S-323456789a'),
+                            ('d/portrait-envelope.jpg', 'S-323456789a')])
+        self.assertEqual(rows['d/portrait-front.jpg'][1], 1)
+        self.assertEqual(rows['d/portrait-envelope.jpg'][1], 0)
+
     def test_person_match_on_one_variant_propagates_to_whole_group(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             archive = _copy_fixture(Path(d))
