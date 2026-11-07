@@ -168,7 +168,7 @@
     {
       "path": ".fha/browser-companion/README.md",
       "category": "operating",
-      "sha256": "1113f06b47e4830a2da3abbed217f658fc3ac7b41dbbef80c13a00ee175e0619",
+      "sha256": "a92c1f3badbecac9445fefc8e34cac0be4d54775e6eb6e22f493da5ac27c74fc",
       "spec_version": "1.2",
       "src": "browser-companion/README-ARCHIVE.md"
     },
@@ -203,7 +203,7 @@
     {
       "path": ".fha/browser-companion/manifest.json",
       "category": "operating",
-      "sha256": "267233839415fbca87cc40a8b40372af8772903aa3f50488ffad6f7d0947f85c",
+      "sha256": "6aa80309a30924bfb12506f50e9889d93cf177befe6c55888c338774b16e679b",
       "spec_version": "1.2",
       "src": "browser-companion/manifest.json"
     },
@@ -217,7 +217,7 @@
     {
       "path": ".fha/browser-companion/src/content.js",
       "category": "operating",
-      "sha256": "800517a7250055c7ab12fae51b28b47c7f2165da2c3094243c1bf5903aeac648",
+      "sha256": "f9e4b13f7a81c2c77bf667c5fc7d5097a900b597a64f14156f7e3b352f87b4fc",
       "spec_version": "1.2",
       "src": "browser-companion/src/content.js"
     },
@@ -322,21 +322,21 @@
     {
       "path": ".fha/browser-companion/src/panel.css",
       "category": "operating",
-      "sha256": "ed91fb2490745ead1f51559cbcffd91bda276f0b369c45e70fa77b342a3d5374",
+      "sha256": "a566031bd78d7dcc0cdf33b1501c2e37c87f15c2305e087dbf970a9397f86cee",
       "spec_version": "1.2",
       "src": "browser-companion/src/panel.css"
     },
     {
       "path": ".fha/browser-companion/src/panel.html",
       "category": "operating",
-      "sha256": "7e7d9a0080866195031068601bb88c961c117d2170fdf78fc8146d54c225081c",
+      "sha256": "e8c284c16dc204795539fce7a51f253804debe973f3bab906b76055c457a53cf",
       "spec_version": "1.2",
       "src": "browser-companion/src/panel.html"
     },
     {
       "path": ".fha/browser-companion/src/panel.js",
       "category": "operating",
-      "sha256": "5f243fa1adcd021f8b87407387772b54ef29a2c4b6516cd86738b08f875375a9",
+      "sha256": "c077a5a34333447aad157e11032d30f75e0a7a517dca6c6ed853da3a87ade393",
       "spec_version": "1.2",
       "src": "browser-companion/src/panel.js"
     },
