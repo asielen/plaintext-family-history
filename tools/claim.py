@@ -610,7 +610,10 @@ def _validate_field_args(
                 '`fha person new "Name"`, or run `fha stubs --from-names` to create one for '
                 'every unresolved name, then retry.',
                 next_step='fha person new "Name"'), None, None
-        persons_norm = [normalize_id(p) for p in persons]
+        # A person typed twice (`--persons P-a,P-a`) is kept once, in first-seen
+        # order: no claim means to name one person twice, and writing the
+        # repeat would only earn the claim a lint W135 tidy-up warning (#65).
+        persons_norm = list(dict.fromkeys(normalize_id(p) for p in persons))
 
     return None, normalized_date, persons_norm
 

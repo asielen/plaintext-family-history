@@ -2763,6 +2763,73 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
                             f'{fmt_id_display(pid)} to persons: too, or remove this '
                             'roles: entry if it does not belong on this claim.'))
 
+            # W135 (#65): the same person named twice in one claim's persons:
+            # - typically a name-link pasted beside the P-id it resolves to
+            # (`[P-a, "[[Alice Smith]]"]`), or a merge that rewrote one entry
+            # onto an id already present. Every reader now counts PEOPLE, not
+            # entries (_lib.spouse_parties folds, index._derive_relationships
+            # dedupes, the spouse inserts refuse p1 == p2 - PR #61), so a
+            # true repeat is inert; the warning is tidy-up for the human
+            # reading the file. Compared on the RESOLVED id, so a P-id and a
+            # name-link for the same person count as one.
+            #
+            # A NAME that resolves onto a code already listed is not always a
+            # repeat, though (#215 audit): "[[John Smith]]" beside John Sr.'s
+            # code may have been written for his son, who has no record yet,
+            # and the only John Smith in the archive is the father. Fathers and
+            # sons sharing a name is ordinary in this work, so that shape is
+            # never called harmless and never handed a one-line command that
+            # would erase the son: the human is asked which it is.
+            refs = link_field_refs(claim.get('persons'))
+            resolved = [(ref, _resolve_person_ref(ref, alias_map)) for ref in refs]
+            claim_pids = [pid for _ref, pid in resolved if pid]
+            repeated = sorted({p for p in claim_pids if claim_pids.count(p) > 1})
+            if repeated:
+                names = ', '.join(_person_label(registry, p) for p in repeated)
+                by_name = [ref for ref, pid in resolved
+                           if pid in repeated and not id_type_of(ref)]
+                unique_pids = list(dict.fromkeys(claim_pids))
+                # The claim's id as written, as TEXT: YAML reads a hand-typed
+                # `id: 123` as an integer, and formatting that crashed the
+                # whole lint run before it could report the E002 that says
+                # the id is malformed (Codex, #215).
+                claim_id_text = str(claim.get('id') or '').strip()
+                # Only a command that will actually run: a real claim id,
+                # every entry resolved, and every one a person with a record
+                # (`fha claim --persons` refuses a dangling P-id and a
+                # non-person code - #215 audit).
+                command_works = (
+                    id_type_of(claim_id_text) == 'C'
+                    and len(claim_pids) == len(refs)
+                    and all(id_type_of(pid) == 'P' and registry.has_person(pid)
+                            for pid in unique_pids))
+                command = ('`fha claim '
+                           f'{fmt_id_display(claim_id_text)} --persons '
+                           + ','.join(fmt_id_display(p) for p in unique_pids) + '`'
+                           if command_works else '')
+                if by_name:
+                    written = ', '.join(f'"[[{r}]]"' for r in by_name)
+                    keep_once = (f'run {command} to keep them once'
+                                 if command_works else
+                                 "delete the name from that claim's persons: line")
+                    findings.append(Finding('W', 'W135', src_path,
+                        f'Claim {claim.get("id","?")} lists {names} by code, and again '
+                        f'by the name {written}. If the name means the same person, '
+                        f'{keep_once}. If it was meant for a different person with the '
+                        'same name (a father and son, say), give that person their own '
+                        'record with `fha person new "Name"` and put their code there '
+                        'instead.'))
+                else:
+                    fix = (f'To tidy it, run {command} (it keeps each person once).'
+                           if command_works else
+                           'To tidy it, open the source file and delete the '
+                           "repeated entry from that claim's persons: line.")
+                    findings.append(Finding('W', 'W135', src_path,
+                        f'Claim {claim.get("id","?")} lists {names} more than once in '
+                        'persons:. Nothing is wrong because of it - every tool counts '
+                        'each person once - but the list reads as if two people were '
+                        f'named. {fix}'))
+
             # W125: a marriage/divorce naming more than two people without
             # saying which two were the couple. Certificates routinely name the
             # couple AND both sets of parents, and listing all six in persons:
