@@ -1263,11 +1263,15 @@
   // words lib/capture-batch.js classifyError reads): a batch download stops
   // after a capture that met one, even when the capture itself got through.
   const SLOW_DOWN_RE = /slow down|HTTP 429|HTTP 503|too many requests/i;
-  // An image that will not come from here however often it is asked for
-  // (center-only, no download offered): a record saved without it is done.
-  // Any other missing image makes the save partial, and a batch comes back
-  // for it on a later Start (lib/capture-batch.js markPartial).
-  const IMAGE_FOR_GOOD_RE = /restricted|offers no download|did not offer a downloadable/i;
+  // A missing image or photo whose cause passes - a "slow down", a site
+  // having trouble, no connection, a page that did not answer, a lost login
+  // - makes the save partial, and a batch comes back for it on a later Start
+  // (lib/capture-batch.js markPartial). Every other cause lasts (a refused
+  // download, a picture too small to be the record, no image at the
+  // address, center-only): asking again would only save the same record
+  // again, so the record is done, its note saying what is missing.
+  const PASSES_RE = /slow down|HTTP 429|HTTP 5\d\d|having trouble|could not reach|internet connection|broke off|did not answer|no answer from the page|HTTP 401|asked you to sign in/i;
+  const passes = (why) => PASSES_RE.test(String(why || ''));
 
   // A batch download names the record it queued (`opts.expectKey`, the Seen
   // It key "rec:…", "fsrec:…", "fag:…"); the record the page shows must be
@@ -1422,7 +1426,7 @@
       // The Seen It key that says this record's scan is saved (asked before
       // a partial save is captured again).
       imageKey: imageKey ? 'img:' + imageKey : null,
-      partial: !!imageWarning && !IMAGE_FOR_GOOD_RE.test(imageWarning),
+      partial: !!imageWarning && passes(imageWarning),
       slowDown: SLOW_DOWN_RE.test(imageWarning || ''),
       note: imageWarning ? 'image not saved: ' + imageWarning.split('. The record')[0]
         : sameImageAs ? 'page already saved in ' + describeSameImage(sameImageAs) : null,
@@ -1618,7 +1622,7 @@
       record: { fsId: rec.fsId, name: rec.name || null },
       bundle: st.bundle, where: st.where,
       imageKey: imageKey ? 'fsimg:' + String(imageKey).toUpperCase() : null,
-      partial: !!imageWarning && !IMAGE_FOR_GOOD_RE.test(imageWarning),
+      partial: !!imageWarning && passes(imageWarning),
       slowDown: SLOW_DOWN_RE.test(imageWarning || ''),
       note: imageWarning ? 'image not saved: ' + imageWarning.split('. The record')[0]
         : sameImageAs ? 'image already saved in ' + describeSameImage(sameImageAs) : null,
@@ -1847,12 +1851,14 @@
       key: 'fag:' + rec.memorialId,
       record: { memorialId: rec.memorialId, slug: rec.slug || null, name: rec.name || null },
       bundle: st.bundle, where: st.where,
-      // Photos still to come - the list read in part, some not tried (a
-      // "slow down", over the limit of one capture), or failed for a reason
-      // that may pass - make it partial. A photo Find a Grave no longer has
-      // never will.
-      partial: !galleryOk || partList || notTried.length > 0 || skipped.length > 0 ||
-        failed.some((ph) => !/no longer has this photo/i.test(ph.error || '')),
+      // Photos still to come make it partial: some not tried (a "slow down",
+      // over the limit of one capture), or the list or a photo failed for a
+      // cause that passes. A photo refused or gone, or a list that is short
+      // every time, would only be saved the same way again.
+      partial: notTried.length > 0 || skipped.length > 0 ||
+        (!galleryOk && passes(gallery && gallery.error)) ||
+        (galleryOk && partList && passes(gallery.partialError)) ||
+        failed.some((ph) => passes(ph.error)),
       // A "slow down" while its photos were listed or fetched (429): the
       // memorial is saved with the photos that came, and a batch stops.
       slowDown: slowDown || (!galleryOk && SLOW_DOWN_RE.test((gallery && gallery.error) || '')),

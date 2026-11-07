@@ -215,7 +215,9 @@ test('classifyError: one record\'s cause sets it aside; the run\'s own cause sto
     ['this page shows no memorial - it may have been removed or merged into another. Search Find a Grave', 'retry'],
     // Anything else: stop at once, and set aside if the same record is refused again.
     ['Find a Grave refused the memorial (HTTP 403). Reload the page', 'refused'],
-    ['FamilySearch is having trouble (HTTP 500). Try again in a little while', 'refused'],
+    // A site having trouble (any 5xx) is the run's cause, never the record's (D3).
+    ['FamilySearch is having trouble (HTTP 500). Try again in a little while', 'stop'],
+    ['FamilySearch is having trouble (HTTP 502). Try again in a little while', 'stop'],
     ['something nobody expected', 'refused'],
     ['', 'refused'],
   ];

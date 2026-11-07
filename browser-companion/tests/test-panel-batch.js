@@ -851,3 +851,113 @@ test('batch downloads switched off mid-run: the run stops after the record being
   await start(p, 'anc');
   assert.deepStrictEqual(p.navigations.map((n) => n.url), [CALVIN]);
 });
+
+// ── PR #224 stand-in review D1-D4 ───────────────────────────────────────────
+
+test('D1: a clipping whose title holds a number like 503 is a record, not a busy page', async () => {
+  const lists = [{ ok: true, user: ME.username, more: false, nextCursor: null, clippings: [
+    listed(101, 'Fire at 503 Elm Street', NP_A), listed(202, 'Hartley wedding', NP_B)] }];
+  const p = await openPanel({ url: NP_A, respond: npSite(lists), storage: ON,
+    titleFor: (u) => (u === NP_A ? 'Fire at 503 Elm Street - Newspapers.com' : 'Clipping 500 of 504 - Newspapers.com') });
+  quick(p);
+  await start(p, 'np');
+  assert.strictEqual(p.written.length, 2, p.batchEl('np-status').textContent);
+  assert.match(p.batchEl('np-status').textContent, /^Finished\. 2 done/);
+});
+
+test('D1: a record whose address shows a busy page Start after Start is set aside, and the queue moves on', async () => {
+  const p = await openPanel({ url: FAG_CALVIN, respond: fagSite(), storage: Object.assign({}, ON, { fagBatchLedger: fagLedger(2) }),
+    titleFor: (u) => (/900000001$/.test(u) ? '503 Service Temporarily Unavailable' : 'A memorial - Find a Grave'),
+    fetch: async (url) => ({ ok: true, status: 200, url, headers: { get: () => 'image/jpeg' },
+      blob: async () => new Blob(['photo'], { type: 'image/jpeg' }) }) });
+  quick(p);
+  await start(p, 'fag');
+  assert.strictEqual(p.storage.fagBatchLedger.items['900000001'].state, 'queued');
+  p.storage.fagBatchLedger.pacing.resumeAt = 0;
+  await start(p, 'fag');
+  assert.strictEqual(p.storage.fagBatchLedger.items['900000001'].state, 'failed');
+  assert.match(p.storage.fagBatchLedger.items['900000001'].lastError, /busy or error page/);
+  p.storage.fagBatchLedger.pacing.resumeAt = 0;
+  await start(p, 'fag');
+  assert.deepStrictEqual(p.navigations.map((n) => n.url.replace(/^.*\//, '')), ['900000001', '900000001', '900000002']);
+  assert.strictEqual(p.storage.fagBatchLedger.items['900000002'].state, 'done');
+});
+
+test('D2: a scan refused for good is saved once, done without it - no false "sign in" stop, no second bundle', async () => {
+  for (const error of [
+    'Ancestry refused (HTTP 403) - sign in on this page, or the collection may not allow downloads',
+    'Ancestry refused the image download (HTTP 403)',
+    'the image came back too small to be the full record (12 KB)',
+  ]) {
+    const base = ancestrySite();
+    const p = await openPanel({ url: HARRIET, storage: Object.assign({}, ON, { ancBatchLedger: ancLedger([CALVIN, ETHEL]) }),
+      respond: (msg, tab) => (msg.action === 'ancestryImage' ? { ok: false, error } : base(msg, tab)) });
+    quick(p);
+    await start(p, 'anc');
+    await start(p, 'anc');
+    assert.deepStrictEqual(p.navigations.map((n) => n.url), [CALVIN, ETHEL], error);
+    assert.strictEqual(p.written.length, 2, error);
+    const it = p.storage.ancBatchLedger.items['90001:1000001'];
+    assert.strictEqual(it.state, 'done', error);
+    assert.match(it.note, /^image not saved: /);
+    assert.doesNotMatch(p.batchEl('anc-status').textContent, /sign in/, error);
+  }
+});
+
+test('D2: a lost login (HTTP 401) on the scan still stops the run, and the record is tried again', async () => {
+  const base = ancestrySite();
+  const p = await openPanel({ url: HARRIET, storage: Object.assign({}, ON, { ancBatchLedger: ancLedger([CALVIN, ETHEL]) }),
+    respond: (msg, tab) => (msg.action === 'ancestryImage'
+      ? { ok: false, error: 'Ancestry refused (HTTP 401) - sign in on this page, or the collection may not allow downloads' }
+      : base(msg, tab)) });
+  quick(p);
+  await start(p, 'anc');
+  assert.deepStrictEqual(p.navigations.map((n) => n.url), [CALVIN]);
+  assert.strictEqual(p.storage.ancBatchLedger.items['90001:1000001'].state, 'partial');
+  assert.match(p.batchEl('anc-status').textContent, /^Stopped: Ancestry asked you to sign in/);
+});
+
+test('D3: FamilySearch having trouble (HTTP 500) stops the run without counting against the record', async () => {
+  const calls = [];
+  const p = await openPanel({ url: ark('HRT1-CEN2'), storage: Object.assign({}, ON,
+    { fsBatchLedger: fsLedger(['HRT1-CEN1', 'HRT1-DTH1']) }),
+  respond: familysearchSite(calls, (u) => (/\/ark:\/61903\/1:1:HRT1-CEN1$/.test(u) ? 500 : null)) });
+  quick(p);
+  await start(p, 'fs');
+  await start(p, 'fs');
+  await start(p, 'fs');
+  assert.deepStrictEqual(p.navigations.map((n) => n.url), [ark('HRT1-CEN1'), ark('HRT1-CEN1'), ark('HRT1-CEN1')]);
+  assert.strictEqual(p.storage.fsBatchLedger.items['HRT1-CEN1'].state, 'queued');
+  assert.match(p.batchEl('fs-status').textContent, /^Stopped: FamilySearch is having trouble \(HTTP 500\)/);
+});
+
+test('D4: switching batches off during a slow-down break keeps the break owed', async () => {
+  const L = ancLedger([CALVIN]);
+  const until = Date.now() + 30 * 60 * 1000;
+  L.pacing = { sinceShort: 0, shortEvery: 40, rateEvents: 1, resumeAt: until, resumeReason: 'ratelimit' };
+  const p = await openPanel({ url: ETHEL, respond: ancestrySite(), storage: Object.assign({}, ON, { ancBatchLedger: L }) });
+  quick(p);
+  const run = p.batchEl('anc-start').fire('click');
+  await settle();
+  assert.match(p.batchEl('anc-status').textContent, /asked us to slow down, so the batch waits/);
+  p.chrome.storage.local.remove('batchDownloads');
+  await run;
+  await settle();
+  assert.match(p.batchEl('anc-status').textContent, /^Stopped: batch downloads were switched off/);
+  assert.strictEqual(p.storage.ancBatchLedger.pacing.resumeAt, until);
+  assert.deepStrictEqual(p.navigations, []);
+});
+
+test('a record a batch saves never carries a field she typed for the record the panel showed before', async () => {
+  const p = await openPanel({ url: HARRIET, respond: ancestrySite(), storage: Object.assign({}, ON,
+    { ancBatchLedger: ancLedger([ETHEL]) }) });
+  quick(p);
+  p.$('f-title').value = 'Harriet, typed by hand';
+  await p.$('f-title').fire('input');
+  p.$('f-notes').value = 'A note for Harriet';
+  await start(p, 'anc');
+  assert.strictEqual(p.written.length, 1);
+  const cap = p.capJson(p.written[0]);
+  assert.strictEqual(cap.title, 'Ethel Hartley - California, U.S., Death Index, 1940-1997');
+  assert.ok(!String(cap.notes || '').includes('A note for Harriet'));
+});

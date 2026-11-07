@@ -91,7 +91,10 @@
   const CHECK_RE = /just a moment|attention required|cloudflare|access denied|verify you are human/i;
   // A page the site sent instead of the record: busy, an error, too many
   // requests. Never a record that is gone - so a stop, never a set-aside.
-  const BUSY_RE = /too many requests|service (temporarily )?unavailable|temporarily unavailable|bad gateway|gateway time-?out|internal server error|server error|\b(429|500|502|503|504)\b/i;
+  // Error-page wording only: a clipping titled "Fire at 503 Elm Street" is
+  // a record, not a busy page, so a bare number never counts - only a title
+  // that is the code alone, or the code beside "HTTP" or "error".
+  const BUSY_RE = /too many requests|service (temporarily )?unavailable|temporarily unavailable|bad gateway|gateway time-?out|internal server error|^\s*(429|50[0234])\s*$|\bHTTP\s*(error\s*)?(429|50[0234])\b|\berror\s*(429|50[0234])\b|\b(429|50[0234])\s*error\b/i;
 
   const SITE_UI = {
     newspapers: {
@@ -275,8 +278,10 @@
       if (!tab) throw new Stop('the batch’s tab was closed');
       if (CHECK_RE.test(tab.title || '')) throw new Stop(name + ' showed a security check page');
       if (BUSY_RE.test(tab.title || '')) {
-        throw new Stop(name + ' answered with a busy or error page ("' + String(tab.title).slice(0, 80) + '")',
+        const e = new Stop(name + ' answered with a busy or error page ("' + String(tab.title).slice(0, 80) + '")',
           /429|too many requests|503|unavailable/i.test(tab.title) ? 'slowdown' : 'stop');
+        e.atRecord = true;
+        throw e;
       }
       if (!SITE_UI[siteName].hostRe.test(tab.url || '')) throw new Stop('the tab ended up outside ' + name);
       let path = '';
@@ -291,8 +296,8 @@
     // Between steps: has the owner paused, switched batches off, or another
     // window taken the batch over?
     function halted() {
-      if (active.off) throw new Stop('batch downloads were switched off in this browser');
-      if (active.lost) throw new Stop(active.lost);
+      if (active.off) throw new Stop('batch downloads were switched off in this browser', 'halt');
+      if (active.lost) throw new Stop(active.lost, 'halt');
       if (active.stop) throw new Paused();
     }
 
@@ -474,7 +479,9 @@
         } else {
           const slow = e instanceof Stop && e.kind === 'slowdown';
           if (L) {
-            if (!slow && L.pacing) L.pacing.resumeAt = 0;
+            // A halt (switched off, another window took over) keeps the pacing:
+            // a break under way is still owed when batches start again.
+            if (!slow && e.kind !== 'halt' && L.pacing) L.pacing.resumeAt = 0;
             // A "slow down" seen before any capture (a busy page, the list):
             // the break starts now if it has not already.
             if (slow && !(L.pacing && L.pacing.resumeAt > Date.now())) CB().planRateLimit(L, Date.now());
@@ -483,7 +490,8 @@
           }
           say(siteName, 'Stopped: ' + e.message + '. ' + (slow
             ? 'Press Start to carry on; it waits until about ' + fmtWhen(L.pacing.resumeAt) + ' before its next request. '
-            : 'Look at the tab (signed in? a security check?), then press Start to carry on. ') + countsLine(L), 'error');
+            : e.kind === 'halt' ? ''
+              : 'Look at the tab (signed in? a security check?), then press Start to carry on. ') + countsLine(L), 'error');
         }
       } finally {
         clearInterval(leaseTimer);
@@ -521,7 +529,19 @@
         return;
       }
       say(siteName, 'Saving ' + (item.title || lib.name + ' ' + item.key) + '… ' + countsLine(L));
-      await goTo(siteName, url);
+      try {
+        await goTo(siteName, url);
+      } catch (e) {
+        // A busy or error page at this record's address stops the run (and
+        // takes the break on a "slow down"); the same page there again on a
+        // later Start sets the record aside, so it never holds up the rest.
+        if (e instanceof Stop && e.atRecord) {
+          const it = L.items[item.key];
+          it.stops = (it.stops || 0) + 1;
+          if (it.stops >= CB().MAX_TRIES) CB().markSetAside(L, item.key, e.message + ' (' + it.stops + ' times)');
+        }
+        throw e;
+      }
       const page = await hooks.readPage();
       // A page the panel cannot read at all stops the run (the next one would
       // fare no better); a page that reads but is not a record is set aside.
@@ -551,7 +571,11 @@
           await save(siteName, L, true);
           throw new Stop(lib.name + ' asked us to slow down while this one was saved', 'slowdown');
         }
-        if (/sign in|signed in|HTTP 401/i.test(out.note || '')) {
+        // The record page itself loaded, so its session is there: only an
+        // unmistakable lost login (401, "asked you to sign in") stops the
+        // run - never a download refused for one collection (an Ancestry
+        // 403 says "sign in ... or the collection may not allow downloads").
+        if (/asked you to sign in|HTTP 401/i.test(out.note || '')) {
           await save(siteName, L, true);
           throw new Stop(lib.name + ' asked you to sign in (the last one was saved without its image; it is tried ' +
             'again at the next Start)');

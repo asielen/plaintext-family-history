@@ -494,8 +494,9 @@
   //                at the end of the queue, then set aside;
   //   'stop'     - the run's own cause (signed out, a security check, no
   //                connection, a download that would not write, the tab
-  //                moved, a capture already saving): stop with the cause;
-  //   'refused'  - anything else (a 403, a 500, a message nobody expected):
+  //                moved, a capture already saving, a site having trouble -
+  //                any HTTP 5xx): stop with the cause;
+  //   'refused'  - anything else (a 403, a message nobody expected):
   //                stop with the cause, and if the same record is refused
   //                again on a later Start, set it aside so it can never hold
   //                up the rest of the queue.
@@ -509,6 +510,7 @@
     'sign in', 'signed in', 'security check', 'HTTP 401', 'could not reach', 'internet connection', 'broke off',
     'download was blocked', 'download interrupted', 'the page in the tab', 'the tab ', 'the batch.s tab', 'the panel',
     'a capture is already saving', 'different member', 'switched off', 'did not finish loading', 'took over',
+    'having trouble', 'HTTP 5\\d\\d', 'busy or error page',
   ].join('|'), 'i');
   const RETRY_RE = /shows no memorial|could not read the (Ancestry record|FamilySearch record|Find a Grave memorial)/i;
   function classifyError(message) {
