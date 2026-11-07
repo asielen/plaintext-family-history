@@ -2222,7 +2222,8 @@ def photoindex_status(archive_root: str | Path, fha_config: dict) -> tuple[str, 
     Returns (status, lag_seconds):
       'absent'     → no photos.sqlite               (lag 0.0)
       'unreadable' → exists but fails a basic schema query - corrupt/incompatible (lag 0.0)
-      'stale'      → older than the newest file in the photos root, OR the #48
+      'stale'      → older than the newest catalogued photo or folder in the
+                     photos root (non-photo files never count, #202), OR the #48
                      path manifest disagrees with a fresh listing (lag = seconds
                      behind when there is a meaningful watermark to measure
                      against; a manifest-only deletion has no later mtime to

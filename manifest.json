@@ -420,7 +420,7 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "c1371376ccde8546ba7ca75cb5a72b7c2239ba648276241f2bd98617e3c2d944",
+      "sha256": "658c2a925339aeaea3dced47cbcc2be6f55998cea6ee53ef1e8c4611d991f9b4",
       "spec_version": "1.2",
       "src": "tools/_lib.py"
     },
@@ -511,7 +511,7 @@
     {
       "path": ".fha/tools/doctor.py",
       "category": "operating",
-      "sha256": "ae1317116b585694f13de893f496de1cae0800e93892ce38c24bae2bb8a2bacf",
+      "sha256": "311c8e3b8308fad6b8cd92c1dbc606af78a7797787186be4f7416cc553dd6dc4",
       "spec_version": "1.2",
       "src": "tools/doctor.py"
     },

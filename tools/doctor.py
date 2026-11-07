@@ -279,7 +279,8 @@ def _index_freshness(archive_root: Path) -> tuple[str, str, list[str]]:
 
 def _photoindex_freshness(archive_root: Path, fha_config: dict) -> tuple[str, str]:
     """
-    Check .cache/photos.sqlite against the newest file in the photos root.
+    Check .cache/photos.sqlite against the newest catalogued photo or folder
+    in the photos root (a Thumbs.db or PDF never counts, #202).
 
     Delegates to the shared _lib.photoindex_status so find and doctor agree on
     whether photos.sqlite is usable.  The shared helper probes the schema BEFORE
