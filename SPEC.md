@@ -556,7 +556,7 @@ The ID-in-filename is the **formalized** form, maintained by tools. A record a p
 
 The deliberate style difference - person files underscored, source files hyphenated - instantly distinguishes record kinds in search results.
 
-*Decision log:* the role list above was always open-ended (`…`) and no tool rejects a role it does not know, so a captured file's role never needed a SPEC change to be filed. Added 2026-11 (the browser-capture ports, #211/#213/#214/#221) - the roles the capture add-on writes are named here so a reader of `files:` knows what each one is, and so `page` (one whole newspaper page) is never confused with `page-N` (the Nth page of one document). The filename grammar is unchanged.
+*Decision log:* the role list above was always open-ended (`…`) and no tool rejects a role it does not know, so a captured file's role never needed a SPEC change to be filed. Added 2026-11 (the browser-capture ports, #211/#213/#214/#221) - the roles the capture add-on writes are named here so a reader of `files:` knows what each one is, and so `page` (one whole newspaper page) is never confused with `page-N` (the Nth page of one document). The filename grammar is unchanged: a role is filed as the `-{role}` suffix like any other.
 
 *Decision log:* an earlier revision of this section named the three generated companion kinds `{primary_sort_name}__{given_names}_{kind}_{P-id}.md`, with nothing between the given names and the kind word. Changed 2026-08 (#77) - the kind word alone decided sort order, so the disposable `draft-queue` cache sorted ahead of the person's own profile in every folder listing; the `view_` marker fixes the order without touching the profile or `research` filenames.
 
