@@ -618,3 +618,29 @@ test('F7: on FamilySearch, an address elsewhere that refuses is not tried again 
   assert.deepStrictEqual(p.log().length, 1);
   assert.match(p.result(), /^Could not capture: this image would not come through/);
 });
+
+test('Codex 4502752672: a new page that could not be read yet is read again when it finishes loading', async () => {
+  const pages = { [REC_A]: { title: 'Calvin Hartley, 1880' }, [REC_B]: { title: 'Harriet Hartley, 1880' } };
+  let ready = false; // B is still loading at first
+  const p = await open(REC_A, pages, {
+    wrap: (r) => (msg, tab) => (msg.action === 'prefill' && tab.url === REC_B && !ready
+      ? { ok: false, error: 'the page is still loading' } : r(msg, tab)),
+  });
+  await type(p, 'f-title', 'Calvin in the census');
+  await p.navigate(REC_B);
+  await settle();
+  assert.strictEqual(p.$('f-title').value, '', 'the last record\'s details go at once');
+  assert.strictEqual(p.$('f-url').value, REC_B);
+  await type(p, 'f-date', '1880'); // she starts typing meanwhile
+  ready = true;
+  await p.navigate(REC_B); // the page finishes loading: another 'complete'
+  await settle();
+  assert.strictEqual(p.$('f-title').value, 'Harriet Hartley, 1880');
+  assert.strictEqual(p.$('f-date').value, '1880', 'what she typed into the empty form stays');
+  assert.doesNotMatch(p.$('recipe-banner').textContent, /Couldn’t read/);
+  // ...and once read, another 'complete' for it reads nothing more.
+  const reads = p.sent.filter((m) => m.action === 'prefill').length;
+  await p.navigate(REC_B);
+  await settle();
+  assert.strictEqual(p.sent.filter((m) => m.action === 'prefill').length, reads);
+});

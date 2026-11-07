@@ -169,6 +169,9 @@
     autoMissed: false,
     // The newest read of the page that may fill the form (beginRead).
     readSeq: 0,
+    // The last read of prefilledUrl could not read the page: the form is
+    // empty for that address, and its next navigation event reads it again.
+    prefillFailed: false,
   };
 
   const $ = (id) => document.getElementById(id);
@@ -483,6 +486,7 @@
     for (const id of ['f-title', 'f-date', 'f-repo']) $(id).readOnly = false;
     state.prefill = prefill;
     state.prefilledUrl = prefill.url || null;
+    state.prefillFailed = false;
     $('f-title').value = prefill.title || '';
     $('f-date').value = prefill.sourceDate || '';
     $('f-repo').value = prefill.repository || '';
@@ -2537,7 +2541,12 @@
       // #page arrows) move only the #fragment without changing the record, and
       // a re-prefill on that wipes the human's typed notes/people for nothing.
       // Capture's check of the form against the tab compares this way too.
-      if (sameRecordUrl(tab.url, state.prefilledUrl)) return;
+      // ...unless the last read of this address failed (a page still loading
+      // when it was asked): then its next event reads it again, keeping what
+      // she has typed into the empty form meanwhile (Codex 4502752672).
+      const retry = sameRecordUrl(tab.url, state.prefilledUrl) && state.prefillFailed;
+      if (sameRecordUrl(tab.url, state.prefilledUrl) && !retry) return;
+      const typed = retry ? typedDetails() : null;
       // From here this read owns the form, until a newer read (a later
       // navigation, or a Re-read button) takes it over.
       const read = beginRead();
@@ -2556,6 +2565,7 @@
       // a page that cannot be read gets an empty form for its own address,
       // never the last record's details (the next 'complete' may still read it).
       finishRead(resp, tab.url);
+      if (typed && resp && resp.ok) restoreTyped(typed);
     } finally {
       if (seq === state.navSeq) state.navInFlight = false;
     }
@@ -2612,6 +2622,9 @@
       clearDetails(url);
       forgetFileState();
       clearAutoLog();
+      // The previous record's details are gone at once; this address is
+      // read again on its next event (refreshOnNavigation).
+      state.prefillFailed = true;
       const banner = $('recipe-banner');
       banner.textContent = 'Couldn’t read this page automatically. Type the details below, or reload the page ' +
         'and press ↻ Re-read page.';
@@ -2619,6 +2632,22 @@
       banner.classList.add('warn');
     }
     if (!state.busy) $('btn-capture').disabled = false;
+    updateAssetStatus();
+  }
+
+  // What she typed into the form for this address (fields she edited, her
+  // notes), so a second read of the same address fills the rest around it.
+  function typedDetails() {
+    const fields = {};
+    for (const id of state.userEdited) fields[id] = $(id).value;
+    return { fields, notes: $('f-notes').value };
+  }
+  function restoreTyped(typed) {
+    for (const [id, value] of Object.entries(typed.fields)) {
+      $(id).value = value;
+      state.userEdited.add(id);
+    }
+    if (typed.notes.trim()) $('f-notes').value = typed.notes;
     updateAssetStatus();
   }
 
@@ -2645,6 +2674,7 @@
     state.userEdited = new Set();
     state.prefill = null;
     state.prefilledUrl = url || null;
+    state.prefillFailed = false; // finishRead marks a failed read after this
     for (const id of ['f-title', 'f-date', 'f-repo']) {
       $(id).value = '';
       $(id).readOnly = false;
