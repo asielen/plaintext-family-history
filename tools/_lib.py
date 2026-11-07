@@ -1429,6 +1429,14 @@ TEXT_COMPANION_ROLES: frozenset[str] = frozenset({
     'transcript', 'transcription', 'extracted-text',
 })
 
+# `files:` roles the archive itself spells with a hyphen, longest first.
+# `bundle_role` matches these whole before falling back to a file's last
+# word, so 'record-extracted-text.txt' keeps the role that makes it
+# searchable (#209 review). Derived, not listed, so a new compound text role
+# is covered the day it is added.
+_COMPOUND_FILE_ROLES: tuple[str, ...] = tuple(sorted(
+    (r for r in TEXT_COMPANION_ROLES if '-' in r), key=len, reverse=True))
+
 # File extensions the archive's text search actually opens and reads. Anything
 # else - a scan, a photograph, a PDF, a recording - is opaque to it: a PDF's own
 # text layer is only searchable once `fha source extract` has dumped it into a
@@ -4696,8 +4704,27 @@ def bundle_role(parsed: ParsedName) -> str | None:
     is the envelope, 'letter-transcript.txt' the transcript. The suffix
     grammar wins where it applies ('letter-back.jpg' -> 'back'). Only here:
     in a folder of loose scans that word is part of the name (#200).
+
+    A role the archive itself spells with a hyphen is recognised whole
+    before the last word is taken: 'record-extracted-text.txt' is
+    `extracted-text`, which `fha index` loads as searchable text, not
+    `text`, which it would skip (#209 review).
     """
-    return variant_role(parsed) or parsed.freeform_role
+    role = variant_role(parsed)
+    if role:
+        return role
+    name = parsed.base_id.casefold()
+    for compound in _COMPOUND_FILE_ROLES:
+        if name == compound or name.endswith((f'-{compound}', f'_{compound}')):
+            return compound
+    return parsed.freeform_role
+
+
+def _extends_name(name: str, root: str) -> bool:
+    """True when `name` is `root` plus a separator and more ('portrait-
+    envelope' extends 'portrait'), compared without regard to case."""
+    name, root = name.casefold(), root.casefold()
+    return len(name) > len(root) and name.startswith(root) and name[len(root)] in '-_'
 
 
 def select_variation_primary(members: list, parsed_of) -> object:
@@ -4712,6 +4739,12 @@ def select_variation_primary(members: list, parsed_of) -> object:
 
     Shared so `fha process` flags the same file as `is_primary: true` that
     `fha photoindex` records in `photo_groups.primary_path`.
+
+    Among several plain scans, one whose name merely extends another's is an
+    attachment, not the picture: in a bundle or a processed source holding
+    'portrait.jpg' and 'portrait-envelope.jpg', the portrait is the main
+    image, though '-' sorts before '.' (#209 review). Members of a folder
+    variation group share one base name, so this never changes their pick.
     """
     plain = [
         m for m in members
@@ -4720,7 +4753,12 @@ def select_variation_primary(members: list, parsed_of) -> object:
         and not parsed_of(m).is_crop
     ]
     if plain:
-        return min(plain)
+        roots = [
+            m for m in plain
+            if not any(o is not m and _extends_name(parsed_of(m).base_id, parsed_of(o).base_id)
+                       for o in plain)
+        ]
+        return min(roots or plain)
     fronts = [
         m for m in members
         if parsed_of(m).variant_id in (None, 'a')

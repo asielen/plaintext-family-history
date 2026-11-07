@@ -691,6 +691,24 @@ class PhotoindexTests(unittest.TestCase):
         self.assertEqual(len(others), 2)
         self.assertNotIn(rows['album/Smith-Farm-01400.tif'][0], others)
 
+    def test_a_processed_portrait_stays_main_image_over_its_envelope(self) -> None:
+        # #209 review, same class as the bundle pick: a processed source's
+        # files group by their SOURCE: id, and both names read as plain
+        # scans, so '-' sorting before '.' made the envelope the main image.
+        with tempfile.TemporaryDirectory() as d:
+            conn, _needs_face_backfill, _rebuilt_reason = photoindex._get_db(Path(d) / '.cache')
+            try:
+                for name in ('box/portrait.jpg', 'box/portrait-envelope.jpg'):
+                    conn.execute(
+                        'INSERT INTO photos(path, mtime, size, source_id, group_id, '
+                        'is_primary, variant_copy, variant_role) '
+                        "VALUES (?,0,0,'S-123456789a',NULL,0,NULL,NULL)", (name,))
+                photoindex._group_photos(conn)
+                primary = [r[0] for r in conn.execute('SELECT path FROM photos WHERE is_primary = 1')]
+            finally:
+                conn.close()
+        self.assertEqual(primary, ['box/portrait.jpg'])
+
     def test_person_match_on_one_variant_propagates_to_whole_group(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             archive = _copy_fixture(Path(d))

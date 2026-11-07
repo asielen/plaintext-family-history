@@ -3356,6 +3356,51 @@ class ProcessTestCase(unittest.TestCase):
         self.assertEqual(by_original['transcript.txt']['is_primary'], 'true')
         self.assertTrue(by_original['transcript.txt']['file'].endswith('-transcript_' + record.stem.split('_')[-1] + '.txt'))
 
+    def test_bundle_keeps_the_portrait_as_main_image_not_its_envelope(self) -> None:
+        # #209 review: once the parser stopped splitting words off names,
+        # both files read as plain scans and '-' sorts before '.', so the
+        # envelope became the record's main image.
+        self._install_photo_store()
+        bundle = self.archive / 'inbox' / 'portrait-bundle'
+        bundle.mkdir(parents=True)
+        (bundle / 'notes.md').write_text(
+            '---\ntitle: Portrait of Ada\nsource_type: photo\n---\nIn an envelope.\n',
+            encoding='utf-8')
+        (bundle / 'portrait.jpg').write_bytes(b'\xff\xd8\xff')
+        (bundle / 'portrait-envelope.jpg').write_bytes(b'\xff\xd8\xff')
+        self.assertEqual(self._run([str(bundle)]), EXIT_CLEAN)
+        record = next((self.archive / 'sources').rglob('*_S-*.md'))
+        files = {Path(f['file']).name: f for f in read_record(record)['meta']['files']}
+        self.assertEqual(files['portrait.jpg']['role'], 'primary')
+        self.assertIn(files['portrait.jpg']['is_primary'], (True, 'true'))
+        self.assertEqual(files['portrait-envelope.jpg']['role'], 'envelope')
+        self.assertNotIn(files['portrait-envelope.jpg'].get('is_primary'), (True, 'true'))
+
+    def test_bundle_extracted_text_companion_stays_searchable(self) -> None:
+        # #209 review: the last-word rule read 'record-extracted-text.txt' as
+        # role 'text', which `fha index` does not load, so its words vanished
+        # from search. Run intake, index and search end to end.
+        import find
+        from index import build_index
+        bundle = self.archive / 'inbox' / 'record-bundle'
+        bundle.mkdir(parents=True)
+        (bundle / 'notes.md').write_text(
+            '---\ntitle: Land Deed\nsource_type: land-record\nfiles:\n'
+            '  - file: record.pdf\n    is_primary: true\n---\nA deed.\n',
+            encoding='utf-8')
+        (bundle / 'record.pdf').write_bytes(b'%PDF-1.4')
+        (bundle / 'record-extracted-text.txt').write_text(
+            'The parcel adjoins Quillfeather Creek.', encoding='utf-8')
+        self.assertEqual(self._run([str(bundle)]), EXIT_CLEAN)
+        record = next((self.archive / 'sources').rglob('*_S-*.md'))
+        roles = {f['original_filename']: f['role'] for f in read_record(record)['meta']['files']}
+        self.assertEqual(roles['record-extracted-text.txt'], 'extracted-text')
+        cfg = load_fha_yaml(self.archive)
+        with contextlib.redirect_stdout(io.StringIO()):
+            build_index(self.archive, cfg)
+        hits = find.search_json(self.archive, cfg, 'Quillfeather')
+        self.assertTrue(hits, 'the companion text must be searchable after intake')
+
     def test_bundle_document_filename_includes_copy_hint(self) -> None:
         bundle = self.archive / 'inbox' / 'translation-bundle'
         bundle.mkdir(parents=True)
