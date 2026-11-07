@@ -656,7 +656,7 @@ test('Codex 4502845504: a second failed read of the same page keeps what she typ
   await settle();
   await type(p, 'f-title', 'Harriet in the census');
   await type(p, 'f-date', 'June 1880');
-  p.$('f-notes').value = 'the farm household';
+  await type(p, 'f-notes', 'the farm household');
   await p.navigate(REC_B); // B still loading: the retry fails too
   await settle();
   assert.strictEqual(p.$('f-title').value, 'Harriet in the census');
@@ -697,4 +697,92 @@ test('Codex 4502845504: typing while the panel\'s first read is out survives tha
   await settle();
   assert.strictEqual(p.$('f-title').value, 'Harriet in the census');
   assert.strictEqual(p.$('f-url').value, REC_B);
+});
+
+// ── PR #223 delta review: a retry fills only what she has not touched ───────
+
+// B cannot be read at first; `state.ready = true` lets the next read work.
+function loadingB(extra = {}) {
+  const st = { ready: false, holdNext: false, release: null };
+  const pages = {
+    [REC_A]: { title: 'Calvin Hartley, 1880' },
+    [REC_B]: Object.assign({ title: 'Harriet Hartley, 1880', people: ['Harriet Hartley'],
+      prefill: { imageUrl: REC_B + '/guess.jpg', sourceDate: '1880', repository: 'records.example.org' } }, extra),
+  };
+  const wrap = (r) => (msg, tab) => {
+    if (msg.action !== 'prefill' || tab.url !== REC_B) return r(msg, tab);
+    if (!st.ready) return { ok: false, error: 'the page is still loading' };
+    if (st.holdNext) {
+      st.holdNext = false;
+      return new Promise((res) => { st.release = () => res(r(msg, tab)); });
+    }
+    return r(msg, tab);
+  };
+  return { st, pages, wrap };
+}
+
+test('D1: a retry that works keeps the file address she typed, and Capture saves that file', async () => {
+  const { st, pages, wrap } = loadingB();
+  const p = await open(REC_A, pages, { wrap });
+  await p.navigate(REC_B);
+  await settle();
+  await type(p, 'f-asset-url', 'https://records.example.org/img/the-real-scan.jpg');
+  st.ready = true;
+  await p.navigate(REC_B);
+  await settle();
+  assert.strictEqual(p.$('f-asset-url').value, 'https://records.example.org/img/the-real-scan.jpg');
+  await p.capture();
+  const fetched = p.sent.filter((m) => m.action === 'fetchAsset').map((m) => m.url);
+  assert.deepStrictEqual(fetched, ['https://records.example.org/img/the-real-scan.jpg']);
+});
+
+test('D2: people she added to the empty form stay when the retry works', async () => {
+  const { st, pages, wrap } = loadingB();
+  const p = await open(REC_A, pages, { wrap });
+  await p.navigate(REC_B);
+  await settle();
+  p.$('f-add-person').value = 'Calvin Hartley';
+  await p.$('btn-add-person').fire('click');
+  st.ready = true;
+  await p.navigate(REC_B);
+  await settle();
+  assert.deepStrictEqual(people(p), ['Calvin Hartley']);
+  await p.capture();
+  assert.deepStrictEqual(p.written[0].captureJson.people, ['Calvin Hartley']);
+});
+
+test('D3: what she types while the retry is reading is kept', async () => {
+  const { st, pages, wrap } = loadingB();
+  const p = await open(REC_A, pages, { wrap });
+  await p.navigate(REC_B);
+  await settle();
+  await type(p, 'f-title', 'Harr');
+  st.ready = true;
+  st.holdNext = true;
+  const nav = p.navigate(REC_B);
+  await until(() => st.release);
+  await type(p, 'f-title', 'Harriet in the census');
+  await type(p, 'f-notes', 'typed while it read');
+  st.release();
+  await nav;
+  await settle();
+  assert.strictEqual(p.$('f-title').value, 'Harriet in the census');
+  assert.strictEqual(p.$('f-notes').value, 'typed while it read');
+});
+
+test('control: a retry that works DOES fill every field she has not touched', async () => {
+  const { st, pages, wrap } = loadingB();
+  const p = await open(REC_A, pages, { wrap });
+  await p.navigate(REC_B);
+  await settle();
+  await type(p, 'f-title', 'Harriet in the census');
+  st.ready = true;
+  await p.navigate(REC_B);
+  await settle();
+  assert.strictEqual(p.$('f-title').value, 'Harriet in the census');
+  assert.strictEqual(p.$('f-date').value, '1880');
+  assert.strictEqual(p.$('f-repo').value, 'records.example.org');
+  assert.deepStrictEqual(people(p), ['Harriet Hartley']);
+  assert.strictEqual(p.$('f-asset-url').value, REC_B + '/guess.jpg');
+  assert.match(p.$('recipe-banner').textContent, /^Generic capture/);
 });

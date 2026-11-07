@@ -172,6 +172,10 @@
     // The last read of prefilledUrl could not read the page: the form is
     // empty for that address, and its next navigation event reads it again.
     prefillFailed: false,
+    // What she has touched since the last read that filled the form: the
+    // fields she typed in, the file address, the people, a dropped file, the
+    // clipping ticks. A retry of a failed read fills only the rest.
+    touched: new Set(),
   };
 
   const $ = (id) => document.getElementById(id);
@@ -457,6 +461,8 @@
     cb.type = 'checkbox';
     cb.checked = checked !== false;
     cb.dataset.name = name;
+    // Ticking or unticking someone is her choice for this record (touched).
+    cb.addEventListener('change', () => state.touched.add('people'));
     const span = document.createElement('span');
     span.textContent = name;
     label.appendChild(cb);
@@ -470,7 +476,16 @@
     );
   }
 
-  function applyPrefill(prefill) {
+  // `retry`: a second read of the address whose last read failed, after she
+  // may have started filling the empty form by hand. Then only what she has
+  // not touched since (state.touched) is filled from the page; everything
+  // she typed, added, ticked or dropped stays exactly as it is, read from
+  // the form now rather than from a copy (PR #223 delta D1-D3).
+  function applyPrefill(prefill, retry) {
+    const keep = retry ? state.touched : new Set();
+    const fill = (id, value) => {
+      if (!keep.has(id)) $(id).value = value;
+    };
     // A prefill for a DIFFERENT record invalidates the previous record's
     // evidence picks: without this, a file dropped for record A (and its
     // screen-capture tick) would survive the navigation and stage as record
@@ -482,23 +497,33 @@
       clearEvidenceSelection();
       clearAutoLog();
     }
-    state.userEdited = new Set();
+    // Her corrections on a retry stay hers (later data never overwrites
+    // them); a new record starts with none.
+    if (!retry) state.userEdited = new Set();
     for (const id of ['f-title', 'f-date', 'f-repo']) $(id).readOnly = false;
     state.prefill = prefill;
     state.prefilledUrl = prefill.url || null;
     state.prefillFailed = false;
-    $('f-title').value = prefill.title || '';
-    $('f-date').value = prefill.sourceDate || '';
-    $('f-repo').value = prefill.repository || '';
+    fill('f-title', prefill.title || '');
+    fill('f-date', prefill.sourceDate || '');
+    fill('f-repo', prefill.repository || '');
     $('f-url').value = prefill.url || '';
     // Reset the per-record fields the prefill doesn't otherwise set, so a batch
     // re-prefill (on navigation) never carries the previous record's notes or
     // chosen kind onto the next page. (Auto-detect = blank kind.)
-    $('f-notes').value = '';
-    state.fsNoteLine = null;
-    $('f-type').value = prefill.sourceType || '';
-    renderPeople(prefill.people);
-    applyFilePrefill(prefill);
+    if (!keep.has('f-notes')) {
+      $('f-notes').value = '';
+      state.fsNoteLine = null;
+    }
+    fill('f-type', prefill.sourceType || '');
+    if (!keep.has('people')) renderPeople(prefill.people);
+    // Her clipping ticks, too, when she changed them since (and a dropped
+    // file is never let go on the same record: clearEvidenceSelection above).
+    const keepNp = keep.has('npTicks') && state.np
+      ? { pageId: state.np.pageId, selected: new Set(state.npSelected) } : null;
+    applyFilePrefill(prefill, keepNp, keep.has('f-asset-url'));
+    // From here, "touched" counts from this read.
+    state.touched = new Set();
 
     const banner = $('recipe-banner');
     const hintLabel = RECIPE_LABELS[prefill.recipeHint];
@@ -538,7 +563,9 @@
   // `keepNp`: { pageId, selected } - Re-read file on the same Newspapers.com
   // page keeps the clippings she ticked (PR #223 audit F2), rather than the
   // page's defaults; a new record never passes it.
-  function applyFilePrefill(prefill, keepNp) {
+  // `keepAddress`: the file address box holds one she typed (a retry), so
+  // the page's guess does not replace it.
+  function applyFilePrefill(prefill, keepNp, keepAddress) {
     state.autoMissed = false;
     state.iiif = !!prefill.iiif;
     state.ancRecord = !!prefill.ancestryRecord;
@@ -553,7 +580,9 @@
     // supplies the full record on Capture. Any other page clears a stale URL so
     // a previous record's address can't be re-fetched as this one's evidence.
     const auto = autoFilePage(prefill);
-    if (auto) {
+    if (keepAddress) {
+      /* hers: left as typed (updateAddressRow keeps it in view) */
+    } else if (auto) {
       $('f-asset-url').value = '';
     } else if (prefill.imageUrl) {
       $('f-asset-url').value = prefill.imageUrl;
@@ -582,8 +611,10 @@
     const p = state.prefill || {};
     let hide = autoFilePage(p);
     if (hide && state.npPage && !state.npLoading && !npActive()) hide = false;
-    if (hide && (state.ancestryViewer || state.fsImage || state.iiif) &&
-        (state.autoMissed || ($('f-asset-url').value || '').trim())) hide = false;
+    if (hide && (state.ancestryViewer || state.fsImage || state.iiif) && state.autoMissed) hide = false;
+    // An address in the box is never hidden: she sees what Capture would use
+    // (and can clear it). Newspapers.com's own label is not an address.
+    if (hide && ($('f-asset-url').value || '').trim() && !$('f-asset-url').readOnly) hide = false;
     $('asset-url-row').style.display = hide ? 'none' : '';
   }
 
@@ -865,6 +896,7 @@
       cb.type = 'checkbox';
       cb.checked = state.npSelected.has(c.id);
       cb.addEventListener('change', () => {
+        state.touched.add('npTicks');
         if (cb.checked) state.npSelected.add(c.id);
         else state.npSelected.delete(c.id);
         // A correction typed for one clipping belongs to that clipping: once
@@ -1873,6 +1905,7 @@
   }
 
   function acceptDroppedFile(file) {
+    state.touched.add('dropped');
     const ext = extOfFile(file);
     state.droppedAsset = { blob: file, ext, filename: file.name };
     const dz = $('dropzone');
@@ -2546,7 +2579,6 @@
       // she has typed into the empty form meanwhile (Codex 4502752672).
       const retry = sameRecordUrl(tab.url, state.prefilledUrl) && state.prefillFailed;
       if (sameRecordUrl(tab.url, state.prefilledUrl) && !retry) return;
-      const typed = retry ? typedDetails() : null;
       // From here this read owns the form, until a newer read (a later
       // navigation, or a Re-read button) takes it over.
       const read = beginRead();
@@ -2564,8 +2596,7 @@
       // The tab is on a new record: what the form held was the old one's, so
       // a page that cannot be read gets an empty form for its own address,
       // never the last record's details (the next 'complete' may still read it).
-      finishRead(resp, tab.url);
-      if (typed && resp && resp.ok) restoreTyped(typed);
+      finishRead(resp, tab.url, retry);
     } finally {
       if (seq === state.navSeq) state.navInFlight = false;
     }
@@ -2615,9 +2646,9 @@
   // opening, a navigation, Re-read page), so the screen is always left
   // usable: filled from the page, or emptied for it with the reason said,
   // and Capture ready (PR #223 audit F1).
-  function finishRead(resp, url) {
+  function finishRead(resp, url, retry) {
     if (resp && resp.ok) {
-      applyPrefill(resp.prefill);
+      applyPrefill(resp.prefill, retry && sameRecordUrl(resp.prefill.url, state.prefilledUrl));
     } else {
       // A new record: the previous one's details are gone at once. The same
       // page again (a retry while it loads, the panel's first read, a Re-read
@@ -2643,21 +2674,6 @@
     updateAssetStatus();
   }
 
-  // What she typed into the form for this address (fields she edited, her
-  // notes), so a second read of the same address fills the rest around it.
-  function typedDetails() {
-    const fields = {};
-    for (const id of state.userEdited) fields[id] = $(id).value;
-    return { fields, notes: $('f-notes').value };
-  }
-  function restoreTyped(typed) {
-    for (const [id, value] of Object.entries(typed.fields)) {
-      $(id).value = value;
-      state.userEdited.add(id);
-    }
-    if (typed.notes.trim()) $('f-notes').value = typed.notes;
-    updateAssetStatus();
-  }
 
   // A Re-read button pressed while a capture saves: say why nothing happens.
   function rereadWhileBusy() {
@@ -2683,6 +2699,7 @@
     state.prefill = null;
     state.prefilledUrl = url || null;
     state.prefillFailed = false; // finishRead marks a failed read after this
+    state.touched = new Set();
     for (const id of ['f-title', 'f-date', 'f-repo']) {
       $(id).value = '';
       $(id).readOnly = false;
@@ -2796,6 +2813,8 @@
       for (const k of FILE_PREFILL_KEYS) half[k] = resp.prefill[k];
       state.prefill = Object.assign({}, state.prefill || { url: recordUrl }, half);
       applyFilePrefill(state.prefill, keepNp);
+      // The page was read: a later event for it is no retry (PR #223 delta D4).
+      state.prefillFailed = false;
     } else {
       setStageResult('Couldn’t read the page’s file. Drop the file in, or reload the page and press ↻ Re-read page.',
         'warn');
@@ -2934,12 +2953,16 @@
         updateAssetStatus();
       })
     );
-    $('f-asset-url').addEventListener('input', updateAssetStatus);
+    $('f-asset-url').addEventListener('input', () => {
+      state.touched.add('f-asset-url');
+      updateAssetStatus();
+    });
+    $('f-notes').addEventListener('input', () => state.touched.add('f-notes'));
     // Remember which fields the human typed in, so newspaper data arriving
     // later never overwrites a correction (state.userEdited, #211 review).
     for (const id of ['f-title', 'f-date', 'f-repo', 'f-url', 'f-type']) {
-      $(id).addEventListener('input', () => state.userEdited.add(id));
-      $(id).addEventListener('change', () => state.userEdited.add(id));
+      $(id).addEventListener('input', () => { state.userEdited.add(id); state.touched.add(id); });
+      $(id).addEventListener('change', () => { state.userEdited.add(id); state.touched.add(id); });
     }
     $('f-provisional').addEventListener('change', updateAssetStatus);
     $('btn-capture').addEventListener('click', capture);
@@ -2949,6 +2972,7 @@
     $('btn-add-person').addEventListener('click', () => {
       const name = $('f-add-person').value.trim();
       if (name) {
+        state.touched.add('people');
         addPersonRow(name, true);
         $('f-add-person').value = '';
       }

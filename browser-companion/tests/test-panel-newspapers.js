@@ -547,3 +547,19 @@ test('on a page with her clippings the address box is hidden; Re-read file keeps
   await settle();
   assert.strictEqual(p.$('asset-url-row').style.display, 'none');
 });
+
+test('PR #223 delta D4: after Re-read file reads a page the panel could not read at first, her ticks stay', async () => {
+  const pages = twoOnPage();
+  let ready = false;
+  const base = scripted(pages);
+  const p = await openPanel({ url: URL_PAGE,
+    respond: (msg, tab) => (msg.action === 'prefill' && !ready ? { ok: false, error: 'still loading' } : base(msg, tab)) });
+  ready = true;
+  await p.$('btn-rescrape-file').fire('click'); // reads the page's file: her clippings
+  await settle();
+  await setTick(p, 'Ethel Hartley visits Topeka', false);
+  await p.navigate(URL_PAGE); // the page's own 'complete': the page is read already
+  await settle();
+  await p.capture();
+  assert.strictEqual(p.written.length, 1, 'the clipping she unticked is not saved');
+});
