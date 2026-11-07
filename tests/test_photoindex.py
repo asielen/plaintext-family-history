@@ -6774,7 +6774,13 @@ class ContentFingerprintTests(unittest.TestCase):
                 + cls._segment(0xC0, b'\x08\x01\x2c\x01\x90\x03\x01\x22\x00\x02\x11\x01\x03\x11\x01')
                 + cls._segment(0xC4, b'\x00' + bytes(16) + b'')
                 + cls._segment(0xDA, b'\x03\x01\x00\x02\x11\x03\x11\x00\x3f\x00')
-                + random.Random(seed).randbytes(size) + b'\xff\xd9')
+                + cls._scan(random.Random(seed).randbytes(size)) + b'\xff\xd9')
+
+    @staticmethod
+    def _scan(raw: bytes) -> bytes:
+        """Entropy-coded data as a JPEG encoder writes it: every FF byte
+        stuffed with a 00, so no marker appears inside the scan."""
+        return raw.replace(b'\xff', b'\xff\x00')
 
     @classmethod
     def _with_new_header(cls, picture: bytes) -> bytes:
@@ -6815,9 +6821,9 @@ class ContentFingerprintTests(unittest.TestCase):
     def test_no_fingerprint_where_it_could_not_tell_photos_apart(self) -> None:
         none = photoindex._NO_FINGERPRINT
         self.assertEqual(photoindex._photo_fingerprint(self._put('tiny.jpg', b'x' * 1000)), none)
-        # A flat region at the end of the picture: no detail to tell scans apart.
-        blank = self._picture(3, 100_000)[:-2] + b'\xfe\xff' * 40_000 + b'\xff\xd9'
-        self.assertEqual(photoindex._photo_fingerprint(self._put('scan.jpg', blank)), none)
+        # Bytes that do not parse as a JPEG (no segments after the signature).
+        self.assertEqual(photoindex._photo_fingerprint(
+            self._put('broken.jpg', b'\xff\xd8' + b'\x01' * 100_000)), none)
         # Formats whose tail is not picture data are never fingerprinted (F1).
         self.assertEqual(photoindex._photo_fingerprint(
             self._put('scan.tif', self._picture(4))), none)
@@ -6950,11 +6956,11 @@ class ContentFingerprintTests(unittest.TestCase):
         fb = photoindex._photo_fingerprint(self._put('b.jpg', b))
         self.assertTrue(photoindex._is_real_fingerprint(fa))
         self.assertNotEqual(fa, fb)
-        # A trailer longer than the window leaves no picture data to read:
-        # no fingerprint at all, rather than one of metadata.
+        # Bytes after end-of-image are not picture data at all: however long
+        # the trailer, the same picture keeps the same identity.
         huge = b'TRAILER' + bytes(range(256)) * 400
         self.assertEqual(photoindex._photo_fingerprint(
-            self._put('c.jpg', self._picture(20) + huge)), photoindex._NO_FINGERPRINT)
+            self._put('c.jpg', self._picture(20) + huge)), fa)
 
     def test_a_png_is_fingerprinted_by_its_image_data_not_its_tail(self) -> None:
         import struct
@@ -6974,7 +6980,7 @@ class ContentFingerprintTests(unittest.TestCase):
 
         f1 = photoindex._photo_fingerprint(self._put('red.png', png(30)))
         f2 = photoindex._photo_fingerprint(self._put('blue.png', png(31)))
-        self.assertTrue(f1.startswith('png-idat64k'))
+        self.assertTrue(f1.startswith(photoindex._PNG_SCHEME + ':'))
         self.assertNotEqual(f1, f2)
 
     def test_a_live_copy_of_the_picture_blocks_the_re_tie(self) -> None:
@@ -7188,6 +7194,8 @@ class ContentFingerprintTests(unittest.TestCase):
 
     def test_a_value_stored_under_an_older_rule_is_never_compared(self) -> None:
         self.assertFalse(photoindex._is_real_fingerprint('png-idat64k-v1:' + 'a' * 32))
+        self.assertFalse(photoindex._is_real_fingerprint('png-idat64k-v2:' + 'a' * 32))
+        self.assertFalse(photoindex._is_real_fingerprint('jpeg-scan64k-v2:' + 'a' * 32))
         self.assertFalse(photoindex._is_real_fingerprint('jpeg-scan64k-v1:' + 'a' * 32))
         self.assertFalse(photoindex._is_real_fingerprint('tail64k-v1:' + 'a' * 32))
         self.assertTrue(photoindex._is_real_fingerprint(
@@ -7253,6 +7261,165 @@ class ContentFingerprintTests(unittest.TestCase):
         result = photoindex.run_reconcile(self.archive, self.CFG)
         self.assertEqual(result['rematched'], [])
         self.assertIn('MISSING:photos/a.jpg', result['missing'])
+
+
+    # ── #220 Codex round 5: the whole picture, and an atomic upgrade ───────
+
+    def test_pngs_differing_only_above_an_identical_compressed_suffix_differ(self) -> None:
+        # Codex's case: two pictures whose image data agree in its last
+        # 64 KiB (identical noisy bottom, different top - Codex built it as
+        # one stored-deflate stream with equal Adler sums). Here the top and
+        # bottom are separate IDAT chunks, which gives the same collision on
+        # the old 64 KiB window more simply. The whole-picture hash must
+        # tell them apart.
+        import random
+        import struct
+        import zlib
+
+        def chunk(kind: bytes, data: bytes) -> bytes:
+            return (struct.pack('>I', len(data)) + kind + data
+                    + struct.pack('>I', zlib.crc32(kind + data)))
+
+        bottom = random.Random(60).randbytes(90_000)       # identical, > 64 KiB
+
+        def png(top: bytes) -> bytes:
+            ihdr = struct.pack('>IIBBBBB', 400, 300, 8, 2, 0, 0, 0)
+            return (photoindex._PNG_SIGNATURE + chunk(b'IHDR', ihdr) + chunk(b'IDAT', top)
+                    + chunk(b'IDAT', bottom) + chunk(b'IEND', b''))
+
+        purple = png(bytes((128, 0, 128)) * 20_000)
+        green = png(bytes((0, 128, 0)) * 20_000)
+        f1 = photoindex._photo_fingerprint(self._put('purple.png', purple))
+        f2 = photoindex._photo_fingerprint(self._put('green.png', green))
+        self.assertTrue(photoindex._is_real_fingerprint(f1))
+        self.assertNotEqual(f1, f2)
+
+    def test_a_jpeg_retouched_only_near_the_top_differs(self) -> None:
+        picture = self._picture(61)
+        sos = picture.index(b'\xff\xda')
+        scan_start = sos + 2 + int.from_bytes(picture[sos + 2:sos + 4], 'big')
+        retouched = picture[:scan_start + 10] + b'\x42' + picture[scan_start + 11:]
+        self.assertNotEqual(photoindex._photo_fingerprint(self._put('a.jpg', picture)),
+                            photoindex._photo_fingerprint(self._put('b.jpg', retouched)))
+
+    def test_metadata_segments_and_chunks_never_change_the_identity(self) -> None:
+        import struct
+        import zlib
+        picture = self._picture(62)
+        with_meta = (picture[:2] + self._segment(0xE1, b'Exif\x00\x00keywords')
+                     + self._segment(0xE2, b'ICC_PROFILE\x00' + bytes(500))
+                     + self._segment(0xFE, b'a comment') + picture[2:])
+        self.assertEqual(photoindex._photo_fingerprint(self._put('a.jpg', picture)),
+                         photoindex._photo_fingerprint(self._put('b.jpg', with_meta)))
+
+        def chunk(kind: bytes, data: bytes) -> bytes:
+            return (struct.pack('>I', len(data)) + kind + data
+                    + struct.pack('>I', zlib.crc32(kind + data)))
+
+        core = chunk(b'IHDR', struct.pack('>IIBBBBB', 10, 10, 8, 2, 0, 0, 0))
+        idat = chunk(b'IDAT', zlib.compress(bytes(310)))
+        plain = b'\x89PNG\r\n\x1a\n' + core + idat + chunk(b'IEND', b'')
+        tagged = (b'\x89PNG\r\n\x1a\n' + core + chunk(b'iTXt', b'XML:com.adobe.xmp\x00' * 3)
+                  + chunk(b'gAMA', b'\x00\x00\xb1\x8f') + idat
+                  + chunk(b'tEXt', b'Comment\x00hi') + chunk(b'IEND', b''))
+        self.assertEqual(photoindex._photo_fingerprint(self._put('a.png', plain)),
+                         photoindex._photo_fingerprint(self._put('b.png', tagged)))
+
+    def test_fingerprint_reading_is_rationed_per_scan(self) -> None:
+        # Over budget: the rows stay NULL (no re-match) and the next scan,
+        # with time to spare, fills them in.
+        self._put('farm.jpg', self._picture(63))
+        saved = photoindex._FINGERPRINT_BUDGET_SECONDS
+        photoindex._FINGERPRINT_BUDGET_SECONDS = 0.0
+        try:
+            photoindex.run_scan(self.archive, self.CFG)
+        finally:
+            photoindex._FINGERPRINT_BUDGET_SECONDS = saved
+        self.assertIsNone(self._rows()['photos/farm.jpg'][1])
+        photoindex.run_scan(self.archive, self.CFG)
+        self.assertTrue(photoindex._is_real_fingerprint(self._rows()['photos/farm.jpg'][1]))
+
+    def test_the_upgrade_is_one_transaction(self) -> None:
+        # ALTER TABLE, both version stamps and the scan_due marker commit
+        # together: rolled back, nothing of the upgrade remains.
+        self._put('farm.jpg', self._picture(64))
+        photoindex.run_scan(self.archive, self.CFG)
+        self._downgrade_to_schema_1()
+        db = self.archive / '.cache' / 'photos.sqlite'
+        conn = sqlite3.connect(db)
+        try:
+            photoindex._migrate_v1_catalog(conn, commit=False)
+            conn.rollback()
+            cols = {r[1] for r in conn.execute('PRAGMA table_info(photos)')}
+            self.assertNotIn('fingerprint', cols)
+            self.assertEqual(conn.execute('PRAGMA user_version').fetchone()[0], 1)
+            self.assertEqual(conn.execute(
+                "SELECT value FROM meta WHERE key='schema_version'").fetchone()[0], '1')
+        finally:
+            conn.close()
+
+    def test_an_upgrade_interrupted_between_statements_loses_nothing(self) -> None:
+        # Stop the upgrade after the column is added but before the stamps
+        # are written: the transaction rolls back, the scan says so instead
+        # of rebuilding, and the next scan upgrades with the MISSING: row
+        # (unrecoverable history) intact.
+        self._put('farm.jpg', self._picture(66))
+        photoindex.run_scan(self.archive, self.CFG)
+        db = self.archive / '.cache' / 'photos.sqlite'
+        conn = sqlite3.connect(db)
+        conn.execute("INSERT INTO photos(path, caption) VALUES ('MISSING:photos/lost.jpg', 'Grandma')")
+        conn.commit()
+        conn.close()
+        self._downgrade_to_schema_1()
+
+        def crash(*_a, **_k):
+            raise sqlite3.OperationalError('simulated stop between statements')
+
+        with mock.patch.object(photoindex, 'write_cache_meta', side_effect=crash):
+            with self.assertRaises(RuntimeError):
+                photoindex.run_scan(self.archive, self.CFG)
+        conn = sqlite3.connect(db)
+        try:
+            self.assertNotIn('fingerprint', {r[1] for r in conn.execute('PRAGMA table_info(photos)')})
+            self.assertEqual(conn.execute('PRAGMA user_version').fetchone()[0], 1)
+        finally:
+            conn.close()
+        summary = photoindex.run_scan(self.archive, self.CFG)
+        self.assertIsNone(summary['rebuilt_reason'])
+        self.assertEqual(self._rows()['MISSING:photos/lost.jpg'][0], 'Grandma')
+
+    def test_a_half_upgraded_catalog_is_finished_not_rebuilt(self) -> None:
+        # Codex: an older upgrade committed its statements one by one, and a
+        # crash between them left the stamps disagreeing. Every such state
+        # is finished in place - the MISSING: row (unrecoverable history)
+        # survives - never rebuilt.
+        for column, user_version, meta_version in (
+                (True, 2, '1'), (True, 1, '2'), (False, 2, '1'), (True, 0, '2'), (True, 2, None)):
+            with self.subTest(column=column, user_version=user_version, meta=meta_version):
+                shutil.rmtree(self.archive / '.cache', ignore_errors=True)
+                self._put('farm.jpg', self._picture(65))
+                photoindex.run_scan(self.archive, self.CFG)
+                db = self.archive / '.cache' / 'photos.sqlite'
+                conn = sqlite3.connect(db)
+                try:
+                    conn.execute("INSERT INTO photos(path, caption) "
+                                 "VALUES ('MISSING:photos/lost.jpg', 'Grandma, 1931')")
+                    if not column:
+                        conn.execute('DROP INDEX IF EXISTS idx_photos_fingerprint')
+                        conn.execute('ALTER TABLE photos DROP COLUMN fingerprint')
+                    if meta_version is None:
+                        conn.execute("DELETE FROM meta WHERE key='schema_version'")
+                    else:
+                        conn.execute("UPDATE meta SET value=? WHERE key='schema_version'",
+                                     (meta_version,))
+                    conn.execute(f'PRAGMA user_version={user_version}')
+                    conn.commit()
+                finally:
+                    conn.close()
+                summary = photoindex.run_scan(self.archive, self.CFG)
+                self.assertIsNone(summary['rebuilt_reason'])
+                self.assertEqual(self._rows()['MISSING:photos/lost.jpg'][0], 'Grandma, 1931')
+                self.assertEqual(photoindex_status(self.archive, self.CFG)[0], 'fresh')
 
 
 if __name__ == '__main__':
