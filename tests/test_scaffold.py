@@ -3804,5 +3804,99 @@ class RootRemapRound7Test(unittest.TestCase):
         self.assertFalse((self.archive / 'photos').exists())
 
 
+class RootRemapAuditFollowUpTest(unittest.TestCase):
+    """#219 audit: folder identity is compared the way the filesystem does,
+    and a dry run previews exactly what the live run does.
+
+    On Windows `Documents/` and `documents/` are one folder. A capitals-only
+    rename (`inbox: Inbox`) read as a real rename, so the "old" inbox - the
+    very same folder - was pruned, taking the new inbox and its notes
+    template with it for good. The same blind spot let `photos: Documents`
+    delete photos' live placeholder. Each test is written to hold on a
+    case-sensitive filesystem too, where the folders are distinct.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self.repo = _make_fake_repo_with_asset_dirs(self.tmp / 'repo')
+        self.archive = self.tmp / 'archive'
+        self.external = self.tmp / 'external' / 'docs'
+        self.external.mkdir(parents=True)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _update(self, **kw):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = scaffold.run_update_tools(self.archive, self.repo, **kw)
+        return rc, out.getvalue()
+
+    def test_a_capitals_only_inbox_rename_never_loses_the_inbox(self):
+        scaffold.run_install(self.archive, self.repo)
+        _write(self.archive / 'fha.yaml', 'roots:\n  inbox: Inbox\n  photos: photos\n')
+        _rc, dry = self._update(dry_run=True)
+        self.assertNotIn('now-orphaned inbox/', dry)
+        for run in (1, 2, 3):
+            rc, out = self._update()
+            with self.subTest(run=run):
+                self.assertEqual(rc, EXIT_CLEAN, out)
+                self.assertTrue((self.archive / 'Inbox' / '_TEMPLATE.notes.md').is_file(), out)
+                self.assertNotIn('now-orphaned inbox/', out)
+
+    def test_a_case_variant_of_another_aliass_old_folder_is_kept(self):
+        scaffold.run_install(self.archive, self.repo)
+        _write(self.archive / 'fha.yaml',
+               'roots:\n  documents: archive-docs\n  photos: Documents\n')
+        for run in (1, 2, 3):
+            rc, out = self._update()
+            with self.subTest(run=run):
+                self.assertTrue((self.archive / 'Documents' / '.gitkeep').is_file(), out)
+                self.assertTrue((self.archive / 'archive-docs' / '.gitkeep').is_file(), out)
+                self.assertNotIn('now-orphaned documents/', out)
+
+    def test_a_case_variant_beside_an_external_alias_is_kept(self):
+        scaffold.run_install(self.archive, self.repo)
+        _write(self.archive / 'fha.yaml',
+               f'roots:\n  documents: {self.external.as_posix()}\n  photos: Documents\n')
+        for run in (1, 2, 3):
+            rc, out = self._update()
+            with self.subTest(run=run):
+                self.assertTrue((self.archive / 'Documents' / '.gitkeep').is_file(), out)
+                self.assertNotIn('now-purposeless documents/', out)
+
+    def test_a_folder_holding_another_aliass_nested_home_is_not_previewed_as_removed(self):
+        for config in ('roots:\n  documents: archive-docs\n  photos: documents/pics\n',
+                       f'roots:\n  documents: {self.external.as_posix()}\n'
+                       '  photos: documents/pics\n'):
+            with self.subTest(config=config):
+                shutil.rmtree(self.archive, ignore_errors=True)
+                scaffold.run_install(self.archive, self.repo)
+                _write(self.archive / 'fha.yaml', config)
+                _rc, dry = self._update(dry_run=True)
+                self.assertNotIn('would remove the now-orphaned documents/', dry)
+                self.assertNotIn('would remove the now-purposeless documents/', dry)
+                rc, out = self._update()
+                self.assertTrue((self.archive / 'documents' / 'pics' / '.gitkeep').is_file(), out)
+
+    def test_a_nested_former_home_and_its_emptied_parent_go_in_one_run(self):
+        _write(self.repo / 'archive-template' / 'fha.yaml',
+               'roots:\n  documents: documents/archive-docs\n  photos: photos\n')
+        scaffold._write_manifest(self.repo)
+        scaffold.run_install(self.archive, self.repo)
+        _write(self.archive / 'fha.yaml',
+               f'roots:\n  documents: {self.external.as_posix()}\n  photos: photos\n')
+        _rc, dry = self._update(dry_run=True)
+        self.assertIn('would remove the now-purposeless documents/archive-docs/ folder', dry)
+        self.assertIn('would remove the now-purposeless documents/ folder', dry)
+        rc, out = self._update()
+        self.assertEqual(rc, EXIT_CLEAN, out)
+        self.assertFalse((self.archive / 'documents').exists(), out)
+        # Nothing left for a second run to do: dry run and live agreed.
+        _rc, again = self._update()
+        self.assertNotIn('Removed', again)
+
+
 if __name__ == '__main__':
     unittest.main()

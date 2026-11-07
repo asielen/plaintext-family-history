@@ -733,8 +733,38 @@ def _remap_skeleton_path(archive_path: str, renames: dict[str, str]) -> str:
     return f'{renamed}{sep}{rest}' if sep else renamed
 
 
+def _folder_key(folder: str) -> str:
+    """A folder name the way a case-INSENSITIVE filesystem compares it.
+
+    Windows (and a default macOS volume) treats `Documents/` and `documents/`
+    as one folder, so every "is this the same folder?" test a prune uses to
+    decide to SKIP must compare these keys, not the raw text (#219 audit):
+    `photos: Documents` beside `documents: archive-docs` otherwise read the
+    literal `documents/` as nobody's, and deleted photos' live placeholder.
+    Applied everywhere, case-sensitive Linux included, because it only ever
+    makes a prune skip MORE - the safe direction: at worst a genuinely
+    orphaned `Inbox/` beside `inbox/` on Linux is left as clutter.
+    """
+    return folder.replace('\\', '/').strip('/').casefold()
+
+
+def _overlaps_live_target(folder: str, active_targets) -> bool:
+    """Whether `folder` is, or contains, some alias's live rename target.
+
+    Either way it is not litter: it IS that alias's placeholder, or its
+    ancestor (`photos: documents/pics` lives inside `documents/`). A prune
+    that removed it would only have the next run re-deliver it, and a dry
+    run would preview a removal the live run - which delivers the nested
+    seed first - never makes (#198 finding 5, #219 audit).
+    """
+    key = _folder_key(folder)
+    return any(t == key or t.startswith(key + '/')
+               for t in (_folder_key(a) for a in active_targets))
+
+
 def _placeholder_only_scaffold_litter(
     folder: Path, archive_root: Path, seed_shas: dict[str, str],
+    assume_gone: frozenset[Path] | set[Path] = frozenset(),
 ) -> bool | None:
     """Whether `folder` (an alias's placeholder) holds nothing but this install's
     OWN shipped skeleton bytes - recursively - so pruning it destroys nothing.
@@ -776,12 +806,20 @@ def _placeholder_only_scaffold_litter(
     A SYMLINK, of either kind, is never fine on its own - it disqualifies the
     folder immediately and unconditionally, the same as a real file this walk
     does not recognize.
+
+    `assume_gone` names subfolders this same run has already removed - or,
+    under a dry run, would remove - so a parent is judged as the live run
+    will find it, once its nested placeholder is gone (#219 audit). Without
+    it a dry run could never preview the parent's removal that the live run
+    then makes.
     """
     try:
         entries = sorted(folder.iterdir(), key=lambda p: p.name)
     except OSError:
         return None  # can't tell what's in there - leave it, say nothing
     for entry in entries:
+        if entry in assume_gone:
+            continue
         try:
             is_link = entry.is_symlink()
         except OSError:
@@ -796,7 +834,8 @@ def _placeholder_only_scaffold_litter(
         except OSError:
             return None
         if is_dir:
-            verdict = _placeholder_only_scaffold_litter(entry, archive_root, seed_shas)
+            verdict = _placeholder_only_scaffold_litter(
+                entry, archive_root, seed_shas, assume_gone)
             if verdict is not True:
                 return verdict  # None (unreadable) or False (real content) - propagate
             continue
@@ -961,17 +1000,20 @@ def _recorded_alias_rename_targets(
     # nested under a skeleton root's own name - `documents/archive-docs`,
     # `sources/archive-docs` - is a real former home, and a first-segment
     # test threw it away, leaving that folder as unrecorded litter forever.
-    literal_folders = set(skeleton_roots)
+    # Compared case-insensitively (`_folder_key`), the safe direction: on
+    # Windows `Sources/archive-docs` and `sources/archive-docs` are one folder.
+    literal_folders = {_folder_key(r) for r in skeleton_roots}
     for path in skeleton_paths:
         folder = _strip_matching_skeleton_tail(path, tails)
         if folder:
-            literal_folders.add(folder)
+            literal_folders.add(_folder_key(folder))
     targets: set[str] = set()
     for recorded_path in recorded:
         folder = _strip_matching_skeleton_tail(recorded_path, tails)
         if folder is None:
             continue
-        if folder != alias and folder not in literal_folders:
+        key = _folder_key(folder)
+        if key != _folder_key(alias) and key not in literal_folders:
             targets.add(folder)
     return targets
 
@@ -1073,14 +1115,24 @@ def _prune_external_root_placeholders(
     # RIGHT NOW belongs to that alias, whatever an unrelated tail-shape
     # coincidence might suggest - never a candidate for this one.
     active_rename_targets = set(_internal_root_renames(fha_config, archive_root).values())
+    # Folders this run has removed, or under a dry run would remove: a parent
+    # checked after its nested placeholder is judged without it (#219 audit).
+    gone: set[Path] = set()
     for alias in sorted(external_asset_roots(fha_config, archive_root)):
         # The exclusion covers the literal `{alias}` folder too (#198 finding
         # 5): with `photos: documents` while `documents` is external, the
         # literal `documents/` IS the photos placeholder, live - pruning it
-        # here only for the next run to re-deliver it, forever.
-        candidates = ({alias} | _recorded_alias_rename_targets(alias, manifest, recorded)) \
-            - active_rename_targets
-        for folder_name in sorted(candidates):
+        # here only for the next run to re-deliver it, forever. Compared
+        # case-insensitively, and an ANCESTOR of a live target is excluded
+        # too (`_overlaps_live_target`, #219 audit).
+        candidates = {
+            c for c in {alias} | _recorded_alias_rename_targets(alias, manifest, recorded)
+            if not _overlaps_live_target(c, active_rename_targets)
+        }
+        # Deepest first: `documents/archive-docs` before `documents`, so the
+        # parent is judged after its nested placeholder is gone and the same
+        # run clears both, as its dry run previews (#219 audit).
+        for folder_name in sorted(candidates, key=lambda c: (-c.count('/'), c)):
             folder = archive_root / folder_name
             if not folder.is_dir():
                 continue
@@ -1091,7 +1143,7 @@ def _prune_external_root_placeholders(
             # `_placeholder_only_scaffold_litter` verifies every file it
             # finds against, byte for byte.
             seed_shas = _alias_seed_shas(alias, manifest, recorded, folder=folder_name)
-            if not _placeholder_only_scaffold_litter(folder, archive_root, seed_shas):
+            if not _placeholder_only_scaffold_litter(folder, archive_root, seed_shas, gone):
                 continue  # real content, an edited seed, or unreadable - not ours to touch
             if not dry_run:
                 # Snapshot every file this prune is about to remove, in memory,
@@ -1130,6 +1182,7 @@ def _prune_external_root_placeholders(
                         failed.append((alias, str(exc)))
                     continue
                 snapshots.update(folder_snapshot)
+            gone.add(folder)
             removed.append((alias, folder_name))
     return removed, failed, snapshots
 
@@ -1190,9 +1243,13 @@ def _prune_orphaned_literal_root_folders(
         delivers the new one. Empty under `dry_run`, which delivers nothing
         and fails nothing, so the preview and the clean live run agree.
       - The literal folder is ANOTHER alias's live rename target
-        (`photos: documents` beside `documents: archive-docs`): that folder
-        is the photos placeholder now, not documents' litter, and pruning it
-        would only have the next run re-deliver it, forever (finding 5).
+        (`photos: documents` beside `documents: archive-docs`), or contains
+        one (`photos: documents/pics`): that folder is the photos placeholder
+        now, not documents' litter, and pruning it would only have the next
+        run re-deliver it, forever (finding 5). Compared case-insensitively,
+        which also covers a capitals-only rename (`inbox: Inbox`): on Windows
+        that is the SAME folder, and pruning the "old" one deleted the new
+        inbox and its notes template for good (#219 audit).
 
     Returns `(removed, failed, snapshots)`:
       - `removed`, `failed` - the same shape as `_prune_external_root_placeholders`
@@ -1227,8 +1284,11 @@ def _prune_orphaned_literal_root_folders(
         # (finding 3, see the docstring above).
         if renames[alias].partition('/')[0] == alias:
             continue
-        # Another alias lives here now (#198 finding 5, see the docstring).
-        if alias in active_rename_targets:
+        # Another alias lives here now, or inside it (`photos: documents/pics`),
+        # or this "rename" only changed the folder's capitals (`inbox: Inbox`
+        # - on Windows the very same folder): never litter (#198 finding 5,
+        # #219 audit - compared case-insensitively, see `_folder_key`).
+        if _overlaps_live_target(alias, active_rename_targets):
             continue
         # The replacement seed did not arrive this run (#198 finding 4).
         replacements = {
