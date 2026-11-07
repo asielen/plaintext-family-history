@@ -7674,5 +7674,65 @@ class ContentFingerprintTests(unittest.TestCase):
         self.assertTrue(any('family_reunion' in str(r) for r in found['rows']), found['rows'])
 
 
+    # ── #220 Codex round 8 ──────────────────────────────────────────────────
+
+    def _downgrade_to_pre_face_regions(self) -> None:
+        db = self.archive / '.cache' / 'photos.sqlite'
+        conn = sqlite3.connect(db)
+        conn.execute('DROP TABLE photo_face_regions')
+        conn.commit()
+        conn.close()
+        self._downgrade_to_schema_1()
+
+    def _meta(self, key: str):
+        conn = sqlite3.connect(self.archive / '.cache' / 'photos.sqlite')
+        try:
+            row = conn.execute('SELECT value FROM meta WHERE key=?', (key,)).fetchone()
+        finally:
+            conn.close()
+        return row[0] if row else None
+
+    def test_an_incomplete_scan_keeps_the_backfill_and_scan_due_markers(self) -> None:
+        # A photo exiftool cannot read during the face-region backfill keeps
+        # its stored mtime/size, so no later incremental scan would retry it:
+        # both markers must survive until a scan sees everything.
+        self._put('farm.jpg', self._picture(90))
+        photoindex.run_scan(self.archive, self.CFG)
+        self._downgrade_to_pre_face_regions()
+        photoindex.run_reconcile(self.archive, self.CFG)
+        self.assertIsNotNone(self._meta(photoindex._FACE_BACKFILL_KEY))
+        fake = photoindex._run_exiftool
+
+        def one_unreadable(paths):
+            return [row if Path(row['SourceFile']).name != 'farm.jpg'
+                    else {'SourceFile': row['SourceFile'], 'Error': 'locked'}
+                    for row in fake(paths)]
+
+        photoindex._run_exiftool = one_unreadable
+        summary = photoindex.run_scan(self.archive, self.CFG)
+        photoindex._run_exiftool = fake
+        self.assertGreater(summary['unreadable'], 0)
+        self.assertIsNotNone(self._meta(photoindex._FACE_BACKFILL_KEY))
+        self.assertIsNotNone(self._meta('scan_due'))
+        photoindex.run_scan(self.archive, self.CFG)              # now complete
+        self.assertIsNone(self._meta(photoindex._FACE_BACKFILL_KEY))
+        self.assertIsNone(self._meta('scan_due'))
+
+    def test_a_dry_run_reconcile_previews_the_upgrade_of_a_very_old_catalog(self) -> None:
+        # A schema-1 catalog from before cached face regions: the dry run
+        # shows the plan (the moved photo kept as MISSING:) instead of
+        # "unreadable", and changes nothing on disk.
+        self._put('farm.jpg', self._picture(91), caption='The farm')
+        photoindex.run_scan(self.archive, self.CFG)
+        self._downgrade_to_pre_face_regions()
+        (self.photos / 'farm.jpg').rename(self.photos / 'farm2.jpg')
+        db = self.archive / '.cache' / 'photos.sqlite'
+        before = db.read_bytes()
+        result = photoindex.run_reconcile(self.archive, self.CFG, dry_run=True)
+        self.assertNotIn(result['status'], ('unreadable', 'old-schema'))
+        self.assertEqual(result['missing'], ['MISSING:photos/farm.jpg'])
+        self.assertEqual(db.read_bytes(), before)
+
+
 if __name__ == '__main__':
     unittest.main()

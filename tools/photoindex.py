@@ -4456,6 +4456,15 @@ def _delete_path_rows(conn: sqlite3.Connection, tables: tuple[str, ...], path_ke
         conn.execute(f'DELETE FROM {table} WHERE path=?', (path_key,))
 
 
+def _ddl_statements() -> list[str]:
+    """`_DDL` as separate statements, comments stripped, for running inside a
+    transaction (`executescript` commits first, so it cannot be used there).
+    The DDL holds no string literal containing `--` or `;`, so stripping
+    trailing comments and splitting on `;` is exact for it."""
+    text = '\n'.join(line.split('--', 1)[0] for line in _DDL.splitlines())
+    return [stmt.strip() for stmt in text.split(';') if stmt.strip()]
+
+
 def _migrate_v1_catalog(conn: sqlite3.Connection, *, commit: bool = True) -> None:
     """Bring a schema-1 (or half-upgraded) catalog up to schema 2 in place (#49).
 
@@ -4490,6 +4499,19 @@ def _migrate_v1_catalog(conn: sqlite3.Connection, *, commit: bool = True) -> Non
         # as gone, in the same transaction.
         conn.execute("UPDATE photos SET fingerprint=? WHERE path LIKE 'MISSING:%' "
                      "AND fingerprint IS NULL", (_FINGERPRINT_GONE,))
+        # Every table and index the current schema has, created here too -
+        # statement by statement, because `executescript` would commit -
+        # so the upgrade is whole inside this one transaction, and a dry
+        # run previews ALL of it, including a catalog old enough to predate
+        # `photo_face_regions` (#220, Codex). Such a catalog also needs
+        # every photo rescraped once to fill face regions: recorded here.
+        tables = {row[0] for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'")}
+        for statement in _ddl_statements():
+            conn.execute(statement)
+        if 'photo_face_regions' not in tables:
+            write_cache_meta(conn, _FACE_BACKFILL_KEY,
+                             'face regions not yet cached; every photo needs one rescrape')
         conn.execute('INSERT OR REPLACE INTO meta(key, value) VALUES (?,?)',
                      (CACHE_SCHEMA_KEY, str(PHOTOINDEX_SCHEMA_VERSION)))
         write_cache_meta(conn, PHOTOINDEX_SCAN_DUE_KEY,
@@ -5006,12 +5028,18 @@ def run_scan(archive_root: Path, fha_config: dict, full: bool = False) -> Result
         # those commands must not claim the catalog has caught up.
         write_cache_meta(
             conn, PHOTOINDEX_CONFIG_KEY, photoindex_config_fingerprint(fha_config))
-        # A completed scan is what a schema upgrade's "scan due" waits for,
+        # A COMPLETE scan is what a schema upgrade's "scan due" waits for,
         # and - when this scan rescraped every photo for it - what the
-        # face-region backfill waits for.
-        conn.execute('DELETE FROM meta WHERE key=?', (PHOTOINDEX_SCAN_DUE_KEY,))
-        if needs_face_backfill:
-            conn.execute('DELETE FROM meta WHERE key=?', (_FACE_BACKFILL_KEY,))
+        # face-region backfill waits for. A scan that could not read some
+        # files, or list some folders, is not complete: those photos keep
+        # their stored mtime/size, so no later incremental scan would retry
+        # them, and clearing either marker would call the catalog whole while
+        # their face regions (and anything else the scan refreshes) are not
+        # (#220, Codex). Both markers stay until a scan sees everything.
+        if not unreadable and not unreadable_dirs:
+            conn.execute('DELETE FROM meta WHERE key=?', (PHOTOINDEX_SCAN_DUE_KEY,))
+            if needs_face_backfill:
+                conn.execute('DELETE FROM meta WHERE key=?', (_FACE_BACKFILL_KEY,))
 
         conn.commit()
     finally:
