@@ -113,8 +113,8 @@ async function settle() { for (let i = 0; i < 20; i++) await tick(); }
 
 // `respond(msg, tab)` plays the content script: return a value, or a promise
 // to hold the answer back. `host` makes the archive connection answer.
-// `seenIt` is the Seen It add-on: { 'img:…': 'filed' | 'captured' } it
-// knows, or undefined when it is not installed.
+// `seenIt` is the Seen It add-on: { 'img:…': 'filed' | 'captured' |
+// { state, sid } } it knows, or undefined when it is not installed.
 async function openPanel({ url, respond, host, seenIt }) {
   const doc = makeDocument();
   const tab = { id: 7, url };
@@ -139,8 +139,14 @@ async function openPanel({ url, respond, host, seenIt }) {
             return;
           }
           const keys = {};
-          for (const k of msg.keys || []) if (k in seenIt) keys[k] = seenIt[k];
-          cb({ ok: true, keys });
+          const sids = {};
+          for (const k of msg.keys || []) {
+            if (!(k in seenIt)) continue;
+            const v = seenIt[k];
+            keys[k] = typeof v === 'string' ? v : v.state;
+            if (v && v.sid) sids[k] = v.sid;
+          }
+          cb({ ok: true, keys, sids });
         }, 0);
       },
     },

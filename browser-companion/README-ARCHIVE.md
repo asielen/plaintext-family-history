@@ -165,7 +165,9 @@ installed, the add-on also asks it whether your archive already has that page.
 
 If Ancestry will not hand over the scan (you are signed out, or the collection
 does not allow downloads), the record's facts and citation are still saved, and
-the message says so. You can then use Ancestry's Download button, drop the image
+the message says so. A record saved without a scan always keeps a copy of the
+web page with it, even if you unticked that box: the copy is what the record's
+facts are filed with. You can then use Ancestry's Download button, drop the image
 into the panel and press **Capture** again: that capture holds the facts and your
 image together.
 

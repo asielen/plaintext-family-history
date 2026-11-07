@@ -245,6 +245,28 @@ test('ancTitle: the person and collection, unless the human typed a title', () =
   assert.strictEqual(anc.ancTitle({ dbId: '9', recordId: '8' }, null), 'Ancestry record 9:8');
 });
 
+test('ancTitle knows the tab\'s own title on every Ancestry site (PR #213 audit #3)', () => {
+  // Left as typed, each household member's bundle would get the same
+  // nameless collection title on ancestry.co.uk, .ca or .com.au.
+  const rec = { dbId: '90001', recordId: '1', name: 'Calvin Hartley', collection: '1881 England Census' };
+  const auto = 'Calvin Hartley - 1881 England Census';
+  for (const tab of [
+    '1881 England Census - Ancestry.co.uk',
+    '1881 England Census - Ancestry.ca',
+    '1881 England Census - Ancestry.com.au',
+    '1881 England Census | Ancestry',
+    '1881 England Census | Ancestry.com',
+    '1881 England Census – Ancestry.de',
+  ]) {
+    assert.strictEqual(anc.ancTitle(rec, tab), auto, tab);
+    const doc = parse('<html><head><title>' + tab + '</title></head><body><h1>Calvin Hartley</h1></body></html>');
+    assert.strictEqual(anc.ancRecordFrom(doc, CENSUS_URL, { title: doc.title }).record.collection,
+      '1881 England Census', tab);
+  }
+  // A title that merely mentions the site is still hers.
+  assert.strictEqual(anc.ancTitle(rec, 'Found on Ancestry, 1881'), 'Found on Ancestry, 1881');
+});
+
 // ── the saved copies of the page (content.js stripSeenIt) ────────────────────
 
 test('page.html and the page copy are saved without Seen It\'s badges, on every site', () => {

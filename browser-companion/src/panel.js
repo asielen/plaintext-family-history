@@ -753,10 +753,12 @@
   const SEEN_IT_ID = 'cennkaddolfbhiabacldomegncpdphed';
   const SEEN_IT_WAIT_MS = 3000;
 
-  // Where the archive already holds this page image, or null: "the archive",
-  // "a capture waiting to be filed", or null when Seen It is absent, off, slow
-  // or does not know it.
+  // Where the archive already holds this page image, or null when Seen It is
+  // absent, off, slow or does not know it: { where: 'archive' | 'inbox',
+  // source?: 'S-…' }. Seen It counts a page only once a saved image backs it
+  // (its helper's _holds_saved_image), never from an image id alone.
   function seenItImage(imageKey) {
+    const key = 'img:' + imageKey;
     return new Promise((resolve) => {
       const timer = setTimeout(() => resolve(null), SEEN_IT_WAIT_MS);
       const done = (v) => {
@@ -764,15 +766,26 @@
         resolve(v);
       };
       try {
-        chrome.runtime.sendMessage(SEEN_IT_ID, { type: 'knownKeys', keys: ['img:' + imageKey] }, (r) => {
-          const st = !chrome.runtime.lastError && r && r.ok && r.keys ? r.keys['img:' + imageKey] : null;
-          done(st === 'captured' ? 'a capture waiting to be filed'
-            : st === 'filed' || st === 'processed' ? 'the archive' : null);
+        chrome.runtime.sendMessage(SEEN_IT_ID, { type: 'knownKeys', keys: [key] }, (r) => {
+          const ok = !chrome.runtime.lastError && r && r.ok && r.keys;
+          const st = ok ? r.keys[key] : null;
+          const sid = ok && r.sids && /^S-[0-9a-z]{10}$/i.test(String(r.sids[key] || '')) ? r.sids[key] : null;
+          if (st === 'captured') done({ where: 'inbox' });
+          else if (st === 'filed' || st === 'processed') done(sid ? { where: 'archive', source: sid } : { where: 'archive' });
+          else done(null);
         });
       } catch (e) {
         done(null);
       }
     });
+  }
+
+  // Where a shared census page is, in words: the record of the household
+  // member it was saved with (in this sitting), or the archive source.
+  function describeSameImage(same) {
+    if (same.record) return 'the capture of ' + (same.name || 'the record') + ' (' + same.url + ')';
+    if (same.where === 'archive') return same.source ? 'the archive, source ' + same.source : 'the archive';
+    return 'a capture waiting in the inbox to be filed';
   }
 
   async function captureAncestryRecord(pageHtml, wantPageCopy) {
@@ -783,10 +796,6 @@
     const rec = info.record;
     const hints = info.hints || {};
     const assets = [];
-    if (wantPageCopy) {
-      const pc = await buildPageCopy();
-      assets.push({ filename: pc.filename, blob: pc.blob, role: 'webpage', mode: 'singlefile' });
-    }
 
     // A file the human dropped in is the record's image (her own download,
     // after Ancestry would not hand it over), saved WITH the index rather than
@@ -824,9 +833,27 @@
           'button, drop the file into the panel and press Capture again: that capture holds both.';
       }
     }
+    // Whether THIS bundle holds the record's scan - not a link to it, not a
+    // screen capture standing in for it. Seen It's helper counts the page as
+    // saved only on this (PR #213 review): `imageId` alone is only the link.
+    const imageSaved = !!rec.imageId && !provisional && assets.some((a) => a.role === 'record');
+    rec.imageSaved = imageSaved;
+
+    // A bundle that would hold nothing but record-data.json (no scan, the page
+    // copy unticked) keeps the page copy anyway: filed alone, the index file
+    // would become the source's main file under a new name, and the record
+    // would lose both its role and its page (PR #213 audit #4).
+    let forcedCopy = false;
+    if (wantPageCopy || !assets.some((a) => a.role === 'record')) {
+      const pc = await buildPageCopy();
+      assets.unshift({ filename: pc.filename, blob: pc.blob, role: 'webpage', mode: 'singlefile' });
+      forcedCopy = !wantPageCopy;
+    }
+
     const data = {
       note: 'Captured from Ancestry by the archive capture extension. "fields" and "household" are ' +
-        'Ancestry’s index of the record, as the site shows it: an index, not a transcript of the image.',
+        'Ancestry’s index of the record, as the site shows it: an index, not a transcript of the image. ' +
+        '"imageSaved" says whether this capture holds the record’s image; "imageId" is the image the record links to.',
       record: rec,
       fields: info.fields,
       household: info.household,
@@ -841,7 +868,8 @@
     const title = info.title || ('Ancestry record ' + rec.dbId + ':' + rec.recordId);
     const cite = info.citation || {};
     const sameNote = sameImageAs
-      ? 'Same page (image ' + rec.imageId + ') as ' + sameImageAs + '; the image was not downloaded again.'
+      ? 'Same page (image ' + rec.imageId + ') as ' + describeSameImage(sameImageAs) +
+        '; the image was not downloaded again.'
       : '';
     const notes = [
       gatherNotes(provisional),
@@ -866,17 +894,22 @@
     const cap = captureJson.build(fields);
     const bundleName = captureJson.bundleName(title);
     const st = await stageBundle(bundleName, pageHtml, cap, assets);
-    // The bundle now holds this page: the next household member reuses it (not
-    // a screen capture, which is a stand-in for the page, not the page). The
-    // bundle's folder name, never a path on this computer, is what is kept.
-    if (imageKey && !provisional && assets.some((a) => a.role === 'record')) {
-      state.ancImages[imageKey] = 'the capture ' + bundleName;
+    // The bundle now holds this page: the next household member's capture
+    // points at THIS record - its key and address, which outlive the staging
+    // folder (ingest re-slugs it, filing renames it) - instead of fetching it.
+    if (imageKey && imageSaved) {
+      state.ancImages[imageKey] = {
+        record: 'rec:' + rec.dbId + ':' + rec.recordId, url: rec.url, name: rec.name || null,
+      };
     }
     const pageNote = sameImageAs
-      ? 'The census page was not downloaded again: it is already saved in ' + sameImageAs + '.'
+      ? 'The census page was not downloaded again: it is already saved in ' + describeSameImage(sameImageAs) + '.'
+      : null;
+    const copyNote = forcedCopy
+      ? 'A copy of the web page was kept too: with no image, it is what this record’s index is filed with.'
       : null;
     reportStaged(st.where, st.viaHost, imageWarning,
-      [st.hostWarning, pageNote].filter(Boolean).join('\n') || null);
+      [st.hostWarning, pageNote, copyNote].filter(Boolean).join('\n') || null);
   }
 
   // Stage one bundle: straight into the archive when the native host answers,

@@ -1,82 +1,388 @@
 {
   "_about": "One table for the two places that read an Ancestry record's own hints: the capture companion (browser-companion/src/lib/ancestry-record.js ancHints / ancDateToEdtf, at capture) and the ancestry recipe (tools/capture_recipes/ancestry.py, at ingest, for bundles captured before the companion sent them). tests/test_capture.py and browser-companion/tests/test-ancestry.js both run every row, so the two cannot drift apart (TI-066). Collections are real-shaped names; the field values are invented.",
   "dates": [
-    ["7 Jan 1957", "1957-01-07"],
-    ["24 Mar 1902", "1902-03-24"],
-    ["07 Sept 1931", "1931-09-07"],
-    ["March 3, 1931", "1931-03-03"],
-    ["Jan 1950", "1950-01"],
-    ["June 1923", "1923-06"],
-    ["1950", "1950"],
-    ["abt 1845", "1845~"],
-    ["About 3 Jun 1870", "1870-06-03~"],
-    ["bef 1900", null],
-    ["1940-1997", null],
-    ["Riverside", null],
-    ["32 Jan 1950", null],
-    ["7 Marchant 1950", null],
-    ["", null]
+    [
+      "7 Jan 1957",
+      "1957-01-07"
+    ],
+    [
+      "24 Mar 1902",
+      "1902-03-24"
+    ],
+    [
+      "07 Sept 1931",
+      "1931-09-07"
+    ],
+    [
+      "March 3, 1931",
+      "1931-03-03"
+    ],
+    [
+      "Jan 1950",
+      "1950-01"
+    ],
+    [
+      "June 1923",
+      "1923-06"
+    ],
+    [
+      "1950",
+      "1950"
+    ],
+    [
+      "abt 1845",
+      "1845~"
+    ],
+    [
+      "About 3 Jun 1870",
+      "1870-06-03~"
+    ],
+    [
+      "bef 1900",
+      null
+    ],
+    [
+      "1940-1997",
+      null
+    ],
+    [
+      "Riverside",
+      null
+    ],
+    [
+      "32 Jan 1950",
+      null
+    ],
+    [
+      "7 Marchant 1950",
+      null
+    ],
+    [
+      "",
+      null
+    ]
   ],
   "records": [
     {
       "collection": "1870 United States Federal Census",
-      "fields": [["Name", "Calvin Hartley"], ["Age in 1870", "32"], ["Birth Date", "abt 1838"]],
-      "expect": {"sourceType": "census", "sourceDate": "1870", "sourceClass": null}
+      "fields": [
+        [
+          "Name",
+          "Calvin Hartley"
+        ],
+        [
+          "Age in 1870",
+          "32"
+        ],
+        [
+          "Birth Date",
+          "abt 1838"
+        ]
+      ],
+      "expect": {
+        "sourceType": "census",
+        "sourceDate": "1870",
+        "sourceClass": null
+      }
     },
     {
       "collection": "Kansas, U.S., State Census Collection, 1855-1925",
-      "fields": [["Name", "Calvin Hartley"], ["Residence Date", "1885"]],
-      "expect": {"sourceType": "census", "sourceDate": "1885", "sourceClass": null}
+      "fields": [
+        [
+          "Name",
+          "Calvin Hartley"
+        ],
+        [
+          "Residence Date",
+          "1885"
+        ]
+      ],
+      "expect": {
+        "sourceType": "census",
+        "sourceDate": "1885",
+        "sourceClass": null
+      }
     },
     {
       "collection": "Kansas, U.S., State Census Collection, 1855-1925",
-      "fields": [["Name", "Calvin Hartley"]],
-      "expect": {"sourceType": "census", "sourceDate": null, "sourceClass": null}
+      "fields": [
+        [
+          "Name",
+          "Calvin Hartley"
+        ]
+      ],
+      "expect": {
+        "sourceType": "census",
+        "sourceDate": null,
+        "sourceClass": null
+      }
     },
     {
       "collection": "California, U.S., Death Index, 1940-1997",
-      "fields": [["Name", "Ethel M Hartley"], ["Birth Date", "24 Mar 1902"], ["Death Date", "7 Jan 1957"]],
-      "expect": {"sourceType": "vital-record", "sourceDate": "1957-01-07", "sourceClass": "derivative"}
+      "fields": [
+        [
+          "Name",
+          "Ethel M Hartley"
+        ],
+        [
+          "Birth Date",
+          "24 Mar 1902"
+        ],
+        [
+          "Death Date",
+          "7 Jan 1957"
+        ]
+      ],
+      "expect": {
+        "sourceType": "vital-record",
+        "sourceDate": "1957-01-07",
+        "sourceClass": "derivative"
+      }
     },
     {
       "collection": "U.S., Social Security Death Index, 1935-2014",
-      "fields": [["Name", "Warren Hartley"], ["Death Date", "Mar 1984"]],
-      "expect": {"sourceType": "vital-record", "sourceDate": "1984-03", "sourceClass": "derivative"}
+      "fields": [
+        [
+          "Name",
+          "Warren Hartley"
+        ],
+        [
+          "Death Date",
+          "Mar 1984"
+        ]
+      ],
+      "expect": {
+        "sourceType": "vital-record",
+        "sourceDate": "1984-03",
+        "sourceClass": "derivative"
+      }
     },
     {
       "collection": "California, U.S., Death Index, 1905-1939",
-      "fields": [["Name", "Edith Hartley"]],
-      "expect": {"sourceType": "vital-record", "sourceDate": null, "sourceClass": "derivative"}
+      "fields": [
+        [
+          "Name",
+          "Edith Hartley"
+        ]
+      ],
+      "expect": {
+        "sourceType": "vital-record",
+        "sourceDate": null,
+        "sourceClass": "derivative"
+      }
     },
     {
       "collection": "Kansas, U.S., County Marriage Records, 1811-1911",
-      "fields": [["Name", "Calvin Hartley"], ["Marriage Date", "12 Oct 1866"]],
-      "expect": {"sourceType": "vital-record", "sourceDate": "1866-10-12", "sourceClass": null}
+      "fields": [
+        [
+          "Name",
+          "Calvin Hartley"
+        ],
+        [
+          "Marriage Date",
+          "12 Oct 1866"
+        ]
+      ],
+      "expect": {
+        "sourceType": "vital-record",
+        "sourceDate": "1866-10-12",
+        "sourceClass": null
+      }
     },
     {
       "collection": "U.S., Find a Grave Index, 1600s-Current",
-      "fields": [["Name", "Calvin Hartley"], ["Death Date", "1901"], ["Burial Date", ""]],
-      "expect": {"sourceType": "vital-record", "sourceDate": null, "sourceClass": "derivative"}
+      "fields": [
+        [
+          "Name",
+          "Calvin Hartley"
+        ],
+        [
+          "Death Date",
+          "1901"
+        ],
+        [
+          "Burial Date",
+          ""
+        ]
+      ],
+      "expect": {
+        "sourceType": "vital-record",
+        "sourceDate": "1901",
+        "sourceClass": "derivative"
+      }
     },
     {
       "collection": "U.S., Newspapers.com Obituary Index, 1800s-current",
-      "fields": [["Name", "Calvin Hartley"], ["Death Date", "2 Feb 1901"]],
-      "expect": {"sourceType": "newspaper", "sourceDate": null, "sourceClass": "derivative"}
+      "fields": [
+        [
+          "Name",
+          "Calvin Hartley"
+        ],
+        [
+          "Death Date",
+          "2 Feb 1901"
+        ]
+      ],
+      "expect": {
+        "sourceType": "newspaper",
+        "sourceDate": "1901-02-02",
+        "sourceClass": "derivative"
+      }
     },
     {
       "collection": "1939 England and Wales Register",
-      "fields": [["Name", "Margaret Cole"]],
-      "expect": {"sourceType": null, "sourceDate": "1939", "sourceClass": null}
+      "fields": [
+        [
+          "Name",
+          "Margaret Cole"
+        ]
+      ],
+      "expect": {
+        "sourceType": null,
+        "sourceDate": "1939",
+        "sourceClass": null
+      }
     },
     {
       "collection": "U.S. City Directories, 1822-1995",
-      "fields": [["Name", "Calvin Hartley"], ["Residence Year", "1890"]],
-      "expect": {"sourceType": null, "sourceDate": null, "sourceClass": null}
+      "fields": [
+        [
+          "Name",
+          "Calvin Hartley"
+        ],
+        [
+          "Residence Year",
+          "1890"
+        ]
+      ],
+      "expect": {
+        "sourceType": null,
+        "sourceDate": null,
+        "sourceClass": null
+      }
+    },
+    {
+      "collection": "U.S., Obituary Collection, 1930-Current",
+      "fields": [
+        [
+          "Name",
+          "Ethel Hartley"
+        ],
+        [
+          "Death Date",
+          "14 May 1962"
+        ]
+      ],
+      "expect": {
+        "sourceType": "newspaper",
+        "sourceDate": "1962-05-14",
+        "sourceClass": null
+      }
+    },
+    {
+      "collection": "U.S., Obituary Collection, 1930-Current",
+      "fields": [
+        [
+          "Name",
+          "Ethel Hartley"
+        ]
+      ],
+      "expect": {
+        "sourceType": "newspaper",
+        "sourceDate": null,
+        "sourceClass": null
+      }
+    },
+    {
+      "collection": "U.S., Funeral Home Collection, 1847-Current",
+      "fields": [
+        [
+          "Name",
+          "Warren Hartley"
+        ],
+        [
+          "Death Date",
+          "3 Jun 1911"
+        ]
+      ],
+      "expect": {
+        "sourceType": "vital-record",
+        "sourceDate": "1911-06-03",
+        "sourceClass": null
+      }
+    },
+    {
+      "collection": "U.S., Funeral Home Collection, 1847-Current",
+      "fields": [
+        [
+          "Name",
+          "Warren Hartley"
+        ]
+      ],
+      "expect": {
+        "sourceType": "vital-record",
+        "sourceDate": null,
+        "sourceClass": null
+      }
+    },
+    {
+      "collection": "Kansas, U.S., Cemetery Records, 1850-present",
+      "fields": [
+        [
+          "Name",
+          "Warren Hartley"
+        ],
+        [
+          "Death Date",
+          "1 Jun 1911"
+        ],
+        [
+          "Burial Date",
+          "5 Jun 1911"
+        ]
+      ],
+      "expect": {
+        "sourceType": "vital-record",
+        "sourceDate": "1911-06-05",
+        "sourceClass": null
+      }
+    },
+    {
+      "collection": "Kansas, U.S., Passenger Lists, 1900s-present",
+      "fields": [
+        [
+          "Name",
+          "Warren Hartley"
+        ]
+      ],
+      "expect": {
+        "sourceType": null,
+        "sourceDate": null,
+        "sourceClass": null
+      }
+    },
+    {
+      "collection": "Kansas, U.S., Directories, 1850 – 1890",
+      "fields": [
+        [
+          "Name",
+          "Warren Hartley"
+        ]
+      ],
+      "expect": {
+        "sourceType": null,
+        "sourceDate": null,
+        "sourceClass": null
+      }
     },
     {
       "collection": "",
       "fields": [],
-      "expect": {"sourceType": null, "sourceDate": null, "sourceClass": null}
+      "expect": {
+        "sourceType": null,
+        "sourceDate": null,
+        "sourceClass": null
+      }
     }
   ]
 }

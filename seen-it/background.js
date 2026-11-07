@@ -925,7 +925,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 //            caller asking in a loop gets the last answer instead.
 // `missing` names archive folders the last read could not reach: their old
 // entries are kept (see refreshKnown), and a caller can tell the answer may
-// be behind.
+// be behind. The narrow form also answers `sids`: the source id of each asked
+// key that is filed, so the caller can say WHICH source holds it ("the
+// archive" alone gives a human nothing to look up).
 const EXTERNAL_REFRESH_MS = 5 * 60 * 1000;
 const EXTERNAL_KEYS_MAX = 20000;
 chrome.runtime.onMessageExternal.addListener((msg, sender, sendResponse) => {
@@ -940,15 +942,19 @@ chrome.runtime.onMessageExternal.addListener((msg, sender, sendResponse) => {
     if (msg.refresh && Date.now() - last >= EXTERNAL_REFRESH_MS) await refreshKnown().catch(() => {});
     const { known = {}, meta = {} } = await chrome.storage.local.get(['known', 'meta']);
     const keys = {};
+    const sids = {};
     if (Array.isArray(msg.keys)) {
       for (const k of msg.keys.slice(0, EXTERNAL_KEYS_MAX)) {
-        if (typeof k === 'string' && Object.prototype.hasOwnProperty.call(known, k)) keys[k] = known[k].state;
+        if (typeof k === 'string' && Object.prototype.hasOwnProperty.call(known, k)) {
+          keys[k] = known[k].state;
+          if (known[k].sid) sids[k] = known[k].sid;
+        }
       }
     } else {
       const prefix = typeof msg.prefix === 'string' ? msg.prefix : '';
       for (const [k, v] of Object.entries(known)) if (k.startsWith(prefix)) keys[k] = v.state;
     }
-    sendResponse({ ok: true, keys, knownAt: meta.knownAt || null, missing: meta.knownMissing || [] });
+    sendResponse({ ok: true, keys, sids, knownAt: meta.knownAt || null, missing: meta.knownMissing || [] });
   })().catch((e) => sendResponse({ ok: false, error: String(e) }));
   return true;
 });

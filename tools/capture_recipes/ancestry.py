@@ -291,11 +291,17 @@ def _record_fields(html: str) -> list[tuple[str, str]]:
     return parser.fields
 
 
+# The site's name at the end of a tab title, on every Ancestry site and in both
+# forms ("… - Ancestry.com", "… - Ancestry.co.uk", "… | Ancestry"). Same rule as
+# the companion's ANC_TITLE_SUFFIX_RE.
+_TITLE_SUFFIX_RE = re.compile(r'\s*[-|\u2013]\s*Ancestry(\.com)?(\.[a-z.]+)?\s*$', re.I)
+
+
 def _collection_from_title(title: str | None) -> str | None:
     """"1870 United States Federal Census - Ancestry.com" -> the collection."""
     if not title:
         return None
-    t = re.sub(r'\s*[-|]\s*Ancestry(\.com)?(\.[a-z.]+)?\s*$', '', title, flags=re.I).strip()
+    t = _TITLE_SUFFIX_RE.sub('', title).strip()
     return t or None
 
 
@@ -342,34 +348,44 @@ def _date_to_edtf(value: str | None) -> str | None:
     return f'{m.group(1)}{approx}' if m else None
 
 
-# The event a collection is about, as the word its date field starts with.
+# The event a collection is about, as the words its date fields start with,
+# in the order to try them. A burial, cemetery or funeral-home record often
+# gives only the death date; an obituary's event is the death.
 _EVENTS = [
-    (re.compile(r'\bdeaths?\b|\bdied\b|\bmortality\b', re.I), 'Death'),
-    (re.compile(r'\bburials?\b|\bgraves?\b|\bcemeter(y|ies)\b', re.I), 'Burial'),
-    (re.compile(r'\bmarriages?\b|\bmarried\b', re.I), 'Marriage'),
-    (re.compile(r'\bbirths?\b|\bborn\b', re.I), 'Birth'),
-    (re.compile(r'\bbaptisms?\b', re.I), 'Baptism'),
-    (re.compile(r'\bchristenings?\b', re.I), 'Christening'),
-    (re.compile(r'\bdivorces?\b', re.I), 'Divorce'),
+    (re.compile(r'\bdeaths?\b|\bdied\b|\bmortality\b', re.I), ('Death',)),
+    (re.compile(r'\bburials?\b|\bgraves?\b|\bcemeter(y|ies)\b|\bfunerals?\b', re.I), ('Burial', 'Death')),
+    (re.compile(r'\bmarriages?\b|\bmarried\b', re.I), ('Marriage',)),
+    (re.compile(r'\bbirths?\b|\bborn\b', re.I), ('Birth',)),
+    (re.compile(r'\bbaptisms?\b', re.I), ('Baptism',)),
+    (re.compile(r'\bchristenings?\b', re.I), ('Christening',)),
+    (re.compile(r'\bdivorces?\b', re.I), ('Divorce',)),
 ]
+_OBITUARY_RE = re.compile(r'\bobituar(y|ies)\b', re.I)
+
+# A collection that runs over years - "1940-1997", "1930-Current",
+# "1800s-present" - names when it was gathered, never the record's event.
+_RANGE_RE = re.compile(r'\b\d{4}s?\s*[-\u2013/]\s*(current|present|\d{2,4}s?)\b', re.I)
 
 
 def _record_hints(collection: str | None, fields: list[tuple[str, str]]) -> dict:
     """What a record says about itself: source type, date and class (TI-066).
 
     From the collection name and the record's own index fields, never the rest
-    of the page: census -> census; a birth/marriage/death/burial/baptism/divorce
-    collection -> vital-record; an obituary or newspaper index -> newspaper. The
-    date is the record's own event date ("Death Date" in a death index), else a
-    census's "Residence Date", else its year, else the collection's one year when
-    it names exactly one - never the first year of a range ("Death Index,
-    1940-1997" says when the index runs, not when she died). An index is
-    `derivative`. Each is None when the record does not say. Mirrors the
-    companion's `ancHints`.
+    of the page: census -> census; a birth/marriage/death/burial/funeral/
+    baptism/divorce collection -> vital-record; an obituary or newspaper index
+    -> newspaper. The date is the record's own event date ("Death Date" in a
+    death index; "Burial Date", else "Death Date", for a burial, cemetery or
+    funeral record; "Death Date" for an obituary), else a census's "Residence
+    Date", else its year, else the collection's one year when it names exactly
+    one - never a year of a range, closed or open ("Death Index, 1940-1997" or
+    "Obituary Collection, 1930-Current" says when the collection runs, not when
+    she died). An index is `derivative`. Each is None when the record does not
+    say. Mirrors the companion's `ancHints`.
     """
     c = collection or ''
     census = bool(re.search(r'\bcensus\b', c, re.I))
-    event = None if census else next((name for rx, name in _EVENTS if rx.search(c)), None)
+    event = None if census else next((names for rx, names in _EVENTS if rx.search(c)), None)
+    date_words = event or (('Death',) if not census and _OBITUARY_RE.search(c) else ())
 
     source_type = None
     if census:
@@ -384,10 +400,12 @@ def _record_hints(collection: str | None, fields: list[tuple[str, str]]) -> dict
         return next((v for label, v in fields if rx.match(label.strip())), None)
 
     source_date = None
-    if event:
-        source_date = _date_to_edtf(field_value(rf'^{event} (date|year)$'))
+    for word in date_words:
+        source_date = _date_to_edtf(field_value(rf'^{word} (date|year)$'))
+        if source_date:
+            break
     years = re.findall(r'\b(1[5-9]\d{2}|20\d{2})\b', c)
-    is_range = bool(re.search(r'\b\d{4}\s*[-–/]\s*\d{4}\b', c))
+    is_range = bool(_RANGE_RE.search(c))
     if not source_date and census:
         source_date = _date_to_edtf(field_value(r'^residence (date|year)$'))
     if not source_date and census:

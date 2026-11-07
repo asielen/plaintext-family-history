@@ -315,10 +315,14 @@ class ScanKnown(_TempHome):
         # filed: site-data files beside processed documents carry the S-id
         _json(ext_docs / 'newspapers' / 'hartley-wedding' / ('clipping-site-data_%s.json' % SID_A),
               {'clipping': {'id': 1101}, 'page': {'id': 2202}})
+        _write(ext_docs / 'newspapers' / 'hartley-wedding' / ('hartley-wedding-page_%s.jpg' % SID_A), 'jpg')
+        # a list of records matched to a source after the fact speaks for its
+        # images only when it says imageSaved (one file cannot say whose it is)
         _json(ext_docs / 'census' / '1900' / ('ancestry-records-site-data_%s.json' % SID_B),
-              {'records': [{'dbId': 7602, 'recordId': 3303, 'imageId': 4404}, 'junk']})
+              {'records': [{'dbId': 7602, 'recordId': 3303, 'imageId': 4404, 'imageSaved': True}, 'junk']})
         _json(ext_docs / 'vital' / 'fs' / 'record-site-data.json',
               {'record': {'fsId': 'abcd-123', 'imageId': 'wxyz-9'}})
+        _write(ext_docs / 'vital' / 'fs' / 'record.jpg', 'jpg')
         _json(ext_docs / 'burial' / 'x' / 'memorial-site-data.json', {'record': {'memorialId': 5505}})
         _write(ext_docs / 'broken' / 'bad-site-data.json', '{nope')
         # sources: a record that cites a memorial it has not captured yet
@@ -823,6 +827,136 @@ class DataFolderNotInArchiveRoots(_TempHome):
         with self.assertRaises(host.SettingsError):
             host._set_config({'archive': str(archive), 'dataDir': str(drive / 'Inbox' / 'data')}, {})
         self.assertFalse(host.config_path().exists())
+
+
+class ImagesCountOnlyWhenSaved(_TempHome):
+    """PR #213 review (Codex 4500176561, audit #1, sweep #6).
+
+    A record's file names the scan it LINKS to whether or not the capture saved
+    it. Counted as saved, a refused scan or a screen capture made the next
+    capture of the same page skip its download and say "already saved".
+    """
+
+    def staged(self, name, record, assets, files=('record-data.json',)):
+        staging = self.tmp / 'Downloads' / 'fha-inbox'
+        bundle = staging / name
+        _json(bundle / 'record-data.json', {'record': record})
+        for f in files:
+            if f != 'record-data.json':
+                _write(bundle / f, 'x')
+        _json(bundle / 'capture.json', {'url': 'https://www.ancestry.com/search/collections/%s/records/%s'
+                                        % (record['dbId'], record['recordId']), 'assets': assets})
+        return staging
+
+    def keys(self, staging):
+        items, _ = host.scan_known({'captured': [str(staging)]})
+        return items
+
+    REC = {'dbId': 90001, 'recordId': 1000001, 'imageId': '4000123_00045'}
+    IMG = 'img:90001:4000123_00045'
+
+    def test_a_refused_scan_is_not_a_saved_page(self):
+        st = self.staged('refused', dict(self.REC, imageSaved=False),
+                         [{'file': 'page-snapshot.html', 'role': 'webpage'},
+                          {'file': 'record-data.json', 'role': 'site-data'}],
+                         files=('page-snapshot.html',))
+        items = self.keys(st)
+        self.assertEqual(items['rec:90001:1000001']['state'], 'captured')
+        self.assertNotIn(self.IMG, items)
+
+    def test_a_screen_capture_is_not_a_saved_page(self):
+        st = self.staged('shot', dict(self.REC, imageSaved=False),
+                         [{'file': 'record.png', 'role': 'record', 'provisional': True},
+                          {'file': 'record-data.json', 'role': 'site-data'}], files=('record.png',))
+        self.assertNotIn(self.IMG, self.keys(st))
+
+    def test_a_saved_scan_is(self):
+        st = self.staged('good', dict(self.REC, imageSaved=True),
+                         [{'file': 'record.jpg', 'role': 'record'},
+                          {'file': 'record-data.json', 'role': 'site-data'}], files=('record.jpg',))
+        self.assertEqual(self.keys(st)[self.IMG]['state'], 'captured')
+
+    def test_a_household_member_pointing_at_another_bundle_holds_no_page(self):
+        st = self.staged('harriet', {'dbId': 90001, 'recordId': 1000002, 'imageId': '4000123_00045',
+                                     'imageSaved': False, 'same_image_as': {'record': 'rec:90001:1000001'}},
+                         [{'file': 'record-data.json', 'role': 'site-data'}])
+        items = self.keys(st)
+        self.assertIn('rec:90001:1000002', items)
+        self.assertNotIn(self.IMG, items)
+
+    def test_files_made_before_imageSaved_are_judged_by_what_is_beside_them(self):
+        # The archive's earlier captures carry no imageSaved: a listed,
+        # present, non-provisional record asset counts; an imageId alone, or a
+        # same_image_as pointer, does not.
+        old = {'dbId': 90001, 'recordId': 1000001, 'imageId': 'with-scan'}
+        st = self.staged('old-good', old, [{'file': 'record.jpg', 'role': 'record'}], files=('record.jpg',))
+        self.staged('old-refused', dict(old, recordId=1000005, imageId='no-scan'),
+                    [{'file': 'page-snapshot.html', 'role': 'webpage'}], files=('page-snapshot.html',))
+        self.staged('old-listed-missing', dict(old, recordId=1000006, imageId='listed-not-there'),
+                    [{'file': 'record.jpg', 'role': 'record'}])
+        self.staged('old-sibling', dict(old, recordId=1000007, imageId='sibling', same_image_as='the capture x'),
+                    [], files=('record.jpg',))
+        items = self.keys(st)
+        self.assertIn('img:90001:with-scan', items)
+        for gone in ('no-scan', 'listed-not-there', 'sibling'):
+            self.assertNotIn('img:90001:%s' % gone, items)
+        # FamilySearch image keys follow the same rule
+        fs = st / 'fs-old'
+        _json(fs / 'record-data.json', {'record': {'fsId': 'abcd-123', 'imageId': 'wxyz-9'}})
+        _json(fs / 'capture.json', {'url': 'https://www.familysearch.org/ark:/61903/1:1:ABCD-123', 'assets': []})
+        items = self.keys(st)
+        self.assertIn('fsrec:ABCD-123', items)
+        self.assertNotIn('fsimg:WXYZ-9', items)
+
+    def test_a_filed_source_needs_its_own_image(self):
+        archive = self.make_archive()
+        docs = archive / 'documents' / 'census' / 'hartley-1880'
+        _json(docs / ('hartley-1880-site-data_%s.json' % SID_A),
+              {'record': {'dbId': 90001, 'recordId': 1000001, 'imageId': 'kept'}})
+        _write(docs / ('hartley-1880_%s.jpg' % SID_A), 'jpg')
+        _json(docs / ('hartley-1880-b-site-data_%s.json' % SID_B),
+              {'record': {'dbId': 90001, 'recordId': 1000009, 'imageId': 'not-kept'}})
+        items, _ = host.scan_known(host.scan_folders({'archive': str(archive)}))
+        self.assertEqual(items['img:90001:kept'], {'state': 'filed', 'where': 'hartley-1880', 'sid': SID_A})
+        self.assertNotIn('img:90001:not-kept', items)   # SID_B has no image of its own
+        self.assertEqual(items['rec:90001:1000009']['sid'], SID_B)
+
+    def test_a_download_that_stopped_part_way_is_not_captured(self):
+        # The companion writes capture.json last: a folder holding a data file
+        # but no capture.json (or, once ingested, no notes.md) is incomplete.
+        staging = self.tmp / 'Downloads' / 'fha-inbox'
+        _json(staging / 'half' / 'record-data.json', {'record': dict(self.REC, imageSaved=True)})
+        _write(staging / 'half' / 'record.jpg', 'jpg')
+        _json(staging / 'ingested' / 'record-data.json', {'record': dict(self.REC, recordId=7)})
+        _write(staging / 'ingested' / 'notes.md', '---\ntitle: x\n---\n')
+        items = self.keys(staging)
+        self.assertNotIn('rec:90001:1000001', items)
+        self.assertNotIn(self.IMG, items)
+        self.assertIn('rec:90001:7', items)
+
+    def test_a_memorial_whose_photos_were_not_saved_is_not_fully_captured(self):
+        # Sweep (#6), Find a Grave: the memorial's facts were saved but a photo
+        # failed, or the gallery could not be read - the batch must still fetch
+        # the photos, so it is fagidx: (known), not fag: (captured).
+        ok = {'record': {'memorialId': 5505}, 'photosTotal': 2,
+              'photos': [{'photoId': 1, 'file': 'headstone-1.jpg'}, {'photoId': 2, 'file': None, 'skipped': 'over the limit'}]}
+        failed = {'record': {'memorialId': 5506}, 'photosTotal': 1, 'photos': [{'photoId': 3, 'file': None}]}
+        unread = {'record': {'memorialId': 5507}, 'photosTotal': None, 'photos': []}
+        none = {'record': {'memorialId': 5508}, 'photosTotal': 0, 'photos': []}
+        older = {'record': {'memorialId': 5509}}
+        self.assertEqual(host._keys_from_site_data(ok), ['fag:5505'])
+        self.assertEqual(host._keys_from_site_data(failed), ['fagidx:5506'])
+        self.assertEqual(host._keys_from_site_data(unread), ['fagidx:5507'])
+        self.assertEqual(host._keys_from_site_data(none), ['fag:5508'])
+        self.assertEqual(host._keys_from_site_data(older), ['fag:5509'])
+
+    def test_without_a_folder_check_only_imageSaved_counts(self):
+        self.assertEqual(host._keys_from_site_data({'record': self.REC}), ['rec:90001:1000001'])
+        self.assertEqual(host._keys_from_site_data({'record': dict(self.REC, imageSaved=True)}),
+                         ['rec:90001:1000001', self.IMG])
+        self.assertEqual(host._keys_from_site_data({'clipping': {'id': 1}, 'page': {'id': 2}}), ['clip:1'])
+        self.assertEqual(host._keys_from_site_data({'record': dict(self.REC, imageSaved='yes')}),
+                         ['rec:90001:1000001'])
 
 
 class OddFolderNames(_TempHome):

@@ -49,6 +49,10 @@ The archive is located only through `archive`. From it the helper reads:
   `capture_staging:`, else ~/Downloads/fha-inbox, plus any `<that>-*` sibling
   (chunk folders split off for filing).
 
+A page image (img:, fsimg:, page:) is counted only when a saved image backs
+it - the record says `imageSaved: true`, or the image file is beside it - never
+from the image id a record links to (_keys_from_site_data, _holds_saved_image).
+
 Roots resolve exactly as the archive's own tools do (tools/_lib.py
 `resolve_path`): an absolute value is used as-is, a relative one is joined to
 the archive folder, and a missing one means the folder of that name inside the
@@ -83,7 +87,8 @@ Code map
                         resolve_data_dir
   the archive's config  read_fha_yaml, _parse_fha_yaml_minimal, resolve_root,
                         archive_problem, scan_folders
-  what the archive has  _keys_from_site_data, _keys_from_url, scan_known,
+  what the archive has  _holds_saved_image, _keys_from_site_data,
+                        _keys_from_url, scan_known,
                         known_items
   the message loop      read_message, send, safe_path, describe, _set_config,
                         handle, main
@@ -484,41 +489,111 @@ def scan_folders(settings, data_dir=None, use_yaml=True):
 
 # ── what the archive already holds ──────────────────────────────────────────
 
-def _keys_from_site_data(data):
+# Image files a bundle or a filed source keeps its scans in.
+IMAGE_EXTS = frozenset({'.jpg', '.jpeg', '.png', '.tif', '.tiff', '.gif', '.webp', '.jp2'})
+
+
+def _holds_saved_image(path, roles):
+    """Does the bundle or source folder beside this site-data file hold a saved
+    image - not merely the id of one?
+
+    A staged bundle's capture.json lists its files: a listed, present,
+    non-provisional asset with one of `roles` counts (a screen capture is a
+    stand-in, not the scan). Without one (an ingested inbox bundle, a filed
+    source), an image file in the same folder counts - for a filed source,
+    one carrying the same S-id as the site-data file.
+    """
+    folder = path.parent
+    cap = folder / 'capture.json'
+    if cap.is_file():
+        try:
+            assets = json.loads(cap.read_text(encoding='utf-8')).get('assets')
+        except (OSError, ValueError, AttributeError):
+            assets = None
+        if isinstance(assets, list):
+            return any(
+                isinstance(a, dict) and a.get('role') in roles and not a.get('provisional')
+                and a.get('file') and (folder / str(a['file'])).is_file()
+                for a in assets)
+    m = SID_RE.search(path.name)
+    sid = m.group(1).lower() if m else None
+    try:
+        files = list(folder.iterdir())
+    except OSError:
+        return False
+    return any(f.suffix.lower() in IMAGE_EXTS and f.is_file() and (sid is None or sid in f.name.lower())
+               for f in files)
+
+
+def _keys_from_site_data(data, image_saved=None):
     """The item keys one site-data file speaks for.
 
     Capture bundles carry a small JSON describing the item on its site: a
     Newspapers.com clipping and its page, or one or more records (Ancestry
     dbId/recordId, FamilySearch ARK ids, a Find a Grave memorial id).
+
+    A record or clipping key means its index is saved - the file itself is
+    that. An IMAGE key (img:, fsimg:, page:) means the scan is saved, and the
+    file only names the scan a record links to, so it needs more: the record
+    says `imageSaved: true` (the capture companion writes it, false when the
+    scan was refused or only a screen capture was kept), or - for files made
+    before that field - `image_saved(roles)` finds the saved image beside the
+    file. A record whose page sits in another bundle (`same_image_as`) never
+    speaks for the image: that bundle's own file does. A list of records
+    matched to a source after the fact (`records`) speaks for an image only
+    with `imageSaved: true`, since one image file cannot say whose it is.
+    Without `image_saved`, only `imageSaved: true` counts.
     """
     keys = []
     if not isinstance(data, dict):
         return keys
+    check = image_saved or (lambda roles: False)
+
+    def image_ok(rec, roles, listed):
+        if 'imageSaved' in rec:
+            return rec.get('imageSaved') is True
+        if rec.get('same_image_as') or listed:
+            return False
+        return check(roles)
+
     clip = data.get('clipping')
     if isinstance(clip, dict) and clip.get('id'):
         keys.append('clip:%s' % clip['id'])
         page = data.get('page') or {}
-        if isinstance(page, dict) and page.get('id'):
+        if isinstance(page, dict) and page.get('id') and image_ok(page, ('page',), False):
             keys.append('page:%s' % page['id'])
     recs = []
     if isinstance(data.get('record'), dict):
-        recs.append(data['record'])
+        recs.append((data['record'], False))
     # a source matched to its Ancestry records after the fact (one census
     # source can hold several years): ancestry-records-site-data_S-….json
     if isinstance(data.get('records'), list):
-        recs.extend(r for r in data['records'] if isinstance(r, dict))
-    for rec in recs:
+        recs.extend((r, True) for r in data['records'] if isinstance(r, dict))
+    for rec, listed in recs:
         if rec.get('memorialId'):
-            keys.append('fag:%s' % rec['memorialId'])
+            # A memorial counts as captured (fag:) only with its photos: the
+            # capture lists each photo with the `file` it was saved as (null
+            # when it failed) and `photosTotal` (null when the gallery could
+            # not be read). Short of that it is known but its photos are not
+            # captured - fagidx:, as for a memorial a record only links - so
+            # the Find a Grave batch still fetches them.
+            photos = data.get('photos')
+            complete = True
+            if isinstance(photos, list):
+                if 'photosTotal' in data and data.get('photosTotal') is None:
+                    complete = False
+                if any(isinstance(ph, dict) and not ph.get('file') and not ph.get('skipped') for ph in photos):
+                    complete = False
+            keys.append(('fag:%s' if complete else 'fagidx:%s') % rec['memorialId'])
             continue
         if rec.get('fsId'):
             keys.append('fsrec:%s' % str(rec['fsId']).upper())
-            if rec.get('imageId'):
+            if rec.get('imageId') and image_ok(rec, ('record',), listed):
                 keys.append('fsimg:%s' % str(rec['imageId']).upper())
             continue
         if rec.get('dbId') and rec.get('recordId'):
             keys.append('rec:%s:%s' % (rec['dbId'], rec['recordId']))
-            if rec.get('imageId'):
+            if rec.get('imageId') and image_ok(rec, ('record',), listed):
                 keys.append('img:%s:%s' % (rec['dbId'], rec['imageId']))
     return keys
 
@@ -580,7 +655,7 @@ def scan_known(folders):
                 data = json.loads(p.read_text(encoding='utf-8'))
             except (OSError, ValueError):
                 continue
-            for k in _keys_from_site_data(data):
+            for k in _keys_from_site_data(data, lambda roles, p=p: _holds_saved_image(p, roles)):
                 put(k, 'filed', p.parent.name, m.group(1) if m else None)
 
     # Source records. The page address a capture came from is kept in the
@@ -624,6 +699,13 @@ def scan_known(folders):
                 or name.startswith(('clipping-data', 'record-data')))
             if not (is_stub or is_data) or not p.is_file():
                 continue
+            # A bundle's data file counts once the bundle is whole: the
+            # companion writes capture.json last, and an ingested inbox
+            # bundle has its notes.md. A download that stopped part-way has
+            # neither, and nothing in it is captured yet.
+            if is_data and name != 'capture.json' and not (
+                    (p.parent / 'capture.json').is_file() or (p.parent / 'notes.md').is_file()):
+                continue
             # an item in the inbox's processed/ holding folder has been filed
             # (or set aside as a duplicate). Only folders INSIDE the inbox
             # count: an inbox that itself lives under a folder called
@@ -645,7 +727,8 @@ def scan_known(folders):
                     continue
                 if not isinstance(data, dict):
                     continue
-                keys = _keys_from_url(data.get('url')) if name == 'capture.json' else _keys_from_site_data(data)
+                keys = (_keys_from_url(data.get('url')) if name == 'capture.json'
+                        else _keys_from_site_data(data, lambda roles, p=p: _holds_saved_image(p, roles)))
             for k in keys:
                 put(k, state, p.parent.name)
     return out, missing

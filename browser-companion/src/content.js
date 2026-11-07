@@ -683,6 +683,10 @@
   // The tree-hint prompt Ancestry can put in an <h1>; it is not the record.
   const ANC_HINT_RE = /match the person in your tree|^does\b.+\?$/i;
 
+  // The site's name at the end of a tab title, on every Ancestry site and in
+  // both forms it uses: "… - Ancestry.com", "… - Ancestry.co.uk", "… | Ancestry".
+  const ANC_TITLE_SUFFIX_RE = /\s*[-|\u2013]\s*Ancestry(\.com)?(\.[a-z.]+)?\s*$/i;
+
   // The whole record from a page (`root`: the document, or a stand-in tree):
   // { ok, record: {dbId, recordId, imageId, url, name, collection}, fields:
   // [{label, value}], household: [[cells]...] per table, citation: {heading:
@@ -743,7 +747,7 @@
     }
 
     const h1 = ancElements(root, (e) => ancTag(e) === 'H1').map((e) => text(e)).find((t) => t && !ANC_HINT_RE.test(t));
-    const collection = String(o.title || '').replace(/\s*[-|]\s*Ancestry(\.com)?(\.[a-z.]+)?\s*$/i, '').trim();
+    const collection = String(o.title || '').replace(ANC_TITLE_SUFFIX_RE, '').trim();
     const origin = o.origin || 'https://www.ancestry.com';
     return {
       ok: true,
@@ -810,26 +814,37 @@
     return m ? m[1] + approx : null;
   }
 
-  // The event a collection is about, as the word its date field starts with.
+  // The event a collection is about, as the words its date fields start with,
+  // in the order to try them. A burial, cemetery or funeral-home record often
+  // gives only the death date; an obituary's event is the death.
   const ANC_EVENTS = [
-    [/\bdeaths?\b|\bdied\b|\bmortality\b/i, 'Death'],
-    [/\bburials?\b|\bgraves?\b|\bcemeter(y|ies)\b/i, 'Burial'],
-    [/\bmarriages?\b|\bmarried\b/i, 'Marriage'],
-    [/\bbirths?\b|\bborn\b/i, 'Birth'],
-    [/\bbaptisms?\b/i, 'Baptism'],
-    [/\bchristenings?\b/i, 'Christening'],
-    [/\bdivorces?\b/i, 'Divorce'],
+    [/\bdeaths?\b|\bdied\b|\bmortality\b/i, ['Death']],
+    [/\bburials?\b|\bgraves?\b|\bcemeter(y|ies)\b|\bfunerals?\b/i, ['Burial', 'Death']],
+    [/\bmarriages?\b|\bmarried\b/i, ['Marriage']],
+    [/\bbirths?\b|\bborn\b/i, ['Birth']],
+    [/\bbaptisms?\b/i, ['Baptism']],
+    [/\bchristenings?\b/i, ['Christening']],
+    [/\bdivorces?\b/i, ['Divorce']],
   ];
+  const ANC_OBITUARY_RE = /\bobituar(y|ies)\b/i;
+
+  // A collection that runs over years - "1940-1997", "1930-Current",
+  // "1800s-present", "1847-Current" - names when it was gathered, not when the
+  // record's event happened, so its years never date the record.
+  const ANC_RANGE_RE = /\b\d{4}s?\s*[-\u2013/]\s*(current|present|\d{2,4}s?)\b/i;
 
   // What a record says about itself, for filing (TI-066). From the collection
   // name and the record's own index fields - never from the rest of the page:
   //   sourceType  census for a census; vital-record for a birth, marriage,
   //               death, burial, baptism or divorce collection; newspaper for
   //               an obituary or newspaper index; else null (let filing decide);
-  //   sourceDate  the record's own event date ("Death Date" in a death index),
-  //               else a census's year, else the collection's one year when it
-  //               names exactly one; never the first year of a range ("Death
-  //               Index, 1940-1997" says when the index runs, not when she died);
+  //   sourceDate  the record's own event date ("Death Date" in a death index;
+  //               "Burial Date", else "Death Date", for a burial, cemetery or
+  //               funeral record; "Death Date" for an obituary), else a census's
+  //               year, else the collection's one year when it names exactly one;
+  //               never a year of a range, closed or open ("Death Index,
+  //               1940-1997" or "Obituary Collection, 1930-Current" says when
+  //               the collection runs, not when she died);
   //   sourceClass 'derivative' for an index (a compiled list, not the record
   //               itself), else null (filing's default, original).
   function ancHints(record, fields) {
@@ -837,6 +852,7 @@
     const list = Array.isArray(fields) ? fields : [];
     const census = /\bcensus\b/i.test(collection);
     const event = census ? null : (ANC_EVENTS.find(([re]) => re.test(collection)) || [])[1] || null;
+    const dateWords = event || (!census && ANC_OBITUARY_RE.test(collection) ? ['Death'] : []);
 
     let sourceType = null;
     if (census) sourceType = 'census';
@@ -844,12 +860,13 @@
     else if (/\bnewspapers?\b|\bobituar(y|ies)\b/i.test(collection)) sourceType = 'newspaper';
 
     let sourceDate = null;
-    if (event) {
-      const f = list.find((x) => new RegExp('^' + event + ' (date|year)$', 'i').test(String(x.label || '').trim()));
-      if (f) sourceDate = ancDateToEdtf(f.value);
+    for (const word of dateWords) {
+      const f = list.find((x) => new RegExp('^' + word + ' (date|year)$', 'i').test(String(x.label || '').trim()));
+      sourceDate = f ? ancDateToEdtf(f.value) : null;
+      if (sourceDate) break;
     }
     const years = collection.match(/\b(1[5-9]\d{2}|20\d{2})\b/g) || [];
-    const isRange = /\b\d{4}\s*[-–/]\s*\d{4}\b/.test(collection);
+    const isRange = ANC_RANGE_RE.test(collection);
     if (!sourceDate && census) {
       // A state census collection spans years; the record's own "Residence
       // Date" is the enumeration it is from.
@@ -869,13 +886,14 @@
 
   // The bundle's title: what the human typed, unless the form still holds the
   // tab's own title ("1920 United States Federal Census - Ancestry.com", which
-  // names only the collection) or nothing; then "{name} - {collection}".
+  // names only the collection; on any Ancestry site, ANC_TITLE_SUFFIX_RE) or
+  // nothing; then "{name} - {collection}".
   function ancTitle(record, formTitle) {
     const r = record || {};
     const auto = [r.name, r.collection].filter(Boolean).join(' - ') ||
       'Ancestry record ' + r.dbId + ':' + r.recordId;
     const typed = String(formTitle || '').trim();
-    return !typed || /-\s*Ancestry(\.com)?\s*$/i.test(typed) ? auto : typed;
+    return !typed || ANC_TITLE_SUFFIX_RE.test(typed) ? auto : typed;
   }
   // FHA-SYNC-END ancestry
 

@@ -203,11 +203,16 @@ test('the next person on the same census page does not download the page again',
   assert.ok(!p.files(second).includes('record.jpg'));
   const data = await recordData(second);
   assert.strictEqual(data.record.recordId, '1000002');
-  assert.strictEqual(data.record.same_image_as, 'the capture ' + p.written[0].bundleName);
-  assert.match(p.capJson(second).notes, /Same page \(image 4000123_00045\) as the capture /);
-  assert.match(p.result(), /not downloaded again: it is already saved in the capture /);
-  // Only a folder name is kept, never a path on this computer.
-  assert.doesNotMatch(data.record.same_image_as, /\/dl\//);
+  // A pointer that outlives the staging folder (ingest re-slugs it, filing
+  // renames it): the record that holds the page, by key and address
+  // (PR #213 audit #5). Never a path on this computer.
+  assert.deepStrictEqual(data.record.same_image_as,
+    { record: 'rec:90001:1000001', url: CALVIN, name: 'Calvin Hartley' });
+  assert.strictEqual(data.record.imageSaved, false);
+  assert.match(p.capJson(second).notes,
+    /Same page \(image 4000123_00045\) as the capture of Calvin Hartley \(https:\/\/www\.ancestry\.com\/search\/collections\/90001\/records\/1000001\)/);
+  assert.match(p.result(), /not downloaded again: it is already saved in the capture of Calvin Hartley/);
+  assert.doesNotMatch(JSON.stringify(data), /\/dl\/|fha-inbox/);
 });
 
 test('a page whose first capture lost its image is fetched for the next person', async () => {
@@ -223,15 +228,163 @@ test('a page the archive already holds (Seen It knows it) is not downloaded', as
   await p.capture();
   assert.strictEqual(imageAsks(p).length, 0);
   const data = await recordData(p.written[0]);
-  assert.strictEqual(data.record.same_image_as, 'the archive');
+  assert.deepStrictEqual(data.record.same_image_as, { where: 'archive' });
   assert.deepStrictEqual(p.external.map((e) => e.msg),
     [{ type: 'knownKeys', keys: ['img:90001:4000123_00045'] }]);
+});
+
+test('a page the archive holds is named by its source id when Seen It knows it (audit #5)', async () => {
+  const p = await open(CALVIN, { seenIt: { 'img:90001:4000123_00045': { state: 'filed', sid: 'S-a1b2c3d4e5' } } });
+  await p.capture();
+  const data = await recordData(p.written[0]);
+  assert.deepStrictEqual(data.record.same_image_as, { where: 'archive', source: 'S-a1b2c3d4e5' });
+  assert.match(p.capJson(p.written[0]).notes, /as the archive, source S-a1b2c3d4e5; the image was not downloaded again/);
+  assert.match(p.result(), /already saved in the archive, source S-a1b2c3d4e5\./);
 });
 
 test('a page waiting in the inbox (Seen It: captured) is named as such', async () => {
   const p = await open(CALVIN, { seenIt: { 'img:90001:4000123_00045': 'captured' } });
   await p.capture();
-  assert.strictEqual((await recordData(p.written[0])).record.same_image_as, 'a capture waiting to be filed');
+  assert.deepStrictEqual((await recordData(p.written[0])).record.same_image_as, { where: 'inbox' });
+  assert.match(p.result(), /a capture waiting in the inbox to be filed/);
+});
+
+// ── PR #213 review: what a bundle says about its own scan ────────────────────
+
+test('record-data.json says whether THIS capture holds the scan (Codex 4500176561, audit #1)', async () => {
+  // imageId is only the image the record links to. imageSaved is what Seen
+  // It's helper may count as "this page is saved".
+  const good = await open(CALVIN);
+  await good.capture();
+  let rec = (await recordData(good.written[0])).record;
+  assert.strictEqual(rec.imageId, '4000123_00045');
+  assert.strictEqual(rec.imageSaved, true);
+
+  const refused = await open(CALVIN, { image: { ok: false, error: 'Ancestry refused (HTTP 403)' } });
+  await refused.capture();
+  rec = (await recordData(refused.written[0])).record;
+  assert.strictEqual(rec.imageId, '4000123_00045'); // still the link
+  assert.strictEqual(rec.imageSaved, false);
+
+  const shot = await open(CALVIN);
+  dropFile(shot, 'screenshot.png');
+  shot.$('f-provisional').checked = true;
+  await shot.capture();
+  assert.strictEqual((await recordData(shot.written[0])).record.imageSaved, false);
+
+  const index = await open(ETHEL);
+  await index.capture();
+  assert.strictEqual((await recordData(index.written[0])).record.imageSaved, false);
+});
+
+// ── end to end: the panel's bundles, Seen It's helper, the next capture ──────
+// The real chain behind "already saved": the panel stages a bundle, Seen It's
+// helper (seen-it/host/seenit_host.py scan_known) reads the download folder,
+// and its answer decides whether the next household member's capture
+// downloads the page. Runs the helper with the Python on this computer; skipped
+// (and says so) if there is none.
+
+const { spawnSync } = require('node:child_process');
+const os = require('node:os');
+
+function findPython() {
+  const tries = process.env.FHA_PYTHON ? [[process.env.FHA_PYTHON]]
+    : [['py', '-3'], ['python3'], ['python']];
+  for (const cmd of tries) {
+    const r = spawnSync(cmd[0], cmd.slice(1).concat(['-c', 'import sys; print(sys.version_info[0])']), { encoding: 'utf8' });
+    if (r.status === 0 && r.stdout.trim() === '3') return cmd;
+  }
+  return null;
+}
+const PYTHON = findPython();
+
+// Write what the panel staged, as the browser's download would, and ask the helper.
+async function helperAnswerFor(bundles) {
+  const staging = fs.mkdtempSync(path.join(os.tmpdir(), 'fha-seenit-e2e-'));
+  try {
+    for (const spec of bundles) {
+      const dir = path.join(staging, spec.bundleName);
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, 'page.html'), spec.pageHtml);
+      for (const a of spec.assets) fs.writeFileSync(path.join(dir, a.filename), Buffer.from(await a.blob.arrayBuffer()));
+      fs.writeFileSync(path.join(dir, 'capture.json'), JSON.stringify(spec.captureJson, null, 2));
+    }
+    const host = path.join(REPO, 'seen-it', 'host');
+    const code = 'import json, sys; sys.path.insert(0, sys.argv[1]); import seenit_host as h; ' +
+      'items, _ = h.scan_known({"captured": [sys.argv[2]]}); print(json.dumps(items))';
+    const r = spawnSync(PYTHON[0], PYTHON.slice(1).concat(['-c', code, host, staging]), { encoding: 'utf8' });
+    assert.strictEqual(r.status, 0, r.stderr);
+    return JSON.parse(r.stdout);
+  } finally {
+    fs.rmSync(staging, { recursive: true, force: true });
+  }
+}
+
+test('Seen It counts a census page as saved only after a capture really saved it (Codex 4500176561)',
+  { skip: PYTHON ? false : 'no Python 3 on this computer to run seen-it/host/seenit_host.py' }, async () => {
+    const scenarios = [
+      ['a good capture', {}, null, true],
+      ['a refused scan', { image: { ok: false, error: 'Ancestry refused (HTTP 403)' } }, null, false],
+      ['a screen capture only', {}, 'screenshot.png', false],
+    ];
+    for (const [what, opts, shot, saved] of scenarios) {
+      const first = await open(CALVIN, opts);
+      if (shot) {
+        dropFile(first, shot);
+        first.$('f-provisional').checked = true;
+      }
+      await first.capture();
+      const items = await helperAnswerFor(first.written);
+      // The record itself is captured either way; its page only when saved.
+      assert.strictEqual(items['rec:90001:1000001'].state, 'captured', what);
+      assert.strictEqual('img:90001:4000123_00045' in items, saved, what);
+
+      // Seen It answers the next capture from exactly what the helper found.
+      const seenIt = {};
+      for (const [k, v] of Object.entries(items)) seenIt[k] = v.sid ? { state: v.state, sid: v.sid } : v.state;
+      const next = await open(HARRIET, { seenIt });
+      await next.capture();
+      assert.strictEqual(imageAsks(next).length, saved ? 0 : 1, what + ': the next person\'s page');
+      assert.strictEqual(next.files(next.written[0]).includes('record.jpg'), !saved, what);
+
+      // And the household member's bundle never claims the page for itself.
+      if (saved) {
+        const again = await helperAnswerFor([first.written[0], next.written[0]]);
+        assert.ok('img:90001:4000123_00045' in again);
+        const only = await helperAnswerFor([next.written[0]]);
+        assert.ok(!('img:90001:4000123_00045' in only), 'a bundle pointing at another holds no page');
+        assert.strictEqual(only['rec:90001:1000002'].state, 'captured');
+      }
+    }
+  });
+
+test('a record with no scan keeps the page copy even when it was unticked (audit #4)', async () => {
+  // Filed alone, record-data.json would become the source's main file and
+  // lose its role; the page copy is what the index is filed with.
+  for (const [url, opts] of [[ETHEL, {}], [CALVIN, { image: { ok: false, error: 'no answer' } }]]) {
+    const p = await open(url, opts);
+    p.$('cb-pagecopy').checked = false;
+    await p.capture();
+    const cap = p.capJson(p.written[0]);
+    assert.deepStrictEqual(cap.assets.map((a) => [a.file, a.role]),
+      [['page-snapshot.html', 'webpage'], ['record-data.json', 'site-data']], url);
+    assert.match(p.result(), /A copy of the web page was kept too/);
+  }
+  // With a scan, an unticked page copy stays off.
+  const p = await open(CALVIN);
+  p.$('cb-pagecopy').checked = false;
+  await p.capture();
+  assert.deepStrictEqual(p.files(p.written[0]), ['record.jpg', 'record-data.json']);
+  assert.doesNotMatch(p.result(), /copy of the web page was kept/);
+});
+
+test('a household member pointing at another capture also keeps the page copy (audit #4)', async () => {
+  const p = await open(CALVIN);
+  p.$('cb-pagecopy').checked = false;
+  await p.capture();
+  await p.navigate(HARRIET);
+  await p.capture();
+  assert.deepStrictEqual(p.files(p.written[1]), ['page-snapshot.html', 'record-data.json']);
 });
 
 test('without Seen It, or when it does not know the page, the page is downloaded', async () => {
