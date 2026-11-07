@@ -138,10 +138,46 @@ class VitalPickKeyTests(unittest.TestCase):
             self._c('C-a', None, None, 'high'),
             self._c('C-z', '0001-01-01', '1900-12-31', 'low')), 'C-z')
 
+    def test_an_exact_year_before_1000_beats_its_decade(self):
+        # #207 review: '0999' used to get bounds '999-01-01', which the span
+        # parser rejected, so the exact year read as undated and the decade
+        # '099X' won even at lower confidence.
+        from _lib import edtf_bounds
+
+        def dated(cid, edtf, confidence):
+            lo, hi = edtf_bounds(edtf)
+            return self._c(cid, lo, hi, confidence)
+        self.assertEqual(self._best(
+            dated('C-a', '099X', 'high'), dated('C-z', '0999', 'low')), 'C-z')
+
+    def test_an_index_built_before_padding_still_ranks(self):
+        # An index written by the old tools still holds '999-01-01'.
+        self.assertEqual(self._best(
+            self._c('C-a', '0990-01-01', '0999-12-31', 'high'),
+            self._c('C-z', '999-01-01', '999-12-31', 'low')), 'C-z')
+
     def test_claim_id_is_the_last_tie_break(self):
         self.assertEqual(self._best(
             self._c('C-z', '1880-01-01', '1880-12-31', 'high'),
             self._c('C-a', '1880-01-01', '1880-12-31', 'high')), 'C-a')
+
+
+class EarlyYearBoundsTests(unittest.TestCase):
+    """#207 review: date bounds are ISO strings compared as text (timeline
+    order, `fha xref` overlap), so a year must always be four digits."""
+
+    def test_years_before_1000_are_zero_padded(self):
+        from _lib import edtf_bounds
+        self.assertEqual(edtf_bounds('0999'), ('0999-01-01', '0999-12-31'))
+        self.assertEqual(edtf_bounds('0999~'), ('0998-01-01', '1000-12-31'))
+        self.assertEqual(edtf_bounds('099X'), ('0990-01-01', '0999-12-31'))
+        self.assertEqual(edtf_bounds('0850-03'), ('0850-03-01', '0850-03-31'))
+        self.assertEqual(edtf_bounds('0850-03-07'), ('0850-03-07', '0850-03-07'))
+        self.assertEqual(edtf_bounds('0000~')[0], '0000-01-01')
+
+    def test_text_order_is_date_order_across_year_1000(self):
+        from _lib import edtf_bounds
+        self.assertLess(edtf_bounds('0999')[1], edtf_bounds('1000')[0])
 
 
 class EverySurfaceAgreesTests(unittest.TestCase):

@@ -809,6 +809,22 @@ def vital_subjects(
 
 
 _VITAL_CONFIDENCE_RANK = {'high': 0, 'medium': 1, 'low': 2}
+_ISO_DAY_RE = re.compile(r'^(\d{1,4})-(\d{2})-(\d{2})')
+
+
+def _iso_day_number(value: Any) -> int:
+    """Day count for a `date_min`/`date_max` bound, for measuring a span.
+
+    Parsed by hand rather than with `datetime.date.fromisoformat`, which
+    rejects year 0000 and, on an index built before bounds were zero-padded,
+    an unpadded early year like '999-01-01' (#207 review). Raises ValueError
+    for anything that is not Y-M-D.
+    """
+    m = _ISO_DAY_RE.match(str(value))
+    if not m:
+        raise ValueError(f'not a date bound: {value!r}')
+    year, month, day = (int(g) for g in m.groups())
+    return datetime.date(max(year, 1), month, day).toordinal() + (0 if year else -366)
 
 
 def vital_pick_key(claim: Any) -> tuple[int, int, int, str]:
@@ -842,8 +858,7 @@ def vital_pick_key(claim: Any) -> tuple[int, int, int, str]:
     undated = 1
     if claim['date_min'] and claim['date_max']:
         try:
-            span = (datetime.date.fromisoformat(str(claim['date_max'])[:10])
-                    - datetime.date.fromisoformat(str(claim['date_min'])[:10])).days
+            span = _iso_day_number(claim['date_max']) - _iso_day_number(claim['date_min'])
             undated = 0
         except ValueError:
             pass
@@ -4832,15 +4847,15 @@ def edtf_bounds(s: str | None) -> tuple[str, str]:
     decade_m = re.match(r'^(\d{3})X$', s)
     if decade_m:
         d = decade_m.group(1)
-        return (f'{d}0-01-01', f'{d}9-12-31')
+        return (f'{_iso_year(int(d + "0"))}-01-01', f'{_iso_year(int(d + "9"))}-12-31')
 
     # Year only (possibly approximate)
     year_m = re.match(r'^(\d{4})([~?])?$', s)
     if year_m:
         year = int(year_m.group(1))
         if year_m.group(2):   # approximate: widen ±1 year
-            return (f'{year - 1}-01-01', f'{year + 1}-12-31')
-        return (f'{year}-01-01', f'{year}-12-31')
+            return (f'{_iso_year(year - 1)}-01-01', f'{_iso_year(year + 1)}-12-31')
+        return (f'{_iso_year(year)}-01-01', f'{_iso_year(year)}-12-31')
 
     # Year-month: 1850-05, 1850-~05, or 1850-05~ (trailing tilde also valid EDTF)
     ym_m = re.match(r'^(\d{4})-~?(\d{2})[~?]?$', s)
@@ -4853,8 +4868,8 @@ def edtf_bounds(s: str | None) -> tuple[str, str]:
             mn_y = year if month > 1 else year - 1
             mx_m = month + 1 if month < 12 else 1
             mx_y = year if month < 12 else year + 1
-            return (f'{mn_y}-{mn_m:02d}-01', _last_day(mx_y, mx_m))
-        return (f'{year}-{month:02d}-01', _last_day(year, month))
+            return (f'{_iso_year(mn_y)}-{mn_m:02d}-01', _last_day(mx_y, mx_m))
+        return (f'{_iso_year(year)}-{month:02d}-01', _last_day(year, month))
 
     # Year-month-day (possibly with ~ on components)
     ymd_m = re.match(r'^(\d{4})-~?(\d{2})-~?(\d{2})[~?]?$', s)
@@ -4865,7 +4880,7 @@ def edtf_bounds(s: str | None) -> tuple[str, str]:
         calendar.monthrange(year, month)
         if day < 1 or day > calendar.monthrange(year, month)[1]:
             raise ValueError(f'invalid day in EDTF date: {s}')
-        iso = f'{year}-{month:02d}-{day:02d}'
+        iso = f'{_iso_year(year)}-{month:02d}-{day:02d}'
         return (iso, iso)
 
     # Nothing structured matched.  Before giving up to the widest-possible window,
@@ -4895,9 +4910,23 @@ def _pad_date(s: str, mode: str) -> str:
         return s
 
 
+def _iso_year(year: int) -> str:
+    """A bound's year as four digits, as ISO 8601 and every string
+    comparison on `date_min`/`date_max` require (#207 review).
+
+    `f'{year}'` wrote 999 as '999-01-01'. That is not a date
+    `datetime.date.fromisoformat` reads, so the life-date pick took an exact
+    early year for an undated claim. It also sorted AFTER '1000-01-01' as a
+    string, so timelines and `fha xref`'s overlap test misplaced every year
+    before 1000. A year below 0 (the widened '0000~') is clamped to 0000,
+    the earliest the four-digit form can say.
+    """
+    return f'{max(year, 0):04d}'
+
+
 def _last_day(year: int, month: int) -> str:
-    last = calendar.monthrange(year, month)[1]
-    return f'{year}-{month:02d}-{last:02d}'
+    last = calendar.monthrange(max(year, 1), month)[1]
+    return f'{_iso_year(year)}-{month:02d}-{last:02d}'
 
 
 def edtf_confidence(edtf: str | None) -> tuple[int, int]:
