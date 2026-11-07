@@ -3070,6 +3070,12 @@ def _move_cached_path(conn: sqlite3.Connection, old_path: str, new_path: str) ->
     """
     for table in _RECONCILE_TABLES:
         conn.execute(f'UPDATE {table} SET path=? WHERE path=?', (new_path, old_path))
+    if not _is_missing_key(new_path):
+        # Back on a live file: `gone:v1` meant "its file is gone", which is no
+        # longer true. Unknown again, so the backfill reads it and it counts
+        # in reconcile's gate (stand-in review D2).
+        conn.execute('UPDATE photos SET fingerprint=NULL WHERE path=? AND fingerprint=?',
+                     (new_path, _FINGERPRINT_GONE))
     conn.execute(
         'UPDATE photo_groups SET primary_path=? WHERE primary_path=?',
         (new_path, old_path),
@@ -4832,6 +4838,7 @@ def run_scan(archive_root: Path, fha_config: dict, full: bool = False) -> Result
             for path, fingerprint in conn.execute('SELECT path, fingerprint FROM photos')
         }
 
+        backfill_missed: list[Path] = []   # rows the face backfill could not rescrape
         to_scrape: list[Path] = []
         for p, (mtime, size) in on_disk.items():
             prior = existing.get(alias_by_path[p])
@@ -5028,15 +5035,28 @@ def run_scan(archive_root: Path, fha_config: dict, full: bool = False) -> Result
         # those commands must not claim the catalog has caught up.
         write_cache_meta(
             conn, PHOTOINDEX_CONFIG_KEY, photoindex_config_fingerprint(fha_config))
-        # A COMPLETE scan is what a schema upgrade's "scan due" waits for,
+        # A completed scan is what a schema upgrade's "scan due" waits for,
         # and - when this scan rescraped every photo for it - what the
-        # face-region backfill waits for. A scan that could not read some
-        # files, or list some folders, is not complete: those photos keep
-        # their stored mtime/size, so no later incremental scan would retry
-        # them, and clearing either marker would call the catalog whole while
-        # their face regions (and anything else the scan refreshes) are not
-        # (#220, Codex). Both markers stay until a scan sees everything.
-        if not unreadable and not unreadable_dirs:
+        # face-region backfill waits for. A photo this scan could not read
+        # must not be lost track of (#220, Codex), but must not hold the
+        # markers forever either (stand-in review D1: one permanently corrupt
+        # photo made every scan a full rescrape, and the catalog stale for
+        # good). So, the unindexed rule the stale-hold below already uses:
+        #   - a miss with no row, or a changed row, is retried by every later
+        #     incremental scan anyway - it holds nothing;
+        #   - a row the face backfill needed but could not rescrape (its
+        #     stored mtime/size still match) gets its stored mtime cleared,
+        #     so later incremental scans retry exactly that row, and it is
+        #     counted with the unindexed misses that keep the catalog stale;
+        #   - only a folder the walk could not list holds the markers, since
+        #     nothing can say which rows under it still need a rescrape.
+        if needs_face_backfill:
+            for p in unreadable:
+                alias = alias_by_path[p]
+                if existing.get(alias) == on_disk[p]:
+                    conn.execute('UPDATE photos SET mtime=NULL WHERE path=?', (alias,))
+                    backfill_missed.append(p)
+        if not unreadable_dirs:
             conn.execute('DELETE FROM meta WHERE key=?', (PHOTOINDEX_SCAN_DUE_KEY,))
             if needs_face_backfill:
                 conn.execute('DELETE FROM meta WHERE key=?', (_FACE_BACKFILL_KEY,))
@@ -5093,7 +5113,7 @@ def run_scan(archive_root: Path, fha_config: dict, full: bool = False) -> Result
     unindexed = [
         p for p in unreadable
         if existing.get(alias_by_path[p]) != on_disk[p]
-    ]
+    ] + backfill_missed
     behind = [on_disk[p][0] for p in unindexed]
     behind += _unreadable_dir_hold_mtimes(unreadable_dirs)
     behind += unreadable_dir_hold_mtimes(unreadable_source_dirs)

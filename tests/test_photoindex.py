@@ -7692,31 +7692,77 @@ class ContentFingerprintTests(unittest.TestCase):
             conn.close()
         return row[0] if row else None
 
-    def test_an_incomplete_scan_keeps_the_backfill_and_scan_due_markers(self) -> None:
+    def _one_unreadable(self, name: str):
+        fake = photoindex._run_exiftool
+
+        def run(paths):
+            return [row if Path(row['SourceFile']).name != name
+                    else {'SourceFile': row['SourceFile'], 'Error': 'corrupt'}
+                    for row in fake(paths)]
+        return fake, run
+
+    def test_a_backfill_row_that_could_not_be_rescraped_alone_is_retried(self) -> None:
         # A photo exiftool cannot read during the face-region backfill keeps
-        # its stored mtime/size, so no later incremental scan would retry it:
-        # both markers must survive until a scan sees everything.
+        # its stored mtime/size, so the backfill clears its stored mtime:
+        # the markers are cleared (no endless full rescrape), the catalog is
+        # held stale, and the next ordinary scan retries exactly that photo.
         self._put('farm.jpg', self._picture(90))
+        self._put('barn.jpg', self._picture(92))
         photoindex.run_scan(self.archive, self.CFG)
         self._downgrade_to_pre_face_regions()
         photoindex.run_reconcile(self.archive, self.CFG)
         self.assertIsNotNone(self._meta(photoindex._FACE_BACKFILL_KEY))
-        fake = photoindex._run_exiftool
-
-        def one_unreadable(paths):
-            return [row if Path(row['SourceFile']).name != 'farm.jpg'
-                    else {'SourceFile': row['SourceFile'], 'Error': 'locked'}
-                    for row in fake(paths)]
-
-        photoindex._run_exiftool = one_unreadable
+        fake, run = self._one_unreadable('farm.jpg')
+        photoindex._run_exiftool = run
         summary = photoindex.run_scan(self.archive, self.CFG)
         photoindex._run_exiftool = fake
         self.assertGreater(summary['unreadable'], 0)
-        self.assertIsNotNone(self._meta(photoindex._FACE_BACKFILL_KEY))
-        self.assertIsNotNone(self._meta('scan_due'))
-        photoindex.run_scan(self.archive, self.CFG)              # now complete
         self.assertIsNone(self._meta(photoindex._FACE_BACKFILL_KEY))
         self.assertIsNone(self._meta('scan_due'))
+        self.assertEqual(photoindex_status(self.archive, self.CFG)[0], 'stale')
+        retry = photoindex.run_scan(self.archive, self.CFG)
+        self.assertEqual(retry['scraped'], 1)                    # farm.jpg alone
+
+    def test_a_permanently_corrupt_new_file_does_not_hold_the_markers(self) -> None:
+        # Stand-in review D1: a never-catalogued file that can never be read
+        # is retried by every incremental scan anyway - it must not keep the
+        # markers set and make every scan a full rescrape.
+        self._put('farm.jpg', self._picture(93))
+        photoindex.run_scan(self.archive, self.CFG)
+        self._downgrade_to_pre_face_regions()
+        photoindex.run_reconcile(self.archive, self.CFG)
+        self._put('corrupt.jpg', self._picture(94))
+        fake, run = self._one_unreadable('corrupt.jpg')
+        photoindex._run_exiftool = run
+        try:
+            photoindex.run_scan(self.archive, self.CFG)
+            second = photoindex.run_scan(self.archive, self.CFG)
+        finally:
+            photoindex._run_exiftool = fake
+        self.assertEqual(second['scraped'], 0)
+        self.assertIsNone(self._meta(photoindex._FACE_BACKFILL_KEY))
+        self.assertIsNone(self._meta('scan_due'))
+
+    def test_a_row_re_tied_by_its_keyword_is_no_longer_gone(self) -> None:
+        # Stand-in review D2: a MISSING: row tagged gone:v1 that its SOURCE:
+        # keyword puts back on a live file is unknown again, so the backfill
+        # reads it.
+        def with_source(paths):
+            return [{'SourceFile': str(p), 'Keywords': ['SOURCE: S-00000000ab']}
+                    if p.name == 'farm.jpg' else {'SourceFile': str(p)} for p in paths]
+
+        photoindex._run_exiftool = with_source
+        self._put('farm.jpg', self._picture(95), caption='Farm')
+        photoindex.run_scan(self.archive, self.CFG)
+        self._set_fingerprint('photos/farm.jpg', None)
+        (self.photos / 'sub').mkdir()
+        (self.photos / 'farm.jpg').rename(self.photos / 'sub' / 'farm.jpg')
+        photoindex.run_reconcile(self.archive, self.CFG)
+        self.assertEqual(self._rows()['MISSING:photos/farm.jpg'][1], photoindex._FINGERPRINT_GONE)
+        photoindex.run_reconcile(self.archive, self.CFG, with_exif=True)
+        self.assertIsNone(self._rows()['photos/sub/farm.jpg'][1])
+        photoindex.run_scan(self.archive, self.CFG)
+        self.assertTrue(photoindex._is_real_fingerprint(self._rows()['photos/sub/farm.jpg'][1]))
 
     def test_a_dry_run_reconcile_previews_the_upgrade_of_a_very_old_catalog(self) -> None:
         # A schema-1 catalog from before cached face regions: the dry run
