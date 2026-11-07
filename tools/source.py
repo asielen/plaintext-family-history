@@ -1424,15 +1424,21 @@ def run_source_set_primary(
             f'Open {path} and write it as `- file: {target_alias}` with a '
             '`role:` line under it, then try again. Nothing was written.')
 
+    # The entry that is the main image now: marked `is_primary: true`, or,
+    # in a hand-made record, only `role: primary`. Missing the role-only
+    # shape left two `role: primary` entries, and the source page shows the
+    # first of them (#210 review).
     previous = [i for i, e in enumerate(entries)
-                if i != target_i and isinstance(e, dict) and _is_true(e.get('is_primary'))]
+                if i != target_i and isinstance(e, dict)
+                and (_is_true(e.get('is_primary'))
+                     or str(e.get('role') or '').strip().lower() == 'primary')]
     if len(previous) > 1:
         shown = ', '.join(aliases[i] for i in previous)
         return _refuse(
             'refused',
             f'{label} already marks more than one file as its main image '
             f'({shown}), so this tool cannot tell which one to step down. Open '
-            f'{path}, leave `is_primary: true` on just one file, run `fha lint`, '
+            f'{path}, leave `is_primary: true` and `role: primary` on just one file, run `fha lint`, '
             'then try again. Nothing was written.')
     prev_i = previous[0] if previous else None
     if prev_i is None and _is_true(target_entry.get('is_primary')) \

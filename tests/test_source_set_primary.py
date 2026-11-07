@@ -123,6 +123,29 @@ class SetPrimarySwapTests(unittest.TestCase):
         self.assertEqual(self.record.read_bytes().decode('utf-8'), FIXED)
         self.assertIn(str(self.record), result.changed)
 
+    def test_a_role_only_main_image_is_stepped_down(self) -> None:
+        # #210 review: a hand-made record marking its back only `role:
+        # primary` (no is_primary) kept that role, so two entries said
+        # primary and the source page showed the first - still the back.
+        self.record.write_bytes(BUG_ERA.replace('    is_primary: true\n', '', 1).encode('utf-8'))
+        result = self._run()
+        self.assertEqual(result.exit_code, EXIT_CLEAN, result.messages)
+        after = self.record.read_bytes().decode('utf-8')
+        self.assertEqual(after.count('role: primary'), 1)
+        self.assertIn('smith-farm-01400-back.tif\n    role: back\n', after)
+
+    def test_conflicting_main_image_markers_are_refused(self) -> None:
+        # One entry says is_primary, another only role: primary. Which one to
+        # step down is a guess, so nothing is written.
+        conflicting = BUG_ERA.replace(
+            '    role: primary\n', '    role: back\n', 1
+        ).replace('    role: back\n    copy: b\n', '    role: primary\n    copy: b\n', 1)
+        self.record.write_bytes(conflicting.encode('utf-8'))
+        before = self.record.read_bytes()
+        result = self._run()
+        self.assertNotEqual(result.exit_code, EXIT_CLEAN)
+        self.assertEqual(self.record.read_bytes(), before)
+
     def test_handwritten_comments_on_changed_lines_are_kept(self) -> None:
         # #210 review: a note on a role:/is_primary: line was silently
         # dropped, and the YAML referee cannot see comments.
