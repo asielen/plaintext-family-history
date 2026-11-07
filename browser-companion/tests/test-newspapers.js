@@ -478,3 +478,28 @@ test('fetchTile never retries before the site\'s Retry-After', async () => {
     assert.ok(calls.sleeps[0] >= 120000, 'waited ' + calls.sleeps[0] + ' ms');
   }
 });
+
+test('Codex 4503849177: a page that met a "slow down" and then lost a later tile says it met one', async () => {
+  // Three tiles: the first answers 429 once and then comes; the second
+  // comes; the third's connection drops.
+  const { deps } = tileService([429, 'ok', 'ok', 'net']);
+  Object.assign(deps, {
+    canvas: (w, h) => ({ width: w, height: h, getContext: () => ({ fillRect() {}, drawImage() {} }) }),
+    bitmap: async () => ({ width: 1488, height: 1448 }),
+  });
+  const info = { pageId: 'rate-test-lost', pageWidth: 1488 * 3, pageHeight: 1448, token: 't', me: { id: 7 } };
+  await assert.rejects(lib.fullPage(info, null, deps), (e) => {
+    assert.match(e.message, /could not reach Newspapers\.com/);
+    assert.strictEqual(e.rateHits, 1);
+    assert.strictEqual(e.slowDown, true);
+    return true;
+  });
+  // A page that lost a tile with no "slow down" before it says none.
+  const clean = tileService(['net']);
+  Object.assign(clean.deps, { canvas: deps.canvas, bitmap: deps.bitmap });
+  await assert.rejects(lib.fullPage(Object.assign({}, info, { pageId: 'rate-test-lost-2' }), null, clean.deps), (e) => {
+    assert.strictEqual(e.rateHits, 0);
+    assert.strictEqual(e.slowDown, false);
+    return true;
+  });
+});

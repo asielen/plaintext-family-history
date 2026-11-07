@@ -190,6 +190,8 @@
     // record: the batch reads each page itself, and Capture waits.
     batch: null,
     batchDriving: false,
+    // A "slow down" was met somewhere in the capture under way (noteSlowDown).
+    slowDownSeen: false,
   };
 
   const $ = (id) => document.getElementById(id);
@@ -415,6 +417,19 @@
   // one shape. A record capture passes `rec` ({ recordUrl, ids }): its
   // question goes through askTab, and a tab that has moved to another record
   // still stops the capture (TabMoved), the line saying so.
+  // A "slow down" (429/503) a site gave anywhere in this capture: in an
+  // answer's own flag, its words, or a photo list's status. Remembered for
+  // the whole capture, so that one which then fails still tells the owner's
+  // batch downloads to take their break (PR #224 Codex 4503849177).
+  function noteSlowDown(resp) {
+    if (!resp) return;
+    const st = (x) => x === 429 || x === 503;
+    if (resp.slowDown || (resp.rateHits > 0) || st(resp.partialStatus) || (!resp.ok && st(resp.status)) ||
+        (!resp.ok && /slow down|HTTP 429|HTTP 503|too many requests/i.test(String(resp.error || '')))) {
+      state.slowDownSeen = true;
+    }
+  }
+
   async function autoFetch(label, msg, rec) {
     const done = autoRow(label);
     let resp;
@@ -428,6 +443,7 @@
       resp = { ok: false, error: String((e && e.message) || e) };
     }
     if (!resp) resp = { ok: false, error: 'no answer from the page - reload it and try again' };
+    noteSlowDown(resp);
     if (resp.ok) {
       const kb = resp.base64 ? Math.max(1, Math.round((resp.base64.length * 3) / 4 / 1024)) : 0;
       const same = await sameAsLastCapture(resp.base64);
@@ -1087,8 +1103,10 @@
       );
     } catch (e) {
       pageRow(false, (e && e.message) || String(e));
+      noteSlowDown(e);
       throw e;
     }
+    noteSlowDown(page);
     pageRow(true, page.tiles + (page.tiles === 1 ? ' piece' : ' pieces') +
       (page.reduced ? ', ' + page.reduced + ' below full size' : ''));
     setStageResult('Building the clipping and combined images…', '');
@@ -1739,6 +1757,7 @@
         failed.push(p);
         row(false, got.error);
         if (got.slowDown) slowDown = true;
+        noteSlowDown(got);
       }
     }
     // The gravestone is the source's main picture when it has one, else the
@@ -2435,6 +2454,7 @@
     state.thisCaptureSigs = new Set();
 
     let outcome = null;
+    state.slowDownSeen = false;
     try {
       // The form's details are saved with what is read from the tab: if the
       // tab is no longer on the page they were filled in for, they would not
@@ -2588,8 +2608,13 @@
       state.autoSaved = false;
       // The form still describes the record she left: read the new one.
       if (e instanceof TabMoved) state.pendingNav = true;
-      outcome = { ok: false, error: e.message || String(e), tabMoved: e instanceof TabMoved };
+      noteSlowDown(e);
+      outcome = { ok: false, error: e.message || String(e), tabMoved: e instanceof TabMoved,
+        rateHits: (e && e.rateHits) || 0 };
     } finally {
+      // Saved or not, a capture that met a "slow down" says so (the batch's
+      // break before its next request).
+      if (outcome && state.slowDownSeen) outcome.slowDown = true;
       // A record saved by hand goes in the batch ledger too (switched on
       // only), so a batch never downloads it again.
       if (!opts.batch && state.batch && outcome && outcome.ok && outcome.site) {

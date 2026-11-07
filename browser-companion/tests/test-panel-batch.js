@@ -1076,3 +1076,46 @@ test('Codex 4503786101: without Web Locks, two Starts together still stage each 
   assert.deepStrictEqual(staged, [CALVIN, ETHEL].sort());
   assert.strictEqual(a.navigations.length + b.navigations.length, 2);
 });
+
+// ── PR #224 Codex 4503849177: a slow-down in a capture that then failed ─────
+
+test('Codex 4503849177: a Newspapers.com page that met a "slow down" and then lost a tile still starts the break', async () => {
+  const lists = [{ ok: true, user: ME.username, more: false, nextCursor: null, clippings: [
+    listed(101, 'Obituary for Calvin Hartley', NP_A), listed(202, 'Hartley wedding', NP_B)] }];
+  // As lib/newspapers.js fullPage throws it: 429, then the tile came, then a later tile's connection dropped.
+  const p = await openPanel({ url: NP_A, respond: npSite(lists), storage: ON,
+    fullPage: () => {
+      throw Object.assign(new Error('could not reach Newspapers.com for the page image, so the capture stopped'),
+        { rateHits: 1, slowDown: true });
+    } });
+  quick(p);
+  await start(p, 'np');
+  assert.strictEqual(p.written.length, 0);
+  const L = p.storage.npBatchLedger;
+  assert.strictEqual(L.items['101'].state, 'queued');
+  assert.ok(L.pacing.resumeAt > Date.now() + 25 * 60 * 1000, 'no break after the slow down');
+  assert.match(p.batchEl('np-status').textContent, /^Stopped: Newspapers\.com asked us to slow down/);
+});
+
+test('Codex 4503849177: a slow-down met by the Ancestry scan or a Find a Grave photo reaches the batch when the save then fails', async () => {
+  // Ancestry: the scan answered 429, then the bundle could not be written.
+  const base = ancestrySite();
+  const a = await openPanel({ url: HARRIET, storage: Object.assign({}, ON, { ancBatchLedger: ancLedger([CALVIN, ETHEL]) }),
+    respond: (msg, tab) => (msg.action === 'ancestryImage'
+      ? { ok: false, slowDown: true, transient: true, error: 'the Ancestry image service returned HTTP 429' } : base(msg, tab)) });
+  quick(a);
+  a.writeFails.add(0);
+  await start(a, 'anc');
+  assert.strictEqual(a.written.length, 0);
+  assert.deepStrictEqual(a.navigations.map((n) => n.url), [CALVIN]);
+  assert.ok(a.storage.ancBatchLedger.pacing.resumeAt > Date.now() + 25 * 60 * 1000, 'Ancestry: no break');
+  // Find a Grave: a photo answered 429, then the bundle could not be written.
+  const f = await openPanel({ url: FAG_CALVIN, respond: fagSite(), storage: Object.assign({}, ON, { fagBatchLedger: fagLedger(2) }),
+    fetch: async (url) => ({ ok: false, status: 429, url, headers: { get: () => 'text/html' } }) });
+  quick(f);
+  f.writeFails.add(0);
+  await start(f, 'fag');
+  assert.strictEqual(f.written.length, 0);
+  assert.strictEqual(f.navigations.length, 1);
+  assert.ok(f.storage.fagBatchLedger.pacing.resumeAt > Date.now() + 25 * 60 * 1000, 'Find a Grave: no break');
+});

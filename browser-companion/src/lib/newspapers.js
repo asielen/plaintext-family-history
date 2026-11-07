@@ -190,10 +190,20 @@
       if (i) await pause(between(PAUSE_MS[0], PAUSE_MS[1]));
       const [x, y, w, h] = tiles[i];
       if (onProgress) onProgress(i + 1, tiles.length);
-      const blob = await fetchTile(tileUrl(info, x, y, w, h), (s) => {
-        rateHits++;
-        if (onProgress) onProgress(i + 1, tiles.length, s);
-      }, deps);
+      let blob;
+      try {
+        blob = await fetchTile(tileUrl(info, x, y, w, h), (s) => {
+          rateHits++;
+          if (onProgress) onProgress(i + 1, tiles.length, s);
+        }, deps);
+      } catch (e) {
+        // A page that met a "slow down" and then failed on a later tile
+        // still met it: the error says so, and the owner's batch downloads
+        // take their break before the next request (PR #224 Codex 4503849177).
+        e.rateHits = rateHits;
+        e.slowDown = rateHits > 0 || /slow down/i.test(String(e.message || ''));
+        throw e;
+      }
       const bmp = await toBitmap(blob);
       // A tile served smaller than asked would be stretched to fit: count it so
       // the capture can say the page is not at full resolution.
