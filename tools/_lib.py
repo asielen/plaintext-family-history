@@ -9920,10 +9920,30 @@ def shell_quote(word: str) -> str:
     algorithm Python itself relies on to launch a Windows subprocess
     correctly (backslash-escaping embedded quotes rather than dropping
     them), so reusing it here beats hand-rolling the same escaper worse.
+
+    But `list2cmdline` quotes only for whitespace and `"`, which is what the
+    MSVCRT argv parser needs, not what a person pasting into PowerShell
+    needs. The printed commands start `.\\fha`, a PowerShell spelling, and
+    PowerShell breaks a bare word on `'` (an unclosed string), `( )` (a
+    subexpression), `&`, `,`, `;`, `{ }` and `@`. A photo named
+    `O'Brien-Farm.tif` produced a command that would not even parse (#210
+    audit). Any such word is double-quoted too, which cmd.exe also accepts.
+    `$` and a backtick are still expanded inside PowerShell double quotes;
+    there is no spelling that both shells take, and they are rare in names.
     """
     if os.name == 'nt':
-        return subprocess.list2cmdline([word])
+        quoted = subprocess.list2cmdline([word])
+        if not quoted.startswith('"') and any(ch in _PS_SPECIAL for ch in word):
+            # No whitespace and no `"` (else list2cmdline had quoted it), so
+            # the only escape needed inside the quotes is a trailing
+            # backslash, which would otherwise escape the closing quote.
+            stripped = word.rstrip('\\')
+            quoted = '"' + stripped + '\\' * (2 * (len(word) - len(stripped))) + '"'
+        return quoted
     return shlex.quote(word)
+
+
+_PS_SPECIAL = frozenset("'()&,;{}@|<>^")
 
 
 def pip_command(target: str) -> str:

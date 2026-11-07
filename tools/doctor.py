@@ -1201,6 +1201,20 @@ def _check_wrong_main_image(archive_root: Path, lines: list[str],
             file_arg = best_name if all_names.count(best_name.casefold()) == 1 else best
             parsed_id = parse_filename(record_path)
             sid = parsed_id.get('id_str') if parsed_id and parsed_id.get('id_type') == 'S' else None
+            meta_id = str((rec.get('meta') or {}).get('id') or '').strip()
+            if sid is None and is_valid_id(meta_id) and id_type_of(meta_id) == 'S':
+                # The record HAS an ID; only its file name lost it (renamed by
+                # hand). `--fix-ids` mints IDs for records without one, so it
+                # would leave this file alone and doctor would repeat itself
+                # (#210 audit). The fix is the rename.
+                findings.append(
+                    f'main image: {record_path.name} names {_what_the_scan_is(_parsed(chosen))} '
+                    f'({chosen_name}) as its main image, but the front scan {best_name} '
+                    "is listed beside it  next: this record's file name has lost its "
+                    f'source ID (the record itself says {fmt_id_display(meta_id)}), so the '
+                    'fix cannot find it yet. Rename the file so its name ends in '
+                    f'_{fmt_id_display(meta_id)}.md, then run doctor again for the fix.')
+                continue
             if sid is None:
                 needs_id += 1
                 findings.append(

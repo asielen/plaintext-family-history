@@ -1306,8 +1306,8 @@ def run_source_set_primary(
     bare filename, exactly first and then ignoring capitals. Refusals: an
     invalid id, no `--file`, no match, more than one match, a match outside
     the photos root, an entry written in a one-line form this text surgery
-    will not rewrite, a record where two files already claim to be the main
-    image, a current main file that is not a photo, or any result that would
+    will not rewrite, a record where two or more files other than the named one already
+    claim to be the main image (`is_primary: true` or `role: primary`), a current main file that is not a photo, or any result that would
     not leave exactly one `is_primary: true`. The rewritten text must parse
     back to exactly the planned list, with every other frontmatter field and
     the whole body unchanged, before it is written; after the write it is

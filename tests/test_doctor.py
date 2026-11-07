@@ -1520,6 +1520,31 @@ class WrongMainImageTests(unittest.TestCase):
         self.assertIn(fix, found[0])
         self.assertEqual(check['next_step'], fix)
 
+    def test_a_name_powershell_would_break_is_quoted(self) -> None:
+        # #210 audit: `.\fha` is pasted into PowerShell, where a bare
+        # O'Brien opens an unclosed string and (1950) is a subexpression.
+        self._record('files:\n'
+                     "  - file: photos/1950/O'Brien-Farm_(1950)-back.tif\n"
+                     '    role: primary\n'
+                     '    is_primary: true\n'
+                     "  - file: photos/1950/O'Brien-Farm_(1950).tif\n"
+                     '    role: variant\n')
+        _result, _check, found = self._doctor()
+        self.assertEqual(len(found), 1)
+        expected = ('"O\'Brien-Farm_(1950).tif"' if os.name == 'nt'
+                    else doctor.shell_quote("O'Brien-Farm_(1950).tif"))
+        self.assertIn(f'--file {expected} --root', found[0])
+
+    def test_a_record_whose_file_name_lost_its_id_is_told_to_rename_it(self) -> None:
+        # #210 audit: `--fix-ids` only mints missing IDs, so for a record
+        # that has one in its frontmatter the advice looped forever.
+        self.record = self.root / 'sources' / 'photos' / 'farm.md'
+        self._record(self.BUG_ERA)
+        result, check, found = self._doctor()
+        self.assertEqual(len(found), 1, result.data['lines'])
+        self.assertIn(f'ends in _{self.SID}.md', found[0])
+        self.assertNotIn('--fix-ids', found[0])
+
     def test_a_front_named_like_a_document_gets_its_full_path(self) -> None:
         # #210 review: set-primary matches --file against EVERY entry, so a
         # documents-root file sharing the front's name made the bare name
