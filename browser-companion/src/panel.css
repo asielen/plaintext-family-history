@@ -150,6 +150,12 @@ button.ghost { font-size: 14px; min-height: 40px; padding: 8px 12px; }
 .ancestry-note strong { color: var(--accent); }
 .ancestry-note .mini { margin-top: 6px; }
 
+/* Newspapers.com: the note reuses .ancestry-note; the clipping checkboxes sit
+   under it when a page holds more than one of your clippings. */
+.np-clips { display: block; margin-top: 6px; }
+.np-clips .mini { display: block; }
+#np-text { display: block; margin-top: 4px; }
+
 .check { display: flex; align-items: flex-start; gap: 8px; font-size: 14px; color: var(--fg); margin: 6px 0 0; flex: 1 1 100%; }
 .check input { width: 20px; height: 20px; flex: none; margin-top: 1px; }
 

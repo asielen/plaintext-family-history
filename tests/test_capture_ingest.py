@@ -234,6 +234,26 @@ class IngestTestCase(unittest.TestCase):
         self.assertEqual(read_record(self._stubs()[0])['meta']['repository'],
                          'Andrews Family Bible')
 
+    def test_capture_json_citation_override(self) -> None:
+        # A citation the site itself supplied (capture.json citation, e.g. a
+        # Newspapers.com "Source Citation") replaces the recipe's assembled one;
+        # a blank one leaves the recipe's in place.
+        _make_bundle(self.staging, 'b-cite', page_html=_sample('ancestry'),
+                     capture_json={'url': 'https://www.ancestry.com/rec/4',
+                                   'asset_mode': 'none',
+                                   'citation': '  The Gazette, March 3, 1931, Page 5.  '})
+        _make_bundle(self.staging, 'b-nocite', page_html=_sample('ancestry'),
+                     capture_json={'url': 'https://www.ancestry.com/rec/5',
+                                   'asset_mode': 'none', 'title': 'Other record',
+                                   'citation': '   '})
+        self._ingest()
+        cites = sorted(str(read_record(p)['meta'].get('citation') or '').strip()
+                       for p in self._stubs())
+        self.assertIn('The Gazette, March 3, 1931, Page 5.', cites)
+        recipe_cite = [c for c in cites if c != 'The Gazette, March 3, 1931, Page 5.']
+        self.assertEqual(len(recipe_cite), 1)
+        self.assertTrue(recipe_cite[0])   # the recipe's own, not blanked
+
     def test_bundle_with_missing_declared_asset_is_malformed(self) -> None:
         # A schema-2 assets entry naming a file absent on disk is an incomplete
         # capture: reported malformed and left in staging, never filed.
@@ -387,6 +407,45 @@ class IngestTestCase(unittest.TestCase):
         self.assertEqual(self._bundle_dirs(), [])      # no bundle folder
         jpgs = [p for p in (self.archive / 'inbox').iterdir() if p.suffix == '.jpg']
         self.assertEqual(len(jpgs), 1)
+
+    def test_newspapers_clipping_bundle_files_every_part_with_its_role(self) -> None:
+        # The shape the companion stages for one Newspapers.com clipping: the
+        # clipping, the whole page, the annotated view and the site's data, plus
+        # the site's own citation. One bundle folder, every file keeping its role,
+        # and the site's citation in place of the recipe's guess.
+        bundle = self.staging / 'np-clip'
+        bundle.mkdir(parents=True)
+        (bundle / 'page.html').write_text(_sample('newspapers'), encoding='utf-8')
+        cite = ('The Fairview Gazette, March 3, 1931, Page 5. via Newspapers.com '
+                '(https://www.newspapers.com/article/x/123456/ : accessed October 8, 2026), '
+                'clip page for Obituary by user someone')
+        (bundle / 'capture.json').write_text(json.dumps({
+            'schema': 2, 'url': 'https://www.newspapers.com/article/x/123456/',
+            'title': 'Obituary - The Fairview Gazette, 3 Mar 1931, p. 5',
+            'accessed': '2026-10-08', 'source_date': '1931-03-03',
+            'source_type': 'newspaper', 'citation': cite, 'recipe_hint': 'newspapers',
+            'assets': [
+                {'file': 'clipping.jpg', 'role': 'clipping', 'mode': 'newspapers-tiles'},
+                {'file': 'page.jpg', 'role': 'page', 'mode': 'newspapers-tiles'},
+                {'file': 'annotated.jpg', 'role': 'annotated', 'mode': 'newspapers-derived'},
+                {'file': 'clipping-data.json', 'role': 'site-data',
+                 'mode': 'newspapers-page-data'},
+            ],
+        }), encoding='utf-8')
+        for name in ('clipping.jpg', 'page.jpg', 'annotated.jpg'):
+            (bundle / name).write_bytes(b'\xff\xd8\xff\xe0 fake jpeg')
+        (bundle / 'clipping-data.json').write_text('{"site_ocr": null}', encoding='utf-8')
+
+        res = self._ingest()
+        self.assertEqual(res.data['ingested'], 1)
+        folder = self._bundle_dirs()[0]
+        meta = read_record(folder / 'notes.md')['meta']
+        self.assertEqual({f['file']: f.get('role') for f in meta['files']}, {
+            'clipping.jpg': 'clipping', 'page.jpg': 'page',
+            'annotated.jpg': 'annotated', 'clipping-data.json': 'site-data'})
+        self.assertEqual(' '.join(str(meta['citation']).split()), cite)
+        self.assertIn('https://www.newspapers.com/clip/123456/',
+                      [l['url'] for l in meta['external_links']])
 
     def test_schema2_both_case_files_as_bundle_folder(self) -> None:
         # Two assets (page copy + record) → a §12.1 bundle FOLDER with notes.md +

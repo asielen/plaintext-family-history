@@ -78,6 +78,27 @@
     // derivative, so the "Yes" flow auto-fetches the FULL IIIF image instead of
     // pulling the URL box. Set from the prefill; drives buildEvidence().
     iiif: false,
+    // Newspapers.com: the newspapersInfo result for the page in the tab (page
+    // id, size, image pass, YOUR clippings on it) and which of them to save.
+    // On Capture the panel rebuilds the page from tiles (lib/newspapers.js).
+    np: null,
+    npSelected: new Set(),
+    // On a Newspapers.com page: why automatic saving is unavailable, if it is.
+    npPage: false,
+    npError: null,
+    // True while the clippings for the page in the tab are still being read.
+    // Capture waits for them rather than staging the previous page's clippings
+    // under this page's form. npSeq numbers each read, so an answer that comes
+    // back after the tab has moved on is dropped, never installed.
+    npLoading: false,
+    // Form fields the human has typed in since this record's prefill. The
+    // newspaper data arriving later must not overwrite them (#211 review).
+    userEdited: new Set(),
+    // True from the moment the tab moves to a new address until the panel
+    // has read the new page. Capture refuses meanwhile, or it would pair the
+    // old clipping with the new page and form (#211 audit).
+    navInFlight: false,
+    npSeq: 0,
     // The URL the form was last pre-filled for, so the batch-capture refresh
     // (re-running prefill when the tab navigates to a new record) can tell a
     // genuine navigation from a same-page update.
@@ -187,6 +208,8 @@
     // so this fires only on a genuine new record - and on the first prefill,
     // where it is a harmless no-op on the fresh form.
     if (!sameRecordUrl(prefill.url, state.prefilledUrl)) clearEvidenceSelection();
+    state.userEdited = new Set();
+    for (const id of ['f-title', 'f-date', 'f-repo']) $(id).readOnly = false;
     state.prefill = prefill;
     state.iiif = !!prefill.iiif;
     state.prefilledUrl = prefill.url || null;
@@ -207,7 +230,7 @@
     // is a derivative). There the URL box is left empty and the auto path
     // supplies the full record on Capture. Any other page clears a stale URL so
     // a previous record's address can't be re-fetched as this one's evidence.
-    if (prefill.ancestryImageViewer || prefill.iiif) {
+    if (prefill.ancestryImageViewer || prefill.iiif || prefill.newspapers) {
       $('f-asset-url').value = '';
     } else if (prefill.imageUrl) {
       $('f-asset-url').value = prefill.imageUrl;
@@ -217,6 +240,7 @@
       $('f-asset-url').value = '';
     }
     applyAncestryNote(!!prefill.ancestryImageViewer);
+    loadNewspapers(prefill);
 
     const banner = $('recipe-banner');
     const hintLabel = RECIPE_LABELS[prefill.recipeHint];
@@ -258,6 +282,494 @@
     updateAssetStatus();
   }
 
+  // ── Newspapers.com: whole page + your clippings ──────────────────────────────
+  // Works from a clipping page (/article/…) or the page viewer (/image/…). The
+  // content script reads the page's own data; this side shows which of YOUR
+  // clippings will be saved, and on Capture rebuilds the page at full
+  // resolution and stages one bundle per clipping (each its own source).
+
+  const NP_URL_LABEL = 'Newspapers.com page + clipping (saved automatically)';
+
+  // True when the page in the tab has clippings Capture can save automatically.
+  function npActive() {
+    return !!(state.np && state.np.ownClips && state.np.ownClips.length);
+  }
+
+  // Why Capture cannot save this Newspapers.com page automatically, in words
+  // that end in what to do instead. Shared by the panel note and Capture.
+  function npUnavailableReason() {
+    const np = state.np;
+    if (state.npError) {
+      return 'automatic saving is not available here: ' + state.npError +
+        '. Reload the page and open the panel again, or drop in a file.';
+    }
+    if (np && np.listTruncated && !np.ownClips.length) {
+      return 'automatic saving is not available here: ' + np.listError +
+        ', so yours may be among the ones it did not check. Open your clipping on ' +
+        'Newspapers.com (its own page) and capture it there, or drop in a file.';
+    }
+    if (np && np.listError && !np.ownClips.length) {
+      return 'automatic saving is not available here: ' + np.listError +
+        ', so the panel cannot tell which clippings are yours. Reload the page and open ' +
+        'the panel again; if it keeps happening, wait a few minutes, or drop in a file.';
+    }
+    if (np && (np.openedUnusable || (np.unusable && np.unusable.length))) {
+      return (np.openedUnusable ? 'this clipping marks' : 'your clippings on this page mark') +
+        ' no area on the newspaper page that can be cut out, so nothing is saved ' +
+        'automatically. Clip the item again on Newspapers.com, or use the site’s ' +
+        'own download and drop the file in.';
+    }
+    return 'none of the clippings on this page are yours, so nothing is saved automatically. ' +
+      'Clip the item on Newspapers.com first, then open the panel again, or drop in a file.';
+  }
+
+  // Titles, dates and citations live in lib/newspapers.js, where they are tested.
+  const npPub = (clip, np) => FHA.newspapers.publicationOf(clip, np);
+  const npTitle = (clip, np) => FHA.newspapers.title(clip, np);
+  const npCaption = (clip, np) => FHA.newspapers.caption(clip, np);
+  const npCitations = (clip, np) =>
+    FHA.newspapers.citations(clip, np, captureJson.accessedDate());
+  // The machine-and-human-readable record of where the clipping sits, so the
+  // combined view can be rebuilt later and the crop is never a mystery.
+  // `copyNote` explains a page copy left out of this bundle (a sibling clipping).
+  function npNotes(clip, np, page, copyNote) {
+    const pub = npPub(clip, np);
+    const lines = [];
+    lines.push(
+      'Newspapers.com clipping ' + clip.id + (clip.title ? ' ("' + clip.title + '")' : '') +
+        (clip.username ? ', clipped by ' + clip.username : '') +
+        (clip.created ? ' on ' + String(clip.created).slice(0, 10) : '') + '.'
+    );
+    lines.push(
+      [pub.name, pub.location, clip.pageDate || np.pageDate, (clip.pageNo || np.pageNo) ? 'page ' + (clip.pageNo || np.pageNo) : null]
+        .filter(Boolean).join(', ') +
+        '. Newspapers.com page ' + np.pageId + ', ' + np.pageWidth + ' x ' + np.pageHeight + ' pixels.'
+    );
+    if (clip.tags) lines.push('Tags on Newspapers.com: ' + clip.tags + '.');
+    lines.push('Citation (Newspapers.com, Genealogy style): ' + npCitations(clip, np).genealogy);
+    lines.push(
+      'Clipping area on the page (x, y, width, height in page pixels): ' +
+        clip.rects.map((r) => [r.x, r.y, r.w, r.h].join(',')).join('; ')
+    );
+    lines.push(
+      'Files: clipping.jpg is the item at full resolution, cut from page.jpg, the whole page ' +
+        'rebuilt at full resolution from Newspapers.com image tiles. annotated.jpg shows the ' +
+        'clipping above the page with the item boxed in red; it was made at capture and is ' +
+        'not part of the newspaper. clipping-data.json holds the clipping details, all four ' +
+        'Newspapers.com citation styles, and the site\'s machine OCR of the item - unverified, ' +
+        'for locating words only, never a transcript.'
+    );
+    if (page && page.reduced) {
+      lines.push(page.reduced + ' of ' + page.tiles + ' page tiles came back below full size.');
+    }
+    if (copyNote) lines.push(copyNote);
+    return lines.join('\n');
+  }
+
+  function npSetText(text) {
+    const el = $('np-text');
+    if (el) el.textContent = text;
+  }
+
+  async function loadNewspapers(prefill) {
+    // Forget the previous record's newspaper page NOW, before waiting on the
+    // tab: until the new answer is installed, Capture must not pair the old
+    // page's image pass and clippings with this record's form and page.html.
+    const seq = ++state.npSeq;
+    setNewspapersMode(null);
+    state.npPage = !!(prefill && prefill.newspapers);
+    state.npError = null;
+    state.npLoading = state.npPage;
+    if (!state.npPage) return;
+    $('np-note').style.display = 'block';
+    npSetText('Reading your clippings on this page…');
+    updateAssetStatus();
+    let info;
+    try {
+      info = await sendToTab(state.tabId, { action: 'newspapersInfo' });
+    } catch (e) {
+      info = { ok: false, error: e.message };
+    }
+    if (seq !== state.npSeq) return; // the tab moved on meanwhile; a newer read owns the state
+    state.npLoading = false;
+    if (!info || !info.ok) {
+      setNewspapersMode(null);
+      state.npError = (info && info.error) || 'no answer from the page';
+      $('np-note').style.display = 'block';
+      npSetText(npUnavailableReason().replace(/^./, (c) => c.toUpperCase()));
+      updateAssetStatus();
+      return;
+    }
+    setNewspapersMode(info);
+  }
+
+  function setNewspapersMode(info) {
+    state.np = info && info.ok ? info : null;
+    state.npSelected = new Set();
+    const note = $('np-note');
+    const urlInput = $('f-asset-url');
+    $('np-clips').textContent = '';
+    if (!state.np) {
+      note.style.display = 'none';
+      if (urlInput.readOnly) {
+        urlInput.readOnly = false;
+        // Only our own label: by now applyPrefill may have put the next
+        // record's detected file address here (#211 review).
+        if (urlInput.value === NP_URL_LABEL) urlInput.value = '';
+      }
+      updateAssetStatus();
+      return;
+    }
+    const np = state.np;
+    const own = np.ownClips;
+    note.style.display = 'block';
+    if (!own.length) {
+      urlInput.readOnly = false;
+      if (urlInput.value === NP_URL_LABEL) urlInput.value = '';
+      npSetText(npUnavailableReason().replace(/^./, (c) => c.toUpperCase()));
+      updateAssetStatus();
+      return;
+    }
+    // Default: on a clipping page, that clipping; on the page viewer, all of
+    // your clippings on the page. The checkboxes below change it.
+    const focus = own.find((c) => c.id === np.focusClipId);
+    if (focus && np.kind === 'article') state.npSelected.add(focus.id);
+    // The clipping she opened cannot be cut out: say so (np-text below), and
+    // let her tick another one herself rather than saving it unasked (#211
+    // audit).
+    else if (np.kind === 'article' && np.openedUnusable) { /* nothing ticked */ }
+    else own.forEach((c) => state.npSelected.add(c.id));
+
+    urlInput.value = NP_URL_LABEL;
+    urlInput.readOnly = true;
+    npSetText(
+      (np.focusOwner
+        ? 'This clipping was made by ' + np.focusOwner + '. It is saved because you opened it. '
+        : '') +
+        'On Capture this rebuilds the whole page at full resolution from Newspapers.com’s own ' +
+        'image tiles, one at a time (about 20 seconds a page), and cuts out your ' +
+        'clipping. Each clipping becomes its own source with the clipping, the whole page, ' +
+        'and a combined view with the item boxed.' +
+        (np.otherClipCount
+          ? ' Other clippings on this page that are not yours (' + np.otherClipCount + ') are skipped.'
+          : '') +
+        (np.unusable && np.unusable.length
+          ? ' Left out because they mark no area on the page that can be cut out: ' +
+            np.unusable.map((c) => '“' + (c.title || 'untitled clipping') + '”').join(', ') + '.'
+          : '') +
+        // Part of the list could not be read: the clippings shown are saved,
+        // but others of hers may be missing, and she must be told (#211 review).
+        (np.listError
+          ? ' Note: ' + np.listError + ', so some of your clippings on this page may not be ' +
+            'listed here. To get one that is missing, open that clipping on Newspapers.com ' +
+            '(its own page) and capture it there.'
+          : '')
+    );
+    renderNpClips();
+    fillNpFields();
+    updateAssetStatus();
+  }
+
+  function renderNpClips() {
+    const box = $('np-clips');
+    box.textContent = '';
+    const np = state.np;
+    if (!np || (np.ownClips.length < 2 && !np.openedUnusable)) return;
+    const head = document.createElement('span');
+    head.className = 'mini';
+    head.textContent = 'Clippings on this page to save (each becomes its own source):';
+    box.appendChild(head);
+    for (const c of np.ownClips) {
+      const label = document.createElement('label');
+      label.className = 'check';
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.checked = state.npSelected.has(c.id);
+      cb.addEventListener('change', () => {
+        if (cb.checked) state.npSelected.add(c.id);
+        else state.npSelected.delete(c.id);
+        // A correction typed for one clipping belongs to that clipping: once
+        // the ticks change, the form describes a different one (#211 audit).
+        state.userEdited = new Set();
+        fillNpFields();
+        updateAssetStatus();
+      });
+      const text = document.createElement('span');
+      text.textContent = (c.title || 'Untitled clipping') + (c.tags ? ' (' + c.tags + ')' : '');
+      label.appendChild(cb);
+      label.appendChild(text);
+      box.appendChild(label);
+    }
+  }
+
+  // One clipping chosen: the form describes it and stays editable. Several: each
+  // bundle gets its own title and date, so the form's title box steps aside.
+  function fillNpFields() {
+    const np = state.np;
+    if (!np) return;
+    const chosen = np.ownClips.filter((c) => state.npSelected.has(c.id));
+    // A field the human typed in keeps what they typed: the clippings can
+    // arrive seconds after the panel opens, and a correction made meanwhile
+    // must not be silently replaced by the site's own value (#211 review).
+    const put = (id, value) => {
+      if (!state.userEdited.has(id)) $(id).value = value;
+    };
+    put('f-type', 'newspaper');
+    if (chosen.length === 1) {
+      const c = chosen[0];
+      put('f-title', npTitle(c, np));
+      $('f-title').placeholder = '';
+      put('f-date', c.pageDate || np.pageDate || '');
+      put('f-repo', npPub(c, np).name || 'Newspapers.com');
+      if (c.url) put('f-url', c.url);
+    } else if (chosen.length > 1) {
+      // Each clipping is saved with its own title, date and newspaper from
+      // the site, so the form shows those and nothing a person could type
+      // and see ignored (#211 audit).
+      for (const id of ['f-title', 'f-date', 'f-repo']) state.userEdited.delete(id);
+      $('f-title').value = '';
+      $('f-title').placeholder = 'Each clipping gets its own title';
+      $('f-date').value = np.pageDate || '';
+      $('f-repo').value = (np.publication && np.publication.name) || 'Newspapers.com';
+    }
+    const many = chosen.length > 1;
+    for (const id of ['f-title', 'f-date', 'f-repo']) $(id).readOnly = many;
+  }
+
+  function npClipData(clip, np, ocr) {
+    const pub = npPub(clip, np);
+    return {
+      note: 'Captured from Newspapers.com by the archive capture extension. site_ocr is the ' +
+        'site\'s machine reading of the clipping: unverified, for locating words only, never a transcript.',
+      clipping: {
+        id: clip.id,
+        title: clip.title || null,
+        tags: clip.tags || null,
+        clipped_by: clip.username || null,
+        created: clip.created || null,
+        url: clip.url || null,
+        rectangles: clip.rects.map((r) => ({ x: r.x, y: r.y, width: r.w, height: r.h, rotation: r.rotation })),
+      },
+      page: {
+        id: np.pageId,
+        width: np.pageWidth,
+        height: np.pageHeight,
+        date: clip.pageDate || np.pageDate || null,
+        page_number: clip.pageNo || np.pageNo || null,
+        publication: pub.name || null,
+        location: pub.location || null,
+      },
+      citations: npCitations(clip, np),
+      site_ocr: ocr
+        ? { text: ocr.text, complete: !!ocr.complete }
+        : null,
+    };
+  }
+
+  // The site's OCR for each chosen clipping: already read for the clipping whose
+  // page is open; otherwise one paced request to that clipping's own page.
+  async function npGatherText(chosen) {
+    const out = new Map();
+    let fetched = 0;
+    for (const clip of chosen) {
+      if (clip.ocrText) {
+        out.set(clip.id, clip.ocrText);
+        continue;
+      }
+      if (!clip.url) continue;
+      if (fetched++) await new Promise((r) => setTimeout(r, 1500 + Math.random() * 2000));
+      setStageResult('Reading the site’s text for “' + (clip.title || 'clipping') + '”…', '');
+      try {
+        const resp = await sendToTab(state.tabId, {
+          action: 'newspapersClipText', url: clip.url, clippingId: clip.id,
+        });
+        if (resp && resp.ok && resp.ocr) out.set(clip.id, resp.ocr);
+      } catch (e) {
+        /* the text is a convenience; the images are the record */
+      }
+    }
+    return out;
+  }
+
+  // Stage one bundle per chosen clipping. The page is fetched once, before any
+  // bundle, so a failure there saves nothing and says so (the caller reports
+  // the throw). After that each clipping succeeds or fails on its own: the
+  // report names where every bundle went and which, if any, were not saved,
+  // and only the unsaved ones stay ticked for another try.
+  async function captureNewspapers(pageHtml, wantPageCopy) {
+    const np = state.np;
+    // The form as it is NOW. The page download below takes about 20 seconds,
+    // and nothing that happens to the form meanwhile may reach these bundles
+    // (#211 audit).
+    const form = {
+      title: $('f-title').value.trim(),
+      date: $('f-date').value.trim(),
+      repo: $('f-repo').value.trim(),
+      url: $('f-url').value.trim(),
+      type: $('f-type').value,
+      people: checkedPeople(),
+      notes: gatherNotes(false),
+    };
+    const chosen = np.ownClips.filter((c) => state.npSelected.has(c.id));
+    if (!chosen.length) throw new Error('tick at least one of your clippings');
+    // The tab's page copy is a copy of the record open in the tab; build it
+    // only if some chosen clipping is that record (lib pageCopyFits).
+    const copyFits = (clip) => FHA.newspapers.pageCopyFits(np, clip);
+    const pageCopy = wantPageCopy && chosen.some(copyFits) ? await buildPageCopy() : null;
+    const opened = np.ownClips.find((c) => c.id === np.focusClipId);
+    const texts = await npGatherText(chosen);
+
+    const page = await FHA.newspapers.fullPage(np, (i, n, wait) =>
+      setStageResult(
+        wait
+          ? 'Newspapers.com asked us to slow down. Waiting ' + wait + ' seconds before tile ' + i + ' of ' + n + '…'
+          : 'Rebuilding the full page from Newspapers.com, tile ' + i + ' of ' + n + ' (paced gently)…',
+        ''
+      )
+    );
+    setStageResult('Building the clipping and combined images…', '');
+    const pageBlob = await FHA.newspapers.toJpeg(page.canvas);
+
+    const results = [];
+    const single = chosen.length === 1;
+    for (const clip of chosen) {
+      const title = single ? (form.title || npTitle(clip, np)) : npTitle(clip, np);
+      try {
+        const st = await stageNpClip(clip, np, page, pageBlob, {
+          title, single, pageHtml, texts, form,
+          pageCopy: pageCopy && copyFits(clip) ? pageCopy : null,
+          copyNote: wantPageCopy && !copyFits(clip)
+            ? 'No copy of the web page was kept for this clipping: the page open in the browser ' +
+              'was another clipping' + (opened && opened.title ? ' ("' + opened.title + '")' : '') +
+              '. This clipping\'s own page is ' + (clip.url || 'on Newspapers.com') + '.'
+            : null,
+        });
+        results.push({ id: clip.id, title, ok: true, ...st });
+      } catch (e) {
+        results.push({ id: clip.id, title, ok: false, error: e.message || String(e) });
+      }
+      if (!single) {
+        setStageResult('Saved ' + results.filter((r) => r.ok).length + ' of ' + chosen.length + ' clippings…', '');
+      }
+    }
+    const reducedWarn = page.reduced
+      ? page.reduced + ' of ' + page.tiles + ' page tiles came back below full size, so parts of page.jpg are softer than the scan.'
+      : null;
+    // The status line promised a page copy; say plainly which bundles lack one.
+    const noCopy = wantPageCopy ? chosen.filter((c) => !copyFits(c)).length : 0;
+    const copyWarn = noCopy
+      ? 'The copy of the web page went only with the clipping open in the browser; ' +
+        (noCopy === 1 ? 'the other clipping was' : 'the other ' + noCopy + ' clippings were') +
+        ' saved without one, since that page shows a different item.'
+      : null;
+    const summary = FHA.newspapers.summarizeStaged(results, [reducedWarn, copyWarn]);
+    setStageResult(summary.text, summary.cls);
+    $('handoff').classList.toggle('show', summary.showHandoff);
+    // Leave only the clippings that were not saved ticked, so pressing Capture
+    // again retries exactly those and never stages a saved one twice.
+    const failed = results.filter((r) => !r.ok);
+    if (failed.length) {
+      state.npSelected = new Set(failed.map((r) => r.id));
+      renderNpClips();
+      fillNpFields();
+    }
+  }
+
+  // Build and stage one clipping's bundle. Returns stageBundle's
+  // { viaHost, where, hostWarning }; throws with a plain reason.
+  async function stageNpClip(clip, np, page, pageBlob, o) {
+    const clipBlob = await FHA.newspapers.toJpeg(FHA.newspapers.clipCanvas(page, clip));
+    // Dashed boxes mark YOUR other clippings on the page only (on a clipping
+    // page made by someone else, theirs is offered but is not yours).
+    const others = np.ownClips.filter(
+      (c) => c.id !== clip.id && (!np.me || !np.me.id || c.userId === np.me.id)
+    );
+    const combinedBlob = await FHA.newspapers.toJpeg(
+      FHA.newspapers.combined(page, clip, np, others, npCaption(clip, np))
+    );
+    const assets = [
+      { filename: 'clipping.jpg', blob: clipBlob, role: 'clipping', mode: 'newspapers-tiles' },
+      { filename: 'page.jpg', blob: pageBlob, role: 'page', mode: 'newspapers-tiles' },
+      { filename: 'annotated.jpg', blob: combinedBlob, role: 'annotated', mode: 'newspapers-derived' },
+      {
+        filename: 'clipping-data.json',
+        blob: new Blob([JSON.stringify(npClipData(clip, np, o.texts.get(clip.id)), null, 2) + '\n'],
+          { type: 'application/json' }),
+        role: 'site-data',
+        mode: 'newspapers-page-data',
+      },
+    ];
+    if (o.pageCopy) {
+      assets.push({ filename: o.pageCopy.filename, blob: o.pageCopy.blob, role: 'webpage', mode: 'singlefile' });
+    }
+    const fields = {
+      // One clipping: the address in the form, which she may have corrected
+      // (a /clip/ permalink, say). Several: each clipping's own (#211 review).
+      url: (o.single && o.form.url) || clip.url || o.form.url || (state.prefill && state.prefill.url),
+      title: o.title,
+      accessed: captureJson.accessedDate(),
+      sourceDate: o.single
+        ? (o.form.date || clip.pageDate || np.pageDate || '')
+        : (clip.pageDate || np.pageDate || ''),
+      sourceType: o.form.type || 'newspaper',
+      repository: o.single ? o.form.repo : (npPub(clip, np).name || 'Newspapers.com'),
+      citation: npCitations(clip, np).genealogy,
+      people: o.form.people,
+      notes: [o.form.notes, npNotes(clip, np, page, o.copyNote)]
+        .filter((t) => t && t.trim()).join('\n\n'),
+      recipeHint: 'newspapers',
+      assets: assets.map((a) => ({ file: a.filename, role: a.role, mode: a.mode, provisional: false })),
+    };
+    const cap = captureJson.build(fields);
+    return stageBundle(captureJson.bundleName(o.title), o.pageHtml, cap, assets);
+  }
+
+  // Stage one bundle: straight into the archive when the native host answers,
+  // else the staging-folder download. Returns { viaHost, where, hostWarning }.
+  async function stageBundle(bundleName, pageHtml, cap, assets) {
+    let hostWarning = null;
+    if (await nativeHost.isAvailable()) {
+      try {
+        const hostAssets = [];
+        for (const a of assets) {
+          hostAssets.push({ filename: a.filename, base64: await blobToBase64(a.blob) });
+        }
+        const resp = await nativeHost.sendBundle({
+          bundleName, pageHtml, captureJson: cap, assets: hostAssets,
+        });
+        return { viaHost: true, where: resp.stub || 'your archive inbox', hostWarning: null };
+      } catch (e) {
+        // Fall back to the download path rather than failing the capture -
+        // but say so. The human opted into the host (isAvailable was true
+        // just above), so a silent downgrade would misreport where captures
+        // are going for the rest of the sitting.
+        hostWarning =
+          "Your archive connection didn't answer (" + shortHostReason(e) +
+          ') - this capture was saved to Downloads instead. Run `' +
+          fhaCmd('capture --ingest') + '` to sweep it in, and `' +
+          fhaCmd('capture --install-host') + '` if this keeps happening.';
+      }
+    }
+    const result = await bundle.writeBundle({
+      folder: state.folder,
+      bundleName,
+      pageHtml,
+      assets: assets.map((a) => ({ filename: a.filename, blob: a.blob })),
+      captureJson: cap,
+    });
+    // Where it really went, from the browser itself. Both the "staged to"
+    // line and the ingest command are built from this, never from a
+    // home-directory path we assumed.
+    const paths = captureJson.stagedPaths(result.filePath);
+    state.stagedDir = paths.staging;
+    updateIngestCmd();
+    return {
+      viaHost: false,
+      where: paths.bundle || result.dir + " (inside your browser's download folder)",
+      hostWarning,
+    };
+  }
+
   // ── Step 2: page-copy toggle + evidence picker ───────────────────────────────
 
   function pageCopyOn() {
@@ -270,6 +782,8 @@
   }
 
   function evidenceUrl() {
+    // On Newspapers.com the box holds a label, not an address.
+    if (npActive() && $('f-asset-url').readOnly) return '';
     return ($('f-asset-url').value || '').trim();
   }
 
@@ -279,6 +793,7 @@
     // full record on Capture, so "Yes" is satisfied with no dropped file or URL.
     // A dropped file or a typed URL still takes precedence (manual override).
     if (state.ancestryViewer || state.iiif) return true;
+    if (npActive() && !state.droppedAsset) return state.npSelected.size > 0;
     return !!(state.droppedAsset || evidenceUrl());
   }
 
@@ -291,6 +806,15 @@
       if (state.droppedAsset) {
         const note = $('f-provisional').checked ? ' (screen capture)' : '';
         parts.push('Record file: ' + state.droppedAsset.filename + note);
+      } else if (state.npPage && state.npLoading) {
+        parts.push('Record files: reading your Newspapers.com clippings…');
+      } else if (npActive()) {
+        const n = state.npSelected.size;
+        parts.push(
+          n
+            ? 'Record files: whole page + ' + n + (n > 1 ? ' clippings, each its own source' : ' clipping') + ' (Newspapers.com, auto)'
+            : 'Record files: tick at least one of your clippings'
+        );
       } else if (evidenceUrl()) {
         parts.push('Record file: from page address');
       } else if (state.ancestryViewer) {
@@ -513,6 +1037,10 @@
 
   async function capture() {
     if (state.busy) return;
+    if (state.navInFlight) {
+      setStageResult('The page in the tab just changed - reading it now. Press Capture again in a moment.', 'warn');
+      return;
+    }
 
     const wantPageCopy = pageCopyOn();
     const wantEvidence = evidenceMode() === 'yes';
@@ -521,8 +1049,21 @@
     // list, which ingest files as a citation/link pointer stub
     // (asset_elsewhere: true). The status line above the button already says
     // "Citation + link only", so the human sees what they are staging.
+    if (wantEvidence && !state.droppedAsset && state.npPage && state.npLoading) {
+      // The clippings for the page now in the tab are still being read; the
+      // previous page's are already forgotten (loadNewspapers), so wait.
+      setStageResult(
+        'Still reading your clippings on this Newspapers.com page - wait a moment, then press Capture again.',
+        'warn'
+      );
+      return;
+    }
     if (wantEvidence && !state.droppedAsset && !evidenceUrl()
-        && !state.ancestryViewer && !state.iiif) {
+        && !state.ancestryViewer && !state.iiif && !npActive()) {
+      if (state.npPage) {
+        setStageResult('Newspapers.com: ' + npUnavailableReason(), 'warn');
+        return;
+      }
       setStageResult(
         'Add the file address or drop a file, or switch to "No, the page copy is the record".',
         'warn'
@@ -542,6 +1083,14 @@
       const pageResp = await sendToTab(state.tabId, { action: 'pagehtml' });
       if (!pageResp || !pageResp.ok || !pageResp.html) {
         throw new Error('could not read the page, reload it and try again');
+      }
+
+      // Newspapers.com: the whole page + each chosen clipping, one bundle per
+      // clipping. A dropped file still wins (the manual override).
+      if (wantEvidence && npActive() && !state.droppedAsset) {
+        await captureNewspapers(pageResp.html, wantPageCopy);
+        resetForNext();
+        return;
       }
 
       // The human's screen-capture flag rides with a file they provided by
@@ -612,62 +1161,11 @@
       const cap = captureJson.build(fields);
       const bundleName = captureJson.bundleName(title || (cap.url || 'capture'));
 
-      const spec = {
-        folder: state.folder,
-        bundleName,
-        pageHtml: pageResp.html,
-        assets: assets.map((a) => ({ filename: a.filename, blob: a.blob })),
-        captureJson: cap,
-      };
-
       // Seamless path (§5.7) when the human opted in and a host answers; else the
       // honest staging-folder download (§5.1). The extension never claims it
       // reached the archive when it only reached Downloads.
-      let viaHost = false;
-      let hostWarning = null;
-      if (await nativeHost.isAvailable()) {
-        try {
-          const hostAssets = [];
-          for (const a of assets) {
-            hostAssets.push({
-              filename: a.filename,
-              base64: await blobToBase64(a.blob),
-            });
-          }
-          const resp = await nativeHost.sendBundle({
-            bundleName,
-            pageHtml: pageResp.html,
-            captureJson: cap,
-            assets: hostAssets,
-          });
-          viaHost = true;
-          reportStaged(resp.stub || 'your archive inbox', true, evidenceWarning);
-        } catch (e) {
-          // Fall back to the download path rather than failing the capture -
-          // but say so. The human opted into the host (isAvailable was true
-          // just above), so a silent downgrade would misreport where captures
-          // are going for the rest of the sitting.
-          viaHost = false;
-          hostWarning =
-            "Your archive connection didn't answer (" + shortHostReason(e) +
-            ') - this capture was saved to Downloads instead. Run `' +
-            fhaCmd('capture --ingest') + '` to sweep it in, and `' +
-            fhaCmd('capture --install-host') + '` if this keeps happening.';
-        }
-      }
-      if (!viaHost) {
-        const result = await bundle.writeBundle(spec);
-        // Where it really went, from the browser itself. Both the "staged to"
-        // line and the ingest command are built from this, never from a
-        // home-directory path we assumed.
-        const paths = captureJson.stagedPaths(result.filePath);
-        state.stagedDir = paths.staging;
-        updateIngestCmd();
-        reportStaged(
-          paths.bundle || result.dir + " (inside your browser's download folder)",
-          false, evidenceWarning, hostWarning
-        );
-      }
+      const st = await stageBundle(bundleName, pageResp.html, cap, assets);
+      reportStaged(st.where, st.viaHost, evidenceWarning, st.hostWarning);
 
       resetForNext();
     } catch (e) {
@@ -763,6 +1261,9 @@
     // repo) is refreshed when the human navigates to the next record - see
     // refreshOnNavigation - so it never carries one record's details onto the next.
     clearEvidenceSelection();
+    // The corrections were for the record just saved; the next capture on
+    // this page describes another clipping (#211 audit).
+    state.userEdited = new Set();
     updateAssetStatus();
   }
 
@@ -790,20 +1291,35 @@
       state.pendingNav = true;
       return;
     }
-    const tab = await getTab(tabId);
-    if (!tab || !/^https?:/i.test(tab.url || '')) return;
-    // Same-record compare, not exact compare: in-page viewers (BookReader's
-    // #page arrows) move only the #fragment without changing the record, and
-    // a re-prefill on that wipes the human's typed notes/people for nothing.
-    // The staleness banner (warnIfFormStale) already compares this way.
-    if (sameRecordUrl(tab.url, state.prefilledUrl)) return;
+    // From here until the new page is read, Capture waits (capture() checks
+    // navInFlight). And after every wait below, a capture that started
+    // anyway parks this refresh instead of rewriting its form (#211 audit).
+    const seq = (state.navSeq = (state.navSeq || 0) + 1);
+    state.navInFlight = true;
+    const parked = () => {
+      if (!state.busy) return false;
+      state.pendingNav = true;
+      return true;
+    };
     try {
-      await injectContent(tabId);
-      const resp = await sendToTab(tabId, { action: 'prefill' });
-      if (resp && resp.ok) applyPrefill(resp.prefill);
-    } catch (e) {
-      // A restricted/again-loading page: don't clobber the form with an error;
-      // the human can still type, and the next 'complete' may succeed.
+      const tab = await getTab(tabId);
+      if (!tab || !/^https?:/i.test(tab.url || '') || parked()) return;
+      // Same-record compare, not exact compare: in-page viewers (BookReader's
+      // #page arrows) move only the #fragment without changing the record, and
+      // a re-prefill on that wipes the human's typed notes/people for nothing.
+      // The staleness banner (warnIfFormStale) already compares this way.
+      if (sameRecordUrl(tab.url, state.prefilledUrl)) return;
+      try {
+        await injectContent(tabId);
+        const resp = await sendToTab(tabId, { action: 'prefill' });
+        if (parked()) return;
+        if (resp && resp.ok) applyPrefill(resp.prefill);
+      } catch (e) {
+        // A restricted/again-loading page: don't clobber the form with an error;
+        // the human can still type, and the next 'complete' may succeed.
+      }
+    } finally {
+      if (seq === state.navSeq) state.navInFlight = false;
     }
   }
 
@@ -939,6 +1455,12 @@
       })
     );
     $('f-asset-url').addEventListener('input', updateAssetStatus);
+    // Remember which fields the human typed in, so newspaper data arriving
+    // later never overwrites a correction (state.userEdited, #211 review).
+    for (const id of ['f-title', 'f-date', 'f-repo', 'f-url', 'f-type']) {
+      $(id).addEventListener('input', () => state.userEdited.add(id));
+      $(id).addEventListener('change', () => state.userEdited.add(id));
+    }
     $('f-provisional').addEventListener('change', updateAssetStatus);
     $('btn-capture').addEventListener('click', capture);
     $('btn-copy-cmd').addEventListener('click', () => copyCmd($('btn-copy-cmd')));

@@ -84,6 +84,7 @@ test('capture-json.js behaves identically to its pure twin', () => {
     sourceDate: '1880',
     sourceType: 'census',
     repository: '  Ancestry.com  ',
+    citation: '  The Gazette, March 3, 1931, Page 5.  ',
     people: [' Thomas ', '', null, 'Margaret'],
     notes: 'a note',
     recipeHint: 'ancestry',
@@ -95,6 +96,8 @@ test('capture-json.js behaves identically to its pure twin', () => {
     ],
   };
   assert.deepStrictEqual(b.build(fields), pure.build(fields));
+  assert.strictEqual(pure.build(fields).citation, 'The Gazette, March 3, 1931, Page 5.');
+  assert.ok(!('citation' in pure.build({ url: 'u', citation: '   ' })));
   assert.deepStrictEqual(
     b.build({ url: 'u', assets: [] }),
     pure.build({ url: 'u', assets: [] })
@@ -192,4 +195,20 @@ test('content.js rewrites to the same IIIF full-image candidates as the lib', ()
     'https://tile.example.org/iiif/id123/full/full/0/default.jpg',
     'https://tile.example.org/iiif/id123/full/max/0/default.jpg',
   ]);
+});
+
+test('content.js Newspapers.com parsers are a verbatim copy of lib/newspapers-page-data.js', () => {
+  // The whole block between the sync markers, compared as text (content.js
+  // indents it two spaces inside its IIFE). A literal match is stronger than a
+  // behavioural battery here: test-newspapers.js already drives the lib, so an
+  // identical copy is proven by construction.
+  const lib = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'lib', 'newspapers-page-data.js'), 'utf8');
+  const begin = '// FHA-SYNC-BEGIN newspapers\n';
+  const end = '// FHA-SYNC-END newspapers';
+  const canon = lib.slice(lib.indexOf(begin) + begin.length, lib.indexOf(end));
+  assert.ok(canon.length > 1000, 'lib sync markers not found');
+  const copy = extractBlock(/\/\/ FHA-SYNC-BEGIN newspapers\n/, '  ' + end)
+    .split('\n').map((l) => l.replace(/^ {2}/, '')).join('\n');
+  assert.strictEqual(copy, canon);
 });
