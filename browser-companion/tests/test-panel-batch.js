@@ -1119,3 +1119,64 @@ test('Codex 4503849177: a slow-down met by the Ancestry scan or a Find a Grave p
   assert.strictEqual(f.navigations.length, 1);
   assert.ok(f.storage.fagBatchLedger.pacing.resumeAt > Date.now() + 25 * 60 * 1000, 'Find a Grave: no break');
 });
+
+// ── PR #224 Codex 4504189301: one ledger writer at a time ───────────────────
+
+const gedFor = (dbId, recordId, name) => ['0 HEAD', '0 @I1@ INDI', '1 NAME ' + name, '1 BIRT', '2 SOUR @S1@',
+  '3 _APID 1,' + dbId + '::' + recordId, '0 TRLR'].join('\n');
+async function importGed(p, name, text) {
+  const input = p.batchEl('anc-file');
+  input.files = [{ name, text: async () => text }];
+  await input.fire('change');
+}
+
+test('Codex 4504189301: two windows queuing a GEDCOM each at the same moment keep both records', async () => {
+  const sharedStore = JSON.parse(JSON.stringify(ON));
+  const locks = makeLocks();
+  const a = await openPanel({ url: CALVIN, respond: ancestrySite(), sharedStore, locks });
+  const b = await openPanel({ url: CALVIN, respond: ancestrySite(), sharedStore, locks });
+  await Promise.all([importGed(a, 'calvin.ged', gedFor('90001', '1000001', 'Calvin /Hartley/')),
+    importGed(b, 'ethel.ged', gedFor('90002', '2000001', 'Ethel /Hartley/'))]);
+  await settle();
+  const L = sharedStore.ancBatchLedger;
+  assert.deepStrictEqual(Object.keys(L.items).sort(), ['90001:1000001', '90002:2000001']);
+  assert.deepStrictEqual(L.order.slice().sort(), ['90001:1000001', '90002:2000001']);
+  assert.ok(locks.granted.includes('fha-batch:ancBatchLedger'), 'the ledger lock was taken');
+});
+
+test('Codex 4504189301: a GEDCOM queued in one window while another notes a record saved by hand keeps both', async () => {
+  const sharedStore = JSON.parse(JSON.stringify(ON));
+  const locks = makeLocks();
+  let manualB = null;
+  const a = await openPanel({ url: CALVIN, respond: ancestrySite(), sharedStore, locks });
+  const b = await openPanel({ url: CALVIN, respond: ancestrySite(), sharedStore, locks,
+    beforePanel: (w) => {
+      const real = w.FHA.batchPanel.install;
+      w.FHA.batchPanel.install = (hooks) => {
+        const got = real(hooks);
+        manualB = got.recordManual;
+        return got;
+      };
+    } });
+  assert.ok(manualB);
+  await Promise.all([
+    importGed(a, 'ethel.ged', gedFor('90002', '2000001', 'Ethel /Hartley/')),
+    manualB({ ok: true, site: 'ancestry', key: 'rec:90001:1000001', bundle: 'calvin-bundle',
+      record: { dbId: '90001', recordId: '1000001', name: 'Calvin Hartley' } }),
+  ]);
+  await settle();
+  const L = sharedStore.ancBatchLedger;
+  assert.strictEqual(L.items['90002:2000001'].state, 'queued');
+  assert.strictEqual(L.items['90001:1000001'].state, 'done');
+  assert.strictEqual(L.items['90001:1000001'].note, 'saved by hand');
+});
+
+test('Codex 4504189301: without Web Locks, two imports overlapping in one window keep both records', async () => {
+  const p = await openPanel({ url: CALVIN, respond: ancestrySite(), storage: ON });
+  const input = p.batchEl('anc-file');
+  const one = (name, text) => { input.files = [{ name, text: async () => text }]; return input.fire('change'); };
+  await Promise.all([one('calvin.ged', gedFor('90001', '1000001', 'Calvin /Hartley/')),
+    one('ethel.ged', gedFor('90002', '2000001', 'Ethel /Hartley/'))]);
+  await settle();
+  assert.deepStrictEqual(Object.keys(p.storage.ancBatchLedger.items).sort(), ['90001:1000001', '90002:2000001']);
+});

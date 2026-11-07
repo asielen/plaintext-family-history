@@ -443,13 +443,23 @@ function holdFirst(respond, action) {
   return h;
 }
 
-// navigator.locks as the panel windows of one browser share it: `request`
-// with { ifAvailable: true } answers null while another holds the name, and
-// the lock is let go when the callback's promise settles.
+// navigator.locks as the panel windows of one browser share it: exclusive
+// locks by name. A request waits its turn; with { ifAvailable: true } it is
+// answered null at once while another holds the name. A lock is let go when
+// the callback's promise settles. `granted` records each grant, in order.
 function makeLocks() {
   const held = new Set();
+  const queues = new Map(); // name -> waiting grant functions
+  const granted = [];
+  function release(name) {
+    const q = queues.get(name) || [];
+    const next = q.shift();
+    if (next) next();
+    else held.delete(name);
+  }
   return {
     held,
+    granted,
     async request(name, opts, cb) {
       if (typeof opts === 'function') {
         cb = opts;
@@ -457,13 +467,18 @@ function makeLocks() {
       }
       if (held.has(name)) {
         if (opts && opts.ifAvailable) return cb(null);
-        throw new Error('this model only answers ifAvailable requests');
+        await new Promise((resolve) => {
+          if (!queues.has(name)) queues.set(name, []);
+          queues.get(name).push(resolve);
+        });
+      } else {
+        held.add(name);
       }
-      held.add(name);
+      granted.push(name);
       try {
         return await cb({ name, mode: 'exclusive' });
       } finally {
-        held.delete(name);
+        release(name);
       }
     },
   };

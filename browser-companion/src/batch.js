@@ -63,6 +63,7 @@
 // Code map:
 //   SITE_UI                the four batches: names, addresses, buttons
 //   load / save / mirror   the ledger in storage, and its reading copy
+//   exclusive / update     one writer at a time per ledger (and lease), across windows
 //   goTo / waitForComplete send the tab to one record, safely
 //   withBatchClaim         one batch at a time: Web Locks, else a token that survives a settle
 //   readLease / holdLease  the stored lease, checked at every step (read before renewed)
@@ -237,11 +238,52 @@
       return L;
     }
 
+    // ── one writer at a time ─────────────────────────────────────────────────
+    // A ledger is read, changed and written back; two panel windows doing that
+    // at once would each write over the other's change (two GEDCOM files
+    // queued together, an import beside a record saved by hand), and both
+    // would say it worked. Every read-change-write of a ledger - and of the
+    // lease - therefore holds an exclusive lock named for its storage key:
+    // navigator.locks, shared by every window of the browser; where Web Locks
+    // are missing, a promise chain in this window (PR #224 Codex 4504189301).
+    // Not re-entrant: what holds a lock calls only the unlocked halves below.
+    const chains = {};
+    function exclusive(name, fn) {
+      const locks = typeof navigator !== 'undefined' && navigator && navigator.locks;
+      if (locks && typeof locks.request === 'function') return locks.request('fha-batch:' + name, () => fn());
+      const run = (chains[name] || Promise.resolve()).then(() => fn());
+      chains[name] = run.catch(() => {});
+      return run;
+    }
+    const ledgerLock = (siteName, fn) => exclusive(CB().SITES[siteName].storageKey, fn);
+
     // Write the ledger, folding in what another panel window stored
     // meanwhile so this save never drops it. `mirror` also writes the reading
     // copy beside the bundles; storage is the working copy, so a failed
-    // mirror is never a failed save.
+    // mirror is never a failed save. Holds the ledger's lock.
     async function save(siteName, L, mirror) {
+      await ledgerLock(siteName, () => writeLedger(siteName, L));
+      if (mirror) writeMirror(siteName, L);
+    }
+
+    // Read the stored ledger, change it (`change(L)`), write it back - all
+    // under the ledger's lock, so no other window's change is lost between.
+    // Answers the ledger as written, and `change`'s own answer as `L.result`.
+    async function update(siteName, change, mirror) {
+      let L = null;
+      let result;
+      await ledgerLock(siteName, async () => {
+        L = await load(siteName);
+        result = await change(L);
+        await writeLedger(siteName, L);
+      });
+      if (mirror) writeMirror(siteName, L);
+      return { L, result };
+    }
+
+    // The unlocked half: merge what is stored, then write. Only ever called
+    // while the ledger's lock is held.
+    async function writeLedger(siteName, L) {
       CB().mergeDone(L, await loadRaw(siteName));
       const k = CB().SITES[siteName].storageKey;
       await new Promise((resolve, reject) => {
@@ -255,7 +297,6 @@
           reject(storageFailed('save', e));
         }
       });
-      if (mirror) writeMirror(siteName, L);
     }
 
     function writeMirror(siteName, L) {
@@ -455,16 +496,21 @@
     async function holdLease(siteName, force) {
       if (!active || (!force && Date.now() - leaseAt < 60 * 1000)) return;
       leaseAt = Date.now();
-      const lease = await readLease();
-      if (lease && lease.owner !== me && lease.until > Date.now()) {
-        active.lost = 'another panel window started a batch while this one ran, so this one stopped';
-        return;
-      }
-      await writeLease(siteName, lease && lease.owner === me ? lease.token : me);
+      const run = active;
+      await exclusive(LEASE_KEY, async () => {
+        const lease = await readLease();
+        if (lease && lease.owner !== me && lease.until > Date.now()) {
+          run.lost = 'another panel window started a batch while this one ran, so this one stopped';
+          return;
+        }
+        await writeLease(siteName, lease && lease.owner === me ? lease.token : me);
+      });
     }
-    async function dropLease() {
-      const lease = await readLease();
-      if (lease && lease.owner === me) await new Promise((resolve) => chrome.storage.local.remove(LEASE_KEY, () => resolve()));
+    function dropLease() {
+      return exclusive(LEASE_KEY, async () => {
+        const lease = await readLease();
+        if (lease && lease.owner === me) await new Promise((resolve) => chrome.storage.local.remove(LEASE_KEY, () => resolve()));
+      });
     }
 
     // ── the run ──────────────────────────────────────────────────────────────
@@ -742,10 +788,11 @@
     };
 
     async function queueRecords(siteName, records, from, what) {
-      const L = await load(siteName);
-      const added = CB().addRecords(siteName, L, records, from);
-      CB().logEvent(L, what + ': ' + records.length + ' found, ' + added + ' new to the queue');
-      await save(siteName, L, true);
+      const { L, result: added } = await update(siteName, (L) => {
+        const n = CB().addRecords(siteName, L, records, from);
+        CB().logEvent(L, what + ': ' + records.length + ' found, ' + n + ' new to the queue');
+        return n;
+      }, true);
       say(siteName, what + ': ' + records.length + ' found, ' + added + ' new to the queue. ' + countsLine(L) +
         (added ? ' Press Start to download them.' : ''), added ? 'ok' : '');
     }
@@ -795,7 +842,11 @@
     // never downloads it again.
     async function recordManual(out) {
       if (!out || !out.ok || !CB().SITES[out.site]) return;
-      const L = await load(out.site);
+      if (out.site !== 'newspapers' && !CB().SITES[out.site].keyOf(out.record)) return;
+      await update(out.site, (L) => noteManual(out, L), false);
+    }
+
+    function noteManual(out, L) {
       if (out.site === 'newspapers') {
         for (const r of out.results || []) {
           if (!r.ok) continue;
@@ -808,7 +859,6 @@
         }
       } else {
         const key = CB().SITES[out.site].keyOf(out.record);
-        if (!key) return;
         CB().addRecords(out.site, L, [Object.assign({ title: out.record.name || '' }, out.record)], 'by hand');
         if (out.partial) {
           CB().markPartial(L, key, out.bundle, 'saved by hand' + (out.note ? ', ' + out.note : ''));
@@ -817,7 +867,6 @@
           CB().markDone(L, key, out.bundle, 'saved by hand');
         }
       }
-      await save(out.site, L, false);
     }
 
     // ── the box ──────────────────────────────────────────────────────────────
@@ -860,22 +909,20 @@
       if (siteName === 'newspapers') {
         u.relist = tagged(el('button', { type: 'button', textContent: 'Read my clippings list again' }, sec), 'np-relist');
         u.relist.addEventListener('click', guarded(siteName, 'Marking the list to be read again', async () => {
-          const L = await load(siteName);
-          L.listComplete = false;
-          L.listCursor = 0;
-          // Read for whoever is signed in then (content.js always asks for
-          // the member signed in on the page).
-          L.user = null;
-          await save(siteName, L, false);
+          const { L } = await update(siteName, (L) => {
+            L.listComplete = false;
+            L.listCursor = 0;
+            // Read for whoever is signed in then (content.js always asks for
+            // the member signed in on the page).
+            L.user = null;
+          }, false);
           say(siteName, 'Your list is read again at the next Start; the clippings already done stay done. ' + countsLine(L));
         }));
       }
       u.retry = tagged(el('button', { type: 'button', textContent: 'Try the set-aside ones again' }, sec), site.short + '-retry');
       u.retry.addEventListener('click', guarded(siteName, 'Queuing the set-aside ones again', async () => {
         if (active) return say(siteName, 'Pause the batch first, then press this again.', 'warn');
-        const L = await load(siteName);
-        const n = CB().requeueSetAside(L);
-        await save(siteName, L, true);
+        const { L, result: n } = await update(siteName, (L) => CB().requeueSetAside(L), true);
         say(siteName, (n ? n + ' set-aside record' + (n === 1 ? ' is' : 's are') + ' queued again; press Start to try them. '
           : 'Nothing is set aside. ') + countsLine(L), n ? 'ok' : '');
       }));
