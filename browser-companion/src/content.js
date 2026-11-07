@@ -322,8 +322,10 @@
   // Best-guess "the image this record centers on" for the Phase-3 (a) pre-fill.
   // og:image is the page's own declared hero; otherwise the largest rendered
   // <img>. Either way it is only a *suggestion* the human can replace or clear.
-  function detectImage() {
-    const og = metaContent('meta[property="og:image"]', 'meta[name="og:image"]');
+  // `staleHead`: the page's head still describes an earlier record (see
+  // headIsStale), so its og:image is that record's picture, never this one's.
+  function detectImage(staleHead) {
+    const og = staleHead ? null : metaContent('meta[property="og:image"]', 'meta[name="og:image"]');
     if (og) return absUrl(og);
     let best = null;
     let bestArea = 0;
@@ -2221,17 +2223,42 @@
     };
   }
 
+  // A record she moves to on a single-page site (FamilySearch, Ancestry) can
+  // otherwise be titled, dated and pictured as the FIRST record of the visit:
+  // those sites change the page without reloading it, and leave the head's
+  // og:url / canonical (and the og:title, og:image and date beside them)
+  // describing that first record. When either address names a different page
+  // from the one in the bar, the head is stale and none of it is used. Pages
+  // are compared by path, ignoring a two-letter language prefix (/en/…), a
+  // trailing slash and letter case; an address that cannot be read is no
+  // evidence of staleness.
+  function headIsStale(url) {
+    const norm = (s) =>
+      new URL(s, url).pathname.replace(/^\/[a-z]{2}(?=\/)/i, '').replace(/\/+$/, '').toLowerCase();
+    const samePage = (a) => {
+      try {
+        return norm(a) === norm(url);
+      } catch (e) {
+        return true;
+      }
+    };
+    const ogUrl = metaContent('meta[property="og:url"]', 'meta[name="og:url"]');
+    const canon = (document.querySelector('link[rel="canonical"]') || {}).href;
+    return !!((ogUrl && !samePage(ogUrl)) || (canon && !samePage(canon)));
+  }
+
   function buildPrefill() {
     const url = location.href;
-    const canonical = absUrl(
+    const stale = headIsStale(url);
+    const canonical = stale ? null : absUrl(
       (document.querySelector('link[rel="canonical"]') || {}).href
     );
     const title =
-      metaContent('meta[property="og:title"]', 'meta[name="og:title"]') ||
+      (stale ? null : metaContent('meta[property="og:title"]', 'meta[name="og:title"]')) ||
       (document.title || '').trim() ||
       ((document.querySelector('h1') || {}).textContent || '').trim() ||
       null;
-    const sourceDate = metaContent(
+    const sourceDate = stale ? null : metaContent(
       'meta[property="article:published_time"]',
       'meta[name="article:published_time"]',
       'meta[name="date"]'
@@ -2261,7 +2288,7 @@
       // A Find a Grave memorial page (not its gallery): Capture saves the
       // memorial's own facts and citation and its photos at full size.
       findagraveMemorial: !!fagMemorialPage(url),
-      imageUrl: detectImage(),
+      imageUrl: detectImage(stale),
       pdfUrl: detectPdf(),
       recipeHint: recipeHint(url),
       ancestryImageViewer: !!ancestry,
@@ -3236,7 +3263,7 @@
           .then(sendResponse)
           .catch((e) => sendResponse({ ok: false, error: String((e && e.message) || e) }));
         return true; // async response
-      case 'familysearchImage':
+      case 'familysearchImage': {
         if (!FS_HOST_RE.test(location.hostname)) {
           sendResponse({ ok: false, error: 'the tab is no longer on FamilySearch, so the image was not fetched - ' +
             'go back to the record and press Capture again' });
@@ -3249,11 +3276,20 @@
           return;
         }
         // No id named: the image the viewer shows now (a single-page app, so
-        // re-read at Capture rather than trust the prefill).
-        fsImage(msg.imageId || fsViewerImageId(), fsDeps())
+        // re-read at Capture rather than trust the prefill). `fromUrl` is the
+        // file address that just failed (the panel's retry): when it names a
+        // FamilySearch image itself, that is the one she meant. Either way the
+        // request goes to FamilySearch only, under fsAuthHeaders' rule.
+        const fsImageWanted = msg.imageId || fsImageIdFromHref(absUrl(msg.fromUrl) || '') || fsViewerImageId();
+        if (!fsImageWanted) {
+          sendResponse({ ok: false, error: 'this page does not show one FamilySearch image the panel can save' });
+          return;
+        }
+        fsImage(fsImageWanted, fsDeps())
           .then(sendResponse)
           .catch((e) => sendResponse({ ok: false, error: String((e && e.message) || e) }));
         return true; // async response
+      }
       case 'ancestryRecordInfo':
         try {
           sendResponse(ancestryRecordInfo(msg.formTitle));

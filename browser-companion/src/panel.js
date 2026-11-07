@@ -142,6 +142,21 @@
     // so. The handoff command names a location only from this: the download
     // directory is a browser setting, so it cannot be derived from `folder`.
     stagedDir: '',
+    // The fetch log's tally for the last Capture ({ ok, failed }), or null
+    // before one: the automatic-saving box turns it into a tick or a cross.
+    autoOutcome: null,
+    // A fingerprint (SHA-256) of every file the automatic fetches brought back
+    // in this Capture, and in the last Capture that was saved. A file that
+    // matches the last one says so in the log: on a new record that is the
+    // tell of a tab still showing the previous picture. Memory only.
+    thisCaptureSigs: new Set(),
+    lastCaptureSigs: new Set(),
+    // The line the panel itself put in the Notes box for a FamilySearch image
+    // it cannot save, so it can be taken out again if the image turns out to
+    // be saveable after all. Never anything she typed.
+    fsNoteLine: null,
+    // True while a Re-read button reads the page: Capture waits for it.
+    rereading: false,
   };
 
   const $ = (id) => document.getElementById(id);
@@ -174,6 +189,185 @@
         }
       });
     });
+  }
+
+  // ── automatic saving: the box and its fetch log ─────────────────────────────
+  // She sees, before Capture, whether this page's file will be fetched on its
+  // own; and after, one line per fetch ("…" while trying, a tick with its size,
+  // a cross with the site's own reason), so a miss is plain at a glance rather
+  // than buried in a sentence. Cleared at each Capture, on a new record and on
+  // a Re-read. Every line is built with textContent: the reasons come from the
+  // page, never as markup.
+
+  const AUTO_LOG_MAX = 8;
+
+  function clearAutoLog() {
+    state.autoOutcome = null;
+    const ul = $('auto-log');
+    if (ul) {
+      ul.textContent = '';
+      ul.hidden = true;
+    }
+    renderAutoBox();
+  }
+
+  // What this page's automatic path will fetch, in plain words; null when the
+  // page has none (then the file must be dropped in, or its address given).
+  function autoPathLabel() {
+    if (state.ancestryViewer) return 'the full record image (Ancestry)';
+    if (state.ancRecord) return 'the record’s index and citation, and its scan if it has one (Ancestry)';
+    if (state.fsRecord) {
+      const fc = state.fsCheck;
+      return fc && fc.available && fc.imageId
+        ? 'the record’s data and citation, and its image ' + fc.imageId + ' (FamilySearch)'
+        : 'the record’s data and citation, and its image if FamilySearch hands it over (FamilySearch)';
+    }
+    if (state.fsImage) {
+      const id = (state.prefill && state.prefill.familysearchImageId) || (state.fsCheck && state.fsCheck.imageId);
+      return 'the full image' + (id ? ' ' + id : '') + ' (FamilySearch)';
+    }
+    if (state.fagRecord) return 'the memorial’s facts and citation, and its photos (Find a Grave)';
+    if (state.iiif) return 'the full image (IIIF archive)';
+    if (npActive()) return 'the whole page and your clippings (Newspapers.com)';
+    return null;
+  }
+
+  // Whether the "File address on the page" box is showing (it is hidden where
+  // the file is fetched automatically), so the box's advice names only what
+  // she can see.
+  function addressBoxShown() {
+    const row = $('asset-url-row');
+    return !row || row.style.display !== 'none';
+  }
+
+  // The box at the top of "Yes, save the actual file".
+  function renderAutoBox() {
+    const box = $('auto-box');
+    if (!box) return;
+    const label = autoPathLabel();
+    const out = state.autoOutcome;
+    const fc = state.fsCheck;
+    const drop = addressBoxShown() ? 'Drop the file in, or paste its address.' : 'Drop the file in below.';
+    let cls;
+    let ico;
+    let text;
+    if (state.rereading) {
+      [cls, ico, text] = ['none', '…', 'Reading the page again…'];
+    } else if (state.droppedAsset) {
+      [cls, ico, text] = ['ready', '●', 'Using the file you dropped in.'];
+    } else if (out && out.failed && !out.ok) {
+      [cls, ico, text] = ['failed', '✗', 'Automatic saving did not work - the lines below say why. ' + drop];
+    } else if (out && out.ok) {
+      // A miss and then a save is usually a retry that worked; the lines say which.
+      [cls, ico, text] = ['done', '✓', out.failed
+        ? 'Saved automatically, but not every try worked - see below.'
+        : 'Saved automatically.'];
+    } else if (evidenceUrl()) {
+      [cls, ico, text] = ['ready', '●', 'Using the file at the address below.'];
+    } else if (state.npPage && state.npLoading) {
+      [cls, ico, text] = ['none', '…', 'Reading your clippings on this page…'];
+    } else if ((state.fsRecord || state.fsImage) && fc && fc.ok && !fc.available) {
+      // FamilySearch said no before Capture: say what WILL be saved.
+      if (state.fsRecord && !fc.imageId) {
+        [cls, ico, text] = ['ready', '⚡', 'Saved automatically when you press Capture: the record’s data and ' +
+          'citation (FamilySearch). It has no image: ' + fc.reason + '.'];
+      } else if (state.fsRecord) {
+        [cls, ico, text] = ['partial', '⚠', 'Saved automatically: the record’s data only (FamilySearch). Its image ' +
+          fc.imageId + ' can’t be saved from here - ' + fc.reason + '. Drop the image in if you have it.'];
+      } else {
+        [cls, ico, text] = ['failed', '✗', 'This image can’t be saved from here - ' + fc.reason + '. ' +
+          'Drop the file in if you have it.'];
+      }
+    } else if (label) {
+      [cls, ico, text] = ['ready', '⚡', 'Saved automatically when you press Capture: ' + label + '.' +
+        (fc && fc.checking ? ' (Checking the image…)' : '')];
+    } else if (state.npPage) {
+      [cls, ico, text] = ['none', '○', 'Nothing on this page is saved automatically - the Newspapers.com note ' +
+        'below says why. ' + drop];
+    } else {
+      [cls, ico, text] = ['none', '○', 'No automatic file on this page. ' + drop];
+    }
+    box.className = 'auto-box ' + cls;
+    $('auto-ico').textContent = ico;
+    $('auto-text').textContent = text;
+  }
+
+  // One line in the log; returns done(ok, detail) to finish it.
+  function autoRow(label) {
+    const ul = $('auto-log');
+    if (!ul) return () => {};
+    const li = document.createElement('li');
+    li.className = 'try';
+    const ico = document.createElement('span');
+    ico.className = 'ico';
+    ico.textContent = '…';
+    const text = document.createElement('span');
+    text.textContent = label;
+    const why = document.createElement('span');
+    why.className = 'why';
+    li.appendChild(ico);
+    li.appendChild(text);
+    li.appendChild(why);
+    ul.appendChild(li);
+    while (ul.children.length > AUTO_LOG_MAX) ul.removeChild(ul.children[0]);
+    ul.hidden = false;
+    return (ok, detail) => {
+      li.className = ok ? 'ok' : 'fail';
+      ico.textContent = ok ? '✓' : '✗';
+      why.textContent = detail ? (ok ? '(' + detail + ')' : '- ' + detail) : '';
+      const o = state.autoOutcome || (state.autoOutcome = { ok: 0, failed: 0 });
+      if (ok) o.ok++;
+      else o.failed++;
+      renderAutoBox();
+    };
+  }
+
+  // A file that is byte for byte the one the last saved Capture fetched. Often
+  // that is right (a second capture of one record), but on a new record it is
+  // the tell of a tab still showing the previous picture, so it is said
+  // rather than hidden. The fingerprint is kept for this Capture either way.
+  async function sameAsLastCapture(base64) {
+    const subtle = typeof crypto !== 'undefined' && crypto && crypto.subtle;
+    if (!base64 || !subtle) return false;
+    let sig;
+    try {
+      const digest = await subtle.digest('SHA-256', new TextEncoder().encode(base64));
+      sig = Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, '0')).join('');
+    } catch (e) {
+      return false;
+    }
+    state.thisCaptureSigs.add(sig);
+    return state.lastCaptureSigs.has(sig);
+  }
+
+  // sendToTab for an automatic fetch, logged. A page that does not answer
+  // becomes { ok: false, error } like any other miss, so every caller handles
+  // one shape. A record capture passes `rec` ({ recordUrl, ids }): its
+  // question goes through askTab, and a tab that has moved to another record
+  // still stops the capture (TabMoved), the line saying so.
+  async function autoFetch(label, msg, rec) {
+    const done = autoRow(label);
+    let resp;
+    try {
+      resp = rec ? await askTab(msg, rec.recordUrl, rec.ids) : await sendToTab(state.tabId, msg);
+    } catch (e) {
+      if (e instanceof TabMoved) {
+        done(false, 'the page in the tab changed');
+        throw e;
+      }
+      resp = { ok: false, error: String((e && e.message) || e) };
+    }
+    if (!resp) resp = { ok: false, error: 'no answer from the page - reload it and try again' };
+    if (resp.ok) {
+      const kb = resp.base64 ? Math.max(1, Math.round((resp.base64.length * 3) / 4 / 1024)) : 0;
+      const same = await sameAsLastCapture(resp.base64);
+      done(true, [kb ? kb + ' KB' : '',
+        same ? 'the same picture as your last capture: check the tab shows the record you mean' : '']
+        .filter(Boolean).join(' - '));
+    } else {
+      done(false, resp.error || 'it did not come through');
+    }
+    return resp;
   }
 
   async function injectContent(tabId) {
@@ -232,15 +426,13 @@
     // Fragment-only moves never reach here (refreshOnNavigation skips them),
     // so this fires only on a genuine new record - and on the first prefill,
     // where it is a harmless no-op on the fresh form.
-    if (!sameRecordUrl(prefill.url, state.prefilledUrl)) clearEvidenceSelection();
+    if (!sameRecordUrl(prefill.url, state.prefilledUrl)) {
+      clearEvidenceSelection();
+      clearAutoLog();
+    }
     state.userEdited = new Set();
     for (const id of ['f-title', 'f-date', 'f-repo']) $(id).readOnly = false;
     state.prefill = prefill;
-    state.iiif = !!prefill.iiif;
-    state.ancRecord = !!prefill.ancestryRecord;
-    state.fsRecord = !!prefill.familysearchRecord;
-    state.fsImage = !!prefill.familysearchImageViewer;
-    state.fagRecord = !!prefill.findagraveMemorial;
     state.prefilledUrl = prefill.url || null;
     $('f-title').value = prefill.title || '';
     $('f-date').value = prefill.sourceDate || '';
@@ -250,28 +442,10 @@
     // re-prefill (on navigation) never carries the previous record's notes or
     // chosen kind onto the next page. (Auto-detect = blank kind.)
     $('f-notes').value = '';
+    state.fsNoteLine = null;
     $('f-type').value = prefill.sourceType || '';
     renderPeople(prefill.people);
-    // Pre-fill the evidence url box with the best-guess image/PDF the page
-    // exposed - EXCEPT where the visible image is a downsized derivative and an
-    // auto path can fetch the real file: an Ancestry image-viewer page (the EX7
-    // 507x600 thumbnail trap) or an open-archive IIIF page (the rendered <img>
-    // is a derivative). There the URL box is left empty and the auto path
-    // supplies the full record on Capture. Any other page clears a stale URL so
-    // a previous record's address can't be re-fetched as this one's evidence.
-    if (prefill.ancestryImageViewer || prefill.ancestryRecord || prefill.familysearchRecord ||
-        prefill.familysearchImageViewer || prefill.findagraveMemorial || prefill.iiif || prefill.newspapers) {
-      $('f-asset-url').value = '';
-    } else if (prefill.imageUrl) {
-      $('f-asset-url').value = prefill.imageUrl;
-    } else if (prefill.pdfUrl) {
-      $('f-asset-url').value = prefill.pdfUrl;
-    } else {
-      $('f-asset-url').value = '';
-    }
-    applyAncestryNote(!!prefill.ancestryImageViewer);
-    loadNewspapers(prefill);
-    checkFamilySearch();
+    applyFilePrefill(prefill);
 
     const banner = $('recipe-banner');
     const hintLabel = RECIPE_LABELS[prefill.recipeHint];
@@ -291,6 +465,99 @@
       banner.classList.remove('warn', 'recipe');
     }
     updateAssetStatus();
+  }
+
+  // The prefill's "Save the record" half: which automatic path applies, and
+  // the best-guess file address. A new record (applyPrefill) sets it with the
+  // rest; the "Re-read file" button sets it alone, so the title, date, people
+  // and notes she has stay as they are.
+  const FILE_PREFILL_KEYS = ['imageUrl', 'pdfUrl', 'ancestryImageViewer', 'ancestryRecord',
+    'familysearchRecord', 'familysearchImageViewer', 'familysearchImageId', 'findagraveMemorial',
+    'newspapers', 'iiif'];
+
+  // Pages whose record file is fetched without her: there the "File address
+  // on the page" box has no job, and is hidden (the drop zone stays).
+  function autoFilePage(prefill) {
+    return !!(prefill.ancestryImageViewer || prefill.ancestryRecord || prefill.familysearchRecord ||
+      prefill.familysearchImageViewer || prefill.findagraveMemorial || prefill.iiif || prefill.newspapers);
+  }
+
+  function applyFilePrefill(prefill) {
+    state.iiif = !!prefill.iiif;
+    state.ancRecord = !!prefill.ancestryRecord;
+    state.fsRecord = !!prefill.familysearchRecord;
+    state.fsImage = !!prefill.familysearchImageViewer;
+    state.fagRecord = !!prefill.findagraveMemorial;
+    // Pre-fill the evidence url box with the best-guess image/PDF the page
+    // exposed - EXCEPT where the visible image is a downsized derivative and an
+    // auto path can fetch the real file: an Ancestry image-viewer page (the EX7
+    // 507x600 thumbnail trap) or an open-archive IIIF page (the rendered <img>
+    // is a derivative). There the URL box is left empty and the auto path
+    // supplies the full record on Capture. Any other page clears a stale URL so
+    // a previous record's address can't be re-fetched as this one's evidence.
+    const auto = autoFilePage(prefill);
+    if (auto) {
+      $('f-asset-url').value = '';
+    } else if (prefill.imageUrl) {
+      $('f-asset-url').value = prefill.imageUrl;
+    } else if (prefill.pdfUrl) {
+      $('f-asset-url').value = prefill.pdfUrl;
+    } else {
+      $('f-asset-url').value = '';
+    }
+    $('asset-url-row').style.display = auto ? 'none' : '';
+    applyAncestryNote(!!prefill.ancestryImageViewer);
+    loadNewspapers(prefill);
+    checkFamilySearch();
+    updateAssetStatus();
+  }
+
+  // Forget every file setting the page left behind - the automatic path, the
+  // best-guess address, a dropped file - and the answers still on their way
+  // for them (the newspaper clippings, the FamilySearch image check). A
+  // Re-read starts here, so a page that then cannot be read leaves the panel
+  // holding nothing of the previous page's file: Capture saves no file rather
+  // than the old one.
+  function forgetFileState() {
+    clearEvidenceSelection();
+    if (state.prefill) {
+      const off = {};
+      for (const k of FILE_PREFILL_KEYS) off[k] = null;
+      state.prefill = Object.assign({}, state.prefill, off);
+    }
+    applyFilePrefill(state.prefill || {});
+  }
+
+  // The Notes box carries the reason a FamilySearch image cannot be saved as
+  // soon as the panel knows it, so she sees it and can change it before
+  // Capture; it then travels into the source's notes. Only the panel's own
+  // line is ever added or taken away - never what she typed.
+  function restrictedImageNote(check) {
+    if (!check || !check.ok) return; // no answer is no news: leave the box as it is
+    const want = check.imageId && !check.available
+      ? 'Image not saved: FamilySearch image ' + check.imageId + ' (https://www.familysearch.org/ark:/61903/3:1:' +
+        check.imageId + ') could not be downloaded - ' + check.reason + '. Checked ' + captureJson.accessedDate() + '.'
+      : null;
+    const box = $('f-notes');
+    if (state.fsNoteLine && state.fsNoteLine !== want) box.value = withoutLine(box.value, state.fsNoteLine);
+    state.fsNoteLine = null;
+    if (!want) return;
+    // Already said (by an earlier check of this image, or by her): not twice.
+    if (box.value.indexOf(fsNoteMark(check.imageId)) === -1) {
+      box.value = box.value.trim() ? box.value.replace(/\s+$/, '') + '\n' + want : want;
+    }
+    if (box.value.indexOf(want) !== -1) state.fsNoteLine = want;
+  }
+
+  // How every "this image was not saved" note begins, for one image.
+  function fsNoteMark(imageId) {
+    return 'Image not saved: FamilySearch image ' + imageId + ' ';
+  }
+
+  // `text` without the one line `line` (when it is there, word for word).
+  function withoutLine(text, line) {
+    if (!line || !text || text.indexOf(line) === -1) return text;
+    return text.split('\n').filter((l) => l !== line).join('\n').replace(/\n{3,}/g, '\n\n').trim();
   }
 
   // Show/hide the Ancestry auto-fetch affordance. On an image-viewer page the
@@ -653,14 +920,23 @@
     const opened = np.ownClips.find((c) => c.id === np.focusClipId);
     const texts = await npGatherText(chosen);
 
-    const page = await FHA.newspapers.fullPage(np, (i, n, wait) =>
-      setStageResult(
-        wait
-          ? 'Newspapers.com asked us to slow down. Waiting ' + wait + ' seconds before tile ' + i + ' of ' + n + '…'
-          : 'Rebuilding the full page from Newspapers.com, tile ' + i + ' of ' + n + ' (paced gently)…',
-        ''
-      )
-    );
+    const pageRow = autoRow('Newspapers.com whole page');
+    let page;
+    try {
+      page = await FHA.newspapers.fullPage(np, (i, n, wait) =>
+        setStageResult(
+          wait
+            ? 'Newspapers.com asked us to slow down. Waiting ' + wait + ' seconds before tile ' + i + ' of ' + n + '…'
+            : 'Rebuilding the full page from Newspapers.com, tile ' + i + ' of ' + n + ' (paced gently)…',
+          ''
+        )
+      );
+    } catch (e) {
+      pageRow(false, (e && e.message) || String(e));
+      throw e;
+    }
+    pageRow(true, page.tiles + (page.tiles === 1 ? ' piece' : ' pieces') +
+      (page.reduced ? ', ' + page.reduced + ' below full size' : ''));
     setStageResult('Building the clipping and combined images…', '');
     const pageBlob = await FHA.newspapers.toJpeg(page.canvas);
 
@@ -829,12 +1105,12 @@
   }
 
   async function captureAncestryRecord(pageHtml, wantPageCopy, form, recordUrl) {
-    const info = await askTab({
+    const info = await autoFetch('Ancestry record details', {
       // A title she typed is hers and is used as typed (below); only the
       // form's untouched prefill goes through ancTitle's "is this just the
       // tab's own title?" test (PR #214 review).
       action: 'ancestryRecordInfo', formTitle: form.edited.has('f-title') ? '' : form.title,
-    }, recordUrl);
+    }, { recordUrl });
     if (!info || !info.ok) throw new Error((info && info.error) || 'could not read the Ancestry record');
     const rec = info.record;
     const hints = info.hints || {};
@@ -869,7 +1145,8 @@
       rec.same_image_as = sameImageAs;
     } else if (rec.imageId) {
       setStageResult('Fetching the record’s image from Ancestry…', '');
-      const img = await askTab({ action: 'ancestryImage', dbId: rec.dbId, imageId: rec.imageId }, recordUrl, [rec.recordId]);
+      const img = await autoFetch('Ancestry record image', { action: 'ancestryImage', dbId: rec.dbId, imageId: rec.imageId },
+        { recordUrl, ids: [rec.recordId] });
       if (img && img.ok) {
         assets.push({
           filename: 'record.' + (img.ext || 'jpg'),
@@ -993,6 +1270,7 @@
     if (seq !== state.fsCheckSeq) return; // the tab moved on; a newer read owns the state
     state.fsCheck = r && r.ok ? r : { unknown: true, error: (r && r.error) || 'no answer from the page' };
     if (r && r.ok && r.title && !state.userEdited.has('f-title')) $('f-title').value = r.title;
+    restrictedImageNote(r);
     updateAssetStatus();
   }
 
@@ -1024,12 +1302,12 @@
   }
 
   async function captureFamilySearchRecord(pageHtml, wantPageCopy, form, recordUrl) {
-    const info = await askTab({
+    const info = await autoFetch('FamilySearch record details', {
       action: 'familysearchRecordInfo',
       // FamilySearch's own name for the record; a title she typed is used
       // as typed below, never second-guessed (PR #214 review).
       formTitle: '',
-    }, recordUrl);
+    }, { recordUrl });
     if (!info || !info.ok) throw new Error((info && info.error) || 'could not read the FamilySearch record');
     const rec = info.record;
     const hints = info.hints || {};
@@ -1056,7 +1334,8 @@
       rec.same_image_as = sameImageAs;
     } else if (imageKey) {
       setStageResult('Fetching the record’s image from FamilySearch…', '');
-      const img = await askTab({ action: 'familysearchImage', imageId: imageKey }, recordUrl, ['1:1:' + rec.fsId]);
+      const img = await autoFetch('FamilySearch image ' + imageKey, { action: 'familysearchImage', imageId: imageKey },
+        { recordUrl, ids: ['1:1:' + rec.fsId] });
       if (img && img.ok) {
         assets.push({
           filename: 'record.' + (img.ext || 'jpg'),
@@ -1103,11 +1382,16 @@
     const title = (form.edited.has('f-title') && form.title) || info.bundleTitle ||
       ('FamilySearch record ' + rec.fsId);
     const imageArk = imageKey ? 'https://www.familysearch.org/ark:/61903/3:1:' + imageKey : '';
+    // The Notes box may already say why the image is not saved (the check
+    // before Capture put it there, restrictedImageNote): then it is not said
+    // twice. If the image came through after all, the panel's own line goes.
+    const ownNotes = hasImage || sameImageAs ? withoutLine(form.notes, form.fsNoteLine) : form.notes;
+    const saidAlready = !!imageKey && ownNotes.indexOf(fsNoteMark(imageKey)) !== -1;
     const notes = [
-      gatherNotes(provisional, form.notes),
+      gatherNotes(provisional, ownNotes),
       info.citation ? 'FamilySearch citation: ' + info.citation : '',
       sameImageAs ? 'Same image (' + imageKey + ') as ' + describeSameImage(sameImageAs) + '; the image was not downloaded again.' : '',
-      imageWarning ? 'Image not saved: FamilySearch image ' + imageKey + ' (' + imageArk + ') could not be downloaded - ' +
+      imageWarning && !saidAlready ? fsNoteMark(imageKey) + '(' + imageArk + ') could not be downloaded - ' +
         imageWarning.split('. The record')[0] + '. Checked ' + captureJson.accessedDate() + '.' : '',
     ].filter((t) => t && t.trim()).join('\n\n');
     const fields = {
@@ -1155,7 +1439,8 @@
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
   async function captureFindAGraveMemorial(pageHtml, wantPageCopy, form, recordUrl) {
-    const info = await askTab({ action: 'findagraveMemorialInfo', today: captureJson.accessedDate() }, recordUrl);
+    const info = await autoFetch('Find a Grave memorial details',
+      { action: 'findagraveMemorialInfo', today: captureJson.accessedDate() }, { recordUrl });
     if (!info || !info.ok) throw new Error((info && info.error) || 'could not read the Find a Grave memorial');
     const rec = info.record;
     const hints = info.hints || {};
@@ -1172,7 +1457,8 @@
     // Its photos, from its gallery (by memorial id, not "whatever the tab
     // shows"). A gallery that cannot be read leaves the memorial's facts.
     setStageResult('Reading the memorial’s photos on Find a Grave…', '');
-    const gallery = await askTab({ action: 'findagraveGallery', memorialId: rec.memorialId, slug: rec.slug }, recordUrl);
+    const gallery = await autoFetch('Find a Grave list of photos',
+      { action: 'findagraveGallery', memorialId: rec.memorialId, slug: rec.slug }, { recordUrl });
     const galleryOk = !!(gallery && gallery.ok);
     const listed = galleryOk ? gallery.photos : [];
     const photos = listed.map((p) => ({
@@ -1217,13 +1503,16 @@
       }
       if (i) await sleep(FHA.findagrave.pauseMs());
       setStageResult('Downloading photo ' + (i + 1) + ' of ' + toFetch.length + ' from Find a Grave…', '');
+      const row = autoRow('Find a Grave photo ' + (i + 1) + ' of ' + toFetch.length + ' (' + p.role + ')');
       const got = await FHA.findagrave.fetchPhoto(p.url, (u, init) => window.fetch(u, init));
       if (got.ok) {
         p.file = p.role + '.' + got.ext;
         assets.push({ filename: p.file, blob: got.blob, role: p.role, mode: 'findagrave-photo' });
+        row(true, got.blob && got.blob.size ? Math.max(1, Math.round(got.blob.size / 1024)) + ' KB' : '');
       } else {
         p.error = got.error;
         failed.push(p);
+        row(false, got.error);
         if (got.slowDown) slowDown = true;
       }
     }
@@ -1473,6 +1762,7 @@
       // Ingest files it as a pointer stub flagged asset_elsewhere: true.
       parts.push('Citation + link only - no file saved (a pointer for later retrieval)');
     }
+    renderAutoBox();
     const ok = (pageCopyOn() || evidenceMode() !== 'yes' || hasEvidence()) && !warnFile;
     setAssetStatus(
       parts.join('   ·   '),
@@ -1600,6 +1890,17 @@
   // Returns { blob, filename, mode } or throws (caller turns the throw into a
   // panel message and the manual paths stay available - Capture never hard-fails
   // because the auto-fetch failed).
+  // Whether the page in the tab is on FamilySearch (the record the form was
+  // filled for), where a refused file address can be retried through
+  // FamilySearch's own image service.
+  function isFamilySearchPage() {
+    try {
+      return /(^|\.)familysearch\.org$/i.test(new URL(state.prefilledUrl || (state.prefill && state.prefill.url) || '').hostname);
+    } catch (e) {
+      return false;
+    }
+  }
+
   async function buildEvidence() {
     if (state.droppedAsset) {
       return {
@@ -1610,13 +1911,13 @@
     }
     const url = evidenceUrl();
     if (!url && state.ancestryViewer) {
-      const resp = await sendToTab(state.tabId, { action: 'ancestryImage' });
-      if (!resp || !resp.ok) {
+      const resp = await autoFetch('Ancestry full record image', { action: 'ancestryImage' });
+      if (!resp.ok) {
         // Surface Ancestry's reason (not signed in, downloads disabled, shape
-        // changed, thumbnail-sized) and point at the manual fallbacks.
+        // changed, thumbnail-sized) and point at the manual fallback.
         throw new Error(
-          ((resp && resp.error) || 'could not fetch the full record from Ancestry') +
-            '. You can use Ancestry’s Download button and drop the file in, or paste an image address.'
+          (resp.error || 'could not fetch the full record from Ancestry') +
+            '. You can use Ancestry’s Download button and drop the file in.'
         );
       }
       const blob = bundle.base64ToBlob(resp.base64, resp.contentType);
@@ -1628,9 +1929,10 @@
       // id is sent: the page reads the image on screen now (a single-page app).
       const imageId = (state.prefill && state.prefill.familysearchImageId) ||
         (state.fsCheck && state.fsCheck.imageId) || undefined;
-      const resp = await sendToTab(state.tabId, { action: 'familysearchImage', imageId });
-      if (!resp || !resp.ok) {
-        throw new Error(((resp && resp.error) || 'could not fetch the full image from FamilySearch') +
+      const resp = await autoFetch('FamilySearch full image' + (imageId ? ' ' + imageId : ''),
+        { action: 'familysearchImage', imageId });
+      if (!resp.ok) {
+        throw new Error((resp.error || 'could not fetch the full image from FamilySearch') +
           '. You can use FamilySearch’s Download button and drop the file in.');
       }
       const blob = bundle.base64ToBlob(resp.base64, resp.contentType);
@@ -1639,8 +1941,8 @@
     if (!url && state.iiif) {
       // Open-standard IIIF: fetch the full image (content.js rewrites the
       // derivative's URL to full/full then full/max). No auth, so a plain fetch.
-      const resp = await sendToTab(state.tabId, { action: 'iiifImage' });
-      if (resp && resp.ok) {
+      const resp = await autoFetch('Full image (IIIF archive)', { action: 'iiifImage' });
+      if (resp.ok) {
         const blob = bundle.base64ToBlob(resp.base64, resp.contentType);
         return { blob, filename: 'record.' + (resp.ext || 'jpg'), mode: 'iiif' };
       }
@@ -1649,20 +1951,34 @@
       // exposed, if any, before giving up.
       const derivative = state.prefill && state.prefill.imageUrl;
       if (derivative) {
-        const dResp = await sendToTab(state.tabId, { action: 'fetchAsset', url: derivative });
-        if (dResp && dResp.ok) {
+        const dResp = await autoFetch('The picture on the page (a smaller copy)',
+          { action: 'fetchAsset', url: derivative });
+        if (dResp.ok) {
           const blob = bundle.base64ToBlob(dResp.base64, dResp.contentType);
           return { blob, filename: 'record.' + (dResp.ext || 'jpg'), mode: 'iiif-derivative' };
         }
       }
       throw new Error(
-        ((resp && resp.error) || 'could not fetch the full IIIF image') +
-          '. You can paste an image address or drop a file in instead.'
+        (resp.error || 'could not fetch the full IIIF image') + '. You can drop a file in instead.'
       );
     }
-    const resp = await sendToTab(state.tabId, { action: 'fetchAsset', url });
-    if (!resp || !resp.ok) {
-      throw new Error((resp && resp.error) || 'could not pull that file from the page');
+    const resp = await autoFetch('File from the page address', { action: 'fetchAsset', url });
+    if (!resp.ok) {
+      // On FamilySearch a file address usually refuses (the viewer's tiles do
+      // not let themselves be read), but the same image comes whole through
+      // FamilySearch's own image service: the one this address names, or the
+      // one image the viewer shows. The login goes only to FamilySearch
+      // (content.js fsAuthHeaders). The image is read from the page, so the
+      // caller checks the tab is still on it (`fromPage`).
+      if (isFamilySearchPage()) {
+        const fs = await autoFetch('The same image through FamilySearch (a second try)',
+          { action: 'familysearchImage', fromUrl: url });
+        if (fs.ok) {
+          const blob = bundle.base64ToBlob(fs.base64, fs.contentType);
+          return { blob, filename: 'record.' + (fs.ext || 'jpg'), mode: 'familysearch-api', fromPage: true };
+        }
+      }
+      throw new Error(resp.error || 'could not pull that file from the page');
     }
     const blob = bundle.base64ToBlob(resp.base64, resp.contentType);
     return { blob, filename: 'record.' + (resp.ext || 'bin'), mode: 'fetch' };
@@ -1776,11 +2092,16 @@
       provisional: $('f-provisional').checked,
       dropped: state.droppedAsset,
       edited: new Set(state.userEdited),
+      fsNoteLine: state.fsNoteLine,
     };
   }
 
   async function capture() {
     if (state.busy) return;
+    if (state.rereading) {
+      setStageResult('The panel is reading the page again - press Capture once it has finished.', 'warn');
+      return;
+    }
     if (state.navInFlight) {
       setStageResult('The page in the tab just changed - reading it now. Press Capture again in a moment.', 'warn');
       return;
@@ -1820,6 +2141,10 @@
     state.busy = true;
     $('btn-capture').disabled = true;
     setStageResult('Capturing…', '');
+    // A fresh log for this Capture; the last saved Capture's fingerprints stay
+    // to compare against (sameAsLastCapture).
+    clearAutoLog();
+    state.thisCaptureSigs = new Set();
 
     // The record this capture is of: the one the form was filled for.
     const recordUrl = state.prefilledUrl;
@@ -1922,8 +2247,9 @@
           }
         } else {
           const ev = await buildEvidence();
-          // An automatic file is read from the page itself: it must still be this page.
-          if (autoOnly) await checkTabStillOn(pageUrl);
+          // An automatic file is read from the page itself (the FamilySearch
+          // retry of a refused address too): it must still be this page.
+          if (autoOnly || ev.fromPage) await checkTabStillOn(pageUrl);
           assets.push({
             filename: ev.filename, blob: ev.blob,
             role: 'record', mode: ev.mode || (state.droppedAsset ? 'manual' : 'fetch'),
@@ -1941,7 +2267,10 @@
         sourceType: $('f-type').value,
         repository: $('f-repo').value.trim(),
         people: checkedPeople(),
-        notes: gatherNotes(provisional),
+        // The panel's own "image not saved" line goes when the image came
+        // through after all (restrictedImageNote).
+        notes: gatherNotes(provisional, assets.some((a) => a.role === 'record')
+          ? withoutLine($('f-notes').value, state.fsNoteLine) : undefined),
         recipeHint: state.prefill && state.prefill.recipeHint,
         assets: assets.map((a) => ({
           file: a.filename, role: a.role, mode: a.mode,
@@ -2058,6 +2387,9 @@
     // Capture again"). They are cleared when the record changes (applyPrefill)
     // or the ticked clippings change (renderNpClips, the retry below) - PR
     // #214 review, keeping #211's clipping rule.
+    // The files this Capture saved are now the ones the next is compared to.
+    if (state.thisCaptureSigs.size) state.lastCaptureSigs = state.thisCaptureSigs;
+    state.thisCaptureSigs = new Set();
     updateAssetStatus();
   }
 
@@ -2103,10 +2435,16 @@
       // a re-prefill on that wipes the human's typed notes/people for nothing.
       // The staleness banner (warnIfFormStale) already compares this way.
       if (sameRecordUrl(tab.url, state.prefilledUrl)) return;
+      // From here this read owns the form, until a newer read (a later
+      // navigation, or a Re-read button) takes it over.
+      const read = beginRead();
       try {
         await injectContent(tabId);
         const resp = await sendToTab(tabId, { action: 'prefill' });
         if (parked()) return;
+        // A newer read owns the form (a later navigation, or a Re-read that
+        // may have moved the panel to another tab): this page's answer is old.
+        if (!ownsForm(read, tabId)) return;
         if (resp && resp.ok) applyPrefill(resp.prefill);
       } catch (e) {
         // A restricted/again-loading page: don't clobber the form with an error;
@@ -2115,6 +2453,176 @@
     } finally {
       if (seq === state.navSeq) state.navInFlight = false;
     }
+  }
+
+  // ── the Re-read buttons ──────────────────────────────────────────────────────
+  // The panel stays on the tab it was opened on, whatever tab she looks at
+  // next, so nothing changes under her while she types: it moves to another
+  // tab only when she presses Re-read page. (The owner's rule since 0.6.6,
+  // after one record was captured three times while other tabs were in
+  // front.) The refresh on navigation above still follows the panel's own
+  // tab to its next record.
+
+  const REREAD_HOLD_MS = 500;
+
+  // Reads of the page that will refill the form are numbered; only the newest
+  // may fill it, and only while the panel is still on the tab it read. (Kept
+  // apart from navSeq, which says whether a navigation is still being read:
+  // a "page finished loading" event for the address already in the form
+  // reads nothing, and must not cancel a Re-read under way.)
+  function beginRead() {
+    state.readSeq = (state.readSeq || 0) + 1;
+    return state.readSeq;
+  }
+  function ownsForm(read, tabId) {
+    return read === state.readSeq && tabId === state.tabId;
+  }
+
+  // Keep "Reading the page again…" up for a moment, so a fast re-read is
+  // still seen to happen.
+  function holdRereading(t0) {
+    const left = REREAD_HOLD_MS - (Date.now() - t0);
+    return left > 0 ? new Promise((r) => setTimeout(r, left)) : Promise.resolve();
+  }
+
+  function setRereading(on) {
+    state.rereading = on;
+    for (const id of ['btn-rescrape', 'btn-rescrape-file']) $(id).disabled = on;
+    renderAutoBox();
+  }
+
+  // Empty the record's details - what she typed with them - before a fresh
+  // read, so that if the page then cannot be read, no detail of the previous
+  // record is left to be filed with this one. The page address stays: it is
+  // the tab's own, and Capture needs it.
+  function clearDetails(url) {
+    state.userEdited = new Set();
+    state.prefill = null;
+    state.prefilledUrl = url || null;
+    for (const id of ['f-title', 'f-date', 'f-repo']) {
+      $(id).value = '';
+      $(id).readOnly = false;
+    }
+    $('f-type').value = '';
+    $('f-notes').value = '';
+    state.fsNoteLine = null;
+    $('f-url').value = url || '';
+    renderPeople([]);
+  }
+
+  // "Re-read page": start again from the page in front of her. Everything
+  // goes - the details, what she typed, the record file, the last Capture's
+  // log - and is filled in from that page, exactly as if she had closed the
+  // panel and opened it there. It is the one way the panel moves to another
+  // tab, and the way to start clean on a viewer that changes record without
+  // changing its address. Not while a capture is saving.
+  async function rescrape() {
+    if (state.busy || state.rereading) return;
+    const active = await queryActiveTab();
+    if (state.busy || state.rereading) return;
+    const banner = $('recipe-banner');
+    if (!active || !active.id || !/^https?:/i.test(active.url || '')) {
+      // Nothing there to read: stay on the page the form describes.
+      banner.textContent = 'The tab in front of you is not a web page the panel can read, so the panel stays on ' +
+        'the page it was reading. Click the record’s tab, then press ↻ Re-read page.';
+      banner.classList.remove('recipe');
+      banner.classList.add('warn');
+      return;
+    }
+    // This read owns the form from now: a navigation read still on its way
+    // for the old tab (or this one) is dropped when it lands.
+    const read = beginRead();
+    const tabId = active.id;
+    state.tabId = tabId;
+    state.pendingNav = false;
+    setRereading(true);
+    clearDetails(active.url);
+    forgetFileState();
+    clearAutoLog();
+    setStageResult('', '');
+    $('handoff').classList.remove('show');
+    banner.textContent = 'Reading the page…';
+    banner.classList.remove('warn', 'recipe');
+    const t0 = Date.now();
+    let resp = null;
+    try {
+      await injectContent(tabId);
+      resp = await sendToTab(tabId, { action: 'prefill' });
+    } catch (e) {
+      resp = null;
+    }
+    await holdRereading(t0);
+    if (!ownsForm(read, tabId)) {
+      setRereading(false); // a newer read took over; it fills the form
+      return;
+    }
+    setRereading(false);
+    if (resp && resp.ok) {
+      applyPrefill(resp.prefill);
+    } else {
+      banner.textContent = 'Couldn’t read this page automatically. Type the details below, or reload the page ' +
+        'and press ↻ Re-read page.';
+      banner.classList.remove('recipe');
+      banner.classList.add('warn');
+    }
+    selectEvidenceMode($('f-default-evidence').value || 'yes');
+    $('btn-capture').disabled = false;
+    updateAssetStatus();
+  }
+
+  // "Re-read file": look at the page again for its record file only - the
+  // automatic path and the best-guess address - for a viewer that pages
+  // through images while the record stays the same, or a page whose image
+  // arrived late. A file dropped in for the previous image is let go. The
+  // title, date, kind, people and notes stay exactly as she has them, so it
+  // works only on the page the form describes: on any other tab it points
+  // her to Re-read page instead of pairing this record's details with
+  // another page's file.
+  async function rescrapeFile() {
+    if (state.busy || state.rereading) return;
+    const active = await queryActiveTab();
+    if (state.busy || state.rereading) return;
+    const tabId = state.tabId;
+    if (!tabId || !active || active.id !== tabId || !state.prefilledUrl ||
+        !sameRecordUrl(active.url, state.prefilledUrl)) {
+      setStageResult('The page in front of you is not the one these details describe. Press ↻ Re-read page ' +
+        'to start on it.', 'warn');
+      return;
+    }
+    const read = beginRead();
+    const recordUrl = state.prefilledUrl;
+    setRereading(true);
+    forgetFileState();
+    clearAutoLog();
+    setStageResult('', '');
+    const t0 = Date.now();
+    let resp = null;
+    try {
+      await injectContent(tabId);
+      resp = await sendToTab(tabId, { action: 'prefill' });
+    } catch (e) {
+      resp = null;
+    }
+    await holdRereading(t0);
+    if (!ownsForm(read, tabId)) {
+      setRereading(false); // a newer read took over
+      return;
+    }
+    setRereading(false);
+    // Read from a different address: the tab has moved on to another record,
+    // and its own refresh fills the whole form; this file is not this record's.
+    if (resp && resp.ok && sameRecordUrl(resp.prefill.url, recordUrl)) {
+      // Only the file half of the prefill moves on; the record half (and
+      // prefilledUrl, the record the form is for) stays with the form.
+      const half = {};
+      for (const k of FILE_PREFILL_KEYS) half[k] = resp.prefill[k];
+      state.prefill = Object.assign({}, state.prefill || { url: recordUrl }, half);
+      applyFilePrefill(state.prefill);
+    } else {
+      setStageResult('Couldn’t read the page’s file. Drop the file in, or reload the page and press ↻ Re-read page.',
+        'warn');
+    }
+    updateAssetStatus();
   }
 
   // ── settings (chrome.storage) ────────────────────────────────────────────────
@@ -2257,6 +2765,8 @@
     }
     $('f-provisional').addEventListener('change', updateAssetStatus);
     $('btn-capture').addEventListener('click', capture);
+    $('btn-rescrape').addEventListener('click', rescrape);
+    $('btn-rescrape-file').addEventListener('click', rescrapeFile);
     $('btn-copy-cmd').addEventListener('click', () => copyCmd($('btn-copy-cmd')));
     $('btn-add-person').addEventListener('click', () => {
       const name = $('f-add-person').value.trim();

@@ -1,10 +1,10 @@
 {
   "name": "plainfile-family-history-companion",
-  "version": "0.1.0",
+  "version": "0.7.0",
   "description": "Browser extension for staging genealogy record captures (TOOLING_INGESTION §5).",
   "private": true,
   "scripts": {
-    "test": "node --test tests/test-content-load.js tests/test-findagrave.js tests/test-panel-findagrave.js tests/test-familysearch.js tests/test-panel-familysearch.js tests/test-ancestry.js tests/test-panel-ancestry.js tests/test-newspapers.js tests/test-panel-newspapers.js tests/test-harvest.js tests/test-iiif.js tests/test-readiness.js tests/test-capture-json.js tests/test-sync.js tests/test-srcset.js tests/test-snapshot-urls.js",
+    "test": "node --test tests/test-content-load.js tests/test-findagrave.js tests/test-panel-findagrave.js tests/test-familysearch.js tests/test-panel-familysearch.js tests/test-ancestry.js tests/test-panel-ancestry.js tests/test-newspapers.js tests/test-panel-newspapers.js tests/test-panel-ux.js tests/test-harvest.js tests/test-iiif.js tests/test-readiness.js tests/test-capture-json.js tests/test-sync.js tests/test-srcset.js tests/test-snapshot-urls.js",
     "test:harvest": "node --test tests/test-harvest.js",
     "test:iiif": "node --test tests/test-iiif.js",
     "test:readiness": "node --test tests/test-readiness.js",

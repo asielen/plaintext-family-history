@@ -142,7 +142,16 @@ in Chrome and Edge; a Firefox port is a packaging detail, not a redesign.
        pulled when you press Capture, in your own logged-in session; there is no
        separate fetch button. Tick "the file I'm providing is a screen capture"
        when it is a screenshot, so reviewers know to look for a clearer original
-       later.
+       later. Where the file is fetched automatically (Ancestry, FamilySearch,
+       Find a Grave, Newspapers.com, IIIF) the url box is hidden and a status
+       box says what will be fetched; after Capture it keeps a short log, one
+       line per fetch (tick with size, cross with the site's reason, and a note
+       when a picture is byte-identical to the last saved capture's).
+   - The panel stays bound to the tab it opened on (it follows that tab's
+     navigation, never a tab switch). **↻ Re-read page** rebinds it to the
+     active tab and refills everything from scratch; **↻ Re-read file**
+     refreshes only the file half, on the same tab and record, keeping what
+     was typed.
      - **No, the page copy is the record**, for memorials, index entries, and
        write-ups where the page itself is the evidence. (With the page-snapshot toggle
        off too, this is a pointer-only capture: citation and link only, staged with
@@ -420,8 +429,9 @@ Newspapers.com page-data parsers and tile/report logic, the Ancestry record
 readers (run over the same scrubbed fixture pages the Python recipe tests read,
 through the small HTML reader in `tests/mini-dom.js`), and the
 content.js ↔ `src/lib/` sync guards - run under `node --test` (Node ≥18, no
-dependencies). `tests/test-panel-newspapers.js`, `tests/test-panel-ancestry.js` and
-`tests/test-panel-familysearch.js` also drive `panel.js` itself against a stand-in for the panel page and a
+dependencies). `tests/test-panel-newspapers.js`, `tests/test-panel-ancestry.js`,
+`tests/test-panel-familysearch.js`, `tests/test-panel-findagrave.js` and
+`tests/test-panel-ux.js` (the Re-read buttons, tab binding and the fetch log) also drive `panel.js` itself against a stand-in for the panel page and a
 scripted content script (`tests/panel-harness.js`), so those capture flows (and
 the panel opening at all) are checked without a browser, and
 `tests/test-content-load.js` loads the whole of `content.js` in a sandbox page

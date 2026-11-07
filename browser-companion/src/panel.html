@@ -22,6 +22,10 @@
     -->
     <div class="panel" role="region" aria-label="Capture this record">
       <header>
+        <!-- Reads the tab in front of you from scratch: the panel moves to it
+             only when this is pressed, never on its own. -->
+        <button id="btn-rescrape" class="rescrape" type="button"
+          title="Read the page in front of you again: clears everything - the details, what you typed, and the record file - and fills it in from that page">&#x21bb; Re-read page</button>
         <h1>Capture this record</h1>
         <p id="recipe-banner" class="banner">Reading the page…</p>
       </header>
@@ -94,7 +98,8 @@
           </label>
 
           <!-- 2b - the actual evidence file: just two choices. -->
-          <p class="subq" id="evidence-h">Is there a specific file that's the actual record?</p>
+          <p class="subq" id="evidence-h"><button id="btn-rescrape-file" class="rescrape" type="button"
+            title="Look at this page again for its record file only (keeps the title, date, people and notes you have)">&#x21bb; Re-read file</button>Is there a specific file that's the actual record?</p>
           <div class="asset-cards" id="asset-cards" role="radiogroup" aria-labelledby="evidence-h">
             <label class="opt is-selected" data-mode="yes">
               <span class="opt-top">
@@ -105,6 +110,13 @@
               <span class="opt-desc">Provide the direct url, or download the file and drop it
                 here, to package it for your records.</span>
               <span class="opt-controls">
+                <!-- Automatic saving: before Capture, whether this page's file is
+                     fetched on its own; after, what each fetch did (… trying,
+                     a tick saved, a cross failed with the site's reason). -->
+                <span id="auto-box" class="auto-box none">
+                  <span class="auto-head"><span id="auto-ico" class="ico">○</span><span id="auto-text"></span></span>
+                  <ul id="auto-log" class="auto-log" role="status" hidden></ul>
+                </span>
                 <span id="ancestry-note" class="ancestry-note" style="display:none">
                   <strong>Save the full record image (Ancestry).</strong>
                   On Capture this pulls the same full-resolution scan Ancestry’s own
@@ -119,10 +131,15 @@
                   <span id="np-text"></span>
                   <span id="np-clips" class="np-clips"></span>
                 </span>
-                <label class="mini" for="f-asset-url">File address on the page
-                  <span class="muted-note">(best guess, edit if it's wrong)</span></label>
-                <input id="f-asset-url" type="text" placeholder="image or PDF address" />
-                <span class="or-divider"><span>or</span></span>
+                <!-- Hidden on pages whose file is fetched automatically (Ancestry,
+                     FamilySearch, Newspapers.com, IIIF archives); the drop zone
+                     stays as the fallback for a file the site will not hand over. -->
+                <span id="asset-url-row">
+                  <label class="mini" for="f-asset-url">File address on the page
+                    <span class="muted-note">(best guess, edit if it's wrong)</span></label>
+                  <input id="f-asset-url" type="text" placeholder="image or PDF address" />
+                  <span class="or-divider"><span>or</span></span>
+                </span>
                 <span id="dropzone" class="dropzone" tabindex="0" role="button"
                   aria-label="Drop a file here, or click to choose">Drop a file here, or click to choose</span>
                 <label class="check">

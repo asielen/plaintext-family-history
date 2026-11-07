@@ -11,6 +11,7 @@
 const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
+const { webcrypto } = require('node:crypto');
 
 const SRC = path.join(__dirname, '..', 'src');
 const read = (rel) => fs.readFileSync(path.join(SRC, rel), 'utf8');
@@ -40,6 +41,12 @@ function makeEl(id, tag) {
     },
     addEventListener(t, f) { (this.listeners[t] = this.listeners[t] || []).push(f); },
     appendChild(c) { this.children.push(c); return c; },
+    removeChild(c) {
+      const i = this.children.indexOf(c);
+      if (i < 0) throw new Error('removeChild: not a child');
+      this.children.splice(i, 1);
+      return c;
+    },
     descendants() {
       return this.children.flatMap((c) => [c, ...c.descendants()]);
     },
@@ -125,6 +132,10 @@ async function settle() { for (let i = 0; i < 20; i++) await tick(); }
 async function openPanel({ url, respond, host, seenIt, fullPage, fetch }) {
   const doc = makeDocument();
   const tab = { id: 7, url };
+  // Every tab in the window, and the one in front (openTab / activate).
+  const tabs = new Map([[tab.id, tab]]);
+  let active = tab;
+  const sentTo = []; // the tab id each message in `sent` went to
   const sent = [];
   const written = [];
   const filed = [];
@@ -158,11 +169,18 @@ async function openPanel({ url, respond, host, seenIt, fullPage, fetch }) {
       },
     },
     tabs: {
-      query: (q, cb) => cb([tab]),
-      get: (id, cb) => cb(tab),
+      query: (q, cb) => cb([active]),
+      get: (id, cb) => {
+        if (tabs.has(id)) return cb(tabs.get(id));
+        chrome.runtime.lastError = { message: 'No tab with id: ' + id + '.' };
+        cb(undefined);
+        chrome.runtime.lastError = undefined;
+        return undefined;
+      },
       sendMessage: (id, msg, cb) => {
         sent.push(msg);
-        Promise.resolve(respond(msg, tab)).then((r) => setTimeout(() => {
+        sentTo.push(id);
+        Promise.resolve(respond(msg, tabs.get(id))).then((r) => setTimeout(() => {
           if (r !== PORT_CLOSED) {
             cb(r);
             return;
@@ -219,19 +237,48 @@ async function openPanel({ url, respond, host, seenIt, fullPage, fetch }) {
     },
   };
   // panel.js reads FHA as the page global that window.FHA is in a browser.
-  new Function('window', 'FHA', 'document', 'chrome', 'FileReader', 'navigator', read('panel.js'))(
-    window, window.FHA, doc, chrome, FakeFileReader, {}
+  // `crypto` is the page's Web Crypto (a global in a browser and in newer Node).
+  new Function('window', 'FHA', 'document', 'chrome', 'FileReader', 'navigator', 'crypto', read('panel.js'))(
+    window, window.FHA, doc, chrome, FakeFileReader, {}, webcrypto
   );
   await doc.ready();
   await settle();
   const $ = (id) => doc.els[id];
+  let nextTabId = 8;
   return {
-    doc, $, tab, sent, written, filed, writeFails, sendFails, external, fetched,
+    doc, $, tab, sent, sentTo, written, filed, writeFails, sendFails, external, fetched,
     async navigate(newUrl) {
       tab.url = newUrl;
       await onUpdated(tab.id, { status: 'complete' });
       await tick();
     },
+    // Another tab, opened in front of the panel's own (she clicked to it).
+    openTab(newUrl) {
+      const t = { id: nextTabId++, url: newUrl };
+      tabs.set(t.id, t);
+      active = t;
+      return t;
+    },
+    activate(t) { active = t; },
+    // A tab other than the panel's own loading a new page.
+    async navigateTab(t, newUrl) {
+      t.url = newUrl;
+      await onUpdated(t.id, { status: 'complete' });
+      await tick();
+    },
+    // The two Re-read buttons (each holds its "reading…" a moment on purpose).
+    async reread() {
+      await $('btn-rescrape').fire('click');
+      await settle();
+    },
+    async rereadFile() {
+      await $('btn-rescrape-file').fire('click');
+      await settle();
+    },
+    // The fetch log under the automatic-saving box, one string per line.
+    log: () => $('auto-log').children.map((li) =>
+      li.children.map((c) => c.textContent).filter(Boolean).join(' ')),
+    autoBox: () => ({ cls: $('auto-box').className, text: $('auto-text').textContent }),
     async capture() {
       await $('btn-capture').fire('click');
       await settle();
