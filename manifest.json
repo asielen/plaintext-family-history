@@ -322,7 +322,7 @@
     {
       "path": ".fha/browser-companion/src/lib/newspapers.js",
       "category": "operating",
-      "sha256": "4497d42fe57ec8845cdc1ebdf3ae8d26f7cade9076fbb98250aefcb5b650c4ff",
+      "sha256": "cdec7aedfb9588ba2176e1f7738e53930791417c9ef2dc7d54092f1f75648f87",
       "spec_version": "1.2",
       "src": "browser-companion/src/lib/newspapers.js"
     },
@@ -357,7 +357,7 @@
     {
       "path": ".fha/browser-companion/src/panel.js",
       "category": "operating",
-      "sha256": "dc9fc8e200066c37797d9b980300251716103cba94052a8224f9dcd47d8c479e",
+      "sha256": "c809ccdb2dd61dce948f8bb574af19fcf8ef79640389ed8cb0cc0b5b9220553d",
       "spec_version": "1.2",
       "src": "browser-companion/src/panel.js"
     },
