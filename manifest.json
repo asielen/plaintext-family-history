@@ -1,7 +1,7 @@
 {
   "manifest_version": "1",
   "spec_version": "1.2",
-  "generated": "2026-11-06",
+  "generated": "2026-11-07",
   "files": [
     {
       "path": ".claude/skills/README.md",
@@ -679,7 +679,7 @@
     {
       "path": ".fha/tools/scaffold.py",
       "category": "operating",
-      "sha256": "5f8faea6ee5735db78a520b5cb276818c3a6f59d39aceb9b7dfa87048fde5326",
+      "sha256": "f6f68509c4d53bbe77e3f3c6cbe194e211a0bcc9598fe4f60a4d13e105d941df",
       "spec_version": "1.2",
       "src": "tools/scaffold.py"
     },
@@ -919,7 +919,7 @@
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "72fd5164c70b83f8703affde1579153c7e4180d444db628106ad6fe3a05a4b2c",
+      "sha256": "554d3092a63505a7560022ac0906a331b5cffbde6426e57fd6d463e4b7010f13",
       "spec_version": "1.2"
     },
     {
