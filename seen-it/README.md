@@ -133,6 +133,14 @@ read from that file, the same way the archive's own `fha` tools read it:
 | Captured, not filed | `fha.yaml` `roots:` `inbox` (default: `inbox`): capture bundles, and the `*.notes.md` stubs `fha capture --ingest` leaves. A `processed` folder inside it counts as done. |
 | Waiting in Downloads | the capture add-on's download folder: `fha.yaml` `capture_staging:`, else `~/Downloads/fha-inbox`, plus any `fha-inbox-…` folders beside it. |
 
+A page image or scan is marked saved only when the image itself is: the capture says it saved
+it (`imageSaved` in its record file), or the image file sits beside the record file. A record
+that only links to a scan - Ancestry would not hand it over, only a screen capture was kept,
+or the page is saved with another household member - leaves the scan "not saved", so the
+capture add-on still downloads it next time. A Find a Grave memorial whose photos did not all
+save is "linked", not "captured". A download that stopped part-way counts for nothing until it
+finishes.
+
 A root can be a full path (an external drive) or a path relative to the archive. If a drive is
 not connected, the window says which folder it could not reach rather than showing zero, and
 what that folder held the last time it was read stays marked until it can be read again.
@@ -215,7 +223,8 @@ It is not a secret and identifies no one: it is the same for every user, like th
 The one question other add-ons may ask is "which item keys does the archive hold"; Seen It
 never shares your looks, marks, searches or tree, and outside Advanced mode the answer is empty.
 The question is `{type: "knownKeys", prefix}` (every key starting with `rec:`, `fsrec:`, …) or
-`{type: "knownKeys", keys: [...]}` (only those keys). An add-on may ask for the archive to be
+`{type: "knownKeys", keys: [...]}` (only those keys; the answer's `sids` then names the
+source each filed key is in). An add-on may ask for the archive to be
 re-read first (`refresh: true`), but gets at most one fresh read every five minutes; the
 answer's `missing` lists archive folders the last read could not reach.
 

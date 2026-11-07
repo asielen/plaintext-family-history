@@ -78,6 +78,15 @@
     // derivative, so the "Yes" flow auto-fetches the FULL IIIF image instead of
     // pulling the URL box. Set from the prefill; drives buildEvidence().
     iiif: false,
+    // True on an Ancestry record page (/search/collections/{dbId}/records/…):
+    // Capture saves the record's own index (record-data.json) and its linked
+    // scan, if it has one. Set from the prefill; drives captureAncestryRecord.
+    ancRecord: false,
+    // Census pages saved in this sitting, "{dbId}:{imageId}" -> the bundle that
+    // holds the page. Everyone in a household has their own record but they
+    // share one page image, so the next member's capture does not download it
+    // again. Lives as long as the panel, like the form it serves.
+    ancImages: {},
     // Newspapers.com: the newspapersInfo result for the page in the tab (page
     // id, size, image pass, YOUR clippings on it) and which of them to save.
     // On Capture the panel rebuilds the page from tiles (lib/newspapers.js).
@@ -212,6 +221,7 @@
     for (const id of ['f-title', 'f-date', 'f-repo']) $(id).readOnly = false;
     state.prefill = prefill;
     state.iiif = !!prefill.iiif;
+    state.ancRecord = !!prefill.ancestryRecord;
     state.prefilledUrl = prefill.url || null;
     $('f-title').value = prefill.title || '';
     $('f-date').value = prefill.sourceDate || '';
@@ -230,7 +240,7 @@
     // is a derivative). There the URL box is left empty and the auto path
     // supplies the full record on Capture. Any other page clears a stale URL so
     // a previous record's address can't be re-fetched as this one's evidence.
-    if (prefill.ancestryImageViewer || prefill.iiif || prefill.newspapers) {
+    if (prefill.ancestryImageViewer || prefill.ancestryRecord || prefill.iiif || prefill.newspapers) {
       $('f-asset-url').value = '';
     } else if (prefill.imageUrl) {
       $('f-asset-url').value = prefill.imageUrl;
@@ -724,6 +734,184 @@
     return stageBundle(captureJson.bundleName(o.title), o.pageHtml, cap, assets);
   }
 
+  // ── Ancestry record pages ─────────────────────────────────────────────────────
+  // One bundle per record: page.html, the page copy, record-data.json (the
+  // record's labelled fields, household and citation as the site shows them -
+  // role site-data, never a transcript) and record.jpg (the linked scan, through
+  // the same token call Ancestry's own Download button uses). A record with no
+  // scan, or one Ancestry will not hand over, is still saved - the fields and
+  // the citation are the index entry - with a note saying the image is missing.
+  // The record also says what kind of source it is and when (its collection
+  // and its own event date, lib/ancestry-record.js ancHints): sent in
+  // capture.json so filing does not have to guess from the page (TI-066),
+  // and only where the human left the form's type and date blank.
+
+  // Seen It (seen-it/ in this repo) can say whether the archive already holds a
+  // page image. Its ID is fixed by the "key" in its manifest, the same on every
+  // computer (tests/test-panel-ancestry.js derives it from that key). It answers
+  // only in its advanced mode; no answer just means "download it".
+  const SEEN_IT_ID = 'cennkaddolfbhiabacldomegncpdphed';
+  const SEEN_IT_WAIT_MS = 3000;
+
+  // Where the archive already holds this page image, or null when Seen It is
+  // absent, off, slow or does not know it: { where: 'archive' | 'inbox',
+  // source?: 'S-…' }. Seen It counts a page only once a saved image backs it
+  // (its helper's _holds_saved_image), never from an image id alone.
+  function seenItImage(imageKey) {
+    const key = 'img:' + imageKey;
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => resolve(null), SEEN_IT_WAIT_MS);
+      const done = (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      };
+      try {
+        chrome.runtime.sendMessage(SEEN_IT_ID, { type: 'knownKeys', keys: [key] }, (r) => {
+          const ok = !chrome.runtime.lastError && r && r.ok && r.keys;
+          const st = ok ? r.keys[key] : null;
+          const sid = ok && r.sids && /^S-[0-9a-z]{10}$/i.test(String(r.sids[key] || '')) ? r.sids[key] : null;
+          if (st === 'captured') done({ where: 'inbox' });
+          else if (st === 'filed' || st === 'processed') done(sid ? { where: 'archive', source: sid } : { where: 'archive' });
+          else done(null);
+        });
+      } catch (e) {
+        done(null);
+      }
+    });
+  }
+
+  // Where a shared census page is, in words: the record of the household
+  // member it was saved with (in this sitting), or the archive source.
+  function describeSameImage(same) {
+    if (same.record) return 'the capture of ' + (same.name || 'the record') + ' (' + same.url + ')';
+    if (same.where === 'archive') return same.source ? 'the archive, source ' + same.source : 'the archive';
+    return 'a capture waiting in the inbox to be filed';
+  }
+
+  async function captureAncestryRecord(pageHtml, wantPageCopy) {
+    const info = await sendToTab(state.tabId, {
+      action: 'ancestryRecordInfo', formTitle: $('f-title').value,
+    });
+    if (!info || !info.ok) throw new Error((info && info.error) || 'could not read the Ancestry record');
+    const rec = info.record;
+    const hints = info.hints || {};
+    const assets = [];
+
+    // A file the human dropped in is the record's image (her own download,
+    // after Ancestry would not hand it over), saved WITH the index rather than
+    // instead of it. Her screen-capture tick rides with it, as anywhere else.
+    const dropped = state.droppedAsset;
+    const provisional = !!dropped && $('f-provisional').checked;
+
+    // Everyone in a household has their own record, but they share one census
+    // page. A page already saved - earlier in this sitting, or in the archive
+    // as Seen It knows it - is not fetched again: this bundle keeps the
+    // person's own index entry and says where the page is.
+    const imageKey = rec.imageId ? rec.dbId + ':' + rec.imageId : null;
+    let sameImageAs = !dropped && imageKey ? state.ancImages[imageKey] || null : null;
+    if (!dropped && imageKey && !sameImageAs) sameImageAs = await seenItImage(imageKey);
+    let imageWarning = null;
+    if (dropped) {
+      assets.push({
+        filename: 'record.' + dropped.ext, blob: dropped.blob,
+        role: 'record', mode: 'manual', provisional,
+      });
+    } else if (sameImageAs) {
+      rec.same_image_as = sameImageAs;
+    } else if (rec.imageId) {
+      setStageResult('Fetching the record’s image from Ancestry…', '');
+      const img = await sendToTab(state.tabId, { action: 'ancestryImage', dbId: rec.dbId, imageId: rec.imageId });
+      if (img && img.ok) {
+        assets.push({
+          filename: 'record.' + (img.ext || 'jpg'),
+          blob: bundle.base64ToBlob(img.base64, img.contentType),
+          role: 'record', mode: 'ancestry-api',
+        });
+      } else {
+        imageWarning = ((img && img.error) || 'no answer from the page') +
+          '. The record’s index and citation are saved. To add the image, use Ancestry’s Download ' +
+          'button, drop the file into the panel and press Capture again: that capture holds both.';
+      }
+    }
+    // Whether THIS bundle holds the record's scan - not a link to it, not a
+    // screen capture standing in for it. Seen It's helper counts the page as
+    // saved only on this (PR #213 review): `imageId` alone is only the link.
+    const imageSaved = !!rec.imageId && !provisional && assets.some((a) => a.role === 'record');
+    rec.imageSaved = imageSaved;
+
+    // A bundle that would hold nothing but record-data.json (no scan, the page
+    // copy unticked) keeps the page copy anyway: filed alone, the index file
+    // would become the source's main file under a new name, and the record
+    // would lose both its role and its page (PR #213 audit #4).
+    let forcedCopy = false;
+    if (wantPageCopy || !assets.some((a) => a.role === 'record')) {
+      const pc = await buildPageCopy();
+      assets.unshift({ filename: pc.filename, blob: pc.blob, role: 'webpage', mode: 'singlefile' });
+      forcedCopy = !wantPageCopy;
+    }
+
+    const data = {
+      note: 'Captured from Ancestry by the archive capture extension. "fields" and "household" are ' +
+        'Ancestry’s index of the record, as the site shows it: an index, not a transcript of the image. ' +
+        '"imageSaved" says whether this capture holds the record’s image; "imageId" is the image the record links to.',
+      record: rec,
+      fields: info.fields,
+      household: info.household,
+      citation: info.citation,
+    };
+    assets.push({
+      filename: 'record-data.json',
+      blob: new Blob([JSON.stringify(data, null, 2) + '\n'], { type: 'application/json' }),
+      role: 'site-data',
+      mode: 'ancestry-page-data',
+    });
+    const title = info.title || ('Ancestry record ' + rec.dbId + ':' + rec.recordId);
+    const cite = info.citation || {};
+    const sameNote = sameImageAs
+      ? 'Same page (image ' + rec.imageId + ') as ' + describeSameImage(sameImageAs) +
+        '; the image was not downloaded again.'
+      : '';
+    const notes = [
+      gatherNotes(provisional),
+      cite.Citation ? 'Ancestry source citation: ' + cite.Citation : '',
+      sameNote,
+      imageWarning ? 'The record’s image was not saved: ' + imageWarning : '',
+    ].filter((t) => t && t.trim()).join('\n\n');
+    const fields = {
+      url: rec.url,
+      title,
+      accessed: captureJson.accessedDate(),
+      // What the human typed wins; else what the record says about itself.
+      sourceDate: $('f-date').value.trim() || hints.sourceDate || '',
+      sourceType: $('f-type').value || hints.sourceType || '',
+      sourceClass: hints.sourceClass || '',
+      repository: $('f-repo').value.trim() || 'Ancestry.com',
+      people: checkedPeople(),
+      notes,
+      recipeHint: 'ancestry',
+      assets: assets.map((a) => ({ file: a.filename, role: a.role, mode: a.mode, provisional: !!a.provisional })),
+    };
+    const cap = captureJson.build(fields);
+    const bundleName = captureJson.bundleName(title);
+    const st = await stageBundle(bundleName, pageHtml, cap, assets);
+    // The bundle now holds this page: the next household member's capture
+    // points at THIS record - its key and address, which outlive the staging
+    // folder (ingest re-slugs it, filing renames it) - instead of fetching it.
+    if (imageKey && imageSaved) {
+      state.ancImages[imageKey] = {
+        record: 'rec:' + rec.dbId + ':' + rec.recordId, url: rec.url, name: rec.name || null,
+      };
+    }
+    const pageNote = sameImageAs
+      ? 'The census page was not downloaded again: it is already saved in ' + describeSameImage(sameImageAs) + '.'
+      : null;
+    const copyNote = forcedCopy
+      ? 'A copy of the web page was kept too: with no image, it is what this record’s index is filed with.'
+      : null;
+    reportStaged(st.where, st.viaHost, imageWarning,
+      [st.hostWarning, pageNote, copyNote].filter(Boolean).join('\n') || null);
+  }
+
   // Stage one bundle: straight into the archive when the native host answers,
   // else the staging-folder download. Returns { viaHost, where, hostWarning }.
   async function stageBundle(bundleName, pageHtml, cap, assets) {
@@ -792,7 +980,7 @@
     // On an Ancestry image-viewer or an IIIF page the auto path supplies the
     // full record on Capture, so "Yes" is satisfied with no dropped file or URL.
     // A dropped file or a typed URL still takes precedence (manual override).
-    if (state.ancestryViewer || state.iiif) return true;
+    if (state.ancestryViewer || state.ancRecord || state.iiif) return true;
     if (npActive() && !state.droppedAsset) return state.npSelected.size > 0;
     return !!(state.droppedAsset || evidenceUrl());
   }
@@ -805,7 +993,8 @@
     if (evidenceMode() === 'yes') {
       if (state.droppedAsset) {
         const note = $('f-provisional').checked ? ' (screen capture)' : '';
-        parts.push('Record file: ' + state.droppedAsset.filename + note);
+        parts.push('Record file: ' + state.droppedAsset.filename + note +
+          (state.ancRecord ? ', with the record’s index and citation (Ancestry)' : ''));
       } else if (state.npPage && state.npLoading) {
         parts.push('Record files: reading your Newspapers.com clippings…');
       } else if (npActive()) {
@@ -820,6 +1009,8 @@
       } else if (state.ancestryViewer) {
         // Auto path: the full-res record is fetched on Capture.
         parts.push('Record file: full record (Ancestry, auto)');
+      } else if (state.ancRecord) {
+        parts.push('Record files: the record’s index and citation + its scan, if it has one (Ancestry, auto)');
       } else if (state.iiif) {
         parts.push('Record file: full image (IIIF, auto)');
       } else {
@@ -1059,7 +1250,7 @@
       return;
     }
     if (wantEvidence && !state.droppedAsset && !evidenceUrl()
-        && !state.ancestryViewer && !state.iiif && !npActive()) {
+        && !state.ancestryViewer && !state.ancRecord && !state.iiif && !npActive()) {
       if (state.npPage) {
         setStageResult('Newspapers.com: ' + npUnavailableReason(), 'warn');
         return;
@@ -1089,6 +1280,15 @@
       // clipping. A dropped file still wins (the manual override).
       if (wantEvidence && npActive() && !state.droppedAsset) {
         await captureNewspapers(pageResp.html, wantPageCopy);
+        resetForNext();
+        return;
+      }
+
+      // Ancestry record page: the record's own index and citation, plus its
+      // linked scan - or the file she dropped in, saved with the index. A typed
+      // file address still takes the ordinary path.
+      if (wantEvidence && state.ancRecord && !evidenceUrl()) {
+        await captureAncestryRecord(pageResp.html, wantPageCopy);
         resetForNext();
         return;
       }

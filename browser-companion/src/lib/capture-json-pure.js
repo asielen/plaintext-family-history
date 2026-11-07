@@ -158,6 +158,9 @@ function build(fields) {
   // A citation the page itself supplied (a site's own "cite this"), which
   // ingest prefers over the recipe's assembled guess.
   if (fields.citation && fields.citation.trim()) out.citation = fields.citation.trim();
+  // What the record said about itself (an index entry is derivative):
+  // SPEC 14's source_class, one of original | derivative | authored.
+  if (['original', 'derivative', 'authored'].indexOf(fields.sourceClass) >= 0) out.source_class = fields.sourceClass;
 
   const assets = (fields.assets || [])
     .filter((a) => a && a.file)

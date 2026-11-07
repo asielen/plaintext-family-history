@@ -206,6 +206,53 @@ class ExampleBundleTestCase(unittest.TestCase):
             # The bundle folder dissolved (§12.1: grouping migrates to the S-id).
             self.assertFalse(bundle_dir.exists())
 
+    def test_an_ancestry_index_with_no_scan_files_with_its_roles(self) -> None:
+        """PR #213 audit #4: an Ancestry record with no scan. Alone, its
+        record-data.json was filed as the source's `primary` file under a new
+        name, so the role was lost and Seen It's helper (which reads
+        `*site-data*.json`) no longer knew the record was filed. The companion
+        now always keeps the page copy beside it; this is that bundle, through
+        ingest and processing, and back through Seen It's helper."""
+        import process
+        sys.path.insert(0, str(ROOT / 'seen-it' / 'host'))
+        import seenit_host
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            staging = tmp / 'staging'
+            bundle = staging / 'ethel-hartley-death-index'
+            bundle.mkdir(parents=True)
+            url = 'https://www.ancestry.com/search/collections/90002/records/2000001'
+            (bundle / 'page.html').write_text('<html><title>California, U.S., Death Index, 1940-1997 - '
+                                              'Ancestry.com</title></html>', encoding='utf-8')
+            (bundle / 'page-snapshot.html').write_text('<html>copy</html>', encoding='utf-8')
+            (bundle / 'record-data.json').write_text(json.dumps({'record': {
+                'dbId': '90002', 'recordId': '2000001', 'imageId': None, 'imageSaved': False,
+                'url': url, 'name': 'Ethel Hartley'}}), encoding='utf-8')
+            (bundle / 'capture.json').write_text(json.dumps({
+                'schema': 2, 'url': url, 'title': 'Ethel Hartley - California, U.S., Death Index, 1940-1997',
+                'source_type': 'vital-record', 'source_date': '1957-01-07', 'source_class': 'derivative',
+                'recipe_hint': 'ancestry',
+                'assets': [{'file': 'page-snapshot.html', 'role': 'webpage', 'mode': 'singlefile'},
+                           {'file': 'record-data.json', 'role': 'site-data', 'mode': 'ancestry-page-data'}],
+            }), encoding='utf-8')
+            archive = tmp / 'archive'
+            archive.mkdir()
+            (archive / 'fha.yaml').write_text(
+                'roots:\n  photos: photos\n  documents: documents\n', encoding='utf-8')
+            config = load_fha_yaml(archive, strict=True)
+            capture.run_ingest(archive, config, staging_dir=str(staging))
+            bundle_dir = next(p for p in (archive / 'inbox').iterdir() if p.is_dir())
+            self.assertEqual(process.process_bundle(archive, config, bundle_dir, source_date=None, dry_run=False),
+                             EXIT_CLEAN)
+            rec = read_record(next((archive / 'sources').rglob('*.md')))
+            by_role = {f.get('role'): f['file'] for f in rec['meta']['files']}
+            self.assertEqual(set(by_role), {'webpage', 'site-data'})
+            self.assertIn('site-data', Path(by_role['site-data']).name)
+            self.assertEqual(rec['meta']['source_class'], 'derivative')
+            items, _ = seenit_host.scan_known({'filed': [str(archive / 'documents')]})
+            self.assertEqual(items['rec:90002:2000001']['state'], 'filed')
+            self.assertEqual(items['rec:90002:2000001']['sid'], rec['meta']['id'])
+
 
 # ── Drift-guard extraction (emission sites, not whole files) ──────────────────
 #

@@ -171,6 +171,21 @@ test('an add-on that names the keys it cares about is told only about those', as
   assert.deepStrictEqual((await h.sendExternal({ type: 'knownKeys', prefix: '' })).keys, {});
 });
 
+test('the narrow question also names the source a filed key is in (PR #213 audit #5)', async () => {
+  // So the capture add-on can say "already in the archive as S-…" rather
+  // than "the archive", which gives a person nothing to look up.
+  const state = { items: {
+    'img:1001:5005': { state: 'filed', where: 'census', sid: SID },
+    'img:1001:6006': { state: 'captured', where: 'inbox' },
+  }, missing: [] };
+  const h = load({ native: helperAnswering(state) });
+  await h.local.set({ settings: { advanced: true } });
+  await h.send({ type: 'refreshKnown' });
+  const r = await h.sendExternal({ type: 'knownKeys', keys: ['img:1001:5005', 'img:1001:6006', 'img:1:1'] });
+  assert.deepStrictEqual(r.keys, { 'img:1001:5005': 'filed', 'img:1001:6006': 'captured' });
+  assert.deepStrictEqual(r.sids, { 'img:1001:5005': SID });
+});
+
 // ── PR #212 review: backups and the shared data file carry no local paths ──
 const LOCAL_PATH = /(^|[^A-Za-z])[A-Za-z]:[\\/]|\/(?:Users|home)\/|AppData|\.local\/share/;
 

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Seen It: Newspapers.com, Ancestry, FamilySearch, Find a Grave",
-  "version": "0.11.0",
+  "version": "0.11.1",
   "description": "Marks the newspaper pages, records and memorials you have already opened, ruled out, or attached to your tree on Newspapers.com, Ancestry, FamilySearch and Find a Grave, and logs your searches.",
   "permissions": [
     "storage",
