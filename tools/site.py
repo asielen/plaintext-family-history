@@ -222,6 +222,7 @@ from _lib import (
     apply_private_fence,
     ASSET_ROOT_ALIASES,
     claim_is_own_vital,
+    vital_pick_key,
     configure_utf8_stdout,
     EXIT_CLEAN,
     EXIT_FAILURE,
@@ -4869,10 +4870,11 @@ class _SiteBuilder:
         Accepted-only in EVERY mode, deliberately - unlike the timeline, where
         the workbench also shows needs-review marked. The summary block is the
         person's settled headline facts; a parked vital belongs in the
-        timeline (tagged) and the review surfaces, not the headline. First
-        accepted claim per type wins, with `ORDER BY c.id` making that pick
-        deterministic (row order otherwise varies by rowid and churns the
-        committed example fixtures between rebuilds).
+        timeline (tagged) and the review surfaces, not the headline. When a
+        type has several accepted claims, the most exact one wins
+        (`_lib.vital_pick_key`, #201: narrowest date, then confidence, then
+        claim id). The claim id keeps the pick deterministic, so the
+        committed example fixtures do not churn between rebuilds.
 
         Negated claims are excluded (COALESCE(c.negated, 0) = 0): a confirmed
         absence - a `--negated` birth minted as "not born in 1900" - is not a
@@ -4895,7 +4897,8 @@ class _SiteBuilder:
             ")"
         )
         rows = self.conn.execute(
-            "SELECT c.id, type, value, date_edtf, place_id, place_text, source_id, confidence "
+            "SELECT c.id, type, value, date_edtf, date_min, date_max, place_id, place_text, "
+            "source_id, confidence "
             "FROM claims c "
             "JOIN claim_persons cp ON c.id = cp.claim_id "
             f"WHERE cp.person_id = ? AND c.status = 'accepted' "
@@ -4927,8 +4930,8 @@ class _SiteBuilder:
                     if normalize_id(str(r['id'])) not in self.restricted_claims
                     and not self._source_hard_restricted(r['source_id'])]
         by_type: dict[str, sqlite3.Row] = {}
-        for r in rows:
-            by_type.setdefault(r['type'], r)   # first accepted of each type
+        for r in sorted(rows, key=vital_pick_key):
+            by_type.setdefault(r['type'], r)   # the most exact accepted of each type
         summary = []
         for t in _VITAL_ORDER:
             if t in by_type:
@@ -6613,16 +6616,19 @@ class _SiteBuilder:
         shortest, most quotable fact on the page, and reading them off any
         birth/death claim naming the person is what produced nodes labelled
         `1955-1916` and great-grandparents charted with their own child's birth
-        year. `ORDER BY c.id` makes the surviving pick deterministic, as it
-        does in `_person_summary` - without it the committed example fixtures
-        churn between rebuilds on sqlite's rowid order."""
+        year. Among the claims that survive, the most exact one labels the
+        node (`_lib.vital_pick_key`, #201), the same pick `_person_summary`
+        makes, so a node and its person page never disagree. The claim id
+        is the last tie-break, which keeps the committed example fixtures
+        from churning between rebuilds."""
         vitals = {'birth': None, 'death': None}
-        for r in self.conn.execute(
-            "SELECT c.id, c.type, c.date_edtf, c.source_id FROM claims c JOIN claim_persons cp ON c.id = cp.claim_id "
+        for r in sorted(self.conn.execute(
+            "SELECT c.id, c.type, c.date_edtf, c.date_min, c.date_max, c.confidence, c.source_id "
+            "FROM claims c JOIN claim_persons cp ON c.id = cp.claim_id "
             "WHERE cp.person_id = ? AND c.type IN ('birth','death') AND c.status = 'accepted' "
             "AND COALESCE(c.negated, 0) = 0 ORDER BY c.id",
             (pid,),
-        ):
+        ).fetchall(), key=vital_pick_key):
             if not self._claim_is_own_vital(pid, r['id'], r['type']):
                 continue
             # Standalone: show a (deceased) person's date even when its source is
