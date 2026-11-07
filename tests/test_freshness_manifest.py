@@ -42,6 +42,7 @@ Synthetic tmp archives only - the real archive is never a test bed.
 import contextlib
 import io
 import json
+import os
 import sys
 import tempfile
 import time
@@ -340,6 +341,86 @@ class PhotoindexDeletionTests(unittest.TestCase):
         self.assertEqual(photoindex_status(self.root, self.cfg)[0], 'stale')
         photoindex.run_scan(self.root, self.cfg)
         self.assertEqual(photoindex_status(self.root, self.cfg)[0], 'fresh')
+
+
+class NonPhotoFilesInThePhotosRootTests(unittest.TestCase):
+    """#202: a real photo library is never only photos.
+
+    Windows drops a Thumbs.db in every folder it shows as thumbnails, scanners
+    leave PDFs, and editors keep `.tif_original` backups. The scan catalogues
+    none of them. The freshness check used to count every one as a photo the
+    catalog had never seen, so the catalog read out of date straight after a
+    clean scan, and rescanning, which the warning itself recommends, changed
+    nothing. Everything that waits for a current catalog was off for good: the
+    shareable site's living-person photo check, tagging who is in a photo,
+    photos in a packet, caption search.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        (self.root / 'fha.yaml').write_text('roots:\n  photos: photos\n', encoding='utf-8')
+        self.album = self.root / 'photos' / 'album'
+        self.album.mkdir(parents=True)
+        (self.album / 'grandpa.jpg').write_bytes(b'x')
+        for name in ('Thumbs.db', 'scan-notes.pdf', 'grandpa.tif_original'):
+            (self.album / name).write_bytes(b'not a photo')
+        (self.root / 'people').mkdir()
+        (self.root / 'people' / 'hartley__john_P-aaaaaaaaaa.md').write_text(
+            '---\nid: P-aaaaaaaaaa\nname: John Hartley\nliving: false\ntier: stub\n'
+            '---\n\n', encoding='utf-8')
+        (self.root / 'sources' / 'photos').mkdir(parents=True)
+        self.cfg = {'roots': {'photos': 'photos'}}
+        self._orig_run_exiftool = photoindex._run_exiftool
+        photoindex._run_exiftool = lambda paths: [{'SourceFile': str(p)} for p in paths]
+        with contextlib.redirect_stdout(io.StringIO()):
+            photoindex.run_scan(self.root, self.cfg)
+
+    def tearDown(self) -> None:
+        photoindex._run_exiftool = self._orig_run_exiftool
+        self._tmp.cleanup()
+
+    def test_a_clean_scan_reads_fresh(self) -> None:
+        self.assertEqual(photoindex_status(self.root, self.cfg)[0], 'fresh')
+
+    def test_the_catalog_holds_only_the_photo(self) -> None:
+        # The other half of the agreement: the scan still skips them, so the
+        # fix is the freshness check learning the scan's rule, not the scan
+        # starting to catalogue Thumbs.db.
+        stored = read_path_manifest(photoindex_manifest_path(self.root))
+        photo_keys = [k for k in stored if k.startswith('photos/')]
+        self.assertEqual(photo_keys, ['photos/album/grandpa.jpg'])
+
+    def test_explorer_rewriting_thumbs_db_does_not_stale_it(self) -> None:
+        thumbs = self.album / 'Thumbs.db'
+        thumbs.write_bytes(b'rewritten')
+        later = time.time() + 60
+        os.utime(thumbs, (later, later))
+        self.assertEqual(photoindex_status(self.root, self.cfg)[0], 'fresh')
+
+    def test_tagging_a_person_is_not_refused(self) -> None:
+        # tag-person refuses a stale catalog outright (require_fresh=True), so
+        # the bug blocked identifying anyone in any photo.
+        plan = photoindex.run_tag_person_plan(
+            self.root, self.cfg, 'P-aaaaaaaaaa', paths=['photos/album/grandpa.jpg'])
+        self.assertEqual(plan.data['status'], 'fresh')
+
+    def test_doctor_agrees(self) -> None:
+        result = doctor.run_doctor(self.root, self.cfg)
+        check = next(c for c in result.data['checks'] if c['id'] == 'photoindex')
+        self.assertEqual(check['status'], 'ok')
+
+    def test_a_new_photo_still_stales_it(self) -> None:
+        # The narrowing must not blind the check to what it is for.
+        new = self.album / 'grandma.jpg'
+        new.write_bytes(b'y')
+        later = time.time() + 60
+        os.utime(new, (later, later))
+        self.assertEqual(photoindex_status(self.root, self.cfg)[0], 'stale')
+
+    def test_a_deleted_photo_still_stales_it(self) -> None:
+        (self.album / 'grandpa.jpg').unlink()
+        self.assertEqual(photoindex_status(self.root, self.cfg)[0], 'stale')
 
 
 class PhotoindexIndexIsFreshResearchCompanionTests(unittest.TestCase):

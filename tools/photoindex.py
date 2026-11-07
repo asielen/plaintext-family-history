@@ -66,7 +66,7 @@ CODE MAP
                                  incomplete walk cannot read 'fresh'
 
   exiftool integration
-    PHOTO_EXTENSIONS          - recognised photo/scan file extensions (imported from _lib)
+    is_catalogued_photo_name  - which files the catalog keeps (imported from _lib, #202)
     _run_exiftool             - batched `exiftool -j -struct` invocation (test seam)
     _SOURCE_KEYWORD_RE, _PID_KEYWORD_RE, _DATE_KEYWORD_RE - keyword patterns
     _extract_keywords         - flatten Keywords+Subject into one string list
@@ -216,7 +216,6 @@ from _lib import (
     INDEX_SCHEMA_VERSION,
     PHOTOINDEX_CONFIG_KEY,
     PHOTOINDEX_SCHEMA_VERSION,
-    PHOTO_EXTENSIONS,
     BackupRefused,
     OriginalBackup,
     ParsedName,
@@ -234,6 +233,7 @@ from _lib import (
     humanize_edtf as _humanize_edtf,
     id_type_of,
     index_manifest_path,
+    is_catalogued_photo_name,
     is_nonspec_photo_date_keyword as _is_nonspec_date_keyword,
     is_valid_edtf,
     is_valid_id,
@@ -351,7 +351,8 @@ _REQUIRED_SCHEMA = {
 
 # ── exiftool integration ──────────────────────────────────────────────────
 
-# PHOTO_EXTENSIONS now lives in _lib (shared with `fha process`); imported above.
+# Which files count as photos lives in _lib (`is_catalogued_photo_name`, over
+# PHOTO_EXTENSIONS), shared with `fha process` and the freshness check.
 
 _EXIFTOOL_FIELDS = [
     '-Title', '-Caption-Abstract', '-XMP-dc:Description', '-UserComment', '-DateTimeOriginal',
@@ -441,7 +442,7 @@ def _iter_photo_files(photos_root: Path, ignore: list[str] | None = None, on_err
             dirnames[:] = [d for d in dirnames if not _ignored(f'{prefix}{d}')]
         for name in filenames:
             p = Path(dirpath) / name
-            if p.suffix.lower() not in PHOTO_EXTENSIONS or _ignored(f'{prefix}{name}'):
+            if not is_catalogued_photo_name(name) or _ignored(f'{prefix}{name}'):
                 continue
             # os.walk lists a dangling symlink among the files; the old
             # rglob walker's is_file() dropped it silently, and without this

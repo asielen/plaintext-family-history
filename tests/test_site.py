@@ -2283,6 +2283,31 @@ class LivingPhotoCheckUnavailableTests(_Base):
         self.assertEqual(self._warnings(res), [], res['messages'])
 
     @unittest.skipUnless(site._PIL_AVAILABLE, 'Pillow not installed')
+    def test_a_thumbs_db_beside_the_photo_does_not_switch_the_check_off(self):
+        # #202: a real scan over a folder that also holds a Thumbs.db and a
+        # scanner PDF. The freshness check used to count those as photos the
+        # catalog had never seen, so every shareable build skipped this check
+        # and printed the warning, however often `fha photoindex` ran.
+        import photoindex
+        self._seed_photo_source()
+        folder = self.archive_root / 'photos' / '1880'
+        (folder / 'Thumbs.db').write_bytes(b'windows thumbnail cache')
+        (folder / 'scan-notes.pdf').write_bytes(b'%PDF-1.4')
+        orig = photoindex._run_exiftool
+        photoindex._run_exiftool = lambda paths: [{'SourceFile': str(p)} for p in paths]
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                photoindex.run_scan(self.archive_root, {})
+        finally:
+            photoindex._run_exiftool = orig
+        # `_run` dates index.sqlite a few seconds ahead; keep the catalog newer,
+        # as a scan run after indexing would be.
+        far_future = time.time() + 10_000
+        os.utime(self.archive_root / '.cache' / 'photos.sqlite', (far_future, far_future))
+        res = self._run(linked=False)
+        self.assertEqual(self._warnings(res), [], res['messages'])
+
+    @unittest.skipUnless(site._PIL_AVAILABLE, 'Pillow not installed')
     def test_an_unreadable_catalog_names_itself(self):
         # A file that is not a database at all reads as unreadable, and the
         # warning must say that rather than "not built yet" - the two have
