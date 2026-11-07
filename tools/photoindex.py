@@ -382,6 +382,15 @@ _REQUIRED_SCHEMA = {
 # tried, the read failed, or the scan's hashing budget ran out), and only NULL
 # is retried. Never compared by reconcile.
 _NO_FINGERPRINT = 'none:v1'
+# Stored on a MISSING: row whose fingerprint was never known: its file is
+# gone, so it can never be read. It does NOT hold reconcile's content gate
+# shut and does not count as a holder (owner decision, #220): the
+# whole-picture hash already rules out a DIFFERENT picture, so the only risk
+# such a row leaves is that it was another copy of the SAME picture - a
+# caption landing on an identical picture, rated P3. Set when a row goes
+# MISSING: with an unknown fingerprint, and for every such row the upgrade
+# (or any writer) finds, so the rule is visible in the data.
+_FINGERPRINT_GONE = 'gone:v1'
 # meta key: a catalog that gained `photo_face_regions` still needs every photo
 # rescraped once to fill it (see `_open_and_apply_schema`).
 _FACE_BACKFILL_KEY = 'face_backfill_due'
@@ -557,10 +566,11 @@ def _photo_fingerprint(path: Path) -> str | None:
 
 
 def _fingerprint_unknown(value: object) -> bool:
-    """True for a stored value that says nothing yet: NULL, `_FINGERPRINT_RETRY`,
+    """True for a stored value that says nothing YET: NULL, `_FINGERPRINT_RETRY`,
     or a tag an older rule wrote (#220 audit F8) - each is recomputed by the
-    backfill, and each counts as a possible copy in reconcile's guards."""
-    return value != _NO_FINGERPRINT and not _is_real_fingerprint(value)
+    backfill. `_NO_FINGERPRINT` and `_FINGERPRINT_GONE` are settled answers,
+    not unknowns."""
+    return value not in (_NO_FINGERPRINT, _FINGERPRINT_GONE) and not _is_real_fingerprint(value)
 
 
 def _is_real_fingerprint(value: object) -> bool:
@@ -3197,6 +3207,19 @@ def _same_source(a: str | None, b: str | None) -> bool:
     return bool(a and b) and normalize_id(a) == normalize_id(b)
 
 
+def _tag_gone_fingerprints(conn: sqlite3.Connection, keys: list[str]) -> None:
+    """Mark MISSING: rows whose fingerprint was never known as `_FINGERPRINT_GONE`.
+
+    Their file is gone, so no later run can read it; tagging makes the rule
+    visible in the data - such a row does not hold reconcile's content gate
+    and is not a holder - instead of leaving it to be inferred.
+    """
+    for key in keys:
+        row = conn.execute('SELECT fingerprint FROM photos WHERE path=?', (key,)).fetchone()
+        if row is not None and _fingerprint_unknown(row[0]):
+            conn.execute('UPDATE photos SET fingerprint=? WHERE path=?', (_FINGERPRINT_GONE, key))
+
+
 def _content_rematches(
     conn: sqlite3.Connection, missing: dict[str, str | None], untracked: dict[str, Path],
     untracked_source_ids: dict[Path, str] | None = None,
@@ -3205,15 +3228,17 @@ def _content_rematches(
     fingerprint (#49): (pairs, unread untracked aliases, unknown live rows,
     unknown missing rows). Any non-empty refusal means no pair was taken.
 
-    **The gate.** No content pair is taken at all while any JPEG/PNG row in
-    the catalog - live or MISSING: - has an unknown fingerprint (NULL,
-    `retry:v1`, or a tag an older rule wrote). "The only holder" cannot be
-    decided while some copies are unread: an unread row may hold the same
-    picture, whatever its size or metadata (#220, Codex round 7 - this
-    replaces the same-size heuristics). The counts come back so the caller
-    can say how far the backfill has to go. A MISSING: row with an unknown
-    fingerprint can never be read (its file is gone), so while one remains,
-    matching by picture stays off; the SOURCE: keyword pass is unaffected.
+    **The gate.** No content pair is taken at all while any LIVE JPEG/PNG row
+    has an unknown fingerprint (NULL, `retry:v1`, or a tag an older rule
+    wrote). "The only holder" cannot be decided while some copies are
+    unread: an unread row may hold the same picture, whatever its size or
+    metadata (#220, Codex round 7 - this replaces the same-size heuristics).
+    The count comes back so the caller can say how far the backfill has to
+    go. A vanished or MISSING: row whose fingerprint was never known can
+    never be read (its file is gone); it is `_FINGERPRINT_GONE`, and it
+    neither holds the gate nor counts as a holder (owner decision: the
+    whole-picture hash rules out a different picture, so its only risk is a
+    copy of the same one). The SOURCE: keyword pass is unaffected.
 
     Then one holder on each side, or no match: the fingerprint is held by
     exactly ONE row in the whole catalog - the vanished one - and found on
@@ -3227,20 +3252,22 @@ def _content_rematches(
     """
     holders: dict[str, int] = {}
     old_by_fp: dict[str, str] = {}
-    unknown_live = unknown_missing = 0
+    unknown_live = 0
     for path, fingerprint in conn.execute('SELECT path, fingerprint FROM photos'):
         if _is_real_fingerprint(fingerprint):
             holders[fingerprint] = holders.get(fingerprint, 0) + 1
             if path in missing:
                 old_by_fp[fingerprint] = path
         elif (_fingerprint_unknown(fingerprint)
-              and Path(_live_alias(path)).suffix.lower() in _JPEG_SUFFIXES | _PNG_SUFFIXES):
-            if _is_missing_key(path) or path in missing:
-                unknown_missing += 1
-            else:
-                unknown_live += 1
-    if unknown_live or unknown_missing:
-        return [], [], unknown_live, unknown_missing
+              and not (_is_missing_key(path) or path in missing)
+              and Path(path).suffix.lower() in _JPEG_SUFFIXES | _PNG_SUFFIXES):
+            # Only a LIVE row can still be read, so only a live unknown holds
+            # the gate. A vanished or MISSING: row whose fingerprint was never
+            # known can never become known (`_FINGERPRINT_GONE`): it neither
+            # holds the gate nor counts as a holder.
+            unknown_live += 1
+    if unknown_live:
+        return [], [], unknown_live, 0
     candidates = {fp: old for fp, old in old_by_fp.items() if holders.get(fp) == 1}
     if not candidates or not untracked:
         return [], [], 0, 0
@@ -3362,7 +3389,7 @@ def run_reconcile(
     """
     empty = {
         'rematched': [], 'rematched_by_content': [], 'content_unchecked': [],
-        'content_waiting': {'unread': 0, 'missing_unread': 0},
+        'content_waiting': {'unread': 0},
         'missing': [], 'new_count': 0,
         'new_sourced': {}, 'new_unsourced': [], 'stale_hold_failed': False,
         'unreadable_dirs': [], 'held_unreadable': 0,
@@ -3489,12 +3516,12 @@ def run_reconcile(
             # source's own identity - always wins over a fingerprint.
             rematched_by_content: list[tuple[str, str]] = []
             content_unchecked: list[str] = []
-            content_waiting = {'unread': 0, 'missing_unread': 0}
+            content_waiting = {'unread': 0}
             if missing and untracked:
                 (content_pairs, content_unchecked,
-                 waiting_live, waiting_missing) = _content_rematches(
+                 waiting_live, _waiting_missing) = _content_rematches(
                     conn, missing, untracked, candidate_source_ids if with_exif else None)
-                content_waiting = {'unread': waiting_live, 'missing_unread': waiting_missing}
+                content_waiting = {'unread': waiting_live}
                 for old_path, new_path in content_pairs:
                     if not dry_run:
                         _move_cached_path(conn, old_path, new_path)
@@ -3509,6 +3536,11 @@ def run_reconcile(
                 missing = {p: sid for p, sid in missing.items() if p not in content_old}
                 untracked = {a: p for a, p in untracked.items() if a not in content_new}
 
+            if not dry_run:
+                # Rows already MISSING: whose fingerprint was never known -
+                # chiefly those missing before the schema-2 upgrade - are
+                # settled as `_FINGERPRINT_GONE` (see `_tag_gone_fingerprints`).
+                _tag_gone_fingerprints(conn, [k for k in missing if _is_missing_key(k)])
             now_missing: list[str] = []
             for old_path in missing:
                 if _is_missing_key(old_path):
@@ -3517,6 +3549,7 @@ def run_reconcile(
                 new_key = f'{_MISSING_PREFIX}{old_path}'
                 if not dry_run:
                     _move_cached_path(conn, old_path, new_key)
+                    _tag_gone_fingerprints(conn, [new_key])
                     gid = _group_id_of(conn, new_key)
                     if gid:
                         affected_group_ids.add(gid)
@@ -4453,6 +4486,10 @@ def _migrate_v1_catalog(conn: sqlite3.Connection, *, commit: bool = True) -> Non
         columns = {row[1] for row in conn.execute('PRAGMA table_info(photos)')}
         if 'fingerprint' not in columns:
             conn.execute('ALTER TABLE photos ADD COLUMN fingerprint TEXT')
+        # Rows already MISSING: can never be fingerprinted (#220): settled
+        # as gone, in the same transaction.
+        conn.execute("UPDATE photos SET fingerprint=? WHERE path LIKE 'MISSING:%' "
+                     "AND fingerprint IS NULL", (_FINGERPRINT_GONE,))
         conn.execute('INSERT OR REPLACE INTO meta(key, value) VALUES (?,?)',
                      (CACHE_SCHEMA_KEY, str(PHOTOINDEX_SCHEMA_VERSION)))
         write_cache_meta(conn, PHOTOINDEX_SCAN_DUE_KEY,
@@ -4472,12 +4509,6 @@ def _content_waiting_message(waiting: dict) -> str:
         parts.append(
             f"Matching moved photos by their picture starts once every photo has been "
             f"read ({waiting['unread']} to go; each scan reads more - run `fha photoindex`).")
-    if waiting.get('missing_unread'):
-        parts.append(
-            f"{waiting['missing_unread']} photo(s) already missing before this catalog "
-            "was upgraded cannot be read, so matching by picture stays off while they "
-            "are listed; a photo filed as a source is still re-matched by its SOURCE: "
-            "keyword (`--with-exif`).")
     return ' '.join(parts)
 
 
@@ -5689,7 +5720,7 @@ def _cmd_reconcile(args: argparse.Namespace) -> int:
     for path in result['missing']:
         print(f'  MISSING     {_live_alias(path)}')
     waiting = result.get('content_waiting') or {}
-    if waiting.get('unread') or waiting.get('missing_unread'):
+    if waiting.get('unread'):
         print(_content_waiting_message(waiting))
     unchecked = result.get('content_unchecked') or []
     if unchecked:

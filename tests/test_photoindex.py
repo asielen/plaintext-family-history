@@ -7024,23 +7024,6 @@ class ContentFingerprintTests(unittest.TestCase):
         self.assertEqual(result['rematched_by_content'], [])
         self.assertIn('MISSING:photos/farm.jpg', self._rows())
 
-    def test_an_unread_copy_of_the_same_size_blocks_the_re_tie(self) -> None:
-        # F4: b's fingerprint is unknown (its read failed), and it is the
-        # same size as a: it may be a copy of the same picture, so a is not
-        # paired with b's moved file.
-        picture = self._picture(25)
-        self._put('a.jpg', picture, caption='A')
-        self._put('b.jpg', picture, caption='B')
-        photoindex.run_scan(self.archive, self.CFG)
-        conn = sqlite3.connect(self.archive / '.cache' / 'photos.sqlite')
-        conn.execute("UPDATE photos SET fingerprint=NULL WHERE path='photos/b.jpg'")
-        conn.commit()
-        conn.close()
-        (self.photos / 'a.jpg').unlink()
-        (self.photos / 'b.jpg').rename(self.photos / 'bmoved.jpg')
-        result = photoindex.run_reconcile(self.archive, self.CFG)
-        self.assertEqual(result['rematched'], [])
-
     def test_another_sources_file_is_never_re_tied_by_content(self) -> None:
         # F5 / Codex: the untracked file's own SOURCE: keyword names a
         # different source; it stays untracked, reported under that source.
@@ -7563,10 +7546,12 @@ class ContentFingerprintTests(unittest.TestCase):
 
     # ── #220 Codex round 7 ──────────────────────────────────────────────────
 
-    def test_no_content_match_while_any_photo_is_unread(self) -> None:
-        # The gate: copies A and B with the same picture but different
-        # metadata (so different sizes); B's fingerprint unknown. A deleted,
-        # B moved: no content pair, whatever the sizes, and it says why.
+    def test_a_copy_that_vanished_unread_is_gone_and_does_not_hold_the_gate(self) -> None:
+        # Copies A and B, same picture, different metadata; B's fingerprint
+        # never read, then B vanishes too. B can never be read again, so it
+        # is settled as gone:v1 and neither holds the gate nor counts as a
+        # holder (owner decision, #220): A's row goes to the one untracked
+        # file with A's picture - an identical picture either way.
         picture = self._picture(80)
         self._put('A.jpg', picture, caption='A')
         self._put('B.jpg', self._with_new_header(picture), caption='B')
@@ -7575,10 +7560,30 @@ class ContentFingerprintTests(unittest.TestCase):
         (self.photos / 'A.jpg').unlink()
         (self.photos / 'B.jpg').rename(self.photos / 'N.jpg')
         result = photoindex.run_reconcile(self.archive, self.CFG)
-        self.assertEqual(result['rematched_by_content'], [])
-        self.assertEqual(result['content_waiting']['missing_unread'], 1)
-        message = photoindex._content_waiting_message(result['content_waiting'])
-        self.assertIn('cannot be read', message)
+        self.assertEqual(result['rematched_by_content'], [('photos/A.jpg', 'photos/N.jpg')])
+        self.assertEqual(result['content_waiting']['unread'], 0)
+        self.assertEqual(self._rows()['MISSING:photos/B.jpg'][1], photoindex._FINGERPRINT_GONE)
+
+    def test_a_pre_upgrade_missing_row_does_not_keep_matching_off(self) -> None:
+        # A schema-1 catalog with a photo already MISSING: (its fingerprint
+        # can never be known). After the upgrade and the backfill of the
+        # live rows, a moved photo is re-tied by its picture.
+        self._put('farm.jpg', self._picture(85), caption='The farm')
+        photoindex.run_scan(self.archive, self.CFG)
+        db = self.archive / '.cache' / 'photos.sqlite'
+        conn = sqlite3.connect(db)
+        conn.execute("INSERT INTO photos(path, caption, size) "
+                     "VALUES ('MISSING:photos/lost.jpg', 'Grandma, 1931', 200000)")
+        conn.commit()
+        conn.close()
+        self._downgrade_to_schema_1()
+        photoindex.run_scan(self.archive, self.CFG)               # upgrade + backfill
+        self.assertEqual(self._rows()['MISSING:photos/lost.jpg'],
+                         ('Grandma, 1931', photoindex._FINGERPRINT_GONE))
+        (self.photos / 'farm.jpg').rename(self.photos / 'farm2.jpg')
+        result = photoindex.run_reconcile(self.archive, self.CFG)
+        self.assertEqual(result['rematched_by_content'], [('photos/farm.jpg', 'photos/farm2.jpg')])
+        self.assertEqual(self._rows()['MISSING:photos/lost.jpg'][0], 'Grandma, 1931')
 
     def test_the_gate_names_how_many_photos_are_left_to_read(self) -> None:
         self._put('farm.jpg', self._picture(81), caption='The farm')

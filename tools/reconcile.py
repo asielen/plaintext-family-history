@@ -695,7 +695,7 @@ def run_reconcile(
         d = photo_result.data or {}
         photo_status = str(d.get('status') or '')
         waiting = d.get('content_waiting') or {}
-        if waiting.get('unread') or waiting.get('missing_unread'):
+        if waiting.get('unread'):
             # Matching by picture is gated until every photo has been read
             # (#220): say why no photo was matched that way.
             result.add('info', 'photos: ' + photoindex._content_waiting_message(waiting))
