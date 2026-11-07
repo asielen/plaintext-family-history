@@ -507,7 +507,11 @@
     fill('f-title', prefill.title || '');
     fill('f-date', prefill.sourceDate || '');
     fill('f-repo', prefill.repository || '');
-    $('f-url').value = prefill.url || '';
+    // The address the form was READ for is prefilledUrl (above), and that is
+    // what Capture checks the tab against (checkFormIsForTab). The Page
+    // address box is an ordinary field: one she corrected stays on a retry
+    // and is the address the capture records (Codex 4503614707).
+    fill('f-url', prefill.url || '');
     // Reset the per-record fields the prefill doesn't otherwise set, so a batch
     // re-prefill (on navigation) never carries the previous record's notes or
     // chosen kind onto the next page. (Auto-detect = blank kind.)
@@ -808,9 +812,22 @@
     setNewspapersMode(info, keepNp);
   }
 
+  // The title, date and newspaper boxes step aside (read-only) only while
+  // several of her clippings are ticked (fillNpFields). Every change of
+  // newspaper mode starts by giving them back - a clipping list that could
+  // not be read again, a page with none of hers, a page that is not a
+  // newspaper - so she can always name a file she supplies by hand (Codex
+  // 4503601729). A new answer with several ticked locks them again.
+  const NP_MANY_PLACEHOLDER = 'Each clipping gets its own title';
+  function unlockNpFields() {
+    for (const id of ['f-title', 'f-date', 'f-repo']) $(id).readOnly = false;
+    if ($('f-title').placeholder === NP_MANY_PLACEHOLDER) $('f-title').placeholder = '';
+  }
+
   function setNewspapersMode(info, keepNp) {
     state.np = info && info.ok ? info : null;
     state.npSelected = new Set();
+    unlockNpFields();
     const note = $('np-note');
     const urlInput = $('f-asset-url');
     $('np-clips').textContent = '';
@@ -939,7 +956,7 @@
       // and see ignored (#211 audit).
       for (const id of ['f-title', 'f-date', 'f-repo']) state.userEdited.delete(id);
       $('f-title').value = '';
-      $('f-title').placeholder = 'Each clipping gets its own title';
+      $('f-title').placeholder = NP_MANY_PLACEHOLDER;
       $('f-date').value = np.pageDate || '';
       $('f-repo').value = (np.publication && np.publication.name) || 'Newspapers.com';
     }
@@ -2660,7 +2677,7 @@
         clearAutoLog();
       } else {
         state.prefilledUrl = url || null;
-        $('f-url').value = url || '';
+        if (!state.touched.has('f-url')) $('f-url').value = url || '';
       }
       // This address is read again on its next event (refreshOnNavigation).
       state.prefillFailed = true;

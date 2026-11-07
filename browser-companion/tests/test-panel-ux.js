@@ -786,3 +786,31 @@ test('control: a retry that works DOES fill every field she has not touched', as
   assert.strictEqual(p.$('f-asset-url').value, REC_B + '/guess.jpg');
   assert.match(p.$('recipe-banner').textContent, /^Generic capture/);
 });
+
+test('Codex 4503614707: a page address she corrected after a failed read survives the retry, and is saved', async () => {
+  const { st, pages, wrap } = loadingB();
+  const p = await open(REC_A, pages, { wrap });
+  await p.navigate(REC_B);
+  await settle();
+  const PERMA = 'https://records.example.org/permalink/harriet-1880';
+  await type(p, 'f-url', PERMA);
+  st.ready = true;
+  await p.navigate(REC_B);
+  await settle();
+  assert.strictEqual(p.$('f-url').value, PERMA);
+  assert.strictEqual(p.$('f-title').value, 'Harriet Hartley, 1880', 'the rest fills from the page');
+  await p.capture();
+  assert.strictEqual(p.written.length, 1, 'the form was read for the page in the tab: it saves');
+  assert.strictEqual(p.written[0].captureJson.url, PERMA);
+});
+
+test('Codex 4503614707 control: with a corrected address, a tab moved to another page still refuses', async () => {
+  const { st, pages, wrap } = loadingB();
+  st.ready = true;
+  const p = await open(REC_B, pages, { wrap });
+  await type(p, 'f-url', REC_B); // she "corrects" it to the address it already shows
+  p.tab.url = REC_A; // the tab moved, unannounced
+  await p.capture();
+  assert.strictEqual(p.written.length, 0);
+  assert.match(p.result(), /the page in the tab is not the one these details were filled in for/);
+});

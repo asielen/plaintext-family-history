@@ -563,3 +563,42 @@ test('PR #223 delta D4: after Re-read file reads a page the panel could not read
   await p.capture();
   assert.strictEqual(p.written.length, 1, 'the clipping she unticked is not saved');
 });
+
+// ── Codex 4503601729: the boxes several clippings lock are always given back ─
+
+const locked = (p) => ['f-title', 'f-date', 'f-repo'].map((id) => p.$(id).readOnly);
+
+test('Codex 4503601729: a clipping list that cannot be read again gives her the title, date and newspaper back', async () => {
+  const pages = twoOnPage();
+  const p = await openOn(URL_PAGE, pages);
+  assert.deepStrictEqual(locked(p), [true, true, true], 'several clippings ticked: the boxes step aside');
+  const good = pages[URL_PAGE].info;
+  pages[URL_PAGE].info = { ok: false, error: 'the clipping list did not answer' };
+  await p.$('btn-rescrape-file').fire('click');
+  await settle();
+  assert.deepStrictEqual(locked(p), [false, false, false], 'she can name the file she supplies by hand');
+  assert.notStrictEqual(p.$('f-title').placeholder, 'Each clipping gets its own title');
+  // The list answers again with both clippings: the boxes step aside again.
+  pages[URL_PAGE].info = good;
+  await p.$('btn-rescrape-file').fire('click');
+  await settle();
+  assert.deepStrictEqual(locked(p), [true, true, true]);
+});
+
+test('Codex 4503601729: leaving for a page that is not a newspaper, or Re-read page, unlocks them too', async () => {
+  const pages = Object.assign(twoOnPage(), {
+    'https://records.example.org/hartley/will-1901': { title: 'Will of Calvin Hartley' },
+  });
+  const scriptedPlus = (msg, tab) => (tab.url.indexOf('records.example.org') >= 0 && msg.action === 'prefill'
+    ? { ok: true, prefill: { url: tab.url, title: 'Will of Calvin Hartley', people: [] } } : scripted(pages)(msg, tab));
+  let p = await openPanel({ url: URL_PAGE, respond: scriptedPlus });
+  assert.deepStrictEqual(locked(p), [true, true, true]);
+  await p.navigate('https://records.example.org/hartley/will-1901');
+  await settle();
+  assert.deepStrictEqual(locked(p), [false, false, false]);
+  p = await openOn(URL_PAGE, pages);
+  p.openTab('https://records.example.org/not-readable');
+  await p.$('btn-rescrape').fire('click');
+  await settle();
+  assert.deepStrictEqual(locked(p), [false, false, false]);
+});
