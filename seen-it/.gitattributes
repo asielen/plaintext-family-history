@@ -1,0 +1,4 @@
+# The macOS / Linux installer must stay LF on every checkout: /bin/sh cannot
+# run a script with CRLF line endings. (The repo's .gitattributes covers .cmd,
+# .js, .json, .py, .md, .css and .html already.)
+*.sh text eol=lf

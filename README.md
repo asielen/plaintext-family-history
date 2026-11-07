@@ -158,6 +158,8 @@ The operating loop is simple: **capture → file → process → review → repo
 
 **Or open it in a browser.** `fha serve` starts a private local workbench (this machine only, no login) with a review queue, an inbox, and every record page one click away - every button is the same `fha` command you'd otherwise type, previewed before it writes. It's a second way in, not a second copy of anything: close the window and nothing is lost.
 
+**Stop re-reading the same newspaper page.** The optional [Seen It](seen-it/) browser add-on remembers which Newspapers.com pages, Ancestry and FamilySearch records and Find a Grave memorials you have already opened, ruled out or attached to your tree, and marks them right on the sites. It works on its own, with everything kept in your browser; turn on its Advanced mode and it also marks what your archive already holds, reading the archive without ever changing it.
+
 **Back it up with one command.** `fha backup` copies the archive into a dated zip in a folder *beside* it (`my-family-archive-backups/`) and verifies every file. Photos and documents are not included by default - they are often huge and often live on another drive - and the output says so every time; add `--include-assets` to pack them too, or back those folders up separately (`fha doctor` lists every path a full backup must cover, and reports when you last actually ran a backup). To restore: unzip the file. That's the whole procedure - a backup is just your files.
 
 ## Repository layout
@@ -183,6 +185,9 @@ plaintext-family-history/
 ├── quickstart-template/ ← blank by-hand starter kit — plain files, no tools required, open in any text editor
 ├── quickstart-example/  ← filled-in fictional worked example of quickstart-template/ (the Rivera/Lee family)
 ├── tools/               ← the generic fha command suite (see tools/README.md)
+├── browser-companion/   ← the capture browser add-on (ships into every archive)
+├── seen-it/             ← "Seen It", an optional research add-on: marks pages and records
+│                          you've already looked at; can also show what your archive holds
 ├── tests/               ← automated tests and fixtures for the tools
 ├── PRIVACY.md           ← example-data policy
 └── .github/             ← issue templates, contributing guide

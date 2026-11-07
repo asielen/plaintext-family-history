@@ -1,0 +1,14 @@
+# Seen It's data is a record of what someone browsed. It belongs in a per-user
+# folder (see README.md, "The data folder"), never in this repo - these lines
+# make sure a data folder or a stray data file created here by mistake can
+# never be committed.
+data/
+*-data/
+seen-it-*.json
+known-config.json
+known-cache.json
+.known-cache.json
+.writing-*
+# a helper settings file, if anyone points the settings folder here
+config.json
+node_modules/

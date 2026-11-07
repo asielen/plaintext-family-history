@@ -1,0 +1,86 @@
+{
+  "manifest_version": 3,
+  "name": "Seen It: Newspapers.com, Ancestry, FamilySearch, Find a Grave",
+  "version": "0.11.0",
+  "description": "Marks the newspaper pages, records and memorials you have already opened, ruled out, or attached to your tree on Newspapers.com, Ancestry, FamilySearch and Find a Grave, and logs your searches.",
+  "permissions": [
+    "storage",
+    "history",
+    "unlimitedStorage",
+    "alarms"
+  ],
+  "host_permissions": [
+    "https://www.newspapers.com/*",
+    "https://www.ancestry.com/*",
+    "https://www.familysearch.org/*",
+    "https://www.findagrave.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.newspapers.com/*"
+      ],
+      "js": [
+        "cliplist.js",
+        "searchrun.js",
+        "content.js"
+      ],
+      "css": [
+        "content.css"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://www.ancestry.com/*"
+      ],
+      "js": [
+        "content-ancestry.js"
+      ],
+      "css": [
+        "content-ancestry.css"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://www.familysearch.org/*"
+      ],
+      "js": [
+        "content-familysearch.js"
+      ],
+      "css": [
+        "content-ancestry.css"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://www.findagrave.com/*"
+      ],
+      "js": [
+        "content-findagrave.js"
+      ],
+      "css": [
+        "content-ancestry.css"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Seen It"
+  },
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAsqqepTDxSjCiwcc5NdDgcru0Nk2y/duhzIx7dTP9wDXBe8H87gp9RaeGJMfNDEdzgEp/yeUSJaHQOOgMS0T3BOFGrTlgBVinJYNE150JNxgPcEijvb523h0DQY0ERz1UuLNS0nfmOewcqrmMy8nvw/8Yb+9nDZsbwaloBBhmSqDV+BLVapTQj6IZaGOOWXCmy4rZS2fzmBFNxCBLMZC0l4RflqxeaadaAGdOKy8TkVQqnhfwODHP7rsN41Kh6ylz9Ija4AuhLam++TEQ/N1X3giXpsJKJy8lfT6Ge7S7+2lKGPva5sMl6SmfyONyZp381V+qZ5a4b7BcP4cERBuBTQIDAQAB",
+  "externally_connectable": {
+    "ids": [
+      "*"
+    ]
+  },
+  "optional_permissions": [
+    "nativeMessaging"
+  ]
+}

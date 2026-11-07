@@ -1,0 +1,78 @@
+/* "Seen It" on Ancestry - Ancestry runs a light theme. Shares the pill
+   shapes and colours with the Newspapers.com side (content.css). */
+.nsi-pills { display: inline-flex; flex-wrap: wrap; gap: 5px; margin: 0 0 0 8px; vertical-align: middle; }
+.nsi-pill {
+  display: inline-block;
+  font: 600 12px/1.2 system-ui, -apple-system, "Segoe UI", sans-serif;
+  padding: 3px 9px;
+  border-radius: 999px;
+  white-space: nowrap;
+  text-decoration: none !important;
+  cursor: default;
+}
+.nsi-seen     { background: #f9a825; color: #1a1a1a; }
+.nsi-nothing  { background: #616161; color: #fff; }
+.nsi-later    { background: #6a1b9a; color: #fff; }
+.nsi-archive  { background: #1565c0; color: #fff; }
+.nsi-captured { background: #ef6c00; color: #fff; }
+.nsi-notyet   { background: transparent; color: #555; border: 1px dashed #999; padding: 2px 8px; }
+.nsi-new      { background: #0d47a1; color: #fff; }
+.nsi-ruled-out { opacity: 0.55; }
+.nsi-ruled-out:hover { opacity: 1; }
+
+/* Record and image pages: a fixed badge, bottom left, clear of Ancestry's own controls. */
+#nsi-anc-badge {
+  position: fixed;
+  left: 16px;
+  bottom: 16px;
+  z-index: 2147483000;
+  background: rgba(255, 255, 255, 0.96);
+  border: 1px solid #ccc;
+  border-radius: 12px;
+  padding: 6px 8px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.25);
+  max-width: calc(100vw - 32px);
+}
+#nsi-anc-badge .nsi-pills { margin: 0; }
+.nsi-marks { display: inline-flex; gap: 6px; margin-left: 8px; vertical-align: middle; }
+.nsi-mark {
+  font: 600 12px/1.2 system-ui, -apple-system, "Segoe UI", sans-serif;
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px solid #999;
+  background: #fff;
+  color: #333;
+  cursor: pointer;
+}
+.nsi-mark:hover { border-color: #333; }
+.nsi-mark.nsi-on { background: #333; color: #fff; border-color: #333; }
+
+/* A person's Facts page: how many of their Ancestry sources are saved. */
+#nsi-anc-person {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 2147483000;
+  background: rgba(255, 255, 255, 0.96);
+  border: 1px solid #ccc;
+  border-radius: 12px;
+  padding: 6px 8px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.25);
+}
+#nsi-anc-person .nsi-pills { margin: 0; }
+
+/* Tree view: a chip on each person card whose sources Seen It has seen. */
+.nsi-node-chip {
+  display: inline-block;
+  margin-top: 3px;
+  font: 700 10px/1.2 system-ui, -apple-system, "Segoe UI", sans-serif;
+  padding: 1px 6px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+.nsi-node-all  { background: #2e7d32; color: #fff; }
+.nsi-node-part { background: #ef6c00; color: #fff; }
+.nsi-node-none { background: #fff; color: #555; border: 1px dashed #999; }
+
+/* A record attached to someone in your tree. */
+.nsi-tree { background: #2e7d32; color: #fff; }
