@@ -4859,9 +4859,37 @@ class DuplicatePersonW135Tests(unittest.TestCase):
         self.assertEqual(len(found), 1)
         message = found[0].message
         self.assertIn('Alice Smith', message)
-        self.assertIn('more than once', message)
-        # Tidy-up, not defect: it says plainly that nothing is broken.
-        self.assertIn('Nothing is wrong because of it', message)
+        self.assertIn('by the name "[[Alice Smith]]"', message)
+        # A name onto a listed code may be a different person (#215 audit),
+        # so it is never called harmless; the same-P-id case below is.
+        self.assertNotIn('Nothing is wrong', message)
+
+    def test_a_same_name_relative_is_not_called_a_harmless_repeat(self) -> None:
+        # #215 audit: John Sr.'s code beside "[[John Smith]]" written for his
+        # son, who has no record yet. The name resolves to the father, the
+        # only John Smith - but deleting it would erase the son.
+        root = self._build(f'{self.ALICE}, "[[Alice Smith]]", {self.BOB}')
+        message = self._w135(root)[0].message
+        self.assertNotIn('Nothing is wrong', message)
+        self.assertIn('father and son', message)
+        self.assertIn('fha person new', message)
+        # The one-line command is offered only for the same-person reading,
+        # after the question - never as the tidy-up.
+        self.assertIn('If the name means the same person, run `fha claim', message)
+
+    def test_a_command_that_would_be_refused_is_never_named(self) -> None:
+        # #215 audit: `fha claim --persons` refuses a P-id with no record and
+        # any code that is not a person, so naming it would be a dead end.
+        dangling = 'P-c9c9c9c9c9'
+        for persons in (f'{self.ALICE}, "[[Alice Smith]]", {dangling}',
+                        f'{self.ALICE}, {self.ALICE}, L-1234567890',
+                        f'{self.ALICE}, {self.ALICE}, {dangling}'):
+            with self.subTest(persons=persons):
+                root = self._build(persons)
+                found = self._w135(root)
+                self.assertEqual(len(found), 1)
+                self.assertNotIn('--persons', found[0].message)
+                self.assertIn('delete', found[0].message)
 
     def test_the_same_p_id_twice_warns_and_names_the_exact_fix(self) -> None:
         root = self._build(f'{self.ALICE}, {self.BOB}, {self.ALICE}')
