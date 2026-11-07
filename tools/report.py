@@ -948,9 +948,10 @@ def _section_photo_triage(
             'results below may be stale; run `fha photoindex` once the issue is fixed.'
         )
     result = photoindex.run_triage(archive_root, fha_config, top=10)
-    if result['status'] in ('absent', 'unreadable'):
+    if result['status'] in ('absent', 'unreadable', 'old-schema'):
+        state = 'out of date' if result['status'] == 'old-schema' else result['status']
         return lines + [
-            f'Photo index {result["status"]} - run `fha photoindex` to enable triage.'
+            f'Photo index {state} - run `fha photoindex` to enable triage.'
         ]
 
     candidates = result['candidates']

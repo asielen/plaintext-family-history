@@ -694,13 +694,16 @@ def run_reconcile(
         # clean catalog.
         d = photo_result.data or {}
         photo_status = str(d.get('status') or '')
-        if photo_status in ('absent', 'unreadable'):
+        if photo_status in ('absent', 'unreadable', 'old-schema'):
             # The catalog exists on disk but photoindex refused it (corrupt,
-            # or an older schema). Keyed off status, not ok alone - the
-            # unreachable-root case below is also ok=False but is a warning.
+            # or a schema too old to upgrade in place - a schema-1 catalog
+            # IS upgraded by photoindex reconcile itself, #220 audit F9).
+            # Keyed off status, not ok alone - the unreachable-root case
+            # below is also ok=False but is a warning.
+            state = 'out of date' if photo_status == 'old-schema' else photo_status
             result.add('error',
                        f'photos: the photo catalog (.cache/photos.sqlite) is '
-                       f'{photo_status} - photo paths not checked. Rebuild it '
+                       f'{state} - photo paths not checked. Rebuild it '
                        'with `fha photoindex`, then re-run `fha reconcile`.')
         elif not photo_result.messages:
             if not d.get('root_found', True):
