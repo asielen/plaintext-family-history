@@ -34,7 +34,8 @@
 //   fagStatusMessage    what an HTTP answer means, and what to do next
 //   fagMemorialFrom     the memorial from its page
 //   fagPhotosFrom       the photos listed on one gallery page
-//   fagGallery          every photo, page by page
+//   fagSlugSegment      a memorial's slug as one safe path segment
+//   fagGallery          every photo, page by page, and whether that was all
 //   fagHints            type, date (its own death, never invented) and class
 //   fagTitle            "{name} ({born}-{died}) - Find a Grave memorial"
 //   fagPhotoRole        "grave-1", "person-1", … for each photo
@@ -238,35 +239,89 @@ function fagPhotosFrom(root, base) {
   return { photos, total: isNaN(total) ? null : total };
 }
 
+// A memorial's slug as one safe path segment: Find a Grave's own slugs carry
+// apostrophes ("mary-o'hartley") and percent-escaped accented letters
+// ("j%C3%B3zefa-hartley"), so the slug is decoded and encoded again -
+// never refused for them. '' when there is none; null when it cannot be one
+// (a broken escape, "." or ".."), and the address is then built from the
+// memorial id alone.
+function fagSlugSegment(slug) {
+  if (slug == null || slug === '') return '';
+  let s;
+  try {
+    s = decodeURIComponent(String(slug));
+  } catch (e) {
+    return null;
+  }
+  if (!s || s === '.' || s === '..' || s.length > 300) return null;
+  return encodeURIComponent(s);
+}
+
+const FAG_GALLERY_PAGES = 20;
+
 // Every photo on the memorial, from its gallery pages (at most 20), without
-// cookies. { ok, photos, total } or { ok:false, error }.
+// cookies: { ok, photos, total, partial, partialStatus, partialError } or
+// { ok:false, error, status }.
+//   total    how many photos Find a Grave says the memorial has: its count,
+//            or - with no count - the photos listed when the whole list was
+//            read; null when that is not known (a later page failed, or the
+//            first page listed nothing and gave no count: an unrecognised
+//            page is not "no photos");
+//   partial  true when the list stopped before its end (a later page failed,
+//            repeated itself short of the count, or ran past 20 pages): the
+//            photos listed are only some of them.
 async function fagGallery(memorialId, slug, d) {
-  const path = '/memorial/' + memorialId + (slug ? '/' + slug : '') + '/photo';
+  const seg = fagSlugSegment(slug);
+  const path = '/memorial/' + memorialId + (seg ? '/' + seg : '') + '/photo';
   const photos = [];
-  let total = null;
-  for (let page = 1; page <= 20; page++) {
+  let count = null;
+  let partial = false;
+  let partialStatus = null;
+  let partialError = null;
+  let readAll = false;
+  for (let page = 1; page <= FAG_GALLERY_PAGES; page++) {
     let r;
+    let html;
     try {
       r = await d.fetch(new URL(path + (page > 1 ? '?page=' + page : ''), d.base).href, { credentials: 'omit' });
+      html = r.ok ? await r.text() : null;
     } catch (e) {
-      if (page === 1) return { ok: false, error: 'could not reach Find a Grave for the photos - check your internet connection' };
+      const error = 'could not reach Find a Grave for the photos - check your internet connection';
+      if (page === 1) return { ok: false, error, status: null };
+      partial = true;
+      partialError = error;
       break;
     }
     if (!r.ok) {
-      if (page === 1) return { ok: false, error: fagStatusMessage(r.status, 'gallery') };
+      if (page === 1) return { ok: false, error: fagStatusMessage(r.status, 'gallery'), status: r.status };
+      partial = true;
+      partialStatus = r.status;
+      partialError = fagStatusMessage(r.status, 'gallery');
       break;
     }
-    const one = fagPhotosFrom(d.parse(await r.text()), d.base);
-    if (total == null) total = one.total;
+    const one = fagPhotosFrom(d.parse(html), d.base);
+    if (count == null) count = one.total;
     let added = 0;
     for (const p of one.photos) {
       if (photos.some((x) => x.photoId === p.photoId)) continue;
       photos.push(p);
       added++;
     }
-    if (!added || (total != null && photos.length >= total)) break;
+    if (count != null && photos.length >= count) {
+      readAll = true;
+      break;
+    }
+    if (!added) {
+      // A page with nothing new is the end of the list - unless the count
+      // says there are more (Find a Grave ignoring ?page=, say).
+      if (count != null) partial = true;
+      else readAll = photos.length > 0;
+      break;
+    }
+    if (page === FAG_GALLERY_PAGES) partial = true;
   }
-  return { ok: true, photos, total: total == null ? photos.length : total };
+  const total = count != null ? count : readAll && !partial ? photos.length : null;
+  return { ok: true, photos, total, partial, partialStatus, partialError };
 }
 
 // What the memorial says about itself (TI-066): the shared rule over the
@@ -311,6 +366,7 @@ module.exports = {
   fagStatusMessage,
   fagMemorialFrom,
   fagPhotosFrom,
+  fagSlugSegment,
   fagGallery,
   fagHints,
   fagTitle,

@@ -114,7 +114,16 @@
         );
       }
       if (resp.ok) {
-        const blob = await resp.blob();
+        let blob;
+        try {
+          blob = await resp.blob();
+        } catch (e) {
+          // The tile broke off mid-download (PR #221 review sweep): say so plainly.
+          throw new Error(
+            'the connection to Newspapers.com broke off while the page image was coming down, so the ' +
+              'capture stopped. Nothing was saved for this page. Check your internet connection, then press Capture again'
+          );
+        }
         if (!/^image\//i.test(blob.type || 'image/jpeg')) {
           throw new Error('Newspapers.com sent something other than an image for a page tile');
         }

@@ -829,12 +829,12 @@
   }
 
   async function captureAncestryRecord(pageHtml, wantPageCopy, form, recordUrl) {
-    const info = await sendToTab(state.tabId, {
+    const info = await askTab({
       // A title she typed is hers and is used as typed (below); only the
       // form's untouched prefill goes through ancTitle's "is this just the
       // tab's own title?" test (PR #214 review).
       action: 'ancestryRecordInfo', formTitle: form.edited.has('f-title') ? '' : form.title,
-    });
+    }, recordUrl);
     if (!info || !info.ok) throw new Error((info && info.error) || 'could not read the Ancestry record');
     const rec = info.record;
     const hints = info.hints || {};
@@ -869,7 +869,7 @@
       rec.same_image_as = sameImageAs;
     } else if (rec.imageId) {
       setStageResult('Fetching the record’s image from Ancestry…', '');
-      const img = await sendToTab(state.tabId, { action: 'ancestryImage', dbId: rec.dbId, imageId: rec.imageId });
+      const img = await askTab({ action: 'ancestryImage', dbId: rec.dbId, imageId: rec.imageId }, recordUrl, [rec.recordId]);
       if (img && img.ok) {
         assets.push({
           filename: 'record.' + (img.ext || 'jpg'),
@@ -1024,12 +1024,12 @@
   }
 
   async function captureFamilySearchRecord(pageHtml, wantPageCopy, form, recordUrl) {
-    const info = await sendToTab(state.tabId, {
+    const info = await askTab({
       action: 'familysearchRecordInfo',
       // FamilySearch's own name for the record; a title she typed is used
       // as typed below, never second-guessed (PR #214 review).
       formTitle: '',
-    });
+    }, recordUrl);
     if (!info || !info.ok) throw new Error((info && info.error) || 'could not read the FamilySearch record');
     const rec = info.record;
     const hints = info.hints || {};
@@ -1056,7 +1056,7 @@
       rec.same_image_as = sameImageAs;
     } else if (imageKey) {
       setStageResult('Fetching the record’s image from FamilySearch…', '');
-      const img = await sendToTab(state.tabId, { action: 'familysearchImage', imageId: imageKey });
+      const img = await askTab({ action: 'familysearchImage', imageId: imageKey }, recordUrl, ['1:1:' + rec.fsId]);
       if (img && img.ok) {
         assets.push({
           filename: 'record.' + (img.ext || 'jpg'),
@@ -1155,7 +1155,7 @@
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
   async function captureFindAGraveMemorial(pageHtml, wantPageCopy, form, recordUrl) {
-    const info = await sendToTab(state.tabId, { action: 'findagraveMemorialInfo', today: captureJson.accessedDate() });
+    const info = await askTab({ action: 'findagraveMemorialInfo', today: captureJson.accessedDate() }, recordUrl);
     if (!info || !info.ok) throw new Error((info && info.error) || 'could not read the Find a Grave memorial');
     const rec = info.record;
     const hints = info.hints || {};
@@ -1172,13 +1172,22 @@
     // Its photos, from its gallery (by memorial id, not "whatever the tab
     // shows"). A gallery that cannot be read leaves the memorial's facts.
     setStageResult('Reading the memorial’s photos on Find a Grave…', '');
-    const gallery = await sendToTab(state.tabId, { action: 'findagraveGallery', memorialId: rec.memorialId, slug: rec.slug });
+    const gallery = await askTab({ action: 'findagraveGallery', memorialId: rec.memorialId, slug: rec.slug }, recordUrl);
     const galleryOk = !!(gallery && gallery.ok);
     const listed = galleryOk ? gallery.photos : [];
     const photos = listed.map((p) => ({
       photoId: p.photoId, url: p.url, role: p.role, type: p.type || null,
       caption: p.caption || null, addedBy: p.addedBy || null, file: null,
     }));
+    // How many photos Find a Grave says the memorial has (null when that is
+    // not known), and whether the list was read only in part: a later page
+    // failed, or it listed fewer than the count (PR #221 audit).
+    const shown = galleryOk && typeof gallery.total === 'number' ? gallery.total : null;
+    const partList = galleryOk && (!!gallery.partial || shown == null || shown > photos.length);
+    // Find a Grave said "slow down" while the list was read: no photo is
+    // asked for now either.
+    let slowDown = galleryOk && gallery.partialStatus === 429;
+
     // A photo already saved - in this sitting, or in the archive as Seen It
     // knows it (only from a saved file, never from the memorial alone) - is
     // not downloaded again: the list says where it is.
@@ -1194,15 +1203,16 @@
 
     // The page copy, from the tab before the long downloads, when it is sure
     // to be kept (recordPageCopy): asked for, or no photo will be saved.
-    let pageCopy = await recordPageCopy('early', wantPageCopy || (!dropped && !toFetch.length), recordUrl);
+    let pageCopy = await recordPageCopy('early', wantPageCopy || (!dropped && (!toFetch.length || slowDown)), recordUrl);
 
     const assets = [];
     const failed = [];
-    let slowDown = false;
+    const notTried = [];
     for (let i = 0; i < toFetch.length; i++) {
       const p = toFetch[i];
       if (slowDown) {
         p.error = 'not tried: Find a Grave asked us to slow down';
+        notTried.push(p);
         continue;
       }
       if (i) await sleep(FHA.findagrave.pauseMs());
@@ -1217,6 +1227,11 @@
         if (got.slowDown) slowDown = true;
       }
     }
+    // The gravestone is the source's main picture when it has one, else the
+    // person, else the first photo saved (`is_primary`, which filing honours;
+    // by name alone "family-1" would come before "grave-1" - PR #221 audit).
+    const lead = ['grave', 'person', ''].map((k) => assets.find((a) => a.role.indexOf(k) === 0)).find(Boolean);
+    if (lead) lead.primary = true;
     if (dropped) {
       assets.push({ filename: 'record.' + dropped.ext, blob: dropped.blob, role: 'record', mode: 'manual', provisional });
     }
@@ -1231,19 +1246,20 @@
       forcedCopy = !wantPageCopy;
     }
 
-    const photosTotal = galleryOk ? gallery.total : null;
     const data = {
       note: 'Captured from Find a Grave by the archive capture extension. "record" is what the memorial page ' +
         'says - a volunteer’s compilation from the stone, records and family knowledge, not an original record. ' +
         '"photos" lists the memorial’s photos: "file" is the file this capture saved it as, or null - then ' +
         '"same_image_as" says where it is already saved, "error" why it could not be saved, "skipped" why it was ' +
-        'not tried. "photosTotal" is how many photos the memorial shows (null when its photo list could not be read).',
+        'not tried. "photosTotal" is how many photos the memorial shows (null when that is not known); ' +
+        '"photosPartial" is true when its photo list was read only in part.',
       record: rec,
       citation: info.citation || null,
       title: info.title,
       photos,
-      photosTotal,
+      photosTotal: shown,
     };
+    if (!galleryOk || partList) data.photosPartial = true;
     assets.push({
       filename: 'record-data.json',
       blob: new Blob([JSON.stringify(data, null, 2) + '\n'], { type: 'application/json' }),
@@ -1254,24 +1270,41 @@
     const saved = photos.filter((p) => p.file);
     const already = photos.filter((p) => p.same_image_as);
     const skipped = photos.filter((p) => p.skipped);
+    const kept = saved.length + already.length;
     const named = (list) => list.map((p) => p.role).join(', ');
-    let warning = null;
+    const plural = (n, one) => n + ' ' + one + (n === 1 ? '' : 's');
+    // The next capture is a capture of its own (it is not added to this one):
+    // say so, so the rest is filed with this memorial by hand (PR #221 audit).
+    const again = 'that capture is one of its own, so when you file it, add its photos to this memorial’s source.';
+    const lines = [];
     if (!galleryOk) {
-      warning = 'The memorial’s photos were not saved: ' + ((gallery && gallery.error) || 'no answer from the page') +
-        '. Its facts and citation are saved; press Capture again later for the photos.';
-    } else if (failed.length) {
-      warning = (failed.length === 1 ? 'One photo was' : failed.length + ' photos were') + ' not saved (' +
-        failed.map((p) => p.role + ': ' + p.error).join('; ') + '). ' +
-        (slowDown
-          ? 'Wait a few minutes, then press Capture again: the photos already saved are not downloaded again.'
-          : 'Press Capture again to try again: the photos already saved are not downloaded again.');
+      lines.push('The memorial’s photos were not saved: ' + ((gallery && gallery.error) || 'no answer from the page') +
+        '. Its facts and citation are saved; press Capture again later for the photos - ' + again);
+    } else if (partList) {
+      lines.push((shown != null
+        ? 'Find a Grave shows ' + plural(shown, 'photo') + '; ' + kept + ' are saved'
+        : 'Find a Grave’s photo list could not be read in full; ' + kept + (kept === 1 ? ' photo is' : ' photos are') + ' saved') +
+        (gallery.partialError ? ' (' + gallery.partialError.replace(/\.[^.]*$/, '') + ')' : '') +
+        ' - press Capture again later for the rest; ' + again);
     }
+    if (failed.length || notTried.length) {
+      lines.push(plural(failed.length + notTried.length, 'photo') + (failed.length + notTried.length === 1 ? ' was' : ' were') +
+        ' not saved (' + failed.map((p) => p.role + ': ' + p.error).concat(notTried.length
+          ? [named(notTried) + ': not tried after Find a Grave asked us to slow down'] : []).join('; ') + '). ' +
+        (slowDown ? 'Wait a few minutes, then press Capture again' : 'Press Capture again to try again') +
+        (kept ? ': the photos already saved are not downloaded again; ' : ': ') + again);
+    }
+    if (skipped.length) {
+      lines.push(plural(skipped.length, 'more photo') + (skipped.length === 1 ? ' was' : ' were') + ' not saved in this ' +
+        'capture (at most ' + FAG_MAX_PHOTOS + ' at a time): press Capture again to save the next ones; ' + again);
+    }
+    const warning = lines.join('\n') || null;
     const photoNotes = [
-      saved.length ? saved.length + (saved.length === 1 ? ' photo' : ' photos') + ' saved from the memorial (' + named(saved) + ').' : '',
+      saved.length ? plural(saved.length, 'photo') + ' saved from the memorial (' + named(saved) + ').' : '',
       already.length ? already.map((p) => 'Photo ' + p.role + ' (Find a Grave photo ' + p.photoId + ') is already saved in ' +
         describeSameImage(p.same_image_as) + '; it was not downloaded again.').join('\n') : '',
-      skipped.length ? skipped.length + ' more photos were not downloaded (' + skipped[0].skipped + '): ' + named(skipped) + '.' : '',
-      galleryOk && !photos.length ? 'The memorial has no photos.' : '',
+      skipped.length ? named(skipped) + ': not downloaded (' + skipped[0].skipped + ').' : '',
+      galleryOk && !partList && shown === 0 ? 'The memorial has no photos.' : '',
     ];
     const title = (form.edited.has('f-title') && form.title) || info.title ||
       ('Find a Grave memorial ' + rec.memorialId);
@@ -1293,7 +1326,9 @@
       citation: info.citation || '',
       notes,
       recipeHint: 'findagrave',
-      assets: assets.map((a) => ({ file: a.filename, role: a.role, mode: a.mode, provisional: !!a.provisional })),
+      assets: assets.map((a) => ({
+        file: a.filename, role: a.role, mode: a.mode, provisional: !!a.provisional, primary: !!a.primary,
+      })),
     };
     const cap = captureJson.build(fields);
     const st = await stageBundle(captureJson.bundleName(title), pageHtml, cap, assets);
@@ -1685,6 +1720,20 @@
     if (!sameRecord || !named) {
       throw new TabMoved('the page in the tab changed while this record was being saved, so nothing was ' +
         'saved. The panel is reading the new page now - check it is the record you mean, then press Capture again');
+    }
+  }
+
+  // A record capture's question to the page in the tab. When the page goes
+  // away mid-answer (she clicked on to the next record), Chrome closes the
+  // message port and says so in its own words; the tab check turns that into
+  // the plain "the page in the tab changed" message, nothing saved (PR #221
+  // audit). A page that is still there but did not answer is { ok:false }.
+  async function askTab(msg, recordUrl, ids) {
+    try {
+      return await sendToTab(state.tabId, msg);
+    } catch (e) {
+      await checkTabStillOn(recordUrl, ids);
+      return { ok: false, error: 'the page did not answer (' + e.message + '). Reload it and press Capture again' };
     }
   }
 

@@ -29,7 +29,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const { openPanel, settle, tick, holdFirst } = require('./panel-harness.js');
+const { openPanel, settle, tick, holdFirst, PORT_CLOSED } = require('./panel-harness.js');
 const fag = require('../src/lib/findagrave-record.js');
 const { parse } = require('./mini-dom.js');
 
@@ -182,7 +182,8 @@ test('no login: the photos come only from Find a Grave\'s image host, and nothin
   assert.deepStrictEqual(p.fetched.map((f) => f.url), [PHOTO.grave, PHOTO.person, PHOTO.family]);
   for (const f of p.fetched) {
     assert.strictEqual(new URL(f.url).hostname, 'images.findagrave.com');
-    assert.deepStrictEqual(f.init, { credentials: 'omit', referrerPolicy: 'no-referrer' });
+    // no cookies, no referrer, and a redirect is never followed off the host (PR #221 audit)
+    assert.deepStrictEqual(f.init, { credentials: 'omit', referrerPolicy: 'no-referrer', redirect: 'error' });
   }
 });
 
@@ -215,7 +216,7 @@ test('an answer that is not an image (a page instead of the photo) is not saved 
   const b = p.written[0];
   assert.deepStrictEqual(p.files(b), ['page-snapshot.html', 'person-1.jpg', 'family-1.png', 'record-data.json']);
   assert.match((await recordData(b)).photos[0].error, /sent a page instead of the photo/);
-  assert.match(p.result(), /One photo was not saved \(grave-1: Find a Grave sent a page instead of the photo\)\. Press Capture again/);
+  assert.match(p.result(), /1 photo was not saved \(grave-1: Find a Grave sent a page instead of the photo\)\. Press Capture again/);
 });
 
 // ── typed corrections ────────────────────────────────────────────────────────
@@ -307,7 +308,7 @@ test('Find a Grave asking us to slow down stops the downloads, says what to do, 
     [null, 'not tried: Find a Grave asked us to slow down'],
   ]);
   assert.strictEqual(p.resultClass(), 'stage-result warn');
-  assert.match(p.result(), /Wait a few minutes, then press Capture again: the photos already saved are not downloaded again\./);
+  assert.match(p.result(), /2 photos were not saved \(person-1: Find a Grave asked us to slow down \(HTTP 429\); family-1: not tried after Find a Grave asked us to slow down\)\. Wait a few minutes, then press Capture again: the photos already saved are not downloaded again; that capture is one of its own/);
   delete answers[PHOTO.person];
   await p.capture();
   assert.deepStrictEqual(p.fetched.slice(2).map((f) => f.url), [PHOTO.person, PHOTO.family]);
@@ -319,8 +320,8 @@ test('a refused photo is said with its cause; the others are saved', async () =>
   await p.capture();
   const b = p.written[0];
   assert.deepStrictEqual(p.files(b), ['page-snapshot.html', 'grave-1.jpg', 'person-1.jpg', 'record-data.json']);
-  assert.match(p.result(), /One photo was not saved \(family-1: Find a Grave refused the photo \(HTTP 403\)\)\. Press Capture again to try again/);
-  assert.match(p.capJson(b).notes, /Not saved: One photo was not saved/);
+  assert.match(p.result(), /1 photo was not saved \(family-1: Find a Grave refused the photo \(HTTP 403\)\)\. Press Capture again to try again/);
+  assert.match(p.capJson(b).notes, /Not saved: 1 photo was not saved/);
 });
 
 test('a photo list Find a Grave will not give still saves the memorial, with its page, and says why', async () => {
@@ -434,4 +435,178 @@ test('moving on while the photos download: the bundle is all Calvin\'s, photos f
   assert.match(await asset(b, 'page-snapshot.html').blob.text(), /900000001/);
   assert.deepStrictEqual(p.files(b), ['page-snapshot.html', 'grave-1.jpg', 'person-1.jpg', 'family-1.png', 'record-data.json']);
   assert.strictEqual((await recordData(b)).record.name, 'Calvin George Hartley');
+});
+
+// ── PR #221 audit ────────────────────────────────────────────────────────────
+
+// The gallery as content.js reads it (fagGallery + roles), over pages a test
+// scripts: each an HTML string, or a status number.
+function galleryOf(pages, log = []) {
+  return async (msg) => {
+    const got = await fag.fagGallery(msg.memorialId, msg.slug, {
+      fetch: async (url) => {
+        log.push(url);
+        const n = Number(new URL(url).searchParams.get('page') || 1);
+        const b = pages[n - 1];
+        return typeof b === 'number' ? { ok: false, status: b, text: async () => '' }
+          : { ok: true, status: 200, text: async () => b || '<html></html>' };
+      },
+      parse, base: 'https://www.findagrave.com',
+    });
+    const counts = {};
+    for (const x of got.photos || []) x.role = fag.fagPhotoRole(x.type, counts);
+    return got;
+  };
+}
+const item = (id, file, type = 'Grave') => '<div class="viewer-item" data-photo-id="' + id +
+  '"><img src="https://images.findagrave.com/photos/' + file + '"><p>Photo type: ' + type + '</p></div>';
+
+test('F1/F5/F9/F12: a photo list Find a Grave stops sending after page 1 is amber: N shown, M saved, come back for the rest', async () => {
+  const gallery = galleryOf(['<p class="photosCount">5 photos</p>' + item(1, 'a.jpg') + item(2, 'b.jpg'), 500]);
+  const p = await open(CALVIN, { gallery });
+  await p.capture();
+  const b = p.written[0];
+  assert.deepStrictEqual(p.files(b), ['page-snapshot.html', 'grave-1.jpg', 'grave-2.jpg', 'record-data.json']);
+  assert.strictEqual(p.resultClass(), 'stage-result warn');
+  assert.match(p.result(), /Find a Grave shows 5 photos; 2 are saved \(Find a Grave is having trouble \(HTTP 500\)\) - press Capture again later for the rest/);
+  const data = await recordData(b);
+  assert.deepStrictEqual([data.photosTotal, data.photosPartial], [5, true]);
+  assert.match(p.capJson(b).notes, /Not saved: Find a Grave shows 5 photos; 2 are saved/);
+});
+
+test('F9: with no count on the page, a later page failing leaves the total unknown, never "all of them"', async () => {
+  const gallery = galleryOf([item(1, 'a.jpg') + item(2, 'b.jpg'), 503]);
+  const p = await open(CALVIN, { gallery });
+  await p.capture();
+  const data = await recordData(p.written[0]);
+  assert.deepStrictEqual([data.photosTotal, data.photosPartial], [null, true]);
+  assert.match(p.result(), /Find a Grave’s photo list could not be read in full; 2 photos are saved/);
+  assert.strictEqual(p.resultClass(), 'stage-result warn');
+});
+
+test('Codex 4502262323: a "slow down" on a later gallery page stops the photo downloads too, and says so', async () => {
+  const gallery = galleryOf(['<p class="photosCount">3 photos</p>' + item(1, 'a.jpg') + item(2, 'b.jpg'), 429]);
+  const p = await open(CALVIN, { gallery });
+  await p.capture();
+  assert.strictEqual(p.fetched.length, 0, 'no photo asked for after Find a Grave said slow down');
+  const b = p.written[0];
+  assert.deepStrictEqual(p.files(b), ['page-snapshot.html', 'record-data.json']);
+  assert.match(p.result(), /Find a Grave shows 3 photos; 0 are saved \(Find a Grave asked us to slow down \(HTTP 429\)\)/);
+  assert.match(p.result(), /2 photos were not saved \(grave-1, grave-2: not tried after Find a Grave asked us to slow down\)\. Wait a few minutes, then press Capture again: that capture is one of its own/);
+  assert.doesNotMatch(p.result(), /already saved are not downloaded again/, 'none were saved');
+});
+
+test('F5: a count with no photo the panel can take never says "the memorial has no photos"', async () => {
+  const gallery = galleryOf(['<p class="photosCount">3 photos</p><div class="viewer-item" data-photo-id="9"><img src="https://images.findagrave.com/photos250/photos/t.jpg"></div>']);
+  const p = await open(CALVIN, { gallery });
+  await p.capture();
+  const b = p.written[0];
+  assert.doesNotMatch(p.capJson(b).notes, /has no photos/);
+  assert.match(p.result(), /Find a Grave shows 3 photos; 0 are saved/);
+  assert.strictEqual(p.resultClass(), 'stage-result warn');
+});
+
+test('Codex 4502262326: a photo page that is not recognised is "not known", not "no photos"; a count of 0 is "no photos"', async () => {
+  let p = await open(CALVIN, { gallery: galleryOf(['<html><body>Please wait while we check your browser</body></html>']) });
+  await p.capture();
+  let data = await recordData(p.written[0]);
+  assert.deepStrictEqual([data.photosTotal, data.photosPartial], [null, true]);
+  assert.doesNotMatch(p.capJson(p.written[0]).notes, /has no photos/);
+  assert.strictEqual(p.resultClass(), 'stage-result warn');
+  p = await open(CALVIN, { gallery: galleryOf(['<p class="photosCount">0 photos</p>']) });
+  p.$('cb-pagecopy').checked = true;
+  await p.capture();
+  data = await recordData(p.written[0]);
+  assert.deepStrictEqual([data.photosTotal, 'photosPartial' in data], [0, false]);
+  assert.match(p.capJson(p.written[0]).notes, /The memorial has no photos\./);
+  assert.strictEqual(p.resultClass(), 'stage-result ok');
+});
+
+test('F6: after a "slow down" on the first photo, every photo not saved is counted, and none is called "already saved"', async () => {
+  const p = await open(CALVIN, { answers: { [PHOTO.grave]: 429 } });
+  await p.capture();
+  assert.match(p.result(), /3 photos were not saved \(grave-1: Find a Grave asked us to slow down \(HTTP 429\); person-1, family-1: not tried after Find a Grave asked us to slow down\)\. Wait a few minutes, then press Capture again: that capture/);
+  assert.doesNotMatch(p.result(), /already saved are not downloaded again/);
+});
+
+test('F7: photos over the 40-photo limit turn the result amber and say to press Capture again; the next Capture gets them', async () => {
+  const many = Array.from({ length: 45 }, (_, i) => item(1000 + i, 'p' + i + '.jpg')).join('');
+  const p = await open(CALVIN, { gallery: galleryOf(['<p class="photosCount">45 photos</p>' + many]) });
+  await p.capture();
+  assert.strictEqual(p.fetched.length, 40);
+  assert.strictEqual(p.resultClass(), 'stage-result warn');
+  assert.match(p.result(), /5 more photos were not saved in this capture \(at most 40 at a time\): press Capture again to save the next ones/);
+  await p.capture();
+  assert.strictEqual(p.fetched.length, 45, 'the next Capture fetches only the 5 left');
+});
+
+test('F8: the page going away while the photo list is read says "the page changed", not Chrome\'s port error', async () => {
+  let hold = null;
+  const p = await open(CALVIN, {
+    wrap: (r) => {
+      hold = holdFirst((msg, tab) => (msg.action === 'findagraveGallery' ? PORT_CLOSED : r(msg, tab)), 'findagraveGallery');
+      return hold.respond;
+    },
+  });
+  const pending = p.capture();
+  await untilHeld(hold);
+  await p.navigate(WARREN);
+  hold.release();
+  await pending;
+  await settle();
+  assert.strictEqual(p.written.length, 0);
+  assert.match(p.result(), /^Could not capture: the page in the tab changed while this record was being saved, so nothing was saved/);
+  assert.doesNotMatch(p.result(), /message port/);
+});
+
+test('F8 sweep: the same on Find a Grave when the tab is still there - a plain message, never Chrome\'s words alone', async () => {
+  const p = await open(CALVIN, { wrap: (r) => (msg, tab) => (msg.action === 'findagraveGallery' ? PORT_CLOSED : r(msg, tab)) });
+  await p.capture();
+  assert.strictEqual(p.written.length, 1, 'the memorial is still saved');
+  assert.match(p.result(), /The memorial’s photos were not saved: the page did not answer \(The message port closed before a response was received\.\)\. Reload it and press Capture again/);
+});
+
+test('Codex 4502262333: a photo that breaks off mid-download loses only that photo', async () => {
+  const answers = {
+    [PHOTO.person]: { ok: true, status: 200, url: PHOTO.person, headers: { get: () => 'image/jpeg' }, blob: async () => { throw new TypeError('network error'); } },
+  };
+  const p = await open(CALVIN, { answers });
+  await p.capture();
+  assert.strictEqual(p.written.length, 1, p.result());
+  assert.deepStrictEqual(p.files(p.written[0]), ['page-snapshot.html', 'grave-1.jpg', 'family-1.png', 'record-data.json']);
+  assert.match(p.result(), /person-1: the photo broke off while downloading/);
+});
+
+test('F3/F15: a photo Find a Grave sends elsewhere is not followed; the photo is named as not saved', async () => {
+  const host = imageHost();
+  const p = await openPanel({
+    url: CALVIN, respond: fagSite(),
+    fetch: async (url, init) => {
+      if (url === PHOTO.person && init.redirect === 'error') throw new TypeError('Failed to fetch'); // a 302 off-host
+      return host(url, init);
+    },
+  });
+  await p.capture();
+  assert.deepStrictEqual(p.files(p.written[0]), ['page-snapshot.html', 'grave-1.jpg', 'family-1.png', 'record-data.json']);
+  assert.match(p.result(), /person-1: could not download the photo from Find a Grave’s image host \(the connection dropped, or it sent the photo somewhere else, which is not followed\)/);
+});
+
+test('F13: the gravestone is the main file filing picks, even when a family photo sorts first by name', async () => {
+  let p = await open(CALVIN);
+  await p.capture();
+  let cap = p.capJson(p.written[0]);
+  assert.deepStrictEqual(cap.assets.filter((a) => a.is_primary).map((a) => a.file), ['grave-1.jpg']);
+  // no gravestone: the person; else the first photo
+  const gallery = () => ({ ok: true, total: 2, photos: [
+    { photoId: '7', url: PHOTO.family, role: 'family-1', type: 'Family' },
+    { photoId: '8', url: PHOTO.person, role: 'person-1', type: 'Person' },
+  ] });
+  p = await open(CALVIN, { gallery });
+  await p.capture();
+  cap = p.capJson(p.written[0]);
+  assert.deepStrictEqual(cap.assets.filter((a) => a.is_primary).map((a) => a.file), ['person-1.jpg']);
+  // no photo saved: none is marked (filing's own choice)
+  p = await open(CALVIN, { gallery: () => ({ ok: true, total: 0, photos: [] }) });
+  await p.capture();
+  assert.ok(!p.capJson(p.written[0]).assets.some((a) => a.is_primary));
 });

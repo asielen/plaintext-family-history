@@ -107,6 +107,10 @@ class FakeFileReader {
 }
 
 const tick = () => new Promise((r) => setTimeout(r, 0));
+
+// What a scripted content script answers to play a page that unloaded before
+// it could answer: the panel's message port closes (chrome.runtime.lastError).
+const PORT_CLOSED = Symbol('port closed');
 async function settle() { for (let i = 0; i < 20; i++) await tick(); }
 
 // ── one panel, freshly loaded ────────────────────────────────────────────────
@@ -158,7 +162,16 @@ async function openPanel({ url, respond, host, seenIt, fullPage, fetch }) {
       get: (id, cb) => cb(tab),
       sendMessage: (id, msg, cb) => {
         sent.push(msg);
-        Promise.resolve(respond(msg, tab)).then((r) => setTimeout(() => cb(r), 0));
+        Promise.resolve(respond(msg, tab)).then((r) => setTimeout(() => {
+          if (r !== PORT_CLOSED) {
+            cb(r);
+            return;
+          }
+          // The page went away before it answered, as Chrome reports it.
+          chrome.runtime.lastError = { message: 'The message port closed before a response was received.' };
+          cb(undefined);
+          chrome.runtime.lastError = undefined;
+        }, 0));
       },
       onUpdated: { addListener: (f) => { onUpdated = f; } },
     },
@@ -257,4 +270,4 @@ function holdFirst(respond, action) {
   return h;
 }
 
-module.exports = { openPanel, settle, tick, read, holdFirst };
+module.exports = { openPanel, settle, tick, read, holdFirst, PORT_CLOSED };

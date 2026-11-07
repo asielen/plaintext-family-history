@@ -552,11 +552,12 @@ def _holds_saved_file(path, name):
         if isinstance(assets, list):
             return any(isinstance(a, dict) and str(a.get('file') or '') == name and not a.get('provisional')
                        and (folder / name).is_file() for a in assets)
-    if (folder / name).is_file():
-        return True
     m = SID_RE.search(path.name)
     if not m:
-        return False
+        # an ingested inbox bundle: its files keep their names
+        return (folder / name).is_file()
+    # A filed source: its files carry its S-id. A bare `grave-1.jpg` in the
+    # same shared folder is someone else's (or nobody's) - PR #221 review.
     sid = m.group(1).lower()
     stem, suffix = Path(name).stem.lower(), Path(name).suffix.lower()
     try:
@@ -632,7 +633,9 @@ def _keys_from_site_data(data, image_saved=None, file_saved=None):
             # links - never fag: from the memorial's facts alone.
             photos = data.get('photos')
             total = data.get('photosTotal')
-            complete = isinstance(photos, list) and not listed
+            # `photosPartial`: the capture read only part of its photo list
+            # (a later page failed, the count was not reached) - PR #221 audit.
+            complete = isinstance(photos, list) and not listed and data.get('photosPartial') is not True
             saved_here = []
             for ph in photos if isinstance(photos, list) else []:
                 if not isinstance(ph, dict):

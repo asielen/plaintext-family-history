@@ -12,8 +12,9 @@
 // without the extension's address as a referrer, and only to Find a Grave's
 // image host over https (photoUrlOk - the same rule as fagPhotoUrlOk in
 // lib/findagrave-record.js; tests/test-sync.js runs both through one
-// battery). A photo that comes back from anywhere else after a redirect, or
-// that is not an image, is refused, never saved.
+// battery). A redirect is never followed (`redirect: 'error'`), so no request
+// leaves that host; an answer from anywhere else, or one that is not an
+// image, is refused, never saved.
 //
 // Loaded as a classic script in panel.html; attaches to the global `FHA`.
 
@@ -42,9 +43,14 @@
     }
     let r;
     try {
-      r = await fetchFn(url, { credentials: 'omit', referrerPolicy: 'no-referrer' });
+      r = await fetchFn(url, { credentials: 'omit', referrerPolicy: 'no-referrer', redirect: 'error' });
     } catch (e) {
-      return { ok: false, error: 'could not reach Find a Grave’s image host - check your internet connection' };
+      // A refused redirect lands here too: the browser says no more than "failed".
+      return {
+        ok: false,
+        error: 'could not download the photo from Find a Grave’s image host (the connection dropped, or it ' +
+          'sent the photo somewhere else, which is not followed) - press Capture again later',
+      };
     }
     if (r.status === 429) {
       return { ok: false, slowDown: true, error: 'Find a Grave asked us to slow down (HTTP 429)' };
@@ -64,7 +70,14 @@
     if (!/^image\//.test(type)) {
       return { ok: false, error: 'Find a Grave sent a page instead of the photo' };
     }
-    const blob = await r.blob();
+    let blob;
+    try {
+      blob = await r.blob();
+    } catch (e) {
+      // The headers came but the photo itself broke off: this photo is not
+      // saved, and the rest of the capture carries on (PR #221 review).
+      return { ok: false, error: 'the photo broke off while downloading - press Capture again later' };
+    }
     const fromUrl = (/\.(jpe?g|png|gif|webp)$/i.exec(new URL(url).pathname) || [])[1];
     return { ok: true, blob, ext: EXT[type] || (fromUrl ? fromUrl.toLowerCase().replace('jpeg', 'jpg') : 'jpg') };
   }

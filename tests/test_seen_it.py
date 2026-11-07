@@ -1102,6 +1102,43 @@ class RecordsFiledByTheArchiveTools(_TempHome):
 
 # ── not shipped into archives yet ───────────────────────────────────────────
 
+class FindAGravePartialCaptures(_TempHome):
+    """PR #221 audit and review: a memorial is captured only when all of it is."""
+
+    def test_a_photo_list_read_only_in_part_is_never_fag(self):
+        # F9/F12: page 2 of the gallery failed and the page gave no count -
+        # every photo listed is saved, but the list itself was only part.
+        part = {'record': {'memorialId': 900000001}, 'photosTotal': None, 'photosPartial': True,
+                'photos': [{'photoId': 1, 'file': 'grave-1.jpg'}, {'photoId': 2, 'file': 'grave-2.jpg'}]}
+        self.assertEqual(host._keys_from_site_data(part), ['fagidx:900000001', 'fagphoto:1', 'fagphoto:2'])
+        # even with a count that the listed photos happen to match
+        self.assertEqual(host._keys_from_site_data(dict(part, photosTotal=2))[0], 'fagidx:900000001')
+        self.assertEqual(host._keys_from_site_data(dict(part, photosPartial=False, photosTotal=2))[0], 'fag:900000001')
+
+    def test_an_unrelated_bare_file_in_a_shared_folder_is_not_a_filed_photo(self):
+        # Codex 4502262338: filed photos carry their source's S-id; a stray
+        # unprocessed grave-1.jpg beside another source's data is not one.
+        archive = self.make_archive()
+        docs = archive / 'documents' / 'website'
+        _json(docs / ('record-data-site-data_%s.json' % SID_A),
+              {'record': {'memorialId': 900000001}, 'photosTotal': 1,
+               'photos': [{'photoId': 990000101, 'file': 'grave-1.jpg'}]})
+        _write(docs / 'grave-1.jpg', 'jpg')
+        items, _ = host.scan_known(host.scan_folders({'archive': str(archive)}))
+        self.assertNotIn('fag:900000001', items)
+        self.assertNotIn('fagphoto:990000101', items)
+        self.assertIn('fagidx:900000001', items)
+        # an ingested inbox bundle (its data file names no S-id) keeps bare names
+        inbox = archive / 'inbox' / 'calvin-george-hartley'
+        _json(inbox / 'record-data.json', {'record': {'memorialId': 900000002}, 'photosTotal': 1,
+                                           'photos': [{'photoId': 990000201, 'file': 'grave-1.jpg'}]})
+        _write(inbox / 'grave-1.jpg', 'jpg')
+        _write(inbox / 'notes.md', '---\ntitle: x\n---\n')
+        items, _ = host.scan_known(host.scan_folders({'archive': str(archive)}))
+        self.assertEqual(items['fag:900000002']['state'], 'captured')
+        self.assertIn('fagphoto:990000201', items)
+
+
 class NotVendoredYet(unittest.TestCase):
 
     def test_seen_it_is_not_in_the_archive_manifest(self):

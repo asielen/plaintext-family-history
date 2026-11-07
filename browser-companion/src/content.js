@@ -1542,35 +1542,89 @@
     return { photos, total: isNaN(total) ? null : total };
   }
 
+  // A memorial's slug as one safe path segment: Find a Grave's own slugs carry
+  // apostrophes ("mary-o'hartley") and percent-escaped accented letters
+  // ("j%C3%B3zefa-hartley"), so the slug is decoded and encoded again -
+  // never refused for them. '' when there is none; null when it cannot be one
+  // (a broken escape, "." or ".."), and the address is then built from the
+  // memorial id alone.
+  function fagSlugSegment(slug) {
+    if (slug == null || slug === '') return '';
+    let s;
+    try {
+      s = decodeURIComponent(String(slug));
+    } catch (e) {
+      return null;
+    }
+    if (!s || s === '.' || s === '..' || s.length > 300) return null;
+    return encodeURIComponent(s);
+  }
+
+  const FAG_GALLERY_PAGES = 20;
+
   // Every photo on the memorial, from its gallery pages (at most 20), without
-  // cookies. { ok, photos, total } or { ok:false, error }.
+  // cookies: { ok, photos, total, partial, partialStatus, partialError } or
+  // { ok:false, error, status }.
+  //   total    how many photos Find a Grave says the memorial has: its count,
+  //            or - with no count - the photos listed when the whole list was
+  //            read; null when that is not known (a later page failed, or the
+  //            first page listed nothing and gave no count: an unrecognised
+  //            page is not "no photos");
+  //   partial  true when the list stopped before its end (a later page failed,
+  //            repeated itself short of the count, or ran past 20 pages): the
+  //            photos listed are only some of them.
   async function fagGallery(memorialId, slug, d) {
-    const path = '/memorial/' + memorialId + (slug ? '/' + slug : '') + '/photo';
+    const seg = fagSlugSegment(slug);
+    const path = '/memorial/' + memorialId + (seg ? '/' + seg : '') + '/photo';
     const photos = [];
-    let total = null;
-    for (let page = 1; page <= 20; page++) {
+    let count = null;
+    let partial = false;
+    let partialStatus = null;
+    let partialError = null;
+    let readAll = false;
+    for (let page = 1; page <= FAG_GALLERY_PAGES; page++) {
       let r;
+      let html;
       try {
         r = await d.fetch(new URL(path + (page > 1 ? '?page=' + page : ''), d.base).href, { credentials: 'omit' });
+        html = r.ok ? await r.text() : null;
       } catch (e) {
-        if (page === 1) return { ok: false, error: 'could not reach Find a Grave for the photos - check your internet connection' };
+        const error = 'could not reach Find a Grave for the photos - check your internet connection';
+        if (page === 1) return { ok: false, error, status: null };
+        partial = true;
+        partialError = error;
         break;
       }
       if (!r.ok) {
-        if (page === 1) return { ok: false, error: fagStatusMessage(r.status, 'gallery') };
+        if (page === 1) return { ok: false, error: fagStatusMessage(r.status, 'gallery'), status: r.status };
+        partial = true;
+        partialStatus = r.status;
+        partialError = fagStatusMessage(r.status, 'gallery');
         break;
       }
-      const one = fagPhotosFrom(d.parse(await r.text()), d.base);
-      if (total == null) total = one.total;
+      const one = fagPhotosFrom(d.parse(html), d.base);
+      if (count == null) count = one.total;
       let added = 0;
       for (const p of one.photos) {
         if (photos.some((x) => x.photoId === p.photoId)) continue;
         photos.push(p);
         added++;
       }
-      if (!added || (total != null && photos.length >= total)) break;
+      if (count != null && photos.length >= count) {
+        readAll = true;
+        break;
+      }
+      if (!added) {
+        // A page with nothing new is the end of the list - unless the count
+        // says there are more (Find a Grave ignoring ?page=, say).
+        if (count != null) partial = true;
+        else readAll = photos.length > 0;
+        break;
+      }
+      if (page === FAG_GALLERY_PAGES) partial = true;
     }
-    return { ok: true, photos, total: total == null ? photos.length : total };
+    const total = count != null ? count : readAll && !partial ? photos.length : null;
+    return { ok: true, photos, total, partial, partialStatus, partialError };
   }
 
   // What the memorial says about itself (TI-066): the shared rule over the
@@ -3188,6 +3242,12 @@
             'go back to the record and press Capture again' });
           return;
         }
+        // An id named must be one: FamilySearch image ids are letters, digits
+        // and dashes, and it is put straight into an address (PR #221 sweep).
+        if (msg.imageId && !/^[A-Z0-9-]+$/i.test(String(msg.imageId))) {
+          sendResponse({ ok: false, error: 'that is not a FamilySearch image, so nothing was fetched' });
+          return;
+        }
         // No id named: the image the viewer shows now (a single-page app, so
         // re-read at Capture rather than trust the prefill).
         fsImage(msg.imageId || fsViewerImageId(), fsDeps())
@@ -3215,11 +3275,14 @@
             'go back to the memorial and press Capture again' });
           return;
         }
-        if (!/^\d+$/.test(String(msg.memorialId || '')) || (msg.slug && !/^[\w-]+$/.test(String(msg.slug)))) {
+        // The id must be a memorial's number. The slug is any slug Find a
+        // Grave uses - apostrophes, accented letters - made one safe path
+        // segment by fagSlugSegment (PR #221 audit), never refused.
+        if (!/^\d+$/.test(String(msg.memorialId || ''))) {
           sendResponse({ ok: false, error: 'no memorial was named for the photos' });
           return;
         }
-        findagraveGallery(String(msg.memorialId), msg.slug || null)
+        findagraveGallery(String(msg.memorialId), msg.slug == null ? null : String(msg.slug))
           .then(sendResponse)
           .catch((e) => sendResponse({ ok: false, error: String((e && e.message) || e) }));
         return true; // async response

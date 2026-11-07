@@ -213,9 +213,10 @@ no-op, the bundles land in `inbox/` directly.
   memorial as it shows it and its photo list from the memorial's own gallery
   pages (at most 20, `credentials: 'omit'`), and the panel downloads each
   photo - at most 40, one at a time with a 0.8-2 s pause, stopping at the
-  first "slow down" (HTTP 429) - only from https://images.findagrave.com/photos/…,
-  without cookies or a referrer, refusing any other host, port, or a redirect
-  off it (`fagPhotoUrlOk` in `lib/findagrave-record.js`, the same rule in
+  first "slow down" (HTTP 429, from the photo list or a photo) - only from
+  https://images.findagrave.com/photos/…, without cookies or a referrer,
+  refusing any other host or port and never following a redirect
+  (`redirect: 'error'`, so no request leaves that host) (`fagPhotoUrlOk` in `lib/findagrave-record.js`, the same rule in
   `lib/findagrave.js`, tested in `tests/test-findagrave.js`,
   `tests/test-panel-findagrave.js` and `tests/test-content-load.js`). The one
   question for the Seen It add-on is which of the memorial's photos the

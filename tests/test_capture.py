@@ -710,7 +710,7 @@ class CaptureTestCase(unittest.TestCase):
         # B3: a "Memorial Park" burial place is found, and the "Virtual
         # Cemetery" decoy is rejected.
         rc = self._capture(_sample('findagrave-memorial-park'),
-                           url='https://www.findagrave.com/memorial/900000201/frances-hartley')
+                           url='https://www.findagrave.com/memorial/900000020/frances-hartley')
         self.assertEqual(rc, EXIT_CLEAN)
         rec = read_record(self._only_stub())
         meta = rec['meta']
@@ -735,7 +735,8 @@ class CaptureTestCase(unittest.TestCase):
         self.assertEqual(meta['repository'], 'Find a Grave')
         self.assertTrue(str(meta['citation']).startswith(
             'Find a Grave, database and images (https://www.findagrave.com/memorial/900000001/'
-            'calvin-george-hartley: accessed ), memorial page for Calvin George Hartley'))
+            'calvin-george-hartley: accessed %s), memorial page for Calvin George Hartley'
+            % capture._today()))  # PR #221 audit (F10/F16): the blank "accessed" date is filled
         self.assertEqual(meta['people'], ['Calvin George Hartley', 'Thomas Hartley',
                                           'Harriet Frances Hartley', 'Warren Calvin Hartley'])
         self.assertIn('Cemetery (place_text hint): Fairview Cemetery, Fairview, Brown County, Kansas, USA', body)
@@ -747,6 +748,17 @@ class CaptureTestCase(unittest.TestCase):
         # TI-067: the Seen It add-on's badge is not the memorial
         for badge in ('Seen 2', 'Not in archive'):
             self.assertNotIn(badge, body)
+
+    def test_findagrave_memorial_saved_by_hand_with_no_address(self) -> None:
+        # PR #221 audit (F11): filed with no URL, the memorial's canonical link
+        # says which memorial it is - its link to itself is not its own family.
+        rc = self._capture(_sample('findagrave-memorial'), url=None)
+        self.assertEqual(rc, EXIT_CLEAN)
+        rec = read_record(self._only_stub())
+        self.assertEqual(rec['body'].count('Family ('), 3)
+        self.assertNotIn('Family (Children): Calvin George Hartley', rec['body'])
+        self.assertEqual(rec['meta']['external_links'][0]['url'],
+                         'https://www.findagrave.com/memorial/900000001/calvin-george-hartley')
 
     def test_findagrave_memorial_never_dated_by_its_birth(self) -> None:
         html = _sample('findagrave-memorial').replace(

@@ -203,15 +203,20 @@ test('fagGallery: every page until the count is reached, each request on Find a 
   for (const l of log) assert.deepStrictEqual(l.init, { credentials: 'omit' });
 });
 
-test('fagGallery: a page that repeats the last stops the walk; no photos at all is an empty gallery', async () => {
+test('fagGallery: a page that repeats the last stops the walk; only a count of 0 is an empty gallery', async () => {
   const log = [];
   const same = item(1, 'a.jpg');
   const got = await fag.fagGallery('900000001', null, { fetch: galleryFetch([same, same, same], log), parse, base: 'https://www.findagrave.com' });
   assert.deepStrictEqual(got.photos.map((p) => p.photoId), ['1']);
   assert.strictEqual(log.length, 2);
   assert.strictEqual(got.total, 1);
-  const none = await fag.fagGallery('900000001', null, { fetch: galleryFetch(['<p>No photos</p>'], []), parse, base: 'https://www.findagrave.com' });
-  assert.deepStrictEqual(none, { ok: true, photos: [], total: 0 });
+  assert.strictEqual(got.partial, false);
+  const empty = await fag.fagGallery('900000001', null, { fetch: galleryFetch(['<p class="photosCount">0 photos</p>'], []), parse, base: 'https://www.findagrave.com' });
+  assert.deepStrictEqual([empty.photos, empty.total, empty.partial], [[], 0, false]);
+  // Codex 4502262326: a page with no photo and no count (an interstitial,
+  // a new layout) is not "no photos": the total is not known
+  const unknown = await fag.fagGallery('900000001', null, { fetch: galleryFetch(['<p>Checking your browser</p>'], []), parse, base: 'https://www.findagrave.com' });
+  assert.deepStrictEqual([unknown.ok, unknown.photos, unknown.total], [true, [], null]);
 });
 
 test('fagGallery: a refusal says what it means and what to do', async () => {
@@ -225,6 +230,59 @@ test('fagGallery: a refusal says what it means and what to do', async () => {
   // a later page failing keeps what the first pages gave
   const later = await fag.fagGallery('1', null, { fetch: galleryFetch(['<p class="photosCount">3</p>' + item(1, 'a.jpg'), 500], []), parse, base: 'https://www.findagrave.com' });
   assert.deepStrictEqual([later.ok, later.photos.length, later.total], [true, 1, 3]);
+});
+
+// ── PR #221 audit ────────────────────────────────────────────────────────────
+
+test('F9/F12, Codex 4502262323: a later gallery page failing says the list is partial, with its cause; no count stays unknown', async () => {
+  const base = 'https://www.findagrave.com';
+  const withCount = await fag.fagGallery('1', null, { fetch: galleryFetch(['<p class="photosCount">30</p>' + item(1, 'a.jpg') + item(2, 'b.jpg'), 429], []), parse, base });
+  assert.deepStrictEqual([withCount.ok, withCount.photos.length, withCount.total, withCount.partial, withCount.partialStatus],
+    [true, 2, 30, true, 429]);
+  assert.match(withCount.partialError, /slow down/);
+  const noCount = await fag.fagGallery('1', null, { fetch: galleryFetch([item(1, 'a.jpg') + item(2, 'b.jpg'), 503], []), parse, base });
+  assert.deepStrictEqual([noCount.photos.length, noCount.total, noCount.partial], [2, null, true],
+    'never "2 of 2" when page 2 was never read');
+  let n = 0;
+  const offline = await fag.fagGallery('1', null, {
+    fetch: async (url) => {
+      if (n++) throw new TypeError('Failed to fetch');
+      return { ok: true, status: 200, text: async () => item(1, 'a.jpg') };
+    }, parse, base,
+  });
+  assert.deepStrictEqual([offline.total, offline.partial], [null, true]);
+  assert.match(offline.partialError, /internet connection/);
+  // a count the pages fall short of (Find a Grave ignoring ?page=) is partial too
+  const short = await fag.fagGallery('1', null, { fetch: galleryFetch(['<p class="photosCount">5</p>' + item(1, 'a.jpg'), '<p class="photosCount">5</p>' + item(1, 'a.jpg')], []), parse, base });
+  assert.deepStrictEqual([short.photos.length, short.total, short.partial], [1, 5, true]);
+  // more than 20 pages is partial
+  const pages = Array.from({ length: 21 }, (_, i) => item(i + 1, i + '.jpg'));
+  const long = await fag.fagGallery('1', null, { fetch: galleryFetch(pages, []), parse, base });
+  assert.deepStrictEqual([long.photos.length, long.total, long.partial], [20, null, true]);
+});
+
+test('F2/F4: an accented or apostrophe slug is used, safely encoded - never a reason to refuse the photos', async () => {
+  assert.strictEqual(fag.fagSlugSegment('j%C3%B3zefa-hartley'), 'j%C3%B3zefa-hartley');
+  assert.strictEqual(fag.fagSlugSegment('józefa-hartley'), 'j%C3%B3zefa-hartley');
+  assert.strictEqual(fag.fagSlugSegment("mary-o'hartley"), "mary-o'hartley");
+  assert.strictEqual(fag.fagSlugSegment('ann-o%27hartley'), "ann-o'hartley");
+  assert.strictEqual(fag.fagSlugSegment('../x?y#z'), '..%2Fx%3Fy%23z', 'one segment, whatever it says');
+  for (const bad of ['%E0%A4%A', '.', '..']) assert.strictEqual(fag.fagSlugSegment(bad), null, bad);
+  assert.strictEqual(fag.fagSlugSegment(null), '');
+  for (const [slug, want] of [
+    ['j%C3%B3zefa-hartley', '/memorial/900000005/j%C3%B3zefa-hartley/photo'],
+    ["mary-o'hartley", "/memorial/900000005/mary-o'hartley/photo"],
+    ['%E0%A4%A', '/memorial/900000005/photo'],
+  ]) {
+    const log = [];
+    const got = await fag.fagGallery('900000005', slug, { fetch: galleryFetch([item(1, 'a.jpg')], log), parse, base: 'https://www.findagrave.com' });
+    assert.ok(got.ok, slug);
+    assert.strictEqual(new URL(log[0].url).pathname, want, slug);
+    assert.strictEqual(new URL(log[0].url).hostname, 'www.findagrave.com');
+  }
+  // the memorial reader takes such a slug from the address as Find a Grave gives it
+  assert.deepStrictEqual(fag.fagParseMemorial("https://www.findagrave.com/memorial/900000005/mary-o'hartley"),
+    { memorialId: '900000005', slug: "mary-o'hartley" });
 });
 
 test('fagStatusMessage: removed, refused, slow down, trouble', () => {

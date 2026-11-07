@@ -23,7 +23,7 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const { openPanel, read, settle, tick, holdFirst } = require('./panel-harness.js');
+const { openPanel, read, settle, tick, holdFirst, PORT_CLOSED } = require('./panel-harness.js');
 const anc = require('../src/lib/ancestry-record.js');
 const { parse } = require('./mini-dom.js');
 
@@ -499,4 +499,20 @@ test('an index entry needs its page copy: if it cannot be made, nothing half-fil
   await p.capture();
   assert.strictEqual(p.written.length, 0);
   assert.match(p.result(), /the copy of the web page could not be made/);
+});
+
+test('PR #221 sweep (F8): the page going away while the scan downloads says "the page changed", not Chrome\'s port error', async () => {
+  const site = ancestrySite();
+  const hold = holdFirst((msg, tab) => (msg.action === 'ancestryImage' ? PORT_CLOSED : site(msg, tab)), 'ancestryImage');
+  const p = await openPanel({ url: CALVIN, respond: hold.respond });
+  const pending = p.capture();
+  for (let i = 0; i < 200 && !hold.held; i++) await tick();
+  assert.ok(hold.held);
+  await p.navigate(ETHEL);
+  hold.release();
+  await pending;
+  await settle();
+  assert.strictEqual(p.written.length, 0);
+  assert.match(p.result(), /^Could not capture: the page in the tab changed while this record was being saved, so nothing was saved/);
+  assert.doesNotMatch(p.result(), /message port/);
 });

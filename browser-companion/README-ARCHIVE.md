@@ -226,20 +226,25 @@ saves:
   photos with their captions, and Find a Grave's own citation. A memorial is a
   volunteer's work from the stone, records and family knowledge - useful, but
   not the original record - so it files as a website and is marked derivative.
-- a copy of the page, if you keep one (always, when no photo was saved).
+- a copy of the page, if you keep one (always, when the capture would otherwise
+  hold no photo and no file of yours).
 
+The gravestone photo is the source's main picture (else the person's photo).
 The title is "Calvin George Hartley (1842-1918) - Find a Grave memorial" unless
 you type your own, and the date is the death date the memorial gives. Find a
 Grave gives no burial date, so none is made up, and the birth date never dates
 the memorial.
 
 A photo already saved is not downloaded again: one from an earlier capture in
-the same sitting, or one the Seen It add-on says the archive holds. If Find a
-Grave asks the add-on to slow down, it stops, saves what it has, and says so:
-wait a few minutes and press Capture again for the rest. If a memorial has been
-removed or merged into another, Capture says so: search Find a Grave for the
-person and open the memorial it shows now. At most 40 photos are saved in one
-capture.
+the same sitting, or one the Seen It add-on says the archive holds. When not
+every photo could be saved - Find a Grave asked the add-on to slow down, its
+photo list could be read only in part ("Find a Grave shows 12 photos; 8 are
+saved"), or the memorial has more than the 40 saved in one capture - the result
+line turns amber and says so: press Capture again later for the rest. That
+second capture is a capture of its own, not added to the first: when you file
+it, add its photos to the memorial's source. If a memorial has been removed or
+merged into another, Capture says so: search Find a Grave for the person and
+open the memorial it shows now.
 
 ---
 

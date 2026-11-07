@@ -90,7 +90,7 @@ test('capture-json.js behaves identically to its pure twin', () => {
     notes: 'a note',
     recipeHint: 'ancestry',
     assets: [
-      { file: 'record.jpg', role: 'record', mode: 'fetch', provisional: false },
+      { file: 'record.jpg', role: 'record', mode: 'fetch', provisional: false, primary: true },
       { file: 'page-snapshot.html', role: 'webpage', mode: 'singlefile', provisional: true },
       { file: '', role: 'record' },
       null,
@@ -98,6 +98,8 @@ test('capture-json.js behaves identically to its pure twin', () => {
   };
   assert.deepStrictEqual(b.build(fields), pure.build(fields));
   assert.strictEqual(pure.build(fields).citation, 'The Gazette, March 3, 1931, Page 5.');
+  // the main file (a memorial's gravestone) is marked; no other is
+  assert.deepStrictEqual(pure.build(fields).assets.map((a) => !!a.is_primary), [true, false]);
   assert.ok(!('citation' in pure.build({ url: 'u', citation: '   ' })));
   assert.strictEqual(pure.build(fields).source_class, 'derivative');
   for (const bad of ['', 'Derivative', 'index', null, 3]) {

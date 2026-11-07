@@ -284,9 +284,41 @@ test('the photo list is never asked for from a tab that has left Find a Grave, o
   assert.match(r.error, /no longer on Find a Grave/);
   assert.strictEqual(page.calls.length, 0);
   page = loadPage({ url: MEMORIAL, fetch: findagrave() });
-  for (const msg of [{ memorialId: '../../account' }, { memorialId: '' }, { memorialId: '900000001', slug: '../x?y' }]) {
+  for (const msg of [{ memorialId: '../../account' }, { memorialId: '' }, { memorialId: '9/../1' }]) {
     r = await page.ask(Object.assign({ action: 'findagraveGallery' }, msg));
     assert.strictEqual(r.ok, false, JSON.stringify(msg));
   }
   assert.strictEqual(page.calls.length, 0);
+  // an odd slug is made one path segment: the request stays under the memorial
+  await page.ask({ action: 'findagraveGallery', memorialId: '900000001', slug: '../x?y' });
+  assert.deepStrictEqual(page.calls.map((c) => c.url), ['https://www.findagrave.com/memorial/900000001/..%2Fx%3Fy/photo']);
+});
+
+test('F2/F4: a memorial whose slug has an accented letter or an apostrophe still gets its photo list', async () => {
+  for (const [slug, path] of [
+    ['j%C3%B3zefa-hartley', '/memorial/900000005/j%C3%B3zefa-hartley/photo'],
+    ["mary-o'hartley", "/memorial/900000005/mary-o'hartley/photo"],
+    ['mary-o%27hartley', "/memorial/900000005/mary-o'hartley/photo"],
+  ]) {
+    const page = loadPage({
+      url: 'https://www.findagrave.com/memorial/900000005/' + slug,
+      fetch: async () => ({ ok: true, status: 200, text: async () => SAMPLE('findagrave-memorial-photos') }),
+    });
+    const r = await page.ask({ action: 'findagraveGallery', memorialId: '900000005', slug });
+    assert.strictEqual(r.ok, true, slug + ': ' + r.error);
+    assert.strictEqual(r.photos.length, 3, slug);
+    assert.deepStrictEqual(page.calls.map((c) => new URL(c.url).pathname), [path], slug);
+  }
+});
+
+test('PR #221 sweep: a FamilySearch image id that is not one is refused before any request', async () => {
+  const page = loadPage({ url: REC, cookie: 'fssessionid=' + TOKEN, fetch: familysearch() });
+  for (const imageId of ['../../platform/users/current', 'HRT1-IMG1?x=1', 'a/b']) {
+    const r = await page.ask({ action: 'familysearchImage', imageId });
+    assert.strictEqual(r.ok, false, imageId);
+    assert.match(r.error, /not a FamilySearch image/);
+  }
+  assert.strictEqual(page.calls.length, 0);
+  const ok = await page.ask({ action: 'familysearchImage', imageId: 'HRT1-IMG1' });
+  assert.strictEqual(ok.ok, true);
 });

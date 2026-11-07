@@ -169,6 +169,8 @@ function build(fields) {
       if (a.role) entry.role = String(a.role);
       if (a.mode) entry.mode = String(a.mode);
       if (a.provisional) entry.provisional = true;
+      // The file to file as the source's main one (a memorial's gravestone).
+      if (a.primary) entry.is_primary = true;
       return entry;
     });
   out.assets = assets;

@@ -32,6 +32,7 @@ import re
 from html.parser import HTMLParser
 
 from capture import (
+    _today,
     domain_of,
     extract_tables,
     first_nonempty,
@@ -65,6 +66,7 @@ _CEMETERY_RE = re.compile(
 _BURIAL_LABEL_RE = re.compile(r'\b(?:Burial|Plot)\b[:\s]*(.{0,80})', re.I)
 
 _AGED_RE = re.compile(r'\s*\(aged[^)]*\)\s*$', re.I)
+_ACCESSED_RE = re.compile(r'accessed\s*\)')
 _MEMORIAL_RE = re.compile(r'/memorial/(\d+)')
 
 _SKIP_TAGS = frozenset({'script', 'style', 'noscript', 'template', 'button', 'svg'})
@@ -247,7 +249,11 @@ def _extract_memorial(m: dict, html: str, url: str | None) -> dict:
     for f in m['family']:
         if f['name'] and f['name'] not in people:
             people.append(f['name'])
-    citation = m['citation'] or (f'{m["name"]}. Find a Grave memorial.' + (f' {url}' if url else ''))
+    # Find a Grave's own citation leaves its "accessed" date blank on the page
+    # ("…: accessed ), memorial page for…"); the date is the capture's, today
+    # - as the capture companion fills it (PR #221 audit).
+    citation = (_ACCESSED_RE.sub(f'accessed {_today()})', m['citation']) if m['citation'] else
+                f'{m["name"]}. Find a Grave memorial.' + (f' {url}' if url else ''))
     lines = []
     if m['burial_place']:
         lines.append(f'Cemetery (place_text hint): {m["burial_place"]}')
@@ -304,6 +310,13 @@ def _cemetery(text: str) -> str | None:
 
 def extract(html: str, url: str | None) -> dict:
     html = strip_seen_it(html)
+    # A page saved by hand, filed with no address: the memorial's own
+    # canonical link says which memorial it is (so its link to itself is not
+    # read as its own family, PR #221 audit).
+    if not url:
+        canonical = parse_html(html).canonical or ''
+        if _MEMORIAL_RE.search(canonical) and 'findagrave.com' in domain_of(canonical):
+            url = canonical
     memorial = memorial_from_html(html, url)
     if memorial:
         return _extract_memorial(memorial, html, url)
