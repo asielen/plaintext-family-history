@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Seen It</title>
+<style>
+  body { font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; margin: 0; padding: 14px 16px; width: 360px; color: #1a1a1a; background: #fff; }
+  h1 { font-size: 15px; margin: 0 0 8px; }
+  h2 { font-size: 13px; margin: 14px 0 6px; text-transform: uppercase; letter-spacing: .04em; color: #555; }
+  table { border-collapse: collapse; width: 100%; }
+  td, th { padding: 3px 0; text-align: left; font-weight: normal; }
+  td.n, th.n { text-align: right; font-variant-numeric: tabular-nums; padding-left: 8px; }
+  tr.sub td { color: #666; font-size: 13px; padding-left: 12px; }
+  #cov th { font-size: 12px; color: #666; }
+  #cov td { font-size: 13px; }
+  #cov .place { color: #777; font-size: 12px; }
+  button { display: block; width: 100%; margin: 6px 0; padding: 7px; font: inherit; border: 1px solid #bbb; border-radius: 6px; background: #f4f4f4; color: inherit; cursor: pointer; }
+  button:hover { background: #e8e8e8; }
+  button.primary { background: #0d47a1; color: #fff; border-color: #0d47a1; }
+  button.primary:hover { background: #0b3c88; }
+  .links { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 4px 0; }
+  .links button { display: inline; width: auto; margin: 0; padding: 0; border: 0; background: none; color: #0d47a1; text-decoration: underline; font-size: 13px; }
+  .links button:hover { background: none; color: #0b3c88; }
+  #msg { min-height: 1.4em; font-size: 13px; color: #333; margin-top: 6px; }
+  .key span { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; margin: 0 4px 4px 0; }
+  .muted { color: #777; font-size: 12px; }
+  .toggle { display: flex; align-items: center; gap: 8px; margin-top: 14px; padding-top: 10px; border-top: 1px solid #ddd; font-size: 13px; cursor: pointer; }
+  #adv { border-left: 3px solid #0d47a1; padding-left: 10px; margin-top: 6px; }
+  a { color: #0d47a1; }
+  .field { display: block; font-size: 13px; margin: 8px 0 3px; }
+  .row { display: flex; gap: 6px; align-items: center; }
+  .row input { flex: 1; min-width: 0; font: inherit; font-size: 12px; padding: 5px 6px; border: 1px solid #bbb; border-radius: 6px; background: #fff; color: inherit; }
+  .row button.small { width: auto; margin: 0; padding: 5px 10px; font-size: 13px; }
+  p.warn { color: #b71c1c; }
+  [hidden] { display: none !important; }
+  @media (prefers-color-scheme: dark) {
+    body { background: #222; color: #eee; }
+    h2, #cov th, .muted, #cov .place, tr.sub td { color: #aaa; }
+    button { background: #333; color: #eee; border-color: #555; }
+    button:hover { background: #3c3c3c; }
+    .links button, a { color: #90caf9; }
+    .links button:hover { color: #bbdefb; }
+    .toggle { border-color: #444; }
+    #adv { border-color: #90caf9; }
+    #msg { color: #ccc; }
+    .row input { background: #2b2b2b; border-color: #555; }
+    p.warn { color: #ef9a9a; }
+  }
+</style>
+</head>
+<body>
+  <h1>Seen It</h1>
+  <p class="key">
+    <span style="background:#f9a825;color:#1a1a1a">Seen</span><span style="border:1px solid #8a8a8a;color:#777">Passed over</span><span style="background:#0d47a1;color:#fff">New</span><span style="background:#2e7d32;color:#fff">✂ clipped</span><span style="background:#2e7d32;color:#fff">🌳 in your tree</span><span style="background:#616161;color:#fff">✓ nothing here / ✗ not ours</span><span style="background:#6a1b9a;color:#fff">↻ later</span><span style="background:#00838f;color:#fff">👥 overlap</span><span class="adv-only" style="background:#1565c0;color:#fff">📚 in archive</span><span class="adv-only" style="background:#ef6c00;color:#fff">📥 captured</span>
+  </p>
+
+  <table>
+    <tr><td>Newspaper pages you have looked at</td><td class="n" id="n-seen">…</td></tr>
+    <tr class="sub"><td>passed over in results, never opened</td><td class="n" id="n-passed">…</td></tr>
+    <tr class="sub"><td>marked "nothing here" / "later"</td><td class="n" id="n-marks">…</td></tr>
+    <tr class="sub"><td>with your clippings</td><td class="n" id="n-clip-pages">…</td></tr>
+    <tr><td>Newspaper searches logged</td><td class="n" id="n-searches">…</td></tr>
+    <tr><td>Ancestry records you have opened</td><td class="n" id="n-anc-seen">…</td></tr>
+    <tr><td>FamilySearch records you have opened</td><td class="n" id="n-fs-seen">…</td></tr>
+    <tr><td>Find a Grave memorials you have opened</td><td class="n" id="n-fag-seen">…</td></tr>
+    <tr><td>Records attached to your tree</td><td class="n" id="n-tree">…</td></tr>
+  </table>
+  <p class="muted" id="t-tree"></p>
+
+  <button id="b-log" class="primary">Export research log</button>
+  <div class="links">
+    <button id="b-gedcom">Load your tree (GEDCOM)…</button>
+    <button id="b-export">Back up…</button>
+    <button id="b-import">Restore…</button>
+  </div>
+  <p class="muted" id="t-log"></p>
+
+  <h2>Papers you have read in</h2>
+  <table id="cov"><tr><th>Paper</th><th class="n">Years</th><th class="n">Pages</th><th class="n">Nothing</th></tr></table>
+  <p class="muted" id="cov-more"></p>
+
+  <label class="toggle"><input type="checkbox" id="c-adv"> Advanced mode: family archive integration</label>
+  <div id="adv" hidden>
+    <p class="muted">For archives kept with <a href="https://github.com/asielen/plaintext-family-history" target="_blank" rel="noopener">Plaintext Family History</a>. Needs the small local helper, installed once per computer: <code>host\install.cmd</code> on Windows, <code>host/install.sh</code> on a Mac or Linux.</p>
+    <h2>Folders</h2>
+    <label class="field" for="i-archive">Archive folder <span class="muted">(the one that holds <code>fha.yaml</code>)</span></label>
+    <div class="row"><input id="i-archive" type="text" spellcheck="false" placeholder="paste the archive's folder here"><button id="b-archive" class="small">Save</button></div>
+    <p class="muted" id="t-archive"></p>
+    <label class="field" for="i-data">Data folder <span class="muted">(your looks and marks, one file per computer)</span></label>
+    <div class="row"><input id="i-data" type="text" spellcheck="false" placeholder="leave empty for the usual place"><button id="b-data" class="small">Save</button></div>
+    <p class="muted" id="t-data"></p>
+    <h2>The family archive</h2>
+    <table>
+      <tr><td>Newspapers.com clippings in the archive</td><td class="n" id="n-k-clip">…</td></tr>
+      <tr><td>Ancestry records in the archive</td><td class="n" id="n-k-rec">…</td></tr>
+      <tr><td>FamilySearch records in the archive</td><td class="n" id="n-k-fs">…</td></tr>
+      <tr><td>Find a Grave memorials in the archive</td><td class="n" id="n-k-fag">…</td></tr>
+      <tr><td>Captured, waiting to be filed</td><td class="n" id="n-k-cap">…</td></tr>
+    </table>
+    <p class="muted" id="t-known"></p>
+    <h2>Data folder</h2>
+    <p class="muted" id="t-backup"></p>
+    <div class="links">
+      <button id="b-known">Refresh the archive list</button>
+      <button id="b-backup">Sync the data folder</button>
+      <button id="b-log-all">Export the whole log</button>
+      <button id="b-history">Re-import browser history</button>
+      <button id="b-refresh">Re-read all my clippings</button>
+    </div>
+    <p class="muted" id="t-clips"></p>
+  </div>
+
+  <input id="f-import" type="file" accept="application/json,.json" multiple hidden>
+  <input id="f-gedcom" type="file" accept=".ged,.gedcom,text/plain" hidden>
+  <div id="msg"></div>
+  <script src="researchlog.js"></script>
+  <script src="treefile.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

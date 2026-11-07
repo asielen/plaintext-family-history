@@ -1,0 +1,99 @@
+/* "Newspapers.com: Seen It" - pills beside search results and on newspaper pages.
+   Newspapers.com runs a dark theme; the pills are solid so they read on it. */
+.nsi-pills {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 6px 0 2px;
+  vertical-align: middle;
+}
+.nsi-pill {
+  display: inline-block;
+  font: 600 13px/1.2 system-ui, -apple-system, "Segoe UI", sans-serif;
+  padding: 4px 10px;
+  border-radius: 999px;
+  white-space: nowrap;
+  text-decoration: none !important;
+  cursor: default;
+}
+a.nsi-pill { cursor: pointer; }
+.nsi-clip { background: #2e7d32; color: #fff !important; }
+a.nsi-clip:hover { background: #1b5e20; }
+.nsi-seen { background: #f9a825; color: #1a1a1a; }
+.nsi-new  { background: #0d47a1; color: #fff; }
+/* Shown in results before but never opened: an outline, quieter than "Seen". */
+.nsi-passed { background: transparent; color: #cfcfcf; border: 1px solid #8a8a8a; padding: 3px 9px; }
+
+/* The whole result gets a coloured edge, so a scroll down the list shows at a
+   glance which ones are already done. */
+.nsi-has-clip { box-shadow: inset 5px 0 0 #2e7d32; }
+.nsi-was-seen:not(.nsi-has-clip) { box-shadow: inset 5px 0 0 #f9a825; }
+
+/* On a newspaper page: a small fixed badge, top centre just under the
+   viewer's header bar - the one spot the viewer's own controls leave free
+   (bottom-right collides with its page breadcrumb bar). */
+#nsi-page-badge {
+  position: fixed;
+  top: 62px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 2147483000;
+  background: rgba(20, 20, 20, 0.88);
+  border-radius: 12px;
+  padding: 6px 8px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.4);
+}
+#nsi-page-badge .nsi-pills { margin: 0; }
+
+/* Verdicts and overlaps. */
+.nsi-nothing { background: #616161; color: #fff; }
+.nsi-later   { background: #6a1b9a; color: #fff; }
+.nsi-overlap { background: #00838f; color: #fff !important; }
+a.nsi-overlap:hover { background: #006064; }
+
+/* A result you marked "Nothing here" fades back, so new ones stand out. */
+.nsi-ruled-out { opacity: 0.55; box-shadow: inset 5px 0 0 #616161 !important; }
+.nsi-ruled-out:hover { opacity: 1; }
+
+/* "You ran this search before…" above the results. */
+#nsi-search-banner {
+  margin: 10px 16px;
+  padding: 10px 14px;
+  border-radius: 8px;
+  background: #f9a825;
+  color: #1a1a1a;
+  font: 600 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+/* The two verdict buttons in the page badge. */
+.nsi-marks { display: inline-flex; gap: 6px; margin-left: 8px; vertical-align: middle; }
+.nsi-mark {
+  font: 600 12px/1.2 system-ui, -apple-system, "Segoe UI", sans-serif;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid #9e9e9e;
+  background: transparent;
+  color: #eee;
+  cursor: pointer;
+}
+.nsi-mark:hover { border-color: #fff; color: #fff; }
+.nsi-mark.nsi-on { background: #eee; color: #1a1a1a; border-color: #eee; }
+
+/* What the family archive already holds (read by the helper from capture bundles). */
+.nsi-archive  { background: #1565c0; color: #fff; }
+.nsi-captured { background: #ef6c00; color: #fff; }
+.nsi-notyet   { background: transparent; color: #cfcfcf; border: 1px dashed #8a8a8a; padding: 3px 9px; }
+
+/* On a clipping's own page: the same badge spot as on a newspaper page. */
+#nsi-article-badge {
+  position: fixed;
+  top: 62px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 2147483000;
+  background: rgba(20, 20, 20, 0.88);
+  border-radius: 12px;
+  padding: 6px 8px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.4);
+}
+#nsi-article-badge .nsi-pills { margin: 0; }
