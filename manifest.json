@@ -455,14 +455,14 @@
     {
       "path": ".fha/tools/README.md",
       "category": "operating",
-      "sha256": "fb739a24c2431b7fa06476b77ed07d4a32cb13741c61b8ff26fa8981a11ccbbf",
+      "sha256": "6e423ccfed21f25da05ab4501460e0c7bce20dca461196b9352fd2de33bf4506",
       "spec_version": "1.2",
       "src": "tools/README.md"
     },
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "ee96f96f657b0e2ea66443be12812ba7a71b66e58b75e99be209bb03034e4a52",
+      "sha256": "9e65dc35ba64d5187302d54f1b4962b38b9be497cdc4d4514c9a487b8a60ec09",
       "spec_version": "1.2",
       "src": "tools/_lib.py"
     },
@@ -637,7 +637,7 @@
     {
       "path": ".fha/tools/photoindex.py",
       "category": "operating",
-      "sha256": "dedfb220ae15bf51d36db34ceaa71e80cb554416f6e37566a83430185df5d859",
+      "sha256": "22efe740fa506b52bf0c055444687c741f37a1c203a58b3c853b8f11c8ade5e3",
       "spec_version": "1.2",
       "src": "tools/photoindex.py"
     },
@@ -909,7 +909,7 @@
     {
       "path": "CHEATSHEET.md",
       "category": "operating",
-      "sha256": "01069ce8a9317b2da1d7ecfb554c38118dc6742621cccf84c4b855efff64aa30",
+      "sha256": "9edb02e02da7a403911cd06f16c2e9c8a094bb0262a5e9dc3740d9e4259b333a",
       "spec_version": "1.2"
     },
     {
@@ -933,7 +933,7 @@
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "196ddaa59362a070fb24e631d5dd8eb21ee5ae2b82690b44072ab4a14ceb9144",
+      "sha256": "63dc8b48e33efac0f32d240894feb0e196af6bfe0680edf62ca38910a708e555",
       "spec_version": "1.2"
     },
     {

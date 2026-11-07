@@ -1518,7 +1518,10 @@ GENERATED_COMPANION_KINDS: frozenset[str] = frozenset({'timeline', 'sources-inde
 # schema-version gate, not a file-timestamp one, so updating the TOOLS alone
 # (no record file touched) would otherwise never invalidate the stale cache.
 INDEX_SCHEMA_VERSION = 8
-PHOTOINDEX_SCHEMA_VERSION = 1
+# 2 (#49): photos.fingerprint, a content identity for re-tying moved photos.
+# A schema-1 catalog is upgraded in place, not rebuilt (photoindex
+# `_migrate_v1_catalog`).
+PHOTOINDEX_SCHEMA_VERSION = 2
 CACHE_SCHEMA_KEY = 'schema_version'
 
 # The `meta` row `fha photoindex` stamps with the fha.yaml settings the catalog

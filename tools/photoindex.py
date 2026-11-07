@@ -37,8 +37,9 @@ BUILD.md M3.4 added `fha photoindex reconcile` and `fha photoindex
 tag-person`, the two sub-commands that touch on-disk state or embedded
 metadata, completing layer 3. `reconcile` heals drift between the catalog's
 stored paths and what is actually on disk (a file moved outside `fha` is
-re-matched by its embedded `SOURCE:` keyword, never by trusting the old
-path); `tag-person` writes a bare `P-id` keyword into specific photos -
+re-matched by its embedded `SOURCE:` keyword, or - for a photo that is not
+a source - by the content fingerprint each scan stores for it (#49), never
+by trusting the old path); `tag-person` writes a bare `P-id` keyword into specific photos -
 either explicit `--paths` or every photo carrying an ambiguous `--from-face-
 tag` name - making a human identification durable in the file itself.
 BUILD.md M3.5 adds `fha photoindex set-summary`, the second embedded-
@@ -51,6 +52,8 @@ CODE MAP
 --------
   Schema
     _DDL                      - CREATE TABLE statements for photos.sqlite
+    _photo_fingerprint        - cheap content identity for one file: a hash of its
+                                 last 64 KiB (#49; see the function for what it survives)
 
   Cached-path vocabulary
     _MISSING_PREFIX           - reconcile's synthetic key for a vanished photo
@@ -142,7 +145,10 @@ CODE MAP
     _on_disk_aliases          - alias path -> absolute Path for every file under the photos root
                                  (+ optional collector for folders it could not read)
     _scrape_source_ids        - exiftool SOURCE: keyword read over untracked candidate files
-    run_reconcile             - re-match moved files by source_id, flag the rest as MISSING
+    _content_rematches        - pair vanished rows with untracked files by fingerprint,
+                                 one-to-one only (#49)
+    run_reconcile             - re-match moved files by source_id, then by content
+                                 fingerprint; flag the rest as MISSING
 
   Tag-person (fha photoindex tag-person - M3.4)
     run_tag_person_plan       - resolve candidate paths (read-only; CLI previews this before writing)
@@ -169,6 +175,7 @@ CODE MAP
     run_set_summary           - WC refusal; per-file read-compose-write; photos/photo_fts mirror
 
   Scan orchestration
+    _migrate_v1_catalog       - add the fingerprint column to a schema-1 catalog in place
     _get_db                   - open (or create) .cache/photos.sqlite, apply DDL
     run_scan                  - top-level: walk photos root, scrape, group, report
 
@@ -302,7 +309,8 @@ CREATE TABLE IF NOT EXISTS photos(
   gps_lat REAL, gps_lon REAL,
   source_id TEXT,
   group_id TEXT, is_primary INTEGER DEFAULT 0,
-  variant_copy TEXT, variant_role TEXT
+  variant_copy TEXT, variant_role TEXT,
+  fingerprint TEXT            -- _photo_fingerprint: content identity (#49), NULL if none
 );
 -- photo_groups: variation groups and the selected primary photo.
 CREATE TABLE IF NOT EXISTS photo_groups(
@@ -334,6 +342,7 @@ CREATE INDEX IF NOT EXISTS idx_photos_group_id        ON photos(group_id);
 CREATE INDEX IF NOT EXISTS idx_photo_keywords_path    ON photo_keywords(path);
 CREATE INDEX IF NOT EXISTS idx_photo_people_path      ON photo_people(path);
 CREATE INDEX IF NOT EXISTS idx_photo_face_regions_path ON photo_face_regions(path);
+CREATE INDEX IF NOT EXISTS idx_photos_fingerprint     ON photos(fingerprint);
 """
 
 _REQUIRED_SCHEMA = {
@@ -341,7 +350,7 @@ _REQUIRED_SCHEMA = {
         'path', 'mtime', 'size', 'title', 'caption', 'user_comment', 'exif_date',
         'date_pattern', 'edtf', 'sublocation', 'city', 'state', 'country',
         'gps_lat', 'gps_lon', 'source_id', 'group_id', 'is_primary',
-        'variant_copy', 'variant_role',
+        'variant_copy', 'variant_role', 'fingerprint',
     },
     'photo_groups': {'group_id', 'primary_path', 'edtf_resolved', 'date_conflict', 'file_count'},
     'photo_keywords': {'path', 'keyword'},
@@ -349,6 +358,62 @@ _REQUIRED_SCHEMA = {
     'photo_people': {'path', 'person_ref', 'via'},
     'photo_fts': {'path', 'title', 'caption', 'user_comment', 'keywords'},
 }
+
+# ── Content fingerprint (#49) ─────────────────────────────────────────────
+
+# The photo library, not the archive, decides where a photo lives: Lightroom
+# or a cleanup pass may move or rename it (SPEC §12.1), so a path is not an
+# identity. A photo filed as a source carries one in its SOURCE: keyword; the
+# rest of the library had nothing, and a moved photo read as one row vanishing
+# and an unrelated one appearing. This fingerprint is that missing identity.
+_FINGERPRINT_WINDOW = 64 * 1024
+# A window with this few distinct byte values is padding or a blank margin
+# (an uncompressed scan's white border), not picture data - two different
+# scans could share it byte for byte, so it is no identity at all.
+_FINGERPRINT_MIN_DISTINCT_BYTES = 64
+_FINGERPRINT_SCHEME = 'tail64k-v1'
+
+
+def _photo_fingerprint(path: Path) -> str | None:
+    """A cheap content identity for one photo file, or None when it has none.
+
+    The hash of the file's LAST 64 KiB, tagged with its scheme. Why the tail:
+    a whole-file hash changes the moment anything writes metadata - the
+    archive's own `tag-person` and `set-summary`, or Lightroom - and a hash
+    that breaks on the operations that matter is worse than none, because it
+    looks like an identity. JPEG and PNG keep their metadata at the front of
+    the file and their picture data at the end, so the tail survives those
+    writes; measured with exiftool 13.10 (keywords, XMP subject, UserComment,
+    a long XMP description) on JPEG, PNG and uncompressed TIFF, the tail held
+    while the size changed every time. An LZW-compressed TIFF did NOT hold:
+    exiftool rewrote its directory at the end of the file. A changed tail
+    only means no match - reconcile then flags the row MISSING: as it always
+    has - never a wrong one.
+
+    Cost is one seek and one 64 KiB read, so it is computed only when the
+    scan scrapes a file (new or changed) and, once, for rows a schema-1
+    catalog brought along. The full-content alternative, exiftool's
+    ImageDataHash, also survives every write measured, but reads every byte
+    of every photo - hours over an 88,000-photo library.
+
+    None for a file smaller than the window (the whole file IS the window,
+    so any metadata write moves it), for a window too uniform to tell two
+    photos apart (`_FINGERPRINT_MIN_DISTINCT_BYTES`), or for a file that
+    cannot be read.
+    """
+    try:
+        with path.open('rb') as handle:
+            size = handle.seek(0, os.SEEK_END)
+            if size < _FINGERPRINT_WINDOW:
+                return None
+            handle.seek(size - _FINGERPRINT_WINDOW)
+            window = handle.read(_FINGERPRINT_WINDOW)
+    except OSError:
+        return None
+    if len(window) < _FINGERPRINT_WINDOW or len(set(window)) < _FINGERPRINT_MIN_DISTINCT_BYTES:
+        return None
+    return f'{_FINGERPRINT_SCHEME}:{hashlib.sha256(window).hexdigest()[:32]}'
+
 
 # ── exiftool integration ──────────────────────────────────────────────────
 
@@ -2931,6 +2996,39 @@ def _scrape_source_ids(paths: list[Path]) -> dict[Path, str]:
     return out
 
 
+def _content_rematches(
+    conn: sqlite3.Connection, missing: dict[str, str | None], untracked: dict[str, Path],
+) -> list[tuple[str, str]]:
+    """(old_key, new_alias) pairs for vanished rows whose photo is back under a
+    new name, matched by content fingerprint (#49).
+
+    One-to-one only: a fingerprint shared by two vanished rows, or found on
+    two untracked files, is a duplicate copy of one picture, and either pairing
+    would be a guess - those rows stay MISSING: rather than risk tying one
+    photo's caption and dates to another file. Untracked files are
+    fingerprinted here, lazily, and only when some vanished row has a
+    fingerprint to compare with: one 64 KiB read each.
+    """
+    old_by_fp: dict[str, list[str]] = {}
+    for path, fingerprint in conn.execute(
+            'SELECT path, fingerprint FROM photos WHERE fingerprint IS NOT NULL'):
+        if path in missing:
+            old_by_fp.setdefault(fingerprint, []).append(path)
+    if not old_by_fp or not untracked:
+        return []
+    new_by_fp: dict[str, list[str]] = {}
+    for alias, abs_path in untracked.items():
+        fingerprint = _photo_fingerprint(abs_path)
+        if fingerprint in old_by_fp:
+            new_by_fp.setdefault(fingerprint, []).append(alias)
+    pairs = []
+    for fingerprint, olds in old_by_fp.items():
+        news = new_by_fp.get(fingerprint, [])
+        if len(olds) == 1 and len(news) == 1:
+            pairs.append((olds[0], news[0]))
+    return sorted(pairs)
+
+
 def run_reconcile(
     archive_root: Path, fha_config: dict, with_exif: bool = False, dry_run: bool = False,
 ) -> Result:
@@ -2945,7 +3043,13 @@ def run_reconcile(
         SOURCE: keyword equals a missing row's -> the row's path (and its
         photo_keywords/photo_face_regions/photo_people rows) move to the new
         path silently. Without --with-exif there is no way to read a
-        candidate's embedded keyword, so no re-match is attempted. Rows
+        candidate's embedded keyword, so no keyword re-match is attempted.
+      - re-tied by content (#49, with or without --with-exif): a row still
+        unmatched whose stored fingerprint (`_photo_fingerprint`) equals
+        exactly one untracked file's, and no other vanished row's, moves to
+        that file the same way. This is what heals a photo that is NOT a
+        source - it has no SOURCE: keyword to match on. Listed again in
+        `rematched_by_content` so the report can say how it was matched. Rows
         already flagged 'MISSING:' from an earlier run remain eligible here
         too, so re-running with --with-exif after fixing/restoring the photo
         can still heal them.
@@ -3006,14 +3110,15 @@ def run_reconcile(
     up front and returns 'root_found': False instead of mass-flagging every
     row 'MISSING:'.
 
-    Returns {'status', 'root_found': bool, 'rematched': [(old, new), ...],
+    Returns {'status', 'root_found': bool, 'rematched': [(old, new), ...]
+    (by keyword or by content), 'rematched_by_content': [(old, new), ...],
     'missing': [path, ...], 'new_count': int,
     'new_sourced': {source_id: [path, ...]}, 'new_unsourced': [path, ...],
     'stale_hold_failed': bool, 'unreadable_dirs': [alias, ...],
     'held_unreadable': int}.
     """
     empty = {
-        'rematched': [], 'missing': [], 'new_count': 0,
+        'rematched': [], 'rematched_by_content': [], 'missing': [], 'new_count': 0,
         'new_sourced': {}, 'new_unsourced': [], 'stale_hold_failed': False,
         'unreadable_dirs': [], 'held_unreadable': 0,
     }
@@ -3112,6 +3217,25 @@ def run_reconcile(
                 missing = {p: sid for p, sid in missing.items() if p not in rematched_old}
                 untracked = {a: p for a, p in untracked.items() if a not in claimed}
 
+            # Second pass, by content (#49): whatever the SOURCE: keyword
+            # could not place. Runs after it, so a keyword match - the
+            # source's own identity - always wins over a fingerprint.
+            rematched_by_content: list[tuple[str, str]] = []
+            if missing and untracked:
+                for old_path, new_path in _content_rematches(conn, missing, untracked):
+                    if not dry_run:
+                        _move_cached_path(conn, old_path, new_path)
+                        gid = _group_id_of(conn, new_path)
+                        if gid:
+                            affected_group_ids.add(gid)
+                    rematched_by_content.append((old_path, new_path))
+                    rematched.append((old_path, new_path))
+                    rematched_paths.append(untracked[new_path])
+                content_old = {old for old, _new in rematched_by_content}
+                content_new = {new for _old, new in rematched_by_content}
+                missing = {p: sid for p, sid in missing.items() if p not in content_old}
+                untracked = {a: p for a, p in untracked.items() if a not in content_new}
+
             now_missing: list[str] = []
             for old_path in missing:
                 if _is_missing_key(old_path):
@@ -3147,6 +3271,7 @@ def run_reconcile(
                 'status': status,
                 'root_found': True,
                 'rematched': rematched,
+                'rematched_by_content': rematched_by_content,
                 'missing': now_missing,
                 'new_count': len(untracked),
                 'new_sourced': new_sourced,
@@ -4012,15 +4137,40 @@ def _delete_path_rows(conn: sqlite3.Connection, tables: tuple[str, ...], path_ke
         conn.execute(f'DELETE FROM {table} WHERE path=?', (path_key,))
 
 
-def _open_and_apply_schema(db_path: Path) -> tuple[sqlite3.Connection, bool]:
-    """Open db_path, apply the DDL, and report whether photo_face_regions pre-existed."""
+def _migrate_v1_catalog(conn: sqlite3.Connection) -> None:
+    """Bring a schema-1 catalog up to schema 2 in place (#49).
+
+    Schema 2 adds one column, `photos.fingerprint`. Rebuilding instead would
+    re-run exiftool over the whole library - the slow step, half an hour or
+    more on a large one - and throw away every MISSING: row, the vanished
+    photos' kept caption and date history that the fingerprint exists to
+    re-tie. So the column is added and left NULL; the next scan fills it in
+    (see `run_scan`). Anything else that is wrong with the file still takes
+    `_get_db`'s clean rebuild path.
+    """
+    columns = {row[1] for row in conn.execute('PRAGMA table_info(photos)')}
+    if columns and 'fingerprint' not in columns:
+        conn.execute('ALTER TABLE photos ADD COLUMN fingerprint TEXT')
+
+
+def _open_and_apply_schema(
+    db_path: Path, *, migrate_v1: bool = False,
+) -> tuple[sqlite3.Connection, bool]:
+    """Open db_path, apply the DDL, and report whether photo_face_regions pre-existed.
+
+    `migrate_v1` first adds the schema-2 column to a schema-1 catalog
+    (`_migrate_v1_catalog`); without it, the DDL's fingerprint index fails on
+    such a file and `_get_db` rebuilds it.
+    """
     conn = sqlite3.connect(str(db_path))
     try:
         had_face_regions = conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='photo_face_regions'"
         ).fetchone() is not None
+        if migrate_v1:
+            _migrate_v1_catalog(conn)
         conn.executescript(_DDL)
-        conn.execute('PRAGMA user_version=1')
+        conn.execute(f'PRAGMA user_version={PHOTOINDEX_SCHEMA_VERSION}')
         return conn, not had_face_regions
     except sqlite3.DatabaseError:
         conn.close()
@@ -4038,6 +4188,27 @@ def _schema_is_usable(conn: sqlite3.Connection) -> bool:
         if not required_columns.issubset(columns):
             return False
     return True
+
+
+def _stored_schema_version(db_path: Path) -> int | None:
+    """The schema version a catalog file says it has, or None if it cannot say.
+
+    Both stamps must agree - the `meta` row and SQLite's own user_version -
+    the same two `sqlite_cache_schema_status` checks, so a half-stamped file
+    is never mistaken for an upgradable one.
+    """
+    try:
+        conn = sqlite3.connect(str(db_path))
+        try:
+            row = conn.execute('SELECT value FROM meta WHERE key=?',
+                               (CACHE_SCHEMA_KEY,)).fetchone()
+            user_version = conn.execute('PRAGMA user_version').fetchone()[0]
+        finally:
+            conn.close()
+        stored = int(row[0]) if row else None
+    except (sqlite3.DatabaseError, TypeError, ValueError):
+        return None
+    return stored if stored == int(user_version or 0) else None
 
 
 def _get_db(cache_dir: Path) -> tuple[sqlite3.Connection, bool, str | None]:
@@ -4067,9 +4238,12 @@ def _get_db(cache_dir: Path) -> tuple[sqlite3.Connection, bool, str | None]:
         ),
     )
 
+    # A schema-1 catalog (before #49's fingerprint column) is upgraded in
+    # place rather than rebuilt - see `_migrate_v1_catalog` for why.
+    migrate_v1 = schema_status == 'old-schema' and _stored_schema_version(db_path) == 1
     try:
-        conn, needs_face_backfill = _open_and_apply_schema(db_path)
-        if schema_status in {'absent', 'fresh'} and _schema_is_usable(conn):
+        conn, needs_face_backfill = _open_and_apply_schema(db_path, migrate_v1=migrate_v1)
+        if (schema_status in {'absent', 'fresh'} or migrate_v1) and _schema_is_usable(conn):
             return conn, needs_face_backfill, None
         conn.close()
     except sqlite3.DatabaseError:
@@ -4232,11 +4406,13 @@ def run_scan(archive_root: Path, fha_config: dict, full: bool = False) -> Result
                     'INSERT OR REPLACE INTO photos(path, mtime, size, title, caption, '
                     'user_comment, exif_date, date_pattern, edtf, sublocation, city, state, '
                     'country, gps_lat, gps_lon, source_id, group_id, is_primary, variant_copy, '
-                    'variant_role) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,0,NULL,NULL)',
+                    'variant_role, fingerprint) '
+                    'VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,0,NULL,NULL,?)',
                     (path_key, photo['mtime'], photo['size'], photo['title'], photo['caption'],
                      photo['user_comment'], photo['exif_date'], photo['date_pattern'],
                      photo['edtf'], photo['sublocation'], photo['city'], photo['state'],
-                     photo['country'], photo['gps_lat'], photo['gps_lon'], photo['source_id']),
+                     photo['country'], photo['gps_lat'], photo['gps_lon'], photo['source_id'],
+                     _photo_fingerprint(p)),
                 )
 
                 _delete_path_rows(conn, ('photo_keywords', 'photo_face_regions'), path_key)
@@ -4250,6 +4426,25 @@ def run_scan(archive_root: Path, fha_config: dict, full: bool = False) -> Result
                         (path_key, name, region_type, area_json),
                     )
                 scraped += 1
+
+        # A catalog carried over from schema 1 (`_migrate_v1_catalog`) has
+        # no fingerprint on its unchanged rows, and the incremental scan
+        # above never revisits them. Fill each in once - one 64 KiB read per
+        # file, no exiftool - so the library's existing photos can be
+        # re-tied by reconcile too, not only the ones added from now on.
+        # After that one pass the NULL set holds only files with no usable
+        # fingerprint (tiny, uniform, unreadable), so later scans read just
+        # those again, a handful at most.
+        path_by_alias = {alias: p for p, alias in alias_by_path.items()}
+        unfingerprinted = [
+            row[0] for row in conn.execute('SELECT path FROM photos WHERE fingerprint IS NULL')
+            if row[0] in path_by_alias
+        ]
+        for path_key in unfingerprinted:
+            fingerprint = _photo_fingerprint(path_by_alias[path_key])
+            if fingerprint:
+                conn.execute('UPDATE photos SET fingerprint=? WHERE path=?',
+                             (fingerprint, path_key))
 
         removed = 0
         held_unreadable = 0
@@ -5063,8 +5258,10 @@ def _cmd_reconcile(args: argparse.Namespace) -> int:
     if getattr(args, 'dry_run', False):
         print('(dry run - no changes made)')
 
+    by_content = set(result.get('rematched_by_content') or [])
     for old, new in result['rematched']:
-        print(f'  RE-MATCHED  {old} -> {new}')
+        how = '  (same picture, found by its content)' if (old, new) in by_content else ''
+        print(f'  RE-MATCHED  {old} -> {new}{how}')
     for path in result['missing']:
         print(f'  MISSING     {_live_alias(path)}')
     for source_id, paths in sorted(result['new_sourced'].items()):

@@ -6731,5 +6731,186 @@ class SetSummaryTests(unittest.TestCase):
             self.assertEqual(stored, f'Grandma wrote: June wedding.\n\nAI: {self.TEXT}')
 
 
+class ContentFingerprintTests(unittest.TestCase):
+    """#49: a photo the library moves keeps its catalog row.
+
+    Photos are never renamed by the archive, but Lightroom or a cleanup pass
+    may move them, and a photo that is not filed as a source has no SOURCE:
+    keyword to be re-matched by. Its row simply vanished and an unrelated one
+    appeared. Each scan now stores a cheap content fingerprint, and reconcile
+    re-ties a vanished row to the one new file with the same fingerprint.
+    """
+
+    CFG = {'roots': {'photos': 'photos'}}
+
+    def setUp(self) -> None:
+        self._orig_run_exiftool = photoindex._run_exiftool
+        self._tmp = tempfile.TemporaryDirectory()
+        self.archive = _copy_fixture(Path(self._tmp.name))
+        self.photos = self.archive / 'photos'
+        self.captions: dict[str, str] = {}
+
+        def fake_exiftool(paths: list[Path]) -> list[dict]:
+            return [{'SourceFile': str(p), 'Caption-Abstract': self.captions.get(p.name, '')}
+                    for p in paths]
+
+        photoindex._run_exiftool = fake_exiftool
+
+    def tearDown(self) -> None:
+        photoindex._run_exiftool = self._orig_run_exiftool
+        self._tmp.cleanup()
+
+    @staticmethod
+    def _picture(seed: int, size: int = 200_000) -> bytes:
+        import random
+        return random.Random(seed).randbytes(size)
+
+    def _put(self, name: str, data: bytes, caption: str = '') -> Path:
+        path = self.photos / name
+        path.write_bytes(data)
+        if caption:
+            self.captions[name] = caption
+        return path
+
+    def _rows(self) -> dict[str, tuple]:
+        conn = sqlite3.connect(self.archive / '.cache' / 'photos.sqlite')
+        try:
+            return {r[0]: r[1:] for r in conn.execute(
+                'SELECT path, caption, fingerprint FROM photos')}
+        finally:
+            conn.close()
+
+    # ── the fingerprint itself ──────────────────────────────────────────────
+
+    def test_a_metadata_write_at_the_front_keeps_the_fingerprint(self) -> None:
+        # What tag-person / set-summary / Lightroom do to a JPEG: change the
+        # header (and so the size), leave the picture data at the end alone.
+        picture = self._picture(1)
+        before = photoindex._photo_fingerprint(self._put('a.jpg', picture))
+        after = photoindex._photo_fingerprint(
+            self._put('a.jpg', b'\xff\xd8 new keywords block ' * 40 + picture))
+        self.assertIsNotNone(before)
+        self.assertEqual(before, after)
+        self.assertNotEqual(before, photoindex._photo_fingerprint(
+            self._put('b.jpg', self._picture(2))))
+
+    def test_no_fingerprint_where_it_could_not_tell_photos_apart(self) -> None:
+        self.assertIsNone(photoindex._photo_fingerprint(self._put('tiny.jpg', b'x' * 1000)))
+        # A blank margin: two different scans could share it byte for byte.
+        blank = self._picture(3, 100_000) + b'\xfe\xff' * 40_000
+        self.assertIsNone(photoindex._photo_fingerprint(self._put('scan.tif', blank)))
+        self.assertIsNone(photoindex._photo_fingerprint(self.photos / 'nowhere.jpg'))
+
+    # ── scan stores it, reconcile re-ties by it ─────────────────────────────
+
+    def test_scan_stores_the_fingerprint(self) -> None:
+        self._put('farm.jpg', self._picture(4))
+        photoindex.run_scan(self.archive, self.CFG)
+        caption, fingerprint = self._rows()['photos/farm.jpg']
+        self.assertEqual(fingerprint,
+                         photoindex._photo_fingerprint(self.photos / 'farm.jpg'))
+
+    def test_a_moved_photo_is_re_tied_without_with_exif(self) -> None:
+        self._put('farm.jpg', self._picture(5), caption='The farm, 1952')
+        photoindex.run_scan(self.archive, self.CFG)
+        (self.photos / '1952').mkdir()
+        (self.photos / 'farm.jpg').rename(self.photos / '1952' / 'farm-house.jpg')
+        result = photoindex.run_reconcile(self.archive, self.CFG)
+        pair = ('photos/farm.jpg', 'photos/1952/farm-house.jpg')
+        self.assertEqual(result['rematched_by_content'], [pair])
+        self.assertIn(pair, result['rematched'])
+        self.assertEqual(result['missing'], [])
+        self.assertEqual(result['new_count'], 0)
+        rows = self._rows()
+        self.assertNotIn('photos/farm.jpg', rows)
+        self.assertEqual(rows['photos/1952/farm-house.jpg'][0], 'The farm, 1952')
+
+    def test_a_row_already_flagged_missing_is_re_tied_when_its_photo_turns_up(self) -> None:
+        picture = self._picture(6)
+        self._put('farm.jpg', picture, caption='The farm, 1952')
+        photoindex.run_scan(self.archive, self.CFG)
+        (self.photos / 'farm.jpg').unlink()
+        first = photoindex.run_reconcile(self.archive, self.CFG)
+        self.assertEqual(first['missing'], ['MISSING:photos/farm.jpg'])
+        # The library puts it back under a new name - after a metadata write.
+        self._put('farm-renamed.jpg', b'edited header ' * 30 + picture)
+        second = photoindex.run_reconcile(self.archive, self.CFG)
+        self.assertEqual(second['rematched_by_content'],
+                         [('MISSING:photos/farm.jpg', 'photos/farm-renamed.jpg')])
+        self.assertEqual(self._rows()['photos/farm-renamed.jpg'][0], 'The farm, 1952')
+
+    def test_duplicate_copies_are_never_guessed_between(self) -> None:
+        picture = self._picture(7)
+        self._put('copy1.jpg', picture, caption='first copy')
+        self._put('copy2.jpg', picture, caption='second copy')
+        photoindex.run_scan(self.archive, self.CFG)
+        (self.photos / 'copy1.jpg').rename(self.photos / 'moved1.jpg')
+        (self.photos / 'copy2.jpg').rename(self.photos / 'moved2.jpg')
+        result = photoindex.run_reconcile(self.archive, self.CFG)
+        self.assertEqual(result['rematched'], [])
+        self.assertEqual(sorted(result['missing']),
+                         ['MISSING:photos/copy1.jpg', 'MISSING:photos/copy2.jpg'])
+
+    def test_a_source_keyword_match_wins_over_content(self) -> None:
+        # The SOURCE: keyword is the source's own identity; a fingerprint is
+        # only for what the keyword cannot place.
+        self._put('deed.jpg', self._picture(8))
+        self.captions['deed.jpg'] = ''
+
+        def with_source(paths: list[Path]) -> list[dict]:
+            return [{'SourceFile': str(p), 'Keywords': ['SOURCE: S-123456789a']}
+                    for p in paths if p.name in ('deed.jpg', 'deed-moved.jpg')] + [
+                    {'SourceFile': str(p)} for p in paths
+                    if p.name not in ('deed.jpg', 'deed-moved.jpg')]
+
+        photoindex._run_exiftool = with_source
+        photoindex.run_scan(self.archive, self.CFG)
+        (self.photos / 'deed.jpg').rename(self.photos / 'deed-moved.jpg')
+        result = photoindex.run_reconcile(self.archive, self.CFG, with_exif=True)
+        self.assertEqual(result['rematched'], [('photos/deed.jpg', 'photos/deed-moved.jpg')])
+        self.assertEqual(result['rematched_by_content'], [])
+
+    def test_dry_run_reports_the_re_tie_and_changes_nothing(self) -> None:
+        self._put('farm.jpg', self._picture(9))
+        photoindex.run_scan(self.archive, self.CFG)
+        (self.photos / 'farm.jpg').rename(self.photos / 'farm2.jpg')
+        before = self._rows()
+        result = photoindex.run_reconcile(self.archive, self.CFG, dry_run=True)
+        self.assertEqual(result['rematched_by_content'],
+                         [('photos/farm.jpg', 'photos/farm2.jpg')])
+        self.assertEqual(self._rows(), before)
+
+    # ── upgrading a schema-1 catalog ────────────────────────────────────────
+
+    def test_a_schema_1_catalog_is_upgraded_in_place_and_backfilled(self) -> None:
+        self._put('farm.jpg', self._picture(10), caption='The farm')
+        photoindex.run_scan(self.archive, self.CFG)
+        db = self.archive / '.cache' / 'photos.sqlite'
+        conn = sqlite3.connect(db)
+        try:
+            # Turn it back into what a schema-1 build left: no fingerprint
+            # column, version 1 - plus a MISSING: row a rebuild would lose.
+            conn.execute('DROP INDEX IF EXISTS idx_photos_fingerprint')
+            conn.execute('ALTER TABLE photos DROP COLUMN fingerprint')
+            conn.execute("UPDATE meta SET value='1' WHERE key='schema_version'")
+            conn.execute('PRAGMA user_version=1')
+            conn.execute("INSERT INTO photos(path, caption) "
+                         "VALUES ('MISSING:photos/lost.jpg', 'Grandma, 1931')")
+            conn.commit()
+        finally:
+            conn.close()
+        self.assertEqual(photoindex_status(self.archive, self.CFG)[0], 'old-schema')
+
+        summary = photoindex.run_scan(self.archive, self.CFG)
+        self.assertIsNone(summary['rebuilt_reason'])
+        # The unchanged file was NOT re-sent to exiftool - only fingerprinted.
+        self.assertEqual(summary['scraped'], 0)
+        rows = self._rows()
+        self.assertEqual(rows['MISSING:photos/lost.jpg'][0], 'Grandma, 1931')
+        self.assertEqual(rows['photos/farm.jpg'][1],
+                         photoindex._photo_fingerprint(self.photos / 'farm.jpg'))
+        self.assertNotEqual(photoindex_status(self.archive, self.CFG)[0], 'old-schema')
+
+
 if __name__ == '__main__':
     unittest.main()
