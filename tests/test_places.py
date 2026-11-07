@@ -345,6 +345,33 @@ class PlacesCandidatesTests(unittest.TestCase):
         self.assertEqual(group['date_min'], '1870-01-01')
         self.assertEqual(group['date_max'], '1900-12-31')
 
+    def test_before_and_after_dates_never_make_a_backwards_spread(self) -> None:
+        # Codex, #218: "before 1900" and "after 1920" at one place read as the
+        # backwards spread 1920-01-01/1900-12-31. The spread runs forward over
+        # the dates the claims name; a side stays open only when every dated
+        # claim is open on it.
+        from _lib import format_date_spread
+        cases = (
+            (('[..1900]', '[1920..]', '1910'), '1900-12-31', '1920-01-01'),
+            (('[1920..]', '[1930..]', '[1925..]'), '1920-01-01', None),
+            (('[..1900]', '[..1890]', '[..1895]'), None, '1900-12-31'),
+            (('1870', '[1920..]', '1880'), '1870-01-01', '1920-01-01'),
+        )
+        for dates, want_min, want_max in cases:
+            with self.subTest(dates=dates):
+                self.conn.execute('DELETE FROM claims')
+                for i, d in enumerate(dates):
+                    _add_claim(self.conn, f'c-{i}111111111', place_text='Oak Hill',
+                               date_edtf=d)
+                self.conn.commit()
+                group = places.run_candidates(self.archive_root, {}, threshold=3)[
+                    'place_text_groups'][0]
+                self.assertEqual((group['date_min'], group['date_max']),
+                                 (want_min, want_max))
+                spread = format_date_spread(group['date_min'], group['date_max'])
+                self.assertNotIn('9999', spread)
+                self.assertNotIn('0001', spread)
+
     def test_groups_field_is_formatted_strings_for_report(self) -> None:
         for i in range(3):
             _add_claim(self.conn, f'c-{i}111111111', place_text='Topeka, Kansas')

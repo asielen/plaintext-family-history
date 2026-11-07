@@ -644,7 +644,7 @@
     {
       "path": ".fha/tools/places.py",
       "category": "operating",
-      "sha256": "38eeddcf6e99380e3ddd6c934e528ce1b23960fa5692f002e4d78e5973d57d99",
+      "sha256": "8ba5092fd65f27700b8fddd527331316b4a80e72754b6e79848ab2dd8492f2af",
       "spec_version": "1.2",
       "src": "tools/places.py"
     },
