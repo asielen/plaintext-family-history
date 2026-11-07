@@ -82,6 +82,16 @@
     // Capture saves the record's own index (record-data.json) and its linked
     // scan, if it has one. Set from the prefill; drives captureAncestryRecord.
     ancRecord: false,
+    // FamilySearch: a record (ark 1:1, or the viewer opened from one) and a
+    // bare image viewer (ark 3:1). fsCheck is the answer to "can this page's
+    // image be saved from here?", asked when the page is read (null until it
+    // is; fsCheckSeq drops an answer for a page the tab has left). fsImages is
+    // ancImages for FamilySearch: "{imageId}" -> the record that holds it.
+    fsRecord: false,
+    fsImage: false,
+    fsCheck: null,
+    fsCheckSeq: 0,
+    fsImages: {},
     // Census pages saved in this sitting, "{dbId}:{imageId}" -> the bundle that
     // holds the page. Everyone in a household has their own record but they
     // share one page image, so the next member's capture does not download it
@@ -222,6 +232,8 @@
     state.prefill = prefill;
     state.iiif = !!prefill.iiif;
     state.ancRecord = !!prefill.ancestryRecord;
+    state.fsRecord = !!prefill.familysearchRecord;
+    state.fsImage = !!prefill.familysearchImageViewer;
     state.prefilledUrl = prefill.url || null;
     $('f-title').value = prefill.title || '';
     $('f-date').value = prefill.sourceDate || '';
@@ -240,7 +252,8 @@
     // is a derivative). There the URL box is left empty and the auto path
     // supplies the full record on Capture. Any other page clears a stale URL so
     // a previous record's address can't be re-fetched as this one's evidence.
-    if (prefill.ancestryImageViewer || prefill.ancestryRecord || prefill.iiif || prefill.newspapers) {
+    if (prefill.ancestryImageViewer || prefill.ancestryRecord || prefill.familysearchRecord ||
+        prefill.familysearchImageViewer || prefill.iiif || prefill.newspapers) {
       $('f-asset-url').value = '';
     } else if (prefill.imageUrl) {
       $('f-asset-url').value = prefill.imageUrl;
@@ -251,6 +264,7 @@
     }
     applyAncestryNote(!!prefill.ancestryImageViewer);
     loadNewspapers(prefill);
+    checkFamilySearch();
 
     const banner = $('recipe-banner');
     const hintLabel = RECIPE_LABELS[prefill.recipeHint];
@@ -757,8 +771,7 @@
   // absent, off, slow or does not know it: { where: 'archive' | 'inbox',
   // source?: 'S-…' }. Seen It counts a page only once a saved image backs it
   // (its helper's _holds_saved_image), never from an image id alone.
-  function seenItImage(imageKey) {
-    const key = 'img:' + imageKey;
+  function seenItImage(key) {
     return new Promise((resolve) => {
       const timer = setTimeout(() => resolve(null), SEEN_IT_WAIT_MS);
       const done = (v) => {
@@ -788,9 +801,9 @@
     return 'a capture waiting in the inbox to be filed';
   }
 
-  async function captureAncestryRecord(pageHtml, wantPageCopy) {
+  async function captureAncestryRecord(pageHtml, wantPageCopy, form) {
     const info = await sendToTab(state.tabId, {
-      action: 'ancestryRecordInfo', formTitle: $('f-title').value,
+      action: 'ancestryRecordInfo', formTitle: form.title,
     });
     if (!info || !info.ok) throw new Error((info && info.error) || 'could not read the Ancestry record');
     const rec = info.record;
@@ -800,8 +813,8 @@
     // A file the human dropped in is the record's image (her own download,
     // after Ancestry would not hand it over), saved WITH the index rather than
     // instead of it. Her screen-capture tick rides with it, as anywhere else.
-    const dropped = state.droppedAsset;
-    const provisional = !!dropped && $('f-provisional').checked;
+    const dropped = form.dropped;
+    const provisional = !!dropped && form.provisional;
 
     // Everyone in a household has their own record, but they share one census
     // page. A page already saved - earlier in this sitting, or in the archive
@@ -809,7 +822,7 @@
     // person's own index entry and says where the page is.
     const imageKey = rec.imageId ? rec.dbId + ':' + rec.imageId : null;
     let sameImageAs = !dropped && imageKey ? state.ancImages[imageKey] || null : null;
-    if (!dropped && imageKey && !sameImageAs) sameImageAs = await seenItImage(imageKey);
+    if (!dropped && imageKey && !sameImageAs) sameImageAs = await seenItImage('img:' + imageKey);
     let imageWarning = null;
     if (dropped) {
       assets.push({
@@ -872,7 +885,7 @@
         '; the image was not downloaded again.'
       : '';
     const notes = [
-      gatherNotes(provisional),
+      gatherNotes(provisional, form.notes),
       cite.Citation ? 'Ancestry source citation: ' + cite.Citation : '',
       sameNote,
       imageWarning ? 'The record’s image was not saved: ' + imageWarning : '',
@@ -882,11 +895,11 @@
       title,
       accessed: captureJson.accessedDate(),
       // What the human typed wins; else what the record says about itself.
-      sourceDate: $('f-date').value.trim() || hints.sourceDate || '',
-      sourceType: $('f-type').value || hints.sourceType || '',
+      sourceDate: form.date || hints.sourceDate || '',
+      sourceType: form.type || hints.sourceType || '',
       sourceClass: hints.sourceClass || '',
-      repository: $('f-repo').value.trim() || 'Ancestry.com',
-      people: checkedPeople(),
+      repository: form.repo || 'Ancestry.com',
+      people: form.people,
       notes,
       recipeHint: 'ancestry',
       assets: assets.map((a) => ({ file: a.filename, role: a.role, mode: a.mode, provisional: !!a.provisional })),
@@ -907,6 +920,173 @@
       : null;
     const copyNote = forcedCopy
       ? 'A copy of the web page was kept too: with no image, it is what this record’s index is filed with.'
+      : null;
+    reportStaged(st.where, st.viaHost, imageWarning,
+      [st.hostWarning, pageNote, copyNote].filter(Boolean).join('\n') || null);
+  }
+
+  // ── FamilySearch records and images ───────────────────────────────────────────
+  // A record (ark:/61903/1:1:{id}, or the image viewer opened from one) is one
+  // bundle: page.html, the page copy, record-data.json (FamilySearch's own
+  // GEDCOM X data for the record with its citation - role site-data, the
+  // site's index, never a transcript) and record.jpg (the full image behind
+  // ark:/61903/3:1:{image}). A bare image viewer saves its full image the
+  // ordinary way (buildEvidence). All of it through FamilySearch's data
+  // service in the researcher's signed-in session; the login itself stays in
+  // the page (content.js) and never reaches this panel.
+
+  // Ask the page, as soon as it is read, whether its image can be saved from
+  // here - so a restricted (center-only) image is said up front ("the
+  // record's data only") rather than as a failure after Capture - and, on a
+  // record, FamilySearch's own name for it, which becomes the title unless
+  // the human has typed one (state.userEdited).
+  async function checkFamilySearch() {
+    const seq = ++state.fsCheckSeq;
+    state.fsCheck = null;
+    if (!(state.fsRecord || state.fsImage) || !state.tabId) return;
+    state.fsCheck = { checking: true };
+    updateAssetStatus();
+    let r = null;
+    try {
+      r = await sendToTab(state.tabId, { action: 'familysearchImageCheck' });
+    } catch (e) {
+      r = { ok: false, error: e.message };
+    }
+    if (seq !== state.fsCheckSeq) return; // the tab moved on; a newer read owns the state
+    state.fsCheck = r && r.ok ? r : { unknown: true, error: (r && r.error) || 'no answer from the page' };
+    if (r && r.ok && r.title && !state.userEdited.has('f-title')) $('f-title').value = r.title;
+    updateAssetStatus();
+  }
+
+  // What the status line says about a FamilySearch page's files, and whether
+  // that is a warning (amber): { text, warn }.
+  function fsStatus() {
+    const fc = state.fsCheck || {};
+    if (state.fsRecord) {
+      if (fc.checking || !state.fsCheck) {
+        return { text: 'Record files: the record’s FamilySearch data and citation + its image (checking that FamilySearch lets it be saved from here…)' };
+      }
+      if (fc.unknown) {
+        return { text: 'Record files: the record’s FamilySearch data and citation + its image, if FamilySearch hands it over (the check did not answer: ' + fc.error + ')' };
+      }
+      if (fc.available) return { text: 'Record files: the record’s FamilySearch data and citation + its image ' + fc.imageId + ' (FamilySearch, auto)' };
+      if (!fc.imageId) return { text: 'Record files: the record’s FamilySearch data and citation (FamilySearch, auto) - no image: ' + fc.reason };
+      return {
+        text: 'Record files: the record’s data only (FamilySearch). Its image ' + fc.imageId +
+          ' can’t be saved from here - ' + fc.reason + '. Drop the image in if you have it.',
+        warn: true,
+      };
+    }
+    const id = (state.prefill && state.prefill.familysearchImageId) || fc.imageId || '';
+    if (fc.checking || !state.fsCheck) return { text: 'Record file: full image ' + id + ' (FamilySearch, checking…)' };
+    if (fc.ok && !fc.available) {
+      return { text: 'This image can’t be saved from here - ' + fc.reason + '. Drop the file in if you have it.', warn: true };
+    }
+    return { text: 'Record file: full image ' + id + ' (FamilySearch, auto)' };
+  }
+
+  async function captureFamilySearchRecord(pageHtml, wantPageCopy, form) {
+    const info = await sendToTab(state.tabId, {
+      action: 'familysearchRecordInfo',
+      // Only a title she typed; otherwise FamilySearch's own name for the record.
+      formTitle: form.edited.has('f-title') ? form.title : '',
+    });
+    if (!info || !info.ok) throw new Error((info && info.error) || 'could not read the FamilySearch record');
+    const rec = info.record;
+    const hints = info.hints || {};
+    const assets = [];
+    const dropped = form.dropped;
+    const provisional = !!dropped && form.provisional;
+
+    // Household members are each their own record on one image: an image
+    // saved earlier in this sitting, or one Seen It says the archive holds,
+    // is not fetched again (as for Ancestry).
+    const imageKey = rec.imageId || null;
+    let sameImageAs = !dropped && imageKey ? state.fsImages[imageKey] || null : null;
+    if (!dropped && imageKey && !sameImageAs) sameImageAs = await seenItImage('fsimg:' + imageKey);
+    let imageWarning = null;
+    if (dropped) {
+      assets.push({ filename: 'record.' + dropped.ext, blob: dropped.blob, role: 'record', mode: 'manual', provisional });
+    } else if (sameImageAs) {
+      rec.same_image_as = sameImageAs;
+    } else if (imageKey) {
+      setStageResult('Fetching the record’s image from FamilySearch…', '');
+      const img = await sendToTab(state.tabId, { action: 'familysearchImage', imageId: imageKey });
+      if (img && img.ok) {
+        assets.push({
+          filename: 'record.' + (img.ext || 'jpg'),
+          blob: bundle.base64ToBlob(img.base64, img.contentType),
+          role: 'record', mode: 'familysearch-api',
+        });
+      } else {
+        imageWarning = ((img && img.error) || 'no answer from the page') +
+          '. The record’s data and citation are saved. To add the image, use FamilySearch’s ' +
+          'Download button, drop the file into the panel and press Capture again: that capture holds both.';
+      }
+    }
+    // Whether THIS bundle holds the image - not a link to it, not a screen
+    // capture standing in for it. Seen It counts the image as saved only on
+    // this; `imageId` is only the image the record links to.
+    const imageSaved = !!imageKey && !provisional && assets.some((a) => a.role === 'record');
+    rec.imageSaved = imageSaved;
+
+    // No image in the bundle: the page copy comes too, ticked or not, so the
+    // record's data is never filed as the source's main file.
+    let forcedCopy = false;
+    if (wantPageCopy || !assets.some((a) => a.role === 'record')) {
+      const pc = await buildPageCopy();
+      assets.unshift({ filename: pc.filename, blob: pc.blob, role: 'webpage', mode: 'singlefile' });
+      forcedCopy = !wantPageCopy;
+    }
+    const data = {
+      note: 'Captured from FamilySearch by the archive capture extension. "gedcomx" is FamilySearch’s own ' +
+        'data for this record (its index of the record, as the site holds it): an index, not a transcript of ' +
+        'the image. "imageSaved" says whether this capture holds the record’s image; "imageId" is the image ' +
+        'the record links to.',
+      record: rec,
+      citation: info.citation,
+      title: info.title,
+      gedcomx: info.gedcomx,
+    };
+    assets.push({
+      filename: 'record-data.json',
+      blob: new Blob([JSON.stringify(data, null, 2) + '\n'], { type: 'application/json' }),
+      role: 'site-data',
+      mode: 'familysearch-record-data',
+    });
+    const title = info.bundleTitle || ('FamilySearch record ' + rec.fsId);
+    const imageArk = imageKey ? 'https://www.familysearch.org/ark:/61903/3:1:' + imageKey : '';
+    const notes = [
+      gatherNotes(provisional, form.notes),
+      info.citation ? 'FamilySearch citation: ' + info.citation : '',
+      sameImageAs ? 'Same image (' + imageKey + ') as ' + describeSameImage(sameImageAs) + '; the image was not downloaded again.' : '',
+      imageWarning ? 'Image not saved: FamilySearch image ' + imageKey + ' (' + imageArk + ') could not be downloaded - ' +
+        imageWarning.split('. The record')[0] + '. Checked ' + captureJson.accessedDate() + '.' : '',
+    ].filter((t) => t && t.trim()).join('\n\n');
+    const fields = {
+      url: rec.url,
+      title,
+      accessed: captureJson.accessedDate(),
+      // What she typed wins; else what the record says about itself.
+      sourceDate: form.date || hints.sourceDate || '',
+      sourceType: form.type || hints.sourceType || '',
+      sourceClass: hints.sourceClass || '',
+      repository: form.edited.has('f-repo') && form.repo ? form.repo : 'FamilySearch',
+      people: form.people,
+      notes,
+      recipeHint: 'familysearch',
+      assets: assets.map((a) => ({ file: a.filename, role: a.role, mode: a.mode, provisional: !!a.provisional })),
+    };
+    const cap = captureJson.build(fields);
+    const st = await stageBundle(captureJson.bundleName(title), pageHtml, cap, assets);
+    if (imageKey && imageSaved) {
+      state.fsImages[imageKey] = { record: 'fsrec:' + rec.fsId, url: rec.url, name: rec.name || null };
+    }
+    const pageNote = sameImageAs
+      ? 'The image was not downloaded again: it is already saved in ' + describeSameImage(sameImageAs) + '.'
+      : null;
+    const copyNote = forcedCopy
+      ? 'A copy of the web page was kept too: with no image, it is what this record’s data is filed with.'
       : null;
     reportStaged(st.where, st.viaHost, imageWarning,
       [st.hostWarning, pageNote, copyNote].filter(Boolean).join('\n') || null);
@@ -980,7 +1160,7 @@
     // On an Ancestry image-viewer or an IIIF page the auto path supplies the
     // full record on Capture, so "Yes" is satisfied with no dropped file or URL.
     // A dropped file or a typed URL still takes precedence (manual override).
-    if (state.ancestryViewer || state.ancRecord || state.iiif) return true;
+    if (state.ancestryViewer || state.ancRecord || state.fsRecord || state.fsImage || state.iiif) return true;
     if (npActive() && !state.droppedAsset) return state.npSelected.size > 0;
     return !!(state.droppedAsset || evidenceUrl());
   }
@@ -989,12 +1169,16 @@
   // human can see the "both" composition before pressing Capture.
   function updateAssetStatus() {
     const parts = [];
+    // A file the page says it cannot hand over (a restricted FamilySearch
+    // image): the line turns amber though Capture will still save the rest.
+    let warnFile = false;
     if (pageCopyOn()) parts.push('Whole-page copy ✓');
     if (evidenceMode() === 'yes') {
       if (state.droppedAsset) {
         const note = $('f-provisional').checked ? ' (screen capture)' : '';
         parts.push('Record file: ' + state.droppedAsset.filename + note +
-          (state.ancRecord ? ', with the record’s index and citation (Ancestry)' : ''));
+          (state.ancRecord ? ', with the record’s index and citation (Ancestry)'
+            : state.fsRecord ? ', with the record’s data and citation (FamilySearch)' : ''));
       } else if (state.npPage && state.npLoading) {
         parts.push('Record files: reading your Newspapers.com clippings…');
       } else if (npActive()) {
@@ -1011,6 +1195,10 @@
         parts.push('Record file: full record (Ancestry, auto)');
       } else if (state.ancRecord) {
         parts.push('Record files: the record’s index and citation + its scan, if it has one (Ancestry, auto)');
+      } else if (state.fsRecord || state.fsImage) {
+        const fst = fsStatus();
+        parts.push(fst.text);
+        if (fst.warn) warnFile = true;
       } else if (state.iiif) {
         parts.push('Record file: full image (IIIF, auto)');
       } else {
@@ -1024,7 +1212,7 @@
       // Ingest files it as a pointer stub flagged asset_elsewhere: true.
       parts.push('Citation + link only - no file saved (a pointer for later retrieval)');
     }
-    const ok = pageCopyOn() || evidenceMode() !== 'yes' || hasEvidence();
+    const ok = (pageCopyOn() || evidenceMode() !== 'yes' || hasEvidence()) && !warnFile;
     setAssetStatus(
       parts.join('   ·   '),
       ok ? 'ok' : 'warn'
@@ -1099,8 +1287,10 @@
 
   // ── Step 3: assemble + stage the bundle ──────────────────────────────────────
 
-  function gatherNotes(provisional) {
-    let notes = $('f-notes').value;
+  // `text`: the notes as they stood when Capture was pressed (formSnapshot);
+  // the box itself otherwise.
+  function gatherNotes(provisional, text) {
+    let notes = text === undefined ? $('f-notes').value : text;
     if (!notes.trim()) notes = '';
     // schema-2 capture.json carries the provisional flag structurally (on the
     // record asset), but we ALSO surface it in the notes body - the one place
@@ -1171,6 +1361,18 @@
       const blob = bundle.base64ToBlob(resp.base64, resp.contentType);
       return { blob, filename: 'record.' + (resp.ext || 'jpg'), mode: 'ancestry-api' };
     }
+    if (!url && state.fsImage) {
+      // FamilySearch image viewer: the page draws deep-zoom tiles, so the full
+      // image (dist.jpg) comes from FamilySearch's own API in her session. No
+      // id is sent: the page reads the image on screen now (a single-page app).
+      const resp = await sendToTab(state.tabId, { action: 'familysearchImage' });
+      if (!resp || !resp.ok) {
+        throw new Error(((resp && resp.error) || 'could not fetch the full image from FamilySearch') +
+          '. You can use FamilySearch’s Download button and drop the file in.');
+      }
+      const blob = bundle.base64ToBlob(resp.base64, resp.contentType);
+      return { blob, filename: 'record.' + (resp.ext || 'jpg'), mode: 'familysearch-api' };
+    }
     if (!url && state.iiif) {
       // Open-standard IIIF: fetch the full image (content.js rewrites the
       // derivative's URL to full/full then full/max). No auth, so a plain fetch.
@@ -1226,6 +1428,24 @@
     banner.classList.add('warn');
   }
 
+  // The form as it stands the moment Capture is pressed. A record capture
+  // waits on the page and the network for seconds; what she typed meanwhile,
+  // or the next record's details arriving, must not change what this capture
+  // files (#211/#213 reviews).
+  function formSnapshot() {
+    return {
+      title: $('f-title').value.trim(),
+      date: $('f-date').value.trim(),
+      type: $('f-type').value,
+      repo: $('f-repo').value.trim(),
+      notes: $('f-notes').value,
+      people: checkedPeople(),
+      provisional: $('f-provisional').checked,
+      dropped: state.droppedAsset,
+      edited: new Set(state.userEdited),
+    };
+  }
+
   async function capture() {
     if (state.busy) return;
     if (state.navInFlight) {
@@ -1235,6 +1455,7 @@
 
     const wantPageCopy = pageCopyOn();
     const wantEvidence = evidenceMode() === 'yes';
+    const form = formSnapshot();
     // Both controls off is NOT a refusal: it is the pointer-only capture
     // (§5.3's "none", TOOLING §13b case (c)) - page.html + an empty assets
     // list, which ingest files as a citation/link pointer stub
@@ -1250,7 +1471,8 @@
       return;
     }
     if (wantEvidence && !state.droppedAsset && !evidenceUrl()
-        && !state.ancestryViewer && !state.ancRecord && !state.iiif && !npActive()) {
+        && !state.ancestryViewer && !state.ancRecord && !state.fsRecord && !state.fsImage
+        && !state.iiif && !npActive()) {
       if (state.npPage) {
         setStageResult('Newspapers.com: ' + npUnavailableReason(), 'warn');
         return;
@@ -1288,7 +1510,16 @@
       // linked scan - or the file she dropped in, saved with the index. A typed
       // file address still takes the ordinary path.
       if (wantEvidence && state.ancRecord && !evidenceUrl()) {
-        await captureAncestryRecord(pageResp.html, wantPageCopy);
+        await captureAncestryRecord(pageResp.html, wantPageCopy, form);
+        resetForNext();
+        return;
+      }
+
+      // FamilySearch record (or the viewer opened from one): FamilySearch's
+      // own data and citation, plus its image - or the file she dropped in,
+      // saved with the data.
+      if (wantEvidence && state.fsRecord && !evidenceUrl()) {
+        await captureFamilySearchRecord(pageResp.html, wantPageCopy, form);
         resetForNext();
         return;
       }
@@ -1320,7 +1551,7 @@
         // the human can grab the file by hand. The explicit manual paths
         // (dropped file / typed URL) still fail loudly - those are user choices.
         const autoOnly =
-          (state.ancestryViewer || state.iiif) && !state.droppedAsset && !evidenceUrl();
+          (state.ancestryViewer || state.fsImage || state.iiif) && !state.droppedAsset && !evidenceUrl();
         if (autoOnly && wantPageCopy) {
           try {
             const ev = await buildEvidence();

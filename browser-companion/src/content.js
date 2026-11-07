@@ -50,9 +50,12 @@
   // copy of the page before it is saved (TI-067): they record what you had
   // looked at, not what the site shows. Its own elements only - the lists
   // live with the Ancestry readers (ANC_SEEN_IT_CLASSES, ancIsSeenItNode).
+  // Built on use, not at load: ANC_SEEN_IT_CLASSES is declared further down.
+  function seenItSelector() {
+    return ['[id^="nsi-"]'].concat(ANC_SEEN_IT_CLASSES.map((c) => '.' + c)).join(',');
+  }
   function stripSeenIt(root) {
-    const sel = ['[id^="nsi-"]'].concat(ANC_SEEN_IT_CLASSES.map((c) => '.' + c)).join(',');
-    for (const el of root.querySelectorAll(sel)) el.remove();
+    for (const el of root.querySelectorAll(seenItSelector())) el.remove();
   }
 
   function absUrl(href) {
@@ -833,8 +836,9 @@
   // record's event happened, so its years never date the record.
   const ANC_RANGE_RE = /\b\d{4}s?\s*[-\u2013/]\s*(current|present|\d{2,4}s?)\b/i;
 
-  // What a record says about itself, for filing (TI-066). From the collection
-  // name and the record's own index fields - never from the rest of the page:
+  // What a record says about itself, for filing (TI-066), on any site: from
+  // the collection name and `dateOf(event)` - the record's own date for "Death",
+  // "Marriage", "Census"… as EDTF, or null - never from the rest of the page:
   //   sourceType  census for a census; vital-record for a birth, marriage,
   //               death, burial, baptism or divorce collection; newspaper for
   //               an obituary or newspaper index; else null (let filing decide);
@@ -847,41 +851,54 @@
   //               the collection runs, not when she died);
   //   sourceClass 'derivative' for an index (a compiled list, not the record
   //               itself), else null (filing's default, original).
-  function ancHints(record, fields) {
-    const collection = String((record && record.collection) || '');
-    const list = Array.isArray(fields) ? fields : [];
-    const census = /\bcensus\b/i.test(collection);
-    const event = census ? null : (ANC_EVENTS.find(([re]) => re.test(collection)) || [])[1] || null;
-    const dateWords = event || (!census && ANC_OBITUARY_RE.test(collection) ? ['Death'] : []);
+  function recordHints(collection, dateOf) {
+    const c = String(collection || '');
+    const ask = typeof dateOf === 'function' ? dateOf : () => null;
+    const census = /\bcensus\b/i.test(c);
+    // Every event the collection names, in the order ANC_EVENTS gives them:
+    // a "Birth and Death Records" entry is a death record when it has a death
+    // date, else a birth record.
+    const events = [];
+    if (!census) {
+      for (const [re, words] of ANC_EVENTS) {
+        if (re.test(c)) for (const w of words) if (events.indexOf(w) < 0) events.push(w);
+      }
+    }
+    const dateWords = census ? ['Census', 'Residence']
+      : events.length ? events : ANC_OBITUARY_RE.test(c) ? ['Death'] : [];
 
     let sourceType = null;
     if (census) sourceType = 'census';
-    else if (event) sourceType = 'vital-record';
-    else if (/\bnewspapers?\b|\bobituar(y|ies)\b/i.test(collection)) sourceType = 'newspaper';
+    else if (events.length) sourceType = 'vital-record';
+    else if (/\bnewspapers?\b|\bobituar(y|ies)\b/i.test(c)) sourceType = 'newspaper';
 
     let sourceDate = null;
     for (const word of dateWords) {
-      const f = list.find((x) => new RegExp('^' + word + ' (date|year)$', 'i').test(String(x.label || '').trim()));
-      sourceDate = f ? ancDateToEdtf(f.value) : null;
+      sourceDate = ask(word) || null;
       if (sourceDate) break;
     }
-    const years = collection.match(/\b(1[5-9]\d{2}|20\d{2})\b/g) || [];
-    const isRange = ANC_RANGE_RE.test(collection);
+    const years = c.match(/\b(1[5-9]\d{2}|20\d{2})\b/g) || [];
+    const isRange = ANC_RANGE_RE.test(c);
     if (!sourceDate && census) {
-      // A state census collection spans years; the record's own "Residence
-      // Date" is the enumeration it is from.
-      const f = list.find((x) => /^residence (date|year)$/i.test(String(x.label || '').trim()));
-      if (f) sourceDate = ancDateToEdtf(f.value);
-    }
-    if (!sourceDate && census) {
-      const lead = /^\s*(\d{4})\b/.exec(collection);
+      const lead = /^\s*(\d{4})\b/.exec(c);
       if (lead) sourceDate = lead[1];
       else if (years.length === 1) sourceDate = years[0];
     }
     if (!sourceDate && !census && years.length === 1 && !isRange) sourceDate = years[0];
 
-    const sourceClass = /\bindex(es)?\b/i.test(collection) ? 'derivative' : null;
+    const sourceClass = /\bindex(es)?\b/i.test(c) ? 'derivative' : null;
     return { sourceType, sourceDate, sourceClass };
+  }
+
+  // ancHints for an Ancestry record: its labelled fields answer "{Event} Date"
+  // (or "{Event} Year") in Ancestry's own date words.
+  function ancHints(record, fields) {
+    const list = Array.isArray(fields) ? fields : [];
+    return recordHints((record && record.collection) || '', (word) => {
+      const re = new RegExp('^' + word + ' (date|year)$', 'i');
+      const f = list.find((x) => re.test(String(x.label || '').trim()));
+      return f ? ancDateToEdtf(f.value) : null;
+    });
   }
 
   // The bundle's title: what the human typed, unless the form still holds the
@@ -924,6 +941,357 @@
     info.hints = ancHints(info.record, info.fields);
     info.title = ancTitle(info.record, formTitle);
     return info;
+  }
+
+  // ── FamilySearch records (the record's own data, through its data service) ───
+  // On a record (ark:/61903/1:1:{id}) - or the image viewer opened from one
+  // (personArk=) - Capture saves FamilySearch's own GEDCOM X data for the
+  // record with its citation, and the full image behind ark:/61903/3:1:{id};
+  // on an image viewer, the full image (dist.jpg), not the deep-zoom tile the
+  // page draws. Through FamilySearch's data service, in the researcher's own
+  // signed-in session. The readers are a COPY of lib/familysearch-record.js
+  // (the canonical, tested module); tests/test-sync.js fails if they drift.
+  // FHA-SYNC-BEGIN familysearch
+  const FS_HOST_RE = /(^|\.)familysearch\.org$/i;
+
+  // A FamilySearch record: ark:/61903/1:1:{id}, or the image viewer opened from
+  // one (ark:/61903/3:1:{image}?…personArk=…1:1:{id}) - captured as the record
+  // it was opened from, with this image. null for anything else.
+  function fsParseRecordPage(href) {
+    let u;
+    try {
+      u = new URL(href);
+    } catch (e) {
+      return null;
+    }
+    if (!FS_HOST_RE.test(u.hostname)) return null;
+    const m = /\/ark:\/61903\/1:1:([A-Z0-9-]+)/i.exec(u.pathname);
+    if (m) return { fsId: m[1].toUpperCase(), viewerImageId: null };
+    const img = /\/ark:\/61903\/3:1:([A-Z0-9-]+)/i.exec(u.pathname);
+    if (img) {
+      const p = /1:1:([A-Z0-9-]+)/i.exec(u.searchParams.get('personArk') || '');
+      if (p) return { fsId: p[1].toUpperCase(), viewerImageId: img[1].toUpperCase() };
+    }
+    return null;
+  }
+
+  // The image (ark:/61903/3:1:{id}) an address names, in its path or query.
+  function fsImageIdFromHref(href) {
+    let u;
+    try {
+      u = new URL(href);
+    } catch (e) {
+      return null;
+    }
+    if (!FS_HOST_RE.test(u.hostname)) return null;
+    let query = u.search;
+    try {
+      query = decodeURIComponent(query);
+    } catch (e) {
+      /* a stray % that is not valid encoding: read the query as it is */
+    }
+    const m = /ark:\/61903\/3:1:([A-Z0-9-]+)/i.exec(u.pathname + query);
+    return m ? m[1].toUpperCase() : null;
+  }
+
+  // The login header for `href` (resolved against `base`, the page's address):
+  // { Authorization: 'Bearer …' } only for https on familysearch.org or a
+  // subdomain of it, and only when someone is signed in (`token`); else {}.
+  function fsAuthHeaders(href, base, token) {
+    let u;
+    try {
+      u = new URL(href, base);
+    } catch (e) {
+      return {};
+    }
+    if (u.protocol !== 'https:' || !FS_HOST_RE.test(u.hostname) || u.username || u.password) return {};
+    return token ? { Authorization: 'Bearer ' + token } : {};
+  }
+
+  // What an HTTP answer from FamilySearch means, in words that end in what to
+  // do next. `what` is 'record' or 'image'; `signedIn` whether a login was sent.
+  // Built from the status alone: no address, header or token ever goes into it.
+  function fsStatusMessage(status, what, signedIn) {
+    const thing = what === 'image' ? 'this image' : 'this record';
+    if (status === 401 || (status === 403 && !signedIn)) {
+      return 'FamilySearch asked you to sign in (HTTP ' + status + '). Sign in to FamilySearch in this tab, ' +
+        'reload the page, then press Capture again';
+    }
+    if (status === 403) {
+      return 'FamilySearch will not show ' + thing + ' here (HTTP 403): it is restricted to a FamilySearch ' +
+        'center or affiliate library. It can be saved from a computer there';
+    }
+    if (status === 404) return 'FamilySearch has no ' + (what === 'image' ? 'image' : 'record') + ' at this address (HTTP 404) - check the page is the one you meant';
+    if (status === 429) return 'FamilySearch asked us to slow down (HTTP 429). Wait a few minutes, then press Capture again';
+    if (status >= 500) return 'FamilySearch is having trouble (HTTP ' + status + '). Try again in a little while';
+    return 'FamilySearch answered HTTP ' + status + ' for ' + thing + '. Reload the page and press Capture again';
+  }
+
+  // GEDCOM X's formal date in the archive's form (EDTF): "+1957-01-07" ->
+  // "1957-01-07", "+1957-01" -> "1957-01", "+1957", and "A+1887" (about) ->
+  // "1887~". A range or open date ("+1880/+1881", "/+1900") is null: no date
+  // beats a wrong one.
+  function fsFormalToEdtf(formal) {
+    const m = /^(A)?\+(\d{4})(-\d{2})?(-\d{2})?$/.exec(String(formal || '').trim());
+    return m ? m[2] + (m[3] || '') + (m[4] || '') + (m[1] ? '~' : '') : null;
+  }
+
+  const fsTypeName = (t) => String(t || '').replace(/^.*[/#]/, '');
+  const fsFirstTitle = (x) => (x && x.titles && x.titles[0] && x.titles[0].value) || null;
+
+  // The record's main person: the one FamilySearch marks principal, else the first.
+  function fsPrincipal(g) {
+    const persons = (g && Array.isArray(g.persons)) ? g.persons : [];
+    return persons.find((p) => p && p.principal) || persons[0] || null;
+  }
+
+  function fsPersonName(p) {
+    const n = p && p.names && p.names[0];
+    const f = n && n.nameForms && n.nameForms[0];
+    return (f && String(f.fullText || '').trim()) || null;
+  }
+
+  // The record from FamilySearch's data for it (`g`, GEDCOM X) and its identity
+  // (`ids`, from fsParseRecordPage). Everything comes from the data, not the
+  // page: a single-page site's title tags can still describe an earlier record.
+  function fsRecordFrom(g, ids) {
+    const sds = (g && Array.isArray(g.sourceDescriptions)) ? g.sourceDescriptions : [];
+    const about = (s) => String((s && s.about) || '');
+    const persona = sds.find((s) => /ark:\/61903\/1:1:/i.test(about(s)) &&
+      about(s).toUpperCase().indexOf('1:1:' + ids.fsId) >= 0) || {};
+    const image = sds.find((s) => /DigitalArtifact/.test(String(s.resourceType || '')) && /3:1:/i.test(about(s)));
+    const coll = sds.find((s) => /Collection/.test(String(s.resourceType || '')) && /\/collections\/\d+$/.test(about(s)));
+    const rec = sds.find((s) => /\/Record$/.test(String(s.resourceType || '')));
+    const imageId = (image && ((/3:1:([A-Z0-9-]+)/i.exec(about(image)) || [])[1] || '').toUpperCase()) ||
+      ids.viewerImageId || null;
+    const cite = persona.citations && persona.citations[0] && persona.citations[0].value;
+    return {
+      record: {
+        fsId: ids.fsId,
+        url: 'https://www.familysearch.org/ark:/61903/1:1:' + ids.fsId,
+        imageId,
+        recordArk: rec ? (/1:2:[A-Z0-9-]+/i.exec(about(rec)) || [])[0] || null : null,
+        collectionId: coll ? (/collections\/(\d+)$/.exec(about(coll)) || [])[1] || null : null,
+        collection: fsFirstTitle(coll),
+        name: fsPersonName(fsPrincipal(g)),
+      },
+      citation: cite ? String(cite).replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim() || null : null,
+      title: fsFirstTitle(persona),
+    };
+  }
+
+  // recordHints over the record's own events: the main person's facts (and the
+  // couple's, for a marriage), by GEDCOM X type ("http://gedcomx.org/Death").
+  function fsHints(record, g) {
+    const main = fsPrincipal(g);
+    const facts = [].concat((main && main.facts) || []);
+    for (const r of (g && g.relationships) || []) {
+      const ids = [r.person1, r.person2].map((x) => String((x && (x.resource || x.resourceId)) || '').replace(/^#/, ''));
+      if (!main || !main.id || ids.indexOf(main.id) >= 0) facts.push(...(r.facts || []));
+    }
+    return recordHints((record && record.collection) || '', (word) => {
+      for (const f of facts) {
+        if (fsTypeName(f.type).toLowerCase() !== word.toLowerCase()) continue;
+        const d = f.date || {};
+        const v = fsFormalToEdtf(d.formal) || ancDateToEdtf(d.original);
+        if (v) return v;
+      }
+      return null;
+    });
+  }
+
+  // The bundle's title: what the human typed, unless the form still holds the
+  // page's own title (`pageTitle`, the tab's - on FamilySearch often an earlier
+  // record's) or nothing; then "{name} - {collection}" from FamilySearch's data.
+  function fsTitle(record, formTitle, pageTitle) {
+    const r = record || {};
+    const auto = [r.name, r.collection].filter(Boolean).join(' - ') || 'FamilySearch record ' + r.fsId;
+    const typed = String(formTitle || '').trim();
+    const page = String(pageTitle || '').trim();
+    return !typed || typed === page || /\bFamilySearch\s*$|•/.test(typed) ? auto : typed;
+  }
+
+  // The full-image link in an image description; null when there is none
+  // (a restricted image often has none).
+  function fsImageLink(j) {
+    const links = (j && j.links) || {};
+    const l = links['image-stream-image-dist'] || links.image;
+    return l && typeof l.href === 'string' && l.href ? l.href : null;
+  }
+
+  // One GET of FamilySearch's data service. Throws an Error with
+  // fsStatusMessage's words (never the token or the address).
+  async function fsJson(path, accept, d) {
+    const headers = Object.assign({ Accept: accept || 'application/x-gedcomx-v1+json' },
+      fsAuthHeaders(path, d.base, d.token));
+    let r;
+    try {
+      r = await d.fetch(new URL(path, d.base).href, { credentials: 'include', headers });
+    } catch (e) {
+      throw new Error('could not reach FamilySearch - check your internet connection, then press Capture again');
+    }
+    if (!r.ok) throw new Error(fsStatusMessage(r.status, 'record', !!d.token));
+    if (r.status === 204) return {};
+    const text = await r.text();
+    try {
+      return text ? JSON.parse(text) : {};
+    } catch (e) {
+      throw new Error('FamilySearch sent something other than its record data - reload the page and press Capture again');
+    }
+  }
+
+  // The record on the page at `href`: { ok, record, citation, title, hints,
+  // gedcomx } or { ok:false, error }.
+  async function fsRecordInfo(href, d) {
+    const ids = fsParseRecordPage(href);
+    if (!ids) return { ok: false, error: 'this is not a FamilySearch record page' };
+    try {
+      const g = await fsJson('/ark:/61903/1:1:' + ids.fsId, null, d);
+      const info = fsRecordFrom(g, ids);
+      return Object.assign({ ok: true }, info, { hints: fsHints(info.record, g), gedcomx: g });
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  }
+
+  // Before Capture: can this page's image be saved from here? Reads the image's
+  // description and asks for its first kilobyte, never the whole picture.
+  // `imageId` is the record's or the viewer's. { ok, imageId, available, reason? }.
+  async function fsImageCheck(imageId, d) {
+    if (!imageId) return { ok: true, imageId: null, available: false, reason: 'there is no image for it on FamilySearch' };
+    let link;
+    try {
+      link = fsImageLink(await fsJson('/ark:/61903/3:1:' + imageId, null, d));
+    } catch (e) {
+      return { ok: true, imageId, available: false, reason: e.message };
+    }
+    if (!link) {
+      return { ok: true, imageId, available: false,
+        reason: 'it is restricted: FamilySearch shows it only at a FamilySearch center or affiliate library' };
+    }
+    let r;
+    try {
+      r = await d.fetch(new URL(link, d.base).href.split('?')[0], {
+        headers: Object.assign({ Accept: 'image/jpeg', Range: 'bytes=0-1023' }, fsAuthHeaders(link, d.base, d.token)),
+      });
+    } catch (e) {
+      return { ok: true, imageId, available: false, reason: 'could not reach FamilySearch for the image' };
+    }
+    try {
+      if (r.body && r.body.cancel) r.body.cancel();
+    } catch (e) {
+      /* nothing to stop */
+    }
+    return r.ok ? { ok: true, imageId, available: true }
+      : { ok: true, imageId, available: false, reason: fsStatusMessage(r.status, 'image', !!d.token) };
+  }
+
+  // The full image behind ark:/61903/3:1:{imageId}: { ok, base64, ext,
+  // contentType } or { ok:false, error }.
+  async function fsImage(imageId, d) {
+    if (!imageId) return { ok: false, error: 'no image named' };
+    let link;
+    try {
+      link = fsImageLink(await fsJson('/ark:/61903/3:1:' + imageId, null, d));
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+    if (!link) {
+      return { ok: false, error: 'FamilySearch offers no download of this image: it is restricted to a ' +
+        'FamilySearch center or affiliate library' };
+    }
+    let r;
+    try {
+      r = await d.fetch(new URL(link, d.base).href.split('?')[0], {
+        headers: Object.assign({ Accept: 'image/jpeg' }, fsAuthHeaders(link, d.base, d.token)),
+      });
+    } catch (e) {
+      return { ok: false, error: 'could not reach FamilySearch for the image - check your internet connection' };
+    }
+    if (!r.ok) return { ok: false, error: fsStatusMessage(r.status, 'image', !!d.token) };
+    const blob = await r.blob();
+    if (!/^image\//.test(blob.type || '') || blob.size < 30 * 1024) {
+      return { ok: false, error: 'the image came back too small to be the full record (' +
+        Math.round((blob.size || 0) / 1024) + ' KB) - use FamilySearch’s Download button and drop the file in' };
+    }
+    return { ok: true, base64: await d.toBase64(blob), ext: 'jpg', contentType: blob.type || 'image/jpeg' };
+  }
+  // FHA-SYNC-END familysearch
+
+  // The researcher's FamilySearch login, read from the page at the moment of
+  // each request - whoever is signed in now - and handed only to
+  // fsAuthHeaders, which sends it to FamilySearch's own https addresses and
+  // nowhere else. Never stored, logged, or put into anything returned.
+  function fsToken() {
+    const m = /(?:^|;\s*)fssessionid=([^;]+)/.exec(document.cookie || '');
+    if (!m) return null;
+    try {
+      return decodeURIComponent(m[1]);
+    } catch (e) {
+      return m[1];
+    }
+  }
+
+  function fsDeps() {
+    return {
+      fetch: (url, init) => fetch(url, init),
+      base: location.href,
+      token: fsToken(),
+      toBase64: blobToBase64,
+    };
+  }
+
+  // The image on a FamilySearch image viewer: its address, its canonical link,
+  // or - on a film viewer (/search/film/…?i=N), which does not name the image
+  // in its address - the ONE 3:1 image the page links to. Two different
+  // images on the page is not an identification, so that answers null. The
+  // Seen It add-on's badges are not the page's links and are skipped.
+  function fsViewerImageId(href) {
+    const own = fsImageIdFromHref(href || location.href);
+    if (own) return own;
+    if (href && href.split('#')[0] !== location.href.split('#')[0]) return null;
+    const canon = document.querySelector('link[rel="canonical"], meta[property="og:url"]');
+    const fromCanon = canon && fsImageIdFromHref(new URL(canon.getAttribute('href') || canon.getAttribute('content') || '', location.href).href);
+    if (fromCanon) return fromCanon;
+    const found = new Set();
+    for (const el of document.querySelectorAll('a[href*="3:1:"], input[value*="3:1:"]')) {
+      if (el.closest(seenItSelector())) continue;
+      let id = null;
+      try {
+        id = fsImageIdFromHref(new URL(el.getAttribute('href') || el.value || '', location.href).href);
+      } catch (e) {
+        id = null;
+      }
+      if (id) found.add(id);
+      if (found.size > 1) return null;
+    }
+    return found.size === 1 ? [...found][0] : null;
+  }
+
+  // The record, plus the bundle's title: the human's `formTitle` when she
+  // typed one, else FamilySearch's own "{name} - {collection}" (fsTitle).
+  async function familysearchRecordInfo(formTitle) {
+    const info = await fsRecordInfo(location.href, fsDeps());
+    if (info.ok) info.bundleTitle = fsTitle(info.record, formTitle, '');
+    return info;
+  }
+
+  // Before Capture: can this page's image be saved from here? On a record,
+  // also FamilySearch's own name for it (the panel's title).
+  async function familysearchImageCheck() {
+    if (fsParseRecordPage(location.href)) {
+      const info = await fsRecordInfo(location.href, fsDeps());
+      if (!info.ok) return { ok: false, error: info.error };
+      const r = info.record;
+      const check = await fsImageCheck(r.imageId, fsDeps());
+      return Object.assign({}, check, {
+        record: true, fsId: r.fsId,
+        title: [r.name, r.collection].filter(Boolean).join(' - ') || null,
+      });
+    }
+    const imageId = fsViewerImageId();
+    if (!imageId) return { ok: true, record: false, imageId: null, available: false, reason: 'no single image was found on this page' };
+    return Object.assign({ record: false }, await fsImageCheck(imageId, fsDeps()));
   }
 
   // ── IIIF full-image auto-fetch (open archives) ───────────────────────────────
@@ -1483,6 +1851,12 @@
       // An Ancestry record page: Capture saves the record's own fields and
       // citation (record-data.json) and fetches its linked scan, if it has one.
       ancestryRecord: !!ancParseRecordPage(url),
+      // A FamilySearch record (or the image viewer opened from one): Capture
+      // saves FamilySearch's own data for it and its image.
+      familysearchRecord: !!fsParseRecordPage(url),
+      // A FamilySearch image viewer of its own: the full image, from the API.
+      familysearchImageViewer: !fsParseRecordPage(url) && !!fsViewerImageId(url),
+      familysearchImageId: fsParseRecordPage(url) ? null : fsViewerImageId(url),
       // A Newspapers.com page or clipping: the panel asks for newspapersInfo
       // and saves the full page plus your clippings on it automatically.
       newspapers: !!npPageKind(url),
@@ -2434,6 +2808,23 @@
         return;
       case 'fetchAsset':
         fetchAsset(msg.url).then(sendResponse);
+        return true; // async response
+      case 'familysearchRecordInfo':
+        familysearchRecordInfo(msg.formTitle)
+          .then(sendResponse)
+          .catch((e) => sendResponse({ ok: false, error: String((e && e.message) || e) }));
+        return true; // async response
+      case 'familysearchImageCheck':
+        familysearchImageCheck()
+          .then(sendResponse)
+          .catch((e) => sendResponse({ ok: false, error: String((e && e.message) || e) }));
+        return true; // async response
+      case 'familysearchImage':
+        // No id named: the image the viewer shows now (a single-page app, so
+        // re-read at Capture rather than trust the prefill).
+        fsImage(msg.imageId || fsViewerImageId(), fsDeps())
+          .then(sendResponse)
+          .catch((e) => sendResponse({ ok: false, error: String((e && e.message) || e) }));
         return true; // async response
       case 'ancestryRecordInfo':
         try {

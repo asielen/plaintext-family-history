@@ -482,11 +482,69 @@ class CaptureTestCase(unittest.TestCase):
         self.assertEqual(rc, EXIT_CLEAN)
         meta = read_record(self._only_stub())['meta']
         self.assertEqual(meta['source_type'], 'vital-record')
-        self.assertEqual(meta['source_date'], '1905')
+        # The record's own birth date, not the index's first year (TI-066).
+        self.assertEqual(str(meta['source_date']), '1912-04-12')
+        self.assertEqual(meta['source_class'], 'derivative')
         self.assertEqual(meta['title'], 'California, Birth Index, 1905-1995')
-        self.assertIn('Mark B Sielen', meta['people'])
+        self.assertIn('Warren B Hartley', meta['people'])
         self.assertNotIn('Event Type', meta['people'])
         self.assertNotIn('Event Place', meta['people'])
+
+    # ── TI-066 on FamilySearch: the record's own event, never the collection's first year ──
+
+    def _fs_record_page(self, person: str, collection: str, body: str) -> str:
+        """A FamilySearch record page as saved: the person and the collection
+        in <title>, the record's facts in its text (label, then value)."""
+        return ('<!DOCTYPE html><html><head><meta charset="utf-8">'
+                f'<title>{person}, "{collection}"</title>'
+                '<meta property="og:site_name" content="FamilySearch"></head>'
+                f'<body><h1>{person}</h1><div class="facts">{body}</div>'
+                '<footer>© 2026 by Intellectual Reserve</footer></body></html>')
+
+    def test_familysearch_record_dated_by_its_own_event(self) -> None:
+        cases = [
+            ('Calvin Hartley', 'Kansas, County Marriages, 1855-1911',
+             '<span>Event Type</span> <strong>Marriage</strong> <span>Event Date</span> <strong>12 October 1866</strong>'
+             ' <span>Event Place</span> <strong>Fairview, Breton, Kansas</strong>',
+             'vital-record', '1866-10-12', None),
+            ('Ethel Hartley', 'California, County Birth and Death Records, 1849-1980',
+             '<span>Birth Date</span> <strong>24 Mar 1902</strong> <span>Event Type</span> <strong>Death</strong>'
+             ' <span>Event Date</span> <strong>7 Jan 1957</strong>',
+             'vital-record', '1957-01-07', None),
+            ('Calvin Hartley', 'United States, Census, 1880',
+             '<span>Event Type</span> <strong>Census</strong> <span>Event Date</span> <strong>1880</strong>',
+             'census', '1880', None),
+            ('Ethel Hartley', 'California Death Index, 1940-1997',
+             '<span>Event Type</span> <strong>Death</strong> <span>Event Date</span> <strong>7 Jan 1957</strong>',
+             'vital-record', '1957-01-07', 'derivative'),
+            # Nothing dated on the page: no date at all, never 1850.
+            ('Warren Hartley', 'California, Marriages, 1850-1952', '<span>Event Type</span> <strong>Marriage</strong>',
+             'vital-record', None, None),
+        ]
+        for i, (person, collection, body, stype, sdate, sclass) in enumerate(cases):
+            with self.subTest(collection=collection):
+                for stub in list((self.archive / 'inbox').glob('*.notes.md')):
+                    stub.unlink()
+                rc = self._capture(self._fs_record_page(person, collection, body),
+                                   url=f'https://www.familysearch.org/ark:/61903/1:1:HRT1-TST{i}')
+                self.assertEqual(rc, EXIT_CLEAN)
+                meta = read_record(self._only_stub())['meta']
+                self.assertEqual(meta['source_type'], stype)
+                self.assertEqual(str(meta['source_date']) if 'source_date' in meta else None, sdate)
+                self.assertEqual(meta.get('source_class'), sclass)
+
+    def test_familysearch_page_saved_with_seen_it_badges(self) -> None:
+        # TI-067 on FamilySearch: Seen It's pills on a saved page are not the record.
+        html = self._fs_record_page(
+            'Calvin Hartley', 'United States, Census, 1880',
+            '<span>Event Type</span> <strong>Census</strong> <span>Event Date</span> <strong>1880</strong>'
+            '<span class="nsi-pills"><span class="nsi-pill nsi-captured">Captured, not filed</span></span>'
+            '<div id="nsi-fs-badge"><span class="nsi-pill nsi-seen">Seen 2x</span></div>')
+        rc = self._capture(html, url='https://www.familysearch.org/ark:/61903/1:1:HRT1-TSTS')
+        self.assertEqual(rc, EXIT_CLEAN)
+        text = self._only_stub().read_text(encoding='utf-8')
+        self.assertNotIn('Captured, not filed', text)
+        self.assertNotIn('Seen 2x', text)
 
     def test_newspapers_recipe(self) -> None:
         rc = self._capture(_sample('newspapers'),

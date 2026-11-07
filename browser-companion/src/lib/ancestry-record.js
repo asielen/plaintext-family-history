@@ -33,7 +33,8 @@
 //   ancText              an element's text, without Seen It's badges or hidden parts
 //   ancRecordFrom        the whole record from a page: fields, household, citation
 //   ancDateToEdtf        "7 Jan 1950" -> "1950-01-07"; "abt 1845" -> "1845~"
-//   ancHints             source type, date and class from the record itself
+//   recordHints          source type, date and class from a record's own events (every site)
+//   ancHints             recordHints over an Ancestry record's labelled fields
 //   ancTitle             "{name} - {collection}", unless the human typed a title
 
 'use strict';
@@ -327,8 +328,9 @@ const ANC_OBITUARY_RE = /\bobituar(y|ies)\b/i;
 // record's event happened, so its years never date the record.
 const ANC_RANGE_RE = /\b\d{4}s?\s*[-\u2013/]\s*(current|present|\d{2,4}s?)\b/i;
 
-// What a record says about itself, for filing (TI-066). From the collection
-// name and the record's own index fields - never from the rest of the page:
+// What a record says about itself, for filing (TI-066), on any site: from
+// the collection name and `dateOf(event)` - the record's own date for "Death",
+// "Marriage", "Census"… as EDTF, or null - never from the rest of the page:
 //   sourceType  census for a census; vital-record for a birth, marriage,
 //               death, burial, baptism or divorce collection; newspaper for
 //               an obituary or newspaper index; else null (let filing decide);
@@ -341,41 +343,54 @@ const ANC_RANGE_RE = /\b\d{4}s?\s*[-\u2013/]\s*(current|present|\d{2,4}s?)\b/i;
 //               the collection runs, not when she died);
 //   sourceClass 'derivative' for an index (a compiled list, not the record
 //               itself), else null (filing's default, original).
-function ancHints(record, fields) {
-  const collection = String((record && record.collection) || '');
-  const list = Array.isArray(fields) ? fields : [];
-  const census = /\bcensus\b/i.test(collection);
-  const event = census ? null : (ANC_EVENTS.find(([re]) => re.test(collection)) || [])[1] || null;
-  const dateWords = event || (!census && ANC_OBITUARY_RE.test(collection) ? ['Death'] : []);
+function recordHints(collection, dateOf) {
+  const c = String(collection || '');
+  const ask = typeof dateOf === 'function' ? dateOf : () => null;
+  const census = /\bcensus\b/i.test(c);
+  // Every event the collection names, in the order ANC_EVENTS gives them:
+  // a "Birth and Death Records" entry is a death record when it has a death
+  // date, else a birth record.
+  const events = [];
+  if (!census) {
+    for (const [re, words] of ANC_EVENTS) {
+      if (re.test(c)) for (const w of words) if (events.indexOf(w) < 0) events.push(w);
+    }
+  }
+  const dateWords = census ? ['Census', 'Residence']
+    : events.length ? events : ANC_OBITUARY_RE.test(c) ? ['Death'] : [];
 
   let sourceType = null;
   if (census) sourceType = 'census';
-  else if (event) sourceType = 'vital-record';
-  else if (/\bnewspapers?\b|\bobituar(y|ies)\b/i.test(collection)) sourceType = 'newspaper';
+  else if (events.length) sourceType = 'vital-record';
+  else if (/\bnewspapers?\b|\bobituar(y|ies)\b/i.test(c)) sourceType = 'newspaper';
 
   let sourceDate = null;
   for (const word of dateWords) {
-    const f = list.find((x) => new RegExp('^' + word + ' (date|year)$', 'i').test(String(x.label || '').trim()));
-    sourceDate = f ? ancDateToEdtf(f.value) : null;
+    sourceDate = ask(word) || null;
     if (sourceDate) break;
   }
-  const years = collection.match(/\b(1[5-9]\d{2}|20\d{2})\b/g) || [];
-  const isRange = ANC_RANGE_RE.test(collection);
+  const years = c.match(/\b(1[5-9]\d{2}|20\d{2})\b/g) || [];
+  const isRange = ANC_RANGE_RE.test(c);
   if (!sourceDate && census) {
-    // A state census collection spans years; the record's own "Residence
-    // Date" is the enumeration it is from.
-    const f = list.find((x) => /^residence (date|year)$/i.test(String(x.label || '').trim()));
-    if (f) sourceDate = ancDateToEdtf(f.value);
-  }
-  if (!sourceDate && census) {
-    const lead = /^\s*(\d{4})\b/.exec(collection);
+    const lead = /^\s*(\d{4})\b/.exec(c);
     if (lead) sourceDate = lead[1];
     else if (years.length === 1) sourceDate = years[0];
   }
   if (!sourceDate && !census && years.length === 1 && !isRange) sourceDate = years[0];
 
-  const sourceClass = /\bindex(es)?\b/i.test(collection) ? 'derivative' : null;
+  const sourceClass = /\bindex(es)?\b/i.test(c) ? 'derivative' : null;
   return { sourceType, sourceDate, sourceClass };
+}
+
+// ancHints for an Ancestry record: its labelled fields answer "{Event} Date"
+// (or "{Event} Year") in Ancestry's own date words.
+function ancHints(record, fields) {
+  const list = Array.isArray(fields) ? fields : [];
+  return recordHints((record && record.collection) || '', (word) => {
+    const re = new RegExp('^' + word + ' (date|year)$', 'i');
+    const f = list.find((x) => re.test(String(x.label || '').trim()));
+    return f ? ancDateToEdtf(f.value) : null;
+  });
 }
 
 // The bundle's title: what the human typed, unless the form still holds the
@@ -399,6 +414,7 @@ module.exports = {
   ancText,
   ancRecordFrom,
   ancDateToEdtf,
+  recordHints,
   ancHints,
   ancTitle,
 };

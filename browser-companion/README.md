@@ -199,6 +199,16 @@ no-op, the bundles land in `inbox/` directly.
   If the Seen It add-on is installed, the panel asks it one question before
   that download - "does the archive already hold this census page?" - so a
   household's shared page is fetched once; nothing else is asked or sent.
+  On a FamilySearch record or image viewer, the page reads the record and its
+  image through FamilySearch's own data service, as FamilySearch's pages do,
+  with your signed-in session. That session (the `fssessionid` login, sent as a
+  Bearer token) goes **only** to https addresses on familysearch.org or its
+  subdomains - never to an address FamilySearch's reply names without that
+  check - and is read fresh from the page for each request, never stored,
+  logged, or written into a capture (`lib/familysearch-record.js`
+  `fsAuthHeaders`, tested in `tests/test-familysearch.js` and
+  `tests/test-content-load.js`). Before Capture the panel asks for the image's
+  first kilobyte only, to say whether it can be saved from here.
 - No local machine paths leak, `capture.json` carries the page URL, never a disk
   path.
 - Everything enters review as **pre-source**. The S-id, the claims, the person
@@ -229,11 +239,12 @@ src/
     capture-readiness.js  the "record detail looks empty" phrases (canonical; ditto)
     newspapers-page-data.js  reads a Newspapers.com page's embedded data (canonical; ditto)
     ancestry-record.js  reads an Ancestry record page: fields, household, citation, scan, hints (canonical; ditto)
+    familysearch-record.js  a FamilySearch record from its data service: login rule, record, image, hints (canonical; ditto)
     newspapers.js      rebuilds a Newspapers.com page from tiles; clipping, annotated view, citations
 test-bundle/           an example "both" bundle in the exact output shape (round-trip test)
 ```
 
-content.js is an injected classic script, so it cannot `import`: the six
+content.js is an injected classic script, so it cannot `import`: the seven
 canonical modules above have hand-kept copies inside it, and
 `tests/test-sync.js` re-runs both sides through the same battery so a drift is a
 failing build rather than a hope.
@@ -395,11 +406,13 @@ Newspapers.com page-data parsers and tile/report logic, the Ancestry record
 readers (run over the same scrubbed fixture pages the Python recipe tests read,
 through the small HTML reader in `tests/mini-dom.js`), and the
 content.js ↔ `src/lib/` sync guards - run under `node --test` (Node ≥18, no
-dependencies). `tests/test-panel-newspapers.js` and `tests/test-panel-ancestry.js`
-also drive `panel.js` itself against a stand-in for the panel page and a
+dependencies). `tests/test-panel-newspapers.js`, `tests/test-panel-ancestry.js` and
+`tests/test-panel-familysearch.js` also drive `panel.js` itself against a stand-in for the panel page and a
 scripted content script (`tests/panel-harness.js`), so those capture flows (and
-the panel opening at all) are checked without a browser; the pixels and the
-live sites still need a hand test in a loaded extension:
+the panel opening at all) are checked without a browser, and
+`tests/test-content-load.js` loads the whole of `content.js` in a sandbox page
+and drives its message listener; the pixels and the live sites still need a
+hand test in a loaded extension:
 
 ```sh
 npm --prefix browser-companion test
