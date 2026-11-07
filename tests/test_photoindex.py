@@ -749,6 +749,17 @@ class PhotoindexTests(unittest.TestCase):
         self.assertEqual(rows['c/portrait-envelope.jpg'][3], 'envelope')
         self.assertEqual(rows['b/grandma-note.jpg'][3], 'note')
 
+    def test_print_b_stays_main_image_over_its_envelope(self) -> None:
+        # #209 review round 3: the picture-side fallback let the envelope back in.
+        rows = self._group([('e/portrait-b.jpg', 'S-423456789a'),
+                            ('e/portrait-envelope.jpg', 'S-423456789a')])
+        self.assertEqual(rows['e/portrait-b.jpg'][1], 1)
+        self.assertEqual(rows['e/portrait-envelope.jpg'][1], 0)
+        # Class sweep: the front tier has the same rule.
+        rows = self._group([('f/portrait-front.jpg', 'S-523456789a'),
+                            ('f/portrait-envelope-front.jpg', 'S-523456789a')])
+        self.assertEqual(rows['f/portrait-front.jpg'][1], 1)
+
     def test_a_processed_front_stays_main_image_over_its_envelope(self) -> None:
         # #209 review round 2: an explicit '-front' beside an envelope.
         rows = self._group([('d/portrait-front.jpg', 'S-323456789a'),

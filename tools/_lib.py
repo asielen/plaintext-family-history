@@ -4779,13 +4779,28 @@ def select_variation_primary(members: list, parsed_of) -> object:
         and not parsed_of(m).is_crop
     ]
     if fronts:
-        return min(fronts)
+        # Same attachment rule ('portrait-envelope-front' is the envelope's).
+        front_roots = [
+            m for m in fronts
+            if not any(o is not m and _extends_name(parsed_of(m).base_id, parsed_of(o).base_id)
+                       for o in members)
+        ]
+        return min(front_roots or fronts)
     picture_side = [
         m for m in members
         if parsed_of(m).part_kind in ('none', 'front') and not parsed_of(m).is_crop
     ]
     if picture_side:
-        return min(picture_side, key=lambda m: (parsed_of(m).variant_id or '', m))
+        # The attachment rule again: 'portrait-envelope.jpg' must not win just
+        # because print B, 'portrait-b.jpg', carries a copy letter (#209
+        # review). Only when every candidate is an attachment does one win.
+        picture_roots = [
+            m for m in picture_side
+            if not any(o is not m and _extends_name(parsed_of(m).base_id, parsed_of(o).base_id)
+                       for o in members)
+        ]
+        return min(picture_roots or picture_side,
+                   key=lambda m: (parsed_of(m).variant_id or '', m))
     return min(members)
 
 
