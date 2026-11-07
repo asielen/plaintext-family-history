@@ -592,3 +592,29 @@ test('a page with more clippings than the panel reads is not "none are yours"', 
   assert.match(p.result(), /its own page/);
   assert.doesNotMatch(p.result(), /none of the clippings on this page are yours/);
 });
+
+test('on a clipping page, a corrected title does not follow to a newly ticked clipping', async () => {
+  const p = await openOn(URL_A, {
+    [URL_A]: { title: 'Obituary', info: npInfo('article', [
+      clipObj(101, 'Obituary for Calvin Hartley'), clipObj(202, 'Hartley - Webb wedding')]) },
+  });
+  p.$('f-title').value = 'Corrected obituary';
+  await p.$('f-title').fire('input');
+  await setTick(p, 'Obituary for Calvin Hartley', false);
+  await setTick(p, 'Hartley - Webb wedding', true);
+  await p.capture();
+  assert.strictEqual(p.written.length, 1);
+  assert.match(p.capJson(p.written[0]).title, /^Hartley - Webb wedding/);
+});
+
+test('a corrected web address is kept for a single clipping', async () => {
+  const p = await openOn(URL_A, {
+    [URL_A]: { title: 'Obituary', info: npInfo('article', [clipObj(101, 'Obituary for Calvin Hartley')]) },
+  });
+  p.$('f-url').value = 'https://www.newspapers.com/clip/101/obituary-for-calvin-hartley/';
+  await p.$('f-url').fire('input');
+  await p.capture();
+  assert.strictEqual(p.written.length, 1);
+  assert.strictEqual(p.capJson(p.written[0]).url,
+    'https://www.newspapers.com/clip/101/obituary-for-calvin-hartley/');
+});

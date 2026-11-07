@@ -696,7 +696,9 @@
       assets.push({ filename: o.pageCopy.filename, blob: o.pageCopy.blob, role: 'webpage', mode: 'singlefile' });
     }
     const fields = {
-      url: clip.url || o.form.url || (state.prefill && state.prefill.url),
+      // One clipping: the address in the form, which she may have corrected
+      // (a /clip/ permalink, say). Several: each clipping's own (#211 review).
+      url: (o.single && o.form.url) || clip.url || o.form.url || (state.prefill && state.prefill.url),
       title: o.title,
       accessed: captureJson.accessedDate(),
       sourceDate: o.single
