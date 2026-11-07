@@ -2763,6 +2763,36 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
                             f'{fmt_id_display(pid)} to persons: too, or remove this '
                             'roles: entry if it does not belong on this claim.'))
 
+            # W135 (#65): the same person named twice in one claim's persons:
+            # - typically a name-link pasted beside the P-id it resolves to
+            # (`[P-a, "[[Alice Smith]]"]`), or a merge that rewrote one entry
+            # onto an id already present. Every reader now counts PEOPLE, not
+            # entries (_lib.spouse_parties folds, index._derive_relationships
+            # dedupes, the spouse inserts refuse p1 == p2 - PR #61), so the
+            # repeat is inert; the warning is tidy-up for the human reading
+            # the file, and says so. Compared on the RESOLVED id, so a
+            # P-id and a name-link for the same person count as one.
+            claim_pids = _claim_person_ids(claim, alias_map)
+            repeated = sorted({p for p in claim_pids if claim_pids.count(p) > 1})
+            if repeated:
+                names = ', '.join(_person_label(registry, p) for p in repeated)
+                unique_pids = list(dict.fromkeys(claim_pids))
+                every_ref_resolves = (len(claim_pids)
+                                      == len(link_field_refs(claim.get('persons'))))
+                if every_ref_resolves and claim.get('id'):
+                    fix = ('To tidy it, run `fha claim '
+                           f'{fmt_id_display(claim.get("id", "?"))} --persons '
+                           + ','.join(fmt_id_display(p) for p in unique_pids)
+                           + '` (it keeps each person once).')
+                else:
+                    fix = ('To tidy it, open the source file and delete the '
+                           'repeated entry from that claim\'s persons: line.')
+                findings.append(Finding('W', 'W135', src_path,
+                    f'Claim {claim.get("id","?")} lists {names} more than once in '
+                    'persons: (perhaps once by code and once by name). Nothing is '
+                    'wrong because of it - every tool counts each person once - '
+                    f'but the list reads as if two people were named. {fix}'))
+
             # W125: a marriage/divorce naming more than two people without
             # saying which two were the couple. Certificates routinely name the
             # couple AND both sets of parents, and listing all six in persons:

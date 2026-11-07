@@ -4809,5 +4809,95 @@ class EphemeraPeopleW134Tests(unittest.TestCase):
         self.assertIn('does not really belong here', message)
 
 
+class DuplicatePersonW135Tests(unittest.TestCase):
+    """W135 (#65): a claim whose persons: names the same person twice.
+
+    Reached the ordinary way - a name-link pasted beside the P-id it resolves
+    to, or a merge rewriting one entry onto an id already present. Every
+    reader now counts people, not entries (PR #61), so the repeat is inert -
+    but a human reading the file sees one person listed twice with no
+    explanation, and nothing used to say so. The warning is tidy-up wording:
+    it says nothing is wrong because of it, and names the exact fix.
+    """
+
+    ALICE = 'P-a1a1a1a1a1'
+    BOB = 'P-b1b1b1b1b1'
+    SID = 'S-5555555555'
+    CID = 'C-6666666666'
+
+    def _build(self, persons: str) -> Path:
+        root = Path(tempfile.mkdtemp())
+        (root / 'people').mkdir(parents=True)
+        (root / 'sources' / 'notes').mkdir(parents=True)
+        (root / 'fha.yaml').write_text('roots:\n  documents: documents\n',
+                                       encoding='utf-8')
+        for pid, name in ((self.ALICE, 'Alice Smith'), (self.BOB, 'Bob Jones')):
+            first, last = name.lower().split()
+            (root / 'people' / f'{last}__{first}_{pid}.md').write_text(
+                f'---\nid: {pid}\nname: {name}\nsex: U\nliving: false\n'
+                f'tier: stub\n---\n\n# {name}\n', encoding='utf-8')
+        claim = (f'- id: {self.CID}\n'
+                 '  type: residence\n'
+                 f'  persons: [{persons}]\n'
+                 '  value: "lived on the farm"\n'
+                 '  status: accepted\n  reviewed: 2026-01-01\n'
+                 '  date: 1910\n')
+        (root / 'sources' / 'notes' / f'rec_{self.SID.lower()}.md').write_text(
+            f'---\nid: {self.SID}\ntitle: Rec\nsource_type: note\n---\n\n'
+            f'## Claims\n```yaml\n{claim}```\n', encoding='utf-8')
+        return root
+
+    def _w135(self, root: Path) -> list:
+        from _lib import load_fha_yaml
+        findings, _reg = lint._run_lint_core(root, load_fha_yaml(root))
+        return [f for f in findings if f.code == 'W135']
+
+    def test_a_p_id_and_a_name_link_for_the_same_person_warns(self) -> None:
+        # The issue's own reproduction: both entries resolve to Alice.
+        root = self._build(f'{self.ALICE}, "[[Alice Smith]]"')
+        found = self._w135(root)
+        self.assertEqual(len(found), 1)
+        message = found[0].message
+        self.assertIn('Alice Smith', message)
+        self.assertIn('more than once', message)
+        # Tidy-up, not defect: it says plainly that nothing is broken.
+        self.assertIn('Nothing is wrong because of it', message)
+
+    def test_the_same_p_id_twice_warns_and_names_the_exact_fix(self) -> None:
+        root = self._build(f'{self.ALICE}, {self.BOB}, {self.ALICE}')
+        found = self._w135(root)
+        self.assertEqual(len(found), 1)
+        # The fix keeps each person once, in first-seen order.
+        self.assertIn(f'fha claim {self.CID} --persons {self.ALICE},{self.BOB}`',
+                      found[0].message)
+
+    def test_an_unresolved_name_beside_the_repeat_gets_the_hand_edit_fix(self) -> None:
+        # `fha claim --persons` takes P-ids only, so suggesting it here would
+        # silently drop the unresolved name. The message must say "by hand".
+        root = self._build(f'{self.ALICE}, {self.ALICE}, "[[Nobody Known]]"')
+        found = self._w135(root)
+        self.assertEqual(len(found), 1)
+        self.assertNotIn('--persons', found[0].message)
+        self.assertIn('delete the repeated entry', found[0].message)
+
+    def test_two_different_people_are_clean(self) -> None:
+        root = self._build(f'{self.ALICE}, {self.BOB}')
+        self.assertEqual(self._w135(root), [])
+
+    def test_fha_claim_persons_keeps_a_repeated_person_once(self) -> None:
+        # The entry-side twin: `fha claim C-… --persons P-a,P-a` must not
+        # write the repeat that W135 would then complain about.
+        import claim as claim_tool
+        root = self._build(f'{self.ALICE}')
+        result = claim_tool.run_claim(
+            root, claim_id=self.CID,
+            persons=[self.ALICE, self.BOB, self.ALICE])
+        self.assertTrue(result.ok, result.messages)
+        text = (root / 'sources' / 'notes' / f'rec_{self.SID.lower()}.md').read_text(
+            encoding='utf-8')
+        self.assertIn(f'persons: [{self.ALICE}, {self.BOB}]', text)
+        self.assertEqual(self._w135(root), [])
+
+
 if __name__ == '__main__':
     unittest.main()
