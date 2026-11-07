@@ -246,3 +246,42 @@ test('content.js Ancestry record readers are a verbatim copy of lib/ancestry-rec
     .split('\n').map((l) => l.replace(/^ {2}/, '')).join('\n');
   assert.strictEqual(copy, canon);
 });
+
+test('content.js Find a Grave readers are a verbatim copy of lib/findagrave-record.js', () => {
+  // Including the photo-host rule (fagPhotoUrlOk) and the cookie-free
+  // gallery walk (fagGallery): a drift there is the one that would fetch
+  // from a host it must not.
+  const lib = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'lib', 'findagrave-record.js'), 'utf8');
+  const begin = '// FHA-SYNC-BEGIN findagrave\n';
+  const end = '// FHA-SYNC-END findagrave';
+  const canon = lib.slice(lib.indexOf(begin) + begin.length, lib.indexOf(end));
+  assert.ok(canon.length > 1000 && canon.includes('function fagPhotoUrlOk'), 'lib sync markers not found');
+  const copy = extractBlock(/\/\/ FHA-SYNC-BEGIN findagrave\n/, '  ' + end)
+    .split('\n').map((l) => l.replace(/^ {2}/, '')).join('\n');
+  assert.strictEqual(copy, canon);
+});
+
+test('lib/findagrave.js (the panel) takes photos only from the hosts lib/findagrave-record.js allows', () => {
+  // The panel downloads the photos; the page lists them. One rule, two
+  // copies (the panel is a classic script), so drive both through one battery.
+  const fagRecord = require('../src/lib/findagrave-record.js');
+  const w = {};
+  new Function('window', readSrc('lib/findagrave.js'))(w);
+  const panel = w.FHA.findagrave;
+  assert.strictEqual(panel.PHOTO_HOST, fagRecord.FAG_PHOTO_HOST);
+  for (const u of [
+    'https://images.findagrave.com/photos/2020/45/900000001_aaaa1111.jpeg',
+    'https://IMAGES.FINDAGRAVE.COM/photos/x.jpg',
+    'http://images.findagrave.com/photos/x.jpg',
+    'https://images.findagrave.com.evil.example/photos/x.jpg',
+    'https://evil.example/photos/x.jpg?images.findagrave.com',
+    'https://www.findagrave.com/photos/x.jpg',
+    'https://images.findagrave.com/photos250/photos/x.jpg',
+    'https://a:b@images.findagrave.com/photos/x.jpg',
+    'https://images.findagrave.com:8443/photos/x.jpg',
+    'data:image/png;base64,AAAA', 'javascript:alert(1)', '/photos/x.jpg', '', null, undefined,
+  ]) {
+    assert.strictEqual(panel.photoUrlOk(u), fagRecord.fagPhotoUrlOk(u), String(u));
+  }
+});

@@ -2,8 +2,9 @@
 // driven through its own message listener. The lib tests cover the copied
 // blocks; this covers what only the whole file can show - that it loads at all
 // (a block reading a constant declared further down fails here, as it would
-// on every page in the browser), and that its FamilySearch wiring passes the
-// signed-in session only where the login rule says.
+// on every page in the browser), that its FamilySearch wiring passes the
+// signed-in session only where the login rule says, and that Find a Grave is
+// read without any login at all.
 //
 //   node --test browser-companion/tests/test-content-load.js
 
@@ -19,10 +20,14 @@ const SRC = fs.readFileSync(path.join(__dirname, '..', 'src', 'content.js'), 'ut
 const FIX = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'tests', 'fixtures',
   'capture-samples', 'familysearch-gedcomx.json'), 'utf8'));
 const TOKEN = 'fs-session-SECRET-0000';
+const { parse } = require('./mini-dom.js');
+const SAMPLE = (name) => fs.readFileSync(path.join(__dirname, '..', '..', 'tests', 'fixtures',
+  'capture-samples', name + '.html'), 'utf8');
 
 // A page with nothing on it but what a test hands in: its address, its
-// cookie, the links it shows, and how the network answers.
-function loadPage({ url, cookie = '', links = [], fetch, canonical } = {}) {
+// cookie, the links it shows, how the network answers, and (`tree`, a
+// tests/mini-dom.js page) the elements the Find a Grave readers walk.
+function loadPage({ url, cookie = '', links = [], fetch, canonical, tree } = {}) {
   const listeners = [];
   const el = (tag) => ({ tagName: tag, textContent: '', innerText: '', getAttribute: () => null, closest: () => null });
   const document = {
@@ -37,7 +42,9 @@ function loadPage({ url, cookie = '', links = [], fetch, canonical } = {}) {
       ? { getAttribute: (a) => (a === 'href' ? canonical : null) } : null),
     querySelectorAll: (sel) => (/3:1:/.test(sel) ? links : []),
     getElementById: () => null,
+    childNodes: tree ? tree.childNodes : [],
   };
+  if (tree) document.title = tree.title;
   const calls = [];
   const sandbox = {
     document,
@@ -51,6 +58,7 @@ function loadPage({ url, cookie = '', links = [], fetch, canonical } = {}) {
       return fetch(String(u), init);
     },
     getComputedStyle: () => ({ display: 'block', visibility: 'visible' }),
+    DOMParser: class { parseFromString(html) { return parse(html); } },
     URL, Blob, TextDecoder, setTimeout, clearTimeout, console,
     FileReader: class {
       readAsDataURL(b) {
@@ -208,5 +216,77 @@ test('an image request is never sent from a tab that has left the site (#214 swe
   r = await page.ask({ action: 'ancestryImage', dbId: '90001', imageId: '4000123_00045' });
   assert.strictEqual(r.ok, false);
   assert.match(r.error, /no longer on Ancestry/);
+  assert.strictEqual(page.calls.length, 0);
+});
+
+// ── Find a Grave: no login ──────────────────────────────────────────────────
+
+const MEMORIAL = 'https://www.findagrave.com/memorial/900000001/calvin-george-hartley';
+
+// Find a Grave's gallery pages, as the fixture answers them.
+function findagrave() {
+  return async (url) => (/\/memorial\/900000001\/calvin-george-hartley\/photo$/.test(url)
+    ? { ok: true, status: 200, text: async () => SAMPLE('findagrave-memorial-photos') }
+    : { ok: false, status: 404, text: async () => '' });
+}
+
+test('prefill on a memorial starts from what the memorial says; its gallery page is not a memorial', async () => {
+  const tree = parse(SAMPLE('findagrave-memorial'));
+  let r = await loadPage({ url: MEMORIAL, tree, fetch: findagrave() }).ask({ action: 'prefill' });
+  assert.strictEqual(r.prefill.findagraveMemorial, true);
+  assert.strictEqual(r.prefill.recipeHint, 'findagrave');
+  assert.strictEqual(r.prefill.title, 'Calvin George Hartley (1842-1918) - Find a Grave memorial');
+  assert.strictEqual(r.prefill.sourceDate, '1918-01-04');
+  assert.strictEqual(r.prefill.sourceType, 'website');
+  assert.strictEqual(r.prefill.repository, 'Find a Grave');
+  assert.deepStrictEqual(r.prefill.people,
+    ['Calvin George Hartley', 'Thomas Hartley', 'Harriet Frances Hartley', 'Warren Calvin Hartley']);
+  for (const url of [MEMORIAL + '/photo', MEMORIAL + '/flower', 'https://www.findagrave.com/memorial/900000001/photo',
+    'https://www.findagrave.com/cemetery/9990001/fairview-cemetery']) {
+    r = await loadPage({ url, tree, fetch: findagrave() }).ask({ action: 'prefill' });
+    assert.strictEqual(r.prefill.findagraveMemorial, false, url);
+  }
+  // a memorial page that will not read is still a memorial: Capture says why
+  r = await loadPage({ url: MEMORIAL, fetch: findagrave() }).ask({ action: 'prefill' });
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(r.prefill.findagraveMemorial, true);
+  assert.strictEqual(r.prefill.title, 'A page');
+});
+
+test('the memorial is read from the page, with its hints and title', async () => {
+  const page = loadPage({ url: MEMORIAL, tree: parse(SAMPLE('findagrave-memorial')), fetch: findagrave() });
+  const info = await page.ask({ action: 'findagraveMemorialInfo', today: '2026-11-06' });
+  assert.strictEqual(info.ok, true);
+  assert.strictEqual(info.record.name, 'Calvin George Hartley');
+  assert.deepStrictEqual(info.hints, { sourceType: 'website', sourceDate: '1918-01-04', sourceClass: 'derivative' });
+  assert.strictEqual(info.title, 'Calvin George Hartley (1842-1918) - Find a Grave memorial');
+  assert.match(info.citation, /accessed 2026-11-06\)/);
+  assert.strictEqual(page.calls.length, 0, 'reading the memorial asks nothing of the network');
+});
+
+test('the photo list is read from Find a Grave without cookies or a login, each photo with its role', async () => {
+  const page = loadPage({ url: MEMORIAL, cookie: 'session=SECRET-FAG-COOKIE', fetch: findagrave() });
+  const got = await page.ask({ action: 'findagraveGallery', memorialId: '900000001', slug: 'calvin-george-hartley' });
+  assert.strictEqual(got.ok, true);
+  assert.deepStrictEqual(got.photos.map((p) => [p.photoId, p.role]),
+    [['990000101', 'grave-1'], ['990000102', 'person-1'], ['990000103', 'family-1']]);
+  assert.deepStrictEqual(page.calls.map((c) => c.url), [MEMORIAL + '/photo']);
+  for (const c of page.calls) {
+    assert.strictEqual(JSON.stringify(c.init), JSON.stringify({ credentials: 'omit' })); // made in the page's realm
+    assert.strictEqual(c.auth, false);
+  }
+});
+
+test('the photo list is never asked for from a tab that has left Find a Grave, or for no memorial', async () => {
+  let page = loadPage({ url: 'https://blog.example.org/x', fetch: findagrave() });
+  let r = await page.ask({ action: 'findagraveGallery', memorialId: '900000001', slug: 'calvin-george-hartley' });
+  assert.strictEqual(r.ok, false);
+  assert.match(r.error, /no longer on Find a Grave/);
+  assert.strictEqual(page.calls.length, 0);
+  page = loadPage({ url: MEMORIAL, fetch: findagrave() });
+  for (const msg of [{ memorialId: '../../account' }, { memorialId: '' }, { memorialId: '900000001', slug: '../x?y' }]) {
+    r = await page.ask(Object.assign({ action: 'findagraveGallery' }, msg));
+    assert.strictEqual(r.ok, false, JSON.stringify(msg));
+  }
   assert.strictEqual(page.calls.length, 0);
 });

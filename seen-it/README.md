@@ -138,8 +138,10 @@ it (`imageSaved` in its record file), or the image file sits beside the record f
 that only links to a scan - Ancestry would not hand it over, only a screen capture was kept,
 or the page is saved with another household member - leaves the scan "not saved", so the
 capture add-on still downloads it next time. A Find a Grave memorial whose photos did not all
-save is "linked", not "captured". A download that stopped part-way counts for nothing until it
-finishes.
+save is "linked", not "captured" - and so is one known only by its address (a capture whose
+memorial data is missing, an inbox note, a source that cites it). Each memorial photo whose file
+is saved is remembered on its own, so the capture add-on does not download that photo again. A
+download that stopped part-way counts for nothing until it finishes.
 
 A root can be a full path (an external drive) or a path relative to the archive. If a drive is
 not connected, the window says which folder it could not reach rather than showing zero, and

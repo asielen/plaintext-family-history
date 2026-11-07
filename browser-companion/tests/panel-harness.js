@@ -116,7 +116,9 @@ async function settle() { for (let i = 0; i < 20; i++) await tick(); }
 // `seenIt` is the Seen It add-on: { 'img:…': 'filed' | 'captured' |
 // { state, sid } } it knows, or undefined when it is not installed.
 // `fullPage` replaces the newspaper page download (to hold it back).
-async function openPanel({ url, respond, host, seenIt, fullPage }) {
+// `fetch` is the network the panel itself reaches (Find a Grave's photos):
+// every request is recorded in `fetched`; without it, any request fails.
+async function openPanel({ url, respond, host, seenIt, fullPage, fetch }) {
   const doc = makeDocument();
   const tab = { id: 7, url };
   const sent = [];
@@ -163,8 +165,18 @@ async function openPanel({ url, respond, host, seenIt, fullPage }) {
     scripting: { executeScript: async () => {} },
     storage: { local: { get: (d, cb) => cb(d), set: () => {} } },
   };
-  const window = { FHA: {} };
+  const fetched = [];
+  const window = {
+    FHA: {},
+    fetch: async (u, init) => {
+      fetched.push({ url: u, init });
+      if (!fetch) throw new TypeError('Failed to fetch');
+      return fetch(u, init);
+    },
+  };
   new Function('window', read('lib/capture-json.js'))(window);
+  new Function('window', read('lib/findagrave.js'))(window);
+  window.FHA.findagrave.pauseMs = () => 0;
   new Function('window', 'OffscreenCanvas', read('lib/newspapers.js'))(window, FakeCanvas);
   window.FHA.newspapers.fullPage = async (info) => {
     if (fullPage) await fullPage(info);
@@ -201,7 +213,7 @@ async function openPanel({ url, respond, host, seenIt, fullPage }) {
   await settle();
   const $ = (id) => doc.els[id];
   return {
-    doc, $, tab, sent, written, filed, writeFails, sendFails, external,
+    doc, $, tab, sent, written, filed, writeFails, sendFails, external, fetched,
     async navigate(newUrl) {
       tab.url = newUrl;
       await onUpdated(tab.id, { status: 'complete' });

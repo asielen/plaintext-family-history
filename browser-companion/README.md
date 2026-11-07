@@ -209,6 +209,17 @@ no-op, the bundles land in `inbox/` directly.
   `fsAuthHeaders`, tested in `tests/test-familysearch.js` and
   `tests/test-content-load.js`). Before Capture the panel asks for the image's
   first kilobyte only, to say whether it can be saved from here.
+  On a Find a Grave memorial no login is used at all: the page reads the
+  memorial as it shows it and its photo list from the memorial's own gallery
+  pages (at most 20, `credentials: 'omit'`), and the panel downloads each
+  photo - at most 40, one at a time with a 0.8-2 s pause, stopping at the
+  first "slow down" (HTTP 429) - only from https://images.findagrave.com/photos/…,
+  without cookies or a referrer, refusing any other host, port, or a redirect
+  off it (`fagPhotoUrlOk` in `lib/findagrave-record.js`, the same rule in
+  `lib/findagrave.js`, tested in `tests/test-findagrave.js`,
+  `tests/test-panel-findagrave.js` and `tests/test-content-load.js`). The one
+  question for the Seen It add-on is which of the memorial's photos the
+  archive already holds (`fagphoto:{photoId}` keys).
 - No local machine paths leak, `capture.json` carries the page URL, never a disk
   path.
 - Everything enters review as **pre-source**. The S-id, the claims, the person
@@ -240,11 +251,13 @@ src/
     newspapers-page-data.js  reads a Newspapers.com page's embedded data (canonical; ditto)
     ancestry-record.js  reads an Ancestry record page: fields, household, citation, scan, hints (canonical; ditto)
     familysearch-record.js  a FamilySearch record from its data service: login rule, record, image, hints (canonical; ditto)
+    findagrave-record.js  a Find a Grave memorial: its facts, family, citation, photo list, photo-host rule, hints (canonical; ditto)
     newspapers.js      rebuilds a Newspapers.com page from tiles; clipping, annotated view, citations
+    findagrave.js      downloads a memorial's photos from Find a Grave's image host (panel side)
 test-bundle/           an example "both" bundle in the exact output shape (round-trip test)
 ```
 
-content.js is an injected classic script, so it cannot `import`: the seven
+content.js is an injected classic script, so it cannot `import`: the eight
 canonical modules above have hand-kept copies inside it, and
 `tests/test-sync.js` re-runs both sides through the same battery so a drift is a
 failing build rather than a hope.

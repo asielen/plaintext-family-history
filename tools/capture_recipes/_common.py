@@ -235,14 +235,22 @@ _OBITUARY_RE = re.compile(r'\bobituar(y|ies)\b', re.I)
 # "1800s-present" - names when it was gathered, never the record's event.
 _RANGE_RE = re.compile(r'\b\d{4}s?\s*[-\u2013/]\s*(current|present|\d{2,4}s?)\b', re.I)
 
+# A Find a Grave memorial, or an index of them ("U.S., Find a Grave Index"):
+# a volunteer's page built from the stone, records and family knowledge. It
+# dates like a burial record but is a website, not a vital record - filed as
+# one, its claims would default to high confidence (SPEC 8.5) on a stranger's
+# transcription.
+_FINDAGRAVE_RE = re.compile(r'\bfind\s*a\s*grave\b', re.I)
+
 
 def record_hints(collection: str | None, date_of) -> dict:
     """What a record says about itself: source type, date and class (TI-066).
 
     From the collection name and `date_of(event)` - the record's own date for
     "Death", "Marriage", "Census"... in EDTF, or None - never the rest of the
-    page. Census -> census; a birth/marriage/death/burial/funeral/baptism/
-    divorce collection -> vital-record; an obituary or newspaper index ->
+    page. Census -> census; Find a Grave -> website (and derivative); a
+    birth/marriage/death/burial/funeral/baptism/divorce collection ->
+    vital-record; an obituary or newspaper index ->
     newspaper. The date is the record's own event date, trying every event the
     collection names in turn ("Birth and Death Records": the death, else the
     birth; a burial record's "Burial", else its "Death"; an obituary's
@@ -267,9 +275,12 @@ def record_hints(collection: str | None, date_of) -> dict:
     else:
         date_words = ('Death',) if _OBITUARY_RE.search(c) else ()
 
+    findagrave = bool(_FINDAGRAVE_RE.search(c))
     source_type = None
     if census:
         source_type = 'census'
+    elif findagrave:
+        source_type = 'website'
     elif events:
         source_type = 'vital-record'
     elif re.search(r'\bnewspapers?\b|\bobituar(y|ies)\b', c, re.I):
@@ -291,7 +302,7 @@ def record_hints(collection: str | None, date_of) -> dict:
     if not source_date and not census and len(years) == 1 and not is_range:
         source_date = years[0]
 
-    source_class = 'derivative' if re.search(r'\bindex(es)?\b', c, re.I) else None
+    source_class = 'derivative' if findagrave or re.search(r'\bindex(es)?\b', c, re.I) else None
     return {'source_type': source_type, 'source_date': source_date, 'source_class': source_class}
 
 

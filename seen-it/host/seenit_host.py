@@ -52,6 +52,10 @@ The archive is located only through `archive`. From it the helper reads:
 A page image (img:, fsimg:, page:) is counted only when a saved image backs
 it - the record says `imageSaved: true`, or the image file is beside it - never
 from the image id a record links to (_keys_from_site_data, _holds_saved_image).
+Likewise a Find a Grave memorial is fag: (captured) only when its photos are
+saved, each one fagphoto:{photoId} from its saved file; a memorial's address
+alone - a capture's page address, an inbox stub, a source that cites it - is
+fagidx: (known, photos still to come) (_holds_saved_file).
 
 Roots resolve exactly as the archive's own tools do (tools/_lib.py
 `resolve_path`): an absolute value is used as-is, a relative one is joined to
@@ -87,7 +91,7 @@ Code map
                         resolve_data_dir
   the archive's config  read_fha_yaml, _parse_fha_yaml_minimal, resolve_root,
                         archive_problem, scan_folders
-  what the archive has  _holds_saved_image, _keys_from_site_data,
+  what the archive has  _holds_saved_image, _holds_saved_file, _keys_from_site_data,
                         _keys_from_url, scan_known,
                         known_items
   the message loop      read_message, send, safe_path, describe, _set_config,
@@ -525,7 +529,46 @@ def _holds_saved_image(path, roles):
                for f in files)
 
 
-def _keys_from_site_data(data, image_saved=None):
+def _holds_saved_file(path, name):
+    """Does the bundle or source folder beside this site-data file hold the
+    file its data names (a memorial photo the capture saved as `name`)?
+
+    A staged bundle's capture.json must list it, present and not provisional.
+    Without one, the file itself counts: by its own name in an ingested inbox
+    bundle, and in a filed source by the name `fha process` gives it there -
+    its old name, a role suffix and the source's S-id
+    (`grave-1-grave-1_S-….jpg`), the S-id being the one in this file's name.
+    """
+    name = Path(str(name or '')).name
+    if not name:
+        return False
+    folder = path.parent
+    cap = folder / 'capture.json'
+    if cap.is_file():
+        try:
+            assets = json.loads(cap.read_text(encoding='utf-8')).get('assets')
+        except (OSError, ValueError, AttributeError):
+            assets = None
+        if isinstance(assets, list):
+            return any(isinstance(a, dict) and str(a.get('file') or '') == name and not a.get('provisional')
+                       and (folder / name).is_file() for a in assets)
+    if (folder / name).is_file():
+        return True
+    m = SID_RE.search(path.name)
+    if not m:
+        return False
+    sid = m.group(1).lower()
+    stem, suffix = Path(name).stem.lower(), Path(name).suffix.lower()
+    try:
+        files = list(folder.iterdir())
+    except OSError:
+        return False
+    return any(f.is_file() and sid in f.name.lower() and f.suffix.lower() == suffix
+               and (f.stem.lower() == stem or f.stem.lower().startswith((stem + '-', stem + '_')))
+               for f in files)
+
+
+def _keys_from_site_data(data, image_saved=None, file_saved=None):
     """The item keys one site-data file speaks for.
 
     Capture bundles carry a small JSON describing the item on its site: a
@@ -543,11 +586,20 @@ def _keys_from_site_data(data, image_saved=None):
     matched to a source after the fact (`records`) speaks for an image only
     with `imageSaved: true`, since one image file cannot say whose it is.
     Without `image_saved`, only `imageSaved: true` counts.
+
+    A Find a Grave memorial is fag: (captured) only when every one of its
+    photos is saved - in this bundle (`file`, and `file_saved(name)` finds
+    it beside the data file) or already elsewhere (`same_image_as`) - and
+    the gallery was read in full; else fagidx: (known, its photos still to
+    come). Each photo saved here is also fagphoto:{photoId}, so a later
+    capture does not download it again. Without `file_saved`, a `file` the
+    data names counts.
     """
     keys = []
     if not isinstance(data, dict):
         return keys
     check = image_saved or (lambda roles: False)
+    has_file = file_saved or (lambda name: True)
 
     def image_ok(rec, roles, listed):
         if 'imageSaved' in rec:
@@ -573,18 +625,28 @@ def _keys_from_site_data(data, image_saved=None):
         if rec.get('memorialId'):
             # A memorial counts as captured (fag:) only with its photos: the
             # capture lists each photo with the `file` it was saved as (null
-            # when it failed) and `photosTotal` (null when the gallery could
-            # not be read). Short of that it is known but its photos are not
-            # captured - fagidx:, as for a memorial a record only links - so
-            # the Find a Grave batch still fetches them.
+            # when it failed, was over the limit, or is saved elsewhere -
+            # `same_image_as`) and `photosTotal` (null when the gallery could
+            # not be read). Short of all of them it is known but its photos
+            # are not captured - fagidx:, as for a memorial a record only
+            # links - never fag: from the memorial's facts alone.
             photos = data.get('photos')
-            complete = True
-            if isinstance(photos, list):
-                if 'photosTotal' in data and data.get('photosTotal') is None:
+            total = data.get('photosTotal')
+            complete = isinstance(photos, list) and not listed
+            saved_here = []
+            for ph in photos if isinstance(photos, list) else []:
+                if not isinstance(ph, dict):
                     complete = False
-                if any(isinstance(ph, dict) and not ph.get('file') and not ph.get('skipped') for ph in photos):
+                    continue
+                if ph.get('file') and has_file(ph['file']):
+                    if ph.get('photoId'):
+                        saved_here.append('fagphoto:%s' % ph['photoId'])
+                elif not ph.get('same_image_as'):
                     complete = False
+            if complete and (not isinstance(total, int) or isinstance(total, bool) or total > len(photos)):
+                complete = False
             keys.append(('fag:%s' if complete else 'fagidx:%s') % rec['memorialId'])
+            keys.extend(saved_here)
             continue
         if rec.get('fsId'):
             keys.append('fsrec:%s' % str(rec['fsId']).upper())
@@ -610,7 +672,9 @@ def _keys_from_url(url):
         keys.append('fsrec:%s' % m.group(1).upper())
     m = FAG_MEMORIAL_RE.search(url)
     if m:
-        keys.append('fag:%s' % m.group(1))
+        # The address alone says the memorial was seen, never that its
+        # photos were saved: fagidx:. Its record-data says fag: when they were.
+        keys.append('fagidx:%s' % m.group(1))
     m = ANC_RECORD_RE.search(url)
     if m:
         if m.group(1):
@@ -655,7 +719,8 @@ def scan_known(folders):
                 data = json.loads(p.read_text(encoding='utf-8'))
             except (OSError, ValueError):
                 continue
-            for k in _keys_from_site_data(data, lambda roles, p=p: _holds_saved_image(p, roles)):
+            for k in _keys_from_site_data(data, lambda roles, p=p: _holds_saved_image(p, roles),
+                                          lambda name, p=p: _holds_saved_file(p, name)):
                 put(k, 'filed', p.parent.name, m.group(1) if m else None)
 
     # Source records. The page address a capture came from is kept in the
@@ -728,7 +793,8 @@ def scan_known(folders):
                 if not isinstance(data, dict):
                     continue
                 keys = (_keys_from_url(data.get('url')) if name == 'capture.json'
-                        else _keys_from_site_data(data, lambda roles, p=p: _holds_saved_image(p, roles)))
+                        else _keys_from_site_data(data, lambda roles, p=p: _holds_saved_image(p, roles),
+                                                  lambda name, p=p: _holds_saved_file(p, name)))
             for k in keys:
                 put(k, state, p.parent.name)
     return out, missing

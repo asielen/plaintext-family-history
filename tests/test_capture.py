@@ -710,14 +710,53 @@ class CaptureTestCase(unittest.TestCase):
         # B3: a "Memorial Park" burial place is found, and the "Virtual
         # Cemetery" decoy is rejected.
         rc = self._capture(_sample('findagrave-memorial-park'),
-                           url='https://www.findagrave.com/memorial/28906345/frances-dodson')
+                           url='https://www.findagrave.com/memorial/900000201/frances-hartley')
         self.assertEqual(rc, EXIT_CLEAN)
         rec = read_record(self._only_stub())
         meta = rec['meta']
         self.assertEqual(meta['source_date'], '1921')
         # The place hint is the Memorial Park, not the "Virtual Cemetery" decoy.
-        self.assertIn('place_text hint): Greenwood Memorial Park', rec['body'])
+        self.assertIn('place_text hint): Fairview Memorial Park', rec['body'])
         self.assertNotIn('place_text hint): Ancestry Virtual Cemetery', rec['body'])
+
+    def test_findagrave_memorial_todays_layout(self) -> None:
+        # Today's memorial page (findagrave-memorial.html, an invented memorial):
+        # read as the capture companion reads it (lib/findagrave-record.js).
+        url = 'https://www.findagrave.com/memorial/900000001/calvin-george-hartley'
+        rc = self._capture(_sample('findagrave-memorial'), url=url)
+        self.assertEqual(rc, EXIT_CLEAN)
+        rec = read_record(self._only_stub())
+        meta, body = rec['meta'], rec['body']
+        self.assertEqual(meta['title'], 'Calvin George Hartley (1842-1918) - Find a Grave memorial')
+        # TI-066 / TI-068: a website, derivative, dated by its own death - never the birth
+        self.assertEqual(meta['source_type'], 'website')
+        self.assertEqual(meta['source_date'], '1918-01-04')
+        self.assertEqual(meta['source_class'], 'derivative')
+        self.assertEqual(meta['repository'], 'Find a Grave')
+        self.assertTrue(str(meta['citation']).startswith(
+            'Find a Grave, database and images (https://www.findagrave.com/memorial/900000001/'
+            'calvin-george-hartley: accessed ), memorial page for Calvin George Hartley'))
+        self.assertEqual(meta['people'], ['Calvin George Hartley', 'Thomas Hartley',
+                                          'Harriet Frances Hartley', 'Warren Calvin Hartley'])
+        self.assertIn('Cemetery (place_text hint): Fairview Cemetery, Fairview, Brown County, Kansas, USA', body)
+        self.assertIn('Death: 4 Jan 1918, Fairview, Brown County, Kansas, USA', body)
+        self.assertIn('Plot: Block 4, Lot 12', body)
+        self.assertIn('Inscription: Gone home / Rest in peace', body)
+        self.assertIn('Family (Spouse): Harriet Frances Hartley (1846–1915)', body)
+        self.assertEqual(body.count('Family ('), 3, 'the memorial linking itself is not its own family')
+        # TI-067: the Seen It add-on's badge is not the memorial
+        for badge in ('Seen 2', 'Not in archive'):
+            self.assertNotIn(badge, body)
+
+    def test_findagrave_memorial_never_dated_by_its_birth(self) -> None:
+        html = _sample('findagrave-memorial').replace(
+            '<span id="deathDateLabel">4 Jan 1918 (aged 75)</span>', '<span id="deathDateLabel"></span>')
+        rc = self._capture(html, url='https://www.findagrave.com/memorial/900000001/calvin-george-hartley')
+        self.assertEqual(rc, EXIT_CLEAN)
+        meta = read_record(self._only_stub())['meta']
+        self.assertNotIn('source_date', meta)
+        self.assertEqual(meta['source_type'], 'website')
+        self.assertEqual(meta['title'], 'Calvin George Hartley (1842-?) - Find a Grave memorial')
 
     # ── helpers ──────────────────────────────────────────────────────────────
 
