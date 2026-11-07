@@ -793,9 +793,12 @@ class DateRoundTripTests(unittest.TestCase):
     here and must read back as the same string.
     """
 
+    # Years before 1000 too: '0750' (digits 0-7 only) is an octal number to
+    # YAML 1.1 and read back as 488 until yaml_edtf checked the round trip
+    # (#208 audit); '0999' and '0750/0760' read back intact either way.
     FORMS = ('1880', '1880-06', '1880-06-15', '1880~', '1880?', '188X',
              '1850-~05', '[..1884-10-01]', '[..1920]', '1871-02/1871-03',
-             '1824/1825')
+             '1824/1825', '0750', '0123?', '0999', '0750/0760', '0750-03')
 
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()

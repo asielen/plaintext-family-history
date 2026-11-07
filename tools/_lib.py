@@ -3273,12 +3273,18 @@ def yaml_edtf(value: str) -> str:
     Plain dates stay bare on purpose: `yaml_inline` would quote every one
     (`'1880'`), restyling every claim a tool touches for no reader's benefit,
     since the reader already turns a bare year or date back into its string.
+
+    The test is a real round trip, not a guess at which shapes are risky:
+    bare only when reading the bare text back, the way `read_record` does,
+    gives exactly `value`. A year before 1000 written with the digits 0-7
+    only (`0750`) is an octal number to YAML 1.1 and would read back as
+    488 (#208 audit); this catches it, and any other surprise of that kind.
     """
     try:
-        parsed = yaml.safe_load(value)
+        parsed = _coerce_yaml(yaml.safe_load(value))
     except yaml.YAMLError:
         return yaml_inline(value)
-    if isinstance(parsed, (list, dict)):
+    if isinstance(parsed, (list, dict)) or str(parsed) != value:
         return yaml_inline(value)
     return value
 

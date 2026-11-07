@@ -311,6 +311,7 @@ from _lib import (
     sqlite_cache_schema_status,
     stub_filename,
     write_text_exact_atomic,
+    yaml_edtf,
     yaml_inline,
 )
 
@@ -3029,9 +3030,11 @@ def run_estimate(
             continue
 
         # Free-text place values go through yaml_inline (a colon or quote in
-        # "Fairview: the old township" must not corrupt the header); dates
-        # are bare EDTF scalars and stay unquoted, as always.
-        written_value = yaml_inline(target) if field.endswith('_place') else target
+        # "Fairview: the old township" must not corrupt the header). Dates go
+        # through yaml_edtf: bare as always, but quoted when YAML would
+        # misread the bare text - `[..1920]` is a list, `0750` an octal
+        # number (#205, #208 audit).
+        written_value = yaml_inline(target) if field.endswith('_place') else yaml_edtf(target)
         if real_lines:
             new_lines[real_lines[0]] = f'{field}: {written_value}{cr}'
         elif commented:
