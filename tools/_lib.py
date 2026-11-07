@@ -873,8 +873,8 @@ def vital_pick_key(claim: Any) -> tuple[int, int, int, int, str]:
     high-confidence certificate's 1880 because 1880 is a leap year (#207
     audit).
 
-    A range that runs backwards (`1950/1940`, a typing slip lint does not
-    catch) has no meaningful width. It ranks with the undated claims rather
+    A range that runs backwards (`1950/1940`, a typing slip lint reports as
+    E014 but a record may still hold until it is fixed) has no meaningful width. It ranks with the undated claims rather
     than first, which a negative width would otherwise make it.
 
     `claim` is any mapping or sqlite3.Row with `date_min`, `date_max`,
@@ -1310,7 +1310,21 @@ def format_edtf_error(value: object, *, field: str = 'date') -> str:
     so this is reserved for genuinely ambiguous values, and it teaches the
     accepted shapes (including the natural phrasings now understood) rather than
     stopping at the acronym.
+
+    A range written backwards (`1950/1940`, "1950 to 1940") gets its own
+    sentence: its halves are both fine, so the generic message would leave
+    the human staring at two good-looking years. It offers the swapped form
+    but never applies it - either year may be the typo.
     """
+    backwards = backwards_interval_halves(value)
+    if backwards:
+        start, end = backwards
+        return (
+            f'{field} {value!r} runs backwards: it starts at {start} but ends '
+            f'earlier, at {end}. A span is written earlier date first - if you '
+            f'meant {end} to {start}, write {end}/{start}; if one of the two '
+            f'dates is a typo, correct that one.'
+        )
     return (
         f'{field} {value!r} is not a date the archive can read. '
         f'Write it {EDTF_EXAMPLE_TEXT}, or in plain words like '
@@ -4819,13 +4833,22 @@ _EDTF_PATTERNS = [
 
 
 def is_valid_edtf(s: str | None) -> bool:
-    """Return True if s is a valid EDTF date per TOOLING.md §1."""
+    """Return True if s is a valid EDTF date per TOOLING.md §1.
+
+    An interval must run forwards: `1950/1940` has two readable halves but
+    is not a span EDTF can express, and its bounds would come out inverted
+    (date_min after date_max), so every sort and overlap test reading it
+    would be wrong. It is refused here, the one validator lint E014,
+    `normalize_date` and `fha claim --date` all share, so a typing slip is
+    caught at entry and in hand edits alike (`interval_runs_backwards`).
+    """
     if not s or not isinstance(s, str):
         return False
     s = s.strip()
     if '/' in s:
         parts = s.split('/', 1)
-        return is_valid_edtf(parts[0]) and is_valid_edtf(parts[1])
+        return (is_valid_edtf(parts[0]) and is_valid_edtf(parts[1])
+                and not interval_runs_backwards(parts[0], parts[1]))
     if not any(p.match(s) for p in _EDTF_PATTERNS):
         return False
     try:
@@ -4833,6 +4856,49 @@ def is_valid_edtf(s: str | None) -> bool:
     except ValueError:
         return False
     return True
+
+
+def interval_runs_backwards(start: str, end: str) -> bool:
+    """True when an interval's start is wholly after its end.
+
+    Both halves must already be valid EDTF on their own. "Wholly after"
+    compares the earliest the start can be with the latest the end can be,
+    so only a span no reading can make forwards is refused: `1950/1940` and
+    `1941-01-19/1941-01-18` are, but `1950-06/1950` (June 1950 to some time
+    in 1950) and `1941~/1940` (about 1941 can be 1940) are not. An open
+    bound (`[..1920]`, `[1920..]`) widens to the archive's floor or ceiling
+    and so never trips this by itself.
+    """
+    return edtf_bounds(start)[0] > edtf_bounds(end)[1]
+
+
+# Plain-word year ranges: "between 1870 and 1875", "1870 to 1875", "1870-1875".
+# Shared by normalize_date (which turns one into 1870/1875) and
+# backwards_interval_halves (which explains why a reversed one was refused).
+_RANGE_WORDS_RE = re.compile(r'^(?:between\s+)?(\d{4})\s*(?:to|and|-|–|/)\s*(\d{4})$')
+
+
+def backwards_interval_halves(value: object) -> tuple[str, str] | None:
+    """(start, end) when `value` is a range written backwards, else None.
+
+    Catches the EDTF form (`1950/1940`) and the plain-word forms
+    normalize_date reads ("1950 to 1940", "between 1950 and 1940"), so the
+    refusal can say what is actually wrong - the span starts after it ends -
+    instead of the generic "not a date the archive can read".
+    """
+    raw = str(value or '').strip()
+    if '/' in raw:
+        start, end = (part.strip() for part in raw.split('/', 1))
+        if (is_valid_edtf(start) and is_valid_edtf(end)
+                and interval_runs_backwards(start, end)):
+            return start, end
+    # The same hedge words normalize_date reads off first ("circa", "about",
+    # "the" ...), so "circa 1950 to 1940" is explained as backwards too.
+    text = _loose_date_parts(raw)[0]
+    words = _RANGE_WORDS_RE.match(text)
+    if words and words.group(1) > words.group(2):
+        return words.group(1), words.group(2)
+    return None
 
 
 # Loose human date forms the archive understands and the canonical EDTF they map
@@ -4866,6 +4932,37 @@ _MONTH_NAMES = {
 }
 
 
+def _loose_date_parts(raw: str) -> tuple[str, bool, bool, bool]:
+    """A loose date's text with its hedge words read off: (rest, approx, before, uncertain).
+
+    The one reader both `normalize_date` and `backwards_interval_halves` use,
+    so the two cannot disagree about which words are a hedge (#217 audit:
+    "circa 1950 to 1940" was refused as backwards by one and not explained
+    as backwards by the other).
+
+    Works on a lowercased, whitespace-collapsed copy stripped of trailing
+    sentence punctuation ("circa 1870." → "circa 1870"), and of a leading
+    "the". Canonical forms with meaningful punctuation (~, ?, [..], /) never
+    reach here from `normalize_date`, so stripping '.,' only removes human
+    noise. A leading approximate tilde ("~1870") folds into the approximate
+    path.
+    """
+    text = re.sub(r'\s+', ' ', raw.lower()).strip().strip('.,')
+    text = re.sub(r'^the\s+', '', text)
+    if text.startswith('~'):
+        text = 'circa ' + text[1:].strip()
+
+    approx = before = uncertain = False
+    m = _APPROX_PREFIX_RE.match(text)
+    if m:
+        approx, text = True, text[m.end():].strip()
+    elif (m := _BEFORE_PREFIX_RE.match(text)):
+        before, text = True, text[m.end():].strip()
+    elif (m := _UNCERTAIN_PREFIX_RE.match(text)):
+        uncertain, text = True, text[m.end():].strip()
+    return text, approx, before, uncertain
+
+
 def normalize_date(s: str | None) -> str | None:
     """Translate a loose, human-written date into canonical EDTF, or None if its
     meaning is genuinely unclear.
@@ -4881,6 +4978,8 @@ def normalize_date(s: str | None) -> str | None:
       before/bef/prior to/by 1920                          → [..1920]
       1870s, 1870's, 187x                                  → 187X   (decade)
       between 1870 and 1875, 1870 to 1875, 1870-1875       → 1870/1875 (interval)
+      ("1875 to 1870" runs backwards → None, never silently swapped: either
+      year may be the typo, so the human is asked - format_edtf_error)
       a bare year/month/day already shaped like EDTF       → itself
 
     Month names such as "June 1923", "June 14 1923", and "14 June 1923"
@@ -4896,29 +4995,11 @@ def normalize_date(s: str | None) -> str | None:
     if is_valid_edtf(raw):
         return raw
 
-    # Work on a lowercased, whitespace-collapsed copy stripped of trailing
-    # sentence punctuation ("circa 1870." → "circa 1870").  Canonical forms with
-    # meaningful punctuation (~, ?, [..], /) are already handled by the early
-    # return above, so stripping '.,' here only removes human noise.
-    text = re.sub(r'\s+', ' ', raw.lower()).strip().strip('.,')
-    text = re.sub(r'^the\s+', '', text)
-
-    # A leading approximate tilde ("~1870") folds into the approximate path.
-    if text.startswith('~'):
-        text = 'circa ' + text[1:].strip()
-
-    approx = before = uncertain = False
-    m = _APPROX_PREFIX_RE.match(text)
-    if m:
-        approx, text = True, text[m.end():].strip()
-    elif (m := _BEFORE_PREFIX_RE.match(text)):
-        before, text = True, text[m.end():].strip()
-    elif (m := _UNCERTAIN_PREFIX_RE.match(text)):
-        uncertain, text = True, text[m.end():].strip()
+    text, approx, before, uncertain = _loose_date_parts(raw)
 
     candidate: str | None = None
 
-    range_m = re.match(r'^(?:between\s+)?(\d{4})\s*(?:to|and|-|–|/)\s*(\d{4})$', text)
+    range_m = _RANGE_WORDS_RE.match(text)
     decade_word_m = re.match(r"^(\d{3})0(?:'s|s)$", text)
     decade_x_m = re.match(r'^(\d{3})x$', text)
     date_m = re.match(r'^(\d{4})(?:-\d{2})?(?:-\d{2})?$', text)

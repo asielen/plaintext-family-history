@@ -441,14 +441,14 @@
     {
       "path": ".fha/tools/README.md",
       "category": "operating",
-      "sha256": "1e47739b377e604d28a6b07ede87db9ba3c097c02dd0d9282968e9848b93f29e",
+      "sha256": "d65281c5d89c040e11adceb01ba9f9cf8672dc4ff8dea84562f793e10d85b515",
       "spec_version": "1.2",
       "src": "tools/README.md"
     },
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "d95e3831cec520d02088ff752b730e43fca543c5a2a3e85cf1c21ddf524cb3d3",
+      "sha256": "3414ed52eb22b2c49a44c2e254f1330f270b18f45263ea2c4423d887df18e41a",
       "spec_version": "1.2",
       "src": "tools/_lib.py"
     },
@@ -525,7 +525,7 @@
     {
       "path": ".fha/tools/convert_mining.py",
       "category": "operating",
-      "sha256": "bbb8a619b12bdedcf53c5e5a9026223d8b45460b34a3b3ffcba51adedb88bce6",
+      "sha256": "46152300865517428581ab167c05f69a8df84703bb7d186d484c89fdd17fd7ca",
       "spec_version": "1.2",
       "src": "tools/convert_mining.py"
     },
@@ -567,7 +567,7 @@
     {
       "path": ".fha/tools/gedcom_import.py",
       "category": "operating",
-      "sha256": "066680f1714b48c2e96d511eb91df51bd949e3e52abca31a9c94afd14c5a50a8",
+      "sha256": "3018cf3081896efdaf3bcff41d9c37348ac85c574889811a87ef8ed86b47b8fe",
       "spec_version": "1.2",
       "src": "tools/gedcom_import.py"
     },
@@ -895,7 +895,7 @@
     {
       "path": "CHEATSHEET.md",
       "category": "operating",
-      "sha256": "4158cd4c19a52ce9c1b95da426a994ef285361aafeebb197959ce91b29fcbc69",
+      "sha256": "1a23052cc91395f3529aa5149006aed382fe73e8828a241b86402d05e5a9787c",
       "spec_version": "1.2"
     },
     {
@@ -919,7 +919,7 @@
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "554d3092a63505a7560022ac0906a331b5cffbde6426e57fd6d463e4b7010f13",
+      "sha256": "bcde59c07faa2748a4e77d910c0123ef5bddc313397dc629ed9f0186eaa8efa1",
       "spec_version": "1.2"
     },
     {

@@ -2688,5 +2688,100 @@ class EchoOnSuccessTests(unittest.TestCase):
         self.assertIn('evidence -> direct', all_text)
 
 
+from _lib import format_edtf_error, normalize_date  # noqa: E402  (#216 tests)
+
+
+class BackwardsIntervalTests(unittest.TestCase):
+    """#216: a range typed backwards is refused, in plain words, everywhere.
+
+    "Between 1940 and 1950" typed as `1950/1940`, or a death's two candidate
+    days in the wrong order, used to be written without a word: both halves
+    are fine dates, and nothing compared them. The fact then sorted in the
+    wrong place and fell out of every date-window search. An interval must
+    run forwards (TOOLING §1): its start may not be wholly after its end.
+    """
+
+    BACKWARDS = ('1950/1940', '1941-01-19/1941-01-18', '1950-06/1950-03')
+    # Some reading makes each of these forwards, so none is refused.
+    FORWARDS = ('1940/1950', '1950/1950', '1950-06/1950', '1941~/1940',
+                '1950/1950-03', '[..1920]/1930')
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.source = _write_source(self.root)
+        _write_person(self.root, 'P-aaaaaaaaaa', 'Anna Smith')
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _date_of(self, cid: str):
+        claims = {c['id']: c for c in read_record(self.source)['claims']}
+        return claims[cid].get('date')
+
+    def test_a_backwards_interval_is_not_a_date_the_archive_reads(self) -> None:
+        for form in self.BACKWARDS:
+            with self.subTest(form=form):
+                self.assertFalse(is_valid_edtf(form))
+                self.assertIsNone(normalize_date(form))
+
+    def test_a_forwards_or_overlapping_interval_still_reads(self) -> None:
+        for form in self.FORWARDS:
+            with self.subTest(form=form):
+                self.assertTrue(is_valid_edtf(form))
+
+    def test_plain_words_backwards_are_refused_not_swapped(self) -> None:
+        # Either year may be the typo, so the tool must not guess 1940/1950.
+        for words in ('1950 to 1940', 'between 1950 and 1940', '1950-1940'):
+            with self.subTest(words=words):
+                self.assertIsNone(normalize_date(words))
+        self.assertEqual(normalize_date('1940 to 1950'), '1940/1950')
+
+    def test_the_message_says_it_runs_backwards_and_offers_the_swap(self) -> None:
+        message = format_edtf_error('1950/1940')
+        self.assertIn('runs backwards', message)
+        self.assertIn('1940/1950', message)
+        self.assertIn('typo', message)
+        words = format_edtf_error('between 1950 and 1940', field='--date')
+        self.assertIn('runs backwards', words)
+
+    def test_a_hedged_backwards_range_is_explained_as_backwards_too(self) -> None:
+        # #217 audit: normalize_date reads "circa"/"about"/"the" off first, so
+        # the explanation must too - not the generic "not a date" message.
+        for words in ('circa 1950 to 1940', 'about 1950-1940', 'the 1950 to 1940',
+                      'maybe 1950 to 1940'):
+            with self.subTest(words=words):
+                self.assertIsNone(normalize_date(words))
+                self.assertIn('runs backwards', format_edtf_error(words))
+
+    def test_fha_claim_date_refuses_and_leaves_the_claim_alone(self) -> None:
+        before = self.source.read_bytes()
+        result = claim.run_claim(self.root, claim_id='C-aa11bb22cc', date='1950/1940')
+        self.assertNotEqual(result.exit_code, EXIT_CLEAN)
+        self.assertIn('runs backwards', ' '.join(m.text for m in result.messages))
+        self.assertEqual(self.source.read_bytes(), before)
+
+    def test_fha_claim_new_date_refuses(self) -> None:
+        before = self.source.read_bytes()
+        result = claim.run_claim_new(
+            self.root, source_id='S-1111111111', claim_type='residence',
+            value='Lived in Topeka', date='1941-01-19/1941-01-18')
+        self.assertNotEqual(result.exit_code, EXIT_CLEAN)
+        self.assertIn('runs backwards', ' '.join(m.text for m in result.messages))
+        self.assertEqual(self.source.read_bytes(), before)
+
+    def test_lint_reports_a_hand_edited_backwards_range_as_e014(self) -> None:
+        import lint
+        text = self.source.read_text(encoding='utf-8')
+        self.assertIn('  date: 1880\n', text)
+        text = text.replace('  date: 1880\n', '  date: 1950/1940\n')
+        self.source.write_text(text, encoding='utf-8')
+        (self.root / 'fha.yaml').write_text('roots:\n  documents: documents\n', encoding='utf-8')
+        result = lint.run_lint(self.root, load_fha_yaml(self.root))
+        e014 = [m.text for m in result.messages if m.code == 'E014']
+        self.assertEqual(len(e014), 1, e014)
+        self.assertIn('runs backwards', e014[0])
+
+
 if __name__ == '__main__':
     unittest.main()

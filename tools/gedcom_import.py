@@ -424,9 +424,10 @@ def gedcom_date_to_edtf(raw: str) -> str | None:
             b = _one_gedcom_date_to_edtf(m.group(2))
             if a and b and _edtf_ymd(a) > _edtf_ymd(b):
                 # A reversed range ('BET 1900 AND 1850') is malformed, not a
-                # guessable date: `1900/1850` would pass is_valid_edtf (the
-                # halves validate independently) but query as an empty window
-                # and feed the living heuristic the wrong bound. Same posture
+                # guessable date: `1900/1850` would query as an empty window
+                # and feed the living heuristic the wrong bound (is_valid_edtf
+                # now refuses it too; this stricter tuple test also catches
+                # '1900-05' after '1900', which it lets through). Same posture
                 # as the AFT fallback: no date, wording kept in the value,
                 # counted in the could-not-translate report.
                 edtf = None
