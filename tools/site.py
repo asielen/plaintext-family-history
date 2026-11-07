@@ -3111,7 +3111,16 @@ class _SiteBuilder:
         # there a stale answer would change what a page shows, not just
         # what it withholds.
         self.photos_gate_conn: sqlite3.Connection | None = None
-        self._living_photo_warning_sent = False
+        # Which living-photo warnings this build has already given, by kind:
+        # 'partial' (an out-of-date catalog checked the photo against its old
+        # tags) and 'unchecked' (nothing could check it). One of each at most,
+        # so a build that starts on the first and then publishes a photo the
+        # catalog never saw still says so (#204 audit).
+        self._living_photo_warnings_sent: set[str] = set()
+        # Set by the gate for the photo it just answered: True when an
+        # out-of-date catalog has no row for it at all (added, moved or
+        # renamed since the last scan), so the "checked" was nothing.
+        self._gate_last_unknown = False
         # discoveries.md is read for both the discoveries page and the home
         # teaser; memoize so the file is parsed once per build.
         self._discoveries: tuple[str, list[str]] | None = None
@@ -4617,7 +4626,8 @@ class _SiteBuilder:
                 # text attachments, or one where Pillow left every image out,
                 # raises no alarm about photos it never published.
                 if not self.linked and self.photos_status != 'fresh':
-                    self._warn_living_photo_check_unavailable()
+                    self._warn_living_photo_check_unavailable(
+                        unknown_to_catalog=self._gate_last_unknown)
         portrait = next((e for is_front, e in candidates if is_front), None)
         if portrait is None and candidates:
             portrait = candidates[0][1]
@@ -5534,15 +5544,25 @@ class _SiteBuilder:
         An OUT-OF-DATE catalog is still asked (`photos_gate_conn`). Its tags
         were true at the last scan, and skipping it would publish every photo it
         already knows names a living person. Only a tag added since then goes
-        unseen, and the warning says exactly that."""
+        unseen, and the warning says exactly that.
+
+        Except for a photo the out-of-date catalog has no row for at all,
+        because it was added, moved or renamed since the last scan. Nothing
+        checked that one, and `_gate_last_unknown` says so, so the warning
+        does not claim otherwise (#204 audit)."""
+        self._gate_last_unknown = False
         conn = self.photos_conn if self.photos_conn is not None else self.photos_gate_conn
         if conn is None:
             return False
+        keys = (alias_path, f'{_MISSING_PREFIX}{_live_alias(alias_path)}')
         try:
             rows = conn.execute(
-                'SELECT person_ref FROM photo_people WHERE path = ? OR path = ?',
-                (alias_path, f'{_MISSING_PREFIX}{_live_alias(alias_path)}'),
+                'SELECT person_ref FROM photo_people WHERE path = ? OR path = ?', keys,
             ).fetchall()
+            if conn is self.photos_gate_conn and not rows:
+                self._gate_last_unknown = conn.execute(
+                    'SELECT 1 FROM photos WHERE path = ? OR path = ? LIMIT 1', keys,
+                ).fetchone() is None
         except sqlite3.DatabaseError:
             # The catalog opened and then failed a query: from here on it can
             # answer nothing, so the build's warning must name it as unreadable
@@ -5558,7 +5578,7 @@ class _SiteBuilder:
                 return True
         return False
 
-    def _warn_living_photo_check_unavailable(self) -> None:
+    def _warn_living_photo_check_unavailable(self, *, unknown_to_catalog: bool = False) -> None:
         """Say once that this build published photos nobody checked for living-person tags.
 
         Called when a standalone build has just put a real image on a page while
@@ -5573,11 +5593,22 @@ class _SiteBuilder:
         warning nobody finishes reading is a warning nobody read. It carries the
         cause and the two ways out - rebuild the catalog, or look through the
         images yourself - because a message that names no fix is a dead end.
+
+        Two wordings, each given at most once. 'partial': an out-of-date
+        catalog checked the photo against the tags it held at its last scan.
+        'unchecked': nothing checked it - no usable catalog, a catalog that
+        failed partway through the build, or a photo the out-of-date catalog
+        has never seen (`unknown_to_catalog`). Once 'unchecked' has been said,
+        'partial' adds nothing, so it is not given after it.
         """
-        if self._living_photo_warning_sent:
+        partial = (self.photos_status == 'stale' and self.photos_gate_conn is not None
+                   and not unknown_to_catalog)
+        kind = 'partial' if partial else 'unchecked'
+        if kind in self._living_photo_warnings_sent or (
+                kind == 'partial' and 'unchecked' in self._living_photo_warnings_sent):
             return
-        self._living_photo_warning_sent = True
-        if self.photos_status == 'stale' and self.photos_gate_conn is not None:
+        self._living_photo_warnings_sent.add(kind)
+        if partial:
             # The check ran, against the tags the catalog held at its last
             # scan. Say what it could not see, not that nothing was checked.
             self.messages.append(
@@ -5593,6 +5624,10 @@ class _SiteBuilder:
             return
         reason = _PHOTO_CATALOG_TROUBLE.get(
             self.photos_status, 'the photo catalog is not available')
+        if self.photos_status == 'stale' and unknown_to_catalog:
+            reason = ('the photo catalog is out of date and has never seen some of '
+                      'the photos in this site (added, moved or renamed since '
+                      '`fha photoindex` last ran)')
         self.messages.append(
             f'WARNING: {reason}, so the photos published in this site were NOT '
             'checked against it for tags naming living people - a photograph '
