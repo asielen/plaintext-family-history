@@ -953,6 +953,19 @@ class OrphanedBackPhotosTests(unittest.TestCase):
         result = doctor.run_doctor(self.root, self._fha_config())
         self.assertIsNone(self._finding(result), '\n'.join(result.data['lines']))
 
+    def test_a_damaged_files_value_elsewhere_does_not_stop_doctor(self) -> None:
+        # #209 review: the "listed on any record" pass iterated `files: 1`
+        # and raised, so one hand-damaged record disabled the whole report.
+        (self.root / 'photos' / 'x-00100.jpg').write_bytes(b'front')
+        (self.root / 'photos' / 'x-00100-back.jpg').write_bytes(b'back')
+        _write(self.root / 'sources' / 'photos' / 'card_S-1111111111.md', _SOURCE.format(
+            sid='S-1111111111', title='Card',
+            line='files:\n  - file: photos/x-00100.jpg\n    role: primary\n'))
+        _write(self.root / 'sources' / 'photos' / 'broken_S-2222222222.md', _SOURCE.format(
+            sid='S-2222222222', title='Broken', line='files: 1\n'))
+        result = doctor.run_doctor(self.root, self._fha_config())
+        self.assertIsNotNone(self._finding(result), '\n'.join(result.data['lines']))
+
     def test_a_back_filed_on_another_record_is_not_an_orphan(self) -> None:
         # A back already listed on ANY source has a home; only a file no
         # record names is orphaned.

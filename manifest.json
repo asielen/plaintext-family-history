@@ -525,7 +525,7 @@
     {
       "path": ".fha/tools/doctor.py",
       "category": "operating",
-      "sha256": "a23f0fb81526a12f73a709482d91ba6be20e22ba1badeb2afd2001617508975d",
+      "sha256": "b90adaf3c57c406a9637d01634047eb449d07c536fbcf6e342ca129a089cf631",
       "spec_version": "1.2",
       "src": "tools/doctor.py"
     },

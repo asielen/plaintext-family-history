@@ -804,7 +804,16 @@ def _check_orphaned_back_photos(archive_root: Path, fha_config: dict,
     # this one, even when the names line up (#209 audit).
     listed_anywhere: set[str] = set()
     for _rp, _rec in records:
-        for _item in ((_rec.get('meta') or {}).get('files') or []):
+        # The same guards the main loop applies: one hand-damaged record
+        # (`files: 1`, a meta that is not a mapping) must not stop doctor
+        # (#209 review).
+        if _rec.get('undecodable') or _rec.get('parse_errors'):
+            continue
+        _meta = _rec.get('meta')
+        _files = _meta.get('files') if isinstance(_meta, dict) else None
+        if not isinstance(_files, list):
+            continue
+        for _item in _files:
             if isinstance(_item, dict) and str(_item.get('file') or '').startswith('photos/'):
                 listed_anywhere.add(str(_item['file']))
     for record_path, rec in records:
