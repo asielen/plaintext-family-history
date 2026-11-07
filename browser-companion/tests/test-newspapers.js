@@ -357,6 +357,32 @@ test('fetchTile gives up after three backoffs and says the site asked us to slow
   assert.strictEqual(calls.sleeps.length, 3);
 });
 
+test('fullPage counts the "slow down" answers it waited out, so a batch can stop after the page', async () => {
+  // A page of two tiles; the first answers 429 once, then comes.
+  const { deps, calls } = tileService([429, 'ok', 'ok']);
+  const drawn = [];
+  Object.assign(deps, {
+    canvas: (w, h) => ({ width: w, height: h, getContext: () => ({ fillRect() {}, drawImage: (b, x, y) => drawn.push([x, y]) }) }),
+    bitmap: async () => ({ width: 1488, height: 1448 }),
+  });
+  const info = { pageId: 'rate-test-1', pageWidth: 2976, pageHeight: 1448, token: 't', me: { id: 7 } };
+  const page = await lib.fullPage(info, null, deps);
+  assert.strictEqual(page.rateHits, 1);
+  assert.strictEqual(page.tiles, 2);
+  assert.strictEqual(calls.fetches, 3);
+  assert.deepStrictEqual(drawn, [[0, 0], [1488, 0]]);
+  // The same page again is the stitched one: no request, nothing waited out.
+  const again = await lib.fullPage(info, null, deps);
+  assert.strictEqual(again.rateHits, 0);
+  assert.strictEqual(calls.fetches, 3);
+  assert.strictEqual(again.canvas, page.canvas);
+  // A clean page counts none.
+  const clean = tileService(['ok']);
+  Object.assign(clean.deps, { canvas: deps.canvas, bitmap: deps.bitmap });
+  const p2 = await lib.fullPage(Object.assign({}, info, { pageId: 'rate-test-2' }), null, clean.deps);
+  assert.strictEqual(p2.rateHits, 0);
+});
+
 // ── a clipping with nothing to cut out ───────────────────────────────────────
 
 test('clipCanvas names a clipping with no area instead of failing as a canvas error', () => {

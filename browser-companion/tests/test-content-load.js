@@ -29,7 +29,10 @@ const SAMPLE = (name) => fs.readFileSync(path.join(__dirname, '..', '..', 'tests
 // tests/mini-dom.js page) the elements the Find a Grave readers walk.
 // `head` is the page's head tags by name - 'og:title', 'og:url', 'og:image',
 // 'canonical', 'date' - each answering as that tag would.
-function loadPage({ url, cookie = '', links = [], fetch, canonical, tree, head = {}, title = 'A page' } = {}) {
+// `storage` is what chrome.storage.local holds (the batch switch); without
+// it the page has no storage to ask, as on an add-on that cannot read it.
+// `scripts` are the page's script texts (Newspapers.com's page data).
+function loadPage({ url, cookie = '', links = [], fetch, canonical, tree, head = {}, title = 'A page', storage, scripts = [] } = {}) {
   const listeners = [];
   const el = (tag) => ({ tagName: tag, textContent: '', innerText: '', getAttribute: () => null, closest: () => null });
   const headTag = (sel) => {
@@ -45,7 +48,7 @@ function loadPage({ url, cookie = '', links = [], fetch, canonical, tree, head =
     doctype: null,
     body: el('BODY'),
     documentElement: { outerHTML: '<html></html>', cloneNode: () => ({ querySelectorAll: () => [], outerHTML: '<html></html>' }) },
-    scripts: [],
+    scripts: scripts.map((t) => ({ textContent: t })),
     images: [],
     querySelector: (sel) => headTag(sel) || (canonical && /canonical|og:url/.test(sel)
       ? { getAttribute: (a) => (a === 'href' ? canonical : null) } : null),
@@ -61,6 +64,8 @@ function loadPage({ url, cookie = '', links = [], fetch, canonical, tree, head =
     navigator: { userAgent: 'test' },
     chrome: {
       runtime: { getManifest: () => ({ version: '9.9.9' }), onMessage: { addListener: (f) => listeners.push(f) } },
+      storage: storage === undefined ? undefined
+        : { local: { get: (d, cb) => cb(Object.assign({}, d, JSON.parse(JSON.stringify(storage)))) } },
     },
     fetch: async (u, init) => {
       calls.push({ url: String(u), auth: !!(init && init.headers && init.headers.Authorization), init });
@@ -473,5 +478,119 @@ test('F8: a head left from another record keyed in the query or a hash route is 
       .ask({ action: 'prefill' });
     assert.strictEqual(r.prefill.title, 'A page', url);
     assert.notStrictEqual(r.prefill.imageUrl, 'https://records.example.org/img/previous.jpg', url);
+  }
+});
+
+// ── the owner's batch downloads: switched off unless told ───────────────────
+
+const FS_PERSON = 'https://www.familysearch.org/tree/person/details/KWHR-T01';
+const NP_LIST_PAGE = 'https://www.newspapers.com/clippings/my-clippings/';
+const ANC_PERSON = 'https://www.ancestry.com/family-tree/person/tree/1/person/2/facts';
+const BATCH_ON = { batchDownloads: true };
+
+// Every network answer a batch question could want; each request recorded.
+function anything() {
+  return async (url) => {
+    if (/\/platform\/tree\/persons\/KWHR-T01\/sources$/.test(url)) {
+      return { ok: true, status: 200, text: async () => JSON.stringify({ sourceDescriptions: [
+        { about: 'https://www.familysearch.org/ark:/61903/1:1:HRT1-CEN1', titles: [{ value: 'Calvin Hartley, 1880' }] },
+        { about: 'https://www.findagrave.com/memorial/900000001/calvin-george-hartley' },
+      ] }) };
+    }
+    if (/\/platform\/tree\/persons\/KWHR-T01$/.test(url)) {
+      return { ok: true, status: 200, text: async () => JSON.stringify({ persons: [{ display: { name: 'Calvin George Hartley' } }] }) };
+    }
+    if (/\/api\/clipping\/list\?/.test(url)) {
+      return { ok: true, status: 200, json: async () => ({ clippings: [], more_results: false }) };
+    }
+    return { ok: false, status: 404, text: async () => '' };
+  };
+}
+
+test('switched off, every batch question is answered "switched off" and nothing is read or sent', async () => {
+  const asks = [
+    [FS_PERSON, { action: 'familysearchPersonSources' }],
+    [FS_PERSON, { action: 'findagraveLinks' }],
+    [MEMORIAL, { action: 'findagraveLinks' }],
+    [ANC_PERSON, { action: 'ancestryPersonSources' }],
+    [NP_LIST_PAGE, { action: 'newspapersList', cursor: 0, user: 'HartleyResearch' }],
+  ];
+  for (const storage of [undefined, {}, { batchDownloads: false }, { batchDownloads: 'true' }]) {
+    for (const [url, msg] of asks) {
+      const page = loadPage({ url, cookie: 'fssessionid=' + TOKEN, fetch: anything(), storage,
+        tree: parse(SAMPLE('findagrave-memorial')) });
+      const r = await page.ask(msg);
+      assert.deepStrictEqual(r, { ok: false, off: true, error: 'batch downloads are switched off in this browser' },
+        msg.action + ' with ' + JSON.stringify(storage));
+      assert.strictEqual(page.calls.length, 0, msg.action + ' sent a request');
+    }
+  }
+});
+
+test('switched on: a tree person\'s FamilySearch sources, the session sent to FamilySearch only and returned nowhere', async () => {
+  const page = loadPage({ url: FS_PERSON, cookie: 'fssessionid=' + encodeURIComponent(TOKEN), fetch: anything(), storage: BATCH_ON });
+  const r = await page.ask({ action: 'familysearchPersonSources' });
+  assert.strictEqual(r.ok, true, r.error);
+  assert.strictEqual(r.person, 'Calvin George Hartley');
+  assert.deepStrictEqual(r.sources, [{ fsId: 'HRT1-CEN1', title: 'Calvin Hartley, 1880' }]);
+  assert.strictEqual(page.calls.length, 2);
+  for (const c of page.calls) {
+    assert.match(c.url, /^https:\/\/www\.familysearch\.org\//);
+    assert.strictEqual(c.auth, true);
+  }
+  assert.ok(!JSON.stringify(r).includes(TOKEN));
+  // ...and the memorials among them, the same way.
+  const f = loadPage({ url: FS_PERSON, cookie: 'fssessionid=' + TOKEN, fetch: anything(), storage: BATCH_ON,
+    tree: parse('<html><h1>Calvin George Hartley</h1></html>') });
+  const links = await f.ask({ action: 'findagraveLinks' });
+  assert.deepStrictEqual(links.sources.map((s) => s.memorialId), ['900000001']);
+  assert.ok(f.calls.every((c) => /^https:\/\/www\.familysearch\.org\//.test(c.url)));
+  // Asked from a tab that is not on FamilySearch: no request at all.
+  const away = loadPage({ url: 'https://blog.example.org/tree/person/details/KWHR-T01', cookie: 'fssessionid=' + TOKEN,
+    fetch: anything(), storage: BATCH_ON });
+  assert.strictEqual((await away.ask({ action: 'familysearchPersonSources' })).ok, false);
+  assert.strictEqual(away.calls.length, 0);
+});
+
+test('switched on: Find a Grave and Ancestry pages are read for what to queue without any request', async () => {
+  const page = loadPage({ url: MEMORIAL, cookie: 'session=SECRET-FAG-COOKIE', fetch: anything(), storage: BATCH_ON,
+    tree: parse(SAMPLE('findagrave-memorial')) });
+  const r = await page.ask({ action: 'findagraveLinks' });
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(r.sources[0].memorialId, '900000001');
+  assert.ok(r.sources.length > 1);
+  assert.strictEqual(page.calls.length, 0);
+  const anc = loadPage({ url: ANC_PERSON, fetch: anything(), storage: BATCH_ON, tree: parse('<html><h1>Calvin Hartley</h1>' +
+    '<div id="sourcesSection"><a href="/search/collections/90001/records/1000001">1880 census</a></div></html>') });
+  const a = await anc.ask({ action: 'ancestryPersonSources' });
+  assert.deepStrictEqual(a.sources.map((s) => s.dbId + ':' + s.recordId), ['90001:1000001']);
+  assert.strictEqual(anc.calls.length, 0);
+  // Ancestry's reader answers on Ancestry only.
+  const off = loadPage({ url: MEMORIAL, fetch: anything(), storage: BATCH_ON, tree: parse(SAMPLE('findagrave-memorial')) });
+  assert.strictEqual((await off.ask({ action: 'ancestryPersonSources' })).ok, false);
+});
+
+// The page data that names who is signed in, as Newspapers.com sends it.
+const npSignedIn = (name) => 'self.__next_f.push([1,' +
+  JSON.stringify('1:{"user":{"id":7,"username":"' + name + '"}}\n') + '])';
+
+test('switched on: her clippings list is asked of Newspapers.com only, for whoever is signed in there', async () => {
+  const page = loadPage({ url: NP_LIST_PAGE, fetch: anything(), storage: BATCH_ON, scripts: [npSignedIn('HartleyResearch')] });
+  const r = await page.ask({ action: 'newspapersList', cursor: 0, user: null });
+  assert.strictEqual(r.ok, true, r.error);
+  assert.strictEqual(r.user, 'HartleyResearch');
+  assert.strictEqual(page.calls.length, 1);
+  assert.match(page.calls[0].url, /^https:\/\/www\.newspapers\.com\/api\/clipping\/list\?user=HartleyResearch&/);
+  assert.strictEqual(page.calls[0].auth, false);
+  // Another tab's site, nobody signed in, or another member signed in than
+  // the list was started for: nothing is asked.
+  for (const [url, scripts, user] of [
+    ['https://blog.example.org/clippings/', [npSignedIn('HartleyResearch')], 'HartleyResearch'],
+    [NP_LIST_PAGE, [], 'HartleyResearch'],
+    [NP_LIST_PAGE, [npSignedIn('SomeoneElse')], 'HartleyResearch'],
+  ]) {
+    const away = loadPage({ url, fetch: anything(), storage: BATCH_ON, scripts });
+    assert.strictEqual((await away.ask({ action: 'newspapersList', cursor: 0, user })).ok, false, url + ' ' + scripts);
+    assert.strictEqual(away.calls.length, 0);
   }
 });

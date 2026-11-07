@@ -25,6 +25,9 @@
 //   capture  → grab fresh page.html, build the page copy + evidence, stage bundle
 //
 // Classic script; depends on window.FHA.{captureJson,bundle,nativeHost,newspapers,findagrave}.
+// The owner's batch downloads (window.FHA.batchPanel, src/batch.js) are handed a
+// few hooks only when this browser has them switched on (init, batchHooks);
+// switched off, the panel never calls them.
 
 (function () {
   const { captureJson, bundle, nativeHost } = window.FHA;
@@ -176,6 +179,17 @@
     // fields she typed in, the file address, the people, a dropped file, the
     // clipping ticks. A retry of a failed read fills only the rest.
     touched: new Set(),
+    // The answers still on their way for the page just read: its newspaper
+    // clippings (loadNewspapers) and its FamilySearch image check. A batch
+    // download waits for both before it presses Capture.
+    npReading: null,
+    fsChecking: null,
+    // The owner's batch downloads (src/batch.js), when this browser has them
+    // switched on - null otherwise, and then nothing below ever calls them.
+    // `batchDriving` is true while a batch moves this tab from record to
+    // record: the batch reads each page itself, and Capture waits.
+    batch: null,
+    batchDriving: false,
   };
 
   const $ = (id) => document.getElementById(id);
@@ -596,8 +610,8 @@
       $('f-asset-url').value = '';
     }
     applyAncestryNote(!!prefill.ancestryImageViewer);
-    loadNewspapers(prefill, keepNp);
-    checkFamilySearch();
+    state.npReading = loadNewspapers(prefill, keepNp);
+    state.fsChecking = checkFamilySearch();
     updateAddressRow();
     updateAssetStatus();
   }
@@ -1024,7 +1038,12 @@
   // the throw). After that each clipping succeeds or fails on its own: the
   // report names where every bundle went and which, if any, were not saved,
   // and only the unsaved ones stay ticked for another try.
-  async function captureNewspapers(pageHtml, wantPageCopy, recordUrl) {
+  // `opts` (a batch download only): `expectKey` is the one clipping it
+  // queued ("clip:{id}") - anything else ticked saves nothing - and
+  // `forceDownload` stages to the download folder (stageBundle). Returns
+  // { saved, results, rateHits }: `rateHits` is how many "slow down"
+  // answers the page download waited out.
+  async function captureNewspapers(pageHtml, wantPageCopy, recordUrl, opts = {}) {
     const np = state.np;
     // The form as it is NOW. The page download below takes about 20 seconds,
     // and nothing that happens to the form meanwhile may reach these bundles
@@ -1040,6 +1059,11 @@
     };
     const chosen = np.ownClips.filter((c) => state.npSelected.has(c.id));
     if (!chosen.length) throw new Error('tick at least one of your clippings');
+    if (opts.expectKey && (chosen.length !== 1 || 'clip:' + chosen[0].id !== opts.expectKey ||
+        np.focusClipId !== chosen[0].id)) {
+      throw new Error('the clipping shown is not the one queued (' + opts.expectKey.replace(/^clip:/, '') +
+        '), so nothing was saved');
+    }
     // The tab's page copy is a copy of the record open in the tab; build it
     // only if some chosen clipping is that record (lib pageCopyFits).
     const copyFits = (clip) => FHA.newspapers.pageCopyFits(np, clip);
@@ -1076,7 +1100,7 @@
       const title = single ? (form.title || npTitle(clip, np)) : npTitle(clip, np);
       try {
         const st = await stageNpClip(clip, np, page, pageBlob, {
-          title, single, pageHtml, texts, form,
+          title, single, pageHtml, texts, form, forceDownload: !!opts.forceDownload,
           pageCopy: pageCopy && copyFits(clip) ? pageCopy : null,
           copyNote: wantPageCopy && !copyFits(clip)
             ? 'No copy of the web page was kept for this clipping: the page open in the browser ' +
@@ -1117,7 +1141,7 @@
       renderNpClips();
       fillNpFields();
     }
-    return results.length - failed.length;
+    return { saved: results.length - failed.length, results, rateHits: page.rateHits || 0 };
   }
 
   // Build and stage one clipping's bundle. Returns stageBundle's
@@ -1166,7 +1190,7 @@
       assets: assets.map((a) => ({ file: a.filename, role: a.role, mode: a.mode, provisional: false })),
     };
     const cap = captureJson.build(fields);
-    return stageBundle(captureJson.bundleName(o.title), o.pageHtml, cap, assets);
+    return stageBundle(captureJson.bundleName(o.title), o.pageHtml, cap, assets, { forceDownload: o.forceDownload });
   }
 
   // ── Ancestry record pages ─────────────────────────────────────────────────────
@@ -1235,7 +1259,23 @@
     return 'a capture waiting in the inbox to be filed';
   }
 
-  async function captureAncestryRecord(pageHtml, wantPageCopy, form, recordUrl) {
+  // A site's "slow down" or "busy" answer, in any capture's words (the same
+  // words lib/capture-batch.js classifyError reads): a batch download stops
+  // after a capture that met one, even when the capture itself got through.
+  const SLOW_DOWN_RE = /slow down|HTTP 429|HTTP 503|too many requests/i;
+
+  // A batch download names the record it queued (`opts.expectKey`, the Seen
+  // It key "rec:…", "fsrec:…", "fag:…"); the record the page shows must be
+  // that one, checked from the record's own data before anything is
+  // downloaded, or nothing is saved. An ordinary Capture names none.
+  function notQueued(opts, key, label) {
+    if (!opts || !opts.expectKey || opts.expectKey === key) return;
+    throw new Error('the page shows ' + label + ', not the one queued, so nothing was saved');
+  }
+
+  // `opts` (a batch download only): see captureNewspapers. Returns what was
+  // staged: { key, record, bundle, where, slowDown, note }.
+  async function captureAncestryRecord(pageHtml, wantPageCopy, form, recordUrl, opts = {}) {
     const info = await autoFetch('Ancestry record details', {
       // A title she typed is hers and is used as typed (below); only the
       // form's untouched prefill goes through ancTitle's "is this just the
@@ -1246,6 +1286,7 @@
     const rec = info.record;
     const hints = info.hints || {};
     const assets = [];
+    notQueued(opts, 'rec:' + rec.dbId + ':' + rec.recordId, 'Ancestry record ' + rec.dbId + ':' + rec.recordId);
     // The record was read from the tab: it must still be on this record.
     await checkTabStillOn(recordUrl, [rec.recordId]);
 
@@ -1352,7 +1393,7 @@
     };
     const cap = captureJson.build(fields);
     const bundleName = captureJson.bundleName(title);
-    const st = await stageBundle(bundleName, pageHtml, cap, assets);
+    const st = await stageBundle(bundleName, pageHtml, cap, assets, opts);
     // The bundle now holds this page: the next household member's capture
     // points at THIS record - its key and address, which outlive the staging
     // folder (ingest re-slugs it, filing renames it) - instead of fetching it.
@@ -1369,6 +1410,14 @@
       : null;
     reportStaged(st.where, st.viaHost, imageWarning,
       [st.hostWarning, pageNote, copyNote].filter(Boolean).join('\n') || null);
+    return {
+      key: 'rec:' + rec.dbId + ':' + rec.recordId,
+      record: { dbId: rec.dbId, recordId: rec.recordId, name: rec.name || null },
+      bundle: st.bundle, where: st.where,
+      slowDown: SLOW_DOWN_RE.test(imageWarning || ''),
+      note: imageWarning ? 'image not saved: ' + imageWarning.split('. The record')[0]
+        : sameImageAs ? 'page already saved in ' + describeSameImage(sameImageAs) : null,
+    };
   }
 
   // ── FamilySearch records and images ───────────────────────────────────────────
@@ -1432,7 +1481,9 @@
     return { text: 'Record file: full image ' + id + ' (FamilySearch, auto)' };
   }
 
-  async function captureFamilySearchRecord(pageHtml, wantPageCopy, form, recordUrl) {
+  // `opts` (a batch download only): see captureNewspapers. Returns what was
+  // staged: { key, record, bundle, where, slowDown, note }.
+  async function captureFamilySearchRecord(pageHtml, wantPageCopy, form, recordUrl, opts = {}) {
     const info = await autoFetch('FamilySearch record details', {
       action: 'familysearchRecordInfo',
       // FamilySearch's own name for the record; a title she typed is used
@@ -1443,6 +1494,7 @@
     const rec = info.record;
     const hints = info.hints || {};
     const assets = [];
+    notQueued(opts, 'fsrec:' + String(rec.fsId).toUpperCase(), 'FamilySearch record ' + rec.fsId);
     // The record was read from the tab: it must still be on this record.
     await checkTabStillOn(recordUrl, ['1:1:' + rec.fsId]);
     const dropped = form.dropped;
@@ -1540,7 +1592,7 @@
       assets: assets.map((a) => ({ file: a.filename, role: a.role, mode: a.mode, provisional: !!a.provisional })),
     };
     const cap = captureJson.build(fields);
-    const st = await stageBundle(captureJson.bundleName(title), pageHtml, cap, assets);
+    const st = await stageBundle(captureJson.bundleName(title), pageHtml, cap, assets, opts);
     if (imageKey && imageSaved) {
       state.fsImages[imageKey] = { record: 'fsrec:' + rec.fsId, url: rec.url, name: rec.name || null };
     }
@@ -1552,6 +1604,14 @@
       : null;
     reportStaged(st.where, st.viaHost, imageWarning,
       [st.hostWarning, pageNote, copyNote].filter(Boolean).join('\n') || null);
+    return {
+      key: 'fsrec:' + String(rec.fsId).toUpperCase(),
+      record: { fsId: rec.fsId, name: rec.name || null },
+      bundle: st.bundle, where: st.where,
+      slowDown: SLOW_DOWN_RE.test(imageWarning || ''),
+      note: imageWarning ? 'image not saved: ' + imageWarning.split('. The record')[0]
+        : sameImageAs ? 'image already saved in ' + describeSameImage(sameImageAs) : null,
+    };
   }
 
   // ── Find a Grave memorials ──────────────────────────────────────────────────
@@ -1569,12 +1629,15 @@
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-  async function captureFindAGraveMemorial(pageHtml, wantPageCopy, form, recordUrl) {
+  // `opts` (a batch download only): see captureNewspapers. Returns what was
+  // staged: { key, record, bundle, where, slowDown, note }.
+  async function captureFindAGraveMemorial(pageHtml, wantPageCopy, form, recordUrl, opts = {}) {
     const info = await autoFetch('Find a Grave memorial details',
       { action: 'findagraveMemorialInfo', today: captureJson.accessedDate() }, { recordUrl });
     if (!info || !info.ok) throw new Error((info && info.error) || 'could not read the Find a Grave memorial');
     const rec = info.record;
     const hints = info.hints || {};
+    notQueued(opts, 'fag:' + rec.memorialId, 'Find a Grave memorial ' + rec.memorialId);
     // The memorial was read from the tab: it must still be this memorial.
     const wantId = (/\/memorial\/(\d+)/.exec(String(recordUrl || '')) || [])[1];
     if (wantId !== rec.memorialId) {
@@ -1751,7 +1814,7 @@
       })),
     };
     const cap = captureJson.build(fields);
-    const st = await stageBundle(captureJson.bundleName(title), pageHtml, cap, assets);
+    const st = await stageBundle(captureJson.bundleName(title), pageHtml, cap, assets, opts);
     // These photos are saved now: capturing the memorial again points at
     // this capture - its memorial and address, which outlive the staging
     // folder - instead of downloading them again.
@@ -1768,13 +1831,29 @@
     // speaks of "the record image"); any of these lines turns the result amber.
     reportStaged(st.where, st.viaHost, null,
       [warning, st.hostWarning, heldNote, copyNote].filter(Boolean).join('\n') || null);
+    const missing = failed.length + notTried.length + skipped.length;
+    return {
+      key: 'fag:' + rec.memorialId,
+      record: { memorialId: rec.memorialId, slug: rec.slug || null, name: rec.name || null },
+      bundle: st.bundle, where: st.where,
+      // A "slow down" while its photos were listed or fetched (429): the
+      // memorial is saved with the photos that came, and a batch stops.
+      slowDown: slowDown || (!galleryOk && SLOW_DOWN_RE.test((gallery && gallery.error) || '')),
+      note: plural(saved.length, 'photo') + ' saved' + (already.length ? ', ' + already.length + ' already saved' : '') +
+        (missing ? ', ' + missing + ' not saved' : '') + (!galleryOk || partList ? ', photo list read only in part' : ''),
+    };
   }
 
   // Stage one bundle: straight into the archive when the native host answers,
-  // else the staging-folder download. Returns { viaHost, where, hostWarning }.
-  async function stageBundle(bundleName, pageHtml, cap, assets) {
+  // else the staging-folder download. Returns { viaHost, where, hostWarning,
+  // bundle }. `opts.forceDownload` (the owner's batch downloads) always takes
+  // the download: a batch of hundreds lands in the staging folder, beside its
+  // ledger, to be swept in by `fha capture --ingest` in chunks the owner
+  // chooses, rather than filing hundreds of stubs into the inbox unasked. The
+  // files are the same either way.
+  async function stageBundle(bundleName, pageHtml, cap, assets, opts = {}) {
     let hostWarning = null;
-    if (await nativeHost.isAvailable()) {
+    if (!opts.forceDownload && (await nativeHost.isAvailable())) {
       try {
         const hostAssets = [];
         for (const a of assets) {
@@ -1783,7 +1862,7 @@
         const resp = await nativeHost.sendBundle({
           bundleName, pageHtml, captureJson: cap, assets: hostAssets,
         });
-        return { viaHost: true, where: resp.stub || 'your archive inbox', hostWarning: null };
+        return { viaHost: true, where: resp.stub || 'your archive inbox', hostWarning: null, bundle: bundleName };
       } catch (e) {
         // Fall back to the download path rather than failing the capture -
         // but say so. The human opted into the host (isAvailable was true
@@ -1813,6 +1892,7 @@
       viaHost: false,
       where: paths.bundle || result.dir + " (inside your browser's download folder)",
       hostWarning,
+      bundle: bundleName,
     };
   }
 
@@ -2235,19 +2315,40 @@
     };
   }
 
-  async function capture() {
-    if (state.busy) return;
+  // The Capture button.
+  function capture() {
+    return runCapture();
+  }
+
+  // One capture of the page the form was filled in for. The Capture button
+  // runs it as she set the panel; the owner's batch downloads (src/batch.js)
+  // run it once per queued record with `opts.batch` = { expectKey }: the
+  // page copy kept and the record's own file saved (the panel's defaults),
+  // the record shown checked against the one queued before anything is
+  // downloaded, and the bundle staged to the download folder. Everything
+  // else - every check, every file, every word in capture.json - is this
+  // one path, so a batch bundle is the bundle Capture makes.
+  // Returns { ok, error?, site?, key?, bundle?, note?, slowDown?, rateHits?,
+  // results? } for the batch; the button ignores it.
+  async function runCapture(opts = {}) {
+    const refuse = (text, cls) => {
+      setStageResult(text, cls || 'warn');
+      return { ok: false, error: text };
+    };
+    if (!opts.batch && state.batchDriving) {
+      return refuse('A batch download is moving this tab from record to record. Press Pause in the batch box, ' +
+        'wait until it says it has stopped, then press Capture.');
+    }
+    if (state.busy) return { ok: false, error: 'a capture is already saving' };
     if (state.rereading) {
-      setStageResult('The panel is reading the page again - press Capture once it has finished.', 'warn');
-      return;
+      return refuse('The panel is reading the page again - press Capture once it has finished.');
     }
     if (state.navInFlight) {
-      setStageResult('The page in the tab just changed - reading it now. Press Capture again in a moment.', 'warn');
-      return;
+      return refuse('The page in the tab just changed - reading it now. Press Capture again in a moment.');
     }
 
-    const wantPageCopy = pageCopyOn();
-    const wantEvidence = evidenceMode() === 'yes';
+    const wantPageCopy = opts.batch ? true : pageCopyOn();
+    const wantEvidence = opts.batch ? true : evidenceMode() === 'yes';
     const form = formSnapshot();
     // Both controls off is NOT a refusal: it is the pointer-only capture
     // (§5.3's "none", TOOLING §13b case (c)) - page.html + an empty assets
@@ -2257,25 +2358,31 @@
     if (wantEvidence && !state.droppedAsset && state.npPage && state.npLoading) {
       // The clippings for the page now in the tab are still being read; the
       // previous page's are already forgotten (loadNewspapers), so wait.
-      setStageResult(
-        'Still reading your clippings on this Newspapers.com page - wait a moment, then press Capture again.',
-        'warn'
-      );
-      return;
+      return refuse('Still reading your clippings on this Newspapers.com page - wait a moment, then press Capture again.');
     }
     if (wantEvidence && !state.droppedAsset && !evidenceUrl()
         && !state.ancestryViewer && !state.ancRecord && !state.fsRecord && !state.fsImage
         && !state.fagRecord && !state.iiif && !npActive()) {
       if (state.npPage) {
-        setStageResult('Newspapers.com: ' + npUnavailableReason(), 'warn');
-        return;
+        return refuse('Newspapers.com: ' + npUnavailableReason());
       }
-      setStageResult(
-        'Add the file address or drop a file, or switch to "No, the page copy is the record".',
-        'warn'
-      );
-      return;
+      return refuse('Add the file address or drop a file, or switch to "No, the page copy is the record".');
     }
+
+    // The record this capture is of: the one the form was filled for.
+    const recordUrl = state.prefilledUrl;
+    const recordCapture = wantEvidence && !evidenceUrl() &&
+      ((npActive() && !state.droppedAsset) || state.ancRecord || state.fsRecord || state.fagRecord);
+    // A batch saves a record page's own files only, never a file dropped
+    // into the panel meanwhile or a page that is not a record.
+    if (opts.batch && state.droppedAsset) {
+      return refuse('a file was dropped into the panel while the batch ran, so nothing was saved. Press ↻ Re-read ' +
+        'page to clear it, then press Start again', 'error');
+    }
+    if (opts.batch && !recordCapture) {
+      return refuse('this page is not one the batch can save as the record queued, so nothing was saved', 'error');
+    }
+    const siteOpts = opts.batch ? { forceDownload: true, expectKey: opts.batch.expectKey } : {};
 
     state.busy = true;
     $('btn-capture').disabled = true;
@@ -2286,10 +2393,7 @@
     clearAutoLog();
     state.thisCaptureSigs = new Set();
 
-    // The record this capture is of: the one the form was filled for.
-    const recordUrl = state.prefilledUrl;
-    const recordCapture = wantEvidence && !evidenceUrl() &&
-      ((npActive() && !state.droppedAsset) || state.ancRecord || state.fsRecord || state.fagRecord);
+    let outcome = null;
     try {
       // The form's details are saved with what is read from the tab: if the
       // tab is no longer on the page they were filled in for, they would not
@@ -2309,35 +2413,43 @@
       // Newspapers.com: the whole page + each chosen clipping, one bundle per
       // clipping. A dropped file still wins (the manual override).
       if (wantEvidence && npActive() && !state.droppedAsset) {
-        const savedClips = await captureNewspapers(pageResp.html, wantPageCopy, recordUrl);
-        resetForNext(savedClips > 0);
-        return;
+        const np = await captureNewspapers(pageResp.html, wantPageCopy, recordUrl, siteOpts);
+        resetForNext(np.saved > 0);
+        const miss = np.results.find((r) => !r.ok);
+        outcome = {
+          ok: np.saved > 0, site: 'newspapers', results: np.results, rateHits: np.rateHits,
+          slowDown: np.rateHits > 0, error: np.saved > 0 ? null : (miss && miss.error) || 'nothing was saved',
+        };
+        return outcome;
       }
 
       // Ancestry record page: the record's own index and citation, plus its
       // linked scan - or the file she dropped in, saved with the index. A typed
       // file address still takes the ordinary path.
       if (wantEvidence && state.ancRecord && !evidenceUrl()) {
-        await captureAncestryRecord(pageResp.html, wantPageCopy, form, recordUrl);
+        const got = await captureAncestryRecord(pageResp.html, wantPageCopy, form, recordUrl, siteOpts);
         resetForNext();
-        return;
+        outcome = Object.assign({ ok: true, site: 'ancestry' }, got);
+        return outcome;
       }
 
       // FamilySearch record (or the viewer opened from one): FamilySearch's
       // own data and citation, plus its image - or the file she dropped in,
       // saved with the data.
       if (wantEvidence && state.fsRecord && !evidenceUrl()) {
-        await captureFamilySearchRecord(pageResp.html, wantPageCopy, form, recordUrl);
+        const got = await captureFamilySearchRecord(pageResp.html, wantPageCopy, form, recordUrl, siteOpts);
         resetForNext();
-        return;
+        outcome = Object.assign({ ok: true, site: 'familysearch' }, got);
+        return outcome;
       }
 
       // Find a Grave memorial: what the memorial says and its citation, plus
       // its photos at full size (and a file she dropped in, saved with them).
       if (wantEvidence && state.fagRecord && !evidenceUrl()) {
-        await captureFindAGraveMemorial(pageResp.html, wantPageCopy, form, recordUrl);
+        const got = await captureFindAGraveMemorial(pageResp.html, wantPageCopy, form, recordUrl, siteOpts);
         resetForNext();
-        return;
+        outcome = Object.assign({ ok: true, site: 'findagrave' }, got);
+        return outcome;
       }
 
       // The human's screen-capture flag rides with a file they provided by
@@ -2428,16 +2540,23 @@
       reportStaged(st.where, st.viaHost, evidenceWarning, st.hostWarning);
 
       resetForNext();
+      outcome = { ok: true, site: null, bundle: st.bundle, where: st.where };
     } catch (e) {
       setStageResult('Could not capture: ' + e.message, 'error');
       // Whatever was fetched, nothing was saved: the box must not say so.
       state.autoSaved = false;
       // The form still describes the record she left: read the new one.
       if (e instanceof TabMoved) state.pendingNav = true;
+      outcome = { ok: false, error: e.message || String(e), tabMoved: e instanceof TabMoved };
     } finally {
+      // A record saved by hand goes in the batch ledger too (switched on
+      // only), so a batch never downloads it again.
+      if (!opts.batch && state.batch && outcome && outcome.ok && outcome.site) {
+        state.batch.recordManual(outcome).catch(() => {});
+      }
       state.busy = false;
-      $('btn-capture').disabled = false;
-      setRereadButtons(false);
+      $('btn-capture').disabled = state.batchDriving;
+      setRereadButtons(state.batchDriving);
       // An automatic file that did not come: from now on she may also give
       // its address (updateAddressRow), as well as drop it in.
       state.autoMissed = !!(state.autoOutcome && state.autoOutcome.failed &&
@@ -2452,6 +2571,7 @@
         refreshOnNavigation(state.tabId, { status: 'complete' });
       }
     }
+    return outcome;
   }
 
   // Boil a native-messaging failure down to one plain phrase for the fallback
@@ -2560,6 +2680,9 @@
   // unreadable new page is left for the human to fill, not dead-ended.
   async function refreshOnNavigation(tabId, changeInfo) {
     if (tabId !== state.tabId) return;
+    // A batch download is moving this tab: it reads each page itself
+    // (batchReadPage), once the page has loaded and settled.
+    if (state.batchDriving) return;
     const navigated =
       changeInfo.status === 'complete' ||
       (!!changeInfo.url && changeInfo.status !== 'loading');
@@ -2687,13 +2810,19 @@
       banner.classList.remove('recipe');
       banner.classList.add('warn');
     }
-    if (!state.busy) $('btn-capture').disabled = false;
+    if (!state.busy) $('btn-capture').disabled = state.batchDriving;
     updateAssetStatus();
   }
 
 
   // A Re-read button pressed while a capture saves: say why nothing happens.
   function rereadWhileBusy() {
+    // A batch download is moving this tab: a Re-read would move the panel
+    // out from under it.
+    if (state.batchDriving) {
+      setStageResult('A batch download is moving this tab - press Pause in the batch box first.', 'warn');
+      return true;
+    }
     if (!state.busy) return false;
     setStageResult('Saving the capture - press Re-read once it has finished.', 'warn');
     return true;
@@ -2839,6 +2968,56 @@
     updateAssetStatus();
   }
 
+  // ── the owner's batch downloads (switched off unless told) ───────────────────
+  // src/batch.js drives this tab from record to record and presses this
+  // panel's own Capture for each (runCapture). It is handed these few hooks,
+  // and only when this browser has batch downloads switched on (init).
+
+  // Read the page now in the tab into the form, exactly as a navigation does
+  // (beginRead → prefill → finishRead), then wait for the answers still on
+  // their way (its newspaper clippings, its FamilySearch image check).
+  async function batchReadPage() {
+    const tabId = state.tabId;
+    const read = beginRead();
+    releaseNavigation();
+    const tab = await getTab(tabId);
+    if (!tab) return { ok: false, error: 'the batch’s tab was closed' };
+    let resp = null;
+    try {
+      await injectContent(tabId);
+      resp = await sendToTab(tabId, { action: 'prefill' });
+    } catch (e) {
+      resp = null;
+    }
+    if (!ownsForm(read, tabId)) return { ok: false, error: 'another read of the page took over the panel' };
+    setStageResult('', '');
+    finishRead(resp, tab.url);
+    for (const pending of [state.npReading, state.fsChecking]) {
+      try {
+        await pending;
+      } catch (e) {
+        /* said in the panel; Capture then refuses or saves what it can */
+      }
+    }
+    return resp && resp.ok
+      ? { ok: true, prefill: resp.prefill, url: tab.url }
+      : { ok: false, error: 'could not read the page' };
+  }
+
+  function batchHooks() {
+    return {
+      state, getTab, sendToTab, injectContent, queryActiveTab, seenItHeld, describeSameImage,
+      readPage: batchReadPage,
+      capture: (expectKey) => runCapture({ batch: { expectKey } }),
+      folder: () => state.folder,
+      setDriving(on) {
+        state.batchDriving = !!on;
+        $('btn-capture').disabled = !!on || state.busy;
+        setRereadButtons(!!on || state.busy);
+      },
+    };
+  }
+
   // ── settings (chrome.storage) ────────────────────────────────────────────────
 
   function loadSettings() {
@@ -2848,6 +3027,10 @@
           captureFolder: captureJson.DEFAULT_FOLDER,
           defaultEvidence: 'yes',
           pageCopyDefault: true,
+          // The owner's batch downloads: shown only when this is exactly
+          // true (src/batch.js says how it is set). There is no control for
+          // it in the panel.
+          batchDownloads: false,
         },
         (cfg) => {
           // Sanitize on the way in too: a value stored by an older build (or
@@ -3007,6 +3190,11 @@
     wireSettings();
     const cfg = await loadSettings();
     $('page-copy-card').classList.toggle('unchecked', !pageCopyOn());
+    // Switched off (the default, and every ordinary install): no batch box,
+    // no batch ledger read, nothing of src/batch.js runs.
+    if (cfg && cfg.batchDownloads === true && FHA.batchPanel) {
+      state.batch = FHA.batchPanel.install(batchHooks());
+    }
 
     // Reflect whether the seamless permission is already granted, and refresh the
     // pre-fill whenever the panel's tab navigates to the next record (batch mode).

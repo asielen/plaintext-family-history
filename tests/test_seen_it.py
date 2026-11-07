@@ -367,6 +367,29 @@ class ScanKnown(_TempHome):
         self.assertEqual(items['rec:7602:9909']['state'], 'captured')  # a -* chunk folder
         self.assertEqual(len(items), 13)
 
+    def test_a_batch_ledger_never_says_the_archive_holds_anything(self):
+        # The capture add-on's batch downloads keep a reading copy of each
+        # queue at the staging root. It names records as done the moment
+        # their bundle staged - a ledger's say-so, not a file that exists -
+        # so it must never count as the archive holding them, or a deleted
+        # bundle would be skipped forever.
+        _archive, settings = self.build()
+        before, _ = host.scan_known(host.scan_folders(settings))
+        staging = Path(settings['capture_staging'])
+        for site in ('newspapers', 'ancestry', 'familysearch', 'findagrave'):
+            _json(staging / ('_%s-batch-ledger.json' % site), {
+                'note': 'batch ledger', 'entries': [
+                    {'key': '7602:1111', 'dbId': '7602', 'recordId': '1111', 'state': 'done',
+                     'url': 'https://www.ancestry.com/search/collections/7602/records/1111'},
+                    {'id': 3131, 'url': 'https://www.newspapers.com/article/x/3131/', 'state': 'done'},
+                    {'key': '900000009', 'memorialId': '900000009', 'state': 'done',
+                     'url': 'https://www.findagrave.com/memorial/900000009'},
+                ],
+                'record': {'dbId': 7602, 'recordId': 2222, 'imageId': 3333, 'imageSaved': True},
+            })
+        after, _ = host.scan_known(host.scan_folders(settings))
+        self.assertEqual(after, before)
+
     def test_where_is_a_folder_name_never_a_path(self):
         _archive, settings = self.build()
         items, _ = host.scan_known(host.scan_folders(settings))
