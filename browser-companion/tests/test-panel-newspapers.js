@@ -510,3 +510,40 @@ test('a title she typed is filed as typed, even one that names the site (#214 sw
   await p.capture();
   assert.strictEqual(p.written[0].captureJson.title, 'Calvin Hartley obituary - Newspapers.com');
 });
+
+// ── PR #223 audit F2 / Codex 4502593870: Re-read file keeps her choices ─────
+
+test('Re-read file on the page viewer keeps the clipping she ticked and the title she typed', async () => {
+  const p = await openOn(URL_PAGE, twoOnPage());
+  await setTick(p, 'Ethel Hartley visits Topeka', false); // she wants only the farm sale
+  p.$('f-title').value = 'Hartley farm sale, corrected';
+  await p.$('f-title').fire('input');
+  p.$('f-notes').value = 'only about the farm sale';
+  await p.$('btn-rescrape-file').fire('click');
+  await settle();
+  assert.strictEqual(p.$('f-title').value, 'Hartley farm sale, corrected');
+  assert.strictEqual(p.$('f-notes').value, 'only about the farm sale');
+  await p.capture();
+  assert.strictEqual(p.written.length, 1, 'the clipping she unticked is not saved');
+  assert.strictEqual(p.written[0].captureJson.title, 'Hartley farm sale, corrected');
+});
+
+test('Re-read file keeps only ticks for clippings still listed; none left gives the page\'s default', async () => {
+  const pages = twoOnPage();
+  const p = await openOn(URL_PAGE, pages);
+  await setTick(p, 'Ethel Hartley visits Topeka', false);
+  // The site no longer lists the farm sale: nothing she ticked is left.
+  pages[URL_PAGE].info = npInfo('image', [clipObj(302, 'Ethel Hartley visits Topeka'), clipObj(303, 'Church supper')]);
+  await p.$('btn-rescrape-file').fire('click');
+  await settle();
+  await p.capture();
+  assert.strictEqual(p.written.length, 2, 'the default: every clipping of hers on the page');
+});
+
+test('on a page with her clippings the address box is hidden; Re-read file keeps it so', async () => {
+  const p = await openOn(URL_PAGE, twoOnPage());
+  assert.strictEqual(p.$('asset-url-row').style.display, 'none');
+  await p.$('btn-rescrape-file').fire('click');
+  await settle();
+  assert.strictEqual(p.$('asset-url-row').style.display, 'none');
+});

@@ -70,10 +70,14 @@ a viewer that turns to the next image without changing its address.
 
 **What was saved automatically.** On sites where the add-on fetches the
 record's file by itself (Ancestry, FamilySearch, Find a Grave, Newspapers.com,
-and archives with IIIF images) there is no address box to fill in. A small box
-under "Yes, save the actual file" says what will be fetched. After Capture it
-lists each download with a tick (and its size) or a cross (and the site's
-reason). If a picture is exactly the same as the one your last capture saved,
+and archives with IIIF images) there is no address box to fill in. If the
+automatic download fails on an image viewer, the address box comes back, so you
+can paste the right file's address; you can always drop the file in instead. On
+Newspapers.com the box is there whenever none of the clippings on the page are
+yours. A small box under "Yes, save the actual file" says what will be fetched.
+After Capture it lists each download with a tick (and its size) or a cross (and
+the site's reason), and says "Saved automatically" only once the capture really
+is saved. A long list keeps every download that failed. If a picture is exactly the same as the one your last capture saved,
 the list says so: check the tab really shows the record you meant.
 
 ---

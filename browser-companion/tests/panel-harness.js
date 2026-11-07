@@ -41,6 +41,12 @@ function makeEl(id, tag) {
     },
     addEventListener(t, f) { (this.listeners[t] = this.listeners[t] || []).push(f); },
     appendChild(c) { this.children.push(c); return c; },
+    insertBefore(c, ref) {
+      const i = ref ? this.children.indexOf(ref) : -1;
+      if (i < 0) this.children.push(c);
+      else this.children.splice(i, 0, c);
+      return c;
+    },
     removeChild(c) {
       const i = this.children.indexOf(c);
       if (i < 0) throw new Error('removeChild: not a child');
@@ -129,7 +135,10 @@ async function settle() { for (let i = 0; i < 20; i++) await tick(); }
 // `fullPage` replaces the newspaper page download (to hold it back).
 // `fetch` is the network the panel itself reaches (Find a Grave's photos):
 // every request is recorded in `fetched`; without it, any request fails.
-async function openPanel({ url, respond, host, seenIt, fullPage, fetch }) {
+// `waitReady: false` returns as soon as the panel starts (its first read of
+// the page may still be on its way); `p.ready` settles when it is done.
+async function openPanel({ url, respond, host, seenIt, fullPage, fetch, waitReady = true }) {
+  const getHolds = new Map(); // tab id -> promise the next tabs.get answer waits on
   const doc = makeDocument();
   const tab = { id: 7, url };
   // Every tab in the window, and the one in front (openTab / activate).
@@ -171,6 +180,12 @@ async function openPanel({ url, respond, host, seenIt, fullPage, fetch }) {
     tabs: {
       query: (q, cb) => cb([active]),
       get: (id, cb) => {
+        if (getHolds.has(id)) {
+          const held = getHolds.get(id);
+          getHolds.delete(id);
+          held.then(() => cb(tabs.get(id)));
+          return undefined;
+        }
         if (tabs.has(id)) return cb(tabs.get(id));
         chrome.runtime.lastError = { message: 'No tab with id: ' + id + '.' };
         cb(undefined);
@@ -241,12 +256,21 @@ async function openPanel({ url, respond, host, seenIt, fullPage, fetch }) {
   new Function('window', 'FHA', 'document', 'chrome', 'FileReader', 'navigator', 'crypto', read('panel.js'))(
     window, window.FHA, doc, chrome, FakeFileReader, {}, webcrypto
   );
-  await doc.ready();
-  await settle();
+  const ready = doc.ready();
+  if (waitReady) {
+    await ready;
+    await settle();
+  }
   const $ = (id) => doc.els[id];
   let nextTabId = 8;
   return {
-    doc, $, tab, sent, sentTo, written, filed, writeFails, sendFails, external, fetched,
+    doc, $, tab, sent, sentTo, written, filed, writeFails, sendFails, external, fetched, ready,
+    // Hold the next tabs.get answer for tab `id` until the returned release().
+    holdNextGet(id) {
+      let release = null;
+      getHolds.set(id, new Promise((r) => { release = r; }));
+      return () => release();
+    },
     async navigate(newUrl) {
       tab.url = newUrl;
       await onUpdated(tab.id, { status: 'complete' });
@@ -276,8 +300,8 @@ async function openPanel({ url, respond, host, seenIt, fullPage, fetch }) {
       await settle();
     },
     // The fetch log under the automatic-saving box, one string per line.
-    log: () => $('auto-log').children.map((li) =>
-      li.children.map((c) => c.textContent).filter(Boolean).join(' ')),
+    log: () => $('auto-log').children.map((li) => (li.children.length
+      ? li.children.map((c) => c.textContent).filter(Boolean).join(' ') : li.textContent)),
     autoBox: () => ({ cls: $('auto-box').className, text: $('auto-text').textContent }),
     async capture() {
       await $('btn-capture').fire('click');

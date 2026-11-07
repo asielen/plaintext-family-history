@@ -143,7 +143,9 @@ in Chrome and Edge; a Firefox port is a packaging detail, not a redesign.
        separate fetch button. Tick "the file I'm providing is a screen capture"
        when it is a screenshot, so reviewers know to look for a clearer original
        later. Where the file is fetched automatically (Ancestry, FamilySearch,
-       Find a Grave, Newspapers.com, IIIF) the url box is hidden and a status
+       Find a Grave, Newspapers.com, IIIF) the url box is hidden (it comes
+       back after an image viewer's or IIIF page's auto-fetch fails, and on
+       Newspapers.com when none of the clippings are hers) and a status
        box says what will be fetched; after Capture it keeps a short log, one
        line per fetch (tick with size, cross with the site's reason, and a note
        when a picture is byte-identical to the last saved capture's).

@@ -292,16 +292,47 @@ test('a refused image is a cross with Ancestry\'s reason, and the box says what 
     },
     [VIEWER_2]: { prefill: { ancestryImageViewer: true } },
   });
+  assert.strictEqual(p.$('asset-url-row').style.display, 'none');
   await p.capture();
   assert.deepStrictEqual(p.log(), ['✗ Ancestry full record image - Ancestry asked you to sign in']);
+  // The viewer's own image did not come: she may now give its address too (F9).
+  assert.strictEqual(p.$('asset-url-row').style.display, '');
   assert.deepStrictEqual(p.autoBox(), { cls: 'auto-box failed',
-    text: 'Automatic saving did not work - the lines below say why. Drop the file in below.' });
+    text: 'Automatic saving did not work - the lines below say why. Drop the file in, or paste its address.' });
   assert.strictEqual(p.written.length, 1, 'the page copy is still saved');
-  // A new record starts with a clean log.
+  // A new record starts with a clean log, and its own automatic file.
   await p.navigate(VIEWER_2);
   await settle();
   assert.deepStrictEqual(p.log(), []);
   assert.strictEqual(p.autoBox().cls, 'auto-box ready');
+  assert.strictEqual(p.$('asset-url-row').style.display, 'none');
+});
+
+test('an address she gives after the automatic image failed is the one saved next', async () => {
+  const p = await open(VIEWER, { [VIEWER]: {
+    prefill: { ancestryImageViewer: true },
+    on: { ancestryImage: () => ({ ok: false, error: 'Ancestry asked you to sign in' }) },
+  } });
+  await p.capture();
+  await type(p, 'f-asset-url', 'https://records.example.org/img/my-download.jpg');
+  await p.capture();
+  assert.strictEqual(p.written.length, 2);
+  assert.ok(p.sent.some((m) => m.action === 'fetchAsset' && m.url === 'https://records.example.org/img/my-download.jpg'));
+  assert.deepStrictEqual(p.written[1].captureJson.assets.map((a) => a.mode), ['singlefile', 'fetch']);
+});
+
+test('fetched is not saved: a capture that then fails says nothing was saved (F6/F11)', async () => {
+  const p = await open(VIEWER, { [VIEWER]: { prefill: { ancestryImageViewer: true } } });
+  p.writeFails.add(0); // the download of the bundle is blocked
+  await p.capture();
+  assert.strictEqual(p.written.length, 0);
+  assert.match(p.result(), /^Could not capture: the download was blocked/);
+  assert.deepStrictEqual(p.log(), ['✓ Ancestry full record image (1 KB)']);
+  assert.deepStrictEqual(p.autoBox(), { cls: 'auto-box failed',
+    text: 'The file was fetched, but nothing was saved - the message under Capture says why. Press Capture again.' });
+  await p.capture();
+  assert.strictEqual(p.written.length, 1);
+  assert.deepStrictEqual(p.autoBox(), { cls: 'auto-box done', text: 'Saved automatically.' });
 });
 
 test('the same picture as the last capture, on a new record, is pointed out', async () => {
@@ -356,14 +387,18 @@ test('the address box is hidden where the file comes automatically, and back on 
     'https://www.familysearch.org/ark:/61903/3:1:HRT1-IMG1': { prefill: { familysearchImageViewer: true, familysearchImageId: 'HRT1-IMG1' } },
     'https://www.findagrave.com/memorial/1000001/calvin-hartley': { prefill: { findagraveMemorial: true } },
     'https://iiif.example.org/item/1': { prefill: { iiif: true } },
+    // A Newspapers.com page with none of her clippings: nothing comes by
+    // itself there, so the box is back (F9; the page WITH her clippings is
+    // in test-panel-newspapers.js).
     'https://www.newspapers.com/article/the-fairview-gazette/100001/': { prefill: { newspapers: true } },
     [REC_A]: { prefill: { imageUrl: 'https://records.example.org/img/a.jpg' } },
   };
+  const shown = new Set([REC_A, 'https://www.newspapers.com/article/the-fairview-gazette/100001/']);
   const p = await open(VIEWER, pages);
   for (const url of Object.keys(pages)) {
     await p.navigate(url);
     await settle();
-    assert.strictEqual(p.$('asset-url-row').style.display, url === REC_A ? '' : 'none', url);
+    assert.strictEqual(p.$('asset-url-row').style.display, shown.has(url) ? '' : 'none', url);
   }
   assert.strictEqual(p.$('f-asset-url').value, 'https://records.example.org/img/a.jpg');
   assert.strictEqual(p.autoBox().text, 'Using the file at the address below.');
@@ -427,4 +462,159 @@ test('the tab moving while the retry reads the page: nothing is saved', async ()
   await p.capture();
   assert.strictEqual(p.written.length, 0);
   assert.match(p.result(), /the page in the tab changed while this record was being saved/);
+});
+
+// ── PR #223 audit: who may fill the form, and a screen she can always use ────
+
+const UNREADABLE = 'https://records.example.org/hartley/not-readable';
+const until = async (cond) => {
+  for (let i = 0; i < 200 && !cond(); i++) await tick();
+  assert.ok(cond(), 'the awaited moment never came');
+};
+
+test('F4/F10: the panel\'s first read, answering late, never overwrites a Re-read of another tab', async () => {
+  const pages = { [REC_A]: { title: 'Calvin Hartley, 1880' }, [REC_B]: { title: 'Harriet Hartley, 1880' } };
+  let hold = null;
+  const p = await open(REC_A, pages, {
+    waitReady: false,
+    wrap: (r) => { hold = holdFirst(r, 'prefill'); return hold.respond; },
+  });
+  await until(() => hold.held); // tab A is still loading
+  const other = p.openTab(REC_B);
+  await p.reread();
+  assert.strictEqual(p.$('f-title').value, 'Harriet Hartley, 1880');
+  hold.release(); // A answers at last
+  await p.ready;
+  await settle();
+  assert.strictEqual(p.$('f-title').value, 'Harriet Hartley, 1880');
+  assert.strictEqual(p.$('f-url').value, REC_B);
+  await p.capture();
+  assert.strictEqual(p.written.length, 1);
+  assert.strictEqual(p.written[0].captureJson.url, REC_B);
+  assert.strictEqual(p.written[0].captureJson.title, 'Harriet Hartley, 1880');
+  assert.ok(!p.sent.some((m) => m.action === 'fetchAsset' && m.url === REC_A + '/image.jpg'), 'never A\'s file');
+  assert.strictEqual(lastSentTo(p, 'pagehtml'), other.id);
+});
+
+test('F4/F10: a form filled for one page is never saved with another page in the tab', async () => {
+  const pages = { [REC_A]: { title: 'Calvin Hartley, 1880' }, [REC_B]: { title: 'Harriet Hartley, 1880' } };
+  const p = await open(REC_A, pages);
+  await type(p, 'f-title', 'Calvin in the census');
+  p.tab.url = REC_B; // the tab moved on, and the panel was not told
+  await p.capture();
+  assert.strictEqual(p.written.length, 0, 'nothing saved under the wrong page');
+  assert.match(p.result(), /^Could not capture: the page in the tab is not the one these details were filled in for, so nothing was saved/);
+  await settle();
+  // ...and the panel reads the page that is there.
+  assert.strictEqual(p.$('f-url').value, REC_B);
+  assert.strictEqual(p.$('f-title').value, 'Harriet Hartley, 1880');
+});
+
+test('F1: a Re-read that loses to the tab moving to an unreadable page leaves a usable form', async () => {
+  const pages = { [REC_A]: { title: 'Calvin Hartley, 1880' }, [REC_B]: { title: 'Harriet Hartley, 1880' } };
+  const p = await open(REC_A, pages);
+  const other = p.openTab(REC_B);
+  const reading = p.reread();
+  await tick();
+  await p.navigateTab(other, UNREADABLE);
+  await reading;
+  await settle();
+  assert.match(p.$('recipe-banner').textContent, /^Couldn’t read this page automatically/);
+  assert.strictEqual(p.$('f-url').value, UNREADABLE);
+  assert.strictEqual(p.$('f-title').value, '');
+  assert.strictEqual(p.$('btn-capture').disabled, false);
+});
+
+test('F1: opened on a browser page, a Re-read that a navigation overtakes still turns Capture on', async () => {
+  const REC_A2 = REC_A + '/page-2';
+  const pages = { [REC_A]: { title: 'Calvin Hartley, 1880' }, [REC_A2]: { title: 'Calvin, page 2' } };
+  const p = await open('chrome://newtab/', pages);
+  assert.strictEqual(p.$('btn-capture').disabled, true);
+  const rec = p.openTab(REC_A);
+  const reading = p.reread();
+  await tick();
+  await p.navigateTab(rec, REC_A2);
+  await reading;
+  await settle();
+  assert.strictEqual(p.$('f-title').value, 'Calvin, page 2');
+  assert.strictEqual(p.$('btn-capture').disabled, false);
+  assert.doesNotMatch(p.$('recipe-banner').textContent, /Reading the page/);
+  await p.capture();
+  assert.strictEqual(p.written[0].captureJson.url, REC_A2);
+});
+
+test('Codex 4502593873: an old tab\'s navigation still waiting for its tab does not cancel the Re-read', async () => {
+  const REC_A2 = REC_A + '/page-2';
+  const pages = {
+    [REC_A]: { title: 'Calvin Hartley, 1880' }, [REC_A2]: { title: 'Calvin, page 2' },
+    [REC_B]: { title: 'Harriet Hartley, 1880' },
+  };
+  const p = await open(REC_A, pages);
+  const releaseGet = p.holdNextGet(p.tab.id);
+  const nav = p.navigate(REC_A2); // waits on its tabs.get
+  p.openTab(REC_B);
+  const reading = p.reread();
+  await tick();
+  releaseGet(); // the old tab's navigation resumes while the Re-read reads
+  await nav;
+  await reading;
+  await settle();
+  assert.strictEqual(p.$('f-title').value, 'Harriet Hartley, 1880');
+  assert.strictEqual(p.$('f-url').value, REC_B);
+  assert.doesNotMatch(p.$('recipe-banner').textContent, /Reading the page/);
+});
+
+test('F12: after a Re-read, Capture does not wait for the old tab\'s navigation to be read', async () => {
+  const REC_A2 = REC_A + '/page-2';
+  const pages = {
+    [REC_A]: { title: 'Calvin Hartley, 1880' }, [REC_A2]: { title: 'Calvin, page 2' },
+    [REC_B]: { title: 'Harriet Hartley, 1880' },
+  };
+  let release = null;
+  const p = await open(REC_A, pages, {
+    wrap: (r) => (msg, tab) => {
+      if (msg.action === 'prefill' && tab.url === REC_A2 && !release) {
+        return new Promise((res) => { release = () => res(r(msg, tab)); });
+      }
+      return r(msg, tab);
+    },
+  });
+  const nav = p.navigate(REC_A2);
+  await until(() => release);
+  p.openTab(REC_B);
+  await p.reread();
+  await p.capture(); // the old tab's read is still out
+  assert.strictEqual(p.written.length, 1);
+  assert.strictEqual(p.written[0].captureJson.url, REC_B);
+  release();
+  await nav;
+  await settle();
+  assert.strictEqual(p.$('f-url').value, REC_B);
+});
+
+test('F13: Re-read buttons are off while a capture saves, and a press says to wait', async () => {
+  let hold = null;
+  const pages = { [REC_A]: { title: 'Calvin Hartley, 1880' } };
+  const p = await open(REC_A, pages, { wrap: (r) => { hold = holdFirst(r, 'singlefile'); return hold.respond; } });
+  const saving = p.capture();
+  await until(() => hold.held);
+  assert.strictEqual(p.$('btn-rescrape').disabled, true);
+  assert.strictEqual(p.$('btn-rescrape-file').disabled, true);
+  await p.$('btn-rescrape').fire('click');
+  assert.strictEqual(p.result(), 'Saving the capture - press Re-read once it has finished.');
+  hold.release();
+  await saving;
+  await settle();
+  assert.strictEqual(p.$('btn-rescrape').disabled, false);
+  assert.strictEqual(p.$('btn-rescrape-file').disabled, false);
+  assert.match(p.result(), /^Staged to /);
+});
+
+test('F7: on FamilySearch, an address elsewhere that refuses is not tried again through FamilySearch', async () => {
+  const p = await open(FS_PAGE, { [FS_PAGE]: fsPage({ prefill: { imageUrl: 'https://county.example.gov/records/hartley.jpg' } }) });
+  await p.capture();
+  assert.strictEqual(p.written.length, 0);
+  assert.ok(!p.sent.some((m) => m.action === 'familysearchImage'), 'no second try for an address off FamilySearch');
+  assert.deepStrictEqual(p.log().length, 1);
+  assert.match(p.result(), /^Could not capture: this image would not come through/);
 });

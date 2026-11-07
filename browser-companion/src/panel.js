@@ -157,6 +157,18 @@
     fsNoteLine: null,
     // True while a Re-read button reads the page: Capture waits for it.
     rereading: false,
+    // Whether the last Capture staged its bundle: null while none has
+    // finished, true once saved, false when it failed after fetching. The
+    // automatic-saving box says "saved" only on true.
+    autoSaved: null,
+    // Log lines trimmed past AUTO_LOG_MAX, and the summary line saying so.
+    autoHidden: { ok: 0, failed: 0 },
+    autoMore: null,
+    // An automatic file on a viewer did not come: the address box shows
+    // again (updateAddressRow).
+    autoMissed: false,
+    // The newest read of the page that may fill the form (beginRead).
+    readSeq: 0,
   };
 
   const $ = (id) => document.getElementById(id);
@@ -203,6 +215,9 @@
 
   function clearAutoLog() {
     state.autoOutcome = null;
+    state.autoSaved = null;
+    state.autoHidden = { ok: 0, failed: 0 };
+    state.autoMore = null;
     const ul = $('auto-log');
     if (ul) {
       ul.textContent = '';
@@ -257,6 +272,13 @@
       [cls, ico, text] = ['ready', '●', 'Using the file you dropped in.'];
     } else if (out && out.failed && !out.ok) {
       [cls, ico, text] = ['failed', '✗', 'Automatic saving did not work - the lines below say why. ' + drop];
+    } else if (out && out.ok && state.autoSaved !== true) {
+      // Fetched is not saved: "saved" waits for the bundle to be staged, and
+      // a capture that then failed says so (PR #223 audit F6/F11).
+      [cls, ico, text] = state.autoSaved === false
+        ? ['failed', '✗', 'The file was fetched, but nothing was saved - the message under Capture says why. ' +
+          'Press Capture again.']
+        : ['none', '…', 'Fetched - saving the capture…'];
     } else if (out && out.ok) {
       // A miss and then a save is usually a retry that worked; the lines say which.
       [cls, ico, text] = ['done', '✓', out.failed
@@ -309,7 +331,7 @@
     li.appendChild(text);
     li.appendChild(why);
     ul.appendChild(li);
-    while (ul.children.length > AUTO_LOG_MAX) ul.removeChild(ul.children[0]);
+    trimAutoLog(ul);
     ul.hidden = false;
     return (ok, detail) => {
       li.className = ok ? 'ok' : 'fail';
@@ -320,6 +342,33 @@
       else o.failed++;
       renderAutoBox();
     };
+  }
+
+  // Keep the log short without losing what went wrong (PR #223 audit F3/F14):
+  // past AUTO_LOG_MAX lines the oldest line that worked goes first, a failed
+  // one only when nothing else is left, and a line at the top says how many
+  // are not shown and whether any of them failed.
+  function trimAutoLog(ul) {
+    let rows = Array.from(ul.children).filter((li) => li !== state.autoMore);
+    if (rows.length <= AUTO_LOG_MAX) return;
+    while (rows.length > AUTO_LOG_MAX) {
+      const older = rows.slice(0, -1);
+      const drop = older.find((li) => li.className === 'ok') || older[0];
+      if (drop.className === 'fail') state.autoHidden.failed++;
+      else state.autoHidden.ok++;
+      ul.removeChild(drop);
+      rows = rows.filter((li) => li !== drop);
+    }
+    const n = state.autoHidden.ok + state.autoHidden.failed;
+    if (!state.autoMore) {
+      state.autoMore = document.createElement('li');
+      state.autoMore.className = 'more';
+      ul.insertBefore(state.autoMore, ul.children[0] || null);
+    }
+    state.autoMore.textContent = n + ' earlier ' + (n === 1 ? 'line' : 'lines') + ' not shown' +
+      (state.autoHidden.failed
+        ? ' (' + state.autoHidden.failed + ' of them did not work)'
+        : ' - ' + (n === 1 ? 'it' : 'all of them') + ' worked');
   }
 
   // A file that is byte for byte the one the last saved Capture fetched. Often
@@ -482,7 +531,11 @@
       prefill.familysearchImageViewer || prefill.findagraveMemorial || prefill.iiif || prefill.newspapers);
   }
 
-  function applyFilePrefill(prefill) {
+  // `keepNp`: { pageId, selected } - Re-read file on the same Newspapers.com
+  // page keeps the clippings she ticked (PR #223 audit F2), rather than the
+  // page's defaults; a new record never passes it.
+  function applyFilePrefill(prefill, keepNp) {
+    state.autoMissed = false;
     state.iiif = !!prefill.iiif;
     state.ancRecord = !!prefill.ancestryRecord;
     state.fsRecord = !!prefill.familysearchRecord;
@@ -505,11 +558,29 @@
     } else {
       $('f-asset-url').value = '';
     }
-    $('asset-url-row').style.display = auto ? 'none' : '';
     applyAncestryNote(!!prefill.ancestryImageViewer);
-    loadNewspapers(prefill);
+    loadNewspapers(prefill, keepNp);
     checkFamilySearch();
+    updateAddressRow();
     updateAssetStatus();
+  }
+
+  // The "File address on the page" box is hidden where the file comes by
+  // itself, with two exceptions so she can still name the right file (PR
+  // #223 audit F9): on Newspapers.com only while there are clippings of hers
+  // to save automatically, and on a viewer that takes a typed address over
+  // its own guess (an Ancestry or FamilySearch image viewer, an IIIF page)
+  // once that guess has failed, or while an address is in the box. On a
+  // record page (Ancestry, FamilySearch, Find a Grave) a typed address would
+  // file the page without the record's own data, so the drop zone - whose
+  // file is saved WITH that data - stays the way to add a missing image.
+  function updateAddressRow() {
+    const p = state.prefill || {};
+    let hide = autoFilePage(p);
+    if (hide && state.npPage && !state.npLoading && !npActive()) hide = false;
+    if (hide && (state.ancestryViewer || state.fsImage || state.iiif) &&
+        (state.autoMissed || ($('f-asset-url').value || '').trim())) hide = false;
+    $('asset-url-row').style.display = hide ? 'none' : '';
   }
 
   // Forget every file setting the page left behind - the automatic path, the
@@ -669,7 +740,7 @@
     if (el) el.textContent = text;
   }
 
-  async function loadNewspapers(prefill) {
+  async function loadNewspapers(prefill, keepNp) {
     // Forget the previous record's newspaper page NOW, before waiting on the
     // tab: until the new answer is installed, Capture must not pair the old
     // page's image pass and clippings with this record's form and page.html.
@@ -695,13 +766,14 @@
       state.npError = (info && info.error) || 'no answer from the page';
       $('np-note').style.display = 'block';
       npSetText(npUnavailableReason().replace(/^./, (c) => c.toUpperCase()));
+      updateAddressRow();
       updateAssetStatus();
       return;
     }
-    setNewspapersMode(info);
+    setNewspapersMode(info, keepNp);
   }
 
-  function setNewspapersMode(info) {
+  function setNewspapersMode(info, keepNp) {
     state.np = info && info.ok ? info : null;
     state.npSelected = new Set();
     const note = $('np-note');
@@ -729,9 +801,14 @@
       return;
     }
     // Default: on a clipping page, that clipping; on the page viewer, all of
-    // your clippings on the page. The checkboxes below change it.
+    // your clippings on the page. The checkboxes below change it. Re-read
+    // file on the same page keeps what she ticked, of the clippings still
+    // listed (keepNp).
     const focus = own.find((c) => c.id === np.focusClipId);
-    if (focus && np.kind === 'article') state.npSelected.add(focus.id);
+    const kept = keepNp && keepNp.pageId === np.pageId
+      ? own.filter((c) => keepNp.selected.has(c.id)).map((c) => c.id) : [];
+    if (kept.length) kept.forEach((id) => state.npSelected.add(id));
+    else if (focus && np.kind === 'article') state.npSelected.add(focus.id);
     // The clipping she opened cannot be cut out: say so (np-text below), and
     // let her tick another one herself rather than saving it unasked (#211
     // audit).
@@ -987,6 +1064,7 @@
       renderNpClips();
       fillNpFields();
     }
+    return results.length - failed.length;
   }
 
   // Build and stage one clipping's bundle. Returns stageBundle's
@@ -1762,6 +1840,7 @@
       // Ingest files it as a pointer stub flagged asset_elsewhere: true.
       parts.push('Citation + link only - no file saved (a pointer for later retrieval)');
     }
+    updateAddressRow();
     renderAutoBox();
     const ok = (pageCopyOn() || evidenceMode() !== 'yes' || hasEvidence()) && !warnFile;
     setAssetStatus(
@@ -1901,6 +1980,17 @@
     }
   }
 
+  // Whether a file address is on FamilySearch itself (https): only such an
+  // address can name a FamilySearch image to try again (PR #223 audit F7).
+  function onFamilySearch(href) {
+    try {
+      const u = new URL(href, state.prefilledUrl || undefined);
+      return u.protocol === 'https:' && /(^|\.)familysearch\.org$/i.test(u.hostname);
+    } catch (e) {
+      return false;
+    }
+  }
+
   async function buildEvidence() {
     if (state.droppedAsset) {
       return {
@@ -1970,7 +2060,7 @@
       // one image the viewer shows. The login goes only to FamilySearch
       // (content.js fsAuthHeaders). The image is read from the page, so the
       // caller checks the tab is still on it (`fromPage`).
-      if (isFamilySearchPage()) {
+      if (isFamilySearchPage() && onFamilySearch(url)) {
         const fs = await autoFetch('The same image through FamilySearch (a second try)',
           { action: 'familysearchImage', fromUrl: url });
         if (fs.ok) {
@@ -1991,24 +2081,19 @@
     return String(a || '').split('#')[0] === String(b || '').split('#')[0];
   }
 
-  // The batch-mode staleness tell: if the tab's address moved after the form
-  // was pre-filled (a navigation the refresh missed, or one still parked behind
-  // an earlier capture), the fields below may describe the previous record.
-  // Warn in the top banner - never block, and never touch the fields: the human
-  // may have edited them deliberately for exactly this page.
-  async function warnIfFormStale() {
-    if (!state.prefilledUrl) return; // no pre-fill baseline, nothing to compare
+  // Before anything is read: the details in the form must be the ones filled
+  // in for the page now in the tab. If the tab has moved on (a navigation the
+  // refresh missed, or one still parked behind an earlier capture), saving
+  // would file one record's title, people and file with another page - so
+  // nothing is saved, on every path, and the panel reads the page now in the
+  // tab (capture()'s finally). Was a warning only, for the ordinary path
+  // (PR #223 audit F4/F10).
+  async function checkFormIsForTab(recordUrl) {
+    if (!recordUrl) return; // nothing was ever read: the form is hers alone
     const tab = await getTab(state.tabId);
-    if (!tab || !tab.url || sameRecordUrl(tab.url, state.prefilledUrl)) return;
-    staleBanner();
-  }
-
-  function staleBanner() {
-    const banner = $('recipe-banner');
-    banner.textContent =
-      'This page changed since the form was filled - check the title and web address before saving.';
-    banner.classList.remove('recipe');
-    banner.classList.add('warn');
+    if (tab && tab.url && sameRecordUrl(tab.url, recordUrl)) return;
+    throw new TabMoved('the page in the tab is not the one these details were filled in for, so nothing ' +
+      'was saved. The panel is reading the page in the tab now - check the details, then press Capture again');
   }
 
   // A capture reads the tab several times - its page, the record, the page
@@ -2140,6 +2225,7 @@
 
     state.busy = true;
     $('btn-capture').disabled = true;
+    setRereadButtons(true); // not while this capture saves (PR #223 audit F13)
     setStageResult('Capturing…', '');
     // A fresh log for this Capture; the last saved Capture's fingerprints stay
     // to compare against (sameAsLastCapture).
@@ -2151,10 +2237,10 @@
     const recordCapture = wantEvidence && !evidenceUrl() &&
       ((npActive() && !state.droppedAsset) || state.ancRecord || state.fsRecord || state.fagRecord);
     try {
-      await warnIfFormStale();
-      // A record capture saves the form's details with the record's own data
-      // from the tab: if the tab is no longer on that record, they would not
-      // match, so stop before reading anything.
+      // The form's details are saved with what is read from the tab: if the
+      // tab is no longer on the page they were filled in for, they would not
+      // match, so stop before reading anything - on every path.
+      await checkFormIsForTab(recordUrl);
       if (recordCapture) await checkTabStillOn(recordUrl);
 
       // page.html is always saved - grab it fresh at capture time so any
@@ -2164,12 +2250,13 @@
         throw new Error('could not read the page, reload it and try again');
       }
       if (recordCapture) await checkTabStillOn(recordUrl);
+      else await checkFormIsForTab(recordUrl);
 
       // Newspapers.com: the whole page + each chosen clipping, one bundle per
       // clipping. A dropped file still wins (the manual override).
       if (wantEvidence && npActive() && !state.droppedAsset) {
-        await captureNewspapers(pageResp.html, wantPageCopy, recordUrl);
-        resetForNext();
+        const savedClips = await captureNewspapers(pageResp.html, wantPageCopy, recordUrl);
+        resetForNext(savedClips > 0);
         return;
       }
 
@@ -2210,8 +2297,8 @@
       // Compose the asset list (the "both" case): the page copy and/or the
       // record evidence. Each entry carries its role so ingest files it right.
       const assets = []; // { filename, blob, role, mode, provisional }
-      // The page these files come from, as the browser shows it now (the
-      // ordinary path keeps its warn-but-save rule for a stale form).
+      // The page these files come from, as the browser shows it now (the one
+      // the form was filled in for: checkFormIsForTab above).
       const startTab = await getTab(state.tabId);
       const pageUrl = startTab && startTab.url;
       if (wantPageCopy) {
@@ -2289,11 +2376,20 @@
       resetForNext();
     } catch (e) {
       setStageResult('Could not capture: ' + e.message, 'error');
+      // Whatever was fetched, nothing was saved: the box must not say so.
+      state.autoSaved = false;
       // The form still describes the record she left: read the new one.
       if (e instanceof TabMoved) state.pendingNav = true;
     } finally {
       state.busy = false;
       $('btn-capture').disabled = false;
+      setRereadButtons(false);
+      // An automatic file that did not come: from now on she may also give
+      // its address (updateAddressRow), as well as drop it in.
+      state.autoMissed = !!(state.autoOutcome && state.autoOutcome.failed &&
+        (state.ancestryViewer || state.fsImage || state.iiif));
+      updateAddressRow();
+      renderAutoBox();
       // Replay a navigation that arrived mid-capture (parked by
       // refreshOnNavigation) so the form moves on to the record now in the
       // tab instead of silently staying on the one just staged.
@@ -2375,7 +2471,10 @@
     $('f-provisional').checked = false;
   }
 
-  function resetForNext() {
+  // `saved`: whether this capture staged anything (a Newspapers.com run can
+  // fail for every clipping); the automatic-saving box says "saved" only then.
+  function resetForNext(saved = true) {
+    state.autoSaved = saved;
     // Batch capture is the natural mode (§5.3): a research sitting yields a dozen
     // bundles. Clear the evidence so the next page starts fresh, but leave the
     // panel open and the settings intact. The form metadata (title/date/people/
@@ -2430,26 +2529,33 @@
     try {
       const tab = await getTab(tabId);
       if (!tab || !/^https?:/i.test(tab.url || '') || parked()) return;
+      // A Re-read may have moved the panel to another tab while this waited:
+      // then this tab's navigation is no longer the form's business, and must
+      // not take the form over from the Re-read (Codex 4502593873).
+      if (tabId !== state.tabId) return;
       // Same-record compare, not exact compare: in-page viewers (BookReader's
       // #page arrows) move only the #fragment without changing the record, and
       // a re-prefill on that wipes the human's typed notes/people for nothing.
-      // The staleness banner (warnIfFormStale) already compares this way.
+      // Capture's check of the form against the tab compares this way too.
       if (sameRecordUrl(tab.url, state.prefilledUrl)) return;
       // From here this read owns the form, until a newer read (a later
       // navigation, or a Re-read button) takes it over.
       const read = beginRead();
+      let resp = null;
       try {
         await injectContent(tabId);
-        const resp = await sendToTab(tabId, { action: 'prefill' });
-        if (parked()) return;
-        // A newer read owns the form (a later navigation, or a Re-read that
-        // may have moved the panel to another tab): this page's answer is old.
-        if (!ownsForm(read, tabId)) return;
-        if (resp && resp.ok) applyPrefill(resp.prefill);
+        resp = await sendToTab(tabId, { action: 'prefill' });
       } catch (e) {
-        // A restricted/again-loading page: don't clobber the form with an error;
-        // the human can still type, and the next 'complete' may succeed.
+        resp = null; // a restricted or still-loading page: said below
       }
+      if (parked()) return;
+      // A newer read owns the form (a later navigation, or a Re-read that
+      // may have moved the panel to another tab): this page's answer is old.
+      if (!ownsForm(read, tabId)) return;
+      // The tab is on a new record: what the form held was the old one's, so
+      // a page that cannot be read gets an empty form for its own address,
+      // never the last record's details (the next 'complete' may still read it).
+      finishRead(resp, tab.url);
     } finally {
       if (seq === state.navSeq) state.navInFlight = false;
     }
@@ -2485,10 +2591,50 @@
     return left > 0 ? new Promise((r) => setTimeout(r, left)) : Promise.resolve();
   }
 
+  function setRereadButtons(off) {
+    for (const id of ['btn-rescrape', 'btn-rescrape-file']) $(id).disabled = off;
+  }
+
   function setRereading(on) {
     state.rereading = on;
-    for (const id of ['btn-rescrape', 'btn-rescrape-file']) $(id).disabled = on;
+    setRereadButtons(on);
     renderAutoBox();
+  }
+
+  // Every read that owns the form ends here, whoever started it (the panel
+  // opening, a navigation, Re-read page), so the screen is always left
+  // usable: filled from the page, or emptied for it with the reason said,
+  // and Capture ready (PR #223 audit F1).
+  function finishRead(resp, url) {
+    if (resp && resp.ok) {
+      applyPrefill(resp.prefill);
+    } else {
+      clearDetails(url);
+      forgetFileState();
+      clearAutoLog();
+      const banner = $('recipe-banner');
+      banner.textContent = 'Couldn’t read this page automatically. Type the details below, or reload the page ' +
+        'and press ↻ Re-read page.';
+      banner.classList.remove('recipe');
+      banner.classList.add('warn');
+    }
+    if (!state.busy) $('btn-capture').disabled = false;
+    updateAssetStatus();
+  }
+
+  // A Re-read button pressed while a capture saves: say why nothing happens.
+  function rereadWhileBusy() {
+    if (!state.busy) return false;
+    setStageResult('Saving the capture - press Re-read once it has finished.', 'warn');
+    return true;
+  }
+
+  // A Re-read takes the form over from a navigation still being read: that
+  // read is dropped when it lands (ownsForm), so it must not keep Capture
+  // waiting for it either (PR #223 audit F12).
+  function releaseNavigation() {
+    state.navSeq = (state.navSeq || 0) + 1;
+    state.navInFlight = false;
   }
 
   // Empty the record's details - what she typed with them - before a fresh
@@ -2517,9 +2663,9 @@
   // tab, and the way to start clean on a viewer that changes record without
   // changing its address. Not while a capture is saving.
   async function rescrape() {
-    if (state.busy || state.rereading) return;
+    if (rereadWhileBusy() || state.rereading) return;
     const active = await queryActiveTab();
-    if (state.busy || state.rereading) return;
+    if (rereadWhileBusy() || state.rereading) return;
     const banner = $('recipe-banner');
     if (!active || !active.id || !/^https?:/i.test(active.url || '')) {
       // Nothing there to read: stay on the page the form describes.
@@ -2532,6 +2678,7 @@
     // This read owns the form from now: a navigation read still on its way
     // for the old tab (or this one) is dropped when it lands.
     const read = beginRead();
+    releaseNavigation();
     const tabId = active.id;
     state.tabId = tabId;
     state.pendingNav = false;
@@ -2541,6 +2688,7 @@
     clearAutoLog();
     setStageResult('', '');
     $('handoff').classList.remove('show');
+    selectEvidenceMode($('f-default-evidence').value || 'yes');
     banner.textContent = 'Reading the page…';
     banner.classList.remove('warn', 'recipe');
     const t0 = Date.now();
@@ -2552,22 +2700,11 @@
       resp = null;
     }
     await holdRereading(t0);
-    if (!ownsForm(read, tabId)) {
-      setRereading(false); // a newer read took over; it fills the form
-      return;
-    }
     setRereading(false);
-    if (resp && resp.ok) {
-      applyPrefill(resp.prefill);
-    } else {
-      banner.textContent = 'Couldn’t read this page automatically. Type the details below, or reload the page ' +
-        'and press ↻ Re-read page.';
-      banner.classList.remove('recipe');
-      banner.classList.add('warn');
-    }
-    selectEvidenceMode($('f-default-evidence').value || 'yes');
-    $('btn-capture').disabled = false;
-    updateAssetStatus();
+    // A newer read took over (a navigation of this tab): it fills the form
+    // and leaves the screen usable (finishRead).
+    if (!ownsForm(read, tabId)) return;
+    finishRead(resp, active.url);
   }
 
   // "Re-read file": look at the page again for its record file only - the
@@ -2579,9 +2716,9 @@
   // her to Re-read page instead of pairing this record's details with
   // another page's file.
   async function rescrapeFile() {
-    if (state.busy || state.rereading) return;
+    if (rereadWhileBusy() || state.rereading) return;
     const active = await queryActiveTab();
-    if (state.busy || state.rereading) return;
+    if (rereadWhileBusy() || state.rereading) return;
     const tabId = state.tabId;
     if (!tabId || !active || active.id !== tabId || !state.prefilledUrl ||
         !sameRecordUrl(active.url, state.prefilledUrl)) {
@@ -2590,7 +2727,10 @@
       return;
     }
     const read = beginRead();
+    releaseNavigation();
     const recordUrl = state.prefilledUrl;
+    // Her ticks on this Newspapers.com page survive the re-read (F2).
+    const keepNp = state.np ? { pageId: state.np.pageId, selected: new Set(state.npSelected) } : null;
     setRereading(true);
     forgetFileState();
     clearAutoLog();
@@ -2617,7 +2757,7 @@
       const half = {};
       for (const k of FILE_PREFILL_KEYS) half[k] = resp.prefill[k];
       state.prefill = Object.assign({}, state.prefill || { url: recordUrl }, half);
-      applyFilePrefill(state.prefill);
+      applyFilePrefill(state.prefill, keepNp);
     } else {
       setStageResult('Couldn’t read the page’s file. Drop the file in, or reload the page and press ↻ Re-read page.',
         'warn');
@@ -2807,19 +2947,21 @@
     }
     state.tabId = tab.id;
 
+    // The panel's first read owns the form like any other: if she presses
+    // Re-read page before this slow page answers, the Re-read's page wins and
+    // this answer is dropped (PR #223 audit F4/F10).
+    const read = beginRead();
+    let resp = null;
     try {
       await injectContent(tab.id);
-      const resp = await sendToTab(tab.id, { action: 'prefill' });
-      if (resp && resp.ok) applyPrefill(resp.prefill);
-      else throw new Error((resp && resp.error) || 'no pre-fill');
+      resp = await sendToTab(tab.id, { action: 'prefill' });
     } catch (e) {
       // A restricted page (chrome://, the web store) or a page that hasn't
       // finished loading. Don't dead-end: explain and let the human still type.
-      $('recipe-banner').textContent =
-        "Couldn't read this page automatically. Type the details below, or reload and reopen.";
-      $('f-url').value = tab.url || '';
+      resp = null;
     }
-
+    if (!ownsForm(read, tab.id)) return; // a Re-read took over, choices and all
+    finishRead(resp, tab.url);
     // Honor the saved default evidence option as the initial selection.
     selectEvidenceMode((cfg && cfg.defaultEvidence) || 'yes');
     updateAssetStatus();

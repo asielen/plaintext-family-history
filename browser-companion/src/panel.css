@@ -262,6 +262,7 @@ details#settings .hint code { background: #ece9e0; padding: 1px 5px; border-radi
 .auto-log .ok .ico { color: var(--ok); }
 .auto-log .fail .ico, .auto-log .fail .why { color: var(--error); }
 .auto-log .why { color: var(--muted); }
+.auto-log .more { color: var(--muted); font-style: italic; }
 /* Both sit in the flex row of .opt-controls: give each the full width, and
    keep the "or" rule a full-width line inside the address row's wrapper. */
 .opt-controls .auto-box { flex: 1 1 100%; }
