@@ -32,7 +32,11 @@ Checks (in order):
                          disk beside a photo a source already lists, but not
                          itself listed - often the only surviving caption or
                          provenance note for that print)
- 15. Unresolved companion owners (#193/#179 followup: a mid-graduation
+ 15. Main image names the back (#200: a record written while a filename
+                         bug was live marks a photo's back - or a copy - as
+                         its main image, with the front scan listed beside
+                         it; names the `fha source set-primary` fix)
+ 16. Unresolved companion owners (#193/#179 followup: a mid-graduation
                          research companion whose frontmatter id: names no
                          profile anywhere - a state lint's own profile/
                          companion classification reads as a profile
@@ -54,7 +58,7 @@ import shutil
 import sqlite3
 import sys
 import time
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -109,6 +113,7 @@ from _lib import (
     resolve_root_arg,
     Result,
     roots_change_orphans,
+    select_variation_primary,
     shell_quote,
     sqlite_cache_schema_status,
     undecodable_file_recorder,
@@ -147,6 +152,12 @@ configure_utf8_stdout()
 #                               beside a photo a source DOES list; its local
 #                               _find_back_on_disk scans the directory via
 #                               parse_media_filename (#145 followup, finding 2)
+#
+#  Main-image check (#200)
+#    _main_image_rank          - 0 plain / 1 front / 2 other: select_variation_primary's order
+#    _what_the_scan_is         - "the back of the photo", for the finding's wording
+#    _check_wrong_main_image   - a record marking a back/copy is_primary while
+#                               its plain front scan is listed beside it
 #
 #  Unresolved companion-owner check (#193/#179 followup, round 4, finding 4)
 #    _check_unresolved_companion_owners - a mid-graduation research companion
@@ -1046,6 +1057,164 @@ def _check_orphaned_back_photos(archive_root: Path, fha_config: dict,
     return EXIT_WARNINGS
 
 
+# ── Main image names the back (#200) ─────────────────────────────────────────
+
+def _main_image_rank(parsed) -> int:
+    """How strongly a filename says "this is the photo's main image".
+
+    0 a plain scan, 1 a front (copy a or none), 2 anything else - the same
+    order `_lib.select_variation_primary` picks in, which takes the
+    alphabetically-first file of the best rank present. Two files of the same
+    rank are an even choice for the filename rule, so a record that names
+    either one is right by the rule's own lights.
+    """
+    if parsed.variant_id is None and parsed.part_kind == 'none' and not parsed.is_crop:
+        return 0
+    if parsed.variant_id in (None, 'a') and parsed.part_kind == 'front' and not parsed.is_crop:
+        return 1
+    return 2
+
+
+def _what_the_scan_is(parsed) -> str:
+    """A plain description of a scan that should not be the main image."""
+    if parsed.part_kind == 'back':
+        return 'the back of the photo'
+    if parsed.part_kind == 'negative':
+        return 'the negative'
+    if parsed.part_kind == 'page':
+        return f'page {parsed.page_num}'
+    if parsed.variant_id:
+        return f'print {parsed.variant_id.upper()} (a second copy)'
+    if parsed.is_crop:
+        return 'a cropped copy'
+    if parsed.part_kind == 'bw':
+        return 'a black-and-white copy'
+    return 'another scan of the photo'
+
+
+def _check_wrong_main_image(archive_root: Path, lines: list[str],
+                            checks: list[dict]) -> int:
+    """#200: a source record that names a photo's back (or a copy) as its
+    main image, when the front scan is listed right beside it.
+
+    While the filename bug was live, `fha process` read the plain front scan
+    `Smith-Farm-01400.tif` as photo `Smith` with a made-up role, so a
+    front/back pair processed as ONE source got a record with `is_primary:
+    true` and `role: primary` on the back. The parser is fixed and the photo
+    catalog now picks the front, but the record on disk still says the back -
+    and so does everything that reads the record. This check finds those
+    records; `fha source set-primary` is the fix it names, one record at a
+    time, on the human's say-so.
+
+    Filename comparison only, like the #113 back-scan check above: photos
+    are never renamed, so the names in `files:` still say what each scan is,
+    and no exiftool call is needed. For each record, the photos-root entries
+    are grouped by (folder, `_lib.grouping_stem`) - the key `fha process`
+    groups variation siblings by. In a group of two or more holding the one
+    entry marked `is_primary: true`, the filename rule's own pick
+    (`_lib.select_variation_primary`) is compared with the marked one.
+
+    The false-positive guard: a record is reported only when the marked file
+    ranks WORSE by that rule than the rule's pick (`_main_image_rank`). Two
+    plain scans, or two fronts, are an even choice the human may have made by
+    hand, so naming the other one is not a mistake and is not reported. The
+    bug-era shape - a back, or another suffixed scan, chosen over a plain
+    front - always ranks worse, so it is always reported.
+
+    Read-only: doctor never edits a record. The next step is a complete
+    command, spelled with the launcher and the archive's --root like every
+    other doctor next step.
+    """
+    sources_dir = archive_root / 'sources'
+    if not sources_dir.is_dir():
+        return EXIT_CLEAN
+
+    def _is_true(value) -> bool:
+        # The same spellings `fha source set-primary` accepts; read_record
+        # hands a YAML boolean back as the string 'true'.
+        return value is True or str(value).strip().lower() in ('true', 'yes', '1')
+
+    def _parsed(alias: str):
+        return parse_media_filename(PurePosixPath(alias).stem)
+
+    findings: list[str] = []
+    commands: list[str] = []
+    for record_path in sorted(sources_dir.rglob('*.md')):
+        rec = read_record(record_path, on_decode_error=lambda p: None)
+        if rec.get('undecodable') or rec.get('parse_errors'):
+            continue                # unreadable/malformed - lint's job, not this check's
+        entries = (rec.get('meta') or {}).get('files')
+        if not isinstance(entries, list) or len(entries) < 2:
+            continue
+
+        aliases: list[str] = []
+        marked: set[str] = set()
+        for item in entries:
+            if not isinstance(item, dict) or not item.get('file'):
+                continue
+            alias = str(item['file']).replace('\\', '/')
+            if alias.split('/', 1)[0].lower() != 'photos':
+                continue            # a documents-root entry: renamed on import, no sibling grammar
+            aliases.append(alias)
+            if _is_true(item.get('is_primary')):
+                marked.add(alias)
+
+        groups: dict[tuple[str, str], list[str]] = {}
+        for alias in aliases:
+            p = PurePosixPath(alias)
+            key = (p.parent.as_posix(), grouping_stem(parse_media_filename(p.stem)))
+            groups.setdefault(key, []).append(alias)
+
+        for members in groups.values():
+            in_group = [a for a in members if a in marked]
+            if len(members) < 2 or len(in_group) != 1:
+                continue            # nothing to compare, or not this group's main image
+            chosen = in_group[0]
+            best =select_variation_primary(members, _parsed)
+            if best == chosen or _main_image_rank(_parsed(chosen)) <= _main_image_rank(_parsed(best)):
+                continue
+
+            chosen_name = PurePosixPath(chosen).name
+            best_name = PurePosixPath(best).name
+            # The bare filename when it is unique on the record (easier to read
+            # and type); the full path when another listed file shares it.
+            same_name = [a for a in aliases if PurePosixPath(a).name.casefold() == best_name.casefold()]
+            file_arg = best_name if len(same_name) == 1 else best
+            parsed_id = parse_filename(record_path)
+            sid = parsed_id.get('id_str') if parsed_id and parsed_id.get('id_type') == 'S' else None
+            if sid is None:
+                findings.append(
+                    f'main image: {record_path.name} names {_what_the_scan_is(_parsed(chosen))} '
+                    f'({chosen_name}) as its main image, but the front scan {best_name} '
+                    'is listed beside it  next: this record\'s filename carries no '
+                    f'source ID yet, so run `{_LAUNCHER} lint --root "{archive_root}"` '
+                    '(it gives the record one), then run doctor again for the fix.')
+                continue
+            command = (f'{_LAUNCHER} source set-primary {fmt_id_display(sid)} '
+                       f'--file {shell_quote(file_arg)} --root "{archive_root}"')
+            commands.append(command)
+            findings.append(
+                f'main image: {record_path.name} names {_what_the_scan_is(_parsed(chosen))} '
+                f'({chosen_name}) as its main image, but the front scan {best_name} '
+                'is listed beside it - an older `fha process` mixed the two up '
+                f'(#200)  next: make the front the main image - `{command}` (add '
+                '--dry-run first to preview; no photo is renamed, only the record\'s '
+                'file list changes). If you chose this scan on purpose, leave it.')
+
+    if not findings:
+        return EXIT_CLEAN
+    lines.extend(findings)
+    checks.append({
+        'id': 'wrong_main_image', 'status': 'warn',
+        'detail': f'{len(findings)} source(s) name a back or copy as the main image '
+                  'while the front scan is listed beside it',
+        'next_step': (commands[0] if len(commands) == 1 else
+                      f'{_LAUNCHER} source set-primary <S-id> --file <front scan> '
+                      f'--root "{archive_root}" - one per record; see the report'),
+    })
+    return EXIT_WARNINGS
+
+
 # ── Unresolved companion-owner check (#193/#179 followup, round 4, finding 4) ──
 
 def _check_unresolved_companion_owners(archive_root: Path, lines: list[str],
@@ -1634,6 +1803,10 @@ def run_doctor(archive_root: Path, fha_config: dict) -> Result:
     # #113: a -back/_back photo sibling sitting on disk but not in its
     # source's files: - see _check_orphaned_back_photos for the full case.
     worst = max(worst, _check_orphaned_back_photos(archive_root, fha_config, lines, checks))
+
+    # #200: a record that names a photo's back as its main image while the
+    # front is listed beside it - see _check_wrong_main_image.
+    worst = max(worst, _check_wrong_main_image(archive_root, lines, checks))
 
     # #193/#179 followup, round 4, finding 4: a mid-graduation research
     # companion whose frontmatter id: resolves to no profile anywhere - a

@@ -296,6 +296,9 @@ fha source edit-note <S-id> --old-text … --text …  rewrite ONE existing ## N
 fha source clear-keyword <S-id> --keyword … [--replace-with …]   clear or correct one
                             embedded Keywords/Subject value on a documents-root file
                             (the fix for a stray keyword `fha lint --with-exif` finds)
+fha source set-primary <S-id> --file NAME          make the named photo the source's main
+                            image (the fix `fha doctor` names when a record calls a
+                            photo's back its main image; record-only, nothing renamed)
 fha places set <L-id> --coords|--aka|--history …   human-directed place registry edit
                             (each field a full replace; dry-run diff first)
 fha places note <L-id> --text …                    append a dated research note to a place
