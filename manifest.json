@@ -168,7 +168,7 @@
     {
       "path": ".fha/browser-companion/README.md",
       "category": "operating",
-      "sha256": "a92c1f3badbecac9445fefc8e34cac0be4d54775e6eb6e22f493da5ac27c74fc",
+      "sha256": "77ee0913848133208eb2c668796d9cac8c462facbde9b87f2d2f7c3f2ca52aae",
       "spec_version": "1.2",
       "src": "browser-companion/README-ARCHIVE.md"
     },
@@ -217,7 +217,7 @@
     {
       "path": ".fha/browser-companion/src/content.js",
       "category": "operating",
-      "sha256": "f9e4b13f7a81c2c77bf667c5fc7d5097a900b597a64f14156f7e3b352f87b4fc",
+      "sha256": "724a8b7a4e5b6a4b5a698b389bc97d7430c1c1f4e1533fcdea5c1ab0fb90f45c",
       "spec_version": "1.2",
       "src": "browser-companion/src/content.js"
     },
@@ -322,7 +322,7 @@
     {
       "path": ".fha/browser-companion/src/panel.css",
       "category": "operating",
-      "sha256": "a566031bd78d7dcc0cdf33b1501c2e37c87f15c2305e087dbf970a9397f86cee",
+      "sha256": "0b825a517615821070ca7eb5bd256e5299d132b24f5b3b468a898a4d0dc78e1e",
       "spec_version": "1.2",
       "src": "browser-companion/src/panel.css"
     },
@@ -336,7 +336,7 @@
     {
       "path": ".fha/browser-companion/src/panel.js",
       "category": "operating",
-      "sha256": "c077a5a34333447aad157e11032d30f75e0a7a517dca6c6ed853da3a87ade393",
+      "sha256": "4c3247f5bf8ad8a0d2b5b7bc07cc1db67bc2b9afae2f0ebb372c2a624a81dcad",
       "spec_version": "1.2",
       "src": "browser-companion/src/panel.js"
     },
