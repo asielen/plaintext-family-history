@@ -87,6 +87,8 @@ later), or a ledger whose entries run for months. Give the source's own date the
 treatment as "February or March 1871" above - the earliest to the latest, e.g. `1916-02/1916-06` -
 so the page shows a true span instead of picking one page's date and leaving the rest unlabeled.
 Tell the assistant the earliest and latest dates you can see and it writes the range for you.
+A range is always written earlier date first: if one comes out backwards (`1950/1940`, often
+just a typing slip), the tools say so and ask which year you meant rather than guess.
 
 ---
 

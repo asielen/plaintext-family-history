@@ -105,6 +105,8 @@ All file IO is UTF-8.
 
 Validation regex (accepting the subset above) is the linter's date check; anything else is `E014`.
 
+**An interval must run forwards.** `A/B` is valid only when each half is valid on its own *and* the start is not wholly after the end - `min(A) <= max(B)`, the same bounds as the table above (`_lib.interval_runs_backwards`). `1950/1940` and `1941-01-19/1941-01-18` are refused; `1950-06/1950` and `1941~/1940`, which some reading makes forwards, are not. This is `E014`, not a warning, because a backwards span is not an interval EDTF can express and its bounds invert (`date_min` after `date_max`), so every sort, overlap window and life-date pick that reads it would be wrong rather than merely untidy. The check lives in `is_valid_edtf`, so it binds every entry point that validates through it - lint, `normalize_date` (a plain-word "1950 to 1940" reads as nothing, never silently swapped, because either year may be the typo), `fha claim --date`, `fha claim new --date`, `fha person estimate`, `fha process --date`, `fha find --date`. `format_edtf_error` names the problem in plain words and offers the swapped form without applying it: *"date '1950/1940' runs backwards: it starts at 1950 but ends earlier, at 1940 … if you meant 1940 to 1950, write 1940/1950; if one of the two dates is a typo, correct that one."*
+
 **Exit codes (all tools).** `0` clean · `1` warnings only · `2` errors found · `3` tool failure. `--json` emits machine-readable findings; default output is human lines: `SEVERITY CODE path: message`.
 
 **Structured-result contract (the headless core).** Every command is split into an *engine* and an *interface*, and the seam between them is a single value type, `_lib.Result`:
