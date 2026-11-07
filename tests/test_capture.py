@@ -441,10 +441,10 @@ class CaptureTestCase(unittest.TestCase):
         # link must still be recovered from it, as from the older /clip/{id}/.
         from capture_recipes.newspapers import _clip_id
         self.assertEqual(_clip_id(
-            'https://www.newspapers.com/article/the-daily-news-obit-smith/123456/'), '123456')
+            'https://www.newspapers.com/article/the-fairview-gazette-obituary-hartley/123456/'), '123456')
         self.assertEqual(_clip_id('https://www.newspapers.com/article/123456/'), '123456')
         self.assertEqual(_clip_id('https://www.newspapers.com/clip/42/x/'), '42')
-        self.assertIsNone(_clip_id('https://www.newspapers.com/image/1046785212/'))
+        self.assertIsNone(_clip_id('https://www.newspapers.com/image/987654/'))
         rc = self._capture(_sample('newspapers'),
                            url='https://www.newspapers.com/article/the-gazette-x/987654/')
         self.assertEqual(rc, EXIT_CLEAN)

@@ -20,13 +20,26 @@
 // live on another host (img.newspapers.com) that a page-side fetch can't read.
 //
 // Pacing (rate limits): Newspapers.com answered HTTP 429 when three large image
-// requests arrived within a second. So: one request at a time, a random 1.5-4 s
-// pause between tiles, and on 429/503 a backoff of about 1, 2, then 4 minutes
-// (Retry-After honored when sent), then stop with a plain message. A page costs
-// about 15 tiles, about 40 seconds. A stitched page is reused for every clipping
-// on it, so several clippings on one page never fetch it twice.
+// requests arrived within a second. So: one tile request at a time with a short
+// random gap (0.2-0.7 s; owner, 2026-10-08: the site's own viewer loads its
+// tiles all at once, so the real pauses belong between captures, not inside a
+// page). Only a 429 or 503 - the site's "slow down" and "busy" answers - earns
+// a backoff, of about 1, 2, then 4 minutes (Retry-After honored when sent),
+// then a plain stop. Any other refusal stops at once with its real cause: a
+// missing tile does not get better by waiting seven minutes. A page costs
+// about 15 tiles, roughly 15-25 seconds. A stitched page is reused for every
+// clipping on it, so several clippings on one page never fetch it twice.
 //
 // Loaded as a classic script in panel.html; attaches to the global `FHA`.
+//
+// Code map:
+//   tileUrl / tileGrid   the viewer's tile addresses and grid, in page pixels
+//   fetchTile            one tile; backoff on 429/503 only, plain stop otherwise
+//   fullPage             the whole page stitched at 1:1 (cached per page id)
+//   clipCanvas/combined  the clipping cut out; the annotated view
+//   words (pure)         shortDate, longDate, title, caption, citations
+//   pageCopyFits (pure)  which bundle the tab's page copy belongs in
+//   summarizeStaged (pure)  the closing report: where every bundle went
 
 (function () {
   const FHA = (window.FHA = window.FHA || {});
@@ -34,7 +47,7 @@
   // The viewer's own tile grid (1488 x 1448 page pixels); we ask for each at 1:1.
   const TILE_W = 1488;
   const TILE_H = 1448;
-  const PAUSE_MS = [1500, 4000];
+  const PAUSE_MS = [200, 700];
   const BACKOFF_S = [60, 120, 240];
   const JPEG_QUALITY = 0.92;
 
@@ -71,43 +84,56 @@
     return tiles;
   }
 
-  // One tile, with backoff on "slow down" answers. onWait(seconds, status) lets
-  // the panel say why it has gone quiet.
-  async function fetchTile(url, onWait) {
+  // One tile, with backoff on the site's "slow down" answers only.
+  // onWait(seconds, status) lets the panel say why it has gone quiet. `deps`
+  // ({ fetch, sleep }) exists so tests can drive every answer without a network.
+  async function fetchTile(url, onWait, deps) {
+    const doFetch = (deps && deps.fetch) || fetch;
+    const wait = (deps && deps.sleep) || sleep;
     for (let attempt = 0; ; attempt++) {
-      let resp = null;
+      let resp;
       try {
         // No cookies: the page pass in the URL is what authorizes a tile (tested
         // 2026-10-08), and leaving cookies out keeps the request cross-origin-clean.
-        resp = await fetch(url, { credentials: 'omit' });
+        resp = await doFetch(url, { credentials: 'omit' });
       } catch (e) {
-        resp = null; // network hiccup: treated like a slow-down below
+        throw new Error(
+          'could not reach Newspapers.com for the page image, so the capture stopped. ' +
+            'Nothing was saved for this page. Check your internet connection, then press Capture again'
+        );
       }
-      if (resp && resp.ok) {
+      if (resp.ok) {
         const blob = await resp.blob();
         if (!/^image\//i.test(blob.type || 'image/jpeg')) {
           throw new Error('Newspapers.com sent something other than an image for a page tile');
         }
         return blob;
       }
-      const status = resp ? resp.status : 0;
+      const status = resp.status;
       if (status === 401 || status === 403) {
         throw new Error(
           'Newspapers.com refused the page image (HTTP ' + status + '). Reload the page ' +
             '(its image pass lasts a day) and check you are signed in'
         );
       }
-      if (attempt >= BACKOFF_S.length) {
+      if (status !== 429 && status !== 503) {
         throw new Error(
-          'Newspapers.com kept asking us to slow down' +
-            (status ? ' (HTTP ' + status + ')' : '') +
-            ', so the capture stopped. Nothing was saved for this page; try again in a few minutes'
+          'Newspapers.com could not send part of the page image (HTTP ' + status + '), so the ' +
+            'capture stopped. Nothing was saved for this page. Reload the page and press Capture ' +
+            'again; if it keeps happening, use the site\'s own download and drop the file in'
         );
       }
-      const retryAfter = resp ? Number(resp.headers.get('retry-after')) : 0;
+      if (attempt >= BACKOFF_S.length) {
+        throw new Error(
+          'Newspapers.com kept asking us to slow down (HTTP ' + status + '), so the capture ' +
+            'stopped. Nothing was saved for this page; try again in a few minutes'
+        );
+      }
+      const retryAfter =
+        resp.headers && resp.headers.get ? Number(resp.headers.get('retry-after')) : 0;
       const waitS = (retryAfter > 0 ? retryAfter : BACKOFF_S[attempt]) * between(0.7, 1.3);
       if (onWait) onWait(Math.round(waitS), status);
-      await sleep(waitS * 1000);
+      await wait(waitS * 1000);
     }
   }
 
@@ -145,6 +171,13 @@
   // The clipping cut from the full page. Several rectangles (an item continued
   // into the next column) are stacked top to bottom in the site's order.
   function clipCanvas(page, clip) {
+    // npOffered never offers such a clipping; this is the last line of defence,
+    // so a bad entry names itself instead of failing as a canvas error.
+    if (!clip.rects || !clip.rects.length) {
+      throw new Error(
+        'the clipping "' + (clip.title || clip.id) + '" marks no area on the page, so it cannot be cut out'
+      );
+    }
     const gap = clip.rects.length > 1 ? 24 : 0;
     const w = Math.max(...clip.rects.map((r) => r.w));
     const h = clip.rects.reduce((sum, r) => sum + r.h, 0) + gap * (clip.rects.length - 1);
@@ -311,12 +344,75 @@
     };
   }
 
+  // Which bundle a page copy (the single-file snapshot of the tab) belongs in.
+  // On a clipping page the tab shows ONE clipping, so only that clipping's
+  // bundle gets it; a sibling ticked alongside would otherwise file a copy of
+  // the wrong item's page. On the page viewer the tab shows the newspaper page
+  // itself, which every clipping offered there was cut from.
+  function pageCopyFits(info, clip) {
+    if (info.kind === 'image') return true;
+    return info.kind === 'article' && clip.id === info.focusClipId;
+  }
+
+  // The panel's closing report for one Capture, which stages one bundle per
+  // clipping. `results`: one per clipping, in order - { title, ok, viaHost,
+  // where, hostWarning, error }. `warnings`: page-level lines (soft tiles).
+  // Every bundle says where it went, a mix of archive and Downloads is never
+  // reported as one place, and a clipping that failed after others were saved
+  // is named rather than hiding the ones that made it.
+  // Returns { text, cls, showHandoff }: cls is 'ok', 'warn' or 'error';
+  // showHandoff is true when anything went to Downloads and needs the sweep.
+  function summarizeStaged(results, warnings) {
+    const saved = results.filter((r) => r.ok);
+    const failed = results.filter((r) => !r.ok);
+    const lines = [];
+    const notes = [];
+    for (const w of [...results.map((r) => r.hostWarning), ...(warnings || [])]) {
+      if (w && !notes.includes(w)) notes.push(w);
+    }
+    if (results.length === 1 && saved.length === 1) {
+      const r = saved[0];
+      lines.push((r.viaHost ? 'Filed straight into your archive: ' : 'Staged to ') + r.where);
+    } else {
+      lines.push(
+        saved.length === results.length
+          ? 'Saved all ' + results.length + ' clippings, each as its own source:'
+          : saved.length
+            ? 'Saved ' + saved.length + ' of ' + results.length + ' clippings, each as its own source:'
+            : 'Nothing was saved:'
+      );
+      for (const r of results) {
+        const name = '"' + (r.title || 'Newspapers.com clipping') + '"';
+        lines.push(
+          '- ' + name + ': ' +
+            (!r.ok
+              ? 'NOT saved - ' + (r.error || 'unknown problem')
+              : r.viaHost
+                ? 'filed straight into your archive (' + r.where + ')'
+                : 'staged to ' + r.where)
+        );
+      }
+      if (failed.length) {
+        lines.push(
+          (failed.length === 1
+            ? 'The clipping that was not saved is still ticked'
+            : 'The ' + failed.length + ' clippings that were not saved are still ticked') +
+            ' - press Capture to try again.'
+        );
+      }
+    }
+    const text = lines.concat(notes).join('\n');
+    const cls = !saved.length ? 'error' : failed.length || notes.length ? 'warn' : 'ok';
+    return { text, cls, showHandoff: saved.some((r) => !r.viaHost) };
+  }
+
   function toJpeg(canvas) {
     return canvas.convertToBlob({ type: 'image/jpeg', quality: JPEG_QUALITY });
   }
 
   FHA.newspapers = {
-    fullPage, clipCanvas, combined, toJpeg, tileGrid,
+    fullPage, fetchTile, clipCanvas, combined, toJpeg, tileGrid,
     shortDate, longDate, publicationOf, title, caption, citations,
+    pageCopyFits, summarizeStaged,
   };
 })();

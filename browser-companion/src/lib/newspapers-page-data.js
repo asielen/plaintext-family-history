@@ -108,6 +108,14 @@ function npJwtPayload(token) {
   }
 }
 
+// The site's page label is usually "4" but sometimes "Page 4" (or "p. 4");
+// keep only the label after any such prefix, so a title never reads "p. Page 4".
+function npPageNo(v) {
+  if (v == null) return null;
+  const t = String(v).trim().replace(/^(?:page\s+|page(?=\d)|pg\.\s*|pg\s+|p\.\s*)/i, '').trim();
+  return t || null;
+}
+
 // One clipping, from the page data or the clipping list, in the shape the
 // panel uses. `toAbs` makes the site's relative clipping url absolute.
 function npClip(c, toAbs) {
@@ -131,7 +139,7 @@ function npClip(c, toAbs) {
     username: c.user_username || '',
     created: c.created || null,
     pageDate: c.page_date || null,
-    pageNo: c.page_title || null,
+    pageNo: npPageNo(c.page_title),
     pageWidth: c.page_width || null,
     pageHeight: c.page_height || null,
     publication: c.publication
@@ -171,19 +179,38 @@ function npIsMine(c, me) {
   );
 }
 
+// Can this clipping be cut out of the page? Only if it marks at least one
+// real area on it. A deleted or damaged list entry can come back with no
+// rectangle at all, and offering it would let a capture download the whole
+// page only to fail at the cut.
+function npUsable(c) {
+  return !!(c && Array.isArray(c.rects) && c.rects.length);
+}
+
 // Which clippings to offer (owner decision, 2026-10-08):
 //   - on a clipping page, THAT clipping, whoever made it - opening it is the
 //     choice - first, then your own other clippings on the page;
 //   - on the page viewer (`opened` null), only your own clippings.
-// Returns { offered, otherClipCount, focusOwner } where focusOwner names the
-// clipper of an opened clipping that is not yours.
+// A clipping with no usable area is never offered; it is listed in
+// `unusable` instead, so the panel can say which one and why.
+// Returns { offered, unusable, openedUnusable, otherClipCount, focusOwner }:
+// focusOwner names the clipper of an opened clipping that is not yours, and
+// otherClipCount counts the other members' clippings that are skipped.
 function npOffered(clips, opened, me) {
-  const offered = clips.filter((c) => npIsMine(c, me));
-  if (opened && !npIsMine(opened, me)) offered.unshift(opened);
+  const candidates = clips.filter((c) => npIsMine(c, me));
+  if (opened && !npIsMine(opened, me)) candidates.unshift(opened);
+  const offered = candidates.filter(npUsable);
   return {
     offered,
-    otherClipCount: clips.filter((c) => !offered.some((o) => o.id === c.id)).length,
-    focusOwner: opened && !npIsMine(opened, me) ? opened.username || 'another member' : null,
+    unusable: candidates
+      .filter((c) => !npUsable(c))
+      .map((c) => ({ id: c.id, title: c.title || '' })),
+    openedUnusable: !!opened && !npUsable(opened),
+    otherClipCount: clips.filter((c) => !candidates.some((o) => o.id === c.id)).length,
+    focusOwner:
+      opened && !npIsMine(opened, me) && npUsable(opened)
+        ? opened.username || 'another member'
+        : null,
   };
 }
 // FHA-SYNC-END newspapers
@@ -194,8 +221,10 @@ module.exports = {
   npObjectAt,
   npObjectAfter,
   npJwtPayload,
+  npPageNo,
   npClip,
   npTextChunk,
   npIsMine,
+  npUsable,
   npOffered,
 };

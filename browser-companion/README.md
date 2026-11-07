@@ -191,7 +191,7 @@ no-op, the bundles land in `inbox/` directly.
   opening the panel on a clipping or page reads the page's list of clippings
   (the same request its viewer makes, at most a few pages of 25), and Capture
   rebuilds that one newspaper page from the viewer's own image tiles - one tile
-  at a time with 1.5-4 s pauses, backing off when the site asks - plus one
+  at a time with short random gaps, backing off when the site asks it to slow down - plus one
   request per extra clipping you ticked, for its text. One page per Capture,
   only the clippings you chose; never your whole clippings list.
 - No local machine paths leak, `capture.json` carries the page URL, never a disk
@@ -384,9 +384,13 @@ There is no browser-driven test harness wired into this repo (a DOM would have t
 come with it). Two suites cover everything that *can* be checked without one.
 
 **The pure JS helpers** - srcset parsing, the snapshot's URL anchoring, the
-JSON-LD person harvest, IIIF rewriting, `capture.json` building, and the
+JSON-LD person harvest, IIIF rewriting, `capture.json` building, the
+Newspapers.com page-data parsers and tile/report logic, and the
 content.js ↔ `src/lib/` sync guards - run under `node --test` (Node ≥18, no
-dependencies):
+dependencies). `tests/test-panel-newspapers.js` also drives `panel.js` itself
+against a stand-in for the panel page and a scripted content script, so the
+Newspapers.com flow (and the panel opening at all) is checked without a
+browser; the pixels still need a hand test in a loaded extension:
 
 ```sh
 npm --prefix browser-companion test
