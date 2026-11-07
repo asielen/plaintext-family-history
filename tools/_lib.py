@@ -4745,6 +4745,14 @@ def select_variation_primary(members: list, parsed_of) -> object:
     'portrait.jpg' and 'portrait-envelope.jpg', the portrait is the main
     image, though '-' sorts before '.' (#209 review). Members of a folder
     variation group share one base name, so this never changes their pick.
+    Of unrelated plain names (a processed source holding 'x-00100.jpg' and
+    an attached 'grandma-note.jpg'), one without a trailing label word ranks
+    ahead of one with it - the old parser's effective preference, kept.
+
+    When no member is plain or a front, a scan of the picture side still
+    beats a back, a negative or a crop: 'Reunion-1950s.jpg' (its trailing
+    's' reads as a copy letter) is the picture, '...-1950s-back.jpg' is not,
+    though '-' sorts first (#209 audit). The lowest copy letter wins.
     """
     plain = [
         m for m in members
@@ -4757,8 +4765,9 @@ def select_variation_primary(members: list, parsed_of) -> object:
             m for m in plain
             if not any(o is not m and _extends_name(parsed_of(m).base_id, parsed_of(o).base_id)
                        for o in plain)
-        ]
-        return min(roots or plain)
+        ] or plain
+        unlabelled = [m for m in roots if parsed_of(m).freeform_role is None]
+        return min(unlabelled or roots)
     fronts = [
         m for m in members
         if parsed_of(m).variant_id in (None, 'a')
@@ -4767,6 +4776,12 @@ def select_variation_primary(members: list, parsed_of) -> object:
     ]
     if fronts:
         return min(fronts)
+    picture_side = [
+        m for m in members
+        if parsed_of(m).part_kind in ('none', 'front') and not parsed_of(m).is_crop
+    ]
+    if picture_side:
+        return min(picture_side, key=lambda m: (parsed_of(m).variant_id or '', m))
     return min(members)
 
 

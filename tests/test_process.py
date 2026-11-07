@@ -1497,6 +1497,16 @@ class ProcessTestCase(unittest.TestCase):
             p.write_bytes(b'\xff\xd8\xff')
         self.assertEqual(process._find_back_sibling(primary), back)
 
+    def test_a_crop_of_the_back_does_not_make_the_back_ambiguous(self) -> None:
+        # #209 audit: a detail crop of the back parsed as a second 'back' and
+        # the pull-in refused with "more than one possible back scan".
+        d = self.archive / 'documents' / 'census'
+        primary = d / 'Smith-Farm-01400.jpg'
+        back = d / 'Smith-Farm-01400-back.jpg'
+        for p in (primary, back, d / 'Smith-Farm-01400-back-crop.jpg'):
+            p.write_bytes(b'\xff\xd8\xff')
+        self.assertEqual(process._find_back_sibling(primary), back)
+
     def test_find_back_sibling_raises_on_ambiguous_match(self) -> None:
         # Finding #3 (ambiguity half) / finding #4 (Codex PR #145 followup):
         # the old two-candidate guess checked '-back' before '_back' and

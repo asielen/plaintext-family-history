@@ -434,7 +434,7 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "8fa87568986a4a7d01e83f26a80a09f051d25cdeab093f23f9fac71d1db5d47d",
+      "sha256": "ca874c95beab005daaf4e2ef39872e25e5195486e61362ef91e0773f32105b16",
       "spec_version": "1.2",
       "src": "tools/_lib.py"
     },
@@ -525,7 +525,7 @@
     {
       "path": ".fha/tools/doctor.py",
       "category": "operating",
-      "sha256": "311c8e3b8308fad6b8cd92c1dbc606af78a7797787186be4f7416cc553dd6dc4",
+      "sha256": "a23f0fb81526a12f73a709482d91ba6be20e22ba1badeb2afd2001617508975d",
       "spec_version": "1.2",
       "src": "tools/doctor.py"
     },
@@ -609,7 +609,7 @@
     {
       "path": ".fha/tools/photoindex.py",
       "category": "operating",
-      "sha256": "67d9029d8f5e46423eb9a4e297c2411a5ca2a05d4fba3c16510f6a2aa5676505",
+      "sha256": "dedfb220ae15bf51d36db34ceaa71e80cb554416f6e37566a83430185df5d859",
       "spec_version": "1.2",
       "src": "tools/photoindex.py"
     },
@@ -623,7 +623,7 @@
     {
       "path": ".fha/tools/process.py",
       "category": "operating",
-      "sha256": "bf1a90b37a8f0dc4f6057df8d36a39c772a0e9dcd6b9af40473ed4a0641472aa",
+      "sha256": "c47c01afcce470165f0fff5b14d5bc988b5be45211070be8c4ababb2bc5b549d",
       "spec_version": "1.2",
       "src": "tools/process.py"
     },

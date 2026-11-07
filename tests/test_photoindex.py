@@ -709,6 +709,46 @@ class PhotoindexTests(unittest.TestCase):
                 conn.close()
         self.assertEqual(primary, ['box/portrait.jpg'])
 
+    def _group(self, rows):
+        """Group `rows` of (path, source_id) and return {path: (group_id,
+        is_primary, variant_copy, variant_role)}."""
+        with tempfile.TemporaryDirectory() as d:
+            conn, _needs_face_backfill, _rebuilt_reason = photoindex._get_db(Path(d) / '.cache')
+            try:
+                for name, sid in rows:
+                    conn.execute(
+                        'INSERT INTO photos(path, mtime, size, source_id, group_id, '
+                        'is_primary, variant_copy, variant_role) '
+                        'VALUES (?,0,0,?,NULL,0,NULL,NULL)', (name, sid))
+                photoindex._group_photos(conn)
+                return {r[0]: r[1:] for r in conn.execute(
+                    'SELECT path, group_id, is_primary, variant_copy, variant_role FROM photos')}
+            finally:
+                conn.close()
+
+    def test_a_front_with_a_trailing_letter_still_beats_its_back(self) -> None:
+        # #209 audit: '1950s' reads its 's' as a copy letter, so neither the
+        # front nor the back was plain, and min() chose the back.
+        rows = self._group([('a/Hartley-Reunion-1950s.jpg', None),
+                            ('a/Hartley-Reunion-1950s-back.jpg', None),
+                            ('a/Smith-Farm-01400a.tif', None),
+                            ('a/Smith-Farm-01400a-back.tif', None)])
+        self.assertEqual(rows['a/Hartley-Reunion-1950s.jpg'][1], 1)
+        self.assertEqual(rows['a/Hartley-Reunion-1950s-back.jpg'][1], 0)
+        self.assertEqual(rows['a/Smith-Farm-01400a.tif'][1], 1)
+
+    def test_a_processed_sources_attachments_keep_their_labels(self) -> None:
+        # #209 audit: in a SOURCE: group, an unrelated attachment name used to
+        # outrank the real picture, and the envelope lost its 'envelope' label.
+        rows = self._group([('b/x-00100.jpg', 'S-123456789a'),
+                            ('b/grandma-note.jpg', 'S-123456789a'),
+                            ('c/portrait.jpg', 'S-223456789a'),
+                            ('c/portrait-envelope.jpg', 'S-223456789a')])
+        self.assertEqual(rows['b/x-00100.jpg'][1], 1)
+        self.assertEqual(rows['c/portrait.jpg'][1], 1)
+        self.assertEqual(rows['c/portrait-envelope.jpg'][3], 'envelope')
+        self.assertEqual(rows['b/grandma-note.jpg'][3], 'note')
+
     def test_person_match_on_one_variant_propagates_to_whole_group(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             archive = _copy_fixture(Path(d))

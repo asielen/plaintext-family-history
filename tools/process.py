@@ -1080,9 +1080,10 @@ def _find_back_sibling(file_path: Path) -> Path | None:
         if candidate_parsed.part_kind != 'back':
             continue
         # The back of print B ('x-01400b-back') is not the back of this
-        # print, and must not make the real back look ambiguous (#200; the
-        # same copy-letter rule doctor's #113 check applies).
-        if candidate_parsed.variant_id is not None:
+        # print, and a crop of the back is a detail of it, not a second back.
+        # Neither may make the real back look ambiguous (#200, #209 audit;
+        # doctor's `_find_back_on_disk` applies the same rule).
+        if candidate_parsed.variant_id is not None or candidate_parsed.is_crop:
             continue
         if candidate_parsed.base_id.lower() == base_id:
             matches.append(candidate)

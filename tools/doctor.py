@@ -772,6 +772,13 @@ def _check_orphaned_back_photos(archive_root: Path, fha_config: dict,
             candidate_parsed = parse_media_filename(candidate.stem)
             if candidate_parsed.part_kind != 'back':
                 continue
+            # The back of print B ('x-01400b-back') belongs to print B, and a
+            # crop of a back is a detail of it, not a second back. Neither is
+            # print A's orphaned back; suggesting it would file print B's
+            # writing on print A's record (#209 audit; the same rule
+            # `process._find_back_sibling` applies).
+            if candidate_parsed.variant_id is not None or candidate_parsed.is_crop:
+                continue
             if grouping_stem(candidate_parsed).lower() == base_id_norm:
                 matches.append(candidate)
         return matches
@@ -790,8 +797,17 @@ def _check_orphaned_back_photos(archive_root: Path, fha_config: dict,
     # ALREADY lists a back is not the same situation as a group with no back
     # at all - see `duplicate_back_photos` below.
     n_needs_investigation = 0
-    for record_path in sorted(sources_dir.rglob('*.md')):
-        rec = read_record(record_path, on_decode_error=lambda p: None)
+    records = [(rp, read_record(rp, on_decode_error=lambda p: None))
+               for rp in sorted(sources_dir.rglob('*.md'))]
+    # Every photos-root file ANY source lists. A back already filed on its
+    # own record (print B's back on print B's source) is not an orphan of
+    # this one, even when the names line up (#209 audit).
+    listed_anywhere: set[str] = set()
+    for _rp, _rec in records:
+        for _item in ((_rec.get('meta') or {}).get('files') or []):
+            if isinstance(_item, dict) and str(_item.get('file') or '').startswith('photos/'):
+                listed_anywhere.add(str(_item['file']))
+    for record_path, rec in records:
         if rec.get('undecodable') or rec.get('parse_errors'):
             continue                # unreadable/malformed - not this check's job
         entries = (rec.get('meta') or {}).get('files')
@@ -852,6 +868,7 @@ def _check_orphaned_back_photos(archive_root: Path, fha_config: dict,
             unlisted = [
                 c for c in candidates
                 if path_to_alias(c, 'photos', fha_config, archive_root) not in listed
+                and path_to_alias(c, 'photos', fha_config, archive_root) not in listed_anywhere
             ]
             if not unlisted:
                 continue
