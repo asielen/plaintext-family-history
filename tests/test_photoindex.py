@@ -36,6 +36,7 @@ from _lib import (
     photoindex_status,
     record_path_manifest,
     resolve_path,
+    variant_role,
     write_path_manifest,
 )
 
@@ -651,6 +652,45 @@ class PhotoindexTests(unittest.TestCase):
             finally:
                 conn.close()
 
+    def test_hyphenated_mixed_case_print_set_is_one_photo_with_the_front_as_main(self) -> None:
+        # #200: in one real library most front/back pairs went wrong. The
+        # back became the main image, capitals split a pair into two photos,
+        # and print B stood apart while its own back joined the original.
+        # All of it came from reading 'Smith-Farm-01400' as photo 'Smith'
+        # with role 'farm-01400'.
+        names = [
+            'album/Smith-Farm-01400.tif',          # the plain front scan
+            'album/smith-farm-01400-back.tif',     # its back, capitals differ
+            'album/Smith-Farm-01400b.tif',         # print B of the same picture
+            'album/Smith-Farm-01400b-back.tif',    # the back of print B
+            'album/smith-family.jpg',              # unrelated, must stay apart
+            'album/smith-house.jpg',               # unrelated, must stay apart
+        ]
+        with tempfile.TemporaryDirectory() as d:
+            conn, _needs_face_backfill, _rebuilt_reason = photoindex._get_db(Path(d) / '.cache')
+            try:
+                for name in names:
+                    conn.execute(
+                        'INSERT INTO photos(path, mtime, size, source_id, group_id, '
+                        'is_primary, variant_copy, variant_role) '
+                        'VALUES (?,0,0,NULL,NULL,0,NULL,NULL)', (name,))
+                photoindex._group_photos(conn)
+                rows = {r[0]: r[1:] for r in conn.execute(
+                    'SELECT path, group_id, is_primary, variant_copy, variant_role FROM photos')}
+            finally:
+                conn.close()
+        print_set = names[:4]
+        self.assertEqual(len({rows[n][0] for n in print_set}), 1, rows)
+        self.assertEqual(
+            [n for n in print_set if rows[n][1]], ['album/Smith-Farm-01400.tif'])
+        self.assertEqual(rows['album/Smith-Farm-01400.tif'][3], None)    # no role
+        self.assertEqual(rows['album/smith-farm-01400-back.tif'][3], 'back')
+        self.assertEqual(rows['album/Smith-Farm-01400b.tif'][2], 'b')    # copy letter read
+        self.assertEqual(rows['album/Smith-Farm-01400b-back.tif'][2:], ('b', 'back'))
+        others = {rows['album/smith-family.jpg'][0], rows['album/smith-house.jpg'][0]}
+        self.assertEqual(len(others), 2)
+        self.assertNotIn(rows['album/Smith-Farm-01400.tif'][0], others)
+
     def test_person_match_on_one_variant_propagates_to_whole_group(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             archive = _copy_fixture(Path(d))
@@ -696,11 +736,15 @@ class PhotoindexTests(unittest.TestCase):
         self.assertEqual(bw.part_kind, 'bw')
         self.assertTrue(bw.is_crop)
 
+        # #200: an unrecognised word stays in base_id. It is reported as
+        # freeform_role (a label for bundle files), but it neither splits the
+        # name nor counts as a role, so the file is its own plain scan.
         freeform = parse_media_filename('portrait_1880b-restored')
-        self.assertEqual(freeform.base_id, 'portrait_1880')
-        self.assertEqual(freeform.variant_id, 'b')
-        self.assertEqual(freeform.part_kind, 'freeform')
+        self.assertEqual(freeform.base_id, 'portrait_1880b-restored')
+        self.assertIsNone(freeform.variant_id)
+        self.assertEqual(freeform.part_kind, 'none')
         self.assertEqual(freeform.freeform_role, 'restored')
+        self.assertIsNone(variant_role(freeform))
 
         dash_variant = parse_media_filename('portrait_1880-b')
         self.assertEqual(dash_variant.base_id, 'portrait_1880')
@@ -880,7 +924,8 @@ class PhotoindexTests(unittest.TestCase):
     def test_grouping_stem_keeps_freeform_suffix_distinct(self) -> None:
         family = parse_media_filename('smith-family')
         house = parse_media_filename('smith-house')
-        self.assertEqual(family.base_id, house.base_id)
+        # #200: no word is split off, so the two names never share a base.
+        self.assertNotEqual(family.base_id, house.base_id)
         self.assertNotEqual(photoindex._grouping_stem(family), photoindex._grouping_stem(house))
 
         back = parse_media_filename('portrait_1880_back')

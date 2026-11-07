@@ -1486,6 +1486,17 @@ class ProcessTestCase(unittest.TestCase):
 
         self.assertEqual(process._find_back_sibling(primary), back)
 
+    def test_find_back_sibling_works_for_a_hyphenated_mixed_case_name(self) -> None:
+        # #200 completes #113: a name with a hyphenated word used to parse as
+        # a "freeform role", so the pull-in silently found nothing for it.
+        # The back of print B must not be taken for this print's back either.
+        d = self.archive / 'documents' / 'census'
+        primary = d / 'Smith-Farm-01400.jpg'
+        back = d / 'smith-farm-01400-back.jpg'
+        for p in (primary, back, d / 'Smith-Farm-01400b-back.jpg'):
+            p.write_bytes(b'\xff\xd8\xff')
+        self.assertEqual(process._find_back_sibling(primary), back)
+
     def test_find_back_sibling_raises_on_ambiguous_match(self) -> None:
         # Finding #3 (ambiguity half) / finding #4 (Codex PR #145 followup):
         # the old two-candidate guess checked '-back' before '_back' and
@@ -3067,6 +3078,27 @@ class ProcessTestCase(unittest.TestCase):
         sibs = process._photo_variation_siblings(front)
         self.assertEqual([p.name for p in sibs],
                          ['portrait_1880-back.jpg', 'portrait_1880.jpg'])
+
+    def test_photo_siblings_ignore_capitals_and_read_print_letters(self) -> None:
+        # #200: the one/separate/skip prompt groups by the same rule as the
+        # photo catalog, so a front and back that differ only in capitals,
+        # and print B, are offered together.
+        d = self.archive / 'photos' / '1880'
+        names = ['Smith-Farm-01400.jpg', 'smith-farm-01400-back.jpg',
+                 'Smith-Farm-01400b.jpg', 'smith-family.jpg']
+        for n in names:
+            (d / n).write_bytes(b'\xff\xd8\xff')
+        sibs = process._photo_variation_siblings(d / 'Smith-Farm-01400.jpg')
+        self.assertEqual(sorted(p.name for p in sibs), sorted(names[:3]))
+
+    def test_a_bundle_file_still_takes_its_role_from_its_last_word(self) -> None:
+        # In a bundle the name's last word IS the label its maker gave it.
+        from _lib import bundle_role
+        self.assertEqual(bundle_role(parse_media_filename('letter-envelope')), 'envelope')
+        self.assertEqual(
+            bundle_role(parse_media_filename('grandma-letter-transcript')), 'transcript')
+        self.assertEqual(bundle_role(parse_media_filename('letter-back')), 'back')
+        self.assertIsNone(bundle_role(parse_media_filename('letter-b')))
 
     def test_photo_siblings_always_include_the_file_itself(self) -> None:
         # The file being processed is a member of its own group even when the

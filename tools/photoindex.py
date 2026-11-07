@@ -1184,9 +1184,9 @@ def _group_photos(conn: sqlite3.Connection) -> None:
     Grouping key, in priority order (TOOLING §9): (1) a shared SOURCE: S-id -
     files already processed into one source are one logical photo regardless
     of name; (2) same directory + same filename base_id after stripping the
-    *recognized* suffix grammar (_lib.parse_media_filename, excluding
-    freeform roles - see _grouping_stem) - the pipeline's own variation
-    convention. Always run over every row (not just changed ones): grouping
+    *recognized* suffix grammar (_lib.parse_media_filename; no other word of
+    the name is ever split off, and case is folded - see _grouping_stem, #200)
+    - the pipeline's own variation convention. Always run over every row (not just changed ones): grouping
     is cheap pure-SQL/Python and a partial re-group after an incremental scan
     would silently miss a newly-added sibling joining an existing group.
     """

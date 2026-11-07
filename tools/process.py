@@ -192,6 +192,7 @@ from _lib import (
     OriginalBackup,
     ParsedName,
     append_paragraph_to_section,
+    bundle_role,
     claims_edit_problem,
     configure_utf8_stdout,
     edtf_confidence,
@@ -1078,6 +1079,11 @@ def _find_back_sibling(file_path: Path) -> Path | None:
         candidate_parsed = parse_media_filename(candidate.stem)
         if candidate_parsed.part_kind != 'back':
             continue
+        # The back of print B ('x-01400b-back') is not the back of this
+        # print, and must not make the real back look ambiguous (#200; the
+        # same copy-letter rule doctor's #113 check applies).
+        if candidate_parsed.variant_id is not None:
+            continue
         if candidate_parsed.base_id.lower() == base_id:
             matches.append(candidate)
     if len(matches) > 1:
@@ -1576,12 +1582,16 @@ def _photo_variation_siblings(file_path: Path) -> list[Path]:
     return sorted(siblings)
 
 
-def _variation_role_copy(file_path: Path, is_primary: bool) -> tuple[str, str | None]:
+def _variation_role_copy(
+    file_path: Path, is_primary: bool, *, in_bundle: bool = False,
+) -> tuple[str, str | None]:
     """Return the (role, copy) `files:` annotation for one variation member.
 
     The primary always gets `role: primary`. A non-primary member's role comes
-    from `variant_role` (back, front, page-3, negative, bw, a freeform suffix,
-    or crop); when the filename encodes only a bare copy letter ('portrait_1880b')
+    from `variant_role` (back, front, page-3, negative, bw, or crop) - or, for
+    a file of a capture bundle (`in_bundle`), from `bundle_role`, which also
+    reads the name's last word ('letter-envelope' -> 'envelope'; #200); when
+    the filename encodes only a bare copy letter ('portrait_1880b')
     there is no part-kind, so the role falls back to 'variant' and the letter is
     recorded in `copy:`. A negative is source material for the root image rather
     than an A/B print, so its copy letter (if any) is dropped - mirroring how
@@ -1590,7 +1600,7 @@ def _variation_role_copy(file_path: Path, is_primary: bool) -> tuple[str, str | 
     parsed = parse_media_filename(file_path.stem)
     if is_primary:
         return 'primary', None
-    role = variant_role(parsed) or 'variant'
+    role = (bundle_role(parsed) if in_bundle else variant_role(parsed)) or 'variant'
     copy = None if parsed.part_kind == 'negative' else parsed.variant_id
     return role, copy
 
@@ -2860,7 +2870,7 @@ def process_bundle(
         is_primary = asset == primary
         hint = file_hints.get(asset.name, {})
         if kind == 'photo':
-            role, copy = _variation_role_copy(asset, is_primary)
+            role, copy = _variation_role_copy(asset, is_primary, in_bundle=True)
             role = hint.get('role') or role
             copy = hint.get('copy') or copy
             dest = photos_root / asset.name  # photos are never renamed
@@ -2871,7 +2881,7 @@ def process_bundle(
             plan.append({'src': asset, 'kind': 'photo', 'dest': dest, 'embed': True, 'entry': entry})
         else:
             role = hint.get('role') or (
-                'primary' if is_primary else (variant_role(parse_media_filename(asset.stem))
+                'primary' if is_primary else (bundle_role(parse_media_filename(asset.stem))
                                               or 'attachment')
             )
             copy = hint.get('copy')
