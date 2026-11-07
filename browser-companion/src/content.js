@@ -944,6 +944,7 @@
     // Why the list could not be read, if it could not. An unread list is not
     // evidence that none of the clippings are yours (#211 review).
     let listError = null;
+    let listTruncated = false;
     try {
       for (let pg = 0; pg < NP_LIST_MAX_PAGES; pg++) {
         if (pg) await new Promise((r) => setTimeout(r, 800 + Math.random() * 1200));
@@ -963,6 +964,13 @@
           if (!clips.some((x) => x.id === c.clipping_id)) clips.push(npClip(c, absUrl));
         }
         if (batch.length < NP_LIST_PAGE) break;
+        if (pg === NP_LIST_MAX_PAGES - 1) {
+          // Stopped at the cap with more to come: hers may be among the rest
+          // (#211 audit).
+          listTruncated = true;
+          listError = 'this page has more than ' + NP_LIST_MAX_PAGES * NP_LIST_PAGE +
+            ' clippings, more than the panel reads';
+        }
       }
     } catch (e) {
       // The page's own clipping still works; only the list is missing.
@@ -1030,6 +1038,7 @@
       pageNo: npPageNo(pageObj && pageObj.title) || first.pageNo || null,
       ownClips: offered,
       listError,
+      listTruncated,
       unusable,
       openedUnusable,
       otherClipCount,

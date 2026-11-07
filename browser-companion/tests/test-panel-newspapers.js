@@ -520,3 +520,75 @@ test('Capture waits while the tab is moving to the next clipping', async () => {
   assert.strictEqual(p.written.length, 1);
   assert.match(p.capJson(p.written[0]).title, /^Hartley - Webb wedding/);
 });
+
+// ── #211 audit, round 2 ──────────────────────────────────────────────────────
+
+function setTick(p, title, on) {
+  const label = p.$('np-clips').children.find(
+    (c) => c.children && c.children[1] && c.children[1].textContent.startsWith(title));
+  assert.ok(label, 'no checkbox for ' + title);
+  label.children[0].checked = on;
+  return label.children[0].fire('change');
+}
+
+test('a correction typed for one clipping is not filed on the next one picked', async () => {
+  const p = await openOn(URL_PAGE, twoOnPage());
+  await setTick(p, 'Ethel Hartley visits Topeka', false);
+  p.$('f-title').value = 'Hartley farm sale notice';
+  await p.$('f-title').fire('input');
+  p.$('f-date').value = '1931-03-04';
+  await p.$('f-date').fire('input');
+  await setTick(p, 'Hartley farm sale', false);
+  await setTick(p, 'Ethel Hartley visits Topeka', true);
+  assert.match(p.$('f-title').value, /^Ethel Hartley visits Topeka/);
+  assert.strictEqual(p.$('f-date').value, '1931-03-03');
+  await p.capture();
+  assert.strictEqual(p.written.length, 1);
+  assert.match(p.capJson(p.written[0]).title, /^Ethel Hartley visits Topeka/);
+});
+
+test('with several clippings ticked the form shows only what will be saved', async () => {
+  const p = await openOn(URL_PAGE, twoOnPage());
+  await setTick(p, 'Ethel Hartley visits Topeka', false);
+  p.$('f-date').value = '1931-03-04';
+  await p.$('f-date').fire('input');
+  await setTick(p, 'Ethel Hartley visits Topeka', true);
+  assert.strictEqual(p.$('f-date').value, '1931-03-03');
+  assert.strictEqual(p.$('f-date').readOnly, true);
+  assert.strictEqual(p.$('f-title').readOnly, true);
+  await setTick(p, 'Ethel Hartley visits Topeka', false);
+  assert.strictEqual(p.$('f-date').readOnly, false);
+});
+
+test('an opened clipping that cannot be cut out does not quietly save another one', async () => {
+  const pages = {
+    [URL_A]: {
+      title: 'Obituary',
+      info: npInfo('article', [clipObj(102, 'Card of thanks')], {
+        focusClipId: 101,
+        unusable: [{ id: 101, title: 'Obituary for Calvin Hartley' }], openedUnusable: true,
+      }),
+    },
+  };
+  const p = await openOn(URL_A, pages);
+  await p.capture();
+  assert.strictEqual(p.written.length, 0, 'nothing is saved that she did not ask for');
+  await setTick(p, 'Card of thanks', true);
+  await p.capture();
+  assert.strictEqual(p.written.length, 1);
+  assert.match(p.capJson(p.written[0]).title, /^Card of thanks/);
+});
+
+test('a page with more clippings than the panel reads is not "none are yours"', async () => {
+  const p = await openOn(URL_PAGE, {
+    [URL_PAGE]: { title: 'The Fairview Gazette, page 1', info: npInfo('image', [], {
+      listTruncated: true,
+      listError: 'this page has more than 200 clippings, more than the panel reads',
+    }) },
+  });
+  await p.capture();
+  assert.strictEqual(p.written.length, 0);
+  assert.match(p.result(), /more than 200 clippings/);
+  assert.match(p.result(), /its own page/);
+  assert.doesNotMatch(p.result(), /none of the clippings on this page are yours/);
+});

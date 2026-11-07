@@ -217,7 +217,7 @@
     {
       "path": ".fha/browser-companion/src/content.js",
       "category": "operating",
-      "sha256": "62a0faebd7497648c587663535037fd307150e6a92f5b2b4868c609c91941113",
+      "sha256": "d036a69e6e388383f8615957530db084bd9e18597f90c28efaca34abf4133131",
       "spec_version": "1.2",
       "src": "browser-companion/src/content.js"
     },
@@ -308,7 +308,7 @@
     {
       "path": ".fha/browser-companion/src/panel.js",
       "category": "operating",
-      "sha256": "039b36bafeffebe4a89b6a4a81909723366537b6e77d6b7f0d05267a00f75b16",
+      "sha256": "ffb8ce4d42070a9f56b976b2e4f05dab13e9cc54be62804bdc691a6a04a73e87",
       "spec_version": "1.2",
       "src": "browser-companion/src/panel.js"
     },

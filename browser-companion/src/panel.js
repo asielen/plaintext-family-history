@@ -209,6 +209,7 @@
     // where it is a harmless no-op on the fresh form.
     if (!sameRecordUrl(prefill.url, state.prefilledUrl)) clearEvidenceSelection();
     state.userEdited = new Set();
+    for (const id of ['f-title', 'f-date', 'f-repo']) $(id).readOnly = false;
     state.prefill = prefill;
     state.iiif = !!prefill.iiif;
     state.prefilledUrl = prefill.url || null;
@@ -301,6 +302,11 @@
     if (state.npError) {
       return 'automatic saving is not available here: ' + state.npError +
         '. Reload the page and open the panel again, or drop in a file.';
+    }
+    if (np && np.listTruncated && !np.ownClips.length) {
+      return 'automatic saving is not available here: ' + np.listError +
+        ', so yours may be among the ones it did not check. Open your clipping on ' +
+        'Newspapers.com (its own page) and capture it there, or drop in a file.';
     }
     if (np && np.listError && !np.ownClips.length) {
       return 'automatic saving is not available here: ' + np.listError +
@@ -428,6 +434,10 @@
     // your clippings on the page. The checkboxes below change it.
     const focus = own.find((c) => c.id === np.focusClipId);
     if (focus && np.kind === 'article') state.npSelected.add(focus.id);
+    // The clipping she opened cannot be cut out: say so (np-text below), and
+    // let her tick another one herself rather than saving it unasked (#211
+    // audit).
+    else if (np.kind === 'article' && np.openedUnusable) { /* nothing ticked */ }
     else own.forEach((c) => state.npSelected.add(c.id));
 
     urlInput.value = NP_URL_LABEL;
@@ -457,7 +467,7 @@
     const box = $('np-clips');
     box.textContent = '';
     const np = state.np;
-    if (!np || np.ownClips.length < 2) return;
+    if (!np || (np.ownClips.length < 2 && !np.openedUnusable)) return;
     const head = document.createElement('span');
     head.className = 'mini';
     head.textContent = 'Clippings on this page to save (each becomes its own source):';
@@ -471,6 +481,9 @@
       cb.addEventListener('change', () => {
         if (cb.checked) state.npSelected.add(c.id);
         else state.npSelected.delete(c.id);
+        // A correction typed for one clipping belongs to that clipping: once
+        // the ticks change, the form describes a different one (#211 audit).
+        state.userEdited = new Set();
         fillNpFields();
         updateAssetStatus();
       });
@@ -503,11 +516,17 @@
       put('f-repo', npPub(c, np).name || 'Newspapers.com');
       if (c.url) put('f-url', c.url);
     } else if (chosen.length > 1) {
-      put('f-title', '');
+      // Each clipping is saved with its own title, date and newspaper from
+      // the site, so the form shows those and nothing a person could type
+      // and see ignored (#211 audit).
+      for (const id of ['f-title', 'f-date', 'f-repo']) state.userEdited.delete(id);
+      $('f-title').value = '';
       $('f-title').placeholder = 'Each clipping gets its own title';
-      put('f-date', np.pageDate || '');
-      put('f-repo', (np.publication && np.publication.name) || 'Newspapers.com');
+      $('f-date').value = np.pageDate || '';
+      $('f-repo').value = (np.publication && np.publication.name) || 'Newspapers.com';
     }
+    const many = chosen.length > 1;
+    for (const id of ['f-title', 'f-date', 'f-repo']) $(id).readOnly = many;
   }
 
   function npClipData(clip, np, ocr) {
@@ -1233,6 +1252,9 @@
     // repo) is refreshed when the human navigates to the next record - see
     // refreshOnNavigation - so it never carries one record's details onto the next.
     clearEvidenceSelection();
+    // The corrections were for the record just saved; the next capture on
+    // this page describes another clipping (#211 audit).
+    state.userEdited = new Set();
     updateAssetStatus();
   }
 
