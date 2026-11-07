@@ -15,19 +15,26 @@
 // storage keys and the entry shapes are the ones the owner's archive copy of
 // the add-on (0.6.x) used, so a queue built there carries over.
 //
-// An entry is `done` only once its bundle finished staging, or when the Seen
-// It add-on says the archive already holds the record; `failed` ("set aside")
-// when the page shown was not a record that can be saved, with the reason.
-// The ledger never records that an IMAGE is saved: only a file that exists
-// can say that, and Seen It reads the files (seen-it/host/seenit_host.py).
+// An entry is `done` only once its bundle finished staging with everything
+// it should hold, or when the Seen It add-on says the archive already holds
+// the record; `partial` when it was staged without all of its image or
+// photos (tried again at the next Start, after asking Seen It about what was
+// missing); `retry` when its page may not have shown it (once more, at the
+// end of the queue); `failed` ("set aside") when it cannot be saved as the
+// record queued, with the reason - until the owner presses "Try the
+// set-aside ones again". The ledger never records that an IMAGE is saved:
+// only a file that exists can say that, and Seen It reads the files
+// (seen-it/host/seenit_host.py).
 //
 // Pacing (owner, 2026-10-08), all randomized:
 //   • 45-90 s of quiet after each record's capture finishes;
 //   • a short break of 20-40 min every 30-60 records.
 // Rate limiting: the first "slow down" (HTTP 429/503) stops the run at once.
 // Before the next request the batch waits 30-35 min (the third such stop in
-// a row: about 4 h, then the count starts again). Any other refusal stops the
-// run with its real cause; nothing is retried on a timer.
+// a row: about 4 h, then the count starts again). A cause that belongs to one
+// record sets that record aside and the run goes on; a cause that belongs to
+// the run (signed out, a security check, no connection, the tab) stops it,
+// with its real cause (classifyError). Nothing is retried on a timer.
 //
 // Works as a classic script (window.FHA.captureBatch) and as a CommonJS
 // module (tests/test-capture-batch.js).
@@ -38,7 +45,8 @@
 //   newLedger                 an empty ledger (the archive copy's shape)
 //   addRecords                queue records; a done one stays done
 //   addClippings              queue the member's own Newspapers.com clippings
-//   markHeld / markDone / markSetAside   what became of one entry
+//   markHeld / markDone / markPartial / markRetry / markSetAside   what became of one entry
+//   requeuePartials / requeueSetAside    a later Start; "Try the set-aside ones again"
 //   mergeDone                 fold in what another panel window stored
 //   nextPending / counts      the next entry to try; the tally
 //   ensurePacing / planAfterCapture / planRateLimit   when the next request may go
@@ -72,6 +80,13 @@
   const NP_LIST_MAX_PAGES = 250;
   // At most this many entries are looked at in one Start.
   const MAX_PER_RUN = 5000;
+  // A record whose page might not have shown it (a busy page) is tried this
+  // many times before it is set aside; one saved in part this many times
+  // before it counts as done; and this many records in a row that cannot be
+  // saved stop the run (the site, not the records, is the likely cause).
+  const MAX_TRIES = 2;
+  const MAX_PARTIAL = 3;
+  const MAX_FAILS_IN_A_ROW = 3;
 
   function between(range, rand) {
     const r = typeof rand === 'function' ? rand() : Math.random();
@@ -160,10 +175,22 @@
 
   // Normalize a ledger read from storage (the archive copy's, or ours): a
   // missing part is made empty, never trusted to exist.
+  // The archive copy kept a Newspapers.com queue's order as numbers
+  // ([5, 7]) while its items are keyed by text ("5", "7"): the order is
+  // made text, said once each, and only of entries that exist, and an entry
+  // the order left out goes at its end - so no entry is ever counted or
+  // queued twice.
   function repair(L) {
     if (!L || typeof L !== 'object') return null;
     if (!L.items || typeof L.items !== 'object') L.items = {};
-    if (!Array.isArray(L.order)) L.order = Object.keys(L.items);
+    const seen = new Set();
+    const order = [];
+    for (const k of (Array.isArray(L.order) ? L.order : []).map(String).concat(Object.keys(L.items))) {
+      if (seen.has(k) || !L.items[k]) continue;
+      seen.add(k);
+      order.push(k);
+    }
+    L.order = order;
     if (!Array.isArray(L.log)) L.log = [];
     return L;
   }
@@ -243,22 +270,20 @@
   }
 
   function sortClippings(L) {
-    const items = L.order.concat(Object.keys(L.items).filter((k) => L.order.indexOf(k) < 0))
-      .map((k) => L.items[k]).filter(Boolean);
+    repair(L);
+    const page = (k) => L.items[k].pageId || 'x' + k;
     const first = {};
-    for (const it of items) {
-      const k = it.pageId || 'x' + it.id;
-      const t = it.created || '';
-      if (!(k in first) || t < first[k]) first[k] = t;
+    for (const k of L.order) {
+      const t = L.items[k].created || '';
+      if (!(page(k) in first) || t < first[page(k)]) first[page(k)] = t;
     }
-    items.sort((a, b) => {
-      const ka = a.pageId || 'x' + a.id;
-      const kb = b.pageId || 'x' + b.id;
-      if (first[ka] !== first[kb]) return first[ka] < first[kb] ? -1 : 1;
-      if (ka !== kb) return String(ka) < String(kb) ? -1 : 1;
-      return a.id - b.id;
+    L.order.sort((a, b) => {
+      const pa = page(a);
+      const pb = page(b);
+      if (first[pa] !== first[pb]) return first[pa] < first[pb] ? -1 : 1;
+      if (pa !== pb) return String(pa) < String(pb) ? -1 : 1;
+      return Number(a) - Number(b);
     });
-    L.order = items.map((it) => String(it.id));
   }
 
   function markDone(L, key, bundle, note, now) {
@@ -268,6 +293,8 @@
     it.bundle = bundle;
     it.doneAt = new Date(now || Date.now()).toISOString();
     it.lastError = null;
+    it.stops = 0;
+    delete it.again;
     if (note) it.note = note;
     else delete it.note;
     logEvent(L, 'done ' + key + ' -> ' + bundle + (note ? ' (' + note + ')' : ''), now);
@@ -279,8 +306,8 @@
   }
 
   // Set aside with the reason: the page shown was not a record the batch can
-  // save as the one queued. Not tried again by this run or the next; the
-  // reading copy of the ledger lists it.
+  // save as the one queued. Not tried again until the owner presses "Try the
+  // set-aside ones again" (requeueSetAside); the reading copy lists it.
   function markSetAside(L, key, reason, now) {
     const it = L.items[key];
     if (!it) return;
@@ -288,6 +315,74 @@
     it.state = 'failed';
     it.lastError = String(reason || '').slice(0, 400);
     logEvent(L, 'SET ASIDE ' + key + ': ' + it.lastError, now);
+  }
+
+  // This page could not be read as the record, for a reason that may pass
+  // (a page that showed no memorial): tried once more at the end of the
+  // queue, then set aside.
+  function markRetry(L, key, reason, now) {
+    const it = L.items[key];
+    if (!it) return;
+    if ((it.tries || 0) + 1 >= MAX_TRIES) {
+      markSetAside(L, key, reason, now);
+      return;
+    }
+    it.tries = (it.tries || 0) + 1;
+    it.state = 'retry';
+    it.lastError = String(reason || '').slice(0, 400);
+    L.order = L.order.filter((k) => k !== key).concat([key]);
+    logEvent(L, 'try again later ' + key + ': ' + it.lastError, now);
+  }
+
+  // Saved, but without all of its image or photos (a "slow down" part way,
+  // more photos than one capture takes, a scan that would not come): not
+  // done. The next Start asks Seen It again and captures it again; after
+  // MAX_PARTIAL tries it counts as done, with the note saying what is missing.
+  function markPartial(L, key, bundle, note, now) {
+    const it = L.items[key];
+    if (!it) return;
+    it.partialTries = (it.partialTries || 0) + 1;
+    if (it.partialTries >= MAX_PARTIAL) {
+      markDone(L, key, bundle, (note ? note + '; ' : '') + 'still incomplete after ' + MAX_PARTIAL + ' tries', now);
+      return;
+    }
+    it.state = 'partial';
+    it.bundle = bundle;
+    it.note = note || 'saved without all of its image or photos';
+    it.lastError = null;
+    logEvent(L, 'saved in part ' + key + ' -> ' + bundle + ' (' + it.note + ')', now);
+  }
+
+  // At Start: the records saved in part are tried again.
+  function requeuePartials(L) {
+    let n = 0;
+    for (const key of L.order) {
+      const it = L.items[key];
+      if (it && it.state === 'partial') {
+        it.state = 'queued';
+        it.again = true;
+        n++;
+      }
+    }
+    return n;
+  }
+
+  // "Try the set-aside ones again": every set-aside record is queued again,
+  // its tries counted from nothing. Its last reason is kept for reading.
+  function requeueSetAside(L, now) {
+    let n = 0;
+    for (const key of L.order) {
+      const it = L.items[key];
+      if (!it || it.state !== 'failed') continue;
+      it.state = 'queued';
+      it.tries = 0;
+      it.stops = 0;
+      it.setAsideBefore = it.lastError || null;
+      it.lastError = null;
+      n++;
+    }
+    if (n) logEvent(L, 'queued again: ' + n + ' set-aside record' + (n === 1 ? '' : 's'), now);
+    return n;
   }
 
   // Fold in what another panel window stored meanwhile (a record captured or
@@ -321,13 +416,14 @@
   }
 
   function counts(L) {
-    const c = { total: 0, done: 0, queued: 0, failed: 0 };
+    const c = { total: 0, done: 0, queued: 0, failed: 0, partial: 0 };
     for (const key of (L && L.order) || []) {
       const it = L.items[key];
       if (!it) continue;
       c.total++;
       if (it.state === 'done') c.done++;
       else if (it.state === 'failed') c.failed++;
+      else if (it.state === 'partial') c.partial++;
       else c.queued++;
     }
     return c;
@@ -384,21 +480,44 @@
     return { kind, until };
   }
 
-  // What a failed capture means for the run:
+  // What a failed capture means for the run. The rule: a cause that belongs
+  // to ONE record sets that record aside and the run goes on; a cause that
+  // belongs to the run (the site, the session, the tab) stops it.
   //   'slowdown' - the site said slow down or busy (429/503): stop, and wait
   //                the rate-limit break before the next request;
-  //   'skip'     - this page is not a record that can be saved as the one
-  //                queued (gone, merged, another record shown): set it aside
-  //                and go on;
-  //   'stop'     - anything else, a refusal above all (sign in, 401/403, a
-  //                security check, no connection): stop with the cause, and
-  //                let the owner look. Unknown means stop, never "try again".
+  //   'skip'     - this record cannot be saved as the one queued (gone,
+  //                merged, another record shown, a clipping that marks no
+  //                area, a record restricted to a FamilySearch center): set
+  //                it aside and go on;
+  //   'retry'    - the page did not show the record, for a reason that may
+  //                pass (a memorial page with no memorial on it): once more
+  //                at the end of the queue, then set aside;
+  //   'stop'     - the run's own cause (signed out, a security check, no
+  //                connection, a download that would not write, the tab
+  //                moved, a capture already saving): stop with the cause;
+  //   'refused'  - anything else (a 403, a 500, a message nobody expected):
+  //                stop with the cause, and if the same record is refused
+  //                again on a later Start, set it aside so it can never hold
+  //                up the rest of the queue.
+  const SLOWDOWN_RE = /slow down|HTTP 429|HTTP 503|too many requests/i;
+  const RECORD_RE = new RegExp([
+    'HTTP 404', 'HTTP 410', 'no memorial at this address', 'no record at this address', 'not the one queued',
+    'is not a record page', 'not one the batch can save', 'marks no area', 'tick at least one of your clippings',
+    'none of the clippings on this page are yours', 'restricted to a FamilySearch center',
+  ].join('|'), 'i');
+  const RUN_RE = new RegExp([
+    'sign in', 'signed in', 'security check', 'HTTP 401', 'could not reach', 'internet connection', 'broke off',
+    'download was blocked', 'download interrupted', 'the page in the tab', 'the tab ', 'the batch.s tab', 'the panel',
+    'a capture is already saving', 'different member', 'switched off', 'did not finish loading', 'took over',
+  ].join('|'), 'i');
+  const RETRY_RE = /shows no memorial|could not read the (Ancestry record|FamilySearch record|Find a Grave memorial)/i;
   function classifyError(message) {
     const m = String(message || '');
-    if (/slow down|HTTP 429|HTTP 503|too many requests/i.test(m)) return 'slowdown';
-    if (/sign in|signed in|refused|security check|HTTP 401|HTTP 403/i.test(m)) return 'stop';
-    if (/HTTP 404|HTTP 410|no memorial at this address|no record at this address|removed or merged|not the one queued|is not a record page|not one the batch can save/i.test(m)) return 'skip';
-    return 'stop';
+    if (SLOWDOWN_RE.test(m)) return 'slowdown';
+    if (RECORD_RE.test(m)) return 'skip';
+    if (RUN_RE.test(m)) return 'stop';
+    if (RETRY_RE.test(m)) return 'retry';
+    return 'refused';
   }
 
   // ── what fills a queue ───────────────────────────────────────────────────
@@ -467,9 +586,10 @@
   }
 
   const api = {
-    PACING, SITES, NP_LIST_MAX_PAGES, MAX_PER_RUN,
+    PACING, SITES, NP_LIST_MAX_PAGES, MAX_PER_RUN, MAX_TRIES, MAX_PARTIAL, MAX_FAILS_IN_A_ROW,
     between, npClipUrl, newLedger, repair, logEvent, addRecords, addClippings,
-    markDone, markHeld, markSetAside, mergeDone, nextPending, counts,
+    markDone, markHeld, markSetAside, markRetry, markPartial, requeuePartials, requeueSetAside,
+    mergeDone, nextPending, counts,
     ensurePacing, planRateLimit, planAfterCapture, classifyError,
     parseGedcom, parseMemorialList, ledgerFileBody,
   };

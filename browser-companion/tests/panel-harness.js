@@ -143,7 +143,8 @@ async function settle() { for (let i = 0; i < 20; i++) await tick(); }
 // batch switch, its ledgers); it is kept, so `p.storage` shows what the
 // panel wrote. Without it the store starts empty, as on a fresh install.
 // `beforePanel(window)` runs after the libraries load, before panel.js.
-async function openPanel({ url, respond, host, seenIt, fullPage, fetch, storage, beforePanel, waitReady = true }) {
+// `titleFor(url)` is the title a tab shows once a batch sends it to `url`.
+async function openPanel({ url, respond, host, seenIt, fullPage, fetch, storage, beforePanel, titleFor, waitReady = true }) {
   const getHolds = new Map(); // tab id -> promise the next tabs.get answer waits on
   const doc = makeDocument();
   const tab = { id: 7, url };
@@ -164,6 +165,7 @@ async function openPanel({ url, respond, host, seenIt, fullPage, fetch, storage,
   const storageReads = []; // the keys of every get
   const navigations = []; // { id, url } of every tabs.update
   const downloads = []; // chrome.downloads.download calls (the ledger's reading copy)
+  const storageListeners = []; // chrome.storage.onChanged
   const chrome = {
     runtime: {
       lastError: undefined,
@@ -236,6 +238,7 @@ async function openPanel({ url, respond, host, seenIt, fullPage, fetch, storage,
           return;
         }
         t.url = props.url;
+        t.title = titleFor ? titleFor(props.url) : t.title;
         if (cb) cb(t);
         setTimeout(() => fireUpdated(id, { status: 'complete' }), 0);
       },
@@ -258,14 +261,23 @@ async function openPanel({ url, respond, host, seenIt, fullPage, fetch, storage,
           cb(out);
         },
         set: (obj, cb) => {
+          const changes = {};
+          for (const [k, v] of Object.entries(obj)) changes[k] = { oldValue: store[k], newValue: v };
           Object.assign(store, JSON.parse(JSON.stringify(obj)));
           if (cb) cb();
+          for (const f of storageListeners.slice()) f(changes, 'local');
         },
         remove: (k, cb) => {
-          for (const x of [].concat(k)) delete store[x];
+          const changes = {};
+          for (const x of [].concat(k)) {
+            changes[x] = { oldValue: store[x] };
+            delete store[x];
+          }
           if (cb) cb();
+          for (const f of storageListeners.slice()) f(changes, 'local');
         },
       },
+      onChanged: { addListener: (f) => storageListeners.push(f) },
     },
     downloads: {
       download: (opts, cb) => {
@@ -337,7 +349,7 @@ async function openPanel({ url, respond, host, seenIt, fullPage, fetch, storage,
   let nextTabId = 8;
   return {
     doc, $, tab, sent, sentTo, written, filed, writeFails, sendFails, external, fetched, ready,
-    storage: store, storageReads, navigations, downloads, window,
+    storage: store, storageReads, navigations, downloads, window, chrome,
     // The batch box's element named `name` (its data-batch tag), or undefined.
     batchEl: (name) => doc.body.descendants().concat([doc.body]).find((e) => e.dataset && e.dataset.batch === name),
     // Hold the next tabs.get answer for tab `id` until the returned release().

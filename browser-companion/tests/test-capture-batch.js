@@ -127,7 +127,7 @@ test('a queue built by the archive copy (0.6.x) carries over: "retry" is still t
   };
   const L = CB.repair(JSON.parse(JSON.stringify(old)));
   assert.strictEqual(CB.nextPending(L).key, '90001:1000002');
-  assert.deepStrictEqual(CB.counts(L), { total: 3, done: 1, queued: 1, failed: 1 });
+  assert.deepStrictEqual(CB.counts(L), { total: 3, done: 1, queued: 1, failed: 1, partial: 0 });
   // Nothing in the library reads `images`: a page image counts as saved
   // only from a saved file (Seen It), never from a ledger's say-so.
   const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'lib', 'capture-batch.js'), 'utf8') +
@@ -186,24 +186,103 @@ test('a short break every 30-60 records', () => {
   assert.strictEqual(kinds[29], 'short');
 });
 
-test('classifyError: slow down, stop, or set aside - and anything unknown stops', () => {
+test('classifyError: one record\'s cause sets it aside; the run\'s own cause stops it (PR #224 audit F1/F6/F13/F15)', () => {
   const table = [
     ['Newspapers.com kept asking us to slow down (HTTP 429), so the capture stopped', 'slowdown'],
     ['FamilySearch asked us to slow down (HTTP 429). Wait a few minutes', 'slowdown'],
     ['the Ancestry image service returned HTTP 503', 'slowdown'],
+    // The run's own causes: stop.
     ['FamilySearch asked you to sign in (HTTP 401). Sign in to FamilySearch', 'stop'],
-    ['Find a Grave refused the memorial (HTTP 403). Reload the page', 'stop'],
+    ['FamilySearch asked you to sign in (HTTP 403). Sign in to FamilySearch in this tab', 'stop'],
     ['Newspapers.com showed a security check page', 'stop'],
     ['could not reach FamilySearch - check your internet connection', 'stop'],
     ['the page in the tab changed while this record was being saved', 'stop'],
-    ['something nobody expected', 'stop'],
-    ['', 'stop'],
+    ['the download was blocked', 'stop'],
+    ['a capture is already saving', 'stop'],
+    ['a different member is signed in to Newspapers.com than the one this list was started for', 'stop'],
+    // One record's causes: set aside, and go on.
     ['FamilySearch has no record at this address (HTTP 404) - check the page', 'skip'],
     ['Find a Grave has no memorial at this address (HTTP 404): it may have been removed or merged', 'skip'],
     ['the page shows Ancestry record 90001:1000002, not the one queued, so nothing was saved', 'skip'],
+    ['the clipping shown is not the one queued (202), so nothing was saved', 'skip'],
     ['the page it opened is not a record page (it may have moved or been removed)', 'skip'],
+    ['tick at least one of your clippings', 'skip'],
+    ['Newspapers.com: this clipping marks no area on the newspaper page that can be cut out, so nothing is saved ' +
+      'automatically.', 'skip'],
+    ['FamilySearch will not show this record here (HTTP 403): it is restricted to a FamilySearch center or ' +
+      'affiliate library', 'skip'],
+    // A memorial page with no memorial on it may be a busy page: once more, never "removed".
+    ['this page shows no memorial - it may have been removed or merged into another. Search Find a Grave', 'retry'],
+    // Anything else: stop at once, and set aside if the same record is refused again.
+    ['Find a Grave refused the memorial (HTTP 403). Reload the page', 'refused'],
+    ['FamilySearch is having trouble (HTTP 500). Try again in a little while', 'refused'],
+    ['something nobody expected', 'refused'],
+    ['', 'refused'],
   ];
   for (const [m, want] of table) assert.strictEqual(CB.classifyError(m), want, m);
+});
+
+test('an archive-era Newspapers.com queue (numeric order) is never doubled when the list is read again (F3/F7)', () => {
+  // The archive copy (0.6.x) stored the order as numbers.
+  const old = {
+    version: 1, user: 'HartleyResearch', listComplete: false, listCursor: 0,
+    items: {
+      5: { id: 5, url: 'https://www.newspapers.com/article/x/5/', pageId: 10, created: '2025-01-01', state: 'done' },
+      7: { id: 7, url: 'https://www.newspapers.com/article/x/7/', pageId: 10, created: '2025-01-02', state: 'queued' },
+    },
+    order: [5, 7, 5], log: [],
+  };
+  const L = CB.repair(JSON.parse(JSON.stringify(old)));
+  assert.deepStrictEqual(L.order, ['5', '7']);
+  const c = (id) => ({ clipping_id: id, page_id: 10, created: '2025-01-0' + id, url: '/article/x/' + id + '/',
+    user_username: 'HartleyResearch' });
+  assert.strictEqual(CB.addClippings(L, [c(5), c(7), c(9)], 'HartleyResearch'), 1);
+  assert.deepStrictEqual(L.order, ['5', '7', '9']);
+  CB.addClippings(L, [c(5), c(9)], 'HartleyResearch');
+  assert.deepStrictEqual(L.order, ['5', '7', '9']);
+  assert.deepStrictEqual(CB.counts(L), { total: 3, done: 1, queued: 2, failed: 0, partial: 0 });
+  // A queue never reloaded still never counts twice.
+  const raw = JSON.parse(JSON.stringify(old));
+  CB.addClippings(raw, [c(9)], 'HartleyResearch');
+  assert.deepStrictEqual(raw.order, ['5', '7', '9']);
+});
+
+test('saved in part: not done; tried again at the next Start, and counted apart (F2/F8/F14)', () => {
+  const L = CB.newLedger();
+  CB.addRecords('findagrave', L, [{ memorialId: '900000001' }, { memorialId: '900000002' }]);
+  CB.markPartial(L, '900000001', 'b1', '0 photos saved, 3 not saved');
+  assert.strictEqual(L.items['900000001'].state, 'partial');
+  assert.deepStrictEqual(CB.counts(L), { total: 2, done: 0, queued: 1, failed: 0, partial: 1 });
+  // Not again in the same run...
+  assert.strictEqual(CB.nextPending(L).key, '900000002');
+  CB.markDone(L, '900000002', 'b2');
+  assert.strictEqual(CB.nextPending(L), null);
+  // ...but at the next Start.
+  assert.strictEqual(CB.requeuePartials(L), 1);
+  assert.strictEqual(CB.nextPending(L).key, '900000001');
+  assert.strictEqual(CB.nextPending(L).again, true);
+  // Still in part after MAX_PARTIAL tries: done, saying what is missing.
+  CB.markPartial(L, '900000001', 'b3', 'still missing');
+  CB.requeuePartials(L);
+  CB.markPartial(L, '900000001', 'b4', 'still missing');
+  assert.strictEqual(L.items['900000001'].state, 'done');
+  assert.match(L.items['900000001'].note, /still incomplete after 3 tries/);
+});
+
+test('set aside is never for ever: "Try the set-aside ones again" queues them all again (F9)', () => {
+  const L = CB.newLedger();
+  CB.addRecords('ancestry', L, [{ dbId: '1', recordId: '2' }, { dbId: '3', recordId: '4' }]);
+  CB.markSetAside(L, '1:2', 'not the one queued');
+  CB.markRetry(L, '3:4', 'this page shows no memorial');
+  assert.strictEqual(L.items['3:4'].state, 'retry');
+  CB.markRetry(L, '3:4', 'this page shows no memorial');
+  assert.strictEqual(L.items['3:4'].state, 'failed');
+  assert.strictEqual(CB.nextPending(L), null);
+  assert.strictEqual(CB.requeueSetAside(L), 2);
+  assert.strictEqual(L.items['1:2'].state, 'queued');
+  assert.strictEqual(L.items['1:2'].tries, 0);
+  assert.strictEqual(L.items['1:2'].setAsideBefore, 'not the one queued');
+  assert.strictEqual(CB.nextPending(L).key, '1:2');
 });
 
 test('the reading copy of a ledger carries no login and says what "done" means', () => {

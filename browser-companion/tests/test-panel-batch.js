@@ -221,7 +221,9 @@ test('the first "slow down" stops the run; the next Start waits out the break be
   assert.deepStrictEqual(p.navigations.map((n) => n.url), [CALVIN]);
   assert.strictEqual(p.written.length, 1);
   const L = p.storage.ancBatchLedger;
-  assert.strictEqual(L.items['90001:1000001'].state, 'done');
+  // Saved without its scan: in part, so a later Start comes back for it.
+  assert.strictEqual(L.items['90001:1000001'].state, 'partial');
+  assert.strictEqual(L.items['90001:1000001'].imageKey, 'img:90001:4000123_00045');
   assert.match(L.items['90001:1000001'].note, /HTTP 429/);
   assert.strictEqual(L.items['90002:2000001'].state, 'queued');
   assert.ok(L.pacing.resumeAt >= t0 + P.rateBreakMs[0], 'a long break before the next request');
@@ -295,7 +297,7 @@ test('Find a Grave: a 429 from the photo host stops the run after that memorial,
   assert.deepStrictEqual(p.navigations.map((n) => n.url), [FAG_CALVIN]);
   assert.strictEqual(p.written.length, 1);
   const out = p.storage.fagBatchLedger;
-  assert.strictEqual(out.items['900000001'].state, 'done');
+  assert.strictEqual(out.items['900000001'].state, 'partial');
   assert.strictEqual(out.items['900000002'].state, 'queued');
   assert.ok(out.pacing.resumeAt > Date.now() + 25 * 60 * 1000);
   assert.match(p.batchEl('fag-status').textContent, /^Stopped: Find a Grave asked us to slow down/);
@@ -309,9 +311,13 @@ const TOKEN = 'fs-session-SECRET-0000';
 const ark = (id) => 'https://www.familysearch.org/ark:/61903/1:1:' + id;
 
 // FamilySearch, as content.js composes the lib, with every request recorded.
-function familysearchSite(calls) {
+// `over(url)` may answer a request instead (a status number, or a response).
+function familysearchSite(calls, over) {
   const fetch = async (url, init) => {
     calls.push({ url, auth: !!(init && init.headers && init.headers.Authorization) });
+    const o = over && over(url);
+    if (typeof o === 'number') return { ok: false, status: o, text: async () => '' };
+    if (o) return o;
     const j = (x) => ({ ok: true, status: 200, text: async () => JSON.stringify(x) });
     let m = /\/ark:\/61903\/1:1:([A-Z0-9-]+)$/.exec(url);
     if (m && FIX.records[m[1]]) return j(FIX.records[m[1]]);
@@ -347,30 +353,52 @@ function familysearchSite(calls) {
   };
 }
 
-test('FamilySearch: each record saved with its data and image; the login went to FamilySearch only and is in no file', async () => {
-  const calls = [];
+// A record whose image description points off FamilySearch (a moved CDN, a
+// tampered answer): the census record, re-pointed at the fixture's HRT1-EVIL.
+FIX.records['HRT1-EVR1'] = JSON.parse(JSON.stringify(FIX.records['HRT1-CEN1'])
+  .replace(/1:1:HRT1-CEN1/g, '1:1:HRT1-EVR1').replace(/3:1:HRT1-IMG1/g, '3:1:HRT1-EVIL'));
+const fsLedger = (ids) => {
   const L = { version: 1, items: {}, order: [], log: [] };
-  for (const id of ['HRT1-CEN1', 'HRT1-DTH1']) {
+  for (const id of ids) {
     L.items[id] = { key: id, fsId: id, url: ark(id), persons: [], title: '', state: 'queued', tries: 0 };
     L.order.push(id);
   }
+  return L;
+};
+
+test('FamilySearch: each record saved with its data; the login went to FamilySearch only, never to the address its answer named elsewhere', async () => {
+  const calls = [];
   const p = await openPanel({ url: ark('HRT1-CEN2'), respond: familysearchSite(calls),
-    storage: Object.assign({}, ON, { fsBatchLedger: L }) });
+    storage: Object.assign({}, ON, { fsBatchLedger: fsLedger(['HRT1-EVR1', 'HRT1-DTH1']) }) });
   quick(p);
   await start(p, 'fs');
-  assert.deepStrictEqual(p.navigations.map((n) => n.url), [ark('HRT1-CEN1'), ark('HRT1-DTH1')]);
+  assert.deepStrictEqual(p.navigations.map((n) => n.url), [ark('HRT1-EVR1'), ark('HRT1-DTH1')]);
   assert.strictEqual(p.written.length, 2, p.batchEl('fs-status').textContent);
   assert.ok(p.files(p.written[0]).includes('record-data.json'));
-  assert.ok(calls.length > 0);
+  // Both kinds of request happened: with the login, to FamilySearch...
+  assert.ok(calls.some((c) => c.auth), 'no request carried the login');
   for (const c of calls) {
     if (c.auth) assert.match(c.url, /^https:\/\/([a-z0-9-]+\.)*familysearch\.org\//, c.url);
   }
-  for (const spec of p.written) {
-    const all = [spec.pageHtml, JSON.stringify(spec.captureJson)];
-    for (const a of spec.assets) all.push(await a.blob.text());
-    assert.ok(!all.join('\n').includes(TOKEN), 'the login is in a saved file');
-  }
-  assert.ok(!JSON.stringify(p.storage).includes(TOKEN), 'the login is in storage');
+  // ...and to the address elsewhere, without it.
+  const away = calls.filter((c) => /familysearch\.org\.evil\.com/.test(c.url));
+  assert.ok(away.length > 0, 'the off-site image address was never asked');
+  assert.ok(away.every((c) => !c.auth), 'the login went off FamilySearch');
+});
+
+test('FamilySearch: a record restricted to a FamilySearch center is set aside, and the run goes on (F6/F13)', async () => {
+  const calls = [];
+  const p = await openPanel({ url: ark('HRT1-CEN2'), storage: Object.assign({}, ON,
+    { fsBatchLedger: fsLedger(['HRT1-CEN1', 'HRT1-DTH1']) }),
+  respond: familysearchSite(calls, (u) => (/\/ark:\/61903\/1:1:HRT1-CEN1$/.test(u) ? 403 : null)) });
+  quick(p);
+  await start(p, 'fs');
+  assert.deepStrictEqual(p.navigations.map((n) => n.url), [ark('HRT1-CEN1'), ark('HRT1-DTH1')]);
+  const L = p.storage.fsBatchLedger;
+  assert.strictEqual(L.items['HRT1-CEN1'].state, 'failed');
+  assert.match(L.items['HRT1-CEN1'].lastError, /restricted to a FamilySearch center/);
+  assert.strictEqual(L.items['HRT1-DTH1'].state, 'done');
+  assert.strictEqual(p.written.length, 1);
 });
 
 // ── never twice ──────────────────────────────────────────────────────────────
@@ -558,4 +586,268 @@ test('Newspapers.com: only her own clippings are queued, and a page that met a "
   assert.strictEqual(L.items['202'].state, 'queued');
   assert.ok(L.pacing.resumeAt > Date.now() + 25 * 60 * 1000);
   assert.match(p.batchEl('np-status').textContent, /^Stopped: Newspapers\.com asked us to slow down while this one was saved/);
+});
+
+// ── PR #224 audit: one record never holds up the queue ──────────────────────
+
+const NP_C = 'https://www.newspapers.com/article/the-fairview-gazette-reunion/505/';
+function npPages(infoFor) {
+  const base = npSite([]);
+  return (lists) => (msg, tab) => {
+    if (msg.action === 'newspapersList') return lists.shift();
+    if (msg.action === 'newspapersInfo' && infoFor[tab.url]) return infoFor[tab.url]();
+    return base(msg, tab);
+  };
+}
+
+test('Newspapers.com: a clipping that marks no area is set aside (alone, or beside a usable one) and the run goes on (F1/F6/F13)', async () => {
+  const lists = [{ ok: true, user: ME.username, more: false, nextCursor: null, clippings: [
+    listed(101, 'Unusable alone', NP_A), listed(202, 'Unusable beside another', NP_B), listed(505, 'Reunion', NP_C),
+  ] }];
+  const other = npClip(303, 'A usable one on the same page', 'https://www.newspapers.com/article/x/303/');
+  const respond = npPages({
+    [NP_A]: () => Object.assign(npInfo(npClip(101, 'Unusable alone', NP_A)), { ownClips: [], openedUnusable: true }),
+    [NP_B]: () => Object.assign(npInfo(npClip(202, 'Unusable beside another', NP_B)), { ownClips: [other], openedUnusable: true }),
+    [NP_C]: () => npInfo(npClip(505, 'Reunion', NP_C)),
+  })(lists);
+  const p = await openPanel({ url: NP_A, respond, storage: ON });
+  quick(p);
+  await start(p, 'np');
+  assert.deepStrictEqual(p.navigations.map((n) => n.url), [NP_LIST, NP_A, NP_B, NP_C]);
+  const L = p.storage.npBatchLedger;
+  assert.strictEqual(L.items['101'].state, 'failed');
+  assert.match(L.items['101'].lastError, /marks no area/);
+  assert.strictEqual(L.items['202'].state, 'failed');
+  assert.match(L.items['202'].lastError, /tick at least one|marks no area/);
+  assert.strictEqual(L.items['505'].state, 'done');
+  assert.strictEqual(p.written.length, 1);
+  assert.strictEqual(p.capJson(p.written[0]).url, NP_C);
+  assert.match(p.batchEl('np-status').textContent, /^Finished\. 1 done, 0 to go, 2 set aside\./);
+});
+
+test('Newspapers.com: a page showing another of her clippings than the one queued saves nothing, and fetches no page (F18)', async () => {
+  const lists = [{ ok: true, user: ME.username, more: false, nextCursor: null, clippings: [listed(202, 'Hartley wedding', NP_B)] }];
+  let pageDownloads = 0;
+  const respond = npPages({ [NP_B]: () => npInfo(npClip(101, 'Obituary for Calvin Hartley', NP_A)) })(lists);
+  const p = await openPanel({ url: NP_A, respond, storage: ON, fullPage: () => { pageDownloads++; return {}; } });
+  quick(p);
+  await start(p, 'np');
+  assert.strictEqual(p.written.length, 0);
+  assert.strictEqual(pageDownloads, 0, 'the newspaper page was downloaded');
+  const it = p.storage.npBatchLedger.items['202'];
+  assert.strictEqual(it.state, 'failed');
+  assert.match(it.lastError, /not the one queued \(202\)/);
+});
+
+test('Newspapers.com: a capture that met a "slow down" but saved nothing still starts the break (F10/F16)', async () => {
+  const lists = [{ ok: true, user: ME.username, more: false, nextCursor: null, clippings: [
+    listed(101, 'Obituary for Calvin Hartley', NP_A), listed(202, 'Hartley wedding', NP_B)] }];
+  const p = await openPanel({ url: NP_A, respond: npSite(lists), storage: ON, fullPage: () => ({ rateHits: 1 }) });
+  quick(p);
+  p.writeFails.add(0);
+  await start(p, 'np');
+  assert.strictEqual(p.written.length, 0);
+  const L = p.storage.npBatchLedger;
+  assert.strictEqual(L.items['101'].state, 'queued');
+  assert.ok(L.pacing.resumeAt > Date.now() + 25 * 60 * 1000, 'no break after the slow down');
+  assert.deepStrictEqual(p.navigations.map((n) => n.url), [NP_LIST, NP_A]);
+  assert.match(p.batchEl('np-status').textContent, /^Stopped: Newspapers\.com asked us to slow down/);
+});
+
+test('saved in part: the next Start asks Seen It about the missing scan, not the record, and captures it again (F2/F8/F14)', async () => {
+  let image = { ok: false, error: 'the Ancestry image service returned HTTP 429' };
+  const base = ancestrySite();
+  const seenIt = {};
+  const p = await openPanel({ url: HARRIET, seenIt, storage: Object.assign({}, ON, { ancBatchLedger: ancLedger([CALVIN, ETHEL]) }),
+    respond: (msg, tab) => (msg.action === 'ancestryImage' && image ? image : base(msg, tab)) });
+  quick(p);
+  await start(p, 'anc');
+  assert.strictEqual(p.storage.ancBatchLedger.items['90001:1000001'].state, 'partial');
+  assert.match(p.batchEl('anc-status').textContent, /1 saved in part/);
+  // The break is over, the record's index is now in the inbox (Seen It
+  // knows rec:), and Ancestry hands the scan over.
+  p.storage.ancBatchLedger.pacing.resumeAt = 0;
+  seenIt['rec:90001:1000001'] = 'captured';
+  image = null;
+  const asked = p.external.length;
+  await start(p, 'anc');
+  assert.deepStrictEqual(p.navigations.map((n) => n.url), [CALVIN, CALVIN, ETHEL]);
+  assert.deepStrictEqual(p.external[asked].msg.keys, ['img:90001:4000123_00045']);
+  const L = p.storage.ancBatchLedger;
+  assert.strictEqual(L.items['90001:1000001'].state, 'done');
+  assert.strictEqual(L.items['90002:2000001'].state, 'done');
+  assert.strictEqual(p.written.length, 3);
+  assert.ok(p.files(p.written[1]).includes('record.jpg'));
+});
+
+test('Find a Grave: a memorial whose photos were cut short is captured again at the next Start (F14)', async () => {
+  const L = { version: 1, items: {}, order: [], log: [] };
+  for (const [id, slug] of [['900000001', 'calvin-george-hartley'], ['900000002', 'harriet-frances-hartley']]) {
+    L.items[id] = { key: id, memorialId: id, slug, url: 'https://www.findagrave.com/memorial/' + id + '/' + slug,
+      persons: [], title: '', state: 'queued', tries: 0 };
+    L.order.push(id);
+  }
+  let slow = true;
+  const p = await openPanel({ url: FAG_CALVIN, respond: fagSite(), storage: Object.assign({}, ON, { fagBatchLedger: L }),
+    fetch: async (url) => (slow ? { ok: false, status: 429, url, headers: { get: () => 'text/html' } }
+      : { ok: true, status: 200, url, headers: { get: () => 'image/jpeg' }, blob: async () => new Blob(['photo'], { type: 'image/jpeg' }) }) });
+  quick(p);
+  await start(p, 'fag');
+  assert.strictEqual(p.storage.fagBatchLedger.items['900000001'].state, 'partial');
+  p.storage.fagBatchLedger.pacing.resumeAt = 0;
+  slow = false;
+  const asked = p.external.length;
+  await start(p, 'fag');
+  assert.deepStrictEqual(p.navigations.map((n) => n.url).slice(1), [FAG_CALVIN,
+    'https://www.findagrave.com/memorial/900000002/harriet-frances-hartley']);
+  assert.deepStrictEqual(p.external[asked].msg.keys, ['fag:900000001']);
+  assert.strictEqual(p.storage.fagBatchLedger.items['900000001'].state, 'done');
+});
+
+function fagLedger(n) {
+  const L = { version: 1, items: {}, order: [], log: [] };
+  for (let i = 1; i <= n; i++) {
+    const id = '90000000' + i;
+    L.items[id] = { key: id, memorialId: id, url: 'https://www.findagrave.com/memorial/' + id, persons: [], title: '',
+      state: 'queued', tries: 0 };
+    L.order.push(id);
+  }
+  return L;
+}
+
+test('Find a Grave: a busy page at a memorial\'s address stops the run with the break; nothing is set aside as removed (F15)', async () => {
+  const p = await openPanel({ url: FAG_CALVIN, respond: fagSite(), titleFor: () => '503 Service Temporarily Unavailable',
+    storage: Object.assign({}, ON, { fagBatchLedger: fagLedger(3) }) });
+  quick(p);
+  await start(p, 'fag');
+  assert.deepStrictEqual(p.navigations.map((n) => n.url), ['https://www.findagrave.com/memorial/900000001']);
+  assert.strictEqual(p.written.length, 0);
+  const L = p.storage.fagBatchLedger;
+  assert.deepStrictEqual(L.order.map((k) => L.items[k].state), ['queued', 'queued', 'queued']);
+  assert.ok(L.pacing.resumeAt > Date.now() + 25 * 60 * 1000);
+  assert.match(p.batchEl('fag-status').textContent, /^Stopped: Find a Grave answered with a busy or error page/);
+});
+
+test('Find a Grave: a memorial page with no memorial on it is tried once more, never set aside as removed at once; three in a row stop the run (F15)', async () => {
+  const base = fagSite();
+  const noMemorial = { ok: false, error: 'this page shows no memorial - it may have been removed or merged into another. ' +
+    'Search Find a Grave for the person and open the memorial it shows now' };
+  // Memorial 1 never shows; 2 does.
+  const p = await openPanel({ url: FAG_CALVIN, storage: Object.assign({}, ON, { fagBatchLedger: fagLedger(2) }),
+    respond: (msg, tab) => (msg.action === 'findagraveMemorialInfo' && /900000001$/.test(tab.url) ? noMemorial : base(msg, tab)),
+    fetch: async (url) => ({ ok: true, status: 200, url, headers: { get: () => 'image/jpeg' },
+      blob: async () => new Blob(['photo'], { type: 'image/jpeg' }) }) });
+  quick(p);
+  await start(p, 'fag');
+  assert.deepStrictEqual(p.navigations.map((n) => n.url.replace(/^.*\//, '')), ['900000001', '900000002', '900000001']);
+  const L = p.storage.fagBatchLedger;
+  assert.strictEqual(L.items['900000002'].state, 'done');
+  assert.strictEqual(L.items['900000001'].state, 'failed');
+  // Every memorial page empty: the third in a row stops the run.
+  const q = await openPanel({ url: FAG_CALVIN, storage: Object.assign({}, ON, { fagBatchLedger: fagLedger(4) }),
+    respond: (msg, tab) => (msg.action === 'findagraveMemorialInfo' ? noMemorial : base(msg, tab)) });
+  quick(q);
+  await start(q, 'fag');
+  assert.strictEqual(q.navigations.length, 3);
+  assert.match(q.batchEl('fag-status').textContent, /^Stopped: 3 records in a row could not be saved/);
+});
+
+test('a record refused twice on two Starts is set aside, so it never holds up the queue (F13)', async () => {
+  const base = ancestrySite();
+  const p = await openPanel({ url: HARRIET, storage: Object.assign({}, ON, { ancBatchLedger: ancLedger([CALVIN, ETHEL]) }),
+    respond: (msg, tab) => (msg.action === 'ancestryRecordInfo' && tab.url === CALVIN
+      ? { ok: false, error: 'Ancestry answered something nobody expected' } : base(msg, tab)) });
+  quick(p);
+  await start(p, 'anc');
+  assert.match(p.batchEl('anc-status').textContent, /^Stopped: Ancestry answered something nobody expected/);
+  assert.strictEqual(p.storage.ancBatchLedger.items['90001:1000001'].state, 'queued');
+  await start(p, 'anc');
+  assert.deepStrictEqual(p.navigations.map((n) => n.url), [CALVIN, CALVIN, ETHEL]);
+  assert.strictEqual(p.storage.ancBatchLedger.items['90001:1000001'].state, 'failed');
+  assert.strictEqual(p.storage.ancBatchLedger.items['90002:2000001'].state, 'done');
+});
+
+test('"Try the set-aside ones again" queues them again for the next Start (F9)', async () => {
+  const L = ancLedger([CALVIN]);
+  L.items['90001:1000001'].state = 'failed';
+  L.items['90001:1000001'].lastError = 'the page shows Ancestry record 90001:1000002, not the one queued';
+  const p = await openPanel({ url: ETHEL, respond: ancestrySite(), storage: Object.assign({}, ON, { ancBatchLedger: L }) });
+  quick(p);
+  await start(p, 'anc');
+  assert.deepStrictEqual(p.navigations, []);
+  await p.batchEl('anc-retry').fire('click');
+  await settle();
+  assert.match(p.batchEl('anc-status').textContent, /^1 set-aside record is queued again/);
+  await start(p, 'anc');
+  assert.deepStrictEqual(p.navigations.map((n) => n.url), [CALVIN]);
+  assert.strictEqual(p.storage.ancBatchLedger.items['90001:1000001'].state, 'done');
+});
+
+// ── PR #224 audit: Start, the lease and the switch ──────────────────────────
+
+test('Start waits while a Capture by hand is still saving: the tab is never moved under it (F4/F11/F17)', async () => {
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const base = ancestrySite();
+  const p = await openPanel({ url: CALVIN, storage: Object.assign({}, ON, { ancBatchLedger: ancLedger([ETHEL]) }),
+    respond: async (msg, tab) => {
+      if (msg.action === 'ancestryRecordInfo' && tab.url === CALVIN) await gate;
+      return base(msg, tab);
+    } });
+  quick(p);
+  const hand = p.$('btn-capture').fire('click');
+  await settle();
+  await start(p, 'anc');
+  assert.deepStrictEqual(p.navigations, []);
+  assert.match(p.batchEl('anc-status').textContent, /^A capture is still saving/);
+  release();
+  await hand;
+  await settle();
+  assert.strictEqual(p.written.length, 1);
+  assert.strictEqual(p.capJson(p.written[0]).url, CALVIN);
+});
+
+test('another window that takes the batch over stops this run at its next step; the lease is not written over (F5/F12)', async () => {
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const base = ancestrySite();
+  const p = await openPanel({ url: HARRIET, storage: Object.assign({}, ON, { ancBatchLedger: ancLedger([CALVIN, ETHEL]) }),
+    respond: async (msg, tab) => {
+      if (msg.action === 'ancestryRecordInfo' && tab.url === CALVIN) await gate;
+      return base(msg, tab);
+    } });
+  quick(p);
+  const run = p.batchEl('anc-start').fire('click');
+  await settle();
+  const theirs = { owner: 'another-window', site: 'ancestry', until: Date.now() + 5 * 60 * 1000 };
+  p.storage.batchLease = theirs;
+  release();
+  await run;
+  await settle();
+  assert.deepStrictEqual(p.navigations.map((n) => n.url), [CALVIN]);
+  assert.deepStrictEqual(p.storage.batchLease, theirs);
+  assert.match(p.batchEl('anc-status').textContent, /^Stopped: another panel window started a batch/);
+});
+
+test('batch downloads switched off mid-run: the run stops after the record being saved (F5)', async () => {
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const base = ancestrySite();
+  const p = await openPanel({ url: HARRIET, storage: Object.assign({}, ON, { ancBatchLedger: ancLedger([CALVIN, ETHEL]) }),
+    respond: async (msg, tab) => {
+      if (msg.action === 'ancestryRecordInfo' && tab.url === CALVIN) await gate;
+      return base(msg, tab);
+    } });
+  quick(p);
+  const run = p.batchEl('anc-start').fire('click');
+  await settle();
+  p.chrome.storage.local.remove('batchDownloads');
+  release();
+  await run;
+  await settle();
+  assert.strictEqual(p.written.length, 1);
+  assert.deepStrictEqual(p.navigations.map((n) => n.url), [CALVIN]);
+  assert.match(p.batchEl('anc-status').textContent, /^Stopped: batch downloads were switched off/);
+  await start(p, 'anc');
+  assert.deepStrictEqual(p.navigations.map((n) => n.url), [CALVIN]);
 });

@@ -43,9 +43,16 @@
 //      one queued, from the record's own data, before downloading anything;
 //   4. pause 45-90 s (lib/capture-batch.js PACING), and on to the next.
 // The first "slow down" (429/503) stops the run, and the next Start waits
-// out a long break before its first request. Any other refusal stops it with
-// its cause. A record that is not one (gone, merged, another shown) is set
-// aside with the reason. One run at a time, one request at a time.
+// out a long break before its first request. A cause that belongs to one
+// record (gone, merged, another shown, a clipping that marks no area, a
+// record restricted to a FamilySearch center) sets it aside and the run goes
+// on; a cause that belongs to the run (signed out, a security check, a busy
+// or error page, the tab) stops it. A record refused on two Starts is set
+// aside, three records in a row that cannot be saved stop the run, and "Try
+// the set-aside ones again" queues the set-aside ones again. A record saved
+// without all of its image or photos is "partial", tried again at the next
+// Start. One run at a time, one request at a time; Start waits while a
+// Capture by hand or a read of the page is under way.
 //
 // The ledgers (lib/capture-batch.js) live in chrome.storage.local; a copy for
 // reading is written beside the bundles, `_{site}-batch-ledger.json`.
@@ -57,8 +64,10 @@
 //   SITE_UI                the four batches: names, addresses, buttons
 //   load / save / mirror   the ledger in storage, and its reading copy
 //   goTo / waitForComplete send the tab to one record, safely
-//   readLease / holdLease  one batch at a time across every panel window
-//   run                    the run loop above
+//   readLease / holdLease  one batch at a time across every panel window (read before renewed)
+//   halted                 paused, switched off, or taken over by another window?
+//   run / one              the run loop above, and one record of it
+//   countFail / setAside   one record set aside; several in a row stop the run
 //   readClippingsList      Newspapers.com: queue the member's own clippings
 //   queueFrom*             fill a queue from a file or a page she has open
 //   recordManual           a record saved by hand joins its ledger
@@ -80,6 +89,9 @@
 
   const SIGNIN_RE = /\/(account\/signin|signin|sign-in|login|secure\/login|auth\/)/i;
   const CHECK_RE = /just a moment|attention required|cloudflare|access denied|verify you are human/i;
+  // A page the site sent instead of the record: busy, an error, too many
+  // requests. Never a record that is gone - so a stop, never a set-aside.
+  const BUSY_RE = /too many requests|service (temporarily )?unavailable|temporarily unavailable|bad gateway|gateway time-?out|internal server error|server error|\b(429|500|502|503|504)\b/i;
 
   const SITE_UI = {
     newspapers: {
@@ -125,7 +137,8 @@
 
   function install(hooks) {
     const ui = {};
-    let active = null; // { site, tabId, stop } while a run goes
+    let active = null; // { site, tabId, stop, off, lost, fails } while a run goes
+    let switchedOff = false; // the switch was turned off while this panel was open
 
     // ── words ────────────────────────────────────────────────────────────────
 
@@ -146,7 +159,9 @@
     function countsLine(L) {
       if (!L || !L.order.length) return 'Nothing queued yet.';
       const c = CB().counts(L);
-      return c.done + ' done, ' + c.queued + ' to go' + (c.failed ? ', ' + c.failed + ' set aside' : '') + '.';
+      return c.done + ' done, ' +
+        (c.partial ? c.partial + ' saved in part (tried again at the next Start), ' : '') +
+        c.queued + ' to go' + (c.failed ? ', ' + c.failed + ' set aside' : '') + '.';
     }
 
     function breakLabel(siteName, kind) {
@@ -165,6 +180,7 @@
         u.start.disabled = !!active;
         u.pause.disabled = !active || active.site !== name;
         if (u.relist) u.relist.disabled = !!active;
+        u.retry.disabled = !!active;
       }
     }
 
@@ -258,6 +274,10 @@
       const tab = await hooks.getTab(tabId);
       if (!tab) throw new Stop('the batch’s tab was closed');
       if (CHECK_RE.test(tab.title || '')) throw new Stop(name + ' showed a security check page');
+      if (BUSY_RE.test(tab.title || '')) {
+        throw new Stop(name + ' answered with a busy or error page ("' + String(tab.title).slice(0, 80) + '")',
+          /429|too many requests|503|unavailable/i.test(tab.title) ? 'slowdown' : 'stop');
+      }
       if (!SITE_UI[siteName].hostRe.test(tab.url || '')) throw new Stop('the tab ended up outside ' + name);
       let path = '';
       try {
@@ -268,9 +288,17 @@
       if (SIGNIN_RE.test(path)) throw new Stop(name + ' asked you to sign in');
     }
 
+    // Between steps: has the owner paused, switched batches off, or another
+    // window taken the batch over?
+    function halted() {
+      if (active.off) throw new Stop('batch downloads were switched off in this browser');
+      if (active.lost) throw new Stop(active.lost);
+      if (active.stop) throw new Paused();
+    }
+
     async function sleepUntil(siteName, L, until, label) {
       while (Date.now() < until) {
-        if (active.stop) throw new Paused();
+        halted();
         await holdLease(siteName);
         say(siteName, label + '. Next about ' + fmtWhen(until) + '. ' + countsLine(L));
         await nap(Math.min(1000, until - Date.now()));
@@ -285,7 +313,7 @@
       await hooks.injectContent(active.tabId);
       let pages = 0;
       while (!L.listComplete) {
-        if (active.stop) throw new Paused();
+        halted();
         if (++pages > CB().NP_LIST_MAX_PAGES) {
           throw new Stop('your clippings list is longer than one Start reads (' + CB().NP_LIST_MAX_PAGES * 24 +
             ' clippings); press Start again to read on from where it stopped');
@@ -333,13 +361,21 @@
       return new Promise((resolve) => chrome.storage.local.get(LEASE_KEY, (o) =>
         resolve(!chrome.runtime.lastError && o && o[LEASE_KEY] ? o[LEASE_KEY] : null)));
     }
-    // Renewed at every step, but written at most once a minute: a half-hour
-    // break is not 1800 writes.
+    // Renewed at every step and once a minute on a timer (a long capture
+    // waiting out a site's slow-downs must not let it run out), written at
+    // most once a minute. Before it is renewed, it is read: if another
+    // window holds it now, this run stops at its next step instead of
+    // writing over it.
     let leaseAt = 0;
-    function holdLease(siteName, force) {
-      if (!force && Date.now() - leaseAt < 60 * 1000) return Promise.resolve();
+    async function holdLease(siteName, force) {
+      if (!active || (!force && Date.now() - leaseAt < 60 * 1000)) return;
       leaseAt = Date.now();
-      return new Promise((resolve) => chrome.storage.local.set(
+      const lease = await readLease();
+      if (lease && lease.owner !== me && lease.until > Date.now()) {
+        active.lost = 'another panel window started a batch while this one ran, so this one stopped';
+        return;
+      }
+      await new Promise((resolve) => chrome.storage.local.set(
         { [LEASE_KEY]: { owner: me, site: siteName, until: Date.now() + LEASE_MS } }, () => resolve()));
     }
     async function dropLease() {
@@ -349,9 +385,26 @@
 
     // ── the run ──────────────────────────────────────────────────────────────
 
+    // A capture saving or the panel reading a page: the batch would move the
+    // tab out from under it.
+    function panelBusy() {
+      const st = hooks.state;
+      if (st.busy) return 'A capture is still saving. Press Start once it says where it was saved.';
+      if (st.rereading || st.navInFlight) return 'The panel is still reading the page. Press Start in a moment.';
+      return null;
+    }
+
     async function run(siteName) {
       if (active) {
         say(siteName, 'Another batch is running. Press its Pause, wait until it has stopped, then press Start here.', 'warn');
+        return;
+      }
+      if (panelBusy()) {
+        say(siteName, panelBusy(), 'warn');
+        return;
+      }
+      if (switchedOff) {
+        say(siteName, 'Batch downloads were switched off in this browser. Reopen the panel.', 'warn');
         return;
       }
       const lib = CB().SITES[siteName];
@@ -370,14 +423,22 @@
         return;
       }
       if (active) return;
-      active = { site: siteName, tabId, stop: false };
+      if (panelBusy()) {
+        say(siteName, panelBusy(), 'warn');
+        return;
+      }
+      active = { site: siteName, tabId, stop: false, fails: 0 };
       await holdLease(siteName, true);
+      const leaseTimer = setInterval(() => holdLease(siteName, true).catch(() => {}), 60 * 1000);
       buttons();
       hooks.setDriving(true);
       let L = null;
       try {
         L = await load(siteName);
         CB().ensurePacing(L);
+        // Saved in part last time: asked about and captured again now.
+        const again = CB().requeuePartials(L);
+        if (again) CB().logEvent(L, 'trying again: ' + again + ' saved in part');
         await save(siteName, L, false);
         // The back-off: after a "slow down", no request before the break is over.
         if (L.pacing.resumeAt > Date.now()) {
@@ -392,7 +453,7 @@
           CB().mergeDone(L, await loadRaw(siteName));
           const item = CB().nextPending(L);
           if (!item) break;
-          if (active.stop) throw new Paused();
+          halted();
           if (looked >= CB().MAX_PER_RUN) throw new Stop('one Start looks at most ' + CB().MAX_PER_RUN + ' records; press Start again');
           await one(siteName, L, item);
         }
@@ -414,6 +475,9 @@
           const slow = e instanceof Stop && e.kind === 'slowdown';
           if (L) {
             if (!slow && L.pacing) L.pacing.resumeAt = 0;
+            // A "slow down" seen before any capture (a busy page, the list):
+            // the break starts now if it has not already.
+            if (slow && !(L.pacing && L.pacing.resumeAt > Date.now())) CB().planRateLimit(L, Date.now());
             CB().logEvent(L, 'STOPPED: ' + e.message);
             await save(siteName, L, true);
           }
@@ -422,6 +486,7 @@
             : 'Look at the tab (signed in? a security check?), then press Start to carry on. ') + countsLine(L), 'error');
         }
       } finally {
+        clearInterval(leaseTimer);
         active = null;
         hooks.setDriving(false);
         buttons();
@@ -433,21 +498,25 @@
     async function one(siteName, L, item) {
       const lib = CB().SITES[siteName];
       await holdLease(siteName, true);
+      halted();
       // The address is rebuilt from the record's checked id every time, never
       // taken as stored: a queue kept by an older copy of the add-on may hold
       // any address at all.
       const url = lib.keyOf(item) ? lib.urlOf(item) : null;
       if (!url) {
-        CB().markSetAside(L, item.key, 'its id or address is not one the batch can save as the record queued');
-        await save(siteName, L, true);
+        await setAside(siteName, L, item, 'its id or address is not one the batch can save as the record queued');
         return;
       }
-      const sk = lib.seenIt(item);
+      // A record saved in part before is held only once what was missing is
+      // saved: its scan (img:/fsimg:), or for a memorial every photo (fag:,
+      // which Seen It claims only then).
+      const sk = item.again && item.imageKey ? item.imageKey : lib.seenIt(item);
       const held = (await hooks.seenItHeld([sk]))[sk];
       if (held) {
         CB().markHeld(L, item.key, held.where === 'archive'
           ? 'in the archive' + (held.source ? ', source ' + held.source : '')
           : 'waiting in the inbox to be filed');
+        active.fails = 0;
         await save(siteName, L, true);
         return;
       }
@@ -463,33 +532,73 @@
       } else {
         out = await hooks.capture(lib.captureKey(item));
       }
-      if (out && out.ok) {
+      out = out || { ok: false, error: 'nothing was saved' };
+      // The site said "slow down" during this capture, saved or not: the
+      // break comes before the next request, whatever else went wrong.
+      const metSlowDown = !!(out.slowDown || out.rateHits > 0);
+      if (out.ok) {
         const bundle = siteName === 'newspapers'
           ? ((out.results || []).find((r) => r.ok) || {}).bundle : out.bundle;
-        CB().markDone(L, item.key, bundle || '(staged)', out.note || null);
-        if (out.slowDown) {
+        if (out.partial) {
+          CB().markPartial(L, item.key, bundle || '(staged)', out.note || null);
+          if (out.imageKey && L.items[item.key]) L.items[item.key].imageKey = out.imageKey;
+        } else {
+          CB().markDone(L, item.key, bundle || '(staged)', out.note || null);
+        }
+        active.fails = 0;
+        if (metSlowDown) {
           CB().planRateLimit(L, Date.now());
           await save(siteName, L, true);
           throw new Stop(lib.name + ' asked us to slow down while this one was saved', 'slowdown');
         }
         if (/sign in|signed in|HTTP 401/i.test(out.note || '')) {
           await save(siteName, L, true);
-          throw new Stop(lib.name + ' asked you to sign in (the last one was saved without its image)');
+          throw new Stop(lib.name + ' asked you to sign in (the last one was saved without its image; it is tried ' +
+            'again at the next Start)');
         }
       } else {
-        const why = (out && out.error) || 'nothing was saved';
-        const kind = CB().classifyError(why);
+        const why = out.error || 'nothing was saved';
+        const kind = metSlowDown ? 'slowdown' : CB().classifyError(why);
         if (kind === 'slowdown') {
           CB().planRateLimit(L, Date.now());
           await save(siteName, L, true);
           throw new Stop(lib.name + ' asked us to slow down (' + why + ')', 'slowdown');
         }
-        if (kind !== 'skip') throw new Stop(why);
-        CB().markSetAside(L, item.key, why);
+        if (kind === 'stop') throw new Stop(why);
+        if (kind === 'refused') {
+          // Stop at the first refusal, with its cause. The same record
+          // refused again on a later Start is set aside instead, so one
+          // record can never hold up the rest of the queue.
+          const it = L.items[item.key];
+          it.stops = (it.stops || 0) + 1;
+          if (it.stops < CB().MAX_TRIES) throw new Stop(why);
+          await setAside(siteName, L, item, why + ' (refused ' + it.stops + ' times)');
+        } else if (kind === 'retry') {
+          CB().markRetry(L, item.key, why);
+          countFail(why);
+        } else {
+          await setAside(siteName, L, item, why);
+        }
       }
       const plan = CB().planAfterCapture(L, Date.now());
       await save(siteName, L, true);
       if (CB().nextPending(L)) await sleepUntil(siteName, L, plan.until, breakLabel(siteName, plan.kind));
+    }
+
+    // Several records in a row that cannot be saved say more about the site
+    // than about the records: the run stops, and they can be queued again.
+    function countFail(why) {
+      active.fails = (active.fails || 0) + 1;
+      if (active.fails >= CB().MAX_FAILS_IN_A_ROW) {
+        throw new Stop(active.fails + ' records in a row could not be saved (the last: ' + why + '). The site may be ' +
+          'having trouble. Those set aside can be queued again with "Try the set-aside ones again"');
+      }
+    }
+
+    async function setAside(siteName, L, item, why) {
+      CB().markSetAside(L, item.key, why);
+      await save(siteName, L, true);
+      countFail(why);
     }
 
     // ── filling a queue ──────────────────────────────────────────────────────
@@ -574,7 +683,12 @@
         const key = CB().SITES[out.site].keyOf(out.record);
         if (!key) return;
         CB().addRecords(out.site, L, [Object.assign({ title: out.record.name || '' }, out.record)], 'by hand');
-        CB().markDone(L, key, out.bundle, 'saved by hand');
+        if (out.partial) {
+          CB().markPartial(L, key, out.bundle, 'saved by hand' + (out.note ? ', ' + out.note : ''));
+          if (out.imageKey) L.items[key].imageKey = out.imageKey;
+        } else {
+          CB().markDone(L, key, out.bundle, 'saved by hand');
+        }
       }
       await save(out.site, L, false);
     }
@@ -629,6 +743,15 @@
           say(siteName, 'Your list is read again at the next Start; the clippings already done stay done. ' + countsLine(L));
         }));
       }
+      u.retry = tagged(el('button', { type: 'button', textContent: 'Try the set-aside ones again' }, sec), site.short + '-retry');
+      u.retry.addEventListener('click', guarded(siteName, 'Queuing the set-aside ones again', async () => {
+        if (active) return say(siteName, 'Pause the batch first, then press this again.', 'warn');
+        const L = await load(siteName);
+        const n = CB().requeueSetAside(L);
+        await save(siteName, L, true);
+        say(siteName, (n ? n + ' set-aside record' + (n === 1 ? ' is' : 's are') + ' queued again; press Start to try them. '
+          : 'Nothing is set aside. ') + countsLine(L), n ? 'ok' : '');
+      }));
       u.start = tagged(el('button', { type: 'button', textContent: 'Start' }, sec), site.short + '-start');
       u.start.addEventListener('click', () => run(siteName));
       u.pause = tagged(el('button', { type: 'button', textContent: 'Pause' }, sec), site.short + '-pause');
@@ -640,6 +763,20 @@
     }
     document.body.appendChild(box);
     buttons();
+
+    // Batch downloads switched off while this panel is open: a run going now
+    // stops after the record being saved, and Start answers nothing more.
+    if (chrome.storage.onChanged && chrome.storage.onChanged.addListener) {
+      chrome.storage.onChanged.addListener((changes, area) => {
+        if (area !== 'local' || !changes || !changes.batchDownloads) return;
+        if (changes.batchDownloads.newValue === true) return;
+        switchedOff = true;
+        if (active) {
+          active.off = true;
+          say(active.site, 'Batch downloads were switched off - stopping after the record being saved now…', 'warn');
+        }
+      });
+    }
 
     // Each queue's state, as it was left.
     (async () => {
