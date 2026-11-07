@@ -150,6 +150,32 @@ class VitalPickKeyTests(unittest.TestCase):
         self.assertEqual(self._best(
             dated('C-a', '099X', 'high'), dated('C-z', '0999', 'low')), 'C-z')
 
+    def _dated(self, cid, edtf, confidence):
+        from _lib import edtf_bounds
+        lo, hi = edtf_bounds(edtf)
+        return self._c(cid, lo, hi, confidence)
+
+    def test_a_leap_year_does_not_outrank_confidence(self):
+        # #207 audit: by raw days 1881 (364) was "narrower" than leap-year
+        # 1880 (365), so a low-confidence memory beat the certificate.
+        self.assertEqual(self._best(
+            self._dated('C-a', '1880', 'high'), self._dated('C-z', '1881', 'low')), 'C-a')
+
+    def test_month_length_does_not_outrank_confidence(self):
+        self.assertEqual(self._best(
+            self._dated('C-a', '1925-03', 'high'), self._dated('C-z', '1925-02', 'low')), 'C-a')
+
+    def test_two_about_years_go_by_confidence(self):
+        self.assertEqual(self._best(
+            self._dated('C-a', '1880~', 'high'), self._dated('C-z', '1882~', 'low')), 'C-a')
+
+    def test_a_backwards_interval_does_not_win(self):
+        # A typing slip '1950/1940' has a negative width; it must not beat
+        # the certificate's exact day by looking narrower than zero.
+        self.assertEqual(self._best(
+            self._dated('C-a', '1950/1940', 'low'),
+            self._dated('C-z', '1941-01-19', 'high')), 'C-z')
+
     def test_an_index_built_before_padding_still_ranks(self):
         # An index written by the old tools still holds '999-01-01'.
         self.assertEqual(self._best(

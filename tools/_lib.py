@@ -827,7 +827,21 @@ def _iso_day_number(value: Any) -> int:
     return datetime.date(max(year, 1), month, day).toordinal() + (0 if year else -366)
 
 
-def vital_pick_key(claim: Any) -> tuple[int, int, int, str]:
+# Precision tiers for `vital_pick_key`, by the width of a claim's date range
+# in days: (upper bound, tier). Tiers, not raw day counts, so the calendar
+# never outranks confidence. 1880 (a leap year, 365 days wide) is as exact as
+# 1881 (364), and March (30) as exact as February (27).
+_VITAL_PRECISION_TIERS: tuple[tuple[int, int], ...] = (
+    (0, 0),        # one day
+    (31, 1),       # one month
+    (366, 2),      # one year (or an approximate month)
+    (1100, 3),     # about a year ('1880~'), or a span of two or three years
+    (3660, 4),     # a decade ('188X')
+)
+_VITAL_WIDE_TIER = 5   # wider still: "before 1900", long intervals
+
+
+def vital_pick_key(claim: Any) -> tuple[int, int, int, int, str]:
     """Sort key for choosing which of a person's accepted vital claims is
     the headline Born/Died/Married date (#201).
 
@@ -841,14 +855,23 @@ def vital_pick_key(claim: Any) -> tuple[int, int, int, str]:
 
     The rule, in order:
       1. a dated claim before an undated one;
-      2. the narrowest `date_min`..`date_max` span - an exact day beats a
-         month, a month beats a year, a year beats "about" or "before";
+      2. the more precise date: a day beats a month, a month a year, a year
+         "about a year", that a decade, that anything wider
+         (`_VITAL_PRECISION_TIERS`);
       3. confidence: high, medium, low, then unstated;
-      4. claim id, so the pick never changes between builds.
+      4. the narrower range within one precision tier;
+      5. claim id, so the pick never changes between builds.
 
     Exactness comes before confidence on purpose. Ranking confidence first
     was tried on a real archive and mostly swapped an exact date for a
-    year range (`1825-06` lost to `1824/1825`).
+    year range (`1825-06` lost to `1824/1825`). But exactness is measured in
+    tiers, not raw days: by days alone, a low-confidence 1881 beat a
+    high-confidence certificate's 1880 because 1880 is a leap year (#207
+    audit).
+
+    A range that runs backwards (`1950/1940`, a typing slip lint does not
+    catch) has no meaningful width. It ranks with the undated claims rather
+    than first, which a negative width would otherwise make it.
 
     `claim` is any mapping or sqlite3.Row with `date_min`, `date_max`,
     `confidence` and `id`. Callers still filter first (own vitals only,
@@ -859,11 +882,16 @@ def vital_pick_key(claim: Any) -> tuple[int, int, int, str]:
     if claim['date_min'] and claim['date_max']:
         try:
             span = _iso_day_number(claim['date_max']) - _iso_day_number(claim['date_min'])
-            undated = 0
+            undated = 0 if span >= 0 else 1
         except ValueError:
             pass
+    if undated:
+        tier, span = _VITAL_WIDE_TIER, 0
+    else:
+        tier = next((t for limit, t in _VITAL_PRECISION_TIERS if span <= limit),
+                    _VITAL_WIDE_TIER)
     rank = _VITAL_CONFIDENCE_RANK.get(claim['confidence'] or '', 3)
-    return (undated, span, rank, str(claim['id']))
+    return (undated, tier, rank, span, str(claim['id']))
 
 
 def claim_is_own_vital(
