@@ -1486,6 +1486,27 @@ class ProcessTestCase(unittest.TestCase):
 
         self.assertEqual(process._find_back_sibling(primary), back)
 
+    def test_find_back_sibling_works_for_a_hyphenated_mixed_case_name(self) -> None:
+        # #200 completes #113: a name with a hyphenated word used to parse as
+        # a "freeform role", so the pull-in silently found nothing for it.
+        # The back of print B must not be taken for this print's back either.
+        d = self.archive / 'documents' / 'census'
+        primary = d / 'Smith-Farm-01400.jpg'
+        back = d / 'smith-farm-01400-back.jpg'
+        for p in (primary, back, d / 'Smith-Farm-01400b-back.jpg'):
+            p.write_bytes(b'\xff\xd8\xff')
+        self.assertEqual(process._find_back_sibling(primary), back)
+
+    def test_a_crop_of_the_back_does_not_make_the_back_ambiguous(self) -> None:
+        # #209 audit: a detail crop of the back parsed as a second 'back' and
+        # the pull-in refused with "more than one possible back scan".
+        d = self.archive / 'documents' / 'census'
+        primary = d / 'Smith-Farm-01400.jpg'
+        back = d / 'Smith-Farm-01400-back.jpg'
+        for p in (primary, back, d / 'Smith-Farm-01400-back-crop.jpg'):
+            p.write_bytes(b'\xff\xd8\xff')
+        self.assertEqual(process._find_back_sibling(primary), back)
+
     def test_find_back_sibling_raises_on_ambiguous_match(self) -> None:
         # Finding #3 (ambiguity half) / finding #4 (Codex PR #145 followup):
         # the old two-candidate guess checked '-back' before '_back' and
@@ -3068,6 +3089,27 @@ class ProcessTestCase(unittest.TestCase):
         self.assertEqual([p.name for p in sibs],
                          ['portrait_1880-back.jpg', 'portrait_1880.jpg'])
 
+    def test_photo_siblings_ignore_capitals_and_read_print_letters(self) -> None:
+        # #200: the one/separate/skip prompt groups by the same rule as the
+        # photo catalog, so a front and back that differ only in capitals,
+        # and print B, are offered together.
+        d = self.archive / 'photos' / '1880'
+        names = ['Smith-Farm-01400.jpg', 'smith-farm-01400-back.jpg',
+                 'Smith-Farm-01400b.jpg', 'smith-family.jpg']
+        for n in names:
+            (d / n).write_bytes(b'\xff\xd8\xff')
+        sibs = process._photo_variation_siblings(d / 'Smith-Farm-01400.jpg')
+        self.assertEqual(sorted(p.name for p in sibs), sorted(names[:3]))
+
+    def test_a_bundle_file_still_takes_its_role_from_its_last_word(self) -> None:
+        # In a bundle the name's last word IS the label its maker gave it.
+        from _lib import bundle_role
+        self.assertEqual(bundle_role(parse_media_filename('letter-envelope')), 'envelope')
+        self.assertEqual(
+            bundle_role(parse_media_filename('grandma-letter-transcript')), 'transcript')
+        self.assertEqual(bundle_role(parse_media_filename('letter-back')), 'back')
+        self.assertIsNone(bundle_role(parse_media_filename('letter-b')))
+
     def test_photo_siblings_always_include_the_file_itself(self) -> None:
         # The file being processed is a member of its own group even when the
         # directory listing cannot yield it: a dry-run inbox relocation hands
@@ -3323,6 +3365,68 @@ class ProcessTestCase(unittest.TestCase):
         self.assertEqual(by_original['transcript.txt']['role'], 'transcript')
         self.assertEqual(by_original['transcript.txt']['is_primary'], 'true')
         self.assertTrue(by_original['transcript.txt']['file'].endswith('-transcript_' + record.stem.split('_')[-1] + '.txt'))
+
+    def test_bundle_keeps_the_portrait_as_main_image_not_its_envelope(self) -> None:
+        # #209 review: once the parser stopped splitting words off names,
+        # both files read as plain scans and '-' sorts before '.', so the
+        # envelope became the record's main image.
+        self._install_photo_store()
+        bundle = self.archive / 'inbox' / 'portrait-bundle'
+        bundle.mkdir(parents=True)
+        (bundle / 'notes.md').write_text(
+            '---\ntitle: Portrait of Ada\nsource_type: photo\n---\nIn an envelope.\n',
+            encoding='utf-8')
+        (bundle / 'portrait.jpg').write_bytes(b'\xff\xd8\xff')
+        (bundle / 'portrait-envelope.jpg').write_bytes(b'\xff\xd8\xff')
+        self.assertEqual(self._run([str(bundle)]), EXIT_CLEAN)
+        record = next((self.archive / 'sources').rglob('*_S-*.md'))
+        files = {Path(f['file']).name: f for f in read_record(record)['meta']['files']}
+        self.assertEqual(files['portrait.jpg']['role'], 'primary')
+        self.assertIn(files['portrait.jpg']['is_primary'], (True, 'true'))
+        self.assertEqual(files['portrait-envelope.jpg']['role'], 'envelope')
+        self.assertNotIn(files['portrait-envelope.jpg'].get('is_primary'), (True, 'true'))
+
+    def test_bundle_keeps_an_explicit_front_as_main_image_over_its_envelope(self) -> None:
+        # #209 review round 2: with 'portrait-front.jpg' the envelope was the
+        # only PLAIN file, so it won before the front tier was reached.
+        self._install_photo_store()
+        bundle = self.archive / 'inbox' / 'front-bundle'
+        bundle.mkdir(parents=True)
+        (bundle / 'notes.md').write_text(
+            '---\ntitle: Portrait of Ada\nsource_type: photo\n---\nIn an envelope.\n',
+            encoding='utf-8')
+        (bundle / 'portrait-front.jpg').write_bytes(b'\xff\xd8\xff')
+        (bundle / 'portrait-envelope.jpg').write_bytes(b'\xff\xd8\xff')
+        self.assertEqual(self._run([str(bundle)]), EXIT_CLEAN)
+        record = next((self.archive / 'sources').rglob('*_S-*.md'))
+        files = {Path(f['file']).name: f for f in read_record(record)['meta']['files']}
+        self.assertIn(files['portrait-front.jpg']['is_primary'], (True, 'true'))
+        self.assertEqual(files['portrait-envelope.jpg']['role'], 'envelope')
+
+    def test_bundle_extracted_text_companion_stays_searchable(self) -> None:
+        # #209 review: the last-word rule read 'record-extracted-text.txt' as
+        # role 'text', which `fha index` does not load, so its words vanished
+        # from search. Run intake, index and search end to end.
+        import find
+        from index import build_index
+        bundle = self.archive / 'inbox' / 'record-bundle'
+        bundle.mkdir(parents=True)
+        (bundle / 'notes.md').write_text(
+            '---\ntitle: Land Deed\nsource_type: land-record\nfiles:\n'
+            '  - file: record.pdf\n    is_primary: true\n---\nA deed.\n',
+            encoding='utf-8')
+        (bundle / 'record.pdf').write_bytes(b'%PDF-1.4')
+        (bundle / 'record-extracted-text.txt').write_text(
+            'The parcel adjoins Quillfeather Creek.', encoding='utf-8')
+        self.assertEqual(self._run([str(bundle)]), EXIT_CLEAN)
+        record = next((self.archive / 'sources').rglob('*_S-*.md'))
+        roles = {f['original_filename']: f['role'] for f in read_record(record)['meta']['files']}
+        self.assertEqual(roles['record-extracted-text.txt'], 'extracted-text')
+        cfg = load_fha_yaml(self.archive)
+        with contextlib.redirect_stdout(io.StringIO()):
+            build_index(self.archive, cfg)
+        hits = find.search_json(self.archive, cfg, 'Quillfeather')
+        self.assertTrue(hits, 'the companion text must be searchable after intake')
 
     def test_bundle_document_filename_includes_copy_hint(self) -> None:
         bundle = self.archive / 'inbox' / 'translation-bundle'

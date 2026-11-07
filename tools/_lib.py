@@ -211,6 +211,9 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #
 #    ParsedName, parse_media_filename - decompose an unprocessed photo/scan filename
 #                                 into base_id + variant/part-kind/page/crop (TOOLING §6/§9)
+#    grouping_stem / variant_role / bundle_role / select_variation_primary -
+#                                 the variation-group key, a member's role, a bundle
+#                                 file's role, and the group's main image (#200)
 #
 #  EDTF handling
 #    is_valid_edtf             - validate an EDTF string against this project's subset
@@ -1425,6 +1428,14 @@ def is_catalogued_photo_name(name: str) -> bool:
 TEXT_COMPANION_ROLES: frozenset[str] = frozenset({
     'transcript', 'transcription', 'extracted-text',
 })
+
+# `files:` roles the archive itself spells with a hyphen, longest first.
+# `bundle_role` matches these whole before falling back to a file's last
+# word, so 'record-extracted-text.txt' keeps the role that makes it
+# searchable (#209 review). Derived, not listed, so a new compound text role
+# is covered the day it is added.
+_COMPOUND_FILE_ROLES: tuple[str, ...] = tuple(sorted(
+    (r for r in TEXT_COMPANION_ROLES if '-' in r), key=len, reverse=True))
 
 # File extensions the archive's text search actually opens and reads. Anything
 # else - a scan, a photograph, a PDF, a recording - is opaque to it: a PDF's own
@@ -4527,9 +4538,11 @@ class ParsedName:
 
     base_id    - the stem with all recognised suffixes stripped; the grouping key.
     variant_id - trailing copy letter ('a', 'b', 'c', …) if present, else None.
-    part_kind  - 'front' | 'back' | 'page' | 'negative' | 'bw' | 'freeform' | 'none'.
+    part_kind  - 'front' | 'back' | 'page' | 'negative' | 'bw' | 'none'.
     page_num   - integer page number when part_kind == 'page', else None.
-    freeform_role - unrecognised suffix kept as a role, per TOOLING §6.
+    freeform_role - the name's last word ('letter-envelope' -> 'envelope') when
+                 no recognised suffix or copy letter applies, else None. A
+                 LABEL only (`bundle_role`), never split off base_id (#200).
     is_crop    - True if a '-crop' derivative-detail suffix was stripped.
     """
     base_id: str
@@ -4548,7 +4561,11 @@ _BW_SUFFIX_RE = re.compile(r'[-_]bw$', re.I)
 _PAGE_SUFFIX_RE = re.compile(r'[-_]page[-_]?(\d+)$', re.I)
 _VARIANT_DASH_RE = re.compile(r'-([a-z])$', re.I)
 _VARIANT_BARE_RE = re.compile(r'(?<=[0-9])([a-z])$', re.I)
-_FREEFORM_ROLE_RE = re.compile(r'[-_]([a-z][a-z0-9-]*)$', re.I)
+# One word only, after the LAST separator: 'grandma-letter-envelope' ->
+# 'envelope'. The old pattern allowed hyphens inside the role and matched at
+# the leftmost place it could, so it took everything after the first hyphen
+# ('smith-farm-01400' -> 'farm-01400').
+_LAST_WORD_RE = re.compile(r'[-_]([a-z][a-z0-9]*)$', re.I)
 
 
 def parse_media_filename(stem: str) -> ParsedName:
@@ -4571,6 +4588,16 @@ def parse_media_filename(stem: str) -> ParsedName:
     root image, not an A/B print variant. That grouping decision lives in
     photoindex.py, not here - this function only reports what the filename
     literally encodes.
+
+    No other word is ever split off base_id (#200). Splitting the rest of a
+    hyphenated name off as a "freeform role" read the plain front scan
+    'Smith-Farm-01400' as photo 'Smith' with role 'farm-01400'. Its back,
+    'Smith-Farm-01400-back', then outranked it as the main image; the
+    lowercased role split the pair by capitals; and print B, '...-01400b',
+    never had its copy letter read, so it stood apart while its own back
+    joined the original. A trailing word that is not suffix grammar is
+    still reported in `freeform_role`, for the one place that wants it as a
+    label: a capture bundle's files (`bundle_role`).
     """
     remaining = stem
     is_crop = bool(_CROP_SUFFIX_RE.search(remaining))
@@ -4597,17 +4624,6 @@ def parse_media_filename(stem: str) -> ParsedName:
     elif _BW_SUFFIX_RE.search(remaining):
         part_kind = 'bw'
         remaining = _BW_SUFFIX_RE.sub('', remaining)
-    else:
-        freeform_m = _FREEFORM_ROLE_RE.search(remaining)
-        # A single trailing letter is never a freeform role - it's either a
-        # documented copy variant ('-b', '034b') or, for an undocumented form
-        # like '_a', not a suffix at all (TOOLING §6: only dash or
-        # bare-after-digit is copy-variant grammar; underscore-letter must
-        # stay part of base_id rather than being swallowed as a "role").
-        if freeform_m and len(freeform_m.group(1)) > 1:
-            part_kind = 'freeform'
-            freeform_role = freeform_m.group(1).lower()
-            remaining = _FREEFORM_ROLE_RE.sub('', remaining)
 
     variant_id: str | None = None
     dash_m = _VARIANT_DASH_RE.search(remaining)
@@ -4620,6 +4636,13 @@ def parse_media_filename(stem: str) -> ParsedName:
             variant_id = bare_m.group(1).lower()
             remaining = remaining[:-1]
 
+    if part_kind == 'none' and variant_id is None:
+        # A single trailing letter is never a word - it is a copy letter or,
+        # for an undocumented form like '_a', just part of the name.
+        word_m = _LAST_WORD_RE.search(remaining)
+        if word_m and len(word_m.group(1)) > 1:
+            freeform_role = word_m.group(1).lower()
+
     return ParsedName(
         base_id=remaining, variant_id=variant_id, part_kind=part_kind,
         page_num=page_num, freeform_role=freeform_role, is_crop=is_crop,
@@ -4627,13 +4650,16 @@ def parse_media_filename(stem: str) -> ParsedName:
 
 
 def grouping_stem(parsed: ParsedName) -> str:
-    """The base_id to group variation siblings by (TOOLING §6/§9).
+    """The key to group variation siblings by (TOOLING §6/§9): base_id,
+    case-folded. A comparison key, not a display name.
 
     The recognised suffix grammar (copy letter, negative/back/front/page-N/bw,
     crop) is stripped so different scans of one physical photo collapse to one
-    key, but an *unrecognised* freeform suffix is folded back in: two unrelated
-    files like 'smith-family.jpg' and 'smith-house.jpg' must not merge into one
-    group just because both end in '-word'.
+    key. Nothing else is: two unrelated files like 'smith-family.jpg' and
+    'smith-house.jpg' keep different base_ids and never merge. Case is folded
+    because a scanner or a rename tool does not keep capitals consistent: the
+    front 'Smith-Farm-01400' and back 'smith-farm-01400-back' are one photo
+    (#200).
 
     Lives in _lib (not photoindex) because two tools must agree on what counts
     as a variation group: `fha photoindex` caches the grouping, and `fha
@@ -4643,26 +4669,23 @@ def grouping_stem(parsed: ParsedName) -> str:
     variation detection). Tools never import tools, so the shared rule lives
     here.
     """
-    if parsed.part_kind == 'freeform':
-        return f'{parsed.base_id}-{parsed.freeform_role}'
-    return parsed.base_id
+    return parsed.base_id.casefold()
 
 
 def variant_role(parsed: ParsedName) -> str | None:
     """Compound role string for a non-primary variation member (TOOLING §6/§9).
 
     Returns None for a plain scan (no recognised suffix) - the caller treats a
-    None role as the primary. 'page' carries its number ('page-3'); a freeform
-    suffix becomes the role verbatim; '-crop' stacks onto whatever part-kind it
-    accompanies ('back-crop') or stands alone ('crop'). Shared by `fha
+    None role as the primary. 'page' carries its number ('page-3'); '-crop'
+    stacks onto whatever part-kind it accompanies ('back-crop') or stands
+    alone ('crop'). The name's other words are never a role here (#200): a
+    plain scan named 'smith-farm-01400' has no role. Shared by `fha
     photoindex` (the cached `variant_role` column) and `fha process` (the
     `files:` role annotation written on a grouped source), so both label the
     same physical relationship identically.
     """
     if parsed.part_kind == 'page':
         base = f'page-{parsed.page_num}'
-    elif parsed.part_kind == 'freeform':
-        base = parsed.freeform_role
     elif parsed.part_kind != 'none':
         base = parsed.part_kind
     else:
@@ -4670,6 +4693,38 @@ def variant_role(parsed: ParsedName) -> str | None:
     if parsed.is_crop:
         return f'{base}-crop' if base else 'crop'
     return base
+
+
+def bundle_role(parsed: ParsedName) -> str | None:
+    """The `files:` role for one non-primary file of a capture BUNDLE.
+
+    A bundle's files were put together on purpose (a folder handed to
+    `fha process`, or a capture), so there is no grouping to get wrong, and
+    a file's last word is the label its maker gave it: 'letter-envelope.jpg'
+    is the envelope, 'letter-transcript.txt' the transcript. The suffix
+    grammar wins where it applies ('letter-back.jpg' -> 'back'). Only here:
+    in a folder of loose scans that word is part of the name (#200).
+
+    A role the archive itself spells with a hyphen is recognised whole
+    before the last word is taken: 'record-extracted-text.txt' is
+    `extracted-text`, which `fha index` loads as searchable text, not
+    `text`, which it would skip (#209 review).
+    """
+    role = variant_role(parsed)
+    if role:
+        return role
+    name = parsed.base_id.casefold()
+    for compound in _COMPOUND_FILE_ROLES:
+        if name == compound or name.endswith((f'-{compound}', f'_{compound}')):
+            return compound
+    return parsed.freeform_role
+
+
+def _extends_name(name: str, root: str) -> bool:
+    """True when `name` is `root` plus a separator and more ('portrait-
+    envelope' extends 'portrait'), compared without regard to case."""
+    name, root = name.casefold(), root.casefold()
+    return len(name) > len(root) and name.startswith(root) and name[len(root)] in '-_'
 
 
 def select_variation_primary(members: list, parsed_of) -> object:
@@ -4684,6 +4739,20 @@ def select_variation_primary(members: list, parsed_of) -> object:
 
     Shared so `fha process` flags the same file as `is_primary: true` that
     `fha photoindex` records in `photo_groups.primary_path`.
+
+    Among several plain scans, one whose name merely extends another's is an
+    attachment, not the picture: in a bundle or a processed source holding
+    'portrait.jpg' and 'portrait-envelope.jpg', the portrait is the main
+    image, though '-' sorts before '.' (#209 review). Members of a folder
+    variation group share one base name, so this never changes their pick.
+    Of unrelated plain names (a processed source holding 'x-00100.jpg' and
+    an attached 'grandma-note.jpg'), one without a trailing label word ranks
+    ahead of one with it - the old parser's effective preference, kept.
+
+    When no member is plain or a front, a scan of the picture side still
+    beats a back, a negative or a crop: 'Reunion-1950s.jpg' (its trailing
+    's' reads as a copy letter) is the picture, '...-1950s-back.jpg' is not,
+    though '-' sorts first (#209 audit). The lowest copy letter wins.
     """
     plain = [
         m for m in members
@@ -4691,8 +4760,18 @@ def select_variation_primary(members: list, parsed_of) -> object:
         and parsed_of(m).part_kind == 'none'
         and not parsed_of(m).is_crop
     ]
-    if plain:
-        return min(plain)
+    # A plain scan whose name extends ANY member's - a plain one, a front,
+    # a back - is that member's attachment, never the picture:
+    # 'portrait-envelope.jpg' beside 'portrait-front.jpg' as much as beside
+    # 'portrait.jpg' (#209 review).
+    roots = [
+        m for m in plain
+        if not any(o is not m and _extends_name(parsed_of(m).base_id, parsed_of(o).base_id)
+                   for o in members)
+    ]
+    if roots:
+        unlabelled = [m for m in roots if parsed_of(m).freeform_role is None]
+        return min(unlabelled or roots)
     fronts = [
         m for m in members
         if parsed_of(m).variant_id in (None, 'a')
@@ -4700,7 +4779,28 @@ def select_variation_primary(members: list, parsed_of) -> object:
         and not parsed_of(m).is_crop
     ]
     if fronts:
-        return min(fronts)
+        # Same attachment rule ('portrait-envelope-front' is the envelope's).
+        front_roots = [
+            m for m in fronts
+            if not any(o is not m and _extends_name(parsed_of(m).base_id, parsed_of(o).base_id)
+                       for o in members)
+        ]
+        return min(front_roots or fronts)
+    picture_side = [
+        m for m in members
+        if parsed_of(m).part_kind in ('none', 'front') and not parsed_of(m).is_crop
+    ]
+    if picture_side:
+        # The attachment rule again: 'portrait-envelope.jpg' must not win just
+        # because print B, 'portrait-b.jpg', carries a copy letter (#209
+        # review). Only when every candidate is an attachment does one win.
+        picture_roots = [
+            m for m in picture_side
+            if not any(o is not m and _extends_name(parsed_of(m).base_id, parsed_of(o).base_id)
+                       for o in members)
+        ]
+        return min(picture_roots or picture_side,
+                   key=lambda m: (parsed_of(m).variant_id or '', m))
     return min(members)
 
 

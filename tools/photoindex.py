@@ -229,6 +229,7 @@ from _lib import (
     fmt_id_display,
     format_edtf_error,
     format_exiftool_error,
+    bundle_role,
     grouping_stem as _grouping_stem,
     humanize_edtf as _humanize_edtf,
     id_type_of,
@@ -1184,9 +1185,9 @@ def _group_photos(conn: sqlite3.Connection) -> None:
     Grouping key, in priority order (TOOLING §9): (1) a shared SOURCE: S-id -
     files already processed into one source are one logical photo regardless
     of name; (2) same directory + same filename base_id after stripping the
-    *recognized* suffix grammar (_lib.parse_media_filename, excluding
-    freeform roles - see _grouping_stem) - the pipeline's own variation
-    convention. Always run over every row (not just changed ones): grouping
+    *recognized* suffix grammar (_lib.parse_media_filename; no other word of
+    the name is ever split off, and case is folded - see _grouping_stem, #200)
+    - the pipeline's own variation convention. Always run over every row (not just changed ones): grouping
     is cheap pure-SQL/Python and a partial re-group after an incremental scan
     would silently miss a newly-added sibling joining an existing group.
     """
@@ -1249,11 +1250,18 @@ def _group_photos(conn: sqlite3.Connection) -> None:
             # letter in their filename (TOOLING §9) - a negative is source
             # material for the root image, not an A/B variant of the print.
             variant_copy = None if parsed.part_kind == 'negative' else parsed.variant_id
+            # A processed source's files were put together on purpose (a
+            # bundle, a --more attachment), so a member's last word is the
+            # label its maker gave it: 'portrait-envelope.jpg' is the
+            # envelope, not an unnamed copy (#209 audit; `bundle_role`).
+            # A name-derived group keeps the suffix grammar only.
+            role = (bundle_role(parsed)
+                    if group_id.startswith('SOURCE:') and path != primary
+                    else _variant_role(parsed))
             conn.execute(
                 'UPDATE photos SET group_id=?, is_primary=?, variant_copy=?, variant_role=? '
                 'WHERE path=?',
-                (group_id, 1 if path == primary else 0, variant_copy,
-                 _variant_role(parsed), path),
+                (group_id, 1 if path == primary else 0, variant_copy, role, path),
             )
 
 

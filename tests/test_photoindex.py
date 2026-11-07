@@ -36,6 +36,7 @@ from _lib import (
     photoindex_status,
     record_path_manifest,
     resolve_path,
+    variant_role,
     write_path_manifest,
 )
 
@@ -651,6 +652,121 @@ class PhotoindexTests(unittest.TestCase):
             finally:
                 conn.close()
 
+    def test_hyphenated_mixed_case_print_set_is_one_photo_with_the_front_as_main(self) -> None:
+        # #200: in one real library most front/back pairs went wrong. The
+        # back became the main image, capitals split a pair into two photos,
+        # and print B stood apart while its own back joined the original.
+        # All of it came from reading 'Smith-Farm-01400' as photo 'Smith'
+        # with role 'farm-01400'.
+        names = [
+            'album/Smith-Farm-01400.tif',          # the plain front scan
+            'album/smith-farm-01400-back.tif',     # its back, capitals differ
+            'album/Smith-Farm-01400b.tif',         # print B of the same picture
+            'album/Smith-Farm-01400b-back.tif',    # the back of print B
+            'album/smith-family.jpg',              # unrelated, must stay apart
+            'album/smith-house.jpg',               # unrelated, must stay apart
+        ]
+        with tempfile.TemporaryDirectory() as d:
+            conn, _needs_face_backfill, _rebuilt_reason = photoindex._get_db(Path(d) / '.cache')
+            try:
+                for name in names:
+                    conn.execute(
+                        'INSERT INTO photos(path, mtime, size, source_id, group_id, '
+                        'is_primary, variant_copy, variant_role) '
+                        'VALUES (?,0,0,NULL,NULL,0,NULL,NULL)', (name,))
+                photoindex._group_photos(conn)
+                rows = {r[0]: r[1:] for r in conn.execute(
+                    'SELECT path, group_id, is_primary, variant_copy, variant_role FROM photos')}
+            finally:
+                conn.close()
+        print_set = names[:4]
+        self.assertEqual(len({rows[n][0] for n in print_set}), 1, rows)
+        self.assertEqual(
+            [n for n in print_set if rows[n][1]], ['album/Smith-Farm-01400.tif'])
+        self.assertEqual(rows['album/Smith-Farm-01400.tif'][3], None)    # no role
+        self.assertEqual(rows['album/smith-farm-01400-back.tif'][3], 'back')
+        self.assertEqual(rows['album/Smith-Farm-01400b.tif'][2], 'b')    # copy letter read
+        self.assertEqual(rows['album/Smith-Farm-01400b-back.tif'][2:], ('b', 'back'))
+        others = {rows['album/smith-family.jpg'][0], rows['album/smith-house.jpg'][0]}
+        self.assertEqual(len(others), 2)
+        self.assertNotIn(rows['album/Smith-Farm-01400.tif'][0], others)
+
+    def test_a_processed_portrait_stays_main_image_over_its_envelope(self) -> None:
+        # #209 review, same class as the bundle pick: a processed source's
+        # files group by their SOURCE: id, and both names read as plain
+        # scans, so '-' sorting before '.' made the envelope the main image.
+        with tempfile.TemporaryDirectory() as d:
+            conn, _needs_face_backfill, _rebuilt_reason = photoindex._get_db(Path(d) / '.cache')
+            try:
+                for name in ('box/portrait.jpg', 'box/portrait-envelope.jpg'):
+                    conn.execute(
+                        'INSERT INTO photos(path, mtime, size, source_id, group_id, '
+                        'is_primary, variant_copy, variant_role) '
+                        "VALUES (?,0,0,'S-123456789a',NULL,0,NULL,NULL)", (name,))
+                photoindex._group_photos(conn)
+                primary = [r[0] for r in conn.execute('SELECT path FROM photos WHERE is_primary = 1')]
+            finally:
+                conn.close()
+        self.assertEqual(primary, ['box/portrait.jpg'])
+
+    def _group(self, rows):
+        """Group `rows` of (path, source_id) and return {path: (group_id,
+        is_primary, variant_copy, variant_role)}."""
+        with tempfile.TemporaryDirectory() as d:
+            conn, _needs_face_backfill, _rebuilt_reason = photoindex._get_db(Path(d) / '.cache')
+            try:
+                for name, sid in rows:
+                    conn.execute(
+                        'INSERT INTO photos(path, mtime, size, source_id, group_id, '
+                        'is_primary, variant_copy, variant_role) '
+                        'VALUES (?,0,0,?,NULL,0,NULL,NULL)', (name, sid))
+                photoindex._group_photos(conn)
+                return {r[0]: r[1:] for r in conn.execute(
+                    'SELECT path, group_id, is_primary, variant_copy, variant_role FROM photos')}
+            finally:
+                conn.close()
+
+    def test_a_front_with_a_trailing_letter_still_beats_its_back(self) -> None:
+        # #209 audit: '1950s' reads its 's' as a copy letter, so neither the
+        # front nor the back was plain, and min() chose the back.
+        rows = self._group([('a/Hartley-Reunion-1950s.jpg', None),
+                            ('a/Hartley-Reunion-1950s-back.jpg', None),
+                            ('a/Smith-Farm-01400a.tif', None),
+                            ('a/Smith-Farm-01400a-back.tif', None)])
+        self.assertEqual(rows['a/Hartley-Reunion-1950s.jpg'][1], 1)
+        self.assertEqual(rows['a/Hartley-Reunion-1950s-back.jpg'][1], 0)
+        self.assertEqual(rows['a/Smith-Farm-01400a.tif'][1], 1)
+
+    def test_a_processed_sources_attachments_keep_their_labels(self) -> None:
+        # #209 audit: in a SOURCE: group, an unrelated attachment name used to
+        # outrank the real picture, and the envelope lost its 'envelope' label.
+        rows = self._group([('b/x-00100.jpg', 'S-123456789a'),
+                            ('b/grandma-note.jpg', 'S-123456789a'),
+                            ('c/portrait.jpg', 'S-223456789a'),
+                            ('c/portrait-envelope.jpg', 'S-223456789a')])
+        self.assertEqual(rows['b/x-00100.jpg'][1], 1)
+        self.assertEqual(rows['c/portrait.jpg'][1], 1)
+        self.assertEqual(rows['c/portrait-envelope.jpg'][3], 'envelope')
+        self.assertEqual(rows['b/grandma-note.jpg'][3], 'note')
+
+    def test_print_b_stays_main_image_over_its_envelope(self) -> None:
+        # #209 review round 3: the picture-side fallback let the envelope back in.
+        rows = self._group([('e/portrait-b.jpg', 'S-423456789a'),
+                            ('e/portrait-envelope.jpg', 'S-423456789a')])
+        self.assertEqual(rows['e/portrait-b.jpg'][1], 1)
+        self.assertEqual(rows['e/portrait-envelope.jpg'][1], 0)
+        # Class sweep: the front tier has the same rule.
+        rows = self._group([('f/portrait-front.jpg', 'S-523456789a'),
+                            ('f/portrait-envelope-front.jpg', 'S-523456789a')])
+        self.assertEqual(rows['f/portrait-front.jpg'][1], 1)
+
+    def test_a_processed_front_stays_main_image_over_its_envelope(self) -> None:
+        # #209 review round 2: an explicit '-front' beside an envelope.
+        rows = self._group([('d/portrait-front.jpg', 'S-323456789a'),
+                            ('d/portrait-envelope.jpg', 'S-323456789a')])
+        self.assertEqual(rows['d/portrait-front.jpg'][1], 1)
+        self.assertEqual(rows['d/portrait-envelope.jpg'][1], 0)
+
     def test_person_match_on_one_variant_propagates_to_whole_group(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             archive = _copy_fixture(Path(d))
@@ -696,11 +812,15 @@ class PhotoindexTests(unittest.TestCase):
         self.assertEqual(bw.part_kind, 'bw')
         self.assertTrue(bw.is_crop)
 
+        # #200: an unrecognised word stays in base_id. It is reported as
+        # freeform_role (a label for bundle files), but it neither splits the
+        # name nor counts as a role, so the file is its own plain scan.
         freeform = parse_media_filename('portrait_1880b-restored')
-        self.assertEqual(freeform.base_id, 'portrait_1880')
-        self.assertEqual(freeform.variant_id, 'b')
-        self.assertEqual(freeform.part_kind, 'freeform')
+        self.assertEqual(freeform.base_id, 'portrait_1880b-restored')
+        self.assertIsNone(freeform.variant_id)
+        self.assertEqual(freeform.part_kind, 'none')
         self.assertEqual(freeform.freeform_role, 'restored')
+        self.assertIsNone(variant_role(freeform))
 
         dash_variant = parse_media_filename('portrait_1880-b')
         self.assertEqual(dash_variant.base_id, 'portrait_1880')
@@ -880,7 +1000,8 @@ class PhotoindexTests(unittest.TestCase):
     def test_grouping_stem_keeps_freeform_suffix_distinct(self) -> None:
         family = parse_media_filename('smith-family')
         house = parse_media_filename('smith-house')
-        self.assertEqual(family.base_id, house.base_id)
+        # #200: no word is split off, so the two names never share a base.
+        self.assertNotEqual(family.base_id, house.base_id)
         self.assertNotEqual(photoindex._grouping_stem(family), photoindex._grouping_stem(house))
 
         back = parse_media_filename('portrait_1880_back')
