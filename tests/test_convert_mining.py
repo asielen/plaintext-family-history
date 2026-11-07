@@ -466,5 +466,48 @@ class PersonFilenameTests(unittest.TestCase):
                 )
 
 
+class ReversedLegacyDateTests(unittest.TestCase):
+    """#217 audit: a legacy row with Earliest typed after Latest must not lose
+    its years. They are refused as a date now (a backwards range, #216), so
+    the converter keeps them as written in the claim's notes and says so in
+    one summarized warning naming the row - never a silent, dateless claim.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.archive = Path(self._tmp.name) / 'legacy-export'
+        shutil.copytree(FIXTURE, self.archive)
+        self.config = load_fha_yaml(self.archive, strict=True)
+        facts = self.archive / 'mining' / 'facts.txt'
+        text = facts.read_text(encoding='utf-8')
+        self.assertIn('| 1880 | 1885 |', text)
+        facts.write_text(text.replace('| 1880 | 1885 |', '| 1885 | 1880 |'), encoding='utf-8')
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_the_years_are_kept_in_notes_and_warned_about(self) -> None:
+        plan = convert_mining.build_plan(self.archive, self.config, self.archive / 'mining')
+        claims = [c for s in plan.sources for c in s.claims]
+        bookkeeper = next(c for c in claims if 'bookkeeper' in c.value)
+        self.assertIsNone(bookkeeper.date)
+        self.assertIn('Earliest 1885', bookkeeper.notes)
+        self.assertIn('Latest 1880', bookkeeper.notes)
+        warning = next(w for w in plan.warnings if 'Earliest/Latest' in w)
+        self.assertIn('bookkeeper', warning)
+        self.assertIn('fha claim', warning)
+
+    def test_the_applied_record_still_holds_both_years_and_lints_clean(self) -> None:
+        with contextlib.redirect_stdout(io.StringIO()):
+            rc = convert_mining.run_convert(self.archive, self.config, apply=True)
+        self.assertNotEqual(rc, EXIT_CLEAN)   # the warning makes it exit 1, not 0
+        texts = [p.read_text(encoding='utf-8') for p in (self.archive / 'sources').rglob('*.md')]
+        record = next(t for t in texts if 'bookkeeper' in t)
+        self.assertIn('Earliest 1885', record)
+        self.assertIn('Latest 1880', record)
+        result = lint.run_lint(self.archive, load_fha_yaml(self.archive))
+        self.assertEqual([m for m in result.messages if m.code == 'E014'], [])
+
+
 if __name__ == '__main__':
     unittest.main()

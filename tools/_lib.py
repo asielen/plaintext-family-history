@@ -4892,7 +4892,9 @@ def backwards_interval_halves(value: object) -> tuple[str, str] | None:
         if (is_valid_edtf(start) and is_valid_edtf(end)
                 and interval_runs_backwards(start, end)):
             return start, end
-    text = re.sub(r'\s+', ' ', raw.lower()).strip().strip('.,')
+    # The same hedge words normalize_date reads off first ("circa", "about",
+    # "the" ...), so "circa 1950 to 1940" is explained as backwards too.
+    text = _loose_date_parts(raw)[0]
     words = _RANGE_WORDS_RE.match(text)
     if words and words.group(1) > words.group(2):
         return words.group(1), words.group(2)
@@ -4930,6 +4932,37 @@ _MONTH_NAMES = {
 }
 
 
+def _loose_date_parts(raw: str) -> tuple[str, bool, bool, bool]:
+    """A loose date's text with its hedge words read off: (rest, approx, before, uncertain).
+
+    The one reader both `normalize_date` and `backwards_interval_halves` use,
+    so the two cannot disagree about which words are a hedge (#217 audit:
+    "circa 1950 to 1940" was refused as backwards by one and not explained
+    as backwards by the other).
+
+    Works on a lowercased, whitespace-collapsed copy stripped of trailing
+    sentence punctuation ("circa 1870." → "circa 1870"), and of a leading
+    "the". Canonical forms with meaningful punctuation (~, ?, [..], /) never
+    reach here from `normalize_date`, so stripping '.,' only removes human
+    noise. A leading approximate tilde ("~1870") folds into the approximate
+    path.
+    """
+    text = re.sub(r'\s+', ' ', raw.lower()).strip().strip('.,')
+    text = re.sub(r'^the\s+', '', text)
+    if text.startswith('~'):
+        text = 'circa ' + text[1:].strip()
+
+    approx = before = uncertain = False
+    m = _APPROX_PREFIX_RE.match(text)
+    if m:
+        approx, text = True, text[m.end():].strip()
+    elif (m := _BEFORE_PREFIX_RE.match(text)):
+        before, text = True, text[m.end():].strip()
+    elif (m := _UNCERTAIN_PREFIX_RE.match(text)):
+        uncertain, text = True, text[m.end():].strip()
+    return text, approx, before, uncertain
+
+
 def normalize_date(s: str | None) -> str | None:
     """Translate a loose, human-written date into canonical EDTF, or None if its
     meaning is genuinely unclear.
@@ -4962,25 +4995,7 @@ def normalize_date(s: str | None) -> str | None:
     if is_valid_edtf(raw):
         return raw
 
-    # Work on a lowercased, whitespace-collapsed copy stripped of trailing
-    # sentence punctuation ("circa 1870." → "circa 1870").  Canonical forms with
-    # meaningful punctuation (~, ?, [..], /) are already handled by the early
-    # return above, so stripping '.,' here only removes human noise.
-    text = re.sub(r'\s+', ' ', raw.lower()).strip().strip('.,')
-    text = re.sub(r'^the\s+', '', text)
-
-    # A leading approximate tilde ("~1870") folds into the approximate path.
-    if text.startswith('~'):
-        text = 'circa ' + text[1:].strip()
-
-    approx = before = uncertain = False
-    m = _APPROX_PREFIX_RE.match(text)
-    if m:
-        approx, text = True, text[m.end():].strip()
-    elif (m := _BEFORE_PREFIX_RE.match(text)):
-        before, text = True, text[m.end():].strip()
-    elif (m := _UNCERTAIN_PREFIX_RE.match(text)):
-        uncertain, text = True, text[m.end():].strip()
+    text, approx, before, uncertain = _loose_date_parts(raw)
 
     candidate: str | None = None
 

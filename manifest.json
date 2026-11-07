@@ -441,14 +441,14 @@
     {
       "path": ".fha/tools/README.md",
       "category": "operating",
-      "sha256": "1e47739b377e604d28a6b07ede87db9ba3c097c02dd0d9282968e9848b93f29e",
+      "sha256": "d65281c5d89c040e11adceb01ba9f9cf8672dc4ff8dea84562f793e10d85b515",
       "spec_version": "1.2",
       "src": "tools/README.md"
     },
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "1afd294a01e119138b6ec1955f0178e7c4e0de72e740c1e361bd8e383b9de411",
+      "sha256": "3414ed52eb22b2c49a44c2e254f1330f270b18f45263ea2c4423d887df18e41a",
       "spec_version": "1.2",
       "src": "tools/_lib.py"
     },
@@ -525,7 +525,7 @@
     {
       "path": ".fha/tools/convert_mining.py",
       "category": "operating",
-      "sha256": "bbb8a619b12bdedcf53c5e5a9026223d8b45460b34a3b3ffcba51adedb88bce6",
+      "sha256": "46152300865517428581ab167c05f69a8df84703bb7d186d484c89fdd17fd7ca",
       "spec_version": "1.2",
       "src": "tools/convert_mining.py"
     },
@@ -919,7 +919,7 @@
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "bfb3568b60982ca1d8bfa436d8596f53db3a397424c70389cf4b5f9c5c80d186",
+      "sha256": "bcde59c07faa2748a4e77d910c0123ef5bddc313397dc629ed9f0186eaa8efa1",
       "spec_version": "1.2"
     },
     {

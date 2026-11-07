@@ -643,6 +643,7 @@ def build_plan(archive_root: Path, fha_config: dict, mining_dir: Path) -> Conver
     mapping_rows: list[tuple[str, str, str]] = []
     attached_story_indices: set[int] = set()
     defaulted_confidence = 0
+    unstored_dates: list[str] = []   # rows whose Earliest/Latest could not be stored
 
     documents_root = resolve_path('documents', fha_config, archive_root)
 
@@ -705,6 +706,21 @@ def build_plan(archive_root: Path, fha_config: dict, mining_dir: Path) -> Conver
             notes_bits: list[str] = []
             for tref, utext in row.get('updates', []):
                 notes_bits.append(f'Update ({tref}): {utext}' if tref else f'Update: {utext}')
+            # A date the row HAS but that cannot be stored - Earliest after
+            # Latest (a typing slip, now refused as a backwards range, #216),
+            # or a cell that is not a date at all - must not vanish: the
+            # legacy table is the only place those years exist. Keep them
+            # as written in the claim's notes and count them for one
+            # summarized warning (gedcom_import's could-not-translate posture).
+            earliest_raw = (row.get('earliest') or '').strip()
+            latest_raw = (row.get('latest') or '').strip()
+            if date is None and (earliest_raw or latest_raw):
+                notes_bits.append(
+                    f'Legacy dates as written: Earliest {earliest_raw or "(blank)"}, '
+                    f'Latest {latest_raw or "(blank)"} - not stored as a date, because '
+                    'they do not read as one (Earliest after Latest runs backwards).')
+                unstored_dates.append(f'{legacy_id}: {value[:40]!r} '
+                                      f'(Earliest {earliest_raw or "-"}, Latest {latest_raw or "-"})')
             notes = ' '.join(notes_bits) or None
             anchor = find_anchor(value, transcript_lines) if value else None
             confidence = _confidence(row.get('confidence', ''))
@@ -751,6 +767,16 @@ def build_plan(archive_root: Path, fha_config: dict, mining_dir: Path) -> Conver
             ai_pass_model=model, stories=source_stories, claims=source_claims,
         ))
         mapping_rows.append((legacy_id, sid, f'source: {title}'))
+
+    if unstored_dates:
+        shown = '; '.join(unstored_dates[:5])
+        more = f'; and {len(unstored_dates) - 5} more' if len(unstored_dates) > 5 else ''
+        warnings.append(
+            f'{len(unstored_dates)} fact row(s) had Earliest/Latest dates that could not be '
+            'stored as a date - most often Earliest typed after Latest. Their claims were '
+            'written without a date, and the dates as written are kept in each claim\'s '
+            f'notes: {shown}{more}. Set the right date during claim review with '
+            '`fha claim <C-id> --date ...`.')
 
     if defaulted_confidence:
         warnings.append(

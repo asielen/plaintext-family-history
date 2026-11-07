@@ -2745,6 +2745,15 @@ class BackwardsIntervalTests(unittest.TestCase):
         words = format_edtf_error('between 1950 and 1940', field='--date')
         self.assertIn('runs backwards', words)
 
+    def test_a_hedged_backwards_range_is_explained_as_backwards_too(self) -> None:
+        # #217 audit: normalize_date reads "circa"/"about"/"the" off first, so
+        # the explanation must too - not the generic "not a date" message.
+        for words in ('circa 1950 to 1940', 'about 1950-1940', 'the 1950 to 1940',
+                      'maybe 1950 to 1940'):
+            with self.subTest(words=words):
+                self.assertIsNone(normalize_date(words))
+                self.assertIn('runs backwards', format_edtf_error(words))
+
     def test_fha_claim_date_refuses_and_leaves_the_claim_alone(self) -> None:
         before = self.source.read_bytes()
         result = claim.run_claim(self.root, claim_id='C-aa11bb22cc', date='1950/1940')
