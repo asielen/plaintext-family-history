@@ -7208,5 +7208,52 @@ class ContentFingerprintTests(unittest.TestCase):
         self.assertNotEqual(photoindex_status(self.archive, self.CFG)[0], 'stale')
 
 
+    # ── #220 Codex round 4 ──────────────────────────────────────────────────
+
+    def test_an_already_catalogued_twin_never_drops_a_missing_copy(self) -> None:
+        # Two copies of one picture, both catalogued. One is deleted and
+        # flagged MISSING:; the next scan must keep that copy's history -
+        # its twin was already here, it is not the photo coming back.
+        picture = self._picture(50)
+        self._put('a.jpg', picture, caption='first copy')
+        self._put('z.jpg', self._with_new_header(picture), caption='second copy')
+        photoindex.run_scan(self.archive, self.CFG)
+        (self.photos / 'a.jpg').unlink()
+        photoindex.run_reconcile(self.archive, self.CFG)
+        photoindex.run_scan(self.archive, self.CFG)
+        rows = self._rows()
+        self.assertIn('MISSING:photos/a.jpg', rows)
+        self.assertEqual(rows['MISSING:photos/a.jpg'][0], 'first copy')
+
+    def test_several_missing_copies_are_not_dropped_for_one_new_arrival(self) -> None:
+        picture = self._picture(51)
+        self._put('a.jpg', picture, caption='A')
+        self._put('b.jpg', picture, caption='B')
+        photoindex.run_scan(self.archive, self.CFG)
+        (self.photos / 'a.jpg').unlink()
+        (self.photos / 'b.jpg').unlink()
+        photoindex.run_reconcile(self.archive, self.CFG)
+        self._put('c.jpg', picture)
+        photoindex.run_scan(self.archive, self.CFG)
+        rows = self._rows()
+        self.assertIn('MISSING:photos/a.jpg', rows)
+        self.assertIn('MISSING:photos/b.jpg', rows)
+
+    def test_reconcile_never_ties_a_missing_copy_to_its_already_catalogued_twins_copy(self) -> None:
+        # The same hole on the reconcile side: a is already MISSING:, its
+        # twin z is live, and another copy w appears. The catalog-wide
+        # one-holder rule (two holders: MISSING:a and z) refuses.
+        picture = self._picture(52)
+        self._put('a.jpg', picture, caption='first copy')
+        self._put('z.jpg', picture, caption='second copy')
+        photoindex.run_scan(self.archive, self.CFG)
+        (self.photos / 'a.jpg').unlink()
+        photoindex.run_reconcile(self.archive, self.CFG)
+        self._put('w.jpg', picture)
+        result = photoindex.run_reconcile(self.archive, self.CFG)
+        self.assertEqual(result['rematched'], [])
+        self.assertIn('MISSING:photos/a.jpg', result['missing'])
+
+
 if __name__ == '__main__':
     unittest.main()

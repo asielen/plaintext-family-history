@@ -637,7 +637,7 @@
     {
       "path": ".fha/tools/photoindex.py",
       "category": "operating",
-      "sha256": "229a1ad8c33d742eea90627ad5d86312dbf12c2df09dc9703ddd082ec561cb74",
+      "sha256": "d9d7021bed43b5e410176b54666dbec8dfa835371f6fb99fb133a266cee9c485",
       "spec_version": "1.2",
       "src": "tools/photoindex.py"
     },
@@ -933,7 +933,7 @@
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "75ea9e765f0e31fca8ed2e380ee0404cde9f8f31c37c54e1ae313f53056d75b3",
+      "sha256": "e9ddf7da345220918d9175c0442031fb9b618dc0e6873ba6a6ca554fe2b778ed",
       "spec_version": "1.2"
     },
     {

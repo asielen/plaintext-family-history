@@ -4741,30 +4741,40 @@ def run_scan(archive_root: Path, fha_config: dict, full: bool = False) -> Result
         held_unreadable = 0
         alias_on_disk = set(alias_by_path.values())
         is_ignored = photos_ignore_matcher(ignore)
-        # A MISSING: row whose picture this scan has catalogued again under a
-        # new name - its fingerprint held by exactly one live on-disk row -
-        # is a stale duplicate, the content twin of "the file is back at its
-        # alias" below. Left in place it lingered forever, and as a second
-        # holder of the fingerprint it blocked every later content re-tie of
-        # that picture (#220 audit F2).
-        # The live row must also carry the same source identity
-        # (`_same_source`): a different source's copy of the same picture is
-        # not this row's photo coming back, and dropping the row would erase
-        # a source's history for another's file (#220, Codex).
-        live_holders: dict[str, list[str | None]] = {}
-        missing_fp: dict[str, tuple[str, str | None]] = {}
+        # A MISSING: row whose picture THIS scan has catalogued again under a
+        # new name is a stale duplicate, the content twin of "the file is back
+        # at its alias" below. Left in place it lingered forever, and as a
+        # second holder of the fingerprint it blocked every later content
+        # re-tie of that picture (#220 audit F2). Only an unambiguous NEW
+        # replacement counts, so a real copy's history is never dropped
+        # (#220, Codex rounds 3-4):
+        #   - the live holder was catalogued in this scan - not a twin that
+        #     was already here (two copies of one picture, one deleted: the
+        #     deleted copy's MISSING: history stays);
+        #   - it is the only live holder, and the MISSING: row is the only
+        #     missing one (several copies gone at once: none is "the" one);
+        #   - same source identity (`_same_source`): a different source's
+        #     copy of the same picture is not this row's photo coming back.
+        live_holders: dict[str, list[tuple[str, str | None]]] = {}
+        missing_holders: dict[str, list[tuple[str, str | None]]] = {}
         for path_key, fingerprint, row_source in conn.execute(
                 'SELECT path, fingerprint, source_id FROM photos'):
             if not _is_real_fingerprint(fingerprint):
                 continue
             if _is_missing_key(path_key):
-                missing_fp[path_key] = (fingerprint, row_source)
+                missing_holders.setdefault(fingerprint, []).append((path_key, row_source))
             elif path_key in alias_on_disk:
-                live_holders.setdefault(fingerprint, []).append(row_source)
-        recatalogued = {
-            k for k, (fp, src) in missing_fp.items()
-            if len(live_holders.get(fp, [])) == 1 and _same_source(src, live_holders[fp][0])
-        }
+                live_holders.setdefault(fingerprint, []).append((path_key, row_source))
+        recatalogued: set[str] = set()
+        for fingerprint, gone in missing_holders.items():
+            live = live_holders.get(fingerprint, [])
+            if len(gone) != 1 or len(live) != 1:
+                continue
+            (missing_key, missing_source), (live_key, live_source) = gone[0], live[0]
+            if live_key in existing:
+                continue          # an already-catalogued twin, not a new arrival
+            if _same_source(missing_source, live_source):
+                recatalogued.add(missing_key)
         for path_key in list(existing):
             # A 'MISSING:'-prefixed key is reconcile's own bookkeeping, not a
             # stale cache entry: it never matches a real on-disk alias (the
