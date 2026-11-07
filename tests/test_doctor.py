@@ -1520,6 +1520,17 @@ class WrongMainImageTests(unittest.TestCase):
         self.assertIn(fix, found[0])
         self.assertEqual(check['next_step'], fix)
 
+    def test_a_metadata_companion_is_never_suggested_as_the_main_image(self) -> None:
+        # #210 review: x-00100.xmp sorted ahead of the marked back scan.
+        self._record('files:\n'
+                     '  - file: photos/1950/x-00100-back.jpg\n'
+                     '    role: primary\n'
+                     '    is_primary: true\n'
+                     '  - file: photos/1950/x-00100.xmp\n'
+                     '    role: metadata\n')
+        _result, _check, found = self._doctor()
+        self.assertFalse(any('.xmp' in f for f in found), found)
+
     def test_a_name_powershell_would_break_is_quoted(self) -> None:
         # #210 audit: `.\fha` is pasted into PowerShell, where a bare
         # O'Brien opens an unclosed string and (1950) is a subexpression.

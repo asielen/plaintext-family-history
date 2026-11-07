@@ -78,6 +78,7 @@ except ImportError:
     sys.exit(2)
 
 from _lib import (
+    PHOTO_EXTENSIONS,
     carries_person_record_fields,
     COMPANION_KINDS,
     configure_utf8_stdout,
@@ -1175,6 +1176,8 @@ def _check_wrong_main_image(archive_root: Path, lines: list[str],
             alias = str(item['file']).replace('\\', '/')
             if alias.split('/', 1)[0].lower() != 'photos':
                 continue            # a documents-root entry: renamed on import, no sibling grammar
+            if PurePosixPath(alias).suffix.lower() not in PHOTO_EXTENSIONS:
+                continue            # a metadata companion (.xmp, .txt): never a main image (#210 review)
             aliases.append(alias)
             if _is_true(item.get('is_primary')):
                 marked.add(alias)

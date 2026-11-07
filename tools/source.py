@@ -194,6 +194,7 @@ from _lib import (
     normalize_id,
     OriginalBackup,
     parse_frontmatter_strict,
+    PHOTO_EXTENSIONS,
     parse_media_filename,
     pip_command,
     read_record,
@@ -1073,6 +1074,19 @@ def _entry_alias(entry) -> str | None:
     return None
 
 
+def _first_problem(problems: list) -> str:
+    """The first `read_record` parse problem, in words (they are (code, text) pairs)."""
+    first = problems[0]
+    return str(first[1] if isinstance(first, (list, tuple)) and len(first) > 1 else first)
+
+
+def _is_image_alias(alias: str | None) -> bool:
+    """True for a photos-root alias whose file is an image the photo catalog
+    keeps. A metadata companion such as `x-00100.xmp` sits in the photos root
+    too, and must never be made a photo's main image (#210 review)."""
+    return _is_photos_alias(alias) and PurePosixPath(str(alias)).suffix.lower() in PHOTO_EXTENSIONS
+
+
 def _is_photos_alias(alias: str | None) -> bool:
     """True for a photos-root alias (`photos/1950/x.tif`). Aliases are written
     with the root's NAME, never its on-disk location (SPEC §12.1), so this is a
@@ -1368,6 +1382,19 @@ def run_source_set_primary(
             'file list cannot be changed safely. Run `fha lint` to see what is '
             'wrong there, fix it, then try again. Nothing was written.',
             next_step='fha lint')
+    # A record already broken below its frontmatter (an unclosed quote in a
+    # claim, say) cannot pass the post-write check, so the real run would
+    # refuse and restore it. Refuse now, so a --dry-run never promises a
+    # fix the real run cannot make (#210 review).
+    existing = read_record(path)
+    if existing.get('parse_errors'):
+        return _refuse(
+            'refused',
+            f'{path.name} already has a problem elsewhere in it '
+            f'({_first_problem(existing["parse_errors"])}), so its file list will not be '
+            'changed until that is fixed. Run `fha lint` to see it, fix it, '
+            'then try again. Nothing was written.',
+            next_step='fha lint')
     entries = before_meta.get('files')
     if not isinstance(entries, list) or not entries:
         return _refuse(
@@ -1408,6 +1435,11 @@ def run_source_set_primary(
     target_i = hits[0]
     target_alias = aliases[target_i]
     target_name = PurePosixPath(target_alias).name
+    if _is_photos_alias(target_alias) and not _is_image_alias(target_alias):
+        return _refuse(
+            'refused',
+            f'{target_alias} is not an image (it is a {PurePosixPath(target_alias).suffix} '
+            'file), so it cannot be the main image of a photo. Nothing was written.')
     if not _is_photos_alias(target_alias):
         return _refuse(
             'refused',
@@ -1448,7 +1480,7 @@ def run_source_set_primary(
         result.add('info', f'{target_name} is already the main image of {label}. '
                            'Nothing to change.')
         return result
-    if prev_i is not None and not _is_photos_alias(aliases[prev_i]):
+    if prev_i is not None and not _is_image_alias(aliases[prev_i]):
         return _refuse(
             'refused',
             f'The main file of {label} is {aliases[prev_i]}, which is not a '

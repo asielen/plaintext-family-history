@@ -146,6 +146,32 @@ class SetPrimarySwapTests(unittest.TestCase):
         self.assertNotEqual(result.exit_code, EXIT_CLEAN)
         self.assertEqual(self.record.read_bytes(), before)
 
+    def test_a_metadata_companion_is_never_made_the_main_image(self) -> None:
+        # #210 review: an .xmp beside the scans sits in the photos root too.
+        text = BUG_ERA.replace(
+            '  - file: photos/1950/smith-farm-01400b-back.tif\n',
+            '  - file: photos/1950/smith-farm-01400.xmp\n    role: metadata\n'
+            '  - file: photos/1950/smith-farm-01400b-back.tif\n', 1)
+        self.record.write_bytes(text.encode('utf-8'))
+        before = self.record.read_bytes()
+        result = self._run(file='smith-farm-01400.xmp')
+        self.assertNotEqual(result.exit_code, EXIT_CLEAN)
+        self.assertIn('not an image', ' '.join(m.text for m in result.messages))
+        self.assertEqual(self.record.read_bytes(), before)
+
+    def test_a_preview_never_promises_what_the_real_run_refuses(self) -> None:
+        # #210 review: a Claims block already broken made the real run refuse
+        # and restore, after the --dry-run had said it would work.
+        broken = BUG_ERA.replace('  value: "the Smith farm"\n', '  value: "the Smith farm\n', 1)
+        self.record.write_bytes(broken.encode('utf-8'))
+        before = self.record.read_bytes()
+        for dry in (True, False):
+            with self.subTest(dry_run=dry):
+                result = self._run(dry_run=dry)
+                self.assertNotEqual(result.exit_code, EXIT_CLEAN)
+                self.assertIn('fha lint', ' '.join(m.text for m in result.messages))
+                self.assertEqual(self.record.read_bytes(), before)
+
     def test_handwritten_comments_on_changed_lines_are_kept(self) -> None:
         # #210 review: a note on a role:/is_primary: line was silently
         # dropped, and the YAML referee cannot see comments.
