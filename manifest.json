@@ -217,7 +217,7 @@
     {
       "path": ".fha/browser-companion/src/batch.js",
       "category": "operating",
-      "sha256": "873b37498dd665f31597b362d8c323719f65a1cfc036035577bbefc042beddb2",
+      "sha256": "55f1cfb7592db4036ce0ec40de4c293adcbcc1ee0eb6d868eabca8182ae38ad0",
       "spec_version": "1.2",
       "src": "browser-companion/src/batch.js"
     },
