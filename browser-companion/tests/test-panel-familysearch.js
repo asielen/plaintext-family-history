@@ -210,8 +210,11 @@ test('a restricted image is said up front - amber, "data only" - and the record 
   assert.strictEqual(p.written.length, 1);
   const b = p.written[0];
   assert.deepStrictEqual(b.captureJson.assets.map((a) => a.role), ['webpage', 'site-data']);
+  // The reason is the one the check before Capture gave, already in her Notes
+  // box (U5), and it is said once - not again by the failed download.
   assert.match(b.captureJson.notes,
-    /Image not saved: FamilySearch image HRT1-IMG2 \(https:\/\/www\.familysearch\.org\/ark:\/61903\/3:1:HRT1-IMG2\) could not be downloaded - FamilySearch offers no download of this image: it is restricted to a FamilySearch center or affiliate library\. Checked \d{4}-\d{2}-\d{2}\./);
+    /Image not saved: FamilySearch image HRT1-IMG2 \(https:\/\/www\.familysearch\.org\/ark:\/61903\/3:1:HRT1-IMG2\) could not be downloaded - it is restricted: FamilySearch shows it only at a FamilySearch center or affiliate library\. Checked \d{4}-\d{2}-\d{2}\./);
+  assert.strictEqual(b.captureJson.notes.split('Image not saved:').length, 2, 'the reason is said once');
   assert.strictEqual((await recordData(b)).record.imageSaved, false);
   assert.match(p.result(), /The full record image was not saved: FamilySearch offers no download/);
 });
@@ -474,4 +477,57 @@ test('an image refused with the page copy unticked: the copy is made then, from 
   assert.strictEqual(p.written.length, 1);
   assert.deepStrictEqual(p.written[0].captureJson.assets.map((a) => a.role), ['webpage', 'site-data']);
   assert.match(await asset(p.written[0], 'page-snapshot.html').blob.text(), /HRT1-RST1/);
+});
+
+// ── the reason an image is not saved, in her Notes box before Capture (U5) ──
+
+const NOTE_RE = /^Image not saved: FamilySearch image HRT1-IMG2 \(https:\/\/www\.familysearch\.org\/ark:\/61903\/3:1:HRT1-IMG2\) could not be downloaded - it is restricted: FamilySearch shows it only at a FamilySearch center or affiliate library\. Checked \d{4}-\d{2}-\d{2}\.$/;
+
+test('a restricted image is said in the Notes box as soon as the page is read, where she can see and change it', async () => {
+  const p = await open(RESTRICTED);
+  assert.match(p.$('f-notes').value, NOTE_RE);
+  // A record whose image can be saved gets no such line.
+  const q = await open(CALVIN);
+  assert.strictEqual(q.$('f-notes').value, '');
+});
+
+test('her own notes are kept, the reason added once below them, and filed once', async () => {
+  const hold = holdOnce();
+  const p = await open(RESTRICTED, { over: { '3:1:HRT1-IMG2': hold.answer } });
+  p.$('f-notes').value = 'Calvin, the farmer';
+  hold.release();
+  await settle();
+  const [mine, line] = p.$('f-notes').value.split('\n');
+  assert.strictEqual(mine, 'Calvin, the farmer');
+  assert.match(line, NOTE_RE);
+  await p.capture();
+  const notes = p.written[0].captureJson.notes;
+  assert.ok(notes.startsWith('Calvin, the farmer\n'));
+  assert.strictEqual(notes.split('Image not saved:').length, 2);
+});
+
+test('a bare image that cannot be saved: the reason travels with the page copy', async () => {
+  const p = await open('https://www.familysearch.org/ark:/61903/3:1:HRT1-IMG2');
+  assert.match(p.$('f-notes').value, NOTE_RE);
+  await p.capture();
+  assert.deepStrictEqual(p.files(p.written[0]), ['page-snapshot.html']);
+  assert.match(p.written[0].captureJson.notes, /Image not saved: FamilySearch image HRT1-IMG2 /);
+});
+
+test('an image the check refused but Capture saved after all is not filed as "not saved"', async () => {
+  let n = 0; // the first image request is the check (refused), the next the download
+  const p = await open(CALVIN, { over: { 'dist.jpg': () => (n++ === 0 ? 403 : null) } });
+  assert.match(p.$('f-notes').value, /^Image not saved: FamilySearch image HRT1-IMG1 /);
+  await p.capture();
+  const b = p.written[0];
+  assert.ok(b.captureJson.assets.some((a) => a.role === 'record'), 'the image was saved');
+  assert.doesNotMatch(b.captureJson.notes || '', /Image not saved/);
+});
+
+test('a new record takes the line away with the rest of the old notes', async () => {
+  const p = await open(RESTRICTED);
+  assert.match(p.$('f-notes').value, NOTE_RE);
+  await p.navigate(CALVIN);
+  await settle();
+  assert.strictEqual(p.$('f-notes').value, '');
 });

@@ -40,6 +40,21 @@ header {
 
 h1 { font-size: 19px; margin: 0 0 4px; }
 
+/* The two Re-read buttons (header, and the "specific file" question). */
+.rescrape {
+  float: right;
+  margin: 0 0 0 8px;
+  padding: 2px 8px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.rescrape:disabled { opacity: 0.5; cursor: default; }
+
 .banner { margin: 0; font-size: 14px; color: var(--muted); }
 .banner.recipe { color: var(--accent); font-weight: 600; }
 .banner.warn { color: var(--warn); font-weight: 600; }
@@ -217,3 +232,39 @@ details#settings { margin-top: 20px; border-top: 1px solid var(--line); padding-
 details#settings summary { cursor: pointer; color: var(--muted); font-size: 14px; }
 details#settings label { margin-top: 12px; }
 details#settings .hint code { background: #ece9e0; padding: 1px 5px; border-radius: 3px; font-size: 13px; }
+
+/* Automatic saving: the box at the top of "Yes, save the actual file", and
+   its one-line-per-fetch log. */
+.auto-box {
+  display: block;
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font-size: 13px;
+  background: var(--panel);
+}
+.auto-box .auto-head { display: flex; gap: 6px; align-items: baseline; font-weight: 600; }
+.auto-box .ico { flex: 0 0 1.1em; text-align: center; font-weight: 700; }
+.auto-box.ready { border-color: var(--accent); background: var(--accent-soft); }
+.auto-box.ready .auto-head { color: var(--accent); }
+.auto-box.done { border-color: var(--ok); }
+.auto-box.done .auto-head { color: var(--ok); }
+.auto-box.failed { border-color: var(--error); }
+.auto-box.failed .auto-head { color: var(--error); }
+.auto-box.partial { border-color: var(--warn); }
+.auto-box.partial .auto-head { color: var(--warn); }
+.auto-box.none .auto-head { color: var(--muted); font-weight: 400; }
+.auto-log { list-style: none; margin: 6px 0 0; padding: 0; font-size: 12px; font-weight: 400; }
+.auto-log li { display: flex; gap: 6px; align-items: baseline; }
+.auto-log .ico { flex: 0 0 1.1em; text-align: center; font-weight: 700; }
+.auto-log .try .ico { color: var(--muted); }
+.auto-log .ok .ico { color: var(--ok); }
+.auto-log .fail .ico, .auto-log .fail .why { color: var(--error); }
+.auto-log .why { color: var(--muted); }
+.auto-log .more { color: var(--muted); font-style: italic; }
+/* Both sit in the flex row of .opt-controls: give each the full width, and
+   keep the "or" rule a full-width line inside the address row's wrapper. */
+.opt-controls .auto-box { flex: 1 1 100%; }
+#asset-url-row { display: block; flex: 1 1 100%; }
+#asset-url-row .or-divider { display: block; }

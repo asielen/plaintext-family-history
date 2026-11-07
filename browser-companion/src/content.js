@@ -322,8 +322,10 @@
   // Best-guess "the image this record centers on" for the Phase-3 (a) pre-fill.
   // og:image is the page's own declared hero; otherwise the largest rendered
   // <img>. Either way it is only a *suggestion* the human can replace or clear.
-  function detectImage() {
-    const og = metaContent('meta[property="og:image"]', 'meta[name="og:image"]');
+  // `staleHead`: the page's head still describes an earlier record (see
+  // headIsStale), so its og:image is that record's picture, never this one's.
+  function detectImage(staleHead) {
+    const og = staleHead ? null : metaContent('meta[property="og:image"]', 'meta[name="og:image"]');
     if (og) return absUrl(og);
     let best = null;
     let bestArea = 0;
@@ -1311,6 +1313,31 @@
     return found.size === 1 ? [...found][0] : null;
   }
 
+  // The FamilySearch image a file address is of, for the panel's second try
+  // after that address refused: an ark (ark:/61903/3:1:{id}), or one of
+  // FamilySearch's own image addresses - a viewer tile (…/dz/v1/3:1:{id}/…)
+  // or the full image (…/das/v2/{id}/dist.jpg). https on familysearch.org
+  // only; anything else names no FamilySearch image (null).
+  function fsImageIdFromAddress(href) {
+    const ark = fsImageIdFromHref(href);
+    if (ark) return ark;
+    let u;
+    try {
+      u = new URL(href);
+    } catch (e) {
+      return null;
+    }
+    if (u.protocol !== 'https:' || u.username || u.password || !FS_HOST_RE.test(u.hostname)) return null;
+    let p = u.pathname;
+    try {
+      p = decodeURIComponent(p);
+    } catch (e) {
+      /* read it as it is */
+    }
+    const m = /(?:^|\/)3:1:([A-Z0-9-]+)(?:\/|$)/i.exec(p) || /\/das\/v2\/([A-Z0-9-]+)\/[^/]*$/i.exec(p);
+    return m ? m[1].toUpperCase() : null;
+  }
+
   // The record, plus the bundle's title: the human's `formTitle` when she
   // typed one, else FamilySearch's own "{name} - {collection}" (fsTitle).
   async function familysearchRecordInfo(formTitle) {
@@ -2221,17 +2248,63 @@
     };
   }
 
+  // A record she moves to on a single-page site (FamilySearch, Ancestry) can
+  // otherwise be titled, dated and pictured as the FIRST record of the visit:
+  // those sites change the page without reloading it, and leave the head's
+  // og:url / canonical (and the og:title, og:image and date beside them)
+  // describing that first record. When either address names a different page
+  // from the one in the bar, the head is stale and none of it is used. Pages
+  // are compared by path, read the same whether written %3A or ":", ignoring
+  // a two-letter language prefix (/en/…), a trailing slash and letter case;
+  // and, for sites that key the record in the query (?itemId=2) or a hash
+  // route (#/record/2), by any query value both addresses name and by the
+  // tag's hash route. An address that cannot be read is no evidence of
+  // staleness. (PR #223 audit F8.)
+  function headIsStale(url) {
+    const decode = (s) => {
+      try {
+        return decodeURIComponent(s);
+      } catch (e) {
+        return s;
+      }
+    };
+    const path = (u) => decode(u.pathname).replace(/^\/[a-z]{2}(?=\/)/i, '').replace(/\/+$/, '').toLowerCase();
+    const samePage = (a) => {
+      let here;
+      let tag;
+      try {
+        here = new URL(url);
+        tag = new URL(a, url);
+      } catch (e) {
+        return true;
+      }
+      if (path(tag) !== path(here)) return false;
+      // A value the tag and the address both give, but differently, names
+      // another record; one only the address carries (tracking, a language)
+      // says nothing.
+      for (const [k, v] of tag.searchParams) {
+        if (here.searchParams.has(k) && here.searchParams.get(k) !== v) return false;
+      }
+      if (/^#!?\//.test(tag.hash) && decode(tag.hash) !== decode(here.hash)) return false;
+      return true;
+    };
+    const ogUrl = metaContent('meta[property="og:url"]', 'meta[name="og:url"]');
+    const canon = (document.querySelector('link[rel="canonical"]') || {}).href;
+    return !!((ogUrl && !samePage(ogUrl)) || (canon && !samePage(canon)));
+  }
+
   function buildPrefill() {
     const url = location.href;
-    const canonical = absUrl(
+    const stale = headIsStale(url);
+    const canonical = stale ? null : absUrl(
       (document.querySelector('link[rel="canonical"]') || {}).href
     );
     const title =
-      metaContent('meta[property="og:title"]', 'meta[name="og:title"]') ||
+      (stale ? null : metaContent('meta[property="og:title"]', 'meta[name="og:title"]')) ||
       (document.title || '').trim() ||
       ((document.querySelector('h1') || {}).textContent || '').trim() ||
       null;
-    const sourceDate = metaContent(
+    const sourceDate = stale ? null : metaContent(
       'meta[property="article:published_time"]',
       'meta[name="article:published_time"]',
       'meta[name="date"]'
@@ -2261,7 +2334,7 @@
       // A Find a Grave memorial page (not its gallery): Capture saves the
       // memorial's own facts and citation and its photos at full size.
       findagraveMemorial: !!fagMemorialPage(url),
-      imageUrl: detectImage(),
+      imageUrl: detectImage(stale),
       pdfUrl: detectPdf(),
       recipeHint: recipeHint(url),
       ancestryImageViewer: !!ancestry,
@@ -3236,7 +3309,7 @@
           .then(sendResponse)
           .catch((e) => sendResponse({ ok: false, error: String((e && e.message) || e) }));
         return true; // async response
-      case 'familysearchImage':
+      case 'familysearchImage': {
         if (!FS_HOST_RE.test(location.hostname)) {
           sendResponse({ ok: false, error: 'the tab is no longer on FamilySearch, so the image was not fetched - ' +
             'go back to the record and press Capture again' });
@@ -3248,12 +3321,34 @@
           sendResponse({ ok: false, error: 'that is not a FamilySearch image, so nothing was fetched' });
           return;
         }
-        // No id named: the image the viewer shows now (a single-page app, so
-        // re-read at Capture rather than trust the prefill).
-        fsImage(msg.imageId || fsViewerImageId(), fsDeps())
+        // `fromUrl` is the file address that just failed (the panel's second
+        // try): the image is the one THAT address names - an ark, a viewer
+        // tile, a dist.jpg on FamilySearch - and nothing else. An address
+        // elsewhere, or not of an image, is not swapped for whatever the
+        // viewer shows now: her own address stands refused (PR #223 audit
+        // F5/F7). With no id and no address: the image the viewer shows now
+        // (a single-page app, so re-read at Capture rather than trust the
+        // prefill). Either way the request goes to FamilySearch only, under
+        // fsAuthHeaders' rule.
+        let fsImageWanted = msg.imageId;
+        if (!fsImageWanted && msg.fromUrl) {
+          fsImageWanted = fsImageIdFromAddress(absUrl(msg.fromUrl) || '');
+          if (!fsImageWanted) {
+            sendResponse({ ok: false, error: 'that address is not of a FamilySearch image, so FamilySearch was ' +
+              'not asked for it' });
+            return;
+          }
+        }
+        if (!fsImageWanted) fsImageWanted = fsViewerImageId();
+        if (!fsImageWanted) {
+          sendResponse({ ok: false, error: 'this page does not show one FamilySearch image the panel can save' });
+          return;
+        }
+        fsImage(fsImageWanted, fsDeps())
           .then(sendResponse)
           .catch((e) => sendResponse({ ok: false, error: String((e && e.message) || e) }));
         return true; // async response
+      }
       case 'ancestryRecordInfo':
         try {
           sendResponse(ancestryRecordInfo(msg.formTitle));

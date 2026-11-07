@@ -510,3 +510,95 @@ test('a title she typed is filed as typed, even one that names the site (#214 sw
   await p.capture();
   assert.strictEqual(p.written[0].captureJson.title, 'Calvin Hartley obituary - Newspapers.com');
 });
+
+// ── PR #223 audit F2 / Codex 4502593870: Re-read file keeps her choices ─────
+
+test('Re-read file on the page viewer keeps the clipping she ticked and the title she typed', async () => {
+  const p = await openOn(URL_PAGE, twoOnPage());
+  await setTick(p, 'Ethel Hartley visits Topeka', false); // she wants only the farm sale
+  p.$('f-title').value = 'Hartley farm sale, corrected';
+  await p.$('f-title').fire('input');
+  p.$('f-notes').value = 'only about the farm sale';
+  await p.$('btn-rescrape-file').fire('click');
+  await settle();
+  assert.strictEqual(p.$('f-title').value, 'Hartley farm sale, corrected');
+  assert.strictEqual(p.$('f-notes').value, 'only about the farm sale');
+  await p.capture();
+  assert.strictEqual(p.written.length, 1, 'the clipping she unticked is not saved');
+  assert.strictEqual(p.written[0].captureJson.title, 'Hartley farm sale, corrected');
+});
+
+test('Re-read file keeps only ticks for clippings still listed; none left gives the page\'s default', async () => {
+  const pages = twoOnPage();
+  const p = await openOn(URL_PAGE, pages);
+  await setTick(p, 'Ethel Hartley visits Topeka', false);
+  // The site no longer lists the farm sale: nothing she ticked is left.
+  pages[URL_PAGE].info = npInfo('image', [clipObj(302, 'Ethel Hartley visits Topeka'), clipObj(303, 'Church supper')]);
+  await p.$('btn-rescrape-file').fire('click');
+  await settle();
+  await p.capture();
+  assert.strictEqual(p.written.length, 2, 'the default: every clipping of hers on the page');
+});
+
+test('on a page with her clippings the address box is hidden; Re-read file keeps it so', async () => {
+  const p = await openOn(URL_PAGE, twoOnPage());
+  assert.strictEqual(p.$('asset-url-row').style.display, 'none');
+  await p.$('btn-rescrape-file').fire('click');
+  await settle();
+  assert.strictEqual(p.$('asset-url-row').style.display, 'none');
+});
+
+test('PR #223 delta D4: after Re-read file reads a page the panel could not read at first, her ticks stay', async () => {
+  const pages = twoOnPage();
+  let ready = false;
+  const base = scripted(pages);
+  const p = await openPanel({ url: URL_PAGE,
+    respond: (msg, tab) => (msg.action === 'prefill' && !ready ? { ok: false, error: 'still loading' } : base(msg, tab)) });
+  ready = true;
+  await p.$('btn-rescrape-file').fire('click'); // reads the page's file: her clippings
+  await settle();
+  await setTick(p, 'Ethel Hartley visits Topeka', false);
+  await p.navigate(URL_PAGE); // the page's own 'complete': the page is read already
+  await settle();
+  await p.capture();
+  assert.strictEqual(p.written.length, 1, 'the clipping she unticked is not saved');
+});
+
+// ── Codex 4503601729: the boxes several clippings lock are always given back ─
+
+const locked = (p) => ['f-title', 'f-date', 'f-repo'].map((id) => p.$(id).readOnly);
+
+test('Codex 4503601729: a clipping list that cannot be read again gives her the title, date and newspaper back', async () => {
+  const pages = twoOnPage();
+  const p = await openOn(URL_PAGE, pages);
+  assert.deepStrictEqual(locked(p), [true, true, true], 'several clippings ticked: the boxes step aside');
+  const good = pages[URL_PAGE].info;
+  pages[URL_PAGE].info = { ok: false, error: 'the clipping list did not answer' };
+  await p.$('btn-rescrape-file').fire('click');
+  await settle();
+  assert.deepStrictEqual(locked(p), [false, false, false], 'she can name the file she supplies by hand');
+  assert.notStrictEqual(p.$('f-title').placeholder, 'Each clipping gets its own title');
+  // The list answers again with both clippings: the boxes step aside again.
+  pages[URL_PAGE].info = good;
+  await p.$('btn-rescrape-file').fire('click');
+  await settle();
+  assert.deepStrictEqual(locked(p), [true, true, true]);
+});
+
+test('Codex 4503601729: leaving for a page that is not a newspaper, or Re-read page, unlocks them too', async () => {
+  const pages = Object.assign(twoOnPage(), {
+    'https://records.example.org/hartley/will-1901': { title: 'Will of Calvin Hartley' },
+  });
+  const scriptedPlus = (msg, tab) => (tab.url.indexOf('records.example.org') >= 0 && msg.action === 'prefill'
+    ? { ok: true, prefill: { url: tab.url, title: 'Will of Calvin Hartley', people: [] } } : scripted(pages)(msg, tab));
+  let p = await openPanel({ url: URL_PAGE, respond: scriptedPlus });
+  assert.deepStrictEqual(locked(p), [true, true, true]);
+  await p.navigate('https://records.example.org/hartley/will-1901');
+  await settle();
+  assert.deepStrictEqual(locked(p), [false, false, false]);
+  p = await openOn(URL_PAGE, pages);
+  p.openTab('https://records.example.org/not-readable');
+  await p.$('btn-rescrape').fire('click');
+  await settle();
+  assert.deepStrictEqual(locked(p), [false, false, false]);
+});

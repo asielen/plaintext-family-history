@@ -58,6 +58,28 @@ normal and expected: it is your own copy, not one from a store.
 You can keep going: capture as many pages as you like in one sitting. They queue
 up in that folder and wait for you.
 
+**The panel stays with its page.** Once open, the panel keeps describing the
+page it was opened on, even while you look at other tabs, so nothing changes
+under you while you type. When that page moves on to the next record, the panel
+follows it. To capture a page in a different tab, click that tab and press
+**↻ Re-read page** at the top of the panel: it clears everything (including
+what you typed) and fills the panel in again from the page in front of you.
+**↻ Re-read file**, beside the "specific file" question, looks at the same
+page again for its file only and keeps your title, date, people and notes. Use it on
+a viewer that turns to the next image without changing its address.
+
+**What was saved automatically.** On sites where the add-on fetches the
+record's file by itself (Ancestry, FamilySearch, Find a Grave, Newspapers.com,
+and archives with IIIF images) there is no address box to fill in. If the
+automatic download fails on an image viewer, the address box comes back, so you
+can paste the right file's address; you can always drop the file in instead. On
+Newspapers.com the box is there whenever none of the clippings on the page are
+yours. A small box under "Yes, save the actual file" says what will be fetched.
+After Capture it lists each download with a tick (and its size) or a cross (and
+the site's reason), and says "Saved automatically" only once the capture really
+is saved. A long list keeps every download that failed. If a picture is exactly the same as the one your last capture saved,
+the list says so: check the tab really shows the record you meant.
+
 ---
 
 ## Get the captures into your archive
@@ -100,8 +122,8 @@ to turn if a step does not behave.
 
 On Newspapers.com the add-on saves more than the page you see. Open a clipping
 (anyone's: opening it is the choice), or a newspaper page that has your own
-clippings on it, and click the toolbar button. The file-address box will say
-"Newspapers.com page + clipping (saved automatically)".
+clippings on it, and click the toolbar button. The box under "Yes, save the
+actual file" will say the whole page and your clippings are saved automatically.
 
 When you click **Capture**, the add-on rebuilds the whole newspaper page at full
 resolution from the site's own image pieces. It fetches them one at a time with
@@ -197,9 +219,13 @@ and whatever you type wins.
 Many FamilySearch images can only be seen at a FamilySearch center or an
 affiliate library. The panel checks before you press Capture: if the image
 cannot be saved from where you are, the line under the file box turns amber and
-says "the record's data only", and the saved record carries a note saying which
-image it was and why it could not be downloaded. If you have the image another
-way, drop it into the panel.
+says "the record's data only", and a line in the Notes box says which image it
+was and why it could not be downloaded. You can edit that line; it is saved
+with the record. If you have the image another way, drop it into the panel.
+
+On other FamilySearch pages, if the file address the panel found will not
+download (the viewer's image pieces often refuse), Capture tries once more
+through FamilySearch itself for the same image.
 
 On an image viewer that was not opened from a record, Capture saves the full
 image the same way.

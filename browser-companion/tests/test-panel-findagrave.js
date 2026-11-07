@@ -610,3 +610,20 @@ test('F13: the gravestone is the main file filing picks, even when a family phot
   await p.capture();
   assert.ok(!p.capJson(p.written[0]).assets.some((a) => a.is_primary));
 });
+
+// ── PR #223 audit F3/F14: the fetch log never loses a photo that failed ─────
+
+test('PR #223 F3/F14: with many photos, a photo that failed stays in the log; the rest are counted', async () => {
+  const many = Array.from({ length: 12 }, (_, i) => item(2000 + i, 'q' + i + '.jpg')).join('');
+  const first = 'https://images.findagrave.com/photos/q0.jpg';
+  const p = await open(CALVIN, {
+    gallery: galleryOf(['<p class="photosCount">12 photos</p>' + many]),
+    answers: { [first]: 404 },
+  });
+  await p.capture();
+  const log = p.log();
+  assert.ok(log.length <= 9, 'eight lines and the summary: ' + log.length);
+  assert.ok(log.some((l) => /^✗ Find a Grave photo 1 of 12 /.test(l)), 'the failed photo is still there: ' + log.join(' | '));
+  assert.match(log[0], /^\d+ earlier lines not shown - all of them worked$/);
+  assert.match(p.autoBox().text, /not every try worked - see below/);
+});

@@ -27,18 +27,27 @@ const SAMPLE = (name) => fs.readFileSync(path.join(__dirname, '..', '..', 'tests
 // A page with nothing on it but what a test hands in: its address, its
 // cookie, the links it shows, how the network answers, and (`tree`, a
 // tests/mini-dom.js page) the elements the Find a Grave readers walk.
-function loadPage({ url, cookie = '', links = [], fetch, canonical, tree } = {}) {
+// `head` is the page's head tags by name - 'og:title', 'og:url', 'og:image',
+// 'canonical', 'date' - each answering as that tag would.
+function loadPage({ url, cookie = '', links = [], fetch, canonical, tree, head = {}, title = 'A page' } = {}) {
   const listeners = [];
   const el = (tag) => ({ tagName: tag, textContent: '', innerText: '', getAttribute: () => null, closest: () => null });
+  const headTag = (sel) => {
+    const name = Object.keys(head).find((k) =>
+      (k === 'canonical' ? /^link\[rel="canonical"\]/ : new RegExp('^meta\\[(property|name)="' + k + '"\\]')).test(sel));
+    if (!name) return null;
+    const v = head[name];
+    return { href: new URL(v, url).href, getAttribute: (a) => (a === 'href' || a === 'content' ? v : null) };
+  };
   const document = {
-    title: 'A page',
+    title,
     cookie,
     doctype: null,
     body: el('BODY'),
     documentElement: { outerHTML: '<html></html>', cloneNode: () => ({ querySelectorAll: () => [], outerHTML: '<html></html>' }) },
     scripts: [],
     images: [],
-    querySelector: (sel) => (canonical && /canonical|og:url/.test(sel)
+    querySelector: (sel) => headTag(sel) || (canonical && /canonical|og:url/.test(sel)
       ? { getAttribute: (a) => (a === 'href' ? canonical : null) } : null),
     querySelectorAll: (sel) => (/3:1:/.test(sel) ? links : []),
     getElementById: () => null,
@@ -321,4 +330,148 @@ test('PR #221 sweep: a FamilySearch image id that is not one is refused before a
   assert.strictEqual(page.calls.length, 0);
   const ok = await page.ask({ action: 'familysearchImage', imageId: 'HRT1-IMG1' });
   assert.strictEqual(ok.ok, true);
+});
+
+// ── the page's head on a single-page site ───────────────────────────────────
+
+test('a head left over from the previous record does not title, date or picture this one', async () => {
+  // FamilySearch moved from Calvin's record to Harriet's without reloading:
+  // the address is Harriet's, the head still describes Calvin.
+  const CALVIN = 'https://www.familysearch.org/ark:/61903/1:1:HRT1-CEN1';
+  const HARRIET = 'https://www.familysearch.org/ark:/61903/1:1:HRT1-CEN2';
+  const head = {
+    'og:url': CALVIN,
+    'og:title': 'Calvin Hartley, United States Census, 1880',
+    'og:image': 'https://www.familysearch.org/img/calvin.jpg',
+    'article:published_time': '1880-06-01',
+    canonical: CALVIN,
+  };
+  let r = await loadPage({ url: HARRIET, head, title: 'Harriet Hartley • FamilySearch', fetch: familysearch() })
+    .ask({ action: 'prefill' });
+  assert.strictEqual(r.prefill.title, 'Harriet Hartley • FamilySearch');
+  assert.strictEqual(r.prefill.canonical, null);
+  assert.strictEqual(r.prefill.sourceDate, null);
+  assert.notStrictEqual(r.prefill.imageUrl, 'https://www.familysearch.org/img/calvin.jpg');
+  // Only the canonical left behind (og:url absent) is enough to tell.
+  r = await loadPage({ url: HARRIET, head: { canonical: CALVIN, 'og:title': 'Calvin Hartley' }, fetch: familysearch() })
+    .ask({ action: 'prefill' });
+  assert.strictEqual(r.prefill.title, 'A page');
+});
+
+test('a head that describes this page is used, whatever its language prefix, slash or query', async () => {
+  const url = 'https://www.familysearch.org/en/ark:/61903/1:1:HRT1-CEN1?lang=en';
+  const r = await loadPage({ url, fetch: familysearch(), head: {
+    'og:url': 'https://www.familysearch.org/ark:/61903/1:1:HRT1-CEN1/',
+    canonical: 'https://www.familysearch.org/ark:/61903/1:1:hrt1-cen1',
+    'og:title': 'Calvin Hartley, United States Census, 1880',
+    'og:image': 'https://www.familysearch.org/img/calvin.jpg',
+  } }).ask({ action: 'prefill' });
+  assert.strictEqual(r.prefill.title, 'Calvin Hartley, United States Census, 1880');
+  assert.strictEqual(r.prefill.canonical, 'https://www.familysearch.org/ark:/61903/1:1:hrt1-cen1');
+  assert.strictEqual(r.prefill.imageUrl, 'https://www.familysearch.org/img/calvin.jpg');
+  // An ordinary site with no og:url or canonical keeps its og:title.
+  const plain = await loadPage({ url: 'https://example.org/records/1', head: { 'og:title': 'A will, 1901' },
+    fetch: familysearch() }).ask({ action: 'prefill' });
+  assert.strictEqual(plain.prefill.title, 'A will, 1901');
+});
+
+// ── the panel's retry of a refused FamilySearch address ─────────────────────
+
+test('the retry fetches the image the refused address names, through FamilySearch only', async () => {
+  const page = loadPage({ url: 'https://www.familysearch.org/records/images/image-details?rmsId=TH-0000-HRT1',
+    cookie: 'fssessionid=' + TOKEN, fetch: familysearch() });
+  const img = await page.ask({ action: 'familysearchImage',
+    fromUrl: 'https://www.familysearch.org/ark:/61903/3:1:HRT1-IMG1?i=3' });
+  assert.strictEqual(img.ok, true);
+  assert.deepStrictEqual(page.calls.map((c) => [c.url, c.auth]), [
+    ['https://www.familysearch.org/ark:/61903/3:1:HRT1-IMG1', true],
+    ['https://www.familysearch.org/das/v2/HRT1-IMG1/dist.jpg', true],
+  ]);
+  assert.ok(!JSON.stringify(img).includes(TOKEN));
+  // An address elsewhere names no FamilySearch image; this page is not a
+  // viewer, so there is no image to retry with, and nothing is asked.
+  const none = loadPage({ url: 'https://www.familysearch.org/tree/person/details/HRT1-PPL',
+    cookie: 'fssessionid=' + TOKEN, links: oneLink('/ark:/61903/3:1:HRT1-IMG1'), fetch: familysearch() });
+  const r = await none.ask({ action: 'familysearchImage', fromUrl: 'https://evil.example.com/ark:/61903/3:1:HRT1-IMG1' });
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(none.calls.length, 0);
+  // And from a page off FamilySearch, nothing at all.
+  const away = loadPage({ url: 'https://blog.example.org/x', cookie: 'fssessionid=' + TOKEN, fetch: familysearch() });
+  assert.strictEqual((await away.ask({ action: 'familysearchImage',
+    fromUrl: 'https://www.familysearch.org/ark:/61903/3:1:HRT1-IMG1' })).ok, false);
+  assert.strictEqual(away.calls.length, 0);
+});
+
+// ── PR #223 audit F5/F7: the second try reads FamilySearch's own addresses ──
+
+test('F5: the second try finds the image in FamilySearch\'s tile and dist.jpg addresses', async () => {
+  const pagesTried = ['https://www.familysearch.org/records/images/image-details?rmsId=TH-0000-HRT1&imageIndex=3',
+    'https://www.familysearch.org/search/film/000000?cat=1&i=3'];
+  const addresses = [
+    'https://sg30p0.familysearch.org/service/records/storage/deepzoomcloud/dz/v1/3:1:HRT1-IMG1/image_files/12/0_0.jpg',
+    'https://sg30p0.familysearch.org/service/records/storage/das/v2/3:1:HRT1-IMG1/dist.jpg',
+    'https://sg30p0.familysearch.org/service/records/storage/das/v2/3%3A1%3AHRT1-IMG1/dist.jpg',
+    'https://www.familysearch.org/das/v2/HRT1-IMG1/dist.jpg',
+  ];
+  for (const url of pagesTried) {
+    for (const fromUrl of addresses) {
+      const page = loadPage({ url, cookie: 'fssessionid=' + TOKEN, fetch: familysearch() });
+      const img = await page.ask({ action: 'familysearchImage', fromUrl });
+      assert.strictEqual(img.ok, true, url + ' <- ' + fromUrl);
+      assert.strictEqual(page.calls[0].url, 'https://www.familysearch.org/ark:/61903/3:1:HRT1-IMG1', fromUrl);
+      assert.ok(page.calls.every((c) => /^https:\/\/[^/]*familysearch\.org\//.test(c.url)));
+    }
+  }
+});
+
+test('F7: an address elsewhere, or not of an image, is not swapped for the image the viewer shows', async () => {
+  const film = 'https://www.familysearch.org/search/film/000000?cat=1&i=3';
+  for (const fromUrl of ['https://county.example.gov/records/hartley.pdf',
+    'https://www.familysearch.org/tree/person/details/HRT1-PPL',
+    'http://sg30p0.familysearch.org/service/records/storage/das/v2/3:1:HRT1-IMG1/dist.jpg']) {
+    const page = loadPage({ url: film, cookie: 'fssessionid=' + TOKEN, links: oneLink('/ark:/61903/3:1:HRT1-IMG1'),
+      fetch: familysearch() });
+    const r = await page.ask({ action: 'familysearchImage', fromUrl });
+    assert.strictEqual(r.ok, false, fromUrl);
+    assert.match(r.error, /not of a FamilySearch image, so FamilySearch was not asked for it/);
+    assert.strictEqual(page.calls.length, 0, fromUrl);
+  }
+  // Without an address, the viewer's own image is still the one (unchanged).
+  const page = loadPage({ url: film, cookie: 'fssessionid=' + TOKEN, links: oneLink('/ark:/61903/3:1:HRT1-IMG1'),
+    fetch: familysearch() });
+  assert.strictEqual((await page.ask({ action: 'familysearchImage' })).ok, true);
+});
+
+// ── PR #223 audit F8: the stale-head comparison ─────────────────────────────
+
+test('F8: a head for this page is used however its address is written', async () => {
+  const ok = [
+    // percent-encoded colon in the canonical, a plain one in the bar
+    ['https://records.example.org/view/12:7884', { canonical: 'https://records.example.org/view/12%3A7884' }],
+    // the bar carries extra query values (tracking) the tag does not
+    ['https://records.example.org/item?itemId=5&utm_source=mail', { 'og:url': 'https://records.example.org/item?itemId=5' }],
+    // the tag names a query value the bar leaves out
+    ['https://records.example.org/item/5', { canonical: 'https://records.example.org/item/5?lang=en' }],
+    // the same hash route
+    ['https://records.example.org/app#/record/5', { 'og:url': 'https://records.example.org/app#/record/5' }],
+  ];
+  for (const [url, head] of ok) {
+    const r = await loadPage({ url, head: Object.assign({ 'og:title': 'The right record' }, head), fetch: familysearch() })
+      .ask({ action: 'prefill' });
+    assert.strictEqual(r.prefill.title, 'The right record', url);
+  }
+});
+
+test('F8: a head left from another record keyed in the query or a hash route is stale', async () => {
+  const stale = [
+    ['https://records.example.org/item?itemId=6', { 'og:url': 'https://records.example.org/item?itemId=5' }],
+    ['https://records.example.org/app#/record/6', { canonical: 'https://records.example.org/app#/record/5' }],
+  ];
+  for (const [url, head] of stale) {
+    const r = await loadPage({ url, head: Object.assign({ 'og:title': 'The previous record',
+      'og:image': 'https://records.example.org/img/previous.jpg' }, head), fetch: familysearch() })
+      .ask({ action: 'prefill' });
+    assert.strictEqual(r.prefill.title, 'A page', url);
+    assert.notStrictEqual(r.prefill.imageUrl, 'https://records.example.org/img/previous.jpg', url);
+  }
 });
