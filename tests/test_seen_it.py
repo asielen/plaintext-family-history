@@ -95,6 +95,7 @@ class _TempHome(unittest.TestCase):
         archive.mkdir(parents=True, exist_ok=True)
         _write(archive / 'fha.yaml', fha_yaml)
         (archive / 'sources').mkdir(exist_ok=True)
+        (archive / 'inbox').mkdir(exist_ok=True)
         return archive
 
 
@@ -220,11 +221,13 @@ class ArchiveConfig(_TempHome):
 
     def test_capture_download_folder_default_fha_yaml_and_override(self):
         archive = self.make_archive()
+        home = self.tmp / 'home'
         folders = host.scan_folders({'archive': str(archive)})
-        self.assertEqual(folders['captured'][1:], ['~/Downloads/fha-inbox', '~/Downloads/fha-inbox-*'])
+        dl = str(home / 'Downloads' / 'fha-inbox')
+        self.assertEqual(folders['captured'][1:], [dl, dl + '-*'])
         archive = self.make_archive('roots:\n  documents: documents\ncapture_staging: ~/Captures/fha\n')
-        self.assertEqual(host.scan_folders({'archive': str(archive)})['captured'][1:],
-                         ['~/Captures/fha', '~/Captures/fha-*'])
+        cap = str(home / 'Captures' / 'fha')
+        self.assertEqual(host.scan_folders({'archive': str(archive)})['captured'][1:], [cap, cap + '-*'])
         over = host.scan_folders({'archive': str(archive), 'capture_staging': str(self.tmp / 'dl')})
         self.assertEqual(over['captured'][1:], [str(self.tmp / 'dl'), str(self.tmp / 'dl') + '-*'])
 
@@ -706,6 +709,207 @@ class PrivacyGuard(unittest.TestCase):
         for rel in ('seen-it/manifest.json', 'seen-it/package.json', 'seen-it/host/seenit_host.py'):
             r = subprocess.run(['git', 'check-ignore', '-q', rel], cwd=ROOT)
             self.assertEqual(r.returncode, 1, '%s must stay tracked' % rel)
+
+
+# ── PR #212 review findings (each test fails on 20dcf78) ────────────────────
+
+_NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0)  # a hidden console of its own, as Chrome gives
+
+
+class InstallerInput(_TempHome):
+    """Audit #1 and #6: a folder as people actually paste or drag it."""
+
+    def _fake_install_cmd(self):
+        """install.cmd beside a stand-in helper that only records its arguments."""
+        folder = self.tmp / 'Seen It host'
+        folder.mkdir()
+        shutil.copy(SEEN_IT / 'host' / 'install.cmd', folder / 'install.cmd')
+        _write(folder / 'seenit_host.py',
+               'import json, os, sys\n'
+               'open(os.environ["SEENIT_FAKE_OUT"], "w", encoding="utf-8").write(json.dumps(sys.argv[1:]))\n')
+        return folder / 'install.cmd'
+
+    def _run_cmd(self, script, typed=None, args=()):
+        out = self.tmp / 'args.json'
+        env = dict(os.environ, SEENIT_FAKE_OUT=str(out))
+        # The whole line in one more pair of quotes, the way Explorer runs a
+        # .cmd a folder was dropped onto (cmd /c strips the outer pair).
+        line = 'cmd /c ""%s"%s"' % (script, ''.join(' "%s"' % a for a in args))
+        r = subprocess.run(line, input=(typed or '') + '\r\n\r\n',
+                           capture_output=True, text=True, env=env, timeout=60,
+                           creationflags=_NO_WINDOW)
+        return r, (json.loads(out.read_text(encoding='utf-8')) if out.is_file() else None)
+
+    @unittest.skipUnless(os.name == 'nt', 'install.cmd is the Windows installer')
+    def test_install_cmd_takes_a_folder_pasted_with_quotes_and_spaces(self):
+        # Explorer's Ctrl+Shift+C gives "C:\...\Family Archive" - quotes and a space.
+        script = self._fake_install_cmd()
+        archive = str(self.tmp / 'Hartley Family Archive')
+        r, got = self._run_cmd(script, typed='"%s"' % archive)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(got, ['--install', '--archive', archive])
+        for typed, want in ((archive, ['--install', '--archive', archive]),  # typed plainly
+                            ('', ['--install'])):                            # Enter: skip
+            (self.tmp / 'args.json').unlink(missing_ok=True)
+            r, got = self._run_cmd(script, typed=typed)
+            self.assertEqual((r.returncode, got), (0, want), r.stdout + r.stderr)
+        (self.tmp / 'args.json').unlink(missing_ok=True)
+        r, got = self._run_cmd(script, args=[archive])  # dropped onto install.cmd
+        self.assertEqual((r.returncode, got), (0, ['--install', '--archive', archive]), r.stdout + r.stderr)
+
+    def test_dragged_and_pasted_folders_come_back_as_the_folder(self):
+        clean = host.clean_typed_path
+        # GNOME Terminal: single quotes, a trailing space; an apostrophe as '\''
+        self.assertEqual(clean("'/home/you/Hartley Family Archive' ", posix=True), '/home/you/Hartley Family Archive')
+        self.assertEqual(clean("'/home/you/Mom'\\''s Archive' ", posix=True), "/home/you/Mom's Archive")
+        # macOS Terminal: every space and apostrophe backslash-escaped, a trailing space
+        self.assertEqual(clean("/Users/you/Mom\\'s\\ Archive ", posix=True), "/Users/you/Mom's Archive")
+        self.assertEqual(clean('"/Users/you/Hartley Archive"', posix=True), '/Users/you/Hartley Archive')
+        # typed plainly, no shell quoting at all
+        self.assertEqual(clean('/home/you/Hartley Family Archive', posix=True), '/home/you/Hartley Family Archive')
+        self.assertEqual(clean("/home/you/Mom's Archive", posix=True), "/home/you/Mom's Archive")
+        # Windows: quotes go, backslashes stay - and a "...\" ending reaches us as ...\"
+        self.assertEqual(clean('  "C:\\Users\\you\\Hartley Archive"  ', posix=False), 'C:\\Users\\you\\Hartley Archive')
+        self.assertEqual(clean('C:\\Users\\you\\Hartley Archive"', posix=False), 'C:\\Users\\you\\Hartley Archive')
+        self.assertEqual(clean('   ', posix=True), '')
+
+    def test_the_helper_cleans_what_the_installer_hands_it(self):
+        archive = self.make_archive()
+        if os.name == 'nt':
+            typed = '"%s"  ' % archive
+        else:
+            typed = "'%s' " % archive
+        info = host._set_config({'archive': typed}, {})
+        self.assertEqual(Path(info['archive']), archive)
+        # a blank answer to the installer's question keeps what is set
+        self.assertEqual(host.setup(archive='   ', out=io.StringIO()), 0)
+        self.assertEqual(Path(host.load_settings()['archive']), archive)
+
+
+class LauncherEncoding(_TempHome):
+    """Audit #2: cmd.exe reads a batch file in the console code page."""
+
+    @unittest.skipUnless(os.name == 'nt', 'the .cmd launcher is the Windows one')
+    def test_launcher_runs_from_a_folder_with_accented_letters(self):
+        folder = self.tmp / 'Müller Ünïcode'
+        script = _write(folder / 'fake_host.py', 'import sys\nprint("ok", sys.argv[1])\n')
+        launcher = host.write_launcher(self.tmp / 'Ärchiv launcher', python=sys.executable, script=script,
+                                       windows=True)
+        r = subprocess.run([str(launcher), 'chrome-extension://x/'], capture_output=True, timeout=60,
+                           creationflags=_NO_WINDOW)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(r.stdout.decode('utf-8', 'replace').strip(), 'ok chrome-extension://x/')
+
+
+class DataFolderNotInArchiveRoots(_TempHome):
+    """Audit #4: an archive's photos/documents/inbox often live on another drive."""
+
+    def test_data_folder_under_any_archive_root_or_the_download_folder_is_refused(self):
+        drive = self.tmp / 'Drive'
+        archive = self.make_archive(
+            'roots:\n  photos: %s\n  documents: %s\n  inbox: %s\n'
+            % ((drive / 'Photos').as_posix(), (drive / 'Docs').as_posix(), (drive / 'Inbox').as_posix()))
+        settings = {'archive': str(archive)}
+        for root, word in (('Photos', 'photos'), ('Docs', 'documents'), ('Inbox', 'inbox')):
+            with self.assertRaises(host.SettingsError, msg=root) as cm:
+                host.resolve_data_dir(dict(settings, data_dir=str(drive / root / 'seen-it')))
+            self.assertIn("archive's %s folder" % word, str(cm.exception))
+        with self.assertRaises(host.SettingsError) as cm:
+            host.resolve_data_dir(dict(settings, data_dir=str(self.tmp / 'home' / 'Downloads' / 'fha-inbox' / 'x')))
+        self.assertIn('capture download folder', str(cm.exception))
+        # beside them is fine
+        self.assertEqual(host.resolve_data_dir(dict(settings, data_dir=str(drive / 'Seen It data'))),
+                         drive / 'Seen It data')
+        with self.assertRaises(host.SettingsError):
+            host._set_config({'archive': str(archive), 'dataDir': str(drive / 'Inbox' / 'data')}, {})
+        self.assertFalse(host.config_path().exists())
+
+
+class OddFolderNames(_TempHome):
+    """Audit #5 (+ sweep): brackets, `$` and `%` are ordinary letters in a folder name."""
+
+    def test_brackets_in_the_archive_and_download_folder(self):
+        archive = self.tmp / 'Hartley Family Archive [2024]'
+        _write(archive / 'fha.yaml', 'roots:\n  documents: documents\n')
+        (archive / 'sources').mkdir()
+        (archive / 'documents').mkdir()
+        _json(archive / 'inbox' / 'b' / 'capture.json', {'url': 'https://www.findagrave.com/memorial/42/x'})
+        staging = self.tmp / 'Downloads [old]' / 'fha-inbox'
+        _json(staging / 'b2' / 'capture.json', {'url': 'https://www.newspapers.com/article/x/77/'})
+        _json(self.tmp / 'Downloads [old]' / 'fha-inbox-anc01' / 'b3' / 'capture.json',
+              {'url': 'https://www.ancestry.com/search/collections/76/records/88'})
+        items, missing = host.scan_known(host.scan_folders({'archive': str(archive), 'capture_staging': str(staging)}))
+        self.assertEqual(missing, [])
+        self.assertEqual(sorted(items), ['clip:77', 'fag:42', 'rec:76:88'])
+
+    def test_dollar_and_percent_are_not_environment_variables(self):
+        with mock.patch.dict(os.environ, {'SEENIT_T': 'elsewhere'}):
+            archive = self.tmp / 'Hartley $SEENIT_T 100%SEENIT_T% Archive'
+            _write(archive / 'fha.yaml', 'roots:\n  documents: documents\n')
+            (archive / 'sources').mkdir()
+            _json(archive / 'inbox' / 'b' / 'capture.json', {'url': 'https://www.findagrave.com/memorial/42/x'})
+            info = host._set_config({'archive': str(archive)}, {})
+            self.assertEqual(Path(info['archive']), archive)
+            items, _ = host.scan_known(host.scan_folders(host.load_settings()))
+        self.assertIn('fag:42', items)
+
+
+class RecordsFiledByTheArchiveTools(_TempHome):
+    """PR #212 review (Codex) (+ sweep): records filed by fha capture / fha process."""
+
+    def test_source_records_external_links_mark_the_record_filed(self):
+        archive = self.make_archive()
+        # the shape process.py _scaffold_text writes for a captured page
+        _write(archive / 'sources' / 'census' / ('1900-census-hartley_%s.md' % SID_A),
+               '---\nid: %s\ntitle: 1900 census, Thomas Hartley household\nsource_type: census\n'
+               'external_links:\n'
+               '  - url: https://www.ancestry.com/discoveryui-content/view/3303:7602\n'
+               '    accessed: 2026-01-15\n'
+               '  - url: "https://www.familysearch.org/ark:/61903/1:1:ABCD-123"\n'
+               '---\n\n## Notes\nHer sister is at https://www.ancestry.com/search/collections/7602/records/9999\n'
+               % SID_A)
+        _write(archive / 'sources' / 'newspapers' / ('hartley-wedding_%s.md' % SID_B),
+               '---\nid: %s\ncitation: >\n  "Hartley wedding", The Fairview Courier,\n'
+               '  https://www.newspapers.com/article/the-fairview-courier/1101/\n'
+               'external_links:\n  - url: https://www.findagrave.com/memorial/5505/x\n---\n' % SID_B)
+        items, _ = host.scan_known(host.scan_folders({'archive': str(archive)}))
+        self.assertEqual(items['rec:7602:3303'], {'state': 'filed', 'where': 'census', 'sid': SID_A})
+        self.assertEqual(items['fsrec:ABCD-123']['sid'], SID_A)
+        self.assertEqual(items['clip:1101'], {'state': 'filed', 'where': 'newspapers', 'sid': SID_B})
+        # a memorial a record links is still fagidx (photos not captured), never fag
+        self.assertEqual(items['fagidx:5505']['sid'], SID_B)
+        self.assertNotIn('fag:5505', items)
+        # a record merely mentioned in the notes is not filed
+        self.assertNotIn('rec:7602:9999', items)
+
+    def test_inbox_stubs_from_capture_ingest_count_as_captured(self):
+        archive = self.make_archive()
+        _write(archive / 'inbox' / 'hartley-obit.notes.md',
+               '---\ntitle: Hartley obituary\nsource_type: newspaper\nexternal_links:\n'
+               '  - url: https://www.newspapers.com/article/the-fairview-courier-hartley/7707/\n'
+               '    accessed: 2026-01-15\n---\n\nGrandma\'s obituary.\n')
+        _write(archive / 'inbox' / 'census-bundle' / 'notes.md',
+               '---\nexternal_links:\n  - url: https://www.ancestry.com/search/collections/7602/records/8808\n---\n')
+        items, _ = host.scan_known(host.scan_folders({'archive': str(archive)}))
+        self.assertEqual(items['clip:7707'], {'state': 'captured', 'where': 'inbox'})
+        self.assertEqual(items['rec:7602:8808']['state'], 'captured')
+
+    def test_a_folder_named_processed_above_the_inbox_does_not_mark_everything_done(self):
+        archive = self.tmp / 'processed' / 'Hartley Archive'
+        _write(archive / 'fha.yaml', 'roots:\n  documents: documents\n')
+        (archive / 'sources').mkdir()
+        _json(archive / 'inbox' / 'b' / 'capture.json', {'url': 'https://www.findagrave.com/memorial/42/x'})
+        _json(archive / 'inbox' / 'processed' / 'c' / 'capture.json', {'url': 'https://www.findagrave.com/memorial/43/x'})
+        items, _ = host.scan_known(host.scan_folders({'archive': str(archive)}))
+        self.assertEqual(items['fag:42']['state'], 'captured')
+        self.assertEqual(items['fag:43']['state'], 'processed')
+
+    def test_an_inbox_on_a_drive_not_connected_is_reported(self):
+        archive = self.make_archive('roots:\n  documents: documents\n  inbox: %s/Unplugged Inbox\n'
+                                    % self.tmp.as_posix())
+        (archive / 'documents').mkdir()
+        _, missing = host.scan_known(host.scan_folders({'archive': str(archive)}))
+        self.assertEqual([Path(m) for m in missing], [self.tmp / 'Unplugged Inbox'])
 
 
 # ── not shipped into archives yet ───────────────────────────────────────────

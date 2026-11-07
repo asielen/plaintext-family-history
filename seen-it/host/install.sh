@@ -41,8 +41,11 @@ if [ -z "$ARCHIVE" ] && [ -t 0 ]; then
   printf 'Archive folder: '
   read -r ARCHIVE
 fi
-# A folder dragged into Terminal arrives quoted or with backslash-escaped spaces.
-ARCHIVE=$(printf '%s' "$ARCHIVE" | sed -e "s/^[\"']//" -e "s/[\"']$//" -e 's/\\ / /g')
+# A folder dragged into Terminal arrives shell-quoted: '/home/you/Family Archive'
+# plus a trailing space (GNOME), or /Users/you/Mom\'s\ Archive (macOS). Only the
+# surrounding spaces come off here; the helper undoes the quoting itself with
+# the shell's own rules (seenit_host.py clean_typed_path), never by running it.
+ARCHIVE=$(printf '%s' "$ARCHIVE" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
 
 if [ -n "$ARCHIVE" ]; then
   "$PY" "$HOSTDIR/seenit_host.py" --install --archive "$ARCHIVE"

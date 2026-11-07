@@ -128,12 +128,13 @@ read from that file, the same way the archive's own `fha` tools read it:
 | What | Where it comes from |
 |---|---|
 | Filed sources | `fha.yaml` `roots:` `documents` (default: `documents` inside the archive). The small `*site-data*.json` files saved beside processed captures carry each source's S-id. |
-| Source records | the archive's `sources` folder. A Find a Grave memorial a source cites is noted too. |
-| Captured, not filed | `fha.yaml` `roots:` `inbox` (default: `inbox`); a `processed` folder inside it counts as done. |
+| Source records | the archive's `sources` folder. The page address a record was captured from (its `external_links:` or `citation:`, as `fha capture` and `fha process` write them) marks that record filed. A Find a Grave memorial a source cites is noted too, but as "linked" - its photos may not be captured yet. |
+| Captured, not filed | `fha.yaml` `roots:` `inbox` (default: `inbox`): capture bundles, and the `*.notes.md` stubs `fha capture --ingest` leaves. A `processed` folder inside it counts as done. |
 | Waiting in Downloads | the capture add-on's download folder: `fha.yaml` `capture_staging:`, else `~/Downloads/fha-inbox`, plus any `fha-inbox-…` folders beside it. |
 
 A root can be a full path (an external drive) or a path relative to the archive. If a drive is
-not connected, the window says which folder it could not reach rather than showing zero.
+not connected, the window says which folder it could not reach rather than showing zero, and
+what that folder held the last time it was read stays marked until it can be read again.
 
 To read more folders - old scans that are not in the archive yet, say - put a
 `known-config.json` in the data folder; each list **adds** to what the archive gives:
@@ -151,8 +152,9 @@ To read more folders - old scans that are not in the archive yet, say - put a
 In Advanced mode each computer keeps its data in a file called `seen-it-<device>.json` in the
 data folder, and merges in the files other computers left there. Because the files are a
 record of everything you looked at, the data folder is **never** inside the add-on's folder, a
-git checkout, or the archive - the helper refuses those, so your browsing history can never be
-committed or shared by accident.
+git checkout, the archive, any of the archive's photos, documents or inbox folders (wherever
+they live), or the capture download folder - the helper refuses those, so your browsing history
+can never be committed, filed or shared by accident.
 
 By default it is a private per-user folder:
 
@@ -211,6 +213,10 @@ It is not a secret and identifies no one: it is the same for every user, like th
 
 The one question other add-ons may ask is "which item keys does the archive hold"; Seen It
 never shares your looks, marks, searches or tree, and outside Advanced mode the answer is empty.
+The question is `{type: "knownKeys", prefix}` (every key starting with `rec:`, `fsrec:`, …) or
+`{type: "knownKeys", keys: [...]}` (only those keys). An add-on may ask for the archive to be
+re-read first (`refresh: true`), but gets at most one fresh read every five minutes; the
+answer's `missing` lists archive folders the last read could not reach.
 
 ## Files
 
@@ -218,7 +224,7 @@ never shares your looks, marks, searches or tree, and outside Advanced mode the 
 |---|---|
 | `manifest.json` | the add-on's description for Chrome |
 | `background.js` | the one place data is written; history import, sync, backups, the helper link |
-| `content.js`, `content.css` | Newspapers.com |
+| `content.js`, `cliplist.js`, `content.css` | Newspapers.com (`cliplist.js` keeps your clippings list) |
 | `content-ancestry.js`, `content-familysearch.js`, `content-findagrave.js`, `content-ancestry.css` | Ancestry, FamilySearch, Find a Grave |
 | `researchlog.js` | the research-log export and newspaper coverage |
 | `treefile.js` | reads an Ancestry tree file (GEDCOM) |

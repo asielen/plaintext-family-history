@@ -36,6 +36,7 @@
 //             A tree person's sources, as last seen on their Ancestry Facts page or
 //             FamilySearch person page, or read from a GEDCOM file (ged:, replaced
 //             whole on each load) - so search results can say "in your tree".
+//   syncPending: ms - a Chrome Sync push is waiting (see schedulePushSync).
 //   settings: { advanced: bool }
 //             Advanced mode: the family-archive integration (the local helper,
 //             the known list, the shared data folder). Off by default; the
@@ -98,13 +99,25 @@ function update(keys, fn) {
 }
 
 // ── looks ───────────────────────────────────────────────────────────────────
+// One more look at a newspaper page. A page's count is the larger of its
+// look times (`t`) and `n`, a plain number for looks this computer has no
+// times for: the Chrome Sync summary from another computer carries only a
+// count, and `t` keeps at most MAX_LOOKS_KEPT times. Once `n` is in play it
+// has to move with every new look too, or a page imported as "seen 10 times"
+// would stay at 10 through the next ten visits here.
+function addLook(v, when) {
+  const before = looksOf(v);
+  v.t.push(when);
+  if (v.n || v.t.length > MAX_LOOKS_KEPT) v.n = before + 1;
+  if (v.t.length > MAX_LOOKS_KEPT) v.t.splice(0, v.t.length - MAX_LOOKS_KEPT);
+}
+
 function recordLook(pageId, when, info) {
   return update(['views', 'pages', 'searches', 'meta'], ({ views, pages, searches, meta }) => {
     const v = views[pageId] || { t: [], last: 0 };
     const newLook = !v.t.length || when - (v.last || 0) > GAP_MS;
-    if (newLook) v.t.push(when);
+    if (newLook) addLook(v, when);
     v.last = when;
-    if (v.t.length > MAX_LOOKS_KEPT) v.t.splice(0, v.t.length - MAX_LOOKS_KEPT);
     views[pageId] = v;
 
     const p = pages[pageId] || { dwellMs: 0, fromSearches: [], terms: [], mark: null, overlaps: [] };
@@ -234,11 +247,13 @@ function loadTreeFile(people, file) {
 
 // ── what the archive already holds (via the helper) ─────────────────────────
 const KNOWN_MINUTES = 30;
+const KNOWN_RANK = { captured: 1, processed: 2, filed: 3 };
 let knownBusy = null;
 function refreshKnown() {
   if (knownBusy) return knownBusy;
   knownBusy = (async () => {
     try {
+      await update(['meta'], ({ meta }) => { meta.knownTriedAt = Date.now(); });
       const items = {};
       let offset = 0;
       let total = 1;
@@ -250,6 +265,17 @@ function refreshKnown() {
         total = r.total;
         if (r.next <= offset) break;
         offset = r.next;
+      }
+      if (missing.length) {
+        // Part of the archive could not be read (a drive or network share not
+        // connected). What it held last time is still there, so keep those
+        // marks rather than calling every filed source "not in archive" - and
+        // rather than letting the capture add-on, which asks us, capture them
+        // all again as new.
+        const { known: prev = {} } = await chrome.storage.local.get('known');
+        for (const [k, v] of Object.entries(prev)) {
+          if (!items[k] || KNOWN_RANK[items[k].state] < KNOWN_RANK[v.state]) items[k] = v;
+        }
       }
       await chrome.storage.local.set({ known: items });
       const counts = {};
@@ -381,12 +407,30 @@ async function pushSync() {
   const toRemove = Object.keys(old).filter((k) => k.startsWith(SYNC_PREFIX) && !(k in toSet));
   await chrome.storage.sync.set(toSet);
   if (toRemove.length) await chrome.storage.sync.remove(toRemove);
+  await chrome.storage.local.remove('syncPending');
 }
 
-let syncTimer = null;
-function schedulePushSync() {
-  clearTimeout(syncTimer);
-  syncTimer = setTimeout(() => pushSync().catch((e) => console.warn('seen-it: sync push', e)), 60 * 1000);
+// The push waits a minute so a burst of changes goes up as one write. It is
+// an alarm, not a timer: Chrome stops an idle service worker after about 30
+// seconds and a pending timer dies with it, so the other computers never
+// heard about the look. The alarm is set only when none is pending - reading
+// time is saved every 30 seconds while a page is open, and re-arming on every
+// save would push the write back forever. `syncPending` in storage covers a
+// browser closed before the alarm fires: the next start pushes.
+const SYNC_ALARM = 'pushSync';
+async function schedulePushSync() {
+  if (await chrome.alarms.get(SYNC_ALARM)) return;
+  chrome.alarms.create(SYNC_ALARM, { delayInMinutes: 1 });
+  await chrome.storage.local.set({ syncPending: Date.now() });
+}
+
+function runPushSync() {
+  return pushSync().catch((e) => console.warn('seen-it: sync push', e));
+}
+
+async function pushSyncIfPending() {
+  const { syncPending } = await chrome.storage.local.get('syncPending');
+  if (syncPending && !(await chrome.alarms.get(SYNC_ALARM))) await runPushSync();
 }
 
 async function pullSync() {
@@ -425,7 +469,7 @@ async function pullSync() {
 }
 
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (area === 'local' && (changes.views || changes.pages)) schedulePushSync();
+  if (area === 'local' && (changes.views || changes.pages)) schedulePushSync().catch(() => {});
   if (area === 'sync' && Object.keys(changes).some((k) => k.startsWith(SYNC_PREFIX))) pullSync().catch(() => {});
 });
 
@@ -442,11 +486,35 @@ function mergeList(a, b) {
   return out;
 }
 
+// When the tree-file people were loaded: meta.treeFile.at, written by every
+// load (even of a file whose people had nothing attached), or for a backup
+// made before that field mattered, the newest of its ged: people.
+function treeGeneration(meta, people) {
+  if (meta && meta.treeFile && meta.treeFile.at) return meta.treeFile.at;
+  let at = 0;
+  for (const [k, p] of Object.entries(people || {})) if (k.startsWith('ged:')) at = Math.max(at, (p && p.at) || 0);
+  return at;
+}
+
 async function importAll(obj) {
   if (!obj || obj.app !== 'newspapers-seen-it') throw new Error('not a Seen It backup file');
   let n = 0;
-  await update(['views', 'pages', 'passes', 'searches', 'clips', 'anc', 'ancPeople'], ({ views, pages, passes, searches, clips, anc, ancPeople }) => {
+  await update(['views', 'pages', 'passes', 'searches', 'clips', 'anc', 'ancPeople', 'meta'], ({ views, pages, passes, searches, clips, anc, ancPeople, meta }) => {
+    // The people from a tree file (ged:…) are one snapshot: the newest tree
+    // file loaded on any computer wins whole. Merged person by person, an
+    // older file from another computer would bring back everyone a newer
+    // file had dropped.
+    const mine = treeGeneration(meta, ancPeople);
+    const theirs = treeGeneration(obj.meta, obj.ancPeople);
+    if (theirs > mine) {
+      for (const k of Object.keys(ancPeople)) if (k.startsWith('ged:')) delete ancPeople[k];
+      for (const [k, ip] of Object.entries(obj.ancPeople || {})) if (k.startsWith('ged:')) ancPeople[k] = ip;
+      const tf = obj.meta && obj.meta.treeFile;
+      meta.treeFile = tf && tf.at ? tf : { name: null, at: theirs, people: null };
+    }
+    // People seen on their own Ancestry or FamilySearch pages: newest look at each wins.
     for (const [k, ip] of Object.entries(obj.ancPeople || {})) {
+      if (k.startsWith('ged:')) continue;
       if (!ancPeople[k] || (ip.at || 0) > (ancPeople[k].at || 0)) ancPeople[k] = ip;
     }
     for (const [k, ia] of Object.entries(obj.anc || {})) {
@@ -470,8 +538,10 @@ async function importAll(obj) {
     }
     for (const [id, iv] of Object.entries(obj.views || {})) {
       const v = views[id] || { t: [], last: 0 };
-      v.t = looksFrom((v.t || []).concat(iv.t || [])).slice(-MAX_LOOKS_KEPT);
-      v.n = Math.max(v.n || 0, iv.n || 0);
+      const all = looksFrom((v.t || []).concat(iv.t || []));
+      v.t = all.slice(-MAX_LOOKS_KEPT);
+      // past MAX_LOOKS_KEPT the times are trimmed, so the count moves to n
+      v.n = Math.max(v.n || 0, iv.n || 0, all.length > MAX_LOOKS_KEPT ? all.length : 0);
       v.last = Math.max(v.last || 0, iv.last || 0);
       views[id] = v;
       n++;
@@ -696,6 +766,8 @@ async function setHostConfig(change) {
 }
 
 chrome.alarms.onAlarm.addListener(async (a) => {
+  // Chrome Sync is part of the standalone add-on: it runs in every mode.
+  if (a.name === SYNC_ALARM) return runPushSync();
   if (!(await isAdvanced())) return;
   if (a.name === 'folder') syncFolder(false).catch(() => {});
   if (a.name === 'known') refreshKnown().catch(() => {});
@@ -711,10 +783,12 @@ chrome.runtime.onInstalled.addListener(async () => {
   if (await isAdvanced()) scheduleFolderSync();
   await deviceId();
   await pullSync().catch(() => {});
+  pushSyncIfPending().catch(() => {});
   importHistory().catch((e) => console.warn('seen-it: history import failed', e));
 });
 chrome.runtime.onStartup.addListener(async () => {
   pullSync().catch(() => {});
+  pushSyncIfPending().catch(() => {});
   if (!(await isAdvanced())) return;
   scheduleFolderSync();
   syncFolder(false).catch(() => {});
@@ -777,6 +851,20 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 // mode the answer is empty. The capture extension is loaded unpacked without
 // a fixed ID, so it cannot be named in the manifest; that is why
 // externally_connectable allows any extension to ask this one question.
+//
+// The question: { type: 'knownKeys', prefix?, keys?, refresh? }.
+//   keys     a list of item keys: only those are answered (the narrow form,
+//            for a caller that knows what it is about to capture);
+//   prefix   otherwise, every key that starts with it ('rec:', 'fsrec:', …) -
+//            what the capture add-on's batches ask today;
+//   refresh  re-read the archive first. A full read can take minutes, so an
+//            outside caller gets at most one every EXTERNAL_REFRESH_MS; a
+//            caller asking in a loop gets the last answer instead.
+// `missing` names archive folders the last read could not reach: their old
+// entries are kept (see refreshKnown), and a caller can tell the answer may
+// be behind.
+const EXTERNAL_REFRESH_MS = 5 * 60 * 1000;
+const EXTERNAL_KEYS_MAX = 20000;
 chrome.runtime.onMessageExternal.addListener((msg, sender, sendResponse) => {
   if (!msg || msg.type !== 'knownKeys') return;
   (async () => {
@@ -784,12 +872,20 @@ chrome.runtime.onMessageExternal.addListener((msg, sender, sendResponse) => {
       sendResponse({ ok: true, keys: {}, knownAt: null, advanced: false });
       return;
     }
-    if (msg.refresh) await refreshKnown().catch(() => {});
+    const before = (await chrome.storage.local.get('meta')).meta || {};
+    const last = Math.max(before.knownAt || 0, before.knownTriedAt || 0);
+    if (msg.refresh && Date.now() - last >= EXTERNAL_REFRESH_MS) await refreshKnown().catch(() => {});
     const { known = {}, meta = {} } = await chrome.storage.local.get(['known', 'meta']);
-    const prefix = typeof msg.prefix === 'string' ? msg.prefix : '';
     const keys = {};
-    for (const [k, v] of Object.entries(known)) if (k.startsWith(prefix)) keys[k] = v.state;
-    sendResponse({ ok: true, keys, knownAt: meta.knownAt || null });
+    if (Array.isArray(msg.keys)) {
+      for (const k of msg.keys.slice(0, EXTERNAL_KEYS_MAX)) {
+        if (typeof k === 'string' && Object.prototype.hasOwnProperty.call(known, k)) keys[k] = known[k].state;
+      }
+    } else {
+      const prefix = typeof msg.prefix === 'string' ? msg.prefix : '';
+      for (const [k, v] of Object.entries(known)) if (k.startsWith(prefix)) keys[k] = v.state;
+    }
+    sendResponse({ ok: true, keys, knownAt: meta.knownAt || null, missing: meta.knownMissing || [] });
   })().catch((e) => sendResponse({ ok: false, error: String(e) }));
   return true;
 });

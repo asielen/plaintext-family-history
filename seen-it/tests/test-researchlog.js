@@ -68,3 +68,21 @@ test('quotes and backslashes in search terms cannot break the YAML', () => {
   const { text } = log.build(s, 0);
   assert.match(text, /terms: "say \\"Hartley\\" \\\\ farm"/);
 });
+
+// PR #212 review: a verdict made after the last export is never lost.
+test('a page ruled out after its search was exported gets its own entry next time', () => {
+  const s = store();
+  // the 1923 page was opened from search k1 on Jan 15 and exported that day;
+  // the verdict came on Jan 20
+  s.pages[101].markAt = at(20, 10);
+  const { count, text } = log.build(s, at(18, 0));
+  assert.strictEqual(count, 1);
+  assert.match(text, /- date: 2026-01-20\n  question: "Newspapers.com page review"\n  repository: Newspapers.com\n  collection: "The Fairview Courier 1923-06-14 p. 4, Fairview, Kansas"/);
+  assert.match(text, /result: "nil \(page read, nothing relevant\)"/);
+});
+
+test('a verdict the same export already reports inside its search entry is not repeated', () => {
+  const s = store();
+  s.pages[101].markAt = at(20, 10);
+  assert.strictEqual(log.build(s, 0).count, 3); // the Jan 15 search entry is in this export
+});

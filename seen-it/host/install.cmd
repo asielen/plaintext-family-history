@@ -17,20 +17,25 @@ if not defined PY py -3 -c "import sys" >nul 2>nul && set "PY=py -3"
 if not defined PY goto :nopython
 
 set "ARCHIVE=%~1"
-if not "%ARCHIVE%"=="" goto :run
+if defined ARCHIVE goto :run
 echo.
 echo Where is your family archive? Paste its top folder - the one that holds
 echo fha.yaml - and press Enter. (Tip: in File Explorer, click the folder,
 echo then Ctrl+Shift+C copies its path.) Or just press Enter to skip.
 echo.
 set /p "ARCHIVE=Archive folder: "
+rem "Copy as path" puts quotes around the folder. Take them off before the
+rem value is used anywhere: a quoted folder with a space in its name breaks
+rem every test of it below ("... was unexpected at this time").
+if defined ARCHIVE set "ARCHIVE=%ARCHIVE:"=%"
 
 :run
-if "%ARCHIVE%"=="" (
-  %PY% "%HOSTDIR%seenit_host.py" --install
-) else (
-  %PY% "%HOSTDIR%seenit_host.py" --install --archive "%ARCHIVE:"=%"
-)
+if not defined ARCHIVE goto :noarchive
+%PY% "%HOSTDIR%seenit_host.py" --install --archive "%ARCHIVE%"
+goto :checked
+:noarchive
+%PY% "%HOSTDIR%seenit_host.py" --install
+:checked
 if errorlevel 1 goto :failed
 echo.
 pause

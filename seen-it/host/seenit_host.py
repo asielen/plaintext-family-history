@@ -30,16 +30,21 @@ never in the archive:
 
 Every key is optional. With no `data_dir` the data goes to a per-user folder
 (%LOCALAPPDATA%\\SeenIt\\data, or ~/.local/share/seen-it). The data folder holds
-your browsing history, so the helper refuses one inside a family archive or a
-git checkout: that history would otherwise be committed and shared.
+your browsing history, so the helper refuses one inside a family archive, any
+of its roots (photos, documents, inbox - wherever fha.yaml puts them), the
+capture download folder, or a git checkout: that history would otherwise be
+committed, filed or shared.
 
 The archive is located only through `archive`. From it the helper reads:
 
 - fha.yaml `roots:` `documents` - filed sources (their *site-data*.json files
   carry the S-id in the filename);
-- fha.yaml `roots:` `inbox` - captured, not filed yet (a `processed/` holding
+- fha.yaml `roots:` `inbox` - captured, not filed yet: bundles, and the
+  *.notes.md stubs `fha capture --ingest` writes (a `processed/` holding
   folder counts as processed);
-- `sources/` - source records; a Find a Grave memorial they cite is noted;
+- `sources/` - source records: the page addresses in a record's frontmatter
+  (external_links, citation) mark it filed with its S-id; a Find a Grave
+  memorial a record cites is noted as fagidx: (linked, photos not captured);
 - the capture add-on's download folder: `capture_staging` here, else fha.yaml
   `capture_staging:`, else ~/Downloads/fha-inbox, plus any `<that>-*` sibling
   (chunk folders split off for filing).
@@ -91,6 +96,7 @@ import glob
 import json
 import os
 import re
+import shlex
 import struct
 import sys
 import tempfile
@@ -194,23 +200,54 @@ def save_settings(settings, path=None):
 
 
 def _expand(p):
-    return Path(os.path.expandvars(os.path.expanduser(str(p).strip())))
+    """A folder path as typed or stored: surrounding spaces dropped, `~` expanded.
+
+    Nothing else is expanded: a `$` or `%` in a folder name is part of the
+    name, and expanding it as an environment variable would quietly read a
+    different folder.
+    """
+    return Path(os.path.expanduser(str(p).strip()))
 
 
-def data_dir_problem(path, archive=None):
+def _archive_owned_folders(archive, settings):
+    """Every folder that is part of the archive, by a name a person recognizes.
+
+    The archive folder itself, every root its fha.yaml names (photos,
+    documents and inbox often live on another drive - and the inbox is listed
+    and filed by the archive's tools), and the capture download folder that
+    `fha capture --ingest` sweeps into the inbox.
+    """
+    out = []
+    fha_config = {}
+    if archive:
+        a = _expand(archive)
+        out.append(('your family archive', a))
+        try:
+            fha_config = read_fha_yaml(a) if (a / 'fha.yaml').is_file() else {}
+        except (OSError, SettingsError):
+            fha_config = {}
+        roots = fha_config.get('roots') if isinstance(fha_config.get('roots'), dict) else {}
+        for alias in sorted(set(roots) | {'photos', 'documents', 'inbox'}):
+            out.append(("your archive's %s folder" % alias, resolve_root(alias, fha_config, a)))
+    out.append(('the capture download folder', capture_staging(settings or {}, fha_config)))
+    return out
+
+
+def data_dir_problem(path, archive=None, settings=None):
     """Why `path` must not hold the data files, or None when it is fine.
 
     The data files are a record of everything you looked at. Inside a family
-    archive or any git checkout they would be committed and pushed along with
-    it, so both are refused - the archive named in the settings, and any
-    folder above `path` that holds an fha.yaml or a .git.
+    archive - including its photos, documents and inbox folders wherever they
+    live - or any git checkout they would be committed, filed or shared along
+    with it, so all of those are refused, as is any folder above `path` that
+    holds an fha.yaml or a .git.
     """
     p = _expand(path).resolve()
-    if archive:
-        a = _expand(archive).resolve()
-        if p == a or a in p.parents:
-            return ('that folder is inside your family archive (%s) - the data files hold your '
-                    'browsing history, so keep them outside it' % a)
+    for label, folder in _archive_owned_folders(archive, settings):
+        f = Path(folder).resolve()
+        if p == f or f in p.parents:
+            return ('that folder is inside %s (%s) - the data files hold your '
+                    'browsing history, so keep them outside it' % (label, f))
     for d in (p, *p.parents):
         if (d / 'fha.yaml').is_file():
             return ('that folder is inside a family archive (%s) - the data files hold your '
@@ -228,7 +265,7 @@ def resolve_data_dir(settings):
     # A relative path would land wherever the browser happened to start the
     # helper - possibly inside the add-on's own folder.
     problem = (None if path.is_absolute() else 'write it as a full folder path, starting from the drive or /')
-    problem = problem or data_dir_problem(path, settings.get('archive'))
+    problem = problem or data_dir_problem(path, settings.get('archive'), settings)
     if problem:
         raise SettingsError('the data folder %s cannot be used: %s. Set another one under '
                             '"Data folder" in the Seen It window, or in %s' % (path, problem, config_path()))
@@ -362,15 +399,41 @@ def archive_problem(archive):
 
 
 def _globbed(patterns):
+    """Expand the `captured` list into real folders.
+
+    Every entry is a glob pattern: the ones the helper builds itself (the
+    inbox, the capture download folder) are passed through `glob.escape`
+    first, so a folder named `Family Archive [2024]` is read as itself rather
+    than as a pattern that matches nothing. Only known-config.json entries are
+    the person's own patterns.
+    """
     out = []
     for pattern in patterns:
-        pattern = os.path.expandvars(os.path.expanduser(str(pattern)))
-        out.extend(sorted(glob.glob(pattern)) if any(c in pattern for c in '*?[') else [pattern])
+        pattern = os.path.expanduser(str(pattern))
+        out.extend(sorted(glob.glob(pattern)))
     return out
 
 
+def _literal(path):
+    """A real folder path, made safe to put in the `captured` pattern list."""
+    return glob.escape(str(path))
+
+
+def capture_staging(settings, fha_config):
+    """The capture add-on's download folder, `~` expanded.
+
+    The settings file wins, then fha.yaml `capture_staging:` (the same key
+    `fha capture --ingest` reads), then the default ~/Downloads/fha-inbox.
+    """
+    value = settings.get('capture_staging') or fha_config.get('capture_staging') or DEFAULT_STAGING
+    return _expand(value)
+
+
 def scan_folders(settings, data_dir=None, use_yaml=True):
-    """Which folders to read, by kind: {'filed', 'sources', 'captured'}.
+    """Which folders to read, by kind: {'filed', 'sources', 'captured', 'required'}.
+
+    'captured' entries are glob patterns (real folders escaped, see _globbed);
+    'required' lists the archive folders whose absence is reported as missing.
 
     The archive gives its documents root (filed), its sources/ folder, and its
     inbox (captured); the capture add-on's download folder is captured too.
@@ -390,10 +453,15 @@ def scan_folders(settings, data_dir=None, use_yaml=True):
         fha_config = read_fha_yaml(archive, use_yaml=use_yaml)
         folders['filed'].append(str(resolve_root('documents', fha_config, archive)))
         folders['sources'].append(str(archive / 'sources'))
-        folders['captured'].append(str(resolve_root('inbox', fha_config, archive)))
-    staging = settings.get('capture_staging') or fha_config.get('capture_staging') or DEFAULT_STAGING
-    staging = str(staging).rstrip('/\\')
-    folders['captured'] += [staging, staging + '-*']
+        inbox = resolve_root('inbox', fha_config, archive)
+        folders['captured'].append(_literal(inbox))
+        # The archive's inbox must be there (unlike the download folder, which
+        # a computer that never captured does not have): when it is not - an
+        # inbox on a drive not connected - say so, rather than calling
+        # everything waiting in it "not in archive".
+        folders['required'] = [str(inbox)]
+    staging = str(capture_staging(settings, fha_config)).rstrip('/\\')
+    folders['captured'] += [_literal(staging), _literal(staging) + '-*']
 
     extra_path = Path(data_dir) / 'known-config.json' if data_dir else None
     if extra_path and extra_path.is_file():
@@ -401,7 +469,7 @@ def scan_folders(settings, data_dir=None, use_yaml=True):
             extra = json.loads(extra_path.read_text(encoding='utf-8'))
         except (OSError, ValueError):
             extra = {}
-        for kind in folders:
+        for kind in ('filed', 'sources', 'captured'):
             more = extra.get(kind) if isinstance(extra, dict) else None
             if isinstance(more, str):
                 more = [more]
@@ -515,9 +583,13 @@ def scan_known(folders):
             for k in _keys_from_site_data(data):
                 put(k, 'filed', p.parent.name, m.group(1) if m else None)
 
-    # A memorial a source record only cites or links is fagidx: (its photos
-    # are not captured yet), so the capture add-on's Find a Grave batch still
-    # fetches it.
+    # Source records. The page address a capture came from is kept in the
+    # record's frontmatter (`external_links:`, written by `fha capture` and
+    # `fha process`; sometimes in `citation:` too), so a record filed with the
+    # archive's own tools is recognized even with no site-data file beside it.
+    # A Find a Grave memorial is the exception: one a record cites or links is
+    # fagidx: (its photos are not captured yet), never fag:, so the capture
+    # add-on's Find a Grave batch still fetches it.
     for root in folders.get('sources', []):
         root = _expand(root)
         if not root.is_dir():
@@ -528,35 +600,79 @@ def scan_known(folders):
                 text = p.read_text(encoding='utf-8')
             except (OSError, UnicodeDecodeError):
                 continue
-            ids = set(FAG_MEMORIAL_RE.findall(text))
-            if not ids:
-                continue
-            sm = SOURCE_ID_RE.search(text)
-            for mid in ids:
-                put('fagidx:%s' % mid, 'filed', p.parent.name, sm.group(1) if sm else None)
+            sm = SOURCE_ID_RE.search(_frontmatter(text) or text)
+            sid = sm.group(1) if sm else None
+            for url in _frontmatter_urls(text):
+                for k in _keys_from_url(url):
+                    if not k.startswith('fag:'):
+                        put(k, 'filed', p.parent.name, sid)
+            for mid in set(FAG_MEMORIAL_RE.findall(text)):
+                put('fagidx:%s' % mid, 'filed', p.parent.name, sid)
 
+    for root in folders.get('required', []):
+        if not _expand(root).is_dir():
+            missing.append(str(_expand(root)))
     for root in _globbed(folders.get('captured', [])):
         root = Path(root)
         if not root.is_dir():
             continue  # no download folder yet is normal: nothing captured on this computer
-        for p in root.rglob('*.json'):
+        for p in root.rglob('*'):
             name = p.name.lower()
-            if (name != 'capture.json' and 'site-data' not in name
-                    and not name.startswith(('clipping-data', 'record-data'))):
+            is_stub = name.endswith('.notes.md') or name == 'notes.md'
+            is_data = name.endswith('.json') and (
+                name == 'capture.json' or 'site-data' in name
+                or name.startswith(('clipping-data', 'record-data')))
+            if not (is_stub or is_data) or not p.is_file():
                 continue
             # an item in the inbox's processed/ holding folder has been filed
-            # (or set aside as a duplicate)
-            state = 'processed' if 'processed' in [x.lower() for x in p.parts] else 'captured'
+            # (or set aside as a duplicate). Only folders INSIDE the inbox
+            # count: an inbox that itself lives under a folder called
+            # "processed" is not all done.
+            inside = [x.lower() for x in p.relative_to(root).parts[:-1]]
+            state = 'processed' if 'processed' in inside else 'captured'
             try:
-                data = json.loads(p.read_text(encoding='utf-8'))
-            except (OSError, ValueError):
+                raw = p.read_text(encoding='utf-8')
+            except (OSError, UnicodeDecodeError):
                 continue
-            if not isinstance(data, dict):
-                continue
-            keys = _keys_from_url(data.get('url')) if name == 'capture.json' else _keys_from_site_data(data)
+            if is_stub:
+                # `fha capture --ingest` turns a bundle into an inbox stub
+                # whose frontmatter carries the page address.
+                keys = [k for url in _frontmatter_urls(raw) for k in _keys_from_url(url)]
+            else:
+                try:
+                    data = json.loads(raw)
+                except ValueError:
+                    continue
+                if not isinstance(data, dict):
+                    continue
+                keys = _keys_from_url(data.get('url')) if name == 'capture.json' else _keys_from_site_data(data)
             for k in keys:
                 put(k, state, p.parent.name)
     return out, missing
+
+
+URL_RE = re.compile(r'https?://[^\s\'"<>\])]+', re.I)
+
+
+def _frontmatter(text):
+    """The YAML block between the first two `---` lines, or '' when there is none."""
+    lines = text.lstrip('﻿').splitlines()
+    if not lines or lines[0].strip() != '---':
+        return ''
+    for i, line in enumerate(lines[1:], 1):
+        if line.strip() in ('---', '...'):
+            return '\n'.join(lines[1:i])
+    return ''
+
+
+def _frontmatter_urls(text):
+    """Every web address in a record's frontmatter (external_links, citation, …).
+
+    Only the frontmatter: it describes THIS source. The notes below it may
+    mention other records ("see also her sister's census entry"), which would
+    otherwise be marked as filed when they are not.
+    """
+    return URL_RE.findall(_frontmatter(text))
 
 
 def known_items(offset, settings, data_dir, cache_path=None):
@@ -633,6 +749,37 @@ def describe(settings):
     return out
 
 
+def clean_typed_path(text, posix=None):
+    """A folder as a person pasted or dragged it, turned back into the folder.
+
+    Each place a path can come from wraps it differently:
+      Windows "Copy as path"      "C:\\Users\\you\\Hartley Family Archive"
+      GNOME Terminal drag-drop    '/home/you/Hartley Family Archive'   (+ a space)
+      macOS Terminal drag-drop    /Users/you/Mom\\'s\\ Archive          (+ a space)
+    On macOS and Linux the wrapping is shell quoting, so it is undone with the
+    shell's own rules (shlex, which only parses - it never runs anything). A
+    path typed plainly, spaces and all, is not shell-quoted; when the quoting
+    rules do not give back exactly one folder, the text is used as typed.
+    On Windows a backslash is part of the path, so only the quotes go - all
+    of them, since no Windows name can hold a `"`, and a folder ending in `\\`
+    handed over as "C:\\Users\\you\\Archive\\" reaches Python as
+    C:\\Users\\you\\Archive" (the `\\"` reads as an escaped quote).
+    """
+    posix = (os.name != 'nt') if posix is None else posix
+    t = str(text or '').strip()
+    if not posix:
+        return t.replace('"', '').strip()
+    try:
+        parts = shlex.split(t)
+    except ValueError:  # an unmatched quote: an apostrophe in a typed name
+        parts = []
+    if len(parts) == 1:
+        return parts[0]
+    if len(t) >= 2 and t[0] == t[-1] and t[0] in '"\'':
+        t = t[1:-1].strip()
+    return t
+
+
 def _set_config(msg, settings):
     """Change the archive and/or data folder from the Seen It window.
 
@@ -641,7 +788,7 @@ def _set_config(msg, settings):
     """
     new = dict(settings)
     if 'archive' in msg:
-        archive = str(msg.get('archive') or '').strip().strip('"')
+        archive = clean_typed_path(msg.get('archive'))
         if archive:
             archive = str(_expand(archive).resolve())  # a path typed in a terminal: from there
             problem = archive_problem(archive)
@@ -651,7 +798,7 @@ def _set_config(msg, settings):
         else:
             new.pop('archive', None)
     if 'dataDir' in msg:
-        data = str(msg.get('dataDir') or '').strip().strip('"')
+        data = clean_typed_path(msg.get('dataDir'))
         if data:
             new['data_dir'] = str(_expand(data).resolve())
         else:
@@ -760,7 +907,10 @@ def write_launcher(folder, python=None, script=None, windows=None):
     if windows:
         path = folder / 'seenit_host.cmd'
         esc = lambda s: s.replace('%', '%%')  # noqa: E731 - cmd.exe expands %
-        text = '@echo off\r\n"%s" -u "%s" %%*\r\n' % (esc(python), esc(script))
+        # cmd.exe reads a batch file in the console's code page, not UTF-8, so
+        # a folder named Müller would be misread and "not found".
+        # Switching the code page first makes the next line read as written.
+        text = '@echo off\r\nchcp 65001 >nul 2>nul\r\n"%s" -u "%s" %%*\r\n' % (esc(python), esc(script))
         path.write_bytes(text.encode('utf-8'))
     else:
         path = folder / 'seenit_host'
@@ -816,9 +966,11 @@ def setup(archive=None, data_dir=None, out=None):
     try:
         settings = load_settings()
         msg = {}
-        if archive is not None:
+        # A blank answer (Enter, or only spaces) keeps what is set: the
+        # installer never clears a setting; the Seen It window can.
+        if archive is not None and clean_typed_path(archive):
             msg['archive'] = archive
-        if data_dir is not None:
+        if data_dir is not None and clean_typed_path(data_dir):
             msg['dataDir'] = data_dir
         info = _set_config(msg, settings)
     except SettingsError as e:

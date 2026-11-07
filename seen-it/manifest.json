@@ -24,6 +24,7 @@
         "https://www.newspapers.com/*"
       ],
       "js": [
+        "cliplist.js",
         "content.js"
       ],
       "css": [

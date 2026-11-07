@@ -65,11 +65,18 @@
     const passes = store.passes || {};
     const passDays = (id) => ((passes[id] && passes[id].t) || []).map(day);
     const entries = [];
+    // Which search entries THIS export writes, by search key and day: a
+    // verdict is folded into a search entry only when that entry is in this
+    // export (and covers a day the page was opened) - otherwise it would be
+    // dropped from an incremental export just because the search that found
+    // the page was exported last time.
+    const written = {};
 
-    for (const s of Object.values(searches)) {
+    for (const [key, s] of Object.entries(searches)) {
       const params = s.params || {};
       const byDay = {};
       for (const r of s.runs || []) if (r.at > from) byDay[day(r.at)] = r; // last run that day
+      written[key] = new Set(Object.keys(byDay));
       for (const d of Object.keys(byDay)) {
         const run = byDay[d];
         entries.push({
@@ -87,10 +94,13 @@
       }
     }
 
-    // Verdicts on pages that no logged search accounts for (opened from a link,
-    // a bookmark, or before the add-on was installed).
+    // Verdicts on pages that no search entry in this export accounts for
+    // (opened from a link, a bookmark, before the add-on was installed, or
+    // from a search already exported before the verdict was made).
+    const accounted = (id, p) => (p.fromSearches || []).some((k) =>
+      written[k] && viewsByDay(id).some((d) => written[k].has(d)));
     for (const [id, p] of Object.entries(pages)) {
-      if (!p.mark || !(p.markAt > from) || (p.fromSearches || []).length) continue;
+      if (!p.mark || !(p.markAt > from) || accounted(id, p)) continue;
       entries.push({
         at: p.markAt,
         text: [

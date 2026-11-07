@@ -140,14 +140,8 @@
   }
 
   // ── your clippings ────────────────────────────────────────────────────────
-  function clipEntry(c) {
-    return {
-      id: Number(c.clipping_id),
-      title: String(c.title || '').trim(),
-      url: c.url ? new URL(c.url, location.origin).href : null,
-      created: c.created || null,
-    };
-  }
+  // The list logic itself is in cliplist.js (window.SeenItClips), so it can be tested.
+  const clipEntry = (c) => SeenItClips.clipEntry(c, location.origin);
 
   async function withLock(fn) {
     const { meta = {} } = await chrome.storage.local.get('meta');
@@ -179,36 +173,17 @@
 
     await withLock(async () => {
       const { clips: stored = {}, meta: m = {} } = await chrome.storage.local.get(['clips', 'meta']);
-      const known = new Set();
-      for (const list of Object.values(stored)) for (const c of list) known.add(c.id);
-      const fresh = full ? {} : stored;
-      let cursor = 0;
-      for (let page = 0; page < 60; page++) {
-        if (page) await sleep(between(2000, 5000));
-        const j = await fetchJson('/api/clipping/list?user=' + encodeURIComponent(user.username) +
-          '&visibility=all&count=24&cursor_mark=' + cursor + '&product_id=1');
-        const batch = (j && j.clippings) || [];
-        let newHere = 0;
-        for (const c of batch) {
-          if (c.user_username && c.user_username.toLowerCase() !== user.username.toLowerCase()) continue;
-          const pid = String(c.page_id);
-          const e = clipEntry(c);
-          const list = (fresh[pid] = fresh[pid] || []);
-          if (!list.some((x) => x.id === e.id)) list.push(e);
-          if (!known.has(e.id)) newHere++;
-        }
-        if (!full && newHere < batch.length) break; // newest first: stop at the first page with nothing new
-        if (!j.more_results || !batch.length || j.next_cursor_mark == null) break;
-        cursor = j.next_cursor_mark;
-      }
-      m.user = user.username;
-      m.clipsAt = Date.now();
-      if (full) {
-        m.clipsFullAt = Date.now();
-        delete m.fullRefreshRequested;
-      }
-      m.clipCount = Object.values(fresh).reduce((n, l) => n + l.length, 0);
-      await chrome.storage.local.set({ clips: fresh, meta: m });
+      const r = await SeenItClips.refreshClipList({
+        full,
+        stored,
+        meta: m,
+        username: user.username,
+        origin: location.origin,
+        pause: () => sleep(between(2000, 5000)),
+        fetchPage: (cursor) => fetchJson('/api/clipping/list?user=' + encodeURIComponent(user.username) +
+          '&visibility=all&count=24&cursor_mark=' + encodeURIComponent(cursor) + '&product_id=1'),
+      });
+      await chrome.storage.local.set({ clips: r.clips, meta: r.meta });
     }).catch((e) => console.warn('seen-it: clippings refresh', e));
   }
 
