@@ -250,13 +250,15 @@ Batch mode keeps the form honest across navigations: a navigation that lands *du
 
 ### 5.5 In-browser pre-fill vs. authoritative Python extraction
 
-**The recipes stay in Python. The browser does only a light, generic pre-fill.** The panel reads obvious signals - `<title>`/`og:title`, `<link rel=canonical>`, `article:published_time`, visible person-name selectors - to fill the glance-and-nudge fields, and guesses a `recipe_hint` from the hostname. That is *all*. The durable, per-site citation parsing - the census household table, the marriage-index fields - happens when `fha capture --ingest` runs the existing Python recipe on the saved `page.html`.
+**The recipes stay in Python. The browser does only a light, generic pre-fill.** The panel reads obvious signals - `<title>`/`og:title`, `<link rel=canonical>`, `article:published_time`, visible person-name selectors - to fill the glance-and-nudge fields, and guesses a `recipe_hint` from the hostname. That is *all* - with the one exception below. The durable, per-site citation parsing - the census household table, the marriage-index fields - happens when `fha capture --ingest` runs the existing Python recipe on the saved `page.html`.
 
 This is a deliberate architecture choice, not laziness:
 
 - **One source of truth.** Re-implementing Ancestry/FamilySearch parsing in JavaScript would mean two recipe sets drifting apart. The browser captures; Python extracts.
 - **The companion stays dumb and replaceable** (the TOOLING §13b promise). The extension, the native host, and Claude-in-Chrome all produce the same `page.html`; the engine treats them identically.
 - **Hints are cheap to be wrong about.** Because `page.html` is always saved, a bad browser guess costs nothing - the Python recipe corrects it at ingest, and the human's explicit edits in `capture.json` still win over both.
+
+**The one exception: record hints from a site's own data.** On the record pages the companion reads site-specifically (Ancestry, FamilySearch and Find a Grave - §5.6), the panel also pre-fills `source_type`, `source_date` and `source_class` from the record's collection and its own event date. It does this through **one shared rule** written twice - `recordHints` in `browser-companion/src/lib/ancestry-record.js` and `record_hints` in `tools/capture_recipes/_common.py` - held to the same answers by one case table (`tests/fixtures/capture-samples/ancestry-hints.json`) that both test suites run. So the browser's guess and the ingest recipe's reading of the same page cannot drift, and the three points above still hold: a typed value in the form wins, the hint only fills a blank, and the recipe still reads the saved page at ingest.
 
 ### 5.6 Asset acquisition, honestly
 
