@@ -10,6 +10,7 @@ Run: python -m unittest tests.test_capture -v   (from the repo root)
 
 import contextlib
 import io
+import json
 import shutil
 import sqlite3
 import sys
@@ -358,6 +359,68 @@ class CaptureTestCase(unittest.TestCase):
         self.assertNotIn('Given Name', meta['people'])            # label never leaks
         self.assertNotIn('Surname', meta['people'])
         self.assertNotIn('Does', meta['title'])                   # hint prompt not the title
+
+    # ── TI-066 / TI-067: today's record layout ─────────────────────────────────
+    # The <h1> is the person and the collection lives only in <title>; the old
+    # reading took the <h1> as the collection, so every record typed `website`
+    # and dated from whatever year came first on the page.
+
+    def test_ancestry_record_layout_census_is_a_census(self) -> None:
+        rc = self._capture(_sample('ancestry-record-census'),
+                           url='https://www.ancestry.com/search/collections/90001/records/1000001')
+        self.assertEqual(rc, EXIT_CLEAN)
+        meta = read_record(self._only_stub())['meta']
+        self.assertEqual(meta['title'], 'Calvin Hartley - 1880 United States Federal Census')
+        self.assertEqual(meta['source_type'], 'census')
+        self.assertEqual(meta['source_date'], '1880')
+        self.assertNotIn('source_class', meta)           # a census is filed as original
+        for name in ('Calvin Hartley', 'Harriet Hartley', 'Warren Hartley', 'Edith Hartley'):
+            self.assertIn(name, meta['people'])
+
+    def test_ancestry_record_layout_death_index_is_a_dated_vital_record(self) -> None:
+        rc = self._capture(_sample('ancestry-record-death-index'),
+                           url='https://www.ancestry.com/search/collections/90002/records/2000001')
+        self.assertEqual(rc, EXIT_CLEAN)
+        meta = read_record(self._only_stub())['meta']
+        self.assertEqual(meta['title'], 'Ethel Hartley - California, U.S., Death Index, 1940-1997')
+        self.assertEqual(meta['source_type'], 'vital-record')
+        self.assertEqual(str(meta['source_date']), '1957-01-07')   # her death, not 1940
+        self.assertEqual(meta['source_class'], 'derivative')       # an index entry
+
+    def test_ancestry_record_layout_ignores_seen_it_badges(self) -> None:
+        # TI-067: a page saved with the Seen It add-on's badges reads as if they
+        # were not there - no badge text in the people or the stub body.
+        rc = self._capture(_sample('ancestry-record-census'),
+                           url='https://www.ancestry.com/search/collections/90001/records/1000001')
+        self.assertEqual(rc, EXIT_CLEAN)
+        stub = self._only_stub()
+        text = stub.read_text(encoding='utf-8')
+        for badge in ('Captured, not filed', 'Seen 1', 'Nothing here', 'Not in archive'):
+            self.assertNotIn(badge, text)
+        self.assertIn('Warren Hartley', read_record(stub)['meta']['people'])  # the marked row stays
+
+    def test_ancestry_hints_shared_table(self) -> None:
+        # One case table for the recipe and the companion
+        # (browser-companion/tests/test-ancestry.js runs the same rows).
+        from capture_recipes import ancestry
+        cases = json.loads((SAMPLES / 'ancestry-hints.json').read_text(encoding='utf-8'))
+        for value, want in cases['dates']:
+            self.assertEqual(ancestry._date_to_edtf(value), want, value)
+        for case in cases['records']:
+            got = ancestry._record_hints(case['collection'], [tuple(f) for f in case['fields']])
+            want = case['expect']
+            self.assertEqual(got, {'source_type': want['sourceType'], 'source_date': want['sourceDate'],
+                                   'source_class': want['sourceClass']}, case['collection'])
+
+    def test_seen_it_stripper_keeps_the_page_otherwise_intact(self) -> None:
+        from capture_recipes import ancestry
+        html = ('<p class="nsi-ruled-out">Row &amp; more<br>next</p>'
+                '<span class="nsi-pills"><span class="nsi-pill">Seen</span><img src="x"></span>'
+                '<div id="nsi-anc-badge"><b>badge</b></div><!-- c --><i>end</i>')
+        self.assertEqual(ancestry._strip_seen_it(html),
+                         '<p class="nsi-ruled-out">Row &amp; more<br>next</p><!-- c --><i>end</i>')
+        self.assertEqual(ancestry._strip_seen_it('<p>no badges</p>'), '<p>no badges</p>')
+        self.assertEqual(ancestry._strip_seen_it(''), '')
 
     def test_ancestry_offsite_index_pointer(self) -> None:
         # An Ancestry "Index" record embedding a Newspapers.com clip URL surfaces

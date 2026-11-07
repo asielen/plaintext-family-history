@@ -254,6 +254,72 @@ class IngestTestCase(unittest.TestCase):
         self.assertEqual(len(recipe_cite), 1)
         self.assertTrue(recipe_cite[0])   # the recipe's own, not blanked
 
+    def test_ti066_old_ancestry_bundle_is_typed_from_its_own_page(self) -> None:
+        # The bundles that showed TI-066: the companion sent no type or date,
+        # so ingest read them off today's record page - and typed a census
+        # `website` and dated a 1957 death 1940. Now the recipe reads that
+        # layout: census -> census, a death index -> vital-record dated by the
+        # death, an index entry -> derivative.
+        _make_bundle(self.staging, 'anc-census', page_html=_sample('ancestry-record-census'),
+                     capture_json={'url': 'https://www.ancestry.com/search/collections/90001/records/1000001',
+                                   'title': 'Calvin Hartley - 1880 United States Federal Census',
+                                   'asset_mode': 'none', 'recipe_hint': 'ancestry'})
+        _make_bundle(self.staging, 'anc-death', page_html=_sample('ancestry-record-death-index'),
+                     capture_json={'url': 'https://www.ancestry.com/search/collections/90002/records/2000001',
+                                   'title': 'Ethel Hartley - California, U.S., Death Index, 1940-1997',
+                                   'asset_mode': 'none', 'recipe_hint': 'ancestry'})
+        self._ingest()
+        metas = {read_record(p)['meta']['title']: read_record(p)['meta'] for p in self._stubs()}
+        census = metas['Calvin Hartley - 1880 United States Federal Census']
+        death = metas['Ethel Hartley - California, U.S., Death Index, 1940-1997']
+        self.assertEqual(census['source_type'], 'census')
+        self.assertEqual(str(census['source_date']), '1880')
+        self.assertNotIn('source_class', census)
+        self.assertEqual(death['source_type'], 'vital-record')
+        self.assertEqual(str(death['source_date']), '1957-01-07')
+        self.assertEqual(death['source_class'], 'derivative')
+
+    def test_capture_json_source_class_reaches_the_stub(self) -> None:
+        # The companion now sends what the record said about itself; ingest
+        # keeps it (a valid class only - a stray word is dropped, never refused).
+        _make_bundle(self.staging, 'b-class', page_html=_sample('ancestry'),
+                     capture_json={'url': 'https://www.ancestry.com/rec/6', 'asset_mode': 'none',
+                                   'title': 'An index entry', 'source_class': 'Derivative '})
+        _make_bundle(self.staging, 'b-noclass', page_html=_sample('ancestry'),
+                     capture_json={'url': 'https://www.ancestry.com/rec/7', 'asset_mode': 'none',
+                                   'title': 'A stray class', 'source_class': 'index'})
+        self._ingest()
+        metas = {read_record(p)['meta']['title']: read_record(p)['meta'] for p in self._stubs()}
+        self.assertEqual(metas['An index entry']['source_class'], 'derivative')
+        self.assertNotIn('source_class', metas['A stray class'])
+
+    def test_ancestry_record_bundle_files_its_parts_with_roles_and_class(self) -> None:
+        # The shape the companion stages for one Ancestry record: page copy,
+        # scan, the site's index as record-data.json, and the record's hints.
+        bundle = self.staging / 'anc-record'
+        bundle.mkdir(parents=True)
+        (bundle / 'page.html').write_text(_sample('ancestry-record-death-index'), encoding='utf-8')
+        (bundle / 'capture.json').write_text(json.dumps({
+            'schema': 2, 'url': 'https://www.ancestry.com/search/collections/90002/records/2000001',
+            'title': 'Ethel Hartley - California, U.S., Death Index, 1940-1997',
+            'accessed': '2026-11-06', 'source_type': 'vital-record', 'source_date': '1957-01-07',
+            'source_class': 'derivative', 'recipe_hint': 'ancestry',
+            'assets': [
+                {'file': 'page-snapshot.html', 'role': 'webpage', 'mode': 'singlefile'},
+                {'file': 'record-data.json', 'role': 'site-data', 'mode': 'ancestry-page-data'},
+            ],
+        }), encoding='utf-8')
+        (bundle / 'page-snapshot.html').write_text('<html>copy</html>', encoding='utf-8')
+        (bundle / 'record-data.json').write_text('{"fields": []}', encoding='utf-8')
+        res = self._ingest()
+        self.assertEqual(res.data['ingested'], 1)
+        meta = read_record(self._bundle_dirs()[0] / 'notes.md')['meta']
+        self.assertEqual({f['file']: f.get('role') for f in meta['files']},
+                         {'page-snapshot.html': 'webpage', 'record-data.json': 'site-data'})
+        self.assertEqual(meta['source_type'], 'vital-record')
+        self.assertEqual(str(meta['source_date']), '1957-01-07')
+        self.assertEqual(meta['source_class'], 'derivative')
+
     def test_bundle_with_missing_declared_asset_is_malformed(self) -> None:
         # A schema-2 assets entry naming a file absent on disk is an incomplete
         # capture: reported malformed and left in staging, never filed.

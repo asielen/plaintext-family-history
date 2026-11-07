@@ -408,6 +408,10 @@ class RecipeResult:
     body: str = ''
     collection: str = ''
     terms: str = ''
+    # SPEC §14's optional original | derivative | authored, when the page says
+    # which (an index entry is derivative). None leaves `fha process` to its
+    # default; only a recipe or capture.json that knows sets it.
+    source_class: str | None = None
 
 
 def generic_extract(html: str, url: str | None) -> RecipeResult:
@@ -532,7 +536,25 @@ def _coerce_result(raw) -> RecipeResult:
         body=raw.get('body') or '',
         collection=raw.get('collection') or '',
         terms=raw.get('terms') or '',
+        source_class=_valid_source_class(raw.get('source_class')),
     )
+
+
+# SPEC §14 / §8.5: the Mills classes a source record may carry.
+SOURCE_CLASSES = ('original', 'derivative', 'authored')
+
+
+def _valid_source_class(value) -> str | None:
+    """`value` as a SPEC §14 source_class, or None when it is not one.
+
+    Forgiving on purpose: a stub hint is never a reason to refuse a capture, so
+    an unknown word is dropped (filing then uses its default) rather than
+    raised. Case and spaces are tidied.
+    """
+    if not isinstance(value, str):
+        return None
+    v = value.strip().lower()
+    return v if v in SOURCE_CLASSES else None
 
 
 # ── Stub assembly ─────────────────────────────────────────────────────────────
@@ -588,6 +610,8 @@ def _render_stub(result: RecipeResult, *, accessed: str, has_asset: bool) -> str
         lines.append(f'repository: {_yaml_inline(result.repository)}')
     if result.source_date:
         lines.append(f'source_date: {_yaml_inline(result.source_date)}')
+    if result.source_class:
+        lines.append(f'source_class: {result.source_class}')
     if result.external_links:
         lines.append('external_links:')
         for link in result.external_links:
@@ -769,6 +793,7 @@ def _resolve_recipe_result(
     people: list[str] | None,
     repository: str | None = None,
     citation: str | None = None,
+    source_class: str | None = None,
 ) -> tuple[str, RecipeResult]:
     """Choose a recipe and apply the explicit/override fields (the human's nudge).
 
@@ -790,6 +815,10 @@ def _resolve_recipe_result(
         # A citation the page itself supplied (a site's own "cite this", sent
         # in capture.json) is better than the one the recipe assembles.
         result.citation = citation.strip()
+    if _valid_source_class(source_class):
+        # What the record said about itself at capture (an index entry is
+        # derivative) wins over the recipe's reading of the saved page.
+        result.source_class = _valid_source_class(source_class)
     if source_type:
         st = source_type.strip().lower()
         if st not in SOURCE_TYPES:
@@ -856,6 +885,7 @@ def run_capture(
     people: list[str] | None = None,
     repository: str | None = None,
     citation: str | None = None,
+    source_class: str | None = None,
     dry_run: bool = False,
 ) -> Result:
     """Capture a page into an inbox source stub and log the search (TOOLING §13b).
@@ -874,12 +904,13 @@ def run_capture(
     the human actually viewed the page, `notes` is their free-text body, and
     `people` are their curated name hints (unioned ahead of any recipe-found
     names, deduplicated). `citation` is one the page itself supplied (a site's
-    own "cite this"), which replaces the recipe's assembled guess.
+    own "cite this"), which replaces the recipe's assembled guess, and
+    `source_class` what the record said about itself (an index is derivative).
     """
     recipe_name, result = _resolve_recipe_result(
         url=url, title=title, source_type=source_type, source_date=source_date,
         html=html, notes=notes, people=people, repository=repository,
-        citation=citation,
+        citation=citation, source_class=source_class,
     )
 
     accessed = accessed or _today()
@@ -1151,6 +1182,8 @@ def _render_bundle_notes(
         lines.append(f'repository: {_yaml_inline(result.repository)}')
     if result.source_date:
         lines.append(f'source_date: {_yaml_inline(result.source_date)}')
+    if result.source_class:
+        lines.append(f'source_class: {result.source_class}')
     if result.external_links:
         lines.append('external_links:')
         for link in result.external_links:
@@ -1192,6 +1225,7 @@ def _ingest_bundle_folder(
     repository: str | None,
     assets: list[tuple[Path, str]],
     citation: str | None = None,
+    source_class: str | None = None,
     dry_run: bool = False,
 ) -> Result:
     """File a multi-asset capture as a §12.1 inbox BUNDLE FOLDER (the "both" case).
@@ -1210,7 +1244,7 @@ def _ingest_bundle_folder(
     recipe_name, result = _resolve_recipe_result(
         url=url, title=title, source_type=source_type, source_date=source_date,
         html=html, notes=notes, people=people, repository=repository,
-        citation=citation,
+        citation=citation, source_class=source_class,
     )
     accessed = accessed or _today()
     if not result.title:
@@ -1411,7 +1445,7 @@ def _read_bundle(bundle: Path) -> tuple[dict, str, list[tuple[Path, str]]]:
     # contract. Scalars are str()-coerced (forgiving: `1880` → "1880"); a
     # list/dict where text belongs is structurally wrong → reported BundleError.
     for key in ('url', 'title', 'source_type', 'source_date', 'accessed', 'notes',
-                'repository', 'citation'):
+                'repository', 'citation', 'source_class'):
         val = cap.get(key)
         if val is None or isinstance(val, str):
             continue
@@ -1630,6 +1664,7 @@ def run_ingest(
                     people=cap.get('people'),
                     repository=cap.get('repository'),
                     citation=cap.get('citation'),
+                    source_class=cap.get('source_class'),
                     assets=assets,
                     dry_run=dry_run,
                 )
@@ -1647,6 +1682,7 @@ def run_ingest(
                     people=cap.get('people'),
                     repository=cap.get('repository'),
                     citation=cap.get('citation'),
+                    source_class=cap.get('source_class'),
                     dry_run=dry_run,
                 )
         except (CaptureError, CaptureWriteError) as e:

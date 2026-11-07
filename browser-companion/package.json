@@ -4,7 +4,7 @@
   "description": "Browser extension for staging genealogy record captures (TOOLING_INGESTION §5).",
   "private": true,
   "scripts": {
-    "test": "node --test tests/test-newspapers.js tests/test-panel-newspapers.js tests/test-harvest.js tests/test-iiif.js tests/test-readiness.js tests/test-capture-json.js tests/test-sync.js tests/test-srcset.js tests/test-snapshot-urls.js",
+    "test": "node --test tests/test-ancestry.js tests/test-panel-ancestry.js tests/test-newspapers.js tests/test-panel-newspapers.js tests/test-harvest.js tests/test-iiif.js tests/test-readiness.js tests/test-capture-json.js tests/test-sync.js tests/test-srcset.js tests/test-snapshot-urls.js",
     "test:harvest": "node --test tests/test-harvest.js",
     "test:iiif": "node --test tests/test-iiif.js",
     "test:readiness": "node --test tests/test-readiness.js",
@@ -12,6 +12,7 @@
     "test:sync": "node --test tests/test-sync.js",
     "test:srcset": "node --test tests/test-srcset.js",
     "test:snapshot-urls": "node --test tests/test-snapshot-urls.js",
+    "test:ancestry": "node --test tests/test-ancestry.js tests/test-panel-ancestry.js",
     "test:newspapers": "node --test tests/test-newspapers.js tests/test-panel-newspapers.js"
   },
   "engines": {

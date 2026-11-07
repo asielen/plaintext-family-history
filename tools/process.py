@@ -857,6 +857,7 @@ def _scaffold_text(
     external_links: list[dict] | None = None,
     people: list[str] | None = None,
     stem: str | None = None,
+    source_class: str | None = None,
 ) -> str:
     """Render a §14 source record as text, ready to write.
 
@@ -872,10 +873,12 @@ def _scaffold_text(
     `files:` block is omitted rather than written empty.
 
     `restricted`/`citation`/`repository`/`source_date`/`provenance`/
-    `external_links` are §14 fields a source-stub sidecar may hint (or, for
-    `restricted`, that a `dna` source_type always forces) - without passing
-    them through, capture-written metadata in the stub would be silently
-    dropped when the stub is consumed.
+    `external_links`/`source_class` are §14 fields a source-stub sidecar may
+    hint (or, for `restricted`, that a `dna` source_type always forces) -
+    without passing them through, capture-written metadata in the stub would
+    be silently dropped when the stub is consumed. `source_class` is honoured
+    only as one of original | derivative | authored (anything else falls back
+    to the default below), and a proof-argument is always authored.
 
     `people` is a validated list of P-ids from `--people`; they land in the
     record's `people:` field so `fha index` indexes the photo-to-person link
@@ -907,8 +910,17 @@ def _scaffold_text(
     if source_date:
         lines.append(f'source_date: {_yaml_inline(source_date)}')
     # Proof-argument sources are authored conclusions, not captured originals
-    # (SPEC §14: source_class: authored, filed under sources/proofs/).
-    lines.append(f'source_class: {"authored" if source_type == "proof-argument" else "original"}')
+    # (SPEC §14: source_class: authored, filed under sources/proofs/). Anything
+    # else takes the stub's hint when it is a real class (a capture that knew
+    # its record is an index entry says derivative), else original.
+    hinted_class = str(source_class or '').strip().lower()
+    if source_type == 'proof-argument':
+        record_class = 'authored'
+    elif hinted_class in ('original', 'derivative', 'authored'):
+        record_class = hinted_class
+    else:
+        record_class = 'original'
+    lines.append(f'source_class: {record_class}')
     lines.append(f'repository: {_yaml_inline(repository) if repository else "unknown"}')
     lines.append('citation: >')
     citation_text = citation if citation else title
@@ -1966,6 +1978,7 @@ def process_document(
         repository=_sidecar_str(sidecar_meta, 'repository'),
         source_date=source_date or _sidecar_source_date(sidecar_meta, sidecar.name if sidecar else file_path.name),
         provenance=_sidecar_str(sidecar_meta, 'provenance'),
+        source_class=_sidecar_str(sidecar_meta, 'source_class'),
         stem=file_path.stem if _slugify(file_path.stem) != final_slug else None,
     )
 
@@ -2131,6 +2144,7 @@ def process_pointer_only(
         source_date=source_date or _sidecar_source_date(sidecar_meta, sidecar.name),
         provenance=_pointer_provenance(sidecar_meta),
         external_links=external_links,
+        source_class=_sidecar_str(sidecar_meta, 'source_class'),
     )
 
     if dry_run:
@@ -2271,6 +2285,7 @@ def process_photo(
         source_date=source_date or _sidecar_source_date(sidecar_meta, sidecar.name if sidecar else file_path.name),
         provenance=_sidecar_str(sidecar_meta, 'provenance'),
         people=people or None,
+        source_class=_sidecar_str(sidecar_meta, 'source_class'),
     )
 
     if dry_run:
@@ -2492,6 +2507,7 @@ def process_photo_group(
         source_date=source_date or _sidecar_source_date(sidecar_meta, sidecar.name if sidecar else primary.name),
         provenance=_sidecar_str(sidecar_meta, 'provenance'),
         people=people or None,
+        source_class=_sidecar_str(sidecar_meta, 'source_class'),
     )
 
     if dry_run:
@@ -2925,6 +2941,7 @@ def process_bundle(
         repository=_sidecar_str(sidecar_meta, 'repository'),
         source_date=source_date or _sidecar_source_date(sidecar_meta, notes_path.name),
         provenance=_sidecar_str(sidecar_meta, 'provenance'),
+        source_class=_sidecar_str(sidecar_meta, 'source_class'),
     )
 
     if dry_run:

@@ -139,6 +139,41 @@ reload the page and try again.
 
 ---
 
+## Ancestry records
+
+On an Ancestry record page (the page for one person in one collection - a
+census entry, a death index entry), click the toolbar button and then
+**Capture**. The add-on saves:
+
+- `record.jpg` - the record's scan, when it has one, the same full-size image
+  Ancestry's own Download button gives you.
+- `record-data.json` - the record as Ancestry shows it: its labelled facts, the
+  household, and its "Source Citation". This is Ancestry's index of the record,
+  not a reading of the image.
+- a copy of the page, if you keep one.
+
+It also tells filing what the record is: a census entry is filed as a census, a
+death index entry as a vital record dated by the death, and an index entry is
+marked as an index rather than the original record. Whatever you type in the
+form's title, date or kind boxes wins over that.
+
+Everyone in a household has their own record, but they share one census page.
+When you capture the next person on the same page while the panel is still open,
+the add-on does not download the page again: it notes which capture already holds
+it. If the Seen It add-on is
+installed, the add-on also asks it whether your archive already has that page.
+
+If Ancestry will not hand over the scan (you are signed out, or the collection
+does not allow downloads), the record's facts and citation are still saved, and
+the message says so. You can then use Ancestry's Download button, drop the image
+into the panel and press **Capture** again: that capture holds the facts and your
+image together.
+
+Badges from the Seen It add-on ("Seen 2×", "Captured, not filed") are never saved
+as part of a record or a page copy.
+
+---
+
 ## What it will not do
 
 - It only reads the page you are looking at, in your own browser session, when
@@ -149,7 +184,9 @@ reload the page and try again.
   drop it into the panel.
 - It records the page's web address, never a folder path from your computer.
 - It sends nothing anywhere. Captures go to your Downloads folder and then into
-  your archive - nowhere else, and never onto the public web. What is published
+  your archive - nowhere else, and never onto the public web. The one question it
+  may ask the Seen It add-on, on your own computer, is whether the archive
+  already holds an Ancestry census page. What is published
   is decided later, by you, when you export something.
 
 ---

@@ -1225,6 +1225,32 @@ class ProcessTestCase(unittest.TestCase):
         rec = read_record(record)
         self.assertEqual(rec['meta']['source_class'], 'authored')
 
+    def test_sidecar_source_class_hint_reaches_the_record(self) -> None:
+        # TI-066: a capture that knew its record is an index entry says
+        # `derivative`; before, every record was scaffolded `original`.
+        cases = [('derivative', 'derivative'), ('Original', 'original'), ('index', 'original'), (None, 'original')]
+        for i, (hint, want) in enumerate(cases):
+            asset = self.archive / 'documents' / 'census' / f'class-hint-{i}.txt'
+            asset.write_text('x', encoding='utf-8')
+            sidecar = self.archive / 'documents' / 'census' / f'class-hint-{i}.notes.md'
+            front = f'title: Class hint {i}\n' + (f'source_class: {hint}\n' if hint else '')
+            sidecar.write_text(f'---\n{front}---\nbody\n', encoding='utf-8')
+            rc = self._run([str(asset)])
+            self.assertEqual(rc, EXIT_CLEAN)
+            record = next(p for p in (self.archive / 'sources').rglob('*_S-*.md')
+                          if read_record(p)['meta']['title'] == f'Class hint {i}')
+            self.assertEqual(read_record(record)['meta']['source_class'], want, hint)
+
+    def test_proof_argument_stays_authored_whatever_the_stub_says(self) -> None:
+        argument = self.archive / 'documents' / 'census' / 'order-of-births.txt'
+        argument.write_text('x', encoding='utf-8')
+        sidecar = self.archive / 'documents' / 'census' / 'order-of-births.notes.md'
+        sidecar.write_text('---\nsource_class: derivative\n---\nbody\n', encoding='utf-8')
+        rc = self._run([str(argument), '--type', 'proof-argument'])
+        self.assertEqual(rc, EXIT_CLEAN)
+        record = next((self.archive / 'sources' / 'proofs').glob('*_S-*.md'))
+        self.assertEqual(read_record(record)['meta']['source_class'], 'authored')
+
     def test_path_to_alias_normalizes_dotdot_external_root(self) -> None:
         # A relative external root like 'documents: ../family-docs' resolves to a
         # path containing '..' segments; path_to_alias must resolve it before

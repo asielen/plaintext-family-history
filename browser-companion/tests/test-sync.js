@@ -85,6 +85,7 @@ test('capture-json.js behaves identically to its pure twin', () => {
     sourceType: 'census',
     repository: '  Ancestry.com  ',
     citation: '  The Gazette, March 3, 1931, Page 5.  ',
+    sourceClass: 'derivative',
     people: [' Thomas ', '', null, 'Margaret'],
     notes: 'a note',
     recipeHint: 'ancestry',
@@ -98,6 +99,11 @@ test('capture-json.js behaves identically to its pure twin', () => {
   assert.deepStrictEqual(b.build(fields), pure.build(fields));
   assert.strictEqual(pure.build(fields).citation, 'The Gazette, March 3, 1931, Page 5.');
   assert.ok(!('citation' in pure.build({ url: 'u', citation: '   ' })));
+  assert.strictEqual(pure.build(fields).source_class, 'derivative');
+  for (const bad of ['', 'Derivative', 'index', null, 3]) {
+    assert.ok(!('source_class' in pure.build({ url: 'u', sourceClass: bad })), String(bad));
+    assert.deepStrictEqual(b.build({ url: 'u', sourceClass: bad }), pure.build({ url: 'u', sourceClass: bad }));
+  }
   assert.deepStrictEqual(
     b.build({ url: 'u', assets: [] }),
     pure.build({ url: 'u', assets: [] })
@@ -209,6 +215,20 @@ test('content.js Newspapers.com parsers are a verbatim copy of lib/newspapers-pa
   const canon = lib.slice(lib.indexOf(begin) + begin.length, lib.indexOf(end));
   assert.ok(canon.length > 1000, 'lib sync markers not found');
   const copy = extractBlock(/\/\/ FHA-SYNC-BEGIN newspapers\n/, '  ' + end)
+    .split('\n').map((l) => l.replace(/^ {2}/, '')).join('\n');
+  assert.strictEqual(copy, canon);
+});
+
+test('content.js Ancestry record readers are a verbatim copy of lib/ancestry-record.js', () => {
+  // Same literal comparison as the Newspapers.com block above; test-ancestry.js
+  // drives the lib, so an identical copy is proven by construction.
+  const lib = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'lib', 'ancestry-record.js'), 'utf8');
+  const begin = '// FHA-SYNC-BEGIN ancestry\n';
+  const end = '// FHA-SYNC-END ancestry';
+  const canon = lib.slice(lib.indexOf(begin) + begin.length, lib.indexOf(end));
+  assert.ok(canon.length > 1000, 'lib sync markers not found');
+  const copy = extractBlock(/\/\/ FHA-SYNC-BEGIN ancestry\n/, '  ' + end)
     .split('\n').map((l) => l.replace(/^ {2}/, '')).join('\n');
   assert.strictEqual(copy, canon);
 });
