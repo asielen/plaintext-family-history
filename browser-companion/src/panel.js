@@ -456,6 +456,13 @@
         (np.unusable && np.unusable.length
           ? ' Left out because they mark no area on the page that can be cut out: ' +
             np.unusable.map((c) => '“' + (c.title || 'untitled clipping') + '”').join(', ') + '.'
+          : '') +
+        // Part of the list could not be read: the clippings shown are saved,
+        // but others of hers may be missing, and she must be told (#211 review).
+        (np.listError
+          ? ' Note: ' + np.listError + ', so some of your clippings on this page may not be ' +
+            'listed here. To get one that is missing, open that clipping on Newspapers.com ' +
+            '(its own page) and capture it there.'
           : '')
     );
     renderNpClips();

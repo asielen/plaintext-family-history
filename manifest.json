@@ -308,7 +308,7 @@
     {
       "path": ".fha/browser-companion/src/panel.js",
       "category": "operating",
-      "sha256": "9d86e53679cd1a80b3915f631eaf3b7921d3d9bbde36c1ad5ec165a36f54ecca",
+      "sha256": "ca82568363ec36572fa7ebb980868f217778e5f35b31bfcc52957715ee0dff27",
       "spec_version": "1.2",
       "src": "browser-companion/src/panel.js"
     },

@@ -618,3 +618,18 @@ test('a corrected web address is kept for a single clipping', async () => {
   assert.strictEqual(p.capJson(p.written[0]).url,
     'https://www.newspapers.com/clip/101/obituary-for-calvin-hartley/');
 });
+
+test('a partly read clipping list says some clippings may be missing', async () => {
+  for (const extra of [
+    { listError: 'Newspapers.com would not send the list of clippings on this page (HTTP 503)' },
+    { listTruncated: true, listError: 'this page has more than 200 clippings, more than the panel reads' },
+  ]) {
+    const p = await openOn(URL_PAGE, {
+      [URL_PAGE]: { title: 'The Fairview Gazette, page 5',
+        info: npInfo('image', [clipObj(301, 'Hartley farm sale')], extra) },
+    });
+    assert.match(p.$('np-text').textContent, /some of your clippings on this page may not be listed/);
+    await p.capture();
+    assert.strictEqual(p.written.length, 1, 'the clipping it does know is still saved');
+  }
+});
