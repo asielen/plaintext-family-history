@@ -117,6 +117,7 @@ from _lib import (
     FhaConfigError,
     Result,
     edtf_bounds,
+    format_date_spread,
     expand_place_abbreviations,
     fmt_id_display,
     format_edtf_error,
@@ -387,19 +388,53 @@ def _place_text_candidates(
         if len(group['claim_ids']) < threshold:
             continue
         label = max(group['labels'].items(), key=lambda kv: kv[1])[0]
-        mins = [b[0] for b in group['date_bounds'] if b[0]]
-        maxs = [b[1] for b in group['date_bounds'] if b[1]]
+        date_min, date_max = _known_date_spread(group['date_bounds'])
         out.append({
             'label': label,
             'key': key,
             'claim_ids': sorted(group['claim_ids']),
             'claim_count': len(group['claim_ids']),
-            'date_min': min(mins) if mins else None,
-            'date_max': max(maxs) if maxs else None,
+            'date_min': date_min,
+            'date_max': date_max,
         })
 
     out.sort(key=lambda g: (-g['claim_count'], g['label']))
     return out
+
+
+_OPEN_LOW = '0001-01-01'
+_OPEN_HIGH = '9999-12-31'
+
+
+def _known_date_spread(bounds: list) -> tuple[str | None, str | None]:
+    """The earliest and latest dates a place's claims actually name.
+
+    `edtf_bounds` writes an open side as a sentinel ('0001-01-01' for
+    "before 1900", '9999-12-31' for "after 1920"). Those are not dates, so
+    they never reach the spread line. Dropping them from each side
+    separately (the #218 audit fix) turned "before 1900" plus "after 1920"
+    into a spread that ran backwards, 1920-01-01/1900-12-31 (Codex, #218).
+    Each claim's open side now stands in for its known side instead, so the
+    spread always runs forward over the dates the claims name. A side is
+    left open (None, shown "from …" / "up to …") only when EVERY dated
+    claim is open on it, e.g. a place known only from "after" dates.
+    """
+    lows: list[str] = []
+    highs: list[str] = []
+    open_low = open_high = True
+    for lo, hi in bounds:
+        lo = lo if lo and lo != _OPEN_LOW else None
+        hi = hi if hi and hi != _OPEN_HIGH else None
+        if not lo and not hi:
+            continue                     # undated: names no date at all
+        open_low = open_low and lo is None
+        open_high = open_high and hi is None
+        lows.append(lo or hi)
+        highs.append(hi or lo)
+    if not lows:
+        return None, None
+    return (None if open_low else min(lows),
+            None if open_high else max(highs))
 
 
 # ── Candidates: GPS clustering ─────────────────────────────────────────────────
@@ -544,7 +579,7 @@ def run_candidates(
 
     groups = []
     for g in place_text_groups:
-        spread = f"{g['date_min']}/{g['date_max']}" if g['date_min'] or g['date_max'] else 'no dates'
+        spread = format_date_spread(g['date_min'], g['date_max'])
         groups.append(f"{g['label']} - {g['claim_count']} claim(s), {spread}")
     for c in gps_clusters:
         groups.append(
@@ -1473,7 +1508,7 @@ def _cmd_places_candidates(args: argparse.Namespace) -> int:
     if place_text_groups:
         print(f'Found {len(place_text_groups)} candidate place-text cluster(s):')
         for g in place_text_groups:
-            spread = f"{g['date_min']}/{g['date_max']}" if g['date_min'] or g['date_max'] else 'no dates'
+            spread = format_date_spread(g['date_min'], g['date_max'])
             print(f"  {g['label']} - {g['claim_count']} claim(s), {spread}")
             for cid in g['claim_ids']:
                 print(f"    {fmt_id_display(cid)}")

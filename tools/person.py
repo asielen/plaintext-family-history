@@ -2845,6 +2845,9 @@ def _edtf_gloss(edtf: str) -> str:
     before_m = re.match(r'^\[\.{2}(.+)\]$', edtf)
     if before_m:
         return f'on or before {before_m.group(1)}'
+    after_m = re.match(r'^\[(.+)\.{2}\]$', edtf)
+    if after_m:
+        return f'on or after {after_m.group(1)}'
     decade_m = re.match(r'^(\d{3})X$', edtf)
     if decade_m:
         return f'the {decade_m.group(1)}0s'

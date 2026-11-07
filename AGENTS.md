@@ -211,7 +211,8 @@ his plain words into the stored form for him - map the hedge to the right uncert
   - "around / about / roughly / circa 1870" → `1870~` (approximate)
   - "pretty sure but not certain it was 1870" → `1870?` (uncertain)
   - "sometime in the 1880s" → `188X` (decade)
-  - "before / by 1920" → `[..1920]`; "after 1920" → store the known span you can defend
+  - "before / by 1920" → `[..1920]`; "after 1920" / "on or after 1920" → `[1920..]` (a burial
+    known only from the death date is `[1880-09-30..]`, never an invented upper bound)
   - "between 1870 and 1875" / "1870 to 1875" → `1871-02/1871-03`-style interval `1870/1875`
   - "June 1923" → `1923-06`; "the 14th of June 1923" → `1923-06-14`; a bare year → `1923`
   When the hedge is genuinely ambiguous (a vague "back then", a date you can't pin to a

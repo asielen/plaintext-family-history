@@ -126,7 +126,8 @@ All file IO is UTF-8.
 `edtf_bounds(s) -> (min_iso, max_iso)` - the EDTF subset the tools need (TOOLING §1 table):
 year `1850` → `(1850-01-01, 1850-12-31)`; tilde/question `1850~`/`1850?` → widen ±1y;
 decade `185X` → full decade; month `1850-05` → month bounds; interval `A/B` → (min(A), max(B));
-open `[..1920]` → `(0001-01-01, 1920-12-31)`. Validate with the same regex used for E014.
+open `[..1920]` → `(0001-01-01, 1920-12-31)`; after `[1920..]` → `(1920-01-01, 9999-12-31)` (#206).
+Validate with the same regex used for E014.
 
 `resolve_path(p, fha_yaml) -> str` - maps the first segment of a record path through
 `fha.yaml`'s `roots:` map; missing alias defaults to `{archive_root}/{alias}`.

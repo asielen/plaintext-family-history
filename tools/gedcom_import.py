@@ -382,17 +382,16 @@ def gedcom_date_to_edtf(raw: str) -> str | None:
 
       12 JAN 1850     → 1850-01-12          ABT/EST/CAL X → X~ at its precision
       JAN 1850        → 1850-01             BEF X         → [..X]
-      1850            → 1850                AFT X         → [X..] IF the EDTF
-      BET A AND B     → A/B                                 suite accepts the
-      FROM A TO B     → A/B                                 after-form, else None
+      1850            → 1850                AFT X         → [X..]
+      BET A AND B     → A/B
+      FROM A TO B     → A/B
 
     A range whose bounds are reversed (`BET 1900 AND 1850`) is treated as
     malformed and omits `date:` - the wording stays in the claim value.
 
-    The AFT arm is a runtime probe rather than a hardcoded No: today's
-    `_lib._EDTF_PATTERNS` has no `[X..]` form, so AFT dates omit `date:` and
-    keep "after 1850" in the claim value - but if the suite ever grows the
-    after-form, this starts emitting it with no code change here.
+    The AFT arm is a runtime probe: it emits `[X..]` only because the suite
+    validates it. SPEC §11 gained that after-form (#206); before that, AFT
+    dates omitted `date:` and kept "after 1850" in the claim value only.
 
     Every produced string is validated with `is_valid_edtf` before being
     returned; a failure downgrades to None (omit the date), never an invalid
