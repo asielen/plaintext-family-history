@@ -44,8 +44,11 @@ from _lib import (
     EXIT_FAILURE,
     EXIT_WARNINGS,
     claims_edit_problem,
+    is_valid_edtf,
     load_fha_yaml,
     read_record,
+    render_stub_content,
+    yaml_edtf,
 )
 
 EXAMPLE = ROOT / 'example-archive'
@@ -778,6 +781,92 @@ class ClaimIndexLintIntegrationTests(unittest.TestCase):
         self.assertEqual(accept.exit_code, EXIT_CLEAN)
         self.assertEqual(self._claim_status_in_index(self.BIRTH_CLAIM), 'accepted')
         self.assertFalse(self._w101_birth_for_person())
+
+
+class DateRoundTripTests(unittest.TestCase):
+    """#205: every date the archive accepts must survive being written.
+
+    A genealogist corrected a claim to "before 1 Oct 1884". `fha claim`
+    confirmed it, wrote `date: [..1884-10-01]` bare, and YAML read that as
+    a one-item list. The next `fha lint` reported E014 for the claim just
+    fixed. Every date form `is_valid_edtf` accepts goes through each writer
+    here and must read back as the same string.
+    """
+
+    # Years before 1000 too: '0750' (digits 0-7 only) is an octal number to
+    # YAML 1.1 and read back as 488 until yaml_edtf checked the round trip
+    # (#208 audit); '0999' and '0750/0760' read back intact either way.
+    FORMS = ('1880', '1880-06', '1880-06-15', '1880~', '1880?', '188X',
+             '1850-~05', '[..1884-10-01]', '[..1920]', '1871-02/1871-03',
+             '1824/1825', '0750', '0123?', '0999', '0750/0760', '0750-03')
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.source = _write_source(self.root)
+        _write_person(self.root, 'P-aaaaaaaaaa', 'Anna Smith')
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _date_of(self, cid: str) -> str:
+        claims = {c['id']: c for c in read_record(self.source)['claims']}
+        return str(claims[cid]['date'])
+
+    def test_every_form_is_one_the_archive_accepts(self) -> None:
+        for form in self.FORMS:
+            self.assertTrue(is_valid_edtf(form), form)
+
+    def test_editing_a_claim_date_round_trips(self) -> None:
+        for form in self.FORMS:
+            with self.subTest(form=form):
+                result = claim.run_claim(self.root, claim_id='C-aa11bb22cc', date=form)
+                self.assertEqual(result.exit_code, EXIT_CLEAN, result.messages)
+                self.assertEqual(self._date_of('C-aa11bb22cc'), form)
+
+    def test_adding_a_date_to_an_undated_claim_round_trips(self) -> None:
+        # C-bb22cc33dd has no date: line, so this is the insert branch.
+        result = claim.run_claim(self.root, claim_id='C-bb22cc33dd', date='[..1950-03-01]')
+        self.assertEqual(result.exit_code, EXIT_CLEAN, result.messages)
+        self.assertEqual(self._date_of('C-bb22cc33dd'), '[..1950-03-01]')
+
+    def test_plain_words_before_round_trips(self) -> None:
+        result = claim.run_claim(self.root, claim_id='C-aa11bb22cc', date='before 1884-10-01')
+        self.assertEqual(result.exit_code, EXIT_CLEAN, result.messages)
+        self.assertEqual(self._date_of('C-aa11bb22cc'), '[..1884-10-01]')
+
+    def test_a_new_claim_round_trips(self) -> None:
+        for form in self.FORMS:
+            with self.subTest(form=form):
+                result = claim.run_claim_new(
+                    self.root, source_id='S-1111111111', claim_type='residence',
+                    value='Lived in Topeka', date=form)
+                self.assertEqual(result.exit_code, EXIT_CLEAN, result.messages)
+                self.assertEqual(self._date_of(result['claim_id']), form)
+
+    def test_plain_dates_stay_unquoted(self) -> None:
+        # Quoting only where YAML would misread: no restyling of ordinary dates.
+        claim.run_claim(self.root, claim_id='C-aa11bb22cc', date='1880-06-15')
+        self.assertIn('  date: 1880-06-15\n', self.source.read_text(encoding='utf-8'))
+        self.assertEqual(yaml_edtf('1850~'), '1850~')
+        self.assertEqual(yaml_edtf('[..1920]'), "'[..1920]'")
+
+    def test_lint_accepts_what_was_written(self) -> None:
+        import lint
+        claim.run_claim(self.root, claim_id='C-aa11bb22cc', date='[..1884-10-01]')
+        (self.root / 'fha.yaml').write_text('roots:\n  documents: documents\n', encoding='utf-8')
+        result = lint.run_lint(self.root, load_fha_yaml(self.root))
+        e014 = [m.text for m in result.messages if m.code == 'E014']
+        self.assertEqual(e014, [])
+
+    def test_a_person_stub_birth_round_trips(self) -> None:
+        # `fha person new --birth` / `fha stubs` share render_stub_content.
+        stub = self.root / 'people' / 'stubs' / 'cole__ida_P-cccccccccc.md'
+        stub.write_text(render_stub_content(
+            'P-cccccccccc', 'Ida Cole', birth='[..1920]', death='1990~'), encoding='utf-8')
+        meta = read_record(stub)['meta']
+        self.assertEqual(str(meta['birth']), '[..1920]')
+        self.assertEqual(str(meta['death']), '1990~')
 
 
 # ── fha claim new: run_claim_new contract ────────────────────────────────────────

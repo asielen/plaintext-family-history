@@ -266,6 +266,7 @@ from _lib import (
     scan_person_record_ids,
     sqlite_cache_schema_status,
     write_text_exact_atomic,
+    yaml_edtf,
     yaml_inline,
 )
 
@@ -947,9 +948,9 @@ def _apply_claim_review(
     if date is not None:
         date_idx, date_kind, _ = find_key('date')
         if date_idx is not None:
-            set_scalar('date', date, insert_after=date_idx)
+            set_scalar('date', yaml_edtf(date), insert_after=date_idx)
         else:
-            insert_pos = set_scalar('date', date, insert_after=insert_pos)
+            insert_pos = set_scalar('date', yaml_edtf(date), insert_after=insert_pos)
     if value is not None:
         _, _, raw = find_key('value')
         if raw is not None and (raw == '' or raw[:1] in ('>', '|')):
@@ -1725,7 +1726,7 @@ def _render_new_claim_lines(
     if persons:
         lines.append('  persons: [' + ', '.join(fmt_id_display(p) for p in persons) + ']')
     if date:
-        lines.append(f'  date: {date}')
+        lines.append(f'  date: {yaml_edtf(date)}')
     if place:
         lines.append(f'  place: {fmt_id_display(normalize_id(place))}')
     if place_text:

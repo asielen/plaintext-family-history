@@ -1496,6 +1496,17 @@ class EstimateTests(unittest.TestCase):
         living_idx = next(i for i, l in enumerate(lines) if l.startswith('living:'))
         self.assertEqual(lines[living_idx + 1], 'birth: 1870')
 
+    def test_a_before_date_and_an_octal_looking_year_read_back(self) -> None:
+        # #208 audit: estimate wrote dates bare, so 'before 1920' became the
+        # list ['..1920'] and a year like 0750 the octal number 488, both
+        # stored silently in the index and every export.
+        from _lib import read_record
+        result = person.run_estimate(self.root, PID, birth='before 1920', death='0750')
+        self.assertEqual(result.exit_code, EXIT_CLEAN, result.messages)
+        meta = read_record(self.stub)['meta']
+        self.assertEqual(str(meta['birth']), '[..1920]')
+        self.assertEqual(str(meta['death']), '0750')
+
     def test_normalizes_loose_dates(self) -> None:
         result = person.run_estimate(self.root, PID, birth='circa 1870')
         self.assertEqual(result.exit_code, EXIT_CLEAN)
