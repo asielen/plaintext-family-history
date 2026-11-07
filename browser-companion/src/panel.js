@@ -2619,11 +2619,19 @@
     if (resp && resp.ok) {
       applyPrefill(resp.prefill);
     } else {
-      clearDetails(url);
-      forgetFileState();
-      clearAutoLog();
-      // The previous record's details are gone at once; this address is
-      // read again on its next event (refreshOnNavigation).
+      // A new record: the previous one's details are gone at once. The same
+      // page again (a retry while it loads, the panel's first read, a Re-read
+      // that already started clean): what she has typed for it stays, never
+      // erased by a read that did not work (Codex 4502845504).
+      if (state.prefilledUrl && !sameRecordUrl(url, state.prefilledUrl)) {
+        clearDetails(url);
+        forgetFileState();
+        clearAutoLog();
+      } else {
+        state.prefilledUrl = url || null;
+        $('f-url').value = url || '';
+      }
+      // This address is read again on its next event (refreshOnNavigation).
       state.prefillFailed = true;
       const banner = $('recipe-banner');
       banner.textContent = 'Couldn’t read this page automatically. Type the details below, or reload the page ' +

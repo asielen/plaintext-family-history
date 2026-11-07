@@ -644,3 +644,57 @@ test('Codex 4502752672: a new page that could not be read yet is read again when
   await settle();
   assert.strictEqual(p.sent.filter((m) => m.action === 'prefill').length, reads);
 });
+
+test('Codex 4502845504: a second failed read of the same page keeps what she typed', async () => {
+  const pages = { [REC_A]: { title: 'Calvin Hartley, 1880' }, [REC_B]: { title: 'Harriet Hartley, 1880' } };
+  let ready = false;
+  const p = await open(REC_A, pages, {
+    wrap: (r) => (msg, tab) => (msg.action === 'prefill' && tab.url === REC_B && !ready
+      ? { ok: false, error: 'the page is still loading' } : r(msg, tab)),
+  });
+  await p.navigate(REC_B); // first read of B fails
+  await settle();
+  await type(p, 'f-title', 'Harriet in the census');
+  await type(p, 'f-date', 'June 1880');
+  p.$('f-notes').value = 'the farm household';
+  await p.navigate(REC_B); // B still loading: the retry fails too
+  await settle();
+  assert.strictEqual(p.$('f-title').value, 'Harriet in the census');
+  assert.strictEqual(p.$('f-date').value, 'June 1880');
+  assert.strictEqual(p.$('f-notes').value, 'the farm household');
+  assert.strictEqual(p.$('f-url').value, REC_B);
+  ready = true;
+  await p.navigate(REC_B); // it loads at last: the rest fills in around her typing
+  await settle();
+  assert.strictEqual(p.$('f-title').value, 'Harriet in the census');
+  assert.strictEqual(p.$('f-notes').value, 'the farm household');
+  await p.capture();
+  assert.strictEqual(p.written[0].captureJson.title, 'Harriet in the census');
+});
+
+test('control: a failed read of a DIFFERENT record still clears the last one\'s details at once', async () => {
+  const pages = { [REC_A]: { title: 'Calvin Hartley, 1880' } }; // B cannot be read
+  const p = await open(REC_A, pages);
+  await type(p, 'f-title', 'Calvin in the census');
+  p.$('f-notes').value = 'about Calvin';
+  await p.navigate(REC_B);
+  await settle();
+  assert.strictEqual(p.$('f-title').value, '');
+  assert.strictEqual(p.$('f-notes').value, '');
+  assert.strictEqual(p.$('f-url').value, REC_B);
+});
+
+test('Codex 4502845504: typing while the panel\'s first read is out survives that read failing', async () => {
+  let hold = null;
+  const p = await open(REC_B, {}, { // B cannot be read
+    waitReady: false,
+    wrap: (r) => { hold = holdFirst(r, 'prefill'); return hold.respond; },
+  });
+  await until(() => hold.held);
+  await type(p, 'f-title', 'Harriet in the census');
+  hold.release();
+  await p.ready;
+  await settle();
+  assert.strictEqual(p.$('f-title').value, 'Harriet in the census');
+  assert.strictEqual(p.$('f-url').value, REC_B);
+});
