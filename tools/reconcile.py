@@ -694,6 +694,11 @@ def run_reconcile(
         # clean catalog.
         d = photo_result.data or {}
         photo_status = str(d.get('status') or '')
+        waiting = d.get('content_waiting') or {}
+        if waiting.get('unread') or waiting.get('missing_unread'):
+            # Matching by picture is gated until every photo has been read
+            # (#220): say why no photo was matched that way.
+            result.add('info', 'photos: ' + photoindex._content_waiting_message(waiting))
         if d.get('content_unchecked'):
             # Some new photos could not be read, so photoindex took no
             # content match at all this run (#220 audit F2) - say so.

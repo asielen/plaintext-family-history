@@ -455,7 +455,7 @@
     {
       "path": ".fha/tools/README.md",
       "category": "operating",
-      "sha256": "4acdf957485b87cf013b366e107ce481c247cacaa6b488607d16dfb179633fe5",
+      "sha256": "abe8912c9c6668303f6bd5efade6be460c0802eea9c356c1d4bb8442acad06cb",
       "spec_version": "1.2",
       "src": "tools/README.md"
     },
@@ -637,7 +637,7 @@
     {
       "path": ".fha/tools/photoindex.py",
       "category": "operating",
-      "sha256": "5c9611f7a753f714664674391280031244a2115709f741b464dbe3dad0a6cf44",
+      "sha256": "4336b6361344f808fbdb244cd2d5cd6d999eca6f631e77f260d76402c4302413",
       "spec_version": "1.2",
       "src": "tools/photoindex.py"
     },
@@ -658,7 +658,7 @@
     {
       "path": ".fha/tools/reconcile.py",
       "category": "operating",
-      "sha256": "83950ead28e278de076e062f07d889c8c2914362772ae0683295094c1489991b",
+      "sha256": "a9d1ca4c1c04fc17769c57342da29892fa61c760fe12b64938494798571bc575",
       "spec_version": "1.2",
       "src": "tools/reconcile.py"
     },
@@ -933,7 +933,7 @@
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "c0fd51c96c424f2872114f507828a396d5997e62fecee2734612cc4da9c0ac6b",
+      "sha256": "4f67e2759eff66dfab42bdc850992347e6959e037812775ba0fa933b19f22eac",
       "spec_version": "1.2"
     },
     {

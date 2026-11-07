@@ -382,11 +382,13 @@ _REQUIRED_SCHEMA = {
 # tried, the read failed, or the scan's hashing budget ran out), and only NULL
 # is retried. Never compared by reconcile.
 _NO_FINGERPRINT = 'none:v1'
-# Stored when a JPEG/PNG could not be read when it was catalogued (locked,
-# vanished mid-scan, too large for memory). It is "not known" exactly like
-# NULL - retried by later scans, and an unknown copy in every guard - but it
-# also records that THIS row's first read failed, so when a later scan does
-# read it, it counts as the new arrival it was (#220 audit F6).
+# meta key: a catalog that gained `photo_face_regions` still needs every photo
+# rescraped once to fill it (see `_open_and_apply_schema`).
+_FACE_BACKFILL_KEY = 'face_backfill_due'
+# Stored when a JPEG/PNG could not be read (locked, vanished mid-scan, too
+# large for memory). It is "not known" exactly like NULL - retried by later
+# scans, and it holds reconcile's content gate shut until it is read - but it
+# records that a read was tried and failed, rather than never attempted.
 _FINGERPRINT_RETRY = 'retry:v1'
 _JPEG_SUFFIXES = frozenset({'.jpg', '.jpeg', '.jpe', '.jfif'})
 _PNG_SUFFIXES = frozenset({'.png'})
@@ -3198,59 +3200,50 @@ def _same_source(a: str | None, b: str | None) -> bool:
 def _content_rematches(
     conn: sqlite3.Connection, missing: dict[str, str | None], untracked: dict[str, Path],
     untracked_source_ids: dict[Path, str] | None = None,
-) -> tuple[list[tuple[str, str]], list[str]]:
-    """((old_key, new_alias) pairs, unread untracked aliases) for vanished rows
-    whose photo is back under a new name, matched by content fingerprint (#49).
-    A non-empty unread list means no pair was taken (see below).
+) -> tuple[list[tuple[str, str]], list[str], int, int]:
+    """Vanished rows whose photo is back under a new name, matched by content
+    fingerprint (#49): (pairs, unread untracked aliases, unknown live rows,
+    unknown missing rows). Any non-empty refusal means no pair was taken.
 
-    One holder on each side, or no match. The fingerprint must be held by
+    **The gate.** No content pair is taken at all while any JPEG/PNG row in
+    the catalog - live or MISSING: - has an unknown fingerprint (NULL,
+    `retry:v1`, or a tag an older rule wrote). "The only holder" cannot be
+    decided while some copies are unread: an unread row may hold the same
+    picture, whatever its size or metadata (#220, Codex round 7 - this
+    replaces the same-size heuristics). The counts come back so the caller
+    can say how far the backfill has to go. A MISSING: row with an unknown
+    fingerprint can never be read (its file is gone), so while one remains,
+    matching by picture stays off; the SOURCE: keyword pass is unaffected.
+
+    Then one holder on each side, or no match: the fingerprint is held by
     exactly ONE row in the whole catalog - the vanished one - and found on
-    exactly one untracked file (#220 audit F1). A fingerprint a live row also
-    holds means the picture is catalogued twice (true duplicate copies), and
-    a guess between copies would tie one photo's caption and dates to
-    another file. Two more refusals keep it from guessing:
-      - a vanished row whose fingerprint is not KNOWN (NULL: never read, or
-        the read failed) and whose size matches might be another copy of the
-        same picture, so the fingerprinted row of that size is not paired
-        (F4);
-      - the two must have the same source identity (`_same_source`): a
-        file whose own SOURCE: keyword names a different source, or none,
-        is not that source's file, whatever its pixels (F5, Codex review) -
-        it stays untracked and is reported under its own source. A vanished
-        row filed as a source is never re-tied by content without the
-        `--with-exif` keyword read (`untracked_source_ids` None), because
-        nothing then says whose file the new one is.
-
-    Untracked files are fingerprinted here, lazily, and only when some
-    vanished row has a fingerprint to compare with. `_photo_fingerprint`
-    answers a non-JPEG/PNG name without opening the file.
+    exactly one untracked file (#220 audit F1). Every untracked JPEG/PNG is
+    read, with no budget; one that could not be read might be a second copy,
+    so then no pair is taken that run (F2, Codex). And the two must have the
+    same source identity (`_same_source`); a vanished row filed as a source is
+    never re-tied by content without the `--with-exif` keyword read
+    (`untracked_source_ids` None), because nothing then says whose file the
+    new one is.
     """
     holders: dict[str, int] = {}
     old_by_fp: dict[str, str] = {}
-    old_size: dict[str, int | None] = {}
-    unknown_sizes: set[int] = set()
-    for path, fingerprint, size in conn.execute('SELECT path, fingerprint, size FROM photos'):
+    unknown_live = unknown_missing = 0
+    for path, fingerprint in conn.execute('SELECT path, fingerprint FROM photos'):
         if _is_real_fingerprint(fingerprint):
             holders[fingerprint] = holders.get(fingerprint, 0) + 1
             if path in missing:
                 old_by_fp[fingerprint] = path
-                old_size[path] = size
-        elif (_fingerprint_unknown(fingerprint) and size is not None
+        elif (_fingerprint_unknown(fingerprint)
               and Path(_live_alias(path)).suffix.lower() in _JPEG_SUFFIXES | _PNG_SUFFIXES):
-            # A JPEG/PNG row - vanished (F4) or live (F9) - whose fingerprint
-            # is not known yet may be another copy of the picture; same size,
-            # same doubt.
-            unknown_sizes.add(size)
+            if _is_missing_key(path) or path in missing:
+                unknown_missing += 1
+            else:
+                unknown_live += 1
+    if unknown_live or unknown_missing:
+        return [], [], unknown_live, unknown_missing
     candidates = {fp: old for fp, old in old_by_fp.items() if holders.get(fp) == 1}
     if not candidates or not untracked:
-        return [], []
-    # Every untracked JPEG/PNG is read, with no budget: a match is only
-    # unambiguous if ALL of them were compared. One that could not be read
-    # (locked, vanished, too large for memory) might be a second copy, so
-    # then no content pair is taken at all this run - the caller reports it
-    # and the next run decides (#220 audit F2, Codex). No budget here because
-    # a rationed reconcile would re-read the same files every run and never
-    # finish; untracked files only exist until the next scan catalogues them.
+        return [], [], 0, 0
     new_by_fp: dict[str, list[str]] = {}
     unread: list[str] = []
     for alias, abs_path in untracked.items():
@@ -3262,26 +3255,20 @@ def _content_rematches(
         elif fingerprint in candidates:
             new_by_fp.setdefault(fingerprint, []).append(alias)
     if unread:
-        return [], sorted(unread)
+        return [], sorted(unread), 0, 0
     source_of = untracked_source_ids or {}
     pairs = []
     for fingerprint, old in candidates.items():
         news = new_by_fp.get(fingerprint, [])
         if len(news) != 1:
             continue
-        if old_size.get(old) in unknown_sizes:
-            continue
         old_source = missing.get(old)
         if old_source and untracked_source_ids is None:
-            # A row filed as a source, and no read of the new file's own
-            # SOURCE: keyword (no --with-exif): it could be a different
-            # source's copy of the same picture. The keyword pass is how a
-            # sourced photo is healed; content alone does not decide it.
             continue
         if not _same_source(old_source, source_of.get(untracked[news[0]])):
             continue
         pairs.append((old, news[0]))
-    return sorted(pairs), []
+    return sorted(pairs), [], 0, 0
 
 
 def run_reconcile(
@@ -3375,6 +3362,7 @@ def run_reconcile(
     """
     empty = {
         'rematched': [], 'rematched_by_content': [], 'content_unchecked': [],
+        'content_waiting': {'unread': 0, 'missing_unread': 0},
         'missing': [], 'new_count': 0,
         'new_sourced': {}, 'new_unsourced': [], 'stale_hold_failed': False,
         'unreadable_dirs': [], 'held_unreadable': 0,
@@ -3501,9 +3489,12 @@ def run_reconcile(
             # source's own identity - always wins over a fingerprint.
             rematched_by_content: list[tuple[str, str]] = []
             content_unchecked: list[str] = []
+            content_waiting = {'unread': 0, 'missing_unread': 0}
             if missing and untracked:
-                content_pairs, content_unchecked = _content_rematches(
+                (content_pairs, content_unchecked,
+                 waiting_live, waiting_missing) = _content_rematches(
                     conn, missing, untracked, candidate_source_ids if with_exif else None)
+                content_waiting = {'unread': waiting_live, 'missing_unread': waiting_missing}
                 for old_path, new_path in content_pairs:
                     if not dry_run:
                         _move_cached_path(conn, old_path, new_path)
@@ -3563,6 +3554,7 @@ def run_reconcile(
                 'rematched': rematched,
                 'rematched_by_content': rematched_by_content,
                 'content_unchecked': content_unchecked,
+                'content_waiting': content_waiting,
                 'missing': now_missing,
                 'new_count': len(untracked),
                 'new_sourced': new_sourced,
@@ -4473,6 +4465,22 @@ def _migrate_v1_catalog(conn: sqlite3.Connection, *, commit: bool = True) -> Non
         conn.commit()
 
 
+def _content_waiting_message(waiting: dict) -> str:
+    """Plain words for the gate: why no photo was matched by its picture yet."""
+    parts = []
+    if waiting.get('unread'):
+        parts.append(
+            f"Matching moved photos by their picture starts once every photo has been "
+            f"read ({waiting['unread']} to go; each scan reads more - run `fha photoindex`).")
+    if waiting.get('missing_unread'):
+        parts.append(
+            f"{waiting['missing_unread']} photo(s) already missing before this catalog "
+            "was upgraded cannot be read, so matching by picture stays off while they "
+            "are listed; a photo filed as a source is still re-matched by its SOURCE: "
+            "keyword (`--with-exif`).")
+    return ' '.join(parts)
+
+
 def _upgrade_failed_message(exc: Exception) -> str:
     """The plain words for an in-place upgrade that did not go through.
 
@@ -4532,11 +4540,27 @@ def _open_and_apply_schema(
         had_face_regions = conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='photo_face_regions'"
         ).fetchone() is not None
+        had_photos = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='photos'"
+        ).fetchone() is not None
         if migrate_v1:
             _migrate_v1_catalog(conn)
         conn.executescript(_DDL)
         conn.execute(f'PRAGMA user_version={PHOTOINDEX_SCHEMA_VERSION}')
-        return conn, not had_face_regions
+        if had_photos and not had_face_regions:
+            # An existing catalog that predates cached face regions: every
+            # photo must be rescraped once to fill them in. Whoever opens it
+            # first - a reconcile, not only the scan - records that, so the
+            # requirement survives until a scan has actually done it; a
+            # reconcile that created the table and dropped the flag left
+            # person searches missing those photos, marked fresh (#220,
+            # Codex round 7). Cleared by `run_scan` when it commits.
+            write_cache_meta(conn, _FACE_BACKFILL_KEY,
+                             'face regions not yet cached; every photo needs one rescrape')
+            conn.commit()
+        due = conn.execute('SELECT 1 FROM meta WHERE key=?',
+                           (_FACE_BACKFILL_KEY,)).fetchone() is not None
+        return conn, due or not had_face_regions
     except sqlite3.DatabaseError:
         conn.close()
         raise
@@ -4642,18 +4666,21 @@ _EMPTY_SCAN_SUMMARY = {
 
 def _scrape_fingerprint(
     path: Path, prior: tuple[float, int] | None, now: tuple[float, int], stored: str | None,
+    *, full: bool = False,
 ) -> str:
     """The fingerprint to store for a file the scan is scraping.
 
     New or changed since the last scan (by mtime/size): read it now, with no
     budget - the read costs less than the exiftool pass already running on
     it, and a changed file's old value must not survive a pixel edit. A
-    failed read is stored as `_FINGERPRINT_RETRY`. Unchanged (a `--full` scan,
-    the face-region backfill rescrape): keep what is stored, so a rescrape
+    failed read is stored as `_FINGERPRINT_RETRY`. Unchanged and rescraped
+    only for the face-region backfill: keep what is stored, so that rescrape
     never throws away a known fingerprint (#220 audit F1/F5); an unknown
-    stored value is left for the backfill.
+    stored value is left for the backfill. An explicit `--full` always reads
+    again: the human asked for every file to be refreshed, and a picture can
+    be replaced without its size or time changing (#220, Codex round 7).
     """
-    if prior is not None and prior == now and stored is not None:
+    if not full and prior is not None and prior == now and stored is not None:
         return stored
     return _photo_fingerprint(path) or _FINGERPRINT_RETRY
 
@@ -4797,7 +4824,7 @@ def run_scan(archive_root: Path, fha_config: dict, full: bool = False) -> Result
                      photo['edtf'], photo['sublocation'], photo['city'], photo['state'],
                      photo['country'], photo['gps_lat'], photo['gps_lon'], photo['source_id'],
                      _scrape_fingerprint(p, existing.get(path_key), (mtime, size),
-                                         existing_fingerprint.get(path_key))),
+                                         existing_fingerprint.get(path_key), full=full)),
                 )
 
                 _delete_path_rows(conn, ('photo_keywords', 'photo_face_regions'), path_key)
@@ -4825,7 +4852,6 @@ def run_scan(archive_root: Path, fha_config: dict, full: bool = False) -> Result
         # the rest of the scan: an interrupted scan repeats it.
         path_by_alias = {alias: p for p, alias in alias_by_path.items()}
         fingerprint_budget = _FingerprintBudget()
-        first_read_landed: set[str] = set()   # F6: a failed first read, now read
         for path_key, stored in conn.execute('SELECT path, fingerprint FROM photos').fetchall():
             if path_key not in path_by_alias or not _fingerprint_unknown(stored):
                 continue
@@ -4837,49 +4863,11 @@ def run_scan(archive_root: Path, fha_config: dict, full: bool = False) -> Result
             if fingerprint != stored:
                 conn.execute('UPDATE photos SET fingerprint=? WHERE path=?',
                              (fingerprint, path_key))
-                if stored == _FINGERPRINT_RETRY and _is_real_fingerprint(fingerprint):
-                    first_read_landed.add(path_key)
 
         removed = 0
         held_unreadable = 0
         alias_on_disk = set(alias_by_path.values())
         is_ignored = photos_ignore_matcher(ignore)
-        # A MISSING: row whose picture THIS scan has catalogued again under a
-        # new name is a stale duplicate, the content twin of "the file is back
-        # at its alias" below. Left in place it lingered forever, and as a
-        # second holder of the fingerprint it blocked every later content
-        # re-tie of that picture (#220 audit F2). Only an unambiguous NEW
-        # replacement counts, so a real copy's history is never dropped
-        # (#220, Codex rounds 3-4):
-        #   - the live holder was catalogued in this scan - not a twin that
-        #     was already here (two copies of one picture, one deleted: the
-        #     deleted copy's MISSING: history stays). A row whose first read
-        #     failed and only lands now counts as the new arrival it was, so
-        #     a late fingerprint never leaves the MISSING: row stuck (F6);
-        #   - it is the only live holder, and the MISSING: row is the only
-        #     missing one (several copies gone at once: none is "the" one);
-        #   - same source identity (`_same_source`): a different source's
-        #     copy of the same picture is not this row's photo coming back.
-        live_holders: dict[str, list[tuple[str, str | None]]] = {}
-        missing_holders: dict[str, list[tuple[str, str | None]]] = {}
-        for path_key, fingerprint, row_source in conn.execute(
-                'SELECT path, fingerprint, source_id FROM photos'):
-            if not _is_real_fingerprint(fingerprint):
-                continue
-            if _is_missing_key(path_key):
-                missing_holders.setdefault(fingerprint, []).append((path_key, row_source))
-            elif path_key in alias_on_disk:
-                live_holders.setdefault(fingerprint, []).append((path_key, row_source))
-        recatalogued: set[str] = set()
-        for fingerprint, gone in missing_holders.items():
-            live = live_holders.get(fingerprint, [])
-            if len(gone) != 1 or len(live) != 1:
-                continue
-            (missing_key, missing_source), (live_key, live_source) = gone[0], live[0]
-            if live_key in existing and live_key not in first_read_landed:
-                continue          # an already-catalogued twin, not a new arrival
-            if _same_source(missing_source, live_source):
-                recatalogued.add(missing_key)
         for path_key in list(existing):
             # A 'MISSING:'-prefixed key is reconcile's own bookkeeping, not a
             # stale cache entry: it never matches a real on-disk alias (the
@@ -4904,8 +4892,7 @@ def run_scan(archive_root: Path, fha_config: dict, full: bool = False) -> Result
             #     and a missing row is a catalogued row.
             if _is_missing_key(path_key):
                 live = _live_alias(path_key)
-                if (live in alias_on_disk or _alias_is_ignored(live, is_ignored)
-                        or path_key in recatalogued):
+                if live in alias_on_disk or _alias_is_ignored(live, is_ignored):
                     conn.execute('DELETE FROM photos WHERE path=?', (path_key,))
                     _delete_path_rows(
                         conn, ('photo_keywords', 'photo_face_regions', 'photo_people'), path_key
@@ -4988,8 +4975,12 @@ def run_scan(archive_root: Path, fha_config: dict, full: bool = False) -> Result
         # those commands must not claim the catalog has caught up.
         write_cache_meta(
             conn, PHOTOINDEX_CONFIG_KEY, photoindex_config_fingerprint(fha_config))
-        # A completed scan is what a schema upgrade's "scan due" waits for.
+        # A completed scan is what a schema upgrade's "scan due" waits for,
+        # and - when this scan rescraped every photo for it - what the
+        # face-region backfill waits for.
         conn.execute('DELETE FROM meta WHERE key=?', (PHOTOINDEX_SCAN_DUE_KEY,))
+        if needs_face_backfill:
+            conn.execute('DELETE FROM meta WHERE key=?', (_FACE_BACKFILL_KEY,))
 
         conn.commit()
     finally:
@@ -5697,6 +5688,9 @@ def _cmd_reconcile(args: argparse.Namespace) -> int:
         print(f'  RE-MATCHED  {old} -> {new}{how}')
     for path in result['missing']:
         print(f'  MISSING     {_live_alias(path)}')
+    waiting = result.get('content_waiting') or {}
+    if waiting.get('unread') or waiting.get('missing_unread'):
+        print(_content_waiting_message(waiting))
     unchecked = result.get('content_unchecked') or []
     if unchecked:
         print(f'{len(unchecked)} new photo(s) could not be read just now '
