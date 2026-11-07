@@ -462,7 +462,7 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "303da7444798746403226c0fcce7d535c4d5b627d0265aad016eddc2fe8c2b94",
+      "sha256": "ee96f96f657b0e2ea66443be12812ba7a71b66e58b75e99be209bb03034e4a52",
       "spec_version": "1.2",
       "src": "tools/_lib.py"
     },
@@ -574,7 +574,7 @@
     {
       "path": ".fha/tools/gedcom.py",
       "category": "operating",
-      "sha256": "37a8dd6af34d4f1b1fe8e55571727bf58fc965bdda74f27a6add5da9d12f4ef6",
+      "sha256": "71d2eb8030866e0460cde013771d1906829486552aa7d830e5bbcc812176afd8",
       "spec_version": "1.2",
       "src": "tools/gedcom.py"
     },
@@ -644,7 +644,7 @@
     {
       "path": ".fha/tools/places.py",
       "category": "operating",
-      "sha256": "b1156bed6e468dd35965af21ff45047b49d8f9a17c7fd8b3470356b3c9494a73",
+      "sha256": "38eeddcf6e99380e3ddd6c934e528ce1b23960fa5692f002e4d78e5973d57d99",
       "spec_version": "1.2",
       "src": "tools/places.py"
     },
@@ -679,7 +679,7 @@
     {
       "path": ".fha/tools/report.py",
       "category": "operating",
-      "sha256": "275ebb07767b36eb8a13252c59375f0c61e086b251c9428c5882e693eb97dad7",
+      "sha256": "1ad8aa9633e13860da12811baacadb8ddb8056f1a9e99f69b507933d0907cd18",
       "spec_version": "1.2",
       "src": "tools/report.py"
     },
@@ -933,7 +933,7 @@
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "89446eae3d90477696d72aba7d4712860e6e7d08f7f197ee9fd4471474767a6e",
+      "sha256": "196ddaa59362a070fb24e631d5dd8eb21ee5ae2b82690b44072ab4a14ceb9144",
       "spec_version": "1.2"
     },
     {

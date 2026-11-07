@@ -117,6 +117,7 @@ from _lib import (
     FhaConfigError,
     Result,
     edtf_bounds,
+    format_date_spread,
     expand_place_abbreviations,
     fmt_id_display,
     format_edtf_error,
@@ -387,8 +388,10 @@ def _place_text_candidates(
         if len(group['claim_ids']) < threshold:
             continue
         label = max(group['labels'].items(), key=lambda kv: kv[1])[0]
-        mins = [b[0] for b in group['date_bounds'] if b[0]]
-        maxs = [b[1] for b in group['date_bounds'] if b[1]]
+        # The open sentinels are not dates (an "after" burial's 9999-12-31):
+        # leave them out, so the spread shows only the dates the claims know.
+        mins = [b[0] for b in group['date_bounds'] if b[0] and b[0] != '0001-01-01']
+        maxs = [b[1] for b in group['date_bounds'] if b[1] and b[1] != '9999-12-31']
         out.append({
             'label': label,
             'key': key,
@@ -544,7 +547,7 @@ def run_candidates(
 
     groups = []
     for g in place_text_groups:
-        spread = f"{g['date_min']}/{g['date_max']}" if g['date_min'] or g['date_max'] else 'no dates'
+        spread = format_date_spread(g['date_min'], g['date_max'])
         groups.append(f"{g['label']} - {g['claim_count']} claim(s), {spread}")
     for c in gps_clusters:
         groups.append(
@@ -1473,7 +1476,7 @@ def _cmd_places_candidates(args: argparse.Namespace) -> int:
     if place_text_groups:
         print(f'Found {len(place_text_groups)} candidate place-text cluster(s):')
         for g in place_text_groups:
-            spread = f"{g['date_min']}/{g['date_max']}" if g['date_min'] or g['date_max'] else 'no dates'
+            spread = format_date_spread(g['date_min'], g['date_max'])
             print(f"  {g['label']} - {g['claim_count']} claim(s), {spread}")
             for cid in g['claim_ids']:
                 print(f"    {fmt_id_display(cid)}")

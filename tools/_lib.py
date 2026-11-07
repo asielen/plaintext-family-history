@@ -1316,6 +1316,20 @@ def format_edtf_error(value: object, *, field: str = 'date') -> str:
     the human staring at two good-looking years. It offers the swapped form
     but never applies it - either year may be the typo.
     """
+    hedged = _open_bound_on_a_span(value)
+    if hedged:
+        word, rest, first, last = hedged
+        if word == 'after':
+            choices = (f'"after {first}" (stored as [{first}..]), or "after {last}" '
+                       f'if you mean after {rest} was over')
+        else:
+            choices = (f'"before {last}" (stored as [..{last}]), or "before {first}" '
+                       f'if you mean before {rest} began')
+        return (
+            f'{field} {value!r} puts "{word}" in front of {rest!r}, and the archive '
+            f'can only keep "{word}" with a single date. Say which one you mean - '
+            f'{choices} - or drop "{word}" and keep {rest!r} as it is.'
+        )
     backwards = backwards_interval_halves(value)
     if backwards:
         start, end = backwards
@@ -4879,6 +4893,42 @@ def interval_runs_backwards(start: str, end: str) -> bool:
 _RANGE_WORDS_RE = re.compile(r'^(?:between\s+)?(\d{4})\s*(?:to|and|-|–|/)\s*(\d{4})$')
 
 
+def _open_bound_on_a_span(value: object) -> tuple[str, str, str, str] | None:
+    """('before'|'after', the rest, its first year, its last year) when `value` puts that word on a decade or
+    a range ("after 1880s", "before 1880-1885") - the shape normalize_date
+    refuses, so the refusal can say why (#218 audit)."""
+    text, _approx, before, after, _uncertain = _loose_date_parts(str(value or ''))
+    if not (before or after):
+        return None
+    word = 'before' if before else 'after'
+    span = _RANGE_WORDS_RE.match(text)
+    if span:
+        return word, text, span.group(1), span.group(2)
+    decade = re.match(r"^(\d{3})0(?:'s|s)$", text) or re.match(r'^(\d{3})x$', text)
+    if decade:
+        return word, text, f'{decade.group(1)}0', f'{decade.group(1)}9'
+    return None
+
+
+def format_date_spread(date_min: str | None, date_max: str | None) -> str:
+    """A plain date spread for a report line: "1880-09-30/1882-05-01".
+
+    The open sentinels `edtf_bounds` uses ('0001-01-01' for "before",
+    '9999-12-31' for "after" or undated) are machine bounds, not dates, so a
+    side holding one reads as open - "from 1880-09-30" / "up to 1920-12-31" -
+    rather than showing the reader a year 9999 (#218 audit).
+    """
+    lo = date_min if date_min and date_min != '0001-01-01' else None
+    hi = date_max if date_max and date_max != '9999-12-31' else None
+    if lo and hi:
+        return f'{lo}/{hi}'
+    if lo:
+        return f'from {lo}'
+    if hi:
+        return f'up to {hi}'
+    return 'no dates'
+
+
 def backwards_interval_halves(value: object) -> tuple[str, str] | None:
     """(start, end) when `value` is a range written backwards, else None.
 
@@ -5043,6 +5093,15 @@ def normalize_date(s: str | None) -> str | None:
     elif date_m:
         base = date_m.group(0)
         candidate = base
+
+    # "before"/"after" only have a stored form for one date ([..X], [X..]).
+    # On a decade or a range there is none - "after 1880s" could mean after
+    # 1880 or after 1889, and "after 1880-1885" is no span at all - so the
+    # input is refused (the human is asked), never stored with the word
+    # silently dropped as "the 1880s" (#218 audit). format_edtf_error says
+    # why in plain words.
+    if (before or after) and (range_m or decade_word_m or decade_x_m):
+        return None
 
     if candidate and (date_m or month_year_m or month_day_year_m or day_month_year_m):
         if before:

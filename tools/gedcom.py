@@ -202,10 +202,23 @@ def _edtf_to_gedcom(edtf: str | None) -> str | None:
         ga = _one_edtf_to_gedcom(a)
         gb = _one_edtf_to_gedcom(b)
         if ga and gb:
-            # Strip ABT/BEF/AFT qualifiers inside a range - BET..AND already
-            # conveys the span's fuzziness.
+            # An OPEN side stays open (#218 audit): `1910/[1920..]` runs from
+            # 1910 to no known end, so it is AFT 1910 - a BET 1910 AND 1920
+            # would hand another program a ten-year window the evidence never
+            # set. Likewise `[..1900]/1910` is BEF 1910, and open at both
+            # ends says nothing a GEDCOM date can, so no date is exported.
+            start_open = ga.startswith('BEF ')
+            end_open = gb.startswith('AFT ')
+            if start_open and end_open:
+                return None
+            # Otherwise strip the qualifiers inside the range - BET..AND
+            # already conveys the span's fuzziness.
             ga_core = ga.split(' ', 1)[-1] if ga.startswith(('ABT ', 'BEF ', 'AFT ')) else ga
             gb_core = gb.split(' ', 1)[-1] if gb.startswith(('ABT ', 'BEF ', 'AFT ')) else gb
+            if start_open:
+                return f'BEF {gb_core}'
+            if end_open:
+                return f'AFT {ga_core}'
             return f'BET {ga_core} AND {gb_core}'
         return ga or gb
     return _one_edtf_to_gedcom(edtf)

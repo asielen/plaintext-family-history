@@ -2944,5 +2944,92 @@ class OnOrAfterDateTests(unittest.TestCase):
         self.assertIn("'[1880..]' (on or after 1880)", w109[0])
 
 
+class OnOrAfterAuditTests(unittest.TestCase):
+    """#218 audit: the after-form never silently changes a family fact.
+
+    "after 1880s" was stored as 188X (sometime IN the 1880s) and "after
+    1880-1885" as the range itself - the word "after" dropped without a
+    sign. An interval ending in an after-form was exported to GEDCOM as a
+    closed BET range, and a report showed "9999-12-31" as if it were a date.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.source = _write_source(self.root)
+        _write_person(self.root, 'P-aaaaaaaaaa', 'Anna Smith')
+        (self.root / 'fha.yaml').write_text('roots:\n  documents: documents\n',
+                                           encoding='utf-8')
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_before_or_after_on_a_decade_or_range_is_refused_not_dropped(self) -> None:
+        for words in ('after 1880s', 'after 187x', 'after 1880-1885', 'after 1880 to 1885',
+                      'after between 1880 and 1885', 'before 1880s', 'before 1880-1885'):
+            with self.subTest(words=words):
+                self.assertIsNone(normalize_date(words))
+                message = format_edtf_error(words, field='--date')
+                self.assertIn('single date', message)
+        # The single-date forms are unaffected.
+        self.assertEqual(normalize_date('after 1880'), '[1880..]')
+        self.assertEqual(normalize_date('before 1880-06'), '[..1880-06]')
+
+    def test_the_refusal_names_the_two_readings(self) -> None:
+        message = format_edtf_error('after 1880s', field='--date')
+        self.assertIn('"after 1880" (stored as [1880..])', message)
+        self.assertIn('"after 1889"', message)
+
+    def test_fha_claim_new_refuses_after_a_decade_and_writes_nothing(self) -> None:
+        before = self.source.read_bytes()
+        result = claim.run_claim_new(
+            self.root, source_id='S-1111111111', claim_type='burial',
+            value='Buried some time after the 1880s', date='after 1880s')
+        self.assertNotEqual(result.exit_code, EXIT_CLEAN)
+        self.assertEqual(self.source.read_bytes(), before)
+
+    def test_lint_does_not_suggest_dropping_the_word(self) -> None:
+        import lint
+        text = self.source.read_text(encoding='utf-8')
+        self.source.write_text(text.replace('  date: 1880\n', '  date: after 1880s\n'),
+                               encoding='utf-8')
+        result = lint.run_lint(self.root, load_fha_yaml(self.root))
+        self.assertEqual([m for m in result.messages if m.code == 'W109'], [])
+        e014 = [m.text for m in result.messages if m.code == 'E014']
+        self.assertEqual(len(e014), 1)
+        self.assertIn('single date', e014[0])
+
+    def test_gedcom_keeps_an_open_end_open(self) -> None:
+        import gedcom
+        self.assertEqual(gedcom._edtf_to_gedcom('1910/[1920..]'), 'AFT 1910')
+        self.assertEqual(gedcom._edtf_to_gedcom('[1920..]/[1930..]'), 'AFT 1920')
+        self.assertEqual(gedcom._edtf_to_gedcom('[..1900]/1910'), 'BEF 1910')
+        self.assertIsNone(gedcom._edtf_to_gedcom('[..1900]/[1920..]'))
+        # A closed range, and an after-form START, are still BET ranges.
+        self.assertEqual(gedcom._edtf_to_gedcom('[1920..]/1930'), 'BET 1920 AND 1930')
+        self.assertEqual(gedcom._edtf_to_gedcom('1870/1875'), 'BET 1870 AND 1875')
+
+    def test_a_place_report_never_shows_the_year_9999(self) -> None:
+        import index
+        import places
+        for date in ('on or after 30 Sep 1880', 'after 1 Oct 1881', '1882-05-01'):
+            result = claim.run_claim_new(
+                self.root, source_id='S-1111111111', claim_type='burial',
+                value='Buried at Oak Hill', persons=['P-aaaaaaaaaa'],
+                place_text='Oak Hill Cemetery', date=date)
+            self.assertEqual(result.exit_code, EXIT_CLEAN, result.messages)
+        index.build_index(self.root, load_fha_yaml(self.root))
+        groups = places.run_candidates(self.root, load_fha_yaml(self.root), threshold=2)['groups']
+        line = next(g for g in groups if 'Oak Hill' in g)
+        self.assertNotIn('9999', line)
+        self.assertIn('1880-09-30/1882-05-01', line)
+
+    def test_the_spread_reads_an_open_side_in_words(self) -> None:
+        from _lib import format_date_spread
+        self.assertEqual(format_date_spread('1880-09-30', '9999-12-31'), 'from 1880-09-30')
+        self.assertEqual(format_date_spread('0001-01-01', '1920-12-31'), 'up to 1920-12-31')
+        self.assertEqual(format_date_spread(None, None), 'no dates')
+
+
 if __name__ == '__main__':
     unittest.main()

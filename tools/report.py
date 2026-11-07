@@ -128,6 +128,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
+    format_date_spread,
     configure_utf8_stdout,
     EXIT_CLEAN,
     EXIT_ERRORS,
@@ -1053,7 +1054,7 @@ def _place_text_group_line(
     it fresh (a caller that only ever renders one line pays no extra cost
     either way).
     """
-    spread = f"{g['date_min']}/{g['date_max']}" if g['date_min'] or g['date_max'] else 'no dates'
+    spread = format_date_spread(g['date_min'], g['date_max'])
     name = g['label']
     ids = ' '.join(fmt_id_display(cid) for cid in g['claim_ids'])
     if match is None:
