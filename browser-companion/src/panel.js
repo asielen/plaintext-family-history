@@ -1270,8 +1270,16 @@
   // download, a picture too small to be the record, no image at the
   // address, center-only): asking again would only save the same record
   // again, so the record is done, its note saying what is missing.
-  const PASSES_RE = /slow down|HTTP 429|HTTP 5\d\d|having trouble|could not reach|internet connection|broke off|did not answer|no answer from the page|HTTP 401|asked you to sign in/i;
+  // The fetchers say so themselves (`transient` on their answer: lib/
+  // findagrave.js fetchPhoto, content.js's Ancestry scan, FamilySearch's
+  // fsImage); these words are the fallback for an answer that does not, in
+  // every wording the capture paths produce for a passing cause.
+  const PASSES_RE = /slow down|HTTP 429|HTTP 5\d\d|having trouble|could not reach|internet connection|broke off|connection dropped|would not come through|did not answer|no answer from the page|HTTP 401|asked you to sign in/i;
   const passes = (why) => PASSES_RE.test(String(why || ''));
+  // A Find a Grave answer that means "slow down" or "busy": 429 or 503.
+  const busyStatus = (st) => st === 429 || st === 503;
+  // A status whose cause passes: no answer at all, a "slow down", a server error.
+  const passingStatus = (st) => st == null || st === 429 || st >= 500;
 
   // A batch download names the record it queued (`opts.expectKey`, the Seen
   // It key "rec:…", "fsrec:…", "fag:…"); the record the page shows must be
@@ -1317,6 +1325,7 @@
     const willHaveScan = !!dropped || (!sameImageAs && !!rec.imageId);
     let pageCopy = await recordPageCopy('early', wantPageCopy || !willHaveScan, recordUrl, [rec.recordId]);
     let imageWarning = null;
+    let imageFlags = { transient: false, slowDown: false };
     if (dropped) {
       assets.push({
         filename: 'record.' + dropped.ext, blob: dropped.blob,
@@ -1335,6 +1344,7 @@
           role: 'record', mode: 'ancestry-api',
         });
       } else {
+        imageFlags = { transient: !img || !!img.transient, slowDown: !!(img && img.slowDown) };
         imageWarning = ((img && img.error) || 'no answer from the page') +
           '. The record’s index and citation are saved. To add the image, use Ancestry’s Download ' +
           'button, drop the file into the panel and press Capture again: that capture holds both.';
@@ -1426,8 +1436,8 @@
       // The Seen It key that says this record's scan is saved (asked before
       // a partial save is captured again).
       imageKey: imageKey ? 'img:' + imageKey : null,
-      partial: !!imageWarning && passes(imageWarning),
-      slowDown: SLOW_DOWN_RE.test(imageWarning || ''),
+      partial: !!imageWarning && (imageFlags.transient || passes(imageWarning)),
+      slowDown: imageFlags.slowDown || SLOW_DOWN_RE.test(imageWarning || ''),
       note: imageWarning ? 'image not saved: ' + imageWarning.split('. The record')[0]
         : sameImageAs ? 'page already saved in ' + describeSameImage(sameImageAs) : null,
     };
@@ -1524,6 +1534,7 @@
     const willHaveImage = !!dropped || (!sameImageAs && !!imageKey);
     let pageCopy = await recordPageCopy('early', wantPageCopy || !willHaveImage, recordUrl, ['1:1:' + rec.fsId]);
     let imageWarning = null;
+    let imageFlags = { transient: false, slowDown: false };
     if (dropped) {
       assets.push({ filename: 'record.' + dropped.ext, blob: dropped.blob, role: 'record', mode: 'manual', provisional });
     } else if (sameImageAs) {
@@ -1539,6 +1550,7 @@
           role: 'record', mode: 'familysearch-api',
         });
       } else {
+        imageFlags = { transient: !img || !!img.transient, slowDown: !!(img && img.slowDown) };
         imageWarning = ((img && img.error) || 'no answer from the page') +
           '. The record’s data and citation are saved. To add the image, use FamilySearch’s ' +
           'Download button, drop the file into the panel and press Capture again: that capture holds both.';
@@ -1622,8 +1634,8 @@
       record: { fsId: rec.fsId, name: rec.name || null },
       bundle: st.bundle, where: st.where,
       imageKey: imageKey ? 'fsimg:' + String(imageKey).toUpperCase() : null,
-      partial: !!imageWarning && passes(imageWarning),
-      slowDown: SLOW_DOWN_RE.test(imageWarning || ''),
+      partial: !!imageWarning && (imageFlags.transient || passes(imageWarning)),
+      slowDown: imageFlags.slowDown || SLOW_DOWN_RE.test(imageWarning || ''),
       note: imageWarning ? 'image not saved: ' + imageWarning.split('. The record')[0]
         : sameImageAs ? 'image already saved in ' + describeSameImage(sameImageAs) : null,
     };
@@ -1681,7 +1693,7 @@
     const partList = galleryOk && (!!gallery.partial || shown == null || shown > photos.length);
     // Find a Grave said "slow down" while the list was read: no photo is
     // asked for now either.
-    let slowDown = galleryOk && gallery.partialStatus === 429;
+    let slowDown = galleryOk && busyStatus(gallery.partialStatus);
 
     // A photo already saved - in this sitting, or in the archive as Seen It
     // knows it (only from a saved file, never from the memorial alone) - is
@@ -1703,6 +1715,9 @@
     const assets = [];
     const failed = [];
     const notTried = [];
+    // The photos whose failure may pass (the fetcher's own word), kept apart
+    // so nothing extra goes into record-data.json.
+    const transientPhotos = new Set();
     for (let i = 0; i < toFetch.length; i++) {
       const p = toFetch[i];
       if (slowDown) {
@@ -1720,6 +1735,7 @@
         row(true, got.blob && got.blob.size ? Math.max(1, Math.round(got.blob.size / 1024)) + ' KB' : '');
       } else {
         p.error = got.error;
+        if (got.transient) transientPhotos.add(p.photoId);
         failed.push(p);
         row(false, got.error);
         if (got.slowDown) slowDown = true;
@@ -1856,12 +1872,14 @@
       // cause that passes. A photo refused or gone, or a list that is short
       // every time, would only be saved the same way again.
       partial: notTried.length > 0 || skipped.length > 0 ||
-        (!galleryOk && passes(gallery && gallery.error)) ||
-        (galleryOk && partList && passes(gallery.partialError)) ||
-        failed.some((ph) => passes(ph.error)),
+        (!galleryOk && (passingStatus(gallery && gallery.status) || passes(gallery && gallery.error))) ||
+        (galleryOk && partList && !!gallery.partialError &&
+          (passingStatus(gallery.partialStatus) || passes(gallery.partialError))) ||
+        failed.some((ph) => transientPhotos.has(ph.photoId) || passes(ph.error)),
       // A "slow down" while its photos were listed or fetched (429): the
       // memorial is saved with the photos that came, and a batch stops.
-      slowDown: slowDown || (!galleryOk && SLOW_DOWN_RE.test((gallery && gallery.error) || '')),
+      slowDown: slowDown || (!galleryOk && (busyStatus(gallery && gallery.status) ||
+        SLOW_DOWN_RE.test((gallery && gallery.error) || ''))),
       note: plural(saved.length, 'photo') + ' saved' + (already.length ? ', ' + already.length + ' already saved' : '') +
         (missing ? ', ' + missing + ' not saved' : '') + (!galleryOk || partList ? ', photo list read only in part' : ''),
     };

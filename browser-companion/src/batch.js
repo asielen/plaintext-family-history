@@ -64,7 +64,8 @@
 //   SITE_UI                the four batches: names, addresses, buttons
 //   load / save / mirror   the ledger in storage, and its reading copy
 //   goTo / waitForComplete send the tab to one record, safely
-//   readLease / holdLease  one batch at a time across every panel window (read before renewed)
+//   withBatchClaim         one batch at a time: Web Locks, else a token that survives a settle
+//   readLease / holdLease  the stored lease, checked at every step (read before renewed)
 //   halted                 paused, switched off, or taken over by another window?
 //   run / one              the run loop above, and one record of it
 //   countFail / setAside   one record set aside; several in a row stop the run
@@ -142,6 +143,7 @@
     const ui = {};
     let active = null; // { site, tabId, stop, off, lost, fails } while a run goes
     let switchedOff = false; // the switch was turned off while this panel was open
+    let starting = false; // a Start is claiming the batch
 
     // ── words ────────────────────────────────────────────────────────────────
 
@@ -189,15 +191,40 @@
 
     // ── the ledger ───────────────────────────────────────────────────────────
 
+    // The browser would not keep or give back the batch's progress (its
+    // storage full, say). Nothing more may be downloaded then: a record saved
+    // but not noted would be saved again at the next Start.
+    function storageFailed(what, err) {
+      return new Stop('the browser could not ' + what + ' the batch’s progress (' +
+        ((err && err.message) || err || 'no reason given') + ')', 'storage');
+    }
+
+    // The stored ledger, repaired, or null when there is none yet. A read
+    // the browser refuses throws: an empty queue must never stand in for one
+    // that could not be read, or the next save would write over it.
     function loadRaw(siteName) {
-      return new Promise((resolve) => {
+      return new Promise((resolve, reject) => {
         try {
           const k = CB().SITES[siteName].storageKey;
-          chrome.storage.local.get(k, (o) => resolve(chrome.runtime.lastError ? null : CB().repair(o && o[k])));
+          chrome.storage.local.get(k, (o) => {
+            const err = chrome.runtime.lastError;
+            if (err) reject(storageFailed('read', err));
+            else resolve(CB().repair(o && o[k]));
+          });
         } catch (e) {
-          resolve(null);
+          reject(storageFailed('read', e));
         }
       });
+    }
+
+    // The last save of a run that is ending anyway: a failure here is said
+    // by the caller's own message, never thrown over it.
+    async function saveQuietly(siteName, L) {
+      try {
+        await save(siteName, L, true);
+      } catch (e) {
+        /* the run is already stopping; its message stands */
+      }
     }
 
     async function load(siteName) {
@@ -217,7 +244,17 @@
     async function save(siteName, L, mirror) {
       CB().mergeDone(L, await loadRaw(siteName));
       const k = CB().SITES[siteName].storageKey;
-      await new Promise((resolve) => chrome.storage.local.set({ [k]: L }, () => resolve()));
+      await new Promise((resolve, reject) => {
+        try {
+          chrome.storage.local.set({ [k]: L }, () => {
+            const err = chrome.runtime.lastError;
+            if (err) reject(storageFailed('save', err));
+            else resolve();
+          });
+        } catch (e) {
+          reject(storageFailed('save', e));
+        }
+      });
       if (mirror) writeMirror(siteName, L);
     }
 
@@ -358,9 +395,52 @@
     // batch holds a lease in storage, renewed at every step; another window's
     // Start is refused while it is held. A panel closed mid-run leaves its
     // lease to run out (LEASE_MS) - never a batch that cannot be started.
+    //
+    // Two Starts pressed together must not both win: chrome.storage cannot
+    // compare-and-swap, so the claim itself goes through an exclusive lock
+    // every panel window shares (navigator.locks, the Web Locks API of
+    // extension pages), held for the whole run and let go by the browser if
+    // the panel closes. The stored lease stays as the per-step check. Where
+    // Web Locks are missing, the claim writes a token of its own, waits a
+    // moment (PACING.leaseSettleMs) and goes on only if its token is still
+    // the one stored.
     const LEASE_KEY = 'batchLease';
     const LEASE_MS = 10 * 60 * 1000;
+    const LOCK_NAME = 'fha-capture-batch-downloads';
     const me = Math.random().toString(36).slice(2) + Date.now().toString(36);
+    const otherHolds = (lease) => !!lease && lease.owner !== me && lease.until > Date.now();
+
+    function writeLease(siteName, token) {
+      return new Promise((resolve) => chrome.storage.local.set(
+        { [LEASE_KEY]: { owner: me, token, site: siteName, until: Date.now() + LEASE_MS } },
+        () => resolve(!chrome.runtime.lastError)));
+    }
+
+    // Run `fn` holding the batch, or answer false when another window holds
+    // it (nothing is then read or sent).
+    async function withBatchClaim(siteName, fn) {
+      const locks = typeof navigator !== 'undefined' && navigator && navigator.locks;
+      if (locks && typeof locks.request === 'function') {
+        let ran = false;
+        await locks.request(LOCK_NAME, { ifAvailable: true }, async (lock) => {
+          if (!lock) return;
+          ran = true;
+          // Holding the lock, no other window can be running a batch: a
+          // stored lease of another is one its closed panel left behind.
+          await writeLease(siteName, me);
+          await fn();
+        });
+        return ran;
+      }
+      if (otherHolds(await readLease())) return false;
+      const token = me + '.' + Math.random().toString(36).slice(2);
+      await writeLease(siteName, token);
+      await nap(CB().PACING.leaseSettleMs);
+      const after = await readLease();
+      if (!after || after.token !== token) return false;
+      await fn();
+      return true;
+    }
 
     function readLease() {
       return new Promise((resolve) => chrome.storage.local.get(LEASE_KEY, (o) =>
@@ -380,8 +460,7 @@
         active.lost = 'another panel window started a batch while this one ran, so this one stopped';
         return;
       }
-      await new Promise((resolve) => chrome.storage.local.set(
-        { [LEASE_KEY]: { owner: me, site: siteName, until: Date.now() + LEASE_MS } }, () => resolve()));
+      await writeLease(siteName, lease && lease.owner === me ? lease.token : me);
     }
     async function dropLease() {
       const lease = await readLease();
@@ -420,24 +499,39 @@
           'the batch moves from record to record. Then press Start.', 'warn');
         return;
       }
-      if (active) return;
-      const lease = await readLease();
-      if (lease && lease.owner !== me && lease.until > Date.now()) {
-        say(siteName, 'A batch is running in another window (or was, until a few minutes ago). Pause it there, ' +
-          'or wait until about ' + fmtWhen(lease.until) + ', then press Start here.', 'warn');
-        return;
+      if (active || starting) return;
+      starting = true;
+      let claimed;
+      try {
+        claimed = await withBatchClaim(siteName, () => runClaimed(siteName, tabId));
+      } finally {
+        starting = false;
       }
-      if (active) return;
+      if (!claimed) {
+        const lease = await readLease();
+        say(siteName, 'A batch is running in another window (or was, until a few minutes ago). Pause it there' +
+          (otherHolds(lease) ? ', or wait until about ' + fmtWhen(lease.until) : '') + ', then press Start here.', 'warn');
+      }
+    }
+
+    // The run itself, once this window holds the batch.
+    async function runClaimed(siteName, tabId) {
+      const lib = CB().SITES[siteName];
       if (panelBusy()) {
         say(siteName, panelBusy(), 'warn');
         return;
       }
       active = { site: siteName, tabId, stop: false, fails: 0 };
+      leaseAt = 0;
       await holdLease(siteName, true);
       const leaseTimer = setInterval(() => holdLease(siteName, true).catch(() => {}), 60 * 1000);
       buttons();
       hooks.setDriving(true);
       let L = null;
+      // Whether a capture was pressed in this run (what a storage failure
+      // has to say).
+      let downloaded = false;
+      active.onCapture = () => { downloaded = true; };
       try {
         L = await load(siteName);
         CB().ensurePacing(L);
@@ -470,10 +564,18 @@
           (c.failed ? ' The set-aside ones, with the reasons, are in ' + lib.ledgerFile + ' in the download folder.' : ''),
           c.failed ? 'warn' : 'ok');
       } catch (e) {
+        if (e instanceof Stop && e.kind === 'storage') {
+          // Nothing more is downloaded, and nothing more is written.
+          say(siteName, (downloaded ? 'Stopped: ' + e.message + ', so nothing more was downloaded. The last record ' +
+            'may have been saved without being noted; if so, the next Start saves it again. '
+            : 'Did not start: ' + e.message + ', so nothing was downloaded. ') +
+            'Free some space in the browser (or restart it), then press Start again.', 'error');
+          return;
+        }
         if (e instanceof Paused) {
           if (L) {
             CB().logEvent(L, 'paused');
-            await save(siteName, L, true);
+            await saveQuietly(siteName, L);
           }
           say(siteName, 'Paused. ' + countsLine(L) + ' Press Start to carry on.');
         } else {
@@ -486,7 +588,7 @@
             // the break starts now if it has not already.
             if (slow && !(L.pacing && L.pacing.resumeAt > Date.now())) CB().planRateLimit(L, Date.now());
             CB().logEvent(L, 'STOPPED: ' + e.message);
-            await save(siteName, L, true);
+            await saveQuietly(siteName, L);
           }
           say(siteName, 'Stopped: ' + e.message + '. ' + (slow
             ? 'Press Start to carry on; it waits until about ' + fmtWhen(L.pacing.resumeAt) + ' before its next request. '
@@ -550,6 +652,7 @@
       if (!page.prefill[SITE_UI[siteName].prefillFlag]) {
         out = { ok: false, error: 'the page it opened is not a record page (it may have moved or been removed)' };
       } else {
+        if (active.onCapture) active.onCapture();
         out = await hooks.capture(lib.captureKey(item));
       }
       out = out || { ok: false, error: 'nothing was saved' };

@@ -73,6 +73,9 @@
     listPauseMs: [3 * SEC, 8 * SEC],
     // A page that does not finish loading in this long stops the run.
     loadTimeoutMs: 90 * SEC,
+    // Without Web Locks: how long a Start waits after writing its claim
+    // before reading it back (src/batch.js withBatchClaim).
+    leaseSettleMs: 600,
   };
 
   // At most this many list pages are read in one go (24 clippings each):

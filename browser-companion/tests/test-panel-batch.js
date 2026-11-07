@@ -26,7 +26,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const { openPanel, settle } = require('./panel-harness.js');
+const { openPanel, settle, makeLocks } = require('./panel-harness.js');
 const anc = require('../src/lib/ancestry-record.js');
 const fag = require('../src/lib/findagrave-record.js');
 const { parse } = require('./mini-dom.js');
@@ -92,6 +92,7 @@ function quick(p) {
   P.settleMs = [0, 0];
   P.listPauseMs = [0, 0];
   P.shortBreakMs = [0, 0];
+  P.leaseSettleMs = 0;
   return P;
 }
 
@@ -960,4 +961,118 @@ test('a record a batch saves never carries a field she typed for the record the 
   const cap = p.capJson(p.written[0]);
   assert.strictEqual(cap.title, 'Ethel Hartley - California, U.S., Death Index, 1940-1997');
   assert.ok(!String(cap.notes || '').includes('A note for Harriet'));
+});
+
+// ── PR #224 Codex review (4503786095, -098, -101, -102) ─────────────────────
+
+const PHOTO_OK = async (url) => ({ ok: true, status: 200, url, headers: { get: () => 'image/jpeg' },
+  blob: async () => new Blob(['photo'], { type: 'image/jpeg' }) });
+
+test('Codex 4503786095: a Find a Grave 503, for a photo or a later page of the photo list, stops the run with the break', async () => {
+  // A photo answers 503.
+  const p = await openPanel({ url: FAG_CALVIN, respond: fagSite(), storage: Object.assign({}, ON, { fagBatchLedger: fagLedger(2) }),
+    fetch: async (url) => ({ ok: false, status: 503, url, headers: { get: () => 'text/html' } }) });
+  quick(p);
+  await start(p, 'fag');
+  assert.strictEqual(p.fetched.length, 1, 'photos asked for after the 503');
+  assert.deepStrictEqual(p.navigations.map((n) => n.url), ['https://www.findagrave.com/memorial/900000001']);
+  const L = p.storage.fagBatchLedger;
+  assert.strictEqual(L.items['900000001'].state, 'partial');
+  assert.strictEqual(L.items['900000002'].state, 'queued');
+  assert.ok(L.pacing.resumeAt > Date.now() + 25 * 60 * 1000);
+  assert.match(p.batchEl('fag-status').textContent, /^Stopped: Find a Grave asked us to slow down/);
+  // A later page of the photo list answers 503: no photo is asked for.
+  const base = fagSite();
+  const q = await openPanel({ url: FAG_CALVIN, fetch: PHOTO_OK, storage: Object.assign({}, ON, { fagBatchLedger: fagLedger(2) }),
+    respond: async (msg, tab) => {
+      if (msg.action !== 'findagraveGallery') return base(msg, tab);
+      const got = await base(msg, tab);
+      return Object.assign(got, { partial: true, partialStatus: 503,
+        partialError: 'Find a Grave is having trouble (HTTP 503). Try again in a little while' });
+    } });
+  quick(q);
+  await start(q, 'fag');
+  assert.strictEqual(q.fetched.length, 0);
+  assert.strictEqual(q.navigations.length, 1);
+  assert.ok(q.storage.fagBatchLedger.pacing.resumeAt > Date.now() + 25 * 60 * 1000);
+});
+
+test('Codex 4503786098: photos lost to a dropped connection leave the memorial to be fetched again, not done', async () => {
+  const p = await openPanel({ url: FAG_CALVIN, respond: fagSite(), storage: Object.assign({}, ON, { fagBatchLedger: fagLedger(2) }),
+    fetch: async () => { throw new TypeError('Failed to fetch'); } });
+  quick(p);
+  await start(p, 'fag');
+  const L = p.storage.fagBatchLedger;
+  assert.strictEqual(L.items['900000001'].state, 'partial');
+  assert.strictEqual(L.items['900000002'].state, 'partial');
+  assert.match(p.batchEl('fag-status').textContent, /2 saved in part/);
+});
+
+test('Codex 4503786098: a scan the fetcher marks transient is saved in part, whatever its wording', async () => {
+  const base = ancestrySite();
+  const p = await openPanel({ url: HARRIET, storage: Object.assign({}, ON, { ancBatchLedger: ancLedger([CALVIN]) }),
+    respond: (msg, tab) => (msg.action === 'ancestryImage'
+      ? { ok: false, transient: true, error: 'the scan stopped coming part way' } : base(msg, tab)) });
+  quick(p);
+  await start(p, 'anc');
+  assert.strictEqual(p.storage.ancBatchLedger.items['90001:1000001'].state, 'partial');
+});
+
+test('Codex 4503786101: two windows pressing Start together stage each record once', async () => {
+  const sharedStore = JSON.parse(JSON.stringify(Object.assign({}, ON, { ancBatchLedger: ancLedger([CALVIN, ETHEL]) })));
+  const locks = makeLocks();
+  const a = await openPanel({ url: HARRIET, respond: ancestrySite(), sharedStore, locks });
+  const b = await openPanel({ url: HARRIET, respond: ancestrySite(), sharedStore, locks });
+  quick(a);
+  quick(b);
+  await Promise.all([a.batchEl('anc-start').fire('click'), b.batchEl('anc-start').fire('click')]);
+  await settle();
+  const staged = a.written.concat(b.written).map((spec) => spec.captureJson.url).sort();
+  assert.deepStrictEqual(staged, [CALVIN, ETHEL].sort());
+  assert.strictEqual(a.navigations.length + b.navigations.length, 2);
+  const said = [a.batchEl('anc-status').textContent, b.batchEl('anc-status').textContent];
+  assert.ok(said.some((t) => /^A batch is running in another window/.test(t)), said.join(' | '));
+  assert.ok(said.some((t) => /^Finished\. 2 done/.test(t)), said.join(' | '));
+  assert.strictEqual(locks.held.size, 0, 'the lock was let go');
+});
+
+test('Codex 4503786102: a ledger the browser will not save keeps a batch from starting', async () => {
+  const p = await openPanel({ url: HARRIET, respond: ancestrySite(), storage: Object.assign({}, ON, { ancBatchLedger: ancLedger([CALVIN]) }) });
+  quick(p);
+  p.setStorageFault((k) => (k === 'ancBatchLedger' ? 'QUOTA_BYTES quota exceeded' : null));
+  await start(p, 'anc');
+  assert.deepStrictEqual(p.navigations, []);
+  assert.strictEqual(p.written.length, 0);
+  assert.match(p.batchEl('anc-status').textContent,
+    /^Did not start: the browser could not save the batch’s progress \(QUOTA_BYTES quota exceeded\), so nothing was downloaded/);
+});
+
+test('Codex 4503786102: a ledger write that fails mid-run stops before the next download', async () => {
+  const base = ancestrySite();
+  let p = null;
+  p = await openPanel({ url: HARRIET, storage: Object.assign({}, ON, { ancBatchLedger: ancLedger([CALVIN, ETHEL]) }),
+    respond: (msg, tab) => {
+      // The browser's storage fills up while Calvin's record is saved.
+      if (msg.action === 'ancestryImage') p.setStorageFault((k) => (k === 'ancBatchLedger' ? 'QUOTA_BYTES quota exceeded' : null));
+      return base(msg, tab);
+    } });
+  quick(p);
+  await start(p, 'anc');
+  assert.deepStrictEqual(p.navigations.map((n) => n.url), [CALVIN]);
+  assert.strictEqual(p.written.length, 1);
+  assert.match(p.batchEl('anc-status').textContent,
+    /^Stopped: the browser could not save the batch’s progress \(QUOTA_BYTES quota exceeded\), so nothing more was downloaded/);
+});
+
+test('Codex 4503786101: without Web Locks, two Starts together still stage each record once (a claim that must survive a settle)', async () => {
+  const sharedStore = JSON.parse(JSON.stringify(Object.assign({}, ON, { ancBatchLedger: ancLedger([CALVIN, ETHEL]) })));
+  const a = await openPanel({ url: HARRIET, respond: ancestrySite(), sharedStore });
+  const b = await openPanel({ url: HARRIET, respond: ancestrySite(), sharedStore });
+  quick(a).leaseSettleMs = 50;
+  quick(b).leaseSettleMs = 50;
+  await Promise.all([a.batchEl('anc-start').fire('click'), b.batchEl('anc-start').fire('click')]);
+  await settle();
+  const staged = a.written.concat(b.written).map((spec) => spec.captureJson.url).sort();
+  assert.deepStrictEqual(staged, [CALVIN, ETHEL].sort());
+  assert.strictEqual(a.navigations.length + b.navigations.length, 2);
 });

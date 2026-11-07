@@ -233,6 +233,17 @@ function fsImageLink(j) {
   return l && typeof l.href === 'string' && l.href ? l.href : null;
 }
 
+// An Error in fsStatusMessage's words, saying whether its cause passes
+// (`transient`: no connection, a "slow down", a failing server) and whether
+// FamilySearch said slow down or busy (`slowDown`: 429/503). `status` null
+// means no answer at all.
+function fsFailure(message, status) {
+  const e = new Error(message);
+  e.transient = status == null || status === 429 || status >= 500;
+  e.slowDown = status === 429 || status === 503;
+  return e;
+}
+
 // One GET of FamilySearch's data service. Throws an Error with
 // fsStatusMessage's words (never the token or the address). `what` is what
 // she is told was refused: 'record' (the default) or 'image' (an image's
@@ -244,9 +255,9 @@ async function fsJson(path, accept, d, what) {
   try {
     r = await d.fetch(new URL(path, d.base).href, { credentials: 'include', headers });
   } catch (e) {
-    throw new Error('could not reach FamilySearch - check your internet connection, then press Capture again');
+    throw fsFailure('could not reach FamilySearch - check your internet connection, then press Capture again', null);
   }
-  if (!r.ok) throw new Error(fsStatusMessage(r.status, what || 'record', !!d.token));
+  if (!r.ok) throw fsFailure(fsStatusMessage(r.status, what || 'record', !!d.token), r.status);
   if (r.status === 204) return {};
   const text = await r.text();
   try {
@@ -312,7 +323,7 @@ async function fsImage(imageId, d) {
   try {
     link = fsImageLink(await fsJson('/ark:/61903/3:1:' + imageId, null, d, 'image'));
   } catch (e) {
-    return { ok: false, error: e.message };
+    return { ok: false, error: e.message, transient: !!e.transient, slowDown: !!e.slowDown };
   }
   if (!link) {
     return { ok: false, error: 'FamilySearch offers no download of this image: it is restricted to a ' +
@@ -324,9 +335,12 @@ async function fsImage(imageId, d) {
       headers: Object.assign({ Accept: 'image/jpeg' }, fsAuthHeaders(link, d.base, d.token)),
     });
   } catch (e) {
-    return { ok: false, error: 'could not reach FamilySearch for the image - check your internet connection' };
+    return { ok: false, transient: true, error: 'could not reach FamilySearch for the image - check your internet connection' };
   }
-  if (!r.ok) return { ok: false, error: fsStatusMessage(r.status, 'image', !!d.token) };
+  if (!r.ok) {
+    const f = fsFailure(fsStatusMessage(r.status, 'image', !!d.token), r.status);
+    return { ok: false, error: f.message, transient: f.transient, slowDown: f.slowDown };
+  }
   const blob = await r.blob();
   if (!/^image\//.test(blob.type || '') || blob.size < 30 * 1024) {
     return { ok: false, error: 'the image came back too small to be the full record (' +

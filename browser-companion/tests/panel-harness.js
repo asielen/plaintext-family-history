@@ -144,7 +144,11 @@ async function settle() { for (let i = 0; i < 20; i++) await tick(); }
 // panel wrote. Without it the store starts empty, as on a fresh install.
 // `beforePanel(window)` runs after the libraries load, before panel.js.
 // `titleFor(url)` is the title a tab shows once a batch sends it to `url`.
-async function openPanel({ url, respond, host, seenIt, fullPage, fetch, storage, beforePanel, titleFor, waitReady = true }) {
+// `sharedStore` is a chrome.storage.local two panels (two windows) share, used
+// as it is; `locks` is a navigator.locks they share (makeLocks). Without
+// `locks` the page has no Web Locks, as an older browser would not.
+async function openPanel({ url, respond, host, seenIt, fullPage, fetch, storage, beforePanel, titleFor,
+  sharedStore, locks, waitReady = true }) {
   const getHolds = new Map(); // tab id -> promise the next tabs.get answer waits on
   const doc = makeDocument();
   const tab = { id: 7, url };
@@ -161,7 +165,9 @@ async function openPanel({ url, respond, host, seenIt, fullPage, fetch, storage,
   const fireUpdated = (id, info) => Promise.all(onUpdated.slice().map((f) => f(id, info)));
   const external = [];
   // chrome.storage.local, kept as JSON (as Chrome keeps it).
-  const store = JSON.parse(JSON.stringify(storage || {}));
+  const store = sharedStore || JSON.parse(JSON.stringify(storage || {}));
+  // A write the browser refuses: storageFault(key) gives the reason, or null.
+  let storageFault = null;
   const storageReads = []; // the keys of every get
   const navigations = []; // { id, url } of every tabs.update
   const downloads = []; // chrome.downloads.download calls (the ledger's reading copy)
@@ -261,6 +267,13 @@ async function openPanel({ url, respond, host, seenIt, fullPage, fetch, storage,
           cb(out);
         },
         set: (obj, cb) => {
+          const why = storageFault && Object.keys(obj).map((k) => storageFault(k)).find(Boolean);
+          if (why) {
+            chrome.runtime.lastError = { message: why };
+            if (cb) cb();
+            chrome.runtime.lastError = undefined;
+            return;
+          }
           const changes = {};
           for (const [k, v] of Object.entries(obj)) changes[k] = { oldValue: store[k], newValue: v };
           Object.assign(store, JSON.parse(JSON.stringify(obj)));
@@ -333,7 +346,8 @@ async function openPanel({ url, respond, host, seenIt, fullPage, fetch, storage,
   // The batch downloads' two scripts, loaded as panel.html loads them: they
   // do nothing until panel.js installs them (switched on only).
   new Function('window', read('lib/capture-batch.js'))(window);
-  new Function('window', 'document', 'chrome', read('batch.js'))(window, doc, chrome);
+  new Function('window', 'document', 'chrome', 'navigator', read('batch.js'))(window, doc, chrome,
+    locks ? { locks } : {});
   if (beforePanel) beforePanel(window);
   // panel.js reads FHA as the page global that window.FHA is in a browser.
   // `crypto` is the page's Web Crypto (a global in a browser and in newer Node).
@@ -350,6 +364,7 @@ async function openPanel({ url, respond, host, seenIt, fullPage, fetch, storage,
   return {
     doc, $, tab, sent, sentTo, written, filed, writeFails, sendFails, external, fetched, ready,
     storage: store, storageReads, navigations, downloads, window, chrome,
+    setStorageFault(fn) { storageFault = fn; },
     // The batch box's element named `name` (its data-batch tag), or undefined.
     batchEl: (name) => doc.body.descendants().concat([doc.body]).find((e) => e.dataset && e.dataset.batch === name),
     // Hold the next tabs.get answer for tab `id` until the returned release().
@@ -428,4 +443,30 @@ function holdFirst(respond, action) {
   return h;
 }
 
-module.exports = { openPanel, settle, tick, read, holdFirst, PORT_CLOSED };
+// navigator.locks as the panel windows of one browser share it: `request`
+// with { ifAvailable: true } answers null while another holds the name, and
+// the lock is let go when the callback's promise settles.
+function makeLocks() {
+  const held = new Set();
+  return {
+    held,
+    async request(name, opts, cb) {
+      if (typeof opts === 'function') {
+        cb = opts;
+        opts = {};
+      }
+      if (held.has(name)) {
+        if (opts && opts.ifAvailable) return cb(null);
+        throw new Error('this model only answers ifAvailable requests');
+      }
+      held.add(name);
+      try {
+        return await cb({ name, mode: 'exclusive' });
+      } finally {
+        held.delete(name);
+      }
+    },
+  };
+}
+
+module.exports = { openPanel, settle, tick, read, holdFirst, PORT_CLOSED, makeLocks };
