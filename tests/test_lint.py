@@ -4825,7 +4825,7 @@ class DuplicatePersonW135Tests(unittest.TestCase):
     SID = 'S-5555555555'
     CID = 'C-6666666666'
 
-    def _build(self, persons: str) -> Path:
+    def _build(self, persons: str, claim_id: str | None = None) -> Path:
         root = Path(tempfile.mkdtemp())
         (root / 'people').mkdir(parents=True)
         (root / 'sources' / 'notes').mkdir(parents=True)
@@ -4836,7 +4836,7 @@ class DuplicatePersonW135Tests(unittest.TestCase):
             (root / 'people' / f'{last}__{first}_{pid}.md').write_text(
                 f'---\nid: {pid}\nname: {name}\nsex: U\nliving: false\n'
                 f'tier: stub\n---\n\n# {name}\n', encoding='utf-8')
-        claim = (f'- id: {self.CID}\n'
+        claim = (f'- id: {claim_id if claim_id is not None else self.CID}\n'
                  '  type: residence\n'
                  f'  persons: [{persons}]\n'
                  '  value: "lived on the farm"\n'
@@ -4907,6 +4907,21 @@ class DuplicatePersonW135Tests(unittest.TestCase):
         self.assertEqual(len(found), 1)
         self.assertNotIn('--persons', found[0].message)
         self.assertIn('delete the repeated entry', found[0].message)
+
+    def test_a_malformed_claim_id_still_lets_lint_finish(self) -> None:
+        # Codex, #215: a hand-typed `id: 123` is an integer to YAML. Building
+        # the repair command from it crashed the whole lint run, so the E002
+        # that says the id is malformed was never shown. A repeat on such a
+        # claim gets the hand-edit wording, never a command naming a bad id.
+        from _lib import load_fha_yaml
+        for claim_id in ('123', 'C-bad', "''"):
+            with self.subTest(claim_id=claim_id):
+                root = self._build(f'{self.ALICE}, {self.ALICE}', claim_id=claim_id)
+                findings, _reg = lint._run_lint_core(root, load_fha_yaml(root))
+                w135 = [f for f in findings if f.code == 'W135']
+                self.assertEqual(len(w135), 1)
+                self.assertNotIn('fha claim', w135[0].message)
+                self.assertIn('delete the', w135[0].message)
 
     def test_two_different_people_are_clean(self) -> None:
         root = self._build(f'{self.ALICE}, {self.BOB}')

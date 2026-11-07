@@ -2789,17 +2789,24 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
                 by_name = [ref for ref, pid in resolved
                            if pid in repeated and not id_type_of(ref)]
                 unique_pids = list(dict.fromkeys(claim_pids))
-                # Only a command that will actually run: every entry resolved,
-                # and every one a person with a record (`fha claim --persons`
-                # refuses a dangling P-id and a non-person code - #215 audit).
+                # The claim's id as written, as TEXT: YAML reads a hand-typed
+                # `id: 123` as an integer, and formatting that crashed the
+                # whole lint run before it could report the E002 that says
+                # the id is malformed (Codex, #215).
+                claim_id_text = str(claim.get('id') or '').strip()
+                # Only a command that will actually run: a real claim id,
+                # every entry resolved, and every one a person with a record
+                # (`fha claim --persons` refuses a dangling P-id and a
+                # non-person code - #215 audit).
                 command_works = (
-                    claim.get('id')
+                    id_type_of(claim_id_text) == 'C'
                     and len(claim_pids) == len(refs)
                     and all(id_type_of(pid) == 'P' and registry.has_person(pid)
                             for pid in unique_pids))
                 command = ('`fha claim '
-                           f'{fmt_id_display(claim.get("id", "?"))} --persons '
-                           + ','.join(fmt_id_display(p) for p in unique_pids) + '`')
+                           f'{fmt_id_display(claim_id_text)} --persons '
+                           + ','.join(fmt_id_display(p) for p in unique_pids) + '`'
+                           if command_works else '')
                 if by_name:
                     written = ', '.join(f'"[[{r}]]"' for r in by_name)
                     keep_once = (f'run {command} to keep them once'
