@@ -197,6 +197,9 @@
     // any Capture. A batch takes its break on it before another request,
     // and a capture of this page starts out knowing it (PR #224 Codex 4504294846).
     preflightSlowDown: false,
+    preflightSlowDownSite: null,
+    // The batch sites whose hosts said "slow down" in the capture under way.
+    slowDownSites: new Set(),
   };
 
   const $ = (id) => document.getElementById(id);
@@ -426,13 +429,44 @@
   // answer's own flag, its words, or a photo list's status. Remembered for
   // the whole capture, so that one which then fails still tells the owner's
   // batch downloads to take their break (PR #224 Codex 4503849177).
-  function noteSlowDown(resp) {
+  // `site` is the batch site whose host gave the answer ('ancestry',
+  // 'familysearch', 'findagrave', 'newspapers'), or null for any other host:
+  // only that site's batch is held back by it (PR #224 second audit N4).
+  function noteSlowDown(resp, site) {
     if (!resp) return;
     const st = (x) => x === 429 || x === 503;
     if (resp.slowDown || (resp.rateHits > 0) || st(resp.partialStatus) || (!resp.ok && st(resp.status)) ||
         (!resp.ok && /slow down|HTTP 429|HTTP 503|too many requests/i.test(String(resp.error || '')))) {
       state.slowDownSeen = true;
+      if (site) state.slowDownSites.add(site);
     }
+  }
+
+  // The batch site an address is on, or null for any other host.
+  function siteOfHost(href) {
+    let h = '';
+    try {
+      h = new URL(href).hostname;
+    } catch (e) {
+      return null;
+    }
+    if (/(^|\.)ancestry\.[a-z.]+$/i.test(h)) return 'ancestry';
+    if (/(^|\.)familysearch\.org$/i.test(h)) return 'familysearch';
+    if (/(^|\.)findagrave\.com$/i.test(h)) return 'findagrave';
+    if (/(^|\.)newspapers\.com$/i.test(h)) return 'newspapers';
+    return null;
+  }
+
+  // The batch site whose host a question to the page reaches: its own
+  // site's for the site readers, the address's host for a typed address.
+  function siteOfAsk(msg) {
+    const a = String((msg && msg.action) || '');
+    if (a === 'fetchAsset') return siteOfHost(String(msg.url || ''));
+    if (/^ancestry/.test(a)) return 'ancestry';
+    if (/^familysearch/.test(a)) return 'familysearch';
+    if (/^findagrave/.test(a)) return 'findagrave';
+    if (/^newspapers/.test(a)) return 'newspapers';
+    return null;
   }
 
   async function autoFetch(label, msg, rec) {
@@ -448,7 +482,7 @@
       resp = { ok: false, error: String((e && e.message) || e) };
     }
     if (!resp) resp = { ok: false, error: 'no answer from the page - reload it and try again' };
-    noteSlowDown(resp);
+    noteSlowDown(resp, siteOfAsk(msg));
     if (resp.ok) {
       const kb = resp.base64 ? Math.max(1, Math.round((resp.base64.length * 3) / 4 / 1024)) : 0;
       const same = await sameAsLastCapture(resp.base64);
@@ -838,6 +872,7 @@
     state.npLoading = false;
     if (info && (info.slowDown || SLOW_DOWN_RE.test(String(info.error || info.listError || '')))) {
       state.preflightSlowDown = true;
+      state.preflightSlowDownSite = 'newspapers';
     }
     if (!info || !info.ok) {
       setNewspapersMode(null);
@@ -1112,10 +1147,10 @@
       );
     } catch (e) {
       pageRow(false, (e && e.message) || String(e));
-      noteSlowDown(e);
+      noteSlowDown(e, 'newspapers');
       throw e;
     }
-    noteSlowDown(page);
+    noteSlowDown(page, 'newspapers');
     pageRow(true, page.tiles + (page.tiles === 1 ? ' piece' : ' pieces') +
       (page.reduced ? ', ' + page.reduced + ' below full size' : ''));
     setStageResult('Building the clipping and combined images…', '');
@@ -1505,7 +1540,10 @@
       r = { ok: false, error: e.message };
     }
     if (seq !== state.fsCheckSeq) return; // the tab moved on; a newer read owns the state
-    if (r && (r.slowDown || SLOW_DOWN_RE.test(String(r.error || r.reason || '')))) state.preflightSlowDown = true;
+    if (r && (r.slowDown || SLOW_DOWN_RE.test(String(r.error || r.reason || '')))) {
+      state.preflightSlowDown = true;
+      state.preflightSlowDownSite = 'familysearch';
+    }
     state.fsCheck = r && r.ok ? r : { unknown: true, error: (r && r.error) || 'no answer from the page' };
     if (r && r.ok && r.title && !state.userEdited.has('f-title')) $('f-title').value = r.title;
     restrictedImageNote(r);
@@ -1774,7 +1812,7 @@
         failed.push(p);
         row(false, got.error);
         if (got.slowDown) slowDown = true;
-        noteSlowDown(got);
+        noteSlowDown(got, 'findagrave');
       }
     }
     // The gravestone is the source's main picture when it has one, else the
@@ -2460,10 +2498,6 @@
       return refuse('this page is not one the batch can save as the record queued, so nothing was saved', 'error');
     }
     const siteOpts = opts.batch ? { forceDownload: true, expectKey: opts.batch.expectKey } : {};
-    // Which site's batch a slow-down met here would concern (a capture that
-    // fails says no site of its own).
-    const captureSite = (npActive() || state.npPage) ? 'newspapers' : state.ancRecord || state.ancestryViewer ? 'ancestry'
-      : state.fsRecord || state.fsImage ? 'familysearch' : state.fagRecord ? 'findagrave' : null;
 
     state.busy = true;
     $('btn-capture').disabled = true;
@@ -2475,8 +2509,12 @@
     state.thisCaptureSigs = new Set();
 
     let outcome = null;
-    // A slow-down already met reading this page is not forgotten here.
+    // A slow-down already met reading this page is not forgotten here - and
+    // it is counted once: this capture takes it over, so the next Capture
+    // on the same page does not count it again (PR #224 second audit N1).
     state.slowDownSeen = !!state.preflightSlowDown;
+    state.slowDownSites = new Set(state.preflightSlowDown && state.preflightSlowDownSite ? [state.preflightSlowDownSite] : []);
+    state.preflightSlowDown = false;
     try {
       // The form's details are saved with what is read from the tab: if the
       // tab is no longer on the page they were filled in for, they would not
@@ -2630,23 +2668,24 @@
       state.autoSaved = false;
       // The form still describes the record she left: read the new one.
       if (e instanceof TabMoved) state.pendingNav = true;
-      noteSlowDown(e);
+      noteSlowDown(e, null);
       outcome = { ok: false, error: e.message || String(e), tabMoved: e instanceof TabMoved,
         rateHits: (e && e.rateHits) || 0 };
     } finally {
       // Saved or not, a capture that met a "slow down" says so (the batch's
       // break before its next request).
       if (outcome && state.slowDownSeen) outcome.slowDown = true;
+      if (outcome) outcome.slowDownSites = [...state.slowDownSites];
       // A record saved by hand goes in the batch ledger too (switched on
       // only), so a batch never downloads it again.
       if (!opts.batch && state.batch && outcome && outcome.ok && outcome.site) {
         state.batch.recordManual(outcome).catch(() => {});
       }
-      // A Capture by hand that met a "slow down", saved or not, holds that
-      // site's batch back (PR #224 audit F3).
-      if (!opts.batch && state.batch && outcome && (outcome.slowDown || outcome.rateHits > 0) &&
-          (outcome.site || captureSite)) {
-        state.batch.recordSlowDown(outcome.site || captureSite).catch(() => {});
+      // A Capture by hand that met a "slow down", saved or not, holds back
+      // the batch of the site whose host said it - and no other (PR #224
+      // audit F3, second audit N4).
+      if (!opts.batch && state.batch && outcome) {
+        for (const site of state.slowDownSites) state.batch.recordSlowDown(site).catch(() => {});
       }
       state.busy = false;
       $('btn-capture').disabled = state.batchDriving;
@@ -3093,8 +3132,12 @@
         /* said in the panel; Capture then refuses or saves what it can */
       }
     }
+    // The batch takes its break on a page-read slow-down, and so counts it:
+    // it is not counted again by this page's Capture (second audit N1).
+    const slowDown = !!state.preflightSlowDown;
+    state.preflightSlowDown = false;
     return resp && resp.ok
-      ? { ok: true, prefill: resp.prefill, url: tab.url, slowDown: !!state.preflightSlowDown }
+      ? { ok: true, prefill: resp.prefill, url: tab.url, slowDown }
       : { ok: false, error: 'could not read the page' };
   }
 

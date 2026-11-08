@@ -1460,16 +1460,19 @@ test('Codex 4504508005: Newspapers.com - a page whose tile broke off saves nothi
   assert.strictEqual(p.storage.npBatchLedger.items['101'].state, 'done');
 });
 
-test('Codex 4504508005: a record\'s details lost to the browser\'s "Failed to fetch" stop the run, Start after Start, never set it aside', async () => {
+test('Codex 4504508005 / second audit N3: a record\'s details lost to "Failed to fetch" stop the run - and on the second Start it is set aside, the next one reached', async () => {
   const base = ancestrySite();
-  const p = await openPanel({ url: HARRIET, storage: Object.assign({}, ON, { ancBatchLedger: ancLedger([CALVIN]) }),
-    respond: (msg, tab) => (msg.action === 'ancestryRecordInfo' ? { ok: false, error: 'Failed to fetch' } : base(msg, tab)) });
+  const p = await openPanel({ url: HARRIET, storage: Object.assign({}, ON, { ancBatchLedger: ancLedger([CALVIN, ETHEL]) }),
+    respond: (msg, tab) => (msg.action === 'ancestryRecordInfo' && tab.url === CALVIN
+      ? { ok: false, error: 'Failed to fetch' } : base(msg, tab)) });
   quick(p);
   await start(p, 'anc');
-  await start(p, 'anc');
-  await start(p, 'anc');
-  assert.strictEqual(p.storage.ancBatchLedger.items['90001:1000001'].state, 'queued');
   assert.match(p.batchEl('anc-status').textContent, /^Stopped: Failed to fetch/);
+  assert.strictEqual(p.storage.ancBatchLedger.items['90001:1000001'].state, 'queued');
+  await start(p, 'anc');
+  assert.strictEqual(p.storage.ancBatchLedger.items['90001:1000001'].state, 'failed');
+  assert.match(p.storage.ancBatchLedger.items['90001:1000001'].lastError, /stopped the batch 2 times at this record/);
+  assert.strictEqual(p.storage.ancBatchLedger.items['90002:2000001'].state, 'done');
 });
 
 // ── PR #224 audit of 21179bc (ported from the auditor's repro scripts) ──────
@@ -1621,4 +1624,118 @@ test('a Start refused once it has claimed the batch (a capture began meanwhile) 
   release();
   await hand;
   await settle();
+});
+
+// ── PR #224 second audit of 21179bc..2116f51 (ported from the auditor's repros)
+
+test('second audit N1: a slow-down met while the page was read counts once, however many Captures are pressed on it', async () => {
+  const calls = [];
+  const base = familysearchSite(calls);
+  let checks = 0;
+  const p = await openPanel({ url: ark('HRT1-CEN1'), storage: Object.assign({}, ON), respond: async (msg, tab) => {
+    if (msg.action === 'familysearchImageCheck') {
+      checks++;
+      if (checks === 1) return { ok: false, slowDown: true, error: 'FamilySearch asked us to slow down (HTTP 429)' };
+    }
+    return base(msg, tab);
+  } });
+  for (let i = 1; i <= 3; i++) {
+    await p.capture();
+    await settle();
+    await nap(50);
+  }
+  assert.strictEqual(p.written.length, 3);
+  const pc = p.storage.fsBatchLedger.pacing;
+  assert.strictEqual(pc.rateEvents, 1, 'one slow-down counted ' + pc.rateEvents + ' times');
+  assert.strictEqual(pc.resumeReason, 'ratelimit');
+});
+
+test('second audit N2: with stamps pinned ahead of the clock, "Read my clippings list again" still wins over a page on its way', async () => {
+  const ahead = Date.now() + 24 * 3600 * 1000; // saved while the clock ran a day fast
+  const L = { version: 1, items: {}, order: [], log: [], listComplete: true, listCursor: 0, user: ME.username, listAt: ahead };
+  const sharedStore = JSON.parse(JSON.stringify(Object.assign({}, ON, { npBatchLedger: L })));
+  sharedStore.npBatchLedger.listComplete = false;
+  const locks = makeLocks();
+  let release = null;
+  const base = npSite([]);
+  const page = (cursor) => (cursor === 24
+    ? { ok: true, user: ME.username, more: false, nextCursor: null, clippings: [listed(202, 'Hartley wedding', NP_B)] }
+    : { ok: true, user: ME.username, more: true, nextCursor: 24, clippings: [listed(101, 'Obituary', NP_A)] });
+  const a = await openPanel({ url: NP_A, sharedStore, locks, respond: async (msg, tab) => {
+    if (msg.action !== 'newspapersList') return base(msg, tab);
+    if (!release) await new Promise((r) => { release = r; });
+    return page(msg.cursor);
+  } });
+  quick(a);
+  const run = a.batchEl('np-start').fire('click');
+  await settle();
+  assert.ok(release, 'the first list page was not asked for');
+  const b = await openPanel({ url: NP_A, respond: base, sharedStore, locks });
+  await b.batchEl('np-relist').fire('click');
+  await settle();
+  release();
+  await run;
+  await settle();
+  assert.deepStrictEqual(a.sent.filter((m) => m.action === 'newspapersList').map((m) => m.cursor), [0, 0, 24]);
+});
+
+test('second audit N3: a record whose details always fail is set aside after two Starts, and the next is reached; a real outage still stops', async () => {
+  const base = ancestrySite();
+  // A fault in the add-on while it read the record: set aside at once.
+  const fault = await openPanel({ url: HARRIET, storage: Object.assign({}, ON, { ancBatchLedger: ancLedger([CALVIN, ETHEL]) }),
+    respond: (msg, tab) => (msg.action === 'ancestryRecordInfo' && tab.url === CALVIN
+      ? { ok: false, codeError: true, error: 'the capture add-on could not read this record (TypeError: x is undefined) - a fault in the add-on, not the site' }
+      : base(msg, tab)) });
+  quick(fault);
+  await start(fault, 'anc');
+  assert.strictEqual(fault.storage.ancBatchLedger.items['90001:1000001'].state, 'failed');
+  assert.strictEqual(fault.storage.ancBatchLedger.items['90002:2000001'].state, 'done');
+  // A cause the run stops for, at the same record every time: set aside on the second Start.
+  const stuck = await openPanel({ url: HARRIET, storage: Object.assign({}, ON, { ancBatchLedger: ancLedger([CALVIN, ETHEL]) }),
+    respond: (msg, tab) => (msg.action === 'ancestryRecordInfo' && tab.url === CALVIN
+      ? { ok: false, transient: true, error: 'the connection broke off (Failed to fetch) - press Capture again later' }
+      : base(msg, tab)) });
+  quick(stuck);
+  await start(stuck, 'anc');
+  assert.strictEqual(stuck.storage.ancBatchLedger.items['90001:1000001'].state, 'queued');
+  await start(stuck, 'anc');
+  assert.strictEqual(stuck.storage.ancBatchLedger.items['90001:1000001'].state, 'failed');
+  assert.strictEqual(stuck.storage.ancBatchLedger.items['90002:2000001'].state, 'done');
+  // A real outage - every record fails: the run still stops.
+  const out = await openPanel({ url: HARRIET, storage: Object.assign({}, ON, { ancBatchLedger: ancLedger([CALVIN, ETHEL]) }),
+    respond: (msg, tab) => (msg.action === 'ancestryRecordInfo'
+      ? { ok: false, transient: true, error: 'the connection broke off (Failed to fetch) - press Capture again later' }
+      : base(msg, tab)) });
+  quick(out);
+  await start(out, 'anc');
+  await start(out, 'anc');
+  assert.match(out.batchEl('anc-status').textContent, /^Stopped: the connection broke off/);
+  assert.strictEqual(out.written.length, 0);
+});
+
+test('second audit N4: a slow-down from a host that is not a batch site holds no batch back; one from a batch site holds back only that site', async () => {
+  const base = ancestrySite();
+  const asked = [];
+  const p = await openPanel({ url: CALVIN, storage: Object.assign({}, ON, { ancBatchLedger: ancLedger([ETHEL]), fsBatchLedger: fsLedger(['HRT1-DTH1']) }),
+    respond: (msg, tab) => {
+      if (msg.action === 'fetchAsset') {
+        asked.push(msg.url);
+        return { ok: false, status: 429, error: 'the page refused that download (HTTP 429)' };
+      }
+      return base(msg, tab);
+    } });
+  p.$('f-asset-url').value = 'https://records.example-county.gov/scans/1880/calvin.jpg';
+  await p.capture();
+  await settle();
+  await nap(50);
+  assert.deepStrictEqual(asked, ['https://records.example-county.gov/scans/1880/calvin.jpg']);
+  assert.ok(!(p.storage.ancBatchLedger.pacing && p.storage.ancBatchLedger.pacing.resumeAt > Date.now()),
+    'the Ancestry batch was held back for another host\'s 429');
+  // A typed address on FamilySearch: FamilySearch's batch, not Ancestry's.
+  p.$('f-asset-url').value = 'https://www.familysearch.org/ark:/61903/3:1:HRT1-IMG9';
+  await p.capture();
+  await settle();
+  await nap(50);
+  assert.ok(p.storage.fsBatchLedger.pacing && p.storage.fsBatchLedger.pacing.resumeAt > Date.now() + 25 * 60 * 1000);
+  assert.ok(!(p.storage.ancBatchLedger.pacing && p.storage.ancBatchLedger.pacing.resumeAt > Date.now()));
 });

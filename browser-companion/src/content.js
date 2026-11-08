@@ -3626,9 +3626,23 @@
   // passes (`transient`), the browser's own words in brackets. Never only the
   // browser's words, which no one downstream could tell from a refusal
   // (PR #224 Codex 4504508005).
+  // Only a real network failure is a cause that passes: fetch's own
+  // TypeError ("Failed to fetch", "NetworkError…", "Load failed"), an abort
+  // or a time-out. Anything else thrown is a fault in the add-on while it
+  // read this record: said as such, and the batch sets that one record aside
+  // rather than stopping (PR #224 second audit N3).
   function brokeOff(e) {
-    return { ok: false, transient: true, status: null,
-      error: 'the connection broke off (' + String((e && e.message) || e) + ') - press Capture again later' };
+    const msg = String((e && e.message) || e);
+    const name = String((e && e.name) || '');
+    const network = name === 'AbortError' || name === 'TimeoutError' || name === 'NetworkError' ||
+      (name === 'TypeError' && /fetch|network|load failed/i.test(msg));
+    if (network) {
+      return { ok: false, transient: true, status: null,
+        error: 'the connection broke off (' + msg + ') - press Capture again later' };
+    }
+    return { ok: false, codeError: true,
+      error: 'the capture add-on could not read this record (' + (name ? name + ': ' : '') + msg +
+        ') - a fault in the add-on, not the site' };
   }
 
   // ── message routing ──────────────────────────────────────────────────────────

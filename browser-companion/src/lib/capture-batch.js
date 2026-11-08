@@ -436,6 +436,8 @@
   // changed it last.
   const STATE_FIELDS = ['state', 'stateAt', 'tries', 'stops', 'bundle', 'doneAt', 'lastError', 'note',
     'partialTries', 'again', 'imageKey', 'setAsideBefore'];
+  // Which state wins a tie of stamps (mergeStored): the one nearer saved.
+  const STATE_RANK = { failed: 1, retry: 2, queued: 3, partial: 4, done: 5 };
   const isCooldown = (p) => !!p && (p.resumeReason === 'ratelimit' || p.resumeReason === 'long');
 
   // Fold the ledger another panel window stored (`stored`) into this one (`L`)
@@ -479,8 +481,14 @@
       }
       if (!mine.title && s.title) mine.title = s.title;
       if (!mine.url && s.url) mine.url = s.url;
+      // A stamp shared by two windows (both took "newest stored + 1" while
+      // the clock was behind) is broken the same way in every window: the
+      // state that keeps the record moving toward saved wins - a save, a
+      // part-save, a requeue - so neither a save nor the owner's requeue is
+      // lost (PR #224 second audit N2).
+      const tie = (s.stateAt || 0) === (mine.stateAt || 0) && (STATE_RANK[s.state] || 0) > (STATE_RANK[mine.state] || 0);
       const theirs = s.state === 'done' && mine.state !== 'done' ||
-        (!(mine.state === 'done' && s.state !== 'done') && (s.stateAt || 0) > (mine.stateAt || 0));
+        (!(mine.state === 'done' && s.state !== 'done') && ((s.stateAt || 0) > (mine.stateAt || 0) || tie));
       if (theirs) {
         for (const f of STATE_FIELDS) {
           if (f in s) mine[f] = s[f];
@@ -499,13 +507,19 @@
           if ('sinceShort' in sp) L.pacing.sinceShort = sp.sinceShort;
           if ('shortEvery' in sp) L.pacing.shortEvery = sp.shortEvery;
         }
-        if ((sp.rateAt || 0) > (L.pacing.rateAt || 0)) {
+        // On a shared stamp the larger count wins: a slow-down is never lost.
+        if ((sp.rateAt || 0) > (L.pacing.rateAt || 0) || ((sp.rateAt || 0) === (L.pacing.rateAt || 0) &&
+            (sp.rateEvents || 0) > (L.pacing.rateEvents || 0))) {
           L.pacing.rateEvents = sp.rateEvents || 0;
           L.pacing.rateAt = sp.rateAt;
         }
       }
     }
-    if ((stored.listAt || 0) > (L.listAt || 0)) {
+    // On a shared stamp "read the list again from the start" wins: the
+    // owner's request is never lost to a page that was on its way.
+    const isRestart = (x) => x.listComplete === false && Number(x.listCursor || 0) === 0;
+    if ((stored.listAt || 0) > (L.listAt || 0) ||
+        ((stored.listAt || 0) === (L.listAt || 0) && isRestart(stored) && !isRestart(L))) {
       for (const f of ['listComplete', 'listCursor', 'user', 'listAt']) if (f in stored) L[f] = stored[f];
     }
     if (Array.isArray(stored.log) && stored.log.length) {
@@ -621,6 +635,8 @@
     'HTTP 404', 'HTTP 410', 'no memorial at this address', 'no record at this address', 'not the one queued',
     'is not a record page', 'not one the batch can save', 'marks no area', 'tick at least one of your clippings',
     'none of the clippings on this page are yours', 'restricted to a FamilySearch center',
+    // A fault in the add-on itself while it read this record (content.js brokeOff).
+    'could not read this record',
   ].join('|'), 'i');
   const RUN_RE = new RegExp([
     'sign in', 'signed in', 'security check', 'HTTP 401', 'could not reach', 'internet connection', 'broke off',

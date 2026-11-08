@@ -575,3 +575,28 @@ test('Codex 4504508005: a clippings list that breaks off is said to pass; one th
     assert.strictEqual(CB.classifyError(m), 'stop', m);
   }
 });
+
+test('second audit N2: a stamp two windows share is broken the same way everywhere - a save, a requeue, a slow-down and a restart win', () => {
+  const T = 5e12;
+  const mine = CB.newLedger();
+  CB.addRecords('ancestry', mine, [{ dbId: '1', recordId: '2' }]);
+  Object.assign(mine.items['1:2'], { state: 'failed', stateAt: T });
+  mine.pacing = { rateEvents: 0, rateAt: T, resumeAt: 0, resumeReason: '' };
+  Object.assign(mine, { listComplete: false, listCursor: 24, listAt: T });
+  const theirs = JSON.parse(JSON.stringify(mine));
+  Object.assign(theirs.items['1:2'], { state: 'queued', tries: 0 });
+  theirs.pacing.rateEvents = 1;
+  Object.assign(theirs, { listCursor: 0 });
+  CB.mergeStored(mine, theirs);
+  assert.strictEqual(mine.items['1:2'].state, 'queued');
+  assert.strictEqual(mine.pacing.rateEvents, 1);
+  assert.strictEqual(mine.listCursor, 0);
+  // And the other way round: the stored side keeps the same winners.
+  const back = JSON.parse(JSON.stringify(theirs));
+  const loser = JSON.parse(JSON.stringify(theirs));
+  Object.assign(loser.items['1:2'], { state: 'failed' });
+  loser.pacing.rateEvents = 0;
+  Object.assign(loser, { listCursor: 24 });
+  CB.mergeStored(back, loser);
+  assert.deepStrictEqual([back.items['1:2'].state, back.pacing.rateEvents, back.listCursor], ['queued', 1, 0]);
+});

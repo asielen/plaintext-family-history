@@ -603,3 +603,20 @@ test('Codex 4504508005: FamilySearch\'s image route says a body that broke off p
   assert.deepStrictEqual([r.ok, r.transient], [false, true]);
   assert.match(r.error, /broke off/);
 });
+
+test('second audit N3: a fault in the add-on while it reads is said as one, never as a connection that broke off', async () => {
+  // A page element the reader trips over (a fault in the reader, not the site).
+  const bad = { nodeType: 1, tagName: 'A', id: '', className: '', childNodes: [],
+    getAttribute: () => { throw new TypeError('cannot read the link of this element'); } };
+  const page = loadPage({ url: MEMORIAL, storage: BATCH_ON, tree: { title: 'A memorial', childNodes: [bad] } });
+  const r = await page.ask({ action: 'findagraveLinks' });
+  assert.strictEqual(r.ok, false);
+  assert.ok(!r.transient, 'a code fault was called a passing cause');
+  assert.match(r.error, /could not read this record \(TypeError: cannot read the link/);
+  // A real network failure still is a cause that passes.
+  const net = loadPage({ url: REC, cookie: 'fssessionid=' + TOKEN, fetch: familysearch({
+    'dist.jpg': { ok: true, status: 200, headers: { get: () => 'image/jpeg' }, blob: async () => { throw new TypeError('Failed to fetch'); } },
+  }) });
+  const n = await net.ask({ action: 'familysearchImage', imageId: 'HRT1-IMG1' });
+  assert.strictEqual(n.transient, true);
+});

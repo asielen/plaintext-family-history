@@ -753,7 +753,10 @@
       }
       // A page the panel cannot read at all stops the run (the next one would
       // fare no better); a page that reads but is not a record is set aside.
-      if (!page.ok) throw new Stop(page.error + ' (' + url + ')');
+      if (!page.ok) {
+        await stopAtRecord(siteName, L, item, page.error + ' (' + url + ')');
+        return finishRecord(siteName, L);
+      }
       let out;
       if (!page.prefill[SITE_UI[siteName].prefillFlag]) {
         out = { ok: false, error: 'the page it opened is not a record page (it may have moved or been removed)' };
@@ -796,14 +799,13 @@
           await slowDownBreak(siteName, L);
           throw new Stop(lib.name + ' asked us to slow down (' + why + ')', 'slowdown');
         }
-        if (kind === 'stop') throw new Stop(why);
-        if (kind === 'refused') {
-          // Stop at the first refusal, with its cause. The same record
-          // refused again on a later Start is set aside instead, so one
-          // record can never hold up the rest of the queue.
-          const stops = CB().markRefused(L, item.key);
-          if (stops < CB().MAX_TRIES) throw new Stop(why);
-          await setAside(siteName, L, item, why + ' (refused ' + stops + ' times)');
+        if (kind === 'stop' || kind === 'refused') {
+          // Stop at the first one, with its cause. The same record stopping
+          // the batch again on a later Start is set aside instead, so one
+          // record can never hold up the rest of the queue (a real outage
+          // still stops the run, at the next record). A lost login never
+          // counts against a record.
+          await stopAtRecord(siteName, L, item, why);
         } else if (kind === 'retry') {
           CB().markRetry(L, item.key, why);
           countFail(why);
@@ -811,8 +813,26 @@
           await setAside(siteName, L, item, why);
         }
       }
+      return finishRecord(siteName, L);
+    }
+
+    // After a record, whatever became of it: the gap before the next one.
+    async function finishRecord(siteName, L) {
       const plan = await captureGap(siteName, L);
       if (CB().nextPending(L)) await sleepUntil(siteName, L, plan.until, breakLabel(siteName, plan.kind));
+    }
+
+    // The run stops at this record (throws Stop) - unless it has stopped the
+    // batch here MAX_TRIES times, Start after Start: then the record is set
+    // aside with the reason, and the run goes on (PR #224 second audit N3).
+    // Two causes are never the record's and never count against it: a lost
+    // login, and the site saying it is having trouble (HTTP 5xx, review D3).
+    async function stopAtRecord(siteName, L, item, why) {
+      if (/sign in|signed in|HTTP 401|having trouble|HTTP 5\d\d/i.test(why)) throw new Stop(why);
+      const stops = CB().markRefused(L, item.key);
+      if (stops < CB().MAX_TRIES) throw new Stop(why);
+      await setAside(siteName, L, item, why + ' - it stopped the batch ' + stops +
+        ' times at this record, so it is set aside ("Try the set-aside ones again" brings it back)');
     }
 
     // Several records in a row that cannot be saved say more about the site
