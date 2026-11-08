@@ -140,7 +140,10 @@ CODE MAP
                                  in-process if they cannot run, stop on Ctrl+C
     _DerivativeCache           - saved copies of those derivatives in
                                  .cache/site-derivatives/, reused by the next
-                                 build while the original is unchanged
+                                 build while the original is unchanged; also
+                                 `.failed` notes for scans that could not be made
+    _warn_as_raised_at         - replay a worker's warning through the raising
+                                 module's registry (shown once, as one at a time)
 
   Static charts (person page + home page, #115)
     _render_fan_svg            - radial ancestor fan, self-contained SVG
@@ -2285,6 +2288,48 @@ def _picture_workers_setting(site_cfg: dict) -> tuple[int, str | None]:
         'Set it to 1 to make them one at a time.')
 
 
+def _settled_and_unchanged(src: Path, st: os.stat_result) -> bool:
+    """Was `src` last modified long enough ago to trust its size and time
+    (`_DERIVATIVE_SETTLE_SECONDS`), and is it still the file `st` described?
+    Raises OSError when it cannot be looked at."""
+    settled = time.time_ns() - st.st_mtime_ns > _DERIVATIVE_SETTLE_SECONDS * 10**9
+    after = os.stat(src)
+    return settled and (after.st_size, after.st_mtime_ns) == (st.st_size, st.st_mtime_ns)
+
+
+def _warn_as_raised_at(message: str, category: type, filename: str, lineno: int) -> None:
+    """Show a warning a worker caught (`_picture_job`) as if this process had
+    raised it where the worker did - Pillow's DecompressionBombWarning for a
+    huge scan, say.
+
+    It goes through the raising module's own registry and globals, the ones
+    `warnings.warn` would have used here, so Python's show-each-warning-once
+    rule treats it exactly as a one-at-a-time build would: the same text from
+    two scans of the same size, one made here and one by a worker, prints
+    once; so does a broken scan's warning when the one-at-a-time pass makes
+    it again (PR #242 audit). A file no loaded module came from is shown
+    with Python's own fallback registry."""
+    module = _module_for_file(filename)
+    if module is None:
+        warnings.warn_explicit(message, category, filename, lineno)
+        return
+    namespace = vars(module)
+    warnings.warn_explicit(message, category, filename, lineno,
+                           module=namespace.get('__name__'),
+                           registry=namespace.setdefault('__warningregistry__', {}),
+                           module_globals=namespace)
+
+
+def _module_for_file(filename: str):
+    """The loaded module whose source is `filename`, or None."""
+    want = os.path.normcase(os.path.abspath(filename))
+    for module in list(sys.modules.values()):
+        path = getattr(module, '__file__', None)
+        if path and os.path.normcase(os.path.abspath(path)) == want:
+            return module
+    return None
+
+
 class _PendingPicture(NamedTuple):
     """A picture handed to the workers: its Future plus everything
     `_SiteBuilder._land_picture` needs to write and save it."""
@@ -2496,20 +2541,70 @@ class _DerivativeCache:
             return None
         if type(note) is not dict or set(note) != _NOTE_KEYS:
             return None
-        fields = note['fields']
-        if type(fields) is not dict or set(fields) != _NOTE_FIELD_TYPES.keys():
-            return None
-        if any(type(fields[k]) is not t for k, t in _NOTE_FIELD_TYPES.items()):
+        if not _DerivativeCache._fields_ok(note['fields']):
             return None
         if (type(note['bytes']) is not int or note['bytes'] < 0
                 or type(note['sha256']) is not str
                 or not _SHA256_RE.fullmatch(note['sha256'])):
             return None
-        if (fields['size'] < 0 or fields['max_px'] <= 0 or '\x00' in fields['source']
-                or not os.path.isabs(fields['source'])
-                or not _FORMAT_RE.fullmatch(fields['format'])):
-            return None
         return note
+
+    @staticmethod
+    def _fields_ok(fields) -> bool:
+        """Is `fields` exactly the shape `entry_fields` makes (see `_read_note`)?"""
+        if type(fields) is not dict or set(fields) != _NOTE_FIELD_TYPES.keys():
+            return False
+        if any(type(fields[k]) is not t for k, t in _NOTE_FIELD_TYPES.items()):
+            return False
+        return not (fields['size'] < 0 or fields['max_px'] <= 0 or '\x00' in fields['source']
+                    or not os.path.isabs(fields['source'])
+                    or not _FORMAT_RE.fullmatch(fields['format']))
+
+    # - pictures that could not be made -
+    #
+    # A scan Pillow cannot make (a corrupt or truncated file) is a miss on
+    # every build, because only made pictures are saved. On a build with
+    # workers, such a miss handed to a worker fails after its pages were
+    # written, and the build is redone one picture at a time - on every
+    # rebuild, once more than `_PICTURES_BEFORE_POOL` of them are published
+    # (PR #242 audit). So a failure leaves a small `<key>.failed` note, under
+    # the same key a saved picture would have, and the next build makes that
+    # scan in its own process: it fails there at once, with the same warning,
+    # and no second pass. The note only routes the work. `fetch` never reads
+    # it, so it can never make a failed picture look made; and a fixed or
+    # replaced scan has a new size or modified-time, so a new key with no note.
+
+    def failed_before(self, key: str, fields: dict) -> bool:
+        """Did an earlier build fail to make exactly this picture?"""
+        try:
+            seen = self._read_failure(self.dir / f'{key}.failed')
+        except OSError:
+            return False
+        return seen == fields
+
+    def save_failure(self, key: str, fields: dict) -> None:
+        """Note that this picture could not be made (see above)."""
+        if self.write_error is not None:
+            return
+        try:
+            self.dir.mkdir(parents=True, exist_ok=True)
+            self._write_atomic(self.dir / f'{key}.failed',
+                               json.dumps({'fields': fields}, sort_keys=True).encode('utf-8'))
+        except OSError as e:
+            self.write_error = e.strerror or str(e)
+
+    @classmethod
+    def _read_failure(cls, path: Path) -> dict | None:
+        """A failure note's fields, or None when it is not exactly the shape
+        `save_failure` writes. A failure to read is raised (OSError)."""
+        raw = path.read_bytes()
+        try:
+            note = json.loads(raw)
+        except Exception:   # noqa: BLE001 - ValueError, RecursionError, ...
+            return None
+        if type(note) is not dict or set(note) != {'fields'} or not cls._fields_ok(note['fields']):
+            return None
+        return note['fields']
 
     def save(self, key: str, fields: dict, data: bytes) -> None:
         """Save a freshly made picture for the next build. Each file goes in
@@ -2527,6 +2622,9 @@ class _DerivativeCache:
                                json.dumps(note, sort_keys=True).encode('utf-8'))
         except OSError as e:
             self.write_error = e.strerror or str(e)
+            return
+        with contextlib.suppress(OSError):
+            (self.dir / f'{key}.failed').unlink()   # it was made after all
 
     def _write_atomic(self, path: Path, data: bytes) -> None:
         fd, tmp = tempfile.mkstemp(dir=self.dir, prefix='.tmp-')
@@ -2542,7 +2640,9 @@ class _DerivativeCache:
     def prune(self) -> None:
         """Remove entries no future build could reuse (see the class docstring).
         Only files this cache names (`<32 hex>.json` notes, their pictures,
-        `.tmp-` leftovers) are ever touched; anything else in the folder stays."""
+        `<32 hex>.failed` notes, `.tmp-` leftovers) are ever touched; anything
+        else in the folder stays. A failure note is kept on the same terms as a
+        picture: while its original is unchanged (or its folder is missing)."""
         try:
             names = os.listdir(self.dir)
         except FileNotFoundError:
@@ -2553,9 +2653,11 @@ class _DerivativeCache:
         keep: set[str] = set()
         for name in names:
             key, ext = os.path.splitext(name)
-            if ext != '.json' or not _CACHE_KEY_RE.fullmatch(key):
+            if not _CACHE_KEY_RE.fullmatch(key):
                 continue
-            if self._still_reusable(self.dir / name):
+            if ext == '.json' and self._still_reusable(self.dir / name):
+                keep.add(key)
+            elif ext == '.failed' and self._failure_still_relevant(self.dir / name):
                 keep.add(key)
         stale_tmp = time.time() - 24 * 3600
         for name in names:
@@ -2595,6 +2697,29 @@ class _DerivativeCache:
                 return False                     # its picture is gone
         except OSError:
             return True
+        return cls._source_unchanged(fields)
+
+    @classmethod
+    def _failure_still_relevant(cls, path: Path) -> bool:
+        """Could a future build still ask for this failed picture? The same
+        rules as `_still_reusable`, without a picture to look for."""
+        try:
+            fields = cls._read_failure(path)
+        except FileNotFoundError:
+            return False
+        except OSError:
+            return True
+        if fields is None:
+            return False
+        if fields['recipe'] != _DERIVATIVE_RECIPE_VERSION or fields['pillow'] != _PIL_VERSION:
+            return False
+        return cls._source_unchanged(fields)
+
+    @staticmethod
+    def _source_unchanged(fields: dict) -> bool:
+        """Is the entry's original still the file it was made from? Kept
+        (True) when the original's whole folder is missing - an unplugged
+        drive, far more often than a deletion - or when it cannot be looked at."""
         source = Path(fields['source'])
         try:
             st = source.stat()
@@ -3619,8 +3744,6 @@ class _SiteBuilder:
         # Pictures made in this process before the workers start
         # (`_PICTURES_BEFORE_POOL`).
         self._pictures_made_here = 0
-        # Pillow's warnings from the workers, shown once each, as Python would.
-        self._picture_warning_registry: dict = {}
         # Set when a picture the workers made failed: the pages were written
         # as if it had worked, so the build is redone one picture at a time
         # (`_site_payload`), exactly as a build without workers would run.
@@ -5137,6 +5260,7 @@ class _SiteBuilder:
             return True
         self._collect_pictures(dest)
         if not _make_derivative(src, dest, max_px):
+            self._note_failure(src, st, key, fields)
             return False
         self._derived_dests[dest] = key
         self._save_for_reuse(src, st, key, fields, dest)
@@ -5148,25 +5272,37 @@ class _SiteBuilder:
         read back from `dest`) for the next build - unless the original was
         modified too recently to trust its size and time, or changed while it
         was being read (`_DERIVATIVE_SETTLE_SECONDS`)."""
-        settled = time.time_ns() - st.st_mtime_ns > _DERIVATIVE_SETTLE_SECONDS * 10**9
         try:
-            after = os.stat(src)
-            unchanged = (after.st_size, after.st_mtime_ns) == (st.st_size, st.st_mtime_ns)
-            if settled and unchanged:
+            if _settled_and_unchanged(src, st):
                 self.derivative_cache.save(key, fields, dest.read_bytes() if data is None else data)
         except OSError:
             pass   # the page has its picture; it just is not saved for next time
 
+    def _note_failure(self, src: Path, st: os.stat_result, key: str, fields: dict) -> None:
+        """Remember that this picture could not be made, so the next build
+        makes it in this process rather than handing it to a worker
+        (`_DerivativeCache.failed_before`). Only for an original that has
+        settled and did not change while it was read, like a saved picture."""
+        cache = self.derivative_cache
+        try:
+            if not cache.failed_before(key, fields) and _settled_and_unchanged(src, st):
+                cache.save_failure(key, fields)
+        except OSError:
+            pass
+
     def _queue_picture(self, src: Path, dest: Path, max_px: int, key: str, fields: dict,
                        st: os.stat_result) -> bool:
         """Hand a picture this build must make to the workers. False when it
-        is to be made here instead: no workers, still among the first
+        is to be made here instead: no workers, one an earlier build could
+        not make (`_DerivativeCache.failed_before`), still among the first
         `_PICTURES_BEFORE_POOL`, a file type this Pillow cannot read at all
         (it fails here in a moment, with no second pass), or workers that
         cannot run. Pauses for the oldest picture when enough are waiting."""
         pool = self._picture_pool
         if pool is None or pool.broken:
             return False
+        if self.derivative_cache.failed_before(key, fields):
+            return False   # it failed last time: fail here, at once, with no second pass
         if self._pictures_made_here < _PICTURES_BEFORE_POOL:
             self._pictures_made_here += 1
             return False
@@ -5204,7 +5340,7 @@ class _SiteBuilder:
 
         Pictures land in the order they were handed over, so a media/ file
         written twice ends with the later picture and Pillow's warnings appear
-        in a one-at-a-time build's order. A picture that could not be made sets
+        in a one-at-a-time build's order (`_warn_as_raised_at`). A picture that could not be made sets
         `needs_serial_rebuild` (its pages were written as if it had worked). If
         the workers themselves failed - died, or never started - the picture is
         made here instead and the workers are not used again."""
@@ -5226,14 +5362,15 @@ class _SiteBuilder:
             if self._picture_pool is not None:
                 self._picture_pool.broken = True
             if not _make_derivative(job.src, job.dest, job.max_px):
+                self._note_failure(job.src, job.st, job.key, job.fields)
                 self.needs_serial_rebuild = True
                 return
             self._save_for_reuse(job.src, job.st, job.key, job.fields, job.dest)
             return
         for message, category, filename, lineno in caught:
-            warnings.warn_explicit(message, category, filename, lineno,
-                                   registry=self._picture_warning_registry)
+            _warn_as_raised_at(message, category, filename, lineno)
         if data is None:
+            self._note_failure(job.src, job.st, job.key, job.fields)
             self.needs_serial_rebuild = True
             return
         try:

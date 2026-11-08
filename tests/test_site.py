@@ -2989,11 +2989,10 @@ class ParallelPictureTests(_Base):
         _InlineExecutor.submitted = []
         with self._workers() as spy:
             res = self._run(linked=False)
-        # Saved pictures are copied, never handed over. Only the broken scan
-        # (never saved) is made again - by a worker here, since this build
-        # hands over from the first picture on, then once more in the
-        # serial pass its failure calls for.
-        self.assertEqual(_InlineExecutor.submitted, ['broken.jpg'])
+        # Saved pictures are copied, never handed over. The broken scan
+        # (never saved) failed last time, so it is made here, at once, even
+        # though this build hands over from the first picture on.
+        self.assertEqual(_InlineExecutor.submitted, [])
         self.assertEqual(spy.call_count, 1)
         self.assertEqual(self._site_files(), first)
         self.assertEqual(res['messages'], first_messages)
@@ -3001,13 +3000,136 @@ class ParallelPictureTests(_Base):
         # With the real threshold, a rebuild with one miss (a scan that can
         # never be made) makes it here: no workers, and no second pass.
         _InlineExecutor.submitted = []
-        with self._workers(before_pool=site._PICTURES_BEFORE_POOL) as spy,                 unittest.mock.patch.object(site._SiteBuilder, 'run', autospec=True,
+        with self._workers(before_pool=site._PICTURES_BEFORE_POOL) as spy, \
+                unittest.mock.patch.object(site._SiteBuilder, 'run', autospec=True,
                                            side_effect=site._SiteBuilder.run) as run:
             res = self._run(linked=False)
         self.assertEqual(_InlineExecutor.submitted, [], 'a rebuild with one miss started workers')
         self.assertEqual(spy.call_count, 1)
         self.assertEqual(run.call_count, 1)
         self.assertEqual(res['messages'], first_messages)
+
+    # - Pillow's warnings, shown once each as Python would (PR #242 audit F1) -
+
+    def _huge_scan(self, rel: str, side: int, *, truncate: bool = False) -> None:
+        """A grey scan just over Pillow's DecompressionBombWarning size (about
+        89 million pixels): opening it warns, in any process. `truncate` keeps
+        only its header, so it warns and then cannot be made."""
+        from PIL import Image
+        img = self.archive_root / rel
+        img.parent.mkdir(parents=True, exist_ok=True)
+        Image.new('L', (side, side), 128).save(img, compress_level=1)
+        if truncate:
+            img.write_bytes(img.read_bytes()[:4000])
+        _age(img)
+
+    def _shown_warnings(self, workers: int, before_pool: int) -> list[str]:
+        """The Pillow warnings Python actually shows during a first build,
+        under its default show-once rule, with real worker processes."""
+        self._set_workers(workers)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter('default')   # also clears what earlier builds showed
+            self._fresh_build(inline=False, before_pool=before_pool)
+        return [f'{w.filename}:{w.lineno}: {w.message}' for w in caught
+                if issubclass(w.category, site.Image.DecompressionBombWarning)]
+
+    def test_one_warning_from_two_same_size_scans_shows_once_as_one_at_a_time(self):
+        # Two scans of the same size give the same warning text. One at a
+        # time, Python shows it once. Split between this process and a
+        # worker, it was shown twice: the worker's copy was replayed through
+        # a registry of its own.
+        self._huge_scan('photos/1880/huge1.png', 9500)
+        self._huge_scan('photos/1880/huge2.png', 9500)
+        self._photo_source('s-1111111111', 'photos/1880/huge1.png')
+        self._photo_source('s-2222222222', 'photos/1880/huge2.png')
+        serial = self._shown_warnings(1, 1)
+        self.assertEqual(len(serial), 1, serial)
+        self.assertEqual(self._shown_warnings(2, 1), serial)
+
+    def test_a_broken_scans_warning_shows_once_despite_the_second_pass(self):
+        # A huge scan that warns and then cannot be made: its failure in a
+        # worker sends the build round again, one at a time, where it warns
+        # again. Python must still show it once, as a one-at-a-time build does.
+        self._huge_scan('photos/1880/huge.png', 9600, truncate=True)
+        self._photo_source('s-1111111111', 'photos/1880/huge.png')
+        serial = self._shown_warnings(1, 0)
+        self.assertEqual(len(serial), 1, serial)
+        with unittest.mock.patch.object(site._SiteBuilder, 'run', autospec=True,
+                                        side_effect=site._SiteBuilder.run) as run:
+            parallel = self._shown_warnings(2, 0)
+        self.assertEqual(run.call_count, 2, 'the broken scan should have gone to a worker')
+        self.assertEqual(parallel, serial)
+
+    # - scans that can never be made (PR #242 audit F2) -
+
+    def test_scans_that_never_work_do_not_make_every_rebuild_go_round_twice(self):
+        # More broken scans than the first few made in-process: on a rebuild
+        # they are the only misses, so one reached a worker, failed, and sent
+        # every rebuild round a second time. A failed scan now leaves a note,
+        # and the next build makes it here, at once.
+        broken = []
+        for i in range(10):
+            rel = f'photos/1890/broken{i}.jpg'
+            img = self.archive_root / rel
+            img.parent.mkdir(parents=True, exist_ok=True)
+            img.write_bytes(b'\xff\xd8 not a whole jpeg ' + bytes([i]))
+            _age(img)
+            self._photo_source(f's-{i}{i}{i}{i}{i}bbbbb', rel)
+            broken.append(img)
+        self._set_workers(1)
+        serial, serial_messages, _, _ = self._fresh_build()
+        self.assertEqual(len([m for m in serial_messages if 'could not build a web image' in m]), 10)
+
+        self._set_workers(2)
+        run_spy = unittest.mock.patch.object(site._SiteBuilder, 'run', autospec=True,
+                                             side_effect=site._SiteBuilder.run)
+        with run_spy as run:
+            self._fresh_build(before_pool=site._PICTURES_BEFORE_POOL)
+        self.assertEqual(run.call_count, 2, 'the first build should go round twice')
+        self.assertEqual(len(list(self._cache_dir().glob('*.failed'))), 10)
+
+        for _ in range(2):
+            _InlineExecutor.submitted = []
+            with self._workers(before_pool=site._PICTURES_BEFORE_POOL), run_spy as run:
+                res = self._run(linked=False)
+            self.assertEqual(run.call_count, 1, 'a rebuild went round twice')
+            self.assertEqual(_InlineExecutor.submitted, [])
+            # A note never makes a failed picture look made.
+            self.assertEqual(self._site_files(), serial)
+            self.assertEqual(res['messages'], serial_messages)
+
+        # A fixed scan is a new file: no note, back to the workers.
+        from PIL import Image
+        Image.new('RGB', (800, 600), (10, 120, 30)).save(broken[3], format='JPEG')
+        _age(broken[3], 1800)
+        _InlineExecutor.submitted = []
+        with self._workers(), run_spy as run:
+            res = self._run(linked=False)
+        self.assertEqual(_InlineExecutor.submitted, ['broken3.jpg'])
+        self.assertEqual(run.call_count, 1)
+        self.assertTrue(any('broken3_' in rel for rel in self._media()))
+        self.assertEqual(len([m for m in res['messages'] if 'could not build a web image' in m]), 9)
+        # Its old note is pruned with the old version of the file.
+        self.assertEqual(len(list(self._cache_dir().glob('*.failed'))), 9)
+
+    def test_a_failure_note_never_stands_in_for_a_picture(self):
+        # Even a note whose key matches cannot be fetched as a picture, and a
+        # picture saved under the same key clears it.
+        cache = site._DerivativeCache(self._cache_dir())
+        src = self._image('photos/1880/pic.png')
+        fields = cache.entry_fields(src, os.stat(src), 1200, '.jpg')
+        key = cache.entry_key(fields)
+        cache.save_failure(key, fields)
+        self.assertTrue(cache.failed_before(key, fields))
+        self.assertIsNone(cache.fetch(key, fields))
+        self.assertFalse(cache.damaged, 'a failure note is not a damaged picture')
+        other = dict(fields, size=fields['size'] + 1)
+        self.assertFalse(cache.failed_before(key, other))
+        (self._cache_dir() / f'{key}.failed').write_text('{"fields": 1}', encoding='utf-8')
+        self.assertFalse(cache.failed_before(key, fields), 'a malformed note was trusted')
+        cache.save_failure(key, fields)
+        cache.save(key, fields, b'picture')
+        self.assertFalse((self._cache_dir() / f'{key}.failed').exists())
 
     # - Ctrl+C -
 
