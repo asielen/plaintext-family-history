@@ -691,6 +691,13 @@
         throw e;
       }
       const page = await hooks.readPage();
+      // A "slow down" met while the page was read (its FamilySearch image
+      // check, its clippings): the break comes before any more requests.
+      if (page.slowDown) {
+        CB().planRateLimit(L, Date.now());
+        await save(siteName, L, true);
+        throw new Stop(lib.name + ' asked us to slow down while the page was being read', 'slowdown');
+      }
       // A page the panel cannot read at all stops the run (the next one would
       // fare no better); a page that reads but is not a record is set aside.
       if (!page.ok) throw new Stop(page.error + ' (' + url + ')');
@@ -822,6 +829,15 @@
       }
       await hooks.injectContent(tab.id);
       const r = await hooks.sendToTab(tab.id, { action: site.personAction });
+      // The site said slow down while the page was read: the batch of the
+      // site that said it asks nothing more before its break is over.
+      if (r && (r.slowDown || (!r.ok && CB().classifyError(r.error) === 'slowdown'))) {
+        const slowSite = /^https:\/\/([a-z0-9-]+\.)*familysearch\.org\//i.test(tab.url || '') ? 'familysearch' : siteName;
+        const { L: slowL } = await update(slowSite, (L) => { CB().planRateLimit(L, Date.now()); }, false);
+        say(siteName, CB().SITES[slowSite].name + ' asked us to slow down while this page was read, so nothing was ' +
+          'queued; no batch asks it anything before about ' + fmtWhen(slowL.pacing.resumeAt) + '. Press again after that.', 'warn');
+        return;
+      }
       if (!r || !r.ok) {
         say(siteName, 'Could not read this page: ' + ((r && r.error) || 'no answer') + '.', 'warn');
         return;
@@ -829,7 +845,10 @@
       const who = r.person || 'This page';
       if (!r.sources.length) {
         say(siteName, r.sectionFound === false
-          ? 'No sources section on this page. Open the person’s Facts page and press again.'
+          ? (siteName === 'findagrave'
+            ? 'This page is not one whose memorials can be queued: open a Find a Grave page, or a person’s own page ' +
+              'with a sources list on Ancestry or FamilySearch, then press again.'
+            : 'This is not a person’s page with a sources list. Open the person’s Facts page in your tree, then press again.')
           : who + ' has no ' + CB().SITES[siteName].name + ' records to queue' +
             (r.other ? ' (' + r.otherWhat + ')' : '') + '.', 'warn');
         return;

@@ -418,3 +418,36 @@ test('batchNpUsername: who is signed in, from the page\'s own data', () => {
   assert.strictEqual(BS.batchNpUsername('1:{"user":{"id":7,"username":"HartleyResearch","x":{"y":1}}}'), 'HartleyResearch');
   assert.strictEqual(BS.batchNpUsername('nothing here'), null);
 });
+
+// ── PR #224 Codex 4504294850: each page reader only in its own context ──────
+
+test('Codex 4504294850: a record page (no sources list) is not a person\'s sources - nothing is read from it', async () => {
+  const census = parse(fs.readFileSync(path.join(SAMPLES, 'ancestry-record-census.html'), 'utf8'));
+  const url = 'https://www.ancestry.com/search/collections/90001/records/1000001';
+  const r = BS.batchAncPersonSources(census, url);
+  assert.deepStrictEqual([r.ok, r.sectionFound, r.sources.length, r.total], [true, false, 0, 0]);
+  // Find a Grave links on an Ancestry page: only from the sources list too.
+  const page = parse('<html><h1>Calvin Hartley</h1><div class="hints"><a href="https://www.findagrave.com/memorial/900000009">' +
+    'A hint</a></div></html>');
+  const f = await BS.batchFagLinks(page, url, null);
+  assert.deepStrictEqual([f.sectionFound, f.sources.length], [false, 0]);
+  // ...and on FamilySearch, the person's own sources only, never the page's links.
+  const fsPage = parse('<html><h1>Calvin</h1><a href="https://www.findagrave.com/memorial/900000009">a hint</a></html>');
+  const g = await BS.batchFagLinks(fsPage, 'https://www.familysearch.org/search/record/results', null);
+  assert.deepStrictEqual([g.sectionFound, g.sources.length], [false, 0]);
+  // Anywhere else, nothing.
+  const h = await BS.batchFagLinks(parse(ANC_PERSON), 'https://blog.example.org/hartleys', null);
+  assert.strictEqual(h.sources.length, 0);
+});
+
+test('Codex 4504294846: a FamilySearch "slow down" while sources are read is said, not lost', async () => {
+  const slow = fsService({ '/platform/tree/persons/KWHR-T01/sources': 429 });
+  const r = await BS.batchFsPersonSources(FS_PERSON, { fetch: slow.fetch, base: FS_PERSON, token: TOKEN });
+  assert.deepStrictEqual([r.ok, r.slowDown], [false, true]);
+  const busy = fsService({ '/platform/tree/persons/KWHR-T01/sources': 503 });
+  const f = await BS.batchFagLinks(parse('<html><h1>Calvin</h1></html>'), FS_PERSON, { fetch: busy.fetch, base: FS_PERSON, token: TOKEN });
+  assert.strictEqual(f.slowDown, true);
+  const named = fsService(Object.assign({}, FS_SOURCES, { '/platform/tree/persons/KWHR-T01': 429 }));
+  const n = await BS.batchFsPersonSources(FS_PERSON, { fetch: named.fetch, base: FS_PERSON, token: TOKEN });
+  assert.deepStrictEqual([n.ok, n.slowDown, n.sources.length], [true, true, 2]);
+});

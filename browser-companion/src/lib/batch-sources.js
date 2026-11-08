@@ -60,12 +60,20 @@ function batchFirstLine(el) {
 // An Ancestry tree person's Facts page (`root`, at `href`): the Ancestry
 // records its sources link to, as { dbId, recordId, title }, plus a count of
 // the sources that are something else (a clipping, a web link), so the panel
-// can say what it left out rather than "no sources". Read from the page, with
-// the Seen It add-on's badges skipped (ancText), and nothing fetched.
+// can say what it left out rather than "no sources". Read from the person's
+// own sources list (#sourcesSection) and nowhere else on the page: a record
+// page links its household's records, which are not this person's sources
+// (PR #224 Codex 4504294850). No such list: nothing (`sectionFound: false`).
+// Seen It's badges are skipped (ancText), and nothing is fetched.
 function batchAncPersonSources(root, href) {
   const seen = new Set();
   const sources = [];
-  for (const a of ancElements(root, (e) => ancTag(e) === 'A' && !!e.getAttribute('href'))) {
+  const box = ancById(root, 'sourcesSection');
+  const h1 = ancElements(root, (e) => ancTag(e) === 'H1')[0];
+  if (!box) {
+    return { ok: true, person: batchFirstLine(h1) || null, sources, sectionFound: false, total: 0, other: 0, otherWhat: '' };
+  }
+  for (const a of ancElements(box, (e) => ancTag(e) === 'A' && !!e.getAttribute('href'))) {
     let u;
     try {
       u = new URL(a.getAttribute('href'), href);
@@ -83,8 +91,7 @@ function batchAncPersonSources(root, href) {
     sources.push({ dbId: id.dbId, recordId: id.recordId, title: batchFirstLine(a) });
   }
   const others = [];
-  const box = ancById(root, 'sourcesSection');
-  for (const a of box ? ancElements(box, (e) => ancTag(e) === 'A' && !!e.getAttribute('href')) : []) {
+  for (const a of ancElements(box, (e) => ancTag(e) === 'A' && !!e.getAttribute('href'))) {
     let u;
     try {
       u = new URL(a.getAttribute('href'), href);
@@ -95,12 +102,11 @@ function batchAncPersonSources(root, href) {
     if (BATCH_NP_HOST_RE.test(u.hostname) && /\/(clip|article)\//.test(u.pathname)) others.push('Newspapers.com clippings');
     else if (!/(^|\.)(ancestry|ancestrycdn)\.[a-z.]+$/i.test(u.hostname)) others.push('links to ' + u.hostname.replace(/^www\./, ''));
   }
-  const h1 = ancElements(root, (e) => ancTag(e) === 'H1')[0];
   return {
     ok: true,
     person: batchFirstLine(h1) || null,
     sources,
-    sectionFound: !!box,
+    sectionFound: true,
     total: sources.length + others.length,
     other: others.length,
     otherWhat: batchDescribeOthers(others),
@@ -132,7 +138,7 @@ async function batchFsPersonSources(href, d) {
   try {
     j = await fsJson('/platform/tree/persons/' + pid + '/sources', 'application/x-fs-v1+json', d);
   } catch (e) {
-    return { ok: false, error: e.message };
+    return { ok: false, error: e.message, slowDown: !!e.slowDown };
   }
   const sources = [];
   const others = [];
@@ -156,21 +162,28 @@ async function batchFsPersonSources(href, d) {
     sources.push({ fsId, title: String((s.titles && s.titles[0] && s.titles[0].value) || '').slice(0, 200) });
   }
   let person = null;
+  let slowDown = false;
   try {
     const p = await fsJson('/platform/tree/persons/' + pid, 'application/x-fs-v1+json', d);
     const disp = p && p.persons && p.persons[0] && p.persons[0].display;
     person = (disp && disp.name) || null;
   } catch (e) {
-    /* the name is a label only */
+    // The name is a label only - but a "slow down" is still said.
+    slowDown = !!e.slowDown;
   }
-  return { ok: true, person, pid, sources, total: all.length, other: others.length, otherWhat: batchDescribeOthers(others) };
+  return { ok: true, person, pid, sources, total: all.length, other: others.length, otherWhat: batchDescribeOthers(others),
+    slowDown };
 }
 
-// Every Find a Grave memorial the page (`root`, at `href`) links to - a
-// memorial's own family, a search or cemetery listing, an Ancestry person's
-// web links - and, on a FamilySearch tree person (`d` given), the memorials
-// among their sources. On a memorial page the memorial itself comes first.
-// [{ memorialId, slug, title }].
+// The Find a Grave memorials a page names, each only from where it means
+// "these memorials" (PR #224 Codex 4504294850):
+//   - on Find a Grave, every memorial the page links to (a memorial's own
+//     family, a search or cemetery listing), the memorial itself first;
+//   - on an Ancestry tree person, the person's own sources list
+//     (#sourcesSection) only - never the hints and records elsewhere on it;
+//   - on a FamilySearch tree person (`d` given), the person's own sources,
+//     from FamilySearch's data, never the page's links.
+// Anywhere else, nothing. [{ memorialId, slug, title }].
 async function batchFagLinks(root, href, d) {
   const out = [];
   const add = (m, name) => {
@@ -179,26 +192,45 @@ async function batchFagLinks(root, href, d) {
     }
   };
   let person = null;
-  const here = fagParseMemorial(href);
-  if (here) {
-    person = batchFirstLine(ancById(root, 'bio-name')) || null;
-    add(here, person);
+  let host = '';
+  try {
+    host = new URL(href).hostname;
+  } catch (e) {
+    /* no host: nothing below matches */
   }
-  for (const a of ancElements(root, (e) => ancTag(e) === 'A' && /\/memorial\//.test(e.getAttribute('href') || ''))) {
+  let scope = null; // the part of the page whose links are its memorials
+  let sectionFound = true;
+  let slowDown = false;
+  if (/(^|\.)findagrave\.com$/i.test(host)) {
+    scope = root;
+    const here = fagParseMemorial(href);
+    if (here) {
+      person = batchFirstLine(ancById(root, 'bio-name')) || null;
+      add(here, person);
+    }
+  } else if (BATCH_ANC_HOST_RE.test(host)) {
+    scope = ancById(root, 'sourcesSection');
+    sectionFound = !!scope;
+  }
+  for (const a of scope ? ancElements(scope, (e) => ancTag(e) === 'A' && /\/memorial\//.test(e.getAttribute('href') || '')) : []) {
     add(fagParseMemorial(a.getAttribute('href'), href), batchFirstLine(a));
   }
-  if (d && batchFsPersonPid(href)) {
-    try {
-      const j = await fsJson('/platform/tree/persons/' + batchFsPersonPid(href) + '/sources', 'application/x-fs-v1+json', d);
-      for (const s of (j && j.sourceDescriptions) || []) {
-        add(fagParseMemorial(String((s && s.about) || '')), s && s.titles && s.titles[0] && s.titles[0].value);
+  if (BATCH_FS_HOST_RE.test(host)) {
+    sectionFound = !!batchFsPersonPid(href);
+    if (d && sectionFound) {
+      try {
+        const j = await fsJson('/platform/tree/persons/' + batchFsPersonPid(href) + '/sources', 'application/x-fs-v1+json', d);
+        for (const s of (j && j.sourceDescriptions) || []) {
+          add(fagParseMemorial(String((s && s.about) || '')), s && s.titles && s.titles[0] && s.titles[0].value);
+        }
+      } catch (e) {
+        if (e.slowDown) slowDown = true;
+        else return { ok: false, error: e.message };
       }
-    } catch (e) {
-      /* the page's own links still count */
     }
   }
   if (!person) person = batchFirstLine(ancElements(root, (e) => ancTag(e) === 'H1')[0]) || null;
-  return { ok: true, person, sources: out, total: out.length, other: 0 };
+  return { ok: true, person, sources: out, total: out.length, other: 0, sectionFound, slowDown };
 }
 
 // Who is signed in to Newspapers.com, from the page's own data (`text`, the

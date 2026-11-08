@@ -1180,3 +1180,62 @@ test('Codex 4504189301: without Web Locks, two imports overlapping in one window
   await settle();
   assert.deepStrictEqual(Object.keys(p.storage.ancBatchLedger.items).sort(), ['90001:1000001', '90002:2000001']);
 });
+
+// ── PR #224 Codex 4504294846: a slow-down while the page is read ────────────
+
+test('Codex 4504294846: FamilySearch saying slow down to the image check stops the run before the capture', async () => {
+  const calls = [];
+  const p = await openPanel({ url: ark('HRT1-CEN2'), storage: Object.assign({}, ON,
+    { fsBatchLedger: fsLedger(['HRT1-CEN1', 'HRT1-DTH1']) }),
+  respond: familysearchSite(calls, (u) => (/dist\.jpg$/.test(u) ? 429 : null)) });
+  quick(p);
+  // The panel's own read of the page it opened on asked too; count from Start.
+  const before = calls.filter((c) => /dist\.jpg$/.test(c.url)).length;
+  await start(p, 'fs');
+  assert.strictEqual(p.written.length, 0, 'a capture went on after the slow down');
+  assert.deepStrictEqual(p.navigations.map((n) => n.url), [ark('HRT1-CEN1')]);
+  assert.strictEqual(calls.filter((c) => /dist\.jpg$/.test(c.url)).length - before, 1, 'the image was asked for again');
+  const L = p.storage.fsBatchLedger;
+  assert.strictEqual(L.items['HRT1-CEN1'].state, 'queued');
+  assert.ok(L.pacing.resumeAt > Date.now() + 25 * 60 * 1000);
+  assert.match(p.batchEl('fs-status').textContent, /^Stopped: FamilySearch asked us to slow down while the page was being read/);
+});
+
+test('Codex 4504294846: Newspapers.com saying slow down to the clippings list on the page stops the run before the page download', async () => {
+  const lists = [{ ok: true, user: ME.username, more: false, nextCursor: null, clippings: [listed(101, 'Obituary', NP_A)] }];
+  let pageDownloads = 0;
+  const respond = npPages({ [NP_A]: () => Object.assign(npInfo(npClip(101, 'Obituary', NP_A)),
+    { listError: 'Newspapers.com would not send the list of clippings on this page (HTTP 429)' }) })(lists);
+  const p = await openPanel({ url: NP_A, respond, storage: ON, fullPage: () => { pageDownloads++; return {}; } });
+  quick(p);
+  await start(p, 'np');
+  assert.strictEqual(pageDownloads, 0);
+  assert.strictEqual(p.written.length, 0);
+  assert.ok(p.storage.npBatchLedger.pacing.resumeAt > Date.now() + 25 * 60 * 1000);
+});
+
+test('Codex 4504294846: a slow-down while a person\'s sources are read holds that site\'s batch back, and queues nothing', async () => {
+  const person = 'https://www.familysearch.org/tree/person/details/KWHR-T01';
+  const p = await openPanel({ url: person, storage: ON, respond: (msg) => (msg.action === 'familysearchPersonSources'
+    ? { ok: false, slowDown: true, error: 'FamilySearch asked us to slow down (HTTP 429). Wait a few minutes, then press Capture again' }
+    : msg.action === 'prefill' ? { ok: true, prefill: { url: person, title: 'A person', people: [] } } : { ok: false }) });
+  await p.batchEl('fs-page').fire('click');
+  await settle();
+  const L = p.storage.fsBatchLedger;
+  assert.ok(L && L.pacing.resumeAt > Date.now() + 25 * 60 * 1000, 'no break was kept');
+  assert.strictEqual(L.order.length, 0);
+  assert.match(p.batchEl('fs-status').textContent, /^FamilySearch asked us to slow down while this page was read/);
+});
+
+// ── PR #224 Codex 4504294850: a person's sources come from their sources list only
+
+test('Codex 4504294850: on a census record, "Add the sources of the person in front of you" queues nothing', async () => {
+  const BS = require('../src/lib/batch-sources.js');
+  const base = ancestrySite();
+  const p = await openPanel({ url: CALVIN, storage: ON, respond: (msg, tab) => (msg.action === 'ancestryPersonSources'
+    ? BS.batchAncPersonSources(parse(sample('ancestry-record-census')), tab.url) : base(msg, tab)) });
+  await p.batchEl('anc-page').fire('click');
+  await settle();
+  assert.ok(!p.storage.ancBatchLedger || p.storage.ancBatchLedger.order.length === 0, 'the household was queued');
+  assert.match(p.batchEl('anc-status').textContent, /^This is not a person’s page with a sources list/);
+});

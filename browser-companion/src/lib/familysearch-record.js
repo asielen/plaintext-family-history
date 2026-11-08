@@ -279,7 +279,7 @@ async function fsRecordInfo(href, d) {
     const info = fsRecordFrom(g, ids);
     return Object.assign({ ok: true }, info, { hints: fsHints(info.record, g), gedcomx: g });
   } catch (e) {
-    return { ok: false, error: e.message };
+    return { ok: false, error: e.message, slowDown: !!e.slowDown, transient: !!e.transient };
   }
 }
 
@@ -292,7 +292,9 @@ async function fsImageCheck(imageId, d) {
   try {
     link = fsImageLink(await fsJson('/ark:/61903/3:1:' + imageId, null, d, 'image'));
   } catch (e) {
-    return { ok: true, imageId, available: false, reason: e.message };
+    // `slowDown`: FamilySearch said slow down or busy even before Capture;
+    // the owner's batch downloads take their break (PR #224 Codex 4504294846).
+    return { ok: true, imageId, available: false, reason: e.message, slowDown: !!e.slowDown };
   }
   if (!link) {
     return { ok: true, imageId, available: false,
@@ -312,7 +314,8 @@ async function fsImageCheck(imageId, d) {
     /* nothing to stop */
   }
   return r.ok ? { ok: true, imageId, available: true }
-    : { ok: true, imageId, available: false, reason: fsStatusMessage(r.status, 'image', !!d.token) };
+    : { ok: true, imageId, available: false, reason: fsStatusMessage(r.status, 'image', !!d.token),
+      slowDown: r.status === 429 || r.status === 503 };
 }
 
 // The full image behind ark:/61903/3:1:{imageId}: { ok, base64, ext,

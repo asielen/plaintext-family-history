@@ -192,6 +192,11 @@
     batchDriving: false,
     // A "slow down" was met somewhere in the capture under way (noteSlowDown).
     slowDownSeen: false,
+    // A "slow down" (429/503) met while the page in the form was read -
+    // its FamilySearch image check, its Newspapers.com clippings - before
+    // any Capture. A batch takes its break on it before another request,
+    // and a capture of this page starts out knowing it (PR #224 Codex 4504294846).
+    preflightSlowDown: false,
   };
 
   const $ = (id) => document.getElementById(id);
@@ -626,6 +631,7 @@
       $('f-asset-url').value = '';
     }
     applyAncestryNote(!!prefill.ancestryImageViewer);
+    state.preflightSlowDown = false;
     state.npReading = loadNewspapers(prefill, keepNp);
     state.fsChecking = checkFamilySearch();
     updateAddressRow();
@@ -830,6 +836,9 @@
     }
     if (seq !== state.npSeq) return; // the tab moved on meanwhile; a newer read owns the state
     state.npLoading = false;
+    if (info && (info.slowDown || SLOW_DOWN_RE.test(String(info.error || info.listError || '')))) {
+      state.preflightSlowDown = true;
+    }
     if (!info || !info.ok) {
       setNewspapersMode(null);
       state.npError = (info && info.error) || 'no answer from the page';
@@ -1489,6 +1498,7 @@
       r = { ok: false, error: e.message };
     }
     if (seq !== state.fsCheckSeq) return; // the tab moved on; a newer read owns the state
+    if (r && (r.slowDown || SLOW_DOWN_RE.test(String(r.error || r.reason || '')))) state.preflightSlowDown = true;
     state.fsCheck = r && r.ok ? r : { unknown: true, error: (r && r.error) || 'no answer from the page' };
     if (r && r.ok && r.title && !state.userEdited.has('f-title')) $('f-title').value = r.title;
     restrictedImageNote(r);
@@ -2454,7 +2464,8 @@
     state.thisCaptureSigs = new Set();
 
     let outcome = null;
-    state.slowDownSeen = false;
+    // A slow-down already met reading this page is not forgotten here.
+    state.slowDownSeen = !!state.preflightSlowDown;
     try {
       // The form's details are saved with what is read from the tab: if the
       // tab is no longer on the page they were filled in for, they would not
@@ -3066,7 +3077,7 @@
       }
     }
     return resp && resp.ok
-      ? { ok: true, prefill: resp.prefill, url: tab.url }
+      ? { ok: true, prefill: resp.prefill, url: tab.url, slowDown: !!state.preflightSlowDown }
       : { ok: false, error: 'could not read the page' };
   }
 
