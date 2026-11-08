@@ -1239,3 +1239,75 @@ test('Codex 4504294850: on a census record, "Add the sources of the person in fr
   assert.ok(!p.storage.ancBatchLedger || p.storage.ancBatchLedger.order.length === 0, 'the household was queued');
   assert.match(p.batchEl('anc-status').textContent, /^This is not a person’s page with a sources list/);
 });
+
+// ── PR #224 Codex 4504415455: another window's writes survive a running batch
+
+// A batch in window A, held at its first record's details until release().
+async function heldRun(site, url, respondFor, storeExtra, gateAction, gateUrl) {
+  const sharedStore = JSON.parse(JSON.stringify(Object.assign({}, ON, storeExtra)));
+  const locks = makeLocks();
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const base = respondFor();
+  const a = await openPanel({ url, sharedStore, locks, respond: async (msg, tab) => {
+    if (msg.action === gateAction && tab.url === gateUrl) await gate;
+    return base(msg, tab);
+  } });
+  quick(a);
+  const run = a.batchEl(site + '-start').fire('click');
+  await settle();
+  return { a, run, release, sharedStore, locks };
+}
+
+test('Codex 4504415455: a "slow down" another window met during the first record holds the run, and its break is kept', async () => {
+  const calls = [];
+  const h = await heldRun('fs', ark('HRT1-CEN2'), () => familysearchSite(calls),
+    { fsBatchLedger: fsLedger(['HRT1-CEN1', 'HRT1-DTH1']) }, 'familysearchRecordInfo', ark('HRT1-CEN1'));
+  // Window B: FamilySearch says slow down while a person's sources are read.
+  const person = 'https://www.familysearch.org/tree/person/details/KWHR-T01';
+  const b = await openPanel({ url: person, sharedStore: h.sharedStore, locks: h.locks, respond: (msg) => (msg.action === 'familysearchPersonSources'
+    ? { ok: false, slowDown: true, error: 'FamilySearch asked us to slow down (HTTP 429). Wait a few minutes' }
+    : msg.action === 'prefill' ? { ok: true, prefill: { url: person, title: 'A person', people: [] } } : { ok: false }) });
+  await b.batchEl('fs-page').fire('click');
+  await settle();
+  const owed = h.sharedStore.fsBatchLedger.pacing.resumeAt;
+  assert.ok(owed > Date.now() + 25 * 60 * 1000);
+  h.release();
+  await settle();
+  await settle();
+  assert.match(h.a.batchEl('fs-status').textContent, /asked us to slow down, so the batch waits/);
+  await h.a.batchEl('fs-pause').fire('click');
+  await h.run;
+  await settle();
+  assert.deepStrictEqual(h.a.navigations.map((n) => n.url), [ark('HRT1-CEN1')]);
+  assert.strictEqual(h.sharedStore.fsBatchLedger.pacing.resumeAt, owed);
+  assert.strictEqual(h.sharedStore.fsBatchLedger.items['HRT1-DTH1'].state, 'queued');
+});
+
+test('Codex 4504415455: "Try the set-aside ones again" pressed in another window during a run is not undone', async () => {
+  const L = ancLedger([CALVIN, ETHEL]);
+  L.items['90002:2000001'].state = 'failed';
+  L.items['90002:2000001'].lastError = 'not the one queued';
+  const h = await heldRun('anc', HARRIET, () => ancestrySite(), { ancBatchLedger: L }, 'ancestryRecordInfo', CALVIN);
+  const b = await openPanel({ url: HARRIET, respond: ancestrySite(), sharedStore: h.sharedStore, locks: h.locks });
+  await b.batchEl('anc-retry').fire('click');
+  await settle();
+  assert.strictEqual(h.sharedStore.ancBatchLedger.items['90002:2000001'].state, 'queued');
+  h.release();
+  await h.run;
+  await settle();
+  assert.deepStrictEqual(h.a.navigations.map((n) => n.url), [CALVIN, ETHEL]);
+  assert.strictEqual(h.sharedStore.ancBatchLedger.items['90002:2000001'].state, 'done');
+});
+
+test('Codex 4504415455: a person another window adds to a queued record during a run is kept', async () => {
+  const h = await heldRun('anc', HARRIET, () => ancestrySite(), { ancBatchLedger: ancLedger([CALVIN]) }, 'ancestryRecordInfo', CALVIN);
+  const b = await openPanel({ url: HARRIET, respond: ancestrySite(), sharedStore: h.sharedStore, locks: h.locks });
+  await importGed(b, 'harriet.ged', gedFor('90001', '1000001', 'Harriet /Hartley/'));
+  await settle();
+  h.release();
+  await h.run;
+  await settle();
+  assert.deepStrictEqual(h.sharedStore.ancBatchLedger.items['90001:1000001'].persons, ['Harriet Hartley']);
+  assert.strictEqual(h.sharedStore.ancBatchLedger.items['90001:1000001'].state, 'done');
+});

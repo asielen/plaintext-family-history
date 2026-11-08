@@ -284,7 +284,7 @@
     // The unlocked half: merge what is stored, then write. Only ever called
     // while the ledger's lock is held.
     async function writeLedger(siteName, L) {
-      CB().mergeDone(L, await loadRaw(siteName));
+      CB().mergeStored(L, await loadRaw(siteName));
       const k = CB().SITES[siteName].storageKey;
       await new Promise((resolve, reject) => {
         try {
@@ -379,6 +379,16 @@
       if (active.stop) throw new Paused();
     }
 
+    // Before each request: fold in what another window stored (a slow-down
+    // it met, a record it changed) and take a break it recorded that is still
+    // ahead (PR #224 Codex 4504415455).
+    async function honourStoredBreak(siteName, L) {
+      CB().mergeStored(L, await loadRaw(siteName));
+      if (L.pacing && CB().isCooldown(L.pacing) && L.pacing.resumeAt > Date.now()) {
+        await sleepUntil(siteName, L, L.pacing.resumeAt, breakLabel(siteName, L.pacing.resumeReason));
+      }
+    }
+
     async function sleepUntil(siteName, L, until, label) {
       while (Date.now() < until) {
         halted();
@@ -397,6 +407,7 @@
       let pages = 0;
       while (!L.listComplete) {
         halted();
+        await honourStoredBreak('newspapers', L);
         if (++pages > CB().NP_LIST_MAX_PAGES) {
           throw new Stop('your clippings list is longer than one Start reads (' + CB().NP_LIST_MAX_PAGES * 24 +
             ' clippings); press Start again to read on from where it stopped');
@@ -419,6 +430,7 @@
           throw new Stop('could not read your clippings list: ' + why);
         }
         if (!L.user) L.user = r.user;
+        L.listAt = Date.now();
         CB().addClippings(L, r.clippings, L.user);
         const moved = r.nextCursor != null && String(r.nextCursor) !== String(L.listCursor);
         L.listComplete = !r.more || !r.clippings.length || !moved;
@@ -595,7 +607,7 @@
           return;
         }
         for (let looked = 0; ; looked++) {
-          CB().mergeDone(L, await loadRaw(siteName));
+          await honourStoredBreak(siteName, L);
           const item = CB().nextPending(L);
           if (!item) break;
           halted();
@@ -684,9 +696,8 @@
         // takes the break on a "slow down"); the same page there again on a
         // later Start sets the record aside, so it never holds up the rest.
         if (e instanceof Stop && e.atRecord) {
-          const it = L.items[item.key];
-          it.stops = (it.stops || 0) + 1;
-          if (it.stops >= CB().MAX_TRIES) CB().markSetAside(L, item.key, e.message + ' (' + it.stops + ' times)');
+          const stops = CB().markRefused(L, item.key);
+          if (stops >= CB().MAX_TRIES) CB().markSetAside(L, item.key, e.message + ' (' + stops + ' times)');
         }
         throw e;
       }
@@ -749,10 +760,9 @@
           // Stop at the first refusal, with its cause. The same record
           // refused again on a later Start is set aside instead, so one
           // record can never hold up the rest of the queue.
-          const it = L.items[item.key];
-          it.stops = (it.stops || 0) + 1;
-          if (it.stops < CB().MAX_TRIES) throw new Stop(why);
-          await setAside(siteName, L, item, why + ' (refused ' + it.stops + ' times)');
+          const stops = CB().markRefused(L, item.key);
+          if (stops < CB().MAX_TRIES) throw new Stop(why);
+          await setAside(siteName, L, item, why + ' (refused ' + stops + ' times)');
         } else if (kind === 'retry') {
           CB().markRetry(L, item.key, why);
           countFail(why);
@@ -931,6 +941,7 @@
           const { L } = await update(siteName, (L) => {
             L.listComplete = false;
             L.listCursor = 0;
+            L.listAt = Date.now();
             // Read for whoever is signed in then (content.js always asks for
             // the member signed in on the page).
             L.user = null;

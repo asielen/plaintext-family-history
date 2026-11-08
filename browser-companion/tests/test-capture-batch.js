@@ -451,3 +451,71 @@ test('Codex 4504294846: a FamilySearch "slow down" while sources are read is sai
   const n = await BS.batchFsPersonSources(FS_PERSON, { fetch: named.fetch, base: FS_PERSON, token: TOKEN });
   assert.deepStrictEqual([n.ok, n.slowDown, n.sources.length], [true, true, 2]);
 });
+
+// ── PR #224 Codex 4504415455: the whole ledger merges, no window's write lost ─
+
+test('Codex 4504415455: mergeStored never shortens or erases a stored "slow down" break', () => {
+  const now = Date.now();
+  const mine = CB.newLedger();
+  mine.pacing = { sinceShort: 4, shortEvery: 40, rateEvents: 0, resumeAt: now + 60e3, resumeReason: 'between' };
+  const stored = CB.newLedger();
+  stored.pacing = { sinceShort: 0, shortEvery: 33, rateEvents: 1, resumeAt: now + 30 * 60e3, resumeReason: 'ratelimit' };
+  CB.mergeStored(mine, stored);
+  assert.deepStrictEqual(mine.pacing, { sinceShort: 4, shortEvery: 40, rateEvents: 1, resumeAt: now + 30 * 60e3, resumeReason: 'ratelimit' });
+  // A run that finishes (resumeAt 0) keeps it too.
+  mine.pacing.resumeAt = 0;
+  mine.pacing.resumeReason = '';
+  CB.mergeStored(mine, stored);
+  assert.strictEqual(mine.pacing.resumeAt, now + 30 * 60e3);
+  // A longer break of its own is never cut back to the stored one.
+  mine.pacing.resumeAt = now + 4 * 3600e3;
+  mine.pacing.resumeReason = 'long';
+  CB.mergeStored(mine, stored);
+  assert.deepStrictEqual([mine.pacing.resumeAt, mine.pacing.resumeReason], [now + 4 * 3600e3, 'long']);
+  // An ordinary pause stored by another window is not a break to take.
+  const quiet = CB.newLedger();
+  quiet.pacing = { resumeAt: 1, resumeReason: '' };
+  const other = CB.newLedger();
+  other.pacing = { resumeAt: now + 60e3, resumeReason: 'between' };
+  CB.mergeStored(quiet, other);
+  assert.strictEqual(quiet.pacing.resumeAt, 1);
+});
+
+test('Codex 4504415455: an entry changed in two windows keeps the later change, whole; done stays done; people join', () => {
+  const L = CB.newLedger();
+  CB.addRecords('ancestry', L, [{ dbId: '1', recordId: '2', persons: ['Calvin Hartley'] }, { dbId: '3', recordId: '4' },
+    { dbId: '5', recordId: '6' }]);
+  const stored = JSON.parse(JSON.stringify(L));
+  // This window: 1:2 refused once, 3:4 set aside, 5:6 done.
+  CB.markRefused(L, '1:2');
+  CB.markSetAside(L, '3:4', 'not the one queued');
+  CB.markDone(L, '5:6', 'b56');
+  // The other window, later: queued 1:2 again with another person, queued
+  // the set-aside ones again, and saved 5:6 in part.
+  stored.items['1:2'].persons.push('Harriet Hartley');
+  stored.items['3:4'] = Object.assign({}, L.items['3:4']);
+  CB.requeueSetAside(stored);
+  CB.markPartial(stored, '5:6', 'b56b', 'image not saved');
+  CB.mergeStored(L, stored);
+  assert.deepStrictEqual(L.items['1:2'].persons, ['Calvin Hartley', 'Harriet Hartley']);
+  assert.strictEqual(L.items['1:2'].stops, 1, 'this window\'s refusal, the later change, is kept');
+  assert.deepStrictEqual([L.items['3:4'].state, L.items['3:4'].tries, L.items['3:4'].setAsideBefore],
+    ['queued', 0, 'not the one queued']);
+  assert.strictEqual(L.items['5:6'].state, 'done', 'done stays done');
+});
+
+test('Codex 4504415455: the clippings list progress follows the later change; both windows\' log lines are kept', () => {
+  const L = CB.newLedger();
+  Object.assign(L, { listComplete: true, listCursor: 48, user: 'HartleyResearch', listAt: 1000 });
+  L.log = ['2026-11-07T10:00:00.000Z  list read'];
+  const stored = CB.newLedger();
+  Object.assign(stored, { listComplete: false, listCursor: 0, user: null, listAt: 2000 });
+  stored.log = ['2026-11-07T10:05:00.000Z  queued again'];
+  CB.mergeStored(L, stored);
+  assert.deepStrictEqual([L.listComplete, L.listCursor, L.user], [false, 0, null]);
+  assert.deepStrictEqual(L.log, ['2026-11-07T10:00:00.000Z  list read', '2026-11-07T10:05:00.000Z  queued again']);
+  const older = CB.newLedger();
+  Object.assign(older, { listComplete: true, listCursor: 96, user: 'HartleyResearch', listAt: 1500 });
+  CB.mergeStored(L, older);
+  assert.deepStrictEqual([L.listComplete, L.listCursor], [false, 0]);
+});

@@ -198,6 +198,15 @@
     return L;
   }
 
+  // When an entry's state last changed (ms), so two windows' changes to one
+  // entry merge to the later one (mergeStored). Strictly increasing within a
+  // window, so two changes in one millisecond keep their order.
+  let lastStamp = 0;
+  function stamp(it, now) {
+    lastStamp = Math.max(now || Date.now(), lastStamp + 1);
+    it.stateAt = lastStamp;
+  }
+
   function logEvent(L, text, now) {
     L.log.push(new Date(now || Date.now()).toISOString() + '  ' + text);
     if (L.log.length > 200) L.log.splice(0, L.log.length - 200);
@@ -231,6 +240,7 @@
         state: 'queued',
         tries: 0,
       });
+      stamp(L.items[key]);
       L.order.push(key);
       added++;
     }
@@ -266,6 +276,7 @@
         state: 'queued',
         tries: 0,
       };
+      stamp(L.items[key]);
       added++;
     }
     sortClippings(L);
@@ -293,6 +304,7 @@
     const it = L.items[key];
     if (!it) return;
     it.state = 'done';
+    stamp(it, now);
     it.bundle = bundle;
     it.doneAt = new Date(now || Date.now()).toISOString();
     it.lastError = null;
@@ -316,6 +328,7 @@
     if (!it) return;
     it.tries = (it.tries || 0) + 1;
     it.state = 'failed';
+    stamp(it, now);
     it.lastError = String(reason || '').slice(0, 400);
     logEvent(L, 'SET ASIDE ' + key + ': ' + it.lastError, now);
   }
@@ -332,6 +345,7 @@
     }
     it.tries = (it.tries || 0) + 1;
     it.state = 'retry';
+    stamp(it, now);
     it.lastError = String(reason || '').slice(0, 400);
     L.order = L.order.filter((k) => k !== key).concat([key]);
     logEvent(L, 'try again later ' + key + ': ' + it.lastError, now);
@@ -350,6 +364,7 @@
       return;
     }
     it.state = 'partial';
+    stamp(it, now);
     it.bundle = bundle;
     it.note = note || 'saved without all of its image or photos';
     it.lastError = null;
@@ -357,12 +372,13 @@
   }
 
   // At Start: the records saved in part are tried again.
-  function requeuePartials(L) {
+  function requeuePartials(L, now) {
     let n = 0;
     for (const key of L.order) {
       const it = L.items[key];
       if (it && it.state === 'partial') {
         it.state = 'queued';
+        stamp(it, now);
         it.again = true;
         n++;
       }
@@ -378,6 +394,7 @@
       const it = L.items[key];
       if (!it || it.state !== 'failed') continue;
       it.state = 'queued';
+      stamp(it, now);
       it.tries = 0;
       it.stops = 0;
       it.setAsideBefore = it.lastError || null;
@@ -388,12 +405,42 @@
     return n;
   }
 
-  // Fold in what another panel window stored meanwhile (a record captured or
-  // queued there): new entries are added, a done one stays done.
-  function mergeDone(L, stored) {
-    if (!stored || !stored.items) return 0;
+  // A refusal counted against one record (src/batch.js): stamped like any
+  // other change, so another window's later change to it is not lost.
+  function markRefused(L, key, now) {
+    const it = L.items[key];
+    if (!it) return 0;
+    it.stops = (it.stops || 0) + 1;
+    stamp(it, now);
+    return it.stops;
+  }
+
+  // What says where an entry stands; it moves as one, from the window that
+  // changed it last.
+  const STATE_FIELDS = ['state', 'stateAt', 'tries', 'stops', 'bundle', 'doneAt', 'lastError', 'note',
+    'partialTries', 'again', 'imageKey', 'setAsideBefore'];
+  const isCooldown = (p) => !!p && (p.resumeReason === 'ratelimit' || p.resumeReason === 'long');
+
+  // Fold the ledger another panel window stored (`stored`) into this one (`L`)
+  // so that no write of the other window is lost (PR #224 Codex 4504415455).
+  // The rule for each part:
+  //   items     an entry only one side has is kept; for one both have, a done
+  //             one stays done, else the later change (stateAt) wins its whole
+  //             state (state, tries, stops, partialTries, note, bundle, …);
+  //             people are joined; a missing title or address is filled;
+  //   order     entries only the other side has go at the end;
+  //   pacing    a stored "slow down" break (ratelimit / long) is never
+  //             shortened or erased: the later deadline wins, its reason
+  //             with it; the count of slow-downs in a row is the larger;
+  //             the short-break rhythm (sinceShort, shortEvery) is this run's;
+  //   list      Newspapers.com's list progress (listComplete, listCursor,
+  //             user) from whichever side changed it last (listAt);
+  //   log       both sides' lines, in time order, the last 200.
+  // Answers how many entries changed.
+  function mergeStored(L, stored) {
+    if (!stored || typeof stored !== 'object') return 0;
     let n = 0;
-    for (const key of Object.keys(stored.items)) {
+    for (const key of Object.keys(stored.items || {})) {
       const s = stored.items[key];
       if (!s) continue;
       const mine = L.items[key];
@@ -401,13 +448,47 @@
         L.items[key] = Object.assign({}, s);
         L.order.push(key);
         n++;
-      } else if (s.state === 'done' && mine.state !== 'done') {
-        L.items[key] = Object.assign({}, mine, s);
+        continue;
+      }
+      if (Array.isArray(s.persons)) {
+        mine.persons = Array.isArray(mine.persons) ? mine.persons : [];
+        for (const p of s.persons) if (p && mine.persons.indexOf(p) < 0) mine.persons.push(p);
+      }
+      if (!mine.title && s.title) mine.title = s.title;
+      if (!mine.url && s.url) mine.url = s.url;
+      const theirs = s.state === 'done' && mine.state !== 'done' ||
+        (!(mine.state === 'done' && s.state !== 'done') && (s.stateAt || 0) > (mine.stateAt || 0));
+      if (theirs) {
+        for (const f of STATE_FIELDS) {
+          if (f in s) mine[f] = s[f];
+          else delete mine[f];
+        }
         n++;
       }
     }
+    const sp = stored.pacing;
+    if (sp && typeof sp === 'object') {
+      if (!L.pacing || typeof L.pacing !== 'object') L.pacing = Object.assign({}, sp);
+      else {
+        if (isCooldown(sp) && (sp.resumeAt || 0) > (L.pacing.resumeAt || 0)) {
+          L.pacing.resumeAt = sp.resumeAt;
+          L.pacing.resumeReason = sp.resumeReason;
+        }
+        L.pacing.rateEvents = Math.max(L.pacing.rateEvents || 0, sp.rateEvents || 0);
+      }
+    }
+    if ((stored.listAt || 0) > (L.listAt || 0)) {
+      for (const f of ['listComplete', 'listCursor', 'user', 'listAt']) if (f in stored) L[f] = stored[f];
+    }
+    if (Array.isArray(stored.log) && stored.log.length) {
+      const lines = new Set(L.log || []);
+      const added = stored.log.filter((l) => !lines.has(l));
+      if (added.length) L.log = (L.log || []).concat(added).sort().slice(-200);
+    }
     return n;
   }
+  // The name earlier code used.
+  const mergeDone = mergeStored;
 
   // `retry` is the archive copy's word for "failed once, try again": queued.
   function nextPending(L) {
@@ -593,8 +674,8 @@
   const api = {
     PACING, SITES, NP_LIST_MAX_PAGES, MAX_PER_RUN, MAX_TRIES, MAX_PARTIAL, MAX_FAILS_IN_A_ROW,
     between, npClipUrl, newLedger, repair, logEvent, addRecords, addClippings,
-    markDone, markHeld, markSetAside, markRetry, markPartial, requeuePartials, requeueSetAside,
-    mergeDone, nextPending, counts,
+    markDone, markHeld, markSetAside, markRetry, markPartial, markRefused, requeuePartials, requeueSetAside,
+    mergeStored, mergeDone, isCooldown, nextPending, counts,
     ensurePacing, planRateLimit, planAfterCapture, classifyError,
     parseGedcom, parseMemorialList, ledgerFileBody,
   };
