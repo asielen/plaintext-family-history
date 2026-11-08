@@ -9487,5 +9487,119 @@ class MergedDuplicatePhotoTests(_Base):
         self.assertTrue(self._published(), res['messages'])
 
 
+@unittest.skipUnless(site._PIL_AVAILABLE, 'Pillow not installed')
+class WithheldSourcePathFormTests(_Base):
+    """A private source's picture stays out however its `files:` entry spells
+    the path (#236 delta audit).
+
+    The source check compares the file itself, not the text a record wrote:
+    `photos/./x`, `photos/sub/../x` and a path through a junction or link
+    all name the file a homepage embed resolves to, and a check that compared
+    the strings let each of them publish."""
+
+    def _make_link(self, link: Path, target: Path) -> None:
+        try:
+            if os.name == 'nt':
+                import _winapi
+                _winapi.CreateJunction(str(target), str(link))
+            else:
+                os.symlink(target, link, target_is_directory=True)
+        except (OSError, AttributeError, NotImplementedError) as e:
+            self.skipTest(f'cannot make a junction or link here: {e}')
+
+    def _seed(self, stored: str, embed: str, picture: Path) -> None:
+        from PIL import Image
+        picture.parent.mkdir(parents=True, exist_ok=True)
+        Image.new('RGB', (60, 40), (10, 20, 30)).save(picture)
+        (self.archive_root / 'fha.yaml').write_text('roots:\n  photos: photos\n', encoding='utf-8')
+        home = self.archive_root / 'notes' / 'home.md'
+        home.parent.mkdir(parents=True, exist_ok=True)
+        home.write_text(f'Welcome.\n\n![[{embed}|A private snapshot]]\n', encoding='utf-8')
+        self._seed_person('p-bbbbbbbbbb', 'Grandpa Gone')
+        self._seed_source('s-9999999999', 'Private snapshot', source_type='photo',
+                          publication_ok=0)
+        self.conn.execute('INSERT INTO source_files(source_id, path, role) VALUES (?,?,?)',
+                          ('s-9999999999', stored, 'front'))
+
+    def _fresh_catalog(self) -> None:
+        import photoindex
+        orig = photoindex._run_exiftool
+        photoindex._run_exiftool = lambda paths: [{'SourceFile': str(p)} for p in paths]
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                photoindex.run_scan(self.archive_root, {'roots': {'photos': 'photos'}})
+        finally:
+            photoindex._run_exiftool = orig
+        far_future = time.time() + 10_000
+        os.utime(self.archive_root / '.cache' / 'photos.sqlite', (far_future, far_future))
+
+    def _assert_withheld(self, stem: str) -> None:
+        res = self._run(linked=False)
+        media = self.out_dir / 'media'
+        built = [p.name for p in media.rglob('*') if p.is_file()] if media.is_dir() else []
+        self.assertEqual([n for n in built if n.startswith(stem + '_')], [], res['messages'])
+        self.assertNotIn(stem + '_', self._read('index.html'))
+
+    def _dot(self, *, fresh):
+        self._seed('photos/./reunion.png', 'reunion.png',
+                   self.archive_root / 'photos' / 'reunion.png')
+        if fresh:
+            self._fresh_catalog()
+        self._assert_withheld('reunion')
+
+    def _dotdot(self, *, fresh):
+        (self.archive_root / 'photos' / 'sub').mkdir(parents=True)
+        self._seed('photos/sub/../reunion.png', 'reunion.png',
+                   self.archive_root / 'photos' / 'reunion.png')
+        if fresh:
+            self._fresh_catalog()
+        self._assert_withheld('reunion')
+
+    def _junction(self, *, fresh):
+        import shutil
+        outside = self.archive_root.parent / (self.archive_root.name + '-elsewhere')
+        outside.mkdir()
+        self.addCleanup(shutil.rmtree, outside, True)
+        (self.archive_root / 'photos').mkdir(parents=True)
+        self._make_link(self.archive_root / 'photos' / 'jn', outside)
+        # Unlink the junction before the temp folder is removed, so the
+        # cleanup never walks through it into the folder it points at.
+        self.addCleanup(lambda: os.path.lexists(self.archive_root / 'photos' / 'jn')
+                        and (os.rmdir if os.name == 'nt' else os.unlink)(
+                            self.archive_root / 'photos' / 'jn'))
+        self._seed('photos/jn/inner.png', 'photos/jn/inner.png', outside / 'inner.png')
+        if fresh:
+            self._fresh_catalog()
+        self._assert_withheld('inner')
+
+    def test_a_dot_in_the_files_entry_with_no_catalog(self):
+        self._dot(fresh=False)
+
+    def test_a_dot_in_the_files_entry_with_a_fresh_catalog(self):
+        self._dot(fresh=True)
+
+    def test_a_dotdot_in_the_files_entry_with_no_catalog(self):
+        self._dotdot(fresh=False)
+
+    def test_a_dotdot_in_the_files_entry_with_a_fresh_catalog(self):
+        self._dotdot(fresh=True)
+
+    def test_a_files_entry_through_a_junction_with_no_catalog(self):
+        self._junction(fresh=False)
+
+    def test_a_files_entry_through_a_junction_with_a_fresh_catalog(self):
+        self._junction(fresh=True)
+
+    def test_an_entry_that_cannot_be_checked_holds_back_the_same_file_name(self):
+        # The private source's file sits on a drive that is not plugged in,
+        # so nothing can prove the picture on disk is a different file.
+        self._seed('documents/elsewhere/reunion.png', 'reunion.png',
+                   self.archive_root / 'photos' / 'reunion.png')
+        (self.archive_root / 'fha.yaml').write_text(
+            'roots:\n  photos: photos\n  documents: Z:/unplugged-drive/documents\n',
+            encoding='utf-8')
+        self._assert_withheld('reunion')
+
+
 if __name__ == '__main__':
     unittest.main()

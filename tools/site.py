@@ -215,6 +215,7 @@ import html
 import json
 import math
 import os
+import posixpath
 import re
 import shutil
 import sqlite3
@@ -3480,9 +3481,9 @@ class _SiteBuilder:
         # out-of-date catalog has no row for it at all (added, moved or
         # renamed since the last scan), so the "checked" was nothing.
         self._gate_last_unknown = False
-        # `source_files` path -> owning sources, read once on first use by
-        # `_file_has_withheld_source`.
-        self._source_file_owner_map: dict[str, set[str]] | None = None
+        # The files of the sources this snapshot withholds, read once on first
+        # use by `_file_has_withheld_source` (see `_withheld_source_files`).
+        self._withheld_files_cache: tuple[set[str], set[str], set[str]] | None = None
         # discoveries.md is read for both the discoveries page and the home
         # teaser; memoize so the file is parsed once per build.
         self._discoveries: tuple[str, list[str]] | None = None
@@ -6697,14 +6698,28 @@ class _SiteBuilder:
         Read from the main index's `source_files` - which `fha index` rebuilds
         from the source records themselves, so it needs no photo catalog and
         cannot be out of date the way the catalog's `SOURCE:` keywords can.
-        The file is matched under every root alias it sits beneath, and by
-        archive-relative path, ignoring case so a reference typed with
-        different capitals on a case-blind disk still finds its source. When
-        the index will not answer, the picture is held back: restricted
-        material must never reach public output (SPEC §21), and this is
-        enrichment, not something the build needs to finish."""
-        owners = self._source_files_owners()
-        if owners is None:
+
+        Compared by the FILE, not by how a record spells it: both sides are
+        reduced to the canonical on-disk path (`_canonical_file`), so a
+        `files:` entry written through a junction or link, or as
+        `photos/./x.jpg` or `photos/sub/../x.jpg`, still names the file a hero
+        or embed resolves to (#236 delta audit). The spellings themselves are
+        kept as a second key - normalised, lowercased, under every root alias
+        - in case the canonical form cannot be taken. A withheld source's
+        entry that cannot be checked at all (its root is unplugged, the file
+        is not where it says) holds back any picture with the same file name:
+        nothing proves it is a different file. And when the index will not
+        answer, every picture is held back. Restricted material must never
+        reach public output (SPEC §21), and this is enrichment, not something
+        the build needs to finish."""
+        withheld = self._withheld_source_files()
+        if withheld is None:
+            return True
+        canon_keys, alias_keys, unchecked_names = withheld
+        canon = self._canonical_file(disk)
+        if canon is not None and canon in canon_keys:
+            return True
+        if disk.name.lower() in unchecked_names:
             return True
         keys = set()
         for alias in ASSET_ROOT_ALIASES:
@@ -6718,26 +6733,54 @@ class _SiteBuilder:
             keys.add(disk.resolve().relative_to(self.archive_root.resolve()).as_posix().lower())
         except (OSError, ValueError):
             pass
-        return any(sid not in self.source_pages
-                   for k in keys for sid in owners.get(k, ()))
+        return not keys.isdisjoint(alias_keys)
 
-    def _source_files_owners(self) -> dict[str, set[str]] | None:
-        """Lowercased `source_files` path -> the lowercased ids of the sources
-        it is attached to. Read once per build (the lookup runs per picture);
-        None if the index will not answer."""
-        if self._source_file_owner_map is None:
+    @staticmethod
+    def _canonical_file(path: Path) -> str | None:
+        """The one spelling of an existing file: links and junctions followed,
+        `.` and `..` gone, case folded where the disk ignores case. None when
+        the file is not there to ask."""
+        try:
+            real = Path(path).resolve(strict=True)
+        except (OSError, RuntimeError):
+            return None
+        return os.path.normcase(str(real))
+
+    def _withheld_source_files(self):
+        """The files attached to sources this snapshot withholds, three ways:
+        canonical on-disk paths, normalised lowercased stored spellings, and
+        the lowercased file names of entries that could not be checked.
+
+        Only withheld sources' rows are resolved - usually a handful - so the
+        filesystem is asked a few times per build, not once per attached file.
+        Read once per build; None if the index will not answer."""
+        if self._withheld_files_cache is None:
             try:
                 rows = self.conn.execute(
                     'SELECT source_id, path FROM source_files').fetchall()
             except sqlite3.DatabaseError:
                 return None
-            owners: dict[str, set[str]] = {}
+            canon_keys: set[str] = set()
+            alias_keys: set[str] = set()
+            unchecked_names: set[str] = set()
             for r in rows:
-                if r['path'] and r['source_id']:
-                    owners.setdefault(str(r['path']).replace('\\', '/').lower(),
-                                      set()).add(str(r['source_id']).lower())
-            self._source_file_owner_map = owners
-        return self._source_file_owner_map
+                stored, sid = r['path'], r['source_id']
+                if not stored or not sid or normalize_id(str(sid)) in self.source_pages:
+                    continue
+                spelled = posixpath.normpath(str(stored).replace('\\', '/'))
+                alias_keys.add(spelled.lower())
+                canon = None
+                try:
+                    canon = self._canonical_file(
+                        resolve_path(spelled, self.fha_config, self.archive_root))
+                except Exception:  # noqa: BLE001 - a root that will not resolve
+                    canon = None
+                if canon is not None:
+                    canon_keys.add(canon)
+                else:
+                    unchecked_names.add(posixpath.basename(spelled).lower())
+            self._withheld_files_cache = (canon_keys, alias_keys, unchecked_names)
+        return self._withheld_files_cache
 
     def _catalog_path_for_disk(self, disk: Path) -> str | None:
         """The catalog-stored path (if any) that names the file at `disk`. Tries
