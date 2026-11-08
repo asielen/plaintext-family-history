@@ -9601,5 +9601,106 @@ class WithheldSourcePathFormTests(_Base):
         self._assert_withheld('reunion')
 
 
+@unittest.skipUnless(site._PIL_AVAILABLE, 'Pillow not installed')
+class SameNameHoldIsExplainedTests(_Base):
+    """A photo that is fine to share, held back only because a private
+    source lists a missing file of the same name, says so - and names the fix
+    (#236 delta audit; AGENTS.md next-step rule).
+
+    The hold itself is the SPEC §21 fail-safe: nothing proves the two files
+    are different. What it must not be is silent, or the generic "matched no
+    publishable photo", which leaves the owner nowhere to go. And the message
+    is about a source the site keeps private, so it names the two paths and
+    nothing else about that source."""
+
+    TITLE = 'Zelda Quill private album'
+
+    def _seed(self, kind, name='reunion.png'):
+        from PIL import Image
+        img = self.archive_root / 'photos' / 'other' / name
+        img.parent.mkdir(parents=True, exist_ok=True)
+        Image.new('RGB', (60, 40), (10, 20, 30)).save(img)
+        cfg = 'roots:\n  photos: photos\n'
+        if kind == 'hero':
+            cfg += f'site:\n  hero: photos/other/{name}\n'
+        (self.archive_root / 'fha.yaml').write_text(cfg, encoding='utf-8')
+        if kind == 'embed':
+            home = self.archive_root / 'notes' / 'home.md'
+            home.parent.mkdir(parents=True, exist_ok=True)
+            home.write_text(f'Welcome.\n\n![[photos/other/{name}|The reunion]]\n',
+                            encoding='utf-8')
+        self._seed_person('p-bbbbbbbbbb', 'Grandpa Gone')
+        # The private source: its one file is not where it says.
+        self._seed_source('s-9999999999', self.TITLE, source_type='photo', publication_ok=0,
+                          citation=self.TITLE)
+        self.conn.execute('INSERT INTO source_files(source_id, path, role) VALUES (?,?,?)',
+                          ('s-9999999999', 'photos/1895/reunion.png', 'front'))
+        if kind == 'strip':
+            pconn = sqlite3.connect(str(self.archive_root / '.cache' / 'photos.sqlite'))
+            pconn.executescript(PHOTOS_DDL)
+            pconn.execute('INSERT INTO photos(path, group_id, is_primary, caption) VALUES (?,?,?,?)',
+                          (f'photos/other/{name}', 'g1', 1, ''))
+            pconn.execute('INSERT INTO photo_people(path, person_ref, via) VALUES (?,?,?)',
+                          (f'photos/other/{name}', 'p-bbbbbbbbbb', 'pid-keyword'))
+            pconn.commit()
+            pconn.close()
+            db = self.archive_root / '.cache' / 'photos.sqlite'
+            far_future = time.time() + 10_000
+            os.utime(db, (far_future, far_future))
+            write_path_manifest(
+                photoindex_manifest_path(self.archive_root),
+                {path_to_alias(img, 'photos', {}, self.archive_root): img.stat().st_mtime,
+                 **photoindex_record_manifest(self.archive_root)})
+
+    def _published(self, stem):
+        media = self.out_dir / 'media'
+        return [p.name for p in media.rglob('*')
+                if p.is_file() and p.name.startswith(stem + '_')] if media.is_dir() else []
+
+    def _check_explained(self, kind):
+        self._seed(kind)
+        res = self._run(linked=False)
+        # Held back, as before.
+        self.assertEqual(self._published('reunion'), [], res['messages'])
+        # One message, naming the picture, the missing path, and the fix.
+        said = [m for m in res['messages'] if 'left out of the site' in m]
+        self.assertEqual(len(said), 1, res['messages'])
+        self.assertIn('photos/other/reunion.png', said[0])
+        self.assertIn('photos/1895/reunion.png', said[0])
+        self.assertIn('same name', said[0])
+        self.assertIn('fha index', said[0])
+        self.assertIn('fha site', said[0])
+        # Not the vague line as well.
+        self.assertFalse([m for m in res['messages'] if 'matched no publishable photo' in m],
+                         res['messages'])
+        # Nothing about the private source: not in a message, not in any file.
+        for m in res['messages']:
+            self.assertNotIn(self.TITLE, m)
+            self.assertNotIn('9999999999', m)
+        for f in self.out_dir.rglob('*'):
+            if f.is_file() and f.suffix in ('.html', '.json', '.js', '.css', '.txt'):
+                text = f.read_text(encoding='utf-8', errors='replace')
+                self.assertNotIn(self.TITLE, text, f)
+                self.assertNotIn('left out of the site', text, f)
+
+    def test_a_hero_held_back_by_a_same_name_file_says_why(self):
+        self._check_explained('hero')
+
+    def test_an_embed_held_back_by_a_same_name_file_says_why(self):
+        self._check_explained('embed')
+
+    def test_a_strip_photo_held_back_by_a_same_name_file_says_why(self):
+        self._check_explained('strip')
+        self.assertNotIn('reunion', self._read('persons/p-bbbbbbbbbb.html'))
+
+    def test_a_differently_named_photo_still_publishes(self):
+        # The control: the fail-safe only reaches a picture of the same name.
+        self._seed('embed', name='picnic.png')
+        res = self._run(linked=False)
+        self.assertTrue(self._published('picnic'), res['messages'])
+        self.assertFalse([m for m in res['messages'] if 'left out of the site' in m],
+                         res['messages'])
+
+
 if __name__ == '__main__':
     unittest.main()

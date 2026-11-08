@@ -3484,7 +3484,14 @@ class _SiteBuilder:
         self._gate_last_unknown = False
         # The files of the sources this snapshot withholds, read once on first
         # use by `_file_has_withheld_source` (see `_withheld_source_files`).
-        self._withheld_files_cache: tuple[set[str], set[str], set[str]] | None = None
+        self._withheld_files_cache: tuple[set[str], set[str], dict[str, set[str]]] | None = None
+        # The pictures already named in a "left out: same file name" message,
+        # so each is explained once per build however many pages ask for it;
+        # and whether the picture `_resolve_image_source` just refused was
+        # refused for that reason, so its caller does not add a second, vaguer
+        # "matched no publishable photo" line for the same picture.
+        self._same_name_explained: set[str] = set()
+        self._last_hold_explained = False
         # discoveries.md is read for both the discoveries page and the home
         # teaser; memoize so the file is parsed once per build.
         self._discoveries: tuple[str, list[str]] | None = None
@@ -6629,6 +6636,7 @@ class _SiteBuilder:
         photo's source from the `SOURCE:` keyword in the file, which may be
         missing or out of date; the main index's `source_files` is not (#236
         audit)."""
+        self._last_hold_explained = False
         found = self._find_image_source(ref)
         if found is None or self.linked:
             return found
@@ -6720,7 +6728,9 @@ class _SiteBuilder:
         canon = self._canonical_file(disk)
         if canon is not None and canon in canon_keys:
             return True
-        if disk.name.lower() in unchecked_names:
+        unchecked = unchecked_names.get(disk.name.lower())
+        if unchecked:
+            self._explain_same_name_hold(disk, unchecked)
             return True
         keys = set()
         for alias in ASSET_ROOT_ALIASES:
@@ -6735,6 +6745,46 @@ class _SiteBuilder:
         except (OSError, ValueError):
             pass
         return not keys.isdisjoint(alias_keys)
+
+    def _explain_same_name_hold(self, disk: Path, stored: set[str]) -> None:
+        """Tell the researcher, once per picture, why a photo that is itself
+        fine to share was left out: a source the site keeps private lists a
+        file of the same name that cannot be found, so the two cannot be told
+        apart (`_file_has_withheld_source`). Without this the picture just
+        vanished from a strip, or the hero and embeds said only "matched no
+        publishable photo" - a dead end. The next-step rule: name what went
+        wrong and the fix.
+
+        Names the picture and the path the record wrote, and nothing else
+        about that source - not its title, id or contents - since the
+        message is about something the shared site is keeping private. It goes
+        to the build's messages (printed by `fha site`), never into a page."""
+        self._last_hold_explained = True
+        shown = self._display_path(disk)
+        if shown in self._same_name_explained:
+            return
+        self._same_name_explained.add(shown)
+        listed = ', '.join(sorted(stored))
+        self.messages.append(
+            f'WARNING: {shown} was left out of the site: a source this site keeps '
+            f'private lists a file of the same name, {listed}, that can\'t be found, '
+            'so the two can\'t be told apart. Reconnect the drive or fix that path, '
+            'then run `fha index` and `fha site` again.')
+
+    def _display_path(self, disk: Path) -> str:
+        """A file's path the way the archive writes it (`photos/1950/x.jpg`),
+        falling back to its archive-relative path, then its name."""
+        for alias in ASSET_ROOT_ALIASES:
+            try:
+                a = path_to_alias(disk, alias, self.fha_config, self.archive_root)
+            except Exception:  # noqa: BLE001
+                continue
+            if a.startswith(alias + '/'):
+                return a
+        try:
+            return disk.resolve().relative_to(self.archive_root.resolve()).as_posix()
+        except (OSError, ValueError):
+            return disk.name
 
     @staticmethod
     def _canonical_file(path: Path) -> str | None:
@@ -6763,7 +6813,7 @@ class _SiteBuilder:
                 return None
             canon_keys: set[str] = set()
             alias_keys: set[str] = set()
-            unchecked_names: set[str] = set()
+            unchecked_names: dict[str, set[str]] = {}
             for r in rows:
                 stored, sid = r['path'], r['source_id']
                 if not stored or not sid or normalize_id(str(sid)) in self.source_pages:
@@ -6779,7 +6829,8 @@ class _SiteBuilder:
                 if canon is not None:
                     canon_keys.add(canon)
                 else:
-                    unchecked_names.add(posixpath.basename(spelled).lower())
+                    unchecked_names.setdefault(
+                        posixpath.basename(spelled).lower(), set()).add(spelled)
             self._withheld_files_cache = (canon_keys, alias_keys, unchecked_names)
         return self._withheld_files_cache
 
@@ -6851,8 +6902,9 @@ class _SiteBuilder:
             return None
         resolved = self._resolve_image_source(ref)
         if resolved is None:
-            self.messages.append(
-                f'WARNING: profile_photo for {fmt_id_display(pid)} ("{ref}") matched no photo; skipped.')
+            if not self._last_hold_explained:
+                self.messages.append(
+                    f'WARNING: profile_photo for {fmt_id_display(pid)} ("{ref}") matched no photo; skipped.')
             return None
         if self.linked:
             return resolved
@@ -6970,7 +7022,8 @@ class _SiteBuilder:
         embed TARGET is never scrubbed - it is an id/path, not prose."""
         href = self._image_href(target, page_dir, 'embeds')
         if not href:
-            self.messages.append(f'WARNING: embed {target!r} matched no publishable photo; skipped.')
+            if not self._last_hold_explained:
+                self.messages.append(f'WARNING: embed {target!r} matched no publishable photo; skipped.')
             return ''
         caption = _scrub_internal_encoding(caption) if caption else caption
         cap = _escape(caption) if caption else ''
@@ -8296,7 +8349,7 @@ class _SiteBuilder:
         hero_image = None
         if hero_ref:
             hero_image = self._image_href(hero_ref, page_dir, 'hero')
-            if not hero_image:
+            if not hero_image and not self._last_hold_explained:
                 self.messages.append(
                     f'WARNING: site.hero {hero_ref!r} matched no publishable photo; using the default banner.')
         if hero_image or hero_title or hero_tagline:
