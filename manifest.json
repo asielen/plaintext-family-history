@@ -483,14 +483,14 @@
     {
       "path": ".fha/tools/README.md",
       "category": "operating",
-      "sha256": "435a5eea6bedcee570f25b4c53677aacb6338fb53d3be2d8f517e3c952cc1125",
+      "sha256": "1e3be0d23784f527e16ab3b6662ec227221500410cfe85e83d99dc7205555797",
       "spec_version": "1.2",
       "src": "tools/README.md"
     },
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "9ac7be901cfd96f5bee3733cce954a6a6a00ff89d13eea308c7cb607b2f31e01",
+      "sha256": "f31d5c394d238c6f756f74833c1321afd0ca2b7686d090b8cd23784b8e1ec6d4",
       "spec_version": "1.2",
       "src": "tools/_lib.py"
     },
@@ -553,7 +553,7 @@
     {
       "path": ".fha/tools/claim.py",
       "category": "operating",
-      "sha256": "55e3d8d5812fdf088a9ff4d3483135b56097eb437cbf49ed665faf9ce36ca344",
+      "sha256": "6ef011d0571e97f5d94e0e86de243c56100ae657aa90877d65c5133db1c6b8f2",
       "spec_version": "1.2",
       "src": "tools/claim.py"
     },
@@ -637,7 +637,7 @@
     {
       "path": ".fha/tools/media.py",
       "category": "operating",
-      "sha256": "611a9d8f74adec6bdf1bc7d959a22d011fc92ad4b15168cd6b4e7a5500c04b9b",
+      "sha256": "a92aa1f6ae6aa8f3ef7feb94c4e1df640da1acae0f977778a3562de4f10fedcb",
       "spec_version": "1.2",
       "src": "tools/media.py"
     },
@@ -735,7 +735,7 @@
     {
       "path": ".fha/tools/site.py",
       "category": "operating",
-      "sha256": "faae338ce1a6ed21e7482f73ddb6d2d654b8b0adc47f8ff6b615cbff66f74701",
+      "sha256": "ed02db1a52da0f04127c51f26d5c619cbfa2fe2e7214838294a9f30e24961a06",
       "spec_version": "1.2",
       "src": "tools/site.py"
     },

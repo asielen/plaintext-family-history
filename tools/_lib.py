@@ -162,6 +162,7 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    write_text_exact           - its non-atomic mirror; NOT for archive records
 #    _refuse_unwritable_target  - the read-only-record refusal os.replace skips
 #    _carry_ownership           - give the temp the record's owner/group before it lands
+#    replace_with_retry         - os.replace that waits out a Windows scanner holding the file
 #    write_text_exact_atomic    - the record writer: temp + fsync + os.replace
 #    reapply_newline           - restore a record's CRLF/LF convention after a text edit
 #    yaml_inline                - single-line quoted YAML scalar (every surgical writer's rule)
@@ -3066,12 +3067,16 @@ class OriginalBackup:
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src, tmp)
-            os.replace(tmp, target)
-        except OSError as e:
+            replace_with_retry(tmp, target)
+        except BaseException as e:
+            # Any exception (a Ctrl+C during the retry wait too) drops the
+            # half-made `.part`; only an OSError becomes a refusal.
             try:
                 tmp.unlink()
             except OSError:
                 pass
+            if not isinstance(e, OSError):
+                raise
             raise BackupRefused(
                 f'refused to write to {self._label(src)}: its safety copy could '
                 f'not be made at {target} ({e}). Nothing was written to the file. '
@@ -3276,6 +3281,55 @@ def _carry_ownership(tmp_name: str, target: os.stat_result) -> None:
             continue
 
 
+# How long `replace_with_retry` waits out a file another program still holds.
+# Ten tries 0.2 s apart (about two seconds in all) is what cleared every lock in
+# the owner's real 275-claim batch (#225 follow-up); a lock that outlasts that
+# is not a scanner's quick look, and the human is better told than kept waiting.
+REPLACE_RETRY_ATTEMPTS = 10
+REPLACE_RETRY_DELAY_SECONDS = 0.2
+
+
+def _replace_retries_permission_errors() -> bool:
+    """True on Windows, the one platform whose rename can be refused by a reader.
+
+    A function rather than a bare `os.name` test at the call site so the tests
+    can ask both questions on one machine without patching `os.name` itself,
+    which every other module (pathlib, tempfile) also reads.
+    """
+    return os.name == 'nt'
+
+
+def replace_with_retry(src: str | Path, dst: str | Path) -> None:
+    """`os.replace(src, dst)`, retried while Windows says another program has the file.
+
+    WHY: on Windows a rename onto a file fails with `PermissionError` (WinError 5
+    or 32) while any other program holds it open. Antivirus and the search
+    indexer open every freshly written file for a moment to scan it, so a record
+    written twice in quick succession - a batch accepting several claims that
+    live in one census record - can find its own previous write still being
+    read. A 275-claim `fha claim` batch stopped at claim 60 on exactly this, and
+    another needed eight reruns. The lock clears in well under a second, so a
+    short bounded wait turns that into a non-event.
+
+    Only `PermissionError`, only on Windows, and only a bounded number of times.
+    On POSIX a rename is never refused because a reader has the file open, so a
+    `PermissionError` there is a real permission problem - waiting would only
+    delay the same answer. Every other error (disk full, a vanished folder) is
+    re-raised at once. After the last attempt the original `PermissionError`
+    reaches the caller unchanged, so its plain "cannot write ..." refusal reads
+    exactly as before; the caller still owns cleaning up `src`.
+    """
+    retry = _replace_retries_permission_errors()
+    for attempt in range(1, REPLACE_RETRY_ATTEMPTS + 1):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if not retry or attempt == REPLACE_RETRY_ATTEMPTS:
+                raise
+            time.sleep(REPLACE_RETRY_DELAY_SECONDS)
+
+
 def write_text_exact_atomic(path: str | Path, text: str) -> None:
     """Crash-safe `write_text_exact`: the target is only ever the old bytes or
     the new bytes, never a torn half.
@@ -3292,6 +3346,12 @@ def write_text_exact_atomic(path: str | Path, text: str) -> None:
     temp file is removed, so callers can set their 'wrote it' flag AFTER this
     returns and trust that a raise means the target was never touched. Newline
     handling mirrors `write_text_exact` (`newline=''` - no CRLF translation).
+
+    WINDOWS LOCKS: the replace goes through `replace_with_retry`, which waits up
+    to about two seconds when Windows refuses it because antivirus or the
+    search indexer still has the record open from the previous write. Without
+    that, rewriting one record twice in quick succession (a claim batch) failed
+    part way. The wait is Windows-only and never applies to any other error.
 
     PERMISSIONS: `os.replace` swaps a directory entry, which the kernel judges
     by the parent FOLDER - it never looks at the record being replaced. Two
@@ -3351,10 +3411,14 @@ def write_text_exact_atomic(path: str | Path, text: str) -> None:
             # inheritance survives) onto the temp before it lands.
             _carry_ownership(tmp_name, target)
             os.chmod(tmp_name, target.st_mode & 0o7777)
-        os.replace(tmp_name, str(path))
-    except OSError:
+        # Retried on Windows while a scanner still holds the record from the
+        # last write (replace_with_retry); a final failure lands below.
+        replace_with_retry(tmp_name, str(path))
+    except BaseException:
         # The replace never happened, so the original (if any) still stands;
-        # drop the partial temp so no untracked file is left behind.
+        # drop the partial temp so no untracked file is left behind. Any
+        # exception, not only OSError: a Ctrl+C during the retry wait would
+        # otherwise leave a hidden `.name.….tmp` beside the record.
         try:
             os.unlink(tmp_name)
         except OSError:
