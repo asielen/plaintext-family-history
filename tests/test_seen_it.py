@@ -733,7 +733,8 @@ class PrivacyGuard(unittest.TestCase):
                     'seen-it/host/seen-it-abc123.json', 'seen-it/known-config.json',
                     'seen-it/config.json', 'seen-it/old-data/x.json',
                     'seen-it/my-browsing-data/x.json', 'seen-it/seen-it-backup-2026-01-15.json',
-                    'seen-it/.known-cache.json', 'seen-it/known-cache.json'):
+                    'seen-it/.known-cache.json', 'seen-it/known-cache.json',
+                    'seen-it/known-files.json', 'seen-it/host/known-files.json'):
             r = subprocess.run(['git', 'check-ignore', '-q', rel], cwd=ROOT)
             self.assertEqual(r.returncode, 0, '%s must be gitignored' % rel)
         for rel in ('seen-it/manifest.json', 'seen-it/package.json', 'seen-it/host/seenit_host.py'):
