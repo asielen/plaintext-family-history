@@ -3625,6 +3625,9 @@ class _SiteBuilder:
         # as if it had worked, so the build is redone one picture at a time
         # (`_site_payload`), exactly as a build without workers would run.
         self.needs_serial_rebuild = False
+        # Set once every picture handed to the workers has landed. Until then,
+        # stopping the workers means the build was interrupted (`_close_pictures`).
+        self._pictures_finished = False
 
         self.persons_dir = out_dir / 'persons'
         self.sources_dir = out_dir / 'sources'
@@ -5192,6 +5195,7 @@ class _SiteBuilder:
         """Wait for every picture still with the workers and write it out."""
         while self._pending_pictures:
             self._land_picture()
+        self._pictures_finished = True
 
     def _land_picture(self) -> None:
         """Take the oldest picture handed to the workers (waiting for it if
@@ -5204,13 +5208,21 @@ class _SiteBuilder:
         `needs_serial_rebuild` (its pages were written as if it had worked). If
         the workers themselves failed - died, or never started - the picture is
         made here instead and the workers are not used again."""
-        job = self._pending_pictures.popleft()
-        left = self._pending_dests.pop(job.dest) - 1
-        if left:
-            self._pending_dests[job.dest] = left
+        # The job stays queued while its answer is awaited, so a Ctrl+C during
+        # that wait still finds it there (PR #242 review).
+        job = self._pending_pictures[0]
         try:
             data, caught = job.future.result()
         except Exception:  # noqa: BLE001 - BrokenProcessPool, a worker that could not import, ...
+            data = caught = None
+            broken = True
+        else:
+            broken = False
+        self._pending_pictures.popleft()
+        left = self._pending_dests.pop(job.dest) - 1
+        if left:
+            self._pending_dests[job.dest] = left
+        if broken:
             if self._picture_pool is not None:
                 self._picture_pool.broken = True
             if not _make_derivative(job.src, job.dest, job.max_px):
@@ -5233,12 +5245,15 @@ class _SiteBuilder:
         self._save_for_reuse(job.src, job.st, job.key, job.fields, job.dest, data)
 
     def _close_pictures(self) -> None:
-        """Stop the workers, if any started. Pictures still waiting mean the
-        build did not finish (Ctrl+C, an error): they are dropped, and the
-        workers are terminated rather than left running."""
+        """Stop the workers, if any started. Unless every picture has landed
+        (`_finish_pictures`), the build did not finish (Ctrl+C, an error):
+        whatever is still queued or being made is dropped, and the workers are
+        terminated rather than waited for. (Asking the queue instead missed
+        a Ctrl+C during the wait for the last picture, which waited for that
+        decode to end - the workers ignore Ctrl+C. PR #242 review.)"""
         pool, self._picture_pool = self._picture_pool, None
         if pool is not None:
-            pool.close(abort=bool(self._pending_pictures))
+            pool.close(abort=not self._pictures_finished)
         self._pending_pictures.clear()
         self._pending_dests.clear()
 

@@ -3047,6 +3047,48 @@ class ParallelPictureTests(_Base):
             fields = json.loads(note.read_text(encoding='utf-8'))['fields']
             self.assertIsNotNone(cache.fetch(note.stem, fields), f'{note.name} is damaged')
 
+    def test_ctrl_c_while_waiting_for_the_last_picture_stops_at_once(self):
+        # The last picture is the one the build waits on at the very end. A
+        # Ctrl+C during that wait used to find the queue already empty, so the
+        # workers were shut down politely - which waits for the decode still
+        # running, since the workers ignore Ctrl+C (PR #242 review).
+        import concurrent.futures
+        import multiprocessing
+        from PIL import Image
+        rel = 'photos/1880/last.png'
+        img = self.archive_root / rel
+        img.parent.mkdir(parents=True, exist_ok=True)
+        Image.new('RGB', (6000, 4500), (90, 40, 60)).save(img, compress_level=1)
+        _age(img)
+        self._photo_source('s-1111111111', rel)
+        self._set_workers(2)
+
+        waited_on = []
+
+        def interrupted_wait(future, timeout=None):
+            waited_on.append(future)
+            raise KeyboardInterrupt
+
+        closes = []
+        real_close = site._PicturePool.close
+
+        def spy_close(pool, *, abort):
+            closes.append(abort)
+            return real_close(pool, abort=abort)
+
+        with self._workers(inline=False), \
+                unittest.mock.patch.object(concurrent.futures.Future, 'result', interrupted_wait), \
+                unittest.mock.patch.object(site._PicturePool, 'close', spy_close):
+            with self.assertRaises(KeyboardInterrupt):
+                self._run(linked=False)
+        self.assertEqual(len(waited_on), 1, 'the interrupt should come in the wait for the last picture')
+        self.assertEqual(closes, [True], 'the workers were waited for instead of stopped')
+        self.assertEqual(multiprocessing.active_children(), [])
+        leftovers = [p.name for p in self._cache_dir().glob('.tmp-*')] if self._cache_dir().is_dir() else []
+        self.assertEqual(leftovers, [])
+        self.assertFalse((self.out_dir / 'media').is_dir() and any((self.out_dir / 'media').rglob('*.jpg')),
+                         'a picture still being made was written')
+
     # - the linked preview -
 
     def test_the_linked_preview_starts_no_workers(self):
