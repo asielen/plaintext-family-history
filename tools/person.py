@@ -313,6 +313,7 @@ from _lib import (
     write_text_exact_atomic,
     yaml_edtf,
     yaml_inline,
+    safe_load_yaml,
 )
 
 configure_utf8_stdout()
@@ -398,7 +399,7 @@ def _frontmatter_edit_problem(
         new_text, before_meta=before_meta, changed_keys={'living'})
     if problem is not None:
         return problem
-    meta = yaml.safe_load(FRONT_RE.match(new_text).group(1))
+    meta = safe_load_yaml(FRONT_RE.match(new_text).group(1))
     if _normalize_living(meta.get('living')) != expect_living:
         return (f'the living flag would read {meta.get("living")!r} '
                 f'instead of {expect_living!r}')
@@ -478,7 +479,7 @@ def run_set_living(
             f'Open {path} and add the header by hand, then run `fha lint`. '
             'Nothing was written.')
     try:
-        before_meta = yaml.safe_load(fm.group(1))
+        before_meta = safe_load_yaml(fm.group(1))
     except yaml.YAMLError:
         before_meta = None
     if not isinstance(before_meta, dict):
@@ -711,7 +712,7 @@ def run_set_profile_photo(
             f'Open {path} and add the header by hand, then run `fha lint`. '
             'Nothing was written.')
     try:
-        before_meta = yaml.safe_load(fm.group(1))
+        before_meta = safe_load_yaml(fm.group(1))
     except yaml.YAMLError:
         before_meta = None
     if not isinstance(before_meta, dict):
@@ -914,7 +915,7 @@ def run_set_sex(
             f'Open {path} and add the header by hand, then run `fha lint`. '
             'Nothing was written.')
     try:
-        before_meta = yaml.safe_load(fm.group(1))
+        before_meta = safe_load_yaml(fm.group(1))
     except yaml.YAMLError:
         before_meta = None
     if not isinstance(before_meta, dict):
@@ -1145,7 +1146,7 @@ def _locate_person(
             'Nothing was written.')
         return None
     try:
-        before_meta = yaml.safe_load(fm.group(1))
+        before_meta = safe_load_yaml(fm.group(1))
     except yaml.YAMLError:
         before_meta = None
     if not isinstance(before_meta, dict):
@@ -1994,9 +1995,9 @@ def _append_name_variant(
     existing_items: list[str] = []
     try:
         if stripped.startswith('[') and stripped.endswith(']'):
-            parsed = yaml.safe_load(stripped)
+            parsed = safe_load_yaml(stripped)
         elif not stripped:
-            parsed = yaml.safe_load('\n'.join(lines[key_line + 1:span_end]))
+            parsed = safe_load_yaml('\n'.join(lines[key_line + 1:span_end]))
         else:
             parsed = None
     except yaml.YAMLError:

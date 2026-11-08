@@ -143,7 +143,7 @@ from pathlib import Path, PurePosixPath
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import yaml
+import yaml  # noqa: F401 - a missing PyYAML fails here, where fha.py explains it
 
 from _lib import (
     EXIT_FAILURE,
@@ -167,6 +167,7 @@ from _lib import (
     walk_files,
     write_text_exact_atomic,
     yaml_inline,
+    safe_load_yaml,
 )
 
 # Orchestrator carve-out (TOOLING.md "a tool must never import another tool;
@@ -375,7 +376,7 @@ def _scalar_value(raw: str) -> tuple[str, str]:
                 break
         value_repr, trailing = s[:cut].rstrip(), s[cut:]
     try:
-        value = yaml.safe_load(value_repr)
+        value = safe_load_yaml(value_repr)
     except Exception:
         value = value_repr
     if not isinstance(value, str):

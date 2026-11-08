@@ -70,6 +70,7 @@ from _lib import (
     resolve_root_arg,
     undecodable_file_recorder,
     write_text_exact_atomic,
+    safe_load_yaml,
 )
 
 try:
@@ -143,7 +144,7 @@ def _scan_records(
     places_path = archive_root / 'places' / 'places.yaml'
     if places_path.exists() and yaml is not None:
         try:
-            places = yaml.safe_load(places_path.read_text(encoding='utf-8'))
+            places = safe_load_yaml(places_path.read_text(encoding='utf-8'))
         except Exception:
             places = None
         for place in places or []:

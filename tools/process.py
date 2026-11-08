@@ -226,6 +226,7 @@ from _lib import (
     variant_role,
     write_text_exact_atomic,
     yaml_inline,
+    safe_load_yaml,
 )
 
 configure_utf8_stdout()
@@ -4098,7 +4099,7 @@ def _scalar_value(raw: str) -> tuple[str, str]:
                 break
         value_repr, trailing = s[:cut].rstrip(), s[cut:]
     try:
-        value = yaml.safe_load(value_repr)
+        value = safe_load_yaml(value_repr)
     except Exception:
         value = value_repr
     if not isinstance(value, str):

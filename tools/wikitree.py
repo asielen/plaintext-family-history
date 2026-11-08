@@ -97,7 +97,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-import yaml
+import yaml  # noqa: F401 - a missing PyYAML fails here, where fha.py explains it
 
 from _lib import (
     EXIT_CLEAN,
@@ -120,6 +120,7 @@ from _lib import (
     strip_unaccepted_drafts,
     strip_unfilled_person_sections,
     undecodable_file_recorder,
+    safe_load_yaml,
 )
 
 configure_utf8_stdout()
@@ -177,7 +178,7 @@ def _load_templates(path: Path = _TEMPLATES_FILE) -> dict:
     if not path.exists():
         return {}
     try:
-        data = yaml.safe_load(path.read_text(encoding='utf-8'))
+        data = safe_load_yaml(path.read_text(encoding='utf-8'))
     except Exception:
         return {}
     return data if isinstance(data, dict) else {}

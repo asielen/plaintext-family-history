@@ -116,6 +116,8 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    archive_root_missing_message - one plain recovery message for missing roots
 #    resolve_root_arg          - CLI --root flag (validated: must carry fha.yaml),
 #                                 else find_archive_root(); one shared refusal message
+#    safe_load_yaml            - THE archive YAML reader: libyaml's fast parser when
+#                                 installed, the pure-Python one for every error
 #    load_fha_yaml             - parse fha.yaml into a dict
 #    format_*_error            - shared teaching messages for CLI refusals
 #    get_roots                 - extract roots mapping from config
@@ -1643,6 +1645,98 @@ def _yaml_problem_location(exc: object) -> str:
     return f' on line {mark.line + 1}, column {mark.column + 1}'
 
 
+# Text that libyaml READS but PyYAML's own parser REFUSES, or reads to
+# other values (#228 audit). The pure-Python parser is the archive's rule,
+# so text with any of these never goes to libyaml at all:
+#   - a Tab anywhere: libyaml accepts `name:<Tab>Mary` (Notepad alignment,
+#     a value pasted from a spreadsheet, a trailing Tab); PyYAML refuses it.
+#   - a `?` anywhere: libyaml accepts `[Mary Ann?]` and `[1880?]` in a flow
+#     list; PyYAML refuses them. A bare `1880?` date is common, so this one
+#     costs the most speed, and is still far faster than no libyaml at all.
+#   - a byte-order mark (U+FEFF) anywhere: libyaml skips one at the start
+#     of a later line, so `\ufeffb: 1` reads as the key `b`, not `\ufeffb`.
+#   - `#` straight after a block-scalar indicator (`|#`, `>-#`, `|2#`).
+#   - a `!` anywhere: a bare tag. libyaml reads `name: !` as '' where
+#     PyYAML reads None, and accepts `name: [!,]`, which PyYAML refuses
+#     (Codex review). A `!` in a record is rare, so this costs little.
+# Checked by the #228 audit against 264 hand-made cases and 40,000 one-
+# and two-character mutations of real blocks, then by an exhaustive sweep:
+# every ordered pair of YAML indicator characters (plus Tab, BOM, space,
+# CR, LF) inserted at every position of ten shipped blocks and eight small
+# synthetic ones, and written as every `key: value` line's whole value -
+# about a million documents. With this rule the helper's answer matched
+# SafeLoader's every time.
+_LIBYAML_DISAGREES_RE = re.compile('[\t\ufeff?!]|[|>][-+0-9]*#')
+
+
+def safe_load_yaml(stream: Any) -> Any:
+    """Parse YAML exactly as `yaml.safe_load` does, several times faster.
+
+    Every tool that reads the archive - `fha index`, `fha lint`, `fha site`,
+    `fha find`, `fha claim` - spends most of its time turning record headers
+    and claims blocks into Python values. PyYAML ships two parsers for that:
+    the pure-Python one behind `yaml.safe_load`, and libyaml's C parser
+    (`yaml.CSafeLoader`), present when PyYAML was installed with it, as the
+    usual pip wheels are. On a real archive of 7,800 blocks the C parser took
+    2 s where the Python one took 20 s. Both loaders share one Python
+    constructor and resolver, so only the reading of the text (the scanner
+    and parser) differs - and it differs in two ways this function hides:
+
+      - Errors. On a malformed block libyaml reports a different line and
+        column and leaves out the quoted snippet, and the human sees that
+        text: `fha lint`'s E010, the places-registry warning, `fha.yaml`'s
+        "Original parser note". So on ANY failure the C parser hits, the
+        text is parsed again by the pure-Python loader, and whatever that
+        does - return a value or raise - is the answer. Catching every
+        exception, not just `yaml.YAMLError`, covers text the C side cannot
+        even encode (a lone surrogate raises UnicodeEncodeError there).
+      - What counts as broken. libyaml accepts a few things PyYAML refuses
+        (a Tab after `name:` is the one a person really types) and reads
+        a bare `!` tag to a different value. Taking libyaml's word there
+        would turn lint's E010 into silence, or change a value, and only
+        on machines that have libyaml. Text that could hit one of those
+        cases (`_LIBYAML_DISAGREES_RE`) goes straight to the Python parser.
+
+    So a record reads to the same value, or fails with the same words, on
+    every machine, with or without libyaml. The one known case left, and
+    declined: a list nested more than about 500 levels deep (the exact
+    depth depends on the call stack). PyYAML's parser runs out of Python
+    recursion there and raises RecursionError; libyaml reads it, so the
+    helper returns the value instead of crashing. Nobody writes that by
+    hand.
+
+    Without libyaml this is plain `yaml.safe_load`. An open file is read to
+    text for the check; whenever the Python parser is the one that decides,
+    the file is rewound and handed over as a file, so an error still names
+    it. A stream that cannot be rewound, or a binary one, goes straight to
+    the Python parser. Callers check `yaml is None` (or call
+    `_require_yaml`) first, as before.
+    """
+    c_loader = getattr(yaml, 'CSafeLoader', None)
+    if c_loader is None:
+        return yaml.load(stream, Loader=yaml.SafeLoader)
+    start = None
+    text = None
+    if isinstance(stream, str):
+        text = stream
+    elif not isinstance(stream, bytes) and bool(
+            getattr(stream, 'seekable', lambda: False)()):
+        start = stream.tell()
+        try:
+            read = stream.read()
+        except Exception:  # noqa: BLE001 - the Python parse re-raises it
+            read = None
+        text = read if isinstance(read, str) else None
+    if text is not None and not _LIBYAML_DISAGREES_RE.search(text):
+        try:
+            return yaml.load(text, Loader=c_loader)
+        except Exception:  # noqa: BLE001 - the Python parse below decides
+            pass
+    if start is not None:
+        stream.seek(start)
+    return yaml.load(stream, Loader=yaml.SafeLoader)
+
+
 def format_fha_config_error(path: str | Path, detail: object) -> str:
     """Explain a bad fha.yaml in plain language with a minimal valid example.
 
@@ -1717,7 +1811,7 @@ def load_fha_yaml(archive_root: str | Path, *, strict: bool = False) -> dict:
         return {}
     try:
         with open(path, encoding='utf-8') as f:
-            data = yaml.safe_load(f)
+            data = safe_load_yaml(f)
         if data is None:
             return {}
         if not isinstance(data, dict):
@@ -3334,7 +3428,7 @@ def yaml_edtf(value: str) -> str:
     488 (#208 audit); this catches it, and any other surprise of that kind.
     """
     try:
-        parsed = _coerce_yaml(yaml.safe_load(value))
+        parsed = _coerce_yaml(safe_load_yaml(value))
     except yaml.YAMLError:
         return yaml_inline(value)
     if isinstance(parsed, (list, dict)) or str(parsed) != value:
@@ -3442,7 +3536,7 @@ def read_record(path: str | Path, on_decode_error=None) -> dict:
     if fm_match:
         try:
             _require_yaml()
-            raw_meta = yaml.safe_load(fm_match.group(1)) or {}
+            raw_meta = safe_load_yaml(fm_match.group(1)) or {}
             meta = _coerce_yaml(raw_meta)
         except FhaConfigError as e:
             errors.append(('E010', str(e)))
@@ -3457,7 +3551,7 @@ def read_record(path: str | Path, on_decode_error=None) -> dict:
     if cm_match:
         try:
             _require_yaml()
-            raw_claims = yaml.safe_load(cm_match.group(1))
+            raw_claims = safe_load_yaml(cm_match.group(1))
             if raw_claims is None:
                 raw_claims = []
             if isinstance(raw_claims, list):
@@ -3543,7 +3637,7 @@ def _read_unfenced_claims(body: str) -> list[dict] | None:
         if not text:
             return None
         try:
-            parsed = yaml.safe_load(text)
+            parsed = safe_load_yaml(text)
         except yaml.YAMLError:
             return None
         if not isinstance(parsed, list) or not parsed:
@@ -3627,7 +3721,7 @@ def claims_edit_problem(
     if cm is None:
         return 'the ## Claims block (its ```yaml fence) would be missing'
     try:
-        parsed = yaml.safe_load(cm.group(1))
+        parsed = safe_load_yaml(cm.group(1))
     except yaml.YAMLError as e:
         return f'the ## Claims block would no longer read as YAML{_yaml_problem_location(e)}'
     if parsed is None:
@@ -3868,7 +3962,7 @@ def parse_frontmatter_strict(text: str) -> dict | None:
     if fm is None:
         return None
     try:
-        meta = yaml.safe_load(fm.group(1))
+        meta = safe_load_yaml(fm.group(1))
     except yaml.YAMLError:
         return None
     return meta if isinstance(meta, dict) else None
@@ -3912,7 +4006,7 @@ def frontmatter_edit_problem(
     if fm is None:
         return 'the frontmatter block (its --- fences) would be missing'
     try:
-        meta = yaml.safe_load(fm.group(1))
+        meta = safe_load_yaml(fm.group(1))
     except yaml.YAMLError:
         return 'the frontmatter would no longer read as YAML'
     if not isinstance(meta, dict):
@@ -5868,7 +5962,7 @@ def read_places_registry(archive_root: str | Path) -> tuple[list[dict], str | No
     except OSError as e:
         return [], f'places/places.yaml could not be read: {e}'
     try:
-        data = yaml.safe_load(text)
+        data = safe_load_yaml(text)
     except yaml.YAMLError as e:
         loc = _yaml_problem_location(e)
         return [], (
@@ -6145,7 +6239,7 @@ def append_file_entry_to_record(record_text: str, entry_lines: list[str]) -> str
 
     if lines[files_idx].rstrip() != 'files:':
         inline_value = lines[files_idx].split(':', 1)[1].strip()
-        existing_items = yaml.safe_load(inline_value) if inline_value not in ('', '~', 'null') else None
+        existing_items = safe_load_yaml(inline_value) if inline_value not in ('', '~', 'null') else None
         lines[files_idx] = 'files:' + cr
         if existing_items:
             preserved_lines = []
@@ -9181,7 +9275,7 @@ def promote_person_record(
     meta = None
     if fm is not None:
         try:
-            meta = yaml.safe_load(fm.group(1))
+            meta = safe_load_yaml(fm.group(1))
         except yaml.YAMLError:
             meta = None
     if not isinstance(meta, dict):
@@ -9238,7 +9332,7 @@ def promote_person_record(
         problem = frontmatter_edit_problem(
             new_text, before_meta=meta, changed_keys={'tier'})
         if problem is None:
-            after_meta = yaml.safe_load(FRONT_RE.match(new_text).group(1))
+            after_meta = safe_load_yaml(FRONT_RE.match(new_text).group(1))
             if str(after_meta.get('tier') or '').strip().lower() != 'curated':
                 problem = (f'the tier would read {after_meta.get("tier")!r} '
                            'instead of curated')
