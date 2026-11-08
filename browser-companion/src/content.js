@@ -472,12 +472,16 @@
               resp.status +
               ') - sign in on this page, or the collection may not allow downloads'
             : 'the Ancestry image service returned HTTP ' + resp.status;
-        return { ok: false, error: why };
+        // `slowDown`/`transient`: a "slow down" or a failing server passes,
+        // and the panel's batch downloads come back for the scan later.
+        return { ok: false, error: why, slowDown: resp.status === 429 || resp.status === 503,
+          transient: resp.status === 429 || resp.status >= 500 };
       }
       tokenJson = await resp.json();
     } catch (e) {
       return {
         ok: false,
+        transient: true,
         error: 'could not reach the Ancestry image service (are you online and signed in?)',
       };
     }
@@ -505,6 +509,8 @@
         return {
           ok: false,
           error: 'Ancestry refused the image download (HTTP ' + resp.status + ')',
+          slowDown: resp.status === 429 || resp.status === 503,
+          transient: resp.status === 429 || resp.status >= 500,
         };
       }
       const blob = await resp.blob();
@@ -535,6 +541,7 @@
     } catch (e) {
       return {
         ok: false,
+        transient: true,
         error: 'the full-res image would not come through - use Ancestry’s Download button and drop the file in instead',
       };
     }
@@ -1145,6 +1152,17 @@
     return l && typeof l.href === 'string' && l.href ? l.href : null;
   }
 
+  // An Error in fsStatusMessage's words, saying whether its cause passes
+  // (`transient`: no connection, a "slow down", a failing server) and whether
+  // FamilySearch said slow down or busy (`slowDown`: 429/503). `status` null
+  // means no answer at all.
+  function fsFailure(message, status) {
+    const e = new Error(message);
+    e.transient = status == null || status === 429 || status >= 500;
+    e.slowDown = status === 429 || status === 503;
+    return e;
+  }
+
   // One GET of FamilySearch's data service. Throws an Error with
   // fsStatusMessage's words (never the token or the address). `what` is what
   // she is told was refused: 'record' (the default) or 'image' (an image's
@@ -1156,11 +1174,17 @@
     try {
       r = await d.fetch(new URL(path, d.base).href, { credentials: 'include', headers });
     } catch (e) {
-      throw new Error('could not reach FamilySearch - check your internet connection, then press Capture again');
+      throw fsFailure('could not reach FamilySearch - check your internet connection, then press Capture again', null);
     }
-    if (!r.ok) throw new Error(fsStatusMessage(r.status, what || 'record', !!d.token));
+    if (!r.ok) throw fsFailure(fsStatusMessage(r.status, what || 'record', !!d.token), r.status);
     if (r.status === 204) return {};
-    const text = await r.text();
+    let text;
+    try {
+      text = await r.text();
+    } catch (e) {
+      // The answer began and then broke off: a cause that passes.
+      throw fsFailure('the connection to FamilySearch broke off while its answer was coming down - press Capture again', null);
+    }
     try {
       return text ? JSON.parse(text) : {};
     } catch (e) {
@@ -1180,7 +1204,7 @@
       const info = fsRecordFrom(g, ids);
       return Object.assign({ ok: true }, info, { hints: fsHints(info.record, g), gedcomx: g });
     } catch (e) {
-      return { ok: false, error: e.message };
+      return { ok: false, error: e.message, slowDown: !!e.slowDown, transient: !!e.transient };
     }
   }
 
@@ -1193,7 +1217,9 @@
     try {
       link = fsImageLink(await fsJson('/ark:/61903/3:1:' + imageId, null, d, 'image'));
     } catch (e) {
-      return { ok: true, imageId, available: false, reason: e.message };
+      // `slowDown`: FamilySearch said slow down or busy even before Capture;
+      // the owner's batch downloads take their break (PR #224 Codex 4504294846).
+      return { ok: true, imageId, available: false, reason: e.message, slowDown: !!e.slowDown };
     }
     if (!link) {
       return { ok: true, imageId, available: false,
@@ -1213,7 +1239,8 @@
       /* nothing to stop */
     }
     return r.ok ? { ok: true, imageId, available: true }
-      : { ok: true, imageId, available: false, reason: fsStatusMessage(r.status, 'image', !!d.token) };
+      : { ok: true, imageId, available: false, reason: fsStatusMessage(r.status, 'image', !!d.token),
+        slowDown: r.status === 429 || r.status === 503 };
   }
 
   // The full image behind ark:/61903/3:1:{imageId}: { ok, base64, ext,
@@ -1224,7 +1251,7 @@
     try {
       link = fsImageLink(await fsJson('/ark:/61903/3:1:' + imageId, null, d, 'image'));
     } catch (e) {
-      return { ok: false, error: e.message };
+      return { ok: false, error: e.message, transient: !!e.transient, slowDown: !!e.slowDown };
     }
     if (!link) {
       return { ok: false, error: 'FamilySearch offers no download of this image: it is restricted to a ' +
@@ -1236,15 +1263,31 @@
         headers: Object.assign({ Accept: 'image/jpeg' }, fsAuthHeaders(link, d.base, d.token)),
       });
     } catch (e) {
-      return { ok: false, error: 'could not reach FamilySearch for the image - check your internet connection' };
+      return { ok: false, transient: true, error: 'could not reach FamilySearch for the image - check your internet connection' };
     }
-    if (!r.ok) return { ok: false, error: fsStatusMessage(r.status, 'image', !!d.token) };
-    const blob = await r.blob();
+    if (!r.ok) {
+      const f = fsFailure(fsStatusMessage(r.status, 'image', !!d.token), r.status);
+      return { ok: false, error: f.message, transient: f.transient, slowDown: f.slowDown };
+    }
+    let blob;
+    try {
+      blob = await r.blob();
+    } catch (e) {
+      // The headers came and then the picture broke off (PR #224 Codex 4504508005).
+      return { ok: false, transient: true,
+        error: 'the image broke off while it was coming down from FamilySearch - press Capture again later' };
+    }
     if (!/^image\//.test(blob.type || '') || blob.size < 30 * 1024) {
       return { ok: false, error: 'the image came back too small to be the full record (' +
         Math.round((blob.size || 0) / 1024) + ' KB) - use FamilySearch’s Download button and drop the file in' };
     }
-    return { ok: true, base64: await d.toBase64(blob), ext: 'jpg', contentType: blob.type || 'image/jpeg' };
+    let base64;
+    try {
+      base64 = await d.toBase64(blob);
+    } catch (e) {
+      return { ok: false, transient: true, error: 'the image could not be read once it came - press Capture again later' };
+    }
+    return { ok: true, base64, ext: 'jpg', contentType: blob.type || 'image/jpeg' };
   }
   // FHA-SYNC-END familysearch
 
@@ -1351,7 +1394,7 @@
   async function familysearchImageCheck() {
     if (fsParseRecordPage(location.href)) {
       const info = await fsRecordInfo(location.href, fsDeps());
-      if (!info.ok) return { ok: false, error: info.error };
+      if (!info.ok) return { ok: false, error: info.error, slowDown: !!info.slowDown };
       const r = info.record;
       const check = await fsImageCheck(r.imageId, fsDeps());
       return Object.assign({}, check, {
@@ -2034,12 +2077,323 @@
     return live || document.documentElement.outerHTML.replace(/\\"/g, '"');
   }
 
+  // FHA-SYNC-BEGIN batch-sources
+  const BATCH_FS_PERSON_RE = /\/tree\/person\/(?:[a-z-]+\/)?([A-Z0-9]{4}-[A-Z0-9]{2,4})(?![A-Z0-9])/i;
+  const BATCH_ANC_HOST_RE = /(^|\.)ancestry\.[a-z.]+$/i;
+  const BATCH_FS_HOST_RE = /(^|\.)familysearch\.org$/i;
+  const BATCH_NP_HOST_RE = /(^|\.)newspapers\.com$/i;
+
+  // What a person's other sources are, counted: "links to example.org (2),
+  // a note (1)". Labels only, for the panel to say what it did not queue.
+  function batchDescribeOthers(list) {
+    const n = {};
+    for (const x of list) n[x] = (n[x] || 0) + 1;
+    return Object.keys(n).map((k) => k + (n[k] > 1 ? ' (' + n[k] + ')' : '')).join(', ');
+  }
+
+  function batchFirstLine(el) {
+    return el ? (ancText(el).split('\n')[0] || '').slice(0, 200) : '';
+  }
+
+  // An Ancestry tree person's Facts page (`root`, at `href`): the Ancestry
+  // records its sources link to, as { dbId, recordId, title }, plus a count of
+  // the sources that are something else (a clipping, a web link), so the panel
+  // can say what it left out rather than "no sources". Read from the person's
+  // own sources list (#sourcesSection) and nowhere else on the page: a record
+  // page links its household's records, which are not this person's sources
+  // (PR #224 Codex 4504294850). No such list: nothing (`sectionFound: false`).
+  // Seen It's badges are skipped (ancText), and nothing is fetched.
+  function batchAncPersonSources(root, href) {
+    const seen = new Set();
+    const sources = [];
+    const box = ancById(root, 'sourcesSection');
+    const h1 = ancElements(root, (e) => ancTag(e) === 'H1')[0];
+    if (!box) {
+      return { ok: true, person: batchFirstLine(h1) || null, sources, sectionFound: false, total: 0, other: 0, otherWhat: '' };
+    }
+    for (const a of ancElements(box, (e) => ancTag(e) === 'A' && !!e.getAttribute('href'))) {
+      let u;
+      try {
+        u = new URL(a.getAttribute('href'), href);
+      } catch (e) {
+        continue;
+      }
+      // An image-only collection's source opens into its image:
+      // /interactive/{dbId}/{imageId}/{recordId} is that record.
+      const inter = BATCH_ANC_HOST_RE.test(u.hostname) && /\/interactive\/(\d+)\/[^/?#]+\/(\d+)/.exec(u.pathname);
+      const id = inter ? { dbId: inter[1], recordId: inter[2] } : ancParseRecordPage(u.href);
+      if (!id) continue;
+      const key = id.dbId + ':' + id.recordId;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      sources.push({ dbId: id.dbId, recordId: id.recordId, title: batchFirstLine(a) });
+    }
+    const others = [];
+    for (const a of ancElements(box, (e) => ancTag(e) === 'A' && !!e.getAttribute('href'))) {
+      let u;
+      try {
+        u = new URL(a.getAttribute('href'), href);
+      } catch (e) {
+        continue;
+      }
+      if (!/^https?:$/.test(u.protocol)) continue;
+      if (BATCH_NP_HOST_RE.test(u.hostname) && /\/(clip|article)\//.test(u.pathname)) others.push('Newspapers.com clippings');
+      else if (!/(^|\.)(ancestry|ancestrycdn)\.[a-z.]+$/i.test(u.hostname)) others.push('links to ' + u.hostname.replace(/^www\./, ''));
+    }
+    return {
+      ok: true,
+      person: batchFirstLine(h1) || null,
+      sources,
+      sectionFound: true,
+      total: sources.length + others.length,
+      other: others.length,
+      otherWhat: batchDescribeOthers(others),
+    };
+  }
+
+  // The FamilySearch tree person an address names (/tree/person/details/{PID}),
+  // or null.
+  function batchFsPersonPid(href) {
+    let u;
+    try {
+      u = new URL(href);
+    } catch (e) {
+      return null;
+    }
+    if (!BATCH_FS_HOST_RE.test(u.hostname)) return null;
+    const m = BATCH_FS_PERSON_RE.exec(u.pathname);
+    return m ? m[1].toUpperCase() : null;
+  }
+
+  // A FamilySearch tree person's sources (the Sources tab shows no links, so
+  // FamilySearch's own data service is asked, with `d` - { fetch, base, token }
+  // - as fsJson takes it): the FamilySearch records among them as { fsId,
+  // title }, and a count of the rest. Two requests, one after the other.
+  async function batchFsPersonSources(href, d) {
+    const pid = batchFsPersonPid(href);
+    if (!pid) return { ok: false, error: 'open a person in the FamilySearch Family Tree, then press the button again' };
+    let j;
+    try {
+      j = await fsJson('/platform/tree/persons/' + pid + '/sources', 'application/x-fs-v1+json', d);
+    } catch (e) {
+      return { ok: false, error: e.message, slowDown: !!e.slowDown };
+    }
+    const sources = [];
+    const others = [];
+    const seen = new Set();
+    const all = Array.isArray(j && j.sourceDescriptions) ? j.sourceDescriptions : [];
+    for (const s of all) {
+      const r = /ark:\/61903\/1:1:([A-Z0-9-]+)/i.exec(String((s && s.about) || ''));
+      if (!r) {
+        let host = null;
+        try {
+          host = s && s.about ? new URL(s.about).hostname.replace(/^www\./, '') : null;
+        } catch (e) {
+          /* not a web address */
+        }
+        others.push(host ? 'links to ' + host : 'a note or citation with no link');
+        continue;
+      }
+      const fsId = r[1].toUpperCase();
+      if (seen.has(fsId)) continue;
+      seen.add(fsId);
+      sources.push({ fsId, title: String((s.titles && s.titles[0] && s.titles[0].value) || '').slice(0, 200) });
+    }
+    let person = null;
+    let slowDown = false;
+    try {
+      const p = await fsJson('/platform/tree/persons/' + pid, 'application/x-fs-v1+json', d);
+      const disp = p && p.persons && p.persons[0] && p.persons[0].display;
+      person = (disp && disp.name) || null;
+    } catch (e) {
+      // The name is a label only - but a "slow down" is still said.
+      slowDown = !!e.slowDown;
+    }
+    return { ok: true, person, pid, sources, total: all.length, other: others.length, otherWhat: batchDescribeOthers(others),
+      slowDown };
+  }
+
+  // The Find a Grave memorials a page names, each only from where it means
+  // "these memorials" (PR #224 Codex 4504294850):
+  //   - on Find a Grave, every memorial the page links to (a memorial's own
+  //     family, a search or cemetery listing), the memorial itself first;
+  //   - on an Ancestry tree person, the person's own sources list
+  //     (#sourcesSection) only - never the hints and records elsewhere on it;
+  //   - on a FamilySearch tree person (`d` given), the person's own sources,
+  //     from FamilySearch's data, never the page's links.
+  // Anywhere else, nothing. [{ memorialId, slug, title }].
+  async function batchFagLinks(root, href, d) {
+    const out = [];
+    const add = (m, name) => {
+      if (m && !out.some((x) => x.memorialId === m.memorialId)) {
+        out.push({ memorialId: m.memorialId, slug: m.slug, title: String(name || '').slice(0, 200) });
+      }
+    };
+    let person = null;
+    let host = '';
+    try {
+      host = new URL(href).hostname;
+    } catch (e) {
+      /* no host: nothing below matches */
+    }
+    let scope = null; // the part of the page whose links are its memorials
+    let sectionFound = true;
+    let slowDown = false;
+    if (/(^|\.)findagrave\.com$/i.test(host)) {
+      scope = root;
+      const here = fagParseMemorial(href);
+      if (here) {
+        person = batchFirstLine(ancById(root, 'bio-name')) || null;
+        add(here, person);
+      }
+    } else if (BATCH_ANC_HOST_RE.test(host)) {
+      scope = ancById(root, 'sourcesSection');
+      sectionFound = !!scope;
+    }
+    for (const a of scope ? ancElements(scope, (e) => ancTag(e) === 'A' && /\/memorial\//.test(e.getAttribute('href') || '')) : []) {
+      add(fagParseMemorial(a.getAttribute('href'), href), batchFirstLine(a));
+    }
+    if (BATCH_FS_HOST_RE.test(host)) {
+      sectionFound = !!batchFsPersonPid(href);
+      if (d && sectionFound) {
+        try {
+          const j = await fsJson('/platform/tree/persons/' + batchFsPersonPid(href) + '/sources', 'application/x-fs-v1+json', d);
+          for (const s of (j && j.sourceDescriptions) || []) {
+            add(fagParseMemorial(String((s && s.about) || '')), s && s.titles && s.titles[0] && s.titles[0].value);
+          }
+        } catch (e) {
+          if (e.slowDown) slowDown = true;
+          else return { ok: false, error: e.message };
+        }
+      }
+    }
+    if (!person) person = batchFirstLine(ancElements(root, (e) => ancTag(e) === 'H1')[0]) || null;
+    return { ok: true, person, sources: out, total: out.length, other: 0, sectionFound, slowDown };
+  }
+
+  // Who is signed in to Newspapers.com, from the page's own data (`text`, the
+  // decoded page data): the site's `"user":{"id":…,"username":…}` object.
+  function batchNpUsername(text) {
+    const t = String(text || '');
+    const um = /"user":\{"id":(\d+)/.exec(t);
+    if (!um) return null;
+    const o = npObjectAt(t, um.index + '"user":'.length);
+    return (o && typeof o.username === 'string' && o.username) || null;
+  }
+
+  // One page of the signed-in member's own clippings list (24 at a time, from
+  // `cursor`): { ok, user, clippings, nextCursor, more } or { ok:false, error }.
+  // `d` = { fetch, base }; `base` must be an https Newspapers.com page.
+  async function batchNpClippingsList(cursor, username, d) {
+    let base;
+    try {
+      base = new URL(d.base);
+    } catch (e) {
+      base = null;
+    }
+    if (!base || base.protocol !== 'https:' || !BATCH_NP_HOST_RE.test(base.hostname)) {
+      return { ok: false, error: 'the tab is not on Newspapers.com, so your clippings list was not read' };
+    }
+    if (!username) {
+      return { ok: false, error: 'could not tell who is signed in to Newspapers.com - sign in, reload the page, then press Start again' };
+    }
+    const path = '/api/clipping/list?user=' + encodeURIComponent(username) + '&visibility=all&count=24' +
+      '&cursor_mark=' + encodeURIComponent(String(cursor == null ? 0 : cursor)) + '&product_id=1';
+    let r;
+    try {
+      r = await d.fetch(new URL(path, base).href, { credentials: 'same-origin', headers: { accept: 'application/json' } });
+    } catch (e) {
+      return { ok: false, error: 'could not reach Newspapers.com for your clippings list - check your internet connection' };
+    }
+    if (r.status === 429 || r.status === 503) {
+      return { ok: false, error: 'Newspapers.com asked us to slow down (HTTP ' + r.status + ')' };
+    }
+    if (r.status === 401 || r.status === 403) {
+      return { ok: false, error: 'Newspapers.com refused your clippings list (HTTP ' + r.status + ') - sign in and reload the page' };
+    }
+    if (!r.ok) return { ok: false, error: 'Newspapers.com would not send your clippings list (HTTP ' + r.status + ')' };
+    let j;
+    try {
+      j = await r.json();
+    } catch (e) {
+      // Not JSON is something else; anything else is the answer breaking off.
+      return e instanceof SyntaxError
+        ? { ok: false, error: 'Newspapers.com sent something other than your clippings list' }
+        : { ok: false, transient: true, error: 'the connection to Newspapers.com broke off while your clippings list was coming down' };
+    }
+    return {
+      ok: true,
+      user: username,
+      clippings: Array.isArray(j && j.clippings) ? j.clippings : [],
+      nextCursor: j && j.next_cursor_mark != null ? j.next_cursor_mark : null,
+      more: !!(j && j.more_results),
+    };
+  }
+  // FHA-SYNC-END batch-sources
+
+  // Batch downloads are the owner's own tool, switched off unless this
+  // browser has been told to show them (chrome.storage.local
+  // `batchDownloads: true`; src/batch.js says how). Off, unreadable or
+  // missing all mean off: the batch questions below are then answered
+  // "switched off", and nothing is read or sent anywhere.
+  function batchSwitchOn() {
+    return new Promise((resolve) => {
+      try {
+        chrome.storage.local.get({ batchDownloads: false }, (o) => {
+          resolve(!chrome.runtime.lastError && !!o && o.batchDownloads === true);
+        });
+      } catch (e) {
+        resolve(false);
+      }
+    });
+  }
+
+  // The batch's questions to a page the owner has open: what to queue from
+  // it. Each reads only its own site (batch-sources above says what each may
+  // send).
+  async function batchSourcesRoute(msg) {
+    switch (msg.action) {
+      case 'ancestryPersonSources':
+        if (!BATCH_ANC_HOST_RE.test(location.hostname)) return { ok: false, error: 'this tab is not on Ancestry' };
+        return batchAncPersonSources(document, location.href);
+      case 'familysearchPersonSources':
+        if (!BATCH_FS_HOST_RE.test(location.hostname)) return { ok: false, error: 'this tab is not on FamilySearch' };
+        return batchFsPersonSources(location.href, fsDeps());
+      case 'findagraveLinks':
+        if (!FAG_HOST_RE.test(location.hostname) && !BATCH_ANC_HOST_RE.test(location.hostname) &&
+            !BATCH_FS_HOST_RE.test(location.hostname)) {
+          return { ok: false, error: 'this tab is not on Find a Grave, Ancestry or FamilySearch' };
+        }
+        return batchFagLinks(document, location.href, BATCH_FS_HOST_RE.test(location.hostname) ? fsDeps() : null);
+      case 'newspapersList': {
+        // Whoever is signed in on this page, always: a name the batch stored
+        // earlier must not fetch another member's clippings as hers.
+        const signedIn = batchNpUsername(npFlightText());
+        if (signedIn && typeof msg.user === 'string' && msg.user &&
+            msg.user.toLowerCase() !== signedIn.toLowerCase()) {
+          return { ok: false, error: 'a different member is signed in to Newspapers.com than the one this list ' +
+            'was started for - sign in as ' + msg.user + ', or press "Read my clippings list again"' };
+        }
+        return batchNpClippingsList(msg.cursor, signedIn, { fetch: (u, init) => fetch(u, init), base: location.href });
+      }
+      default:
+        return { ok: false, error: 'not a batch question' };
+    }
+  }
+
   // The site navigates between clippings and pages without reloading, so the
   // data embedded at first load can describe an EARLIER record. When it does not
   // match the address bar, re-read the current address (one same-origin GET).
   async function npFreshFlightText() {
     const resp = await fetch(location.href, { credentials: 'include' });
-    if (!resp.ok) return '';
+    if (!resp.ok) {
+      if (resp.status === 429 || resp.status === 503) {
+        const e = new Error('Newspapers.com asked us to slow down (HTTP ' + resp.status + ') while this page was re-read');
+        e.slowDown = true;
+        throw e;
+      }
+      return '';
+    }
     const html = await resp.text();
     return npFlightFrom([html]) || html.replace(/\\"/g, '"');
   }
@@ -2064,7 +2418,12 @@
     if (!url) return { ok: false, error: 'no clipping address' };
     try {
       const resp = await fetch(url, { credentials: 'include' });
-      if (!resp.ok) return { ok: false, error: 'HTTP ' + resp.status };
+      if (!resp.ok) {
+        // The text is optional, but a "slow down" here is still one
+        // (PR #224 Codex 4504665602).
+        return { ok: false, status: resp.status, slowDown: resp.status === 429 || resp.status === 503,
+          error: 'HTTP ' + resp.status };
+      }
       const html = await resp.text();
       const text = npFlightFrom([html]);
       const raw = npObjectAfter(text, 'clipping');
@@ -2096,6 +2455,7 @@
         if (fresh && describesThisRecord(fresh)) text = fresh;
         else return { ok: false, error: 'the page data does not match this address - reload the page and try again' };
       } catch (e) {
+        if (e && e.slowDown) return { ok: false, slowDown: true, error: e.message + ' - wait a few minutes, then reload it' };
         return { ok: false, error: 'could not re-read this page - reload it and try again' };
       }
     }
@@ -2156,8 +2516,12 @@
           { credentials: 'include', headers: { accept: 'application/json' } }
         );
         if (!r.ok) {
-          listError = 'Newspapers.com would not send the list of clippings on this page (HTTP ' +
-            r.status + ')';
+          // A 401/403 is her session or her subscription, not the page: say
+          // so, so she signs in (and a batch never counts it against a record).
+          listError = r.status === 401 || r.status === 403
+            ? 'Newspapers.com refused the list of clippings on this page (HTTP ' + r.status +
+              ': you may need to sign in, or your subscription may not cover this paper)'
+            : 'Newspapers.com would not send the list of clippings on this page (HTTP ' + r.status + ')';
           break;
         }
         const j = await r.json();
@@ -3046,12 +3410,28 @@
   }
   // FHA-SYNC-END snapshot-rewrites
 
+  // The hosts that said "slow down" (429/503) while the page copy fetched
+  // its pictures and styles: the copy goes on without them, but the panel is
+  // told, so a batch site's batch still takes its break (PR #224 Codex 4504665602).
+  let singleFileSlowHosts = new Set();
+  function noteSingleFileAnswer(url, status) {
+    if (status !== 429 && status !== 503) return;
+    try {
+      singleFileSlowHosts.add(new URL(url).hostname);
+    } catch (e) {
+      /* no host to name */
+    }
+  }
+
   async function fetchAsDataUri(url) {
     const abs = absUrl(url);
     if (!abs) return null;
     try {
       const resp = await fetch(abs, { credentials: 'include' });
-      if (!resp.ok) return null;
+      if (!resp.ok) {
+        noteSingleFileAnswer(abs, resp.status);
+        return null;
+      }
       const blob = await resp.blob();
       if (blob.size > SINGLEFILE_MAX_BYTES_PER_RESOURCE) return null;
       const base64 = await blobToBase64(blob);
@@ -3067,6 +3447,7 @@
     // stylesheets are the must-haves so the snapshot survives link rot; fonts,
     // web-components, and lazy media are diminishing returns and left out. We
     // clone the live (post-load) DOM so dynamic content has settled (§5.6).
+    singleFileSlowHosts = new Set();
     const clone = document.documentElement.cloneNode(true);
     stripSeenIt(clone);
 
@@ -3260,7 +3641,10 @@
       if (!sheetUrl) continue;
       try {
         const resp = await fetch(sheetUrl, { credentials: 'include' });
-        if (!resp.ok) continue;
+        if (!resp.ok) {
+          noteSingleFileAnswer(sheetUrl, resp.status);
+          continue;
+        }
         const css = await resp.text();
         const style = document.createElement('style');
         style.textContent = absolutizeCss(css, resp.url || sheetUrl);
@@ -3272,6 +3656,30 @@
     }
 
     return '<!DOCTYPE html>\n' + clone.outerHTML;
+  }
+
+  // A question whose request threw - the connection dropped, an answer that
+  // broke off - is answered with that said the structured way: a cause that
+  // passes (`transient`), the browser's own words in brackets. Never only the
+  // browser's words, which no one downstream could tell from a refusal
+  // (PR #224 Codex 4504508005).
+  // Only a real network failure is a cause that passes: fetch's own
+  // TypeError ("Failed to fetch", "NetworkError…", "Load failed"), an abort
+  // or a time-out. Anything else thrown is a fault in the add-on while it
+  // read this record: said as such, and the batch sets that one record aside
+  // rather than stopping (PR #224 second audit N3).
+  function brokeOff(e) {
+    const msg = String((e && e.message) || e);
+    const name = String((e && e.name) || '');
+    const network = name === 'AbortError' || name === 'TimeoutError' || name === 'NetworkError' ||
+      (name === 'TypeError' && /fetch|network|load failed/i.test(msg));
+    if (network) {
+      return { ok: false, transient: true, status: null,
+        error: 'the connection broke off (' + msg + ') - press Capture again later' };
+    }
+    return { ok: false, codeError: true,
+      error: 'the capture add-on could not read this record (' + (name ? name + ': ' : '') + msg +
+        ') - a fault in the add-on, not the site' };
   }
 
   // ── message routing ──────────────────────────────────────────────────────────
@@ -3302,12 +3710,12 @@
       case 'familysearchRecordInfo':
         familysearchRecordInfo(msg.formTitle)
           .then(sendResponse)
-          .catch((e) => sendResponse({ ok: false, error: String((e && e.message) || e) }));
+          .catch((e) => sendResponse(brokeOff(e)));
         return true; // async response
       case 'familysearchImageCheck':
         familysearchImageCheck()
           .then(sendResponse)
-          .catch((e) => sendResponse({ ok: false, error: String((e && e.message) || e) }));
+          .catch((e) => sendResponse(brokeOff(e)));
         return true; // async response
       case 'familysearchImage': {
         if (!FS_HOST_RE.test(location.hostname)) {
@@ -3346,7 +3754,7 @@
         }
         fsImage(fsImageWanted, fsDeps())
           .then(sendResponse)
-          .catch((e) => sendResponse({ ok: false, error: String((e && e.message) || e) }));
+          .catch((e) => sendResponse(brokeOff(e)));
         return true; // async response
       }
       case 'ancestryRecordInfo':
@@ -3379,7 +3787,7 @@
         }
         findagraveGallery(String(msg.memorialId), msg.slug == null ? null : String(msg.slug))
           .then(sendResponse)
-          .catch((e) => sendResponse({ ok: false, error: String((e && e.message) || e) }));
+          .catch((e) => sendResponse(brokeOff(e)));
         return true; // async response
       case 'ancestryImage':
         // Full-res Ancestry record fetch for the current page, in-session.
@@ -3391,7 +3799,7 @@
         }
         fetchAncestryFullImage(msg.dbId && msg.imageId ? { dbId: msg.dbId, imageId: msg.imageId } : null)
           .then(sendResponse)
-          .catch((e) => sendResponse({ ok: false, error: String(e) }));
+          .catch((e) => sendResponse(brokeOff(e)));
         return true; // async response
       case 'iiifImage':
         // Full-res IIIF image fetch (open archives) for the current page.
@@ -3402,16 +3810,26 @@
       case 'newspapersClipText':
         npClipText(msg.url, msg.clippingId)
           .then(sendResponse)
-          .catch((e) => sendResponse({ ok: false, error: String(e) }));
+          .catch((e) => sendResponse(brokeOff(e)));
         return true; // async response
       case 'newspapersInfo':
         newspapersInfo()
           .then(sendResponse)
-          .catch((e) => sendResponse({ ok: false, error: String(e) }));
+          .catch((e) => sendResponse(brokeOff(e)));
+        return true; // async response
+      case 'newspapersList':
+      case 'ancestryPersonSources':
+      case 'familysearchPersonSources':
+      case 'findagraveLinks':
+        batchSwitchOn()
+          .then((on) => (on ? batchSourcesRoute(msg)
+            : { ok: false, off: true, error: 'batch downloads are switched off in this browser' }))
+          .then(sendResponse)
+          .catch((e) => sendResponse(brokeOff(e)));
         return true; // async response
       case 'singlefile':
         buildSingleFile()
-          .then((html) => sendResponse({ ok: true, html }))
+          .then((html) => sendResponse({ ok: true, html, slowHosts: [...singleFileSlowHosts] }))
           .catch((e) => sendResponse({ ok: false, error: String(e) }));
         return true; // async response
       default:

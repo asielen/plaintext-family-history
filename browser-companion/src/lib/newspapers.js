@@ -165,26 +165,46 @@
   }
 
   // The whole page at full resolution, stitched from tiles.
-  // onProgress(tileNumber, tileCount, waitSeconds?)
-  async function fullPage(info, onProgress) {
-    if (cached && cached.pageId === info.pageId) return cached;
+  // onProgress(tileNumber, tileCount, waitSeconds?). `rateHits` in the answer
+  // counts the "slow down" answers (429/503) this download waited out: the
+  // page still came, but the owner's batch downloads stop after it rather
+  // than push on (src/batch.js). A page reused from the last download made
+  // no request, so it counts none. `deps` ({ fetch, sleep, canvas, bitmap })
+  // exists so tests can run it without a browser.
+  async function fullPage(info, onProgress, deps) {
+    if (cached && cached.pageId === info.pageId) return Object.assign({}, cached, { rateHits: 0 });
+    const pause = (deps && deps.sleep) || sleep;
+    const makeCanvas = (deps && deps.canvas) || ((w, h) => new OffscreenCanvas(w, h));
+    const toBitmap = (deps && deps.bitmap) || ((b) => createImageBitmap(b));
     const W = info.pageWidth;
     const H = info.pageHeight;
-    const canvas = new OffscreenCanvas(W, H);
+    const canvas = makeCanvas(W, H);
     const ctx = canvas.getContext('2d');
     ctx.fillStyle = '#fff';
     ctx.fillRect(0, 0, W, H);
 
     const tiles = tileGrid(W, H);
     let reduced = 0;
+    let rateHits = 0;
     for (let i = 0; i < tiles.length; i++) {
-      if (i) await sleep(between(PAUSE_MS[0], PAUSE_MS[1]));
+      if (i) await pause(between(PAUSE_MS[0], PAUSE_MS[1]));
       const [x, y, w, h] = tiles[i];
       if (onProgress) onProgress(i + 1, tiles.length);
-      const blob = await fetchTile(tileUrl(info, x, y, w, h), (s) => {
-        if (onProgress) onProgress(i + 1, tiles.length, s);
-      });
-      const bmp = await createImageBitmap(blob);
+      let blob;
+      try {
+        blob = await fetchTile(tileUrl(info, x, y, w, h), (s) => {
+          rateHits++;
+          if (onProgress) onProgress(i + 1, tiles.length, s);
+        }, deps);
+      } catch (e) {
+        // A page that met a "slow down" and then failed on a later tile
+        // still met it: the error says so, and the owner's batch downloads
+        // take their break before the next request (PR #224 Codex 4503849177).
+        e.rateHits = rateHits;
+        e.slowDown = rateHits > 0 || /slow down/i.test(String(e.message || ''));
+        throw e;
+      }
+      const bmp = await toBitmap(blob);
       // A tile served smaller than asked would be stretched to fit: count it so
       // the capture can say the page is not at full resolution.
       if (bmp.width < w * 0.98 || bmp.height < h * 0.98) reduced++;
@@ -192,7 +212,7 @@
       if (bmp.close) bmp.close();
     }
     cached = { pageId: info.pageId, canvas, reduced, tiles: tiles.length };
-    return cached;
+    return Object.assign({}, cached, { rateHits });
   }
 
   // The clipping cut from the full page. Several rectangles (an item continued

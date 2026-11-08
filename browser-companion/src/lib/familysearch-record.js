@@ -233,6 +233,17 @@ function fsImageLink(j) {
   return l && typeof l.href === 'string' && l.href ? l.href : null;
 }
 
+// An Error in fsStatusMessage's words, saying whether its cause passes
+// (`transient`: no connection, a "slow down", a failing server) and whether
+// FamilySearch said slow down or busy (`slowDown`: 429/503). `status` null
+// means no answer at all.
+function fsFailure(message, status) {
+  const e = new Error(message);
+  e.transient = status == null || status === 429 || status >= 500;
+  e.slowDown = status === 429 || status === 503;
+  return e;
+}
+
 // One GET of FamilySearch's data service. Throws an Error with
 // fsStatusMessage's words (never the token or the address). `what` is what
 // she is told was refused: 'record' (the default) or 'image' (an image's
@@ -244,11 +255,17 @@ async function fsJson(path, accept, d, what) {
   try {
     r = await d.fetch(new URL(path, d.base).href, { credentials: 'include', headers });
   } catch (e) {
-    throw new Error('could not reach FamilySearch - check your internet connection, then press Capture again');
+    throw fsFailure('could not reach FamilySearch - check your internet connection, then press Capture again', null);
   }
-  if (!r.ok) throw new Error(fsStatusMessage(r.status, what || 'record', !!d.token));
+  if (!r.ok) throw fsFailure(fsStatusMessage(r.status, what || 'record', !!d.token), r.status);
   if (r.status === 204) return {};
-  const text = await r.text();
+  let text;
+  try {
+    text = await r.text();
+  } catch (e) {
+    // The answer began and then broke off: a cause that passes.
+    throw fsFailure('the connection to FamilySearch broke off while its answer was coming down - press Capture again', null);
+  }
   try {
     return text ? JSON.parse(text) : {};
   } catch (e) {
@@ -268,7 +285,7 @@ async function fsRecordInfo(href, d) {
     const info = fsRecordFrom(g, ids);
     return Object.assign({ ok: true }, info, { hints: fsHints(info.record, g), gedcomx: g });
   } catch (e) {
-    return { ok: false, error: e.message };
+    return { ok: false, error: e.message, slowDown: !!e.slowDown, transient: !!e.transient };
   }
 }
 
@@ -281,7 +298,9 @@ async function fsImageCheck(imageId, d) {
   try {
     link = fsImageLink(await fsJson('/ark:/61903/3:1:' + imageId, null, d, 'image'));
   } catch (e) {
-    return { ok: true, imageId, available: false, reason: e.message };
+    // `slowDown`: FamilySearch said slow down or busy even before Capture;
+    // the owner's batch downloads take their break (PR #224 Codex 4504294846).
+    return { ok: true, imageId, available: false, reason: e.message, slowDown: !!e.slowDown };
   }
   if (!link) {
     return { ok: true, imageId, available: false,
@@ -301,7 +320,8 @@ async function fsImageCheck(imageId, d) {
     /* nothing to stop */
   }
   return r.ok ? { ok: true, imageId, available: true }
-    : { ok: true, imageId, available: false, reason: fsStatusMessage(r.status, 'image', !!d.token) };
+    : { ok: true, imageId, available: false, reason: fsStatusMessage(r.status, 'image', !!d.token),
+      slowDown: r.status === 429 || r.status === 503 };
 }
 
 // The full image behind ark:/61903/3:1:{imageId}: { ok, base64, ext,
@@ -312,7 +332,7 @@ async function fsImage(imageId, d) {
   try {
     link = fsImageLink(await fsJson('/ark:/61903/3:1:' + imageId, null, d, 'image'));
   } catch (e) {
-    return { ok: false, error: e.message };
+    return { ok: false, error: e.message, transient: !!e.transient, slowDown: !!e.slowDown };
   }
   if (!link) {
     return { ok: false, error: 'FamilySearch offers no download of this image: it is restricted to a ' +
@@ -324,15 +344,31 @@ async function fsImage(imageId, d) {
       headers: Object.assign({ Accept: 'image/jpeg' }, fsAuthHeaders(link, d.base, d.token)),
     });
   } catch (e) {
-    return { ok: false, error: 'could not reach FamilySearch for the image - check your internet connection' };
+    return { ok: false, transient: true, error: 'could not reach FamilySearch for the image - check your internet connection' };
   }
-  if (!r.ok) return { ok: false, error: fsStatusMessage(r.status, 'image', !!d.token) };
-  const blob = await r.blob();
+  if (!r.ok) {
+    const f = fsFailure(fsStatusMessage(r.status, 'image', !!d.token), r.status);
+    return { ok: false, error: f.message, transient: f.transient, slowDown: f.slowDown };
+  }
+  let blob;
+  try {
+    blob = await r.blob();
+  } catch (e) {
+    // The headers came and then the picture broke off (PR #224 Codex 4504508005).
+    return { ok: false, transient: true,
+      error: 'the image broke off while it was coming down from FamilySearch - press Capture again later' };
+  }
   if (!/^image\//.test(blob.type || '') || blob.size < 30 * 1024) {
     return { ok: false, error: 'the image came back too small to be the full record (' +
       Math.round((blob.size || 0) / 1024) + ' KB) - use FamilySearch’s Download button and drop the file in' };
   }
-  return { ok: true, base64: await d.toBase64(blob), ext: 'jpg', contentType: blob.type || 'image/jpeg' };
+  let base64;
+  try {
+    base64 = await d.toBase64(blob);
+  } catch (e) {
+    return { ok: false, transient: true, error: 'the image could not be read once it came - press Capture again later' };
+  }
+  return { ok: true, base64, ext: 'jpg', contentType: blob.type || 'image/jpeg' };
 }
 // FHA-SYNC-END familysearch
 

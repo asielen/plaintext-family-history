@@ -4,7 +4,8 @@
 // connection, and the Seen It add-on's one question. The image work
 // (canvases) is stubbed; only a real browser can check pixels.
 //
-// Used by tests/test-panel-newspapers.js and tests/test-panel-ancestry.js.
+// Used by every tests/test-panel-*.js (the batch downloads' too: `storage` holds
+// their switch and queues, `navigations` the addresses a batch sent the tab to).
 
 'use strict';
 
@@ -132,12 +133,22 @@ async function settle() { for (let i = 0; i < 20; i++) await tick(); }
 // to hold the answer back. `host` makes the archive connection answer.
 // `seenIt` is the Seen It add-on: { 'img:…': 'filed' | 'captured' |
 // { state, sid } } it knows, or undefined when it is not installed.
-// `fullPage` replaces the newspaper page download (to hold it back).
+// `fullPage` replaces the newspaper page download (to hold it back, or to
+// say it met a "slow down": return { rateHits }).
 // `fetch` is the network the panel itself reaches (Find a Grave's photos):
 // every request is recorded in `fetched`; without it, any request fails.
 // `waitReady: false` returns as soon as the panel starts (its first read of
 // the page may still be on its way); `p.ready` settles when it is done.
-async function openPanel({ url, respond, host, seenIt, fullPage, fetch, waitReady = true }) {
+// `storage` is what chrome.storage.local holds when the panel opens (the
+// batch switch, its ledgers); it is kept, so `p.storage` shows what the
+// panel wrote. Without it the store starts empty, as on a fresh install.
+// `beforePanel(window)` runs after the libraries load, before panel.js.
+// `titleFor(url)` is the title a tab shows once a batch sends it to `url`.
+// `sharedStore` is a chrome.storage.local two panels (two windows) share, used
+// as it is; `locks` is a navigator.locks they share (makeLocks). Without
+// `locks` the page has no Web Locks, as an older browser would not.
+async function openPanel({ url, respond, host, seenIt, fullPage, fetch, storage, beforePanel, titleFor,
+  sharedStore, locks, waitReady = true }) {
   const getHolds = new Map(); // tab id -> promise the next tabs.get answer waits on
   const doc = makeDocument();
   const tab = { id: 7, url };
@@ -150,8 +161,17 @@ async function openPanel({ url, respond, host, seenIt, fullPage, fetch, waitRead
   const filed = [];
   const writeFails = new Set();
   const sendFails = new Set();
-  let onUpdated = null;
+  const onUpdated = []; // every tabs.onUpdated listener (the panel's, a batch's)
+  const fireUpdated = (id, info) => Promise.all(onUpdated.slice().map((f) => f(id, info)));
   const external = [];
+  // chrome.storage.local, kept as JSON (as Chrome keeps it).
+  const store = sharedStore || JSON.parse(JSON.stringify(storage || {}));
+  // A write the browser refuses: storageFault(key) gives the reason, or null.
+  let storageFault = null;
+  const storageReads = []; // the keys of every get
+  const navigations = []; // { id, url } of every tabs.update
+  const downloads = []; // chrome.downloads.download calls (the ledger's reading copy)
+  const storageListeners = []; // chrome.storage.onChanged
   const chrome = {
     runtime: {
       lastError: undefined,
@@ -206,10 +226,79 @@ async function openPanel({ url, respond, host, seenIt, fullPage, fetch, waitRead
           chrome.runtime.lastError = undefined;
         }, 0));
       },
-      onUpdated: { addListener: (f) => { onUpdated = f; } },
+      onUpdated: {
+        addListener: (f) => { onUpdated.push(f); },
+        removeListener: (f) => {
+          const i = onUpdated.indexOf(f);
+          if (i >= 0) onUpdated.splice(i, 1);
+        },
+      },
+      // The tab loads the address it is sent to, and says so when done.
+      update: (id, props, cb) => {
+        navigations.push({ id, url: props.url });
+        const t = tabs.get(id);
+        if (!t) {
+          chrome.runtime.lastError = { message: 'No tab with id: ' + id + '.' };
+          if (cb) cb(undefined);
+          chrome.runtime.lastError = undefined;
+          return;
+        }
+        t.url = props.url;
+        t.title = titleFor ? titleFor(props.url) : t.title;
+        if (cb) cb(t);
+        setTimeout(() => fireUpdated(id, { status: 'complete' }), 0);
+      },
     },
     scripting: { executeScript: async () => {} },
-    storage: { local: { get: (d, cb) => cb(d), set: () => {} } },
+    storage: {
+      local: {
+        get: (keys, cb) => {
+          const out = {};
+          if (typeof keys === 'string') keys = [keys];
+          if (Array.isArray(keys)) {
+            storageReads.push(...keys);
+            for (const k of keys) if (k in store) out[k] = JSON.parse(JSON.stringify(store[k]));
+          } else {
+            storageReads.push(...Object.keys(keys || {}));
+            for (const [k, d] of Object.entries(keys || {})) {
+              out[k] = k in store ? JSON.parse(JSON.stringify(store[k])) : d;
+            }
+          }
+          cb(out);
+        },
+        set: (obj, cb) => {
+          const why = storageFault && Object.keys(obj).map((k) => storageFault(k)).find(Boolean);
+          if (why) {
+            chrome.runtime.lastError = { message: why };
+            if (cb) cb();
+            chrome.runtime.lastError = undefined;
+            return;
+          }
+          const changes = {};
+          for (const [k, v] of Object.entries(obj)) changes[k] = { oldValue: store[k], newValue: v };
+          Object.assign(store, JSON.parse(JSON.stringify(obj)));
+          if (cb) cb();
+          for (const f of storageListeners.slice()) f(changes, 'local');
+        },
+        remove: (k, cb) => {
+          const changes = {};
+          for (const x of [].concat(k)) {
+            changes[x] = { oldValue: store[x] };
+            delete store[x];
+          }
+          if (cb) cb();
+          for (const f of storageListeners.slice()) f(changes, 'local');
+        },
+      },
+      onChanged: { addListener: (f) => storageListeners.push(f) },
+    },
+    downloads: {
+      download: (opts, cb) => {
+        downloads.push(opts);
+        if (cb) setTimeout(() => cb(downloads.length), 0);
+      },
+      erase: (q, cb) => { if (cb) cb([]); },
+    },
   };
   const fetched = [];
   const window = {
@@ -225,8 +314,11 @@ async function openPanel({ url, respond, host, seenIt, fullPage, fetch, waitRead
   window.FHA.findagrave.pauseMs = () => 0;
   new Function('window', 'OffscreenCanvas', read('lib/newspapers.js'))(window, FakeCanvas);
   window.FHA.newspapers.fullPage = async (info) => {
-    if (fullPage) await fullPage(info);
-    return { pageId: info.pageId, canvas: new FakeCanvas(info.pageWidth, info.pageHeight), reduced: 0, tiles: 1 };
+    // `fullPage` may also say how many "slow down" answers the download
+    // waited out ({ rateHits }), as lib/newspapers.js fullPage reports them.
+    const said = fullPage ? await fullPage(info) : null;
+    return { pageId: info.pageId, canvas: new FakeCanvas(info.pageWidth, info.pageHeight), reduced: 0, tiles: 1,
+      rateHits: (said && said.rateHits) || 0 };
   };
   window.FHA.bundle = {
     base64ToBlob: (b, t) => new Blob([b], { type: t }),
@@ -251,6 +343,12 @@ async function openPanel({ url, respond, host, seenIt, fullPage, fetch, waitRead
       return { stub: 'inbox/' + spec.bundleName };
     },
   };
+  // The batch downloads' two scripts, loaded as panel.html loads them: they
+  // do nothing until panel.js installs them (switched on only).
+  new Function('window', read('lib/capture-batch.js'))(window);
+  new Function('window', 'document', 'chrome', 'navigator', read('batch.js'))(window, doc, chrome,
+    locks ? { locks } : {});
+  if (beforePanel) beforePanel(window);
   // panel.js reads FHA as the page global that window.FHA is in a browser.
   // `crypto` is the page's Web Crypto (a global in a browser and in newer Node).
   new Function('window', 'FHA', 'document', 'chrome', 'FileReader', 'navigator', 'crypto', read('panel.js'))(
@@ -265,6 +363,10 @@ async function openPanel({ url, respond, host, seenIt, fullPage, fetch, waitRead
   let nextTabId = 8;
   return {
     doc, $, tab, sent, sentTo, written, filed, writeFails, sendFails, external, fetched, ready,
+    storage: store, storageReads, navigations, downloads, window, chrome,
+    setStorageFault(fn) { storageFault = fn; },
+    // The batch box's element named `name` (its data-batch tag), or undefined.
+    batchEl: (name) => doc.body.descendants().concat([doc.body]).find((e) => e.dataset && e.dataset.batch === name),
     // Hold the next tabs.get answer for tab `id` until the returned release().
     holdNextGet(id) {
       let release = null;
@@ -273,7 +375,7 @@ async function openPanel({ url, respond, host, seenIt, fullPage, fetch, waitRead
     },
     async navigate(newUrl) {
       tab.url = newUrl;
-      await onUpdated(tab.id, { status: 'complete' });
+      await fireUpdated(tab.id, { status: 'complete' });
       await tick();
     },
     // Another tab, opened in front of the panel's own (she clicked to it).
@@ -287,7 +389,7 @@ async function openPanel({ url, respond, host, seenIt, fullPage, fetch, waitRead
     // A tab other than the panel's own loading a new page.
     async navigateTab(t, newUrl) {
       t.url = newUrl;
-      await onUpdated(t.id, { status: 'complete' });
+      await fireUpdated(t.id, { status: 'complete' });
       await tick();
     },
     // The two Re-read buttons (each holds its "reading…" a moment on purpose).
@@ -341,4 +443,45 @@ function holdFirst(respond, action) {
   return h;
 }
 
-module.exports = { openPanel, settle, tick, read, holdFirst, PORT_CLOSED };
+// navigator.locks as the panel windows of one browser share it: exclusive
+// locks by name. A request waits its turn; with { ifAvailable: true } it is
+// answered null at once while another holds the name. A lock is let go when
+// the callback's promise settles. `granted` records each grant, in order.
+function makeLocks() {
+  const held = new Set();
+  const queues = new Map(); // name -> waiting grant functions
+  const granted = [];
+  function release(name) {
+    const q = queues.get(name) || [];
+    const next = q.shift();
+    if (next) next();
+    else held.delete(name);
+  }
+  return {
+    held,
+    granted,
+    async request(name, opts, cb) {
+      if (typeof opts === 'function') {
+        cb = opts;
+        opts = {};
+      }
+      if (held.has(name)) {
+        if (opts && opts.ifAvailable) return cb(null);
+        await new Promise((resolve) => {
+          if (!queues.has(name)) queues.set(name, []);
+          queues.get(name).push(resolve);
+        });
+      } else {
+        held.add(name);
+      }
+      granted.push(name);
+      try {
+        return await cb({ name, mode: 'exclusive' });
+      } finally {
+        release(name);
+      }
+    },
+  };
+}
+
+module.exports = { openPanel, settle, tick, read, holdFirst, PORT_CLOSED, makeLocks };

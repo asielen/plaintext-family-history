@@ -287,3 +287,17 @@ test('lib/findagrave.js (the panel) takes photos only from the hosts lib/findagr
     assert.strictEqual(panel.photoUrlOk(u), fagRecord.fagPhotoUrlOk(u), String(u));
   }
 });
+
+test('content.js batch-download readers are a verbatim copy of lib/batch-sources.js', () => {
+  // Including the FamilySearch person reader, which sends the login: a drift
+  // there would be the one that sends a researcher's session elsewhere.
+  const lib = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'lib', 'batch-sources.js'), 'utf8');
+  const begin = '// FHA-SYNC-BEGIN batch-sources\n';
+  const end = '// FHA-SYNC-END batch-sources';
+  const canon = lib.slice(lib.indexOf(begin) + begin.length, lib.indexOf(end));
+  assert.ok(canon.length > 1000, 'lib sync markers not found');
+  const copy = extractBlock(/\/\/ FHA-SYNC-BEGIN batch-sources\n/, '  ' + end)
+    .split('\n').map((l) => l.replace(/^ {2}/, '')).join('\n');
+  assert.strictEqual(copy, canon);
+});

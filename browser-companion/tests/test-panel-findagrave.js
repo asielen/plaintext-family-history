@@ -475,7 +475,8 @@ test('F1/F5/F9/F12: a photo list Find a Grave stops sending after page 1 is ambe
 });
 
 test('F9: with no count on the page, a later page failing leaves the total unknown, never "all of them"', async () => {
-  const gallery = galleryOf([item(1, 'a.jpg') + item(2, 'b.jpg'), 503]);
+  // A failure that is not a "slow down" (a 503 is one, and stops the photos).
+  const gallery = galleryOf([item(1, 'a.jpg') + item(2, 'b.jpg'), 500]);
   const p = await open(CALVIN, { gallery });
   await p.capture();
   const data = await recordData(p.written[0]);
@@ -484,16 +485,18 @@ test('F9: with no count on the page, a later page failing leaves the total unkno
   assert.strictEqual(p.resultClass(), 'stage-result warn');
 });
 
-test('Codex 4502262323: a "slow down" on a later gallery page stops the photo downloads too, and says so', async () => {
-  const gallery = galleryOf(['<p class="photosCount">3 photos</p>' + item(1, 'a.jpg') + item(2, 'b.jpg'), 429]);
-  const p = await open(CALVIN, { gallery });
-  await p.capture();
-  assert.strictEqual(p.fetched.length, 0, 'no photo asked for after Find a Grave said slow down');
-  const b = p.written[0];
-  assert.deepStrictEqual(p.files(b), ['page-snapshot.html', 'record-data.json']);
-  assert.match(p.result(), /Find a Grave shows 3 photos; 0 are saved \(Find a Grave asked us to slow down \(HTTP 429\)\)/);
-  assert.match(p.result(), /2 photos were not saved \(grave-1, grave-2: not tried after Find a Grave asked us to slow down\)\. Wait a few minutes, then press Capture again: that capture is one of its own/);
-  assert.doesNotMatch(p.result(), /already saved are not downloaded again/, 'none were saved');
+test('Codex 4502262323/4503786095: a "slow down" (429 or 503) on a later gallery page stops the photo downloads too, and says so', async () => {
+  for (const status of [429, 503]) {
+    const gallery = galleryOf(['<p class="photosCount">3 photos</p>' + item(1, 'a.jpg') + item(2, 'b.jpg'), status]);
+    const p = await open(CALVIN, { gallery });
+    await p.capture();
+    assert.strictEqual(p.fetched.length, 0, 'no photo asked for after Find a Grave said slow down (' + status + ')');
+    const b = p.written[0];
+    assert.deepStrictEqual(p.files(b), ['page-snapshot.html', 'record-data.json']);
+    assert.match(p.result(), /Find a Grave shows 3 photos; 0 are saved \(Find a Grave /);
+    assert.match(p.result(), /2 photos were not saved \(grave-1, grave-2: not tried after Find a Grave asked us to slow down\)\. Wait a few minutes, then press Capture again: that capture is one of its own/);
+    assert.doesNotMatch(p.result(), /already saved are not downloaded again/, 'none were saved');
+  }
 });
 
 test('F5: a count with no photo the panel can take never says "the memorial has no photos"', async () => {

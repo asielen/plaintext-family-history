@@ -35,7 +35,11 @@
 
   const EXT = { 'image/jpeg': 'jpg', 'image/jpg': 'jpg', 'image/png': 'png', 'image/gif': 'gif', 'image/webp': 'webp' };
 
-  // One photo, full size: { ok, blob, ext } or { ok:false, error, slowDown? }.
+  // One photo, full size: { ok, blob, ext } or { ok:false, error, slowDown?,
+  // transient? }. `slowDown`: Find a Grave said slow down or busy (429/503),
+  // so no more photos are asked for now. `transient`: the cause may pass (no
+  // connection, a broken download, a busy or failing server), so a later
+  // capture is worth trying; without it the photo is refused or gone.
   // `fetchFn` is the browser's fetch (a test's stand-in).
   async function fetchPhoto(url, fetchFn) {
     if (!photoUrlOk(url)) {
@@ -48,12 +52,17 @@
       // A refused redirect lands here too: the browser says no more than "failed".
       return {
         ok: false,
+        transient: true,
         error: 'could not download the photo from Find a Grave’s image host (the connection dropped, or it ' +
           'sent the photo somewhere else, which is not followed) - press Capture again later',
       };
     }
-    if (r.status === 429) {
-      return { ok: false, slowDown: true, error: 'Find a Grave asked us to slow down (HTTP 429)' };
+    if (r.status === 429 || r.status === 503) {
+      return { ok: false, slowDown: true, transient: true,
+        error: 'Find a Grave asked us to slow down (HTTP ' + r.status + ')' };
+    }
+    if (r.status >= 500) {
+      return { ok: false, transient: true, error: 'Find a Grave is having trouble sending the photo (HTTP ' + r.status + ')' };
     }
     if (!r.ok) {
       return {
@@ -76,7 +85,7 @@
     } catch (e) {
       // The headers came but the photo itself broke off: this photo is not
       // saved, and the rest of the capture carries on (PR #221 review).
-      return { ok: false, error: 'the photo broke off while downloading - press Capture again later' };
+      return { ok: false, transient: true, error: 'the photo broke off while downloading - press Capture again later' };
     }
     const fromUrl = (/\.(jpe?g|png|gif|webp)$/i.exec(new URL(url).pathname) || [])[1];
     return { ok: true, blob, ext: EXT[type] || (fromUrl ? fromUrl.toLowerCase().replace('jpeg', 'jpg') : 'jpg') };

@@ -357,6 +357,32 @@ test('fetchTile gives up after three backoffs and says the site asked us to slow
   assert.strictEqual(calls.sleeps.length, 3);
 });
 
+test('fullPage counts the "slow down" answers it waited out, so a batch can stop after the page', async () => {
+  // A page of two tiles; the first answers 429 once, then comes.
+  const { deps, calls } = tileService([429, 'ok', 'ok']);
+  const drawn = [];
+  Object.assign(deps, {
+    canvas: (w, h) => ({ width: w, height: h, getContext: () => ({ fillRect() {}, drawImage: (b, x, y) => drawn.push([x, y]) }) }),
+    bitmap: async () => ({ width: 1488, height: 1448 }),
+  });
+  const info = { pageId: 'rate-test-1', pageWidth: 2976, pageHeight: 1448, token: 't', me: { id: 7 } };
+  const page = await lib.fullPage(info, null, deps);
+  assert.strictEqual(page.rateHits, 1);
+  assert.strictEqual(page.tiles, 2);
+  assert.strictEqual(calls.fetches, 3);
+  assert.deepStrictEqual(drawn, [[0, 0], [1488, 0]]);
+  // The same page again is the stitched one: no request, nothing waited out.
+  const again = await lib.fullPage(info, null, deps);
+  assert.strictEqual(again.rateHits, 0);
+  assert.strictEqual(calls.fetches, 3);
+  assert.strictEqual(again.canvas, page.canvas);
+  // A clean page counts none.
+  const clean = tileService(['ok']);
+  Object.assign(clean.deps, { canvas: deps.canvas, bitmap: deps.bitmap });
+  const p2 = await lib.fullPage(Object.assign({}, info, { pageId: 'rate-test-2' }), null, clean.deps);
+  assert.strictEqual(p2.rateHits, 0);
+});
+
 // ── a clipping with nothing to cut out ───────────────────────────────────────
 
 test('clipCanvas names a clipping with no area instead of failing as a canvas error', () => {
@@ -451,4 +477,29 @@ test('fetchTile never retries before the site\'s Retry-After', async () => {
     await lib.fetchTile('u', null, deps);
     assert.ok(calls.sleeps[0] >= 120000, 'waited ' + calls.sleeps[0] + ' ms');
   }
+});
+
+test('Codex 4503849177: a page that met a "slow down" and then lost a later tile says it met one', async () => {
+  // Three tiles: the first answers 429 once and then comes; the second
+  // comes; the third's connection drops.
+  const { deps } = tileService([429, 'ok', 'ok', 'net']);
+  Object.assign(deps, {
+    canvas: (w, h) => ({ width: w, height: h, getContext: () => ({ fillRect() {}, drawImage() {} }) }),
+    bitmap: async () => ({ width: 1488, height: 1448 }),
+  });
+  const info = { pageId: 'rate-test-lost', pageWidth: 1488 * 3, pageHeight: 1448, token: 't', me: { id: 7 } };
+  await assert.rejects(lib.fullPage(info, null, deps), (e) => {
+    assert.match(e.message, /could not reach Newspapers\.com/);
+    assert.strictEqual(e.rateHits, 1);
+    assert.strictEqual(e.slowDown, true);
+    return true;
+  });
+  // A page that lost a tile with no "slow down" before it says none.
+  const clean = tileService(['net']);
+  Object.assign(clean.deps, { canvas: deps.canvas, bitmap: deps.bitmap });
+  await assert.rejects(lib.fullPage(Object.assign({}, info, { pageId: 'rate-test-lost-2' }), null, clean.deps), (e) => {
+    assert.strictEqual(e.rateHits, 0);
+    assert.strictEqual(e.slowDown, false);
+    return true;
+  });
 });
