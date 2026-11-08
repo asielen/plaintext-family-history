@@ -72,7 +72,7 @@ import argparse
 import sys
 from pathlib import Path, PurePosixPath
 
-import yaml
+import yaml  # noqa: F401 - a missing PyYAML fails here, where fha.py explains it
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -96,6 +96,7 @@ from _lib import (
     walk_files,
     write_text_exact_atomic,
     yaml_inline,
+    safe_load_yaml,
 )
 
 import photoindex
@@ -416,7 +417,7 @@ def _split_file_value(raw: str) -> tuple[str, str]:
                 break
         value_repr, trailing = s[:cut].rstrip(), s[cut:]
     try:
-        path = yaml.safe_load(value_repr)
+        path = safe_load_yaml(value_repr)
     except Exception:
         path = value_repr
     if not isinstance(path, str):

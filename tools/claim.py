@@ -270,6 +270,7 @@ from _lib import (
     write_text_exact_atomic,
     yaml_edtf,
     yaml_inline,
+    safe_load_yaml,
 )
 
 configure_utf8_stdout()
@@ -848,7 +849,7 @@ def _apply_claim_review(
     # line-level read and YAML disagree about which claim this is - the edit
     # has no safe landing place, so refuse rather than touch the wrong claim.
     try:
-        parsed_items = yaml.safe_load('\n'.join(lines[content_start:content_end]))
+        parsed_items = safe_load_yaml('\n'.join(lines[content_start:content_end]))
     except yaml.YAMLError:
         parsed_items = None
     aligned = (

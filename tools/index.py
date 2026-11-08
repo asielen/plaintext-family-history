@@ -100,9 +100,10 @@ from _lib import (
     vital_subjects,
     walk_files,
     write_path_manifest,
+    safe_load_yaml,
 )
 
-import yaml
+import yaml  # noqa: F401 - a missing PyYAML fails here, where fha.py explains it
 
 configure_utf8_stdout()
 
@@ -723,7 +724,7 @@ def _index_places(conn: sqlite3.Connection, archive_root: Path) -> list[str]:
         return warnings
     try:
         with open(places_path, encoding='utf-8') as f:
-            places = yaml.safe_load(f)
+            places = safe_load_yaml(f)
     except Exception as exc:
         print(
             f'WARNING: places/places.yaml could not be parsed ({exc}); '

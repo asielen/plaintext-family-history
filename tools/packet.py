@@ -243,6 +243,7 @@ from _lib import (
     walk_files,
     write_text_exact_atomic,
     yaml_inline,
+    safe_load_yaml,
 )
 
 configure_utf8_stdout()
@@ -360,7 +361,7 @@ def _record_restriction(path: Path) -> tuple[object, str | None]:
             'privacy marker can live'
         )
     try:
-        meta = yaml.safe_load(fm.group(1))
+        meta = safe_load_yaml(fm.group(1))
     except yaml.YAMLError:
         return None, 'the frontmatter is not valid YAML'
     if meta is None:
@@ -444,7 +445,7 @@ def _redact_source_record_text(
     end = body_start + m.end(1)
     block = text[start:end]
     try:
-        parsed = yaml.safe_load(block)
+        parsed = safe_load_yaml(block)
     except yaml.YAMLError:
         return None
     if parsed is None:
@@ -624,7 +625,7 @@ def _redact_frontmatter_files_field(fm_text: str) -> tuple[str, int] | None:
         # simplest to re-dump the whole line (same shape
         # `_strip_frontmatter_list_entries` uses for its own inline arm).
         try:
-            doc = yaml.safe_load(key_line)
+            doc = safe_load_yaml(key_line)
         except yaml.YAMLError:
             return None
         value = doc.get('files') if isinstance(doc, dict) else None
@@ -689,7 +690,7 @@ def _redact_frontmatter_files_field(fm_text: str) -> tuple[str, int] | None:
         break
     block = fm_text[key_end:block_end]
     try:
-        doc = yaml.safe_load(fm_text[key_start:block_end])
+        doc = safe_load_yaml(fm_text[key_start:block_end])
     except yaml.YAMLError:
         return None
     value = doc.get('files') if isinstance(doc, dict) else None
@@ -809,7 +810,7 @@ def _strip_frontmatter_list_entries(
         # Inline flow form: the whole list lives on the key line, so the
         # "surgery" is rewriting that one line (or dropping it entirely).
         try:
-            doc = yaml.safe_load(key_line)
+            doc = safe_load_yaml(key_line)
         except yaml.YAMLError:
             return None
         value = doc.get(key) if isinstance(doc, dict) else None
@@ -846,7 +847,7 @@ def _strip_frontmatter_list_entries(
         break
     block = fm_text[key_end:block_end]
     try:
-        doc = yaml.safe_load(fm_text[key_start:block_end])
+        doc = safe_load_yaml(fm_text[key_start:block_end])
     except yaml.YAMLError:
         return None
     value = doc.get(key) if isinstance(doc, dict) else None

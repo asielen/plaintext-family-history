@@ -137,6 +137,7 @@ from _lib import (
     split_log_entries,
     write_text_exact_atomic,
     yaml_inline,
+    safe_load_yaml,
 )
 
 configure_utf8_stdout()
@@ -1355,7 +1356,7 @@ def run_place_edit_note(
 
     pid = normalize_id(place_id)
     try:
-        entries = yaml.safe_load(registry_text) or []
+        entries = safe_load_yaml(registry_text) or []
     except yaml.YAMLError as e:
         return result_fail(result, 'refused',
                            f'places/places.yaml could not be parsed ({e}) - fix the '
@@ -1426,7 +1427,7 @@ def run_place_note(
 
     pid = normalize_id(place_id)
     try:
-        entries = yaml.safe_load(registry_text) or []
+        entries = safe_load_yaml(registry_text) or []
     except yaml.YAMLError as e:
         return result_fail(result, 'refused',
                            f'places/places.yaml could not be parsed ({e}) - fix the '
