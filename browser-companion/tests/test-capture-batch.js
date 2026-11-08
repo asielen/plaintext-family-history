@@ -715,3 +715,90 @@ test('one writer: storage the browser refuses is said, never taken for an empty 
   assert.strictEqual((await store.handle(intent('elsewhere', [['get']]))).ok, false);
   assert.deepStrictEqual(mem.data.ancBatchLedger, before);
 });
+
+// ── PR #231: every rule the deleted merge carried, kept by the one writer ───
+
+test('Codex 4505299723: four slow-downs in a row - the fourth is counted, and never cuts the long break to half an hour', async () => {
+  const mem = memory();
+  const store = STORE.create(mem.deps);
+  const slow = async () => (await store.handle(intent('ancestry', [['rateLimit']]))).results[0];
+  const first = await slow();
+  const second = await slow();
+  assert.strictEqual(second.until, Math.max(first.until, second.until), 'the second shortened the first break');
+  const third = await slow();
+  assert.strictEqual(third.kind, 'long');
+  const fourth = await slow();
+  const P = mem.data.ancBatchLedger.pacing;
+  assert.deepStrictEqual(fourth, { until: third.until, kind: 'long' });
+  assert.deepStrictEqual([P.resumeAt, P.resumeReason, P.rateEvents], [third.until, 'long', 1]);
+});
+
+test('Codex 4505299727 / audit W2: a done record stays done - an older batch result (in part, set aside, tried again, a stop) or a later part-save by hand never undoes it', async () => {
+  const mem = memory();
+  const store = STORE.create(mem.deps);
+  await store.handle(intent('ancestry', [['addRecords', [anc('90001', '1000001')], 'test']]));
+  await store.handle(intent('ancestry', [['manual', { ok: true, site: 'ancestry', bundle: 'calvin-by-hand',
+    record: { dbId: '90001', recordId: '1000001', name: 'Calvin Hartley' } }]]));
+  const saved = clone(mem.data.ancBatchLedger.items['90001:1000001']);
+  assert.strictEqual(saved.state, 'done');
+  // The batch's own result for the same record, still on its way.
+  const r = await store.handle(intent('ancestry', [
+    ['markPartial', '90001:1000001', 'calvin-batch', 'saved without its scan', 'img:90001:4000123_00045'],
+    ['markRetry', '90001:1000001', 'this page shows no record'],
+    ['markSetAside', '90001:1000001', 'not the one queued'],
+    ['markRefused', '90001:1000001', true],
+    ['lastError', '90001:1000001', 'Ancestry would not give this record'],
+    // ...and a later Capture by hand of it that missed its scan (PR #231 audit W2).
+    ['manual', { ok: true, site: 'ancestry', partial: true, bundle: 'calvin-again', note: 'the scan did not come',
+      imageKey: 'img:90001:4000123_00045', record: { dbId: '90001', recordId: '1000001', name: 'Calvin Hartley' } }]]));
+  assert.deepStrictEqual(r.results[3], 0, 'a stop was counted against a done record');
+  assert.deepStrictEqual(mem.data.ancBatchLedger.items['90001:1000001'], saved);
+  assert.strictEqual(CB.nextPending(mem.data.ancBatchLedger), null);
+});
+
+test('PR #231 sweep: two windows queuing the same record join its people, fill a missing title and address, and keep the order', async () => {
+  const mem = memory();
+  const store = STORE.create(mem.deps);
+  await Promise.all([
+    store.handle(intent('ancestry', [['addRecords', [anc('90001', '1000001', ['Calvin Hartley'])], 'file: a.ged', 'a.ged']])),
+    store.handle(intent('ancestry', [['addRecords', [Object.assign(anc('90001', '1000001', ['Harriet Hartley']),
+      { title: '1880 census, Fairview' })], 'page: Harriet', 'Harriet']])),
+    store.handle(intent('newspapers', [['listPage', { epoch: 0, user: 'HartleyResearch', nextCursor: null, more: false,
+      clippings: [{ clipping_id: 101, page_id: 1, url: '/article/x/101/', user_username: 'HartleyResearch' }] }]])),
+  ]);
+  const it = mem.data.ancBatchLedger.items['90001:1000001'];
+  assert.deepStrictEqual([it.persons, it.title, mem.data.ancBatchLedger.order], [['Calvin Hartley', 'Harriet Hartley'],
+    '1880 census, Fairview', ['90001:1000001']]);
+  // A clipping first queued without an address gets it from her list.
+  await store.handle(intent('newspapers', [['manual', { ok: true, site: 'newspapers',
+    results: [{ ok: true, id: 202, bundle: 'b202', title: 'Wedding' }] }]]));
+  assert.strictEqual(mem.data.npBatchLedger.items['202'].url, null);
+  await store.handle(intent('newspapers', [['relist'], ['listPage', { epoch: 1, user: 'HartleyResearch', nextCursor: null,
+    more: false, clippings: [{ clipping_id: 202, page_id: 1, url: '/article/x/202/', user_username: 'HartleyResearch' }] }]]));
+  const np = mem.data.npBatchLedger;
+  assert.deepStrictEqual([np.items['202'].url, np.items['202'].state], ['https://www.newspapers.com/article/x/202/', 'done']);
+  // Both windows' log lines are kept.
+  assert.ok(mem.data.ancBatchLedger.log.some((l) => /a\.ged: 1 found, 1 new/.test(l)));
+  assert.ok(mem.data.ancBatchLedger.log.some((l) => /Harriet: 1 found, 0 new/.test(l)));
+});
+
+test('PR #231 sweep: a stop count, a "refused on its own" mark and a part-save count belong to the record\'s state - cleared when it is saved or queued again', async () => {
+  const mem = memory();
+  const store = STORE.create(mem.deps);
+  await store.handle(intent('newspapers', [['manual', { ok: true, site: 'newspapers', results: [] }]]));
+  mem.data.npBatchLedger.items = {
+    101: { id: 101, url: 'https://www.newspapers.com/article/x/101/', state: 'queued', tries: 0 },
+    202: { id: 202, url: 'https://www.newspapers.com/article/x/202/', state: 'queued', tries: 0 },
+  };
+  mem.data.npBatchLedger.order = ['101', '202'];
+  await store.handle(intent('newspapers', [['markRefused', '101', true], ['markRefused', '101', true],
+    ['markSetAside', '101', 'refused twice'], ['markRefused', '202'], ['markPartial', '202', 'b', 'no page image']]));
+  let L = mem.data.npBatchLedger;
+  assert.deepStrictEqual([L.items['101'].state, L.items['101'].stops, L.items['101'].ownRefusal], ['failed', 2, true]);
+  assert.deepStrictEqual([L.items['202'].state, L.items['202'].stops, L.items['202'].partialTries], ['partial', 1, 1]);
+  await store.handle(intent('newspapers', [['requeueSetAside'], ['start'], ['markDone', '202', 'b2']]));
+  L = mem.data.npBatchLedger;
+  assert.deepStrictEqual([L.items['101'].state, L.items['101'].stops, 'ownRefusal' in L.items['101'],
+    L.items['101'].setAsideBefore], ['queued', 0, false, 'refused twice']);
+  assert.deepStrictEqual([L.items['202'].state, L.items['202'].stops, 'again' in L.items['202']], ['done', 0, false]);
+});

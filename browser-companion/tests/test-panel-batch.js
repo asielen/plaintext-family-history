@@ -2175,3 +2175,100 @@ test('one writer: a window that is not running shows another window\'s change to
   await settle();
   assert.match(b.batchEl('anc-status').textContent, /^Not running\. 0 done, 1 to go\./);
 });
+
+test('Codex 4505299727: a record saved by hand in another window while the batch was saving it stays done', async () => {
+  const sharedStore = JSON.parse(JSON.stringify(Object.assign({}, ON, { ancBatchLedger: ancLedger([CALVIN, ETHEL]) })));
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const base = ancestrySite();
+  // Window A's batch: Calvin's scan will not come, so it is saved in part.
+  const a = await openPanel({ url: HARRIET, sharedStore, respond: async (msg, tab) => {
+    if (msg.action === 'ancestryRecordInfo' && tab.url === CALVIN) await gate;
+    if (msg.action === 'ancestryImage') return { ok: false, transient: true, error: 'the scan stopped coming part way' };
+    return base(msg, tab);
+  } });
+  quick(a);
+  const run = a.batchEl('anc-start').fire('click');
+  try {
+    await settle();
+    // Window B: Calvin by hand, whole.
+    const b = await openPanel({ url: CALVIN, sharedStore, respond: base });
+    await b.capture();
+    await settle();
+    assert.strictEqual(sharedStore.ancBatchLedger.items['90001:1000001'].note, 'saved by hand');
+    release();
+    await run;
+    await settle();
+    const it = sharedStore.ancBatchLedger.items['90001:1000001'];
+    assert.deepStrictEqual([it.state, it.note], ['done', 'saved by hand']);
+  } finally {
+    release();
+    await a.batchEl('anc-pause').fire('click');
+    await Promise.race([run, nap(3000)]);
+  }
+});
+
+test('Codex 4505299730: a first lease renewal that fails ends the run as any run ends - the lease is let go, and the next Start works', async () => {
+  const p = await openPanel({ url: HARRIET, respond: ancestrySite(), storage: Object.assign({}, ON, { ancBatchLedger: ancLedger([CALVIN]) }) });
+  quick(p);
+  let leaseWrites = 0;
+  // The claim is written; its first renewal is refused.
+  p.setStorageFault((k) => (k === 'batchLease' && ++leaseWrites === 2 ? 'QUOTA_BYTES quota exceeded' : null));
+  await start(p, 'anc');
+  assert.deepStrictEqual(p.navigations, []);
+  assert.match(p.batchEl('anc-status').textContent,
+    /^Did not start: the browser could not save the batch’s progress \(QUOTA_BYTES quota exceeded\), so nothing was downloaded/);
+  assert.strictEqual(p.storage.batchLease, undefined, 'the lease was kept');
+  assert.strictEqual(p.batchEl('anc-start').disabled, false);
+  p.setStorageFault(null);
+  await start(p, 'anc');
+  assert.match(p.batchEl('anc-status').textContent, /^Finished\. 1 done/);
+});
+
+test('PR #231 audit W1 (#224 F2 on the busy-page path): a "429" page met just after another window\'s slow-down is counted - the third in a row gets the long break', async () => {
+  const L = ancLedger([CALVIN, ETHEL]);
+  L.pacing = { sinceShort: 0, shortEvery: 40, rateEvents: 1, resumeReason: 'ratelimit', resumeAt: Date.now() - 1000 };
+  const sharedStore = JSON.parse(JSON.stringify(Object.assign({}, ON, { ancBatchLedger: L })));
+  const a = await openPanel({ url: HARRIET, sharedStore, respond: ancestrySite(),
+    titleFor: (u) => (u === CALVIN ? '429 Too Many Requests' : 'Ancestry') });
+  quick(a);
+  const first = a.holdNextGet(a.tab.id);
+  const run = a.batchEl('anc-start').fire('click');
+  await settle();
+  first();
+  // A's tab has gone to Calvin; its "429" page is about to be read.
+  const page = a.holdNextGet(a.tab.id);
+  await settle();
+  await nap(50);
+  await settle();
+  assert.deepStrictEqual(a.navigations.map((n) => n.url), [CALVIN]);
+  // Window B: the second slow-down in a row.
+  const b = await slowSourcesWindow('https://www.ancestry.com/family-tree/person/tree/1/person/2/facts', sharedStore, 'anc');
+  await b.batchEl('anc-page').fire('click');
+  await settle();
+  assert.deepStrictEqual([sharedStore.ancBatchLedger.pacing.rateEvents, sharedStore.ancBatchLedger.pacing.resumeReason], [2, 'ratelimit']);
+  page();
+  await Promise.race([run, nap(3000)]);
+  await settle();
+  const p = sharedStore.ancBatchLedger.pacing;
+  assert.match(a.batchEl('anc-status').textContent, /^Stopped: Ancestry answered with a busy or error page/);
+  assert.deepStrictEqual([p.resumeReason, p.rateEvents], ['long', 0], 'the third slow-down in a row got ' + p.resumeReason);
+  assert.ok(p.resumeAt > Date.now() + 3.5 * 3600 * 1000);
+});
+
+test('PR #231 audit W2: a record the batch saved in full stays done when a later Capture by hand of it misses its scan - the next Start never downloads it again', async () => {
+  const L = ancLedger([CALVIN, ETHEL]);
+  Object.assign(L.items['90001:1000001'], { state: 'done', bundle: 'calvin-1910-census-20261101', doneAt: '2026-11-01T00:00:00.000Z' });
+  let image = { ok: false, transient: true, error: 'the scan stopped coming part way' };
+  const base = ancestrySite();
+  const p = await openPanel({ url: CALVIN, storage: Object.assign({}, ON, { ancBatchLedger: L }),
+    respond: (msg, tab) => (msg.action === 'ancestryImage' && image ? image : base(msg, tab)) });
+  quick(p);
+  await p.capture();
+  await settle();
+  const it = p.storage.ancBatchLedger.items['90001:1000001'];
+  assert.deepStrictEqual([it.state, it.bundle, 'imageKey' in it], ['done', 'calvin-1910-census-20261101', false]);
+  image = null;
+  await start(p, 'anc');
+  assert.deepStrictEqual(p.navigations.map((n) => n.url), [ETHEL]);
+});

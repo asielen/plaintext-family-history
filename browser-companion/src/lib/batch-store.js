@@ -82,6 +82,7 @@
       markHeld(L, key, where) { CB.markHeld(L, key, where); },
       markDone(L, key, bundle, note) { CB.markDone(L, key, bundle, note || null); },
       markPartial(L, key, bundle, note, imageKey) {
+        if (CB.isDone(L.items[key])) return; // a done record stays done
         CB.markPartial(L, key, bundle, note || null);
         if (imageKey && L.items[key]) L.items[key].imageKey = imageKey;
       },
@@ -91,16 +92,28 @@
       // shown to be that record's alone. Answers the count.
       markRefused(L, key, own) {
         const stops = CB.markRefused(L, key);
-        if (own && L.items[key]) L.items[key].ownRefusal = true;
+        if (own && stops && L.items[key]) L.items[key].ownRefusal = true;
         return stops;
       },
-      lastError(L, key, why) { if (L.items[key]) L.items[key].lastError = String(why || '').slice(0, 400); },
+      lastError(L, key, why) {
+        if (L.items[key] && !CB.isDone(L.items[key])) L.items[key].lastError = String(why || '').slice(0, 400);
+      },
       // The site said "slow down": the break. `unlessAhead`: only if no
       // break is ahead already (a run stopping on a slow-down it already
       // took the break for). Answers the plan, or null.
+      // The event always counts; a break already stored whose deadline is
+      // later (the long one, after the third in a row) stands, with its
+      // reason - a fourth "slow down" during it never cuts it to half an hour.
       rateLimit(L, opts) {
         if (opts && opts.unlessAhead && L.pacing && L.pacing.resumeAt > now()) return null;
-        return CB.planRateLimit(L, now());
+        const held = cooldownAhead(L) ? { until: L.pacing.resumeAt, kind: L.pacing.resumeReason } : null;
+        const plan = CB.planRateLimit(L, now());
+        if (held && held.until > plan.until) {
+          L.pacing.resumeAt = held.until;
+          L.pacing.resumeReason = held.kind;
+          return held;
+        }
+        return plan;
       },
       // The ordinary gap after a capture - unless a "slow down" break another
       // window recorded is still ahead: that break stands, whole, and its
@@ -168,6 +181,8 @@
       if (!key) return;
       CB.addRecords(out.site, L, [Object.assign({ title: out.record.name || '' }, out.record)], 'by hand');
       if (out.partial) {
+        // Saved in part by hand, after a save in full: it stays done.
+        if (CB.isDone(L.items[key])) return;
         CB.markPartial(L, key, out.bundle, 'saved by hand' + (out.note ? ', ' + out.note : ''));
         if (out.imageKey && L.items[key]) L.items[key].imageKey = out.imageKey;
       } else {

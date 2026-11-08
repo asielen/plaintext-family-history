@@ -326,8 +326,14 @@
       if (!tab) throw new Stop('the batch’s tab was closed');
       if (CHECK_RE.test(tab.title || '')) throw new Stop(name + ' showed a security check page');
       if (BUSY_RE.test(tab.title || '')) {
+        const slow = /429|too many requests|503|unavailable/i.test(tab.title);
+        // A "slow down" page is counted where it is met, as every other
+        // slow-down is - never left to the run's stop, which skips the count
+        // when another window's break is already ahead (PR #231 audit W1, a
+        // regression of #224 F2: the third in a row must get the long break).
+        if (slow) await slowDownBreak(siteName, null);
         const e = new Stop(name + ' answered with a busy or error page ("' + String(tab.title).slice(0, 80) + '")',
-          /429|too many requests|503|unavailable/i.test(tab.title) ? 'slowdown' : 'stop');
+          slow ? 'slowdown' : 'stop');
         e.atRecord = true;
         throw e;
       }
@@ -548,8 +554,7 @@
       }
       active = { site: siteName, tabId, stop: false, fails: 0 };
       leaseAt = 0;
-      await holdLease(siteName, true);
-      const leaseTimer = setInterval(() => holdLease(siteName, true).catch(() => {}), 60 * 1000);
+      let leaseTimer = null;
       buttons();
       hooks.setDriving(true);
       let L = null;
@@ -558,6 +563,10 @@
       let downloaded = false;
       active.onCapture = () => { downloaded = true; };
       try {
+        // The first renewal too is the run's: if it fails, the run ends as
+        // any run does - its lease let go, Start free again.
+        await holdLease(siteName, true);
+        leaseTimer = setInterval(() => holdLease(siteName, true).catch(() => {}), 60 * 1000);
         // Pacing made ready; the records saved in part last time are asked
         // about and captured again now.
         L = {};
@@ -641,7 +650,7 @@
               : 'Look at the tab (signed in? a security check?), then press Start to carry on. ') + countsLine(L), 'error');
         }
       } finally {
-        clearInterval(leaseTimer);
+        if (leaseTimer) clearInterval(leaseTimer);
         active = null;
         hooks.setDriving(false);
         buttons();

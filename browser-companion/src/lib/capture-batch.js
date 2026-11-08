@@ -316,9 +316,16 @@
   // Set aside with the reason: the page shown was not a record the batch can
   // save as the one queued. Not tried again until the owner presses "Try the
   // set-aside ones again" (requeueSetAside); the reading copy lists it.
+  // A record done stays done: a result that arrives after it was saved (a
+  // batch capture still on its way when she saved it by hand, in another
+  // window) never sets it aside, tries it again, counts a stop against it or
+  // marks it saved in part. Nothing re-opens a done record; Seen It is what
+  // says whether the archive holds it.
+  const isDone = (it) => !!it && it.state === 'done';
+
   function markSetAside(L, key, reason, now) {
     const it = L.items[key];
-    if (!it) return;
+    if (!it || isDone(it)) return;
     it.tries = (it.tries || 0) + 1;
     it.state = 'failed';
     it.lastError = String(reason || '').slice(0, 400);
@@ -330,7 +337,7 @@
   // queue, then set aside.
   function markRetry(L, key, reason, now) {
     const it = L.items[key];
-    if (!it) return;
+    if (!it || isDone(it)) return;
     if ((it.tries || 0) + 1 >= MAX_TRIES) {
       markSetAside(L, key, reason, now);
       return;
@@ -348,7 +355,7 @@
   // MAX_PARTIAL tries it counts as done, with the note saying what is missing.
   function markPartial(L, key, bundle, note, now) {
     const it = L.items[key];
-    if (!it) return;
+    if (!it || isDone(it)) return;
     it.partialTries = (it.partialTries || 0) + 1;
     if (it.partialTries >= MAX_PARTIAL) {
       markDone(L, key, bundle, (note ? note + '; ' : '') + 'still incomplete after ' + MAX_PARTIAL + ' tries', now);
@@ -397,7 +404,7 @@
   // A stop counted against one record (src/batch.js stopAtRecord).
   function markRefused(L, key, now) {
     const it = L.items[key];
-    if (!it) return 0;
+    if (!it || isDone(it)) return 0;
     it.stops = (it.stops || 0) + 1;
     return it.stops;
   }
@@ -665,7 +672,7 @@
   const api = {
     PACING, SITES, NP_LIST_MAX_PAGES, MAX_PER_RUN, MAX_TRIES, MAX_PARTIAL, MAX_FAILS_IN_A_ROW, MAX_TROUBLE_TRIES,
     between, npClipUrl, newLedger, repair, logEvent, addRecords, addClippings,
-    markDone, markHeld, markSetAside, markRetry, markPartial, markRefused, requeuePartials, requeueSetAside,
+    isDone, markDone, markHeld, markSetAside, markRetry, markPartial, markRefused, requeuePartials, requeueSetAside,
     isCooldown, nextPending, counts, stopRule, causeOf,
     ensurePacing, planRateLimit, planAfterCapture, classifyError,
     parseGedcom, parseMemorialList, ledgerFileBody,
