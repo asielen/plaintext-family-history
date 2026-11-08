@@ -853,5 +853,107 @@ class ReadOnlyRecordIsHonouredTests(unittest.TestCase):
         self.assertEqual(self.record.read_text(encoding='utf-8'), 'EDITED BY ROOT\n')
 
 
+# ── 10. A record another program is still reading (Windows) ────────────────
+
+class WindowsScannerLockTests(unittest.TestCase):
+    """A batch that writes one record twice in quick succession must not stop.
+
+    On Windows a rename onto a file fails with PermissionError while another
+    program holds it open, and antivirus or the search indexer opens every
+    fresh file for a moment. A 275-claim `fha claim` batch stopped at claim 60
+    on exactly this (#225 follow-up). The writer now waits it out - on Windows
+    only, for PermissionError only, a bounded number of times.
+
+    The platform question is answered through `_lib`'s own seam rather than by
+    patching `os.name`, which pathlib and tempfile also read mid-write, and
+    `time.sleep` is stubbed so the bound costs no real seconds.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self._tmp.name)
+        self.record = self.dir / 'census.md'
+        self.record.write_text('OLD\n', encoding='utf-8', newline='')
+        self.calls = 0
+        sleep = mock.patch.object(_lib.time, 'sleep')
+        self.slept = sleep.start()
+        self.addCleanup(sleep.stop)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _locked_for(self, refusals: int, error=None):
+        """os.replace that refuses the first `refusals` calls, then really renames."""
+        real_replace = os.replace
+
+        def fake(src, dst):
+            self.calls += 1
+            if self.calls <= refusals:
+                raise error or PermissionError(
+                    13, 'Access is denied', str(dst))
+            return real_replace(src, dst)
+        return mock.patch.object(os, 'replace', fake)
+
+    def _on(self, windows: bool):
+        return mock.patch.object(_lib, '_replace_retries_permission_errors',
+                                 return_value=windows)
+
+    def _listing(self) -> list[str]:
+        return sorted(p.name for p in self.dir.iterdir())
+
+    def test_a_brief_lock_on_windows_is_waited_out(self) -> None:
+        with self._on(True), self._locked_for(2):
+            _lib.write_text_exact_atomic(self.record, 'NEW\n')
+        self.assertEqual(self.record.read_text(encoding='utf-8'), 'NEW\n')
+        self.assertEqual(self.calls, 3)
+        self.assertEqual(self._listing(), ['census.md'])
+
+    def test_on_posix_a_permission_error_is_raised_at_once(self) -> None:
+        # A POSIX rename is never refused because a reader has the file open,
+        # so a PermissionError there is a real permission problem: no waiting.
+        with self._on(False), self._locked_for(2):
+            with self.assertRaises(PermissionError):
+                _lib.write_text_exact_atomic(self.record, 'NEW\n')
+        self.assertEqual(self.calls, 1)
+        self.slept.assert_not_called()
+        self.assertEqual(self.record.read_text(encoding='utf-8'), 'OLD\n')
+        self.assertEqual(self._listing(), ['census.md'])
+
+    def test_a_lock_that_never_clears_gives_up_after_the_bound(self) -> None:
+        with self._on(True), self._locked_for(10_000):
+            with self.assertRaises(PermissionError) as caught:
+                _lib.write_text_exact_atomic(self.record, 'NEW\n')
+        self.assertEqual(self.calls, _lib.REPLACE_RETRY_ATTEMPTS)
+        # The caller's plain "cannot write ..." refusal reads as it always did.
+        self.assertIn('Access is denied', str(caught.exception))
+        self.assertEqual(self.record.read_text(encoding='utf-8'), 'OLD\n')
+        self.assertEqual(self._listing(), ['census.md'], 'the temp file was left behind')
+
+    def test_other_errors_are_never_retried(self) -> None:
+        disk_full = OSError(errno.ENOSPC, 'No space left on device')
+        with self._on(True), self._locked_for(1, error=disk_full):
+            with self.assertRaises(OSError):
+                _lib.write_text_exact_atomic(self.record, 'NEW\n')
+        self.assertEqual(self.calls, 1)
+        self.slept.assert_not_called()
+        self.assertEqual(self._listing(), ['census.md'])
+
+    def test_the_safety_copy_waits_out_a_lock_too(self) -> None:
+        # The originals backup lands its copy the same way (a `.part` temp
+        # renamed into place), so it shares the wait.
+        archive = self.dir / 'archive'
+        photo = archive / 'photos' / 'farm.jpg'
+        photo.parent.mkdir(parents=True)
+        photo.write_bytes(b'pretend jpeg')
+        safety = self.dir / 'safety'
+        policy = _lib.OriginalBackup(archive, {'originals_backup': str(safety)})
+        self.assertIsNone(policy.refusal)
+        with self._on(True), self._locked_for(2):
+            policy.ensure(photo)
+        copies = [p for p in safety.rglob('*') if p.is_file()]
+        self.assertEqual([p.read_bytes() for p in copies], [b'pretend jpeg'])
+        self.assertEqual(self.calls, 3)
+
+
 if __name__ == '__main__':
     unittest.main()

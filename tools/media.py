@@ -153,6 +153,7 @@ from _lib import (
     load_fha_yaml,
     parse_filename,
     pip_command,
+    replace_with_retry,
     resolve_path,
     resolve_root_arg,
 )
@@ -1047,7 +1048,7 @@ def run_media_dedupe(
                 os.makedirs(parent, exist_ok=True)
             with open(tmp, 'w', encoding='utf-8') as fh:
                 fh.write(json.dumps(payload, indent=2) + '\n')
-            os.replace(tmp, dest)
+            replace_with_retry(tmp, dest)   # waits out a Windows scanner on a re-run's report
         except OSError as e:
             if os.path.exists(tmp):
                 try:

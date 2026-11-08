@@ -1094,8 +1094,8 @@ def run_claim(
 ) -> Result:
     """Edit one claim (status move and/or field corrections); return a Result.
 
-    `data` is {'status': 'ok'|'invalid-id'|'invalid-status'|'invalid-type'|
-    'no-op'|'not-found'|'refused'|'failed', 'claim_id', 'before_status',
+    `data` is {'status': 'ok'|'already-done'|'invalid-id'|'invalid-status'|
+    'invalid-type'|'no-op'|'not-found'|'refused'|'failed', 'claim_id', 'before_status',
     'after_status', 'reviewed', 'source', 'source_id'}. `source` is the record
     path (kept for backward compat); `source_id` is the canonical `S-…` id of
     the holding source, the field a downstream reindexer (`fha serve`) reads to
@@ -1112,6 +1112,15 @@ def run_claim(
     docstring): at least one of status/value/date/claim_type/place/
     place_text/persons/confidence/information/evidence/anchor/notes must be
     given, or the call is a plain `no-op` refusal.
+    `already-done` is the other "nothing happens" outcome, and the opposite
+    kind: the edit asked for is already what the record says (the claim is
+    already `accepted` with that `reviewed:` date - a rerun of a batch that
+    stopped part way), so nothing is written and the call SUCCEEDS (exit 0,
+    nothing in `changed`). `no-op` is a refusal of a call that asked for
+    nothing; `already-done` is a request the archive had already met. Before
+    #225's follow-up such a rerun rewrote the file with identical bytes, and
+    on Windows every needless rewrite is another chance to collide with a
+    scanner still reading the last one.
     `reviewed:` is stamped only together with a `status` move, exactly as
     before - passing `reviewed` without `status` is refused rather than
     silently ignored, so a human is never left wondering why a date they typed
@@ -1393,6 +1402,28 @@ def run_claim(
         if note is not None:
             result.add('info', note)
 
+    # Nothing to change: the claim already says exactly this (a rerun of a
+    # batch that stopped part way, or the same decision given twice). Writing
+    # the same bytes back is not harmless - on Windows each rewrite can collide
+    # with a scanner still reading the last one (#225 follow-up) - so this
+    # writes nothing and says the claim was already done. It is a success, not
+    # a refusal: the archive already holds what the human asked for.
+    out_text = reapply_newline(new_text, text)
+    if out_text == text:
+        result.data['status'] = 'already-done'
+        if status is not None and len(changed_bits) == 1:
+            said = f'already {status} (reviewed {reviewed})'
+        else:
+            said = 'already reads that way'
+        if dry_run:
+            result.add('info', f'[dry-run] {fmt_id_display(cid)}: {said} - nothing would '
+                               'change, so the file would not be rewritten.')
+            result.add('info', _DRY_RUN_TRAILER)
+        else:
+            result.add('info', f'{fmt_id_display(cid)}: {said} - nothing to change, so '
+                               'the file was left as it was.', path=record_path)
+        return result
+
     if dry_run:
         result.data['status'] = 'ok'
         diff = difflib.unified_diff(
@@ -1490,6 +1521,12 @@ def run_claim_batch(
     stops the loop - no write after a known failure - and the output names
     what was applied, what was not, and the exact command that finishes the
     rest.
+
+    A claim that already has the requested status and review date
+    (`run_claim`'s `already-done`) counts as applied: nothing is written for
+    it, and the closing lines say how many were already done. That is what
+    makes rerunning a stopped batch with the same ids safe and quiet - only
+    the claims that still need the change touch their files.
 
     `data` for a real batch is {'status': 'ok'|'refused'|'no-op'|
     'invalid-id'|'invalid-status'|'not-found'|'failed', 'claim_ids' (the
@@ -1670,14 +1707,24 @@ def run_claim_batch(
     result.data['applied'] = applied
     if result.data['results']:
         result.data['reviewed'] = result.data['results'][0].get('reviewed')
+    already = sum(1 for d in result.data['results'] if d.get('status') == 'already-done')
+    if already:
+        # Counted as applied (the archive already says what was asked), and
+        # said plainly, so a rerun after a stopped batch reads as finished
+        # rather than as a second round of edits.
+        result.add('info',
+                   f'{already} of {len(ids)} claims were already {status} with that '
+                   'review date, so their files were not rewritten.')
     if dry_run:
         result.add('info',
                    f'[dry-run] {len(ids)} claims previewed. No file written. '
                    'Re-run without --dry-run to apply.')
-    else:
+    elif result.changed:
         result.add('info',
                    'Reminder: run `fha index` so the new statuses enter the query surface.',
                    next_step='fha index')
+    else:
+        result.add('info', 'Nothing needed writing - every claim was already done.')
     return result
 
 

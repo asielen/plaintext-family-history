@@ -28,6 +28,7 @@ one --dry-run previews every edit, and duplicate ids are deduped with a note.
 
 import contextlib
 import io
+import os
 import shutil
 import sqlite3
 import sys
@@ -2338,6 +2339,108 @@ class RunClaimBatchTests(unittest.TestCase):
         result = claim.run_claim_batch(self.root, claim_ids=[], status='accepted')
         self.assertEqual(result.exit_code, EXIT_FAILURE)
         self.assertTrue(result.messages)
+
+
+class BatchRerunIsANoOpTests(unittest.TestCase):
+    """#225 follow-up: a batch that stopped part way is rerun with the same ids,
+    and the claims it had already applied came back as "accepted -> accepted"
+    with their files rewritten byte for byte. On Windows every needless
+    rewrite is another chance to collide with a scanner still reading the last
+    one, so a rerun kept failing on the same records. A claim that already says
+    what was asked now writes nothing and counts as done."""
+
+    BOTH = ('C-aa11bb22cc', 'C-bb22cc33dd')
+    OLD = 1_600_000_000   # a fixed past mtime, so a rewrite cannot hide in the same tick
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.source = _write_source(self.root)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _accept_then_freeze(self) -> bytes:
+        first = claim.run_claim_batch(self.root, claim_ids=list(self.BOTH),
+                                      status='accepted', reviewed='2026-07-20')
+        self.assertEqual(first['status'], 'ok')
+        os.utime(self.source, (self.OLD, self.OLD))
+        return self.source.read_bytes()
+
+    def _counting_writer(self):
+        calls: list[Path] = []
+        real = claim.write_text_exact_atomic
+
+        def spy(path, text):
+            calls.append(Path(path))
+            return real(path, text)
+        return calls, mock.patch.object(claim, 'write_text_exact_atomic', spy)
+
+    def test_rerunning_an_applied_batch_writes_no_file(self) -> None:
+        before = self._accept_then_freeze()
+        calls, spy = self._counting_writer()
+        with spy:
+            result = claim.run_claim_batch(self.root, claim_ids=list(self.BOTH),
+                                           status='accepted', reviewed='2026-07-20')
+        self.assertEqual(calls, [])
+        self.assertEqual(self.source.read_bytes(), before)
+        self.assertEqual(os.stat(self.source).st_mtime, self.OLD)
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertEqual(result['status'], 'ok')
+        self.assertEqual(result['applied'], list(self.BOTH))   # done, not failed
+        self.assertEqual([d['status'] for d in result['results']],
+                         ['already-done', 'already-done'])
+        self.assertEqual(result.changed, [])
+        text = '\n'.join(m.text for m in result.messages)
+        for cid in self.BOTH:
+            self.assertIn(f'{cid}: already accepted (reviewed 2026-07-20)', text)
+        self.assertIn('2 of 2 claims were already accepted', text)
+        self.assertNotIn('fha index', text)
+
+    def test_a_rerun_writes_only_the_claims_still_to_do(self) -> None:
+        claim.run_claim(self.root, claim_id=self.BOTH[0], status='accepted',
+                        reviewed='2026-07-20')
+        result = claim.run_claim_batch(self.root, claim_ids=list(self.BOTH),
+                                       status='accepted', reviewed='2026-07-20')
+        self.assertEqual(result['applied'], list(self.BOTH))
+        self.assertEqual([d['status'] for d in result['results']], ['already-done', 'ok'])
+        self.assertEqual(result.changed, [str(self.source)])
+        rec = {c['id']: c for c in read_record(self.source)['claims']}
+        self.assertEqual(rec[self.BOTH[1]]['status'], 'accepted')
+        self.assertIn('1 of 2 claims were already accepted',
+                      ' '.join(m.text for m in result.messages))
+
+    def test_one_claim_already_done_is_a_success_with_no_write(self) -> None:
+        before = self._accept_then_freeze()
+        result = claim.run_claim(self.root, claim_id=self.BOTH[0], status='accepted',
+                                 reviewed='2026-07-20')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertTrue(result.ok)
+        self.assertEqual(result['status'], 'already-done')
+        self.assertEqual(result.changed, [])
+        self.assertEqual(self.source.read_bytes(), before)
+        self.assertEqual(os.stat(self.source).st_mtime, self.OLD)
+
+    def test_a_new_review_date_is_still_written(self) -> None:
+        # Only an edit that changes nothing is skipped: re-accepting with a
+        # different date is a real change to the record.
+        self._accept_then_freeze()
+        result = claim.run_claim_batch(self.root, claim_ids=list(self.BOTH),
+                                       status='accepted', reviewed='2026-07-21')
+        self.assertEqual([d['status'] for d in result['results']], ['ok', 'ok'])
+        rec = {c['id']: c for c in read_record(self.source)['claims']}
+        self.assertEqual(str(rec[self.BOTH[0]]['reviewed']), '2026-07-21')
+
+    def test_dry_run_of_a_rerun_says_nothing_would_change(self) -> None:
+        before = self._accept_then_freeze()
+        result = claim.run_claim_batch(self.root, claim_ids=list(self.BOTH),
+                                       status='accepted', reviewed='2026-07-20',
+                                       dry_run=True)
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertEqual(self.source.read_bytes(), before)
+        text = '\n'.join(m.text for m in result.messages)
+        self.assertIn('nothing would change', text)
+        self.assertNotIn('Would set', text)
 
 
 # ── Batch status moves: CLI routing (both parsers) ──────────────────────────────
