@@ -37,6 +37,7 @@ import contextlib
 import importlib.util
 import json
 import os
+import sys
 import tempfile
 import time
 import unittest
@@ -726,6 +727,36 @@ class DamagedCache(_KnownCacheCase):
 
 
 # ── one listing per folder, same answers ────────────────────────────────────
+
+class OneListingPerFolder(_KnownCacheCase):
+    """The speed fix itself: a folder full of site-data files and scans is
+    listed once per scan, not once per site-data file in it. Listing the big
+    census folders again for every file was most of the minute a first page
+    took on a real archive."""
+
+    def listings(self):
+        """How often each folder is listed for "is the scan saved?" in one scan."""
+        counts = {}
+        real = os.scandir
+        listing_code = host._FolderFiles.files.__code__
+
+        def spy(path='.', *args, **kwargs):
+            if sys._getframe(1).f_code is listing_code:
+                key = str(Path(path))
+                counts[key] = counts.get(key, 0) + 1
+            return real(path, *args, **kwargs)
+
+        with mock.patch.object(os, 'scandir', spy):
+            host.scan_known(self.folders(), host._KnownFiles(self.cache))
+        return counts
+
+    def test_each_folder_is_listed_once_per_scan(self):
+        census = str(self.site[0].parent)
+        for label in ('cold', 'warm'):
+            counts = self.listings()
+            self.assertEqual(counts.get(census), 1, label)
+            self.assertEqual({k: v for k, v in counts.items() if v > 1}, {}, label)
+
 
 class FolderListing(unittest.TestCase):
     """_holds_saved_image / _holds_saved_file answer from one listing per

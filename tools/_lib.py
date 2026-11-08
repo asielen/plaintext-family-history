@@ -3318,6 +3318,9 @@ def replace_with_retry(src: str | Path, dst: str | Path) -> None:
     re-raised at once. After the last attempt the original `PermissionError`
     reaches the caller unchanged, so its plain "cannot write ..." refusal reads
     exactly as before; the caller still owns cleaning up `src`.
+
+    COPIED in seen-it/host/seenit_host.py `_replace_with_retry` (the Seen It
+    helper is standalone and imports nothing from tools/): change both together.
     """
     retry = _replace_retries_permission_errors()
     for attempt in range(1, REPLACE_RETRY_ATTEMPTS + 1):
