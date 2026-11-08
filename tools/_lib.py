@@ -1645,8 +1645,25 @@ def _yaml_problem_location(exc: object) -> str:
     return f' on line {mark.line + 1}, column {mark.column + 1}'
 
 
+# Text that libyaml READS but PyYAML's own parser REFUSES, or reads to
+# other values (#228 audit). The pure-Python parser is the archive's rule,
+# so text with any of these never goes to libyaml at all:
+#   - a Tab anywhere: libyaml accepts `name:<Tab>Mary` (Notepad alignment,
+#     a value pasted from a spreadsheet, a trailing Tab); PyYAML refuses it.
+#   - a `?` anywhere: libyaml accepts `[Mary Ann?]` and `[1880?]` in a flow
+#     list; PyYAML refuses them. A bare `1880?` date is common, so this one
+#     costs the most speed, and is still far faster than no libyaml at all.
+#   - a byte-order mark (U+FEFF) anywhere: libyaml skips one at the start
+#     of a later line, so `\ufeffb: 1` reads as the key `b`, not `\ufeffb`.
+#   - `#` straight after a block-scalar indicator (`|#`, `>-#`, `|2#`).
+# The audit checked this rule against 264 hand-made cases and 40,000
+# one- and two-character mutations of real blocks: with it, the helper's
+# answer matched SafeLoader's every time.
+_LIBYAML_DISAGREES_RE = re.compile('[\t\ufeff?]|[|>][-+0-9]*#')
+
+
 def safe_load_yaml(stream: Any) -> Any:
-    """Parse YAML the way `yaml.safe_load` does, about eight times faster.
+    """Parse YAML exactly as `yaml.safe_load` does, several times faster.
 
     Every tool that reads the archive - `fha index`, `fha lint`, `fha site`,
     `fha find`, `fha claim` - spends most of its time turning record headers
@@ -1654,37 +1671,61 @@ def safe_load_yaml(stream: Any) -> Any:
     the pure-Python one behind `yaml.safe_load`, and libyaml's C parser
     (`yaml.CSafeLoader`), present when PyYAML was installed with it, as the
     usual pip wheels are. On a real archive of 7,800 blocks the C parser took
-    2 s where the Python one took 20 s, and gave back the same values, down
-    to the Python type of every key and value: both loaders share one
-    Python constructor and resolver, so only the reading of the text (the
-    scanner and parser) differs.
+    2 s where the Python one took 20 s. Both loaders share one Python
+    constructor and resolver, so only the reading of the text (the scanner
+    and parser) differs - and it differs in two ways this function hides:
 
-    Where they do differ is the error. On a malformed block libyaml reports
-    a different line and column and leaves out the quoted snippet, and the
-    human sees that text: `fha lint`'s E010, the places-registry warning,
-    `fha.yaml`'s "Original parser note". So on ANY failure the C parser
-    hits, the text is parsed again by the pure-Python loader and whatever
-    that does - return a value or raise - is the answer. A broken record
-    reads exactly as it always did; only a good one gets faster. Catching
-    every exception, not just `yaml.YAMLError`, keeps that promise for the
-    odd input the two parsers reject in different ways (text the C side
-    cannot encode, for one).
+      - Errors. On a malformed block libyaml reports a different line and
+        column and leaves out the quoted snippet, and the human sees that
+        text: `fha lint`'s E010, the places-registry warning, `fha.yaml`'s
+        "Original parser note". So on ANY failure the C parser hits, the
+        text is parsed again by the pure-Python loader, and whatever that
+        does - return a value or raise - is the answer. Catching every
+        exception, not just `yaml.YAMLError`, covers text the C side cannot
+        even encode (a lone surrogate raises UnicodeEncodeError there).
+      - What counts as broken. libyaml accepts a few things PyYAML refuses
+        (a Tab after `name:` is the one a person really types). Taking
+        libyaml's word there would turn lint's E010 into silence, and only
+        on machines that have libyaml. Text that could hit one of those
+        cases (`_LIBYAML_DISAGREES_RE`) goes straight to the Python parser.
 
-    Without libyaml this is plain `yaml.safe_load`. A stream (an open file)
-    is rewound before the second parse, so the error still names the file;
-    a stream that cannot be rewound skips the C attempt. Callers check
-    `yaml is None` (or call `_require_yaml`) first, as before.
+    So a record reads to the same value, or fails with the same words, on
+    every machine, with or without libyaml. The one known case left, and
+    declined: a list nested more than about 500 levels deep (the exact
+    depth depends on the call stack). PyYAML's parser runs out of Python
+    recursion there and raises RecursionError; libyaml reads it, so the
+    helper returns the value instead of crashing. Nobody writes that by
+    hand.
+
+    Without libyaml this is plain `yaml.safe_load`. An open file is read to
+    text for the check; whenever the Python parser is the one that decides,
+    the file is rewound and handed over as a file, so an error still names
+    it. A stream that cannot be rewound, or a binary one, goes straight to
+    the Python parser. Callers check `yaml is None` (or call
+    `_require_yaml`) first, as before.
     """
     c_loader = getattr(yaml, 'CSafeLoader', None)
-    is_text = isinstance(stream, (str, bytes))
-    rewindable = is_text or bool(getattr(stream, 'seekable', lambda: False)())
-    if c_loader is not None and rewindable:
-        start = None if is_text else stream.tell()
+    if c_loader is None:
+        return yaml.load(stream, Loader=yaml.SafeLoader)
+    start = None
+    text = None
+    if isinstance(stream, str):
+        text = stream
+    elif not isinstance(stream, bytes) and bool(
+            getattr(stream, 'seekable', lambda: False)()):
+        start = stream.tell()
         try:
-            return yaml.load(stream, Loader=c_loader)
+            read = stream.read()
+        except Exception:  # noqa: BLE001 - the Python parse re-raises it
+            read = None
+        text = read if isinstance(read, str) else None
+    if text is not None and not _LIBYAML_DISAGREES_RE.search(text):
+        try:
+            return yaml.load(text, Loader=c_loader)
         except Exception:  # noqa: BLE001 - the Python parse below decides
-            if start is not None:
-                stream.seek(start)
+            pass
+    if start is not None:
+        stream.seek(start)
     return yaml.load(stream, Loader=yaml.SafeLoader)
 
 

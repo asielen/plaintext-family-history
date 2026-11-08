@@ -28,6 +28,7 @@ import datetime
 import io
 import math
 import re
+import shutil
 import sys
 import tempfile
 import types
@@ -363,6 +364,122 @@ class ReadRecordUsesLibyamlTests(unittest.TestCase):
         self.assertIn(expected, rec['parse_errors'])
         self.assertIn('^', expected[1])   # PyYAML's snippet pointer survives
         self.assertEqual(used, [yaml.CSafeLoader, yaml.CSafeLoader, yaml.SafeLoader])
+
+
+# Text libyaml READS but PyYAML's own parser refuses, or reads to other
+# values (#228 audit, F1). Taking libyaml's word on any of these would turn
+# a warning the human gets today into silence, and only on machines that
+# have libyaml. The first is the one a person really types: Notepad's Tab
+# key used to line values up.
+LIBYAML_LENIENT_DOCS = {
+    'Tab after a colon (Notepad alignment)': 'id: P-0123456789\nname:\tMary Ann\n',
+    'Tab inside a value (pasted from a spreadsheet)': 'place_text: daly\tCity\n',
+    'trailing Tab': 'title: census page\t\n',
+    '? inside a flow list (a name)': 'persons: [Mary Ann?]\n',
+    '? inside a flow list (a date)': 'dates: [1880?]\n',
+    'BOM at the start of an indented line': 'a:\n\ufeff  b: 1\n',
+    'BOM on a blank line': 'x: 1\n\ufeff\ny: 2\n',
+    '# straight after |': 'note: |#\n  x\n',
+    '# straight after >-': 'note: >-#\n  x\n',
+    '# straight after |2': 'note: |2#\n    x\n',
+}
+
+
+class LibyamlLenientTextTests(unittest.TestCase):
+    """Where libyaml is more forgiving than PyYAML, PyYAML still decides."""
+
+    @unittest.skipUnless(HAS_LIBYAML, 'PyYAML installed without libyaml')
+    def test_these_really_are_cases_libyaml_reads_differently(self):
+        """Guard the guard: each case must be one where libyaml alone would
+        give a different answer, or the test below proves nothing."""
+        for label, text in LIBYAML_LENIENT_DOCS.items():
+            with self.subTest(label):
+                c = _outcome(lambda t: yaml.load(t, Loader=yaml.CSafeLoader), text)
+                py = _outcome(_python_load, text)
+                differ = c[0] != py[0] or (
+                    not _same(c[1], py[1]) if c[0] else c[1] != py[1])
+                self.assertTrue(differ, f'{label}: libyaml agrees here')
+
+    def test_helper_gives_safeloaders_answer(self):
+        for label, text in LIBYAML_LENIENT_DOCS.items():
+            with self.subTest(label):
+                expected = _outcome(_python_load, text)
+                got = _outcome(safe_load_yaml, text)
+                self.assertEqual(got[0], expected[0], label)
+                if got[0]:
+                    self.assertTrue(_same(got[1], expected[1]), label)
+                else:
+                    self.assertEqual(got[1], expected[1])
+
+    def test_tab_aligned_fha_yaml_file_still_refused_by_name(self):
+        """The stream path (fha.yaml, places.yaml): the open file is read for
+        the check, then rewound and handed to PyYAML, so the error names it."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'fha.yaml'
+            path.write_text('roots:\n  documents:\tdocuments\n', encoding='utf-8')
+            with open(path, encoding='utf-8') as f:
+                expected = _outcome(_python_load, f)
+            with open(path, encoding='utf-8') as f:
+                got = _outcome(safe_load_yaml, f)
+        self.assertFalse(expected[0])
+        self.assertEqual(got, expected)
+        self.assertIn('fha.yaml', got[1][1])
+
+    def test_yaml_edtf_quotes_a_value_with_a_tab(self):
+        """F3: `yaml_edtf` writes a date bare only when reading it back gives
+        the same text. A raw Tab does not read back under PyYAML, so the
+        value must be written quoted - on every machine."""
+        written = _lib.yaml_edtf('abt\t1880')
+        self.assertNotEqual(written, 'abt\t1880')
+        self.assertEqual(_python_load(f'date: {written}\n'), {'date': 'abt\t1880'})
+
+
+class TabEditStillWarnedEndToEndTests(unittest.TestCase):
+    """The user-visible half of F1: a hand edit lint flagged before this
+    change is still flagged, and a Tab in fha.yaml still stops doctor."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name) / 'archive'
+        shutil.copytree(ROOT / 'example-archive', self.root,
+                        ignore=shutil.ignore_patterns('.cache'))
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_lint_flags_a_tab_aligned_name(self):
+        import lint
+        person = next(p for p in sorted((self.root / 'people').rglob('*.md'))
+                      if re.search(r'^name: ', p.read_text(encoding='utf-8'), re.M))
+        text = person.read_text(encoding='utf-8')
+        person.write_text(re.sub(r'^name: ', 'name:\t', text, count=1, flags=re.M),
+                          encoding='utf-8', newline='')
+        findings, _ = lint._run_lint_core(self.root, {})
+        e010 = [f for f in findings if f.code == 'E010' and person.name in str(f.path)]
+        self.assertTrue(e010, 'a Tab after name: must still draw E010')
+        self.assertIn('Frontmatter YAML error', e010[0].message)
+
+    def test_doctor_reports_a_tab_in_fha_yaml(self):
+        """F2: the seen-it host and the import-recordings duplicate finder
+        read fha.yaml with plain yaml.safe_load, so they refuse a Tab there.
+        doctor must refuse it too, with PyYAML's own words, or the human is
+        told the file is fine by one tool and broken by another."""
+        import contextlib
+        import doctor
+        fy = self.root / 'fha.yaml'
+        text = fy.read_text(encoding='utf-8')
+        bad = re.sub(r'^(\s+documents:) ', r'\1\t', text, count=1, flags=re.M)
+        self.assertNotEqual(bad, text)
+        fy.write_text(bad, encoding='utf-8', newline='')
+        with self.assertRaises(yaml.YAMLError):
+            yaml.safe_load(bad)   # what the two sibling readers do
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+            code = doctor._standalone_main(['--root', str(self.root)])
+        self.assertEqual(code, _lib.EXIT_ERRORS)
+        with open(fy, encoding='utf-8') as f:
+            py_exc = _outcome_exc(_python_load, f)
+        self.assertIn(_lib.format_fha_config_error(fy, py_exc), err.getvalue())
 
 
 if __name__ == '__main__':
