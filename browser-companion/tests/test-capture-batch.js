@@ -600,3 +600,32 @@ test('second audit N2: a stamp two windows share is broken the same way everywhe
   CB.mergeStored(back, loser);
   assert.deepStrictEqual([back.items['1:2'].state, back.pacing.rateEvents, back.listCursor], ['queued', 1, 0]);
 });
+
+test('third audit M1: every stop cause is sorted - RUN causes never count against a record, RECORD causes do', () => {
+  const RUN = { counts: false };
+  const TROUBLE = { counts: true, max: CB.MAX_TROUBLE_TRIES, trouble: true };
+  const FAULT = { counts: true, max: CB.MAX_TRIES, trouble: false };
+  const table = [
+    ['could not reach FamilySearch - check your internet connection, then press Capture again', RUN],
+    ['the connection broke off (Failed to fetch) - press Capture again later', RUN],
+    ['Failed to fetch', RUN],
+    ['the download was blocked', RUN],
+    ['download interrupted: NETWORK_FAILED', RUN],
+    ['the page in the tab changed while this record was being saved, so nothing was saved', RUN],
+    ['the batch’s tab was closed', RUN],
+    ['a capture is already saving', RUN],
+    ['a different member is signed in to Newspapers.com than the one this list was started for', RUN],
+    ['FamilySearch asked you to sign in (HTTP 401). Sign in to FamilySearch', RUN],
+    ['Ancestry asked us to slow down (HTTP 429)', RUN],
+    ['something nobody expected', RUN],
+    ['', RUN],
+    ['FamilySearch is having trouble (HTTP 500). Try again in a little while', TROUBLE],
+    ['Ancestry answered with a busy or error page ("502 Bad Gateway")', TROUBLE],
+    ['the page did not answer (The message port closed before a response was received.). Reload it and press Capture again', TROUBLE],
+    ['the capture add-on could not read this record (TypeError: x is undefined) - a fault in the add-on, not the site', FAULT],
+    ['Find a Grave refused the memorial (HTTP 403). Reload the page', FAULT],
+  ];
+  for (const [m, want] of table) assert.deepStrictEqual(CB.stopRule(m), want, m);
+  assert.strictEqual(CB.MAX_TRIES, 2);
+  assert.strictEqual(CB.MAX_TROUBLE_TRIES, 3);
+});

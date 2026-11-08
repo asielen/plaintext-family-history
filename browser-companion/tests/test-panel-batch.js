@@ -26,7 +26,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const { openPanel, settle, makeLocks } = require('./panel-harness.js');
+const { openPanel, settle, makeLocks, PORT_CLOSED } = require('./panel-harness.js');
 const anc = require('../src/lib/ancestry-record.js');
 const fag = require('../src/lib/findagrave-record.js');
 const { parse } = require('./mini-dom.js');
@@ -754,14 +754,14 @@ test('Find a Grave: a memorial page with no memorial on it is tried once more, n
   assert.match(q.batchEl('fag-status').textContent, /^Stopped: 3 records in a row could not be saved/);
 });
 
-test('a record refused twice on two Starts is set aside, so it never holds up the queue (F13)', async () => {
+test('a record the site refuses on two Starts is set aside, so it never holds up the queue (F13, third audit M1)', async () => {
   const base = ancestrySite();
   const p = await openPanel({ url: HARRIET, storage: Object.assign({}, ON, { ancBatchLedger: ancLedger([CALVIN, ETHEL]) }),
     respond: (msg, tab) => (msg.action === 'ancestryRecordInfo' && tab.url === CALVIN
-      ? { ok: false, error: 'Ancestry answered something nobody expected' } : base(msg, tab)) });
+      ? { ok: false, error: 'the site refused this record (HTTP 403)' } : base(msg, tab)) });
   quick(p);
   await start(p, 'anc');
-  assert.match(p.batchEl('anc-status').textContent, /^Stopped: Ancestry answered something nobody expected/);
+  assert.match(p.batchEl('anc-status').textContent, /^Stopped: the site refused this record/);
   assert.strictEqual(p.storage.ancBatchLedger.items['90001:1000001'].state, 'queued');
   await start(p, 'anc');
   assert.deepStrictEqual(p.navigations.map((n) => n.url), [CALVIN, CALVIN, ETHEL]);
@@ -867,21 +867,24 @@ test('D1: a clipping whose title holds a number like 503 is a record, not a busy
   assert.match(p.batchEl('np-status').textContent, /^Finished\. 2 done/);
 });
 
-test('D1: a record whose address shows a busy page Start after Start is set aside, and the queue moves on', async () => {
+test('D1 (third audit M2): a record whose address shows a busy page Start after Start is set aside after 3, as site trouble, and the queue moves on', async () => {
   const p = await openPanel({ url: FAG_CALVIN, respond: fagSite(), storage: Object.assign({}, ON, { fagBatchLedger: fagLedger(2) }),
     titleFor: (u) => (/900000001$/.test(u) ? '503 Service Temporarily Unavailable' : 'A memorial - Find a Grave'),
     fetch: async (url) => ({ ok: true, status: 200, url, headers: { get: () => 'image/jpeg' },
       blob: async () => new Blob(['photo'], { type: 'image/jpeg' }) }) });
   quick(p);
+  for (let i = 0; i < 2; i++) {
+    await start(p, 'fag');
+    assert.strictEqual(p.storage.fagBatchLedger.items['900000001'].state, 'queued', 'set aside after ' + (i + 1));
+    p.storage.fagBatchLedger.pacing.resumeAt = 0;
+  }
   await start(p, 'fag');
-  assert.strictEqual(p.storage.fagBatchLedger.items['900000001'].state, 'queued');
+  const it = p.storage.fagBatchLedger.items['900000001'];
+  assert.strictEqual(it.state, 'failed');
+  assert.match(it.lastError, /^Find a Grave reported trouble with this record 3 times; it is set aside\./);
   p.storage.fagBatchLedger.pacing.resumeAt = 0;
   await start(p, 'fag');
-  assert.strictEqual(p.storage.fagBatchLedger.items['900000001'].state, 'failed');
-  assert.match(p.storage.fagBatchLedger.items['900000001'].lastError, /busy or error page/);
-  p.storage.fagBatchLedger.pacing.resumeAt = 0;
-  await start(p, 'fag');
-  assert.deepStrictEqual(p.navigations.map((n) => n.url.replace(/^.*\//, '')), ['900000001', '900000001', '900000002']);
+  assert.deepStrictEqual(p.navigations.map((n) => n.url.replace(/^.*\//, '')), ['900000001', '900000001', '900000001', '900000002']);
   assert.strictEqual(p.storage.fagBatchLedger.items['900000002'].state, 'done');
 });
 
@@ -1480,18 +1483,20 @@ test('Codex 4504508005: Newspapers.com - a page whose tile broke off saves nothi
   assert.strictEqual(p.storage.npBatchLedger.items['101'].state, 'done');
 });
 
-test('Codex 4504508005 / second audit N3: a record\'s details lost to "Failed to fetch" stop the run - and on the second Start it is set aside, the next one reached', async () => {
+test('Codex 4504508005 / third audit M1: a record\'s details lost to "Failed to fetch" stop the run, Start after Start, and never count against it', async () => {
   const base = ancestrySite();
+  let offline = true;
   const p = await openPanel({ url: HARRIET, storage: Object.assign({}, ON, { ancBatchLedger: ancLedger([CALVIN, ETHEL]) }),
-    respond: (msg, tab) => (msg.action === 'ancestryRecordInfo' && tab.url === CALVIN
+    respond: (msg, tab) => (offline && msg.action === 'ancestryRecordInfo'
       ? { ok: false, error: 'Failed to fetch' } : base(msg, tab)) });
   quick(p);
-  await start(p, 'anc');
+  for (let i = 0; i < 3; i++) await start(p, 'anc');
   assert.match(p.batchEl('anc-status').textContent, /^Stopped: Failed to fetch/);
   assert.strictEqual(p.storage.ancBatchLedger.items['90001:1000001'].state, 'queued');
+  assert.ok(!p.storage.ancBatchLedger.items['90001:1000001'].stops);
+  offline = false;
   await start(p, 'anc');
-  assert.strictEqual(p.storage.ancBatchLedger.items['90001:1000001'].state, 'failed');
-  assert.match(p.storage.ancBatchLedger.items['90001:1000001'].lastError, /stopped the batch 2 times at this record/);
+  assert.strictEqual(p.storage.ancBatchLedger.items['90001:1000001'].state, 'done');
   assert.strictEqual(p.storage.ancBatchLedger.items['90002:2000001'].state, 'done');
 });
 
@@ -1699,29 +1704,20 @@ test('second audit N2: with stamps pinned ahead of the clock, "Read my clippings
   assert.deepStrictEqual(a.sent.filter((m) => m.action === 'newspapersList').map((m) => m.cursor), [0, 0, 24]);
 });
 
-test('second audit N3: a record whose details always fail is set aside after two Starts, and the next is reached; a real outage still stops', async () => {
+test('second audit N3 / third audit M1: a fault in the add-on at one record is set aside on the second Start, the next is reached; a real outage still stops', async () => {
   const base = ancestrySite();
-  // A fault in the add-on while it read the record: set aside at once.
   const fault = await openPanel({ url: HARRIET, storage: Object.assign({}, ON, { ancBatchLedger: ancLedger([CALVIN, ETHEL]) }),
     respond: (msg, tab) => (msg.action === 'ancestryRecordInfo' && tab.url === CALVIN
       ? { ok: false, codeError: true, error: 'the capture add-on could not read this record (TypeError: x is undefined) - a fault in the add-on, not the site' }
       : base(msg, tab)) });
   quick(fault);
   await start(fault, 'anc');
+  assert.strictEqual(fault.storage.ancBatchLedger.items['90001:1000001'].state, 'queued');
+  await start(fault, 'anc');
   assert.strictEqual(fault.storage.ancBatchLedger.items['90001:1000001'].state, 'failed');
+  assert.match(fault.storage.ancBatchLedger.items['90001:1000001'].lastError, /stopped the batch 2 times at this record/);
   assert.strictEqual(fault.storage.ancBatchLedger.items['90002:2000001'].state, 'done');
-  // A cause the run stops for, at the same record every time: set aside on the second Start.
-  const stuck = await openPanel({ url: HARRIET, storage: Object.assign({}, ON, { ancBatchLedger: ancLedger([CALVIN, ETHEL]) }),
-    respond: (msg, tab) => (msg.action === 'ancestryRecordInfo' && tab.url === CALVIN
-      ? { ok: false, transient: true, error: 'the connection broke off (Failed to fetch) - press Capture again later' }
-      : base(msg, tab)) });
-  quick(stuck);
-  await start(stuck, 'anc');
-  assert.strictEqual(stuck.storage.ancBatchLedger.items['90001:1000001'].state, 'queued');
-  await start(stuck, 'anc');
-  assert.strictEqual(stuck.storage.ancBatchLedger.items['90001:1000001'].state, 'failed');
-  assert.strictEqual(stuck.storage.ancBatchLedger.items['90002:2000001'].state, 'done');
-  // A real outage - every record fails: the run still stops.
+  // A real outage - every record fails: the run still stops, and sets nothing aside.
   const out = await openPanel({ url: HARRIET, storage: Object.assign({}, ON, { ancBatchLedger: ancLedger([CALVIN, ETHEL]) }),
     respond: (msg, tab) => (msg.action === 'ancestryRecordInfo'
       ? { ok: false, transient: true, error: 'the connection broke off (Failed to fetch) - press Capture again later' }
@@ -1729,8 +1725,10 @@ test('second audit N3: a record whose details always fail is set aside after two
   quick(out);
   await start(out, 'anc');
   await start(out, 'anc');
+  await start(out, 'anc');
   assert.match(out.batchEl('anc-status').textContent, /^Stopped: the connection broke off/);
   assert.strictEqual(out.written.length, 0);
+  assert.strictEqual(out.storage.ancBatchLedger.items['90001:1000001'].state, 'queued');
 });
 
 test('second audit N4: a slow-down from a host that is not a batch site holds no batch back; one from a batch site holds back only that site', async () => {
@@ -1758,4 +1756,113 @@ test('second audit N4: a slow-down from a host that is not a batch site holds no
   await nap(50);
   assert.ok(p.storage.fsBatchLedger.pacing && p.storage.fsBatchLedger.pacing.resumeAt > Date.now() + 25 * 60 * 1000);
   assert.ok(!(p.storage.ancBatchLedger.pacing && p.storage.ancBatchLedger.pacing.resumeAt > Date.now()));
+});
+
+// ── PR #224 Codex 4504665602: a tolerated secondary request's slow-down ─────
+
+test('Codex 4504665602: two clippings whose text requests get 429 while the tiles come - the batch takes the break', async () => {
+  const lists = [{ ok: true, user: ME.username, more: false, nextCursor: null, clippings: [
+    listed(101, 'Obituary for Calvin Hartley', NP_A), listed(202, 'Hartley wedding', NP_B)] }];
+  const base = npSite(lists);
+  const textAsks = [];
+  const p = await openPanel({ url: NP_A, storage: ON, respond: (msg, tab) => {
+    if (msg.action === 'newspapersClipText') {
+      textAsks.push(msg.url);
+      return { ok: false, status: 429, slowDown: true, error: 'HTTP 429' };
+    }
+    return base(msg, tab);
+  } });
+  quick(p);
+  await start(p, 'np');
+  assert.ok(textAsks.length >= 1, 'no clipping text was asked for');
+  // The clipping was saved (its text is optional), and then the break.
+  assert.strictEqual(p.written.length, 1);
+  assert.deepStrictEqual(p.navigations.map((n) => n.url), [NP_LIST, NP_A]);
+  const L = p.storage.npBatchLedger;
+  assert.strictEqual(L.items['202'].state, 'queued');
+  assert.ok(L.pacing.resumeAt > Date.now() + 25 * 60 * 1000, 'no break after the text requests met 429');
+});
+
+test('Codex 4504665602 sweep: a batch site\'s host saying slow down to the page copy\'s pictures holds that batch back', async () => {
+  const base = fagSite();
+  const p = await openPanel({ url: FAG_CALVIN, storage: Object.assign({}, ON, { fagBatchLedger: fagLedger(2) }),
+    fetch: PHOTO_OK,
+    respond: (msg, tab) => (msg.action === 'singlefile'
+      ? { ok: true, html: '<html>copy</html>', slowHosts: ['images.findagrave.com'] } : base(msg, tab)) });
+  quick(p);
+  await start(p, 'fag');
+  assert.strictEqual(p.navigations.length, 1);
+  assert.ok(p.storage.fagBatchLedger.pacing.resumeAt > Date.now() + 25 * 60 * 1000);
+  // A host that is no batch site's holds nothing back.
+  const q = await openPanel({ url: FAG_CALVIN, storage: Object.assign({}, ON, { fagBatchLedger: fagLedger(2) }),
+    fetch: PHOTO_OK,
+    respond: (msg, tab) => (msg.action === 'singlefile'
+      ? { ok: true, html: '<html>copy</html>', slowHosts: ['cdn.example.org'] } : base(msg, tab)) });
+  quick(q);
+  await start(q, 'fag');
+  assert.strictEqual(q.navigations.length, 2);
+});
+
+// ── PR #224 third audit (M1, M2), ported from the auditor's repros ──────────
+
+test('third audit M1: no internet over two Starts sets nothing aside, and everything is saved once it is back', async () => {
+  const OFFLINE = { ok: false, transient: true, error: 'could not reach FamilySearch - check your internet connection, then press Capture again' };
+  let online = false;
+  const calls = [];
+  const base = familysearchSite(calls);
+  const p = await openPanel({ url: ark('HRT1-CEN2'), storage: Object.assign({}, ON, { fsBatchLedger: fsLedger(['HRT1-CEN1', 'HRT1-DTH1']) }),
+    respond: (msg, tab) => (!online && /^familysearch/.test(msg.action) ? OFFLINE : base(msg, tab)) });
+  quick(p);
+  for (let i = 1; i <= 3; i++) {
+    if (i === 3) online = true;
+    await start(p, 'fs');
+    const L = p.storage.fsBatchLedger;
+    assert.notStrictEqual(L.items['HRT1-CEN1'].state, 'failed', 'CEN1 set aside on Start ' + i);
+  }
+  assert.strictEqual(p.storage.fsBatchLedger.items['HRT1-CEN1'].state, 'done');
+  assert.strictEqual(p.storage.fsBatchLedger.items['HRT1-DTH1'].state, 'done');
+});
+
+test('third audit M1: downloads the browser blocks over two Starts set nothing aside', async () => {
+  const p = await openPanel({ url: HARRIET, respond: ancestrySite(), storage: Object.assign({}, ON, { ancBatchLedger: ancLedger([CALVIN, ETHEL]) }) });
+  quick(p);
+  for (let i = 1; i <= 2; i++) {
+    p.writeFails.add(p.written.length);
+    await start(p, 'anc');
+    const it = p.storage.ancBatchLedger.items['90001:1000001'];
+    assert.deepStrictEqual([it.state, it.stops || 0], ['queued', 0], 'Start ' + i);
+  }
+  await start(p, 'anc');
+  assert.strictEqual(p.storage.ancBatchLedger.items['90001:1000001'].state, 'done');
+  assert.strictEqual(p.storage.ancBatchLedger.items['90002:2000001'].state, 'done');
+});
+
+test('third audit M2: "502 Bad Gateway" at a record over two Starts sets nothing aside; when the site is back it is saved', async () => {
+  let down = true;
+  const p = await openPanel({ url: HARRIET, respond: ancestrySite(),
+    storage: Object.assign({}, ON, { ancBatchLedger: ancLedger([CALVIN, ETHEL]) }),
+    titleFor: () => (down ? '502 Bad Gateway' : 'Calvin Hartley - 1880 census - Ancestry') });
+  quick(p);
+  for (let i = 1; i <= 3; i++) {
+    if (i === 3) down = false;
+    if (p.storage.ancBatchLedger.pacing) p.storage.ancBatchLedger.pacing.resumeAt = 0;
+    await start(p, 'anc');
+    if (i < 3) assert.strictEqual(p.storage.ancBatchLedger.items['90001:1000001'].state, 'queued', 'Start ' + i);
+  }
+  assert.strictEqual(p.storage.ancBatchLedger.items['90001:1000001'].state, 'done');
+  assert.strictEqual(p.storage.ancBatchLedger.items['90002:2000001'].state, 'done');
+});
+
+test('third audit M1: a page that goes away before it answers (message port closed) counts as site trouble - 3 Starts, not 2', async () => {
+  const base = ancestrySite();
+  const p = await openPanel({ url: HARRIET, storage: Object.assign({}, ON, { ancBatchLedger: ancLedger([CALVIN, ETHEL]) }),
+    respond: (msg, tab) => (msg.action === 'ancestryRecordInfo' && tab.url === CALVIN ? PORT_CLOSED : base(msg, tab)) });
+  quick(p);
+  await start(p, 'anc');
+  await start(p, 'anc');
+  assert.strictEqual(p.storage.ancBatchLedger.items['90001:1000001'].state, 'queued');
+  await start(p, 'anc');
+  assert.strictEqual(p.storage.ancBatchLedger.items['90001:1000001'].state, 'failed');
+  assert.match(p.storage.ancBatchLedger.items['90001:1000001'].lastError, /^Ancestry reported trouble with this record 3 times/);
+  assert.strictEqual(p.storage.ancBatchLedger.items['90002:2000001'].state, 'done');
 });

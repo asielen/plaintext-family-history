@@ -639,8 +639,6 @@
     'HTTP 404', 'HTTP 410', 'no memorial at this address', 'no record at this address', 'not the one queued',
     'is not a record page', 'not one the batch can save', 'marks no area', 'tick at least one of your clippings',
     'none of the clippings on this page are yours', 'restricted to a FamilySearch center',
-    // A fault in the add-on itself while it read this record (content.js brokeOff).
-    'could not read this record',
   ].join('|'), 'i');
   const RUN_RE = new RegExp([
     'sign in', 'signed in', 'security check', 'HTTP 401', 'could not reach', 'internet connection', 'broke off',
@@ -651,6 +649,36 @@
     'failed to fetch', 'networkerror', 'network error', 'load failed', 'connection'
   ].join('|'), 'i');
   const RETRY_RE = /shows no memorial|could not read the (Ancestry record|FamilySearch record|Find a Grave memorial)/i;
+  // Whether a cause that stopped the run at a record counts against THAT
+  // record - the one place that decides it (PR #224 third audit M1):
+  //   RUN causes never count: no connection, a connection that broke off, a
+  //     download the browser blocked or cut off, the tab changed or closed,
+  //     the panel busy, a different member signed in, a lost login, a slow-
+  //     down. They are the computer's or the session's, not the record's;
+  //   RECORD causes count, and set the record aside after so many Starts that
+  //     stopped on it: the site reporting trouble with it (HTTP 5xx, a busy or
+  //     error page) or its page not answering (the message port closed) -
+  //     MAX_TROUBLE_TRIES (3); a fault in the add-on while it read this record,
+  //     or the site refusing this record - MAX_TRIES (2).
+  //   Anything not sorted here is a RUN cause: never counted.
+  // { counts, max, trouble }.
+  const RUN_STOP_RE = new RegExp([
+    'slow down', 'HTTP 429', 'too many requests', 'sign in', 'signed in', 'HTTP 401',
+    'could not reach', 'internet connection', 'broke off', 'failed to fetch', 'networkerror', 'network error',
+    'load failed', 'download was blocked', 'download interrupted', 'the page in the tab', 'the tab ',
+    'tab was closed', 'the batch.s tab', 'the panel', 'a capture is already saving', 'different member',
+    'switched off', 'took over', 'did not finish loading', 'could not establish connection',
+  ].join('|'), 'i');
+  const TROUBLE_STOP_RE = /having trouble|HTTP 5\d\d|busy or error page|bad gateway|service (temporarily )?unavailable|internal server error|did not answer|message port closed/i;
+  const FAULT_STOP_RE = /could not read this record|\brefused\b|HTTP 40[0-9]\b|HTTP 410/i;
+  function stopRule(message) {
+    const m = String(message || '');
+    if (RUN_STOP_RE.test(m)) return { counts: false };
+    if (TROUBLE_STOP_RE.test(m)) return { counts: true, max: MAX_TROUBLE_TRIES, trouble: true };
+    if (FAULT_STOP_RE.test(m)) return { counts: true, max: MAX_TRIES, trouble: false };
+    return { counts: false };
+  }
+
   function classifyError(message) {
     const m = String(message || '');
     if (SLOWDOWN_RE.test(m)) return 'slowdown';
@@ -729,7 +757,7 @@
     PACING, SITES, NP_LIST_MAX_PAGES, MAX_PER_RUN, MAX_TRIES, MAX_PARTIAL, MAX_FAILS_IN_A_ROW, MAX_TROUBLE_TRIES,
     between, npClipUrl, newLedger, repair, logEvent, addRecords, addClippings,
     nextStamp, markDone, markHeld, markSetAside, markRetry, markPartial, markRefused, requeuePartials, requeueSetAside,
-    mergeStored, mergeDone, isCooldown, nextPending, counts,
+    mergeStored, mergeDone, isCooldown, nextPending, counts, stopRule,
     ensurePacing, planRateLimit, planAfterCapture, classifyError,
     parseGedcom, parseMemorialList, ledgerFileBody,
   };

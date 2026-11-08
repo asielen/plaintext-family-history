@@ -431,9 +431,11 @@
   // batch downloads to take their break (PR #224 Codex 4503849177).
   // `site` is the batch site whose host gave the answer ('ancestry',
   // 'familysearch', 'findagrave', 'newspapers'), or null for any other host:
-  // only that site's batch is held back by it (PR #224 second audit N4).
+  // only that site's batch is held back by it, and another host's "slow
+  // down" counts for nothing - not for the capture's outcome either, or a
+  // running batch would stop on it (PR #224 second audit N4).
   function noteSlowDown(resp, site) {
-    if (!resp) return;
+    if (!resp || !site) return;
     const st = (x) => x === 429 || x === 503;
     if (resp.slowDown || (resp.rateHits > 0) || st(resp.partialStatus) || (!resp.ok && st(resp.status)) ||
         (!resp.ok && /slow down|HTTP 429|HTTP 503|too many requests/i.test(String(resp.error || '')))) {
@@ -450,7 +452,7 @@
     } catch (e) {
       return null;
     }
-    if (/(^|\.)ancestry\.[a-z.]+$/i.test(h)) return 'ancestry';
+    if (/(^|\.)ancestry\.[a-z.]+$/i.test(h) || /(^|\.)ancestrycdn\.com$/i.test(h)) return 'ancestry';
     if (/(^|\.)familysearch\.org$/i.test(h)) return 'familysearch';
     if (/(^|\.)findagrave\.com$/i.test(h)) return 'findagrave';
     if (/(^|\.)newspapers\.com$/i.test(h)) return 'newspapers';
@@ -1085,6 +1087,9 @@
         const resp = await sendToTab(state.tabId, {
           action: 'newspapersClipText', url: clip.url, clippingId: clip.id,
         });
+        // Optional - but a "slow down" here still holds the batch back
+        // (PR #224 Codex 4504665602).
+        noteSlowDown(resp, 'newspapers');
         if (resp && resp.ok && resp.ocr) out.set(clip.id, resp.ocr);
       } catch (e) {
         /* the text is a convenience; the images are the record */
@@ -2199,6 +2204,11 @@
   // snapshot from the content script. Returns { blob, filename } or throws.
   async function buildPageCopy() {
     const resp = await sendToTab(state.tabId, { action: 'singlefile' });
+    // The copy's pictures and styles are best effort, but a batch site's host
+    // that said "slow down" to them still holds that site's batch back.
+    for (const host of (resp && Array.isArray(resp.slowHosts) ? resp.slowHosts : [])) {
+      noteSlowDown({ slowDown: true }, siteOfHost('https://' + host + '/'));
+    }
     if (!resp || !resp.ok || !resp.html) {
       throw new Error((resp && resp.error) || 'could not build the page copy');
     }

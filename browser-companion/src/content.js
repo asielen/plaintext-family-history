@@ -2386,7 +2386,14 @@
   // match the address bar, re-read the current address (one same-origin GET).
   async function npFreshFlightText() {
     const resp = await fetch(location.href, { credentials: 'include' });
-    if (!resp.ok) return '';
+    if (!resp.ok) {
+      if (resp.status === 429 || resp.status === 503) {
+        const e = new Error('Newspapers.com asked us to slow down (HTTP ' + resp.status + ') while this page was re-read');
+        e.slowDown = true;
+        throw e;
+      }
+      return '';
+    }
     const html = await resp.text();
     return npFlightFrom([html]) || html.replace(/\\"/g, '"');
   }
@@ -2411,7 +2418,12 @@
     if (!url) return { ok: false, error: 'no clipping address' };
     try {
       const resp = await fetch(url, { credentials: 'include' });
-      if (!resp.ok) return { ok: false, error: 'HTTP ' + resp.status };
+      if (!resp.ok) {
+        // The text is optional, but a "slow down" here is still one
+        // (PR #224 Codex 4504665602).
+        return { ok: false, status: resp.status, slowDown: resp.status === 429 || resp.status === 503,
+          error: 'HTTP ' + resp.status };
+      }
       const html = await resp.text();
       const text = npFlightFrom([html]);
       const raw = npObjectAfter(text, 'clipping');
@@ -2443,6 +2455,7 @@
         if (fresh && describesThisRecord(fresh)) text = fresh;
         else return { ok: false, error: 'the page data does not match this address - reload the page and try again' };
       } catch (e) {
+        if (e && e.slowDown) return { ok: false, slowDown: true, error: e.message + ' - wait a few minutes, then reload it' };
         return { ok: false, error: 'could not re-read this page - reload it and try again' };
       }
     }
@@ -3393,12 +3406,28 @@
   }
   // FHA-SYNC-END snapshot-rewrites
 
+  // The hosts that said "slow down" (429/503) while the page copy fetched
+  // its pictures and styles: the copy goes on without them, but the panel is
+  // told, so a batch site's batch still takes its break (PR #224 Codex 4504665602).
+  let singleFileSlowHosts = new Set();
+  function noteSingleFileAnswer(url, status) {
+    if (status !== 429 && status !== 503) return;
+    try {
+      singleFileSlowHosts.add(new URL(url).hostname);
+    } catch (e) {
+      /* no host to name */
+    }
+  }
+
   async function fetchAsDataUri(url) {
     const abs = absUrl(url);
     if (!abs) return null;
     try {
       const resp = await fetch(abs, { credentials: 'include' });
-      if (!resp.ok) return null;
+      if (!resp.ok) {
+        noteSingleFileAnswer(abs, resp.status);
+        return null;
+      }
       const blob = await resp.blob();
       if (blob.size > SINGLEFILE_MAX_BYTES_PER_RESOURCE) return null;
       const base64 = await blobToBase64(blob);
@@ -3414,6 +3443,7 @@
     // stylesheets are the must-haves so the snapshot survives link rot; fonts,
     // web-components, and lazy media are diminishing returns and left out. We
     // clone the live (post-load) DOM so dynamic content has settled (§5.6).
+    singleFileSlowHosts = new Set();
     const clone = document.documentElement.cloneNode(true);
     stripSeenIt(clone);
 
@@ -3607,7 +3637,10 @@
       if (!sheetUrl) continue;
       try {
         const resp = await fetch(sheetUrl, { credentials: 'include' });
-        if (!resp.ok) continue;
+        if (!resp.ok) {
+          noteSingleFileAnswer(sheetUrl, resp.status);
+          continue;
+        }
         const css = await resp.text();
         const style = document.createElement('style');
         style.textContent = absolutizeCss(css, resp.url || sheetUrl);
@@ -3792,7 +3825,7 @@
         return true; // async response
       case 'singlefile':
         buildSingleFile()
-          .then((html) => sendResponse({ ok: true, html }))
+          .then((html) => sendResponse({ ok: true, html, slowHosts: [...singleFileSlowHosts] }))
           .catch((e) => sendResponse({ ok: false, error: String(e) }));
         return true; // async response
       default:

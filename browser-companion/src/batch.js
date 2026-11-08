@@ -738,9 +738,12 @@
         // A busy or error page at this record's address stops the run (and
         // takes the break on a "slow down"); the same page there again on a
         // later Start sets the record aside, so it never holds up the rest.
+        // Counted as the site's trouble with this record, as a 5xx is: set
+        // aside after MAX_TROUBLE_TRIES Starts, with the same words (third
+        // audit M2). The run still stops (and takes its break on a 503).
         if (e instanceof Stop && e.atRecord) {
           const stops = CB().markRefused(L, item.key);
-          if (stops >= CB().MAX_TRIES) CB().markSetAside(L, item.key, e.message + ' (' + stops + ' times)');
+          if (stops >= CB().MAX_TROUBLE_TRIES) CB().markSetAside(L, item.key, troubleWords(siteName, stops, e.message));
         }
         throw e;
       }
@@ -831,16 +834,21 @@
     // that stops every Start cannot be got past - but only after
     // MAX_TROUBLE_TRIES Starts, so a short outage sets nothing aside
     // (owner's coordinator, 2026-11-07, revising review D3).
+    // Which causes count, and after how many Starts, is capture-batch.js
+    // stopRule's to say (third audit M1).
     async function stopAtRecord(siteName, L, item, why) {
-      if (/sign in|signed in|HTTP 401/i.test(why)) throw new Stop(why);
-      const trouble = /having trouble|HTTP 5\d\d/i.test(why);
+      const rule = CB().stopRule(why);
+      if (!rule.counts) throw new Stop(why);
       const stops = CB().markRefused(L, item.key);
-      if (stops < (trouble ? CB().MAX_TROUBLE_TRIES : CB().MAX_TRIES)) throw new Stop(why);
-      await setAside(siteName, L, item, trouble
-        ? CB().SITES[siteName].name + ' reported trouble with this record ' + stops + ' times; it is set aside. ' +
-          'When the site is working again, press \'Try the set-aside ones again\'. (' + why + ')'
+      if (stops < rule.max) throw new Stop(why);
+      await setAside(siteName, L, item, rule.trouble ? troubleWords(siteName, stops, why)
         : why + ' - it stopped the batch ' + stops +
           ' times at this record, so it is set aside ("Try the set-aside ones again" brings it back)');
+    }
+
+    function troubleWords(siteName, stops, why) {
+      return CB().SITES[siteName].name + ' reported trouble with this record ' + stops + ' times; it is set aside. ' +
+        'When the site is working again, press \'Try the set-aside ones again\'. (' + why + ')';
     }
 
     // Several records in a row that cannot be saved say more about the site

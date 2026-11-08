@@ -32,7 +32,9 @@ const SAMPLE = (name) => fs.readFileSync(path.join(__dirname, '..', '..', 'tests
 // `storage` is what chrome.storage.local holds (the batch switch); without
 // it the page has no storage to ask, as on an add-on that cannot read it.
 // `scripts` are the page's script texts (Newspapers.com's page data).
-function loadPage({ url, cookie = '', links = [], fetch, canonical, tree, head = {}, title = 'A page', storage, scripts = [] } = {}) {
+// `clone` is what the page copy clones (a stand-in with the pictures to inline).
+function loadPage({ url, cookie = '', links = [], fetch, canonical, tree, head = {}, title = 'A page', storage, scripts = [],
+  clone } = {}) {
   const listeners = [];
   const el = (tag) => ({ tagName: tag, textContent: '', innerText: '', getAttribute: () => null, closest: () => null });
   const headTag = (sel) => {
@@ -47,7 +49,7 @@ function loadPage({ url, cookie = '', links = [], fetch, canonical, tree, head =
     cookie,
     doctype: null,
     body: el('BODY'),
-    documentElement: { outerHTML: '<html></html>', cloneNode: () => ({ querySelectorAll: () => [], outerHTML: '<html></html>' }) },
+    documentElement: { outerHTML: '<html></html>', cloneNode: () => clone || ({ querySelectorAll: () => [], outerHTML: '<html></html>' }) },
     scripts: scripts.map((t) => ({ textContent: t })),
     images: [],
     querySelector: (sel) => headTag(sel) || (canonical && /canonical|og:url/.test(sel)
@@ -619,4 +621,35 @@ test('second audit N3: a fault in the add-on while it reads is said as one, neve
   }) });
   const n = await net.ask({ action: 'familysearchImage', imageId: 'HRT1-IMG1' });
   assert.strictEqual(n.transient, true);
+});
+
+// ── PR #224 Codex 4504665602: secondary requests still say "slow down" ─────
+
+const NP_CLIP = 'https://www.newspapers.com/article/the-fairview-gazette-obituary/101/';
+
+test('Codex 4504665602: a clipping-text request refused with 429 says so, with its status', async () => {
+  const page = loadPage({ url: NP_CLIP, fetch: async () => ({ ok: false, status: 429, text: async () => '' }) });
+  const r = await page.ask({ action: 'newspapersClipText', url: 'https://www.newspapers.com/article/x/202/', clippingId: 202 });
+  assert.deepStrictEqual([r.ok, r.status, r.slowDown], [false, 429, true]);
+});
+
+test('Codex 4504665602 sweep: a page re-read refused with 503 says "slow down", not only "could not re-read"', async () => {
+  // The page's own data describes another clipping, so the page is read again.
+  const other = 'self.__next_f.push([1,' + JSON.stringify('2:{"clipping":{"clipping_id":999}}\n') + '])';
+  const page = loadPage({ url: NP_CLIP, scripts: [other], fetch: async () => ({ ok: false, status: 503, text: async () => '' }) });
+  const r = await page.ask({ action: 'newspapersInfo' });
+  assert.deepStrictEqual([r.ok, r.slowDown], [false, true]);
+  assert.match(r.error, /slow down \(HTTP 503\)/);
+});
+
+test('Codex 4504665602 sweep: the page copy names the hosts that said slow down to its pictures', async () => {
+  const img = { getAttribute: (a) => (a === 'src' ? 'https://images.findagrave.com/photos/2020/45/900000001_aaaa1111.jpeg' : null),
+    getAttributeNames: () => ['src'], hasAttribute: (a) => a === 'src', setAttribute() {}, removeAttribute() {},
+    parentElement: null, tagName: 'IMG' };
+  const clone = { querySelectorAll: (sel) => (sel === 'img' ? [img] : []), querySelector: () => null, outerHTML: '<html></html>',
+    getAttributeNames: () => [], getAttribute: () => null, setAttribute() {}, removeAttribute() {}, tagName: 'HTML' };
+  const page = loadPage({ url: MEMORIAL, clone, fetch: async () => ({ ok: false, status: 429, text: async () => '' }) });
+  const r = await page.ask({ action: 'singlefile' });
+  assert.strictEqual(r.ok, true, r.error);
+  assert.deepStrictEqual(r.slowHosts, ['images.findagrave.com']);
 });
