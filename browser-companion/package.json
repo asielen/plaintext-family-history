@@ -1,6 +1,6 @@
 {
   "name": "plainfile-family-history-companion",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "description": "Browser extension for staging genealogy record captures (TOOLING_INGESTION §5).",
   "private": true,
   "scripts": {
