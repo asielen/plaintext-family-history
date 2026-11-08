@@ -919,7 +919,7 @@ test('D2: a lost login (HTTP 401) on the scan still stops the run, and the recor
   assert.match(p.batchEl('anc-status').textContent, /^Stopped: Ancestry asked you to sign in/);
 });
 
-test('D3: FamilySearch having trouble (HTTP 500) stops the run without counting against the record', async () => {
+test('D3 (revised): FamilySearch having trouble (HTTP 500) stops the run; a short outage over two Starts sets nothing aside', async () => {
   const calls = [];
   const p = await openPanel({ url: ark('HRT1-CEN2'), storage: Object.assign({}, ON,
     { fsBatchLedger: fsLedger(['HRT1-CEN1', 'HRT1-DTH1']) }),
@@ -927,10 +927,30 @@ test('D3: FamilySearch having trouble (HTTP 500) stops the run without counting 
   quick(p);
   await start(p, 'fs');
   await start(p, 'fs');
-  await start(p, 'fs');
-  assert.deepStrictEqual(p.navigations.map((n) => n.url), [ark('HRT1-CEN1'), ark('HRT1-CEN1'), ark('HRT1-CEN1')]);
+  assert.deepStrictEqual(p.navigations.map((n) => n.url), [ark('HRT1-CEN1'), ark('HRT1-CEN1')]);
   assert.strictEqual(p.storage.fsBatchLedger.items['HRT1-CEN1'].state, 'queued');
   assert.match(p.batchEl('fs-status').textContent, /^Stopped: FamilySearch is having trouble \(HTTP 500\)/);
+});
+
+test('a record FamilySearch persistently reports trouble with (HTTP 5xx) is set aside after 3 Starts, and the next record is reached', async () => {
+  const calls = [];
+  const p = await openPanel({ url: ark('HRT1-CEN2'), storage: Object.assign({}, ON,
+    { fsBatchLedger: fsLedger(['HRT1-CEN1', 'HRT1-DTH1']) }),
+  respond: familysearchSite(calls, (u) => (/\/ark:\/61903\/1:1:HRT1-CEN1$/.test(u) ? 502 : null)) });
+  quick(p);
+  for (let i = 0; i < 3; i++) await start(p, 'fs');
+  const it = p.storage.fsBatchLedger.items['HRT1-CEN1'];
+  assert.strictEqual(it.state, 'failed');
+  assert.match(it.lastError, /^FamilySearch reported trouble with this record 3 times; it is set aside\. When the site is working again, press 'Try the set-aside ones again'\./);
+  assert.strictEqual(p.storage.fsBatchLedger.items['HRT1-DTH1'].state, 'done');
+  assert.deepStrictEqual(p.navigations.map((n) => n.url), [ark('HRT1-CEN1'), ark('HRT1-CEN1'), ark('HRT1-CEN1'), ark('HRT1-DTH1')]);
+  // A lost login never counts: the same record, signed out, is never set aside.
+  const q = await openPanel({ url: ark('HRT1-CEN2'), storage: Object.assign({}, ON,
+    { fsBatchLedger: fsLedger(['HRT1-CEN1', 'HRT1-DTH1']) }),
+  respond: familysearchSite([], (u) => (/\/ark:\/61903\/1:1:HRT1-CEN1$/.test(u) ? 401 : null)) });
+  quick(q);
+  for (let i = 0; i < 4; i++) await start(q, 'fs');
+  assert.strictEqual(q.storage.fsBatchLedger.items['HRT1-CEN1'].state, 'queued');
 });
 
 test('D4: switching batches off during a slow-down break keeps the break owed', async () => {

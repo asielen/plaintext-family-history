@@ -825,14 +825,22 @@
     // The run stops at this record (throws Stop) - unless it has stopped the
     // batch here MAX_TRIES times, Start after Start: then the record is set
     // aside with the reason, and the run goes on (PR #224 second audit N3).
-    // Two causes are never the record's and never count against it: a lost
-    // login, and the site saying it is having trouble (HTTP 5xx, review D3).
+    // A lost login never counts: she can sign in. A site reporting trouble
+    // (HTTP 5xx) at this record counts too - sites do answer 5xx for one
+    // broken record, and a record set aside can be brought back while one
+    // that stops every Start cannot be got past - but only after
+    // MAX_TROUBLE_TRIES Starts, so a short outage sets nothing aside
+    // (owner's coordinator, 2026-11-07, revising review D3).
     async function stopAtRecord(siteName, L, item, why) {
-      if (/sign in|signed in|HTTP 401|having trouble|HTTP 5\d\d/i.test(why)) throw new Stop(why);
+      if (/sign in|signed in|HTTP 401/i.test(why)) throw new Stop(why);
+      const trouble = /having trouble|HTTP 5\d\d/i.test(why);
       const stops = CB().markRefused(L, item.key);
-      if (stops < CB().MAX_TRIES) throw new Stop(why);
-      await setAside(siteName, L, item, why + ' - it stopped the batch ' + stops +
-        ' times at this record, so it is set aside ("Try the set-aside ones again" brings it back)');
+      if (stops < (trouble ? CB().MAX_TROUBLE_TRIES : CB().MAX_TRIES)) throw new Stop(why);
+      await setAside(siteName, L, item, trouble
+        ? CB().SITES[siteName].name + ' reported trouble with this record ' + stops + ' times; it is set aside. ' +
+          'When the site is working again, press \'Try the set-aside ones again\'. (' + why + ')'
+        : why + ' - it stopped the batch ' + stops +
+          ' times at this record, so it is set aside ("Try the set-aside ones again" brings it back)');
     }
 
     // Several records in a row that cannot be saved say more about the site

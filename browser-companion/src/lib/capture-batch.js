@@ -90,6 +90,10 @@
   const MAX_TRIES = 2;
   const MAX_PARTIAL = 3;
   const MAX_FAILS_IN_A_ROW = 3;
+  // A site reporting trouble (HTTP 5xx) at one record, Start after Start: set
+  // aside after this many, one more than other stops, so a short outage over
+  // a couple of Starts sets nothing aside.
+  const MAX_TROUBLE_TRIES = 3;
 
   function between(range, rand) {
     const r = typeof rand === 'function' ? rand() : Math.random();
@@ -722,7 +726,7 @@
   }
 
   const api = {
-    PACING, SITES, NP_LIST_MAX_PAGES, MAX_PER_RUN, MAX_TRIES, MAX_PARTIAL, MAX_FAILS_IN_A_ROW,
+    PACING, SITES, NP_LIST_MAX_PAGES, MAX_PER_RUN, MAX_TRIES, MAX_PARTIAL, MAX_FAILS_IN_A_ROW, MAX_TROUBLE_TRIES,
     between, npClipUrl, newLedger, repair, logEvent, addRecords, addClippings,
     nextStamp, markDone, markHeld, markSetAside, markRetry, markPartial, markRefused, requeuePartials, requeueSetAside,
     mergeStored, mergeDone, isCooldown, nextPending, counts,
