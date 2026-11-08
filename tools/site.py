@@ -7579,7 +7579,12 @@ class _SiteBuilder:
         # Published/standalone output stays curated-only (person_pages already
         # excludes stubs there).
         by_letter: dict[str, list[dict]] = {}
-        for pid in self.person_pages:
+        # Walk the page sets in sorted order, and break name/title ties on the
+        # link: a set's order changes with every run's hash seed, so two
+        # people (or sources) with the same name swapped places between two
+        # builds of an unchanged archive, and the homepage never came out the
+        # same twice (the build is deterministic by contract, TOOLING §12).
+        for pid in sorted(self.person_pages):
             meta = self.person_meta[pid]
             name = meta['name'] or fmt_id_display(pid)
             surname = (meta['surname'] or name or '?').strip()
@@ -7603,7 +7608,8 @@ class _SiteBuilder:
                     {'name': fmt_id_display(pid), 'href': None, 'stub': True,
                      'recordless': True, 'person_id': fmt_id_display(pid)})
         surnames = [
-            {'letter': letter, 'people': sorted(by_letter[letter], key=lambda p: p['name'].lower())}
+            {'letter': letter,
+             'people': sorted(by_letter[letter], key=lambda p: (p['name'].lower(), p['href'] or ''))}
             for letter in sorted(by_letter)
         ]
 
@@ -7617,7 +7623,7 @@ class _SiteBuilder:
         # in order, alphabetical within each, undated records last under
         # their own heading (owner request, review 2026-07-16).
         by_decade: dict[str, list[dict]] = {}
-        for sid in self.source_pages:
+        for sid in sorted(self.source_pages):
             row = self.source_meta[sid]
             year = (row['date_min'] or '')[:4]
             label = f'{int(year) // 10 * 10}s' if year.isdigit() else 'Undated'
@@ -7626,13 +7632,13 @@ class _SiteBuilder:
                  'href': f'sources/{_page_filename(sid)}'})
         source_groups = [
             {'label': label,
-             'sources': sorted(by_decade[label], key=lambda s: s['title'].lower())}
+             'sources': sorted(by_decade[label], key=lambda s: (s['title'].lower(), s['href']))}
             for label in sorted(by_decade, key=lambda g: (g == 'Undated', g))
         ]
         places = sorted(
             ({'name': self.place_meta[lid]['name'] or fmt_id_display(lid),
-              'href': f'places/{_page_filename(lid)}'} for lid in self.place_pages),
-            key=lambda p: p['name'].lower())
+              'href': f'places/{_page_filename(lid)}'} for lid in sorted(self.place_pages)),
+            key=lambda p: (p['name'].lower(), p['href']))
         # Homepage intro: notes/home.md (markdown, human + AI curated) when present,
         # else a default line. Its [[links]] and ![[S-id|caption]] embeds resolve
         # exactly as in any prose (and redact under standalone).
