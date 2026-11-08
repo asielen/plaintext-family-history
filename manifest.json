@@ -462,7 +462,7 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "acf24e1cea4c5fce8e0ecabcd1d4574ad4a1a7a931e6c24217f3985c2af1198a",
+      "sha256": "851638e040457753f5ad7cab87a65dd3fb923c3d0fbb17547d7316d32d18fd60",
       "spec_version": "1.2",
       "src": "tools/_lib.py"
     },
@@ -525,14 +525,14 @@
     {
       "path": ".fha/tools/claim.py",
       "category": "operating",
-      "sha256": "4055ec0dea81810483c313f12a3ac7b4b431587305e60f0c0bc049c18d5d1577",
+      "sha256": "5a4df352940e8cc86214908c247ae17a8c818f10d57e752201cfc0486f1f8570",
       "spec_version": "1.2",
       "src": "tools/claim.py"
     },
     {
       "path": ".fha/tools/confirm.py",
       "category": "operating",
-      "sha256": "181100e3a1e14e8fdd6490d944911cfb08a14fec94a9522d9d59a079c31342fb",
+      "sha256": "78e7965bb93dee0d04301c47ef5746d54534068448792fb6c82d120138b71fef",
       "spec_version": "1.2",
       "src": "tools/confirm.py"
     },

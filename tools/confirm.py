@@ -155,6 +155,7 @@ import yaml
 sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
+    locate_claim_records,
     EXIT_CLEAN,
     EXIT_ERRORS,
     EXIT_FAILURE,
@@ -228,21 +229,14 @@ _EditRefused = ClaimEditRefused
 # ── Locating records on disk (the .md files are truth, never the index) ─────────
 
 def _find_source_path_for_claim(archive_root: Path, claim_id: str) -> Path | None:
-    """Scan `sources/` for the record whose `## Claims` block holds `claim_id`."""
+    """The source record whose `## Claims` block holds `claim_id`, or None.
+
+    Uses the shared single-pass lookup (`_lib.locate_claim_records`, #225):
+    parsing every source record per claim took ~18 s on a 3,231-source archive.
+    """
     target = normalize_id(claim_id)
-    sources_dir = archive_root / 'sources'
-    if not sources_dir.is_dir():
-        return None
-    for path in sorted(sources_dir.rglob('*.md')):
-        try:
-            rec = read_record(path)
-        except Exception:  # noqa: BLE001 - a bad record can't hold our claim
-            continue
-        for claim in rec.get('claims') or []:
-            if isinstance(claim, dict) and claim.get('id') \
-                    and normalize_id(str(claim['id'])) == target:
-                return path
-    return None
+    found = locate_claim_records(archive_root, [target]).get(target)
+    return found[0] if found else None
 
 
 def _find_source_path_by_id(archive_root: Path, source_id: str) -> Path | None:
@@ -584,8 +578,9 @@ def run_confirm_xref(
     result.data['claim_a'] = fmt_id_display(ca)
     result.data['claim_b'] = fmt_id_display(cb)
 
-    path_a = _find_source_path_for_claim(archive_root, ca)
-    path_b = _find_source_path_for_claim(archive_root, cb)
+    located = locate_claim_records(archive_root, [ca, cb])    # one scan for both (#225)
+    path_a = located[ca][0] if ca in located else None
+    path_b = located[cb][0] if cb in located else None
     for cid, path in ((ca, path_a), (cb, path_b)):
         if path is None:
             return _notfound(result,
@@ -1217,12 +1212,12 @@ def run_confirm_place(
 
     # Locate each claim's source up front so a missing one is reported, not half-written.
     claim_paths: dict[str, Path] = {}
+    located = locate_claim_records(archive_root, list(norm_claims))   # one scan (#225)
     for cid in norm_claims:
-        path = _find_source_path_for_claim(archive_root, cid)
-        if path is None:
+        if cid not in located:
             result.data['missing'].append(fmt_id_display(cid))
         else:
-            claim_paths[cid] = path
+            claim_paths[cid] = located[cid][0]
     if result.data['missing']:
         return _notfound(result,
                          'These claims were not found in any source record: '
