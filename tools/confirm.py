@@ -94,7 +94,6 @@ CODE MAP
   Shared edit helpers
     _today
     _EditRefused                  - alias of _lib.ClaimEditRefused (shared with fha claim)
-    _find_source_path_for_claim   - scan sources/ for the .md holding one C-id
     _find_source_path_by_id       - scan sources/ for one S-id's record
     (person records are located via _lib.find_person_record_path, shared with fha person;
      source records can also be via the newer _lib.find_source_record_path, shared with
@@ -227,17 +226,6 @@ _EditRefused = ClaimEditRefused
 
 
 # ── Locating records on disk (the .md files are truth, never the index) ─────────
-
-def _find_source_path_for_claim(archive_root: Path, claim_id: str) -> Path | None:
-    """The source record whose `## Claims` block holds `claim_id`, or None.
-
-    Uses the shared single-pass lookup (`_lib.locate_claim_records`, #225):
-    parsing every source record per claim took ~18 s on a 3,231-source archive.
-    """
-    target = normalize_id(claim_id)
-    found = locate_claim_records(archive_root, [target]).get(target)
-    return found[0] if found else None
-
 
 def _find_source_path_by_id(archive_root: Path, source_id: str) -> Path | None:
     """Scan `sources/` for the record file whose `_{S-id}.md` suffix matches.
@@ -706,7 +694,7 @@ def _claim_value_by_id(path: Path, cid: str) -> str | None:
     None when the file can't be read or the id isn't found there.
 
     A thin lookup, not a scan: the caller already knows which source holds
-    this claim (`_find_source_path_for_claim` did that work), so this just
+    this claim (`_lib.locate_claim_records` did that work), so this just
     re-reads that one file rather than re-scanning `sources/`.
     """
     try:
@@ -736,7 +724,7 @@ def _spawn_contradiction_question(archive_root: Path, ca: str, path_a: Path,
     identical situation (issue #55), so the two spawners can never drift back
     into disagreeing about what a good question heading looks like. `path_a`/
     `path_b` are the source records the caller already resolved for `ca`/`cb`
-    (`_find_source_path_for_claim`), passed in rather than re-found so this
+    (`_lib.locate_claim_records`), passed in rather than re-found so this
     doesn't re-scan `sources/` a second time. `refs:` carries both ids for
     tooling (`fha find --related`, `fha report`'s question section).
     """
