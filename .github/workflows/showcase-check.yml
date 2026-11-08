@@ -37,8 +37,21 @@ jobs:
         run: python -m pip install -r tools/requirements.txt
       - name: Rebuild the example standalone site in place
         run: |
+          # `fha site` reads a relative --out against --root, so the old
+          # `--out example-archive/generated/site` built into the gitignored
+          # example-archive/example-archive/generated/site and this check
+          # compared an untouched copy for months. An absolute path says
+          # exactly where, and the guard below fails if the build ever writes
+          # somewhere else again.
+          touch "$RUNNER_TEMP/build-start"
           python tools/fha.py index --root example-archive
-          python tools/fha.py site --root example-archive --standalone --out example-archive/generated/site
+          python tools/fha.py site --root example-archive --standalone --out "$PWD/example-archive/generated/site"
+      - name: Fail if the rebuild did not write into the committed showcase
+        run: |
+          if [ -d example-archive/example-archive ] ||              [ -z "$(find example-archive/generated/site/index.html -newer "$RUNNER_TEMP/build-start")" ]; then
+            echo "::error::fha site did not rebuild example-archive/generated/site in place, so the drift check below would compare an untouched copy."
+            exit 1
+          fi
       - name: Fail if the committed showcase drifted (text files only)
         run: |
           # `.fha-site` carries a `Last build: <today>` stamp that changes every
@@ -52,7 +65,7 @@ jobs:
                 ':!example-archive/generated/site/.fha-site'; then
             echo "::error::example-archive/generated/site is out of date. Rebuild and commit it:"
             echo "  python tools/fha.py index --root example-archive"
-            echo "  python tools/fha.py site --root example-archive --standalone --out example-archive/generated/site"
+            echo "  python tools/fha.py site --root example-archive --standalone --out generated/site"
             exit 1
           fi
       - name: Fail if generated media or font files are untracked or deleted
