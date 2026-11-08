@@ -110,7 +110,8 @@ configure_utf8_stdout()
 # ── CODE MAP ──────────────────────────────────────────────────────────────────
 #
 #  Schema
-#    _DDL                    - CREATE TABLE statements for all index tables
+#    _DDL                    - CREATE TABLE statements for all index tables,
+#                              plus the lookup indexes (upgrade-safe)
 #
 #  Unreadable records
 #    _parse_error_recorder   - shared collector: a record whose YAML would not
@@ -390,6 +391,36 @@ CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts
 -- transcripts_fts: full-text search over source transcripts.
 CREATE VIRTUAL TABLE IF NOT EXISTS transcripts_fts
   USING fts5(source_id, path, content);
+
+-- Lookup indexes. Without them every "the claims on this source", "the people
+-- on this claim" and "the files of this source" question reads its whole
+-- table, and `fha site` asks them thousands of times: on an archive of ~3,000
+-- sources that was most of a minute of the build. Each one below serves a
+-- `WHERE col = ?` that a tool asks once per source, claim or person; a table
+-- asked only in bulk, or only once per command, is left without one.
+-- `relationships` needs none for `person_id`: its UNIQUE constraint already
+-- keeps an index that starts with that column.
+--
+-- IF NOT EXISTS is the upgrade path, not just tidiness. `_get_db` runs this
+-- script on every open for writing - the full rebuild AND `fha index
+-- --source` - so an index built before these existed gains them the next
+-- time anything writes to it, with no schema-version bump. A bump would make
+-- every reading tool (`fha site`, `fha find`, `fha packet`, ...) refuse the
+-- cache until a rebuild, and an index without these returns the same rows,
+-- only more slowly. Readers never create them: a write from a reader would
+-- move the cache's modified time past an edited record and hide that the
+-- cache is stale (see `_lib.open_index_db`).
+--
+-- An index can change the order SQLite hands rows back in. A query whose row
+-- order reaches a page or a printed list says the order it wants (often
+-- `ORDER BY rowid` - the order this build wrote the rows, which is the order
+-- they came back in before these indexes existed).
+CREATE INDEX IF NOT EXISTS idx_claims_source_id ON claims(source_id);
+CREATE INDEX IF NOT EXISTS idx_claim_persons_claim_id ON claim_persons(claim_id);
+CREATE INDEX IF NOT EXISTS idx_claim_persons_person_id ON claim_persons(person_id);
+CREATE INDEX IF NOT EXISTS idx_source_files_source_id ON source_files(source_id);
+CREATE INDEX IF NOT EXISTS idx_source_people_source_id ON source_people(source_id);
+CREATE INDEX IF NOT EXISTS idx_source_people_person_id ON source_people(person_id);
 """
 
 # One home for the vocabulary: `_lib.SOCIAL_TIE_SUBTYPES` is both the set of

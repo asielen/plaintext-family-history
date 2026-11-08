@@ -1688,6 +1688,221 @@ class IndexSchemaVersionV8BumpTests(unittest.TestCase):
         self.assertEqual(version[0], str(index.INDEX_SCHEMA_VERSION))
 
 
+# ── Lookup indexes ────────────────────────────────────────────────────────────
+#
+# `fha site` asks "the claims on this source", "the people on this claim" and
+# "the files of this source" once per page and once per claim. With no index
+# on those columns every one of those questions read its whole table, and on
+# an archive of ~3,000 sources that was most of a minute of the build. The
+# indexes below are the fix; these tests pin that they exist, that an index
+# built before them keeps working and gains them on its next write, and that
+# SQLite actually uses them for the questions the site asks.
+
+_LOOKUP_INDEXES = {
+    'idx_claims_source_id': ('claims', 'source_id'),
+    'idx_claim_persons_claim_id': ('claim_persons', 'claim_id'),
+    'idx_claim_persons_person_id': ('claim_persons', 'person_id'),
+    'idx_source_files_source_id': ('source_files', 'source_id'),
+    'idx_source_people_source_id': ('source_people', 'source_id'),
+    'idx_source_people_person_id': ('source_people', 'person_id'),
+}
+
+_LOOKUP_PID = 'P-1a1a1a1a1a'
+_LOOKUP_SID = 'S-1b1b1b1b1b'
+_LOOKUP_PERSON = f'''---
+id: {_LOOKUP_PID}
+name: Ada Lookup
+living: false
+tier: curated
+---
+
+# Ada Lookup
+'''
+_LOOKUP_SOURCE = f'''---
+id: {_LOOKUP_SID}
+title: Parish register entry
+source_type: church
+people: ["[[{_LOOKUP_PID}]]"]
+files:
+  - file: documents/church/register-front_{_LOOKUP_SID}.jpg
+    role: primary
+  - file: documents/church/register-back_{_LOOKUP_SID}.jpg
+    role: back
+---
+
+## Claims
+```yaml
+- id: C-1c1c1c1c1c
+  value: "Ada baptized 1850"
+  type: baptism
+  persons: ["[[{_LOOKUP_PID}]]"]
+  date: 1850
+  status: accepted
+  reviewed: 2026-01-01
+  confidence: high
+```
+'''
+
+
+def _write_lookup_archive(root: Path) -> None:
+    _write(root / 'people' / f'lookup__ada_{_LOOKUP_PID}.md', _LOOKUP_PERSON)
+    _write(root / 'sources' / 'church' / f'register_{_LOOKUP_SID}.md', _LOOKUP_SOURCE)
+
+
+def _lookup_index_names(db_path: Path) -> set[str]:
+    conn = sqlite3.connect(str(db_path))
+    try:
+        return {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' AND name LIKE 'idx_%'")}
+    finally:
+        conn.close()
+
+
+def _strip_lookup_indexes(db_path: Path) -> None:
+    """Turn a freshly built index into one built before the lookup indexes
+    existed: same schema version, same rows, no `idx_*` indexes."""
+    conn = sqlite3.connect(str(db_path))
+    try:
+        for name in _LOOKUP_INDEXES:
+            conn.execute(f'DROP INDEX IF EXISTS {name}')
+        conn.commit()
+    finally:
+        conn.close()
+
+
+class LookupIndexUpgradeTests(unittest.TestCase):
+    """The lookup indexes arrive without a schema-version bump. A bump would
+    make every reading tool refuse an existing cache until `fha index` ran,
+    and a cache without the indexes returns exactly the same rows, only more
+    slowly - so it must keep reading as fresh, keep serving the site, and
+    pick the indexes up the next time `fha index` (full or `--source`)
+    writes to it. A reader never adds them itself: that write would move the
+    cache's modified time past a record edited since, and hide that the
+    cache is stale."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        _write_lookup_archive(self.root)
+        self.db_path = self.root / '.cache' / 'index.sqlite'
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _build_old_cache(self) -> None:
+        index.build_index(self.root, {})
+        _strip_lookup_indexes(self.db_path)
+        self.assertEqual(_lookup_index_names(self.db_path), set())
+
+    def test_full_build_creates_every_lookup_index(self) -> None:
+        index.build_index(self.root, {})
+        self.assertEqual(_lookup_index_names(self.db_path), set(_LOOKUP_INDEXES))
+        conn = sqlite3.connect(str(self.db_path))
+        try:
+            for name, (table, column) in _LOOKUP_INDEXES.items():
+                cols = [r[2] for r in conn.execute(f'PRAGMA index_info({name})')]
+                self.assertEqual(cols, [column], name)
+                owner = conn.execute(
+                    "SELECT tbl_name FROM sqlite_master WHERE name=?", (name,)).fetchone()
+                self.assertEqual(owner[0], table, name)
+        finally:
+            conn.close()
+
+    def test_cache_built_before_them_still_reads_as_fresh(self) -> None:
+        self._build_old_cache()
+        status, detail = sqlite_cache_schema_status(
+            self.db_path, index.INDEX_SCHEMA_VERSION, ('persons', 'sources', 'claims'))
+        self.assertEqual(status, 'fresh', detail)
+        conn = open_index_db(self.root, ('persons', 'sources', 'claims'), strict=True)
+        self.assertIsNotNone(conn)
+        conn.close()
+
+    def test_full_rebuild_of_an_old_cache_adds_them(self) -> None:
+        self._build_old_cache()
+        index.build_index(self.root, {})
+        self.assertEqual(_lookup_index_names(self.db_path), set(_LOOKUP_INDEXES))
+
+    def test_source_upsert_on_an_old_cache_adds_them(self) -> None:
+        # `fha index --source` is the everyday write after `fha process` and
+        # `fha claim`; it must upgrade the cache too, not only a full rebuild.
+        self._build_old_cache()
+        self.assertEqual(
+            index.upsert_source(self.root, {}, _LOOKUP_SID.lower()), 'indexed')
+        self.assertEqual(_lookup_index_names(self.db_path), set(_LOOKUP_INDEXES))
+
+    def test_site_builds_from_an_old_cache_and_leaves_it_untouched(self) -> None:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            'fha_site_lookup', ROOT / 'tools' / 'site.py')
+        site = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(site)
+
+        self._build_old_cache()
+        before = self.db_path.stat().st_mtime_ns
+        out = self.root / 'generated' / 'site'
+        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            res = site.run_site(self.root, out, linked=False)
+        self.assertEqual(res['status'], 'ok', res['messages'])
+        source_page = out / 'sources' / f'{_LOOKUP_SID.lower()}.html'
+        self.assertTrue(source_page.exists(), sorted(p.name for p in out.rglob('*.html')))
+        self.assertIn('Ada baptized 1850', source_page.read_text(encoding='utf-8'))
+        # The reader neither added the indexes nor touched the file.
+        self.assertEqual(_lookup_index_names(self.db_path), set())
+        self.assertEqual(self.db_path.stat().st_mtime_ns, before)
+
+
+class LookupIndexQueryPlanTests(unittest.TestCase):
+    """SQLite uses the lookup indexes for the questions `fha site` asks per
+    page and per claim. Without them each of these plans reads `SCAN <table>`
+    - the whole table, once per source page, per claim and per person."""
+
+    # (what the site asks, the SQL shape it asks it in, the index it must use)
+    _HOT_QUERIES = (
+        ('the claims on one source page',
+         "SELECT id, type, value FROM claims c WHERE source_id = ? "
+         "AND status = 'accepted' ORDER BY "
+         "CASE WHEN date_min IS NULL OR date_min = '' THEN 1 ELSE 0 END, date_min ASC",
+         'idx_claims_source_id'),
+        ('the people one claim names',
+         'SELECT person_id FROM claim_persons WHERE claim_id = ? ORDER BY position',
+         'idx_claim_persons_claim_id'),
+        ('the "does this claim name a living person" check',
+         "SELECT 1 FROM claim_persons cp2 JOIN persons p ON cp2.person_id = p.id "
+         "WHERE cp2.claim_id = ? AND p.living IN ('true','unknown')",
+         'idx_claim_persons_claim_id'),
+        ('the claims on one person page',
+         "SELECT c.id, c.type FROM claim_persons cp JOIN claims c ON cp.claim_id = c.id "
+         "WHERE cp.person_id = ? AND c.status = 'accepted'",
+         'idx_claim_persons_person_id'),
+        ('the files of one source',
+         'SELECT path, role, copy, date_edtf FROM source_files WHERE source_id = ? '
+         'ORDER BY rowid',
+         'idx_source_files_source_id'),
+        ('the sources that list one person',
+         'SELECT source_id FROM source_people WHERE person_id = ?',
+         'idx_source_people_person_id'),
+        ('the people one source lists',
+         'SELECT person_id FROM source_people WHERE source_id = ?',
+         'idx_source_people_source_id'),
+    )
+
+    def test_hot_lookups_use_an_index(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write_lookup_archive(root)
+            index.build_index(root, {})
+            conn = sqlite3.connect(str(root / '.cache' / 'index.sqlite'))
+            try:
+                for what, sql, idx in self._HOT_QUERIES:
+                    with self.subTest(what):
+                        plan = ' | '.join(
+                            r[-1] for r in conn.execute(
+                                'EXPLAIN QUERY PLAN ' + sql, ('x',)))
+                        self.assertRegex(plan, rf'USING (COVERING )?INDEX {idx}\b', plan)
+            finally:
+                conn.close()
+
+
 _EXTRACT_SID = 'S-7a7a7a7a7a'
 _EXTRACT_SOURCE = '''---
 id: {sid}

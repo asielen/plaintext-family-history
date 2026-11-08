@@ -721,7 +721,8 @@ def gather_review(state: ServeState) -> dict:
                 cid = r['id']
                 people = [
                     pr['person_id'] for pr in conn.execute(
-                        'SELECT person_id FROM claim_persons WHERE claim_id = ?', (cid,))
+                        'SELECT person_id FROM claim_persons WHERE claim_id = ? '
+                        'ORDER BY rowid', (cid,))
                 ]
                 pnames = []
                 for pid in people:

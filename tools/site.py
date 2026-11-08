@@ -4609,19 +4609,21 @@ class _SiteBuilder:
         as its main one (`role: primary`, which `fha process` and `fha source
         set-primary` write beside `is_primary: true`), else `role: front`, if
         such an image resolved to a viewable thumbnail, else the first image in
-        `source_files`' own row order (the table's insertion order - there is
-        no separate sequence column, so "first" here means whatever order the
-        SELECT below already returns). It is None whenever no image asset
-        resolved to a thumbnail at all - no image row, every image missing on
-        disk, Pillow absent in standalone, or every image gated out for
-        naming a living person - so the portrait can never show what the
-        Files list itself would have hidden; it reuses that list's own
-        entries rather than re-resolving the file, so a missing/omitted image
-        degrades identically in both places."""
+        `source_files`' own row order (the order `fha index` wrote the rows,
+        which follows the record's `files:` list - there is no separate
+        sequence column, so the SELECT below asks for `rowid` order by name
+        rather than trusting whatever order an index lookup hands back). It
+        is None whenever no image asset resolved to a thumbnail at all - no
+        image row, every image missing on disk, Pillow absent in standalone,
+        or every image gated out for naming a living person - so the
+        portrait can never show what the Files list itself would have hidden;
+        it reuses that list's own entries rather than re-resolving the file,
+        so a missing/omitted image degrades identically in both places."""
         entries: list[dict] = []
         candidates: list[tuple[int, dict]] = []   # (rank, entry) for resolvable images
         for f in self.conn.execute(
-            'SELECT path, role, copy, date_edtf FROM source_files WHERE source_id = ?', (sid,)
+            'SELECT path, role, copy, date_edtf FROM source_files WHERE source_id = ? '
+            'ORDER BY rowid', (sid,)
         ):
             if not f['path']:
                 continue
@@ -5680,7 +5682,8 @@ class _SiteBuilder:
     def _person_family(self, pid: str, page_dir: Path) -> list[dict]:
         """Friends & Family from the relationships edges, grouped by relation."""
         rows = self.conn.execute(
-            'SELECT DISTINCT rel, other_id FROM relationships WHERE person_id = ?', (pid,)
+            'SELECT DISTINCT rel, other_id FROM relationships WHERE person_id = ? '
+            'ORDER BY rel, other_id', (pid,)
         ).fetchall()
         by_rel: dict[str, list[str]] = {}
         for r in rows:
@@ -5711,7 +5714,8 @@ class _SiteBuilder:
         non-redacted parent."""
         def edge(person: str, rel: str) -> list[str]:
             return [r['other_id'] for r in self.conn.execute(
-                'SELECT DISTINCT other_id FROM relationships WHERE person_id = ? AND rel = ?',
+                'SELECT DISTINCT other_id FROM relationships WHERE person_id = ? AND rel = ? '
+                'ORDER BY other_id',
                 (person, rel))]
 
         def links(ids, evidence_with):
@@ -6740,7 +6744,8 @@ class _SiteBuilder:
             for _ in range(len(queue)):
                 cur = queue.popleft()
                 for r in self.conn.execute(
-                    "SELECT DISTINCT other_id FROM relationships WHERE person_id = ? AND rel = 'parent'",
+                    "SELECT DISTINCT other_id FROM relationships WHERE person_id = ? AND rel = 'parent' "
+                    "ORDER BY other_id",
                     (cur,),
                 ):
                     other = r['other_id']
@@ -6788,7 +6793,8 @@ class _SiteBuilder:
             rows = self.conn.execute(
                 '''SELECT DISTINCT r.other_id, r.claim_id, c.subtype
                    FROM relationships r LEFT JOIN claims c ON r.claim_id = c.id
-                   WHERE r.person_id = ? AND r.rel = ?''',
+                   WHERE r.person_id = ? AND r.rel = ?
+                   ORDER BY r.other_id, r.claim_id''',
                 (pid, rel),
             ).fetchall()
             self._tree_edges_cache[key] = rows
@@ -7017,7 +7023,8 @@ class _SiteBuilder:
                           c.source_id, c.status
                    FROM relationships r JOIN persons p ON r.other_id = p.id
                    LEFT JOIN claims c ON r.claim_id = c.id
-                   WHERE r.person_id = ? AND r.rel = 'parent' ''', (pid,)):
+                   WHERE r.person_id = ? AND r.rel = 'parent'
+                   ORDER BY r.other_id, r.claim_id''', (pid,)):
                 other = r['other_id']
                 # A deceased ancestor without a page (stub) still fills its slot as a
                 # name (unlinked); only a living/unknown/restricted ancestor stays a

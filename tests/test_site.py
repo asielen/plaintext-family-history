@@ -8440,5 +8440,100 @@ class CommittedShowcaseAssetTests(unittest.TestCase):
                 self.assertIn("addEventListener('toggle'", html)
 
 
+
+class LookupIndexesLeaveTheSiteUnchangedTests(unittest.TestCase):
+    """The index cache's lookup indexes (PR #229) are a speed-up only: a
+    site built from a cache that has them must be byte-for-byte the site
+    built from one that does not. An index can change the order SQLite hands
+    rows back in, and a page that shows rows in "whatever order the query
+    returned" would then reshuffle - a source's file list, a person's
+    relatives - with nothing in the archive changed. The queries whose order
+    reaches a page name their order; this test is what notices when one
+    stops doing so, or when a new index starts to matter.
+
+    Built from a copy of the example archive plus one source whose `files:`
+    list is NOT in path order (the front image first, its back second, and
+    "back" sorts before "front"), so a file list that fell back to path or
+    index order would show up as a diff rather than pass by luck."""
+
+    _REORDER_SID = 'S-9q8w7e6r5t'
+    _REORDER_SOURCE = f"""---
+id: {_REORDER_SID}
+title: Postcard, front and back
+source_type: photo
+files:
+  - file: photos/postcard-front_{_REORDER_SID}.jpg
+    role: front
+  - file: photos/postcard-back_{_REORDER_SID}.jpg
+    role: back
+  - file: photos/postcard-album-page_{_REORDER_SID}.jpg
+    role: context
+---
+
+## Notes
+A postcard kept in the family album.
+"""
+
+    def _text_files(self, out: Path) -> dict[str, bytes]:
+        return {
+            p.relative_to(out).as_posix(): p.read_bytes()
+            for p in out.rglob('*')
+            if p.is_file() and p.name != '.fha-site'
+            and p.suffix.lower() in {'.html', '.css', '.js', '.json', '.txt', '.md', '.svg'}
+        }
+
+    def test_site_is_identical_with_and_without_the_lookup_indexes(self) -> None:
+        import shutil
+        import index as index_mod
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / 'archive'
+            shutil.copytree(ROOT / 'example-archive', root,
+                            ignore=shutil.ignore_patterns('generated', '.cache'))
+            (root / 'sources' / 'photos' / f'postcard_{self._REORDER_SID}.md').write_text(
+                self._REORDER_SOURCE, encoding='utf-8')
+            with contextlib.redirect_stdout(io.StringIO()),                     contextlib.redirect_stderr(io.StringIO()):
+                index_mod.build_index(root, {})
+            db_path = root / '.cache' / 'index.sqlite'
+            conn = sqlite3.connect(str(db_path))
+            try:
+                lookup = [r[0] for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='index' AND name LIKE 'idx_%'")]
+                # The fixture row must be there, and out of path order, or
+                # this test cannot see a file list fall back to path order.
+                files = [r[0] for r in conn.execute(
+                    'SELECT path FROM source_files WHERE source_id = ? ORDER BY rowid',
+                    (self._REORDER_SID.lower(),))]
+            finally:
+                conn.close()
+            self.assertEqual(len(lookup), 6, lookup)
+            self.assertEqual(len(files), 3)
+            self.assertNotEqual(files, sorted(files))
+
+            def build(out: Path) -> dict[str, bytes]:
+                with contextlib.redirect_stdout(io.StringIO()),                         contextlib.redirect_stderr(io.StringIO()):
+                    res = site.run_site(root, out, linked=False)
+                self.assertEqual(res['status'], 'ok', res['messages'])
+                return self._text_files(out)
+
+            with_indexes = build(Path(tmp) / 'site-with')
+            self.assertIn(f'sources/{self._REORDER_SID.lower()}.html', with_indexes)
+
+            conn = sqlite3.connect(str(db_path))
+            try:
+                for name in lookup:
+                    conn.execute(f'DROP INDEX {name}')
+                conn.commit()
+            finally:
+                conn.close()
+            without_indexes = build(Path(tmp) / 'site-without')
+
+            self.assertEqual(sorted(with_indexes), sorted(without_indexes))
+            changed = [rel for rel in sorted(with_indexes)
+                       if with_indexes[rel] != without_indexes[rel]]
+            self.assertEqual(changed, [], 'pages that changed when the lookup indexes '
+                             'were dropped (a query whose row order reaches the page '
+                             'lost its ORDER BY)')
+
+
 if __name__ == '__main__':
     unittest.main()
