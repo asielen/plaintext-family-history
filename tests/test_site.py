@@ -2548,6 +2548,57 @@ class DerivativeCacheTests(_Base):
         self.assertTrue(any(m.level == 'info' and 'could not be read back' in m.text
                             for m in res.messages), res.messages)
 
+    def test_a_cache_folder_that_cannot_be_opened_never_fails_the_build(self):
+        # Codex review on PR #233 (P2): on Python 3.10/3.11 `Path.exists` (and
+        # `is_file`/`is_dir`) raise PermissionError for a folder the build may
+        # not traverse, where 3.14 answers False - so the lookup's existence
+        # probe stopped the whole build. Here every filesystem call that
+        # touches the cache folder raises, the way an untraversable folder
+        # does on the oldest Python we support.
+        self._image('photos/1880/pic.png')
+        self._photo_source('s-1111111111', 'photos/1880/pic.png')
+        self._run(linked=False)
+        good = self._media()
+        cache = str(self._cache_dir())
+
+        def blocked(path) -> bool:
+            return os.fspath(path).startswith(cache)
+
+        def deny(real):
+            def wrapper(*args, **kwargs):
+                if args and blocked(args[0]):
+                    raise PermissionError(13, 'Permission denied', os.fspath(args[0]))
+                return real(*args, **kwargs)
+            return wrapper
+
+        P = Path
+        patches = [unittest.mock.patch.object(P, name, deny(getattr(P, name)))
+                   for name in ('exists', 'is_file', 'is_dir', 'stat', 'read_bytes',
+                                'mkdir', 'unlink', 'open')]
+        real_mkstemp = tempfile.mkstemp
+
+        def mkstemp(*args, **kwargs):
+            if blocked(kwargs.get('dir') or ''):
+                raise PermissionError(13, 'Permission denied', kwargs['dir'])
+            return real_mkstemp(*args, **kwargs)
+
+        patches += [unittest.mock.patch.object(os, 'listdir', deny(os.listdir)),
+                    unittest.mock.patch.object(os, 'stat', deny(os.stat)),
+                    unittest.mock.patch.object(tempfile, 'mkstemp', mkstemp)]
+        with contextlib.ExitStack() as stack:
+            for p in patches:
+                stack.enter_context(p)
+            res, decoded = self._run_spied(linked=False)
+        self.assertEqual(res['status'], 'ok', res['messages'])
+        self.assertEqual(res.exit_code, site.EXIT_WARNINGS if res['messages'] else site.EXIT_CLEAN)
+        self.assertEqual(decoded, ['pic.png'])              # made from the original
+        self.assertEqual(self._media(), good)
+        self.assertTrue(any('could not open the saved web pictures' in m for m in res['notes']),
+                        res['notes'])
+        self.assertFalse([m for m in res['messages'] if 'web pictures' in m])
+        # Nothing was deleted while it could not be looked at.
+        self.assertEqual(len(self._cache_notes()), 1)
+
     def test_a_cache_folder_that_cannot_be_written_never_fails_the_build(self):
         self._image('photos/1880/pic.png')
         self._photo_source('s-1111111111', 'photos/1880/pic.png')

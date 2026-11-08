@@ -2170,7 +2170,9 @@ class _DerivativeCache:
     counts as damaged at lookup and is discarded by `prune`: the picture is
     made again from the original and the build says so once (`notes`). A cache
     folder that cannot be written turns saving off for the rest of the build,
-    also said once. Neither ever fails the build or changes a page.
+    and one that cannot be read makes every lookup a miss - each said once.
+    None of these ever fails the build or changes a page: every filesystem
+    call here turns an OSError into a miss, a skip or a note.
 
     `prune` runs once at the end of a standalone build and removes entries
     whose original is gone or has changed, or that were made under another
@@ -2184,6 +2186,7 @@ class _DerivativeCache:
         self.damaged: set[str] = set()         # keys whose entry could not be read back
         self.write_error: str | None = None    # first failure to save; saving stops
         self.prune_error: str | None = None    # could not list the folder to prune
+        self.read_error: str | None = None     # first failure to read a saved picture
 
     def entry_fields(self, src: Path, st: os.stat_result, max_px: int, suffix: str) -> dict:
         """Everything a derivative's bytes depend on, as recorded in its note."""
@@ -2209,18 +2212,31 @@ class _DerivativeCache:
         but cannot be trusted - unreadable, not a well-formed note
         (`_read_note`), made for something else, or with a picture that is
         missing or does not match it - counts as damaged: a miss the build
-        reports, never an exception."""
+        reports, never an exception.
+
+        A note or picture the build is not allowed to read (a folder it cannot
+        open, a file another program holds) is a miss of its own kind,
+        `read_error`, said once. There is no existence check first: on Python
+        3.10/3.11 `Path.exists` raises PermissionError where 3.12+ quietly
+        answers False, so the read itself is the only probe."""
         note_path = self.dir / f'{key}.json'
-        if not note_path.exists():
+        try:
+            note = self._read_note(note_path)
+        except FileNotFoundError:
             return None
-        note = self._read_note(note_path)
+        except OSError as e:
+            self._note_read_error(e)
+            return None
         if note is None or note['fields'] != fields:
             self.damaged.add(key)
             return None
         try:
             data = (self.dir / f'{key}{fields["format"]}').read_bytes()
-        except OSError:
+        except FileNotFoundError:
             self.damaged.add(key)
+            return None
+        except OSError as e:
+            self._note_read_error(e)
             return None
         if note['bytes'] != len(data) or note['sha256'] != hashlib.sha256(data).hexdigest():
             self.damaged.add(key)
@@ -2237,10 +2253,14 @@ class _DerivativeCache:
 
         Types are checked with `type(...) is`, not `isinstance`: JSON `true`
         is a Python bool, and a bool is an int, so `"size": true` would
-        otherwise pass as the number 1."""
+        otherwise pass as the number 1.
+
+        A failure to READ the file is raised (OSError) rather than folded into
+        None, so each caller can tell "malformed" from "could not look"."""
+        raw = note_path.read_bytes()
         try:
-            note = json.loads(note_path.read_bytes())
-        except Exception:   # noqa: BLE001 - OSError, ValueError, RecursionError, ...
+            note = json.loads(raw)
+        except Exception:   # noqa: BLE001 - ValueError, RecursionError, ...
             return None
         if type(note) is not dict or set(note) != _NOTE_KEYS:
             return None
@@ -2322,23 +2342,42 @@ class _DerivativeCache:
     @classmethod
     def _still_reusable(cls, note_path: Path) -> bool:
         """Could a future build still hit this entry? A malformed note never
-        can (`_read_note`), so it is discarded with its picture."""
-        note = cls._read_note(note_path)
+        can (`_read_note`), so it is discarded with its picture. Whenever the
+        answer depends on a file this build cannot look at, the entry is kept:
+        deleting what might be good is worse than keeping what might be stale.
+        (`is_file`/`is_dir` raise on some errors on Python 3.10/3.11, so each
+        probe is guarded.)"""
+        try:
+            note = cls._read_note(note_path)
+        except FileNotFoundError:
+            return False                         # removed since the listing
+        except OSError:
+            return True                          # cannot read it now; keep it
         if note is None:
             return False
         fields = note['fields']
         if fields['recipe'] != _DERIVATIVE_RECIPE_VERSION or fields['pillow'] != _PIL_VERSION:
             return False
-        if not note_path.with_suffix(fields['format']).is_file():
-            return False                         # its picture is gone
+        try:
+            if not note_path.with_suffix(fields['format']).is_file():
+                return False                     # its picture is gone
+        except OSError:
+            return True
         source = Path(fields['source'])
         try:
             st = source.stat()
         except FileNotFoundError:
-            return not source.parent.is_dir()   # whole folder missing: unplugged drive
+            try:
+                return not source.parent.is_dir()   # whole folder missing: unplugged drive
+            except OSError:
+                return True
         except (OSError, ValueError):
             return True                          # cannot tell; keep it
         return st.st_size == fields['size'] and st.st_mtime_ns == fields['mtime_ns']
+
+    def _note_read_error(self, e: OSError) -> None:
+        if self.read_error is None:
+            self.read_error = e.strerror or str(e)
 
     def notes(self) -> list[str]:
         """The build's one-line reports about the cache itself, if any."""
@@ -2351,6 +2390,13 @@ class _DerivativeCache:
                 f'Note: {what} in {where} could not be read back, so '
                 f'{"it was" if n == 1 else "they were"} made again from '
                 'the originals. The site is complete; nothing for you to do.')
+        if self.read_error is not None:
+            out.append(
+                f'Note: could not open the saved web pictures in {where} '
+                f'({self.read_error}), so pictures were made again from the '
+                'originals. The site is complete. To make the next `fha site` '
+                f'fast again, check that {where} can be opened (deleting it is '
+                'safe).')
         if self.write_error is not None:
             out.append(
                 f'Note: could not save web pictures in {where} for reuse '
