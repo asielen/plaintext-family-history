@@ -9135,6 +9135,9 @@ A postcard kept in the family album.
                              'lost its ORDER BY)')
 
 
+# Every picture this class checks is a derivative fha site makes with Pillow;
+# without it nothing is published, so there is nothing to withhold.
+@unittest.skipUnless(site._PIL_AVAILABLE, 'Pillow not installed')
 class MarkedLivingAfterTaggingTests(unittest.TestCase):
     """#235, as the owner would hit it, on a copy of the example archive.
 
