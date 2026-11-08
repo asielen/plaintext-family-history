@@ -54,19 +54,20 @@
 // Start. One run at a time, one request at a time; Start waits while a
 // Capture by hand or a read of the page is under way.
 //
-// The ledgers (lib/capture-batch.js) live in chrome.storage.local; a copy for
-// reading is written beside the bundles, `_{site}-batch-ledger.json`.
+// The ledgers (lib/capture-batch.js) live in chrome.storage.local, and only
+// the add-on's service worker writes them (lib/batch-store.js): this panel
+// asks it for each change ("intent") and is answered with the ledger as now
+// stored, so no window's change can be lost to another's. A copy for reading
+// is written beside the bundles, `_{site}-batch-ledger.json`.
 //
 // Classic script; attaches FHA.batchPanel = { install(hooks) }. panel.js
 // calls install only with the switch on.
 //
 // Code map:
 //   SITE_UI                the four batches: names, addresses, buttons
-//   load / save / mirror   the ledger in storage, and its reading copy
-//   exclusive / update     one writer at a time per ledger (and lease), across windows
+//   ask / apply / mirror   a change to a ledger, made by the service worker; the reading copy
 //   goTo / waitForComplete send the tab to one record, safely
-//   withBatchClaim         one batch at a time: Web Locks, else a token that survives a settle
-//   readLease / holdLease  the stored lease, checked at every step (read before renewed)
+//   claim / holdLease      one batch at a time: the service worker's lease, renewed at every step
 //   halted                 paused, switched off, or taken over by another window?
 //   run / one              the run loop above, and one record of it
 //   countFail / setAside   one record set aside; several in a row stop the run
@@ -163,7 +164,7 @@
     }
 
     function countsLine(L) {
-      if (!L || !L.order.length) return 'Nothing queued yet.';
+      if (!L || !L.order || !L.order.length) return 'Nothing queued yet.';
       const c = CB().counts(L);
       return c.done + ' done, ' +
         (c.partial ? c.partial + ' saved in part (tried again at the next Start), ' : '') +
@@ -193,110 +194,79 @@
     // ── the ledger ───────────────────────────────────────────────────────────
 
     // The browser would not keep or give back the batch's progress (its
-    // storage full, say). Nothing more may be downloaded then: a record saved
-    // but not noted would be saved again at the next Start.
+    // storage full, say), or the service worker that keeps it did not
+    // answer. Nothing more may be downloaded then: a record saved but not
+    // noted would be saved again at the next Start.
     function storageFailed(what, err) {
       return new Stop('the browser could not ' + what + ' the batch’s progress (' +
         ((err && err.message) || err || 'no reason given') + ')', 'storage');
     }
 
-    // The stored ledger, repaired, or null when there is none yet. A read
-    // the browser refuses throws: an empty queue must never stand in for one
-    // that could not be read, or the next save would write over it.
-    function loadRaw(siteName) {
-      return new Promise((resolve, reject) => {
+    // ── one writer: the service worker ──────────────────────────────────────
+    // Every change to a ledger is an intent sent to the service worker
+    // (lib/batch-store.js), applied there to the ledger as stored, one at a
+    // time. Each intent has an id of its own: the browser may stop the
+    // service worker between applying an intent and answering, so one that
+    // got no answer is sent again, and the worker never applies an id twice.
+    const me = Math.random().toString(36).slice(2) + Date.now().toString(36);
+    let seq = 0;
+    const ASK_TRIES = 4;
+
+    function send(msg) {
+      return new Promise((resolve) => {
         try {
-          const k = CB().SITES[siteName].storageKey;
-          chrome.storage.local.get(k, (o) => {
+          chrome.runtime.sendMessage(msg, (r) => {
             const err = chrome.runtime.lastError;
-            if (err) reject(storageFailed('read', err));
-            else resolve(CB().repair(o && o[k]));
+            resolve(err || r == null ? { unanswered: (err && err.message) || 'no answer' } : r);
           });
         } catch (e) {
-          reject(storageFailed('read', e));
+          resolve({ unanswered: (e && e.message) || String(e) });
         }
       });
     }
 
-    // The last save of a run that is ending anyway: a failure here is said
+    async function ask(msg) {
+      const intent = Object.assign({ id: me + '.' + ++seq }, msg);
+      let why = 'no answer';
+      for (let i = 0; i < ASK_TRIES; i++) {
+        if (i) await nap(CB().PACING.askRetryMs * i);
+        const r = await send(intent);
+        if (!r.unanswered) return r;
+        why = r.unanswered;
+      }
+      throw storageFailed('keep', 'the add-on’s background part did not answer: ' + why);
+    }
+
+    // Apply `ops` ([[name, ...args], ...]) to a site's ledger. `L`, when
+    // given, is this panel's copy, refreshed in place with the ledger as now
+    // stored. `mirror` also writes the reading copy beside the bundles.
+    // Answers each op's answer, in order.
+    async function apply(siteName, L, ops, mirror) {
+      const r = await ask({ type: 'fha-batch', site: siteName, ops });
+      if (!r.ok) throw r.storage ? storageFailed(r.what === 'read' ? 'read' : 'save', r.error) : new Stop(r.error);
+      if (L) {
+        for (const k of Object.keys(L)) delete L[k];
+        Object.assign(L, r.L);
+      }
+      if (mirror) writeMirror(siteName, r.L);
+      return r.results;
+    }
+
+    // The ledger as stored (nothing changes). A new copy, or `L` refreshed.
+    async function refresh(siteName, L) {
+      const into = L || {};
+      await apply(siteName, into, [['get']], false);
+      return into;
+    }
+
+    // The last change of a run that is ending anyway: a failure here is said
     // by the caller's own message, never thrown over it.
-    async function saveQuietly(siteName, L) {
+    async function applyQuietly(siteName, L, ops) {
       try {
-        await save(siteName, L, true);
+        await apply(siteName, L, ops, true);
       } catch (e) {
         /* the run is already stopping; its message stands */
       }
-    }
-
-    async function load(siteName) {
-      const L = (await loadRaw(siteName)) || CB().newLedger();
-      if (siteName === 'newspapers') {
-        if (L.listCursor == null) L.listCursor = 0;
-        if (L.listComplete == null) L.listComplete = false;
-        if (L.user === undefined) L.user = null;
-      }
-      return L;
-    }
-
-    // ── one writer at a time ─────────────────────────────────────────────────
-    // A ledger is read, changed and written back; two panel windows doing that
-    // at once would each write over the other's change (two GEDCOM files
-    // queued together, an import beside a record saved by hand), and both
-    // would say it worked. Every read-change-write of a ledger - and of the
-    // lease - therefore holds an exclusive lock named for its storage key:
-    // navigator.locks, shared by every window of the browser; where Web Locks
-    // are missing, a promise chain in this window (PR #224 Codex 4504189301).
-    // Not re-entrant: what holds a lock calls only the unlocked halves below.
-    const chains = {};
-    function exclusive(name, fn) {
-      const locks = typeof navigator !== 'undefined' && navigator && navigator.locks;
-      if (locks && typeof locks.request === 'function') return locks.request('fha-batch:' + name, () => fn());
-      const run = (chains[name] || Promise.resolve()).then(() => fn());
-      chains[name] = run.catch(() => {});
-      return run;
-    }
-    const ledgerLock = (siteName, fn) => exclusive(CB().SITES[siteName].storageKey, fn);
-
-    // Write the ledger, folding in what another panel window stored
-    // meanwhile so this save never drops it. `mirror` also writes the reading
-    // copy beside the bundles; storage is the working copy, so a failed
-    // mirror is never a failed save. Holds the ledger's lock.
-    async function save(siteName, L, mirror) {
-      await ledgerLock(siteName, () => writeLedger(siteName, L));
-      if (mirror) writeMirror(siteName, L);
-    }
-
-    // Read the stored ledger, change it (`change(L)`), write it back - all
-    // under the ledger's lock, so no other window's change is lost between.
-    // Answers the ledger as written, and `change`'s own answer as `L.result`.
-    async function update(siteName, change, mirror) {
-      let L = null;
-      let result;
-      await ledgerLock(siteName, async () => {
-        L = await load(siteName);
-        result = await change(L);
-        await writeLedger(siteName, L);
-      });
-      if (mirror) writeMirror(siteName, L);
-      return { L, result };
-    }
-
-    // The unlocked half: merge what is stored, then write. Only ever called
-    // while the ledger's lock is held.
-    async function writeLedger(siteName, L) {
-      CB().mergeStored(L, await loadRaw(siteName));
-      const k = CB().SITES[siteName].storageKey;
-      await new Promise((resolve, reject) => {
-        try {
-          chrome.storage.local.set({ [k]: L }, () => {
-            const err = chrome.runtime.lastError;
-            if (err) reject(storageFailed('save', err));
-            else resolve();
-          });
-        } catch (e) {
-          reject(storageFailed('save', e));
-        }
-      });
     }
 
     function writeMirror(siteName, L) {
@@ -379,44 +349,30 @@
       if (active.stop) throw new Paused();
     }
 
-    // Before each request: fold in what another window stored (a slow-down
-    // it met, a record it changed) and take a break it recorded that is still
-    // ahead (PR #224 Codex 4504415455).
-    // Read again after every sleep: a longer break another window stored
-    // while this one slept is taken too, before any request (PR #224 audit F1).
+    // Before each request: the ledger as stored now (a slow-down another
+    // window met, a record it changed), and a break it recorded that is still
+    // ahead is taken (PR #224 Codex 4504415455). Read again after every
+    // sleep: a longer break stored while this one slept is taken too, before
+    // any request (PR #224 audit F1).
     async function honourStoredBreak(siteName, L) {
       for (;;) {
-        CB().mergeStored(L, await loadRaw(siteName));
+        await refresh(siteName, L);
         if (!(L.pacing && CB().isCooldown(L.pacing) && L.pacing.resumeAt > Date.now())) return;
         await sleepUntil(siteName, L, L.pacing.resumeAt, breakLabel(siteName, L.pacing.resumeReason));
       }
     }
 
-    // A "slow down" counted against the ledger as it is stored NOW, under its
-    // lock: the count goes up from what every window has counted, and the
-    // break (30 minutes, or about four hours for the third in a row) is
-    // chosen from that count (PR #224 audit F2). Answers the plan.
+    // A "slow down": counted, and its break (30 minutes, or about four hours
+    // for the third in a row) chosen from the count every window has kept
+    // (PR #224 audit F2). Answers the plan.
     async function slowDownBreak(siteName, L) {
-      let plan = null;
-      await ledgerLock(siteName, async () => {
-        CB().mergeStored(L, await loadRaw(siteName));
-        plan = CB().planRateLimit(L, Date.now());
-        await writeLedger(siteName, L);
-      });
-      writeMirror(siteName, L);
-      return plan;
+      return (await apply(siteName, L, [['rateLimit']], true))[0];
     }
 
-    // The ordinary gap after a capture, worked out the same way.
+    // The ordinary gap after a capture - or a "slow down" break another
+    // window recorded meanwhile, which it never shortens.
     async function captureGap(siteName, L) {
-      let plan = null;
-      await ledgerLock(siteName, async () => {
-        CB().mergeStored(L, await loadRaw(siteName));
-        plan = CB().planAfterCapture(L, Date.now());
-        await writeLedger(siteName, L);
-      });
-      writeMirror(siteName, L);
-      return plan;
+      return (await apply(siteName, L, [['afterCapture']], true))[0];
     }
 
     async function sleepUntil(siteName, L, until, label) {
@@ -444,11 +400,13 @@
         }
         await holdLease('newspapers');
         say('newspapers', 'Reading your clippings list (' + L.order.length + ' so far)…');
+        // The list as it is when this page is asked for: "Read my clippings
+        // list again" pressed in another window meanwhile makes the page
+        // stale, and the list is read again from its start.
+        const epoch = L.listEpoch || 0;
         let r;
-        let askedAt;
         try {
-          askedAt = CB().nextStamp();
-        r = await hooks.sendToTab(active.tabId, { action: 'newspapersList', cursor: L.listCursor, user: L.user });
+          r = await hooks.sendToTab(active.tabId, { action: 'newspapersList', cursor: L.listCursor, user: L.user });
         } catch (e) {
           r = { ok: false, error: 'the page did not answer (' + e.message + ')' };
         }
@@ -460,103 +418,67 @@
           }
           throw new Stop('could not read your clippings list: ' + why);
         }
-        if (!L.user) L.user = r.user;
-        // Stamped with when this page was asked for: a "Read my clippings
-        // list again" pressed in another window meanwhile is later, and the
-        // next save keeps it (the list is read again from the start).
-        L.listAt = askedAt;
-        CB().addClippings(L, r.clippings, L.user);
-        const moved = r.nextCursor != null && String(r.nextCursor) !== String(L.listCursor);
-        L.listComplete = !r.more || !r.clippings.length || !moved;
-        if (moved) L.listCursor = r.nextCursor;
-        await save('newspapers', L, false);
+        await apply('newspapers', L, [['listPage', { epoch, user: r.user, clippings: r.clippings,
+          nextCursor: r.nextCursor, more: r.more }]], false);
         if (!L.listComplete) await nap(CB().between(CB().PACING.listPauseMs));
       }
-      CB().logEvent(L, 'list read: ' + L.order.length + ' clippings by ' + L.user);
-      await save('newspapers', L, true);
+      await apply('newspapers', L, [['log', 'list read: ' + L.order.length + ' clippings by ' + L.user]], true);
     }
 
     // ── one batch at a time, across every panel window ──────────────────────
     // The capture panel can be open in several windows; each could start a
     // batch of its own, and two would ask a site twice as often. A running
-    // batch holds a lease in storage, renewed at every step; another window's
-    // Start is refused while it is held. A panel closed mid-run leaves its
-    // lease to run out (LEASE_MS) - never a batch that cannot be started.
-    //
-    // Two Starts pressed together must not both win: chrome.storage cannot
-    // compare-and-swap, so the claim itself goes through an exclusive lock
-    // every panel window shares (navigator.locks, the Web Locks API of
-    // extension pages), held for the whole run and let go by the browser if
-    // the panel closes. The stored lease stays as the per-step check. Where
-    // Web Locks are missing, the claim writes a token of its own, waits a
-    // moment (PACING.leaseSettleMs) and goes on only if its token is still
-    // the one stored.
-    const LEASE_KEY = 'batchLease';
-    const LEASE_MS = 10 * 60 * 1000;
-    const LOCK_NAME = 'fha-capture-batch-downloads';
-    const me = Math.random().toString(36).slice(2) + Date.now().toString(36);
-    const otherHolds = (lease) => !!lease && lease.owner !== me && lease.until > Date.now();
-
-    function writeLease(siteName, token) {
-      return new Promise((resolve) => chrome.storage.local.set(
-        { [LEASE_KEY]: { owner: me, token, site: siteName, until: Date.now() + LEASE_MS } },
-        () => resolve(!chrome.runtime.lastError)));
+    // batch holds a lease kept by the service worker, renewed at every step;
+    // another window's Start is refused while it is held. The worker answers
+    // one intent at a time, so two Starts pressed together cannot both win.
+    // While the run goes, this panel keeps a port open to the worker: a panel
+    // closed mid-run lets the lease go at once. A lease whose worker was
+    // stopped meanwhile runs out instead (lib/batch-store.js LEASE_MS).
+    let port = null;
+    function lease(action, siteName) {
+      return ask({ type: 'fha-batch-lease', action, owner: me, site: siteName || null });
     }
-
-    // Run `fn` holding the batch, or answer false when another window holds
-    // it (nothing is then read or sent).
-    async function withBatchClaim(siteName, fn) {
-      const locks = typeof navigator !== 'undefined' && navigator && navigator.locks;
-      if (locks && typeof locks.request === 'function') {
-        let ran = false;
-        await locks.request(LOCK_NAME, { ifAvailable: true }, async (lock) => {
-          if (!lock) return;
-          ran = true;
-          // Holding the lock, no other window can be running a batch: a
-          // stored lease of another is one its closed panel left behind.
-          await writeLease(siteName, me);
-          await fn();
+    function openPort() {
+      if (port || !chrome.runtime.connect) return;
+      try {
+        port = chrome.runtime.connect({ name: 'fha-batch-run:' + me });
+        port.onDisconnect.addListener(() => {
+          void chrome.runtime.lastError;
+          port = null;
         });
-        return ran;
+      } catch (e) {
+        port = null;
       }
-      if (otherHolds(await readLease())) return false;
-      const token = me + '.' + Math.random().toString(36).slice(2);
-      await writeLease(siteName, token);
-      await nap(CB().PACING.leaseSettleMs);
-      const after = await readLease();
-      if (!after || after.token !== token) return false;
-      await fn();
-      return true;
+    }
+    function closePort() {
+      const p = port;
+      port = null;
+      if (p) {
+        try {
+          p.disconnect();
+        } catch (e) {
+          /* already gone */
+        }
+      }
     }
 
-    function readLease() {
-      return new Promise((resolve) => chrome.storage.local.get(LEASE_KEY, (o) =>
-        resolve(!chrome.runtime.lastError && o && o[LEASE_KEY] ? o[LEASE_KEY] : null)));
-    }
     // Renewed at every step and once a minute on a timer (a long capture
-    // waiting out a site's slow-downs must not let it run out), written at
-    // most once a minute. Before it is renewed, it is read: if another
-    // window holds it now, this run stops at its next step instead of
-    // writing over it.
+    // waiting out a site's slow-downs must not let it run out), at most once
+    // a minute. If another window holds it now, this run stops at its next
+    // step instead of taking it back.
     let leaseAt = 0;
     async function holdLease(siteName, force) {
       if (!active || (!force && Date.now() - leaseAt < 60 * 1000)) return;
       leaseAt = Date.now();
       const run = active;
-      await exclusive(LEASE_KEY, async () => {
-        const lease = await readLease();
-        if (lease && lease.owner !== me && lease.until > Date.now()) {
-          run.lost = 'another panel window started a batch while this one ran, so this one stopped';
-          return;
-        }
-        await writeLease(siteName, lease && lease.owner === me ? lease.token : me);
-      });
+      openPort();
+      const r = await lease('renew', siteName);
+      if (!r.ok && r.lost) run.lost = 'another panel window started a batch while this one ran, so this one stopped';
+      else if (!r.ok && r.storage) throw storageFailed('save', r.error);
     }
-    function dropLease() {
-      return exclusive(LEASE_KEY, async () => {
-        const lease = await readLease();
-        if (lease && lease.owner === me) await new Promise((resolve) => chrome.storage.local.remove(LEASE_KEY, () => resolve()));
-      });
+    async function dropLease() {
+      closePort();
+      await lease('release');
     }
 
     // ── the run ──────────────────────────────────────────────────────────────
@@ -593,17 +515,25 @@
       }
       if (active || starting) return;
       starting = true;
-      let claimed;
+      let claim;
       try {
-        claimed = await withBatchClaim(siteName, () => runClaimed(siteName, tabId));
+        claim = await lease('claim', siteName);
+      } catch (e) {
+        claim = { ok: false, error: e.message };
       } finally {
         starting = false;
       }
-      if (!claimed) {
-        const lease = await readLease();
-        say(siteName, 'A batch is running in another window (or was, until a few minutes ago). Pause it there' +
-          (otherHolds(lease) ? ', or wait until about ' + fmtWhen(lease.until) : '') + ', then press Start here.', 'warn');
+      if (claim.ok) {
+        await runClaimed(siteName, tabId);
+        return;
       }
+      if (claim.lease) {
+        say(siteName, 'A batch is running in another window (or was, until a few minutes ago). Pause it there, ' +
+          'or wait until about ' + fmtWhen(claim.lease.until) + ', then press Start here.', 'warn');
+        return;
+      }
+      say(siteName, 'Did not start: ' + (claim.storage ? storageFailed('save', claim.error).message : claim.error) +
+        ', so nothing was downloaded. Close the panel and open it again, then press Start.', 'error');
     }
 
     // The run itself, once this window holds the batch.
@@ -628,12 +558,10 @@
       let downloaded = false;
       active.onCapture = () => { downloaded = true; };
       try {
-        L = await load(siteName);
-        CB().ensurePacing(L);
-        // Saved in part last time: asked about and captured again now.
-        const again = CB().requeuePartials(L);
-        if (again) CB().logEvent(L, 'trying again: ' + again + ' saved in part');
-        await save(siteName, L, false);
+        // Pacing made ready; the records saved in part last time are asked
+        // about and captured again now.
+        L = {};
+        await apply(siteName, L, [['start']], false);
         // The back-off: after a "slow down", no request before the break is over.
         if (L.pacing.resumeAt > Date.now()) {
           await sleepUntil(siteName, L, L.pacing.resumeAt, breakLabel(siteName, L.pacing.resumeReason));
@@ -680,9 +608,7 @@
             probe = null;
           }
         }
-        L.pacing.resumeAt = 0;
-        CB().logEvent(L, 'finished: ' + countsLine(L));
-        await save(siteName, L, true);
+        await apply(siteName, L, [['clearGap'], ['log', 'finished: ' + countsLine(L)]], true);
         const c = CB().counts(L);
         say(siteName, 'Finished. ' + countsLine(L) +
           (c.failed ? ' The set-aside ones, with the reasons, are in ' + lib.ledgerFile + ' in the download folder.' : ''),
@@ -697,31 +623,20 @@
           return;
         }
         if (e instanceof Paused) {
-          if (L) {
-            CB().logEvent(L, 'paused');
-            await saveQuietly(siteName, L);
-          }
+          if (L) await applyQuietly(siteName, L, [['log', 'paused']]);
           say(siteName, 'Paused. ' + countsLine(L) + ' Press Start to carry on.');
         } else {
           const slow = e instanceof Stop && e.kind === 'slowdown';
           if (L) {
             // A halt (switched off, another window took over) keeps the pacing:
-            // a break under way is still owed when batches start again.
-            if (!slow && e.kind !== 'halt' && L.pacing) L.pacing.resumeAt = 0;
-            // A "slow down" seen before any capture (a busy page, the list):
+            // a break under way is still owed when batches start again. A
+            // "slow down" seen before any capture (a busy page, the list):
             // the break starts now if it has not already.
-            if (slow && !(L.pacing && L.pacing.resumeAt > Date.now())) {
-              try {
-                await slowDownBreak(siteName, L);
-              } catch (err) {
-                /* the run is stopping anyway; the save below says no more */
-              }
-            }
-            CB().logEvent(L, 'STOPPED: ' + e.message);
-            await saveQuietly(siteName, L);
+            const ops = slow ? [['rateLimit', { unlessAhead: true }]] : e.kind !== 'halt' ? [['clearGap']] : [];
+            await applyQuietly(siteName, L, ops.concat([['log', 'STOPPED: ' + e.message]]));
           }
           say(siteName, 'Stopped: ' + e.message + '. ' + (slow
-            ? 'Press Start to carry on; it waits until about ' + fmtWhen(L.pacing.resumeAt) + ' before its next request. '
+            ? 'Press Start to carry on; it waits until about ' + fmtWhen((L.pacing || {}).resumeAt) + ' before its next request. '
             : e.kind === 'halt' ? ''
               : 'Look at the tab (signed in? a security check?), then press Start to carry on. ') + countsLine(L), 'error');
         }
@@ -753,11 +668,10 @@
       const sk = item.again && item.imageKey ? item.imageKey : lib.seenIt(item);
       const held = (await hooks.seenItHeld([sk]))[sk];
       if (held) {
-        CB().markHeld(L, item.key, held.where === 'archive'
+        await apply(siteName, L, [['markHeld', item.key, held.where === 'archive'
           ? 'in the archive' + (held.source ? ', source ' + held.source : '')
-          : 'waiting in the inbox to be filed');
+          : 'waiting in the inbox to be filed']], true);
         active.fails = 0;
-        await save(siteName, L, true);
         return;
       }
       say(siteName, 'Saving ' + (item.title || lib.name + ' ' + item.key) + '… ' + countsLine(L));
@@ -771,8 +685,10 @@
         // aside after MAX_TROUBLE_TRIES Starts, with the same words (third
         // audit M2). The run still stops (and takes its break on a 503).
         if (e instanceof Stop && e.atRecord) {
-          const stops = CB().markRefused(L, item.key);
-          if (stops >= CB().MAX_TROUBLE_TRIES) CB().markSetAside(L, item.key, troubleWords(siteName, stops, e.message));
+          const [stops] = await apply(siteName, L, [['markRefused', item.key]], false);
+          if (stops >= CB().MAX_TROUBLE_TRIES) {
+            await apply(siteName, L, [['markSetAside', item.key, troubleWords(siteName, stops, e.message)]], true);
+          }
         }
         throw e;
       }
@@ -814,15 +730,11 @@
       if (out.ok) {
         const bundle = siteName === 'newspapers'
           ? ((out.results || []).find((r) => r.ok) || {}).bundle : out.bundle;
-        if (out.partial) {
-          CB().markPartial(L, item.key, bundle || '(staged)', out.note || null);
-          if (out.imageKey && L.items[item.key]) L.items[item.key].imageKey = out.imageKey;
-        } else {
-          CB().markDone(L, item.key, bundle || '(staged)', out.note || null);
-        }
+        await apply(siteName, L, [out.partial
+          ? ['markPartial', item.key, bundle || '(staged)', out.note || null, out.imageKey || null]
+          : ['markDone', item.key, bundle || '(staged)', out.note || null]], false);
         active.fails = 0;
         if (metSlowDown) {
-          await save(siteName, L, true);
           await slowDownBreak(siteName, L);
           throw new Stop(lib.name + ' asked us to slow down while this one was saved', 'slowdown');
         }
@@ -831,7 +743,6 @@
         // run - never a download refused for one collection (an Ancestry
         // 403 says "sign in ... or the collection may not allow downloads").
         if (/asked you to sign in|HTTP 401/i.test(out.note || '')) {
-          await save(siteName, L, true);
           throw new Stop(lib.name + ' asked you to sign in (the last one was saved without its image; it is tried ' +
             'again at the next Start)');
         }
@@ -852,7 +763,7 @@
           // counts against a record.
           await stopAtRecord(siteName, L, item, why, cause);
         } else if (kind === 'retry') {
-          CB().markRetry(L, item.key, why);
+          await apply(siteName, L, [['markRetry', item.key, why]], false);
           countFail(why);
         } else {
           await setAside(siteName, L, item, why);
@@ -894,7 +805,7 @@
         throw Object.assign(new Stop(why), { signIn: true });
       }
       if (!rule.counts) throw new Stop(why);
-      const stops = CB().markRefused(L, item.key);
+      const [stops] = await apply(siteName, L, [['markRefused', item.key]], false);
       if (stops < rule.max) throw new Stop(why);
       await setAside(siteName, L, item, rule.trouble ? troubleWords(siteName, stops, why)
         : why + ' - it stopped the batch ' + stops +
@@ -904,13 +815,10 @@
     // A "sign in" / "subscription" refusal that was this record's alone:
     // counted as the site refusing it, set aside after MAX_TRIES Starts.
     async function refusedAlone(siteName, L, key) {
-      const it = L.items[key];
-      if (!it) return;
-      it.ownRefusal = true;
-      const stops = CB().markRefused(L, key);
+      if (!L.items[key]) return;
+      const [stops] = await apply(siteName, L, [['markRefused', key, true]], false);
       if (stops < CB().MAX_TRIES) {
-        it.lastError = refusedWords(siteName);
-        await save(siteName, L, true);
+        await apply(siteName, L, [['lastError', key, refusedWords(siteName)]], true);
         return;
       }
       await setAside(siteName, L, { key }, refusedWords(siteName) + ' - it was refused on ' + stops +
@@ -939,8 +847,7 @@
     }
 
     async function setAside(siteName, L, item, why) {
-      CB().markSetAside(L, item.key, why);
-      await save(siteName, L, true);
+      await apply(siteName, L, [['markSetAside', item.key, why]], true);
       countFail(why);
     }
 
@@ -958,11 +865,8 @@
     };
 
     async function queueRecords(siteName, records, from, what) {
-      const { L, result: added } = await update(siteName, (L) => {
-        const n = CB().addRecords(siteName, L, records, from);
-        CB().logEvent(L, what + ': ' + records.length + ' found, ' + n + ' new to the queue');
-        return n;
-      }, true);
+      const L = {};
+      const [added] = await apply(siteName, L, [['addRecords', records, from, what]], true);
       say(siteName, what + ': ' + records.length + ' found, ' + added + ' new to the queue. ' + countsLine(L) +
         (added ? ' Press Start to download them.' : ''), added ? 'ok' : '');
     }
@@ -996,7 +900,8 @@
       // site that said it asks nothing more before its break is over.
       if (r && (r.slowDown || (!r.ok && CB().classifyError(r.error) === 'slowdown'))) {
         const slowSite = /^https:\/\/([a-z0-9-]+\.)*familysearch\.org\//i.test(tab.url || '') ? 'familysearch' : siteName;
-        const { L: slowL } = await update(slowSite, (L) => { CB().planRateLimit(L, Date.now()); }, false);
+        const slowL = {};
+        await apply(slowSite, slowL, [['rateLimit']], false);
         say(siteName, CB().SITES[slowSite].name + ' asked us to slow down while this page was read, so nothing was ' +
           'queued; no batch asks it anything before about ' + fmtWhen(slowL.pacing.resumeAt) + '. Press again after that.', 'warn');
         return;
@@ -1025,38 +930,15 @@
     // another window takes the break before its next request (PR #224 audit F3).
     async function recordSlowDown(siteName) {
       if (!CB().SITES[siteName]) return;
-      await update(siteName, (L) => { CB().planRateLimit(L, Date.now()); }, false);
+      await apply(siteName, null, [['rateLimit']], false);
     }
 
     // A record saved by hand with Capture goes in its ledger too, so a batch
-    // never downloads it again.
+    // never downloads it again (lib/batch-store.js `manual`).
     async function recordManual(out) {
       if (!out || !out.ok || !CB().SITES[out.site]) return;
       if (out.site !== 'newspapers' && !CB().SITES[out.site].keyOf(out.record)) return;
-      await update(out.site, (L) => noteManual(out, L), false);
-    }
-
-    function noteManual(out, L) {
-      if (out.site === 'newspapers') {
-        for (const r of out.results || []) {
-          if (!r.ok) continue;
-          const key = String(r.id);
-          if (!L.items[key]) {
-            L.items[key] = { id: Number(r.id), url: null, title: r.title || '', state: 'queued', tries: 0 };
-            L.order.push(key);
-          }
-          CB().markDone(L, key, r.bundle, 'saved by hand');
-        }
-      } else {
-        const key = CB().SITES[out.site].keyOf(out.record);
-        CB().addRecords(out.site, L, [Object.assign({ title: out.record.name || '' }, out.record)], 'by hand');
-        if (out.partial) {
-          CB().markPartial(L, key, out.bundle, 'saved by hand' + (out.note ? ', ' + out.note : ''));
-          if (out.imageKey) L.items[key].imageKey = out.imageKey;
-        } else {
-          CB().markDone(L, key, out.bundle, 'saved by hand');
-        }
-      }
+      await apply(out.site, null, [['manual', out]], false);
     }
 
     // ── the box ──────────────────────────────────────────────────────────────
@@ -1099,21 +981,16 @@
       if (siteName === 'newspapers') {
         u.relist = tagged(el('button', { type: 'button', textContent: 'Read my clippings list again' }, sec), 'np-relist');
         u.relist.addEventListener('click', guarded(siteName, 'Marking the list to be read again', async () => {
-          const { L } = await update(siteName, (L) => {
-            L.listComplete = false;
-            L.listCursor = 0;
-            L.listAt = CB().nextStamp();
-            // Read for whoever is signed in then (content.js always asks for
-            // the member signed in on the page).
-            L.user = null;
-          }, false);
+          const L = {};
+          await apply(siteName, L, [['relist']], false);
           say(siteName, 'Your list is read again at the next Start; the clippings already done stay done. ' + countsLine(L));
         }));
       }
       u.retry = tagged(el('button', { type: 'button', textContent: 'Try the set-aside ones again' }, sec), site.short + '-retry');
       u.retry.addEventListener('click', guarded(siteName, 'Queuing the set-aside ones again', async () => {
         if (active) return say(siteName, 'Pause the batch first, then press this again.', 'warn');
-        const { L, result: n } = await update(siteName, (L) => CB().requeueSetAside(L), true);
+        const L = {};
+        const [n] = await apply(siteName, L, [['requeueSetAside']], true);
         say(siteName, (n ? n + ' set-aside record' + (n === 1 ? ' is' : 's are') + ' queued again; press Start to try them. '
           : 'Nothing is set aside. ') + countsLine(L), n ? 'ok' : '');
       }));
@@ -1133,7 +1010,16 @@
     // stops after the record being saved, and Start answers nothing more.
     if (chrome.storage.onChanged && chrome.storage.onChanged.addListener) {
       chrome.storage.onChanged.addListener((changes, area) => {
-        if (area !== 'local' || !changes || !changes.batchDownloads) return;
+        if (area !== 'local' || !changes) return;
+        // The service worker's broadcast: a ledger it changed for another
+        // window. A queue that is not running here shows where it stands now
+        // (a line this panel just wrote itself is left alone).
+        for (const siteName of Object.keys(SITE_UI)) {
+          const ch = changes[CB().SITES[siteName].storageKey];
+          if (!ch || (active && active.site === siteName)) continue;
+          if (/^Not running\./.test(ui[siteName].status.textContent)) idleLine(siteName, CB().repair(ch.newValue));
+        }
+        if (!changes.batchDownloads) return;
         if (changes.batchDownloads.newValue === true) return;
         switchedOff = true;
         if (active) {
@@ -1144,13 +1030,16 @@
     }
 
     // Each queue's state, as it was left.
+    function idleLine(siteName, L) {
+      const waiting = L && L.pacing && L.pacing.resumeAt > Date.now()
+        ? ' It waits until about ' + fmtWhen(L.pacing.resumeAt) + ' before its next request.' : '';
+      say(siteName, 'Not running. ' + countsLine(L && L.order ? L : null) + waiting);
+    }
     (async () => {
       for (const siteName of Object.keys(SITE_UI)) {
-        const L = await loadRaw(siteName);
+        const L = await refresh(siteName);
         if (active && active.site === siteName) continue;
-        const waiting = L && L.pacing && L.pacing.resumeAt > Date.now()
-          ? ' It waits until about ' + fmtWhen(L.pacing.resumeAt) + ' before its next request.' : '';
-        say(siteName, 'Not running. ' + countsLine(L) + waiting);
+        idleLine(siteName, L);
       }
     })().catch(() => {});
 
