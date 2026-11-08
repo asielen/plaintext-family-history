@@ -2035,3 +2035,61 @@ test('Y2: offline, a record page the add-on cannot read at all over three Starts
   const L = p.storage.ancBatchLedger;
   assert.deepStrictEqual([L.items['90001:1000001'].state, L.items['90002:2000001'].state], ['done', 'done']);
 });
+
+// Sixth audit Z1 (the auditor's r16): signed out, with Seen It holding every
+// other record - nothing asked of the site for those settles the probe.
+test('Z1: signed out of FamilySearch, with every other record already held, two Starts count nothing; once signed in, all are saved', async () => {
+  const SIGNED_OUT = { ok: false, error: 'FamilySearch asked you to sign in (HTTP 403). Sign in to FamilySearch in this tab, ' +
+    'reload the page, then press Capture again' };
+  // The ones not held are the fixture's records, so they can be saved once she signs in.
+  const ids = ['HRT1-CEN1', 'HRT1-BBB1', 'HRT1-DTH1', 'HRT1-DDD1', 'HRT1-MAR1', 'HRT1-FFF1'];
+  const held = { 'fsrec:HRT1-BBB1': 'captured', 'fsrec:HRT1-DDD1': 'captured', 'fsrec:HRT1-FFF1': 'captured' };
+  let signedOut = true;
+  const base = familysearchSite([]);
+  const p = await openPanel({ url: ark('HRT1-CEN2'), seenIt: held, storage: Object.assign({}, ON, { fsBatchLedger: fsLedger(ids) }),
+    respond: (msg, tab) => (signedOut && /^familysearch/.test(msg.action) && tab.url !== ark('HRT1-CEN2') ? SIGNED_OUT : base(msg, tab)) });
+  quick(p);
+  for (let i = 1; i <= 2; i++) {
+    await start(p, 'fs');
+    const L = p.storage.fsBatchLedger;
+    for (const id of ['HRT1-CEN1', 'HRT1-DTH1', 'HRT1-MAR1']) {
+      const it = L.items[id];
+      assert.deepStrictEqual([it.state, it.stops || 0, !!it.ownRefusal], ['queued', 0, false], id + ', Start ' + i);
+    }
+    assert.match(p.batchEl('fs-status').textContent, /^Stopped: FamilySearch asked you to sign in/, 'Start ' + i);
+  }
+  signedOut = false;
+  await start(p, 'fs');
+  const L = p.storage.fsBatchLedger;
+  assert.deepStrictEqual(ids.map((id) => L.items[id].state), ids.map(() => 'done'));
+});
+
+test('Z1: a probe passes only on a record the site answered - one Seen It holds is passed over, and the next is asked', async () => {
+  // Every page image refused "...check you are signed in"; the clipping
+  // between them is already in the archive, so nothing is asked of the site for it.
+  let signedIn = false;
+  const q = npQueue();
+  q.items['505'] = { id: 505, url: NP_C, pageId: 5550001, title: 'Hartley reunion', state: 'queued', tries: 0 };
+  q.order.push('505');
+  const p = await openPanel({ url: NP_B, seenIt: { 'clip:202': 'captured' }, storage: Object.assign({}, ON, { npBatchLedger: q }),
+    respond: npPages({ [NP_C]: () => npInfo(npClip(505, 'Hartley reunion', NP_C)) })([]),
+    fullPage: () => {
+      if (signedIn) return {};
+      throw new Error('Newspapers.com refused the page image (HTTP 403). Reload the page ' +
+        '(its image pass lasts a day) and check you are signed in');
+    } });
+  quick(p);
+  for (let i = 1; i <= 2; i++) {
+    await start(p, 'np');
+    const L = p.storage.npBatchLedger;
+    assert.strictEqual(L.items['202'].state, 'done', 'Start ' + i);
+    for (const k of ['101', '505']) {
+      assert.deepStrictEqual([L.items[k].state, L.items[k].stops || 0, !!L.items[k].ownRefusal], ['queued', 0, false], k + ', Start ' + i);
+    }
+    assert.match(p.batchEl('np-status').textContent, /^Stopped: .*signed in/, 'Start ' + i);
+  }
+  signedIn = true;
+  await start(p, 'np');
+  const L = p.storage.npBatchLedger;
+  assert.deepStrictEqual(['101', '202', '505'].map((k) => L.items[k].state), ['done', 'done', 'done']);
+});

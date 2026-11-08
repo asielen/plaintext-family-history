@@ -711,10 +711,12 @@
   function stopRule(message) {
     const whole = String(message || '');
     if (SIGN_IN_403_RE.test(whole) && OWN_LIST_RE.test(whole)) return { counts: false };
-    // A 401 is a lost login, never a record's: the session check below.
-    if (/HTTP 403\b/.test(whole) && SIGN_IN_WORDS_RE.test(whole)) return { counts: false, signIn: true };
     const m = causeOf(whole);
+    // The session's own words first - "asked you to sign in", a 401, a slow-
+    // down - so FamilySearch's signed-out 403 stops the run and is never
+    // asked about (sixth audit Z1).
     if (SESSION_STOP_RE.test(m)) return { counts: false };
+    if (/HTTP 403\b/.test(whole) && SIGN_IN_WORDS_RE.test(whole)) return { counts: false, signIn: true };
     if (TROUBLE_STOP_RE.test(m)) return { counts: true, max: MAX_TROUBLE_TRIES, trouble: true };
     if (FAULT_STOP_RE.test(m)) return { counts: true, max: MAX_TRIES, trouble: false };
     if (RUN_STOP_RE.test(m)) return { counts: false };

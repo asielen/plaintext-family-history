@@ -624,7 +624,7 @@ test('third audit M1, X1: every stop cause is sorted on the cause - RUN causes n
     ['a different member is signed in to Newspapers.com than the one this list was started for', RUN],
     ['FamilySearch asked you to sign in (HTTP 401). Sign in to FamilySearch', RUN],
     ['Ancestry asked us to slow down (HTTP 429)', RUN],
-    ['FamilySearch asked you to sign in (HTTP 403). Sign in to FamilySearch in this tab, reload the page, then press Capture again', SIGN_IN],
+    ['FamilySearch asked you to sign in (HTTP 403). Sign in to FamilySearch in this tab, reload the page, then press Capture again', RUN],
     ['Newspapers.com asked us to slow down (HTTP 503)', RUN],
     ['Still reading your clippings on this Newspapers.com page - wait a moment, then press Capture again.', RUN],
     ['a file was dropped into the panel while the batch ran, so nothing was saved', RUN],

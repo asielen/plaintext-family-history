@@ -662,6 +662,7 @@
           }
           halted();
           if (looked >= CB().MAX_PER_RUN) throw new Stop('one Start looks at most ' + CB().MAX_PER_RUN + ' records; press Start again');
+          active.answered = false;
           try {
             await one(siteName, L, item);
           } catch (e) {
@@ -670,7 +671,10 @@
             probe = { key: item.key, why: e.message };
             continue;
           }
-          if (probe) {
+          // Only a record the site answered settles it: one Seen It holds,
+          // or one set aside before any request, says nothing about her
+          // session - the probe asks the next (sixth audit Z1).
+          if (probe && active.answered) {
             await refusedAlone(siteName, L, probe.key);
             passed.add(probe.key);
             probe = null;
@@ -784,6 +788,8 @@
       // tab shows the browser's own error page, which no record caused
       // (fifth audit Y2). A page that reads but is not a record is set aside.
       if (!page.ok) throw new Stop(page.error + ' (' + url + ')');
+      // The site served this record's page: what follows is its answer.
+      active.answered = true;
       let out;
       if (!page.prefill[SITE_UI[siteName].prefillFlag]) {
         out = { ok: false, error: 'the page it opened is not a record page (it may have moved or been removed)' };
