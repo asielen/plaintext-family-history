@@ -215,6 +215,7 @@ import html
 import json
 import math
 import os
+import posixpath
 import re
 import shutil
 import sqlite3
@@ -250,6 +251,7 @@ from _lib import (
     open_index_db,
     parse_filename,
     parse_questions,
+    path_to_alias,
     person_section_is_unfilled,
     photoindex_status,
     photos_ignore_matcher,
@@ -3463,8 +3465,10 @@ class _SiteBuilder:
         # The same catalog opened for the living-person photo gate ONLY, when
         # it is out of date (#202 follow-up). An out-of-date catalog still
         # knows every tag it held at the last scan, and skipping the check
-        # would publish all of those photos too. It stays out of the photo
-        # strips and hero/profile lookups, which keep their fresh-only rule:
+        # would publish all of those photos too. Every picture a standalone
+        # page shows - source files, the hero, embeds, profile photos - is
+        # held back by it (#235). It still never FINDS a photo for those
+        # lookups, or fills a photo strip, which keep their fresh-only rule:
         # there a stale answer would change what a page shows, not just
         # what it withholds.
         self.photos_gate_conn: sqlite3.Connection | None = None
@@ -3478,6 +3482,16 @@ class _SiteBuilder:
         # out-of-date catalog has no row for it at all (added, moved or
         # renamed since the last scan), so the "checked" was nothing.
         self._gate_last_unknown = False
+        # The files of the sources this snapshot withholds, read once on first
+        # use by `_file_has_withheld_source` (see `_withheld_source_files`).
+        self._withheld_files_cache: tuple[set[str], set[str], dict[str, set[str]]] | None = None
+        # The pictures already named in a "left out: same file name" message,
+        # so each is explained once per build however many pages ask for it;
+        # and whether the picture `_resolve_image_source` just refused was
+        # refused for that reason, so its caller does not add a second, vaguer
+        # "matched no publishable photo" line for the same picture.
+        self._same_name_explained: set[str] = set()
+        self._last_hold_explained = False
         # discoveries.md is read for both the discoveries page and the home
         # teaser; memoize so the file is parsed once per build.
         self._discoveries: tuple[str, list[str]] | None = None
@@ -4372,10 +4386,57 @@ class _SiteBuilder:
         """A person is redacted from standalone output when living/unknown
         (AGENTS.md; `unknown` is treated as living) or `restricted` (any value,
         SPEC §21 - a restricted person, like a living one, gets no page and is
-        rendered as a redaction label)."""
+        rendered as a redaction label).
+
+        A merged duplicate is the person it was merged into. `fha confirm
+        merge` leaves the old record behind as a tombstone that still says
+        whatever it said before (often `living: false`, from a tree imported
+        before anyone knew the two were one person), with `merged_into:`
+        naming the survivor. A photo tagged with the old id - and every
+        export reads old ids, since tags in photo files are never rewritten -
+        must be held to the survivor's status, or a living person's photos
+        publish under their duplicate's name (#236 audit). So the whole
+        `merged_into` chain is checked, and the person is redacted if anyone
+        on it is. Every redaction decision in this file comes through here,
+        so the photo gates (`_is_living_tagged_photo`, `_photo_is_public`,
+        the photo strips) and every name and link follow it the same way."""
+        return any(self._person_row_is_redacted(r) for r in self._merge_chain(row))
+
+    def _person_row_is_redacted(self, row: sqlite3.Row) -> bool:
+        """The redaction rule for one record on its own, merges not followed."""
         if row['id'] in self.restricted_persons:
             return True
         return (row['living'] or '') in ('true', 'unknown')
+
+    def _merge_chain(self, row: sqlite3.Row) -> list:
+        """`row`, then each record it was merged into in turn, to the survivor.
+
+        A chain that loops back on itself stops at the repeat. One that names
+        an id the index does not hold ends in a stand-in that reads as
+        `living: unknown`: nothing is known about the survivor, and an unknown
+        person is treated as living, so the snapshot keeps them out rather
+        than guessing."""
+        chain = [row]
+        seen = {row['id']}
+        current = row
+        while True:
+            try:
+                nxt = current['merged_into']
+            except (IndexError, KeyError):
+                break
+            nxt = (nxt or '').strip()
+            if not nxt:
+                break
+            nid = normalize_id(nxt)
+            if nid in seen:
+                break
+            seen.add(nid)
+            current = self.person_meta.get(nid)
+            if current is None:
+                chain.append({'id': nid, 'living': 'unknown', 'merged_into': None})
+                break
+            chain.append(current)
+        return chain
 
     def _name_is_sensitive(self, key: str) -> bool:
         """True when a lowercased, wrapper-stripped name-link key must not be
@@ -5028,16 +5089,9 @@ class _SiteBuilder:
                 # review).
                 role = (f['role'] or '').strip().lower()
                 candidates.append((0 if role == 'primary' else 1 if role == 'front' else 2, entry))
-                # An image is going into a shareable snapshot. If the living-
-                # person gate at the top of this loop had no catalog to ask,
-                # this is the moment the build learns it published something
-                # unchecked - and the only honest moment to say so. Warned here
-                # rather than inside the gate itself so a build with nothing but
-                # text attachments, or one where Pillow left every image out,
-                # raises no alarm about photos it never published.
-                if not self.linked and self.photos_status != 'fresh':
-                    self._warn_living_photo_check_unavailable(
-                        unknown_to_catalog=self._gate_last_unknown)
+                # An image is going into a shareable snapshot, past the
+                # living-person gate at the top of this loop.
+                self._warn_if_published_photo_went_unchecked()
         portrait = min(candidates, key=lambda c: c[0])[1] if candidates else None
         return entries, portrait
 
@@ -6028,8 +6082,9 @@ class _SiteBuilder:
                 'last ran - a tag added since then was NOT seen, so a '
                 'photograph of someone still living may be in it. Run '
                 '`fha photoindex`, then `fha site` again, to check against '
-                'every tag; until then, look through the images on the source '
-                'pages yourself before you share this site.'
+                'every tag; until then, look through the pictures on the home '
+                'page, the person pages, the family trees and the source pages '
+                'yourself before you share this site.'
             )
             return
         reason = _PHOTO_CATALOG_TROUBLE.get(
@@ -6043,9 +6098,33 @@ class _SiteBuilder:
             'checked against it for tags naming living people - a photograph '
             'of someone still living may be in it. Run `fha photoindex`, then '
             '`fha site` again, to have that check applied; until then, look '
-            'through the images on the source pages yourself before you share '
-            'this site.'
+            'through the pictures on the home page, the person pages, the '
+            'family trees and the source pages yourself before you share this '
+            'site.'
         )
+
+    def _warn_if_published_photo_went_unchecked(self) -> None:
+        """Call right after a standalone page has put a real image in the snapshot.
+
+        Every picture a shareable site publishes passes `_is_living_tagged_photo`
+        first: the files on a source page and its portrait, the homepage hero,
+        `![[...]]` embeds, and profile photos (which also appear in the trees and
+        the family chart). When that gate had no fresh catalog to ask, this is
+        the moment the build learns it published something not fully checked -
+        and the only honest moment to say so. It is called after the image is
+        made rather than inside the gate, so a build with nothing but text
+        attachments, or one where Pillow left every image out, raises no alarm
+        about photos it never published.
+
+        One helper, called from each place a picture is published, so the
+        source pages and the hero / embed / profile photos cannot drift apart
+        on when the researcher is told (#235: they had). It reads
+        `_gate_last_unknown`, so it belongs straight after the gate call for
+        the image just published, with no other gate call in between.
+        """
+        if not self.linked and self.photos_status != 'fresh':
+            self._warn_living_photo_check_unavailable(
+                unknown_to_catalog=self._gate_last_unknown)
 
     def _person_family(self, pid: str, page_dir: Path) -> list[dict]:
         """Friends & Family from the relationships edges, grouped by relation."""
@@ -6288,11 +6367,15 @@ class _SiteBuilder:
             return []
         # Standalone: exclude photos from withheld sources.
         # photos.source_id is stored lowercase by normalize_id; compare case-insensitively.
+        # The catalog's source_id comes from the file's SOURCE: keyword, which
+        # a file attached by hand may not carry, so the main index's
+        # source_files is asked too (#236 audit).
         if not self.linked:
             source_pages_lower = {s.lower() for s in self.source_pages}
             rows = [
                 r for r in rows
-                if not r['source_id'] or r['source_id'].lower() in source_pages_lower
+                if (not r['source_id'] or r['source_id'].lower() in source_pages_lower)
+                and not self._photo_row_has_withheld_source(r['path'])
             ]
         # Standalone: exclude groups that are also tagged to a living person.
         if not self.linked:
@@ -6331,6 +6414,14 @@ class _SiteBuilder:
             if key not in best or (r['is_primary'] and not best[key]['is_primary']):
                 best[key] = r
         return [e for e in (self._photo_entry(r, page_dir) for r in best.values()) if e]
+
+    def _photo_row_has_withheld_source(self, alias_path: str) -> bool:
+        """`_file_has_withheld_source` for a catalog row, by its stored path."""
+        try:
+            disk = resolve_path(alias_path, self.fha_config, self.archive_root)
+        except Exception:  # noqa: BLE001 - an unresolvable row publishes nothing anyway
+            return True
+        return self._file_has_withheld_source(disk)
 
     def _photo_entry(self, row: sqlite3.Row, page_dir: Path) -> dict | None:
         """One photo-strip entry. Standalone makes an EXIF-stripped derivative;
@@ -6493,7 +6584,13 @@ class _SiteBuilder:
         rest of the site already read this table, so an S-id must always
         resolve - even when `.cache/photos.sqlite` is absent or stale - so long
         as its source is publishable. Returns None if the id is not S-shaped,
-        the source has no attached file on disk, or the source is withheld."""
+        the source has no attached file on disk, or the source is withheld.
+
+        Standalone: each image passes the same living-person gate the source
+        page applies to that very file (`_is_living_tagged_photo`, which falls
+        back to an out-of-date catalog), and one it withholds is passed over
+        for the source's next image - so a hero or embed written as an S-id
+        can never show a picture the source's own page leaves out (#235)."""
         if not re.match(r'(?i)^s-[0-9a-z]+$', ref.strip()):
             return None
         sid = normalize_id(ref.strip())
@@ -6519,20 +6616,50 @@ class _SiteBuilder:
             except Exception:  # noqa: BLE001
                 cand = self.archive_root / p
             try:
-                if cand and Path(cand).is_file():
-                    return Path(cand)
+                if not (cand and Path(cand).is_file()):
+                    continue
             except OSError:
                 continue
+            if not self.linked and self._is_living_tagged_photo(p):
+                continue
+            return Path(cand)
         return None
 
     def _resolve_image_source(self, ref: str) -> Path | None:
+        """The publishable on-disk file for a photo reference, or None.
+
+        Standalone: a file attached to a source that gets no page in this
+        snapshot - restricted, DNA, `rights.publication_ok: false`, or held
+        back because a claim names someone living - is never published as a
+        hero, embed or portrait either, whatever state the photo catalog is in
+        (`_file_has_withheld_source`, SPEC §21). The catalog only knows a
+        photo's source from the `SOURCE:` keyword in the file, which may be
+        missing or out of date; the main index's `source_files` is not (#236
+        audit)."""
+        self._last_hold_explained = False
+        found = self._find_image_source(ref)
+        if found is None or self.linked:
+            return found
+        if self._file_has_withheld_source(found):
+            return None
+        return found
+
+    def _find_image_source(self, ref: str) -> Path | None:
         """The on-disk source file for a photo reference. Prefers a catalogued
         photo (S-id or indexed path), applying the strip's privacy gate; else a
-        hand-written path/filename on disk. If a photo catalog is available in
-        standalone mode, an uncatalogued disk hit is fail-closed - the author who
-        wrote a bare filename should either catalog the file or accept the safe
-        default; only when there is no catalog at all does a raw disk lookup
-        publish without a co-living gate. None if nothing resolves."""
+        hand-written path/filename on disk. If a fresh photo catalog is
+        available in standalone mode, an uncatalogued disk hit is fail-closed -
+        the author who wrote a bare filename should either catalog the file or
+        accept the safe default. None if nothing resolves.
+
+        Without a fresh catalog, an S-id or disk hit goes through exactly the
+        gate the source pages use (`_is_living_tagged_photo`): an out-of-date
+        catalog still withholds every photo it knows is tagged to someone
+        living, and with no catalog at all the photo publishes and the build
+        says so (`_warn_if_published_photo_went_unchecked`, called by whoever
+        makes the image). Editing anyone's `living:` makes the catalog out of
+        date, so before #235 that was exactly when a newly-living person's
+        photo went out as the hero, an embed or a profile photo."""
         cat = self._resolve_photo_ref(ref)
         if cat:
             # A catalog match that the privacy gate rejects must NOT fall through to
@@ -6554,17 +6681,158 @@ class _SiteBuilder:
         disk = self._resolve_asset_path(ref)
         if disk is None:
             return None
-        # Standalone + a catalog exists: a disk hit that has no catalog entry
-        # (or one that fails the privacy gate) is fail-closed. If there is no
-        # catalog at all (photos_conn is None) the hand-written path is the
-        # deliberate publish choice the caller made.
-        if not self.linked and self.photos_conn is not None:
+        if self.linked:
+            return disk
+        # Standalone + a fresh catalog: a disk hit that has no catalog entry
+        # (or one that fails the privacy gate) is fail-closed.
+        if self.photos_conn is not None:
             cat_path = self._catalog_path_for_disk(disk)
             if cat_path is None:
                 return None
             if not self._photo_is_public(cat_path):
                 return None
+            return disk
+        # No fresh catalog: the source pages' gate, keyed the way the catalog
+        # keys a photo (its photos-root alias). An out-of-date catalog still
+        # answers it; with none, the photo publishes and the caller warns.
+        if self._is_living_tagged_photo(
+                path_to_alias(disk, 'photos', self.fha_config, self.archive_root)):
+            return None
         return disk
+
+    def _file_has_withheld_source(self, disk: Path) -> bool:
+        """True when the file at `disk` is attached to any source this
+        standalone snapshot does not publish.
+
+        Read from the main index's `source_files` - which `fha index` rebuilds
+        from the source records themselves, so it needs no photo catalog and
+        cannot be out of date the way the catalog's `SOURCE:` keywords can.
+
+        Compared by the FILE, not by how a record spells it: both sides are
+        reduced to the canonical on-disk path (`_canonical_file`), so a
+        `files:` entry written through a junction or link, or as
+        `photos/./x.jpg` or `photos/sub/../x.jpg`, still names the file a hero
+        or embed resolves to (#236 delta audit). The spellings themselves are
+        kept as a second key - normalised, lowercased, under every root alias
+        - in case the canonical form cannot be taken. A withheld source's
+        entry that cannot be checked at all (its root is unplugged, the file
+        is not where it says) holds back any picture with the same file name:
+        nothing proves it is a different file. And when the index will not
+        answer, every picture is held back. Restricted material must never
+        reach public output (SPEC §21), and this is enrichment, not something
+        the build needs to finish."""
+        withheld = self._withheld_source_files()
+        if withheld is None:
+            return True
+        canon_keys, alias_keys, unchecked_names = withheld
+        canon = self._canonical_file(disk)
+        if canon is not None and canon in canon_keys:
+            return True
+        unchecked = unchecked_names.get(disk.name.lower())
+        if unchecked:
+            self._explain_same_name_hold(disk, unchecked)
+            return True
+        keys = set()
+        for alias in ASSET_ROOT_ALIASES:
+            try:
+                a = path_to_alias(disk, alias, self.fha_config, self.archive_root)
+            except Exception:  # noqa: BLE001 - a root that will not resolve
+                continue
+            if a.startswith(alias + '/'):
+                keys.add(a.lower())
+        try:
+            keys.add(disk.resolve().relative_to(self.archive_root.resolve()).as_posix().lower())
+        except (OSError, ValueError):
+            pass
+        return not keys.isdisjoint(alias_keys)
+
+    def _explain_same_name_hold(self, disk: Path, stored: set[str]) -> None:
+        """Tell the researcher, once per picture, why a photo that is itself
+        fine to share was left out: a source the site keeps private lists a
+        file of the same name that cannot be found, so the two cannot be told
+        apart (`_file_has_withheld_source`). Without this the picture just
+        vanished from a strip, or the hero and embeds said only "matched no
+        publishable photo" - a dead end. The next-step rule: name what went
+        wrong and the fix.
+
+        Names the picture and the path the record wrote, and nothing else
+        about that source - not its title, id or contents - since the
+        message is about something the shared site is keeping private. It goes
+        to the build's messages (printed by `fha site`), never into a page."""
+        self._last_hold_explained = True
+        shown = self._display_path(disk)
+        if shown in self._same_name_explained:
+            return
+        self._same_name_explained.add(shown)
+        listed = ', '.join(sorted(stored))
+        self.messages.append(
+            f'WARNING: {shown} was left out of the site: a source this site keeps '
+            f'private lists a file of the same name, {listed}, that can\'t be found, '
+            'so the two can\'t be told apart. Reconnect the drive or fix that path, '
+            'then run `fha index` and `fha site` again.')
+
+    def _display_path(self, disk: Path) -> str:
+        """A file's path the way the archive writes it (`photos/1950/x.jpg`),
+        falling back to its archive-relative path, then its name."""
+        for alias in ASSET_ROOT_ALIASES:
+            try:
+                a = path_to_alias(disk, alias, self.fha_config, self.archive_root)
+            except Exception:  # noqa: BLE001
+                continue
+            if a.startswith(alias + '/'):
+                return a
+        try:
+            return disk.resolve().relative_to(self.archive_root.resolve()).as_posix()
+        except (OSError, ValueError):
+            return disk.name
+
+    @staticmethod
+    def _canonical_file(path: Path) -> str | None:
+        """The one spelling of an existing file: links and junctions followed,
+        `.` and `..` gone, case folded where the disk ignores case. None when
+        the file is not there to ask."""
+        try:
+            real = Path(path).resolve(strict=True)
+        except (OSError, RuntimeError):
+            return None
+        return os.path.normcase(str(real))
+
+    def _withheld_source_files(self):
+        """The files attached to sources this snapshot withholds, three ways:
+        canonical on-disk paths, normalised lowercased stored spellings, and
+        the lowercased file names of entries that could not be checked.
+
+        Only withheld sources' rows are resolved - usually a handful - so the
+        filesystem is asked a few times per build, not once per attached file.
+        Read once per build; None if the index will not answer."""
+        if self._withheld_files_cache is None:
+            try:
+                rows = self.conn.execute(
+                    'SELECT source_id, path FROM source_files').fetchall()
+            except sqlite3.DatabaseError:
+                return None
+            canon_keys: set[str] = set()
+            alias_keys: set[str] = set()
+            unchecked_names: dict[str, set[str]] = {}
+            for r in rows:
+                stored, sid = r['path'], r['source_id']
+                if not stored or not sid or normalize_id(str(sid)) in self.source_pages:
+                    continue
+                spelled = posixpath.normpath(str(stored).replace('\\', '/'))
+                alias_keys.add(spelled.lower())
+                canon = None
+                try:
+                    canon = self._canonical_file(
+                        resolve_path(spelled, self.fha_config, self.archive_root))
+                except Exception:  # noqa: BLE001 - a root that will not resolve
+                    canon = None
+                if canon is not None:
+                    canon_keys.add(canon)
+                else:
+                    unchecked_names.setdefault(
+                        posixpath.basename(spelled).lower(), set()).add(spelled)
+            self._withheld_files_cache = (canon_keys, alias_keys, unchecked_names)
+        return self._withheld_files_cache
 
     def _catalog_path_for_disk(self, disk: Path) -> str | None:
         """The catalog-stored path (if any) that names the file at `disk`. Tries
@@ -6634,8 +6902,9 @@ class _SiteBuilder:
             return None
         resolved = self._resolve_image_source(ref)
         if resolved is None:
-            self.messages.append(
-                f'WARNING: profile_photo for {fmt_id_display(pid)} ("{ref}") matched no photo; skipped.')
+            if not self._last_hold_explained:
+                self.messages.append(
+                    f'WARNING: profile_photo for {fmt_id_display(pid)} ("{ref}") matched no photo; skipped.')
             return None
         if self.linked:
             return resolved
@@ -6643,6 +6912,7 @@ class _SiteBuilder:
             return None
         dest = self._media_dest(ref, 'profiles')
         if self._derive(resolved, dest, max_px=_PROFILE_MAX_PX):
+            self._warn_if_published_photo_went_unchecked()
             return dest
         self.messages.append(
             f'WARNING: could not build a web image for profile_photo {ref} ({fmt_id_display(pid)}); skipped.')
@@ -6732,7 +7002,10 @@ class _SiteBuilder:
         if not _PIL_AVAILABLE:
             return None
         dest = self._media_dest(ref, subdir)
-        return _rel_href(dest, page_dir) if self._derive(resolved, dest) else None
+        if not self._derive(resolved, dest):
+            return None
+        self._warn_if_published_photo_went_unchecked()
+        return _rel_href(dest, page_dir)
 
     def _render_embed(self, target: str, caption: str, page_dir: Path) -> str:
         """A `![[S-id|Caption]]` prose embed → a responsive <figure>. The image is
@@ -6749,7 +7022,8 @@ class _SiteBuilder:
         embed TARGET is never scrubbed - it is an id/path, not prose."""
         href = self._image_href(target, page_dir, 'embeds')
         if not href:
-            self.messages.append(f'WARNING: embed {target!r} matched no publishable photo; skipped.')
+            if not self._last_hold_explained:
+                self.messages.append(f'WARNING: embed {target!r} matched no publishable photo; skipped.')
             return ''
         caption = _scrub_internal_encoding(caption) if caption else caption
         cap = _escape(caption) if caption else ''
@@ -8075,7 +8349,7 @@ class _SiteBuilder:
         hero_image = None
         if hero_ref:
             hero_image = self._image_href(hero_ref, page_dir, 'hero')
-            if not hero_image:
+            if not hero_image and not self._last_hold_explained:
                 self.messages.append(
                     f'WARNING: site.hero {hero_ref!r} matched no publishable photo; using the default banner.')
         if hero_image or hero_title or hero_tagline:
