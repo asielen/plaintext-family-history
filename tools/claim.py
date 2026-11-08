@@ -1089,11 +1089,27 @@ def _cannot_write(record_path: Path, error: OSError) -> str:
     return f'cannot write {record_path}: {error}'
 
 
-def _changed_meanwhile(record_path: Path) -> str:
-    """Why a batch left a record alone: someone else wrote it while it ran."""
-    return (f'{record_path} was changed by something else (another program, or a '
-            'second fha session) while this batch ran, so the batch did not write '
-            'it - nothing in it was changed by this batch, and the other edit is kept.')
+_NOT_UTF8 = ('is not saved as UTF-8 text - re-save it as UTF-8 (`fha lint` names '
+             'such files as W128)')
+
+
+def _changed_meanwhile(record_path: Path, now: bytes) -> str:
+    """Why a batch left a record alone: someone else wrote it while it ran.
+
+    `now` is the record's bytes as just re-read. When the other editor also
+    saved it in another encoding (a Windows editor's cp1252, most often), the
+    human is told that too, in the words the archive's other tools use for
+    it, because the rerun would otherwise refuse the file for a reason he
+    has not been shown.
+    """
+    message = (f'{record_path} was changed by something else (another program, or a '
+               'second fha session) while this batch ran, so the batch did not write '
+               'it - nothing in it was changed by this batch, and the other edit is kept.')
+    try:
+        now.decode('utf-8')
+    except UnicodeDecodeError:
+        message += f' It also {_NOT_UTF8} before you rerun.'
+    return message
 
 
 def run_claim(
@@ -1325,6 +1341,11 @@ def run_claim(
         result.data['status'] = 'failed'
         result.add('error', f'cannot read {record_path}: {e}')
         return result
+    except UnicodeDecodeError:
+        # A ValueError, not an OSError: without this it escaped as a
+        # traceback (a record re-saved by another editor since it was found).
+        return _fail(result, 'failed',
+                     f'Nothing was changed: {record_path} {_NOT_UTF8}, then retry.')
 
     # Issue #79 point 3: only when this claim does not ALREADY carry a
     # place: - never let a place_text correction silently re-point an
@@ -1756,15 +1777,28 @@ def run_claim_batch(
     # is read again just before its write and must still match what the batch
     # first read; if it does not, it is left alone and the batch stops there,
     # exactly as for a failed write, so a rerun picks up the claims left.
+    #
+    # The check compares BYTES (the first read was strict UTF-8 with no
+    # newline translation, so encoding it gives back the file's exact bytes)
+    # and never decodes: another editor may have saved the file in cp1252,
+    # and a decode error there is a ValueError that would escape this loop
+    # and lose the report of the records already written. For the same
+    # reason the write catches ValueError (an encode error) beside OSError -
+    # every way out of this loop is the plain stop-and-report.
     written: set[Path] = set()
     write_failed: tuple[Path, str] | None = None
     for path, (first_read, out_text) in (pending or {}).items():
         try:
-            if read_text_exact(path) != first_read:
-                write_failed = (path, _changed_meanwhile(path))
-                break
-            write_text_exact_atomic(path, out_text)
+            now = Path(path).read_bytes()
         except OSError as e:
+            write_failed = (path, _cannot_write(path, e))
+            break
+        if now != first_read.encode('utf-8'):
+            write_failed = (path, _changed_meanwhile(path, now))
+            break
+        try:
+            write_text_exact_atomic(path, out_text)
+        except (OSError, ValueError) as e:
             write_failed = (path, _cannot_write(path, e))
             break
         written.add(path)

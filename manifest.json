@@ -553,7 +553,7 @@
     {
       "path": ".fha/tools/claim.py",
       "category": "operating",
-      "sha256": "03058f8272cc418c566c3d0a8dec6fc96f68ca533b912a22c7acca1f4d0dc3c5",
+      "sha256": "6ef011d0571e97f5d94e0e86de243c56100ae657aa90877d65c5133db1c6b8f2",
       "spec_version": "1.2",
       "src": "tools/claim.py"
     },

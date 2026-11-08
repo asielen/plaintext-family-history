@@ -2491,6 +2491,55 @@ class OneWritePerRecordTests(unittest.TestCase):
         self.assertIn(f'Stopped at {self.b[0]}: 1 of 2 claims applied ({self.a[0]})',
                       ' '.join(m.text for m in result.messages))
 
+    def test_a_record_resaved_in_cp1252_meanwhile_stops_plainly(self) -> None:
+        # Codex review, #234: a Windows editor saving the second record in
+        # cp1252 (an accented name) mid-batch made the final check's UTF-8
+        # read raise UnicodeDecodeError - a ValueError the write loop did not
+        # catch - so the first record's report and the rerun command were lost.
+        real = claim.run_claim
+        seen = {'n': 0}
+
+        def run_then_resave(*a, **k):
+            out = real(*a, **k)
+            seen['n'] += 1
+            if seen['n'] == 2:
+                text = self.second.read_text(encoding='utf-8')
+                self.second.write_bytes(
+                    text.replace('*(none yet)*', 'Renée visited').encode('cp1252'))
+            return out
+        with mock.patch.object(claim, 'run_claim', run_then_resave):
+            result = claim.run_claim_batch(self.root, claim_ids=[self.a[0], self.b[0]],
+                                           status='accepted', reviewed='2026-07-20')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertEqual(result['applied'], [self.a[0]])
+        self.assertEqual(result.changed, [str(self.first)])
+        self.assertEqual(self._status(self.first)[self.a[0]], 'accepted')
+        self.assertIn(b'Ren\xe9e visited', self.second.read_bytes())   # left exactly as saved
+        msgs = '\n'.join(m.text for m in result.messages)
+        self.assertIn(f'Set {self.a[0]}: status suggested -> accepted', msgs)
+        self.assertIn(f'{self.second} was changed by something else', msgs)
+        self.assertIn('It also is not saved as UTF-8 text', msgs)
+        self.assertIn('W128', msgs)
+        self.assertIn(f'Stopped at {self.b[0]}: 1 of 2 claims applied ({self.a[0]})', msgs)
+        self.assertIn(f'`fha claim {self.b[0]} --status accepted --reviewed 2026-07-20`', msgs)
+
+    def test_a_record_that_will_not_decode_when_edited_is_a_plain_refusal(self) -> None:
+        # The same encoding change landing between finding the claim and
+        # reading the record to edit it: a refusal, never a traceback.
+        real = claim._find_claim_record
+
+        def find_then_resave(*a, **k):
+            out = real(*a, **k)
+            self.first.write_bytes(self.first.read_text(encoding='utf-8')
+                                   .replace('*(none yet)*', 'Renée').encode('cp1252'))
+            return out
+        with mock.patch.object(claim, '_find_claim_record', find_then_resave):
+            result = claim.run_claim(self.root, claim_id=self.a[0], status='accepted')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertEqual(result['status'], 'failed')
+        self.assertIn('is not saved as UTF-8 text', result.messages[-1].text)
+        self.assertIn(b'Ren\xe9e', self.first.read_bytes())
+
     def test_dry_run_preview_is_each_claims_own_preview(self) -> None:
         # The preview is unchanged: each claim's diff against the file as it
         # stands, exactly what a single-claim dry run shows.
