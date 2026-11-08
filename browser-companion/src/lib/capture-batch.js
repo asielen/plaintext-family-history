@@ -185,6 +185,7 @@
   // queued twice.
   function repair(L) {
     if (!L || typeof L !== 'object') return null;
+    observeStamps(L);
     if (!L.items || typeof L.items !== 'object') L.items = {};
     const seen = new Set();
     const order = [];
@@ -201,10 +202,23 @@
   // When an entry's state last changed (ms), so two windows' changes to one
   // entry merge to the later one (mergeStored). Strictly increasing within a
   // window, so two changes in one millisecond keep their order.
+  // Every stamp this window has seen in a stored ledger raises the floor
+  // (`observeStamps`, from repair and mergeStored), so a change made here is
+  // always stamped later than anything already read - even after the
+  // computer's clock was set back (PR #224 audit F4).
   let lastStamp = 0;
   function nextStamp(now) {
     lastStamp = Math.max(now || Date.now(), lastStamp + 1);
     return lastStamp;
+  }
+  function seeStamp(v) {
+    if (typeof v === 'number' && isFinite(v) && v > lastStamp) lastStamp = v;
+  }
+  function observeStamps(L) {
+    if (!L || typeof L !== 'object') return;
+    for (const k of Object.keys(L.items || {})) seeStamp(L.items[k] && L.items[k].stateAt);
+    if (L.pacing) seeStamp(L.pacing.rateAt);
+    seeStamp(L.listAt);
   }
   function stamp(it, now) {
     it.stateAt = nextStamp(now);
@@ -447,6 +461,7 @@
   // Answers how many entries changed.
   function mergeStored(L, stored) {
     if (!stored || typeof stored !== 'object') return 0;
+    observeStamps(stored);
     let n = 0;
     for (const key of Object.keys(stored.items || {})) {
       const s = stored.items[key];
@@ -693,7 +708,7 @@
   const api = {
     PACING, SITES, NP_LIST_MAX_PAGES, MAX_PER_RUN, MAX_TRIES, MAX_PARTIAL, MAX_FAILS_IN_A_ROW,
     between, npClipUrl, newLedger, repair, logEvent, addRecords, addClippings,
-    markDone, markHeld, markSetAside, markRetry, markPartial, markRefused, requeuePartials, requeueSetAside,
+    nextStamp, markDone, markHeld, markSetAside, markRetry, markPartial, markRefused, requeuePartials, requeueSetAside,
     mergeStored, mergeDone, isCooldown, nextPending, counts,
     ensurePacing, planRateLimit, planAfterCapture, classifyError,
     parseGedcom, parseMemorialList, ledgerFileBody,

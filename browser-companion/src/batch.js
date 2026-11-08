@@ -382,11 +382,41 @@
     // Before each request: fold in what another window stored (a slow-down
     // it met, a record it changed) and take a break it recorded that is still
     // ahead (PR #224 Codex 4504415455).
+    // Read again after every sleep: a longer break another window stored
+    // while this one slept is taken too, before any request (PR #224 audit F1).
     async function honourStoredBreak(siteName, L) {
-      CB().mergeStored(L, await loadRaw(siteName));
-      if (L.pacing && CB().isCooldown(L.pacing) && L.pacing.resumeAt > Date.now()) {
+      for (;;) {
+        CB().mergeStored(L, await loadRaw(siteName));
+        if (!(L.pacing && CB().isCooldown(L.pacing) && L.pacing.resumeAt > Date.now())) return;
         await sleepUntil(siteName, L, L.pacing.resumeAt, breakLabel(siteName, L.pacing.resumeReason));
       }
+    }
+
+    // A "slow down" counted against the ledger as it is stored NOW, under its
+    // lock: the count goes up from what every window has counted, and the
+    // break (30 minutes, or about four hours for the third in a row) is
+    // chosen from that count (PR #224 audit F2). Answers the plan.
+    async function slowDownBreak(siteName, L) {
+      let plan = null;
+      await ledgerLock(siteName, async () => {
+        CB().mergeStored(L, await loadRaw(siteName));
+        plan = CB().planRateLimit(L, Date.now());
+        await writeLedger(siteName, L);
+      });
+      writeMirror(siteName, L);
+      return plan;
+    }
+
+    // The ordinary gap after a capture, worked out the same way.
+    async function captureGap(siteName, L) {
+      let plan = null;
+      await ledgerLock(siteName, async () => {
+        CB().mergeStored(L, await loadRaw(siteName));
+        plan = CB().planAfterCapture(L, Date.now());
+        await writeLedger(siteName, L);
+      });
+      writeMirror(siteName, L);
+      return plan;
     }
 
     async function sleepUntil(siteName, L, until, label) {
@@ -417,7 +447,7 @@
         let r;
         let askedAt;
         try {
-          askedAt = Date.now();
+          askedAt = CB().nextStamp();
         r = await hooks.sendToTab(active.tabId, { action: 'newspapersList', cursor: L.listCursor, user: L.user });
         } catch (e) {
           r = { ok: false, error: 'the page did not answer (' + e.message + ')' };
@@ -425,8 +455,7 @@
         if (!r || !r.ok) {
           const why = (r && r.error) || 'no answer from the page';
           if (CB().classifyError(why) === 'slowdown') {
-            CB().planRateLimit(L, Date.now());
-            await save('newspapers', L, true);
+            await slowDownBreak('newspapers', L);
             throw new Stop('Newspapers.com asked us to slow down while your clippings list was read', 'slowdown');
           }
           throw new Stop('could not read your clippings list: ' + why);
@@ -582,6 +611,9 @@
       const lib = CB().SITES[siteName];
       if (panelBusy()) {
         say(siteName, panelBusy(), 'warn');
+        // The claim wrote a lease: let it go, or another window would wait
+        // out its ten minutes for a batch that never started.
+        await dropLease().catch(() => {});
         return;
       }
       active = { site: siteName, tabId, stop: false, fails: 0 };
@@ -649,7 +681,13 @@
             if (!slow && e.kind !== 'halt' && L.pacing) L.pacing.resumeAt = 0;
             // A "slow down" seen before any capture (a busy page, the list):
             // the break starts now if it has not already.
-            if (slow && !(L.pacing && L.pacing.resumeAt > Date.now())) CB().planRateLimit(L, Date.now());
+            if (slow && !(L.pacing && L.pacing.resumeAt > Date.now())) {
+              try {
+                await slowDownBreak(siteName, L);
+              } catch (err) {
+                /* the run is stopping anyway; the save below says no more */
+              }
+            }
             CB().logEvent(L, 'STOPPED: ' + e.message);
             await saveQuietly(siteName, L);
           }
@@ -710,8 +748,7 @@
       // A "slow down" met while the page was read (its FamilySearch image
       // check, its clippings): the break comes before any more requests.
       if (page.slowDown) {
-        CB().planRateLimit(L, Date.now());
-        await save(siteName, L, true);
+        await slowDownBreak(siteName, L);
         throw new Stop(lib.name + ' asked us to slow down while the page was being read', 'slowdown');
       }
       // A page the panel cannot read at all stops the run (the next one would
@@ -739,8 +776,8 @@
         }
         active.fails = 0;
         if (metSlowDown) {
-          CB().planRateLimit(L, Date.now());
           await save(siteName, L, true);
+          await slowDownBreak(siteName, L);
           throw new Stop(lib.name + ' asked us to slow down while this one was saved', 'slowdown');
         }
         // The record page itself loaded, so its session is there: only an
@@ -756,8 +793,7 @@
         const why = out.error || 'nothing was saved';
         const kind = metSlowDown ? 'slowdown' : CB().classifyError(why);
         if (kind === 'slowdown') {
-          CB().planRateLimit(L, Date.now());
-          await save(siteName, L, true);
+          await slowDownBreak(siteName, L);
           throw new Stop(lib.name + ' asked us to slow down (' + why + ')', 'slowdown');
         }
         if (kind === 'stop') throw new Stop(why);
@@ -775,8 +811,7 @@
           await setAside(siteName, L, item, why);
         }
       }
-      const plan = CB().planAfterCapture(L, Date.now());
-      await save(siteName, L, true);
+      const plan = await captureGap(siteName, L);
       if (CB().nextPending(L)) await sleepUntil(siteName, L, plan.until, breakLabel(siteName, plan.kind));
     }
 
@@ -872,6 +907,14 @@
         'page: ' + (r.person || tab.url), who + (r.other ? ' (also ' + r.otherWhat + ', not queued)' : ''));
     }
 
+    // A Capture by hand that met a "slow down" (saved or not) holds that
+    // site's batch back as the person-sources button does: a batch running in
+    // another window takes the break before its next request (PR #224 audit F3).
+    async function recordSlowDown(siteName) {
+      if (!CB().SITES[siteName]) return;
+      await update(siteName, (L) => { CB().planRateLimit(L, Date.now()); }, false);
+    }
+
     // A record saved by hand with Capture goes in its ledger too, so a batch
     // never downloads it again.
     async function recordManual(out) {
@@ -946,7 +989,7 @@
           const { L } = await update(siteName, (L) => {
             L.listComplete = false;
             L.listCursor = 0;
-            L.listAt = Date.now();
+            L.listAt = CB().nextStamp();
             // Read for whoever is signed in then (content.js always asks for
             // the member signed in on the page).
             L.user = null;
@@ -998,7 +1041,7 @@
       }
     })().catch(() => {});
 
-    return { recordManual, run, box };
+    return { recordManual, recordSlowDown, run, box };
   }
 
   FHA.batchPanel = { install };

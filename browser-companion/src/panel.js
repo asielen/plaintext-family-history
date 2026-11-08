@@ -2460,6 +2460,10 @@
       return refuse('this page is not one the batch can save as the record queued, so nothing was saved', 'error');
     }
     const siteOpts = opts.batch ? { forceDownload: true, expectKey: opts.batch.expectKey } : {};
+    // Which site's batch a slow-down met here would concern (a capture that
+    // fails says no site of its own).
+    const captureSite = (npActive() || state.npPage) ? 'newspapers' : state.ancRecord || state.ancestryViewer ? 'ancestry'
+      : state.fsRecord || state.fsImage ? 'familysearch' : state.fagRecord ? 'findagrave' : null;
 
     state.busy = true;
     $('btn-capture').disabled = true;
@@ -2637,6 +2641,12 @@
       // only), so a batch never downloads it again.
       if (!opts.batch && state.batch && outcome && outcome.ok && outcome.site) {
         state.batch.recordManual(outcome).catch(() => {});
+      }
+      // A Capture by hand that met a "slow down", saved or not, holds that
+      // site's batch back (PR #224 audit F3).
+      if (!opts.batch && state.batch && outcome && (outcome.slowDown || outcome.rateHits > 0) &&
+          (outcome.site || captureSite)) {
+        state.batch.recordSlowDown(outcome.site || captureSite).catch(() => {});
       }
       state.busy = false;
       $('btn-capture').disabled = state.batchDriving;

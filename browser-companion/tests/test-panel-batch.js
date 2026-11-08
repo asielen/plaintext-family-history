@@ -1471,3 +1471,154 @@ test('Codex 4504508005: a record\'s details lost to the browser\'s "Failed to fe
   assert.strictEqual(p.storage.ancBatchLedger.items['90001:1000001'].state, 'queued');
   assert.match(p.batchEl('anc-status').textContent, /^Stopped: Failed to fetch/);
 });
+
+// ── PR #224 audit of 21179bc (ported from the auditor's repro scripts) ──────
+
+const nap = (ms) => new Promise((r) => setTimeout(r, ms));
+const personPage = 'https://www.familysearch.org/tree/person/details/KWHR-T01';
+function slowSourcesWindow(url, sharedStore, locks, site) {
+  const action = site === 'anc' ? 'ancestryPersonSources' : 'familysearchPersonSources';
+  return openPanel({ url, sharedStore, locks, respond: (msg) => (msg.action === action
+    ? { ok: false, slowDown: true, error: 'the site asked us to slow down (HTTP 429)' }
+    : msg.action === 'prefill' ? { ok: true, prefill: { url, title: 'A person', people: [] } } : { ok: false }) });
+}
+
+test('audit F1: a longer break another window stores while the batch sleeps out an earlier one is taken too', async () => {
+  const sharedStore = JSON.parse(JSON.stringify(Object.assign({}, ON, { fsBatchLedger: fsLedger(['HRT1-CEN1', 'HRT1-DTH1']) })));
+  const locks = makeLocks();
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const calls = [];
+  const base = familysearchSite(calls);
+  const a = await openPanel({ url: ark('HRT1-CEN2'), sharedStore, locks, respond: async (msg, tab) => {
+    if (msg.action === 'familysearchRecordInfo' && tab.url === ark('HRT1-CEN1')) await gate;
+    return base(msg, tab);
+  } });
+  quick(a);
+  const run = a.batchEl('fs-start').fire('click');
+  try {
+    await settle();
+    const b = await slowSourcesWindow(personPage, sharedStore, locks, 'fs');
+    const BP = b.window.FHA.captureBatch.PACING;
+    const realBreak = BP.rateBreakMs.slice();
+    BP.rateBreakMs = [1500, 1500]; // B's first break: short, so the test is quick
+    await b.batchEl('fs-page').fire('click');
+    await settle();
+    release();
+    await settle();
+    await nap(200);
+    assert.match(a.batchEl('fs-status').textContent, /asked us to slow down, so the batch waits/);
+    BP.rateBreakMs = realBreak; // B's second break, while A sleeps out the first: the real one
+    await b.batchEl('fs-page').fire('click');
+    await settle();
+    await nap(2500);
+    await settle();
+    assert.ok(!a.navigations.some((n) => /DTH1/.test(n.url)), 'A asked FamilySearch inside the second break');
+    assert.ok(sharedStore.fsBatchLedger.pacing.resumeAt > Date.now() + 25 * 60 * 1000);
+  } finally {
+    release();
+    await a.batchEl('fs-pause').fire('click');
+    await Promise.race([run, nap(3000)]);
+  }
+});
+
+test('audit F2: two slow-downs close together in two windows count as two, so the third in a row gets the long break', async () => {
+  const L = ancLedger([CALVIN, ETHEL]);
+  L.pacing = { sinceShort: 0, shortEvery: 40, rateEvents: 1, rateAt: Date.now() - 60 * 60 * 1000,
+    resumeReason: 'ratelimit', resumeAt: Date.now() - 1000 };
+  const sharedStore = JSON.parse(JSON.stringify(Object.assign({}, ON, { ancBatchLedger: L })));
+  const locks = makeLocks();
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const base = ancestrySite();
+  const a = await openPanel({ url: CALVIN, sharedStore, locks, respond: async (msg, tab) => {
+    if (msg.action === 'ancestryRecordInfo' && tab.url === CALVIN) await gate;
+    if (msg.action === 'ancestryImage') return { ok: false, slowDown: true, transient: true, error: 'the Ancestry image service returned HTTP 429' };
+    return base(msg, tab);
+  } });
+  quick(a);
+  const run = a.batchEl('anc-start').fire('click');
+  await settle();
+  const b = await slowSourcesWindow('https://www.ancestry.com/family-tree/person/tree/1/person/2/facts', sharedStore, locks, 'anc');
+  await b.batchEl('anc-page').fire('click');
+  await settle();
+  assert.strictEqual(sharedStore.ancBatchLedger.pacing.rateEvents, 2);
+  release();
+  await run;
+  await settle();
+  const p = sharedStore.ancBatchLedger.pacing;
+  assert.strictEqual(p.resumeReason, 'long', 'the third slow-down in a row got only ' + p.resumeReason);
+  assert.ok(p.resumeAt > Date.now() + 3.5 * 3600 * 1000);
+});
+
+test('audit F3: a Capture by hand in another window that met a slow-down - saved or failed - holds the running batch back', async () => {
+  for (const failed of [false, true]) {
+    const sharedStore = JSON.parse(JSON.stringify(Object.assign({}, ON, { ancBatchLedger: ancLedger([CALVIN, ETHEL]) })));
+    const locks = makeLocks();
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    const base = ancestrySite();
+    const a = await openPanel({ url: CALVIN, sharedStore, locks, respond: async (msg, tab) => {
+      if (msg.action === 'ancestryRecordInfo' && tab.url === CALVIN) await gate;
+      return base(msg, tab);
+    } });
+    quick(a);
+    const run = a.batchEl('anc-start').fire('click');
+    try {
+      await settle();
+      // Window B: Harriet by hand. Ancestry says slow down - to the scan (saved
+      // without it), or to the record's details (nothing saved).
+      const b = await openPanel({ url: HARRIET, sharedStore, locks, respond: (msg, tab) => {
+        if (!failed && msg.action === 'ancestryImage') return { ok: false, slowDown: true, transient: true, error: 'the Ancestry image service returned HTTP 429' };
+        if (failed && msg.action === 'ancestryRecordInfo') return { ok: false, error: 'Ancestry asked us to slow down (HTTP 429)' };
+        return base(msg, tab);
+      } });
+      await b.capture();
+      await settle();
+      assert.ok(sharedStore.ancBatchLedger.pacing && sharedStore.ancBatchLedger.pacing.resumeAt > Date.now() + 25 * 60 * 1000,
+        (failed ? 'failed' : 'saved') + ' hand capture: no break recorded');
+      release();
+      await settle();
+      await settle();
+      assert.ok(!a.navigations.some((n) => n.url === ETHEL), 'the batch asked Ancestry for Ethel straight after');
+    } finally {
+      release();
+      await a.batchEl('anc-pause').fire('click');
+      await Promise.race([run, nap(3000)]);
+    }
+  }
+});
+
+test('audit F4: a change made after the clock was set back is still stamped later than what was stored', async () => {
+  const L = ancLedger([CALVIN, ETHEL]);
+  Object.assign(L.items['90002:2000001'], { state: 'failed', tries: 1, lastError: 'not the one queued',
+    stateAt: Date.now() + 10 * 60 * 1000 });
+  const p = await openPanel({ url: CALVIN, respond: ancestrySite(), storage: Object.assign({}, ON, { ancBatchLedger: L }) });
+  await p.batchEl('anc-retry').fire('click');
+  await settle();
+  assert.match(p.batchEl('anc-status').textContent, /^1 set-aside record is queued again/);
+  assert.strictEqual(p.storage.ancBatchLedger.items['90002:2000001'].state, 'queued');
+});
+
+test('a Start refused once it has claimed the batch (a capture began meanwhile) lets its lease go at once', async () => {
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const base = ancestrySite();
+  const p = await openPanel({ url: CALVIN, storage: Object.assign({}, ON, { ancBatchLedger: ancLedger([ETHEL]) }),
+    respond: async (msg, tab) => {
+      if (msg.action === 'ancestryRecordInfo' && tab.url === CALVIN) await gate;
+      return base(msg, tab);
+    } });
+  quick(p).leaseSettleMs = 100; // no Web Locks here: the claim waits a moment
+  const started = p.batchEl('anc-start').fire('click');
+  await nap(10);
+  const hand = p.$('btn-capture').fire('click'); // a hand Capture starts during the claim
+  await started;
+  await settle();
+  assert.deepStrictEqual(p.navigations, []);
+  assert.match(p.batchEl('anc-status').textContent, /^A capture is still saving/);
+  assert.strictEqual(p.storage.batchLease, undefined, 'the refused Start left its lease behind');
+  release();
+  await hand;
+  await settle();
+});
