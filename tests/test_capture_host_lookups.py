@@ -267,7 +267,7 @@ class EquivalenceTestCase(_ArchiveCase):
         self.write('people/stubs/bad.md', '---\nname: [unclosed\n---\n')
         self.write('people/stubs/noname.md', '---\nid: P-1111111111\n---\n')
 
-    def assert_same(self) -> None:
+    def assert_same(self, *extra: str) -> None:
         # Every shared page and every 7th other one keeps the old reference
         # (a full parse per probe) affordable; the real-archive run in the PR
         # compared every saved URL.
@@ -275,6 +275,7 @@ class EquivalenceTestCase(_ArchiveCase):
         probes += [u.replace('https://www.', 'http://') + '/' for u in self.urls[::20]]
         probes += ['https://example.org/map/1', 'https://example.org/cb/2',
                    self.urls[3] + 'x', self.urls[4].split('?')[0] + 'zz', 'https://nowhere.test/a']
+        probes += extra
         for url in probes:
             with self.subTest(url=url):
                 self.assertEqual(self.check(url), _old_check_url(self.archive, self.config, url))
@@ -293,15 +294,25 @@ class EquivalenceTestCase(_ArchiveCase):
 
     def test_matches_old_scan_after_edits_moves_and_deletes(self) -> None:
         self.assert_same()
-        # Edit, delete, add, and move records between requests.
-        self.source('census/0/r005_S-r000000005.md', 'S-r000000005', 'https://new.example/x/5')
-        (self.archive / 'sources/census/1/r050_S-r000000050.md').unlink()
-        self.source('census/9/late_S-kkkkkkkkkk.md', 'S-kkkkkkkkkk', self.urls[90])
+        # Edit, delete, add, and move records between requests. The records
+        # picked hold pages no other record shares, so each answer turns on
+        # the one file that changed.
+        edited_old, edited_new = self.urls[6], 'https://new.example/x/6'
+        deleted, moved, added = self.urls[51], self.urls[121], 'https://new.example/late/1'
+        self.source('census/0/r006_S-r000000006.md', 'S-r000000006', edited_new)
+        (self.archive / 'sources/census/1/r051_S-r000000051.md').unlink()
+        self.source('census/9/late_S-kkkkkkkkkk.md', 'S-kkkkkkkkkk', added, self.urls[90])
         (self.archive / 'inbox/batch1/stub001.notes.md').rename(
             self.archive / 'inbox/batch2/stub001.notes.md')
         self.person('people/000 Couple/anna_000.md', 'Annaliese Brandt', 'Lise')
         (self.archive / 'people/001 Couple/anne_001.md').unlink()
-        self.assert_same()
+        self.assert_same(edited_old, edited_new, deleted, moved, added, self.urls[90])
+        self.assertFalse(self.check(edited_old)['known'])
+        self.assertEqual(self.check(edited_new)['source'], 'S-r000000006')
+        self.assertFalse(self.check(deleted)['known'])
+        self.assertTrue(self.check(moved)['known'])
+        self.assertEqual(self.check(added)['source'], 'S-kkkkkkkkkk')
+        self.assertEqual(self.check(self.urls[90])['source'], 'S-r000000090')   # first in walk order
 
 
 # ── Fresh the moment a record changes: never a false "not saved" ─────────────
@@ -400,9 +411,11 @@ class DamagedCacheTestCase(_ArchiveCase):
         for bad_links, bad_names in [
             ('not json', '{'),
             (json.dumps({'version': 999, 'files': {}}), json.dumps([1, 2])),
-            # Right size and mtime but a value of the wrong shape.
-            (json.dumps({'version': 1, 'files': {key_s: [st_s.st_mtime_ns, st_s.st_size, 5]}}),
-             json.dumps({'version': 1, 'files': {key_p: [st_p.st_mtime_ns, st_p.st_size, [1]]}})),
+            # Right size, mtime and reader, but a value of the wrong shape.
+            (json.dumps({'version': 1, 'reader': capture._reader_fingerprint(),
+                         'files': {key_s: [st_s.st_mtime_ns, st_s.st_size, 5]}}),
+             json.dumps({'version': 1, 'reader': capture._reader_fingerprint(),
+                         'files': {key_p: [st_p.st_mtime_ns, st_p.st_size, [1]]}})),
         ]:
             with self.subTest(bad_links=bad_links[:20]):
                 links.write_text(bad_links, encoding='utf-8')
@@ -425,6 +438,118 @@ class DamagedCacheTestCase(_ArchiveCase):
         self.cache.write_text('a file where the folder should be', encoding='utf-8')
         self.assert_answers()
         self.assertTrue(self.cache.is_file())
+
+
+# ── The guards against a false "not saved", each pinned on its own ───────────
+
+class SafetyGuardTestCase(_ArchiveCase):
+    """Each test here fails if its one guard in `_RecordFacts` is removed.
+
+    The walk-order tests above can pass by luck (a slow walk lets the clock
+    move on); these hold the clock still - the second write carries the very
+    same mtime_ns as the first - so only the guard itself can save the answer.
+    """
+
+    def same_tick_rewrite(self, rel: str, old: str, new: str) -> None:
+        """Rewrite `rel` replacing `old` with same-length `new`, keeping the exact
+        mtime_ns - two saves inside one coarse mtime tick (FAT/exFAT: 2 s)."""
+        self.assertEqual(len(old), len(new))
+        p = self.archive / rel
+        st = p.stat()
+        p.write_text(p.read_text(encoding='utf-8').replace(old, new), encoding='utf-8')
+        os.utime(p, ns=(st.st_atime_ns, st.st_mtime_ns))
+        self.assertEqual((p.stat().st_size, p.stat().st_mtime_ns), (st.st_size, st.st_mtime_ns))
+
+    def just_now(self, rel: str) -> None:
+        """Stamp `rel` half a second ago: inside the settle window."""
+        m = time.time_ns() - 500_000_000
+        os.utime(self.archive / rel, ns=(m, m))
+
+    def test_settle_window_check_url(self) -> None:
+        rel = 'sources/census/x_S-xxxxxxxxxx.md'
+        self.source('census/x_S-xxxxxxxxxx.md', 'S-xxxxxxxxxx', 'https://a.example/rec/AAAA')
+        self.just_now(rel)
+        self.assertTrue(self.check('https://a.example/rec/AAAA')['known'])
+        self.same_tick_rewrite(rel, 'rec/AAAA', 'rec/BBBB')
+        self.assertTrue(self.check('https://a.example/rec/BBBB')['known'])
+        self.assertFalse(self.check('https://a.example/rec/AAAA')['known'])
+
+    def test_settle_window_suggest_names(self) -> None:
+        self.person('people/p.md', 'Zelda Quist')
+        self.just_now('people/p.md')
+        self.assertEqual(self.names('zelda'), ['Zelda Quist'])
+        self.same_tick_rewrite('people/p.md', 'Quist', 'Quinn')
+        self.assertEqual(self.names('zelda'), ['Zelda Quinn'])
+
+    def locked_once(self, name: str):
+        """A read_record that reports `name` unreadable once (another program -
+        a backup, an antivirus scan, a sync client - held it), then reads it."""
+        real = capture.read_record
+        state = {'locked': True}
+
+        def fake(path, *a, **kw):
+            if Path(path).name == name and state['locked']:
+                state['locked'] = False
+                return {'meta': {}, 'claims': [], 'stories': None, 'body': '',
+                        'unfenced_claims': False, 'undecodable': False,
+                        'parse_errors': [('E010', 'Cannot read file: [Errno 13] locked')]}
+            return real(path, *a, **kw)
+        return mock.patch.object(capture, 'read_record', fake)
+
+    def test_a_record_locked_for_a_moment_is_not_remembered_as_empty(self) -> None:
+        self.source('census/a_S-aaaaaaaaaa.md', 'S-aaaaaaaaaa', 'https://a.example/rec/1')
+        with self.locked_once('a_S-aaaaaaaaaa.md'):
+            self.assertFalse(self.check('https://a.example/rec/1')['known'])   # truly unreadable
+            self.assertTrue(self.check('https://a.example/rec/1')['known'])    # lock gone: saved
+
+    def test_a_person_locked_for_a_moment_is_not_remembered_as_nameless(self) -> None:
+        self.person('people/p.md', 'Zelda Quist')
+        with self.locked_once('p.md'):
+            self.assertEqual(self.names('zelda'), [])
+            self.assertEqual(self.names('zelda'), ['Zelda Quist'])
+
+    def test_new_reading_code_throws_the_cache_away(self) -> None:
+        for i in range(10):
+            self.source(f'census/r{i}_S-r{i:09d}.md', f'S-r{i:09d}', f'https://a.example/rec/{i}')
+        self.check('https://a.example/none')
+        self.assertEqual(self.count_parses(lambda: self.check('https://a.example/none')), 0)
+        with mock.patch.object(capture, '_reader_fingerprint', lambda: 'a newer reader'):
+            self.assertEqual(self.count_parses(lambda: self.check('https://a.example/none')), 10)
+            header = json.loads((self.archive / '.cache/capture_links.json').read_text(encoding='utf-8'))
+            self.assertEqual(header['reader'], 'a newer reader')
+            self.assertEqual(self.count_parses(lambda: self.check('https://a.example/none')), 0)
+
+    def test_a_record_the_new_reader_can_read_is_found_after_update_tools(self) -> None:
+        # Saved by Notepad with a byte-order mark: today's reader finds no
+        # frontmatter in it, a clean read with no links - so it is cached.
+        url = 'https://www.ancestry.com/discoveryui-content/view/42:7884'
+        self.write('sources/census/bom_S-bbbbbbbbbb.md', '', raw=b'\xef\xbb\xbf' + (
+            f'---\nid: S-bbbbbbbbbb\ntitle: t\nexternal_links:\n  - url: "{url}"\n---\n').encode())
+        self.assertFalse(self.check(url)['known'])
+        real = capture.read_record
+
+        def bom_aware(path, *a, **kw):              # what a later release might ship
+            raw = Path(path).read_bytes()
+            if raw.startswith(b'\xef\xbb\xbf'):
+                tmp = Path(self._tmp.name) / Path(path).name
+                tmp.write_bytes(raw[3:])
+                return real(tmp, *a, **kw)
+            return real(path, *a, **kw)
+
+        with mock.patch.object(capture, 'read_record', bom_aware), \
+                mock.patch.object(capture, '_reader_fingerprint', lambda: 'bom-aware reader'):
+            self.assertEqual(self.check(url)['source'], 'S-bbbbbbbbbb')
+
+    def test_the_fingerprint_covers_the_reader_and_the_extractors(self) -> None:
+        fp = capture._reader_fingerprint()
+        self.assertRegex(fp, r'^[0-9a-f]{64}$')
+        capture._reader_fingerprint.cache_clear()
+        try:
+            with mock.patch.object(Path, 'read_bytes', lambda self: b'other code ' + self.name.encode()):
+                self.assertNotEqual(capture._reader_fingerprint(), fp)
+        finally:
+            capture._reader_fingerprint.cache_clear()
+        self.assertEqual(capture._reader_fingerprint(), fp)
 
 
 if __name__ == '__main__':

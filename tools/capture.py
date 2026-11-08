@@ -93,6 +93,7 @@ import base64
 import contextlib
 import datetime
 import functools
+import hashlib
 import importlib
 import json
 import os
@@ -1894,14 +1895,41 @@ def _host_ingest(archive_root: Path, fha_config: dict, msg: dict) -> dict:
 # question to the next; what each record says is remembered on disk instead,
 # in `_RecordFacts`.
 
-# Bump when what a lookup extracts from a record changes, so an old cache is
-# never read as if it held the new facts.
+# Bump when the cache file's own layout changes. Changes to how a record is READ
+# need no bump: `_reader_fingerprint` covers those.
 _RECORD_FACTS_VERSION = 1
 # A file must sit unchanged this long before what it says is cached. A second
 # save inside the window could land in the same mtime tick with the same size
 # and look untouched (FAT/exFAT drives keep mtimes to 2 s); not caching a
 # just-saved file is git's "racily clean" rule, and costs one extra re-read.
 _RECORD_FACTS_SETTLE_SECONDS = 2.0
+
+
+@functools.lru_cache(maxsize=1)
+def _reader_fingerprint() -> str | None:
+    """A stamp of the code that turns a record file into facts, or None.
+
+    The cache holds what each file said *as this code read it*. If an
+    `fha update-tools` teaches the reader something new - a record saved with
+    a byte-order mark that used to read as having no links, a YAML quirk the
+    parser now accepts - every cached answer from the old reader is suspect,
+    and a stale "not saved" is exactly the answer this cache must never give.
+    So the stamp covers all of it: this file (the extractors) and `_lib.py`
+    (`read_record`, `safe_load_yaml`, `_coerce_yaml`, `FRONT_RE`) by content
+    hash, plus the PyYAML version and whether its C loader is in use. Any
+    tools update therefore throws the cache away once. Hashing the two files
+    costs about a millisecond per host start. None (a file that will not
+    read) turns the cache off for this process: every record is read.
+    """
+    h = hashlib.sha256()
+    try:
+        for f in (Path(__file__), Path(__file__).with_name('_lib.py')):
+            h.update(f.read_bytes())
+    except OSError:
+        return None
+    h.update(f"yaml {getattr(yaml, '__version__', '?')} "
+             f"c={bool(getattr(yaml, 'CSafeLoader', None))}".encode())
+    return h.hexdigest()
 
 
 class _RecordFacts:
@@ -1918,6 +1946,10 @@ class _RecordFacts:
     it, which is why the answers cannot drift from the old full scan: the
     cache can only skip a read whose result it already holds.
 
+    The file is thrown away whenever the code that reads records changes
+    (`_reader_fingerprint`), so a tools update never answers from facts an
+    older reader produced.
+
     Not the index (`.cache/index.sqlite`): it does not store a source's
     external links or an alias's own spelling, never holds the inbox, and is
     only as fresh as the last `fha index` - while a page saved a minute ago
@@ -1927,19 +1959,23 @@ class _RecordFacts:
 
     def __init__(self, archive_root: Path, filename: str) -> None:
         self.path = Path(archive_root) / '.cache' / filename
+        self.reader = _reader_fingerprint()
         self.entries = self._load()
         self.loaded = dict(self.entries)
         self.walked: set[str] = set()
         self.settled_before = time.time() - _RECORD_FACTS_SETTLE_SECONDS
 
     def _load(self) -> dict:
-        """The stored entries, or `{}` - missing, corrupt or another version
-        all just mean every file is read once more."""
+        """The stored entries, or `{}` - missing, corrupt, another version or
+        written by other reading code all just mean every file is read once more."""
+        if self.reader is None:
+            return {}
         try:
             raw = json.loads(self.path.read_text(encoding='utf-8'))
         except (OSError, ValueError):
             return {}
-        if not isinstance(raw, dict) or raw.get('version') != _RECORD_FACTS_VERSION:
+        if (not isinstance(raw, dict) or raw.get('version') != _RECORD_FACTS_VERSION
+                or raw.get('reader') != self.reader):
             return {}
         files = raw.get('files')
         return files if isinstance(files, dict) else {}
@@ -1985,9 +2021,10 @@ class _RecordFacts:
         """
         if walked_everything:
             self.entries = {k: v for k, v in self.entries.items() if k in self.walked}
-        if self.entries == self.loaded:
+        if self.reader is None or self.entries == self.loaded:
             return
-        payload = json.dumps({'version': _RECORD_FACTS_VERSION, 'files': self.entries})
+        payload = json.dumps({'version': _RECORD_FACTS_VERSION, 'reader': self.reader,
+                              'files': self.entries})
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             write_text_exact_atomic(self.path, payload)
