@@ -191,7 +191,8 @@ CREATE TABLE source_places(source_id TEXT, place_id TEXT);   -- places: any sour
 CREATE TABLE relationships(
   person_id TEXT, rel TEXT,            -- parent | child | spouse | friend | associate | neighbor
   other_id TEXT, claim_id TEXT,        -- provenance: the claim this edge came from
-  date_start TEXT, date_end TEXT);     -- spouse edges: marriage date / divorce|death date
+  date_start TEXT, date_end TEXT,      -- spouse edges: marriage date / divorce|death date
+  UNIQUE(person_id, rel, other_id, claim_id));  -- its index serves every person_id lookup
 
 CREATE TABLE places(id TEXT PRIMARY KEY, name TEXT, hierarchy TEXT,
   within TEXT, lat REAL, lon REAL,    -- within: recursed for containment queries
