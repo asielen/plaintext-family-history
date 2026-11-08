@@ -7899,6 +7899,69 @@ def find_person_record_path(
     return named_like_a_companion
 
 
+def record_claims_by_id(path: Path) -> dict[str, dict]:
+    """{normalized id: claim} for one record's claims, first occurrence kept.
+
+    A record that fails to read or parse holds nothing: the claim isn't in an
+    unparseable block, and lint is the tool that reports the parse error.
+    """
+    try:
+        rec = read_record(path)
+    except Exception:  # noqa: BLE001 - a bad record can't hold our claim
+        return {}
+    out: dict[str, dict] = {}
+    for claim in rec.get('claims') or []:
+        if not isinstance(claim, dict):
+            continue
+        cid = claim.get('id')
+        if cid:
+            out.setdefault(normalize_id(str(cid)), claim)
+    return out
+
+
+def locate_claim_records(archive_root: Path, targets: list[str]) -> dict[str, tuple[Path, dict]]:
+    """One pass over `sources/` finding every claim id in `targets`.
+
+    Targets are normalized ids (`normalize_id`). Shared by `fha claim` and
+    `fha confirm`, which both locate claims by scanning the `.md` files (archive
+    truth - never the index, so a stale index can't misdirect a write).
+
+    Returns {normalized id: (path, claim)} for each id found, the first match in
+    sorted path order (the answer one full scan per id gave).
+
+    Speed (#225): on a 3,231-source archive, parsing every record took ~18 s
+    per claim, so a 119-claim batch took ~36 minutes and reviewers fell back
+    to hand-editing `status:` lines, skipping this tool's safety checks. A
+    claim can only live in a file whose text names its id, so each file's raw
+    bytes are checked first and only the files that mention a wanted id are
+    parsed - a plain byte scan of that archive takes ~0.4 s. The parse-and-
+    match below still decides, so an id that merely appears in some Notes
+    paragraph costs one extra parse, never a wrong answer. Ids are ASCII; an id
+    that is not skips the byte check and is looked for in every parsed file.
+    """
+    remaining = {t for t in targets if t}
+    found: dict[str, tuple[Path, dict]] = {}
+    sources_dir = archive_root / 'sources'
+    if not remaining or not sources_dir.is_dir():
+        return found
+    for path in sorted(sources_dir.rglob('*.md')):
+        try:
+            blob = path.read_bytes().lower()
+        except OSError:
+            continue
+        wanted = [t for t in remaining if not t.isascii() or t.encode('ascii') in blob]
+        if not wanted:
+            continue
+        claims = record_claims_by_id(path)          # one parse, however many ids
+        for target in wanted:
+            if target in claims:
+                found[target] = (path, claims[target])
+                remaining.discard(target)
+        if not remaining:
+            break
+    return found
+
+
 def find_source_record_path(
     archive_root: str | Path, source_id: str, unreadable: list | None = None,
 ) -> Path | None:

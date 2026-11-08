@@ -33,11 +33,13 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
 
+import _lib as _lib_mod  # noqa: E402 - #225 lookup-speed tests count its parses
 import claim
 from _lib import (
     EXIT_CLEAN,
@@ -1992,6 +1994,75 @@ class RunClaimFieldEditPlaceResolutionTests(unittest.TestCase):
 
 
 # ── Batch status moves (TOOLING §3b amendment): run_claim_batch ─────────────────
+
+class ClaimLookupSpeedTests(unittest.TestCase):
+    """#225: on a 3,231-source archive `fha claim` took ~18 s per claim (every
+    record YAML-parsed per lookup, twice per claim in a batch), so a 119-claim
+    accept took ~36 minutes and reviewers hand-edited `status:` instead. Only
+    the files whose text names a wanted id are parsed now, and a batch scans
+    sources/ once."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.source = _write_source(self.root)
+        other = self.root / 'sources' / 'other'
+        for i in range(12):
+            (other / f'a-unrelated-{i:02d}_S-22222222{i:02d}.md').write_text(
+                _CLAIM_BLOCK.replace('C-aa11bb22cc', f'C-ee00ff00{i:02d}')
+                            .replace('C-bb22cc33dd', f'C-ff00ee00{i:02d}'),
+                encoding='utf-8')
+        self.parsed: list[str] = []
+        real = _lib_mod.read_record
+
+        def counting(path, *a, **k):
+            self.parsed.append(Path(path).name)
+            return real(path, *a, **k)
+        patcher = mock.patch.object(_lib_mod, 'read_record', side_effect=counting)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_one_claim_parses_only_the_file_that_names_it(self) -> None:
+        result = claim.run_claim(self.root, claim_id='C-bb22cc33dd',
+                                 status='accepted', reviewed='2026-07-20')
+        self.assertEqual(result['status'], 'ok')
+        self.assertTrue(self.parsed)
+        self.assertEqual(set(self.parsed), {self.source.name})
+
+    def test_a_batch_scans_once_and_never_parses_unrelated_files(self) -> None:
+        result = claim.run_claim_batch(self.root, claim_ids=['C-aa11bb22cc', 'C-bb22cc33dd'],
+                                       status='accepted', reviewed='2026-07-20')
+        self.assertEqual(result['status'], 'ok')
+        self.assertEqual(set(self.parsed), {self.source.name})
+        # One parse finds both ids for the gate; each write re-reads its one
+        # file (plus run_claim's own reads of it) - never a rescan per id.
+        before = len(self.parsed)
+        self.parsed.clear()
+        claim._locate_claims(self.root, ['c-aa11bb22cc', 'c-bb22cc33dd'])
+        self.assertEqual(len(self.parsed), 1)
+        self.assertLess(before, 12)
+
+    def test_an_id_mentioned_in_another_files_notes_still_finds_the_claim(self) -> None:
+        # Sorts before the real record and names the id only in prose: the text
+        # check lets it through, the parse rules it out.
+        decoy = self.root / 'sources' / 'other' / 'aaa-decoy_S-3333333333.md'
+        decoy.write_text(_CLAIM_BLOCK.replace('C-aa11bb22cc', 'C-dd00dd00dd')
+                         .replace('C-bb22cc33dd', 'C-dd11dd11dd')
+                         .replace('*(none yet)*', 'See also C-bb22cc33dd.'),
+                         encoding='utf-8')
+        found = claim._find_claim_record(self.root, 'C-bb22cc33dd')
+        self.assertIsNotNone(found)
+        self.assertEqual(found[0], self.source)
+        self.assertEqual(found[1]['type'], 'death')
+
+    def test_a_stale_hint_falls_back_to_the_scan(self) -> None:
+        wrong = self.root / 'sources' / 'other' / 'a-unrelated-00_S-2222222200.md'
+        found = claim._find_claim_record(self.root, 'C-aa11bb22cc', hint=wrong)
+        self.assertEqual(found[0], self.source)
+
 
 class RunClaimBatchTests(unittest.TestCase):
     """The review gesture "accept 1, 2 and 4" is one human decision per claim

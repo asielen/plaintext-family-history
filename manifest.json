@@ -217,7 +217,7 @@
     {
       "path": ".fha/browser-companion/src/batch.js",
       "category": "operating",
-      "sha256": "496521b2bbdc6595ee583423f65695f70e59598cd3bce698660e2afe587bbabf",
+      "sha256": "90f2638accd86b1a385a0155cbb662b225fbe9209f5a0ac28b48ae846400dc02",
       "spec_version": "1.2",
       "src": "browser-companion/src/batch.js"
     },
@@ -252,7 +252,7 @@
     {
       "path": ".fha/browser-companion/src/lib/capture-batch.js",
       "category": "operating",
-      "sha256": "fd64edbca866e96abfe66e1c20d574b6bbd068e8a6bc383eaef71b069f4c759e",
+      "sha256": "f99b0b0a5d79f3baa58466653ff66fd140e18b9b4d1495283b2a0f2c2cefe0bc",
       "spec_version": "1.2",
       "src": "browser-companion/src/lib/capture-batch.js"
     },
@@ -483,7 +483,7 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "acf24e1cea4c5fce8e0ecabcd1d4574ad4a1a7a931e6c24217f3985c2af1198a",
+      "sha256": "851638e040457753f5ad7cab87a65dd3fb923c3d0fbb17547d7316d32d18fd60",
       "spec_version": "1.2",
       "src": "tools/_lib.py"
     },
@@ -546,14 +546,14 @@
     {
       "path": ".fha/tools/claim.py",
       "category": "operating",
-      "sha256": "4055ec0dea81810483c313f12a3ac7b4b431587305e60f0c0bc049c18d5d1577",
+      "sha256": "5a4df352940e8cc86214908c247ae17a8c818f10d57e752201cfc0486f1f8570",
       "spec_version": "1.2",
       "src": "tools/claim.py"
     },
     {
       "path": ".fha/tools/confirm.py",
       "category": "operating",
-      "sha256": "181100e3a1e14e8fdd6490d944911cfb08a14fec94a9522d9d59a079c31342fb",
+      "sha256": "6cd9e76322f27276336cb592d42047d1611cff9da5edcf10467e89ce8d6559fe",
       "spec_version": "1.2",
       "src": "tools/confirm.py"
     },
