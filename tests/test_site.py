@@ -3220,6 +3220,23 @@ class HomePageTests(_Base):
         self.assertIn('James Bradford', home)
         self.assertIn('Thomas Hartley', home)
 
+    def test_same_named_entries_list_in_one_fixed_order(self):
+        # Two builds of an unchanged archive must write the same homepage
+        # (deterministic by contract, TOOLING §12). People and sources with
+        # the same name used to come out in set order, which changes with
+        # every run's hash seed. Eight of each make a lucky pass on the old
+        # code a 1-in-40,320 chance.
+        ids = [f'{c * 10}' for c in 'hgfedcba']
+        for x in ids:
+            self._seed_person(f'p-{x}', 'Mary Smith', surname='Smith')
+            self._seed_source(f's-{x}', 'Census of 1900')
+        self._run(linked=True)
+        home = self._read('index.html')
+        for kind in ('persons', 'sources'):
+            with self.subTest(kind=kind):
+                pos = [home.index(f'{kind}/{kind[0]}-{x}.html') for x in sorted(ids)]
+                self.assertEqual(pos, sorted(pos))
+
     def test_home_omits_living_under_standalone(self):
         self._seed_person('p-aaaaaaaaaa', 'Dead Dan', living='false', surname='Dan')
         self._seed_person('p-bbbbbbbbbb', 'Living Larry', living='true', surname='Larry')
