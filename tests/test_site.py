@@ -2200,6 +2200,485 @@ class AssetTests(_Base):
             html)
 
 
+def _age(path: Path, seconds: int = 3600) -> None:
+    """Backdate a file, so it reads as an original nobody is still editing
+    (`_DERIVATIVE_SETTLE_SECONDS`)."""
+    then = time.time() - seconds
+    os.utime(path, (then, then))
+
+
+@unittest.skipUnless(site._PIL_AVAILABLE, 'Pillow not installed')
+class DerivativeCacheTests(_Base):
+    """Rebuilding the site used to re-make every picture from the full-size
+    scans - minutes of decoding on a real archive for pictures identical to
+    the last build's. The build now saves each web picture in
+    `.cache/site-derivatives/` and copies it back while the original is
+    unchanged. These tests hold it to four promises: an unchanged original is
+    not decoded again; a changed one always is; a withheld picture never
+    reaches the snapshot just because a copy is saved; and the site is the
+    same, byte for byte, with or without the saved copies."""
+
+    _make_photos_db = AssetTests._make_photos_db
+    _make_photos_fresh = AssetTests._make_photos_fresh
+
+    def _image(self, rel: str, colour=(120, 90, 60), size=(2000, 1500)) -> Path:
+        from PIL import Image
+        img = self.archive_root / rel
+        img.parent.mkdir(parents=True, exist_ok=True)
+        Image.new('RGB', size, colour).save(img)
+        _age(img)
+        return img
+
+    def _photo_source(self, sid: str, rel: str, **kw) -> None:
+        self._seed_source(sid, 'Photo Source', source_type='photo', **kw)
+        self.conn.execute(
+            'INSERT INTO source_files(source_id, path, role) VALUES (?,?,?)',
+            (sid, rel, 'front'))
+
+    def _cache_dir(self) -> Path:
+        return self.archive_root / '.cache' / 'site-derivatives'
+
+    def _cache_notes(self) -> list[Path]:
+        d = self._cache_dir()
+        return sorted(d.glob('*.json')) if d.is_dir() else []
+
+    def _media(self) -> dict[str, bytes]:
+        media = self.out_dir / 'media'
+        return {p.relative_to(media).as_posix(): p.read_bytes()
+                for p in media.rglob('*') if p.is_file()} if media.is_dir() else {}
+
+    def _run_spied(self, **kw):
+        """Build once, recording every original the build had to decode."""
+        with unittest.mock.patch.object(
+                site, '_make_derivative', wraps=site._make_derivative) as spy:
+            res = self._run(**kw)
+        return res, [Path(c.args[0]).name for c in spy.call_args_list]
+
+    def test_second_build_reuses_the_saved_picture_without_decoding_the_original(self):
+        self._image('photos/1880/pic.png')
+        self._photo_source('s-1111111111', 'photos/1880/pic.png')
+        first, decoded = self._run_spied(linked=False)
+        self.assertEqual(decoded, ['pic.png'])
+        media_first = self._media()
+        page_first = self._read('sources/s-1111111111.html')
+        self.assertEqual(len(media_first), 1)
+
+        second, decoded = self._run_spied(linked=False)
+        self.assertEqual(decoded, [], 'the unchanged original was decoded again')
+        self.assertEqual(self._media(), media_first)
+        self.assertEqual(self._read('sources/s-1111111111.html'), page_first)
+        self.assertEqual(second['messages'], first['messages'])
+
+    def test_a_changed_or_touched_original_is_made_again(self):
+        from PIL import Image
+        changed = self._image('photos/1880/changed.png', colour=(10, 10, 10))
+        touched = self._image('photos/1880/touched.png', colour=(20, 20, 20))
+        self._image('photos/1880/steady.png', colour=(30, 30, 30))
+        for sid, name in (('s-1111111111', 'changed'), ('s-2222222222', 'touched'),
+                          ('s-3333333333', 'steady')):
+            self._photo_source(sid, f'photos/1880/{name}.png')
+        self._run(linked=False)
+        self.assertEqual(len(self._cache_notes()), 3)
+
+        # A re-scan saved over the old file (same size on disk, new picture),
+        # and a file whose modified-time moved with nothing else changed.
+        Image.new('RGB', (2000, 1500), (250, 0, 0)).save(changed)
+        _age(changed, 1800)
+        _age(touched, 1800)
+        res, decoded = self._run_spied(linked=False)
+        self.assertEqual(sorted(decoded), ['changed.png', 'touched.png'])
+
+        # The published picture is the new scan's, not the saved old one.
+        expected = self.archive_root / 'expected.jpg'
+        self.assertTrue(site._make_derivative(changed, expected))
+        published = [data for rel, data in self._media().items() if 'changed_' in rel]
+        self.assertEqual(published, [expected.read_bytes()])
+        # The saved copies of the two old versions are gone: no build could use them.
+        self.assertEqual(len(self._cache_notes()), 3)
+
+    def test_a_withheld_picture_never_reaches_media_even_when_a_copy_is_saved(self):
+        # One source the owner restricts after the first build, and one photo
+        # whose person turns out to be living (the living-tagged-photo gate).
+        self._seed_person('p-aaaaaaaaaa', 'Jane Doe')
+        self._image('photos/1880/private.png', colour=(1, 2, 3))
+        self._image('photos/1890/jane.png', colour=(4, 5, 6))
+        self._image('photos/1900/public.png', colour=(7, 8, 9))
+        self._photo_source('s-1111111111', 'photos/1880/private.png')
+        self._photo_source('s-2222222222', 'photos/1890/jane.png')
+        # One picture stays public, so the rebuild below really runs through
+        # the cache: withholding has to happen with saved copies in play.
+        self._photo_source('s-3333333333', 'photos/1900/public.png')
+        pconn = self._make_photos_db()
+        pconn.execute('INSERT INTO photos(path, group_id, is_primary, caption) VALUES (?,?,?,?)',
+                      ('photos/1890/jane.png', 'g1', 1, ''))
+        pconn.execute('INSERT INTO photo_people(path, person_ref, via) VALUES (?,?,?)',
+                      ('photos/1890/jane.png', 'p-aaaaaaaaaa', 'pid-keyword'))
+        pconn.commit()
+        pconn.close()
+        self._make_photos_fresh()
+        self._run(linked=False)
+        self.assertTrue(any('private_' in rel for rel in self._media()))
+        self.assertTrue(any('jane_' in rel for rel in self._media()))
+        saved = self._cache_notes()
+        self.assertEqual(len(saved), 3, 'expected all three pictures saved for reuse')
+
+        self.conn.execute("UPDATE sources SET restricted = 1 WHERE id = 's-1111111111'")
+        self.conn.execute("UPDATE persons SET living = 'true' WHERE id = 'p-aaaaaaaaaa'")
+        res, decoded = self._run_spied(linked=False)
+        self.assertEqual(res['status'], 'ok', res['messages'])
+        self.assertEqual(decoded, [], 'the public picture should have come from the cache')
+        self.assertEqual([rel.split('/')[-1].split('_')[0] for rel in self._media()],
+                         ['public'], 'a withheld picture was published')
+        self.assertIn('image omitted - tagged to a living person',
+                      self._read('sources/s-2222222222.html'))
+        # Still saved (the originals did not change) - just not published.
+        self.assertEqual(self._cache_notes(), saved)
+
+    def test_pages_are_identical_with_and_without_saved_pictures(self):
+        # The example archive: portraits, photo strips, profile photos, the
+        # home hero and a source whose image fails - every derivative path.
+        import shutil
+        import index as index_mod
+        root = self.archive_root / 'example'
+        shutil.copytree(ROOT / 'example-archive', root,
+                        ignore=shutil.ignore_patterns('generated', '.cache'))
+        for p in root.rglob('*'):
+            if p.is_file() and p.suffix.lower() in {'.jpg', '.jpeg', '.png', '.tif', '.tiff'}:
+                _age(p)
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            index_mod.build_index(root, {})
+
+        def build(out: Path):
+            with unittest.mock.patch.object(
+                    site, '_make_derivative', wraps=site._make_derivative) as spy:
+                res = site.run_site(root, out, linked=False)
+            self.assertEqual(res['status'], 'ok', res['messages'])
+            files = {p.relative_to(out).as_posix(): p.read_bytes()
+                     for p in out.rglob('*') if p.is_file() and p.name != '.fha-site'}
+            return files, res['messages'], spy.call_count
+
+        cold, cold_messages, cold_decoded = build(self.archive_root / 'cold')
+        self.assertTrue(any(rel.startswith('media/') for rel in cold))
+        self.assertGreater(cold_decoded, 0)
+        warm, warm_messages, warm_decoded = build(self.archive_root / 'warm')
+        self.assertEqual(warm_decoded, 0)
+        self.assertEqual(sorted(warm), sorted(cold))
+        self.assertEqual([rel for rel in sorted(cold) if cold[rel] != warm[rel]], [])
+        self.assertEqual(warm_messages, cold_messages)
+
+    def test_a_damaged_saved_picture_is_made_again_and_reported(self):
+        self._image('photos/1880/pic.png')
+        self._photo_source('s-1111111111', 'photos/1880/pic.png')
+        self._run(linked=False)
+        good = self._media()
+        [note] = self._cache_notes()
+        note.with_suffix('.jpg').write_bytes(b'half a picture')
+
+        res, decoded = self._run_spied(linked=False)
+        self.assertEqual(res['status'], 'ok')
+        self.assertEqual(decoded, ['pic.png'])
+        self.assertEqual(self._media(), good)
+        self.assertTrue(any('1 saved web picture' in m and 'made again' in m
+                            for m in res['notes']), res['notes'])
+        self.assertFalse([m for m in res['messages'] if 'saved web picture' in m])
+
+        # Repaired in passing: the next build copies it, quietly.
+        res, decoded = self._run_spied(linked=False)
+        self.assertEqual(decoded, [])
+        self.assertEqual(res['notes'], [])
+
+        # A note that will not parse is damage too.
+        note.write_text('{', encoding='utf-8')
+        res, decoded = self._run_spied(linked=False)
+        self.assertEqual(decoded, ['pic.png'])
+        self.assertEqual(self._media(), good)
+        self.assertTrue(any('could not be read back' in m for m in res['notes']))
+
+    def _malformed_notes(self, good: dict) -> dict[str, bytes]:
+        """Every shape of note `_read_note` must refuse, built from a real one.
+        Hand edits, half-written files and other tools' leftovers all land
+        here; none may raise out of the build (Codex review on PR #233)."""
+        def variant(edit):
+            note = json.loads(json.dumps(good))
+            edit(note)
+            return json.dumps(note).encode('utf-8')
+
+        def drop(*keys):
+            return lambda n: [n['fields'].pop(k) for k in keys]
+
+        def put(key, value, top=False):
+            return lambda n: (n if top else n['fields']).__setitem__(key, value)
+
+        return {
+            'missing size and mtime_ns': variant(drop('size', 'mtime_ns')),
+            'missing source': variant(drop('source')),
+            'size is null': variant(put('size', None)),
+            'size is a string': variant(put('size', '1234')),
+            'size is true': variant(put('size', True)),
+            'mtime_ns is a float': variant(put('mtime_ns', 1.5)),
+            'recipe is a string': variant(put('recipe', '1')),
+            'source is relative': variant(put('source', 'photos/pic.png')),
+            'source has a NUL': variant(put('source', good['fields']['source'] + '\x00')),
+            'source is a list': variant(put('source', ['a'])),
+            'format is a path': variant(put('format', '/../x')),
+            'an extra field': variant(put('extra', 1)),
+            'an extra top-level key': variant(put('extra', 1, top=True)),
+            'fields is a string': variant(put('fields', 'x', top=True)),
+            'sha256 is a number': variant(put('sha256', 7, top=True)),
+            'bytes is negative': variant(put('bytes', -1, top=True)),
+            'note is a list': b'[1, 2, 3]',
+            'note is null': b'null',
+            'empty file': b'',
+            'binary garbage': bytes(range(256)) * 4,
+            'nested past the parser limit': b'[' * 200_000,
+        }
+
+    def test_an_incomplete_unused_note_does_not_break_the_build(self):
+        # Codex review on PR #233 (P2): prune read `size`/`mtime_ns` outside
+        # its guard, so ONE incomplete note - even for a picture no page uses
+        # - raised KeyError and failed every standalone rebuild.
+        self._image('photos/1880/pic.png')
+        self._photo_source('s-1111111111', 'photos/1880/pic.png')
+        self._run(linked=False)
+        [real] = self._cache_notes()
+        good = json.loads(real.read_text(encoding='utf-8'))
+        for name, raw in self._malformed_notes(good).items():
+            with self.subTest(name):
+                stray = self._cache_dir() / ('f' * 32 + '.json')
+                stray.write_bytes(raw)
+                stray.with_suffix('.jpg').write_bytes(real.with_suffix('.jpg').read_bytes())
+                res, decoded = self._run_spied(linked=False)
+                self.assertEqual(res['status'], 'ok', res['messages'])
+                self.assertEqual(decoded, [])            # the real entry is still reused
+                self.assertFalse(stray.exists(), 'the malformed note was kept')
+                self.assertFalse(stray.with_suffix('.jpg').exists())
+                self.assertEqual(self._cache_notes(), [real])
+
+    def test_a_malformed_note_for_a_used_picture_is_made_again(self):
+        self._image('photos/1880/pic.png')
+        self._photo_source('s-1111111111', 'photos/1880/pic.png')
+        self._run(linked=False)
+        good_media = self._media()
+        [real] = self._cache_notes()
+        good_note = real.read_bytes()
+        good = json.loads(good_note)
+        cases = self._malformed_notes(good)
+        cases['picture file missing'] = None
+        for name, raw in cases.items():
+            with self.subTest(name):
+                if raw is None:
+                    real.with_suffix('.jpg').unlink()
+                else:
+                    real.write_bytes(raw)
+                res, decoded = self._run_spied(linked=False)
+                self.assertEqual(res['status'], 'ok', res['messages'])
+                self.assertEqual(decoded, ['pic.png'])
+                self.assertEqual(self._media(), good_media)
+                self.assertTrue(any('could not be read back' in m for m in res['notes']),
+                                res['notes'])
+                # Saved again, whole: the next build reuses it.
+                self.assertEqual(real.read_bytes(), good_note)
+                _, decoded = self._run_spied(linked=False)
+                self.assertEqual(decoded, [])
+
+    def test_a_note_whose_picture_is_gone_is_pruned(self):
+        self._image('photos/1880/pic.png')
+        self._image('photos/1880/other.png', colour=(9, 9, 9))
+        self._photo_source('s-1111111111', 'photos/1880/pic.png')
+        self._run(linked=False)
+        [real] = self._cache_notes()
+        stray = self._cache_dir() / ('e' * 32 + '.json')
+        good = json.loads(real.read_text(encoding='utf-8'))
+        other = (self.archive_root / 'photos' / '1880' / 'other.png').resolve()
+        st = other.stat()
+        good['fields'].update(source=str(other), size=st.st_size, mtime_ns=st.st_mtime_ns)
+        stray.write_text(json.dumps(good), encoding='utf-8')   # no picture beside it
+        res = self._run(linked=False)
+        self.assertEqual(res['status'], 'ok', res['messages'])
+        self.assertFalse(stray.exists())
+        self.assertEqual(self._cache_notes(), [real])
+
+    def _cli(self):
+        """Run `fha site` the way the owner does, returning (exit, stdout, stderr)."""
+        fha_yaml = self.archive_root / 'fha.yaml'
+        if not fha_yaml.exists():
+            fha_yaml.write_text('roots:\n  photos: photos\n', encoding='utf-8')
+        self.conn.commit()
+        future = time.time() + 5
+        os.utime(self.archive_root / '.cache' / 'index.sqlite', (future, future))
+        write_path_manifest(
+            index_manifest_path(self.archive_root), record_path_manifest(self.archive_root))
+        args = argparse.Namespace(root=str(self.archive_root), out=str(self.out_dir),
+                                  linked=False, dry_run=False)
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = site._cmd_site(args)
+        return code, out.getvalue(), err.getvalue()
+
+    def test_a_cache_note_never_turns_a_clean_build_into_warnings(self):
+        # Audit of PR #233: the cache notes say "nothing for you to do", so
+        # they must not make `fha site` exit 1 ("finished with warnings") -
+        # CI runs it under `bash -e`, and the share-and-export skill reads
+        # the exit code the AGENTS.md way.
+        self._image('photos/1880/pic.png')
+        self._photo_source('s-1111111111', 'photos/1880/pic.png')
+        pconn = self._make_photos_db()
+        pconn.execute('INSERT INTO photos(path, group_id, is_primary, caption) VALUES (?,?,?,?)',
+                      ('photos/1880/pic.png', 'g1', 1, ''))
+        pconn.commit()
+        pconn.close()
+        self._make_photos_fresh()
+        code, out, err = self._cli()
+        self.assertEqual(code, site.EXIT_CLEAN, err)
+        [note] = self._cache_notes()
+        note.write_text('{', encoding='utf-8')
+
+        code, out, err = self._cli()
+        self.assertEqual(code, site.EXIT_CLEAN, err)
+        self.assertIn('Site built', out)
+        self.assertIn('could not be read back', err)
+        self.assertNotIn('WARNING', err)
+
+        # Headless callers (fha serve's publish) get the same: a clean exit
+        # with the note as an info line, not a warning.
+        note.write_text('{', encoding='utf-8')
+        res = self._run(linked=False)
+        self.assertEqual(res.exit_code, site.EXIT_CLEAN)
+        self.assertEqual(res['messages'], [])
+        self.assertTrue(any(m.level == 'info' and 'could not be read back' in m.text
+                            for m in res.messages), res.messages)
+
+    def test_a_cache_folder_that_cannot_be_opened_never_fails_the_build(self):
+        # Codex review on PR #233 (P2): on Python 3.10/3.11 `Path.exists` (and
+        # `is_file`/`is_dir`) raise PermissionError for a folder the build may
+        # not traverse, where 3.14 answers False - so the lookup's existence
+        # probe stopped the whole build. Here every filesystem call that
+        # touches the cache folder raises, the way an untraversable folder
+        # does on the oldest Python we support.
+        self._image('photos/1880/pic.png')
+        self._photo_source('s-1111111111', 'photos/1880/pic.png')
+        self._run(linked=False)
+        good = self._media()
+        cache = str(self._cache_dir())
+
+        def blocked(path) -> bool:
+            return os.fspath(path).startswith(cache)
+
+        def deny(real):
+            def wrapper(*args, **kwargs):
+                if args and blocked(args[0]):
+                    raise PermissionError(13, 'Permission denied', os.fspath(args[0]))
+                return real(*args, **kwargs)
+            return wrapper
+
+        P = Path
+        patches = [unittest.mock.patch.object(P, name, deny(getattr(P, name)))
+                   for name in ('exists', 'is_file', 'is_dir', 'stat', 'read_bytes',
+                                'mkdir', 'unlink', 'open')]
+        real_mkstemp = tempfile.mkstemp
+
+        def mkstemp(*args, **kwargs):
+            if blocked(kwargs.get('dir') or ''):
+                raise PermissionError(13, 'Permission denied', kwargs['dir'])
+            return real_mkstemp(*args, **kwargs)
+
+        patches += [unittest.mock.patch.object(os, 'listdir', deny(os.listdir)),
+                    unittest.mock.patch.object(os, 'stat', deny(os.stat)),
+                    unittest.mock.patch.object(tempfile, 'mkstemp', mkstemp)]
+        with contextlib.ExitStack() as stack:
+            for p in patches:
+                stack.enter_context(p)
+            res, decoded = self._run_spied(linked=False)
+        self.assertEqual(res['status'], 'ok', res['messages'])
+        self.assertEqual(res.exit_code, site.EXIT_WARNINGS if res['messages'] else site.EXIT_CLEAN)
+        self.assertEqual(decoded, ['pic.png'])              # made from the original
+        self.assertEqual(self._media(), good)
+        self.assertTrue(any('could not open the saved web pictures' in m for m in res['notes']),
+                        res['notes'])
+        self.assertFalse([m for m in res['messages'] if 'web pictures' in m])
+        # Nothing was deleted while it could not be looked at.
+        self.assertEqual(len(self._cache_notes()), 1)
+
+    def test_a_cache_folder_that_cannot_be_written_never_fails_the_build(self):
+        self._image('photos/1880/pic.png')
+        self._photo_source('s-1111111111', 'photos/1880/pic.png')
+        self._cache_dir().write_text('not a folder', encoding='utf-8')
+        res = self._run(linked=False)
+        self.assertEqual(res['status'], 'ok')
+        self.assertEqual(len(self._media()), 1)
+        notes = [m for m in res['notes'] if 'could not save web pictures' in m]
+        self.assertEqual(len(notes), 1, res['notes'])
+        self.assertIn('`fha site`', notes[0])
+        self.assertFalse([m for m in res['notes'] if 'could not tidy' in m])
+        self.assertFalse([m for m in res['messages'] if 'web pictures' in m])
+
+    def test_saved_pictures_of_deleted_originals_are_pruned_but_an_unplugged_folder_is_kept(self):
+        gone = self._image('photos/1880/gone.png', colour=(1, 1, 1))
+        self._image('photos/1880/kept.png', colour=(2, 2, 2))
+        unplugged = self._image('photos/drive/away.png', colour=(3, 3, 3))
+        for sid, rel in (('s-1111111111', 'photos/1880/gone.png'),
+                         ('s-2222222222', 'photos/1880/kept.png'),
+                         ('s-3333333333', 'photos/drive/away.png')):
+            self._photo_source(sid, rel)
+        self._run(linked=False)
+        self.assertEqual(len(self._cache_notes()), 3)
+        gone.unlink()
+        unplugged.unlink()
+        unplugged.parent.rmdir()
+        self._run(linked=False)
+        sources = sorted(Path(json.loads(n.read_text(encoding='utf-8'))['fields']['source']).name
+                         for n in self._cache_notes())
+        self.assertEqual(sources, ['away.png', 'kept.png'])
+        pictures = sorted(p.stem for p in self._cache_dir().glob('*.jpg'))
+        self.assertEqual(pictures, sorted(n.stem for n in self._cache_notes()))
+
+    def test_a_new_recipe_makes_every_picture_again(self):
+        self._image('photos/1880/pic.png')
+        self._photo_source('s-1111111111', 'photos/1880/pic.png')
+        self._run(linked=False)
+        [old] = self._cache_notes()
+        with unittest.mock.patch.object(site, '_DERIVATIVE_RECIPE_VERSION',
+                                        site._DERIVATIVE_RECIPE_VERSION + 1):
+            _, decoded = self._run_spied(linked=False)
+            self.assertEqual(decoded, ['pic.png'])
+            self.assertNotIn(old, self._cache_notes())
+            self.assertEqual(len(self._cache_notes()), 1)
+
+    def test_an_original_still_being_edited_is_not_saved(self):
+        img = self._image('photos/1880/pic.png')
+        os.utime(img)   # modified just now
+        self._photo_source('s-1111111111', 'photos/1880/pic.png')
+        self._run(linked=False)
+        self.assertEqual(self._cache_notes(), [])
+        _age(img)
+        self._run(linked=False)
+        self.assertEqual(len(self._cache_notes()), 1)
+
+    def test_one_photo_on_many_pages_is_decoded_once_per_build(self):
+        for pid in ('p-aaaaaaaaaa', 'p-bbbbbbbbbb'):
+            self._seed_person(pid, 'Jane Doe')
+        self._image('photos/1880/family.png')
+        pconn = self._make_photos_db()
+        pconn.execute('INSERT INTO photos(path, group_id, is_primary, caption) VALUES (?,?,?,?)',
+                      ('photos/1880/family.png', 'g1', 1, 'Family'))
+        for pid in ('p-aaaaaaaaaa', 'p-bbbbbbbbbb'):
+            pconn.execute('INSERT INTO photo_people(path, person_ref, via) VALUES (?,?,?)',
+                          ('photos/1880/family.png', pid, 'pid-keyword'))
+        pconn.commit()
+        pconn.close()
+        self._make_photos_fresh()
+        _, decoded = self._run_spied(linked=False)
+        self.assertEqual(decoded, ['family.png'])
+        for pid in ('p-aaaaaaaaaa', 'p-bbbbbbbbbb'):
+            self.assertIn('media/people/family_', self._read(f'persons/{pid}.html'))
+
+    def test_the_linked_preview_neither_reads_nor_writes_saved_pictures(self):
+        self._image('photos/1880/pic.png')
+        self._photo_source('s-1111111111', 'photos/1880/pic.png')
+        self._run(linked=True)
+        self.assertFalse(self._cache_dir().exists())
+
+
 class LivingPhotoCheckUnavailableTests(_Base):
     """The living-person photo gate fails OPEN, and the build says so.
 
