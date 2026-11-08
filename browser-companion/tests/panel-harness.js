@@ -5,7 +5,9 @@
 // (canvases) is stubbed; only a real browser can check pixels.
 //
 // Used by every tests/test-panel-*.js (the batch downloads' too: `storage` holds
-// their switch and queues, `navigations` the addresses a batch sent the tab to).
+// their switch and queues, `navigations` the addresses a batch sent the tab to,
+// and `worker` is the add-on's service worker - src/background.js, the one
+// writer of the batch ledgers - that every panel on one store shares).
 
 'use strict';
 
@@ -121,6 +123,165 @@ class FakeFileReader {
 }
 
 const tick = () => new Promise((r) => setTimeout(r, 0));
+const clone = (v) => (v === undefined ? undefined : JSON.parse(JSON.stringify(v)));
+const EXT_ID = 'fha-capture-extension';
+
+// ── one browser profile: its storage, and the add-on's service worker ───────
+
+// What every panel window (and the service worker) on one chrome.storage.local
+// shares: who hears its changes, a write fault, the storage reads made, and
+// the service worker.
+const profiles = new WeakMap();
+function profileOf(store) {
+  if (!profiles.has(store)) profiles.set(store, { listeners: [], fault: null, readLogs: [], worker: null });
+  return profiles.get(store);
+}
+
+// chrome.storage.local over `store`, kept as JSON (as Chrome keeps it), for
+// a page whose chrome object is `ch` (its runtime.lastError).
+function storageArea(store, prof, ch) {
+  return {
+    get: (keys, cb) => {
+      const out = {};
+      if (typeof keys === 'string') keys = [keys];
+      const names = Array.isArray(keys) ? keys : Object.keys(keys || {});
+      for (const log of prof.readLogs) log.push(...names);
+      if (Array.isArray(keys)) {
+        for (const k of keys) if (k in store) out[k] = clone(store[k]);
+      } else {
+        for (const [k, d] of Object.entries(keys || {})) out[k] = k in store ? clone(store[k]) : d;
+      }
+      cb(out);
+    },
+    set: (obj, cb) => {
+      const why = prof.fault && Object.keys(obj).map((k) => prof.fault(k)).find(Boolean);
+      if (why) {
+        ch.runtime.lastError = { message: why };
+        if (cb) cb();
+        ch.runtime.lastError = undefined;
+        return;
+      }
+      const changes = {};
+      for (const [k, v] of Object.entries(obj)) changes[k] = { oldValue: store[k], newValue: clone(v) };
+      Object.assign(store, clone(obj));
+      if (cb) cb();
+      for (const f of prof.listeners.slice()) f(changes, 'local');
+    },
+    remove: (k, cb) => {
+      const changes = {};
+      for (const x of [].concat(k)) {
+        changes[x] = { oldValue: store[x] };
+        delete store[x];
+      }
+      if (cb) cb();
+      for (const f of prof.listeners.slice()) f(changes, 'local');
+    },
+  };
+}
+
+function makePort(name, sender) {
+  const listeners = [];
+  const port = {
+    name, sender, other: null, open: true,
+    onDisconnect: { addListener: (f) => listeners.push(f) },
+    // The far end hears it (as in Chrome, never the end that disconnected).
+    disconnect() {
+      if (!port.open) return;
+      port.open = false;
+      port.other.hear();
+    },
+    hear() {
+      if (!port.open) return;
+      port.open = false;
+      for (const f of listeners.slice()) f(port);
+    },
+  };
+  return port;
+}
+
+// The add-on's service worker: src/background.js, loaded as Chrome loads it
+// (importScripts of its libraries), over the profile's storage.
+//   holdNext()         the next message waits until the release() answered;
+//   restart()          the browser stops it and starts it again: what was in
+//                      memory is gone, every port to it closes;
+//   down = true        it does not answer at all (no receiving end);
+//   loseReplies = n    the next n intents are applied but never answered;
+//   stopAfter = fn     the first message fn(msg) picks is applied, then the
+//                      browser stops the service worker before it answers
+//                      (and starts it again: restart);
+//   PACING             its copy of lib/capture-batch.js PACING (the breaks it
+//                      plans); kept across a restart.
+//   delivered          every message it was sent.
+function makeWorker(store, prof) {
+  const w = { down: false, loseReplies: 0, restarts: 0, delivered: [], ports: [] };
+  function boot() {
+    const self = {};
+    const onMessage = [];
+    const onConnect = [];
+    const ch = {
+      runtime: {
+        id: EXT_ID, lastError: undefined,
+        onMessage: { addListener: (f) => onMessage.push(f) },
+        onConnect: { addListener: (f) => onConnect.push(f) },
+        onInstalled: { addListener: () => {} },
+      },
+      action: { onClicked: { addListener: () => {} } },
+      sidePanel: {},
+    };
+    ch.storage = { local: storageArea(store, prof, ch) };
+    const importScripts = (...files) => {
+      for (const f of files) new Function('self', 'chrome', read(f))(self, ch);
+    };
+    new Function('self', 'chrome', 'importScripts', read('background.js'))(self, ch, importScripts);
+    const before = w.PACING;
+    w.self = self;
+    w.PACING = self.FHA.captureBatch.PACING;
+    if (before) Object.assign(w.PACING, before);
+    w.onMessage = onMessage;
+    w.onConnect = onConnect;
+  }
+  boot();
+  w.restart = () => {
+    w.restarts++;
+    for (const port of w.ports.splice(0)) port.worker.disconnect();
+    boot();
+  };
+  // Hold the next message delivered until the returned release().
+  let held = null;
+  w.holdNext = () => {
+    let release = null;
+    held = new Promise((r) => { release = r; });
+    return () => release();
+  };
+  // A message as chrome.runtime.sendMessage delivers it from a panel.
+  w.deliver = async (msg) => {
+    if (held) {
+      const wait = held;
+      held = null;
+      await wait;
+    }
+    return deliverNow(msg);
+  };
+  const deliverNow = (msg) => new Promise((resolve) => {
+    w.delivered.push(clone(msg));
+    let waiting = false;
+    for (const f of w.onMessage) {
+      if (f(clone(msg), { id: EXT_ID }, (r) => resolve(clone(r))) === true) waiting = true;
+    }
+    if (!waiting) resolve(undefined);
+  });
+  w.connect = (name, panelPorts) => {
+    const panelSide = makePort(name, null);
+    const workerSide = makePort(name, { id: EXT_ID });
+    panelSide.other = workerSide;
+    workerSide.other = panelSide;
+    w.ports.push({ panel: panelSide, worker: workerSide });
+    panelPorts.push(panelSide);
+    for (const f of w.onConnect) f(workerSide);
+    return panelSide;
+  };
+  return w;
+}
 
 // What a scripted content script answers to play a page that unloaded before
 // it could answer: the panel's message port closes (chrome.runtime.lastError).
@@ -145,10 +306,9 @@ async function settle() { for (let i = 0; i < 20; i++) await tick(); }
 // `beforePanel(window)` runs after the libraries load, before panel.js.
 // `titleFor(url)` is the title a tab shows once a batch sends it to `url`.
 // `sharedStore` is a chrome.storage.local two panels (two windows) share, used
-// as it is; `locks` is a navigator.locks they share (makeLocks). Without
-// `locks` the page has no Web Locks, as an older browser would not.
+// as it is - with its one service worker (`p.worker`).
 async function openPanel({ url, respond, host, seenIt, fullPage, fetch, storage, beforePanel, titleFor,
-  sharedStore, locks, waitReady = true }) {
+  sharedStore, waitReady = true }) {
   const getHolds = new Map(); // tab id -> promise the next tabs.get answer waits on
   const doc = makeDocument();
   const tab = { id: 7, url };
@@ -166,17 +326,24 @@ async function openPanel({ url, respond, host, seenIt, fullPage, fetch, storage,
   const external = [];
   // chrome.storage.local, kept as JSON (as Chrome keeps it).
   const store = sharedStore || JSON.parse(JSON.stringify(storage || {}));
-  // A write the browser refuses: storageFault(key) gives the reason, or null.
-  let storageFault = null;
-  const storageReads = []; // the keys of every get
+  const prof = profileOf(store);
+  const storageReads = []; // the keys of every get (the service worker's too)
+  prof.readLogs.push(storageReads);
   const navigations = []; // { id, url } of every tabs.update
   const downloads = []; // chrome.downloads.download calls (the ledger's reading copy)
-  const storageListeners = []; // chrome.storage.onChanged
+  const ports = []; // this panel's ports to the service worker
   const chrome = {
     runtime: {
+      id: EXT_ID,
       lastError: undefined,
-      // Another extension (Seen It): answers from `seenIt`, else "not there".
+      // To the add-on's own service worker: sendMessage(msg, cb).
+      // To another extension (Seen It): sendMessage(extId, msg, cb) - answers
+      // from `seenIt`, else "not there".
       sendMessage(extId, msg, cb) {
+        if (typeof extId !== 'string') {
+          toWorker(extId, msg);
+          return;
+        }
         external.push({ extId, msg });
         setTimeout(() => {
           if (!seenIt) {
@@ -196,6 +363,7 @@ async function openPanel({ url, respond, host, seenIt, fullPage, fetch, storage,
           cb({ ok: true, keys, sids });
         }, 0);
       },
+      connect: ({ name } = {}) => worker().connect(name, ports),
     },
     tabs: {
       query: (q, cb) => cb([active]),
@@ -251,46 +419,7 @@ async function openPanel({ url, respond, host, seenIt, fullPage, fetch, storage,
     },
     scripting: { executeScript: async () => {} },
     storage: {
-      local: {
-        get: (keys, cb) => {
-          const out = {};
-          if (typeof keys === 'string') keys = [keys];
-          if (Array.isArray(keys)) {
-            storageReads.push(...keys);
-            for (const k of keys) if (k in store) out[k] = JSON.parse(JSON.stringify(store[k]));
-          } else {
-            storageReads.push(...Object.keys(keys || {}));
-            for (const [k, d] of Object.entries(keys || {})) {
-              out[k] = k in store ? JSON.parse(JSON.stringify(store[k])) : d;
-            }
-          }
-          cb(out);
-        },
-        set: (obj, cb) => {
-          const why = storageFault && Object.keys(obj).map((k) => storageFault(k)).find(Boolean);
-          if (why) {
-            chrome.runtime.lastError = { message: why };
-            if (cb) cb();
-            chrome.runtime.lastError = undefined;
-            return;
-          }
-          const changes = {};
-          for (const [k, v] of Object.entries(obj)) changes[k] = { oldValue: store[k], newValue: v };
-          Object.assign(store, JSON.parse(JSON.stringify(obj)));
-          if (cb) cb();
-          for (const f of storageListeners.slice()) f(changes, 'local');
-        },
-        remove: (k, cb) => {
-          const changes = {};
-          for (const x of [].concat(k)) {
-            changes[x] = { oldValue: store[x] };
-            delete store[x];
-          }
-          if (cb) cb();
-          for (const f of storageListeners.slice()) f(changes, 'local');
-        },
-      },
-      onChanged: { addListener: (f) => storageListeners.push(f) },
+      onChanged: { addListener: (f) => prof.listeners.push(f) },
     },
     downloads: {
       download: (opts, cb) => {
@@ -300,6 +429,32 @@ async function openPanel({ url, respond, host, seenIt, fullPage, fetch, storage,
       erase: (q, cb) => { if (cb) cb([]); },
     },
   };
+  chrome.storage.local = storageArea(store, prof, chrome);
+  const worker = () => prof.worker || (prof.worker = makeWorker(store, prof));
+  worker();
+  function toWorker(msg, cb) {
+    const w = worker();
+    setTimeout(async () => {
+      const lose = (why) => {
+        chrome.runtime.lastError = { message: why };
+        cb(undefined);
+        chrome.runtime.lastError = undefined;
+      };
+      if (w.down) return lose('Could not establish connection. Receiving end does not exist.');
+      const r = await w.deliver(msg);
+      // Stopped by the browser after making the change, before answering.
+      if (w.stopAfter && w.stopAfter(msg)) {
+        w.stopAfter = null;
+        w.restart();
+        return lose('The message port closed before a response was received.');
+      }
+      if (w.loseReplies > 0) {
+        w.loseReplies--;
+        return lose('The message port closed before a response was received.');
+      }
+      cb(r);
+    }, 0);
+  }
   const fetched = [];
   const window = {
     FHA: {},
@@ -346,8 +501,7 @@ async function openPanel({ url, respond, host, seenIt, fullPage, fetch, storage,
   // The batch downloads' two scripts, loaded as panel.html loads them: they
   // do nothing until panel.js installs them (switched on only).
   new Function('window', read('lib/capture-batch.js'))(window);
-  new Function('window', 'document', 'chrome', 'navigator', read('batch.js'))(window, doc, chrome,
-    locks ? { locks } : {});
+  new Function('window', 'document', 'chrome', read('batch.js'))(window, doc, chrome);
   if (beforePanel) beforePanel(window);
   // panel.js reads FHA as the page global that window.FHA is in a browser.
   // `crypto` is the page's Web Crypto (a global in a browser and in newer Node).
@@ -364,7 +518,11 @@ async function openPanel({ url, respond, host, seenIt, fullPage, fetch, storage,
   return {
     doc, $, tab, sent, sentTo, written, filed, writeFails, sendFails, external, fetched, ready,
     storage: store, storageReads, navigations, downloads, window, chrome,
-    setStorageFault(fn) { storageFault = fn; },
+    get worker() { return worker(); },
+    // A write the browser refuses: fn(key) gives the reason, or null.
+    setStorageFault(fn) { prof.fault = fn; },
+    // The panel is closed: its ports to the service worker close.
+    close() { for (const port of ports.splice(0)) port.disconnect(); },
     // The batch box's element named `name` (its data-batch tag), or undefined.
     batchEl: (name) => doc.body.descendants().concat([doc.body]).find((e) => e.dataset && e.dataset.batch === name),
     // Hold the next tabs.get answer for tab `id` until the returned release().
@@ -443,45 +601,4 @@ function holdFirst(respond, action) {
   return h;
 }
 
-// navigator.locks as the panel windows of one browser share it: exclusive
-// locks by name. A request waits its turn; with { ifAvailable: true } it is
-// answered null at once while another holds the name. A lock is let go when
-// the callback's promise settles. `granted` records each grant, in order.
-function makeLocks() {
-  const held = new Set();
-  const queues = new Map(); // name -> waiting grant functions
-  const granted = [];
-  function release(name) {
-    const q = queues.get(name) || [];
-    const next = q.shift();
-    if (next) next();
-    else held.delete(name);
-  }
-  return {
-    held,
-    granted,
-    async request(name, opts, cb) {
-      if (typeof opts === 'function') {
-        cb = opts;
-        opts = {};
-      }
-      if (held.has(name)) {
-        if (opts && opts.ifAvailable) return cb(null);
-        await new Promise((resolve) => {
-          if (!queues.has(name)) queues.set(name, []);
-          queues.get(name).push(resolve);
-        });
-      } else {
-        held.add(name);
-      }
-      granted.push(name);
-      try {
-        return await cb({ name, mode: 'exclusive' });
-      } finally {
-        release(name);
-      }
-    },
-  };
-}
-
-module.exports = { openPanel, settle, tick, read, holdFirst, PORT_CLOSED, makeLocks };
+module.exports = { openPanel, settle, tick, read, holdFirst, PORT_CLOSED };

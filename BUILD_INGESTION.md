@@ -240,9 +240,12 @@ python -m unittest tests.test_browser_companion -v   # manifest valid; example b
 Protocol: length-prefixed (4-byte little-endian) JSON frames on stdin/stdout. The host files
 a framed bundle into the configured `inbox/` by delegating to `run_ingest` (so a native-host
 capture and a `--ingest` sweep produce byte-identical stubs), plus two read-only helpers the
-panel can call live: `suggestNames` (index-backed name candidates) and `checkUrl` (has this
-source been captured before?). The host writes only to `inbox/`, so it honors WORKING_COPY
-mode like every other capture path.
+panel can call live: `suggestNames` (person name and alias candidates) and `checkUrl` (has this
+source been captured before?). Both read the record files themselves, not the index, through a
+per-file cache keyed on each file's size and mtime (`.cache/capture_links.json`,
+`.cache/capture_names.json`), so only records changed since the last request are parsed. The
+host writes records only to `inbox/` (the caches are disposable, git-ignored `.cache/` files),
+so it honors WORKING_COPY mode like every other capture path.
 
 **Off by default, opt-in.** The extension front-end that drives the host - the `nativeMessaging`
 permission request and the `isAvailable` gate behind the "file straight into my archive"
