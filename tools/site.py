@@ -3305,6 +3305,11 @@ class _SiteBuilder:
         self.workbench = workbench
         self.workbench_context = workbench_context or {}
         self.messages: list[str] = []
+        # Lines about the saved-picture cache itself (`_DerivativeCache.notes`).
+        # Kept apart from `messages` on purpose: a damaged or unwritable cache
+        # leaves the site complete and asks nothing of the human, so it must
+        # not turn a clean build into "finished with warnings" (exit 1).
+        self.cache_notes: list[str] = []
         # Saved web pictures from earlier builds (standalone only - the linked
         # preview points at the originals and makes no derivatives at all).
         self.derivative_cache: _DerivativeCache | None = (
@@ -8141,10 +8146,8 @@ class _SiteBuilder:
         self.build_discoveries_page()
         self.build_index_page()
         if self.derivative_cache is not None:
-            # Last, so every page-level warning keeps the order it has always
-            # had; these lines only appear when the cache itself had trouble.
             self.derivative_cache.prune()
-            self.messages.extend(self.derivative_cache.notes())
+            self.cache_notes = self.derivative_cache.notes()
         self._write_marker()
         # source + person + place pages, plus discoveries.html and index.html
         return len(self.source_pages) + len(self.person_pages) + len(self.place_pages) + 2
@@ -8239,7 +8242,12 @@ def _site_payload(
       'dry-run'     - would build N pages; nothing written. Carries an extra
                       'reset_preview' key: the existing files/subtrees a real
                       rebuild would first remove from the output dir
-      'ok'          - built; 'messages' non-empty means finished with warnings
+      'ok'          - built; 'messages' non-empty means finished with warnings.
+                      Carries an extra 'notes' key: plain lines about the
+                      saved-picture cache (`_DerivativeCache.notes`) that
+                      need nothing from the human, so - like 'reset_preview'
+                      - they live beside 'messages', not in it, and never
+                      count as warnings
     """
     if jinja2 is None:
         return {'status': 'no-jinja', 'messages': [], 'out_dir': out_dir, 'pages': 0}
@@ -8301,7 +8309,8 @@ def _site_payload(
                 'Close any programs using those files and run `fha site` again.'
             )
             return {'status': 'reset-failed', 'messages': [msg], 'out_dir': out_dir, 'pages': 0}
-        return {'status': 'ok', 'messages': builder.messages, 'out_dir': out_dir, 'pages': pages}
+        return {'status': 'ok', 'messages': builder.messages, 'out_dir': out_dir, 'pages': pages,
+                'notes': builder.cache_notes}
     finally:
         builder.close()
         conn.close()
@@ -8368,8 +8377,11 @@ def run_site(
         exit_code = EXIT_WARNINGS if payload.get('messages') else EXIT_CLEAN
     else:  # no-jinja, no-index, bad-config, bad-output, reset-failed
         exit_code = EXIT_FAILURE
-    return Result(ok=(status in ('ok', 'dry-run')), exit_code=exit_code,
-                  data=payload, changed=changed)
+    result = Result(ok=(status in ('ok', 'dry-run')), exit_code=exit_code,
+                    data=payload, changed=changed)
+    for note in payload.get('notes') or []:
+        result.add('info', note)   # headless callers (fha serve) see them too
+    return result
 
 
 def _unsafe_output_reason(out_dir: Path, archive_root: Path, fha_config: dict) -> str | None:
@@ -8529,6 +8541,8 @@ def _cmd_site(args: argparse.Namespace) -> int:
         return EXIT_WARNINGS if result['messages'] else EXIT_CLEAN
 
     print(f'Site built: {result["pages"]} pages ({mode}) in {where}')
+    for note in result.get('notes') or []:
+        print(note, file=sys.stderr)
     if not getattr(args, 'linked', False) and not _PIL_AVAILABLE:
         print('Note: Pillow is not installed, so images were omitted. Install it with '
               f'`{pip_command("pillow")}` for photos in the standalone site.', file=sys.stderr)

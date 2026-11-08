@@ -2302,8 +2302,12 @@ class DerivativeCacheTests(_Base):
         self._seed_person('p-aaaaaaaaaa', 'Jane Doe')
         self._image('photos/1880/private.png', colour=(1, 2, 3))
         self._image('photos/1890/jane.png', colour=(4, 5, 6))
+        self._image('photos/1900/public.png', colour=(7, 8, 9))
         self._photo_source('s-1111111111', 'photos/1880/private.png')
         self._photo_source('s-2222222222', 'photos/1890/jane.png')
+        # One picture stays public, so the rebuild below really runs through
+        # the cache: withholding has to happen with saved copies in play.
+        self._photo_source('s-3333333333', 'photos/1900/public.png')
         pconn = self._make_photos_db()
         pconn.execute('INSERT INTO photos(path, group_id, is_primary, caption) VALUES (?,?,?,?)',
                       ('photos/1890/jane.png', 'g1', 1, ''))
@@ -2316,13 +2320,15 @@ class DerivativeCacheTests(_Base):
         self.assertTrue(any('private_' in rel for rel in self._media()))
         self.assertTrue(any('jane_' in rel for rel in self._media()))
         saved = self._cache_notes()
-        self.assertGreaterEqual(len(saved), 2, 'expected both pictures saved for reuse')
+        self.assertEqual(len(saved), 3, 'expected all three pictures saved for reuse')
 
         self.conn.execute("UPDATE sources SET restricted = 1 WHERE id = 's-1111111111'")
         self.conn.execute("UPDATE persons SET living = 'true' WHERE id = 'p-aaaaaaaaaa'")
-        res = self._run(linked=False)
+        res, decoded = self._run_spied(linked=False)
         self.assertEqual(res['status'], 'ok', res['messages'])
-        self.assertEqual(self._media(), {}, 'a withheld picture was published')
+        self.assertEqual(decoded, [], 'the public picture should have come from the cache')
+        self.assertEqual([rel.split('/')[-1].split('_')[0] for rel in self._media()],
+                         ['public'], 'a withheld picture was published')
         self.assertIn('image omitted - tagged to a living person',
                       self._read('sources/s-2222222222.html'))
         # Still saved (the originals did not change) - just not published.
@@ -2373,19 +2379,20 @@ class DerivativeCacheTests(_Base):
         self.assertEqual(decoded, ['pic.png'])
         self.assertEqual(self._media(), good)
         self.assertTrue(any('1 saved web picture' in m and 'made again' in m
-                            for m in res['messages']), res['messages'])
+                            for m in res['notes']), res['notes'])
+        self.assertFalse([m for m in res['messages'] if 'saved web picture' in m])
 
         # Repaired in passing: the next build copies it, quietly.
         res, decoded = self._run_spied(linked=False)
         self.assertEqual(decoded, [])
-        self.assertFalse([m for m in res['messages'] if 'saved web picture' in m])
+        self.assertEqual(res['notes'], [])
 
         # A note that will not parse is damage too.
         note.write_text('{', encoding='utf-8')
         res, decoded = self._run_spied(linked=False)
         self.assertEqual(decoded, ['pic.png'])
         self.assertEqual(self._media(), good)
-        self.assertTrue(any('could not be read back' in m for m in res['messages']))
+        self.assertTrue(any('could not be read back' in m for m in res['notes']))
 
     def _malformed_notes(self, good: dict) -> dict[str, bytes]:
         """Every shape of note `_read_note` must refuse, built from a real one.
@@ -2467,8 +2474,8 @@ class DerivativeCacheTests(_Base):
                 self.assertEqual(res['status'], 'ok', res['messages'])
                 self.assertEqual(decoded, ['pic.png'])
                 self.assertEqual(self._media(), good_media)
-                self.assertTrue(any('could not be read back' in m for m in res['messages']),
-                                res['messages'])
+                self.assertTrue(any('could not be read back' in m for m in res['notes']),
+                                res['notes'])
                 # Saved again, whole: the next build reuses it.
                 self.assertEqual(real.read_bytes(), good_note)
                 _, decoded = self._run_spied(linked=False)
@@ -2491,6 +2498,56 @@ class DerivativeCacheTests(_Base):
         self.assertFalse(stray.exists())
         self.assertEqual(self._cache_notes(), [real])
 
+    def _cli(self):
+        """Run `fha site` the way the owner does, returning (exit, stdout, stderr)."""
+        fha_yaml = self.archive_root / 'fha.yaml'
+        if not fha_yaml.exists():
+            fha_yaml.write_text('roots:\n  photos: photos\n', encoding='utf-8')
+        self.conn.commit()
+        future = time.time() + 5
+        os.utime(self.archive_root / '.cache' / 'index.sqlite', (future, future))
+        write_path_manifest(
+            index_manifest_path(self.archive_root), record_path_manifest(self.archive_root))
+        args = argparse.Namespace(root=str(self.archive_root), out=str(self.out_dir),
+                                  linked=False, dry_run=False)
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = site._cmd_site(args)
+        return code, out.getvalue(), err.getvalue()
+
+    def test_a_cache_note_never_turns_a_clean_build_into_warnings(self):
+        # Audit of PR #233: the cache notes say "nothing for you to do", so
+        # they must not make `fha site` exit 1 ("finished with warnings") -
+        # CI runs it under `bash -e`, and the share-and-export skill reads
+        # the exit code the AGENTS.md way.
+        self._image('photos/1880/pic.png')
+        self._photo_source('s-1111111111', 'photos/1880/pic.png')
+        pconn = self._make_photos_db()
+        pconn.execute('INSERT INTO photos(path, group_id, is_primary, caption) VALUES (?,?,?,?)',
+                      ('photos/1880/pic.png', 'g1', 1, ''))
+        pconn.commit()
+        pconn.close()
+        self._make_photos_fresh()
+        code, out, err = self._cli()
+        self.assertEqual(code, site.EXIT_CLEAN, err)
+        [note] = self._cache_notes()
+        note.write_text('{', encoding='utf-8')
+
+        code, out, err = self._cli()
+        self.assertEqual(code, site.EXIT_CLEAN, err)
+        self.assertIn('Site built', out)
+        self.assertIn('could not be read back', err)
+        self.assertNotIn('WARNING', err)
+
+        # Headless callers (fha serve's publish) get the same: a clean exit
+        # with the note as an info line, not a warning.
+        note.write_text('{', encoding='utf-8')
+        res = self._run(linked=False)
+        self.assertEqual(res.exit_code, site.EXIT_CLEAN)
+        self.assertEqual(res['messages'], [])
+        self.assertTrue(any(m.level == 'info' and 'could not be read back' in m.text
+                            for m in res.messages), res.messages)
+
     def test_a_cache_folder_that_cannot_be_written_never_fails_the_build(self):
         self._image('photos/1880/pic.png')
         self._photo_source('s-1111111111', 'photos/1880/pic.png')
@@ -2498,10 +2555,11 @@ class DerivativeCacheTests(_Base):
         res = self._run(linked=False)
         self.assertEqual(res['status'], 'ok')
         self.assertEqual(len(self._media()), 1)
-        notes = [m for m in res['messages'] if 'could not save web pictures' in m]
-        self.assertEqual(len(notes), 1, res['messages'])
+        notes = [m for m in res['notes'] if 'could not save web pictures' in m]
+        self.assertEqual(len(notes), 1, res['notes'])
         self.assertIn('`fha site`', notes[0])
-        self.assertFalse([m for m in res['messages'] if 'could not tidy' in m])
+        self.assertFalse([m for m in res['notes'] if 'could not tidy' in m])
+        self.assertFalse([m for m in res['messages'] if 'web pictures' in m])
 
     def test_saved_pictures_of_deleted_originals_are_pruned_but_an_unplugged_folder_is_kept(self):
         gone = self._image('photos/1880/gone.png', colour=(1, 1, 1))
