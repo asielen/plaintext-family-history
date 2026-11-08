@@ -217,7 +217,7 @@
     {
       "path": ".fha/browser-companion/src/batch.js",
       "category": "operating",
-      "sha256": "ab25b09bfedc0e8f71c3d2e6757a0aab3aa543528432e1107fed2f26fb6129f7",
+      "sha256": "804c1230d02c2e5c5a9a1fe8d447d96dc4c30f4e7dfde1d6fcfac8ca8069dd88",
       "spec_version": "1.2",
       "src": "browser-companion/src/batch.js"
     },
@@ -252,7 +252,7 @@
     {
       "path": ".fha/browser-companion/src/lib/capture-batch.js",
       "category": "operating",
-      "sha256": "627f281ca7c0bbfce60c92ae061571d8eb9dc3564312183258683944459293b2",
+      "sha256": "ac23034b83f79e2ca397959a899448ea00b00fc190d8d31d75fd9e9018615f4f",
       "spec_version": "1.2",
       "src": "browser-companion/src/lib/capture-batch.js"
     },
@@ -357,7 +357,7 @@
     {
       "path": ".fha/browser-companion/src/panel.js",
       "category": "operating",
-      "sha256": "a99f765df87ddce100fb2f8773209c7e7faa0397496c3c96800b479c7fd6322b",
+      "sha256": "0edbf8952b9ab40888fab5b09e31ccd7c17bc84d86274114aec71812f545e55b",
       "spec_version": "1.2",
       "src": "browser-companion/src/panel.js"
     },
