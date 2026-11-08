@@ -179,7 +179,8 @@ configure_utf8_stdout()
 # Top-level names excluded from the records walk, each with the plain-language
 # reason the output states (a silent exclusion in a backup tool is a trust bug).
 _EXCLUDED_DIRS = {
-    '.cache': 'rebuildable databases - fha index and fha photoindex regenerate them',
+    '.cache': ('rebuildable databases and saved web pictures - fha index, '
+               'fha photoindex and fha site regenerate them'),
     'generated': 'rebuildable deliverables - fha site and fha views regenerate them',
     'out': 'rebuildable exports - fha packet writes here',
     '.git': 'git history is its own backup channel; zipping it doubles the size for no restore value',
