@@ -94,7 +94,6 @@ CODE MAP
   Shared edit helpers
     _today
     _EditRefused                  - alias of _lib.ClaimEditRefused (shared with fha claim)
-    _find_source_path_for_claim   - scan sources/ for the .md holding one C-id
     _find_source_path_by_id       - scan sources/ for one S-id's record
     (person records are located via _lib.find_person_record_path, shared with fha person;
      source records can also be via the newer _lib.find_source_record_path, shared with
@@ -155,6 +154,7 @@ import yaml
 sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
+    locate_claim_records,
     EXIT_CLEAN,
     EXIT_ERRORS,
     EXIT_FAILURE,
@@ -226,24 +226,6 @@ _EditRefused = ClaimEditRefused
 
 
 # ── Locating records on disk (the .md files are truth, never the index) ─────────
-
-def _find_source_path_for_claim(archive_root: Path, claim_id: str) -> Path | None:
-    """Scan `sources/` for the record whose `## Claims` block holds `claim_id`."""
-    target = normalize_id(claim_id)
-    sources_dir = archive_root / 'sources'
-    if not sources_dir.is_dir():
-        return None
-    for path in sorted(sources_dir.rglob('*.md')):
-        try:
-            rec = read_record(path)
-        except Exception:  # noqa: BLE001 - a bad record can't hold our claim
-            continue
-        for claim in rec.get('claims') or []:
-            if isinstance(claim, dict) and claim.get('id') \
-                    and normalize_id(str(claim['id'])) == target:
-                return path
-    return None
-
 
 def _find_source_path_by_id(archive_root: Path, source_id: str) -> Path | None:
     """Scan `sources/` for the record file whose `_{S-id}.md` suffix matches.
@@ -584,8 +566,9 @@ def run_confirm_xref(
     result.data['claim_a'] = fmt_id_display(ca)
     result.data['claim_b'] = fmt_id_display(cb)
 
-    path_a = _find_source_path_for_claim(archive_root, ca)
-    path_b = _find_source_path_for_claim(archive_root, cb)
+    located = locate_claim_records(archive_root, [ca, cb])    # one scan for both (#225)
+    path_a = located[ca][0] if ca in located else None
+    path_b = located[cb][0] if cb in located else None
     for cid, path in ((ca, path_a), (cb, path_b)):
         if path is None:
             return _notfound(result,
@@ -711,7 +694,7 @@ def _claim_value_by_id(path: Path, cid: str) -> str | None:
     None when the file can't be read or the id isn't found there.
 
     A thin lookup, not a scan: the caller already knows which source holds
-    this claim (`_find_source_path_for_claim` did that work), so this just
+    this claim (`_lib.locate_claim_records` did that work), so this just
     re-reads that one file rather than re-scanning `sources/`.
     """
     try:
@@ -741,7 +724,7 @@ def _spawn_contradiction_question(archive_root: Path, ca: str, path_a: Path,
     identical situation (issue #55), so the two spawners can never drift back
     into disagreeing about what a good question heading looks like. `path_a`/
     `path_b` are the source records the caller already resolved for `ca`/`cb`
-    (`_find_source_path_for_claim`), passed in rather than re-found so this
+    (`_lib.locate_claim_records`), passed in rather than re-found so this
     doesn't re-scan `sources/` a second time. `refs:` carries both ids for
     tooling (`fha find --related`, `fha report`'s question section).
     """
@@ -1217,12 +1200,12 @@ def run_confirm_place(
 
     # Locate each claim's source up front so a missing one is reported, not half-written.
     claim_paths: dict[str, Path] = {}
+    located = locate_claim_records(archive_root, list(norm_claims))   # one scan (#225)
     for cid in norm_claims:
-        path = _find_source_path_for_claim(archive_root, cid)
-        if path is None:
+        if cid not in located:
             result.data['missing'].append(fmt_id_display(cid))
         else:
-            claim_paths[cid] = path
+            claim_paths[cid] = located[cid][0]
     if result.data['missing']:
         return _notfound(result,
                          'These claims were not found in any source record: '

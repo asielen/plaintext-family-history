@@ -231,6 +231,8 @@ sys.path.insert(0, str(Path(__file__).parent))
 import yaml
 
 from _lib import (
+    locate_claim_records,
+    record_claims_by_id,
     CLAIM_TYPES,
     CONFIDENCE_VALUES,
     EVIDENCE_VALUES,
@@ -629,31 +631,31 @@ _ClaimEditRefused = ClaimEditRefused
 
 # ── Locate the claim's source record ──────────────────────────────────────────
 
-def _find_claim_record(archive_root: Path, claim_id: str) -> tuple[Path, dict] | None:
+# The single-pass claim lookup is shared with `fha confirm` (#225), so it lives in
+# `_lib`; these private names stay for the call sites and tests that use them.
+_record_claims = record_claims_by_id
+_locate_claims = locate_claim_records
+
+
+def _find_claim_record(archive_root: Path, claim_id: str, *,
+                       hint: Path | None = None) -> tuple[Path, dict] | None:
     """Scan `sources/` for the record whose `## Claims` block holds `claim_id`.
 
     Returns `(path, claim_dict)` for the first match, or None. The `.md` files
     are archive truth, so this never consults `.cache/index.sqlite` - the write
-    must work even when the index is stale or has never been built. Records that
-    fail to parse are skipped (the claim isn't in an unparseable block, and lint
-    is the tool that reports the parse error).
+    must work even when the index is stale or has never been built.
+
+    `hint` is a record a caller already located the claim in (a batch's
+    existence gate, #225): that one file is re-read - so the claim dict is
+    fresh even after an earlier write in the same batch - and the full scan
+    runs only if the claim is no longer there.
     """
     target = normalize_id(claim_id)
-    sources_dir = archive_root / 'sources'
-    if not sources_dir.is_dir():
-        return None
-    for path in sorted(sources_dir.rglob('*.md')):
-        try:
-            rec = read_record(path)
-        except Exception:  # noqa: BLE001 - a bad record can't hold our claim
-            continue
-        for claim in rec.get('claims') or []:
-            if not isinstance(claim, dict):
-                continue
-            cid = claim.get('id')
-            if cid and normalize_id(str(cid)) == target:
-                return path, claim
-    return None
+    if hint is not None:
+        claim = _record_claims(hint).get(target)
+        if claim is not None:
+            return hint, claim
+    return _locate_claims(archive_root, [target]).get(target)
 
 
 # ── Surgical edit of the one claim's YAML entry ───────────────────────────────
@@ -1087,6 +1089,7 @@ def run_claim(
     anchor: str | None = None,
     notes: str | None = None,
     dry_run: bool = False,
+    _record_hint: Path | None = None,
 ) -> Result:
     """Edit one claim (status move and/or field corrections); return a Result.
 
@@ -1215,7 +1218,8 @@ def run_claim(
                              f'e.g. {_today()}.')
     result.data['reviewed'] = reviewed
 
-    found = _find_claim_record(archive_root, cid)
+    # `_record_hint`: where run_claim_batch's gate already found it (#225).
+    found = _find_claim_record(archive_root, cid, hint=_record_hint)
     if found is None:
         result.ok = False
         result.exit_code = EXIT_WARNINGS
@@ -1585,11 +1589,12 @@ def run_claim_batch(
     ids = [normalize_id(raw) for raw in deduped]
     result.data['claim_ids'] = [fmt_id_display(cid) for cid in ids]
 
-    # All-or-nothing gate, part 2: every id must EXIST. Each lookup is the
-    # same sources/ scan run_claim will do again on the write - redundant on
-    # purpose: the batch stays a thin loop over the one write path instead of
-    # threading located-record state into run_claim's signature.
-    missing = [cid for cid in ids if _find_claim_record(archive_root, cid) is None]
+    # All-or-nothing gate, part 2: every id must EXIST. One scan of sources/
+    # finds them all (#225: one scan per id, and again per write, made a
+    # 119-claim batch take ~36 minutes); each write is then handed the file its
+    # claim was found in, which it re-reads for a fresh copy.
+    located = _locate_claims(archive_root, ids)
+    missing = [cid for cid in ids if cid not in located]
     if missing:
         shown = ', '.join(fmt_id_display(cid) for cid in missing)
         return _notfound(
@@ -1614,7 +1619,8 @@ def run_claim_batch(
     applied: list[str] = []
     for pos, cid in enumerate(ids):
         sub = run_claim(archive_root, claim_id=cid, status=status,
-                        reviewed=reviewed, dry_run=dry_run)
+                        reviewed=reviewed, dry_run=dry_run,
+                        _record_hint=located[cid][0])
         for msg in sub.messages:
             # The per-claim trailers collapse into one closing line below.
             if msg.text in (_INDEX_REMINDER, _DRY_RUN_TRAILER):
