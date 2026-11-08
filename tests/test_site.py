@@ -3056,6 +3056,9 @@ class LivingPhotoCheckUnavailableTests(_Base):
         self.assertEqual(len(warnings), 1, res['messages'])
         self.assertIn('the photo catalog has not been built yet', warnings[0])
         self.assertIn('fha photoindex', warnings[0])
+        # Where to look: the picture is not only on the source pages.
+        for place in ('home page', 'person pages', 'family trees', 'source pages'):
+            self.assertIn(place, warnings[0])
 
     @unittest.skipUnless(site._PIL_AVAILABLE, 'Pillow not installed')
     def test_a_hero_published_with_no_catalog_says_so(self):
@@ -9186,7 +9189,7 @@ class MarkedLivingAfterTaggingTests(unittest.TestCase):
             photoindex.run_scan(root, cfg)
             cls.before = site.run_site(root, out, linked=False)
             cls.media_before = cls._media(out)
-            record = next(root.glob(f'people/**/*_{cls.FRANCES}.md'))
+            record = next(root.glob(f'people/**/hartley__frances_{cls.FRANCES}.md'))
             text = record.read_text(encoding='utf-8')
             assert 'living: false' in text, 'the example archive changed shape'
             record.write_text(text.replace('living: false', 'living: true'), encoding='utf-8')
@@ -9236,6 +9239,252 @@ class MarkedLivingAfterTaggingTests(unittest.TestCase):
         self.assertEqual(len(warnings), 1, self.after['messages'])
         self.assertIn('out of date', warnings[0])
         self.assertIn('fha photoindex', warnings[0])
+        self.assertIn('home page', warnings[0])
+        self.assertIn('person pages', warnings[0])
+
+
+# Every picture these classes check is a derivative fha site makes with
+# Pillow; without it nothing is published, so there is nothing to withhold.
+@unittest.skipUnless(site._PIL_AVAILABLE, 'Pillow not installed')
+class WithheldSourcePictureTests(unittest.TestCase):
+    """A photo filed with a source the shareable site leaves out never shows
+    up as the hero, an embed or a portrait instead (#236 audit; SPEC §21).
+
+    On a copy of the example archive, a snapshot filed as a private source
+    (`rights: publication_ok: false`) is named as the homepage hero, embedded
+    in the homepage text, and set as Thomas's profile photo - which also puts
+    it in his descendants tree. The photo file carries no `SOURCE:` keyword,
+    as a file attached by hand may not, so even a fresh photo catalog does not
+    know which source it belongs to. Before the fix it published in all three
+    places with the catalog fresh, out of date or missing. The source's own
+    page was withheld the whole time."""
+
+    THOMAS = 'P-de957bcda1'
+    SID = 'S-5h7k9m2p4s'
+    STEM = 'private-snap'
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        import shutil
+        import index as index_mod
+        import photoindex
+        from _lib import load_fha_yaml
+        cls._tmp = tempfile.TemporaryDirectory()
+        tmp = Path(cls._tmp.name)
+        root = tmp / 'archive'
+        shutil.copytree(ROOT / 'example-archive', root,
+                        ignore=shutil.ignore_patterns('generated', '.cache'))
+        shutil.copy2(root / 'photos' / 'bradford-home-1954.jpg',
+                     root / 'photos' / f'{cls.STEM}.jpg')
+        (root / 'sources' / 'photos' / f'{cls.STEM}_{cls.SID}.md').write_text(
+            f'---\nid: {cls.SID}\naliases: [{cls.SID}]\ntitle: Private snapshot\n'
+            'source_type: photo\nsource_class: original\nrepository: family collection\n'
+            'citation: Private snapshot\nrights:\n  publication_ok: false\n'
+            f'files:\n  - file: photos/{cls.STEM}.jpg\n    role: front\n---\n',
+            encoding='utf-8')
+        cfgp = root / 'fha.yaml'
+        cfg_text = cfgp.read_text(encoding='utf-8')
+        assert 'hero: coronado-tent-city-postcard.jpg' in cfg_text
+        cfgp.write_text(cfg_text.replace('hero: coronado-tent-city-postcard.jpg',
+                                         f'hero: {cls.STEM}.jpg'), encoding='utf-8')
+        home = root / 'notes' / 'home.md'
+        home.write_text(home.read_text(encoding='utf-8')
+                        + f'\n![[{cls.STEM}.jpg|A private snapshot]]\n', encoding='utf-8')
+        thomas = next(root.glob(f'people/**/hartley__thomas_edward_{cls.THOMAS}.md'))
+        text = thomas.read_text(encoding='utf-8')
+        assert 'profile_photo: thomas-hartley-portrait.jpg' in text
+        thomas.write_text(text.replace('profile_photo: thomas-hartley-portrait.jpg',
+                                       f'profile_photo: {cls.STEM}.jpg'), encoding='utf-8')
+        cfg = load_fha_yaml(root)
+        cls.builds = {}
+        quiet = io.StringIO()
+        no_keywords = lambda paths: [{'SourceFile': str(p)} for p in paths]  # noqa: E731
+        with contextlib.redirect_stdout(quiet), contextlib.redirect_stderr(quiet), \
+                unittest.mock.patch.object(photoindex, '_run_exiftool', no_keywords):
+            index_mod.build_index(root, cfg)
+            photoindex.run_scan(root, cfg)
+            cls._build(root, cfg, tmp, 'fresh')
+            # Any record edit leaves the catalog out of date (#48).
+            frances = next(root.glob('people/**/hartley__frances_P-83e768cacb.md'))
+            frances.write_text(frances.read_text(encoding='utf-8') + '\n', encoding='utf-8')
+            index_mod.build_index(root, cfg)
+            cls._build(root, cfg, tmp, 'stale')
+            (root / '.cache' / 'photos.sqlite').unlink()
+            cls._build(root, cfg, tmp, 'absent')
+
+    @classmethod
+    def _build(cls, root, cfg, tmp, state):
+        out = tmp / f'site-{state}'
+        res = site.run_site(root, out, linked=False)
+        media = [p.relative_to(out).as_posix() for p in (out / 'media').rglob('*') if p.is_file()]
+        pages = {p.relative_to(out).as_posix(): p.read_text(encoding='utf-8', errors='replace')
+                 for p in out.rglob('*') if p.is_file() and p.suffix in ('.html', '.json')}
+        cls.builds[state] = (site.photoindex_status(root, cfg)[0], res, media, pages)
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls._tmp.cleanup()
+
+    def _assert_not_published(self, state, subdir):
+        status, res, media, pages = self.builds[state]
+        self.assertEqual(status, state)
+        self.assertEqual(res['status'], 'ok', res['messages'])
+        # The source's own page is withheld - the rule being tested.
+        self.assertNotIn(f'sources/{self.SID.lower()}.html', pages)
+        self.assertEqual([m for m in media if m.startswith(f'media/{subdir}/{self.STEM}_')], [],
+                         media)
+        self.assertEqual(sorted(n for n, t in pages.items() if f'{self.STEM}_' in t), [])
+
+    def test_the_hero_is_withheld_with_a_fresh_catalog(self):
+        self._assert_not_published('fresh', 'hero')
+
+    def test_the_hero_is_withheld_with_an_out_of_date_catalog(self):
+        self._assert_not_published('stale', 'hero')
+
+    def test_the_hero_is_withheld_with_no_catalog(self):
+        self._assert_not_published('absent', 'hero')
+
+    def test_an_embed_is_withheld_with_a_fresh_catalog(self):
+        self._assert_not_published('fresh', 'embeds')
+
+    def test_an_embed_is_withheld_with_an_out_of_date_catalog(self):
+        self._assert_not_published('stale', 'embeds')
+
+    def test_an_embed_is_withheld_with_no_catalog(self):
+        self._assert_not_published('absent', 'embeds')
+
+    def test_a_profile_photo_is_withheld_with_a_fresh_catalog(self):
+        self._assert_not_published('fresh', 'profiles')
+
+    def test_a_profile_photo_is_withheld_with_an_out_of_date_catalog(self):
+        self._assert_not_published('stale', 'profiles')
+
+    def test_a_profile_photo_is_withheld_with_no_catalog(self):
+        self._assert_not_published('absent', 'profiles')
+
+    def test_the_tree_data_carries_no_portrait_from_it(self):
+        # The portrait also travels in the family tree's data file, which the
+        # page assertions above read too; this pins that the tree is built
+        # and still holds Thomas, just without that picture.
+        for state in ('fresh', 'stale', 'absent'):
+            with self.subTest(state=state):
+                pages = self.builds[state][3]
+                tree = pages.get(f'data/tree_{self.THOMAS.lower()}_descendants.json')
+                self.assertIsNotNone(tree, sorted(pages))
+                self.assertIn(self.THOMAS, tree)
+                self.assertNotIn(self.STEM, tree)
+
+
+@unittest.skipUnless(site._PIL_AVAILABLE, 'Pillow not installed')
+class MergedDuplicatePhotoTests(_Base):
+    """A photo tagged to a duplicate record that was merged into a living
+    person is that living person's photo (#236 audit).
+
+    `fha confirm merge` keeps the duplicate as a tombstone that still says
+    `living: false`, with `merged_into:` naming the survivor, and the tag in
+    the photo file still names the old id. The site has to follow the merge."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        from PIL import Image
+        img = self.archive_root / 'photos' / '1950' / 'reunion.png'
+        img.parent.mkdir(parents=True, exist_ok=True)
+        Image.new('RGB', (60, 40), (10, 20, 30)).save(img)
+        (self.archive_root / 'fha.yaml').write_text('roots:\n  photos: photos\n', encoding='utf-8')
+        home = self.archive_root / 'notes' / 'home.md'
+        home.parent.mkdir(parents=True, exist_ok=True)
+        home.write_text('Welcome.\n\n![[reunion.png|The reunion]]\n', encoding='utf-8')
+        self._seed_person('p-aaaaaaaaaa', 'Living Larry', living='true', surname='Larry')
+        # The duplicate, recorded as deceased before anyone knew it was Larry.
+        self._seed_person('p-dddddddddd', 'Larry Dup', living='false', surname='Dup')
+        self.conn.execute("UPDATE persons SET status = 'merged', merged_into = 'p-aaaaaaaaaa' "
+                          "WHERE id = 'p-dddddddddd'")
+        # A deceased relative in the same photo: it would be on his strip.
+        self._seed_person('p-bbbbbbbbbb', 'Grandpa Gone')
+
+    def _catalog(self, *, fresh):
+        pconn = sqlite3.connect(str(self.archive_root / '.cache' / 'photos.sqlite'))
+        pconn.executescript(PHOTOS_DDL)
+        pconn.execute('INSERT INTO photos(path, group_id, is_primary, caption) VALUES (?,?,?,?)',
+                      ('photos/1950/reunion.png', 'g1', 1, ''))
+        for ref in ('p-dddddddddd', 'p-bbbbbbbbbb'):
+            pconn.execute('INSERT INTO photo_people(path, person_ref, via) VALUES (?,?,?)',
+                          ('photos/1950/reunion.png', ref, 'pid-keyword'))
+        pconn.commit()
+        pconn.close()
+        db = self.archive_root / '.cache' / 'photos.sqlite'
+        if not fresh:
+            long_ago = time.time() - 10_000
+            os.utime(db, (long_ago, long_ago))
+            return
+        far_future = time.time() + 10_000
+        os.utime(db, (far_future, far_future))
+        photo = self.archive_root / 'photos' / '1950' / 'reunion.png'
+        write_path_manifest(
+            photoindex_manifest_path(self.archive_root),
+            {path_to_alias(photo, 'photos', {}, self.archive_root): photo.stat().st_mtime,
+             **photoindex_record_manifest(self.archive_root)})
+
+    def _published(self):
+        media = self.out_dir / 'media'
+        return sorted(p.relative_to(self.out_dir).as_posix() for p in media.rglob('*')
+                      if p.is_file() and 'reunion' in p.name) if media.is_dir() else []
+
+    def test_the_embed_is_withheld_with_a_fresh_catalog(self):
+        self._catalog(fresh=True)
+        res = self._run(linked=False)
+        self.assertEqual(self._published(), [], res['messages'])
+        self.assertNotIn('reunion', self._read('index.html'))
+
+    def test_the_deceased_relatives_photo_strip_leaves_it_out(self):
+        self._catalog(fresh=True)
+        res = self._run(linked=False)
+        self.assertEqual(self._published(), [], res['messages'])
+        self.assertNotIn('reunion', self._read('persons/p-bbbbbbbbbb.html'))
+
+    def test_the_embed_is_withheld_with_an_out_of_date_catalog(self):
+        self._catalog(fresh=False)
+        res = self._run(linked=False)
+        self.assertEqual(self._published(), [], res['messages'])
+
+    def test_the_merge_is_followed_through_a_chain_to_the_survivor(self):
+        # Merged twice: dup -> an older duplicate -> Larry.
+        self._seed_person('p-eeeeeeeeee', 'Larry Older Dup', living='false', surname='Older')
+        self.conn.execute("UPDATE persons SET status = 'merged', merged_into = 'p-aaaaaaaaaa' "
+                          "WHERE id = 'p-eeeeeeeeee'")
+        self.conn.execute("UPDATE persons SET merged_into = 'P-eeeeeeeeee' "
+                          "WHERE id = 'p-dddddddddd'")
+        self._catalog(fresh=True)
+        res = self._run(linked=False)
+        self.assertEqual(self._published(), [], res['messages'])
+
+    def test_a_photo_strip_leaves_out_a_photo_filed_with_a_withheld_source(self):
+        # The same source rule reaches the strips: the catalog row has no
+        # source (the file carries no SOURCE: keyword), but the index knows
+        # the photo is filed with a private source.
+        self.conn.execute("UPDATE persons SET merged_into = NULL, status = 'active' "
+                          "WHERE id = 'p-dddddddddd'")
+        self._seed_source('s-9999999999', 'Private snapshot', source_type='photo',
+                          publication_ok=0)
+        self.conn.execute('INSERT INTO source_files(source_id, path, role) VALUES (?,?,?)',
+                          ('s-9999999999', 'photos/1950/reunion.png', 'front'))
+        (self.archive_root / 'notes' / 'home.md').write_text('Welcome.\n', encoding='utf-8')
+        self._catalog(fresh=True)
+        res = self._run(linked=False)
+        self.assertEqual(self._published(), [], res['messages'])
+        self.assertNotIn('reunion', self._read('persons/p-bbbbbbbbbb.html'))
+
+    def test_a_merge_loop_ends_and_publishes_when_no_one_on_it_is_living(self):
+        # A hand-edited loop must not hang the build, and two deceased
+        # records pointing at each other are still deceased.
+        self.conn.execute("UPDATE persons SET living = 'false', merged_into = 'p-bbbbbbbbbb' "
+                          "WHERE id = 'p-dddddddddd'")
+        self.conn.execute("UPDATE persons SET merged_into = 'p-dddddddddd' "
+                          "WHERE id = 'p-bbbbbbbbbb'")
+        self._catalog(fresh=True)
+        res = self._run(linked=False)
+        self.assertEqual(res['status'], 'ok', res['messages'])
+        self.assertTrue(self._published(), res['messages'])
 
 
 if __name__ == '__main__':

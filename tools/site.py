@@ -3480,6 +3480,9 @@ class _SiteBuilder:
         # out-of-date catalog has no row for it at all (added, moved or
         # renamed since the last scan), so the "checked" was nothing.
         self._gate_last_unknown = False
+        # `source_files` path -> owning sources, read once on first use by
+        # `_file_has_withheld_source`.
+        self._source_file_owner_map: dict[str, set[str]] | None = None
         # discoveries.md is read for both the discoveries page and the home
         # teaser; memoize so the file is parsed once per build.
         self._discoveries: tuple[str, list[str]] | None = None
@@ -4374,10 +4377,57 @@ class _SiteBuilder:
         """A person is redacted from standalone output when living/unknown
         (AGENTS.md; `unknown` is treated as living) or `restricted` (any value,
         SPEC §21 - a restricted person, like a living one, gets no page and is
-        rendered as a redaction label)."""
+        rendered as a redaction label).
+
+        A merged duplicate is the person it was merged into. `fha confirm
+        merge` leaves the old record behind as a tombstone that still says
+        whatever it said before (often `living: false`, from a tree imported
+        before anyone knew the two were one person), with `merged_into:`
+        naming the survivor. A photo tagged with the old id - and every
+        export reads old ids, since tags in photo files are never rewritten -
+        must be held to the survivor's status, or a living person's photos
+        publish under their duplicate's name (#236 audit). So the whole
+        `merged_into` chain is checked, and the person is redacted if anyone
+        on it is. Every redaction decision in this file comes through here,
+        so the photo gates (`_is_living_tagged_photo`, `_photo_is_public`,
+        the photo strips) and every name and link follow it the same way."""
+        return any(self._person_row_is_redacted(r) for r in self._merge_chain(row))
+
+    def _person_row_is_redacted(self, row: sqlite3.Row) -> bool:
+        """The redaction rule for one record on its own, merges not followed."""
         if row['id'] in self.restricted_persons:
             return True
         return (row['living'] or '') in ('true', 'unknown')
+
+    def _merge_chain(self, row: sqlite3.Row) -> list:
+        """`row`, then each record it was merged into in turn, to the survivor.
+
+        A chain that loops back on itself stops at the repeat. One that names
+        an id the index does not hold ends in a stand-in that reads as
+        `living: unknown`: nothing is known about the survivor, and an unknown
+        person is treated as living, so the snapshot keeps them out rather
+        than guessing."""
+        chain = [row]
+        seen = {row['id']}
+        current = row
+        while True:
+            try:
+                nxt = current['merged_into']
+            except (IndexError, KeyError):
+                break
+            nxt = (nxt or '').strip()
+            if not nxt:
+                break
+            nid = normalize_id(nxt)
+            if nid in seen:
+                break
+            seen.add(nid)
+            current = self.person_meta.get(nid)
+            if current is None:
+                chain.append({'id': nid, 'living': 'unknown', 'merged_into': None})
+                break
+            chain.append(current)
+        return chain
 
     def _name_is_sensitive(self, key: str) -> bool:
         """True when a lowercased, wrapper-stripped name-link key must not be
@@ -6023,8 +6073,9 @@ class _SiteBuilder:
                 'last ran - a tag added since then was NOT seen, so a '
                 'photograph of someone still living may be in it. Run '
                 '`fha photoindex`, then `fha site` again, to check against '
-                'every tag; until then, look through the images on the source '
-                'pages yourself before you share this site.'
+                'every tag; until then, look through the pictures on the home '
+                'page, the person pages, the family trees and the source pages '
+                'yourself before you share this site.'
             )
             return
         reason = _PHOTO_CATALOG_TROUBLE.get(
@@ -6038,8 +6089,9 @@ class _SiteBuilder:
             'checked against it for tags naming living people - a photograph '
             'of someone still living may be in it. Run `fha photoindex`, then '
             '`fha site` again, to have that check applied; until then, look '
-            'through the images on the source pages yourself before you share '
-            'this site.'
+            'through the pictures on the home page, the person pages, the '
+            'family trees and the source pages yourself before you share this '
+            'site.'
         )
 
     def _warn_if_published_photo_went_unchecked(self) -> None:
@@ -6306,11 +6358,15 @@ class _SiteBuilder:
             return []
         # Standalone: exclude photos from withheld sources.
         # photos.source_id is stored lowercase by normalize_id; compare case-insensitively.
+        # The catalog's source_id comes from the file's SOURCE: keyword, which
+        # a file attached by hand may not carry, so the main index's
+        # source_files is asked too (#236 audit).
         if not self.linked:
             source_pages_lower = {s.lower() for s in self.source_pages}
             rows = [
                 r for r in rows
-                if not r['source_id'] or r['source_id'].lower() in source_pages_lower
+                if (not r['source_id'] or r['source_id'].lower() in source_pages_lower)
+                and not self._photo_row_has_withheld_source(r['path'])
             ]
         # Standalone: exclude groups that are also tagged to a living person.
         if not self.linked:
@@ -6349,6 +6405,14 @@ class _SiteBuilder:
             if key not in best or (r['is_primary'] and not best[key]['is_primary']):
                 best[key] = r
         return [e for e in (self._photo_entry(r, page_dir) for r in best.values()) if e]
+
+    def _photo_row_has_withheld_source(self, alias_path: str) -> bool:
+        """`_file_has_withheld_source` for a catalog row, by its stored path."""
+        try:
+            disk = resolve_path(alias_path, self.fha_config, self.archive_root)
+        except Exception:  # noqa: BLE001 - an unresolvable row publishes nothing anyway
+            return True
+        return self._file_has_withheld_source(disk)
 
     def _photo_entry(self, row: sqlite3.Row, page_dir: Path) -> dict | None:
         """One photo-strip entry. Standalone makes an EXIF-stripped derivative;
@@ -6553,6 +6617,24 @@ class _SiteBuilder:
         return None
 
     def _resolve_image_source(self, ref: str) -> Path | None:
+        """The publishable on-disk file for a photo reference, or None.
+
+        Standalone: a file attached to a source that gets no page in this
+        snapshot - restricted, DNA, `rights.publication_ok: false`, or held
+        back because a claim names someone living - is never published as a
+        hero, embed or portrait either, whatever state the photo catalog is in
+        (`_file_has_withheld_source`, SPEC §21). The catalog only knows a
+        photo's source from the `SOURCE:` keyword in the file, which may be
+        missing or out of date; the main index's `source_files` is not (#236
+        audit)."""
+        found = self._find_image_source(ref)
+        if found is None or self.linked:
+            return found
+        if self._file_has_withheld_source(found):
+            return None
+        return found
+
+    def _find_image_source(self, ref: str) -> Path | None:
         """The on-disk source file for a photo reference. Prefers a catalogued
         photo (S-id or indexed path), applying the strip's privacy gate; else a
         hand-written path/filename on disk. If a fresh photo catalog is
@@ -6607,6 +6689,55 @@ class _SiteBuilder:
                 path_to_alias(disk, 'photos', self.fha_config, self.archive_root)):
             return None
         return disk
+
+    def _file_has_withheld_source(self, disk: Path) -> bool:
+        """True when the file at `disk` is attached to any source this
+        standalone snapshot does not publish.
+
+        Read from the main index's `source_files` - which `fha index` rebuilds
+        from the source records themselves, so it needs no photo catalog and
+        cannot be out of date the way the catalog's `SOURCE:` keywords can.
+        The file is matched under every root alias it sits beneath, and by
+        archive-relative path, ignoring case so a reference typed with
+        different capitals on a case-blind disk still finds its source. When
+        the index will not answer, the picture is held back: restricted
+        material must never reach public output (SPEC §21), and this is
+        enrichment, not something the build needs to finish."""
+        owners = self._source_files_owners()
+        if owners is None:
+            return True
+        keys = set()
+        for alias in ASSET_ROOT_ALIASES:
+            try:
+                a = path_to_alias(disk, alias, self.fha_config, self.archive_root)
+            except Exception:  # noqa: BLE001 - a root that will not resolve
+                continue
+            if a.startswith(alias + '/'):
+                keys.add(a.lower())
+        try:
+            keys.add(disk.resolve().relative_to(self.archive_root.resolve()).as_posix().lower())
+        except (OSError, ValueError):
+            pass
+        return any(sid not in self.source_pages
+                   for k in keys for sid in owners.get(k, ()))
+
+    def _source_files_owners(self) -> dict[str, set[str]] | None:
+        """Lowercased `source_files` path -> the lowercased ids of the sources
+        it is attached to. Read once per build (the lookup runs per picture);
+        None if the index will not answer."""
+        if self._source_file_owner_map is None:
+            try:
+                rows = self.conn.execute(
+                    'SELECT source_id, path FROM source_files').fetchall()
+            except sqlite3.DatabaseError:
+                return None
+            owners: dict[str, set[str]] = {}
+            for r in rows:
+                if r['path'] and r['source_id']:
+                    owners.setdefault(str(r['path']).replace('\\', '/').lower(),
+                                      set()).add(str(r['source_id']).lower())
+            self._source_file_owner_map = owners
+        return self._source_file_owner_map
 
     def _catalog_path_for_disk(self, disk: Path) -> str | None:
         """The catalog-stored path (if any) that names the file at `disk`. Tries
