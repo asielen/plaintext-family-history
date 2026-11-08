@@ -10422,3 +10422,18 @@ def load_site_module():
     sys.modules['fha_site'] = mod
     spec.loader.exec_module(mod)
     return mod
+
+
+def site_picture_job(src: str, max_px: int, suffix: str):
+    """Make one `fha site` web picture inside a worker process (#239).
+
+    A first standalone build of a big archive spends most of its time decoding
+    scans one at a time, so `fha site` hands that step to a small pool of
+    worker processes. A worker started fresh (Windows always starts them fresh)
+    finds its job function by module name, and site.py has no importable name:
+    it is loaded by path as `fha_site` (`load_site_module`, above). `_lib` is on
+    the import path every worker inherits, so the job names this function, which
+    loads site.py the way the front doors do and runs its recipe. The picture
+    code itself stays in site.py (`_picture_job`), beside the recipe version
+    that says when saved pictures must be made again."""
+    return load_site_module()._picture_job(src, max_px, suffix)

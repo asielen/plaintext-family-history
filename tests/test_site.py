@@ -18,12 +18,14 @@ import io
 import json
 import os
 import re
+import shutil
 import sqlite3
 import sys
 import tempfile
 import time
 import unittest
 import unittest.mock
+import warnings
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -2677,6 +2679,548 @@ class DerivativeCacheTests(_Base):
         self._photo_source('s-1111111111', 'photos/1880/pic.png')
         self._run(linked=True)
         self.assertFalse(self._cache_dir().exists())
+
+
+class _InlineExecutor:
+    """A stand-in for ProcessPoolExecutor that runs each job the moment it is
+    handed over, in this process, and records what it was given. It keeps the
+    logic tests below fast and lets them see every picture handed to the
+    workers; the tests that need real worker processes start real ones."""
+
+    submitted: list[str] = []
+
+    def __init__(self, *args, **kwargs) -> None:
+        pass
+
+    def submit(self, fn, *args):
+        import concurrent.futures
+        type(self).submitted.append(Path(args[0]).name)
+        future = concurrent.futures.Future()
+        try:
+            future.set_result(fn(*args))
+        except BaseException as e:  # noqa: BLE001 - handed back like a real pool would
+            future.set_exception(e)
+        return future
+
+    def shutdown(self, wait=True, cancel_futures=False) -> None:
+        pass
+
+
+@unittest.skipUnless(site._PIL_AVAILABLE, 'Pillow not installed')
+class ParallelPictureTests(_Base):
+    """A first `fha site` of a big archive spent most of its ten-odd minutes
+    decoding scans one at a time (#239). The build now hands that step to
+    worker processes. These tests hold it to the promises that make it safe:
+    the site is the same, byte for byte and warning for warning, with or
+    without workers; a picture a privacy gate withholds never reaches a
+    worker, the cache or media/; `site.picture_workers: 1` turns the workers
+    off; workers that cannot start or that fail leave the build finished the
+    same; saved pictures are still copied, not made again; and Ctrl+C leaves
+    no worker running and no half-written file."""
+
+    _make_photos_db = AssetTests._make_photos_db
+    _make_photos_fresh = AssetTests._make_photos_fresh
+    _image = DerivativeCacheTests._image
+    _photo_source = DerivativeCacheTests._photo_source
+    _cache_dir = DerivativeCacheTests._cache_dir
+    _cache_notes = DerivativeCacheTests._cache_notes
+    _media = DerivativeCacheTests._media
+
+    def setUp(self) -> None:
+        super().setUp()
+        _InlineExecutor.submitted = []
+
+    def _set_workers(self, value) -> None:
+        (self.archive_root / 'fha.yaml').write_text(
+            f'site:\n  picture_workers: {value}\n', encoding='utf-8')
+
+    def _site_files(self, out: Path | None = None) -> dict[str, bytes]:
+        out = out or self.out_dir
+        return {p.relative_to(out).as_posix(): p.read_bytes()
+                for p in out.rglob('*') if p.is_file() and p.name != '.fha-site'}
+
+    @contextlib.contextmanager
+    def _workers(self, *, inline=True, before_pool=0):
+        """Hand pictures to the workers from the first one on. `inline` swaps
+        the process pool for `_InlineExecutor`. Yields a spy on in-process
+        decodes. `create=True`: on a build without workers the setting does
+        not exist, and the test must fail on its assertions, not on setup."""
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(unittest.mock.patch.object(
+                site, '_PICTURES_BEFORE_POOL', before_pool, create=True))
+            if inline:
+                stack.enter_context(unittest.mock.patch(
+                    'concurrent.futures.ProcessPoolExecutor', _InlineExecutor))
+            yield stack.enter_context(unittest.mock.patch.object(
+                site, '_make_derivative', wraps=site._make_derivative))
+
+    def _fresh_build(self, **workers_kw):
+        """A first build: nothing saved yet. Returns (site files, messages,
+        notes, pictures decoded in this process)."""
+        shutil.rmtree(self._cache_dir(), ignore_errors=True)
+        with self._workers(**workers_kw) as spy:
+            res = self._run(linked=False)
+        self.assertEqual(res['status'], 'ok', res['messages'])
+        return self._site_files(), res['messages'], res['notes'], spy.call_count
+
+    def _three_sources_and_a_broken_scan(self) -> None:
+        for i, colour in enumerate(((200, 10, 10), (10, 200, 10), (10, 10, 200)), start=1):
+            self._image(f'photos/1880/pic{i}.png', colour=colour)
+            self._photo_source(f's-{i}{i}{i}{i}{i}{i}{i}{i}{i}{i}', f'photos/1880/pic{i}.png')
+        broken = self.archive_root / 'photos' / '1890' / 'broken.jpg'
+        broken.parent.mkdir(parents=True, exist_ok=True)
+        broken.write_bytes(b'\xff\xd8 this is not a whole jpeg')
+        _age(broken)
+        self._photo_source('s-4444444444', 'photos/1890/broken.jpg')
+
+    # - byte-identical, serial vs parallel -
+
+    def test_the_example_archive_is_identical_with_and_without_workers(self):
+        # Real worker processes, on every derivative path the showcase has:
+        # source portraits, photo strips, profile photos, embeds, the hero.
+        import index as index_mod
+        root = self.archive_root / 'example'
+        shutil.copytree(ROOT / 'example-archive', root,
+                        ignore=shutil.ignore_patterns('generated', '.cache'))
+        for p in root.rglob('*'):
+            if p.is_file():
+                _age(p)
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            index_mod.build_index(root, {})
+
+        def build(name: str, workers: int):
+            shutil.rmtree(root / '.cache' / 'site-derivatives', ignore_errors=True)
+            out = self.archive_root / name
+            with self._workers(inline=False) as spy, unittest.mock.patch.object(
+                    site, '_auto_picture_workers', lambda: workers, create=True):
+                res = site.run_site(root, out, linked=False)
+            self.assertEqual(res['status'], 'ok', res['messages'])
+            return self._site_files(out), res['messages'], res['notes'], spy.call_count
+
+        serial, serial_messages, serial_notes, serial_decoded = build('serial', 1)
+        parallel, parallel_messages, parallel_notes, parallel_decoded = build('parallel', 2)
+        media = [rel for rel in serial if rel.startswith('media/')]
+        self.assertGreater(len(media), 3)
+        self.assertEqual(serial_decoded, len(media))
+        self.assertEqual(parallel_decoded, 0, 'the pictures were not made by the workers')
+        self.assertEqual(sorted(parallel), sorted(serial))
+        self.assertEqual([rel for rel in serial if serial[rel] != parallel[rel]], [])
+        self.assertEqual(parallel_messages, serial_messages)
+        self.assertEqual(parallel_notes, serial_notes)
+        self.assertEqual(len(list((root / '.cache' / 'site-derivatives').glob('*.json'))),
+                         len(media), 'every picture the workers made should be saved')
+
+    def test_a_picture_the_workers_cannot_make_gives_the_serial_pages_and_warnings(self):
+        # The pages are written before a worker's answer arrives. When one
+        # picture fails, the build is redone one at a time - and must come
+        # out exactly as a build without workers, warning order included.
+        self._three_sources_and_a_broken_scan()
+        self._set_workers(1)
+        serial, serial_messages, _, _ = self._fresh_build()
+        self.assertTrue(any('could not build a web image for photos/1890/broken.jpg' in m
+                            for m in serial_messages), serial_messages)
+
+        self._set_workers(2)
+        with unittest.mock.patch.object(
+                site._SiteBuilder, 'run', autospec=True, side_effect=site._SiteBuilder.run) as run:
+            parallel, parallel_messages, _, decoded = self._fresh_build()
+        self.assertEqual(run.call_count, 2, 'the failed picture should trigger one serial rebuild')
+        self.assertEqual(sorted(_InlineExecutor.submitted),
+                         ['broken.jpg', 'pic1.png', 'pic2.png', 'pic3.png'])
+        self.assertEqual(decoded, 1, 'the rebuild should copy what the workers made, '
+                                     'and retry only the broken scan')
+        self.assertEqual(sorted(parallel), sorted(serial))
+        self.assertEqual([rel for rel in serial if serial[rel] != parallel[rel]], [])
+        self.assertEqual(parallel_messages, serial_messages)
+
+    def test_pillow_warnings_keep_their_one_at_a_time_order(self):
+        # A huge scan makes Pillow print a DecompressionBombWarning. A worker
+        # catches it and the build shows it when the picture lands, in the
+        # order the pictures were handed over - the serial order.
+        self._three_sources_and_a_broken_scan()
+
+        def build(workers):
+            self._set_workers(workers)
+            with warnings.catch_warnings(record=True) as caught, unittest.mock.patch.object(
+                    site.Image, 'MAX_IMAGE_PIXELS', 2_000_000):
+                warnings.simplefilter('always')
+                self._fresh_build()
+            return [str(w.message) for w in caught
+                    if issubclass(w.category, site.Image.DecompressionBombWarning)]
+
+        serial = build(1)
+        self.assertEqual(len(serial), 3, serial)
+        self.assertEqual(build(2), serial)
+
+    # - privacy is decided before a picture is handed over -
+
+    def test_a_withheld_or_living_picture_never_reaches_a_worker(self):
+        # On the candidate lists: a living person's photo on a published
+        # source page, and a restricted source's scan named as the home
+        # banner. Both are refused by their gates before any picture is made.
+        (self.archive_root / 'fha.yaml').write_text(
+            'roots:\n  photos: photos\nsite:\n  picture_workers: 2\n'
+            '  hero: photos/1880/private.png\n', encoding='utf-8')
+        self._seed_person('p-aaaaaaaaaa', 'Jane Doe', living='true')
+        self._image('photos/1880/private.png', colour=(1, 2, 3))
+        self._image('photos/1890/jane.png', colour=(4, 5, 6))
+        self._image('photos/1900/public.png', colour=(7, 8, 9))
+        self._photo_source('s-1111111111', 'photos/1880/private.png', restricted=1)
+        self._photo_source('s-2222222222', 'photos/1890/jane.png')
+        self._photo_source('s-3333333333', 'photos/1900/public.png')
+        pconn = self._make_photos_db()
+        for rel in ('photos/1880/private.png', 'photos/1890/jane.png', 'photos/1900/public.png'):
+            pconn.execute('INSERT INTO photos(path, group_id, is_primary, caption) VALUES (?,?,?,?)',
+                          (rel, rel, 1, ''))
+        pconn.execute('INSERT INTO photo_people(path, person_ref, via) VALUES (?,?,?)',
+                      ('photos/1890/jane.png', 'p-aaaaaaaaaa', 'pid-keyword'))
+        pconn.commit()
+        pconn.close()
+        self._make_photos_fresh()
+
+        with self._workers():
+            res = self._run(linked=False)
+        self.assertEqual(res['status'], 'ok', res['messages'])
+        self.assertEqual(_InlineExecutor.submitted, ['public.png'])
+        self.assertEqual([rel.split('/')[-1].split('_')[0] for rel in self._media()], ['public'])
+        self.assertEqual(len(self._cache_notes()), 1, 'only the public picture may be made')
+        self.assertIn('image omitted - tagged to a living person',
+                      self._read('sources/s-2222222222.html'))
+        self.assertNotIn('private', self._read('index.html'))
+
+    # - the switch, and workers that cannot work -
+
+    def test_picture_workers_1_makes_every_picture_here(self):
+        self._three_sources_and_a_broken_scan()
+        self._set_workers(1)
+        _, messages, _, decoded = self._fresh_build()
+        self.assertEqual(_InlineExecutor.submitted, [])
+        self.assertEqual(decoded, 4)
+        self.assertFalse([m for m in messages if 'picture_workers' in m])
+
+    def test_the_setting_is_read_as_a_number_of_workers(self):
+        with unittest.mock.patch.object(site, '_auto_picture_workers', lambda: 3):
+            for raw, expected in ((None, 3), ('auto', 3), ('', 3), (1, 1), (4, 4), (4.0, 4),
+                                  (500, site._PICTURE_WORKERS_LIMIT)):
+                with self.subTest(raw=raw):
+                    self.assertEqual(site._picture_workers_setting({'picture_workers': raw}),
+                                     (expected, None))
+            for raw in (0, -2, 2.5, True, 'many', [2]):
+                with self.subTest(raw=raw):
+                    workers, warning = site._picture_workers_setting({'picture_workers': raw})
+                    self.assertEqual(workers, 3)
+                    self.assertIn('site.picture_workers', warning)
+
+    def test_a_bad_setting_warns_once_and_the_site_still_builds(self):
+        self._image('photos/1880/pic.png')
+        self._photo_source('s-1111111111', 'photos/1880/pic.png')
+        self._set_workers('lots')
+        files, messages, _, _ = self._fresh_build()
+        self.assertEqual(len([m for m in messages if 'site.picture_workers' in m]), 1, messages)
+        self.assertTrue(any(rel.startswith('media/') for rel in files))
+
+    def test_the_automatic_choice_leaves_room_for_the_build_and_its_memory(self):
+        gib = site._PICTURE_WORKER_MEMORY
+        cases = ((16, 64 * gib, site._AUTO_PICTURE_WORKERS_MAX), (4, 64 * gib, 3),
+                 (16, 3 * gib, 3), (16, None, 2), (16, gib // 2, 1), (1, 64 * gib, 1))
+        for cpus, free, expected in cases:
+            with self.subTest(cpus=cpus, free=free), \
+                    unittest.mock.patch.object(site, '_available_memory', lambda: free), \
+                    unittest.mock.patch('os.cpu_count', lambda: cpus), \
+                    unittest.mock.patch('os.process_cpu_count', lambda: cpus, create=True):
+                self.assertEqual(site._auto_picture_workers(), expected)
+        free = site._available_memory()
+        self.assertTrue(free is None or free > 0)
+
+    def test_workers_that_cannot_start_leave_the_site_as_a_serial_build(self):
+        self._three_sources_and_a_broken_scan()
+        self._set_workers(1)
+        serial = self._fresh_build()
+
+        class _NoProcesses:
+            def __init__(self, *args, **kwargs):
+                raise OSError('no new processes here')
+
+        self._set_workers(2)
+        for name, patch in (
+                ('no processes', unittest.mock.patch('concurrent.futures.ProcessPoolExecutor',
+                                                     _NoProcesses)),
+                ('packaged program', unittest.mock.patch.object(sys, 'frozen', True, create=True))):
+            with self.subTest(name), patch:
+                files, messages, notes, decoded = self._fresh_build(inline=False)
+                self.assertEqual(decoded, 4)
+                self.assertEqual((files, messages, notes), serial[:3])
+
+    def test_workers_that_break_part_way_hand_their_pictures_back(self):
+        # A worker killed for memory breaks the whole pool: every picture it
+        # held is made here instead, and the pool is not used again.
+        import concurrent.futures
+        import concurrent.futures.process as cf_process
+        self._three_sources_and_a_broken_scan()
+        self._set_workers(1)
+        serial = self._fresh_build()
+
+        class _BreaksOnFirstUse(_InlineExecutor):
+            def submit(self, fn, *args):
+                type(self).submitted.append(Path(args[0]).name)
+                future = concurrent.futures.Future()
+                future.set_exception(cf_process.BrokenProcessPool('a worker died'))
+                return future
+
+        self._set_workers(2)
+        with unittest.mock.patch('concurrent.futures.ProcessPoolExecutor', _BreaksOnFirstUse), \
+                unittest.mock.patch.object(site._SiteBuilder, 'run', autospec=True,
+                                           side_effect=site._SiteBuilder.run) as run:
+            files, messages, notes, decoded = self._fresh_build(inline=False)
+        self.assertEqual(len(_BreaksOnFirstUse.submitted), 1, 'a broken pool was used again')
+        # The handed-back picture was made here, and so was every one after
+        # it, so each answer was known before its page: no second pass.
+        self.assertEqual(run.call_count, 1)
+        self.assertEqual(decoded, 4)
+        self.assertEqual((files, messages, notes), serial[:3])
+
+    # - saved pictures -
+
+    def test_saved_pictures_are_copied_and_no_worker_is_asked(self):
+        self._three_sources_and_a_broken_scan()
+        self._set_workers(2)
+        first, first_messages, _, _ = self._fresh_build()
+        self.assertEqual(len(self._cache_notes()), 3)
+        _InlineExecutor.submitted = []
+        with self._workers() as spy:
+            res = self._run(linked=False)
+        # Saved pictures are copied, never handed over. The broken scan
+        # (never saved) failed last time, so it is made here, at once, even
+        # though this build hands over from the first picture on.
+        self.assertEqual(_InlineExecutor.submitted, [])
+        self.assertEqual(spy.call_count, 1)
+        self.assertEqual(self._site_files(), first)
+        self.assertEqual(res['messages'], first_messages)
+
+        # With the real threshold, a rebuild with one miss (a scan that can
+        # never be made) makes it here: no workers, and no second pass.
+        _InlineExecutor.submitted = []
+        with self._workers(before_pool=site._PICTURES_BEFORE_POOL) as spy, \
+                unittest.mock.patch.object(site._SiteBuilder, 'run', autospec=True,
+                                           side_effect=site._SiteBuilder.run) as run:
+            res = self._run(linked=False)
+        self.assertEqual(_InlineExecutor.submitted, [], 'a rebuild with one miss started workers')
+        self.assertEqual(spy.call_count, 1)
+        self.assertEqual(run.call_count, 1)
+        self.assertEqual(res['messages'], first_messages)
+
+    # - Pillow's warnings, shown once each as Python would (PR #242 audit F1) -
+
+    def _huge_scan(self, rel: str, side: int, *, truncate: bool = False) -> None:
+        """A grey scan just over Pillow's DecompressionBombWarning size (about
+        89 million pixels): opening it warns, in any process. `truncate` keeps
+        only its header, so it warns and then cannot be made."""
+        from PIL import Image
+        img = self.archive_root / rel
+        img.parent.mkdir(parents=True, exist_ok=True)
+        Image.new('L', (side, side), 128).save(img, compress_level=1)
+        if truncate:
+            img.write_bytes(img.read_bytes()[:4000])
+        _age(img)
+
+    def _shown_warnings(self, workers: int, before_pool: int) -> list[str]:
+        """The Pillow warnings Python actually shows during a first build,
+        under its default show-once rule, with real worker processes."""
+        self._set_workers(workers)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter('default')   # also clears what earlier builds showed
+            self._fresh_build(inline=False, before_pool=before_pool)
+        return [f'{w.filename}:{w.lineno}: {w.message}' for w in caught
+                if issubclass(w.category, site.Image.DecompressionBombWarning)]
+
+    def test_one_warning_from_two_same_size_scans_shows_once_as_one_at_a_time(self):
+        # Two scans of the same size give the same warning text. One at a
+        # time, Python shows it once. Split between this process and a
+        # worker, it was shown twice: the worker's copy was replayed through
+        # a registry of its own.
+        self._huge_scan('photos/1880/huge1.png', 9500)
+        self._huge_scan('photos/1880/huge2.png', 9500)
+        self._photo_source('s-1111111111', 'photos/1880/huge1.png')
+        self._photo_source('s-2222222222', 'photos/1880/huge2.png')
+        serial = self._shown_warnings(1, 1)
+        self.assertEqual(len(serial), 1, serial)
+        self.assertEqual(self._shown_warnings(2, 1), serial)
+
+    def test_a_broken_scans_warning_shows_once_despite_the_second_pass(self):
+        # A huge scan that warns and then cannot be made: its failure in a
+        # worker sends the build round again, one at a time, where it warns
+        # again. Python must still show it once, as a one-at-a-time build does.
+        self._huge_scan('photos/1880/huge.png', 9600, truncate=True)
+        self._photo_source('s-1111111111', 'photos/1880/huge.png')
+        serial = self._shown_warnings(1, 0)
+        self.assertEqual(len(serial), 1, serial)
+        with unittest.mock.patch.object(site._SiteBuilder, 'run', autospec=True,
+                                        side_effect=site._SiteBuilder.run) as run:
+            parallel = self._shown_warnings(2, 0)
+        self.assertEqual(run.call_count, 2, 'the broken scan should have gone to a worker')
+        self.assertEqual(parallel, serial)
+
+    # - scans that can never be made (PR #242 audit F2) -
+
+    def test_scans_that_never_work_do_not_make_every_rebuild_go_round_twice(self):
+        # More broken scans than the first few made in-process: on a rebuild
+        # they are the only misses, so one reached a worker, failed, and sent
+        # every rebuild round a second time. A failed scan now leaves a note,
+        # and the next build makes it here, at once.
+        broken = []
+        for i in range(10):
+            rel = f'photos/1890/broken{i}.jpg'
+            img = self.archive_root / rel
+            img.parent.mkdir(parents=True, exist_ok=True)
+            img.write_bytes(b'\xff\xd8 not a whole jpeg ' + bytes([i]))
+            _age(img)
+            self._photo_source(f's-{i}{i}{i}{i}{i}bbbbb', rel)
+            broken.append(img)
+        self._set_workers(1)
+        serial, serial_messages, _, _ = self._fresh_build()
+        self.assertEqual(len([m for m in serial_messages if 'could not build a web image' in m]), 10)
+
+        self._set_workers(2)
+        run_spy = unittest.mock.patch.object(site._SiteBuilder, 'run', autospec=True,
+                                             side_effect=site._SiteBuilder.run)
+        with run_spy as run:
+            self._fresh_build(before_pool=site._PICTURES_BEFORE_POOL)
+        self.assertEqual(run.call_count, 2, 'the first build should go round twice')
+        self.assertEqual(len(list(self._cache_dir().glob('*.failed'))), 10)
+
+        for _ in range(2):
+            _InlineExecutor.submitted = []
+            with self._workers(before_pool=site._PICTURES_BEFORE_POOL), run_spy as run:
+                res = self._run(linked=False)
+            self.assertEqual(run.call_count, 1, 'a rebuild went round twice')
+            self.assertEqual(_InlineExecutor.submitted, [])
+            # A note never makes a failed picture look made.
+            self.assertEqual(self._site_files(), serial)
+            self.assertEqual(res['messages'], serial_messages)
+
+        # A fixed scan is a new file: no note, back to the workers.
+        from PIL import Image
+        Image.new('RGB', (800, 600), (10, 120, 30)).save(broken[3], format='JPEG')
+        _age(broken[3], 1800)
+        _InlineExecutor.submitted = []
+        with self._workers(), run_spy as run:
+            res = self._run(linked=False)
+        self.assertEqual(_InlineExecutor.submitted, ['broken3.jpg'])
+        self.assertEqual(run.call_count, 1)
+        self.assertTrue(any('broken3_' in rel for rel in self._media()))
+        self.assertEqual(len([m for m in res['messages'] if 'could not build a web image' in m]), 9)
+        # Its old note is pruned with the old version of the file.
+        self.assertEqual(len(list(self._cache_dir().glob('*.failed'))), 9)
+
+    def test_a_failure_note_never_stands_in_for_a_picture(self):
+        # Even a note whose key matches cannot be fetched as a picture, and a
+        # picture saved under the same key clears it.
+        cache = site._DerivativeCache(self._cache_dir())
+        src = self._image('photos/1880/pic.png')
+        fields = cache.entry_fields(src, os.stat(src), 1200, '.jpg')
+        key = cache.entry_key(fields)
+        cache.save_failure(key, fields)
+        self.assertTrue(cache.failed_before(key, fields))
+        self.assertIsNone(cache.fetch(key, fields))
+        self.assertFalse(cache.damaged, 'a failure note is not a damaged picture')
+        other = dict(fields, size=fields['size'] + 1)
+        self.assertFalse(cache.failed_before(key, other))
+        (self._cache_dir() / f'{key}.failed').write_text('{"fields": 1}', encoding='utf-8')
+        self.assertFalse(cache.failed_before(key, fields), 'a malformed note was trusted')
+        cache.save_failure(key, fields)
+        cache.save(key, fields, b'picture')
+        self.assertFalse((self._cache_dir() / f'{key}.failed').exists())
+
+    # - Ctrl+C -
+
+    def test_ctrl_c_leaves_no_worker_running_and_no_half_written_file(self):
+        import multiprocessing
+        from PIL import Image
+        for i in range(8):
+            rel = f'photos/1880/big{i}.png'
+            img = self.archive_root / rel
+            img.parent.mkdir(parents=True, exist_ok=True)
+            Image.new('RGB', (6000, 4500), (i * 20, 40, 60)).save(img, compress_level=1)
+            _age(img)
+            self._photo_source(f's-{i}{i}{i}{i}{i}aaaaa', rel)
+        self._set_workers(2)
+
+        def interrupted(builder):
+            raise KeyboardInterrupt
+
+        closes = []
+        real_close = site._PicturePool.close
+
+        def spy_close(pool, *, abort):
+            closes.append(abort)
+            return real_close(pool, abort=abort)
+
+        with self._workers(inline=False), \
+                unittest.mock.patch.object(site._SiteBuilder, 'build_discoveries_page', interrupted), \
+                unittest.mock.patch.object(site._PicturePool, 'close', spy_close):
+            with self.assertRaises(KeyboardInterrupt):
+                self._run(linked=False)
+        self.assertEqual(closes, [True], 'the workers were not stopped as an interrupted build')
+        self.assertEqual(multiprocessing.active_children(), [])
+        leftovers = [p.name for p in self._cache_dir().glob('*')] if self._cache_dir().is_dir() else []
+        self.assertFalse([n for n in leftovers if n.startswith('.tmp-')], leftovers)
+        cache = site._DerivativeCache(self._cache_dir())
+        for note in self._cache_notes():
+            fields = json.loads(note.read_text(encoding='utf-8'))['fields']
+            self.assertIsNotNone(cache.fetch(note.stem, fields), f'{note.name} is damaged')
+
+    def test_ctrl_c_while_waiting_for_the_last_picture_stops_at_once(self):
+        # The last picture is the one the build waits on at the very end. A
+        # Ctrl+C during that wait used to find the queue already empty, so the
+        # workers were shut down politely - which waits for the decode still
+        # running, since the workers ignore Ctrl+C (PR #242 review).
+        import concurrent.futures
+        import multiprocessing
+        from PIL import Image
+        rel = 'photos/1880/last.png'
+        img = self.archive_root / rel
+        img.parent.mkdir(parents=True, exist_ok=True)
+        Image.new('RGB', (6000, 4500), (90, 40, 60)).save(img, compress_level=1)
+        _age(img)
+        self._photo_source('s-1111111111', rel)
+        self._set_workers(2)
+
+        waited_on = []
+
+        def interrupted_wait(future, timeout=None):
+            waited_on.append(future)
+            raise KeyboardInterrupt
+
+        closes = []
+        real_close = site._PicturePool.close
+
+        def spy_close(pool, *, abort):
+            closes.append(abort)
+            return real_close(pool, abort=abort)
+
+        with self._workers(inline=False), \
+                unittest.mock.patch.object(concurrent.futures.Future, 'result', interrupted_wait), \
+                unittest.mock.patch.object(site._PicturePool, 'close', spy_close):
+            with self.assertRaises(KeyboardInterrupt):
+                self._run(linked=False)
+        self.assertEqual(len(waited_on), 1, 'the interrupt should come in the wait for the last picture')
+        self.assertEqual(closes, [True], 'the workers were waited for instead of stopped')
+        self.assertEqual(multiprocessing.active_children(), [])
+        leftovers = [p.name for p in self._cache_dir().glob('.tmp-*')] if self._cache_dir().is_dir() else []
+        self.assertEqual(leftovers, [])
+        self.assertFalse((self.out_dir / 'media').is_dir() and any((self.out_dir / 'media').rglob('*.jpg')),
+                         'a picture still being made was written')
+
+    # - the linked preview -
+
+    def test_the_linked_preview_starts_no_workers(self):
+        self._three_sources_and_a_broken_scan()
+        self._set_workers(4)
+        with self._workers():
+            res = self._run(linked=True)
+        self.assertEqual(res['status'], 'ok')
+        self.assertEqual(_InlineExecutor.submitted, [])
+        self.assertFalse((self.out_dir / 'media').exists())
 
 
 class LivingPhotoCheckUnavailableTests(_Base):
