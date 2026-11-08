@@ -131,6 +131,9 @@ CODE MAP
   Image derivatives
     _PIL_AVAILABLE             - is Pillow importable?
     _make_derivative           - resized, EXIF-stripped JPEG/PNG copy (standalone)
+    _DerivativeCache           - saved copies of those derivatives in
+                                 .cache/site-derivatives/, reused by the next
+                                 build while the original is unchanged
 
   Static charts (person page + home page, #115)
     _render_fan_svg            - radial ancestor fan, self-contained SVG
@@ -183,6 +186,8 @@ CODE MAP
       ._person_summary         - the Born/Died/Married infobox, own vitals only
       ._person_open_questions  - this person's open questions, rendered
       .render_token            - one [ID] token → HTML (link / redaction / mark)
+      ._derive                 - a media/ web picture: the saved copy when the
+                                 original is unchanged, else made fresh (and saved)
       .build_source_page       - M8.1 source page
       .build_person_page       - M8.2 person page; also builds `descendants_tree`
                                  (#115: the interactive explorer, demoted here
@@ -203,6 +208,7 @@ CODE MAP
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime
 import hashlib
 import html
@@ -213,6 +219,8 @@ import re
 import shutil
 import sqlite3
 import sys
+import tempfile
+import time
 from collections import deque
 from pathlib import Path
 from urllib.parse import quote as _urlquote
@@ -268,10 +276,11 @@ except ModuleNotFoundError:  # pragma: no cover - exercised via the CLI guard
     jinja2 = None  # type: ignore[assignment]
 
 try:  # Pillow is OPTIONAL - standalone image derivatives use it when present.
-    from PIL import Image
+    from PIL import Image, __version__ as _PIL_VERSION
     _PIL_AVAILABLE = True
 except ModuleNotFoundError:  # pragma: no cover - environment-dependent
     Image = None  # type: ignore[assignment]
+    _PIL_VERSION = ''
     _PIL_AVAILABLE = False
 
 
@@ -360,6 +369,21 @@ _DERIVATIVE_MAX_PX = 1200
 # Profile photos are shown small (a person-page plate, a tree square), so their
 # derivative is kept light - crisp at portrait size, tiny for the tree thumbnail.
 _PROFILE_MAX_PX = 512
+
+# Saved web pictures (`_DerivativeCache`). Making a derivative means decoding the
+# full-size original - a 100 MB TIFF scan takes seconds - and the result depends
+# only on the original's bytes and the recipe below, so a rebuild reuses the copy
+# the last build saved instead of decoding every scan again.
+_DERIVATIVE_CACHE_DIR = Path('.cache') / 'site-derivatives'
+# Bump this whenever `_make_derivative`, or anything else that decides a
+# derivative's bytes, changes: every picture saved under the old number is then
+# made again from its original (and pruned), never reused.
+_DERIVATIVE_RECIPE_VERSION = 1
+# An original modified this recently is not saved for reuse. Size and
+# modified-time are the whole freshness test, and a second edit inside one
+# timestamp tick (2 s on a FAT-formatted USB drive) can leave both unchanged.
+# Waiting out the tick closes that hole; the next build saves it instead.
+_DERIVATIVE_SETTLE_SECONDS = 5
 
 # Ancestor generations drawn in the static fan chart (rings beyond the subject).
 # 3 = up to great-grandparents. Every ring then keeps its labels on a roomy
@@ -2113,6 +2137,203 @@ def _make_derivative(src: Path, dest: Path, max_px: int = _DERIVATIVE_MAX_PX) ->
         return False
 
 
+class _DerivativeCache:
+    """The web pictures earlier builds made, saved in `.cache/site-derivatives/`
+    so the next build can copy them instead of decoding every original again.
+
+    Why a cache at all: decoding the full-size originals is most of a standalone
+    build on a real archive (thousands of scans, many of them large TIFFs), and
+    the derivative is a pure function of the original's bytes and the recipe -
+    two builds make byte-identical files. Copying a saved one costs a
+    millisecond; making it again can cost seconds.
+
+    What it never does is decide what is published. `media/` is still cleared
+    on every build (`_reset_output`), and a saved picture reaches it only when a
+    page of THIS build asks for it through `_SiteBuilder._derive`, after every
+    privacy gate has passed. Nothing is ever copied ahead of time, so a picture
+    withheld since the last build stays in `.cache/` (the archive's private,
+    gitignored, deletable machine cache - TOOLING §1) and out of the snapshot.
+
+    The freshness test is the original's path, size and modified-time (to the
+    nanosecond), plus the size limit, the output format, the Pillow version and
+    `_DERIVATIVE_RECIPE_VERSION`. It is never a hash of the original: that would
+    mean reading every original in full (tens of GB) to save decoding them. A
+    file that changes changes its size or modified-time, and an original edited
+    in the last few seconds is not saved at all (`_DERIVATIVE_SETTLE_SECONDS`).
+
+    Each entry is two files named by a hash of that test: the picture
+    (`<key>.jpg`) and a small JSON note (`<key>.json`) recording the test it was
+    made under plus the picture's own length and SHA-256. The note is written
+    last, so an interrupted save is just a miss. A note that will not parse, or
+    a picture that does not match its note, counts as damaged: the picture is
+    made again from the original and the build says so once (`notes`). A cache
+    folder that cannot be written turns saving off for the rest of the build,
+    also said once. Neither ever fails the build or changes a page.
+
+    `prune` runs once at the end of a standalone build and removes entries
+    whose original is gone or has changed, or that were made under another
+    recipe or Pillow version - entries no future build could reuse. An entry
+    whose original's whole folder is missing is kept: that is an unplugged
+    photo drive far more often than a deleted folder, and pruning it would make
+    the next build with the drive back decode everything again."""
+
+    def __init__(self, cache_dir: Path) -> None:
+        self.dir = cache_dir
+        self.damaged: set[str] = set()         # keys whose entry could not be read back
+        self.write_error: str | None = None    # first failure to save; saving stops
+        self.prune_error: str | None = None    # could not list the folder to prune
+
+    def entry_fields(self, src: Path, st: os.stat_result, max_px: int, suffix: str) -> dict:
+        """Everything a derivative's bytes depend on, as recorded in its note."""
+        return {
+            'recipe': _DERIVATIVE_RECIPE_VERSION,
+            'pillow': _PIL_VERSION,
+            'source': os.path.abspath(src),
+            'size': st.st_size,
+            'mtime_ns': st.st_mtime_ns,
+            'max_px': max_px,
+            'format': suffix.lower(),
+        }
+
+    @staticmethod
+    def entry_key(fields: dict) -> str:
+        """The entry's file name: a hash of its fields, so any change to any of
+        them is simply a different (absent) entry."""
+        blob = json.dumps(fields, sort_keys=True).encode('utf-8')
+        return hashlib.sha256(blob).hexdigest()[:32]
+
+    def fetch(self, key: str, fields: dict) -> bytes | None:
+        """The saved picture for `key`, or None for a miss. A note that exists
+        but cannot be trusted counts as damaged (a miss the build reports)."""
+        note_path = self.dir / f'{key}.json'
+        try:
+            note = json.loads(note_path.read_bytes())
+        except FileNotFoundError:
+            return None
+        except (OSError, ValueError):
+            self.damaged.add(key)
+            return None
+        try:
+            data = (self.dir / f'{key}{fields["format"]}').read_bytes()
+        except OSError:
+            self.damaged.add(key)
+            return None
+        if (not isinstance(note, dict) or note.get('fields') != fields
+                or note.get('bytes') != len(data)
+                or note.get('sha256') != hashlib.sha256(data).hexdigest()):
+            self.damaged.add(key)
+            return None
+        return data
+
+    def save(self, key: str, fields: dict, data: bytes) -> None:
+        """Save a freshly made picture for the next build. Each file goes in
+        through a temporary name and an atomic replace, the picture before its
+        note, so a crash or a second build running at once never leaves a note
+        pointing at half a picture."""
+        if self.write_error is not None:
+            return
+        note = {'fields': fields, 'bytes': len(data),
+                'sha256': hashlib.sha256(data).hexdigest()}
+        try:
+            self.dir.mkdir(parents=True, exist_ok=True)
+            self._write_atomic(self.dir / f'{key}{fields["format"]}', data)
+            self._write_atomic(self.dir / f'{key}.json',
+                               json.dumps(note, sort_keys=True).encode('utf-8'))
+        except OSError as e:
+            self.write_error = e.strerror or str(e)
+
+    def _write_atomic(self, path: Path, data: bytes) -> None:
+        fd, tmp = tempfile.mkstemp(dir=self.dir, prefix='.tmp-')
+        try:
+            with os.fdopen(fd, 'wb') as fh:
+                fh.write(data)
+            os.replace(tmp, path)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp)
+            raise
+
+    def prune(self) -> None:
+        """Remove entries no future build could reuse (see the class docstring).
+        Only files this cache names (`<32 hex>.json` notes, their pictures,
+        `.tmp-` leftovers) are ever touched; anything else in the folder stays."""
+        try:
+            names = os.listdir(self.dir)
+        except FileNotFoundError:
+            return
+        except OSError as e:
+            self.prune_error = e.strerror or str(e)
+            return
+        keep: set[str] = set()
+        for name in names:
+            key, ext = os.path.splitext(name)
+            if ext != '.json' or not _CACHE_KEY_RE.fullmatch(key):
+                continue
+            if self._still_reusable(self.dir / name):
+                keep.add(key)
+        stale_tmp = time.time() - 24 * 3600
+        for name in names:
+            path = self.dir / name
+            key = os.path.splitext(name)[0]
+            try:
+                if name.startswith('.tmp-'):
+                    # A save interrupted by a crash; a live one is seconds old.
+                    if path.stat().st_mtime < stale_tmp:
+                        path.unlink()
+                elif _CACHE_KEY_RE.fullmatch(key) and key not in keep:
+                    path.unlink()
+            except OSError:
+                pass   # removed already, or locked: try again next build
+
+    @staticmethod
+    def _still_reusable(note_path: Path) -> bool:
+        """Could a future build still hit this entry?"""
+        try:
+            fields = json.loads(note_path.read_bytes())['fields']
+            if (fields['recipe'] != _DERIVATIVE_RECIPE_VERSION
+                    or fields['pillow'] != _PIL_VERSION):
+                return False
+            source = Path(fields['source'])
+        except (OSError, ValueError, TypeError, KeyError):
+            return False
+        try:
+            st = source.stat()
+        except FileNotFoundError:
+            return not source.parent.is_dir()   # whole folder missing: unplugged drive
+        except OSError:
+            return True                          # cannot tell; keep it
+        return st.st_size == fields['size'] and st.st_mtime_ns == fields['mtime_ns']
+
+    def notes(self) -> list[str]:
+        """The build's one-line reports about the cache itself, if any."""
+        where = _DERIVATIVE_CACHE_DIR.as_posix() + '/'
+        out: list[str] = []
+        n = len(self.damaged)
+        if n:
+            what = '1 saved web picture' if n == 1 else f'{n} saved web pictures'
+            out.append(
+                f'Note: {what} in {where} could not be read back, so '
+                f'{"it was" if n == 1 else "they were"} made again from '
+                'the originals. The site is complete; nothing for you to do.')
+        if self.write_error is not None:
+            out.append(
+                f'Note: could not save web pictures in {where} for reuse '
+                f'({self.write_error}). The site is complete, but the next '
+                '`fha site` will make every picture again and take as long as '
+                f'this one. Check that {where} is not read-only (deleting it is '
+                'safe), then run `fha site` again.')
+        if self.prune_error is not None and self.write_error is None:
+            out.append(
+                f'Note: could not tidy {where} ({self.prune_error}); old saved '
+                'web pictures were left in place. The site is complete; '
+                f'deleting {where} is safe if it grows large.')
+        return out
+
+
+# A saved-picture entry's name: the first 32 hex digits of its key hash.
+_CACHE_KEY_RE = re.compile(r'[0-9a-f]{32}')
+
+
 # ── Ancestor fan chart (static SVG) ─────────────────────────────────────────
 
 def _render_fan_svg(labels: dict, max_gen: int, r0: float = 54, ring: float = 60) -> str:
@@ -3041,6 +3262,14 @@ class _SiteBuilder:
         self.workbench = workbench
         self.workbench_context = workbench_context or {}
         self.messages: list[str] = []
+        # Saved web pictures from earlier builds (standalone only - the linked
+        # preview points at the originals and makes no derivatives at all).
+        self.derivative_cache: _DerivativeCache | None = (
+            None if linked or not _PIL_AVAILABLE
+            else _DerivativeCache(archive_root / _DERIVATIVE_CACHE_DIR))
+        # media/ path -> the cache key of what this build already wrote there,
+        # so a photo shown on many pages is written once, not once per page.
+        self._derived_dests: dict[Path, str] = {}
 
         self.persons_dir = out_dir / 'persons'
         self.sources_dir = out_dir / 'sources'
@@ -4439,6 +4668,50 @@ class _SiteBuilder:
         digest = hashlib.sha1(norm.encode('utf-8')).hexdigest()[:8]
         return self.media_dir / subdir / f'{Path(norm).stem}_{digest}.jpg'
 
+    def _derive(self, src: Path, dest: Path, max_px: int = _DERIVATIVE_MAX_PX) -> bool:
+        """Put the web picture of `src` at `dest` (in media/), reusing a saved
+        copy when the original has not changed. True on success, exactly as
+        `_make_derivative` answers - callers keep their own warnings.
+
+        Every caller has already decided this picture is published on this
+        page; this method only decides whether to decode the original or copy
+        the saved result (see `_DerivativeCache`). The bytes written are the
+        same either way, so the pages and media/ match a build with no cache.
+        A failed derivative is never saved, so it is retried - and warned
+        about - on every build, as before."""
+        cache = self.derivative_cache
+        if cache is None:
+            return _make_derivative(src, dest, max_px)
+        try:
+            st = os.stat(src)
+        except OSError:
+            return _make_derivative(src, dest, max_px)
+        fields = cache.entry_fields(src, st, max_px, dest.suffix)
+        key = cache.entry_key(fields)
+        if self._derived_dests.get(dest) == key:
+            return True
+        data = cache.fetch(key, fields)
+        if data is not None:
+            try:
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                dest.write_bytes(data)
+            except OSError:
+                return _make_derivative(src, dest, max_px)
+            self._derived_dests[dest] = key
+            return True
+        if not _make_derivative(src, dest, max_px):
+            return False
+        self._derived_dests[dest] = key
+        settled = time.time_ns() - st.st_mtime_ns > _DERIVATIVE_SETTLE_SECONDS * 10**9
+        try:
+            after = os.stat(src)
+            unchanged = (after.st_size, after.st_mtime_ns) == (st.st_size, st.st_mtime_ns)
+            if settled and unchanged:
+                cache.save(key, fields, dest.read_bytes())
+        except OSError:
+            pass   # the page has its picture; it just is not saved for next time
+        return True
+
     def _standalone_image_entry(self, sid: str, asset_rel: str, role: str | None, copy: str | None, date_edtf: str | None, page_dir: Path) -> dict:
         """Create the media derivative for a standalone image asset and return
         its file entry. Split from `_file_entry` because it needs the source id
@@ -4452,7 +4725,7 @@ class _SiteBuilder:
         resolved = resolve_path(asset_rel, self.fha_config, self.archive_root)
         dest = self._media_dest(asset_rel, normalize_id(sid))
         role_note = _role_note(role, copy, date_edtf)
-        if _make_derivative(resolved, dest):
+        if self._derive(resolved, dest):
             href = _rel_href(dest, page_dir)
             return {'label': Path(asset_rel).name, 'note': role_note,
                     'link_href': href, 'thumb_href': href}
@@ -5981,7 +6254,7 @@ class _SiteBuilder:
         if not _PIL_AVAILABLE:
             return None
         dest = self._media_dest(row['path'], 'people')
-        if not _make_derivative(resolved, dest):
+        if not self._derive(resolved, dest):
             self.messages.append(f'WARNING: could not build a web image for {row["path"]} (omitted from photo strip)')
             return None
         href = _rel_href(dest, page_dir)
@@ -6274,7 +6547,7 @@ class _SiteBuilder:
         if not _PIL_AVAILABLE:
             return None
         dest = self._media_dest(ref, 'profiles')
-        if _make_derivative(resolved, dest, max_px=_PROFILE_MAX_PX):
+        if self._derive(resolved, dest, max_px=_PROFILE_MAX_PX):
             return dest
         self.messages.append(
             f'WARNING: could not build a web image for profile_photo {ref} ({fmt_id_display(pid)}); skipped.')
@@ -6364,7 +6637,7 @@ class _SiteBuilder:
         if not _PIL_AVAILABLE:
             return None
         dest = self._media_dest(ref, subdir)
-        return _rel_href(dest, page_dir) if _make_derivative(dest=dest, src=resolved) else None
+        return _rel_href(dest, page_dir) if self._derive(resolved, dest) else None
 
     def _render_embed(self, target: str, caption: str, page_dir: Path) -> str:
         """A `![[S-id|Caption]]` prose embed → a responsive <figure>. The image is
@@ -7824,6 +8097,11 @@ class _SiteBuilder:
             self.build_place_page(lid)
         self.build_discoveries_page()
         self.build_index_page()
+        if self.derivative_cache is not None:
+            # Last, so every page-level warning keeps the order it has always
+            # had; these lines only appear when the cache itself had trouble.
+            self.derivative_cache.prune()
+            self.messages.extend(self.derivative_cache.notes())
         self._write_marker()
         # source + person + place pages, plus discoveries.html and index.html
         return len(self.source_pages) + len(self.person_pages) + len(self.place_pages) + 2
