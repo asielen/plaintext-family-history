@@ -203,7 +203,7 @@
     {
       "path": ".fha/browser-companion/manifest.json",
       "category": "operating",
-      "sha256": "6aa80309a30924bfb12506f50e9889d93cf177befe6c55888c338774b16e679b",
+      "sha256": "d4b95e71013707384547e08fbce3122be59d25c157bd4f48643bb9aa3dbc74bb",
       "spec_version": "1.2",
       "src": "browser-companion/manifest.json"
     },
@@ -215,9 +215,16 @@
       "src": "browser-companion/src/background.js"
     },
     {
+      "path": ".fha/browser-companion/src/batch.js",
+      "category": "operating",
+      "sha256": "1a3f799e60c8c36ce6f5eec4baf09f6ba49451e20e7295e7872f1eb6e9498921",
+      "spec_version": "1.2",
+      "src": "browser-companion/src/batch.js"
+    },
+    {
       "path": ".fha/browser-companion/src/content.js",
       "category": "operating",
-      "sha256": "724a8b7a4e5b6a4b5a698b389bc97d7430c1c1f4e1533fcdea5c1ab0fb90f45c",
+      "sha256": "30438eca0b6a148b43ffa00ac81893f9a5de37cde146a150011f79a617348fe1",
       "spec_version": "1.2",
       "src": "browser-companion/src/content.js"
     },
@@ -229,11 +236,25 @@
       "src": "browser-companion/src/lib/ancestry-record.js"
     },
     {
+      "path": ".fha/browser-companion/src/lib/batch-sources.js",
+      "category": "operating",
+      "sha256": "37e385d1a2f615b37e3128c52a48f738f050e79091e8570c29efd6d135266ec4",
+      "spec_version": "1.2",
+      "src": "browser-companion/src/lib/batch-sources.js"
+    },
+    {
       "path": ".fha/browser-companion/src/lib/bundle.js",
       "category": "operating",
       "sha256": "84b0dcd6406c8981fa19c0295935dc7c64be210597391c28d6d0eabac60ae765",
       "spec_version": "1.2",
       "src": "browser-companion/src/lib/bundle.js"
+    },
+    {
+      "path": ".fha/browser-companion/src/lib/capture-batch.js",
+      "category": "operating",
+      "sha256": "4092babbf9d49ee7de80e350c74275ee71b478145c904021e8bc78416f2d0cb5",
+      "spec_version": "1.2",
+      "src": "browser-companion/src/lib/capture-batch.js"
     },
     {
       "path": ".fha/browser-companion/src/lib/capture-json-pure.js",
@@ -259,7 +280,7 @@
     {
       "path": ".fha/browser-companion/src/lib/familysearch-record.js",
       "category": "operating",
-      "sha256": "d11d9989e92a2484c0c93e3006751482b0e9e05fc3cb215dbc9968b319b6dd6f",
+      "sha256": "83db5b0f89f1f89e105ced7c55e2483201f283dfa89b6f571844254f46a82927",
       "spec_version": "1.2",
       "src": "browser-companion/src/lib/familysearch-record.js"
     },
@@ -273,7 +294,7 @@
     {
       "path": ".fha/browser-companion/src/lib/findagrave.js",
       "category": "operating",
-      "sha256": "f10581814145bc179162f1b05c5fd379e73424f891a9423a48a01d1256390a49",
+      "sha256": "3881c97a700a415586018f257822b6e6e38ca891e366dca971ce70eeffc9245b",
       "spec_version": "1.2",
       "src": "browser-companion/src/lib/findagrave.js"
     },
@@ -301,7 +322,7 @@
     {
       "path": ".fha/browser-companion/src/lib/newspapers.js",
       "category": "operating",
-      "sha256": "2f0123875831d6368540dc5e63857ad8e99c8b395bf0ba12875c92dbefc05cbd",
+      "sha256": "cdec7aedfb9588ba2176e1f7738e53930791417c9ef2dc7d54092f1f75648f87",
       "spec_version": "1.2",
       "src": "browser-companion/src/lib/newspapers.js"
     },
@@ -329,14 +350,14 @@
     {
       "path": ".fha/browser-companion/src/panel.html",
       "category": "operating",
-      "sha256": "e8c284c16dc204795539fce7a51f253804debe973f3bab906b76055c457a53cf",
+      "sha256": "470ea31309e5d22e4e531d41de5aeae3afa08bd09ed8a2c3c0f19a744a9dfd44",
       "spec_version": "1.2",
       "src": "browser-companion/src/panel.html"
     },
     {
       "path": ".fha/browser-companion/src/panel.js",
       "category": "operating",
-      "sha256": "b031a572527b9de138a8be0285a724987dd3d98e4b45a89beeb0ff7a9efe5ff8",
+      "sha256": "0edbf8952b9ab40888fab5b09e31ccd7c17bc84d86274114aec71812f545e55b",
       "spec_version": "1.2",
       "src": "browser-companion/src/panel.js"
     },

@@ -731,6 +731,29 @@ class IngestTestCase(unittest.TestCase):
         _, pending2 = capture.staged_bundles({'capture_staging': str(self.staging)})
         self.assertEqual(pending2, [])
 
+    def test_batch_ledger_files_at_the_staging_root_are_never_filed(self) -> None:
+        # The capture add-on's batch downloads (switched off unless the owner
+        # turns them on) write a reading copy of each queue beside the
+        # bundles: `_{site}-batch-ledger.json`, a FILE at the staging root.
+        # A sweep files bundle folders only, so the ledgers stay exactly
+        # where they are, and are no bundle to count, file or report.
+        self._two_clean_bundles()
+        ledgers = {}
+        for site in ('newspapers', 'ancestry', 'familysearch', 'findagrave'):
+            path = self.staging / f'_{site}-batch-ledger.json'
+            body = json.dumps({'note': 'ledger', 'entries': []}).encode('utf-8')
+            path.write_bytes(body)
+            ledgers[path] = body
+        _, pending = capture.staged_bundles({'capture_staging': str(self.staging)})
+        self.assertEqual(len(pending), 2)
+        res = self._ingest()
+        self.assertEqual(res.exit_code, EXIT_CLEAN)
+        self.assertEqual(res.data['ingested'], 2)
+        self.assertEqual(len(self._stubs()), 2)
+        for path, body in ledgers.items():
+            self.assertEqual(path.read_bytes(), body)
+        self.assertFalse(any('ledger' in p.name for p in (self.archive / 'inbox').rglob('*')))
+
     def test_doctor_warns_on_pending_bundles(self) -> None:
         import doctor
         self._two_clean_bundles()

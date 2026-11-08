@@ -293,3 +293,23 @@ test('fagStatusMessage: removed, refused, slow down, trouble', () => {
   assert.match(fag.fagStatusMessage(502, 'gallery'), /having trouble/);
   assert.match(fag.fagStatusMessage(418, 'memorial'), /HTTP 418/);
 });
+
+test('Codex 4503786095/-098: a photo answer says when to slow down (429 and 503) and when its cause passes', async () => {
+  const w = {};
+  new Function('window', fs.readFileSync(path.join(__dirname, '..', 'src', 'lib', 'findagrave.js'), 'utf8'))(w);
+  const fetchPhoto = w.FHA.findagrave.fetchPhoto;
+  const url = 'https://images.findagrave.com/photos/2020/45/900000001_aaaa1111.jpeg';
+  const answer = (status) => async () => ({ ok: status < 400, status, url, headers: { get: () => 'text/html' } });
+  for (const [status, slowDown, transient] of [[429, true, true], [503, true, true], [500, false, true],
+    [502, false, true], [403, false, false], [404, false, false]]) {
+    const got = await fetchPhoto(url, answer(status));
+    assert.strictEqual(got.ok, false);
+    assert.strictEqual(!!got.slowDown, slowDown, 'HTTP ' + status + ' slowDown');
+    assert.strictEqual(!!got.transient, transient, 'HTTP ' + status + ' transient');
+  }
+  const dropped = await fetchPhoto(url, async () => { throw new TypeError('Failed to fetch'); });
+  assert.strictEqual(dropped.transient, true);
+  const broke = await fetchPhoto(url, async () => ({ ok: true, status: 200, url, headers: { get: () => 'image/jpeg' },
+    blob: async () => { throw new TypeError('network error'); } }));
+  assert.strictEqual(broke.transient, true);
+});
