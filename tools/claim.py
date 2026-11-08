@@ -207,6 +207,7 @@ CODE MAP
                                 evidence/anchor/notes)
     run_claim                 - validate, locate, edit ONE claim, return a Result
     _cannot_write             - the one "cannot write" wording, single claim or batch
+    _changed_meanwhile        - why a batch left a record someone else wrote mid-batch
     run_claim_batch           - dedupe, all-or-nothing validate, edit each claim via
                                 run_claim in memory, write each record once
     _cmd_claim
@@ -501,7 +502,8 @@ def _place_match_note(cid_display: str, match: dict, *, dry_run: bool = False) -
     return None
 
 
-def _place_registry_error_note(place_text: str, error: str, *, dry_run: bool = False) -> str:
+def _place_registry_error_note(place_text: str, error: str, *, dry_run: bool = False,
+                               already: bool = False) -> str:
     """The human-facing warning for a `_resolve_place_text_for_write` result
     whose `registry_error` is set (Codex review, PR #150) - `places.yaml`
     exists but could not be parsed, so the write-time lookup never ran at
@@ -518,8 +520,13 @@ def _place_registry_error_note(place_text: str, error: str, *, dry_run: bool = F
     same breath as the write error. `dry_run=True` phrases the trailing
     sentence as a preview ("would still be written"); the live wording
     ("was still written") is only ever reached once the write has happened.
+    `already` is the third outcome: the claim already said this, so nothing
+    was written at all (`run_claim`'s `already-done`).
     """
-    outcome = 'would still be written' if dry_run else 'was still written'
+    if already:
+        outcome = 'already said this'
+    else:
+        outcome = 'would still be written' if dry_run else 'was still written'
     return (
         f'place_text {place_text!r} could not be checked against the place registry - '
         f'places/places.yaml has a problem: {error}. Run `fha lint` to find and fix it; '
@@ -1082,6 +1089,13 @@ def _cannot_write(record_path: Path, error: OSError) -> str:
     return f'cannot write {record_path}: {error}'
 
 
+def _changed_meanwhile(record_path: Path) -> str:
+    """Why a batch left a record alone: someone else wrote it while it ran."""
+    return (f'{record_path} was changed by something else (another program, or a '
+            'second fha session) while this batch ran, so the batch did not write '
+            'it - nothing in it was changed by this batch, and the other edit is kept.')
+
+
 def run_claim(
     archive_root: Path,
     *,
@@ -1101,7 +1115,7 @@ def run_claim(
     notes: str | None = None,
     dry_run: bool = False,
     _record_hint: Path | None = None,
-    _pending: dict[Path, str] | None = None,
+    _pending: dict[Path, tuple[str, str]] | None = None,
 ) -> Result:
     """Edit one claim (status move and/or field corrections); return a Result.
 
@@ -1163,8 +1177,10 @@ def run_claim(
     unlinked, but a warning names the parse problem and points at `fha
     lint`, rather than looking like an ordinary miss.
 
-    `_pending` is `run_claim_batch`'s in-memory buffer (#225 follow-up): the
-    record's text-to-be, keyed by path. When given, the record is read from
+    `_pending` is `run_claim_batch`'s in-memory buffer (#225 follow-up):
+    path -> (the record's text as first read, its text-to-be). The first half
+    lets the batch see, just before it writes, whether something else changed
+    the file meanwhile. When given, the record is read from
     the buffer if an earlier claim in the batch already edited it, and the
     finished text is put back there INSTEAD of written - every check above
     still runs per claim, and the batch writes each record once at the end.
@@ -1300,7 +1316,7 @@ def run_claim(
         # ending of a CRLF-authored record on Linux (or an LF one on Windows) -
         # the claims-surgery byte-faithful contract (read_text_exact docstring).
         if _pending is not None and record_path in _pending:
-            text = _pending[record_path]   # an earlier claim in this batch edited it
+            text = _pending[record_path][1]   # an earlier claim in this batch edited it
         else:
             text = read_text_exact(record_path)
     except OSError as e:
@@ -1444,6 +1460,9 @@ def run_claim(
         else:
             result.add('info', f'{fmt_id_display(cid)}: {said} - nothing to change, so '
                                'the file was left as it was.', path=record_path)
+        if registry_error_note is not None:
+            result.add('warning', _place_registry_error_note(
+                place_text, registry_error_note, already=True))
         return result
 
     if dry_run:
@@ -1463,7 +1482,8 @@ def run_claim(
 
     if _pending is not None:
         # A batch writes each record once, after every claim in it is edited.
-        _pending[record_path] = out_text
+        first_read = _pending[record_path][0] if record_path in _pending else text
+        _pending[record_path] = (first_read, out_text)
     else:
         try:
             # Atomic (temp + os.replace): a failed write must leave the record
@@ -1561,7 +1581,9 @@ def run_claim_batch(
     as they were when each was written as it went. A record that fails to
     write stops the writing: its claims are not applied, the records already
     written stay written, and nothing after it is written (no write after a
-    known failure). Under `--dry-run` nothing is held or written: each claim
+    known failure). So does a record that something else changed while the
+    batch held its edits: it is left alone rather than overwritten, so the
+    other edit survives. Under `--dry-run` nothing is held or written: each claim
     previews against the file as it stands, the same preview as ever.
 
     A claim that already has the requested status and review date
@@ -1707,7 +1729,7 @@ def run_claim_batch(
     # every per-claim check and message - which hands its finished text to
     # `pending` instead of writing it. A dry run never fills `pending`: each
     # claim previews against the file as it stands, exactly as before.
-    pending: dict[Path, str] | None = None if dry_run else {}
+    pending: dict[Path, tuple[str, str]] | None = None if dry_run else {}
     planned: list[tuple[str, Result]] = []
     stopped: Result | None = None
     for cid in ids:
@@ -1726,13 +1748,24 @@ def run_claim_batch(
     # same outcome as when each claim was written as it went. A failed write
     # stops here: that record's claims are not applied, records already
     # written stay written, and nothing after it is written.
+    #
+    # Holding the edits in memory opens a window (seconds, on a big batch)
+    # between reading a record and writing it. If the human saves a note in
+    # that file meanwhile, or a second session's `fha claim` writes it,
+    # writing our copy would silently throw their edit away. So each record
+    # is read again just before its write and must still match what the batch
+    # first read; if it does not, it is left alone and the batch stops there,
+    # exactly as for a failed write, so a rerun picks up the claims left.
     written: set[Path] = set()
-    write_failed: tuple[Path, OSError] | None = None
-    for path, out_text in (pending or {}).items():
+    write_failed: tuple[Path, str] | None = None
+    for path, (first_read, out_text) in (pending or {}).items():
         try:
+            if read_text_exact(path) != first_read:
+                write_failed = (path, _changed_meanwhile(path))
+                break
             write_text_exact_atomic(path, out_text)
         except OSError as e:
-            write_failed = (path, e)
+            write_failed = (path, _cannot_write(path, e))
             break
         written.add(path)
         result.note_changed(path)
@@ -1760,7 +1793,7 @@ def run_claim_batch(
         # explicit --reviewed rides along either way, so a finished batch
         # never ends up split across two review dates.
         if write_failed is not None:
-            result.add('error', _cannot_write(*write_failed))
+            result.add('error', write_failed[1])
             exit_code, status_word = EXIT_FAILURE, 'failed'
         else:
             exit_code = stopped.exit_code
@@ -1804,14 +1837,18 @@ def run_claim_batch(
         # Counted as applied (the archive already says what was asked), and
         # said plainly, so a rerun after a stopped batch reads as finished
         # rather than as a second round of edits.
-        if dry_run:
-            said = 'are already', 'would not be rewritten'
+        one = already == 1
+        if already == len(ids):
+            lead = f'All {already} claims'
         else:
-            said = 'were already', 'were not rewritten'
-        how_many = f'All {already}' if already == len(ids) else f'{already} of {len(ids)}'
+            lead = f'{already} of the {len(ids)} claims'
+        if dry_run:
+            verb, outcome = ('is' if one else 'are'), 'would be'
+        else:
+            verb, outcome = ('was' if one else 'were'), 'was'
         result.add('info',
-                   f'{how_many} claims {said[0]} {status} with that review date, so '
-                   f'their files {said[1]}.')
+                   f'{lead} {verb} already {status} with that review date - '
+                   f'nothing {outcome} rewritten for {"it" if one else "them"}.')
     if dry_run:
         result.add('info',
                    f'[dry-run] {len(ids)} claims previewed. No file written. '

@@ -938,9 +938,22 @@ class WindowsScannerLockTests(unittest.TestCase):
         self.slept.assert_not_called()
         self.assertEqual(self._listing(), ['census.md'])
 
-    def test_the_safety_copy_waits_out_a_lock_too(self) -> None:
-        # The originals backup lands its copy the same way (a `.part` temp
-        # renamed into place), so it shares the wait.
+    def _ctrl_c_during_the_wait(self):
+        def interrupted(_seconds):
+            raise KeyboardInterrupt
+        self.slept.side_effect = interrupted
+
+    def test_ctrl_c_during_the_wait_leaves_no_temp_file(self) -> None:
+        # The wait is the one place a human is likely to press Ctrl+C. The
+        # interrupt must reach him, and the hidden temp must not stay behind.
+        self._ctrl_c_during_the_wait()
+        with self._on(True), self._locked_for(10_000):
+            with self.assertRaises(KeyboardInterrupt):
+                _lib.write_text_exact_atomic(self.record, 'NEW\n')
+        self.assertEqual(self.record.read_text(encoding='utf-8'), 'OLD\n')
+        self.assertEqual(self._listing(), ['census.md'], 'the temp file was left behind')
+
+    def _backup_policy(self):
         archive = self.dir / 'archive'
         photo = archive / 'photos' / 'farm.jpg'
         photo.parent.mkdir(parents=True)
@@ -948,6 +961,20 @@ class WindowsScannerLockTests(unittest.TestCase):
         safety = self.dir / 'safety'
         policy = _lib.OriginalBackup(archive, {'originals_backup': str(safety)})
         self.assertIsNone(policy.refusal)
+        return policy, photo, safety
+
+    def test_ctrl_c_during_the_safety_copy_wait_leaves_no_part_file(self) -> None:
+        policy, photo, safety = self._backup_policy()
+        self._ctrl_c_during_the_wait()
+        with self._on(True), self._locked_for(10_000):
+            with self.assertRaises(KeyboardInterrupt):   # not turned into a refusal
+                policy.ensure(photo)
+        self.assertEqual([p for p in safety.rglob('*') if p.is_file()], [])
+
+    def test_the_safety_copy_waits_out_a_lock_too(self) -> None:
+        # The originals backup lands its copy the same way (a `.part` temp
+        # renamed into place), so it shares the wait.
+        policy, photo, safety = self._backup_policy()
         with self._on(True), self._locked_for(2):
             policy.ensure(photo)
         copies = [p for p in safety.rglob('*') if p.is_file()]

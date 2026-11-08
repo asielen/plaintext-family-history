@@ -1049,12 +1049,16 @@ def run_media_dedupe(
             with open(tmp, 'w', encoding='utf-8') as fh:
                 fh.write(json.dumps(payload, indent=2) + '\n')
             replace_with_retry(tmp, dest)   # waits out a Windows scanner on a re-run's report
-        except OSError as e:
+        except BaseException as e:
+            # Any exception (a Ctrl+C during the retry wait too) drops the temp;
+            # only an OSError becomes the plain refusal below.
             if os.path.exists(tmp):
                 try:
                     os.remove(tmp)
                 except OSError:
                     pass
+            if not isinstance(e, OSError):
+                raise
             result.data['status'] = 'usage'
             result.exit_code = DEDUPE_USAGE
             result.ok = False

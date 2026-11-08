@@ -3068,11 +3068,15 @@ class OriginalBackup:
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src, tmp)
             replace_with_retry(tmp, target)
-        except OSError as e:
+        except BaseException as e:
+            # Any exception (a Ctrl+C during the retry wait too) drops the
+            # half-made `.part`; only an OSError becomes a refusal.
             try:
                 tmp.unlink()
             except OSError:
                 pass
+            if not isinstance(e, OSError):
+                raise
             raise BackupRefused(
                 f'refused to write to {self._label(src)}: its safety copy could '
                 f'not be made at {target} ({e}). Nothing was written to the file. '
@@ -3410,9 +3414,11 @@ def write_text_exact_atomic(path: str | Path, text: str) -> None:
         # Retried on Windows while a scanner still holds the record from the
         # last write (replace_with_retry); a final failure lands below.
         replace_with_retry(tmp_name, str(path))
-    except OSError:
+    except BaseException:
         # The replace never happened, so the original (if any) still stands;
-        # drop the partial temp so no untracked file is left behind.
+        # drop the partial temp so no untracked file is left behind. Any
+        # exception, not only OSError: a Ctrl+C during the retry wait would
+        # otherwise leave a hidden `.name.….tmp` beside the record.
         try:
             os.unlink(tmp_name)
         except OSError:

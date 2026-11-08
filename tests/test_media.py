@@ -254,6 +254,21 @@ class DedupeHappyPathTests(unittest.TestCase):
         self.assertEqual(payload['results'][0]['path'], 'incoming/new.m4a')
         self.assertNotIn(str(self.tmp), json.dumps(payload))
 
+    def test_ctrl_c_while_landing_the_json_report_leaves_no_temp_file(self):
+        # #225 follow-up: the report's rename waits out a Windows lock, and a
+        # Ctrl+C in that wait must not leave `report.json.tmp-<pid>` behind.
+        incoming = _write(self.incoming_dir / 'new.m4a', b'nothing like this exists yet')
+        out = self.tmp / 'report.json'
+
+        def interrupted(src, dst):
+            raise KeyboardInterrupt
+        with mock.patch.object(media, 'replace_with_retry', interrupted):
+            with self.assertRaises(KeyboardInterrupt):
+                media.run_media_dedupe(self.archive, self.cfg, incoming_args=[str(incoming)],
+                                       json_path=str(out))
+        self.assertEqual(sorted(p.name for p in self.tmp.iterdir()),
+                         ['archive', 'incoming'])
+
     def test_json_path_landing_on_the_incoming_file_is_refused_before_hashing(self):
         incoming = _write(self.incoming_dir / 'new.m4a', b'nothing like this exists yet')
         result = media.run_media_dedupe(self.archive, self.cfg, incoming_args=[str(incoming)],

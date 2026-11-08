@@ -2434,6 +2434,63 @@ class OneWritePerRecordTests(unittest.TestCase):
         self.assertIn(f'`fha claim {self.b[0]} {c[0]} --status rejected`',
                       ' '.join(m.text for m in result.messages))
 
+    def _edit_meanwhile(self, path: Path, after_calls: int):
+        """Patch run_claim so that, after `after_calls` claims are edited in
+        memory, someone else saves a note into `path` - a hand edit, or a
+        second session's `fha claim` - before the batch writes anything."""
+        real = claim.run_claim
+        seen = {'n': 0}
+
+        def run_then_edit(*a, **k):
+            out = real(*a, **k)
+            seen['n'] += 1
+            if seen['n'] == after_calls:
+                text = path.read_text(encoding='utf-8')
+                path.write_text(text.replace('*(none yet)*', 'A NOTE TYPED MEANWHILE'),
+                                encoding='utf-8')
+            return out
+        return mock.patch.object(claim, 'run_claim', run_then_edit)
+
+    def test_an_edit_made_while_the_batch_runs_is_never_overwritten(self) -> None:
+        # Writing each record once means holding its edits in memory for a
+        # moment; a save that lands in that moment must survive, and the batch
+        # must stop plainly instead of quietly writing over it.
+        with self._edit_meanwhile(self.first, after_calls=1):
+            result = claim.run_claim_batch(self.root, claim_ids=[self.a[0], self.a[1]],
+                                           status='accepted', reviewed='2026-07-20')
+        text = self.first.read_text(encoding='utf-8')
+        self.assertIn('A NOTE TYPED MEANWHILE', text)
+        self.assertNotIn('status: accepted', text)
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertEqual(result['status'], 'failed')
+        self.assertEqual(result['applied'], [])
+        self.assertEqual(result.changed, [])
+        msgs = '\n'.join(m.text for m in result.messages)
+        self.assertIn(f'{self.first} was changed by something else', msgs)
+        self.assertIn('nothing in it was changed by this batch', msgs)
+        self.assertIn(f'`fha claim {self.a[0]} {self.a[1]} --status accepted '
+                      '--reviewed 2026-07-20`', msgs)
+        # The rerun it names finishes the job and keeps the note.
+        again = claim.run_claim_batch(self.root, claim_ids=[self.a[0], self.a[1]],
+                                      status='accepted', reviewed='2026-07-20')
+        self.assertEqual(again['status'], 'ok')
+        text = self.first.read_text(encoding='utf-8')
+        self.assertIn('A NOTE TYPED MEANWHILE', text)
+        self.assertEqual(text.count('status: accepted'), 2)
+
+    def test_records_before_the_changed_one_stay_written(self) -> None:
+        with self._edit_meanwhile(self.second, after_calls=2):
+            result = claim.run_claim_batch(self.root, claim_ids=[self.a[0], self.b[0]],
+                                           status='accepted', reviewed='2026-07-20')
+        self.assertEqual(result['applied'], [self.a[0]])
+        self.assertEqual(result.changed, [str(self.first)])
+        self.assertEqual(self._status(self.first)[self.a[0]], 'accepted')
+        self.assertIn('A NOTE TYPED MEANWHILE', self.second.read_text(encoding='utf-8'))
+        self.assertEqual(self._status(self.second)[self.b[0]], 'suggested')
+        self.assertEqual([d['status'] for d in result['results']], ['ok', 'failed'])
+        self.assertIn(f'Stopped at {self.b[0]}: 1 of 2 claims applied ({self.a[0]})',
+                      ' '.join(m.text for m in result.messages))
+
     def test_dry_run_preview_is_each_claims_own_preview(self) -> None:
         # The preview is unchanged: each claim's diff against the file as it
         # stands, exactly what a single-claim dry run shows.
@@ -2517,7 +2574,8 @@ class BatchRerunIsANoOpTests(unittest.TestCase):
         self.assertEqual(result.changed, [str(self.source)])
         rec = {c['id']: c for c in read_record(self.source)['claims']}
         self.assertEqual(rec[self.BOTH[1]]['status'], 'accepted')
-        self.assertIn('1 of 2 claims were already accepted',
+        self.assertIn('1 of the 2 claims was already accepted with that review date - '
+                      'nothing was rewritten for it.',
                       ' '.join(m.text for m in result.messages))
 
     def test_one_claim_already_done_is_a_success_with_no_write(self) -> None:
@@ -2540,6 +2598,16 @@ class BatchRerunIsANoOpTests(unittest.TestCase):
         self.assertEqual([d['status'] for d in result['results']], ['ok', 'ok'])
         rec = {c['id']: c for c in read_record(self.source)['claims']}
         self.assertEqual(str(rec[self.BOTH[0]]['reviewed']), '2026-07-21')
+
+    def test_an_already_done_edit_still_warns_about_a_broken_place_registry(self) -> None:
+        claim.run_claim(self.root, claim_id=self.BOTH[0], place_text='Topeka, Kansas')
+        _write_registry(self.root, 'not_a_list: true\n')
+        result = claim.run_claim(self.root, claim_id=self.BOTH[0], place_text='Topeka, Kansas')
+        self.assertEqual(result['status'], 'already-done')
+        warnings = [m.text for m in result.messages if m.level == 'warning']
+        self.assertTrue(any('places.yaml has a problem' in w for w in warnings))
+        self.assertTrue(any('already said this' in w for w in warnings))
+        self.assertFalse(any('was still written' in w for w in warnings))
 
     def test_dry_run_of_a_rerun_says_nothing_would_change(self) -> None:
         before = self._accept_then_freeze()
