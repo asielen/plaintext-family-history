@@ -87,7 +87,8 @@ two ways:
 - **Backups are files you save yourself,** into your Downloads folder. A backup, like the shared
   data-folder file, holds what you looked at and marked - never this computer's folder names.
 - **In Advanced mode the helper only reads your archive.** It never writes to, moves or changes
-  anything in it. It writes only its own settings file and the data folder you choose.
+  anything in it. It writes only its own settings folder (its settings and caches) and the data
+  folder you choose.
 
 ## Advanced mode: connect a family archive
 
@@ -200,8 +201,10 @@ folder (which you might share) and never in the archive:
 Every line is optional: with no `data_dir` the default folder above is used, with no `archive`
 nothing is marked, and `capture_staging` is needed only when the capture add-on downloads
 somewhere other than what the archive's `fha.yaml` says. The same folder also holds the
-two-line launcher the browser starts (`seenit_host.cmd` / `seenit_host`) and a short-lived
-cache of the last archive read.
+two-line launcher the browser starts (`seenit_host.cmd` / `seenit_host`) and two caches: the
+last archive read (`known-cache.json`), and what each archive file said when it was last read
+(`known-files.json`), so a new visit re-reads only the files that changed. Both are safe to
+delete; the next visit just takes longer.
 
 **To remove the helper:** delete that settings folder. On Windows also delete the registry key
 `HKEY_CURRENT_USER\Software\Google\Chrome\NativeMessagingHosts\com.genealogy.seenit`; on a

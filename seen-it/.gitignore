@@ -8,6 +8,8 @@ seen-it-*.json
 known-config.json
 known-cache.json
 .known-cache.json
+# what the helper last read from each archive file: absolute paths
+known-files.json
 .writing-*
 # a helper settings file, if anyone points the settings folder here
 config.json

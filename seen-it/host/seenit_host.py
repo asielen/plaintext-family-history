@@ -73,6 +73,14 @@ Chrome starts this program fresh for every message. Each message is a 4-byte
 little-endian length followed by that many bytes of UTF-8 JSON, both ways, and
 a reply is capped at 1 MB, which is why `read` and `known` answer in pages.
 
+Because each message is a fresh start, two small caches sit beside the
+settings file (this computer only; never in the archive, never in the synced
+data folder): known-cache.json, the last answer to `known`, which its later
+pages reuse for 10 minutes; and known-files.json, what each archive file said
+the last time it was read, keyed on the file's size and modification time, so
+the first page of a visit reads only the files changed since (_KnownFiles).
+Deleting either costs one slower scan, nothing else.
+
 The installers run it from the command line instead: `--install` saves the
 settings, writes a small launcher beside them, and registers that launcher
 with the browser (current user only). `--setup` saves the settings alone.
@@ -91,9 +99,14 @@ Code map
                         resolve_data_dir
   the archive's config  read_fha_yaml, _parse_fha_yaml_minimal, resolve_root,
                         archive_problem, scan_folders
-  what the archive has  _holds_saved_image, _holds_saved_file, _keys_from_site_data,
+  what the archive has  _FolderFiles (one listing per folder per scan),
+                        _holds_saved_image, _holds_saved_file, _keys_from_site_data,
                         _keys_from_url, scan_known,
                         known_items
+  remembering files     _KnownFiles (known-files.json: what each file said, by
+                        size and mtime), _reader_fingerprint, _replace_with_retry,
+                        _source_record_facts, _stub_facts, _capture_json_facts,
+                        _site_data_facts, _site_data_still_true
   the message loop      read_message, send, safe_path, describe, _set_config,
                         handle, main
   installer support     host_manifest, write_launcher, browser_manifest_dirs,
@@ -101,7 +114,9 @@ Code map
 """
 
 import argparse
+import functools
 import glob
+import hashlib
 import json
 import os
 import re
@@ -110,7 +125,7 @@ import struct
 import sys
 import tempfile
 import time
-from pathlib import Path
+from pathlib import Path, PurePath
 
 HOST_NAME = 'com.genealogy.seenit'
 # The add-on's ID. It is fixed by the public `key` in manifest.json, so it is
@@ -497,7 +512,75 @@ def scan_folders(settings, data_dir=None, use_yaml=True):
 IMAGE_EXTS = frozenset({'.jpg', '.jpeg', '.png', '.tif', '.tiff', '.gif', '.webp', '.jp2'})
 
 
-def _holds_saved_image(path, roles):
+class _FolderFiles:
+    """What each folder beside a site-data file holds, listed once per scan.
+
+    Whether a record's scan or a memorial's photo is saved is answered from the
+    files beside its site-data file (_holds_saved_image, _holds_saved_file).
+    A filed census folder can hold a couple of thousand site-data files and
+    twice as many scans, and listing that whole folder again for every one of
+    them - over 17 million names on one real archive - was most of the minute
+    a first page of "already looked at" marks used to take. So each folder is
+    listed once per scan, and its files are indexed by every S-id their names
+    contain.
+
+    One instance lives for one scan only: a folder listed for an earlier
+    request in the same process would be out of date, and a deleted scan must
+    stop counting as saved on the very next scan.
+    """
+
+    def __init__(self):
+        self._listed = {}
+        self._capture = {}
+
+    def files(self, folder):
+        """`(all files, files by S-id)` in `folder`, or None when it cannot be listed.
+
+        Each file is `(lower name, lower stem, lower suffix)`, split the way
+        pathlib splits it (a name like `.jpg` has no suffix). By S-id means:
+        under every `s-` + 10 characters slice of the lower-cased name, so
+        `sid in name.lower()` becomes one dictionary lookup.
+        """
+        key = str(folder)
+        if key not in self._listed:
+            rows, by_sid = [], {}
+            try:
+                with os.scandir(folder) as entries:
+                    for entry in entries:
+                        try:
+                            if not entry.is_file():   # follows links, as Path.is_file does
+                                continue
+                        except OSError:
+                            continue
+                        name = entry.name.lower()
+                        pure = PurePath(entry.name)
+                        row = (name, pure.stem.lower(), pure.suffix.lower())
+                        rows.append(row)
+                        for i in range(len(name) - 11):
+                            if name.startswith('s-', i):
+                                by_sid.setdefault(name[i:i + 12], []).append(row)
+                self._listed[key] = (rows, by_sid)
+            except OSError:
+                self._listed[key] = None
+        return self._listed[key]
+
+    def capture_assets(self, folder):
+        """`(has capture.json, its assets list or None)`, read once per folder."""
+        key = str(folder)
+        if key not in self._capture:
+            cap = Path(folder) / 'capture.json'
+            assets = None
+            present = cap.is_file()
+            if present:
+                try:
+                    assets = json.loads(cap.read_text(encoding='utf-8')).get('assets')
+                except (OSError, ValueError, AttributeError):
+                    assets = None
+            self._capture[key] = (present, assets)
+        return self._capture[key]
+
+
+def _holds_saved_image(path, roles, folders=None):
     """Does the bundle or source folder beside this site-data file hold a saved
     image - not merely the id of one?
 
@@ -506,30 +589,28 @@ def _holds_saved_image(path, roles):
     stand-in, not the scan). Without one (an ingested inbox bundle, a filed
     source), an image file in the same folder counts - for a filed source,
     one carrying the same S-id as the site-data file.
+
+    `folders` (a _FolderFiles) shares one listing of each folder across a
+    whole scan; without it the folder is listed for this one question.
     """
+    folders = folders or _FolderFiles()
     folder = path.parent
-    cap = folder / 'capture.json'
-    if cap.is_file():
-        try:
-            assets = json.loads(cap.read_text(encoding='utf-8')).get('assets')
-        except (OSError, ValueError, AttributeError):
-            assets = None
-        if isinstance(assets, list):
-            return any(
-                isinstance(a, dict) and a.get('role') in roles and not a.get('provisional')
-                and a.get('file') and (folder / str(a['file'])).is_file()
-                for a in assets)
+    present, assets = folders.capture_assets(folder)
+    if present and isinstance(assets, list):
+        return any(
+            isinstance(a, dict) and a.get('role') in roles and not a.get('provisional')
+            and a.get('file') and (folder / str(a['file'])).is_file()
+            for a in assets)
     m = SID_RE.search(path.name)
     sid = m.group(1).lower() if m else None
-    try:
-        files = list(folder.iterdir())
-    except OSError:
+    listed = folders.files(folder)
+    if listed is None:
         return False
-    return any(f.suffix.lower() in IMAGE_EXTS and f.is_file() and (sid is None or sid in f.name.lower())
-               for f in files)
+    rows, by_sid = listed
+    return any(suffix in IMAGE_EXTS for _name, _stem, suffix in (rows if sid is None else by_sid.get(sid, ())))
 
 
-def _holds_saved_file(path, name):
+def _holds_saved_file(path, name, folders=None):
     """Does the bundle or source folder beside this site-data file hold the
     file its data names (a memorial photo the capture saved as `name`)?
 
@@ -538,20 +619,19 @@ def _holds_saved_file(path, name):
     bundle, and in a filed source by the name `fha process` gives it there -
     its old name, a role suffix and the source's S-id
     (`grave-1-grave-1_S-….jpg`), the S-id being the one in this file's name.
+
+    `folders` shares one listing of each folder across a scan, as for
+    _holds_saved_image.
     """
     name = Path(str(name or '')).name
     if not name:
         return False
+    folders = folders or _FolderFiles()
     folder = path.parent
-    cap = folder / 'capture.json'
-    if cap.is_file():
-        try:
-            assets = json.loads(cap.read_text(encoding='utf-8')).get('assets')
-        except (OSError, ValueError, AttributeError):
-            assets = None
-        if isinstance(assets, list):
-            return any(isinstance(a, dict) and str(a.get('file') or '') == name and not a.get('provisional')
-                       and (folder / name).is_file() for a in assets)
+    present, assets = folders.capture_assets(folder)
+    if present and isinstance(assets, list):
+        return any(isinstance(a, dict) and str(a.get('file') or '') == name and not a.get('provisional')
+                   and (folder / name).is_file() for a in assets)
     m = SID_RE.search(path.name)
     if not m:
         # an ingested inbox bundle: its files keep their names
@@ -560,13 +640,11 @@ def _holds_saved_file(path, name):
     # same shared folder is someone else's (or nobody's) - PR #221 review.
     sid = m.group(1).lower()
     stem, suffix = Path(name).stem.lower(), Path(name).suffix.lower()
-    try:
-        files = list(folder.iterdir())
-    except OSError:
+    listed = folders.files(folder)
+    if listed is None:
         return False
-    return any(f.is_file() and sid in f.name.lower() and f.suffix.lower() == suffix
-               and (f.stem.lower() == stem or f.stem.lower().startswith((stem + '-', stem + '_')))
-               for f in files)
+    return any(f_suffix == suffix and (f_stem == stem or f_stem.startswith((stem + '-', stem + '_')))
+               for _name, f_stem, f_suffix in listed[1].get(sid, ()))
 
 
 def _keys_from_site_data(data, image_saved=None, file_saved=None):
@@ -690,17 +768,305 @@ def _keys_from_url(url):
     return keys
 
 
-def scan_known(folders):
+# ── remembering what each file said ─────────────────────────────────────────
+#
+# Chrome starts a new helper for every message, so nothing kept in memory
+# survives from one visit to the next. The first page of "already looked at"
+# marks used to read every source record, inbox stub and site-data file in the
+# archive; what each file said is now remembered on disk instead, in
+# _KnownFiles, and only a file changed since the last scan is read again.
+
+# Bump when the cache file's own layout changes. Changes to how a file is READ
+# need no bump: _reader_fingerprint covers those.
+KNOWN_FILES_VERSION = 1
+# A file must sit unchanged this long before what it says is remembered. A
+# second save inside the window could land in the same mtime tick with the
+# same size and look untouched (FAT/exFAT drives keep mtimes to 2 s); not
+# remembering a just-saved file is git's "racily clean" rule, and costs one
+# extra read.
+KNOWN_FILES_SETTLE_SECONDS = 2.0
+# Windows refuses a rename onto a file another program has open for a moment
+# (antivirus, the search indexer). These are tools/_lib.py replace_with_retry's
+# numbers: this helper is standalone and imports nothing from the archive's
+# tools, so the rule is written twice on purpose - change both together.
+REPLACE_ATTEMPTS = 10
+REPLACE_DELAY_SECONDS = 0.2
+
+
+@functools.lru_cache(maxsize=1)
+def _reader_fingerprint():
+    """A stamp of the code that turns a file into item keys, or None.
+
+    The cache holds what each file said *as this code read it*. A new version
+    of the helper may read a file differently - a record address it newly
+    recognizes, a fixed rule for when a scan counts as saved - and an answer
+    the old code gave must not outlive it: it could keep a record "not in
+    archive" that the new code finds, or keep a mark the new code would drop.
+    So the stamp is this file's own content hash (every rule that reads a file
+    lives in it; it imports nothing but the standard library) plus the Python
+    version. Any update to the helper throws the cache away once. None (this
+    file will not read) turns the cache off for this process.
+    """
+    h = hashlib.sha256()
+    try:
+        h.update(Path(__file__).read_bytes())
+    except OSError:
+        return None
+    h.update(('python %d.%d' % sys.version_info[:2]).encode())
+    return h.hexdigest()
+
+
+def _replace_with_retry(src, dst):
+    """`os.replace`, retried a few times while Windows says the file is in use.
+
+    A copy of tools/_lib.py replace_with_retry (this helper is standalone):
+    only PermissionError, only on Windows, a bounded number of times; the last
+    PermissionError reaches the caller unchanged.
+    """
+    for attempt in range(1, REPLACE_ATTEMPTS + 1):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if os.name != 'nt' or attempt == REPLACE_ATTEMPTS:
+                raise
+            time.sleep(REPLACE_DELAY_SECONDS)
+
+
+class _KnownFiles:
+    """A disposable cache file remembering what each file the scan reads said.
+
+    One entry per file path: `[mtime_ns, size, facts]`. An entry is used only
+    while the file on disk still has exactly that size and modification time,
+    so an edit, a new capture or a restored backup is read afresh on the next
+    scan, and a file that is gone is never walked, so its entry is never
+    consulted. Only a clean read is remembered - a file that would not open
+    (held for a moment by a sync tool or a backup), would not decode, or held
+    broken JSON is read again every time - and only when what it said survives
+    a round trip through JSON unchanged.
+
+    What a site-data file means can also depend on OTHER files: whether the
+    scan or memorial photo it names is saved beside it. Those answers are
+    never trusted from the cache. The entry records each question reading the
+    file asked (`asked`) with its answer; every one is asked again against the
+    folder as it is now, and one different answer means the file is read
+    afresh. So deleting a scan takes its "saved" mark away on the next scan,
+    exactly as before.
+
+    Which way is safe: a stale "in archive" is the dangerous mistake for Seen
+    It. It is silent - he skips a record he never saved, and the capture
+    add-on's batches skip it too - while a wrong "not in archive" shows itself
+    as a second capture of something the archive already holds, which its own
+    checks catch. The cache is built to make neither: it can only skip a read
+    whose result it already holds for that very file, and anything it cannot
+    vouch for is read again. Where it must give up (a cache it cannot read or
+    trust), it reads everything, as the helper always did.
+
+    It lives with the helper's settings (this computer only, like
+    known-cache.json): never in the archive, which the helper only reads, and
+    never in the synced data folder.
+    """
+
+    def __init__(self, path):
+        self.path = Path(path)
+        self.reader = _reader_fingerprint()
+        self.entries = self._load()
+        self.loaded = dict(self.entries)
+        self.walked = set()
+        self.kept_roots = []
+        self.settled_before = time.time() - KNOWN_FILES_SETTLE_SECONDS
+
+    def _load(self):
+        """The stored entries, or {} - missing, damaged, another layout or
+        written by other reading code all just mean every file is read once more."""
+        if self.reader is None:
+            return {}
+        try:
+            raw = json.loads(self.path.read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            return {}
+        if (not isinstance(raw, dict) or raw.get('version') != KNOWN_FILES_VERSION
+                or raw.get('reader') != self.reader):
+            return {}
+        files = raw.get('files')
+        return files if isinstance(files, dict) else {}
+
+    def facts(self, p, extract, still_true):
+        """What file `p` says: from the cache when it is unchanged, else `extract(p)`.
+
+        `extract(p)` returns `(facts, clean)`; it is the scan's own reading of
+        one file, and whatever it raises reaches the caller as before.
+        `still_true(facts)` vets a remembered value - its shape (so a cache
+        damaged by hand costs a read, never a crash or a wrong answer) and, for
+        a site-data file, every answer it depends on, asked again now.
+        """
+        key = str(p)
+        self.walked.add(key)
+        try:
+            st = p.stat()   # stat BEFORE reading: a save landing in between
+        except OSError:     # reads as changed next time, never as remembered
+            st = None
+        entry = self.entries.get(key)
+        if (st is not None and isinstance(entry, list) and len(entry) == 3
+                and entry[0] == st.st_mtime_ns and entry[1] == st.st_size
+                and still_true(entry[2])):
+            return entry[2]
+        self.entries.pop(key, None)
+        facts, clean = extract(p)
+        if clean and st is not None and st.st_mtime < self.settled_before:
+            try:
+                same = json.loads(json.dumps(facts)) == facts
+            except (TypeError, ValueError):
+                same = False
+            if same:
+                self.entries[key] = [st.st_mtime_ns, st.st_size, facts]
+        return facts
+
+    def keep_under(self, root):
+        """Keep what is remembered under a folder that could not be reached this
+        time (a drive not plugged in), so plugging it back in is not a full re-read."""
+        self.kept_roots.append(os.path.join(str(root), ''))
+
+    def save(self):
+        """Write the cache back after a complete scan; a failure is ignored on purpose.
+
+        Entries for files the scan no longer found (deleted or moved) are
+        dropped. The cache only buys speed: a read-only settings folder, or
+        two helpers racing to replace the file, costs the next scan a re-read,
+        never a wrong answer, so there is nothing worth telling the human about.
+        """
+        kept = tuple(self.kept_roots)
+        self.entries = {k: v for k, v in self.entries.items()
+                        if k in self.walked or (kept and k.startswith(kept))}
+        if self.reader is None or self.entries == self.loaded:
+            return
+        tmp = None
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            fd, tmp = tempfile.mkstemp(prefix='.writing-', dir=str(self.path.parent))
+            with os.fdopen(fd, 'w', encoding='utf-8') as f:
+                json.dump({'version': KNOWN_FILES_VERSION, 'reader': self.reader,
+                           'files': self.entries}, f)
+            _replace_with_retry(tmp, self.path)
+            tmp = None
+        except OSError:
+            pass
+        finally:
+            if tmp:
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
+
+
+def _no_cache(p, extract, still_true):
+    """Read the file, as a scan without a cache always has."""
+    return extract(p)[0]
+
+
+def _is_keys(value):
+    return isinstance(value, list) and all(isinstance(k, str) for k in value)
+
+
+def _source_record_facts(p):
+    """The keys one source record names, and its S-id, from its own text."""
+    try:
+        text = p.read_text(encoding='utf-8')
+    except (OSError, UnicodeDecodeError):
+        return None, False
+    sm = SOURCE_ID_RE.search(_frontmatter(text) or text)
+    keys = [k for url in _frontmatter_urls(text) for k in _keys_from_url(url) if not k.startswith('fag:')]
+    keys += ['fagidx:%s' % mid for mid in sorted(set(FAG_MEMORIAL_RE.findall(text)))]
+    return {'sid': sm.group(1) if sm else None, 'keys': keys}, True
+
+
+def _is_source_facts(facts):
+    return (isinstance(facts, dict) and set(facts) == {'sid', 'keys'} and _is_keys(facts['keys'])
+            and (facts['sid'] is None or isinstance(facts['sid'], str)))
+
+
+def _stub_facts(p):
+    """The keys an inbox stub names: the page addresses in its frontmatter."""
+    try:
+        raw = p.read_text(encoding='utf-8')
+    except (OSError, UnicodeDecodeError):
+        return None, False
+    return [k for url in _frontmatter_urls(raw) for k in _keys_from_url(url)], True
+
+
+def _capture_json_facts(p):
+    """The keys a bundle's capture.json names: its page address."""
+    try:
+        data = json.loads(p.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return None, False
+    return (_keys_from_url(data.get('url')) if isinstance(data, dict) else []), True
+
+
+def _site_data_facts(p, folders):
+    """The keys one site-data file speaks for, plus each question about the
+    files beside it that deciding them asked, with its answer (_KnownFiles)."""
+    try:
+        data = json.loads(p.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return None, False
+    asked = []
+
+    def image_saved(roles):
+        answer = _holds_saved_image(p, roles, folders)
+        asked.append(['image', list(roles), answer])
+        return answer
+
+    def file_saved(name):
+        answer = _holds_saved_file(p, name, folders)
+        asked.append(['file', name, answer])
+        return answer
+
+    return {'keys': _keys_from_site_data(data, image_saved, file_saved), 'asked': asked}, True
+
+
+def _site_data_still_true(p, facts, folders):
+    """Is a remembered site-data reading still right: does every question it
+    asked get the same answer from the folder as it is now?
+
+    `_keys_from_site_data` decides only from the file's own data and these
+    answers, so the same data (same size and mtime) and the same answers, in
+    the same order, can only give the same keys.
+    """
+    if not (isinstance(facts, dict) and set(facts) == {'keys', 'asked'} and _is_keys(facts['keys'])
+            and isinstance(facts['asked'], list)):
+        return False
+    for q in facts['asked']:
+        if not (isinstance(q, list) and len(q) == 3 and isinstance(q[2], bool)):
+            return False
+        kind, arg, answer = q
+        if kind == 'image' and _is_keys(arg):
+            now = _holds_saved_image(p, tuple(arg), folders)
+        elif kind == 'file':
+            now = _holds_saved_file(p, arg, folders)
+        else:
+            return False
+        if now is not answer:
+            return False
+    return True
+
+
+def scan_known(folders, cache=None):
     """{key: {state, sid?, where}} for everything the folders hold.
 
     'filed' beats 'processed' beats 'captured': an item that is both waiting in
     the inbox and already filed shows as filed. `where` is only the name of the
     folder the file sits in, never a full path. Also returns the folders that
     could not be reached, so the add-on can say so.
+
+    `cache` (a _KnownFiles) remembers what each file said between scans; the
+    walk, its order and the answers are the same with it or without it.
     """
     out = {}
     missing = []
     rank = {'captured': 1, 'processed': 2, 'filed': 3}
+    beside = _FolderFiles()
+    facts = cache.facts if cache is not None else _no_cache
 
     def put(key, state, where, sid=None):
         old = out.get(key)
@@ -711,19 +1077,24 @@ def scan_known(folders):
             entry['sid'] = sid
         out[key] = entry
 
+    def site_data_keys(p):
+        found = facts(p, lambda p: _site_data_facts(p, beside),
+                      lambda f: _site_data_still_true(p, f, beside))
+        return found['keys'] if found is not None else []
+
+    def unreachable(root):
+        missing.append(str(root))
+        if cache is not None:
+            cache.keep_under(root)
+
     for root in folders.get('filed', []):
         root = _expand(root)
         if not root.is_dir():
-            missing.append(str(root))
+            unreachable(root)
             continue
         for p in root.rglob('*site-data*.json'):
             m = SID_RE.search(p.name)
-            try:
-                data = json.loads(p.read_text(encoding='utf-8'))
-            except (OSError, ValueError):
-                continue
-            for k in _keys_from_site_data(data, lambda roles, p=p: _holds_saved_image(p, roles),
-                                          lambda name, p=p: _holds_saved_file(p, name)):
+            for k in site_data_keys(p):
                 put(k, 'filed', p.parent.name, m.group(1) if m else None)
 
     # Source records. The page address a capture came from is kept in the
@@ -736,25 +1107,18 @@ def scan_known(folders):
     for root in folders.get('sources', []):
         root = _expand(root)
         if not root.is_dir():
-            missing.append(str(root))
+            unreachable(root)
             continue
         for p in root.rglob('*.md'):
-            try:
-                text = p.read_text(encoding='utf-8')
-            except (OSError, UnicodeDecodeError):
+            record = facts(p, _source_record_facts, _is_source_facts)
+            if record is None:
                 continue
-            sm = SOURCE_ID_RE.search(_frontmatter(text) or text)
-            sid = sm.group(1) if sm else None
-            for url in _frontmatter_urls(text):
-                for k in _keys_from_url(url):
-                    if not k.startswith('fag:'):
-                        put(k, 'filed', p.parent.name, sid)
-            for mid in set(FAG_MEMORIAL_RE.findall(text)):
-                put('fagidx:%s' % mid, 'filed', p.parent.name, sid)
+            for k in record['keys']:
+                put(k, 'filed', p.parent.name, record['sid'])
 
     for root in folders.get('required', []):
         if not _expand(root).is_dir():
-            missing.append(str(_expand(root)))
+            unreachable(_expand(root))
     for root in _globbed(folders.get('captured', [])):
         root = Path(root)
         if not root.is_dir():
@@ -780,26 +1144,18 @@ def scan_known(folders):
             # "processed" is not all done.
             inside = [x.lower() for x in p.relative_to(root).parts[:-1]]
             state = 'processed' if 'processed' in inside else 'captured'
-            try:
-                raw = p.read_text(encoding='utf-8')
-            except (OSError, UnicodeDecodeError):
-                continue
             if is_stub:
                 # `fha capture --ingest` turns a bundle into an inbox stub
                 # whose frontmatter carries the page address.
-                keys = [k for url in _frontmatter_urls(raw) for k in _keys_from_url(url)]
+                keys = facts(p, _stub_facts, _is_keys)
+            elif name == 'capture.json':
+                keys = facts(p, _capture_json_facts, _is_keys)
             else:
-                try:
-                    data = json.loads(raw)
-                except ValueError:
-                    continue
-                if not isinstance(data, dict):
-                    continue
-                keys = (_keys_from_url(data.get('url')) if name == 'capture.json'
-                        else _keys_from_site_data(data, lambda roles, p=p: _holds_saved_image(p, roles),
-                                                  lambda name, p=p: _holds_saved_file(p, name)))
-            for k in keys:
+                keys = site_data_keys(p)
+            for k in keys or []:
                 put(k, state, p.parent.name)
+    if cache is not None:
+        cache.save()
     return out, missing
 
 
@@ -827,15 +1183,20 @@ def _frontmatter_urls(text):
     return URL_RE.findall(_frontmatter(text))
 
 
-def known_items(offset, settings, data_dir, cache_path=None):
+def known_items(offset, settings, data_dir, cache_path=None, files_cache_path=None):
     """The scan for page 0; the later pages of the same answer reuse it.
 
     Chrome starts a new helper for every message, so without a cache each page
     would re-scan the whole archive (seconds warm, minutes on a cold disk) and
     the add-on could be stopped before the last page came back. The cache sits
     with the settings (this computer only), not in the synced data folder.
+
+    Page 0 scans afresh - the first page of every visit - but through
+    _KnownFiles (known-files.json, beside it), so only files changed since the
+    last scan are read again.
     """
     cache_path = Path(cache_path) if cache_path else config_dir() / 'known-cache.json'
+    files_cache_path = Path(files_cache_path) if files_cache_path else config_dir() / 'known-files.json'
     if offset:
         try:
             if cache_path.stat().st_mtime > time.time() - KNOWN_CACHE_SECONDS:
@@ -843,7 +1204,7 @@ def known_items(offset, settings, data_dir, cache_path=None):
                 return cached['items'], cached.get('missing', [])
         except (OSError, ValueError, KeyError, TypeError):
             pass
-    items, missing = scan_known(scan_folders(settings, data_dir))
+    items, missing = scan_known(scan_folders(settings, data_dir), _KnownFiles(files_cache_path))
     try:
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         fd, tmp = tempfile.mkstemp(prefix='.writing-', dir=str(cache_path.parent))
