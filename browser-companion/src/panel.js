@@ -777,6 +777,17 @@
 
   // Why Capture cannot save this Newspapers.com page automatically, in words
   // that end in what to do instead. Shared by the panel note and Capture.
+  // The cause alone, for a batch to sort (PR #224 X1): the reason above
+  // wraps it in advice that names the panel ("open the panel again"), and a
+  // batch must judge the cause, never the advice. null when the reason is
+  // its own cause.
+  function npUnavailableCause() {
+    const np = state.np;
+    if (state.npError) return state.npError;
+    if (np && np.listError && !np.ownClips.length) return np.listError;
+    return null;
+  }
+
   function npUnavailableReason() {
     const np = state.np;
     if (state.npError) {
@@ -2453,12 +2464,13 @@
   // downloaded, and the bundle staged to the download folder. Everything
   // else - every check, every file, every word in capture.json - is this
   // one path, so a batch bundle is the bundle Capture makes.
-  // Returns { ok, error?, site?, key?, bundle?, note?, slowDown?, rateHits?,
+  // Returns { ok, error?, cause?, site?, key?, bundle?, note?, slowDown?, rateHits?,
   // results? } for the batch; the button ignores it.
   async function runCapture(opts = {}) {
-    const refuse = (text, cls) => {
+    // `cause`: the cause without its advice, when the text wraps one.
+    const refuse = (text, cls, cause) => {
       setStageResult(text, cls || 'warn');
-      return { ok: false, error: text };
+      return cause ? { ok: false, error: text, cause } : { ok: false, error: text };
     };
     if (!opts.batch && state.batchDriving) {
       return refuse('A batch download is moving this tab from record to record. Press Pause in the batch box, ' +
@@ -2489,7 +2501,7 @@
         && !state.ancestryViewer && !state.ancRecord && !state.fsRecord && !state.fsImage
         && !state.fagRecord && !state.iiif && !npActive()) {
       if (state.npPage) {
-        return refuse('Newspapers.com: ' + npUnavailableReason());
+        return refuse('Newspapers.com: ' + npUnavailableReason(), null, npUnavailableCause());
       }
       return refuse('Add the file address or drop a file, or switch to "No, the page copy is the record".');
     }

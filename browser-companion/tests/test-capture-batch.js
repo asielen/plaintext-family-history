@@ -411,7 +411,10 @@ test('batchNpClippingsList: her own list, from Newspapers.com only; a 429 is a "
   const slow = await BS.batchNpClippingsList(0, 'HartleyResearch', { base, fetch: async () => ({ ok: false, status: 429 }) });
   assert.strictEqual(CB.classifyError(slow.error), 'slowdown');
   const refused = await BS.batchNpClippingsList(0, 'HartleyResearch', { base, fetch: async () => ({ ok: false, status: 403 }) });
-  assert.strictEqual(CB.classifyError(refused.error), 'stop');
+  // Stops the run (as 'stop' does), sorted on the cause - "refused" - never on
+  // the advice after it ("sign in and reload the page"; PR #224 X1).
+  assert.strictEqual(CB.classifyError(refused.error), 'refused');
+  assert.deepStrictEqual(CB.stopRule(refused.error), { counts: true, max: CB.MAX_TRIES, trouble: false });
 });
 
 test('batchNpUsername: who is signed in, from the page\'s own data', () => {
@@ -601,10 +604,13 @@ test('second audit N2: a stamp two windows share is broken the same way everywhe
   assert.deepStrictEqual([back.items['1:2'].state, back.pacing.rateEvents, back.listCursor], ['queued', 1, 0]);
 });
 
-test('third audit M1: every stop cause is sorted - RUN causes never count against a record, RECORD causes do', () => {
+test('third audit M1, X1: every stop cause is sorted on the cause - RUN causes never count, RECORD and unforeseen causes do', () => {
   const RUN = { counts: false };
   const TROUBLE = { counts: true, max: CB.MAX_TROUBLE_TRIES, trouble: true };
   const FAULT = { counts: true, max: CB.MAX_TRIES, trouble: false };
+  const UNFORESEEN = { counts: true, max: CB.MAX_TROUBLE_TRIES, trouble: false };
+  const NP = (cause) => 'Newspapers.com: automatic saving is not available here: ' + cause +
+    '. Reload the page and open the panel again, or drop in a file.';
   const table = [
     ['could not reach FamilySearch - check your internet connection, then press Capture again', RUN],
     ['the connection broke off (Failed to fetch) - press Capture again later', RUN],
@@ -617,8 +623,21 @@ test('third audit M1: every stop cause is sorted - RUN causes never count agains
     ['a different member is signed in to Newspapers.com than the one this list was started for', RUN],
     ['FamilySearch asked you to sign in (HTTP 401). Sign in to FamilySearch', RUN],
     ['Ancestry asked us to slow down (HTTP 429)', RUN],
-    ['something nobody expected', RUN],
-    ['', RUN],
+    ['FamilySearch asked you to sign in (HTTP 403). Sign in to FamilySearch in this tab, reload the page, then press Capture again', RUN],
+    ['Newspapers.com asked us to slow down (HTTP 503)', RUN],
+    ['Still reading your clippings on this Newspapers.com page - wait a moment, then press Capture again.', RUN],
+    ['a file was dropped into the panel while the batch ran, so nothing was saved', RUN],
+    [NP('could not reach Newspapers.com for your clippings list - check your internet connection'), RUN],
+    // X1: the advice after a cause never decides it - "open the panel again".
+    [NP('the capture add-on could not read this record (TypeError: x is undefined) - a fault in the add-on, not the site'), FAULT],
+    [NP('Newspapers.com would not send your clippings list (HTTP 500)'), TROUBLE],
+    [NP('the page data does not match this address'), UNFORESEEN],
+    ['Ancestry refused (HTTP 403) - sign in on this page, or the collection may not allow downloads', FAULT],
+    ['Newspapers.com refused the page image (HTTP 403). Reload the page (its image pass lasts a day) and check you are signed in', FAULT],
+    // X1: a cause nobody foresaw counts, after MAX_TROUBLE_TRIES Starts.
+    ['something nobody expected', UNFORESEEN],
+    ['could not read the page (https://www.newspapers.com/article/x/1/)', UNFORESEEN],
+    ['', UNFORESEEN],
     ['FamilySearch is having trouble (HTTP 500). Try again in a little while', TROUBLE],
     ['Ancestry answered with a busy or error page ("502 Bad Gateway")', TROUBLE],
     ['the page did not answer (The message port closed before a response was received.). Reload it and press Capture again', TROUBLE],
@@ -626,6 +645,9 @@ test('third audit M1: every stop cause is sorted - RUN causes never count agains
     ['Find a Grave refused the memorial (HTTP 403). Reload the page', FAULT],
   ];
   for (const [m, want] of table) assert.deepStrictEqual(CB.stopRule(m), want, m);
+  // The cause is what is left once the advice after it is taken off.
+  assert.strictEqual(CB.causeOf(NP('could not re-read this page')), 'Newspapers.com: automatic saving is not available here: could not re-read this page');
+  assert.strictEqual(CB.causeOf('FamilySearch is having trouble (HTTP 502). Try again in a little while'), 'FamilySearch is having trouble (HTTP 502)');
   assert.strictEqual(CB.MAX_TRIES, 2);
   assert.strictEqual(CB.MAX_TROUBLE_TRIES, 3);
 });

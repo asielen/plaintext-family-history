@@ -1805,7 +1805,8 @@ test('Codex 4504665602 sweep: a batch site\'s host saying slow down to the page 
 
 // ── PR #224 third audit (M1, M2), ported from the auditor's repros ──────────
 
-test('third audit M1: no internet over two Starts sets nothing aside, and everything is saved once it is back', async () => {
+// Over four Starts: past MAX_TROUBLE_TRIES, so a cause that ever counted would show (X1).
+test('third audit M1, X1: no internet over four Starts sets nothing aside, and everything is saved once it is back', async () => {
   const OFFLINE = { ok: false, transient: true, error: 'could not reach FamilySearch - check your internet connection, then press Capture again' };
   let online = false;
   const calls = [];
@@ -1813,20 +1814,21 @@ test('third audit M1: no internet over two Starts sets nothing aside, and everyt
   const p = await openPanel({ url: ark('HRT1-CEN2'), storage: Object.assign({}, ON, { fsBatchLedger: fsLedger(['HRT1-CEN1', 'HRT1-DTH1']) }),
     respond: (msg, tab) => (!online && /^familysearch/.test(msg.action) ? OFFLINE : base(msg, tab)) });
   quick(p);
-  for (let i = 1; i <= 3; i++) {
-    if (i === 3) online = true;
+  for (let i = 1; i <= 5; i++) {
+    if (i === 5) online = true;
     await start(p, 'fs');
     const L = p.storage.fsBatchLedger;
     assert.notStrictEqual(L.items['HRT1-CEN1'].state, 'failed', 'CEN1 set aside on Start ' + i);
+    if (i < 5) assert.strictEqual(L.items['HRT1-CEN1'].stops || 0, 0, 'CEN1 counted on Start ' + i);
   }
   assert.strictEqual(p.storage.fsBatchLedger.items['HRT1-CEN1'].state, 'done');
   assert.strictEqual(p.storage.fsBatchLedger.items['HRT1-DTH1'].state, 'done');
 });
 
-test('third audit M1: downloads the browser blocks over two Starts set nothing aside', async () => {
+test('third audit M1, X1: downloads the browser blocks over four Starts set nothing aside', async () => {
   const p = await openPanel({ url: HARRIET, respond: ancestrySite(), storage: Object.assign({}, ON, { ancBatchLedger: ancLedger([CALVIN, ETHEL]) }) });
   quick(p);
-  for (let i = 1; i <= 2; i++) {
+  for (let i = 1; i <= 4; i++) {
     p.writeFails.add(p.written.length);
     await start(p, 'anc');
     const it = p.storage.ancBatchLedger.items['90001:1000001'];
@@ -1865,4 +1867,68 @@ test('third audit M1: a page that goes away before it answers (message port clos
   assert.strictEqual(p.storage.ancBatchLedger.items['90001:1000001'].state, 'failed');
   assert.match(p.storage.ancBatchLedger.items['90001:1000001'].lastError, /^Ancestry reported trouble with this record 3 times/);
   assert.strictEqual(p.storage.ancBatchLedger.items['90002:2000001'].state, 'done');
+});
+
+// ── PR #224 X1: a stop is sorted on its cause, never on the advice after it ──
+
+// What content.js brokeOff answers for a fault thrown reading one clipping.
+const NP_FAULT = { ok: false, codeError: true,
+  error: "the capture add-on could not read this record (TypeError: Cannot read properties of undefined (reading 'rects')) - a fault in the add-on, not the site" };
+const npQueue = () => ({ version: 1, items: {
+  101: { id: 101, url: NP_A, pageId: 5550001, title: 'Obituary', state: 'queued', tries: 0 },
+  202: { id: 202, url: NP_B, pageId: 5550001, title: 'Hartley wedding', state: 'queued', tries: 0 },
+}, order: ['101', '202'], log: [], listComplete: true, listCursor: 0, user: ME.username });
+
+test('X1: a fault reading one Newspapers.com clipping is set aside on the second Start, though the panel\'s advice names the panel; the next is saved', async () => {
+  const p = await openPanel({ url: NP_B, respond: npPages({ [NP_A]: () => NP_FAULT })([]),
+    storage: Object.assign({}, ON, { npBatchLedger: npQueue() }) });
+  quick(p);
+  await start(p, 'np');
+  // The reason she sees still carries its advice; it decides nothing.
+  assert.match(p.batchEl('np-status').textContent, /could not read this record.*open the panel again/);
+  assert.deepStrictEqual([p.storage.npBatchLedger.items['101'].state, p.storage.npBatchLedger.items['101'].stops], ['queued', 1]);
+  assert.strictEqual(p.written.length, 0);
+  await start(p, 'np');
+  const L = p.storage.npBatchLedger;
+  assert.strictEqual(L.items['101'].state, 'failed');
+  assert.match(L.items['101'].lastError, /stopped the batch 2 times at this record/);
+  assert.strictEqual(L.items['202'].state, 'done');
+  assert.deepStrictEqual(p.written.map((w) => p.capJson(w).url), [NP_B]);
+});
+
+test('X1: a clipping page the panel cannot use, in words no rule knows, is set aside after 3 Starts - "open the panel again" never makes it a run cause', async () => {
+  for (const words of ['the page data does not match this address', 'could not re-read this page']) {
+    const p = await openPanel({ url: NP_B, respond: npPages({ [NP_A]: () => ({ ok: false, error: words }) })([]),
+      storage: Object.assign({}, ON, { npBatchLedger: npQueue() }) });
+    quick(p);
+    for (let i = 1; i <= 2; i++) {
+      await start(p, 'np');
+      const it = p.storage.npBatchLedger.items['101'];
+      assert.deepStrictEqual([it.state, it.stops], ['queued', i], words + ', Start ' + i);
+    }
+    await start(p, 'np');
+    const L = p.storage.npBatchLedger;
+    assert.strictEqual(L.items['101'].state, 'failed', words);
+    assert.match(L.items['101'].lastError, /stopped the batch 3 times at this record, so it is set aside/);
+    assert.strictEqual(L.items['202'].state, 'done', words);
+  }
+});
+
+test('X1: a stop cause nobody foresaw counts against its record - set aside after 3 Starts, and the next record is reached', async () => {
+  const base = ancestrySite();
+  const p = await openPanel({ url: HARRIET, storage: Object.assign({}, ON, { ancBatchLedger: ancLedger([CALVIN, ETHEL]) }),
+    respond: (msg, tab) => (msg.action === 'ancestryRecordInfo' && tab.url === CALVIN
+      ? { ok: false, error: 'something nobody expected happened here' } : base(msg, tab)) });
+  quick(p);
+  for (let i = 1; i <= 2; i++) {
+    await start(p, 'anc');
+    const it = p.storage.ancBatchLedger.items['90001:1000001'];
+    assert.deepStrictEqual([it.state, it.stops], ['queued', i], 'Start ' + i);
+    assert.strictEqual(p.storage.ancBatchLedger.items['90002:2000001'].state, 'queued', 'Start ' + i);
+  }
+  await start(p, 'anc');
+  const L = p.storage.ancBatchLedger;
+  assert.strictEqual(L.items['90001:1000001'].state, 'failed');
+  assert.match(L.items['90001:1000001'].lastError, /^something nobody expected happened here - it stopped the batch 3 times/);
+  assert.strictEqual(L.items['90002:2000001'].state, 'done');
 });

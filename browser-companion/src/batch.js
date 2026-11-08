@@ -797,7 +797,9 @@
         }
       } else {
         const why = out.error || 'nothing was saved';
-        const kind = metSlowDown ? 'slowdown' : CB().classifyError(why);
+        // Sorted on the cause, never on the advice around it (PR #224 X1).
+        const cause = out.cause || why;
+        const kind = metSlowDown ? 'slowdown' : CB().classifyError(cause);
         if (kind === 'slowdown') {
           await slowDownBreak(siteName, L);
           throw new Stop(lib.name + ' asked us to slow down (' + why + ')', 'slowdown');
@@ -808,7 +810,7 @@
           // record can never hold up the rest of the queue (a real outage
           // still stops the run, at the next record). A lost login never
           // counts against a record.
-          await stopAtRecord(siteName, L, item, why);
+          await stopAtRecord(siteName, L, item, why, cause);
         } else if (kind === 'retry') {
           CB().markRetry(L, item.key, why);
           countFail(why);
@@ -835,9 +837,11 @@
     // MAX_TROUBLE_TRIES Starts, so a short outage sets nothing aside
     // (owner's coordinator, 2026-11-07, revising review D3).
     // Which causes count, and after how many Starts, is capture-batch.js
-    // stopRule's to say (third audit M1).
-    async function stopAtRecord(siteName, L, item, why) {
-      const rule = CB().stopRule(why);
+    // stopRule's to say (third audit M1); a cause nobody foresaw counts too,
+    // after MAX_TROUBLE_TRIES (X1). `cause` is `why` without its advice, when
+    // the capture gave one.
+    async function stopAtRecord(siteName, L, item, why, cause) {
+      const rule = CB().stopRule(cause || why);
       if (!rule.counts) throw new Stop(why);
       const stops = CB().markRefused(L, item.key);
       if (stops < rule.max) throw new Stop(why);
