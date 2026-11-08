@@ -575,7 +575,12 @@ def _find_place(
             value_preview = c['value'][:60] + ('…' if len(c['value']) > 60 else '')
             print(f'    {c["id"]}  {c["type"]}{date_str}: {value_preview}  [{c["status"]}]')
             if c['persons']:
-                print(f'      persons: {c["persons"]}')
+                # GROUP_CONCAT has no portable ORDER BY (SQLite added one
+                # only in 3.44), and the order it joins in follows whichever
+                # lookup the planner picks - so sort the ids here, the order
+                # this line printed them in before the lookup indexes.
+                persons = ', '.join(sorted(c['persons'].split(', ')))
+                print(f'      persons: {persons}')
     else:
         print('  claims: none reference this place')
 
@@ -1910,7 +1915,7 @@ def _related_claim(cid: str, conn: sqlite3.Connection) -> int:
     print(f"  source: {claim['source_id']}")
 
     persons = [row['person_id'] for row in conn.execute(
-        'SELECT person_id FROM claim_persons WHERE claim_id = ?', (cid,)
+        'SELECT person_id FROM claim_persons WHERE claim_id = ? ORDER BY rowid', (cid,)
     )]
     names = {row['id']: row['name'] for row in conn.execute('SELECT id, name FROM persons')}
     if persons:

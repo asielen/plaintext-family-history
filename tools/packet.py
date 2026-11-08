@@ -1729,7 +1729,11 @@ def _resolve_source_files(
         return {}, []
     placeholders = ','.join('?' * len(source_ids))
     rows = conn.execute(
-        f'SELECT source_id, path FROM source_files WHERE source_id IN ({placeholders})',
+        f'SELECT source_id, path FROM source_files WHERE source_id IN ({placeholders}) '
+        # The order `fha index` wrote them: without it, an index lookup hands
+        # the rows back grouped by source id, and the README's missing-file
+        # notes would reshuffle.
+        'ORDER BY rowid',
         source_ids,
     ).fetchall()
     documents_root = resolve_path('documents', fha_config, archive_root)
@@ -2046,7 +2050,11 @@ def _build_timeline_text(
               AND c.source_id IN ({src_placeholders})
             ORDER BY
                 CASE WHEN c.date_min IS NULL OR c.date_min = '' THEN 1 ELSE 0 END,
-                c.date_min ASC
+                c.date_min ASC,
+                -- Claims on the same date stay in the order `fha index`
+                -- wrote them. Without this, a person with a merged-away id
+                -- would see same-day claims grouped by which id names them.
+                c.rowid
             """,
             list(pids) + list(included_source_ids),
         ).fetchall()

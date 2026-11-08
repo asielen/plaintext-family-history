@@ -914,6 +914,7 @@ def _render_templates(
           AND COALESCE(s.restricted, 0) = 0
           AND COALESCE(s.source_type, '') != 'dna'
           AND COALESCE(s.publication_ok, 1) != 0
+        ORDER BY cp.rowid
         """,
         (pid,),
     ).fetchall()
