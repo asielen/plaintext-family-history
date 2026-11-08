@@ -75,6 +75,15 @@ library (the project adds no dependency before Jinja2 in M8).
 #    run_capture_path          - register a must-never-move asset by path
 #    register / _run_capture / _standalone_main
 #
+#  Native-messaging host (--host, §5.7)
+#    _read_native_message / _write_native_message - length-prefixed JSON framing
+#    _host_ingest              - file a framed bundle through run_ingest
+#    _RecordFacts              - per-file .cache of what each record said (size+mtime keyed)
+#    _host_suggest_names       - person names/aliases for the panel's name boxes
+#    _normalize_source_url     - host+path(+clipping_id) identity of a page URL
+#    _host_check_url           - is this page already saved? (sources/ then inbox/)
+#    _host_dispatch / run_host - route one request / serve until EOF
+#
 # ─────────────────────────────────────────────────────────────────────────────
 
 from __future__ import annotations
@@ -94,6 +103,7 @@ import sqlite3
 import struct
 import sys
 import tempfile
+import time
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from pathlib import Path
@@ -118,6 +128,7 @@ from _lib import (
     read_record,
     resolve_path,
     resolve_root_arg,
+    write_text_exact_atomic,
 )
 
 import yaml
@@ -1873,31 +1884,159 @@ def _host_ingest(archive_root: Path, fha_config: dict, msg: dict) -> dict:
     return {'ok': False, 'error': 'capture was not filed'}
 
 
+# ── The two lookups the panel asks while the human works ─────────────────────
+#
+# checkUrl runs on every record page he opens ("have I saved this already?") and
+# suggestNames on every keystroke in a name box. Both used to read and parse
+# every record in the archive for every question - about eight seconds a page
+# on a 3,000-source archive. Chrome's `sendNativeMessage` starts a brand-new
+# host process for EACH message, so nothing kept in memory survives from one
+# question to the next; what each record says is remembered on disk instead,
+# in `_RecordFacts`.
+
+# Bump when what a lookup extracts from a record changes, so an old cache is
+# never read as if it held the new facts.
+_RECORD_FACTS_VERSION = 1
+# A file must sit unchanged this long before what it says is cached. A second
+# save inside the window could land in the same mtime tick with the same size
+# and look untouched (FAT/exFAT drives keep mtimes to 2 s); not caching a
+# just-saved file is git's "racily clean" rule, and costs one extra re-read.
+_RECORD_FACTS_SETTLE_SECONDS = 2.0
+
+
+class _RecordFacts:
+    """A disposable `.cache/` file remembering what each record file said.
+
+    One entry per record path: `[mtime_ns, size, facts]`. An entry is used
+    only while the file on disk still has exactly that size and modification
+    time, so an edit, a new capture or a restored backup is read afresh on the
+    very next lookup; a file that is gone is never walked, so its entry is
+    never consulted. Only a clean read is remembered - a file that would not
+    open (locked mid-save), would not decode or has a YAML error is read again
+    every time - and only when what it said survives a round trip through
+    JSON unchanged. Everything else is read exactly as the lookups always read
+    it, which is why the answers cannot drift from the old full scan: the
+    cache can only skip a read whose result it already holds.
+
+    Not the index (`.cache/index.sqlite`): it does not store a source's
+    external links or an alias's own spelling, never holds the inbox, and is
+    only as fresh as the last `fha index` - while a page saved a minute ago
+    must already read as saved, and a name typed into a person file a minute
+    ago must already be offered.
+    """
+
+    def __init__(self, archive_root: Path, filename: str) -> None:
+        self.path = Path(archive_root) / '.cache' / filename
+        self.entries = self._load()
+        self.loaded = dict(self.entries)
+        self.walked: set[str] = set()
+        self.settled_before = time.time() - _RECORD_FACTS_SETTLE_SECONDS
+
+    def _load(self) -> dict:
+        """The stored entries, or `{}` - missing, corrupt or another version
+        all just mean every file is read once more."""
+        try:
+            raw = json.loads(self.path.read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            return {}
+        if not isinstance(raw, dict) or raw.get('version') != _RECORD_FACTS_VERSION:
+            return {}
+        files = raw.get('files')
+        return files if isinstance(files, dict) else {}
+
+    def facts(self, md: Path, extract, valid):
+        """What `md` says, from the cache when it is unchanged, else `extract(md)`.
+
+        `extract` returns `(facts, cacheable)`; it is the lookup's own reading
+        of one file, and whatever it raises reaches the caller as before.
+        `valid(facts)` vets a cached value's shape, so a cache file damaged by
+        hand costs a re-read, never a crash or a wrong answer.
+        """
+        key = os.path.abspath(md)
+        self.walked.add(key)
+        try:
+            st = md.stat()      # stat BEFORE reading: a save landing in between
+        except OSError:         # reads as changed next time, never as cached
+            st = None
+        entry = self.entries.get(key)
+        if (st is not None and isinstance(entry, list) and len(entry) == 3
+                and entry[0] == st.st_mtime_ns and entry[1] == st.st_size
+                and valid(entry[2])):
+            return entry[2]
+        self.entries.pop(key, None)
+        facts, cacheable = extract(md)
+        if cacheable and st is not None and st.st_mtime < self.settled_before:
+            try:
+                same = json.loads(json.dumps(facts)) == facts
+            except (TypeError, ValueError):
+                same = False
+            if same:
+                self.entries[key] = [st.st_mtime_ns, st.st_size, facts]
+        return facts
+
+    def save(self, *, walked_everything: bool) -> None:
+        """Write the cache back when it changed; a failure is ignored on purpose.
+
+        `walked_everything` drops entries for files the walk no longer found
+        (deleted or moved records), which only a complete walk can know. The
+        cache only buys speed: a read-only `.cache/`, or two host processes
+        racing to replace the file, costs the next lookup a re-read, never a
+        wrong answer, so there is nothing worth telling the human about.
+        """
+        if walked_everything:
+            self.entries = {k: v for k, v in self.entries.items() if k in self.walked}
+        if self.entries == self.loaded:
+            return
+        payload = json.dumps({'version': _RECORD_FACTS_VERSION, 'files': self.entries})
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            write_text_exact_atomic(self.path, payload)
+        except OSError:
+            pass
+
+
+def _person_name_facts(md: Path) -> tuple[list[str], bool]:
+    """The names one person file offers: its `name`, then each non-id alias."""
+    try:
+        rec = read_record(md)
+    except Exception:                            # noqa: BLE001 - skip a bad file
+        return [], False
+    meta = rec.get('meta') or {}
+    candidates = [str(meta['name'])] if meta.get('name') else []
+    for alias in (meta.get('aliases') or []):
+        alias = str(alias)
+        if not re.match(r'^[PSLC]-[A-Za-z0-9]+$', alias):  # skip id aliases
+            candidates.append(alias)
+    return candidates, not rec.get('parse_errors')
+
+
+def _is_name_facts(facts) -> bool:
+    return isinstance(facts, list) and all(isinstance(n, str) for n in facts)
+
+
 def _host_suggest_names(archive_root: Path, fha_config: dict, q: str | None, limit: int) -> dict:
-    """Archive person names + aliases matching `q` (read-only, suggestion-only)."""
+    """Archive person names + aliases matching `q` (suggestion-only).
+
+    Walks every person file, but parses only the ones that changed since the
+    last keystroke (`_RecordFacts`), so typing a name costs a folder walk per
+    letter rather than a parse of the whole people/ tree.
+    """
     query = (q or '').strip().lower()
     people_dir = resolve_path('people', fha_config, archive_root)
     names: list[str] = []
     seen: set[str] = set()
     if people_dir.is_dir():
+        cache = _RecordFacts(archive_root, 'capture_names.json')
         for md in sorted(people_dir.rglob('*.md')):
             if md.name.startswith('_'):                  # templates
                 continue
-            try:
-                meta = (read_record(md).get('meta') or {})
-            except Exception:                            # noqa: BLE001 - skip a bad file
-                continue
-            candidates = [str(meta['name'])] if meta.get('name') else []
-            for alias in (meta.get('aliases') or []):
-                alias = str(alias)
-                if not re.match(r'^[PSLC]-[A-Za-z0-9]+$', alias):  # skip id aliases
-                    candidates.append(alias)
-            for name in candidates:
+            for name in cache.facts(md, _person_name_facts, _is_name_facts):
                 key = name.lower()
                 if key in seen or (query and query not in key):
                     continue
                 seen.add(key)
                 names.append(name)
+        cache.save(walked_everything=True)
     names.sort(key=lambda n: (not n.lower().startswith(query), n.lower()))
     return {'ok': True, 'names': names[:max(0, limit)]}
 
@@ -1931,30 +2070,58 @@ def _normalize_source_url(url: str | None) -> str:
     return f'{host}{path}' + ('?' + '&'.join(sorted(ids)) if ids else '')
 
 
+def _source_link_facts(md: Path) -> tuple[dict | None, bool]:
+    """The page URLs one record says it came from, plus the S-id and date
+    checkUrl reports back - read exactly as the full scan read them."""
+    try:
+        rec = read_record(md)
+    except Exception:                            # noqa: BLE001
+        return None, False
+    meta = rec.get('meta') or {}
+    hrefs = [link.get('url') if isinstance(link, dict) else link
+             for link in (meta.get('external_links') or [])]
+    facts = {'hrefs': hrefs, 'source': meta.get('id'),
+             'date': meta.get('source_date') or meta.get('created')}
+    return facts, not rec.get('parse_errors')
+
+
+def _is_link_facts(facts) -> bool:
+    return (isinstance(facts, dict) and isinstance(facts.get('hrefs'), list)
+            and 'source' in facts and 'date' in facts)
+
+
 def _host_check_url(archive_root: Path, fha_config: dict, url: str | None) -> dict:
     """Whether a source URL is already captured (by normalized host+path).
 
     Scans the *configured* sources/inbox roots (an archive may map either outside
     the tree via fha.yaml), so a URL already staged in a relocated inbox is found.
+    The records are walked in the same order as ever, so the answer - and the
+    source it names when two records share a page - is unchanged; only a record
+    edited since the last check is parsed (`_RecordFacts`). The stored URLs are
+    normalized here at lookup time, never in the cache, so a change to
+    `_normalize_source_url` takes effect without a stale cache in the way.
     """
     target = _normalize_source_url(url)
     if not target:
         return {'ok': True, 'known': False}
-    for sub in ('sources', 'inbox'):
-        root = resolve_path(sub, fha_config, archive_root)
-        if not root.is_dir():
-            continue
-        for md in sorted(root.rglob('*.md')):
-            try:
-                meta = (read_record(md).get('meta') or {})
-            except Exception:                            # noqa: BLE001
+    cache = _RecordFacts(archive_root, 'capture_links.json')
+    walked_everything = False
+    try:
+        for sub in ('sources', 'inbox'):
+            root = resolve_path(sub, fha_config, archive_root)
+            if not root.is_dir():
                 continue
-            for link in (meta.get('external_links') or []):
-                href = link.get('url') if isinstance(link, dict) else link
-                if href and _normalize_source_url(href) == target:
-                    return {'ok': True, 'known': True,
-                            'source': meta.get('id'),
-                            'date': meta.get('source_date') or meta.get('created')}
+            for md in sorted(root.rglob('*.md')):
+                facts = cache.facts(md, _source_link_facts, _is_link_facts)
+                if facts is None:
+                    continue
+                for href in facts['hrefs']:
+                    if href and _normalize_source_url(href) == target:
+                        return {'ok': True, 'known': True,
+                                'source': facts['source'], 'date': facts['date']}
+        walked_everything = True
+    finally:
+        cache.save(walked_everything=walked_everything)
     return {'ok': True, 'known': False}
 
 
