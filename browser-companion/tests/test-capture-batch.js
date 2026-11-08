@@ -609,6 +609,7 @@ test('third audit M1, X1: every stop cause is sorted on the cause - RUN causes n
   const TROUBLE = { counts: true, max: CB.MAX_TROUBLE_TRIES, trouble: true };
   const FAULT = { counts: true, max: CB.MAX_TRIES, trouble: false };
   const UNFORESEEN = { counts: true, max: CB.MAX_TROUBLE_TRIES, trouble: false };
+  const SIGN_IN = { counts: false, signIn: true };
   const NP = (cause) => 'Newspapers.com: automatic saving is not available here: ' + cause +
     '. Reload the page and open the panel again, or drop in a file.';
   const table = [
@@ -623,7 +624,7 @@ test('third audit M1, X1: every stop cause is sorted on the cause - RUN causes n
     ['a different member is signed in to Newspapers.com than the one this list was started for', RUN],
     ['FamilySearch asked you to sign in (HTTP 401). Sign in to FamilySearch', RUN],
     ['Ancestry asked us to slow down (HTTP 429)', RUN],
-    ['FamilySearch asked you to sign in (HTTP 403). Sign in to FamilySearch in this tab, reload the page, then press Capture again', RUN],
+    ['FamilySearch asked you to sign in (HTTP 403). Sign in to FamilySearch in this tab, reload the page, then press Capture again', SIGN_IN],
     ['Newspapers.com asked us to slow down (HTTP 503)', RUN],
     ['Still reading your clippings on this Newspapers.com page - wait a moment, then press Capture again.', RUN],
     ['a file was dropped into the panel while the batch ran, so nothing was saved', RUN],
@@ -632,15 +633,16 @@ test('third audit M1, X1: every stop cause is sorted on the cause - RUN causes n
     [NP('the capture add-on could not read this record (TypeError: x is undefined) - a fault in the add-on, not the site'), FAULT],
     [NP('Newspapers.com would not send your clippings list (HTTP 500)'), TROUBLE],
     [NP('the page data does not match this address'), UNFORESEEN],
-    // X1 correction: a 401/403 that points at signing in or subscribing - in its
-    // words or its advice - or one for her clippings list, never counts. A bare
-    // 403 for one record is the site refusing it.
-    ['Ancestry refused (HTTP 403) - sign in on this page, or the collection may not allow downloads', RUN],
-    ['Newspapers.com refused the page image (HTTP 403). Reload the page (its image pass lasts a day) and check you are signed in', RUN],
+    // X1 correction, fifth audit Y1: a 401/403 for HER OWN clippings list never
+    // counts. One that points at signing in or subscribing - in its words or its
+    // advice - counts for nothing yet: `signIn`, and the batch asks the next
+    // record whose it is. A bare 403 for one record is the site refusing it.
     ['Newspapers.com refused your clippings list (HTTP 403) - sign in and reload the page', RUN],
-    [NP('Newspapers.com refused the list of clippings on this page (HTTP 403: you may need to sign in, or your subscription may not cover this paper)'), RUN],
-    [NP('Newspapers.com would not send the list of clippings on this page (HTTP 403)'), RUN],
-    ['this paper is not in your subscription (HTTP 403)', RUN],
+    ['Ancestry refused (HTTP 403) - sign in on this page, or the collection may not allow downloads', SIGN_IN],
+    ['Newspapers.com refused the page image (HTTP 403). Reload the page (its image pass lasts a day) and check you are signed in', SIGN_IN],
+    [NP('Newspapers.com refused the list of clippings on this page (HTTP 403: you may need to sign in, or your subscription may not cover this paper)'), SIGN_IN],
+    ['this paper is not in your subscription (HTTP 403)', SIGN_IN],
+    [NP('Newspapers.com would not send the list of clippings on this page (HTTP 403)'), FAULT],
     ['Newspapers.com refused the page image (HTTP 403)', FAULT],
     // X1: a cause nobody foresaw counts, after MAX_TROUBLE_TRIES Starts.
     ['something nobody expected', UNFORESEEN],

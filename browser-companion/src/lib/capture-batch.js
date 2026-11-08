@@ -330,6 +330,7 @@
     it.doneAt = new Date(now || Date.now()).toISOString();
     it.lastError = null;
     it.stops = 0;
+    delete it.ownRefusal;
     delete it.again;
     if (note) it.note = note;
     else delete it.note;
@@ -418,6 +419,7 @@
       stamp(it, now);
       it.tries = 0;
       it.stops = 0;
+      delete it.ownRefusal;
       it.setAsideBefore = it.lastError || null;
       it.lastError = null;
       n++;
@@ -439,7 +441,7 @@
   // What says where an entry stands; it moves as one, from the window that
   // changed it last.
   const STATE_FIELDS = ['state', 'stateAt', 'tries', 'stops', 'bundle', 'doneAt', 'lastError', 'note',
-    'partialTries', 'again', 'imageKey', 'setAsideBefore'];
+    'partialTries', 'again', 'imageKey', 'setAsideBefore', 'ownRefusal'];
   // Which state wins a tie of stamps (mergeStored): the one nearer saved.
   const STATE_RANK = { failed: 1, retry: 2, queued: 3, partial: 4, done: 5 };
   const isCooldown = (p) => !!p && (p.resumeReason === 'ratelimit' || p.resumeReason === 'long');
@@ -537,9 +539,11 @@
   const mergeDone = mergeStored;
 
   // `retry` is the archive copy's word for "failed once, try again": queued.
-  function nextPending(L) {
+  // `skip`: keys not to give (a Set), if any.
+  function nextPending(L, skip) {
     for (const key of L.order) {
       const it = L.items[key];
+      if (skip && skip.has(key)) continue;
       if (it && it.url && (it.state === 'queued' || it.state === 'retry')) return Object.assign({ key }, it, { key });
     }
     return null;
@@ -684,15 +688,17 @@
   //      is set aside rather than stopping every Start ("Try the set-aside
   //      ones again" brings it back).
   //   Before all of these, and on the whole message, advice included: a 401
-  //   or 403 whose words point at signing in or subscribing, or one for her
-  //   clippings list (never a record), never counts. A lapsed session, or a
-  //   subscription that does not cover the paper, answers EVERY record so;
-  //   counting it would set her queue aside two Starts at a time when
-  //   signing in would have fixed all of it (PR #224 X1 correction). A bare
-  //   403 for one record, with no such words, is the site refusing it.
-  // { counts, max, trouble }.
+  //   or 403 for HER OWN clippings list (never a record) never counts; one
+  //   whose words point at signing in or subscribing does not count either,
+  //   but says `signIn`: a lapsed session answers EVERY record so, while a
+  //   paper her subscription does not cover answers for its clippings only.
+  //   The batch tells the two apart by asking the next record (batch.js
+  //   probe; PR #224 X1 correction, fifth audit Y1). A bare 403 for one
+  //   record, with no such words, is the site refusing it.
+  // { counts, max, trouble, signIn }.
   const SIGN_IN_403_RE = /HTTP 40[13]\b/;
-  const SIGN_IN_WORDS_RE = /sign(?:ed)? in|log(?:ged)? in|subscri|clippings list|list of clippings/i;
+  const OWN_LIST_RE = /your clippings list/i;
+  const SIGN_IN_WORDS_RE = /sign(?:ed)? in|log(?:ged)? in|subscri/i;
   const SESSION_STOP_RE = /slow down|HTTP 429|too many requests|asked you to sign in|not signed in|HTTP 401|different member/i;
   const TROUBLE_STOP_RE = /having trouble|HTTP 5\d\d|busy or error page|bad gateway|service (temporarily )?unavailable|internal server error|did not answer|message port closed/i;
   const FAULT_STOP_RE = /could not read this record|\brefused\b|HTTP 40[02-9]\b|HTTP 410/i;
@@ -704,7 +710,9 @@
   ].join('|'), 'i');
   function stopRule(message) {
     const whole = String(message || '');
-    if (SIGN_IN_403_RE.test(whole) && SIGN_IN_WORDS_RE.test(whole)) return { counts: false };
+    if (SIGN_IN_403_RE.test(whole) && OWN_LIST_RE.test(whole)) return { counts: false };
+    // A 401 is a lost login, never a record's: the session check below.
+    if (/HTTP 403\b/.test(whole) && SIGN_IN_WORDS_RE.test(whole)) return { counts: false, signIn: true };
     const m = causeOf(whole);
     if (SESSION_STOP_RE.test(m)) return { counts: false };
     if (TROUBLE_STOP_RE.test(m)) return { counts: true, max: MAX_TROUBLE_TRIES, trouble: true };

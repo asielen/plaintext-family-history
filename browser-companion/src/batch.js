@@ -643,13 +643,38 @@
           say(siteName, 'Nothing to download. ' + countsLine(L) + (SITE_UI[siteName].empty ? ' ' + SITE_UI[siteName].empty : ''), 'warn');
           return;
         }
+        // A record refused with "sign in" / "subscription" words: her session,
+        // or a paper her subscription does not cover? The next record says
+        // (fifth audit Y1). If it is refused so too, it is the session: the
+        // run stops, and neither counts. If it comes through, or is set aside
+        // or tried again for a cause of its own, the refusal was that
+        // record's alone: it counts as one, and the run goes on without it.
+        // With no next record to ask, or a run cause stopping the next one,
+        // the run stops and nothing counts.
+        let probe = null;
+        const passed = new Set();
         for (let looked = 0; ; looked++) {
           await honourStoredBreak(siteName, L);
-          const item = CB().nextPending(L);
-          if (!item) break;
+          const item = CB().nextPending(L, probe ? new Set([...passed, probe.key]) : passed);
+          if (!item) {
+            if (probe) throw new Stop(probe.why);
+            break;
+          }
           halted();
           if (looked >= CB().MAX_PER_RUN) throw new Stop('one Start looks at most ' + CB().MAX_PER_RUN + ' records; press Start again');
-          await one(siteName, L, item);
+          try {
+            await one(siteName, L, item);
+          } catch (e) {
+            if (!(e instanceof Stop && e.signIn)) throw e;
+            if (probe) throw new Stop(probe.why);
+            probe = { key: item.key, why: e.message };
+            continue;
+          }
+          if (probe) {
+            await refusedAlone(siteName, L, probe.key);
+            passed.add(probe.key);
+            probe = null;
+          }
         }
         L.pacing.resumeAt = 0;
         CB().logEvent(L, 'finished: ' + countsLine(L));
@@ -755,11 +780,10 @@
         throw new Stop(lib.name + ' asked us to slow down while the page was being read', 'slowdown');
       }
       // A page the panel cannot read at all stops the run (the next one would
-      // fare no better); a page that reads but is not a record is set aside.
-      if (!page.ok) {
-        await stopAtRecord(siteName, L, item, page.error + ' (' + url + ')');
-        return finishRecord(siteName, L);
-      }
+      // fare no better), and never counts against the record: offline, the
+      // tab shows the browser's own error page, which no record caused
+      // (fifth audit Y2). A page that reads but is not a record is set aside.
+      if (!page.ok) throw new Stop(page.error + ' (' + url + ')');
       let out;
       if (!page.prefill[SITE_UI[siteName].prefillFlag]) {
         out = { ok: false, error: 'the page it opened is not a record page (it may have moved or been removed)' };
@@ -852,12 +876,45 @@
     // the capture gave one.
     async function stopAtRecord(siteName, L, item, why, cause) {
       const rule = CB().stopRule(cause || why);
+      if (rule.signIn) {
+        // Already shown to be this record's own refusal (the probe in
+        // runClaimed): it counts at once, with no record to ask again.
+        if (L.items[item.key] && L.items[item.key].ownRefusal) {
+          await refusedAlone(siteName, L, item.key);
+          // Counted, and still not set aside: never asked again this Start.
+          if (L.items[item.key].state !== 'failed') throw new Stop(why);
+          return;
+        }
+        throw Object.assign(new Stop(why), { signIn: true });
+      }
       if (!rule.counts) throw new Stop(why);
       const stops = CB().markRefused(L, item.key);
       if (stops < rule.max) throw new Stop(why);
       await setAside(siteName, L, item, rule.trouble ? troubleWords(siteName, stops, why)
         : why + ' - it stopped the batch ' + stops +
           ' times at this record, so it is set aside ("Try the set-aside ones again" brings it back)');
+    }
+
+    // A "sign in" / "subscription" refusal that was this record's alone:
+    // counted as the site refusing it, set aside after MAX_TRIES Starts.
+    async function refusedAlone(siteName, L, key) {
+      const it = L.items[key];
+      if (!it) return;
+      it.ownRefusal = true;
+      const stops = CB().markRefused(L, key);
+      if (stops < CB().MAX_TRIES) {
+        it.lastError = refusedWords(siteName);
+        await save(siteName, L, true);
+        return;
+      }
+      await setAside(siteName, L, { key }, refusedWords(siteName) + ' - it was refused on ' + stops +
+        ' Starts, so it is set aside ("Try the set-aside ones again" brings it back)');
+    }
+
+    function refusedWords(siteName) {
+      return siteName === 'newspapers'
+        ? 'Newspapers.com would not give this clipping - your subscription may not cover this paper'
+        : CB().SITES[siteName].name + ' would not give this record - your subscription may not cover it';
     }
 
     function troubleWords(siteName, stops, why) {

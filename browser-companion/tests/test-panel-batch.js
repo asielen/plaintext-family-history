@@ -1982,27 +1982,56 @@ test('X1 correction: every page image answering 403 "sign in" over four Starts s
   assert.strictEqual(p.written.length, 3);
 });
 
-test('X1 correction: a 403 for her clippings list - the queue\'s or a clipping page\'s - stops the run and counts nothing', async () => {
-  // The queue's own list read.
+test('X1 correction: a 403 for her own clippings list stops the run and counts nothing', async () => {
   const lists = [{ ok: false, error: 'Newspapers.com refused your clippings list (HTTP 403) - sign in and reload the page' }];
-  const r = await openPanel({ url: NP_A, respond: npSite(lists), storage: ON });
+  // Her queue, its list not yet read to the end: the Start reads on.
+  const r = await openPanel({ url: NP_A, respond: npSite(lists),
+    storage: Object.assign({}, ON, { npBatchLedger: Object.assign(npQueue(), { listComplete: false }) }) });
   quick(r);
   await start(r, 'np');
   assert.match(r.batchEl('np-status').textContent, /^Stopped: could not read your clippings list: .*sign in/);
   assert.strictEqual(r.written.length, 0);
-  // A clipping page whose list of clippings answered 403: no clipping of hers
-  // can be found on it, Start after Start - never counted against that clipping.
-  const refusedList = () => Object.assign(npInfo(npClip(101, 'Obituary', NP_A)), { ownClips: [],
+  const L = r.storage.npBatchLedger;
+  assert.deepStrictEqual(['101', '202'].map((k) => [L.items[k].state, L.items[k].stops || 0]), [['queued', 0], ['queued', 0]]);
+});
+
+// Fifth audit Y1 (the auditor's r14): Newspapers.com coverage is per paper.
+test('Y1: a clipping on a paper her subscription does not cover - the next one is saved, and it is set aside on the second Start', async () => {
+  const uncovered = () => Object.assign(npInfo(npClip(101, 'Obituary', NP_A)), { ownClips: [],
     listError: 'Newspapers.com refused the list of clippings on this page (HTTP 403: you may need to sign in, ' +
       'or your subscription may not cover this paper)' });
-  const p = await openPanel({ url: NP_B, respond: npPages({ [NP_A]: refusedList })([]),
+  const p = await openPanel({ url: NP_B, respond: npPages({ [NP_A]: uncovered })([]),
     storage: Object.assign({}, ON, { npBatchLedger: npQueue() }) });
   quick(p);
-  for (let i = 1; i <= 4; i++) {
-    await start(p, 'np');
-    const it = p.storage.npBatchLedger.items['101'];
+  await start(p, 'np');
+  let L = p.storage.npBatchLedger;
+  assert.strictEqual(L.items['202'].state, 'done');
+  assert.deepStrictEqual([L.items['101'].state, L.items['101'].stops], ['queued', 1]);
+  assert.match(L.items['101'].lastError, /^Newspapers\.com would not give this clipping - your subscription may not cover this paper/);
+  assert.deepStrictEqual(p.written.map((w) => p.capJson(w).url), [NP_B]);
+  await start(p, 'np');
+  L = p.storage.npBatchLedger;
+  assert.strictEqual(L.items['101'].state, 'failed');
+  assert.match(L.items['101'].lastError, /^Newspapers\.com would not give this clipping - your subscription may not cover this paper - it was refused on 2 Starts, so it is set aside/);
+  assert.match(p.batchEl('np-status').textContent, /^Finished/);
+});
+
+// Fifth audit Y2 (the auditor's r15): offline, the tab shows the browser's own error page.
+test('Y2: offline, a record page the add-on cannot read at all over three Starts sets nothing aside; once online, both are saved', async () => {
+  let offline = true;
+  const base = ancestrySite();
+  const p = await openPanel({ url: HARRIET, storage: Object.assign({}, ON, { ancBatchLedger: ancLedger([CALVIN, ETHEL]) }),
+    // On the browser's error page no content script answers.
+    respond: (msg, tab) => (offline && tab.url !== HARRIET ? PORT_CLOSED : base(msg, tab)),
+    titleFor: () => (offline ? 'www.ancestry.com' : 'A record - Ancestry') });
+  quick(p);
+  for (let i = 1; i <= 3; i++) {
+    await start(p, 'anc');
+    const it = p.storage.ancBatchLedger.items['90001:1000001'];
     assert.deepStrictEqual([it.state, it.stops || 0], ['queued', 0], 'Start ' + i);
-    assert.match(p.batchEl('np-status').textContent, /^Stopped: .*sign in/, 'Start ' + i);
   }
-  assert.strictEqual(p.storage.npBatchLedger.items['202'].state, 'queued');
+  offline = false;
+  await start(p, 'anc');
+  const L = p.storage.ancBatchLedger;
+  assert.deepStrictEqual([L.items['90001:1000001'].state, L.items['90002:2000001'].state], ['done', 'done']);
 });
