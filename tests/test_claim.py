@@ -2124,39 +2124,6 @@ class RunClaimBatchTests(unittest.TestCase):
         for cid in self.BOTH:
             self.assertEqual(rec[cid]['status'], 'needs-review')
 
-    def test_batch_write_failure_leaves_the_rest_untouched(self) -> None:
-        # A later item's write failing must leave THAT claim exactly as it was,
-        # and the batch must say so. The promise rests on run_claim writing
-        # atomically (write_text_exact_atomic) - a truncating write that died
-        # mid-write would leave the source torn, and the advised retry would
-        # then read an unparseable file. Patching that writer is what proves it
-        # is wired in: a regression to the non-atomic writer would bypass this
-        # patch, write the second claim, and fail the untouched assertion.
-        before = {c['id']: str(c['status'])
-                  for c in read_record(self.source)['claims']}
-        orig = claim.write_text_exact_atomic
-        calls = {'n': 0}
-
-        def flaky(path, text):
-            calls['n'] += 1
-            if calls['n'] == 2:
-                raise OSError('simulated disk full on the second write')
-            return orig(path, text)
-        claim.write_text_exact_atomic = flaky
-        try:
-            result = claim.run_claim_batch(self.root, claim_ids=list(self.BOTH),
-                                           status='accepted', reviewed='2026-07-20')
-        finally:
-            claim.write_text_exact_atomic = orig
-
-        self.assertEqual(result.exit_code, EXIT_FAILURE)
-        self.assertEqual(len(result['applied']), 1)   # only the first landed
-        rec = self._claims()
-        self.assertEqual(rec[self.BOTH[0]]['status'], 'accepted')
-        self.assertEqual(str(rec[self.BOTH[1]]['status']), before[self.BOTH[1]])
-        text = ' '.join(m.text for m in result.messages)
-        self.assertIn('left as they were', text)
-
     def test_multi_id_with_field_flag_refused_nothing_written(self) -> None:
         before = self.source.read_text(encoding='utf-8')
         result = claim.run_claim_batch(self.root, claim_ids=list(self.BOTH),
@@ -2341,6 +2308,149 @@ class RunClaimBatchTests(unittest.TestCase):
         self.assertTrue(result.messages)
 
 
+_THIRD_CLAIM = """
+- value: "Anna Smith, a farmer's daughter"
+  id: C-cc33dd44ee
+  type: occupation
+  persons: [P-aaaaaaaaaa]
+  status: suggested
+  confidence: medium
+```"""
+
+
+def _write_three_claim_source(root: Path, sid: str = 'S-1111111111',
+                              prefix: str = '') -> tuple[Path, tuple[str, str, str]]:
+    """A record holding three claims; `prefix` swaps the ids' first letters
+    so a second record's claims never collide with the first's."""
+    ids = ('C-aa11bb22cc', 'C-bb22cc33dd', 'C-cc33dd44ee')
+    text = _CLAIM_BLOCK.replace('```\n\n## Notes', _THIRD_CLAIM + '\n\n## Notes', 1)
+    text = text.replace('S-1111111111', sid)
+    if prefix:
+        new_ids = tuple('C-' + prefix + cid[3:] for cid in ids)
+        for old, new in zip(ids, new_ids):
+            text = text.replace(old, new)
+        ids = new_ids
+    path = root / 'sources' / 'other' / f'record-{sid.lower()}_{sid}.md'
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding='utf-8')
+    return path, ids
+
+
+class OneWritePerRecordTests(unittest.TestCase):
+    """#225 follow-up: a batch used to rewrite a record once per claim in it, a
+    fraction of a second apart - and on Windows a rewrite can find antivirus
+    still reading the last one, so a big batch stopped part way. A batch now
+    edits every claim in memory and writes each record once, with the same
+    result, the same messages and the same stop-and-report when a write fails."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.first, self.a = _write_three_claim_source(self.root)
+        self.second, self.b = _write_three_claim_source(self.root, 'S-2222222222', prefix='d')
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _spy(self, fail_on: Path | None = None):
+        writes: list[Path] = []
+        real = claim.write_text_exact_atomic
+
+        def spy(path, text):
+            writes.append(Path(path))
+            if fail_on is not None and Path(path) == fail_on:
+                raise PermissionError(13, 'Access is denied', str(path))
+            return real(path, text)
+        return writes, mock.patch.object(claim, 'write_text_exact_atomic', spy)
+
+    def _status(self, path: Path) -> dict:
+        return {c['id']: str(c['status']) for c in read_record(path)['claims']}
+
+    def test_three_claims_in_one_record_write_it_once(self) -> None:
+        # Expected bytes: the same three accepts made one claim at a time,
+        # which is exactly what the batch did before (one run_claim write each).
+        with tempfile.TemporaryDirectory() as d:
+            twin, _ = _write_three_claim_source(Path(d))
+            for cid in self.a:
+                one = claim.run_claim(Path(d), claim_id=cid, status='accepted',
+                                      reviewed='2026-07-20')
+                self.assertEqual(one['status'], 'ok')
+            expected = twin.read_bytes()
+
+        writes, spy = self._spy()
+        with spy:
+            result = claim.run_claim_batch(self.root, claim_ids=list(self.a),
+                                           status='accepted', reviewed='2026-07-20')
+        self.assertEqual(writes, [self.first])
+        self.assertEqual(self.first.read_bytes(), expected)
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertEqual(result['applied'], list(self.a))
+        self.assertEqual(result.changed, [str(self.first)])
+        text = '\n'.join(m.text for m in result.messages)
+        for cid in self.a:
+            self.assertIn(f'Set {cid}: status suggested -> accepted (reviewed 2026-07-20)', text)
+
+    def test_a_failed_write_on_the_second_record_keeps_the_first(self) -> None:
+        # Ids interleave the two records: both of the first record's claims
+        # land in its one write, then the second record's write fails.
+        ids = [self.a[0], self.b[0], self.a[1]]
+        before_second = self.second.read_bytes()
+        writes, spy = self._spy(fail_on=self.second)
+        with spy:
+            result = claim.run_claim_batch(self.root, claim_ids=ids,
+                                           status='accepted', reviewed='2026-07-20')
+        self.assertEqual(writes, [self.first, self.second])
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertEqual(result['status'], 'failed')
+        self.assertEqual(result['applied'], [self.a[0], self.a[1]])
+        self.assertEqual(result.changed, [str(self.first)])
+        first = self._status(self.first)
+        self.assertEqual((first[self.a[0]], first[self.a[1]], first[self.a[2]]),
+                         ('accepted', 'accepted', 'suggested'))
+        self.assertEqual(self.second.read_bytes(), before_second)
+        self.assertEqual([d['status'] for d in result['results']], ['ok', 'failed', 'ok'])
+
+        text = '\n'.join(m.text for m in result.messages)
+        self.assertIn(f'cannot write {self.second}', text)
+        self.assertIn('Access is denied', text)
+        self.assertIn(f'Stopped at {self.b[0]}: 2 of 3 claims applied '
+                      f'({self.a[0]}, {self.a[1]}), the rest left as they were', text)
+        self.assertIn(f'`fha claim {self.b[0]} --status accepted --reviewed 2026-07-20`', text)
+        # Only claims whose record really was written say "Set".
+        self.assertNotIn(f'Set {self.b[0]}', text)
+
+    def test_records_after_a_failed_write_are_not_written(self) -> None:
+        third, c = _write_three_claim_source(self.root, 'S-3333333333', prefix='f')
+        before_third = third.read_bytes()
+        ids = [self.a[0], self.b[0], c[0]]
+        writes, spy = self._spy(fail_on=self.second)
+        with spy:
+            result = claim.run_claim_batch(self.root, claim_ids=ids, status='rejected')
+        self.assertEqual(writes, [self.first, self.second])   # never reached the third
+        self.assertEqual(third.read_bytes(), before_third)
+        self.assertEqual(result['applied'], [self.a[0]])
+        self.assertEqual([d['status'] for d in result['results']],
+                         ['ok', 'failed', 'not-written'])
+        self.assertIn(f'`fha claim {self.b[0]} {c[0]} --status rejected`',
+                      ' '.join(m.text for m in result.messages))
+
+    def test_dry_run_preview_is_each_claims_own_preview(self) -> None:
+        # The preview is unchanged: each claim's diff against the file as it
+        # stands, exactly what a single-claim dry run shows.
+        ids = [self.a[0], self.b[0], self.a[1]]
+        expected = []
+        for cid in ids:
+            one = claim.run_claim(self.root, claim_id=cid, status='accepted',
+                                  reviewed='2026-07-20', dry_run=True)
+            expected += [m.text for m in one.messages if m.text != claim._DRY_RUN_TRAILER]
+        writes, spy = self._spy()
+        with spy:
+            result = claim.run_claim_batch(self.root, claim_ids=ids, status='accepted',
+                                           reviewed='2026-07-20', dry_run=True)
+        self.assertEqual(writes, [])
+        self.assertEqual([m.text for m in result.messages][:-1], expected)
+
+
 class BatchRerunIsANoOpTests(unittest.TestCase):
     """#225 follow-up: a batch that stopped part way is rerun with the same ids,
     and the claims it had already applied came back as "accepted -> accepted"
@@ -2394,7 +2504,7 @@ class BatchRerunIsANoOpTests(unittest.TestCase):
         text = '\n'.join(m.text for m in result.messages)
         for cid in self.BOTH:
             self.assertIn(f'{cid}: already accepted (reviewed 2026-07-20)', text)
-        self.assertIn('2 of 2 claims were already accepted', text)
+        self.assertIn('All 2 claims were already accepted with that review date', text)
         self.assertNotIn('fha index', text)
 
     def test_a_rerun_writes_only_the_claims_still_to_do(self) -> None:

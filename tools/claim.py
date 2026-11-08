@@ -135,9 +135,12 @@ is inherently per-claim and keeps the surgical single-id form. Validation is
 ALL-OR-NOTHING: every id is checked (shape and existence) before any write, so
 a typo'd id refuses the whole batch rather than applying half a decision.
 Duplicate ids are deduped preserving order (one decision, applied once, said so
-in the output). The live run applies each claim through the SAME single-claim
-surgical write (`run_claim`) in a loop - one write path, never a second one -
-and one `--dry-run` previews every edit in the batch.
+in the output). The live run edits each claim through the SAME single-claim
+surgical path (`run_claim`) - one edit path, never a second one - holding the
+results in memory, then writes each record ONCE however many of its claims the
+batch touched (#225 follow-up: rewriting one census record per claim, a
+fraction of a second apart, collided with Windows antivirus still reading the
+last write). One `--dry-run` previews every edit in the batch.
 
 **`fha claim new`** mints a brand-new claim onto an EXISTING source record - the
 CLI-driven counterpart to hand-typing a claim item under `## Claims`. It shares
@@ -203,7 +206,9 @@ CODE MAP
                                 type/place/persons/confidence/information/
                                 evidence/anchor/notes)
     run_claim                 - validate, locate, edit ONE claim, return a Result
-    run_claim_batch           - dedupe, all-or-nothing validate, loop run_claim
+    _cannot_write             - the one "cannot write" wording, single claim or batch
+    run_claim_batch           - dedupe, all-or-nothing validate, edit each claim via
+                                run_claim in memory, write each record once
     _cmd_claim
 
   fha claim new (mint onto an existing source)
@@ -1072,6 +1077,11 @@ def _echo_field_lines(**fields: str | None) -> list[str]:
 
 # ── Top-level operation ───────────────────────────────────────────────────────
 
+def _cannot_write(record_path: Path, error: OSError) -> str:
+    """The one wording for a record write that failed, single claim or batch."""
+    return f'cannot write {record_path}: {error}'
+
+
 def run_claim(
     archive_root: Path,
     *,
@@ -1091,6 +1101,7 @@ def run_claim(
     notes: str | None = None,
     dry_run: bool = False,
     _record_hint: Path | None = None,
+    _pending: dict[Path, str] | None = None,
 ) -> Result:
     """Edit one claim (status move and/or field corrections); return a Result.
 
@@ -1151,6 +1162,14 @@ def run_claim(
     lookup cannot run at all - the edit still applies with `place_text`
     unlinked, but a warning names the parse problem and points at `fha
     lint`, rather than looking like an ordinary miss.
+
+    `_pending` is `run_claim_batch`'s in-memory buffer (#225 follow-up): the
+    record's text-to-be, keyed by path. When given, the record is read from
+    the buffer if an earlier claim in the batch already edited it, and the
+    finished text is put back there INSTEAD of written - every check above
+    still runs per claim, and the batch writes each record once at the end.
+    Nothing lands in `changed` in that mode, because nothing has been written
+    yet; the batch adds the path when its write succeeds.
     """
     result = Result(data={
         'status': None, 'claim_id': None, 'before_status': None,
@@ -1280,7 +1299,10 @@ def run_claim(
         # Exact read/write so a one-line status edit doesn't churn every line
         # ending of a CRLF-authored record on Linux (or an LF one on Windows) -
         # the claims-surgery byte-faithful contract (read_text_exact docstring).
-        text = read_text_exact(record_path)
+        if _pending is not None and record_path in _pending:
+            text = _pending[record_path]   # an earlier claim in this batch edited it
+        else:
+            text = read_text_exact(record_path)
     except OSError as e:
         result.ok = False
         result.exit_code = EXIT_FAILURE
@@ -1439,23 +1461,28 @@ def run_claim(
         result.add('info', _DRY_RUN_TRAILER)
         return result
 
-    try:
-        # Atomic (temp + os.replace): a failed write must leave the record
-        # exactly as it was. run_claim_batch loops this function and, on a
-        # failed item, tells the human "the rest were left as they were" and
-        # hands back a retry command - a promise a truncating `write_text_exact`
-        # could not keep, since a mid-write failure (disk full) would leave the
-        # source torn and the advised retry would then read an unparseable file.
-        write_text_exact_atomic(record_path, reapply_newline(new_text, text))
-    except OSError as e:
-        result.ok = False
-        result.exit_code = EXIT_FAILURE
-        result.data['status'] = 'failed'
-        result.add('error', f'cannot write {record_path}: {e}')
-        return result
+    if _pending is not None:
+        # A batch writes each record once, after every claim in it is edited.
+        _pending[record_path] = out_text
+    else:
+        try:
+            # Atomic (temp + os.replace): a failed write must leave the record
+            # exactly as it was. run_claim_batch tells the human, on a failed
+            # write, "the rest were left as they were" and hands back a retry
+            # command - a promise a truncating `write_text_exact` could not
+            # keep, since a mid-write failure (disk full) would leave the
+            # source torn and the advised retry would then read an unparseable
+            # file.
+            write_text_exact_atomic(record_path, out_text)
+        except OSError as e:
+            result.ok = False
+            result.exit_code = EXIT_FAILURE
+            result.data['status'] = 'failed'
+            result.add('error', _cannot_write(record_path, e))
+            return result
+        result.note_changed(record_path)
 
     result.data['status'] = 'ok'
-    result.note_changed(record_path)
     result.add('info', f'Set {summary}', path=record_path)
     if registry_error_note is not None:
         result.add('warning', _place_registry_error_note(place_text, registry_error_note, dry_run=False))
@@ -1513,14 +1540,29 @@ def run_claim_batch(
     none of it. Duplicate ids are deduped preserving order (one decision,
     applied once) and the dedupe is said in the output.
 
-    The live run applies each claim through `run_claim` in a loop - the ONE
-    surgical write path, never a second writer - collecting each claim's own
-    messages while folding the per-claim `fha index` / dry-run trailers into a
-    single closing line. A mid-loop failure (possible even after validation:
-    a duplicate C-id inside one file, a file that stopped being writable)
-    stops the loop - no write after a known failure - and the output names
-    what was applied, what was not, and the exact command that finishes the
-    rest.
+    The live run edits each claim through `run_claim` - the ONE surgical
+    edit path, with its roles guard, edit refusals and re-parse check per
+    claim - but in memory (`_pending`), then writes each record ONCE, in the
+    order the batch first touched it (#225 follow-up). One census record
+    holding forty of the batch's claims used to be rewritten forty times a
+    fraction of a second apart, and on Windows a rewrite can collide with
+    antivirus still reading the last one. One write per record removes that,
+    and makes the batch faster besides. The result is byte for byte what
+    applying the claims one by one gives, because each claim is edited
+    against the text the earlier ones left. Each claim's own messages are
+    kept, with the per-claim `fha index` / dry-run trailers folded into a
+    single closing line, and a claim's "Set ..." line appears only once its
+    record is actually written.
+
+    Two things stop a batch, and both name what was applied, what was not,
+    and the exact command that finishes the rest. A claim `run_claim`
+    refuses (possible even after validation: a duplicate C-id inside one
+    file) stops the editing; the claims edited before it are still written,
+    as they were when each was written as it went. A record that fails to
+    write stops the writing: its claims are not applied, the records already
+    written stay written, and nothing after it is written (no write after a
+    known failure). Under `--dry-run` nothing is held or written: each claim
+    previews against the file as it stands, the same preview as ever.
 
     A claim that already has the requested status and review date
     (`run_claim`'s `already-done`) counts as applied: nothing is written for
@@ -1530,8 +1572,11 @@ def run_claim_batch(
 
     `data` for a real batch is {'status': 'ok'|'refused'|'no-op'|
     'invalid-id'|'invalid-status'|'not-found'|'failed', 'claim_ids' (the
-    deduped display list), 'applied' (ids written, or previewed under
-    dry-run), 'reviewed', 'results' (each `run_claim` data dict, in order)};
+    deduped display list), 'applied' (ids written or already done, or
+    previewed under dry-run), 'reviewed', 'results' (each `run_claim` data
+    dict, in order; a claim whose edit was ready but whose record failed to
+    write says 'failed', and one in a record the batch stopped before writing
+    says 'not-written')};
     the single-id delegation returns `run_claim`'s data shape unchanged.
     """
     result = Result(data={
@@ -1654,54 +1699,101 @@ def run_claim_batch(
                    f'{fmt_id_display(dup_id)} was given more than once - '
                    'applying it once.')
 
-    applied: list[str] = []
-    for pos, cid in enumerate(ids):
+    # Edit every claim in memory first, then write each record ONCE (#225
+    # follow-up). A batch accepting several claims in one census record used
+    # to rewrite that file once per claim, a fraction of a second apart, and
+    # on Windows a rewrite can find antivirus still reading the last one. Each
+    # claim still goes through `run_claim` - the one surgical edit path, with
+    # every per-claim check and message - which hands its finished text to
+    # `pending` instead of writing it. A dry run never fills `pending`: each
+    # claim previews against the file as it stands, exactly as before.
+    pending: dict[Path, str] | None = None if dry_run else {}
+    planned: list[tuple[str, Result]] = []
+    stopped: Result | None = None
+    for cid in ids:
         sub = run_claim(archive_root, claim_id=cid, status=status,
                         reviewed=reviewed, dry_run=dry_run,
-                        _record_hint=located[cid][0])
-        for msg in sub.messages:
-            # The per-claim trailers collapse into one closing line below.
-            if msg.text in (_INDEX_REMINDER, _DRY_RUN_TRAILER):
-                continue
-            result.messages.append(msg)
-        for changed_path in sub.changed:
-            if changed_path not in result.changed:
-                result.changed.append(changed_path)
+                        _record_hint=located[cid][0], _pending=pending)
         result.data['results'].append(sub.data)
         if sub.exit_code != EXIT_CLEAN:
-            # Stop at the first failure - never keep writing past a known
-            # problem - and hand back the exact command that finishes the rest.
-            # Under dry-run nothing was WRITTEN, only previewed, so the message
-            # says "previewed" and the re-run command carries EVERY id (the
-            # live-run wording would instruct a decision-dropping recovery:
-            # the previewed-but-unwritten claims would silently never apply).
-            # An explicit --reviewed rides along either way, so a finished
-            # batch never ends up split across two review dates.
-            reviewed_part = f' --reviewed {reviewed}' if reviewed else ''
-            level = 'warning' if sub.exit_code == EXIT_WARNINGS else 'error'
-            result.ok = False
-            result.exit_code = sub.exit_code
-            result.data['status'] = sub.data.get('status') or 'failed'
-            result.data['applied'] = applied
-            if dry_run:
-                all_ids = ' '.join(fmt_id_display(c) for c in ids)
-                result.add(level,
-                           f'Stopped at {fmt_id_display(cid)}: {len(applied)} of '
-                           f'{len(ids)} claims previewed - nothing was written '
-                           '(dry-run). Fix the problem above, then re-run '
-                           f'`fha claim {all_ids} --status {status}{reviewed_part} '
-                           '--dry-run` to re-preview the whole batch.')
-            else:
-                not_done = [fmt_id_display(c) for c in ids[pos:]]
-                done_text = ', '.join(applied) if applied else 'none'
-                result.add(level,
-                           f'Stopped at {fmt_id_display(cid)}: {len(applied)} of {len(ids)} '
-                           f'claims applied ({done_text}), the rest left as they were. Fix the '
-                           'problem above, then re-run '
-                           f'`fha claim {" ".join(not_done)} --status {status}{reviewed_part}` '
-                           'for the rest.')
-            return result
-        applied.append(fmt_id_display(cid))
+            # Stop at the first refusal - never edit past a known problem.
+            stopped = sub
+            break
+        planned.append((cid, sub))
+
+    # Write each edited record once, in the order the batch first touched it.
+    # After a refusal above this still writes the claims edited BEFORE it, the
+    # same outcome as when each claim was written as it went. A failed write
+    # stops here: that record's claims are not applied, records already
+    # written stay written, and nothing after it is written.
+    written: set[Path] = set()
+    write_failed: tuple[Path, OSError] | None = None
+    for path, out_text in (pending or {}).items():
+        try:
+            write_text_exact_atomic(path, out_text)
+        except OSError as e:
+            write_failed = (path, e)
+            break
+        written.add(path)
+        result.note_changed(path)
+
+    applied: list[str] = []
+    for cid, sub in planned:
+        if (dry_run or sub.data.get('status') == 'already-done'
+                or Path(sub.data['source']) in written):
+            applied.append(fmt_id_display(cid))
+            for msg in sub.messages:
+                # The per-claim trailers collapse into one closing line below.
+                if msg.text not in (_INDEX_REMINDER, _DRY_RUN_TRAILER):
+                    result.messages.append(msg)
+        else:
+            # Its edit was ready, but its record was never written.
+            failed_here = write_failed is not None and Path(sub.data['source']) == write_failed[0]
+            sub.data['status'] = 'failed' if failed_here else 'not-written'
+
+    if stopped is not None or write_failed is not None:
+        # Name what was applied, what was not, and the exact command that
+        # finishes the rest. Under dry-run nothing was WRITTEN, only previewed,
+        # so the message says "previewed" and the re-run command carries EVERY
+        # id (the live-run wording would instruct a decision-dropping recovery:
+        # the previewed-but-unwritten claims would silently never apply). An
+        # explicit --reviewed rides along either way, so a finished batch
+        # never ends up split across two review dates.
+        if write_failed is not None:
+            result.add('error', _cannot_write(*write_failed))
+            exit_code, status_word = EXIT_FAILURE, 'failed'
+        else:
+            exit_code = stopped.exit_code
+            status_word = stopped.data.get('status') or 'failed'
+        if stopped is not None:
+            for msg in stopped.messages:
+                if msg.text not in (_INDEX_REMINDER, _DRY_RUN_TRAILER):
+                    result.messages.append(msg)
+        applied_set = set(applied)
+        not_done = [fmt_id_display(c) for c in ids if fmt_id_display(c) not in applied_set]
+        reviewed_part = f' --reviewed {reviewed}' if reviewed else ''
+        level = 'warning' if exit_code == EXIT_WARNINGS else 'error'
+        result.ok = False
+        result.exit_code = exit_code
+        result.data['status'] = status_word
+        result.data['applied'] = applied
+        if dry_run:
+            all_ids = ' '.join(fmt_id_display(c) for c in ids)
+            result.add(level,
+                       f'Stopped at {not_done[0]}: {len(applied)} of '
+                       f'{len(ids)} claims previewed - nothing was written '
+                       '(dry-run). Fix the problem above, then re-run '
+                       f'`fha claim {all_ids} --status {status}{reviewed_part} '
+                       '--dry-run` to re-preview the whole batch.')
+        else:
+            done_text = ', '.join(applied) if applied else 'none'
+            result.add(level,
+                       f'Stopped at {not_done[0]}: {len(applied)} of {len(ids)} '
+                       f'claims applied ({done_text}), the rest left as they were. Fix the '
+                       'problem above, then re-run '
+                       f'`fha claim {" ".join(not_done)} --status {status}{reviewed_part}` '
+                       'for the rest.')
+        return result
 
     result.data['status'] = 'ok'
     result.data['applied'] = applied
@@ -1712,9 +1804,14 @@ def run_claim_batch(
         # Counted as applied (the archive already says what was asked), and
         # said plainly, so a rerun after a stopped batch reads as finished
         # rather than as a second round of edits.
+        if dry_run:
+            said = 'are already', 'would not be rewritten'
+        else:
+            said = 'were already', 'were not rewritten'
+        how_many = f'All {already}' if already == len(ids) else f'{already} of {len(ids)}'
         result.add('info',
-                   f'{already} of {len(ids)} claims were already {status} with that '
-                   'review date, so their files were not rewritten.')
+                   f'{how_many} claims {said[0]} {status} with that review date, so '
+                   f'their files {said[1]}.')
     if dry_run:
         result.add('info',
                    f'[dry-run] {len(ids)} claims previewed. No file written. '
@@ -1723,8 +1820,6 @@ def run_claim_batch(
         result.add('info',
                    'Reminder: run `fha index` so the new statuses enter the query surface.',
                    next_step='fha index')
-    else:
-        result.add('info', 'Nothing needed writing - every claim was already done.')
     return result
 
 

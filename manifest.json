@@ -476,7 +476,7 @@
     {
       "path": ".fha/tools/README.md",
       "category": "operating",
-      "sha256": "ac121866c7d98725c2fd9341f82b7444e77fcb8ab8f22c444f2c613c0dbbb7a7",
+      "sha256": "db55f9f63ae407a32b34b0ee28fedd6c3a45646fe7b5127fd315e3bfa92b6417",
       "spec_version": "1.2",
       "src": "tools/README.md"
     },
@@ -546,7 +546,7 @@
     {
       "path": ".fha/tools/claim.py",
       "category": "operating",
-      "sha256": "6dfcf7c14ebe5a8623b8e06b5b1cff40cb8b2fc22b6bf740de9ccd3c0772bc5d",
+      "sha256": "b42fb5620c1cb366f644309b76b77d1c02daccfa1dcc081b7ecf988a983245fc",
       "spec_version": "1.2",
       "src": "tools/claim.py"
     },
