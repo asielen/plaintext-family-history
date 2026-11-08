@@ -217,14 +217,14 @@
     {
       "path": ".fha/browser-companion/src/batch.js",
       "category": "operating",
-      "sha256": "55f1cfb7592db4036ce0ec40de4c293adcbcc1ee0eb6d868eabca8182ae38ad0",
+      "sha256": "03a4a2fca424a6f24234b923123e1c8faf94be647b99890283e79f6abb44ca77",
       "spec_version": "1.2",
       "src": "browser-companion/src/batch.js"
     },
     {
       "path": ".fha/browser-companion/src/content.js",
       "category": "operating",
-      "sha256": "ab6b4a9799f9729bf09b62a8e7963fdee38eac67813106ca33c65714e78d0d38",
+      "sha256": "2d447f81c7b326f2a69f46f3d66f567d8a4b655541146c9e0e767dff6515cf1f",
       "spec_version": "1.2",
       "src": "browser-companion/src/content.js"
     },
@@ -238,7 +238,7 @@
     {
       "path": ".fha/browser-companion/src/lib/batch-sources.js",
       "category": "operating",
-      "sha256": "ab7646237b72893bf33e96633829d7b518f87ddcd9fd1ba778fdf03b631c1e8f",
+      "sha256": "0d71f65b2d30d42490926910b8da569885a50deb2e56daff270e935d3d3c7cea",
       "spec_version": "1.2",
       "src": "browser-companion/src/lib/batch-sources.js"
     },
@@ -280,7 +280,7 @@
     {
       "path": ".fha/browser-companion/src/lib/familysearch-record.js",
       "category": "operating",
-      "sha256": "578bb7da5d5193069db071a0ce1c10b920fa7ebf4d0c2778d66b63ed330449e1",
+      "sha256": "f90b4438088266cd1ed02bbe8710134b61b319be9c46a5b378770171828b7ee7",
       "spec_version": "1.2",
       "src": "browser-companion/src/lib/familysearch-record.js"
     },
@@ -357,7 +357,7 @@
     {
       "path": ".fha/browser-companion/src/panel.js",
       "category": "operating",
-      "sha256": "c809ccdb2dd61dce948f8bb574af19fcf8ef79640389ed8cb0cc0b5b9220553d",
+      "sha256": "c6420cd968b340f706cd485e21e4cffe5ebd0c5759e60ef8ce9c202412e4b309",
       "spec_version": "1.2",
       "src": "browser-companion/src/panel.js"
     },
