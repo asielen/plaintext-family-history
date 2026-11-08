@@ -1656,10 +1656,17 @@ def _yaml_problem_location(exc: object) -> str:
 #   - a byte-order mark (U+FEFF) anywhere: libyaml skips one at the start
 #     of a later line, so `\ufeffb: 1` reads as the key `b`, not `\ufeffb`.
 #   - `#` straight after a block-scalar indicator (`|#`, `>-#`, `|2#`).
-# The audit checked this rule against 264 hand-made cases and 40,000
-# one- and two-character mutations of real blocks: with it, the helper's
-# answer matched SafeLoader's every time.
-_LIBYAML_DISAGREES_RE = re.compile('[\t\ufeff?]|[|>][-+0-9]*#')
+#   - a `!` anywhere: a bare tag. libyaml reads `name: !` as '' where
+#     PyYAML reads None, and accepts `name: [!,]`, which PyYAML refuses
+#     (Codex review). A `!` in a record is rare, so this costs little.
+# Checked by the #228 audit against 264 hand-made cases and 40,000 one-
+# and two-character mutations of real blocks, then by an exhaustive sweep:
+# every ordered pair of YAML indicator characters (plus Tab, BOM, space,
+# CR, LF) inserted at every position of ten shipped blocks and eight small
+# synthetic ones, and written as every `key: value` line's whole value -
+# about a million documents. With this rule the helper's answer matched
+# SafeLoader's every time.
+_LIBYAML_DISAGREES_RE = re.compile('[\t\ufeff?!]|[|>][-+0-9]*#')
 
 
 def safe_load_yaml(stream: Any) -> Any:
@@ -1684,8 +1691,9 @@ def safe_load_yaml(stream: Any) -> Any:
         exception, not just `yaml.YAMLError`, covers text the C side cannot
         even encode (a lone surrogate raises UnicodeEncodeError there).
       - What counts as broken. libyaml accepts a few things PyYAML refuses
-        (a Tab after `name:` is the one a person really types). Taking
-        libyaml's word there would turn lint's E010 into silence, and only
+        (a Tab after `name:` is the one a person really types) and reads
+        a bare `!` tag to a different value. Taking libyaml's word there
+        would turn lint's E010 into silence, or change a value, and only
         on machines that have libyaml. Text that could hit one of those
         cases (`_LIBYAML_DISAGREES_RE`) goes straight to the Python parser.
 

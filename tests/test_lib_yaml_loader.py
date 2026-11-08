@@ -382,6 +382,11 @@ LIBYAML_LENIENT_DOCS = {
     '# straight after |': 'note: |#\n  x\n',
     '# straight after >-': 'note: >-#\n  x\n',
     '# straight after |2': 'note: |2#\n    x\n',
+    # Codex review on 91eac15: a bare non-specific tag. PyYAML reads
+    # `name: !` as None, libyaml as ''; `[!,]` PyYAML refuses outright.
+    'bare ! tag as a value': 'id: P-0123456789\nname: !\n',
+    'bare ! tag in a flow list': 'id: P-0123456789\nname: [!,]\n',
+    'bare ! tag after the comma': 'persons: [P-0123456789,!, P-0123456780]\n',
 }
 
 
@@ -458,6 +463,23 @@ class TabEditStillWarnedEndToEndTests(unittest.TestCase):
         e010 = [f for f in findings if f.code == 'E010' and person.name in str(f.path)]
         self.assertTrue(e010, 'a Tab after name: must still draw E010')
         self.assertIn('Frontmatter YAML error', e010[0].message)
+
+    def test_lint_flags_a_bare_tag_list_and_reads_a_bare_tag_as_empty(self):
+        """Codex review: `name: [!,]` is E010 under PyYAML and was silently
+        `['']` under libyaml; `name: !` is None (no name) under PyYAML and
+        was '' under libyaml."""
+        import lint
+        people = sorted(p for p in (self.root / 'people').rglob('*.md')
+                        if re.search(r'^name: ', p.read_text(encoding='utf-8'), re.M))
+        broken, blank = people[0], people[1]
+        for path, value in ((broken, '[!,]'), (blank, '!')):
+            text = path.read_text(encoding='utf-8')
+            path.write_text(re.sub(r'^name: .*$', 'name: ' + value, text, count=1, flags=re.M),
+                            encoding='utf-8', newline='')
+        findings, _ = lint._run_lint_core(self.root, {})
+        e010 = [f for f in findings if f.code == 'E010' and broken.name in str(f.path)]
+        self.assertTrue(e010, '`name: [!,]` must still draw E010')
+        self.assertIsNone(read_record(blank)['meta']['name'])
 
     def test_doctor_reports_a_tab_in_fha_yaml(self):
         """F2: the seen-it host and the import-recordings duplicate finder
