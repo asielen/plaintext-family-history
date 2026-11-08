@@ -130,7 +130,14 @@ CODE MAP
 
   Image derivatives
     _PIL_AVAILABLE             - is Pillow importable?
-    _make_derivative           - resized, EXIF-stripped JPEG/PNG copy (standalone)
+    _picture_bytes             - the one recipe: resized, EXIF-stripped bytes
+    _make_derivative           - write that copy to media/, in this process (standalone)
+    _picture_job               - a worker's job: the same bytes, made in another
+                                 process (#239), reached via _lib.site_picture_job
+    _auto_picture_workers,     - how many workers: processors, free memory, and
+    _picture_workers_setting     fha.yaml `site.picture_workers` (1 = one at a time)
+    _PicturePool               - the worker processes: start lazily, fall back to
+                                 in-process if they cannot run, stop on Ctrl+C
     _DerivativeCache           - saved copies of those derivatives in
                                  .cache/site-derivatives/, reused by the next
                                  build while the original is unchanged
@@ -188,6 +195,9 @@ CODE MAP
       .render_token            - one [ID] token → HTML (link / redaction / mark)
       ._derive                 - a media/ web picture: the saved copy when the
                                  original is unchanged, else made fresh (and saved)
+                                 - by a worker when there are workers (#239)
+      ._land_picture           - write a worker's picture into media/ and the cache,
+                                 in hand-over order; a failure asks for a serial rebuild
       .build_source_page       - M8.1 source page
       .build_person_page       - M8.2 person page; also builds `descendants_tree`
                                  (#115: the interactive explorer, demoted here
@@ -200,6 +210,8 @@ CODE MAP
       .run                     - orchestrate: prepare, build all pages, write
 
   Core / CLI
+    _site_payload              - build (and, if a worker's picture failed, build
+                                 again one picture at a time), return the result dict
     run_site                   - library entry point
     _unowned_output_reason     - refuse a non-empty --out fha site didn't create
     _cmd_site, register, _standalone_main
@@ -212,6 +224,7 @@ import contextlib
 import datetime
 import hashlib
 import html
+import io
 import json
 import math
 import os
@@ -222,8 +235,10 @@ import sqlite3
 import sys
 import tempfile
 import time
+import warnings
 from collections import deque
 from pathlib import Path
+from typing import NamedTuple
 from urllib.parse import quote as _urlquote
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -264,6 +279,7 @@ from _lib import (
     resolve_path,
     resolve_root_arg,
     Result,
+    site_picture_job,
     split_log_entries,
     strip_link_wrapper,
     strip_unaccepted_drafts,
@@ -387,6 +403,25 @@ _DERIVATIVE_RECIPE_VERSION = 1
 # timestamp tick (2 s on a FAT-formatted USB drive) can leave both unchanged.
 # Waiting out the tick closes that hole; the next build saves it instead.
 _DERIVATIVE_SETTLE_SECONDS = 5
+
+# Making web pictures in parallel (#239, `_PicturePool`). A first build of a big
+# archive decodes thousands of scans; worker processes do that side by side.
+# What one worker may need at once: a 143-megapixel TIFF is ~430 MB decoded, and
+# converting or shrinking it briefly holds a second copy.
+_PICTURE_WORKER_MEMORY = 1 << 30
+# The most workers the automatic choice picks. The originals are read from one
+# disk, so more workers mostly add waiting and memory, not speed.
+_AUTO_PICTURE_WORKERS_MAX = 8
+# A larger `site.picture_workers` is lowered to this: Windows refuses more.
+_PICTURE_WORKERS_LIMIT = 61
+# The first pictures a build has to make are made in the build's own process,
+# the way they always were. A rebuild after a few new scans then finishes
+# without starting any workers, and a scan that can never be made (and so is
+# made again on every build) stays off the pool's path (see `_derive`).
+_PICTURES_BEFORE_POOL = 8
+# How many pictures may wait on the workers at once, per worker. It keeps the
+# workers busy while bounding the finished pictures held in memory.
+_PICTURE_QUEUE_PER_WORKER = 4
 
 # Ancestor generations drawn in the static fan chart (rings beyond the subject).
 # 3 = up to great-grandparents. Every ring then keeps its labels on a roomy
@@ -2115,8 +2150,9 @@ def _place_leading_name_end(place_label: str) -> int | None:
 
 # ── Image derivatives ─────────────────────────────────────────────────────────
 
-def _make_derivative(src: Path, dest: Path, max_px: int = _DERIVATIVE_MAX_PX) -> bool:
-    """Write a resized, EXIF-stripped copy of `src` to `dest`. True on success.
+def _picture_bytes(src: Path, max_px: int, suffix: str) -> bytes | None:
+    """The web picture of `src`: resized, EXIF-stripped, encoded for a file
+    ending in `suffix`. None when it cannot be made.
 
     Standalone snapshots must carry their own image derivatives so no full-res
     original - and none of its EXIF (camera, GPS, timestamps that could leak a
@@ -2124,20 +2160,213 @@ def _make_derivative(src: Path, dest: Path, max_px: int = _DERIVATIVE_MAX_PX) ->
     metadata on a plain save; we additionally cap the longest edge (`max_px`,
     1200px by default; smaller for profile thumbnails).
 
+    This is the one recipe, whichever process runs it: `_make_derivative` (the
+    build's own process) and `_picture_job` (a worker, #239) both call it, so a
+    picture is the same bytes either way. It encodes in memory and touches no
+    file but `src`. The format is the one Pillow picks for a file name ending in
+    `suffix`, which is what saving straight to the `media/` file used to pick.
+
     Failure (a corrupt image, an unsupported format, a locked file) returns
-    False so the caller can warn-and-continue per the M8 UX bar (c) rather than
+    None so the caller can warn-and-continue per the M8 UX bar (c) rather than
     abort the whole build. Caller must ensure PIL is available before calling.
     """
     try:
         with Image.open(src) as im:
             im = im.convert('RGB') if im.mode not in ('RGB', 'L') else im
             im.thumbnail((max_px, max_px))
-            dest.parent.mkdir(parents=True, exist_ok=True)
+            buf = io.BytesIO()
             # Re-save without the original info dict, so no EXIF/GPS survives.
-            im.save(dest)
-        return True
+            im.save(buf, format=Image.registered_extensions()[suffix.lower()])
+        return buf.getvalue()
     except Exception:
+        return None
+
+
+def _make_derivative(src: Path, dest: Path, max_px: int = _DERIVATIVE_MAX_PX) -> bool:
+    """Write the web picture of `src` (`_picture_bytes`) to `dest`, in this
+    process. True on success; False, with nothing written, when it cannot be
+    made or saved."""
+    data = _picture_bytes(src, max_px, dest.suffix)
+    if data is None:
         return False
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(data)
+    except OSError:
+        return False
+    return True
+
+
+def _picture_job(src: str, max_px: int, suffix: str) -> tuple[bytes | None, list[tuple]]:
+    """A worker's whole job (#239, reached through `_lib.site_picture_job`):
+    make one web picture and hand back its bytes.
+
+    The worker writes nothing - not into `media/`, not into the saved-picture
+    cache. The build's own process writes the picture where the page needs it
+    and saves it for reuse, so stopping a build (Ctrl+C) can never leave a
+    half-written file behind in a worker, and every privacy decision stays
+    where it was made, in the build itself.
+
+    Python warnings raised while decoding (Pillow's DecompressionBombWarning
+    for a huge scan) are caught and returned as plain values, so the build can
+    show them in the same order a one-at-a-time build would."""
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
+        data = _picture_bytes(Path(src), max_px, suffix)
+    return data, [(str(w.message), w.category, w.filename, w.lineno) for w in caught]
+
+
+def _available_memory() -> int | None:
+    """Bytes of memory free for new work right now, or None when the system
+    will not say. Read without any extra dependency: Windows'
+    GlobalMemoryStatusEx, Linux's MemAvailable, else POSIX sysconf."""
+    if sys.platform == 'win32':
+        try:
+            import ctypes
+
+            class _MemoryStatus(ctypes.Structure):
+                _fields_ = [('dwLength', ctypes.c_ulong), ('dwMemoryLoad', ctypes.c_ulong)] + [
+                    (name, ctypes.c_ulonglong) for name in (
+                        'ullTotalPhys', 'ullAvailPhys', 'ullTotalPageFile', 'ullAvailPageFile',
+                        'ullTotalVirtual', 'ullAvailVirtual', 'ullAvailExtendedVirtual')]
+
+            status = _MemoryStatus()
+            status.dwLength = ctypes.sizeof(status)
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+                return int(status.ullAvailPhys)
+        except Exception:  # noqa: BLE001 - no answer is an answer: None
+            pass
+        return None
+    try:
+        with open('/proc/meminfo', encoding='ascii') as fh:
+            for line in fh:
+                if line.startswith('MemAvailable:'):
+                    return int(line.split()[1]) * 1024
+    except (OSError, ValueError, IndexError):
+        pass
+    try:
+        return os.sysconf('SC_AVPHYS_PAGES') * os.sysconf('SC_PAGE_SIZE')
+    except (AttributeError, ValueError, OSError):
+        return None
+
+
+def _auto_picture_workers() -> int:
+    """How many pictures to make at once when fha.yaml does not say: one fewer
+    than the processors this build may use (the build itself keeps writing
+    pages on one), at most `_AUTO_PICTURE_WORKERS_MAX`, and no more than free
+    memory allows at `_PICTURE_WORKER_MEMORY` each - two when the system will
+    not say how much is free. 1 means one at a time, as before."""
+    count = getattr(os, 'process_cpu_count', os.cpu_count)() or 1
+    workers = min(count - 1, _AUTO_PICTURE_WORKERS_MAX)
+    free = _available_memory()
+    workers = min(workers, 2 if free is None else free // _PICTURE_WORKER_MEMORY)
+    return max(1, workers)
+
+
+def _picture_workers_setting(site_cfg: dict) -> tuple[int, str | None]:
+    """`site.picture_workers` from fha.yaml: how many web pictures a build makes
+    at once. Absent, empty or `auto` picks the number (`_auto_picture_workers`);
+    a whole number of 1 or more is used as given (1 = one at a time, the way
+    to turn the workers off). Anything else is chosen automatically, with a
+    warning naming the setting - the site is worth finishing even when one
+    setting is wrong (the `home_pedigree_generations` rule).
+
+    Returns (workers, warning or None)."""
+    raw = site_cfg.get('picture_workers')
+    if raw is None or (isinstance(raw, str) and raw.strip().lower() in ('', 'auto')):
+        return _auto_picture_workers(), None
+    if isinstance(raw, float) and math.isfinite(raw) and raw == int(raw):
+        raw = int(raw)   # 4.0 -> 4: a whole number, just spelled as a float
+    if isinstance(raw, int) and not isinstance(raw, bool) and raw >= 1:
+        return min(raw, _PICTURE_WORKERS_LIMIT), None
+    return _auto_picture_workers(), (
+        f'WARNING: fha.yaml site.picture_workers {raw!r} is not a whole number of 1 or '
+        'more (or `auto`); choosing how many pictures to make at once automatically. '
+        'Set it to 1 to make them one at a time.')
+
+
+class _PendingPicture(NamedTuple):
+    """A picture handed to the workers: its Future plus everything
+    `_SiteBuilder._land_picture` needs to write and save it."""
+    future: object
+    src: Path
+    dest: Path
+    max_px: int
+    key: str
+    fields: dict
+    st: os.stat_result
+
+
+class _PicturePool:
+    """The worker processes that make a build's web pictures side by side (#239).
+
+    Only the slow, pure step runs here: decode an original, shrink it, encode
+    it (`_picture_job`). Everything that decides what is published stays in the
+    build's own process and runs exactly as before - every privacy gate has
+    already passed when `_SiteBuilder._derive` hands a picture over, and the
+    build itself writes the result into `media/` and the saved-picture cache.
+
+    The workers start on the first picture handed over, not before, and always
+    as fresh processes ("spawn" on every system), so nothing the build holds in
+    memory - an open index, a test's stand-in - leaks into them. Each ignores
+    Ctrl+C: the build's own process takes the interrupt and stops them
+    (`close`). If the workers cannot start or stop working (a packaged program,
+    a locked-down system, a worker killed for memory), `broken` is set and
+    every picture from then on is made in the build's own process, one at a
+    time - the build finishes the same, just slower, and says nothing."""
+
+    def __init__(self, workers: int) -> None:
+        self.workers = workers
+        # Pictures that may wait on the workers before the build pauses for them.
+        self.queue_limit = workers * _PICTURE_QUEUE_PER_WORKER
+        self.broken = False
+        self._executor = None
+
+    def submit(self, src: Path, max_px: int, suffix: str):
+        """Hand one picture to the workers: its Future, or None when the
+        workers are not available (the caller makes the picture itself)."""
+        if self.broken:
+            return None
+        try:
+            if self._executor is None:
+                if getattr(sys, 'frozen', False):
+                    # A packaged program would start another copy of itself.
+                    raise RuntimeError('worker processes are not available here')
+                import multiprocessing
+                import signal
+                from concurrent.futures import ProcessPoolExecutor
+                self._executor = ProcessPoolExecutor(
+                    max_workers=self.workers,
+                    mp_context=multiprocessing.get_context('spawn'),
+                    initializer=signal.signal, initargs=(signal.SIGINT, signal.SIG_IGN))
+            return self._executor.submit(site_picture_job, os.fspath(src), max_px, suffix)
+        except Exception:  # noqa: BLE001 - any failure to start means: do it here
+            self.broken = True
+            return None
+
+    def close(self, *, abort: bool) -> None:
+        """Stop the workers. After a finished build they are idle and simply
+        exit. After an interrupted one (`abort`: Ctrl+C, or an error part-way)
+        pictures still queued are dropped and the workers are terminated and
+        waited for, so none outlives the build; a worker writes no files, so
+        there is nothing half-written to clean up."""
+        executor, self._executor = self._executor, None
+        self.broken = True
+        if executor is None:
+            return
+        if not abort:
+            executor.shutdown(wait=True)
+            return
+        # `_processes` is read before shutdown, which empties it. (Python 3.14
+        # has `terminate_workers()`; this works on every supported version.)
+        processes = list((getattr(executor, '_processes', None) or {}).values())
+        executor.shutdown(wait=False, cancel_futures=True)
+        for proc in processes:
+            with contextlib.suppress(Exception):
+                proc.terminate()
+        for proc in processes:
+            with contextlib.suppress(Exception):
+                proc.join(10)
 
 
 class _DerivativeCache:
@@ -3337,7 +3566,13 @@ class _SiteBuilder:
         linked: bool,
         workbench: bool = False,
         workbench_context: dict | None = None,
+        derivative_cache: _DerivativeCache | None = None,
+        picture_pool: bool = True,
     ) -> None:
+        """`derivative_cache` and `picture_pool` exist for one caller,
+        `_site_payload`'s one-at-a-time rebuild after a picture the workers
+        made failed: it hands over the first attempt's cache (so its notes
+        about damaged entries survive) and turns the workers off."""
         self.conn = conn
         self.archive_root = archive_root
         self.fha_config = fha_config
@@ -3363,10 +3598,33 @@ class _SiteBuilder:
         # preview points at the originals and makes no derivatives at all).
         self.derivative_cache: _DerivativeCache | None = (
             None if linked or not _PIL_AVAILABLE
-            else _DerivativeCache(archive_root / _DERIVATIVE_CACHE_DIR))
-        # media/ path -> the cache key of what this build already wrote there,
-        # so a photo shown on many pages is written once, not once per page.
+            else derivative_cache or _DerivativeCache(archive_root / _DERIVATIVE_CACHE_DIR))
+        # media/ path -> the cache key of what this build already wrote there
+        # (or has handed to the workers to write), so a photo shown on many
+        # pages is made once, not once per page.
         self._derived_dests: dict[Path, str] = {}
+        # Making pictures side by side (#239, `_PicturePool`). Only a build that
+        # makes pictures has workers, and only when more than one is wanted.
+        self._picture_pool: _PicturePool | None = None
+        self._picture_setting_warning: str | None = None
+        if self.derivative_cache is not None:
+            site_cfg = fha_config.get('site') if isinstance(fha_config.get('site'), dict) else {}
+            workers, self._picture_setting_warning = _picture_workers_setting(site_cfg)
+            if picture_pool and workers > 1:
+                self._picture_pool = _PicturePool(workers)
+        # Pictures handed to the workers, oldest first, and how many of them
+        # write each media/ path (`_land_picture` takes them in this order).
+        self._pending_pictures: deque[_PendingPicture] = deque()
+        self._pending_dests: dict[Path, int] = {}
+        # Pictures made in this process before the workers start
+        # (`_PICTURES_BEFORE_POOL`).
+        self._pictures_made_here = 0
+        # Pillow's warnings from the workers, shown once each, as Python would.
+        self._picture_warning_registry: dict = {}
+        # Set when a picture the workers made failed: the pages were written
+        # as if it had worked, so the build is redone one picture at a time
+        # (`_site_payload`), exactly as a build without workers would run.
+        self.needs_serial_rebuild = False
 
         self.persons_dir = out_dir / 'persons'
         self.sources_dir = out_dir / 'sources'
@@ -4342,7 +4600,9 @@ class _SiteBuilder:
 
     def close(self) -> None:
         """Close any auxiliary connection this build opened (the index
-        connection itself is owned and closed by run_site)."""
+        connection itself is owned and closed by run_site), and stop any
+        picture workers it started (`_close_pictures`)."""
+        self._close_pictures()
         if self.photos_conn is not None:
             self.photos_conn.close()
             self.photos_conn = None
@@ -4830,17 +5090,30 @@ class _SiteBuilder:
         `_make_derivative` answers - callers keep their own warnings.
 
         Every caller has already decided this picture is published on this
-        page; this method only decides whether to decode the original or copy
-        the saved result (see `_DerivativeCache`). The bytes written are the
-        same either way, so the pages and media/ match a build with no cache.
+        page; this method only decides how the picture gets made: copied from
+        the saved result (see `_DerivativeCache`), decoded here, or - on a build
+        with workers (#239, `_PicturePool`) - decoded by a worker while the
+        build carries on writing pages. The bytes written are the same every
+        way, so the pages and media/ match a build with no cache and no workers.
         A failed derivative is never saved, so it is retried - and warned
-        about - on every build, as before."""
+        about - on every build, as before.
+
+        A picture handed to the workers is answered True at once, and the page
+        is written as if it worked; `_land_picture` writes it into media/ when
+        it is done. Should it fail, those pages are wrong, so the build is
+        redone one picture at a time (`needs_serial_rebuild`), which gives
+        exactly the pages, warnings and media/ of a build without workers. Only
+        a cache miss ever reaches the workers, and only past the first few
+        (`_PICTURES_BEFORE_POOL`), so a rebuild with a few new scans, or one
+        scan that can never be made, never needs that second pass."""
         cache = self.derivative_cache
         if cache is None:
             return _make_derivative(src, dest, max_px)
+        self._collect_pictures()   # write out whatever the workers have finished
         try:
             st = os.stat(src)
         except OSError:
+            self._collect_pictures(dest)
             return _make_derivative(src, dest, max_px)
         fields = cache.entry_fields(src, st, max_px, dest.suffix)
         key = cache.entry_key(fields)
@@ -4848,6 +5121,7 @@ class _SiteBuilder:
             return True
         data = cache.fetch(key, fields)
         if data is not None:
+            self._collect_pictures(dest)   # an earlier picture for this file lands first
             try:
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 dest.write_bytes(data)
@@ -4855,18 +5129,118 @@ class _SiteBuilder:
                 return _make_derivative(src, dest, max_px)
             self._derived_dests[dest] = key
             return True
+        if self._queue_picture(src, dest, max_px, key, fields, st):
+            self._derived_dests[dest] = key
+            return True
+        self._collect_pictures(dest)
         if not _make_derivative(src, dest, max_px):
             return False
         self._derived_dests[dest] = key
+        self._save_for_reuse(src, st, key, fields, dest)
+        return True
+
+    def _save_for_reuse(self, src: Path, st: os.stat_result, key: str, fields: dict,
+                        dest: Path, data: bytes | None = None) -> None:
+        """Save the picture just written to `dest` (its bytes are `data`, or
+        read back from `dest`) for the next build - unless the original was
+        modified too recently to trust its size and time, or changed while it
+        was being read (`_DERIVATIVE_SETTLE_SECONDS`)."""
         settled = time.time_ns() - st.st_mtime_ns > _DERIVATIVE_SETTLE_SECONDS * 10**9
         try:
             after = os.stat(src)
             unchanged = (after.st_size, after.st_mtime_ns) == (st.st_size, st.st_mtime_ns)
             if settled and unchanged:
-                cache.save(key, fields, dest.read_bytes())
+                self.derivative_cache.save(key, fields, dest.read_bytes() if data is None else data)
         except OSError:
             pass   # the page has its picture; it just is not saved for next time
+
+    def _queue_picture(self, src: Path, dest: Path, max_px: int, key: str, fields: dict,
+                       st: os.stat_result) -> bool:
+        """Hand a picture this build must make to the workers. False when it
+        is to be made here instead: no workers, still among the first
+        `_PICTURES_BEFORE_POOL`, a file type this Pillow cannot read at all
+        (it fails here in a moment, with no second pass), or workers that
+        cannot run. Pauses for the oldest picture when enough are waiting."""
+        pool = self._picture_pool
+        if pool is None or pool.broken:
+            return False
+        if self._pictures_made_here < _PICTURES_BEFORE_POOL:
+            self._pictures_made_here += 1
+            return False
+        if src.suffix.lower() not in Image.registered_extensions():
+            return False
+        future = pool.submit(src, max_px, dest.suffix)
+        if future is None:
+            return False
+        self._pending_pictures.append(_PendingPicture(future, src, dest, max_px, key, fields, st))
+        self._pending_dests[dest] = self._pending_dests.get(dest, 0) + 1
+        while len(self._pending_pictures) > pool.queue_limit:
+            self._land_picture()
         return True
+
+    def _collect_pictures(self, dest: Path | None = None) -> None:
+        """Write out the pictures the workers have finished, oldest first,
+        without waiting - and, given `dest`, wait for every queued picture for
+        that same media/ file, so a later write to it lands last, as it would
+        one at a time."""
+        queue = self._pending_pictures
+        while queue and (queue[0].future.done()
+                         or (dest is not None and dest in self._pending_dests)):
+            self._land_picture()
+
+    def _finish_pictures(self) -> None:
+        """Wait for every picture still with the workers and write it out."""
+        while self._pending_pictures:
+            self._land_picture()
+
+    def _land_picture(self) -> None:
+        """Take the oldest picture handed to the workers (waiting for it if
+        need be), write it into media/ and save it for reuse, exactly as
+        `_derive` does for a picture made here.
+
+        Pictures land in the order they were handed over, so a media/ file
+        written twice ends with the later picture and Pillow's warnings appear
+        in a one-at-a-time build's order. A picture that could not be made sets
+        `needs_serial_rebuild` (its pages were written as if it had worked). If
+        the workers themselves failed - died, or never started - the picture is
+        made here instead and the workers are not used again."""
+        job = self._pending_pictures.popleft()
+        left = self._pending_dests.pop(job.dest) - 1
+        if left:
+            self._pending_dests[job.dest] = left
+        try:
+            data, caught = job.future.result()
+        except Exception:  # noqa: BLE001 - BrokenProcessPool, a worker that could not import, ...
+            if self._picture_pool is not None:
+                self._picture_pool.broken = True
+            if not _make_derivative(job.src, job.dest, job.max_px):
+                self.needs_serial_rebuild = True
+                return
+            self._save_for_reuse(job.src, job.st, job.key, job.fields, job.dest)
+            return
+        for message, category, filename, lineno in caught:
+            warnings.warn_explicit(message, category, filename, lineno,
+                                   registry=self._picture_warning_registry)
+        if data is None:
+            self.needs_serial_rebuild = True
+            return
+        try:
+            job.dest.parent.mkdir(parents=True, exist_ok=True)
+            job.dest.write_bytes(data)
+        except OSError:
+            self.needs_serial_rebuild = True
+            return
+        self._save_for_reuse(job.src, job.st, job.key, job.fields, job.dest, data)
+
+    def _close_pictures(self) -> None:
+        """Stop the workers, if any started. Pictures still waiting mean the
+        build did not finish (Ctrl+C, an error): they are dropped, and the
+        workers are terminated rather than left running."""
+        pool, self._picture_pool = self._picture_pool, None
+        if pool is not None:
+            pool.close(abort=bool(self._pending_pictures))
+        self._pending_pictures.clear()
+        self._pending_dests.clear()
 
     def _standalone_image_entry(self, sid: str, asset_rel: str, role: str | None, copy: str | None, date_edtf: str | None, page_dir: Path) -> dict:
         """Create the media derivative for a standalone image asset and return
@@ -8456,6 +8830,8 @@ class _SiteBuilder:
         # is written again on completion so its Last-build date is the
         # finished build's, not the aborted attempt's.
         self._write_marker()
+        if self._picture_setting_warning:
+            self.messages.append(self._picture_setting_warning)
         self._copy_vendor()
         self._copy_assets()
         for sid in sorted(self.source_pages):
@@ -8466,6 +8842,9 @@ class _SiteBuilder:
             self.build_place_page(lid)
         self.build_discoveries_page()
         self.build_index_page()
+        self._finish_pictures()
+        if self.needs_serial_rebuild:
+            return 0   # `_site_payload` builds again, one picture at a time
         if self.derivative_cache is not None:
             self.derivative_cache.prune()
             self.cache_notes = self.derivative_cache.notes()
@@ -8623,6 +9002,21 @@ def _site_payload(
             }
         try:
             pages = builder.run()
+            if builder.needs_serial_rebuild:
+                # A picture the workers made failed, and pages were written as
+                # if it had worked (`_SiteBuilder._derive`). Build again, one
+                # picture at a time: that build is exactly a build without
+                # workers, so its pages, warnings and media/ are what this
+                # build must produce. Every picture the workers did make was
+                # saved, so it is copied, not decoded again.
+                first = builder
+                first.close()
+                builder = _SiteBuilder(conn, archive_root, fha_config, out_dir, linked=linked,
+                                       workbench=workbench, workbench_context=workbench_context,
+                                       derivative_cache=first.derivative_cache,
+                                       picture_pool=False)
+                builder.prepare()
+                pages = builder.run()
         except OSError as exc:
             # _reset_output raises in standalone mode if stale pages can't be removed.
             msg = (

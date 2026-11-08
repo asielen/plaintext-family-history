@@ -56,6 +56,7 @@ site:
     image: S-ea61339378          # a photo to feature in the banner (by its source ID)
   home_person: P-de957bcda1            # who the homepage family chart is centered on
   home_pedigree_generations: 5         # how many generations of ancestors it shows
+  picture_workers: auto                # how many web pictures to make at once
 ```
 
 - **`archive_name`** is the title on the masthead of every page.
@@ -73,6 +74,12 @@ site:
   further from there — an ancestor who is still just a stub (a name in the tree
   with no page written up yet, a normal and common state for an archive still in
   progress) shows as a plain, unlinked name instead.
+- **`picture_workers`** is how many web-friendly photo copies the shareable site makes
+  at once. The first build of a big archive spends most of its time on those copies, so
+  by default it makes several side by side, as many as your computer's processors and
+  free memory comfortably allow. You can leave this out. Set it to `1` to make them one
+  at a time (slower, but gentler on an older computer); the site comes out exactly the
+  same either way.
 
 The photo you name in `image` is handled like every other photo on the site: a
 web-friendly copy is made, its hidden location/camera data is stripped, and if it happens
