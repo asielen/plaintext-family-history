@@ -1303,6 +1303,13 @@
   // every wording the capture paths produce for a passing cause.
   const PASSES_RE = /slow down|HTTP 429|HTTP 5\d\d|having trouble|could not reach|internet connection|broke off|connection dropped|would not come through|did not answer|no answer from the page|HTTP 401|asked you to sign in/i;
   const passes = (why) => PASSES_RE.test(String(why || ''));
+  // The causes known to last: refused, gone, restricted, too small, not the
+  // file. Only these make a record saved without its file "done"; anything
+  // the fetcher did not flag and no rule recognises keeps it partial, to be
+  // tried again (at most MAX_PARTIAL times) - an unclassified failure of a
+  // file the capture wanted is never success (PR #224 Codex 4504508005).
+  const LASTS_RE = /restricted|offers no download|did not offer a downloadable|downloads may be disabled|too small|HTTP 40[0-9]\b|HTTP 410|no longer has this photo|refused the (image|photo)|not on Find a Grave|led away|sent a page instead|no image at this address|has no (image|gallery|memorial)/i;
+  const missingPasses = (why, flagged) => !!flagged || passes(why) || !LASTS_RE.test(String(why || ''));
   // A Find a Grave answer that means "slow down" or "busy": 429 or 503.
   const busyStatus = (st) => st === 429 || st === 503;
   // A status whose cause passes: no answer at all, a "slow down", a server error.
@@ -1463,7 +1470,7 @@
       // The Seen It key that says this record's scan is saved (asked before
       // a partial save is captured again).
       imageKey: imageKey ? 'img:' + imageKey : null,
-      partial: !!imageWarning && (imageFlags.transient || passes(imageWarning)),
+      partial: !!imageWarning && missingPasses(imageWarning, imageFlags.transient),
       slowDown: imageFlags.slowDown || SLOW_DOWN_RE.test(imageWarning || ''),
       note: imageWarning ? 'image not saved: ' + imageWarning.split('. The record')[0]
         : sameImageAs ? 'page already saved in ' + describeSameImage(sameImageAs) : null,
@@ -1662,7 +1669,7 @@
       record: { fsId: rec.fsId, name: rec.name || null },
       bundle: st.bundle, where: st.where,
       imageKey: imageKey ? 'fsimg:' + String(imageKey).toUpperCase() : null,
-      partial: !!imageWarning && (imageFlags.transient || passes(imageWarning)),
+      partial: !!imageWarning && missingPasses(imageWarning, imageFlags.transient),
       slowDown: imageFlags.slowDown || SLOW_DOWN_RE.test(imageWarning || ''),
       note: imageWarning ? 'image not saved: ' + imageWarning.split('. The record')[0]
         : sameImageAs ? 'image already saved in ' + describeSameImage(sameImageAs) : null,
@@ -1901,10 +1908,10 @@
       // cause that passes. A photo refused or gone, or a list that is short
       // every time, would only be saved the same way again.
       partial: notTried.length > 0 || skipped.length > 0 ||
-        (!galleryOk && (passingStatus(gallery && gallery.status) || passes(gallery && gallery.error))) ||
+        (!galleryOk && (passingStatus(gallery && gallery.status) || missingPasses(gallery && gallery.error))) ||
         (galleryOk && partList && !!gallery.partialError &&
-          (passingStatus(gallery.partialStatus) || passes(gallery.partialError))) ||
-        failed.some((ph) => transientPhotos.has(ph.photoId) || passes(ph.error)),
+          (passingStatus(gallery.partialStatus) || missingPasses(gallery.partialError))) ||
+        failed.some((ph) => missingPasses(ph.error, transientPhotos.has(ph.photoId))),
       // A "slow down" while its photos were listed or fetched (429): the
       // memorial is saved with the photos that came, and a batch stops.
       slowDown: slowDown || (!galleryOk && (busyStatus(gallery && gallery.status) ||

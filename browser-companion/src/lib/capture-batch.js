@@ -612,6 +612,8 @@
     'download was blocked', 'download interrupted', 'the page in the tab', 'the tab ', 'the batch.s tab', 'the panel',
     'a capture is already saving', 'different member', 'switched off', 'did not finish loading', 'took over',
     'having trouble', 'HTTP 5\\d\\d', 'busy or error page',
+    // The browser's own words for a request that did not come through.
+    'failed to fetch', 'networkerror', 'network error', 'load failed', 'connection'
   ].join('|'), 'i');
   const RETRY_RE = /shows no memorial|could not read the (Ancestry record|FamilySearch record|Find a Grave memorial)/i;
   function classifyError(message) {

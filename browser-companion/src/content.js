@@ -1178,7 +1178,13 @@
     }
     if (!r.ok) throw fsFailure(fsStatusMessage(r.status, what || 'record', !!d.token), r.status);
     if (r.status === 204) return {};
-    const text = await r.text();
+    let text;
+    try {
+      text = await r.text();
+    } catch (e) {
+      // The answer began and then broke off: a cause that passes.
+      throw fsFailure('the connection to FamilySearch broke off while its answer was coming down - press Capture again', null);
+    }
     try {
       return text ? JSON.parse(text) : {};
     } catch (e) {
@@ -1263,12 +1269,25 @@
       const f = fsFailure(fsStatusMessage(r.status, 'image', !!d.token), r.status);
       return { ok: false, error: f.message, transient: f.transient, slowDown: f.slowDown };
     }
-    const blob = await r.blob();
+    let blob;
+    try {
+      blob = await r.blob();
+    } catch (e) {
+      // The headers came and then the picture broke off (PR #224 Codex 4504508005).
+      return { ok: false, transient: true,
+        error: 'the image broke off while it was coming down from FamilySearch - press Capture again later' };
+    }
     if (!/^image\//.test(blob.type || '') || blob.size < 30 * 1024) {
       return { ok: false, error: 'the image came back too small to be the full record (' +
         Math.round((blob.size || 0) / 1024) + ' KB) - use FamilySearch’s Download button and drop the file in' };
     }
-    return { ok: true, base64: await d.toBase64(blob), ext: 'jpg', contentType: blob.type || 'image/jpeg' };
+    let base64;
+    try {
+      base64 = await d.toBase64(blob);
+    } catch (e) {
+      return { ok: false, transient: true, error: 'the image could not be read once it came - press Capture again later' };
+    }
+    return { ok: true, base64, ext: 'jpg', contentType: blob.type || 'image/jpeg' };
   }
   // FHA-SYNC-END familysearch
 
@@ -2297,7 +2316,10 @@
     try {
       j = await r.json();
     } catch (e) {
-      return { ok: false, error: 'Newspapers.com sent something other than your clippings list' };
+      // Not JSON is something else; anything else is the answer breaking off.
+      return e instanceof SyntaxError
+        ? { ok: false, error: 'Newspapers.com sent something other than your clippings list' }
+        : { ok: false, transient: true, error: 'the connection to Newspapers.com broke off while your clippings list was coming down' };
     }
     return {
       ok: true,
@@ -3599,6 +3621,16 @@
     return '<!DOCTYPE html>\n' + clone.outerHTML;
   }
 
+  // A question whose request threw - the connection dropped, an answer that
+  // broke off - is answered with that said the structured way: a cause that
+  // passes (`transient`), the browser's own words in brackets. Never only the
+  // browser's words, which no one downstream could tell from a refusal
+  // (PR #224 Codex 4504508005).
+  function brokeOff(e) {
+    return { ok: false, transient: true, status: null,
+      error: 'the connection broke off (' + String((e && e.message) || e) + ') - press Capture again later' };
+  }
+
   // ── message routing ──────────────────────────────────────────────────────────
 
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
@@ -3627,12 +3659,12 @@
       case 'familysearchRecordInfo':
         familysearchRecordInfo(msg.formTitle)
           .then(sendResponse)
-          .catch((e) => sendResponse({ ok: false, error: String((e && e.message) || e) }));
+          .catch((e) => sendResponse(brokeOff(e)));
         return true; // async response
       case 'familysearchImageCheck':
         familysearchImageCheck()
           .then(sendResponse)
-          .catch((e) => sendResponse({ ok: false, error: String((e && e.message) || e) }));
+          .catch((e) => sendResponse(brokeOff(e)));
         return true; // async response
       case 'familysearchImage': {
         if (!FS_HOST_RE.test(location.hostname)) {
@@ -3671,7 +3703,7 @@
         }
         fsImage(fsImageWanted, fsDeps())
           .then(sendResponse)
-          .catch((e) => sendResponse({ ok: false, error: String((e && e.message) || e) }));
+          .catch((e) => sendResponse(brokeOff(e)));
         return true; // async response
       }
       case 'ancestryRecordInfo':
@@ -3704,7 +3736,7 @@
         }
         findagraveGallery(String(msg.memorialId), msg.slug == null ? null : String(msg.slug))
           .then(sendResponse)
-          .catch((e) => sendResponse({ ok: false, error: String((e && e.message) || e) }));
+          .catch((e) => sendResponse(brokeOff(e)));
         return true; // async response
       case 'ancestryImage':
         // Full-res Ancestry record fetch for the current page, in-session.
@@ -3716,7 +3748,7 @@
         }
         fetchAncestryFullImage(msg.dbId && msg.imageId ? { dbId: msg.dbId, imageId: msg.imageId } : null)
           .then(sendResponse)
-          .catch((e) => sendResponse({ ok: false, error: String(e) }));
+          .catch((e) => sendResponse(brokeOff(e)));
         return true; // async response
       case 'iiifImage':
         // Full-res IIIF image fetch (open archives) for the current page.
@@ -3727,12 +3759,12 @@
       case 'newspapersClipText':
         npClipText(msg.url, msg.clippingId)
           .then(sendResponse)
-          .catch((e) => sendResponse({ ok: false, error: String(e) }));
+          .catch((e) => sendResponse(brokeOff(e)));
         return true; // async response
       case 'newspapersInfo':
         newspapersInfo()
           .then(sendResponse)
-          .catch((e) => sendResponse({ ok: false, error: String(e) }));
+          .catch((e) => sendResponse(brokeOff(e)));
         return true; // async response
       case 'newspapersList':
       case 'ancestryPersonSources':
@@ -3742,7 +3774,7 @@
           .then((on) => (on ? batchSourcesRoute(msg)
             : { ok: false, off: true, error: 'batch downloads are switched off in this browser' }))
           .then(sendResponse)
-          .catch((e) => sendResponse({ ok: false, error: String((e && e.message) || e) }));
+          .catch((e) => sendResponse(brokeOff(e)));
         return true; // async response
       case 'singlefile':
         buildSingleFile()

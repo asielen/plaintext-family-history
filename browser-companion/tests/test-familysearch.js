@@ -347,3 +347,16 @@ test('Codex 4503786095/-098: an image FamilySearch will not send now says so (sl
     fetch: async () => ({ ok: false, status: 503, text: async () => '' }) });
   assert.deepStrictEqual([desc.slowDown, desc.transient], [true, true]);
 });
+
+test('Codex 4504508005: an answer whose body breaks off is a cause that passes - the record\'s data and the image both say so', async () => {
+  const broken = { ok: true, status: 200, text: async () => { throw new TypeError('Failed to fetch'); },
+    blob: async () => { throw new TypeError('Failed to fetch'); } };
+  const info = await fsr.fsRecordInfo(PAGE, { base: PAGE, token: TOKEN, fetch: async () => broken });
+  assert.strictEqual(info.ok, false);
+  assert.strictEqual(info.transient, true);
+  assert.match(info.error, /broke off/);
+  const img = await fsr.fsImage('HRT1-IMG1', { base: PAGE, token: TOKEN, toBase64: async () => 'AAAA',
+    fetch: async (url) => (/\/ark:\/61903\/3:1:/.test(url) ? json(FIX.images['HRT1-IMG1']) : broken) });
+  assert.deepStrictEqual([img.ok, img.transient], [false, true]);
+  assert.match(img.error, /broke off/);
+});

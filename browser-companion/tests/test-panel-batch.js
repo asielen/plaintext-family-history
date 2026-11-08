@@ -346,7 +346,8 @@ function familysearchSite(calls, over) {
         if (info.ok) info.bundleTitle = fsr.fsTitle(info.record, msg.formTitle, '');
         return info;
       }
-      case 'familysearchImage': return fsr.fsImage(msg.imageId, deps);
+      case 'familysearchImage':
+        return fsr.fsImage(msg.imageId, deps).catch((e) => ({ ok: false, error: String((e && e.message) || e) }));
       case 'pagehtml': return { ok: true, html: '<html>FamilySearch page ' + tab.url + '</html>' };
       case 'singlefile': return { ok: true, html: '<html>copy of ' + tab.url + '</html>' };
       default: return { ok: false, error: 'unexpected ' + msg.action };
@@ -1393,4 +1394,80 @@ test('Codex 4504468051: "Read my clippings list again" pressed in another window
   await settle();
   assert.deepStrictEqual(a.sent.filter((m) => m.action === 'newspapersList').map((m) => m.cursor), [0, 0, 24]);
   assert.deepStrictEqual(sharedStore.npBatchLedger.order.slice().sort(), ['101', '202']);
+});
+
+// ── PR #224 Codex 4504508005: a file whose body broke off is tried again ────
+
+const brokenBody = (type) => ({ ok: true, status: 200, headers: { get: () => type },
+  blob: async () => { throw new TypeError('Failed to fetch'); }, text: async () => { throw new TypeError('Failed to fetch'); } });
+
+test('Codex 4504508005: FamilySearch - the image\'s headers come, its body breaks off: partial, and the next Start saves it', async () => {
+  const calls = [];
+  let broken = true;
+  const p = await openPanel({ url: ark('HRT1-CEN2'), storage: Object.assign({}, ON, { fsBatchLedger: fsLedger(['HRT1-CEN1']) }),
+    respond: familysearchSite(calls, (u) => (broken && /dist\.jpg$/.test(u) ? brokenBody('image/jpeg') : null)) });
+  quick(p);
+  await start(p, 'fs');
+  assert.strictEqual(p.storage.fsBatchLedger.items['HRT1-CEN1'].state, 'partial', p.batchEl('fs-status').textContent);
+  broken = false;
+  await start(p, 'fs');
+  assert.deepStrictEqual(p.navigations.map((n) => n.url), [ark('HRT1-CEN1'), ark('HRT1-CEN1')]);
+  assert.strictEqual(p.storage.fsBatchLedger.items['HRT1-CEN1'].state, 'done');
+  assert.ok(p.files(p.written[1]).includes('record.jpg'));
+});
+
+test('Codex 4504508005: Ancestry - a scan that failed in words no rule knows is partial, never done, and the next Start saves it', async () => {
+  const base = ancestrySite();
+  let image = { ok: false, error: 'Failed to fetch' };
+  const p = await openPanel({ url: HARRIET, storage: Object.assign({}, ON, { ancBatchLedger: ancLedger([CALVIN]) }),
+    respond: (msg, tab) => (msg.action === 'ancestryImage' && image ? image : base(msg, tab)) });
+  quick(p);
+  await start(p, 'anc');
+  assert.strictEqual(p.storage.ancBatchLedger.items['90001:1000001'].state, 'partial');
+  image = null;
+  await start(p, 'anc');
+  assert.strictEqual(p.storage.ancBatchLedger.items['90001:1000001'].state, 'done');
+  assert.ok(p.files(p.written[1]).includes('record.jpg'));
+});
+
+test('Codex 4504508005: Find a Grave - photos whose bodies break off, or a photo list that broke off, leave the memorial partial', async () => {
+  const p = await openPanel({ url: FAG_CALVIN, respond: fagSite(), storage: Object.assign({}, ON, { fagBatchLedger: fagLedger(1) }),
+    fetch: async (url) => Object.assign(brokenBody('image/jpeg'), { url }) });
+  quick(p);
+  await start(p, 'fag');
+  assert.strictEqual(p.storage.fagBatchLedger.items['900000001'].state, 'partial');
+  const base = fagSite();
+  const q = await openPanel({ url: FAG_CALVIN, storage: Object.assign({}, ON, { fagBatchLedger: fagLedger(1) }),
+    respond: (msg, tab) => (msg.action === 'findagraveGallery' ? { ok: false, error: 'Failed to fetch' } : base(msg, tab)) });
+  quick(q);
+  await start(q, 'fag');
+  assert.strictEqual(q.storage.fagBatchLedger.items['900000001'].state, 'partial');
+});
+
+test('Codex 4504508005: Newspapers.com - a page whose tile broke off saves nothing, keeps the clipping queued, and the next Start saves it', async () => {
+  const lists = [{ ok: true, user: ME.username, more: false, nextCursor: null, clippings: [listed(101, 'Obituary', NP_A)] }];
+  let broken = true;
+  const p = await openPanel({ url: NP_A, respond: npSite(lists), storage: ON, fullPage: () => {
+    if (broken) throw new Error('the connection to Newspapers.com broke off while the page image was coming down, so the capture stopped');
+    return {};
+  } });
+  quick(p);
+  await start(p, 'np');
+  assert.strictEqual(p.written.length, 0);
+  assert.strictEqual(p.storage.npBatchLedger.items['101'].state, 'queued');
+  broken = false;
+  await start(p, 'np');
+  assert.strictEqual(p.storage.npBatchLedger.items['101'].state, 'done');
+});
+
+test('Codex 4504508005: a record\'s details lost to the browser\'s "Failed to fetch" stop the run, Start after Start, never set it aside', async () => {
+  const base = ancestrySite();
+  const p = await openPanel({ url: HARRIET, storage: Object.assign({}, ON, { ancBatchLedger: ancLedger([CALVIN]) }),
+    respond: (msg, tab) => (msg.action === 'ancestryRecordInfo' ? { ok: false, error: 'Failed to fetch' } : base(msg, tab)) });
+  quick(p);
+  await start(p, 'anc');
+  await start(p, 'anc');
+  await start(p, 'anc');
+  assert.strictEqual(p.storage.ancBatchLedger.items['90001:1000001'].state, 'queued');
+  assert.match(p.batchEl('anc-status').textContent, /^Stopped: Failed to fetch/);
 });

@@ -594,3 +594,12 @@ test('switched on: her clippings list is asked of Newspapers.com only, for whoev
     assert.strictEqual(away.calls.length, 0);
   }
 });
+
+test('Codex 4504508005: FamilySearch\'s image route says a body that broke off passes, never only the browser\'s words', async () => {
+  const page = loadPage({ url: REC, cookie: 'fssessionid=' + TOKEN, fetch: familysearch({
+    'dist.jpg': { ok: true, status: 200, headers: { get: () => 'image/jpeg' }, blob: async () => { throw new TypeError('Failed to fetch'); } },
+  }) });
+  const r = await page.ask({ action: 'familysearchImage', imageId: 'HRT1-IMG1' });
+  assert.deepStrictEqual([r.ok, r.transient], [false, true]);
+  assert.match(r.error, /broke off/);
+});

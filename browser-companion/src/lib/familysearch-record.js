@@ -259,7 +259,13 @@ async function fsJson(path, accept, d, what) {
   }
   if (!r.ok) throw fsFailure(fsStatusMessage(r.status, what || 'record', !!d.token), r.status);
   if (r.status === 204) return {};
-  const text = await r.text();
+  let text;
+  try {
+    text = await r.text();
+  } catch (e) {
+    // The answer began and then broke off: a cause that passes.
+    throw fsFailure('the connection to FamilySearch broke off while its answer was coming down - press Capture again', null);
+  }
   try {
     return text ? JSON.parse(text) : {};
   } catch (e) {
@@ -344,12 +350,25 @@ async function fsImage(imageId, d) {
     const f = fsFailure(fsStatusMessage(r.status, 'image', !!d.token), r.status);
     return { ok: false, error: f.message, transient: f.transient, slowDown: f.slowDown };
   }
-  const blob = await r.blob();
+  let blob;
+  try {
+    blob = await r.blob();
+  } catch (e) {
+    // The headers came and then the picture broke off (PR #224 Codex 4504508005).
+    return { ok: false, transient: true,
+      error: 'the image broke off while it was coming down from FamilySearch - press Capture again later' };
+  }
   if (!/^image\//.test(blob.type || '') || blob.size < 30 * 1024) {
     return { ok: false, error: 'the image came back too small to be the full record (' +
       Math.round((blob.size || 0) / 1024) + ' KB) - use FamilySearch’s Download button and drop the file in' };
   }
-  return { ok: true, base64: await d.toBase64(blob), ext: 'jpg', contentType: blob.type || 'image/jpeg' };
+  let base64;
+  try {
+    base64 = await d.toBase64(blob);
+  } catch (e) {
+    return { ok: false, transient: true, error: 'the image could not be read once it came - press Capture again later' };
+  }
+  return { ok: true, base64, ext: 'jpg', contentType: blob.type || 'image/jpeg' };
 }
 // FHA-SYNC-END familysearch
 

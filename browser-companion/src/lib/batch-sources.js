@@ -278,7 +278,10 @@ async function batchNpClippingsList(cursor, username, d) {
   try {
     j = await r.json();
   } catch (e) {
-    return { ok: false, error: 'Newspapers.com sent something other than your clippings list' };
+    // Not JSON is something else; anything else is the answer breaking off.
+    return e instanceof SyntaxError
+      ? { ok: false, error: 'Newspapers.com sent something other than your clippings list' }
+      : { ok: false, transient: true, error: 'the connection to Newspapers.com broke off while your clippings list was coming down' };
   }
   return {
     ok: true,

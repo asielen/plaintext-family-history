@@ -561,3 +561,17 @@ test('Codex 4504468051: "Read my clippings list again" pressed while a page was 
   CB.mergeStored(L, relist);
   assert.deepStrictEqual([L.listCursor, L.user], [0, null]);
 });
+
+test('Codex 4504508005: a clippings list that breaks off is said to pass; one that is not JSON is something else', async () => {
+  const base = 'https://www.newspapers.com/clippings/my-clippings/';
+  const cut = await BS.batchNpClippingsList(0, 'HartleyResearch', { base,
+    fetch: async () => ({ ok: true, status: 200, json: async () => { throw new TypeError('network error'); } }) });
+  assert.deepStrictEqual([cut.ok, cut.transient], [false, true]);
+  assert.strictEqual(CB.classifyError(cut.error), 'stop');
+  const odd = await BS.batchNpClippingsList(0, 'HartleyResearch', { base,
+    fetch: async () => ({ ok: true, status: 200, json: async () => { throw new SyntaxError('Unexpected token <'); } }) });
+  assert.deepStrictEqual([odd.ok, !!odd.transient], [false, false]);
+  for (const m of ['Failed to fetch', 'NetworkError when attempting to fetch resource.', 'Load failed']) {
+    assert.strictEqual(CB.classifyError(m), 'stop', m);
+  }
+});
