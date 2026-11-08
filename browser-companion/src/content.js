@@ -2516,8 +2516,12 @@
           { credentials: 'include', headers: { accept: 'application/json' } }
         );
         if (!r.ok) {
-          listError = 'Newspapers.com would not send the list of clippings on this page (HTTP ' +
-            r.status + ')';
+          // A 401/403 is her session or her subscription, not the page: say
+          // so, so she signs in (and a batch never counts it against a record).
+          listError = r.status === 401 || r.status === 403
+            ? 'Newspapers.com refused the list of clippings on this page (HTTP ' + r.status +
+              ': you may need to sign in, or your subscription may not cover this paper)'
+            : 'Newspapers.com would not send the list of clippings on this page (HTTP ' + r.status + ')';
           break;
         }
         const j = await r.json();

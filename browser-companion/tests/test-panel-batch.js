@@ -1803,6 +1803,23 @@ test('Codex 4504665602 sweep: a batch site\'s host saying slow down to the page 
   assert.strictEqual(q.navigations.length, 2);
 });
 
+test('Codex 4504894210: another batch site\'s host saying slow down during a capture holds THAT site back; this batch goes on', async () => {
+  // A Find a Grave page whose pictures come from ancestrycdn.com (Ancestry's).
+  const base = fagSite();
+  const p = await openPanel({ url: FAG_CALVIN, storage: Object.assign({}, ON, { fagBatchLedger: fagLedger(2) }),
+    fetch: PHOTO_OK,
+    respond: (msg, tab) => (msg.action === 'singlefile'
+      ? { ok: true, html: '<html>copy</html>', slowHosts: ['www.ancestrycdn.com'] } : base(msg, tab)) });
+  quick(p);
+  await start(p, 'fag');
+  const F = p.storage.fagBatchLedger;
+  assert.strictEqual(p.navigations.length, 2);
+  assert.deepStrictEqual(F.order.map((k) => F.items[k].state), ['done', 'done']);
+  assert.ok(!(F.pacing && F.pacing.resumeAt > Date.now()), 'Find a Grave held back for Ancestry\'s slow-down');
+  const A = p.storage.ancBatchLedger;
+  assert.ok(A && A.pacing && A.pacing.resumeAt > Date.now() + 25 * 60 * 1000, 'no Ancestry break stored');
+});
+
 // ── PR #224 third audit (M1, M2), ported from the auditor's repros ──────────
 
 // Over four Starts: past MAX_TROUBLE_TRIES, so a cause that ever counted would show (X1).
@@ -1931,4 +1948,61 @@ test('X1: a stop cause nobody foresaw counts against its record - set aside afte
   assert.strictEqual(L.items['90001:1000001'].state, 'failed');
   assert.match(L.items['90001:1000001'].lastError, /^something nobody expected happened here - it stopped the batch 3 times/);
   assert.strictEqual(L.items['90002:2000001'].state, 'done');
+});
+
+// ── PR #224 X1 correction: a 403 that says "sign in" is her session's, never a record's ──
+
+test('X1 correction: every page image answering 403 "sign in" over four Starts sets nothing aside; once she signs in, all are saved', async () => {
+  let signedIn = false;
+  const q = npQueue();
+  q.items['505'] = { id: 505, url: NP_C, pageId: 5550001, title: 'Hartley reunion', state: 'queued', tries: 0 };
+  q.order.push('505');
+  const p = await openPanel({ url: NP_B, storage: Object.assign({}, ON, { npBatchLedger: q }),
+    respond: npPages({ [NP_C]: () => npInfo(npClip(505, 'Hartley reunion', NP_C)) })([]),
+    fullPage: () => {
+      if (signedIn) return {};
+      // As lib/newspapers.js fullPage throws it for a 403 tile.
+      throw new Error('Newspapers.com refused the page image (HTTP 403). Reload the page ' +
+        '(its image pass lasts a day) and check you are signed in');
+    } });
+  quick(p);
+  for (let i = 1; i <= 4; i++) {
+    await start(p, 'np');
+    const L = p.storage.npBatchLedger;
+    for (const k of ['101', '202', '505']) {
+      assert.deepStrictEqual([L.items[k].state, L.items[k].stops || 0], ['queued', 0], k + ', Start ' + i);
+    }
+    assert.match(p.batchEl('np-status').textContent, /^Stopped: .*signed in/, 'Start ' + i);
+  }
+  assert.strictEqual(p.written.length, 0);
+  signedIn = true;
+  await start(p, 'np');
+  const L = p.storage.npBatchLedger;
+  assert.deepStrictEqual(['101', '202', '505'].map((k) => L.items[k].state), ['done', 'done', 'done']);
+  assert.strictEqual(p.written.length, 3);
+});
+
+test('X1 correction: a 403 for her clippings list - the queue\'s or a clipping page\'s - stops the run and counts nothing', async () => {
+  // The queue's own list read.
+  const lists = [{ ok: false, error: 'Newspapers.com refused your clippings list (HTTP 403) - sign in and reload the page' }];
+  const r = await openPanel({ url: NP_A, respond: npSite(lists), storage: ON });
+  quick(r);
+  await start(r, 'np');
+  assert.match(r.batchEl('np-status').textContent, /^Stopped: could not read your clippings list: .*sign in/);
+  assert.strictEqual(r.written.length, 0);
+  // A clipping page whose list of clippings answered 403: no clipping of hers
+  // can be found on it, Start after Start - never counted against that clipping.
+  const refusedList = () => Object.assign(npInfo(npClip(101, 'Obituary', NP_A)), { ownClips: [],
+    listError: 'Newspapers.com refused the list of clippings on this page (HTTP 403: you may need to sign in, ' +
+      'or your subscription may not cover this paper)' });
+  const p = await openPanel({ url: NP_B, respond: npPages({ [NP_A]: refusedList })([]),
+    storage: Object.assign({}, ON, { npBatchLedger: npQueue() }) });
+  quick(p);
+  for (let i = 1; i <= 4; i++) {
+    await start(p, 'np');
+    const it = p.storage.npBatchLedger.items['101'];
+    assert.deepStrictEqual([it.state, it.stops || 0], ['queued', 0], 'Start ' + i);
+    assert.match(p.batchEl('np-status').textContent, /^Stopped: .*sign in/, 'Start ' + i);
+  }
+  assert.strictEqual(p.storage.npBatchLedger.items['202'].state, 'queued');
 });

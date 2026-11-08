@@ -770,7 +770,17 @@
       out = out || { ok: false, error: 'nothing was saved' };
       // The site said "slow down" during this capture, saved or not: the
       // break comes before the next request, whatever else went wrong.
-      const metSlowDown = !!(out.slowDown || out.rateHits > 0);
+      // Each batch site whose host said it gets its own break, stored on its
+      // own ledger; this run takes the break only if its own site is among
+      // them. A Find a Grave page's pictures from ancestrycdn.com that met a
+      // "slow down" hold Ancestry back, never Find a Grave (Codex 4504894210,
+      // finishing second audit N4): Ancestry's batch, in any window, takes
+      // that break before its next request, as it takes every break its
+      // ledger holds.
+      const sites = Array.isArray(out.slowDownSites) ? out.slowDownSites : [];
+      for (const other of sites) if (other !== siteName) await recordSlowDown(other);
+      const metSlowDown = !!(out.rateHits > 0 ||
+        (sites.length ? sites.indexOf(siteName) >= 0 : out.slowDown));
       if (out.ok) {
         const bundle = siteName === 'newspapers'
           ? ((out.results || []).find((r) => r.ok) || {}).bundle : out.bundle;

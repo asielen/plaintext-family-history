@@ -411,10 +411,10 @@ test('batchNpClippingsList: her own list, from Newspapers.com only; a 429 is a "
   const slow = await BS.batchNpClippingsList(0, 'HartleyResearch', { base, fetch: async () => ({ ok: false, status: 429 }) });
   assert.strictEqual(CB.classifyError(slow.error), 'slowdown');
   const refused = await BS.batchNpClippingsList(0, 'HartleyResearch', { base, fetch: async () => ({ ok: false, status: 403 }) });
-  // Stops the run (as 'stop' does), sorted on the cause - "refused" - never on
-  // the advice after it ("sign in and reload the page"; PR #224 X1).
-  assert.strictEqual(CB.classifyError(refused.error), 'refused');
-  assert.deepStrictEqual(CB.stopRule(refused.error), { counts: true, max: CB.MAX_TRIES, trouble: false });
+  // Stops the run, and never counts against a record: her clippings list is
+  // no record, and its 403 says to sign in (PR #224 X1 correction).
+  assert.ok(['stop', 'refused'].includes(CB.classifyError(refused.error)));
+  assert.deepStrictEqual(CB.stopRule(refused.error), { counts: false });
 });
 
 test('batchNpUsername: who is signed in, from the page\'s own data', () => {
@@ -632,8 +632,16 @@ test('third audit M1, X1: every stop cause is sorted on the cause - RUN causes n
     [NP('the capture add-on could not read this record (TypeError: x is undefined) - a fault in the add-on, not the site'), FAULT],
     [NP('Newspapers.com would not send your clippings list (HTTP 500)'), TROUBLE],
     [NP('the page data does not match this address'), UNFORESEEN],
-    ['Ancestry refused (HTTP 403) - sign in on this page, or the collection may not allow downloads', FAULT],
-    ['Newspapers.com refused the page image (HTTP 403). Reload the page (its image pass lasts a day) and check you are signed in', FAULT],
+    // X1 correction: a 401/403 that points at signing in or subscribing - in its
+    // words or its advice - or one for her clippings list, never counts. A bare
+    // 403 for one record is the site refusing it.
+    ['Ancestry refused (HTTP 403) - sign in on this page, or the collection may not allow downloads', RUN],
+    ['Newspapers.com refused the page image (HTTP 403). Reload the page (its image pass lasts a day) and check you are signed in', RUN],
+    ['Newspapers.com refused your clippings list (HTTP 403) - sign in and reload the page', RUN],
+    [NP('Newspapers.com refused the list of clippings on this page (HTTP 403: you may need to sign in, or your subscription may not cover this paper)'), RUN],
+    [NP('Newspapers.com would not send the list of clippings on this page (HTTP 403)'), RUN],
+    ['this paper is not in your subscription (HTTP 403)', RUN],
+    ['Newspapers.com refused the page image (HTTP 403)', FAULT],
     // X1: a cause nobody foresaw counts, after MAX_TROUBLE_TRIES Starts.
     ['something nobody expected', UNFORESEEN],
     ['could not read the page (https://www.newspapers.com/article/x/1/)', UNFORESEEN],

@@ -683,7 +683,16 @@
   //      MAX_TROUBLE_TRIES: if it keeps happening at one record, that record
   //      is set aside rather than stopping every Start ("Try the set-aside
   //      ones again" brings it back).
+  //   Before all of these, and on the whole message, advice included: a 401
+  //   or 403 whose words point at signing in or subscribing, or one for her
+  //   clippings list (never a record), never counts. A lapsed session, or a
+  //   subscription that does not cover the paper, answers EVERY record so;
+  //   counting it would set her queue aside two Starts at a time when
+  //   signing in would have fixed all of it (PR #224 X1 correction). A bare
+  //   403 for one record, with no such words, is the site refusing it.
   // { counts, max, trouble }.
+  const SIGN_IN_403_RE = /HTTP 40[13]\b/;
+  const SIGN_IN_WORDS_RE = /sign(?:ed)? in|log(?:ged)? in|subscri|clippings list|list of clippings/i;
   const SESSION_STOP_RE = /slow down|HTTP 429|too many requests|asked you to sign in|not signed in|HTTP 401|different member/i;
   const TROUBLE_STOP_RE = /having trouble|HTTP 5\d\d|busy or error page|bad gateway|service (temporarily )?unavailable|internal server error|did not answer|message port closed/i;
   const FAULT_STOP_RE = /could not read this record|\brefused\b|HTTP 40[02-9]\b|HTTP 410/i;
@@ -694,7 +703,9 @@
     'switched off', 'took over', 'did not finish loading', 'could not establish connection',
   ].join('|'), 'i');
   function stopRule(message) {
-    const m = causeOf(message);
+    const whole = String(message || '');
+    if (SIGN_IN_403_RE.test(whole) && SIGN_IN_WORDS_RE.test(whole)) return { counts: false };
+    const m = causeOf(whole);
     if (SESSION_STOP_RE.test(m)) return { counts: false };
     if (TROUBLE_STOP_RE.test(m)) return { counts: true, max: MAX_TROUBLE_TRIES, trouble: true };
     if (FAULT_STOP_RE.test(m)) return { counts: true, max: MAX_TRIES, trouble: false };
