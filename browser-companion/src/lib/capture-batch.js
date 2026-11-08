@@ -202,9 +202,12 @@
   // entry merge to the later one (mergeStored). Strictly increasing within a
   // window, so two changes in one millisecond keep their order.
   let lastStamp = 0;
-  function stamp(it, now) {
+  function nextStamp(now) {
     lastStamp = Math.max(now || Date.now(), lastStamp + 1);
-    it.stateAt = lastStamp;
+    return lastStamp;
+  }
+  function stamp(it, now) {
+    it.stateAt = nextStamp(now);
   }
 
   function logEvent(L, text, now) {
@@ -431,10 +434,15 @@
   //   order     entries only the other side has go at the end;
   //   pacing    a stored "slow down" break (ratelimit / long) is never
   //             shortened or erased: the later deadline wins, its reason
-  //             with it; the count of slow-downs in a row is the larger;
-  //             the short-break rhythm (sinceShort, shortEvery) is this run's;
+  //             and the short-break rhythm it reset (sinceShort,
+  //             shortEvery) with it; the count of slow-downs in a row is the
+  //             value of its later change (rateAt) - so a reset to 0 (a
+  //             clean capture, the third slow-down's long break) is kept,
+  //             and a slow-down another window met after it still counts
+  //             (PR #224 Codex 4504468051);
   //   list      Newspapers.com's list progress (listComplete, listCursor,
-  //             user) from whichever side changed it last (listAt);
+  //             user) from whichever side changed it last (listAt) - "Read
+  //             my clippings list again" included;
   //   log       both sides' lines, in time order, the last 200.
   // Answers how many entries changed.
   function mergeStored(L, stored) {
@@ -473,8 +481,13 @@
         if (isCooldown(sp) && (sp.resumeAt || 0) > (L.pacing.resumeAt || 0)) {
           L.pacing.resumeAt = sp.resumeAt;
           L.pacing.resumeReason = sp.resumeReason;
+          if ('sinceShort' in sp) L.pacing.sinceShort = sp.sinceShort;
+          if ('shortEvery' in sp) L.pacing.shortEvery = sp.shortEvery;
         }
-        L.pacing.rateEvents = Math.max(L.pacing.rateEvents || 0, sp.rateEvents || 0);
+        if ((sp.rateAt || 0) > (L.pacing.rateAt || 0)) {
+          L.pacing.rateEvents = sp.rateEvents || 0;
+          L.pacing.rateAt = sp.rateAt;
+        }
       }
     }
     if ((stored.listAt || 0) > (L.listAt || 0)) {
@@ -527,11 +540,14 @@
   function planRateLimit(L, now, rand) {
     const p = ensurePacing(L, rand);
     p.rateEvents = (p.rateEvents || 0) + 1;
+    p.rateAt = nextStamp(now);
     let kind;
     let until;
     if (p.rateEvents >= PACING.longAfterRateEvents) {
       kind = 'long';
       until = now + between(PACING.longBreakMs, rand);
+      // The count starts again; the long break it earned is the deadline
+      // (never shortened by the reset).
       p.rateEvents = 0;
     } else {
       kind = 'ratelimit';
@@ -551,6 +567,7 @@
     const p = ensurePacing(L, rand);
     p.sinceShort = (p.sinceShort || 0) + 1;
     p.rateEvents = 0;
+    p.rateAt = nextStamp(now);
     let kind = 'between';
     let until = now + between(PACING.betweenMs, rand);
     if (p.sinceShort >= p.shortEvery) {

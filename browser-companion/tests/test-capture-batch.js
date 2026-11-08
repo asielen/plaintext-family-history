@@ -459,9 +459,11 @@ test('Codex 4504415455: mergeStored never shortens or erases a stored "slow down
   const mine = CB.newLedger();
   mine.pacing = { sinceShort: 4, shortEvery: 40, rateEvents: 0, resumeAt: now + 60e3, resumeReason: 'between' };
   const stored = CB.newLedger();
-  stored.pacing = { sinceShort: 0, shortEvery: 33, rateEvents: 1, resumeAt: now + 30 * 60e3, resumeReason: 'ratelimit' };
+  stored.pacing = { sinceShort: 0, shortEvery: 33, rateEvents: 1, rateAt: now, resumeAt: now + 30 * 60e3, resumeReason: 'ratelimit' };
   CB.mergeStored(mine, stored);
-  assert.deepStrictEqual(mine.pacing, { sinceShort: 4, shortEvery: 40, rateEvents: 1, resumeAt: now + 30 * 60e3, resumeReason: 'ratelimit' });
+  // The break wins, and the short-break rhythm it reset comes with it.
+  assert.deepStrictEqual(mine.pacing, { sinceShort: 0, shortEvery: 33, rateEvents: 1, rateAt: now,
+    resumeAt: now + 30 * 60e3, resumeReason: 'ratelimit' });
   // A run that finishes (resumeAt 0) keeps it too.
   mine.pacing.resumeAt = 0;
   mine.pacing.resumeReason = '';
@@ -518,4 +520,44 @@ test('Codex 4504415455: the clippings list progress follows the later change; bo
   Object.assign(older, { listComplete: true, listCursor: 96, user: 'HartleyResearch', listAt: 1500 });
   CB.mergeStored(L, older);
   assert.deepStrictEqual([L.listComplete, L.listCursor], [false, 0]);
+});
+
+// ── PR #224 Codex 4504468051: a deliberate decrease is never undone ─────────
+
+test('Codex 4504468051: the slow-down count merges by its last change, so a reset to 0 is kept and a later slow-down still counts', () => {
+  const now = Date.now();
+  const L = CB.newLedger();
+  CB.ensurePacing(L);
+  CB.planRateLimit(L, now - 5000);
+  const stored = JSON.parse(JSON.stringify(L));
+  // This window: a clean capture, later - the count starts again.
+  CB.planAfterCapture(L, now);
+  assert.strictEqual(L.pacing.rateEvents, 0);
+  CB.mergeStored(L, stored);
+  assert.strictEqual(L.pacing.rateEvents, 0, 'the reset was undone');
+  // Another window, later still: a slow-down. It counts.
+  const other = JSON.parse(JSON.stringify(L));
+  CB.planRateLimit(other, now + 5000);
+  CB.mergeStored(L, other);
+  assert.strictEqual(L.pacing.rateEvents, 1);
+  // The third slow-down's reset keeps its long break.
+  const T = CB.newLedger();
+  CB.ensurePacing(T);
+  CB.planRateLimit(T, now);
+  CB.planRateLimit(T, now);
+  const before = JSON.parse(JSON.stringify(T));
+  const plan = CB.planRateLimit(T, now);
+  assert.deepStrictEqual([plan.kind, T.pacing.rateEvents], ['long', 0]);
+  CB.mergeStored(T, before);
+  assert.deepStrictEqual([T.pacing.rateEvents, T.pacing.resumeAt], [0, plan.until]);
+});
+
+test('Codex 4504468051: "Read my clippings list again" pressed while a page was on its way wins over that page', () => {
+  const asked = Date.now();
+  const L = CB.newLedger();
+  Object.assign(L, { listComplete: false, listCursor: 24, user: 'HartleyResearch', listAt: asked });
+  const relist = CB.newLedger();
+  Object.assign(relist, { listComplete: false, listCursor: 0, user: null, listAt: asked + 10 });
+  CB.mergeStored(L, relist);
+  assert.deepStrictEqual([L.listCursor, L.user], [0, null]);
 });

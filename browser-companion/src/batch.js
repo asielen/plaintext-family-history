@@ -415,8 +415,10 @@
         await holdLease('newspapers');
         say('newspapers', 'Reading your clippings list (' + L.order.length + ' so far)…');
         let r;
+        let askedAt;
         try {
-          r = await hooks.sendToTab(active.tabId, { action: 'newspapersList', cursor: L.listCursor, user: L.user });
+          askedAt = Date.now();
+        r = await hooks.sendToTab(active.tabId, { action: 'newspapersList', cursor: L.listCursor, user: L.user });
         } catch (e) {
           r = { ok: false, error: 'the page did not answer (' + e.message + ')' };
         }
@@ -430,7 +432,10 @@
           throw new Stop('could not read your clippings list: ' + why);
         }
         if (!L.user) L.user = r.user;
-        L.listAt = Date.now();
+        // Stamped with when this page was asked for: a "Read my clippings
+        // list again" pressed in another window meanwhile is later, and the
+        // next save keeps it (the list is read again from the start).
+        L.listAt = askedAt;
         CB().addClippings(L, r.clippings, L.user);
         const moved = r.nextCursor != null && String(r.nextCursor) !== String(L.listCursor);
         L.listComplete = !r.more || !r.clippings.length || !moved;

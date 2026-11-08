@@ -1311,3 +1311,86 @@ test('Codex 4504415455: a person another window adds to a queued record during a
   assert.deepStrictEqual(h.sharedStore.ancBatchLedger.items['90001:1000001'].persons, ['Harriet Hartley']);
   assert.strictEqual(h.sharedStore.ancBatchLedger.items['90001:1000001'].state, 'done');
 });
+
+// ── PR #224 Codex 4504468051: the batch's own resets survive its saves ──────
+
+function withPacing(L, pacing) {
+  L.pacing = Object.assign({ sinceShort: 0, shortEvery: 40, resumeReason: 'ratelimit', resumeAt: Date.now() - 1000,
+    rateAt: Date.now() - 60 * 1000 }, pacing);
+  return L;
+}
+
+test('Codex 4504468051: a clean capture after a slow-down resets the count to 0, and it stays 0 once saved', async () => {
+  const p = await openPanel({ url: HARRIET, respond: ancestrySite(), storage: Object.assign({}, ON,
+    { ancBatchLedger: withPacing(ancLedger([CALVIN]), { rateEvents: 1 }) }) });
+  quick(p);
+  await start(p, 'anc');
+  assert.strictEqual(p.written.length, 1);
+  assert.strictEqual(p.storage.ancBatchLedger.pacing.rateEvents, 0);
+});
+
+test('Codex 4504468051: the third slow-down resets the count to 0, keeps it 0, and keeps its long break', async () => {
+  const base = ancestrySite();
+  const p = await openPanel({ url: HARRIET, storage: Object.assign({}, ON,
+    { ancBatchLedger: withPacing(ancLedger([CALVIN, ETHEL]), { rateEvents: 2 }) }),
+  respond: (msg, tab) => (msg.action === 'ancestryImage'
+    ? { ok: false, slowDown: true, transient: true, error: 'the Ancestry image service returned HTTP 429' } : base(msg, tab)) });
+  quick(p);
+  await start(p, 'anc');
+  const pacing = p.storage.ancBatchLedger.pacing;
+  assert.strictEqual(pacing.rateEvents, 0);
+  assert.strictEqual(pacing.resumeReason, 'long');
+  assert.ok(pacing.resumeAt > Date.now() + 3.5 * 3600 * 1000, 'the long break was shortened');
+});
+
+test('Codex 4504468051: a slow-down another window met after this run\'s reset survives this run\'s next save', async () => {
+  const sharedStore = JSON.parse(JSON.stringify(Object.assign({}, ON, { fsBatchLedger: fsLedger(['HRT1-CEN1', 'HRT1-DTH1']) })));
+  const locks = makeLocks();
+  const calls = [];
+  const a = await openPanel({ url: ark('HRT1-CEN2'), respond: familysearchSite(calls), sharedStore, locks });
+  quick(a).betweenMs = [60 * 1000, 60 * 1000];
+  const run = a.batchEl('fs-start').fire('click');
+  await settle();
+  // A has saved CEN1 (its count reset to 0) and waits before the next record.
+  assert.strictEqual(sharedStore.fsBatchLedger.items['HRT1-CEN1'].state, 'done');
+  const person = 'https://www.familysearch.org/tree/person/details/KWHR-T01';
+  const b = await openPanel({ url: person, sharedStore, locks, respond: (msg) => (msg.action === 'familysearchPersonSources'
+    ? { ok: false, slowDown: true, error: 'FamilySearch asked us to slow down (HTTP 429)' }
+    : msg.action === 'prefill' ? { ok: true, prefill: { url: person, title: 'A person', people: [] } } : { ok: false }) });
+  await b.batchEl('fs-page').fire('click');
+  await settle();
+  const owed = sharedStore.fsBatchLedger.pacing.resumeAt;
+  assert.strictEqual(sharedStore.fsBatchLedger.pacing.rateEvents, 1);
+  await a.batchEl('fs-pause').fire('click');
+  await run;
+  await settle();
+  assert.strictEqual(sharedStore.fsBatchLedger.pacing.rateEvents, 1, 'B\'s slow-down was lost');
+  assert.strictEqual(sharedStore.fsBatchLedger.pacing.resumeAt, owed);
+});
+
+test('Codex 4504468051: "Read my clippings list again" pressed in another window while a list page is on its way restarts the list', async () => {
+  const sharedStore = JSON.parse(JSON.stringify(ON));
+  const locks = makeLocks();
+  let release = null;
+  const base = npSite([]);
+  const page = (cursor) => (cursor === 24
+    ? { ok: true, user: ME.username, more: false, nextCursor: null, clippings: [listed(202, 'Hartley wedding', NP_B)] }
+    : { ok: true, user: ME.username, more: true, nextCursor: 24, clippings: [listed(101, 'Obituary', NP_A)] });
+  const a = await openPanel({ url: NP_A, sharedStore, locks, respond: async (msg, tab) => {
+    if (msg.action !== 'newspapersList') return base(msg, tab);
+    if (!release) await new Promise((r) => { release = r; });
+    return page(msg.cursor);
+  } });
+  quick(a);
+  const run = a.batchEl('np-start').fire('click');
+  await settle();
+  assert.ok(release, 'the first list page was not asked for');
+  const b = await openPanel({ url: NP_A, respond: base, sharedStore, locks });
+  await b.batchEl('np-relist').fire('click');
+  await settle();
+  release();
+  await run;
+  await settle();
+  assert.deepStrictEqual(a.sent.filter((m) => m.action === 'newspapersList').map((m) => m.cursor), [0, 0, 24]);
+  assert.deepStrictEqual(sharedStore.npBatchLedger.order.slice().sort(), ['101', '202']);
+});
