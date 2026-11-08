@@ -203,21 +203,21 @@
     {
       "path": ".fha/browser-companion/manifest.json",
       "category": "operating",
-      "sha256": "d4b95e71013707384547e08fbce3122be59d25c157bd4f48643bb9aa3dbc74bb",
+      "sha256": "1b5c1edd106cfc07fadf5b9e799acb99a2d24892155d4e23d1d84da25bda99c1",
       "spec_version": "1.2",
       "src": "browser-companion/manifest.json"
     },
     {
       "path": ".fha/browser-companion/src/background.js",
       "category": "operating",
-      "sha256": "98570ec45f0ee0430bbccba384b6de338978cd357a675cbe5365e27d41a87d70",
+      "sha256": "b71435b322f720a2822bb88633b51cafa93dc2d73e3387e7a0304709a29100ee",
       "spec_version": "1.2",
       "src": "browser-companion/src/background.js"
     },
     {
       "path": ".fha/browser-companion/src/batch.js",
       "category": "operating",
-      "sha256": "1a3f799e60c8c36ce6f5eec4baf09f6ba49451e20e7295e7872f1eb6e9498921",
+      "sha256": "c160ce2c7bcb71ebeae98c2679e1ab9eac48bf99400206253faeae28b0e4ed96",
       "spec_version": "1.2",
       "src": "browser-companion/src/batch.js"
     },
@@ -243,6 +243,13 @@
       "src": "browser-companion/src/lib/batch-sources.js"
     },
     {
+      "path": ".fha/browser-companion/src/lib/batch-store.js",
+      "category": "operating",
+      "sha256": "1bac184cd2e57687bb993f21a2028cacf6e998228915ae833b2b1dc35a040b10",
+      "spec_version": "1.2",
+      "src": "browser-companion/src/lib/batch-store.js"
+    },
+    {
       "path": ".fha/browser-companion/src/lib/bundle.js",
       "category": "operating",
       "sha256": "84b0dcd6406c8981fa19c0295935dc7c64be210597391c28d6d0eabac60ae765",
@@ -252,7 +259,7 @@
     {
       "path": ".fha/browser-companion/src/lib/capture-batch.js",
       "category": "operating",
-      "sha256": "4092babbf9d49ee7de80e350c74275ee71b478145c904021e8bc78416f2d0cb5",
+      "sha256": "a203b81a814e231c4aad331571f57b5b26bf3a974f46f9492b14bef441e01df8",
       "spec_version": "1.2",
       "src": "browser-companion/src/lib/capture-batch.js"
     },

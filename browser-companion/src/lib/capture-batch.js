@@ -8,8 +8,9 @@
 // told otherwise (src/batch.js says how). Nothing in this file runs on its
 // own: it only answers when src/batch.js asks.
 //
-// One ledger per site, in chrome.storage.local (the authoritative copy, read
-// and written by src/batch.js), mirrored for reading to
+// One ledger per site, in chrome.storage.local (the authoritative copy,
+// written only by the service worker - lib/batch-store.js - at the panels'
+// asking; src/batch.js reads it), mirrored for reading to
 // `<staging>/_{site}-batch-ledger.json`: a FILE at the staging root, which
 // `fha capture --ingest` never sweeps (it files sub-FOLDERS only). The
 // storage keys and the entry shapes are the ones the owner's archive copy of
@@ -47,7 +48,6 @@
 //   addClippings              queue the member's own Newspapers.com clippings
 //   markHeld / markDone / markPartial / markRetry / markSetAside   what became of one entry
 //   requeuePartials / requeueSetAside    a later Start; "Try the set-aside ones again"
-//   mergeDone                 fold in what another panel window stored
 //   nextPending / counts      the next entry to try; the tally
 //   ensurePacing / planAfterCapture / planRateLimit   when the next request may go
 //   classifyError             stop, slow down, or set this one aside
@@ -73,9 +73,9 @@
     listPauseMs: [3 * SEC, 8 * SEC],
     // A page that does not finish loading in this long stops the run.
     loadTimeoutMs: 90 * SEC,
-    // Without Web Locks: how long a Start waits after writing its claim
-    // before reading it back (src/batch.js withBatchClaim).
-    leaseSettleMs: 600,
+    // A panel whose service worker did not answer (stopped by the browser
+    // between two messages) asks again after this long, a few times.
+    askRetryMs: 250,
   };
 
   // At most this many list pages are read in one go (24 clippings each):
@@ -189,7 +189,6 @@
   // queued twice.
   function repair(L) {
     if (!L || typeof L !== 'object') return null;
-    observeStamps(L);
     if (!L.items || typeof L.items !== 'object') L.items = {};
     const seen = new Set();
     const order = [];
@@ -201,31 +200,6 @@
     L.order = order;
     if (!Array.isArray(L.log)) L.log = [];
     return L;
-  }
-
-  // When an entry's state last changed (ms), so two windows' changes to one
-  // entry merge to the later one (mergeStored). Strictly increasing within a
-  // window, so two changes in one millisecond keep their order.
-  // Every stamp this window has seen in a stored ledger raises the floor
-  // (`observeStamps`, from repair and mergeStored), so a change made here is
-  // always stamped later than anything already read - even after the
-  // computer's clock was set back (PR #224 audit F4).
-  let lastStamp = 0;
-  function nextStamp(now) {
-    lastStamp = Math.max(now || Date.now(), lastStamp + 1);
-    return lastStamp;
-  }
-  function seeStamp(v) {
-    if (typeof v === 'number' && isFinite(v) && v > lastStamp) lastStamp = v;
-  }
-  function observeStamps(L) {
-    if (!L || typeof L !== 'object') return;
-    for (const k of Object.keys(L.items || {})) seeStamp(L.items[k] && L.items[k].stateAt);
-    if (L.pacing) seeStamp(L.pacing.rateAt);
-    seeStamp(L.listAt);
-  }
-  function stamp(it, now) {
-    it.stateAt = nextStamp(now);
   }
 
   function logEvent(L, text, now) {
@@ -261,7 +235,6 @@
         state: 'queued',
         tries: 0,
       });
-      stamp(L.items[key]);
       L.order.push(key);
       added++;
     }
@@ -297,7 +270,6 @@
         state: 'queued',
         tries: 0,
       };
-      stamp(L.items[key]);
       added++;
     }
     sortClippings(L);
@@ -325,7 +297,6 @@
     const it = L.items[key];
     if (!it) return;
     it.state = 'done';
-    stamp(it, now);
     it.bundle = bundle;
     it.doneAt = new Date(now || Date.now()).toISOString();
     it.lastError = null;
@@ -345,12 +316,18 @@
   // Set aside with the reason: the page shown was not a record the batch can
   // save as the one queued. Not tried again until the owner presses "Try the
   // set-aside ones again" (requeueSetAside); the reading copy lists it.
+  // A record done stays done: a result that arrives after it was saved (a
+  // batch capture still on its way when she saved it by hand, in another
+  // window) never sets it aside, tries it again, counts a stop against it or
+  // marks it saved in part. Nothing re-opens a done record; Seen It is what
+  // says whether the archive holds it.
+  const isDone = (it) => !!it && it.state === 'done';
+
   function markSetAside(L, key, reason, now) {
     const it = L.items[key];
-    if (!it) return;
+    if (!it || isDone(it)) return;
     it.tries = (it.tries || 0) + 1;
     it.state = 'failed';
-    stamp(it, now);
     it.lastError = String(reason || '').slice(0, 400);
     logEvent(L, 'SET ASIDE ' + key + ': ' + it.lastError, now);
   }
@@ -360,14 +337,13 @@
   // queue, then set aside.
   function markRetry(L, key, reason, now) {
     const it = L.items[key];
-    if (!it) return;
+    if (!it || isDone(it)) return;
     if ((it.tries || 0) + 1 >= MAX_TRIES) {
       markSetAside(L, key, reason, now);
       return;
     }
     it.tries = (it.tries || 0) + 1;
     it.state = 'retry';
-    stamp(it, now);
     it.lastError = String(reason || '').slice(0, 400);
     L.order = L.order.filter((k) => k !== key).concat([key]);
     logEvent(L, 'try again later ' + key + ': ' + it.lastError, now);
@@ -379,14 +355,13 @@
   // MAX_PARTIAL tries it counts as done, with the note saying what is missing.
   function markPartial(L, key, bundle, note, now) {
     const it = L.items[key];
-    if (!it) return;
+    if (!it || isDone(it)) return;
     it.partialTries = (it.partialTries || 0) + 1;
     if (it.partialTries >= MAX_PARTIAL) {
       markDone(L, key, bundle, (note ? note + '; ' : '') + 'still incomplete after ' + MAX_PARTIAL + ' tries', now);
       return;
     }
     it.state = 'partial';
-    stamp(it, now);
     it.bundle = bundle;
     it.note = note || 'saved without all of its image or photos';
     it.lastError = null;
@@ -400,7 +375,6 @@
       const it = L.items[key];
       if (it && it.state === 'partial') {
         it.state = 'queued';
-        stamp(it, now);
         it.again = true;
         n++;
       }
@@ -416,7 +390,6 @@
       const it = L.items[key];
       if (!it || it.state !== 'failed') continue;
       it.state = 'queued';
-      stamp(it, now);
       it.tries = 0;
       it.stops = 0;
       delete it.ownRefusal;
@@ -428,115 +401,16 @@
     return n;
   }
 
-  // A refusal counted against one record (src/batch.js): stamped like any
-  // other change, so another window's later change to it is not lost.
+  // A stop counted against one record (src/batch.js stopAtRecord).
   function markRefused(L, key, now) {
     const it = L.items[key];
-    if (!it) return 0;
+    if (!it || isDone(it)) return 0;
     it.stops = (it.stops || 0) + 1;
-    stamp(it, now);
     return it.stops;
   }
 
-  // What says where an entry stands; it moves as one, from the window that
-  // changed it last.
-  const STATE_FIELDS = ['state', 'stateAt', 'tries', 'stops', 'bundle', 'doneAt', 'lastError', 'note',
-    'partialTries', 'again', 'imageKey', 'setAsideBefore', 'ownRefusal'];
-  // Which state wins a tie of stamps (mergeStored): the one nearer saved.
-  const STATE_RANK = { failed: 1, retry: 2, queued: 3, partial: 4, done: 5 };
+  // A "slow down" break (as opposed to the ordinary gap between records).
   const isCooldown = (p) => !!p && (p.resumeReason === 'ratelimit' || p.resumeReason === 'long');
-
-  // Fold the ledger another panel window stored (`stored`) into this one (`L`)
-  // so that no write of the other window is lost (PR #224 Codex 4504415455).
-  // The rule for each part:
-  //   items     an entry only one side has is kept; for one both have, a done
-  //             one stays done, else the later change (stateAt) wins its whole
-  //             state (state, tries, stops, partialTries, note, bundle, …);
-  //             people are joined; a missing title or address is filled;
-  //   order     entries only the other side has go at the end;
-  //   pacing    a stored "slow down" break (ratelimit / long) is never
-  //             shortened or erased: the later deadline wins, its reason
-  //             and the short-break rhythm it reset (sinceShort,
-  //             shortEvery) with it; the count of slow-downs in a row is the
-  //             value of its later change (rateAt) - so a reset to 0 (a
-  //             clean capture, the third slow-down's long break) is kept,
-  //             and a slow-down another window met after it still counts
-  //             (PR #224 Codex 4504468051);
-  //   list      Newspapers.com's list progress (listComplete, listCursor,
-  //             user) from whichever side changed it last (listAt) - "Read
-  //             my clippings list again" included;
-  //   log       both sides' lines, in time order, the last 200.
-  // Answers how many entries changed.
-  function mergeStored(L, stored) {
-    if (!stored || typeof stored !== 'object') return 0;
-    observeStamps(stored);
-    let n = 0;
-    for (const key of Object.keys(stored.items || {})) {
-      const s = stored.items[key];
-      if (!s) continue;
-      const mine = L.items[key];
-      if (!mine) {
-        L.items[key] = Object.assign({}, s);
-        L.order.push(key);
-        n++;
-        continue;
-      }
-      if (Array.isArray(s.persons)) {
-        mine.persons = Array.isArray(mine.persons) ? mine.persons : [];
-        for (const p of s.persons) if (p && mine.persons.indexOf(p) < 0) mine.persons.push(p);
-      }
-      if (!mine.title && s.title) mine.title = s.title;
-      if (!mine.url && s.url) mine.url = s.url;
-      // A stamp shared by two windows (both took "newest stored + 1" while
-      // the clock was behind) is broken the same way in every window: the
-      // state that keeps the record moving toward saved wins - a save, a
-      // part-save, a requeue - so neither a save nor the owner's requeue is
-      // lost (PR #224 second audit N2).
-      const tie = (s.stateAt || 0) === (mine.stateAt || 0) && (STATE_RANK[s.state] || 0) > (STATE_RANK[mine.state] || 0);
-      const theirs = s.state === 'done' && mine.state !== 'done' ||
-        (!(mine.state === 'done' && s.state !== 'done') && ((s.stateAt || 0) > (mine.stateAt || 0) || tie));
-      if (theirs) {
-        for (const f of STATE_FIELDS) {
-          if (f in s) mine[f] = s[f];
-          else delete mine[f];
-        }
-        n++;
-      }
-    }
-    const sp = stored.pacing;
-    if (sp && typeof sp === 'object') {
-      if (!L.pacing || typeof L.pacing !== 'object') L.pacing = Object.assign({}, sp);
-      else {
-        if (isCooldown(sp) && (sp.resumeAt || 0) > (L.pacing.resumeAt || 0)) {
-          L.pacing.resumeAt = sp.resumeAt;
-          L.pacing.resumeReason = sp.resumeReason;
-          if ('sinceShort' in sp) L.pacing.sinceShort = sp.sinceShort;
-          if ('shortEvery' in sp) L.pacing.shortEvery = sp.shortEvery;
-        }
-        // On a shared stamp the larger count wins: a slow-down is never lost.
-        if ((sp.rateAt || 0) > (L.pacing.rateAt || 0) || ((sp.rateAt || 0) === (L.pacing.rateAt || 0) &&
-            (sp.rateEvents || 0) > (L.pacing.rateEvents || 0))) {
-          L.pacing.rateEvents = sp.rateEvents || 0;
-          L.pacing.rateAt = sp.rateAt;
-        }
-      }
-    }
-    // On a shared stamp "read the list again from the start" wins: the
-    // owner's request is never lost to a page that was on its way.
-    const isRestart = (x) => x.listComplete === false && Number(x.listCursor || 0) === 0;
-    if ((stored.listAt || 0) > (L.listAt || 0) ||
-        ((stored.listAt || 0) === (L.listAt || 0) && isRestart(stored) && !isRestart(L))) {
-      for (const f of ['listComplete', 'listCursor', 'user', 'listAt']) if (f in stored) L[f] = stored[f];
-    }
-    if (Array.isArray(stored.log) && stored.log.length) {
-      const lines = new Set(L.log || []);
-      const added = stored.log.filter((l) => !lines.has(l));
-      if (added.length) L.log = (L.log || []).concat(added).sort().slice(-200);
-    }
-    return n;
-  }
-  // The name earlier code used.
-  const mergeDone = mergeStored;
 
   // `retry` is the archive copy's word for "failed once, try again": queued.
   // `skip`: keys not to give (a Set), if any.
@@ -577,7 +451,6 @@
   function planRateLimit(L, now, rand) {
     const p = ensurePacing(L, rand);
     p.rateEvents = (p.rateEvents || 0) + 1;
-    p.rateAt = nextStamp(now);
     let kind;
     let until;
     if (p.rateEvents >= PACING.longAfterRateEvents) {
@@ -604,7 +477,6 @@
     const p = ensurePacing(L, rand);
     p.sinceShort = (p.sinceShort || 0) + 1;
     p.rateEvents = 0;
-    p.rateAt = nextStamp(now);
     let kind = 'between';
     let until = now + between(PACING.betweenMs, rand);
     if (p.sinceShort >= p.shortEvery) {
@@ -800,8 +672,8 @@
   const api = {
     PACING, SITES, NP_LIST_MAX_PAGES, MAX_PER_RUN, MAX_TRIES, MAX_PARTIAL, MAX_FAILS_IN_A_ROW, MAX_TROUBLE_TRIES,
     between, npClipUrl, newLedger, repair, logEvent, addRecords, addClippings,
-    nextStamp, markDone, markHeld, markSetAside, markRetry, markPartial, markRefused, requeuePartials, requeueSetAside,
-    mergeStored, mergeDone, isCooldown, nextPending, counts, stopRule, causeOf,
+    isDone, markDone, markHeld, markSetAside, markRetry, markPartial, markRefused, requeuePartials, requeueSetAside,
+    isCooldown, nextPending, counts, stopRule, causeOf,
     ensurePacing, planRateLimit, planAfterCapture, classifyError,
     parseGedcom, parseMemorialList, ledgerFileBody,
   };
@@ -810,4 +682,4 @@
     root.FHA = root.FHA || {};
     root.FHA.captureBatch = api;
   }
-})(typeof window !== 'undefined' ? window : null);
+})(typeof window !== 'undefined' ? window : (typeof self !== 'undefined' ? self : null));
