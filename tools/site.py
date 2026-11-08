@@ -258,6 +258,7 @@ from _lib import (
     PROVISIONAL_VITAL_FIELDS,
     read_record,
     read_text_or_report,
+    replace_with_retry,
     resolve_path,
     resolve_root_arg,
     Result,
@@ -2301,7 +2302,7 @@ class _DerivativeCache:
         try:
             with os.fdopen(fd, 'wb') as fh:
                 fh.write(data)
-            os.replace(tmp, path)
+            replace_with_retry(tmp, path)   # waits out a Windows scanner on the fresh file
         except BaseException:
             with contextlib.suppress(OSError):
                 os.unlink(tmp)
