@@ -728,7 +728,7 @@
     {
       "path": ".fha/tools/site.py",
       "category": "operating",
-      "sha256": "4e99db5aa06be91dd79a258850dce71bb8b91d6f2e8d7ecb48b2d816d1a357f7",
+      "sha256": "4cd8994782856bdbd845b496ce8d4936af1fbe5d0ed4f7b0cc181643e0f77c47",
       "spec_version": "1.2",
       "src": "tools/site.py"
     },
@@ -954,7 +954,7 @@
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "3a7971d4b2659eb0d6e56dfc8d76d68b2092cdc089e4e560283df745cea98674",
+      "sha256": "65add867e3123dfe8b1aa8b513f33541c211e135ba4d7a588a2a780ad89c6a68",
       "spec_version": "1.2"
     },
     {

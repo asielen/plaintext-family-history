@@ -2387,6 +2387,110 @@ class DerivativeCacheTests(_Base):
         self.assertEqual(self._media(), good)
         self.assertTrue(any('could not be read back' in m for m in res['messages']))
 
+    def _malformed_notes(self, good: dict) -> dict[str, bytes]:
+        """Every shape of note `_read_note` must refuse, built from a real one.
+        Hand edits, half-written files and other tools' leftovers all land
+        here; none may raise out of the build (Codex review on PR #233)."""
+        def variant(edit):
+            note = json.loads(json.dumps(good))
+            edit(note)
+            return json.dumps(note).encode('utf-8')
+
+        def drop(*keys):
+            return lambda n: [n['fields'].pop(k) for k in keys]
+
+        def put(key, value, top=False):
+            return lambda n: (n if top else n['fields']).__setitem__(key, value)
+
+        return {
+            'missing size and mtime_ns': variant(drop('size', 'mtime_ns')),
+            'missing source': variant(drop('source')),
+            'size is null': variant(put('size', None)),
+            'size is a string': variant(put('size', '1234')),
+            'size is true': variant(put('size', True)),
+            'mtime_ns is a float': variant(put('mtime_ns', 1.5)),
+            'recipe is a string': variant(put('recipe', '1')),
+            'source is relative': variant(put('source', 'photos/pic.png')),
+            'source has a NUL': variant(put('source', good['fields']['source'] + '\x00')),
+            'source is a list': variant(put('source', ['a'])),
+            'format is a path': variant(put('format', '/../x')),
+            'an extra field': variant(put('extra', 1)),
+            'an extra top-level key': variant(put('extra', 1, top=True)),
+            'fields is a string': variant(put('fields', 'x', top=True)),
+            'sha256 is a number': variant(put('sha256', 7, top=True)),
+            'bytes is negative': variant(put('bytes', -1, top=True)),
+            'note is a list': b'[1, 2, 3]',
+            'note is null': b'null',
+            'empty file': b'',
+            'binary garbage': bytes(range(256)) * 4,
+            'nested past the parser limit': b'[' * 200_000,
+        }
+
+    def test_an_incomplete_unused_note_does_not_break_the_build(self):
+        # Codex review on PR #233 (P2): prune read `size`/`mtime_ns` outside
+        # its guard, so ONE incomplete note - even for a picture no page uses
+        # - raised KeyError and failed every standalone rebuild.
+        self._image('photos/1880/pic.png')
+        self._photo_source('s-1111111111', 'photos/1880/pic.png')
+        self._run(linked=False)
+        [real] = self._cache_notes()
+        good = json.loads(real.read_text(encoding='utf-8'))
+        for name, raw in self._malformed_notes(good).items():
+            with self.subTest(name):
+                stray = self._cache_dir() / ('f' * 32 + '.json')
+                stray.write_bytes(raw)
+                stray.with_suffix('.jpg').write_bytes(real.with_suffix('.jpg').read_bytes())
+                res, decoded = self._run_spied(linked=False)
+                self.assertEqual(res['status'], 'ok', res['messages'])
+                self.assertEqual(decoded, [])            # the real entry is still reused
+                self.assertFalse(stray.exists(), 'the malformed note was kept')
+                self.assertFalse(stray.with_suffix('.jpg').exists())
+                self.assertEqual(self._cache_notes(), [real])
+
+    def test_a_malformed_note_for_a_used_picture_is_made_again(self):
+        self._image('photos/1880/pic.png')
+        self._photo_source('s-1111111111', 'photos/1880/pic.png')
+        self._run(linked=False)
+        good_media = self._media()
+        [real] = self._cache_notes()
+        good_note = real.read_bytes()
+        good = json.loads(good_note)
+        cases = self._malformed_notes(good)
+        cases['picture file missing'] = None
+        for name, raw in cases.items():
+            with self.subTest(name):
+                if raw is None:
+                    real.with_suffix('.jpg').unlink()
+                else:
+                    real.write_bytes(raw)
+                res, decoded = self._run_spied(linked=False)
+                self.assertEqual(res['status'], 'ok', res['messages'])
+                self.assertEqual(decoded, ['pic.png'])
+                self.assertEqual(self._media(), good_media)
+                self.assertTrue(any('could not be read back' in m for m in res['messages']),
+                                res['messages'])
+                # Saved again, whole: the next build reuses it.
+                self.assertEqual(real.read_bytes(), good_note)
+                _, decoded = self._run_spied(linked=False)
+                self.assertEqual(decoded, [])
+
+    def test_a_note_whose_picture_is_gone_is_pruned(self):
+        self._image('photos/1880/pic.png')
+        self._image('photos/1880/other.png', colour=(9, 9, 9))
+        self._photo_source('s-1111111111', 'photos/1880/pic.png')
+        self._run(linked=False)
+        [real] = self._cache_notes()
+        stray = self._cache_dir() / ('e' * 32 + '.json')
+        good = json.loads(real.read_text(encoding='utf-8'))
+        other = (self.archive_root / 'photos' / '1880' / 'other.png').resolve()
+        st = other.stat()
+        good['fields'].update(source=str(other), size=st.st_size, mtime_ns=st.st_mtime_ns)
+        stray.write_text(json.dumps(good), encoding='utf-8')   # no picture beside it
+        res = self._run(linked=False)
+        self.assertEqual(res['status'], 'ok', res['messages'])
+        self.assertFalse(stray.exists())
+        self.assertEqual(self._cache_notes(), [real])
+
     def test_a_cache_folder_that_cannot_be_written_never_fails_the_build(self):
         self._image('photos/1880/pic.png')
         self._photo_source('s-1111111111', 'photos/1880/pic.png')

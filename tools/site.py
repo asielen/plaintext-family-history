@@ -2164,8 +2164,10 @@ class _DerivativeCache:
     Each entry is two files named by a hash of that test: the picture
     (`<key>.jpg`) and a small JSON note (`<key>.json`) recording the test it was
     made under plus the picture's own length and SHA-256. The note is written
-    last, so an interrupted save is just a miss. A note that will not parse, or
-    a picture that does not match its note, counts as damaged: the picture is
+    last, so an interrupted save is just a miss. A note that is not exactly the
+    shape `save` writes (`_read_note`: unparseable, a missing, extra, null or
+    wrong-typed key), or a picture that is missing or does not match its note,
+    counts as damaged at lookup and is discarded by `prune`: the picture is
     made again from the original and the build says so once (`notes`). A cache
     folder that cannot be written turns saving off for the rest of the build,
     also said once. Neither ever fails the build or changes a page.
@@ -2204,13 +2206,15 @@ class _DerivativeCache:
 
     def fetch(self, key: str, fields: dict) -> bytes | None:
         """The saved picture for `key`, or None for a miss. A note that exists
-        but cannot be trusted counts as damaged (a miss the build reports)."""
+        but cannot be trusted - unreadable, not a well-formed note
+        (`_read_note`), made for something else, or with a picture that is
+        missing or does not match it - counts as damaged: a miss the build
+        reports, never an exception."""
         note_path = self.dir / f'{key}.json'
-        try:
-            note = json.loads(note_path.read_bytes())
-        except FileNotFoundError:
+        if not note_path.exists():
             return None
-        except (OSError, ValueError):
+        note = self._read_note(note_path)
+        if note is None or note['fields'] != fields:
             self.damaged.add(key)
             return None
         try:
@@ -2218,12 +2222,42 @@ class _DerivativeCache:
         except OSError:
             self.damaged.add(key)
             return None
-        if (not isinstance(note, dict) or note.get('fields') != fields
-                or note.get('bytes') != len(data)
-                or note.get('sha256') != hashlib.sha256(data).hexdigest()):
+        if note['bytes'] != len(data) or note['sha256'] != hashlib.sha256(data).hexdigest():
             self.damaged.add(key)
             return None
         return data
+
+    @staticmethod
+    def _read_note(note_path: Path) -> dict | None:
+        """A saved picture's note, or None when it is anything but a note this
+        code wrote: unreadable, empty, not JSON (binary garbage, nesting deep
+        enough to exhaust the parser), or JSON of the wrong shape - a missing,
+        extra, null or wrong-typed key anywhere. Every reader goes through
+        here, so a hand-edited or half-written note is a miss, never a crash.
+
+        Types are checked with `type(...) is`, not `isinstance`: JSON `true`
+        is a Python bool, and a bool is an int, so `"size": true` would
+        otherwise pass as the number 1."""
+        try:
+            note = json.loads(note_path.read_bytes())
+        except Exception:   # noqa: BLE001 - OSError, ValueError, RecursionError, ...
+            return None
+        if type(note) is not dict or set(note) != _NOTE_KEYS:
+            return None
+        fields = note['fields']
+        if type(fields) is not dict or set(fields) != _NOTE_FIELD_TYPES.keys():
+            return None
+        if any(type(fields[k]) is not t for k, t in _NOTE_FIELD_TYPES.items()):
+            return None
+        if (type(note['bytes']) is not int or note['bytes'] < 0
+                or type(note['sha256']) is not str
+                or not _SHA256_RE.fullmatch(note['sha256'])):
+            return None
+        if (fields['size'] < 0 or fields['max_px'] <= 0 or '\x00' in fields['source']
+                or not os.path.isabs(fields['source'])
+                or not _FORMAT_RE.fullmatch(fields['format'])):
+            return None
+        return note
 
     def save(self, key: str, fields: dict, data: bytes) -> None:
         """Save a freshly made picture for the next build. Each file goes in
@@ -2285,22 +2319,24 @@ class _DerivativeCache:
             except OSError:
                 pass   # removed already, or locked: try again next build
 
-    @staticmethod
-    def _still_reusable(note_path: Path) -> bool:
-        """Could a future build still hit this entry?"""
-        try:
-            fields = json.loads(note_path.read_bytes())['fields']
-            if (fields['recipe'] != _DERIVATIVE_RECIPE_VERSION
-                    or fields['pillow'] != _PIL_VERSION):
-                return False
-            source = Path(fields['source'])
-        except (OSError, ValueError, TypeError, KeyError):
+    @classmethod
+    def _still_reusable(cls, note_path: Path) -> bool:
+        """Could a future build still hit this entry? A malformed note never
+        can (`_read_note`), so it is discarded with its picture."""
+        note = cls._read_note(note_path)
+        if note is None:
             return False
+        fields = note['fields']
+        if fields['recipe'] != _DERIVATIVE_RECIPE_VERSION or fields['pillow'] != _PIL_VERSION:
+            return False
+        if not note_path.with_suffix(fields['format']).is_file():
+            return False                         # its picture is gone
+        source = Path(fields['source'])
         try:
             st = source.stat()
         except FileNotFoundError:
             return not source.parent.is_dir()   # whole folder missing: unplugged drive
-        except OSError:
+        except (OSError, ValueError):
             return True                          # cannot tell; keep it
         return st.st_size == fields['size'] and st.st_mtime_ns == fields['mtime_ns']
 
@@ -2332,6 +2368,13 @@ class _DerivativeCache:
 
 # A saved-picture entry's name: the first 32 hex digits of its key hash.
 _CACHE_KEY_RE = re.compile(r'[0-9a-f]{32}')
+_SHA256_RE = re.compile(r'[0-9a-f]{64}')
+_FORMAT_RE = re.compile(r'\.[a-z0-9]+')
+# The exact shape of a saved picture's note (`_DerivativeCache.save` writes it,
+# `_DerivativeCache._read_note` refuses anything else).
+_NOTE_KEYS = {'fields', 'bytes', 'sha256'}
+_NOTE_FIELD_TYPES = {'recipe': int, 'pillow': str, 'source': str, 'size': int,
+                     'mtime_ns': int, 'max_px': int, 'format': str}
 
 
 # ── Ancestor fan chart (static SVG) ─────────────────────────────────────────
