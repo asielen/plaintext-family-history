@@ -242,6 +242,7 @@ from _lib import (
     open_index_db,
     parse_filename,
     parse_questions,
+    path_to_alias,
     person_section_is_unfilled,
     photoindex_status,
     photos_ignore_matcher,
@@ -3139,8 +3140,10 @@ class _SiteBuilder:
         # The same catalog opened for the living-person photo gate ONLY, when
         # it is out of date (#202 follow-up). An out-of-date catalog still
         # knows every tag it held at the last scan, and skipping the check
-        # would publish all of those photos too. It stays out of the photo
-        # strips and hero/profile lookups, which keep their fresh-only rule:
+        # would publish all of those photos too. Every picture a standalone
+        # page shows - source files, the hero, embeds, profile photos - is
+        # held back by it (#235). It still never FINDS a photo for those
+        # lookups, or fills a photo strip, which keep their fresh-only rule:
         # there a stale answer would change what a page shows, not just
         # what it withholds.
         self.photos_gate_conn: sqlite3.Connection | None = None
@@ -4660,16 +4663,9 @@ class _SiteBuilder:
                 # review).
                 role = (f['role'] or '').strip().lower()
                 candidates.append((0 if role == 'primary' else 1 if role == 'front' else 2, entry))
-                # An image is going into a shareable snapshot. If the living-
-                # person gate at the top of this loop had no catalog to ask,
-                # this is the moment the build learns it published something
-                # unchecked - and the only honest moment to say so. Warned here
-                # rather than inside the gate itself so a build with nothing but
-                # text attachments, or one where Pillow left every image out,
-                # raises no alarm about photos it never published.
-                if not self.linked and self.photos_status != 'fresh':
-                    self._warn_living_photo_check_unavailable(
-                        unknown_to_catalog=self._gate_last_unknown)
+                # An image is going into a shareable snapshot, past the
+                # living-person gate at the top of this loop.
+                self._warn_if_published_photo_went_unchecked()
         portrait = min(candidates, key=lambda c: c[0])[1] if candidates else None
         return entries, portrait
 
@@ -5679,6 +5675,29 @@ class _SiteBuilder:
             'this site.'
         )
 
+    def _warn_if_published_photo_went_unchecked(self) -> None:
+        """Call right after a standalone page has put a real image in the snapshot.
+
+        Every picture a shareable site publishes passes `_is_living_tagged_photo`
+        first: the files on a source page and its portrait, the homepage hero,
+        `![[...]]` embeds, and profile photos (which also appear in the trees and
+        the family chart). When that gate had no fresh catalog to ask, this is
+        the moment the build learns it published something not fully checked -
+        and the only honest moment to say so. It is called after the image is
+        made rather than inside the gate, so a build with nothing but text
+        attachments, or one where Pillow left every image out, raises no alarm
+        about photos it never published.
+
+        One helper, called from each place a picture is published, so the
+        source pages and the hero / embed / profile photos cannot drift apart
+        on when the researcher is told (#235: they had). It reads
+        `_gate_last_unknown`, so it belongs straight after the gate call for
+        the image just published, with no other gate call in between.
+        """
+        if not self.linked and self.photos_status != 'fresh':
+            self._warn_living_photo_check_unavailable(
+                unknown_to_catalog=self._gate_last_unknown)
+
     def _person_family(self, pid: str, page_dir: Path) -> list[dict]:
         """Friends & Family from the relationships edges, grouped by relation."""
         rows = self.conn.execute(
@@ -6125,7 +6144,13 @@ class _SiteBuilder:
         rest of the site already read this table, so an S-id must always
         resolve - even when `.cache/photos.sqlite` is absent or stale - so long
         as its source is publishable. Returns None if the id is not S-shaped,
-        the source has no attached file on disk, or the source is withheld."""
+        the source has no attached file on disk, or the source is withheld.
+
+        Standalone: each image passes the same living-person gate the source
+        page applies to that very file (`_is_living_tagged_photo`, which falls
+        back to an out-of-date catalog), and one it withholds is passed over
+        for the source's next image - so a hero or embed written as an S-id
+        can never show a picture the source's own page leaves out (#235)."""
         if not re.match(r'(?i)^s-[0-9a-z]+$', ref.strip()):
             return None
         sid = normalize_id(ref.strip())
@@ -6151,20 +6176,31 @@ class _SiteBuilder:
             except Exception:  # noqa: BLE001
                 cand = self.archive_root / p
             try:
-                if cand and Path(cand).is_file():
-                    return Path(cand)
+                if not (cand and Path(cand).is_file()):
+                    continue
             except OSError:
                 continue
+            if not self.linked and self._is_living_tagged_photo(p):
+                continue
+            return Path(cand)
         return None
 
     def _resolve_image_source(self, ref: str) -> Path | None:
         """The on-disk source file for a photo reference. Prefers a catalogued
         photo (S-id or indexed path), applying the strip's privacy gate; else a
-        hand-written path/filename on disk. If a photo catalog is available in
-        standalone mode, an uncatalogued disk hit is fail-closed - the author who
-        wrote a bare filename should either catalog the file or accept the safe
-        default; only when there is no catalog at all does a raw disk lookup
-        publish without a co-living gate. None if nothing resolves."""
+        hand-written path/filename on disk. If a fresh photo catalog is
+        available in standalone mode, an uncatalogued disk hit is fail-closed -
+        the author who wrote a bare filename should either catalog the file or
+        accept the safe default. None if nothing resolves.
+
+        Without a fresh catalog, an S-id or disk hit goes through exactly the
+        gate the source pages use (`_is_living_tagged_photo`): an out-of-date
+        catalog still withholds every photo it knows is tagged to someone
+        living, and with no catalog at all the photo publishes and the build
+        says so (`_warn_if_published_photo_went_unchecked`, called by whoever
+        makes the image). Editing anyone's `living:` makes the catalog out of
+        date, so before #235 that was exactly when a newly-living person's
+        photo went out as the hero, an embed or a profile photo."""
         cat = self._resolve_photo_ref(ref)
         if cat:
             # A catalog match that the privacy gate rejects must NOT fall through to
@@ -6186,16 +6222,23 @@ class _SiteBuilder:
         disk = self._resolve_asset_path(ref)
         if disk is None:
             return None
-        # Standalone + a catalog exists: a disk hit that has no catalog entry
-        # (or one that fails the privacy gate) is fail-closed. If there is no
-        # catalog at all (photos_conn is None) the hand-written path is the
-        # deliberate publish choice the caller made.
-        if not self.linked and self.photos_conn is not None:
+        if self.linked:
+            return disk
+        # Standalone + a fresh catalog: a disk hit that has no catalog entry
+        # (or one that fails the privacy gate) is fail-closed.
+        if self.photos_conn is not None:
             cat_path = self._catalog_path_for_disk(disk)
             if cat_path is None:
                 return None
             if not self._photo_is_public(cat_path):
                 return None
+            return disk
+        # No fresh catalog: the source pages' gate, keyed the way the catalog
+        # keys a photo (its photos-root alias). An out-of-date catalog still
+        # answers it; with none, the photo publishes and the caller warns.
+        if self._is_living_tagged_photo(
+                path_to_alias(disk, 'photos', self.fha_config, self.archive_root)):
+            return None
         return disk
 
     def _catalog_path_for_disk(self, disk: Path) -> str | None:
@@ -6275,6 +6318,7 @@ class _SiteBuilder:
             return None
         dest = self._media_dest(ref, 'profiles')
         if _make_derivative(resolved, dest, max_px=_PROFILE_MAX_PX):
+            self._warn_if_published_photo_went_unchecked()
             return dest
         self.messages.append(
             f'WARNING: could not build a web image for profile_photo {ref} ({fmt_id_display(pid)}); skipped.')
@@ -6364,7 +6408,10 @@ class _SiteBuilder:
         if not _PIL_AVAILABLE:
             return None
         dest = self._media_dest(ref, subdir)
-        return _rel_href(dest, page_dir) if _make_derivative(dest=dest, src=resolved) else None
+        if not _make_derivative(dest=dest, src=resolved):
+            return None
+        self._warn_if_published_photo_went_unchecked()
+        return _rel_href(dest, page_dir)
 
     def _render_embed(self, target: str, caption: str, page_dir: Path) -> str:
         """A `![[S-id|Caption]]` prose embed → a responsive <figure>. The image is

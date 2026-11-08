@@ -2502,6 +2502,127 @@ class LivingPhotoCheckUnavailableTests(_Base):
         self.assertIn('tags naming living people', err.getvalue())
         self.assertIn('fha photoindex', err.getvalue())
 
+    # - #235: the hero, embeds and profile photos get the same gate -
+    #
+    # Editing anyone's `living:` makes the catalog out of date (#48), and the
+    # pictures a page shows outside the source files used to skip the living-
+    # person check whenever the catalog was not fresh. Each kind is tested on
+    # its own, with nothing else in the site that could publish an image, so
+    # a warning can only have come from the kind under test.
+
+    def _seed_one_picture(self, kind, ref='reunion.png'):
+        """A site whose only picture is `photos/1950/reunion.png`, shown one way:
+        as the homepage `hero`, an `embed` on the homepage, or a deceased
+        person's `profile` photo."""
+        from PIL import Image
+        img = self.archive_root / 'photos' / '1950' / 'reunion.png'
+        img.parent.mkdir(parents=True, exist_ok=True)
+        Image.new('RGB', (60, 40), (10, 20, 30)).save(img)
+        cfg = 'roots:\n  photos: photos\n'
+        if kind == 'hero':
+            cfg += f'site:\n  hero: {ref}\n'
+        (self.archive_root / 'fha.yaml').write_text(cfg, encoding='utf-8')
+        if kind == 'embed':
+            home = self.archive_root / 'notes' / 'home.md'
+            home.parent.mkdir(parents=True, exist_ok=True)
+            home.write_text(f'Welcome.\n\n![[{ref}|The reunion]]\n', encoding='utf-8')
+        self._seed_person('p-bbbbbbbbbb', 'Grandpa Gone',
+                          frontmatter_extra=f'profile_photo: {ref}' if kind == 'profile' else '')
+        self._seed_person('p-aaaaaaaaaa', 'Living Larry', living='true', surname='Larry')
+
+    def _picture_published(self):
+        """Whether reunion.png reached the snapshot: a derivative in media/, or
+        any page naming it."""
+        media = self.out_dir / 'media'
+        if media.is_dir() and any('reunion' in p.name for p in media.rglob('*')):
+            return True
+        return any('reunion' in p.read_text(encoding='utf-8', errors='replace')
+                   for p in self.out_dir.rglob('*')
+                   if p.is_file() and p.suffix in ('.html', '.json', '.js'))
+
+    def _check_out_of_date_catalog_withholds(self, kind):
+        # The catalog was last built before Larry was marked living, but it
+        # already knew the photo shows him. The source pages withhold such a
+        # photo; this picture must be withheld the same way.
+        self._seed_one_picture(kind)
+        self._stale_catalog_knowing([('photos/1950/reunion.png', 'p-aaaaaaaaaa')])
+        res = self._run(linked=False)
+        self.assertFalse(self._picture_published(), res['messages'])
+        # Nothing went out unchecked, so there is nothing to warn about.
+        self.assertEqual(self._warnings(res), [], res['messages'])
+
+    @unittest.skipUnless(site._PIL_AVAILABLE, 'Pillow not installed')
+    def test_an_out_of_date_catalog_withholds_a_living_persons_hero(self):
+        self._check_out_of_date_catalog_withholds('hero')
+
+    @unittest.skipUnless(site._PIL_AVAILABLE, 'Pillow not installed')
+    def test_an_out_of_date_catalog_withholds_a_living_persons_embed(self):
+        self._check_out_of_date_catalog_withholds('embed')
+
+    @unittest.skipUnless(site._PIL_AVAILABLE, 'Pillow not installed')
+    def test_an_out_of_date_catalog_withholds_a_living_persons_profile_photo(self):
+        # The photo is someone else's portrait - Grandpa, who died - but Larry
+        # is in it too. Larry's own portrait is already withheld; this one
+        # must be as well.
+        self._check_out_of_date_catalog_withholds('profile')
+
+    def _check_no_catalog_publishes_and_warns(self, kind):
+        # Owner decision 2026-08-16, the same as for source files: with no
+        # catalog at all the picture still publishes - and the build says,
+        # once, that nobody checked it.
+        self._seed_one_picture(kind)
+        res = self._run(linked=False)
+        self.assertTrue(self._picture_published(), res['messages'])
+        warnings = self._warnings(res)
+        self.assertEqual(len(warnings), 1, res['messages'])
+        self.assertIn('the photo catalog has not been built yet', warnings[0])
+        self.assertIn('fha photoindex', warnings[0])
+
+    @unittest.skipUnless(site._PIL_AVAILABLE, 'Pillow not installed')
+    def test_a_hero_published_with_no_catalog_says_so(self):
+        self._check_no_catalog_publishes_and_warns('hero')
+
+    @unittest.skipUnless(site._PIL_AVAILABLE, 'Pillow not installed')
+    def test_an_embed_published_with_no_catalog_says_so(self):
+        self._check_no_catalog_publishes_and_warns('embed')
+
+    @unittest.skipUnless(site._PIL_AVAILABLE, 'Pillow not installed')
+    def test_a_profile_photo_published_with_no_catalog_says_so(self):
+        self._check_no_catalog_publishes_and_warns('profile')
+
+    @unittest.skipUnless(site._PIL_AVAILABLE, 'Pillow not installed')
+    def test_a_hero_the_out_of_date_catalog_never_saw_is_not_called_checked(self):
+        # The #204 rule reaches the hero too: no row for the photo means the
+        # old tags checked nothing, and the warning must not say otherwise.
+        self._seed_one_picture('hero')
+        self._stale_catalog_knowing([('photos/1950/other.png', None)])
+        res = self._run(linked=False)
+        self.assertTrue(self._picture_published(), res['messages'])
+        warnings = self._warnings(res)
+        self.assertEqual(len(warnings), 1, res['messages'])
+        self.assertIn('never seen', warnings[0])
+        self.assertNotIn('only against the tags it held', warnings[0])
+
+    @unittest.skipUnless(site._PIL_AVAILABLE, 'Pillow not installed')
+    def test_a_hero_written_as_a_source_id_is_withheld_like_the_source_page_file(self):
+        # `hero: S-…` finds its picture through the source's files, not the
+        # catalog. The source page leaves that file out because the
+        # out-of-date catalog says Larry is in it; the hero must too.
+        self._seed_one_picture('hero', ref='S-1111111111')
+        self._seed_source('s-1111111111', 'Reunion photo', source_type='photo')
+        self.conn.execute(
+            'INSERT INTO source_files(source_id, path, role) VALUES (?,?,?)',
+            ('s-1111111111', 'photos/1950/reunion.png', 'front'))
+        self._stale_catalog_knowing([('photos/1950/reunion.png', 'p-aaaaaaaaaa')])
+        res = self._run(linked=False)
+        self.assertIn('image omitted - tagged to a living person',
+                      self._read('sources/s-1111111111.html'))
+        media = self.out_dir / 'media'
+        self.assertEqual([p.name for p in media.rglob('*') if p.is_file()]
+                         if media.is_dir() else [], [], res['messages'])
+        self.assertNotIn('media/', self._read('index.html'))
+        self.assertEqual(self._warnings(res), [], res['messages'])
+
 
 class SourcePortraitTests(_Base):
     """Win 2 (plan 17): a right-floated scan thumbnail at the head of a source
@@ -8533,6 +8654,106 @@ A postcard kept in the family album.
             self.assertEqual(changed, [], 'pages that changed when the lookup indexes '
                              'were dropped (a query whose row order reaches the page '
                              'lost its ORDER BY)')
+
+
+class MarkedLivingAfterTaggingTests(unittest.TestCase):
+    """#235, as the owner would hit it, on a copy of the example archive.
+
+    A photo is tagged to Frances, the site is built, and then Frances's record
+    is changed to `living: true` and `fha index` is run - but not
+    `fha photoindex`. Changing her record makes the photo catalog out of date
+    (#48), and the shareable site used to publish her photos anyway as the
+    homepage hero, a homepage `![[…]]` embed, and someone else's profile
+    photo, without a word.
+
+    The real tools run end to end: `fha index`, an `fha photoindex` scan
+    (only exiftool is stood in for, reporting the P-id keyword
+    `fha photoindex tag-person` writes), and `fha site` twice into the same
+    folder, as a person rebuilding their site would."""
+
+    FRANCES = 'P-83e768cacb'
+    # Each kind of picture, by the photo the example archive shows that way.
+    HERO = 'coronado-tent-city-postcard'      # fha.yaml site: hero:
+    EMBED = 'hartley-family-gathering'        # notes/home.md ![[…]]
+    PROFILE = 'thomas-hartley-portrait'       # Thomas's profile_photo:
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        import shutil
+        import index as index_mod
+        import photoindex
+        from _lib import load_fha_yaml
+        cls._tmp = tempfile.TemporaryDirectory()
+        tmp = Path(cls._tmp.name)
+        root = tmp / 'archive'
+        shutil.copytree(ROOT / 'example-archive', root,
+                        ignore=shutil.ignore_patterns('generated', '.cache'))
+        cfg = load_fha_yaml(root)
+        tagged = {f'{stem}.jpg' for stem in (cls.HERO, cls.EMBED, cls.PROFILE)}
+
+        def exiftool(paths):
+            return [{'SourceFile': str(p),
+                     **({'Keywords': [cls.FRANCES]} if Path(p).name in tagged else {})}
+                    for p in paths]
+
+        out = tmp / 'site'
+        quiet = io.StringIO()
+        with contextlib.redirect_stdout(quiet), contextlib.redirect_stderr(quiet), \
+                unittest.mock.patch.object(photoindex, '_run_exiftool', exiftool):
+            index_mod.build_index(root, cfg)
+            photoindex.run_scan(root, cfg)
+            cls.before = site.run_site(root, out, linked=False)
+            cls.media_before = cls._media(out)
+            record = next(root.glob(f'people/**/*_{cls.FRANCES}.md'))
+            text = record.read_text(encoding='utf-8')
+            assert 'living: false' in text, 'the example archive changed shape'
+            record.write_text(text.replace('living: false', 'living: true'), encoding='utf-8')
+            index_mod.build_index(root, cfg)
+            cls.catalog_status = site.photoindex_status(root, cfg)[0]
+            cls.after = site.run_site(root, out, linked=False)
+        cls.media_after = cls._media(out)
+        cls.pages_after = '\n'.join(
+            p.read_text(encoding='utf-8', errors='replace') for p in out.rglob('*')
+            if p.is_file() and p.suffix in ('.html', '.json', '.js'))
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls._tmp.cleanup()
+
+    @staticmethod
+    def _media(out: Path) -> list[str]:
+        return sorted(p.name for p in (out / 'media').rglob('*') if p.is_file())
+
+    def _assert_withheld_after_marking_living(self, stem: str) -> None:
+        # Before: the picture was published, so this test is looking at a
+        # path that really does publish it.
+        self.assertEqual(self.before['status'], 'ok', self.before['messages'])
+        self.assertTrue(any(n.startswith(stem + '_') for n in self.media_before),
+                        self.media_before)
+        # The state the bug needs: the catalog is out of date, not absent.
+        self.assertEqual(self.catalog_status, 'stale')
+        # After: gone from media/ and from every page.
+        self.assertEqual(self.after['status'], 'ok', self.after['messages'])
+        self.assertFalse([n for n in self.media_after if n.startswith(stem + '_')],
+                         self.media_after)
+        self.assertNotIn(stem, self.pages_after)
+
+    def test_the_homepage_hero_is_withheld(self):
+        self._assert_withheld_after_marking_living(self.HERO)
+
+    def test_a_homepage_embed_is_withheld(self):
+        self._assert_withheld_after_marking_living(self.EMBED)
+
+    def test_another_persons_profile_photo_that_shows_her_is_withheld(self):
+        self._assert_withheld_after_marking_living(self.PROFILE)
+
+    def test_the_build_says_the_check_used_the_out_of_date_catalog(self):
+        # The other profile photos still publish, checked only against the
+        # tags the catalog held at its last scan - and the build has to say so.
+        warnings = [m for m in self.after['messages'] if 'tags naming living people' in m]
+        self.assertEqual(len(warnings), 1, self.after['messages'])
+        self.assertIn('out of date', warnings[0])
+        self.assertIn('fha photoindex', warnings[0])
 
 
 if __name__ == '__main__':
