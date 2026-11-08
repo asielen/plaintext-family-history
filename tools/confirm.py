@@ -199,6 +199,7 @@ from _lib import (
     scan_ids_in_tree,
     scan_person_record_ids,
     yaml_inline,
+    safe_load_yaml,
 )
 
 configure_utf8_stdout()
@@ -346,7 +347,7 @@ def _item_span_for(
             continue
         open_fence, close_fence = block
         try:
-            parsed = yaml.safe_load('\n'.join(lines[open_fence + 1:close_fence]))
+            parsed = safe_load_yaml('\n'.join(lines[open_fence + 1:close_fence]))
         except yaml.YAMLError:
             parsed = None
         aligned = (
@@ -1938,7 +1939,7 @@ def _relink_claims_in_source(
     base_indent, spans = _claim_spans(lines, open_fence, close_fence)
     block_text = '\n'.join(lines[open_fence + 1:close_fence])
     try:
-        parsed = yaml.safe_load(block_text)
+        parsed = safe_load_yaml(block_text)
     except yaml.YAMLError:
         parsed = None
     if parsed is None:
@@ -1994,7 +1995,7 @@ def _relink_claims_in_source(
     reparsed = None
     if new_block is not None:
         try:
-            reparsed = yaml.safe_load('\n'.join(new_lines[new_block[0] + 1:new_block[1]]))
+            reparsed = safe_load_yaml('\n'.join(new_lines[new_block[0] + 1:new_block[1]]))
         except yaml.YAMLError:
             reparsed = None
     if not isinstance(reparsed, list) or len(reparsed) != len(parsed):
@@ -2138,7 +2139,7 @@ def _fm_parse_problem(text: str) -> str | None:
     if fm is None:
         return 'the record would lose its frontmatter'
     try:
-        meta = yaml.safe_load('\n'.join(lines[1:fm[1]]))
+        meta = safe_load_yaml('\n'.join(lines[1:fm[1]]))
     except yaml.YAMLError:
         return 'the frontmatter would no longer read as YAML'
     if not isinstance(meta, dict):

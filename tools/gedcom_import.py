@@ -110,6 +110,7 @@ from _lib import (
     resolve_path,
     resolve_root_arg,
     strip_generational_suffix,
+    safe_load_yaml,
 )
 
 import yaml
@@ -1621,7 +1622,7 @@ def _require_valid_frontmatter(record_text: str) -> None:
     parsed = None
     if m is not None:
         try:
-            parsed = yaml.safe_load(m.group(1))
+            parsed = safe_load_yaml(m.group(1))
         except yaml.YAMLError:
             parsed = None
     if not isinstance(parsed, dict):

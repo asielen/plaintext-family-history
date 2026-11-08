@@ -207,6 +207,7 @@ from _lib import (
     result_fail,
     variant_role,
     write_text_exact_atomic,
+    safe_load_yaml,
     yaml_inline,)
 
 configure_utf8_stdout()
@@ -239,7 +240,7 @@ def _source_label(text: str, sid: str) -> str:
     fm = FRONT_RE.match(text)
     if fm:
         try:
-            meta = yaml.safe_load(fm.group(1))
+            meta = safe_load_yaml(fm.group(1))
         except yaml.YAMLError:
             meta = None
         if isinstance(meta, dict):

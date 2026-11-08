@@ -138,6 +138,7 @@ from _lib import (
     walk_files,
     write_text_exact_atomic,
     yaml_inline,
+    safe_load_yaml,
 )
 
 import yaml
@@ -4675,7 +4676,7 @@ def _wrap_unfenced_claims(path: Path) -> tuple[str | None, str | None]:
     if not yaml_text:
         return None, None
     try:
-        expected = yaml.safe_load(yaml_text)
+        expected = safe_load_yaml(yaml_text)
     except yaml.YAMLError:
         expected = None
     tail = text[m.end():]
@@ -4690,7 +4691,7 @@ def _wrap_unfenced_claims(path: Path) -> tuple[str | None, str | None]:
     reread = None
     if cm is not None:
         try:
-            reread = yaml.safe_load(cm.group(1))
+            reread = safe_load_yaml(cm.group(1))
         except yaml.YAMLError:
             reread = None
     if not isinstance(reread, list) or not isinstance(expected, list) \
@@ -4804,7 +4805,7 @@ def _merge_aliases_into_frontmatter(
     an alias)" note prints only when n > 0, so the message can never lie.
     """
     try:
-        parsed = yaml.safe_load(fm_text)
+        parsed = safe_load_yaml(fm_text)
     except yaml.YAMLError:
         return fm_text, 0
     if not isinstance(parsed, dict):
@@ -4964,7 +4965,7 @@ def _mint_write_problem(new_text: str, new_id: str) -> str | None:
     if not fm:
         return 'the record lost its frontmatter block'
     try:
-        parsed = yaml.safe_load(fm.group(1))
+        parsed = safe_load_yaml(fm.group(1))
     except yaml.YAMLError as exc:
         return f'the rewritten frontmatter no longer parses ({exc.__class__.__name__})'
     if not isinstance(parsed, dict):
@@ -5398,7 +5399,7 @@ def _mint_claim_ids_in_file(
         parsed = None
         if cm2 is not None:
             try:
-                parsed = yaml.safe_load(cm2.group(1))
+                parsed = safe_load_yaml(cm2.group(1))
             except yaml.YAMLError:
                 parsed = None
         landed = {normalize_id(str(c.get('id') or ''))
