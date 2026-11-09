@@ -541,8 +541,10 @@ def _title_key(word: str) -> str:
 
 
 # Titles that are also plain words a family used AS a name: a child the census
-# knows only as "Sister Hartley" was called Sister. One of these counts as a
-# title only when a given name AND a surname follow ("Sister Mary Agnes").
+# knows only as "Sister Hartley" may well have been called Sister. A human's
+# "Sister" token is kept for such a child (reconcile_bracket_entries), though a
+# bare "Mrs." never is. The default stays whole ("Sister Hartley"), because the
+# same shape is also a nun's name with no surname ("Sister Mary").
 _KIN_TITLES = frozenset({'sister', 'brother', 'father', 'mother'})
 # Words that trail a surname without being it ("Mrs. John Smith Jr.").
 _NAME_SUFFIXES = frozenset({'jr', 'sr', 'ii', 'iii', 'iv', 'esq'})
@@ -575,10 +577,9 @@ def bracket_given_name(full_name: str) -> str:
     ("Mrs. Walter Doe" -> "Mrs. Doe", "Mrs. John Smith Jr." -> "Mrs. Smith",
     "Mrs. Jan van der Berg" -> "Mrs. van der Berg"), since the given name that
     follows "Mrs." is his. So does a title followed by a single word
-    ("Mrs. Lowe", "Mr. Lowe"), where that word is the surname. "Sister",
-    "Brother", "Mother" and "Father" are titles only before a given name and a
-    surname: a child recorded as "Sister Hartley" was called Sister. A name
-    that is nothing but titles is returned whole.
+    ("Mrs. Lowe", "Mr. Lowe"), where that word is the surname - or, for a
+    nun recorded as "Sister Mary", the name that tells her from her sister
+    "Sister Anne". A name that is nothing but titles is returned whole.
 
     Shared by lint and views (W103) so both backends derive the same token."""
     words = full_name.split()
@@ -586,8 +587,6 @@ def bracket_given_name(full_name: str) -> str:
         return full_name
     i = 0
     while i < len(words) and _title_key(words[i]) in _NAME_TITLES:
-        if _title_key(words[i]) in _KIN_TITLES and len(words) - i - 1 < 2:
-            break
         i += 1
     if i == 0:
         return words[0]
@@ -652,6 +651,8 @@ def reconcile_bracket_entries(
 
     A token made only of titles ("Mrs.") is never kept unless it is that
     child's own default: it fits every married woman and names none of them.
+    The exception is a kin word a family used as a name: "Sister" is kept for
+    a child recorded as "Sister Hartley".
     The tokens are shared out as one assignment over the whole list, never
     child by child: the most hand-written tokens kept, and among those the most
     exact defaults. So with "Claude Edward" and "Claude John", "[Claude +
@@ -677,7 +678,8 @@ def reconcile_bracket_entries(
                 row.append(0)
             # A bare title ("Mrs.") fits every married woman and names no one;
             # it is the defect being repaired, never a choice worth keeping.
-            elif words - _NAME_TITLES and words <= known:
+            # A kin word ("Sister") can be what the family called the child.
+            elif words - (_NAME_TITLES - _KIN_TITLES) and words <= known:
                 row.append(1)
             else:
                 row.append(None)
