@@ -141,7 +141,8 @@ from _lib import (
     extract_token_ids,    # all citation-token IDs ([[X-id]] / legacy [X-id]) in text,
     find_person_record_path,   # disk-truth record lookup for --fix-promote applies,
     fmt_id_display,       # uppercase type prefix for output IDs (p-xxx → P-xxx),
-    format_bracket_child,    # `Given` or `Given (adopted)` - shared with lint W103,
+    bracket_given_name,      # default child token, title-aware - shared with lint W103,
+    reconcile_bracket_entries,   # keeps a still-true hand-written child token (W103),
     format_w120_message,  # the W120 wording - shared with lint so the twins agree,
     is_generated_text,    # GENERATED-header ownership test (first non-blank line),
     is_genetic_parent_subtype,
@@ -245,7 +246,6 @@ def _views_result(
 #  Brackets view  (_cmd_brackets and helpers)
 #    _parse_bracket_names         - extract [Name1 + Name2] list from folder name
 #    _folder_numeric_prefix       - '040 Thomas …' → 40
-#    _given_name                  - 'Thomas Edward Hartley' → 'Thomas' (first word)
 #    _couple_folder_dirs          - list digit-prefixed dirs under people/
 #    _persons_in_folder           - person_ids whose profile files live in a folder
 #    _build_ahnentafel_map        - BFS from root_person → {pid: int position}
@@ -1637,12 +1637,6 @@ def _folder_numeric_prefix(folder_name: str) -> int | None:
     return int(m.group(1)) if m else None
 
 
-def _given_name(full_name: str) -> str:
-    """Return the first word of a full name - the form used in bracket lists."""
-    parts = full_name.strip().split()
-    return parts[0] if parts else full_name
-
-
 def _couple_folder_dirs(archive_root: Path) -> list[Path]:
     """Return digit-prefixed directories directly under people/, excluding
     stubs/connections. Delegates to `_lib.couple_folder_dirs` - the promote
@@ -1853,8 +1847,16 @@ def _check_w103_brackets(
                 continue
             info = child_info.setdefault(r['child_pid'], {'name': r['name'], 'natures': set()})
             info['natures'].add(r['nature'])
+        variants: dict[str, list[str]] = {}
+        if child_info:
+            vpl = ','.join('?' * len(child_info))
+            for r in conn.execute(
+                f'SELECT person_id, variant FROM person_variants WHERE person_id IN ({vpl})',
+                list(child_info),
+            ).fetchall():
+                variants.setdefault(r['person_id'], []).append(r['variant'])
         derived_entries = []
-        for info in child_info.values():
+        for cpid, info in child_info.items():
             natures = info['natures']
             label = None
             if not any(is_genetic_parent_subtype(s) for s in natures):
@@ -1862,8 +1864,12 @@ def _check_w103_brackets(
                     label = nonbirth_bracket_label(s)
                     if label:
                         break
-            derived_entries.append(format_bracket_child(_given_name(info['name']), label))
-        derived_names = sorted(derived_entries)
+            derived_entries.append((
+                bracket_given_name(info['name']), label,
+                [info['name']] + variants.get(cpid, [])))
+        # Keeps a still-true hand-written token ("Louise" for Ada Louise) -
+        # the shared rule, so views and lint agree on every folder.
+        derived_names = reconcile_bracket_entries(derived_entries, current_names)
 
         base_name = re.sub(r'\s*\[[^\]]*\]', '', folder_name).rstrip()
         new_base, other_name = spouse_extended_base(

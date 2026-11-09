@@ -522,6 +522,236 @@ def format_bracket_child(given_name: str, label: str | None) -> str:
     return f'{given_name} ({label})' if label else given_name
 
 
+# Words that can lead a recorded name without being anyone's given name. Old
+# records often know a woman only as her husband's wife ("Mrs. Samuel Pike"),
+# a nun by her religious name ("Sister Mary Agnes"), a man by his rank. Taking
+# the first word of such a name as the bracket token gives "Mrs." or "Sister".
+_NAME_TITLES = frozenset({
+    'mr', 'mrs', 'ms', 'miss', 'mme', 'madame', 'mlle', 'dr', 'rev', 'prof',
+    'sister', 'brother', 'father', 'mother', 'capt', 'col', 'gen', 'lt', 'maj',
+    'sgt', 'hon', 'sr',
+})
+# Titles after which the next word is usually the HUSBAND's given name, so it
+# says nothing about her: "Mrs. Samuel Pike" was not called Samuel.
+_WIFE_TITLES = frozenset({'mrs', 'mme', 'madame'})
+
+
+def _title_key(word: str) -> str:
+    return word.lower().strip('.,')
+
+
+# Words that trail a surname without being it ("Mrs. John Smith Jr.").
+_NAME_SUFFIXES = frozenset({'jr', 'sr', 'ii', 'iii', 'iv', 'esq'})
+# Words that lead a surname and belong to it ("van der Berg", "De Witt").
+_SURNAME_PARTICLES = frozenset({
+    'van', 'von', 'der', 'den', 'de', 'del', 'della', 'di', 'da', 'du', 'la',
+    'le', 'st', 'ten', 'ter',
+})
+
+
+def _surname_of(words: list[str]) -> str:
+    """The surname at the end of `words`: trailing suffixes dropped, leading
+    particles kept ("Smith Jr." -> "Smith", "van der Berg" -> "van der Berg")."""
+    end = len(words)
+    while end > 1 and _title_key(words[end - 1]) in _NAME_SUFFIXES:
+        end -= 1
+    start = end - 1
+    while start > 0 and _title_key(words[start - 1]) in _SURNAME_PARTICLES:
+        start -= 1
+    return ' '.join(words[start:end]).rstrip(',')
+
+
+def bracket_given_name(full_name: str) -> str:
+    """The default bracket token for a child: the first given name.
+
+    Plain names take their first word ("Ada Louise Hartley" -> "Ada"). A
+    name led by a title skips the title, because a title is not what anyone
+    was called: "Sister Mary Agnes" -> "Mary", "Dr. John Smith" -> "John".
+    A wife known only by her husband's name keeps the title with the surname
+    ("Mrs. Walter Doe" -> "Mrs. Doe", "Mrs. John Smith Jr." -> "Mrs. Smith",
+    "Mrs. Jan van der Berg" -> "Mrs. van der Berg"), since the given name that
+    follows "Mrs." is his. So does a title followed by a single word
+    ("Mrs. Lowe", "Mr. Lowe"), where that word is the surname - or, for a
+    nun recorded as "Sister Mary", the name that tells her from her sister
+    "Sister Anne". A name that is nothing but titles is returned whole.
+
+    Shared by lint and views (W103) so both backends derive the same token."""
+    words = full_name.split()
+    if not words:
+        return full_name
+    i = 0
+    while i < len(words) and _title_key(words[i]) in _NAME_TITLES:
+        i += 1
+    if i == 0:
+        return words[0]
+    rest = words[i:]
+    if not rest:
+        return full_name.strip()
+    if _title_key(words[0]) in _WIFE_TITLES or len(rest) == 1:
+        return f'{words[0]} {_surname_of(rest)}'
+    return rest[0]
+
+
+def public_name_variants(raw: Any) -> list[str]:
+    """A person's `name_variants:` minus the restricted ones, as plain strings.
+
+    The same rule `fha index` applies when it fills `person_variants` (SPEC §18):
+    an entry is a bare string or a `{value:, restricted:}` mapping, and any
+    `restricted` value other than absent/false withholds it. Lint uses this so
+    its W103 twin reads exactly the names views reads from `person_variants` -
+    and so a private former name never comes back into a folder name."""
+    out: list[str] = []
+    for v in (raw if isinstance(raw, list) else []):
+        if isinstance(v, dict):
+            val = v.get('value')
+            if val and v.get('restricted') in (None, False, '', 'false'):
+                out.append(str(val))
+        elif v:
+            out.append(str(v))
+    return out
+
+
+def _bracket_words(text: str) -> set[str]:
+    """Lowercased words of a name, punctuation dropped, for token matching."""
+    return {w for w in re.split(r'[^\w]+', text.lower()) if w}
+
+
+def _bracket_token_base(token: str) -> str:
+    """A bracket token without its trailing nature label: `Ruth (adopted)` -> `Ruth`."""
+    return re.sub(r'\s*\([^)]*\)\s*$', '', token).strip()
+
+
+def _bracket_token_label(token: str) -> str | None:
+    """The nature label a bracket token carries today: `Ruth (adopted)` -> `adopted`."""
+    m = re.search(r'\(([^)]*)\)\s*$', token)
+    return m.group(1).strip() if m else None
+
+
+def reconcile_bracket_entries(
+    children: list[tuple[str, str | None, list[str]]],
+    current_tokens: list[str],
+) -> list[str]:
+    """The refreshed bracket list, keeping the human's name for each child.
+
+    `children` is one `(default_token, label, names)` per derived child: the
+    `bracket_given_name` default, the nature label (`adopted`, or None), and the
+    names the child is known by - `name:` plus the public `name_variants:`.
+    `current_tokens` is what the folder's bracket list says today.
+
+    Folder names are the human's convenience (SPEC §12.2). The derivation
+    decides WHO is listed - only accepted parent claims do that - but not what
+    each child is called. A token the human wrote is kept when every word of it
+    belongs to that child's names: "Louise" for Ada Louise Hartley (the
+    name she went by), "Henry" for Harold Cole Hartley (whose record keeps
+    Henry C. Hartley as a variant), "Mrs. Doe" for Mrs. Walter Doe.
+    This is the same courtesy the refresh already pays a hand-written
+    `+ spouse` nickname (`spouse_extended_base`): it never overwrites a human
+    choice that is still true. A token that fits no child is dropped, and a
+    child no token fits gets the default.
+
+    A token made only of titles ("Mrs.") is never kept unless it is that
+    child's own default: it fits every married woman and names none of them,
+    and a bare "Sister" or "Father" left by the old first-word rule fits every
+    nun or priest the same way.
+    The tokens are shared out as one assignment over the whole list, never
+    child by child: the most hand-written tokens kept, and among those the most
+    exact defaults. So with "Claude Edward" and "Claude John", "[Claude +
+    Edward]" keeps both tokens (the only way both survive), and two same-named
+    children keep a "[John + John Henry]" that tells them apart. Children and
+    tokens are put in a fixed order first, so lint (registry order) and views
+    (SQL order) always get the same answer.
+    Returns the entries sorted, the form both backends compare."""
+    kids = sorted(children, key=lambda c: (c[0], c[1] or '', sorted(c[2])))
+    pool = sorted(current_tokens)
+    bases = [_bracket_token_base(t) for t in pool]
+    tok_words = [_bracket_words(b) for b in bases]
+    tok_labels = [_bracket_token_label(t) for t in pool]
+    # cost[i][j]: None = token j cannot be child i's. Otherwise an exact
+    # default costs 0 and a looser fit costs `loose`, which outweighs every
+    # label tie-break together, plus 1 when the label the token carries today
+    # is not the child's. So when two children fit the same tokens equally,
+    # "[Edward + John (adopted)]" stays on the adopted child it was written for.
+    loose = len(pool) + 1
+    cost: list[list[int | None]] = []
+    for default, label, names in kids:
+        known: set[str] = set()
+        for n in names:
+            known |= _bracket_words(n)
+        row: list[int | None] = []
+        for base, words, tok_label in zip(bases, tok_words, tok_labels):
+            relabel = 0 if tok_label == label else 1
+            if base == default:
+                row.append(relabel)
+            # A bare title ("Mrs.") fits every married woman and names no one;
+            # it is the defect being repaired, never a choice worth keeping.
+            elif words - _NAME_TITLES and words <= known:
+                row.append(loose + relabel)
+            else:
+                row.append(None)
+        cost.append(row)
+    tok_of = _min_cost_max_matching(cost, len(pool))
+    out = []
+    for i, (default, label, _names) in enumerate(kids):
+        j = tok_of[i]
+        out.append(format_bracket_child(bases[j] if j is not None else default, label))
+    return sorted(out)
+
+
+def _min_cost_max_matching(cost: list[list[int | None]], n_tokens: int) -> list[int | None]:
+    """Assign tokens to children: as many as possible, then the cheapest.
+
+    Successive shortest augmenting paths (Bellman-Ford over the residual
+    graph), which gives a minimum-cost matching at every size. A bracket list
+    holds a handful of names, so the simple form is plenty. Ties go to the
+    lower index, so a fixed input order gives a fixed answer.
+    Returns, per child, the index of its token or None."""
+    n = len(cost)
+    tok_of: list[int | None] = [None] * n
+    kid_of: list[int | None] = [None] * n_tokens
+    inf = float('inf')
+    while True:
+        # Nodes: children 0..n-1, then tokens n..n+n_tokens-1.
+        dist = [inf] * (n + n_tokens)
+        prev: list[int | None] = [None] * (n + n_tokens)
+        for i in range(n):
+            if tok_of[i] is None:
+                dist[i] = 0
+        for _ in range(n + n_tokens + 1):
+            changed = False
+            for i in range(n):
+                if dist[i] == inf:
+                    continue
+                for j in range(n_tokens):
+                    c = cost[i][j]
+                    if c is None or tok_of[i] == j:
+                        continue
+                    if dist[i] + c < dist[n + j]:
+                        dist[n + j] = dist[i] + c
+                        prev[n + j] = i
+                        changed = True
+            for j in range(n_tokens):
+                k = kid_of[j]
+                if k is None or dist[n + j] == inf:
+                    continue
+                back = dist[n + j] - cost[k][j]
+                if back < dist[k]:
+                    dist[k] = back
+                    prev[k] = n + j
+                    changed = True
+            if not changed:
+                break
+        free = [j for j in range(n_tokens) if kid_of[j] is None and dist[n + j] < inf]
+        if not free:
+            return tok_of
+        j: int | None = min(free, key=lambda t: (dist[n + t], t))
+        while j is not None:
+            i = prev[n + j]
+            nxt = tok_of[i]
+            tok_of[i] = j
+            kid_of[j] = i
+            j = nxt if prev[i] is not None else None
+
+
 def spouse_parties(persons_with_roles: Iterable[tuple[str, Any]]) -> list[str]:
     """
     Who a marriage/divorce claim says were married TO EACH OTHER.
