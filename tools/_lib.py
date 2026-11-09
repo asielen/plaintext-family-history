@@ -540,12 +540,6 @@ def _title_key(word: str) -> str:
     return word.lower().strip('.,')
 
 
-# Titles that are also plain words a family used AS a name: a child the census
-# knows only as "Sister Hartley" may well have been called Sister. A human's
-# "Sister" token is kept for such a child (reconcile_bracket_entries), though a
-# bare "Mrs." never is. The default stays whole ("Sister Hartley"), because the
-# same shape is also a nun's name with no surname ("Sister Mary").
-_KIN_TITLES = frozenset({'sister', 'brother', 'father', 'mother'})
 # Words that trail a surname without being it ("Mrs. John Smith Jr.").
 _NAME_SUFFIXES = frozenset({'jr', 'sr', 'ii', 'iii', 'iv', 'esq'})
 # Words that lead a surname and belong to it ("van der Berg", "De Witt").
@@ -650,9 +644,9 @@ def reconcile_bracket_entries(
     child no token fits gets the default.
 
     A token made only of titles ("Mrs.") is never kept unless it is that
-    child's own default: it fits every married woman and names none of them.
-    The exception is a kin word a family used as a name: "Sister" is kept for
-    a child recorded as "Sister Hartley".
+    child's own default: it fits every married woman and names none of them,
+    and a bare "Sister" or "Father" left by the old first-word rule fits every
+    nun or priest the same way.
     The tokens are shared out as one assignment over the whole list, never
     child by child: the most hand-written tokens kept, and among those the most
     exact defaults. So with "Claude Edward" and "Claude John", "[Claude +
@@ -678,8 +672,7 @@ def reconcile_bracket_entries(
                 row.append(0)
             # A bare title ("Mrs.") fits every married woman and names no one;
             # it is the defect being repaired, never a choice worth keeping.
-            # A kin word ("Sister") can be what the family called the child.
-            elif words - (_NAME_TITLES - _KIN_TITLES) and words <= known:
+            elif words - _NAME_TITLES and words <= known:
                 row.append(1)
             else:
                 row.append(None)

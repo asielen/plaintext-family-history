@@ -188,13 +188,17 @@ class ReconcileBracketEntriesTests(unittest.TestCase):
             self.assertEqual(reconcile_bracket_entries(kids, ['Henry', 'John']),
                              ['Henry', 'John'])
 
-    def test_a_kin_word_name_is_kept_as_written(self) -> None:
-        # A census child known only as "Sister Hartley": the human's
-        # [Ethel + Sister] is still true and is kept (a bare "Mrs." is not).
-        kids = [('Sister Hartley', None, ['Sister Hartley']),
-                ('Ethel', None, ['Ethel Hartley'])]
-        self.assertEqual(reconcile_bracket_entries(kids, ['Ethel', 'Sister']),
-                         ['Ethel', 'Sister'])
+    def test_a_bare_sister_left_by_the_old_rule_is_refreshed(self) -> None:
+        # The old first-word rule wrote [Sister + Sister] for two nuns - the
+        # same names-nobody shape as [Mrs. + Mrs.] - so it is never kept.
+        kids = [('Mary', None, ['Sister Mary Agnes Hartley']),
+                ('Anne', None, ['Sister Anne Hartley'])]
+        self.assertEqual(reconcile_bracket_entries(kids, ['Sister', 'Sister']),
+                         ['Anne', 'Mary'])
+        kids = [('Sister Mary', None, ['Sister Mary']),
+                ('Sister Anne', None, ['Sister Anne'])]
+        self.assertEqual(reconcile_bracket_entries(kids, ['Sister', 'Sister']),
+                         ['Sister Anne', 'Sister Mary'])
 
 
 class PublicNameVariantsTests(unittest.TestCase):
@@ -377,18 +381,18 @@ class SameNamedChildrenTests(unittest.TestCase):
                 self.assertEqual(_views_w103(root), [])
                 self.assertEqual(_lint_w103(root), [])
 
-    def test_two_nuns_are_told_apart_and_a_kin_nickname_is_kept(self) -> None:
+    def test_two_nuns_are_told_apart(self) -> None:
         root = _build_kids(BASE, [('P-4111111111', 'Sister Mary'),
                                   ('P-4999999999', 'Sister Anne')])
         issues = _views_w103(root)
         self.assertEqual(len(issues), 1)
         self.assertTrue(issues[0]['new_name'].endswith('[Sister Anne + Sister Mary]'))
         self.assertIn('-> [Sister Anne + Sister Mary]', _lint_w103(root)[0].message)
-        root = _build_kids(f'{BASE} [Ethel + Sister]',
-                           [('P-4111111111', 'Ethel Hartley'),
-                            ('P-4999999999', 'Sister Hartley')])
-        self.assertEqual(_views_w103(root), [])
-        self.assertEqual(_lint_w103(root), [])
+        root = _build_kids(f'{BASE} [Sister + Sister]',
+                           [('P-4111111111', 'Sister Mary Agnes Hartley'),
+                            ('P-4999999999', 'Sister Anne Hartley')])
+        self.assertTrue(_views_w103(root)[0]['new_name'].endswith('[Anne + Mary]'))
+        self.assertIn('-> [Anne + Mary]', _lint_w103(root)[0].message)
 
 
 if __name__ == '__main__':
