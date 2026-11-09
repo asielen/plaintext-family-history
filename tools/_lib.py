@@ -621,6 +621,12 @@ def _bracket_token_base(token: str) -> str:
     return re.sub(r'\s*\([^)]*\)\s*$', '', token).strip()
 
 
+def _bracket_token_label(token: str) -> str | None:
+    """The nature label a bracket token carries today: `Ruth (adopted)` -> `adopted`."""
+    m = re.search(r'\(([^)]*)\)\s*$', token)
+    return m.group(1).strip() if m else None
+
+
 def reconcile_bracket_entries(
     children: list[tuple[str, str | None, list[str]]],
     current_tokens: list[str],
@@ -659,21 +665,27 @@ def reconcile_bracket_entries(
     pool = sorted(current_tokens)
     bases = [_bracket_token_base(t) for t in pool]
     tok_words = [_bracket_words(b) for b in bases]
-    # cost[i][j]: None = token j cannot be child i's; 0 = it is i's exact
-    # default; 1 = every word of it is one of i's names.
+    tok_labels = [_bracket_token_label(t) for t in pool]
+    # cost[i][j]: None = token j cannot be child i's. Otherwise an exact
+    # default costs 0 and a looser fit costs `loose`, which outweighs every
+    # label tie-break together, plus 1 when the label the token carries today
+    # is not the child's. So when two children fit the same tokens equally,
+    # "[Edward + John (adopted)]" stays on the adopted child it was written for.
+    loose = len(pool) + 1
     cost: list[list[int | None]] = []
-    for default, _label, names in kids:
+    for default, label, names in kids:
         known: set[str] = set()
         for n in names:
             known |= _bracket_words(n)
         row: list[int | None] = []
-        for base, words in zip(bases, tok_words):
+        for base, words, tok_label in zip(bases, tok_words, tok_labels):
+            relabel = 0 if tok_label == label else 1
             if base == default:
-                row.append(0)
+                row.append(relabel)
             # A bare title ("Mrs.") fits every married woman and names no one;
             # it is the defect being repaired, never a choice worth keeping.
             elif words - _NAME_TITLES and words <= known:
-                row.append(1)
+                row.append(loose + relabel)
             else:
                 row.append(None)
         cost.append(row)

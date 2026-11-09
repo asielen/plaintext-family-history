@@ -188,6 +188,23 @@ class ReconcileBracketEntriesTests(unittest.TestCase):
             self.assertEqual(reconcile_bracket_entries(kids, ['Henry', 'John']),
                              ['Henry', 'John'])
 
+    def test_a_label_stays_with_the_child_it_was_written_for(self) -> None:
+        # Both children fit both tokens; the folder's "(adopted)" already says
+        # which is which, so a correct list is not reshuffled.
+        bio = ('John', None, ['John Edward Doe'])
+        adopted = ('John', 'adopted', ['John Edward Henry Doe'])
+        for kids in ([bio, adopted], [adopted, bio]):
+            self.assertEqual(
+                reconcile_bracket_entries(kids, ['Edward', 'John (adopted)']),
+                ['Edward', 'John (adopted)'])
+            self.assertEqual(
+                reconcile_bracket_entries(kids, ['Edward (adopted)', 'John']),
+                ['Edward (adopted)', 'John'])
+        # A label the claims no longer support is still corrected.
+        self.assertEqual(
+            reconcile_bracket_entries([('Ruth', None, ['Ruth Doe'])], ['Ruth (adopted)']),
+            ['Ruth'])
+
     def test_a_bare_sister_left_by_the_old_rule_is_refreshed(self) -> None:
         # The old first-word rule wrote [Sister + Sister] for two nuns - the
         # same names-nobody shape as [Mrs. + Mrs.] - so it is never kept.
