@@ -85,6 +85,22 @@ class BracketGivenNameTests(unittest.TestCase):
     def test_empty_name_comes_back_unchanged(self) -> None:
         self.assertEqual(bracket_given_name(''), '')
 
+    def test_a_wifes_surname_skips_a_suffix_and_keeps_its_particles(self) -> None:
+        # "Mrs. Jr." is nobody: the last word of her name is not always the
+        # surname.
+        self.assertEqual(bracket_given_name('Mrs. John Smith Jr.'), 'Mrs. Smith')
+        self.assertEqual(bracket_given_name('Mrs. John Smith, Jr.'), 'Mrs. Smith')
+        self.assertEqual(bracket_given_name('Mrs. John Doe III'), 'Mrs. Doe')
+        self.assertEqual(bracket_given_name('Mrs. Jan van der Berg'), 'Mrs. van der Berg')
+        self.assertEqual(bracket_given_name('Mrs. John De Witt'), 'Mrs. De Witt')
+
+    def test_sister_or_brother_with_only_a_surname_is_what_they_were_called(self) -> None:
+        # A census child known only as "Sister Hartley" was called Sister;
+        # "Sister Mary Agnes" is a nun's title before her name.
+        self.assertEqual(bracket_given_name('Sister Hartley'), 'Sister')
+        self.assertEqual(bracket_given_name('Brother Hartley'), 'Brother')
+        self.assertEqual(bracket_given_name('Sister Mary Agnes'), 'Mary')
+
 
 class ReconcileBracketEntriesTests(unittest.TestCase):
     """Keeping the human's token for each child, and only when it still fits."""
@@ -148,6 +164,33 @@ class ReconcileBracketEntriesTests(unittest.TestCase):
     def test_punctuation_and_case_do_not_block_a_match(self) -> None:
         kids = [('Mrs. Doe', None, ['Mrs. Walter Doe'])]
         self.assertEqual(reconcile_bracket_entries(kids, ['mrs doe']), ['mrs doe'])
+
+    def test_same_first_names_share_tokens_so_both_survive_in_any_order(self) -> None:
+        # Claude Edward and Claude John both default to "Claude"; only Claude
+        # Edward can be "Edward". Handing "Claude" to whichever child came
+        # first gave [Claude + Claude] for one input order.
+        ce = ('Claude', None, ['Claude Edward Doe'])
+        cj = ('Claude', None, ['Claude John Doe'])
+        for kids in ([ce, cj], [cj, ce]):
+            for toks in (['Claude', 'Edward'], ['Edward', 'Claude']):
+                self.assertEqual(reconcile_bracket_entries(kids, toks),
+                                 ['Claude', 'Edward'], (kids, toks))
+
+    def test_a_reused_name_keeps_the_token_that_tells_the_two_apart(self) -> None:
+        # A baby who died and a later brother given his name: the human wrote
+        # [John + John Henry] so the folder tells them apart.
+        plain = ('John', None, ['John Hartley'])
+        henry = ('John', None, ['John Henry Hartley'])
+        for kids in ([plain, henry], [henry, plain]):
+            self.assertEqual(reconcile_bracket_entries(kids, ['John', 'John Henry']),
+                             ['John', 'John Henry'])
+            self.assertEqual(reconcile_bracket_entries(kids, ['Henry', 'John']),
+                             ['Henry', 'John'])
+
+    def test_a_kin_word_name_is_kept_as_written(self) -> None:
+        kids = [('Sister', None, ['Sister Hartley']), ('Ethel', None, ['Ethel Hartley'])]
+        self.assertEqual(reconcile_bracket_entries(kids, ['Ethel', 'Sister']),
+                         ['Ethel', 'Sister'])
 
 
 class PublicNameVariantsTests(unittest.TestCase):
@@ -288,6 +331,47 @@ class BothBackendsKeepTheHumanNameTests(unittest.TestCase):
             views.run_brackets(root, fix=True, yes=True)
         self.assertTrue((root / 'people' /
                          '040 Thomas Hartley + Margaret Cole [Ada + Ethel + Henry + Mrs. Doe]').is_dir())
+
+
+def _build_kids(folder: str, kids: list[tuple[str, str]]) -> Path:
+    """A couple folder whose children are exactly `kids` (pid, name)."""
+    root = Path(tempfile.mkdtemp())
+    (root / 'people' / 'stubs').mkdir(parents=True)
+    (root / 'sources' / 'notes').mkdir(parents=True)
+    (root / 'fha.yaml').write_text('roots:\n  documents: documents\n', encoding='utf-8')
+    claims = ''.join(_rel_claim(f'C-4{n:09d}', pid, [PA, MA])
+                     for n, (pid, _name) in enumerate(kids, 1))
+    files = {
+        f'{folder}/hartley__thomas_{PA}.md': _ptext(PA, 'Thomas Hartley', 'M', 'curated'),
+        f'{folder}/cole__margaret_{MA}.md': _ptext(MA, 'Margaret Cole', 'F', 'curated'),
+        f'sources/notes/{SID.lower()}.md': (
+            f'---\nid: {SID}\ntitle: Rel\nsource_type: other\n---\n\n'
+            f'## Claims\n```yaml\n{claims}```\n'),
+    }
+    for pid, name in kids:
+        files[f'people/stubs/hartley__{pid.lower()}.md'] = _ptext(pid, name)
+    for rel, text in files.items():
+        path = root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding='utf-8')
+    return root
+
+
+class SameNamedChildrenTests(unittest.TestCase):
+    """Two children with one first name: lint and views agree, whatever the ids."""
+
+    def test_a_reused_name_is_not_stale_whichever_child_has_the_lower_id(self) -> None:
+        # Before, the result hung on which child's id sorted first, and lint
+        # (registry order) and views (SQL order) could disagree: lint silent
+        # while `views brackets --fix` renamed the folder to [John + John].
+        for plain_id, henry_id in (('P-4111111111', 'P-4999999999'),
+                                   ('P-4999999999', 'P-4111111111')):
+            with self.subTest(plain_id=plain_id):
+                root = _build_kids(f'{BASE} [John + John Henry]',
+                                   [(plain_id, 'John Hartley'),
+                                    (henry_id, 'John Henry Hartley')])
+                self.assertEqual(_views_w103(root), [])
+                self.assertEqual(_lint_w103(root), [])
 
 
 if __name__ == '__main__':
