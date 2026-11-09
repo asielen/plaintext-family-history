@@ -147,6 +147,7 @@ from _lib import (
     is_generated_text,    # GENERATED-header ownership test (first non-blank line),
     is_genetic_parent_subtype,
     is_placeholder_name,  # 'unknown'/'None'/'' - never written into a folder name,
+    folder_name_text,     # a name made safe for a folder name on every OS,
     load_fha_yaml,
     load_view_css,        # cached design/view.css loader -> (css, warning_or_None),
     nonbirth_bracket_label,  # 'adopted'/'step'/… mark for a non-birth child,
@@ -2173,9 +2174,9 @@ def _new_couple_folder(archive_root: Path, prefix: int, members: list[dict]) -> 
     """
     namer = min(members, key=lambda c: c['pos'])
     partner = next((c for c in members if c['pos'] == namer['pos'] + 1), None)
-    named = [c['name'] for c in (namer, partner)
+    named = [folder_name_text(c['name']) for c in (namer, partner)
              if c is not None and not is_placeholder_name(c['name'])]
-    label = ' + '.join(named) if named else namer['name']
+    label = ' + '.join(named) if named else folder_name_text(namer['name'])
     return archive_root / 'people' / f'{str(prefix).zfill(3)} {label}'
 
 
