@@ -86,9 +86,11 @@ from _lib import (
     edtf_bounds,
     files_carry_searchable_text,
     finding_to_message,
-    format_bracket_child,
+    bracket_given_name,
     is_genetic_parent_subtype,
     nonbirth_bracket_label,
+    public_name_variants,
+    reconcile_bracket_entries,
     parentage_parties,
     photos_ignore_matcher,
     photos_ignore_patterns,
@@ -1689,8 +1691,12 @@ def _check_bracket_lists(registry: Registry, findings: list[Finding]) -> None:
                     label = nonbirth_bracket_label(s)
                     if label:
                         break
-            derived_entries.append(format_bracket_child(name.split()[0], label))
-        derived_names = sorted(derived_entries)
+            names = [name] + public_name_variants(
+                registry.person_meta.get(cpid, {}).get('name_variants'))
+            derived_entries.append((bracket_given_name(name), label, names))
+        # Keeps a still-true hand-written token ("Louise" for Ada Louise) -
+        # the shared rule, so lint and views agree on every folder.
+        derived_names = reconcile_bracket_entries(derived_entries, current_names)
 
         # The same pass also proposes the missing `+ second spouse` half of the
         # base name (add-only, never rewrites, never guesses) - the shared

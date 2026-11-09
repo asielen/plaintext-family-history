@@ -522,6 +522,140 @@ def format_bracket_child(given_name: str, label: str | None) -> str:
     return f'{given_name} ({label})' if label else given_name
 
 
+# Words that can lead a recorded name without being anyone's given name. Old
+# records often know a woman only as her husband's wife ("Mrs. Samuel Pike"),
+# a nun by her religious name ("Sister Mary Agnes"), a man by his rank. Taking
+# the first word of such a name as the bracket token gives "Mrs." or "Sister".
+_NAME_TITLES = frozenset({
+    'mr', 'mrs', 'ms', 'miss', 'mme', 'madame', 'mlle', 'dr', 'rev', 'prof',
+    'sister', 'brother', 'father', 'mother', 'capt', 'col', 'gen', 'lt', 'maj',
+    'sgt', 'hon', 'sr',
+})
+# Titles after which the next word is usually the HUSBAND's given name, so it
+# says nothing about her: "Mrs. Samuel Pike" was not called Samuel.
+_WIFE_TITLES = frozenset({'mrs', 'mme', 'madame'})
+
+
+def _title_key(word: str) -> str:
+    return word.lower().strip('.,')
+
+
+def bracket_given_name(full_name: str) -> str:
+    """The default bracket token for a child: the first given name.
+
+    Plain names take their first word ("Ada Louise Hartley" -> "Ada"). A
+    name led by a title skips the title, because a title is not what anyone
+    was called: "Sister Mary Agnes" -> "Mary", "Dr. John Smith" -> "John".
+    A wife known only by her husband's name keeps the title with the surname
+    ("Mrs. Walter Doe" -> "Mrs. Doe"), since the given name that
+    follows "Mrs." is his. So does a title followed by a single word
+    ("Mrs. Lowe", "Mr. Lowe"), where that word is the surname. A name that
+    is nothing but titles is returned whole.
+
+    Shared by lint and views (W103) so both backends derive the same token."""
+    words = full_name.split()
+    if not words:
+        return full_name
+    i = 0
+    while i < len(words) and _title_key(words[i]) in _NAME_TITLES:
+        i += 1
+    if i == 0:
+        return words[0]
+    rest = words[i:]
+    if not rest:
+        return full_name.strip()
+    if _title_key(words[0]) in _WIFE_TITLES or len(rest) == 1:
+        return f'{words[0]} {rest[-1]}'
+    return rest[0]
+
+
+def public_name_variants(raw: Any) -> list[str]:
+    """A person's `name_variants:` minus the restricted ones, as plain strings.
+
+    The same rule `fha index` applies when it fills `person_variants` (SPEC §18):
+    an entry is a bare string or a `{value:, restricted:}` mapping, and any
+    `restricted` value other than absent/false withholds it. Lint uses this so
+    its W103 twin reads exactly the names views reads from `person_variants` -
+    and so a private former name never comes back into a folder name."""
+    out: list[str] = []
+    for v in (raw if isinstance(raw, list) else []):
+        if isinstance(v, dict):
+            val = v.get('value')
+            if val and v.get('restricted') in (None, False, '', 'false'):
+                out.append(str(val))
+        elif v:
+            out.append(str(v))
+    return out
+
+
+def _bracket_words(text: str) -> set[str]:
+    """Lowercased words of a name, punctuation dropped, for token matching."""
+    return {w for w in re.split(r'[^\w]+', text.lower()) if w}
+
+
+def _bracket_token_base(token: str) -> str:
+    """A bracket token without its trailing nature label: `Ruth (adopted)` -> `Ruth`."""
+    return re.sub(r'\s*\([^)]*\)\s*$', '', token).strip()
+
+
+def reconcile_bracket_entries(
+    children: list[tuple[str, str | None, list[str]]],
+    current_tokens: list[str],
+) -> list[str]:
+    """The refreshed bracket list, keeping the human's name for each child.
+
+    `children` is one `(default_token, label, names)` per derived child: the
+    `bracket_given_name` default, the nature label (`adopted`, or None), and the
+    names the child is known by - `name:` plus the public `name_variants:`.
+    `current_tokens` is what the folder's bracket list says today.
+
+    Folder names are the human's convenience (SPEC §12.2). The derivation
+    decides WHO is listed - only accepted parent claims do that - but not what
+    each child is called. A token the human wrote is kept when every word of it
+    belongs to that child's names: "Louise" for Ada Louise Hartley (the
+    name she went by), "Henry" for Harold Cole Hartley (whose record keeps
+    Henry C. Hartley as a variant), "Mrs. Doe" for Mrs. Walter Doe.
+    This is the same courtesy the refresh already pays a hand-written
+    `+ spouse` nickname (`spouse_extended_base`): it never overwrites a human
+    choice that is still true. A token that fits no child is dropped, and a
+    child no token fits gets the default.
+
+    A token made only of titles ("Mrs.") is never kept: it fits every married
+    woman and names none of them. Matching runs in two passes so a token equal
+    to a child's own default is claimed by that child before any looser subset
+    match can take it - two Claudes must not cross. Children are
+    taken in default-token order so the result never depends on dict order.
+    Returns the entries sorted, the form both backends compare."""
+    pool = list(current_tokens)
+    ordered = sorted(children, key=lambda c: (c[0], c[1] or ''))
+    chosen: list[str | None] = [None] * len(ordered)
+
+    for i, (default, label, _names) in enumerate(ordered):
+        want = format_bracket_child(default, label)
+        for j, tok in enumerate(pool):
+            if tok == want or _bracket_token_base(tok) == default:
+                chosen[i] = format_bracket_child(_bracket_token_base(pool.pop(j)), label)
+                break
+
+    for i, (default, label, names) in enumerate(ordered):
+        if chosen[i] is not None:
+            continue
+        known = set()
+        for n in names:
+            known |= _bracket_words(n)
+        for j, tok in enumerate(pool):
+            words = _bracket_words(_bracket_token_base(tok))
+            # A bare title ("Mrs.") fits every married woman and names no one;
+            # it is the defect being repaired, never a choice worth keeping.
+            if words - _NAME_TITLES and words <= known:
+                chosen[i] = format_bracket_child(_bracket_token_base(pool.pop(j)), label)
+                break
+        if chosen[i] is None:
+            chosen[i] = format_bracket_child(default, label)
+
+    return sorted(c for c in chosen if c is not None)
+
+
 def spouse_parties(persons_with_roles: Iterable[tuple[str, Any]]) -> list[str]:
     """
     Who a marriage/divorce claim says were married TO EACH OTHER.
