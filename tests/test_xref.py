@@ -1476,6 +1476,62 @@ class RecurringTypeCorroborationTests(unittest.TestCase):
         )
         self.assertEqual(pairs, [])
 
+    # -- #247 round-3 review: one town spelled two ways, end to end --------
+
+    def test_census_with_state_abbreviated_corroborates(self) -> None:
+        pairs = self._pairs(
+            dict(ctype='census', value='Thomas, farmer', date_edtf='1880',
+                 place_text='Riverton, Ohio'),
+            dict(ctype='census', value='Thomas, head', date_edtf='1880-06-01',
+                 place_text='Riverton, Hamilton, OH'),
+        )
+        self.assertEqual([p['kind'] for p in pairs], ['corroborates'])
+
+    def test_residence_with_and_without_accents_corroborates(self) -> None:
+        pairs = self._pairs(
+            dict(ctype='residence', value='born and raised there', date_edtf='1880',
+                 place_text='Suwałki'),
+            dict(ctype='residence', value='last residence', date_edtf='1880~',
+                 place_text='Suwalki, Russia'),
+        )
+        self.assertEqual([p['kind'] for p in pairs], ['corroborates'])
+
+    def test_census_indexed_with_a_misspelled_town_corroborates(self) -> None:
+        pairs = self._pairs(
+            dict(ctype='census', value='Thomas, head', date_edtf='1900',
+                 place_text='Riverton, Ohio'),
+            dict(ctype='census', value='Thos., head', date_edtf='1900',
+                 place_text='Rivertown, Ohio'),
+        )
+        self.assertEqual([p['kind'] for p in pairs], ['corroborates'])
+
+    def test_st_and_saint_spellings_corroborate(self) -> None:
+        pairs = self._pairs(
+            dict(ctype='residence', value='lived in St. Louis', date_edtf='1910',
+                 place_text='St. Louis, Missouri'),
+            dict(ctype='residence', value='lived in Saint Louis', date_edtf='1910',
+                 place_text='Saint Louis, Missouri'),
+        )
+        self.assertEqual([p['kind'] for p in pairs], ['corroborates'])
+
+    def test_never_lived_in_abbreviated_town_still_contradicts(self) -> None:
+        pairs = self._pairs(
+            dict(ctype='residence', value='never lived in Riverton', negated=1,
+                 place_text='Riverton, OH'),
+            dict(ctype='residence', value='lived in Riverton', date_edtf='1910',
+                 place_text='Riverton, Ohio'),
+        )
+        self.assertEqual([p['kind'] for p in pairs], ['contradicts'])
+
+    def test_riverton_and_riverside_same_year_not_paired(self) -> None:
+        pairs = self._pairs(
+            dict(ctype='residence', value='lived in Riverton', date_edtf='1910',
+                 place_text='Riverton, Ohio'),
+            dict(ctype='residence', value='lived in Riverside', date_edtf='1910',
+                 place_text='Riverside, Ohio'),
+        )
+        self.assertEqual(pairs, [])
+
     def test_state_only_place_gives_no_signal_and_dates_decide(self) -> None:
         pairs = self._pairs(
             dict(ctype='residence', value='lived in Riverton', date_edtf='1880',
@@ -1504,9 +1560,12 @@ class ComparePlaceTextsTests(unittest.TestCase):
         ('Riverton', 'Oakdale', 'differ'),
         ('Riverton, Ohio', 'Oakdale, Ohio', 'differ'),
         ('Riverton, Hamilton, Ohio', 'Oakdale, Hamilton, Ohio', 'differ'),
-        ('Springfield, Ohio', 'Springfield, Illinois', 'differ'),
+        # Declined in the #247 round-3 review: same-name towns in two
+        # states, and York / New York, fall through to the date test as on
+        # master rather than being vetoed.
+        ('Springfield, Ohio', 'Springfield, Illinois', 'no-signal'),
         ('Ohio', 'Oakdale, Ohio', 'no-signal'),
-        ('York', 'New York', 'differ'),
+        ('York', 'New York', 'no-signal'),
         ('Hamilton, Ohio', 'Riverton, Hamilton Co., Ohio', 'no-signal'),
     ]
 
@@ -1515,6 +1574,60 @@ class ComparePlaceTextsTests(unittest.TestCase):
             with self.subTest(a=a, b=b):
                 self.assertEqual(xref._compare_place_texts(a, b), want)
                 self.assertEqual(xref._compare_place_texts(b, a), want)
+
+    # #247 round-3 review: one town written another way must never be
+    # vetoed as "two places" - accents, state abbreviations, St./Mt./Ft.,
+    # index misspellings, a farm described as near the town, a county in
+    # brackets. All must come back as anything but 'differ'.
+    SAME_TOWN_WRITTEN_ANOTHER_WAY = [
+        ('Suwałki', 'Suwalki'),
+        ('Suwałki', 'Suwalki, Russia'),
+        ('Łódź, Poland', 'Lodz, Poland'),
+        ('München, Bayern', 'Munchen, Bayern'),
+        ('Muenchen', 'München'),
+        ('Riverton, Ohio', 'Riverton, OH'),
+        ('Riverton, Hamilton, Ohio, USA', 'Riverton, Hamilton Co., OH'),
+        ('Riverton, Ohio', 'Riverton, Hamilton, OH'),
+        ('Topeka, Kansas', 'Topeka, Kan.'),
+        ('Topeka, Kansas', 'Topeka, KS'),
+        ('St. Louis, Missouri', 'Saint Louis, Missouri'),
+        ('Mt. Vernon, Ohio', 'Mount Vernon, Ohio'),
+        ('Ft. Wayne, Indiana', 'Fort Wayne, Indiana'),
+        ('Riverton', 'Riverton Township'),
+        ('Riverton Twp., Hamilton Co., Ohio', 'Riverton, Ohio'),
+        ('Riverton, Ohio', 'Rivertown, Ohio'),
+        ('Riverton, Hamilton, Ohio', 'Riverten, Hamilton, Ohio'),
+        ('farm outside Riverton', 'Riverton, Hamilton, Ohio'),
+        ('the Hartley farm near Riverton, Ohio', 'Riverton, Ohio'),
+        ('14 Elm St, Riverton, Ohio', 'Riverton, Ohio'),
+        ('14 Elm St., Riverton', '14 Elm Street, Riverton'),
+        ('Warsaw, Poland', 'Warszawa, Poland'),
+        ('Riverton, Ohio', 'Riverton (Hamilton County), Ohio'),
+        ('Riverton; Ohio', 'Riverton, Ohio'),
+    ]
+
+    # Different towns whose names merely look alike stay apart.
+    DIFFERENT_TOWNS = [
+        ('Riverton', 'Oakdale'),
+        ('Riverton, Ohio', 'Oakdale, Ohio'),
+        ('Riverton, Hamilton, Ohio', 'Oakdale, Hamilton, Ohio'),
+        ('Riverton', 'Riverside'),
+        ('Riverton, Ohio', 'Riverside, Ohio'),
+        ('Fairview', 'Fairfield'),
+        ('Newton', 'Newport'),
+    ]
+
+    def test_same_town_written_another_way_is_never_differ(self) -> None:
+        for a, b in self.SAME_TOWN_WRITTEN_ANOTHER_WAY:
+            with self.subTest(a=a, b=b):
+                self.assertNotEqual(xref._compare_place_texts(a, b), 'differ')
+                self.assertNotEqual(xref._compare_place_texts(b, a), 'differ')
+
+    def test_different_towns_that_look_alike_still_differ(self) -> None:
+        for a, b in self.DIFFERENT_TOWNS:
+            with self.subTest(a=a, b=b):
+                self.assertEqual(xref._compare_place_texts(a, b), 'differ')
+                self.assertEqual(xref._compare_place_texts(b, a), 'differ')
 
     def test_empty_side_gives_no_signal(self) -> None:
         self.assertEqual(xref._compare_place_texts('', 'Riverton'), 'no-signal')

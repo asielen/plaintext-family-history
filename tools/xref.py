@@ -68,11 +68,15 @@ agrees (`_recurring_agreement`):
     arrives as "Riverton, Ohio" and "Riverton, Hamilton Co., Ohio" - an exact
     comparison hid real pairs (two copies of one 1880 census entry), while no
     comparison at all offered "Riverton" 1880 against "Oakdale" 1880. A
-    verdict of 'differ' (the towns disagree: "Riverton" vs "Oakdale",
-    "Springfield, Ohio" vs "Springfield, Illinois") vetoes. 'same' (a wording
-    variant) or 'no-signal' ("Ohio" vs "Riverton, Ohio": one side only names
-    the larger area) never admits a pair by itself - it falls through to the
-    date test.
+    verdict of 'differ' (the towns plainly disagree: "Riverton" vs "Oakdale",
+    "Riverton" vs "Riverside") vetoes. 'same' (a wording variant) or
+    'no-signal' ("Ohio" vs "Riverton, Ohio": one side only names the larger
+    area; "Suwałki" vs "Suwalki", "Riverton, OH", "St. Louis" vs "Saint
+    Louis", "Rivertown": possibly one town spelled two ways) never admits a
+    pair by itself - it falls through to the date test. The veto is kept
+    gentle on purpose: wrongly calling one town two places hides a real
+    match, while two same-name towns in different states ("Springfield,
+    Ohio" / "Springfield, Illinois") only fall through to the date test.
   - both claims dated and the dates agree: agrees. Dates agree when both
     claims carry the IDENTICAL finite range (`1861/1865` twice - a war
     service, a long career - however wide), or when each date is no wider
@@ -213,9 +217,11 @@ CODE MAP
 from __future__ import annotations
 
 import argparse
+import difflib
 import re
 import sqlite3
 import sys
+import unicodedata
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -373,6 +379,46 @@ def _place_part_tokens(part: str) -> set[str]:
     return set(place_text_cluster_key(part).split()) - _PLACE_FILLER_WORDS
 
 
+# Letters NFKD does not split into base + accent.
+_PLACE_FOLD = str.maketrans({
+    'ł': 'l', 'Ł': 'L', 'ø': 'o', 'Ø': 'O', 'æ': 'ae', 'Æ': 'AE', 'ß': 'ss',
+    'đ': 'd', 'Đ': 'D',
+})
+_TOWN_LEADING_ABBREVIATIONS = {'st': 'saint', 'mt': 'mount', 'ft': 'fort'}
+# difflib ratio at or above which two town names read as one name spelled
+# two ways ("Riverton" / "Rivertown" / "Riverten"), while "Riverton" /
+# "Riverside", "Fairview" / "Fairfield" and "Newton" / "Newport" stay apart.
+_TOWN_VARIANT_RATIO = 0.8
+
+
+def _town_key(text: str | None) -> str:
+    """The town part of an as-written place text, folded for spelling
+    variants: first comma part, cut before any "(", accents folded
+    (Suwałki -> suwalki, München -> munchen, and "ue" -> "u" for Muenchen),
+    a leading St/Mt/Ft spelled out, filler words dropped."""
+    first = (text or '').split(',')[0].split('(')[0]
+    folded = unicodedata.normalize('NFKD', first.translate(_PLACE_FOLD))
+    folded = ''.join(c for c in folded if not unicodedata.combining(c)).lower()
+    folded = folded.replace('ue', 'u')
+    words = [w for w in re.sub(r'[^\w\s]', ' ', folded).split()
+             if w not in _PLACE_FILLER_WORDS]
+    if words:
+        words[0] = _TOWN_LEADING_ABBREVIATIONS.get(words[0], words[0])
+    return ' '.join(words)
+
+
+def _towns_are_variants(text_a: str | None, text_b: str | None) -> bool:
+    """Whether two place texts' towns could be one town written two ways:
+    equal once folded, one a whole word of the other ("farm outside
+    Riverton" / "Riverton"), or close spellings by difflib ratio."""
+    town_a, town_b = sorted((_town_key(text_a), _town_key(text_b)))
+    if not town_a or not town_b:
+        return False
+    if town_a == town_b or town_a in town_b.split() or town_b in town_a.split():
+        return True
+    return difflib.SequenceMatcher(None, town_a, town_b).ratio() >= _TOWN_VARIANT_RATIO
+
+
 def _compare_place_texts(text_a: str | None, text_b: str | None) -> str:
     """
     Compare two as-written place texts: 'same', 'differ', or 'no-signal'.
@@ -390,9 +436,18 @@ def _compare_place_texts(text_a: str | None, text_b: str | None) -> str:
       - one side names only a larger area the other lies in -> 'no-signal':
           "Ohio" / "Riverton, Ohio"; "Hamilton, Ohio" / "Riverton, Hamilton
           Co., Ohio" (a town called Hamilton, or the county? can't tell)
+      - the towns agree but the rest of the words don't line up -> never
+        'differ', only 'no-signal' ("Riverton, Ohio" / "Riverton, OH";
+        "Springfield, Ohio" / "Springfield, Illinois" - same-name towns in
+        two states fall through to the date test)
+      - the towns disagree, but `_towns_are_variants` says they may be one
+        town written two ways -> 'no-signal' (Suwałki / Suwalki; Muenchen /
+        München; St. Louis / Saint Louis; Riverton / Rivertown; "farm
+        outside Riverton" / "Riverton, Ohio"; "Riverton (Hamilton County),
+        Ohio"; also York / New York, accepted)
       - anything else -> 'differ':
           "Riverton" / "Oakdale"; "Riverton, Ohio" / "Oakdale, Ohio";
-          "Springfield, Ohio" / "Springfield, Illinois"; "York" / "New York"
+          "Riverton" / "Riverside"; "Fairview" / "Fairfield"
       - either side empty -> 'no-signal'.
 
     Callers treat only 'differ' as meaningful (a veto); 'same' and
@@ -403,18 +458,20 @@ def _compare_place_texts(text_a: str | None, text_b: str | None) -> str:
     if not parts_a or not parts_b:
         return 'no-signal'
     all_a, all_b = set().union(*parts_a), set().union(*parts_b)
-    if parts_a[0] != parts_b[0]:
-        rest_a, rest_b = set().union(*parts_a[1:]), set().union(*parts_b[1:])
-        if all_a <= rest_b or all_b <= rest_a:
-            return 'no-signal'
-        commaless = (
-            (len(parts_a) == 1 and parts_a[0] <= all_b and parts_b[0] <= parts_a[0])
-            or (len(parts_b) == 1 and parts_b[0] <= all_a and parts_a[0] <= parts_b[0])
-        )
-        if not commaless:
-            return 'differ'
     small, big = (all_a, all_b) if len(all_a) <= len(all_b) else (all_b, all_a)
-    return 'same' if small <= big else 'differ'
+    if parts_a[0] == parts_b[0]:
+        # The towns agree: never a veto, whatever the rest says.
+        return 'same' if small <= big else 'no-signal'
+    rest_a, rest_b = set().union(*parts_a[1:]), set().union(*parts_b[1:])
+    if all_a <= rest_b or all_b <= rest_a:
+        return 'no-signal'
+    commaless = (
+        (len(parts_a) == 1 and parts_a[0] <= all_b and parts_b[0] <= parts_a[0])
+        or (len(parts_b) == 1 and parts_b[0] <= all_a and parts_a[0] <= parts_b[0])
+    )
+    if commaless and small <= big:
+        return 'same'
+    return 'no-signal' if _towns_are_variants(text_a, text_b) else 'differ'
 
 
 def _places_differ(a: dict, b: dict) -> bool:
