@@ -11,6 +11,7 @@ import sys
 import tempfile
 import time
 import unittest
+import unittest.mock
 from pathlib import Path
 from unittest import mock
 
@@ -1250,11 +1251,16 @@ class PhotoindexTests(unittest.TestCase):
             # already-screened weak match for Grandma - tag-person bulk work
             # is incremental, and most of the archive starts out resolved only
             # via these weaker tiers.
-            photoindex._run_exiftool_write = lambda paths, kw, *, backup=None: {p: None for p in paths}
-            result = photoindex.apply_tag_person(
-                archive, {'roots': {'photos': 'photos'}}, 'p-bbbbbbbbbb',
-                ['photos/portrait_1880.jpg'],
-            )
+            # Patched for this call only: a bare assignment here once outlived
+            # the test and left every later keyword-write test in the run
+            # writing nothing (#254).
+            with unittest.mock.patch.object(
+                    photoindex, '_run_exiftool_write',
+                    lambda paths, kw, *, backup=None: {p: None for p in paths}):
+                result = photoindex.apply_tag_person(
+                    archive, {'roots': {'photos': 'photos'}}, 'p-bbbbbbbbbb',
+                    ['photos/portrait_1880.jpg'],
+                )
             self.assertEqual(result['tagged'], ['photos/portrait_1880.jpg'])
 
             conn = sqlite3.connect(archive / '.cache' / 'photos.sqlite')
@@ -7778,6 +7784,24 @@ class ContentFingerprintTests(unittest.TestCase):
         self.assertNotIn(result['status'], ('unreadable', 'old-schema'))
         self.assertEqual(result['missing'], ['MISSING:photos/farm.jpg'])
         self.assertEqual(db.read_bytes(), before)
+
+
+class NoTestLeavesTheKeywordWriterPatchedTests(unittest.TestCase):
+    """#254: one PhotoindexTests test replaced `photoindex._run_exiftool_write`
+    and never put it back, so tests run after it in the same process (the
+    originals-backup tests) saw a writer that wrote nothing."""
+
+    def test_the_rebuild_test_puts_the_real_writer_back(self) -> None:
+        real = photoindex._run_exiftool_write
+        suite = unittest.TestSuite([PhotoindexTests(
+            'test_tag_person_rebuild_preserves_other_photos_weak_matches_when_index_goes_stale')])
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            outcome = unittest.TextTestRunner(stream=io.StringIO(), verbosity=0).run(suite)
+        try:
+            self.assertTrue(outcome.wasSuccessful(), outcome.failures + outcome.errors)
+            self.assertIs(photoindex._run_exiftool_write, real)
+        finally:
+            photoindex._run_exiftool_write = real
 
 
 if __name__ == '__main__':
