@@ -206,15 +206,19 @@ button reads **Capture this photo**. It saves:
   `ancestry-…-photo.jpg` after the photo's own number on Ancestry;
 - `photo-data.json` - the photo's details as Ancestry shows them: its title,
   date, place, description, who first added it, and who it is linked to. These
-  were written by whoever shared it, so treat them as their word, not a fact;
-- a copy of the page, if you keep one.
+  were written by whoever shared it, so treat them as their word, not a fact.
+
+It does **not** keep a copy of Ancestry's page, whatever your "Keep a copy of the
+whole page" setting: that page lists the other members who saved the photo, and
+the archive keeps the photo and its details instead. The panel says so in one
+line, and does not offer the page copy there.
 
 When you file it, it becomes a **photo** source: the photo goes into your photo
 library like any other, and the record keeps the photo's Ancestry address, so
 the Seen It add-on knows it is already in your archive. The record's notes
 repeat the date, place, description and the people it is linked to. The name of
-the member who first added it is in `photo-data.json` and in the copy of the
-page (it was on the page), never in the record's notes. With no date in its
+the member who first added it is kept in `photo-data.json` only, never in the
+record's notes. With no date in its
 Details, the photo is filed undated - never with a year from elsewhere on the
 page, such as a linked relative's birth.
 
@@ -228,10 +232,10 @@ panel read the page), it saves nothing yet: it adds those people to the list,
 ticked, and says "I found more on the page — check the people below, then press
 Capture this photo." Check them, then press it. Each photo is captured once.
 
-The list of other members who saved the photo - its "Saved by …" heading and the
-names under it - is left out of everything the add-on saves, its copy of the
-page included, and never reaches your archive. A sentence of the description that
-happens to begin "Saved by …" is the photo's story, and is kept.
+The list of other members who saved the photo ("Saved by …") never reaches your
+archive: with no copy of the page, the only words kept are the photo's details,
+and reading them stops at that list. A sentence of the description that happens
+to begin "Saved by …" is the photo's story, and is kept.
 
 If Ancestry will not hand over the photo (you are signed out, say), **nothing is
 saved**, and the panel says why: a photo source is never filed without its
@@ -242,7 +246,8 @@ drop it in the same way before you press Capture.
 
 If a photo does get captured twice, filing the second copy stops with a message
 naming the source that already holds the photo, and leaves the copy in your inbox
-for you to delete.
+for you to delete. A *different* photo that only shares a filed photo's name is
+never called a copy: you are asked to rename it in the inbox and file it again.
 
 From a person's **Hints** page, open the photo on its own page first (the
 "Evaluate photo" side panel is not captured).

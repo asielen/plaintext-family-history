@@ -1,3 +1,13 @@
+<!DOCTYPE html>
+<!-- A photo another member shared to their Ancestry tree, open in the media
+     viewer (/mediaui-viewer/tree/{treeId}/person/{personId}/media/{mediaId}).
+     Fictional Hartleys, invented ids and usernames. The page's own markup for
+     the Details panel was not recorded, so this stands in for it with the
+     shapes a details panel is built from: a definition list, a heading over
+     a paragraph, a label alone in its box, an inline "Originally added by",
+     a list of linked people, and the "Saved by" list of other members that
+     the capture must never copy. Read by browser-companion/tests/
+     test-ancestry.js and test-panel-ancestry.js. -->
 <html lang="en">
 <head>
   <meta charset="utf-8">
@@ -12,7 +22,8 @@
       <button type="button">Details</button>
     </div>
     <figure class="viewer-stage">
-      <img class="media-image" alt="Thomas and Margaret Hartley at the Fairview farm, about 1925" src="https://www.ancestry.com/api/media/retrieval/v2/image/namespaces/4242/media/7c0ffee0-1234-4abc-8def-0123456789ab?client=trees-mediaservice&amp;imageQuality=hq">
+      <img class="media-image" alt="Thomas and Margaret Hartley at the Fairview farm, about 1925"
+        src="https://www.ancestry.com/api/media/retrieval/v2/image/namespaces/4242/media/7c0ffee0-1234-4abc-8def-0123456789ab?client=trees-mediaservice&amp;imageQuality=hq">
     </figure>
     <ul class="filmstrip">
       <li><img alt="" src="https://www.ancestry.com/api/media/retrieval/v2/image/namespaces/4242/media/7c0ffee0-1234-4abc-8def-0123456789ab.jpg?client=trees-mediaservice&amp;MaxSide=160"></li>
@@ -45,7 +56,11 @@
       </section>
       <p class="attribution">Originally added by <a href="/profile/x">hartley_family_tree</a> on 3 Mar 2015</p>
       <section>
-        
+        <h3>Saved by</h3>
+        <ul>
+          <li>cousin_member_one</li>
+          <li>cousin_member_two</li>
+        </ul>
       </section>
     </aside>
   </main>

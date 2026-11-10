@@ -96,6 +96,8 @@
             <span class="opt-desc">A self-contained copy for context that survives the
               original disappearing.</span>
           </label>
+          <p id="pagecopy-note" class="mini" style="display:none">For a shared photo, the archive keeps
+            the photo and its details, not a copy of Ancestry's page (it lists other members).</p>
 
           <!-- 2b - the actual evidence file: just two choices. -->
           <p class="subq" id="evidence-h"><button id="btn-rescrape-file" class="rescrape" type="button"
@@ -150,7 +152,7 @@
               </span>
             </label>
 
-            <label class="opt" data-mode="none">
+            <label class="opt" data-mode="none" id="opt-none">
               <span class="opt-top">
                 <input type="radio" name="assetMode" value="none" />
                 <span class="opt-title">No, the page copy is the record</span>

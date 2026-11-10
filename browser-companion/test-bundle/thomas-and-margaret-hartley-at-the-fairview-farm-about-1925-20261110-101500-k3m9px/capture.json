@@ -8,11 +8,6 @@
   "repository": "ancestry.com",
   "assets": [
     {
-      "file": "page-snapshot.html",
-      "role": "webpage",
-      "mode": "singlefile"
-    },
-    {
       "file": "ancestry-7c0ffee0-1234-4abc-8def-0123456789ab-photo.jpg",
       "role": "front",
       "mode": "ancestry-media",

@@ -260,12 +260,25 @@ def _image_url(html: str, url: str | None) -> str | None:
     return first_nonempty(meta_content(page, 'og:image'))
 
 
+# A year that is one end of a range: joined to another by a hyphen, an en or
+# em dash (spaces around it or not), a slash, or " to " - "1940-1997",
+# "1940 - 1997", "1908\u20141932", "1865 to 1925" (PR #258 round 4).
+_RANGE_JOIN = r'(?:\s*[-\u2013\u2014/]\s*|\s+to\s+)'
+
+
 def _year_already_in_title(source_date: str, title: str) -> bool:
     """True when `source_date` is a bare year that `title` names on its own -
     not as one end of a range of years."""
     if not re.fullmatch(r'\d{4}', source_date):
         return False
-    return re.search(r'(?<![\d\-–/])' + source_date + r'(?![\d\-–/])', title) is not None
+    for m in re.finditer(r'(?<!\d)' + source_date + r'(?!\d)', title):
+        before, after = title[:m.start()], title[m.end():]
+        if re.search(r'\d{2,4}' + _RANGE_JOIN + r'$', before, re.I):
+            continue
+        if re.match(_RANGE_JOIN + r'\d{2,4}', after, re.I):
+            continue
+        return True
+    return False
 
 
 def extract(html: str, url: str | None) -> dict:
@@ -297,12 +310,17 @@ def extract(html: str, url: str | None) -> dict:
     # People from the household/index table (records pages), else the
     # image-viewer's grid-cell detail panel (imageviewer pages yield [] from the
     # table path because the panel is divs, not a <table>).
+    # A shared photo's page (the media viewer) is read for nothing but its
+    # title: its tables, lists and text include the other members who saved
+    # the photo, and none of them is the family's. Its people, date and words
+    # come from the capture add-on's capture.json (PR #258 round 4).
+    shared_photo = bool(url and _MEDIA_PAGE_RE.search(url))
     people: list[str] = []
-    for rows in extract_tables(html):
+    for rows in ([] if shared_photo else extract_tables(html)):
         people = people_from_table(rows)
         if people:
             break
-    if not people:
+    if not people and not shared_photo:
         people = _people_from_grid(_grid_rows(html))
 
     # Body fallback for the date (Ancestry ships no og: date), but only the head
@@ -313,7 +331,7 @@ def extract(html: str, url: str | None) -> dict:
         # around the record names the collection's year RANGE, never the event.
         source_date = hints['source_date']
         source_type = hints['source_type'] or source_type_from_text(collection, 'website')
-    elif url and _MEDIA_PAGE_RE.search(url):
+    elif shared_photo:
         # A shared photo: no date unless its Details give one (sent in
         # capture.json) - unknown, never a year guessed from the page.
         source_date = None
@@ -359,7 +377,7 @@ def extract(html: str, url: str | None) -> dict:
         'source_date': source_date,
         'external_links': external_links,
         'people': people,
-        'body': visible_text(page),
+        'body': '' if shared_photo else visible_text(page),
         'collection': collection,
         'terms': '; '.join(people) if people else '',
         'source_class': hints['source_class'] if hints else None,

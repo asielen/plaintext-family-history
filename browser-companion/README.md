@@ -212,17 +212,19 @@ no-op, the bundles land in `inbox/` directly.
   household's shared page is fetched once; nothing else is asked or sent.
   On a photo another member shared to their Ancestry tree (the media viewer,
   `/mediaui-viewer/…/media/{mediaId}`), Capture reads the photo's Details as
-  the page shows them - never its "Saved by" list of other members, which
-  content.js also cuts out of page.html and the page copy
-  (`ancMediaMemberNodes`) - and
-  fetches the one image the viewer shows, from the page's own site in your
+  the page shows them - stopping at its "Saved by" list of other members -
+  and fetches the one image the viewer shows, from the page's own site in your
   session (`lib/ancestry-record.js` `ancMediaImageUrl` builds an address on
   the page's origin only, and content.js checks it again before the fetch),
   keeping the bytes exactly as sent. The bundle files as a `photo` source
   whose `external_links` keep the viewer's address without its query - the
   address Seen It knows the photo by (`med:{mediaId}`). When the photo will
   not come and no file was dropped in, nothing is staged: a photo source is
-  never filed without its picture. Capture reads the page again first, and
+  never filed without its picture. No copy of the page is kept for a shared
+  photo (the page lists other members): the archive keeps the photo and
+  `photo-data.json`, whose fields are only what the Details reader extracts,
+  and the Python recipe reads no people or text from that page. Capture
+  reads the page again first, and
   stages nothing while the page shows Details or linked people the form has
   not shown her (they are added to the form for her to check), so a photo is
   captured once - a second capture of a filed photo cannot be filed.

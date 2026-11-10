@@ -331,7 +331,8 @@ class SharedPhotoTestCase(unittest.TestCase):
             # source's main image.
             self.assertTrue((archive / 'photos' / photo_name).is_file())
             by_role = {f['role']: f for f in meta['files']}
-            self.assertEqual(set(by_role), {'front', 'webpage', 'site-data'})
+            # No copy of Ancestry's page: it lists other members (round 4).
+            self.assertEqual(set(by_role), {'front', 'site-data'})
             self.assertEqual(Path(by_role['front']['file']).name, photo_name)
             self.assertTrue(by_role['front'].get('is_primary'))
             self.assertEqual((archive / 'photos' / photo_name).read_bytes(),
@@ -354,52 +355,93 @@ class SharedPhotoTestCase(unittest.TestCase):
             self.assertEqual(items['med:' + PHOTO_MEDIA_ID]['state'], 'filed')
             self.assertEqual(items['med:' + PHOTO_MEDIA_ID]['sid'], meta['id'])
 
-            # Other members who saved the photo are named nowhere in the archive,
-            # nor in what the panel staged (its page.html included).
-            for p in list(archive.rglob('*')) + list(PHOTO_BUNDLE.iterdir()):
-                if p.is_file() and p.suffix in ('.md', '.json', '.html'):
+            # Other members who saved the photo are named nowhere in the
+            # archive - though the staged page.html, the scrape source that is
+            # never filed, shows them.
+            self.assertIn('cousin_member', (PHOTO_BUNDLE / 'page.html').read_text(encoding='utf-8'))
+            for p in archive.rglob('*'):
+                if p.is_file() and p.suffix in ('.md', '.json', '.html', '.txt', '.jsonl'):
                     self.assertNotIn('cousin_member', p.read_text(encoding='utf-8'), p)
 
-    def test_a_second_capture_of_a_filed_photo_is_refused_in_plain_words(self) -> None:
-        """PR #258 round 3 (Codex PRRT_kwDOS6vm6c61wZYJ): the same shared photo
-        captured twice. The second bundle cannot be filed - the photo keeps its
-        name in the photo library and is never renamed to make room - and the
-        refusal said only "destination already exists: ...". It now says the
-        photo is already filed, as which source, and what to do with the copy."""
+    def _file_photo_twice(self, second_photo: bytes | None = None, keyword_on_filed: bool = False):
+        """File the sample photo bundle, then a second bundle under the same
+        photo name - the same bytes, or `second_photo`. `keyword_on_filed`
+        gives the filed photo an APP1 block, as fha's SOURCE: keyword write
+        does. Returns (first result, second result or refusal text, archive,
+        second inbox folder)."""
         import process
         from unittest import mock
-        with tempfile.TemporaryDirectory() as td:
-            tmp = Path(td)
-            archive = tmp / 'archive'
-            archive.mkdir()
-            (archive / 'fha.yaml').write_text(
-                'roots:\n  photos: photos\n  documents: documents\n', encoding='utf-8')
-            config = load_fha_yaml(archive, strict=True)
-            codes = []
-            for n in ('1', '2'):
-                staging = tmp / ('staging' + n)
-                staging.mkdir()
-                shutil.copytree(PHOTO_BUNDLE, staging / (PHOTO_BUNDLE.name + n))
-                capture.run_ingest(archive, config, staging_dir=str(staging))
-                bundle_dir = next(p for p in (archive / 'inbox').iterdir() if p.is_dir())
-                with mock.patch.object(process, '_run_exiftool_embed_source', return_value=None), \
-                        mock.patch.object(process, '_run_exiftool_read_keywords', return_value=[]), \
-                        mock.patch.object(process, '_run_exiftool_remove_source', return_value=None):
-                    try:
-                        codes.append(process.process_bundle(archive, config, bundle_dir,
-                                                            source_date=None, dry_run=False))
-                    except process.ProcessError as e:
-                        codes.append(str(e))
+        photo_name = f'ancestry-{PHOTO_MEDIA_ID}-photo.jpg'
+        td = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, td, True)
+        tmp = Path(td)
+        archive = tmp / 'archive'
+        archive.mkdir()
+        (archive / 'fha.yaml').write_text(
+            'roots:\n  photos: photos\n  documents: documents\n', encoding='utf-8')
+        config = load_fha_yaml(archive, strict=True)
+        codes = []
+        for n in ('1', '2'):
+            staging = tmp / ('staging' + n)
+            staging.mkdir()
+            bundle = staging / (PHOTO_BUNDLE.name + n)
+            shutil.copytree(PHOTO_BUNDLE, bundle)
+            if n == '2' and second_photo is not None:
+                (bundle / photo_name).write_bytes(second_photo)
+            capture.run_ingest(archive, config, staging_dir=str(staging))
+            bundle_dir = next(p for p in (archive / 'inbox').iterdir() if p.is_dir())
+            with mock.patch.object(process, '_run_exiftool_embed_source', return_value=None), \
+                    mock.patch.object(process, '_run_exiftool_read_keywords', return_value=[]), \
+                    mock.patch.object(process, '_run_exiftool_remove_source', return_value=None):
+                try:
+                    codes.append(process.process_bundle(archive, config, bundle_dir,
+                                                        source_date=None, dry_run=False))
+                except process.ProcessError as e:
+                    codes.append(str(e))
+            if n == '1' and keyword_on_filed:
+                filed = archive / 'photos' / photo_name
+                data = filed.read_bytes()
+                body = b'Exif\x00\x00SOURCE: S-xxxxxxxxxx'
+                app1 = b'\xff\xe1' + (len(body) + 2).to_bytes(2, 'big') + body
+                filed.write_bytes(data[:2] + app1 + data[2:])
+        return codes, archive, bundle_dir
+
+    def test_a_second_copy_of_a_filed_photo_is_refused_in_plain_words(self) -> None:
+        """PR #258 round 3 (Codex PRRT_kwDOS6vm6c61wZYJ): the same shared photo
+        captured twice. The second bundle cannot be filed - the photo keeps its
+        name in the photo library and is never renamed to make room. The
+        refusal says the photo is already filed, as which source, and what to
+        do with the copy - also after fha wrote its keyword into the filed
+        photo (the picture is compared, not the file's bytes)."""
+        for keyword in (False, True):
+            codes, archive, bundle_dir = self._file_photo_twice(keyword_on_filed=keyword)
             sid = read_record(next((archive / 'sources').rglob('*.md')))['meta']['id']
             self.assertEqual(codes[0], EXIT_CLEAN)
             self.assertIn(f'is already in your photo library, filed as source {sid}', codes[1])
-            self.assertIn('is a second capture of the same photo', codes[1])
+            self.assertIn('is a second copy of the same photo. Delete that folder if it adds nothing', codes[1])
             self.assertIn('Nothing was changed', codes[1])
             self.assertNotIn('destination already exists', codes[1])
             # One source, the filed photo untouched, the copy left for her.
             self.assertEqual(len(list((archive / 'sources').rglob('*.md'))), 1)
             self.assertEqual([p.name for p in (archive / 'photos').iterdir()],
                              [f'ancestry-{PHOTO_MEDIA_ID}-photo.jpg'])
+            self.assertTrue(bundle_dir.is_dir())
+
+    def test_a_different_photo_with_a_filed_photos_name_is_never_called_a_copy(self) -> None:
+        """PR #258 round 4 (audit F): two different scans that share a name -
+        two cameras' IMG_0001.jpg - are two photos. Told "a second copy ...
+        delete it", she would delete the only copy of the second photo. Only a
+        matching picture is a copy; a name alone gets the neutral words."""
+        other = (b'\xff\xd8\xff\xe0\x00\x07JFIF\x00\xff\xda\x00\x04\x00\x00'
+                 b'a different fictional photo\xff\xd9')
+        for second in (other, b'not a picture at all'):
+            codes, archive, bundle_dir = self._file_photo_twice(second_photo=second)
+            sid = read_record(next((archive / 'sources').rglob('*.md')))['meta']['id']
+            self.assertEqual(codes[0], EXIT_CLEAN)
+            self.assertIn(f'a different photo with the same name (ancestry-{PHOTO_MEDIA_ID}-photo.jpg) is already '
+                          f'in your photo library, filed as source {sid}; nothing was changed. Rename this one', codes[1])
+            self.assertNotIn('Delete', codes[1])
+            self.assertNotIn('copy', codes[1])
             self.assertTrue(bundle_dir.is_dir())
 
     def test_a_captured_ancestry_record_cites_as_a_record_on_wikitree(self) -> None:

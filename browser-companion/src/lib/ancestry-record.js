@@ -45,7 +45,6 @@
 //   ancMediaImageUrl     the photo's own image, as the viewer shows it, on the page's own site
 //   ancMediaDetails      the photo's Details: title, date, place, description, who added it, who it shows
 //   ancLinkedNames       the names a photo is linked to, without their years or "Private"
-//   ancMediaMemberNodes  the "Saved by" lists of other members, for the page copy to leave out
 //   ancMediaFrom         the whole shared photo from its viewer page
 //   ancMediaHints        a photo, dated by its Details' date when the archive can read it
 //   ancPhotoFileStem     the name the photo keeps in the photo library
@@ -553,43 +552,48 @@ function ancMediaLabel(el) {
   return null;
 }
 
-// Where a label's value is: what the label holds besides its own words, else
-// what follows it - its next siblings, up to the next label - or, for a
-// label alone in its box, what follows that box. { box, nodes, text }: `box`
-// is the label or the box it sits alone in, `nodes` the siblings after it
-// that hold the value. `text(n)` reads a node.
-function ancMediaValue(el, text) {
+// A label's value: what the label holds besides its own words, else what
+// follows it - its next siblings, up to the next label - or, for a label
+// alone in its box, what follows that box. Never read from outside `scope`
+// (the photo's Details box, or the page when it has none). `text(n)` reads
+// a node.
+function ancMediaValue(el, text, scope) {
   const tidy = (parts) => parts.join('\n').split('\n').map((l) => l.replace(/\s+/g, ' ').trim())
     .filter(Boolean).join('\n');
   const holdsLabel = (n) => n.nodeType === 1 && (!!ancMediaLabel(n) || ancElements(n, ancMediaLabel).length > 0);
   const inside = tidy([...(el.childNodes || [])].filter((c) => c.nodeType === 1).map((c) => text(c)));
-  if (inside) return { box: el, nodes: [], text: inside };
+  if (inside) return inside;
   let node = el;
-  for (let up = 0; up < 3 && node && node.parentNode; up++) {
+  for (let up = 0; up < 3 && node && node !== scope && node.parentNode; up++) {
     const sibs = [...(node.parentNode.childNodes || [])]; // a live NodeList has no indexOf
-    const nodes = [];
+    const parts = [];
     for (let i = sibs.indexOf(node) + 1; i < sibs.length; i++) {
-      if (holdsLabel(sibs[i])) break;
-      nodes.push(sibs[i]);
+      const sib = sibs[i];
+      if (holdsLabel(sib)) break;
+      parts.push(sib.nodeType === 3 ? String(sib.nodeValue || '') : sib.nodeType === 1 ? text(sib) : '');
     }
-    const v = tidy(nodes.map((s) => (s.nodeType === 3 ? String(s.nodeValue || '') : s.nodeType === 1 ? text(s) : '')));
-    if (v) return { box: node, nodes, text: v };
+    const v = tidy(parts);
+    if (v) return v;
     node = node.parentNode; // alone in its box: read on after the box
   }
-  return { box: el, nodes: [], text: '' };
+  return '';
 }
 
 // The photo's own Details box: an element whose own label says "Details" -
-// its aria-label, or the first heading inside it. Read first, so a label
-// elsewhere on the page (a search form's "Location") never stands in for
-// it. A class or id with "detail" in it is not enough: a linked person's
-// "person-details" card is not the photo's (PR #258 review).
+// its aria-label, or the first heading inside it. When the page has one,
+// the photo's details are read from it alone (ancMediaDetails). A class or
+// id with "detail" in it is not enough: a linked person's "person-details"
+// card is not the photo's (PR #258 review).
 function ancMediaDetailsBoxes(root) {
   const DETAILS = /^(photo\s+|media\s+)?details$/i;
   const named = (e) => {
     const aria = e.getAttribute ? String(e.getAttribute('aria-label') || '').trim() : '';
     if (DETAILS.test(aria)) return true;
-    const h = ancElements(e, (x) => /^H[1-6]$/.test(ancTag(x)))[0];
+    // Its own heading: a child of it (or of its <header>), not one inside a
+    // box within it - so the page around the Details box is not the box.
+    const kids = [...(e.childNodes || [])].filter((c) => c.nodeType === 1);
+    const heads = kids.concat(...kids.filter((c) => ancTag(c) === 'HEADER').map((c) => [...(c.childNodes || [])]));
+    const h = heads.find((x) => x.nodeType === 1 && /^H[1-6]$/.test(ancTag(x)));
     return !!h && DETAILS.test(ancOwnText(h));
   };
   return ancElements(root, (e) => ['ASIDE', 'SECTION', 'DIV', 'ARTICLE', 'DIALOG', 'FORM'].indexOf(ancTag(e)) >= 0 &&
@@ -599,10 +603,15 @@ function ancMediaDetailsBoxes(root) {
 // The photo's Details as the page shows them: { title, date, place,
 // description, originallyAddedBy, linkedTo: [names] } - each only when the
 // page shows it (the Details panel may be closed until she opens it). A
-// label's value is ancMediaValue's. A label claims its key only with a value,
-// the photo's own Details box first, then the rest of the page; the first
-// such value wins. `opts.hidden` / `opts.block` are ancText's (the live page
-// passes its CSS).
+// label's value is ancMediaValue's, and a label claims its key only with a
+// value; the first such value wins. When the page has the photo's own
+// Details box, its title, date, place and description come from that box
+// alone: a field it does not give is unknown, never filled from a linked
+// relative's card elsewhere on the page (PR #258 round 4, Codex
+// PRRT_kwDOS6vm6c61xYYi). Who it is linked to and who added it may sit beside
+// the box, and are read from the rest of the page when the box lacks them.
+// With no Details box at all, the whole page is read in order.
+// `opts.hidden` / `opts.block` are ancText's (the live page passes its CSS).
 function ancMediaDetails(root, opts) {
   const o = opts || {};
   const text = (n) => ancText(n, { hidden: o.hidden, block: o.block });
@@ -611,8 +620,12 @@ function ancMediaDetails(root, opts) {
     return true;
   };
   const found = {};
+  // While the rest of the page is read beside a Details box, only these.
+  const BESIDE = ['linkedTo', 'originallyAddedBy'];
+  let only = null;
+  let scope = root;
   const claim = (key, value) => {
-    if (value && !(key in found)) found[key] = value;
+    if (value && !(key in found) && (!only || only.indexOf(key) >= 0)) found[key] = value;
   };
   const walk = (n) => {
     for (const c of (n && n.childNodes) || []) {
@@ -621,7 +634,7 @@ function ancMediaDetails(root, opts) {
       if (o.hidden && o.hidden(c)) continue;
       const key = ancMediaLabel(c);
       if (key) {
-        claim(key, ancMediaValue(c, text).text);
+        claim(key, ancMediaValue(c, text, scope));
         continue;
       }
       // "Originally added by hartley_genealogy", in the one element whose own
@@ -635,7 +648,14 @@ function ancMediaDetails(root, opts) {
       walk(c);
     }
   };
-  for (const box of ancMediaDetailsBoxes(root)) if (shown(box)) walk(box);
+  const boxes = ancMediaDetailsBoxes(root);
+  for (const box of boxes) {
+    if (!shown(box)) continue;
+    scope = box;
+    walk(box);
+  }
+  scope = root;
+  only = boxes.length ? BESIDE : null;
   walk(root);
   const details = {};
   for (const [key] of ANC_MEDIA_LABELS) {
@@ -649,81 +669,6 @@ function ancMediaDetails(root, opts) {
     }
   }
   return details;
-}
-
-// Where a "Saved by" section ends, for ancMediaMemberNodes: a heading or a
-// label, or a box of its own (a section, a story, a note on the back).
-const ANC_MEDIA_SECTION_TAGS = ['SECTION', 'ASIDE', 'ARTICLE', 'FIGURE', 'FOOTER', 'HEADER', 'NAV', 'MAIN', 'FORM',
-  'BODY', 'DIALOG', 'DETAILS'];
-const ANC_MEDIA_LIST_TAGS = ['UL', 'OL', 'DL', 'TABLE'];
-
-// The parts of a photo page (or of a copy of it) that list the other members
-// who saved the photo, for the saved copy of the page to leave out: each
-// "Saved by" heading and every member row after it, up to the next heading,
-// label or box of its own - never past the heading's own section. A list
-// after the heading is taken whole and ends the section (an empty one, a list
-// not loaded yet, is taken alone); single rows are short lines, one name
-// each, so a paragraph after them - a story, a note from the back of the
-// photo - is never a row. The one-line form ("Saved by <a>name</a> and 3
-// others") goes whole. Hidden or not: a closed Details panel is still in the
-// copy.
-function ancMediaMemberNodes(root) {
-  const out = [];
-  const text = (n) => ancText(n, {});
-  const boundary = (n) => n.nodeType === 1 && (ANC_MEDIA_SECTION_TAGS.indexOf(ancTag(n)) >= 0 ||
-    ANC_MEDIA_HEADING_TAGS.indexOf(ancTag(n)) >= 0 || !!ancMediaLabel(n) ||
-    ancElements(n, (e) => !!ancMediaLabel(e) || /^H[1-6]$/.test(ancTag(e))).length > 0);
-  const row = (n) => {
-    const t = text(n);
-    return t.indexOf('\n') < 0 && t.length <= 60 && !/[.!?]["')”]?$/.test(t);
-  };
-  const rowsAfter = (node) => {
-    const sibs = [...(node.parentNode.childNodes || [])];
-    const rows = [];
-    for (let i = sibs.indexOf(node) + 1; i < sibs.length; i++) {
-      const s = sibs[i];
-      if (s.nodeType === 3) {
-        if (String(s.nodeValue || '').trim()) break; // words in the box itself: not a list of names
-        rows.push(s);
-        continue;
-      }
-      if (s.nodeType !== 1 || boundary(s)) break;
-      if (ANC_MEDIA_LIST_TAGS.indexOf(ancTag(s)) >= 0) {
-        rows.push(s);
-        break;
-      }
-      if (!row(s)) break;
-      rows.push(s);
-    }
-    return rows;
-  };
-  (function walk(n) {
-    for (const c of (n && n.childNodes) || []) {
-      if (c.nodeType !== 1) continue;
-      if (ancMediaLabel(c) !== 'savedBy') {
-        walk(c);
-        continue;
-      }
-      const own = ancOwnText(c).replace(/\s*:$/, '');
-      if (ancMediaSavedInline(c, own) || !c.parentNode) {
-        out.push(c); // "Saved by <a>cousin_member_one</a> and 3 others"
-        continue;
-      }
-      // The heading alone in a box that is not a section of its own (a
-      // <div><span>Saved by</span></div>): the rows follow the box.
-      let head = c;
-      const meaningful = (p) => [...(p.childNodes || [])].filter((x) => x.nodeType === 1 ||
-        (x.nodeType === 3 && String(x.nodeValue || '').trim()));
-      while (head.parentNode && head.parentNode.parentNode && head.parentNode.nodeType === 1 &&
-        ANC_MEDIA_SECTION_TAGS.indexOf(ancTag(head.parentNode)) < 0 &&
-        meaningful(head.parentNode).length === 1 && !rowsAfter(head).length) {
-        head = head.parentNode;
-      }
-      out.push(head);
-      for (const r of rowsAfter(head)) out.push(r);
-    }
-  })(root);
-  return out;
 }
 
 // The people a shared photo is linked to, as names: one per line, without
@@ -804,7 +749,6 @@ module.exports = {
   ancMediaImageUrl,
   ancMediaDetails,
   ancLinkedNames,
-  ancMediaMemberNodes,
   ancMediaLabel,
   ancMediaFrom,
   ancMediaHints,

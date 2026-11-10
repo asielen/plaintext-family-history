@@ -54,7 +54,7 @@ CODE MAP
     _DDL                      - CREATE TABLE statements for photos.sqlite
     _photo_fingerprint        - content identity for one photo: a hash of ALL its JPEG/PNG
                                  picture data, no metadata (#49), or the none:v1 sentinel
-    _jpeg_picture_hash / _png_picture_hash - that hash, per format
+    _jpeg_picture_hash / _png_picture_hash - that hash, per format (in _lib, shared with fha process)
     _is_real_fingerprint      - comparable fingerprint (current scheme tag only)
     _FingerprintBudget        - per-run time allowance for fingerprint reads
 
@@ -219,6 +219,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
+    PNG_SIGNATURE as _PNG_SIGNATURE,
+    jpeg_picture_hash as _jpeg_picture_hash,
+    png_picture_hash as _png_picture_hash,
     CACHE_SCHEMA_KEY,
     EXIT_CLEAN,
     EXIT_FAILURE,
@@ -403,21 +406,10 @@ _FACE_BACKFILL_KEY = 'face_backfill_due'
 _FINGERPRINT_RETRY = 'retry:v1'
 _JPEG_SUFFIXES = frozenset({'.jpg', '.jpeg', '.jpe', '.jfif'})
 _PNG_SUFFIXES = frozenset({'.png'})
-_PNG_SIGNATURE = b'\x89PNG\r\n\x1a\n'
 # Versioned: a value stored under an older rule (the v1/v2 64 KiB windows,
 # #220 rounds 1-4) is never compared with one made by this rule.
 _JPEG_SCHEME = 'jpeg-picture-v3'
 _PNG_SCHEME = 'png-picture-v3'
-# PNG chunks that ARE the picture: its header (size, bit depth, colour type,
-# interlace), palette, transparency, and the image data. Everything else is
-# left out - text (tEXt/zTXt/iTXt), Exif (eXIf), time (tIME), and also the
-# colour-management chunks (gAMA, cHRM, sRGB, iCCP, sBIT): those tell a viewer
-# how to display the stored samples, they do not change them, and they are
-# exactly what metadata tools embed or strip (exiftool writes an ICC profile
-# as metadata). Leaving them in would break the identity on a profile edit.
-_PNG_PICTURE_CHUNKS = frozenset({b'IHDR', b'PLTE', b'tRNS', b'IDAT'})
-_PNG_MAX_CHUNKS = 200_000
-_JPEG_MAX_SEGMENTS = 100_000
 # Each scan's BACKFILL - fingerprinting rows the catalog already holds without
 # one, chiefly after the schema-2 upgrade - spends at most this long inside
 # `_photo_fingerprint`; past it, the rest stay unknown and the next scan
@@ -425,105 +417,6 @@ _JPEG_MAX_SEGMENTS = 100_000
 # anyway), and neither is reconcile (see `_content_rematches`). See TOOLING
 # §9 for the measured rate and what it means for a large library.
 _FINGERPRINT_BUDGET_SECONDS = 30.0
-
-
-def _jpeg_picture_hash(data: bytes) -> str | None:
-    """sha256 over a JPEG's picture data: every segment except metadata, and
-    all entropy-coded data, through the end-of-image marker.
-
-    Left out: APPn segments (Exif, XMP, ICC, IPTC, Photoshop - where every
-    metadata write lands) and COM comments. Kept: everything else - frame
-    headers, quantization and Huffman tables, restart intervals, every
-    start-of-scan header and its scan data (all scans of a progressive
-    JPEG), and Adobe's APP14 block, whose colour-transform flag changes the
-    pixels. Bytes after the end-of-image marker (a camera or tool trailer) are
-    not part of the picture and are left out too. None when the bytes do not
-    parse as a JPEG.
-    """
-    if data[:2] != b'\xff\xd8':
-        return None
-    view = memoryview(data)              # hash slices without copying them (F3)
-    h = hashlib.sha256(b'\xff\xd8')
-    n = len(data)
-    pos = 2
-    for _ in range(_JPEG_MAX_SEGMENTS):
-        if pos >= n or data[pos] != 0xFF:
-            return None
-        while pos < n and data[pos] == 0xFF:
-            pos += 1                     # fill bytes before a marker code
-        if pos >= n:
-            return None
-        marker = data[pos]
-        pos += 1
-        if marker == 0xD9:               # end of image
-            h.update(b'\xff\xd9')
-            return h.hexdigest()[:32]
-        if marker == 0x01 or 0xD0 <= marker <= 0xD7:
-            h.update(bytes((0xFF, marker)))
-            continue                     # stand-alone markers carry no length
-        if pos + 2 > n:
-            return None
-        end = pos + int.from_bytes(data[pos:pos + 2], 'big')
-        if end > n or end < pos + 2:
-            return None
-        is_metadata = (marker == 0xFE or (0xE0 <= marker <= 0xEF and not (
-            marker == 0xEE and data[pos + 2:pos + 7] == b'Adobe')))
-        if not is_metadata:
-            h.update(bytes((0xFF, marker)))
-            h.update(view[pos:end])
-        pos = end
-        if marker == 0xDA:
-            # Entropy-coded scan data runs to the next marker that is not a
-            # stuffed byte (FF 00) or a restart marker (FF D0-D7).
-            scan_start = pos
-            while True:
-                i = data.find(b'\xff', pos)
-                if i < 0 or i + 1 >= n:
-                    return None
-                code = data[i + 1]
-                if code == 0x00 or 0xD0 <= code <= 0xD7:
-                    pos = i + 2
-                    continue
-                if code == 0xFF:
-                    pos = i + 1          # a fill byte ahead of the marker
-                    continue
-                break
-            h.update(view[scan_start:i])
-            pos = i
-    return None
-
-
-def _png_picture_hash(data: bytes) -> str | None:
-    """sha256 over a PNG's picture chunks (`_PNG_PICTURE_CHUNKS`), in file
-    order, type and data each; every metadata chunk left out. None when the
-    bytes do not parse as a PNG, hold no image data, or are an animated PNG
-    (APNG: an acTL chunk)."""
-    if data[:8] != _PNG_SIGNATURE:
-        return None
-    view = memoryview(data)              # hash slices without copying them (F3)
-    h = hashlib.sha256(_PNG_SIGNATURE)
-    pos, n, saw_idat = 8, len(data), False
-    for _ in range(_PNG_MAX_CHUNKS):
-        if pos + 8 > n:
-            return None                  # truncated before IEND
-        length = int.from_bytes(data[pos:pos + 4], 'big')
-        kind = data[pos + 4:pos + 8]
-        start, end = pos + 8, pos + 8 + length
-        if end + 4 > n:
-            return None
-        if kind == b'acTL':
-            # An animated PNG: its later frames live in fcTL/fdAT chunks, so
-            # two different animations sharing a first frame would hash
-            # alike. Not fingerprinted at all (#220 audit F4).
-            return None
-        if kind in _PNG_PICTURE_CHUNKS:
-            h.update(kind)
-            h.update(view[start:end])
-            saw_idat = saw_idat or kind == b'IDAT'
-        elif kind == b'IEND':
-            return h.hexdigest()[:32] if saw_idat else None
-        pos = end + 4                    # data + CRC
-    return None
 
 
 def _photo_fingerprint(path: Path) -> str | None:

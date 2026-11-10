@@ -407,6 +407,24 @@ class CaptureTestCase(unittest.TestCase):
         self.assertFalse(ancestry._year_already_in_title('1917', 'U.S., WWI Draft Cards, 1917-1918'))
         self.assertTrue(ancestry._year_already_in_title('1880', '1880 United States Federal Census'))
 
+    def test_ancestry_citation_reads_a_range_however_it_is_joined(self) -> None:
+        """PR #258 round 4 (audit J): "1940 - 1997", "1865 to 1925" and
+        "1908—1932" were read as single years, so a date of 1940, 1925 or
+        1908 was dropped from the citation as if the title already said it."""
+        from capture_recipes import ancestry
+        for year, title in (('1940', 'California, U.S., Death Index, 1940 - 1997'),
+                            ('1997', 'California, U.S., Death Index, 1940 - 1997'),
+                            ('1865', 'Kansas State Census Collection, 1865 to 1925'),
+                            ('1925', 'Kansas State Census Collection, 1865 to 1925'),
+                            ('1908', 'Fairview Gazette, 1908—1932'),
+                            ('1932', 'Fairview Gazette, 1908—1932'),
+                            ('1880', 'Ledger, 1880–1890'),
+                            ('1917', 'Draft Cards, 1917/1918')):
+            self.assertFalse(ancestry._year_already_in_title(year, title), (year, title))
+        # Named on its own - and once more after a range - it is the title's.
+        self.assertTrue(ancestry._year_already_in_title('1880', 'Census of 1880, Fairview'))
+        self.assertTrue(ancestry._year_already_in_title('1880', '1870-1875 survey; the 1880 census'))
+
     def test_ancestry_shared_photo_is_never_dated_from_the_page(self) -> None:
         """PR #258 round 3 (Codex PRRT_kwDOS6vm6c61wZYE): an undated shared
         photo was filed with a linked relative's birth year - 1840, from

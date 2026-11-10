@@ -664,8 +664,13 @@
     state.iiif = !!prefill.iiif;
     state.ancRecord = !!prefill.ancestryRecord;
     state.ancPhoto = !!prefill.ancestryPhoto;
-    // On a shared photo the button says what it saves.
+    // On a shared photo the button says what it saves, and the page copy and
+    // "the page copy is the record" are not offered (pageCopyOn): one plain
+    // line says why.
     $('btn-capture').textContent = state.ancPhoto ? 'Capture this photo' : 'Capture & save';
+    $('page-copy-card').style.display = state.ancPhoto ? 'none' : '';
+    $('opt-none').style.display = state.ancPhoto ? 'none' : '';
+    $('pagecopy-note').style.display = state.ancPhoto ? 'block' : 'none';
     state.fsRecord = !!prefill.familysearchRecord;
     state.fsImage = !!prefill.familysearchImageViewer;
     state.fagRecord = !!prefill.findagraveMemorial;
@@ -1553,18 +1558,23 @@
   // ── Photos shared on Ancestry ─────────────────────────────────────────────────
   // A photo another member shared to their tree, open in Ancestry's media
   // viewer (/mediaui-viewer/…/media/{mediaId}), is one bundle that files as a
-  // PHOTO source: page.html, the page copy, the photo itself (role `front`,
-  // the source's main image - SPEC §13's name for a photo's picture; it is
-  // not a record scan, so not `record`) and photo-data.json (the photo's
-  // Details as the page shows them - title, date, place, description, who
-  // added it, who it is linked to - role site-data). The photo is the image
-  // the viewer shows, fetched from Ancestry's own site in her session and
-  // kept byte for byte. capture.json's `url` is the viewer's address without
-  // its query, so Seen It knows the photo again (med:{mediaId}) once it is
-  // filed. Ancestry's "Saved by" list (other members' names) is never copied
-  // out of the page - content.js leaves it out of page.html and the page copy
-  // too. No photo, no capture: when the photo will not come and she has not
-  // dropped her own file in, nothing is staged and the panel says why.
+  // PHOTO source: the photo itself (role `front`, the source's main image -
+  // SPEC §13's name for a photo's picture; it is not a record scan, so not
+  // `record`) and photo-data.json (the photo's Details as the page shows them
+  // - title, date, place, description, who added it, who it is linked to -
+  // role site-data), plus page.html, the scrape source, which is never filed.
+  // The photo is the image the viewer shows, fetched from Ancestry's own site
+  // in her session and kept byte for byte. capture.json's `url` is the
+  // viewer's address without its query, so Seen It knows the photo again
+  // (med:{mediaId}) once it is filed.
+  //
+  // No other member's name reaches the archive: no copy of the page is kept
+  // for a shared photo (pageCopyOn), the Details reader stops at member lists
+  // (lib/ancestry-record.js ancMediaLabel), photo-data.json holds only what
+  // that reader extracts, and the ingestion recipe reads no people or text
+  // from a shared photo's page. No photo, no capture: when the photo will not
+  // come and she has not dropped her own file in, nothing is staged and the
+  // panel says why.
   //
   // The photo's file keeps its name for good: a photo source's picture goes
   // into the photo library, where the archive never renames a file. So it is
@@ -1575,7 +1585,7 @@
 
   // `opts` (a batch download only): see captureNewspapers. Returns what was
   // staged: { key, bundle, where, note }.
-  async function captureAncestryPhoto(pageHtml, wantPageCopy, form, recordUrl, opts = {}) {
+  async function captureAncestryPhoto(pageHtml, form, recordUrl, opts = {}) {
     const info = await autoFetch('Ancestry photo details', { action: 'ancestryPhotoInfo' }, { recordUrl });
     if (!info || !info.ok) throw new Error((info && info.error) || 'could not read the photo on Ancestry');
     const media = info.media;
@@ -1609,12 +1619,8 @@
 
     const dropped = form.dropped;
     const provisional = !!dropped && form.provisional;
-    // The page copy, from the tab before the download, when she asked for it
-    // (and only then: a photo capture always holds the photo, so nothing else
-    // needs the copy to be filed with).
-    const pageCopy = await recordPageCopy('early', wantPageCopy, recordUrl, [media.mediaId]);
+    // No copy of the page, ever (pageCopyOn): the photo and its details only.
     const assets = [];
-    if (pageCopy) assets.push({ filename: pageCopy.filename, blob: pageCopy.blob, role: 'webpage', mode: 'singlefile' });
     if (dropped) {
       // Her own file (one she downloaded, or a scan she has) is the photo.
       assets.push({ filename: media.fileStem + '.' + dropped.ext, blob: dropped.blob, role: 'front', mode: 'manual',
@@ -2201,11 +2207,17 @@
 
   // ── Step 2: page-copy toggle + evidence picker ───────────────────────────────
 
+  // A shared photo never keeps a copy of Ancestry's page: the page lists
+  // the other members who saved the photo, and the archive keeps the photo
+  // and its details instead (PR #258 round 4 - the owner's call, reversible).
+  // Its file is always the photo, so "the page copy is the record" does not
+  // apply there either.
   function pageCopyOn() {
-    return $('cb-pagecopy').checked;
+    return !state.ancPhoto && $('cb-pagecopy').checked;
   }
 
   function evidenceMode() {
+    if (state.ancPhoto) return 'yes';
     const r = document.querySelector('input[name="assetMode"]:checked');
     return r ? r.value : 'yes';
   }
@@ -2662,7 +2674,7 @@
       return refuse('The page in the tab just changed - reading it now. Press Capture again in a moment.');
     }
 
-    const wantPageCopy = opts.batch ? true : pageCopyOn();
+    const wantPageCopy = opts.batch && !state.ancPhoto ? true : pageCopyOn();
     const wantEvidence = opts.batch ? true : evidenceMode() === 'yes';
     const form = formSnapshot();
     // Both controls off is NOT a refusal: it is the pointer-only capture
@@ -2757,7 +2769,7 @@
       // A photo someone shared on Ancestry: the photo and its Details, filed
       // as a photo - or the file she dropped in, saved as the photo.
       if (wantEvidence && state.ancPhoto && !evidenceUrl()) {
-        const got = await captureAncestryPhoto(pageResp.html, wantPageCopy, form, recordUrl, siteOpts);
+        const got = await captureAncestryPhoto(pageResp.html, form, recordUrl, siteOpts);
         if (got.staged === false) {
           // More on the page than the form showed: nothing staged, her
           // dropped file and form kept for the Capture she presses next.
@@ -3496,7 +3508,7 @@
   function wireEvents() {
     $('cb-pagecopy').addEventListener('change', () => {
       $('page-copy-card').classList.toggle('unchecked', !pageCopyOn());
-      chrome.storage.local.set({ pageCopyDefault: pageCopyOn() });
+      chrome.storage.local.set({ pageCopyDefault: $('cb-pagecopy').checked });
       updateAssetStatus();
     });
     document.querySelectorAll('input[name="assetMode"]').forEach((r) =>

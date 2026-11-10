@@ -467,70 +467,30 @@ test('PR #258 review: linked people lose their "abt" years, and a living person 
     'Ethel Hartley (bef 1890–?)</dd></dl>'), { linkedTo: ['Thomas Hartley', 'Ethel Hartley'] });
 });
 
-test('PR #258 review: ancMediaMemberNodes takes the "Saved by" list out of a copy of the page, and nothing else', () => {
-  const { serialize } = require('./mini-dom.js');
-  const doc = page('ancestry-media-photo');
-  for (const el of anc.ancMediaMemberNodes(doc)) el.parentNode.removeChild(el);
-  const html = serialize(doc);
-  for (const gone of ['cousin_member_one', 'cousin_member_two', 'Saved by']) assert.ok(!html.includes(gone), gone);
-  for (const kept of ['Linked to', 'Thomas Hartley', 'Description', 'The dog is Shep.', 'Originally added by',
-    'abt 1925', '/media/' + MEDIA_ID + '?client']) {
-    assert.ok(html.includes(kept), kept);
+// ── PR #258 round 3/4 ────────────────────────────────────────────────────────
+// No copy of the page is kept for a shared photo (round 4), so what keeps
+// other members' names out of the archive is this reader: it stops at every
+// members-list label, and keeps only what it extracts.
+
+test('round 3/4: the reader stops at a "Saved by" list however its members are laid out, and keeps none of them', () => {
+  for (const rows of ['<div>cousin_member_one</div><div>cousin_member_two</div>',
+    '<div>cousin_member_one<br>Joined 2015</div><div>Cousin Member Two Jr.</div>',
+    '<div>cousin member with a very long display name that goes on past sixty characters</div>',
+    '<ul><li>cousin_member_one</li></ul><p>Hartley farm, 1925</p>',
+    '<dl><dd>cousin_member_one</dd><dd>cousin_member_two</dd></dl>']) {
+    const d = details('<aside><h2>Details</h2><h3>Description</h3><p>On the porch.</p><h3>Linked to</h3>' +
+      '<ul><li>Thomas Hartley</li></ul><h3>Saved by 2 members</h3>' + rows + '</aside>');
+    assert.deepStrictEqual(d, { description: 'On the porch.', linkedTo: ['Thomas Hartley'] }, rows);
   }
-  // Its Details read the same without the list.
-  assert.deepStrictEqual(anc.ancMediaDetails(doc), anc.ancMediaDetails(page('ancestry-media-photo')));
-  // Inline, and a heading with a count, each go whole; a page with none loses nothing.
-  const inline = parse('<html><body><p>Saved by <a>cousin_member_one</a> and 3 others</p>' +
-    '<h3>Saved by 2 members</h3><ul><li>cousin_member_two</li></ul><p>Kept.</p><h3>Description</h3><p>Porch</p></body></html>');
-  for (const el of anc.ancMediaMemberNodes(inline)) el.parentNode.removeChild(el);
-  assert.strictEqual(serialize(inline), '<html><body><p>Kept.</p><h3>Description</h3><p>Porch</p></body></html>');
-  assert.deepStrictEqual(anc.ancMediaMemberNodes(page('ancestry-record-census')), []);
 });
 
-// ── PR #258 round 3 ──────────────────────────────────────────────────────────
-
-const stripped = (html) => {
-  const { serialize } = require('./mini-dom.js');
-  const doc = parse('<html><body>' + html + '</body></html>');
-  for (const el of anc.ancMediaMemberNodes(doc)) el.parentNode.removeChild(el);
-  return serialize(doc);
-};
-
-test('round 3 (Codex PRRT_kwDOS6vm6c61wZYB): every member row after "Saved by" goes, sibling rows included', () => {
-  const out = stripped('<aside><h3>Linked to</h3><ul><li>Thomas Hartley</li></ul>' +
-    '<h3>Saved by 2 members</h3><div>cousin_member_one</div><div>cousin_member_two</div>' +
-    '<h3>Comments</h3><p>Lovely photo.</p></aside>');
-  assert.ok(!/cousin_member|Saved by/.test(out), out);
-  assert.ok(out.includes('Thomas Hartley') && out.includes('<h3>Comments</h3>'), out);
-  // In a definition list: every dd up to the next dt.
-  assert.strictEqual(stripped('<dl><dt>Saved by (2)</dt><dd>cousin_member_one</dd><dd>cousin_member_two</dd>' +
-    '<dt>Place</dt><dd>Fairview</dd></dl>'), '<html><body><dl><dt>Place</dt><dd>Fairview</dd></dl></body></html>');
-});
-
-test('round 3 (audit E): a "Saved by" list not loaded yet takes only its heading and the empty list, never the story after it', () => {
-  assert.strictEqual(stripped('<aside id="mediaDetails"><section><h3>Saved by</h3><ul></ul></section>' +
-    '<section class="story"><p>Grandma wrote on the back: Fairview, summer 1925.</p></section></aside>'),
-  '<html><body><aside id="mediaDetails"><section></section><section class="story"><p>Grandma wrote on the back: ' +
-    'Fairview, summer 1925.</p></section></aside></body></html>');
-  // In the same box: rows are short names; the note after them is not one.
-  const out = stripped('<div class="panel"><div><span>Saved by</span></div><div>cousin_member_one</div>' +
-    '<div>Grandma wrote on the back: Fairview, summer 1925.</div></div>');
-  assert.ok(!out.includes('cousin_member_one') && !out.includes('Saved by'), out);
-  assert.ok(out.includes('Grandma wrote on the back'), out);
-  // After a list, nothing more is taken.
-  assert.ok(stripped('<div><h3>Saved by</h3><ul><li>cousin_member_one</li></ul><div>Hartley farm, 1925</div></div>')
-    .includes('Hartley farm, 1925'));
-});
-
-test('round 3 (audit A): a family sentence starting "Saved by" is the description, kept in the notes and the page copy', () => {
+test('round 3 (audit A): a family sentence starting "Saved by" is the description, kept in the notes', () => {
   const html = '<aside id="mediaDetails"><dl><dt>Date</dt><dd>abt 1925</dd></dl><section><h3>Description</h3>' +
     '<p>Thomas and Margaret on the porch.</p><p>Saved by Aunt Ethel from the 1938 farmhouse fire.</p>' +
     '<p>The dog is Shep.</p></section><section><h3>Saved by</h3><ul><li>cousin_member_one</li></ul></section></aside>';
   assert.strictEqual(details(html).description,
     'Thomas and Margaret on the porch.\nSaved by Aunt Ethel from the 1938 farmhouse fire.\nThe dog is Shep.');
-  const out = stripped(html);
-  assert.ok(out.includes('Saved by Aunt Ethel from the 1938 farmhouse fire.') && out.includes('Shep'), out);
-  assert.ok(!out.includes('cousin_member_one'), out);
+  assert.ok(!JSON.stringify(details(html)).includes('cousin_member_one'));
   // A member's username in plain text is still a members line.
   assert.deepStrictEqual(details('<div><span>Description</span></div><div>On the porch.</div>' +
     '<div>Saved by cousin_member_one</div>'), { description: 'On the porch.' });
@@ -543,4 +503,22 @@ test('round 3 (audit D): a linked person\'s "person-details" card is not the pho
   // A box labelled "Details" is read first, wherever it sits.
   assert.deepStrictEqual(details('<div class="person-details"><h4>Thomas Hartley</h4><dl><dt>Date</dt><dd>1840</dd>' +
     '</dl></div><aside aria-label="Details"><dl><dt>Date</dt><dd>abt 1925</dd></dl></aside>'), { date: 'abt 1925' });
+});
+
+test('round 4 (Codex PRRT_kwDOS6vm6c61xYYi): a field the photo\'s Details box does not give stays unknown', () => {
+  // The photo's own box gives only its title; a linked relative's card says 1840 and Yorkshire.
+  const html = '<aside><h2>Details</h2><dl><dt>Title</dt><dd>Thomas and Margaret on the porch</dd></dl></aside>' +
+    '<div class="person-details"><h4>Thomas Hartley</h4><dl><dt>Date</dt><dd>1840</dd><dt>Place</dt>' +
+    '<dd>Yorkshire, England</dd><dt>Description</dt><dd>Born on the moors.</dd></dl></div>';
+  const d = details(html);
+  assert.deepStrictEqual(d, { title: 'Thomas and Margaret on the porch' });
+  assert.strictEqual(anc.ancMediaHints(d).sourceDate, null);
+  // A label at the end of the box with nothing after it does not read on past the box.
+  assert.deepStrictEqual(details('<div><aside><h2>Details</h2><div><span>Date</span></div></aside><p>1840</p></div>'), {});
+  // Who it is linked to and who added it may sit beside the box.
+  assert.deepStrictEqual(details('<aside><h2>Details</h2><dl><dt>Date</dt><dd>abt 1925</dd></dl></aside>' +
+    '<section><h3>Linked to</h3><ul><li>Thomas Hartley</li></ul></section>'),
+  { date: 'abt 1925', linkedTo: ['Thomas Hartley'] });
+  // No Details box at all: the page is read in order, as before.
+  assert.deepStrictEqual(details('<dl><dt>Date</dt><dd>abt 1925</dd></dl>'), { date: 'abt 1925' });
 });

@@ -225,6 +225,7 @@ from _lib import (
     parse_frontmatter_strict,
     parse_media_filename,
     path_to_alias,
+    picture_data_hash,
     read_embedded_keywords,
     read_record,
     read_text_exact,
@@ -2899,12 +2900,18 @@ def process_folder(
     return rc
 
 
-def _photo_already_filed_message(archive_root: Path, fha_config: dict, dest: Path, folder: Path) -> str:
-    """What to say when a bundle's photo is already in the photo library under
-    its name - nearly always a second capture of the same photo.
+def _photo_already_filed_message(archive_root: Path, fha_config: dict, dest: Path, src: Path,
+                                 folder: Path) -> str:
+    """What to say when a bundle's photo would land on a name the photo library
+    already holds.
 
-    The source that lists it is named when a record's `files:` names that
-    path (a plain text search of sources/, run only on this refusal)."""
+    Only when the two hold the same picture (`picture_data_hash`, which a
+    keyword write does not change) is it a second copy, which she may delete
+    if it adds nothing. A name alone proves nothing: two scans both called
+    IMG_0001.jpg are two photos, and the second must never be called a copy
+    of the first (PR #258 round 4). The source holding the filed photo is
+    named when a record's `files:` names its path (a text search of sources/,
+    run only on this refusal). The filed photo is never renamed."""
     alias = path_to_alias(dest, _PHOTO_DIR, fha_config, archive_root)
     holder = None
     sources_dir = archive_root / 'sources'
@@ -2918,15 +2925,20 @@ def _photo_already_filed_message(archive_root: Path, fha_config: dict, dest: Pat
                 m = re.search(r'^id:\s*["\']?(S-[0-9a-z]{10})', text, re.M)
                 holder = m.group(1) if m else None
                 break
-    where = f'source {fmt_id_display(holder)}' if holder else 'your archive'
+    where = f'source {fmt_id_display(holder)}' if holder else 'a source in your archive'
     try:
         shown = _rel(folder, archive_root)
     except ValueError:
         shown = folder.name
-    return (f'this photo ({dest.name}) is already in your photo library, filed as {where}. '
-            f'{shown} is a second capture of the same photo. If it adds nothing, delete that '
-            f'folder; if it holds a file the source lacks, attach that file to the source with '
-            f'`fha process {alias} --more <file> ROLE`. Nothing was changed.')
+    filed_hash = picture_data_hash(dest)
+    if filed_hash is not None and filed_hash == picture_data_hash(src):
+        return (f'this photo ({dest.name}) is already in your photo library, filed as {where}. '
+                f'{shown} is a second copy of the same photo. Delete that folder if it adds '
+                f'nothing; if it holds a file the source lacks, attach that file to the source with '
+                f'`fha process {alias} --more <file> ROLE`. Nothing was changed.')
+    return (f'a different photo with the same name ({dest.name}) is already in your photo library, '
+            f'filed as {where}; nothing was changed. Rename this one ({src.name}) in {shown} and '
+            f'process it again.')
 
 
 def process_bundle(
@@ -3086,10 +3098,11 @@ def process_bundle(
 
     for item in plan:
         if item['dest'].exists() and item['kind'] == 'photo':
-            # A second capture of a photo already filed (the same shared photo
-            # captured twice): said plainly, with the source that holds it.
-            # The filed original is never renamed to make room (PR #258 review).
-            raise ProcessError(_photo_already_filed_message(archive_root, fha_config, item['dest'], folder))
+            # A photo of that name is already filed: a second copy of it, or a
+            # different photo that shares its name - said plainly, with the
+            # source that holds it. The filed original is never renamed.
+            raise ProcessError(_photo_already_filed_message(archive_root, fha_config, item['dest'],
+                                                            item['src'], folder))
         if item['dest'].exists():
             raise ProcessError(f'destination already exists: {item["dest"].name}')
         if item['kind'] == 'document' and (

@@ -737,34 +737,3 @@ test('PR #258 review: on a shared photo, the form starts from its Details - link
   assert.strictEqual(r.prefill.sourceDate, '1925~');
   assert.deepStrictEqual(r.prefill.people, ['Thomas Hartley', 'Margaret Hartley']);
 });
-
-test('PR #258 review: the "Saved by" list of other members is left out of page.html and the page copy', async () => {
-  const { serialize } = require('./mini-dom.js');
-  const copyOf = () => {
-    const html = parse(SAMPLE('ancestry-media-photo')).childNodes.find((c) => c.tagName === 'HTML');
-    // What content.js asks of the copy it builds (the page copy's sweeps find
-    // nothing to rewrite in this small page).
-    Object.assign(html, {
-      querySelectorAll: () => [], querySelector: () => null,
-      getAttributeNames() { return Object.keys(this.attrs); }, hasAttribute(k) { return k in this.attrs; },
-      setAttribute(k, v) { this.attrs[k] = String(v); }, removeAttribute(k) { delete this.attrs[k]; },
-    });
-    Object.defineProperty(html, 'outerHTML', { get() { return serialize(html); } });
-    return html;
-  };
-  let r = await loadPage({ url: SHARED + '?hid=h1', tree: parse(SAMPLE('ancestry-media-photo')), clone: copyOf(),
-    fetch: ancestryMedia() }).ask({ action: 'pagehtml' });
-  assert.strictEqual(r.ok, true);
-  assert.ok(!/cousin_member|Saved by/.test(r.html), 'other members are in page.html');
-  assert.ok(r.html.includes('Linked to') && r.html.includes('The dog is Shep.'), 'the rest of the page is kept');
-  // Off a photo page, nothing is taken out.
-  r = await loadPage({ url: 'https://www.ancestry.com/family-trees/90000001/people/90000002/hints', clone: copyOf(),
-    fetch: ancestryMedia() }).ask({ action: 'pagehtml' });
-  assert.ok(r.html.includes('cousin_member_one'));
-  // The page copy, built the way Capture builds it (the singlefile path).
-  r = await loadPage({ url: SHARED + '?hid=h1', tree: parse(SAMPLE('ancestry-media-photo')), clone: copyOf(),
-    fetch: ancestryMedia() }).ask({ action: 'singlefile' });
-  assert.strictEqual(r.ok, true, r.error);
-  assert.ok(!/cousin_member|Saved by/.test(r.html), 'other members are in the page copy');
-  assert.ok(r.html.includes('Linked to') && r.html.includes('The dog is Shep.'), 'the rest of the page copy is kept');
-});
