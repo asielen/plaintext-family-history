@@ -27,6 +27,27 @@ pages you have already opened, so the "Seen" counts start out filled in.
 
 It also loads in Microsoft Edge (`edge://extensions`) and other Chromium browsers the same way.
 
+### Keeping it up to date
+
+**If you keep a family archive** with these tools, let them do it. `fha install` and
+`fha update-tools` ask you once whether you want Seen It and which folder to keep it in (press
+Enter for an `extensions` folder inside the archive, or paste a folder of your own - your answer
+is saved as one line in `fha.yaml`, `browser_extensions:`). After that, every
+`fha update-tools`:
+
+- finds your copy by its ID, even if you renamed its folder;
+- copies your current one into `_backups` beside it first (named with its version and the date);
+- writes the new files over it, in place - keeping any file it did not ship, and never touching
+  anything else in that folder (a data folder you keep beside it is left alone);
+- leaves it alone if yours is already newer.
+
+Then one step is yours: in `chrome://extensions`, click the **reload arrow** on Seen It.
+**Do not remove it** and load it again - removing it deletes everything it remembers. The
+helper (`host`) is updated with it and needs nothing re-run.
+
+**Without an archive,** download the new `seen-it` folder and copy its files over your old
+folder (keep the folder where it is), then click the reload arrow the same way.
+
 ## What you see on the sites
 
 | Pill | Means |
