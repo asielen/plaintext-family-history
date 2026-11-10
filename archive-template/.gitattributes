@@ -21,6 +21,9 @@
 *.js text eol=lf
 *.json text eol=lf
 *.txt text eol=lf
+# The Seen It add-on's Mac/Linux helper installer, when its folder is kept in
+# the archive (`browser_extensions: extensions`): /bin/sh cannot run CRLF.
+*.sh text eol=lf
 
 # The Windows launchers stay CRLF. Pinning them either way stops the checksum
 # churn - the bytes become deterministic on every platform - but CRLF is what

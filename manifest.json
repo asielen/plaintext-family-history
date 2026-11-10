@@ -924,7 +924,7 @@
     {
       "path": ".gitattributes",
       "category": "skeleton",
-      "sha256": "9aac1976166095c80db5785f7c67d723a1a2a0d60dd182fb4c9e581bf39ea315",
+      "sha256": "2c2ff0cb1eda5fc60f3240c7bdac1875d9aef6dfdcec8f3b8dafd848ca7450c4",
       "spec_version": "1.2",
       "src": "archive-template/.gitattributes"
     },
@@ -938,7 +938,7 @@
     {
       "path": "AGENTS.md",
       "category": "operating",
-      "sha256": "b4241f522f1eac45e4e384b4fb0f0f4ef0c9608b40bacbf71a5d3ffc5b6b25b3",
+      "sha256": "d4e62d3b59474c322a3ef076d40cb2d48028a604ca2e1fd91ddc3819c76fea77",
       "spec_version": "1.2"
     },
     {
