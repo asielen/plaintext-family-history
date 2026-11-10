@@ -174,6 +174,7 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    exiftool_write_failure    - exit code AND report read (exit 0 can still fail)
 #    _argfile_line             - one UTF-8 exiftool argfile line (#[CSTR], survives any value)
 #    expected_keyword_fields  - the writer's resulting state, for previews and verifiers
+#    iptc_charset_plan         - write a legacy Latin-1 IPTC block in Latin-1, never relabel it
 #    write_embedded_keywords   - THE keyword writer: add/remove in every field, one call
 #
 #  Record parsing
@@ -3829,22 +3830,91 @@ def _argfile_line(arg: str) -> str:
 
 
 def expected_keyword_fields(before: dict[str, list[str]], add: list[str],
-                             remove: list[str], add_tags: tuple[str, ...]) -> dict[str, list[str]]:
+                             remove: list[str], add_tags: tuple[str, ...],
+                             iptc_skip: Iterable[str] = ()) -> dict[str, list[str]]:
     """What each keyword field holds after `write_embedded_keywords` runs.
 
     The writer's own rule, stated once so a planner and a verifier can use
     the same answer: every exact `remove` value leaves every field; in each
     field named by `add_tags`, every exact copy of an `add` value is cleared
-    and the value then goes in once.
+    and the value then goes in once - except that IPTC does not receive a
+    value in `iptc_skip` (see `iptc_charset_plan`).
     """
+    skip = set(iptc_skip)
     out = {}
     for tag in KEYWORD_TAGS:
-        gone = set(remove) | (set(add) if tag in add_tags else set())
+        tag_add = [v for v in add if not (tag == 'IPTC:Keywords' and v in skip)]
+        gone = set(remove) | (set(tag_add) if tag in add_tags else set())
         kept = [v for v in before.get(tag, []) if v not in gone]
         if tag in add_tags:
-            kept += list(add)
+            kept += tag_add
         out[tag] = kept
     return out
+
+
+def iptc_charset_plan(path: str | Path, values: Iterable[str], *, command: str) -> dict:
+    """How to write these keyword values into this file's IPTC block, safely.
+
+    IPTC text carries no encoding of its own; an optional CodedCharacterSet
+    tag says UTF-8, and without it readers assume Latin-1 - which is what
+    older scanning software wrote. Marking such a block UTF-8 to add one
+    accented keyword relabels every caption and keyword already in it
+    without converting them: "München" reads as "M?nchen" from then on (#253
+    review). So, for a write involving a non-ASCII value:
+
+      * CodedCharacterSet already UTF-8, or no IPTC text with a non-ASCII
+        byte in it -> write UTF-8 (and mark the block UTF-8 if adding one);
+      * no CodedCharacterSet and the block already holds non-ASCII (legacy
+        Latin-1) -> write Latin-1 and leave the block's label alone; a value
+        Latin-1 cannot spell (`Łódź`) is not written to IPTC at all - the
+        XMP fields still carry it - and `note` says so;
+      * any other CodedCharacterSet -> no non-ASCII value goes into IPTC.
+
+    Returns `{'charset': 'UTF8'|'Latin', 'set_ccs': bool, 'skip': [values],
+    'note': str|None}`. Reads the file only when a value is non-ASCII.
+    """
+    values = list(dict.fromkeys(str(v) for v in values))
+    plan = {'charset': 'UTF8', 'set_ccs': False, 'skip': [], 'note': None}
+    accented = [v for v in values if not v.isascii()]
+    if not accented or 'IPTC:Keywords' not in keyword_tags_for(path):
+        return plan
+    cmd = ['exiftool', '-j', '-charset', 'iptc=Latin', '-IPTC:all', str(path)]
+    try:
+        proc = subprocess.run(cmd, check=False, capture_output=True, text=True, encoding='utf-8')
+    except FileNotFoundError as e:
+        raise ExiftoolUnavailableError(format_exiftool_error(command)) from e
+    try:
+        rows = json.loads(proc.stdout or '[]') if proc.returncode == 0 else None
+    except json.JSONDecodeError:
+        rows = None
+    if rows is None:
+        raise RuntimeError(f'exiftool could not read the IPTC block of {Path(path).name}')
+    row = rows[0] if rows and isinstance(rows[0], dict) else {}
+    ccs = row.get('CodedCharacterSet')
+    holds_non_ascii = any(
+        not str(v).isascii()
+        for key, raw in row.items() if key not in ('SourceFile', 'CodedCharacterSet')
+        for v in (raw if isinstance(raw, list) else [raw]))
+    if ccs == 'UTF8' or (ccs is None and not holds_non_ascii):
+        plan['set_ccs'] = ccs is None
+        return plan
+    if ccs is None:
+        plan['charset'] = 'Latin'
+        for v in accented:
+            try:
+                v.encode('latin-1')
+            except UnicodeEncodeError:
+                plan['skip'].append(v)
+        reason = ('its older IPTC text is in the Latin-1 alphabet, which cannot spell it')
+    else:
+        plan['skip'] = accented
+        reason = f'its IPTC block is in a character set ({ccs}) fha does not write'
+    if plan['skip']:
+        shown = ', '.join(repr(v) for v in plan['skip'])
+        plan['note'] = (f'{shown} was written to the XMP keyword fields of {Path(path).name} but '
+                        f'not to its older IPTC field, because {reason}; Lightroom reads '
+                        'the XMP fields.')
+    return plan
 
 
 def _counts_differ(want: dict[str, list[str]], got: dict[str, list[str]]) -> str | None:
@@ -3864,6 +3934,7 @@ def _counts_differ(want: dict[str, list[str]], got: dict[str, list[str]]) -> str
 def write_embedded_keywords(
     path: str | Path, *, add: Iterable[str] = (), remove: Iterable[str] = (),
     backup: 'OriginalBackup', command: str, add_tags: Iterable[str] | None = None,
+    report: dict | None = None,
 ) -> str | None:
     """Add and/or remove keywords in one file, in every keyword field, in one call.
 
@@ -3895,9 +3966,22 @@ def write_embedded_keywords(
     and any stray `_exiftool_tmp` are cleared (#110). After, exiftool's report
     is read, not only its exit code (`exiftool_write_failure`).
 
+    The IPTC block's own character set is respected (`iptc_charset_plan`): a
+    legacy Latin-1 block is written in Latin-1 and never relabelled, so its
+    old captions and keywords read the same afterwards.
+
+    `report`, when given, is filled in: `written` (exiftool changed the file -
+    true even if the check afterwards then failed, so a caller never says
+    "nothing was changed" about a file that was), `notes` (plain sentences,
+    e.g. a value kept out of IPTC) and `iptc_skipped`.
+
     Returns None on success and the human-facing failure text otherwise;
     raises `ExiftoolUnavailableError` only when exiftool is not installed.
     """
+    if report is not None:
+        report.setdefault('written', False)
+        report.setdefault('notes', [])
+        report.setdefault('iptc_skipped', [])
     path = Path(path)
     add = list(dict.fromkeys(str(v) for v in add))
     remove = list(dict.fromkeys(str(v) for v in remove))
@@ -3927,15 +4011,26 @@ def write_embedded_keywords(
         backup.ensure(path)
     except BackupRefused as e:
         return str(e)
+    try:
+        iptc = iptc_charset_plan(path, add + remove, command=command)
+    except ExiftoolUnavailableError:
+        raise
+    except RuntimeError as e:
+        return str(e)
+    iptc_skip = set(iptc['skip'])
     clear_read_only_bit(path)
     cleanup_exiftool_tmp(path)
-    args: list[str] = ['-charset', 'UTF8', '-charset', 'iptc=UTF8']
-    if 'IPTC:Keywords' in tags_for_add and any(not v.isascii() for v in add):
+    args: list[str] = ['-charset', 'UTF8', '-charset', f'iptc={iptc["charset"]}']
+    if (iptc['set_ccs'] and 'IPTC:Keywords' in tags_for_add
+            and any(not v.isascii() for v in add)):
         args.append('-IPTC:CodedCharacterSet=UTF8')
     for value in remove:
-        args.extend(f'-{tag}-={value}' for tag in KEYWORD_TAGS)
+        args.extend(f'-{tag}-={value}' for tag in KEYWORD_TAGS
+                    if not (tag == 'IPTC:Keywords' and value in iptc_skip))
     for value in add:
         for tag in tags_for_add:
+            if tag == 'IPTC:Keywords' and value in iptc_skip:
+                continue
             args.extend((f'-{tag}-={value}', f'-{tag}+={value}'))
     args.append('-overwrite_original_in_place')
     fd, argfile = tempfile.mkstemp(prefix='fha-exiftool-', suffix='.args')
@@ -3957,13 +4052,19 @@ def write_embedded_keywords(
     if failure is not None:
         cleanup_exiftool_tmp(path)
         return format_exiftool_tmp_error(failure, path)
+    if report is not None:
+        report['written'] = True
+        report['iptc_skipped'] = [v for v in add if v in iptc_skip]
+        if iptc['note'] and any(v in iptc_skip for v in add):
+            report['notes'].append(iptc['note'])
     if before is not None:
         try:
             after = keyword_fields_from_row(read_keyword_row(path, command=command))
         except RuntimeError as e:
             return f'the keywords were written, but reading them back failed ({e})'
         problem = _counts_differ(
-            expected_keyword_fields(before, add if tags_for_add else [], remove, tags_for_add),
+            expected_keyword_fields(before, add if tags_for_add else [], remove, tags_for_add,
+                                    iptc_skip=iptc_skip),
             after)
         if problem is not None:
             return (f'exiftool said it updated {path.name}, but reading it back shows '

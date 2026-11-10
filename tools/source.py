@@ -190,6 +190,7 @@ from _lib import (
     is_working_copy,
     keyword_fields_from_row,
     expected_keyword_fields,
+    iptc_charset_plan,
     keyword_tags_for,
     load_fha_yaml,
     normalize_id,
@@ -548,7 +549,7 @@ def _run_exiftool_read_keyword_fields(file_path: Path) -> dict[str, list[str]]:
 
 def _run_exiftool_edit_keyword_fields(
     file_path: Path, *, remove: list[tuple[str, str]], add: list[tuple[str, str]],
-    backup: OriginalBackup,
+    backup: OriginalBackup, report: dict | None = None,
 ) -> str | None:
     """Remove/add keyword values on one file in a single exiftool call.
 
@@ -567,7 +568,7 @@ def _run_exiftool_edit_keyword_fields(
     return write_embedded_keywords(
         file_path, add=[value for _, value in add], remove=[value for _, value in remove],
         add_tags=[tag_of[bucket] for bucket, _ in add],
-        backup=backup, command='fha source clear-keyword')
+        backup=backup, command='fha source clear-keyword', report=report)
 
 
 def run_source_clear_keyword(
@@ -908,6 +909,21 @@ def run_source_clear_keyword(
             if not any(_keyword_leaf(tag, v).strip().lower() == replacement.lower()
                        for v in remaining):
                 add.append((tag, replacement))
+    # An accented correction on a scan whose older IPTC text is Latin-1 (no
+    # character-set tag): the writer writes it there in Latin-1, or - when
+    # Latin-1 cannot spell it (`Łódź`) - keeps it out of IPTC and leaves the
+    # block's old captions untouched (#253 review). Planned here too, so the
+    # preview and the check after the write say the same thing.
+    iptc_note = None
+    if replacement and not replacement.isascii() and any(b == 'keywords' for b, _ in add):
+        try:
+            plan = iptc_charset_plan(abs_path, [replacement] + remove_values,
+                                     command='fha source clear-keyword')
+        except RuntimeError:
+            plan = None
+        if plan is not None and replacement in plan['skip']:
+            add = [(b, v) for b, v in add if b != 'keywords']
+            iptc_note = plan['note']
     tag_of = dict(_KEYWORD_BUCKETS)
     bucket_of = {tag: bucket for bucket, tag in _KEYWORD_BUCKETS}
     expected_by_tag = expected_keyword_fields(
@@ -927,6 +943,8 @@ def run_source_clear_keyword(
             result.add('info',
                        f'[dry-run] {replacement!r} is already present where it '
                        'would be added - nothing more to write.')
+        if iptc_note:
+            result.add('info', f'[dry-run] {iptc_note}')
         result.add('info', '[dry-run] No file written. Re-run without --dry-run to apply.')
         return result
 
@@ -936,10 +954,27 @@ def run_source_clear_keyword(
     for level, text in backup.drain_messages():
         result.add(level, text)
 
+    write_report: dict = {}
     error = _run_exiftool_edit_keyword_fields(
-        abs_path, remove=matches, add=add, backup=backup)
+        abs_path, remove=matches, add=add, backup=backup, report=write_report)
     for level, text in backup.drain_messages():
         result.add(level, text)
+    if error is not None and write_report.get('written'):
+        # The file WAS written and only the check afterwards failed (#253
+        # review: this used to say "Nothing was changed"). Say what is there
+        # now, so the next step is taken from the truth.
+        result.note_changed(abs_path)
+        try:
+            now = _run_exiftool_read_keyword_fields(abs_path)
+            state = '; '.join(f'{b}: {", ".join(repr(v) for v in vals) or "(empty)"}'
+                              for b, vals in now.items())
+        except RuntimeError as e:
+            state = f'(could not be read back: {e})'
+        return _refuse(
+            'refused',
+            f'exiftool changed {alias}, but {error}. Its keyword fields now hold - '
+            f'{state}. Run `fha lint --with-exif` to see what still needs fixing, '
+            'then run clear-keyword again for anything left.')
     if error is not None:
         return _refuse(
             'refused',
@@ -1033,6 +1068,8 @@ def run_source_clear_keyword(
     if add:
         added_desc = ', '.join(f'{tag}: {value!r}' for tag, value in add)
         result.add('info', f'Added {added_desc}.')
+    if iptc_note:
+        result.add('info', iptc_note)
     result.add('info',
                'Next: run `fha lint --with-exif` if you want to confirm the '
                'warning is gone.',

@@ -69,6 +69,11 @@ class _Recorder:
         return self.result
 
 
+def _CLEAN_IPTC(*_a, **_k) -> dict:
+    """`iptc_charset_plan` for a file whose IPTC block is empty or UTF-8."""
+    return {'charset': 'UTF8', 'set_ccs': True, 'skip': [], 'note': None}
+
+
 def _no_backup(tmp: Path) -> OriginalBackup:
     return OriginalBackup(tmp, {})
 
@@ -242,6 +247,7 @@ class WriterCommandTests(unittest.TestCase):
                                    stderr='')
 
         with unittest.mock.patch.object(_lib.subprocess, 'run', run), \
+                unittest.mock.patch.object(_lib, 'iptc_charset_plan', _CLEAN_IPTC), \
                 unittest.mock.patch.object(_lib, 'read_keyword_row', lambda *a, **k: {
                     'IPTC:Keywords': ['Zoë Kowalczyk'], 'XMP-dc:Subject': ['Zoë Kowalczyk'],
                     'XMP-lr:HierarchicalSubject': ['Zoë Kowalczyk']}
@@ -267,6 +273,7 @@ class WriterCommandTests(unittest.TestCase):
         path.write_bytes(b'x')
         row = {'XMP-dc:Subject': ['Zoë Kowalczyk']}
         with unittest.mock.patch.object(_lib.subprocess, 'run', _Recorder()), \
+                unittest.mock.patch.object(_lib, 'iptc_charset_plan', _CLEAN_IPTC), \
                 unittest.mock.patch.object(_lib, 'read_keyword_row', lambda *a, **k: row):
             err = _lib.write_embedded_keywords(path, remove=['Zoë Kowalczyk'],
                                                backup=_no_backup(self.tmp), command='t')
@@ -507,6 +514,92 @@ class RealNonAsciiTests(unittest.TestCase):
         self.assertIsNone(self._write(path, add=['#1 Hartley farm', 'C:\\Old\\Name']))
         self.assertEqual(read_fields(path)['XMP-dc:Subject'],
                          ['#1 Hartley farm', 'C:\\Old\\Name'])
+
+
+@unittest.skipUnless(EXIFTOOL, 'exiftool is not installed - these run on a machine that has it')
+class RealLegacyIptcTests(unittest.TestCase):
+    """#253 review (U1): an accented keyword must not relabel older Latin-1
+    IPTC text as UTF-8 - "München" in a caption read as "M?nchen" after."""
+
+    CAPTION = 'Brief von Tante Zoë aus München, 1920'
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _exiftool_args(self, path: Path, *lines: str) -> None:
+        import subprocess
+        argfile = self.tmp / 'setup.args'
+        argfile.write_text('\n'.join(lines + ('-overwrite_original',)) + '\n', encoding='utf-8')
+        subprocess.run(['exiftool', '-@', str(argfile), str(path)], check=True, capture_output=True)
+
+    def _raw(self, path: Path, tag: str) -> bytes:
+        import subprocess
+        # -charset iptc=UTF8 makes exiftool hand back the stored bytes as they are.
+        return subprocess.run(['exiftool', '-b', '-charset', 'iptc=UTF8', f'-IPTC:{tag}',
+                               str(path)], capture_output=True, check=True).stdout
+
+    def _latin1_scan(self) -> Path:
+        path = write_fixture(self.tmp / 'letter.jpg')
+        self._exiftool_args(path, '-charset', 'iptc=Latin', f'-IPTC:Caption-Abstract={self.CAPTION}',
+                            '-IPTC:Keywords=München', '-IPTC:Keywords=Hartley')
+        return path
+
+    def _write(self, path: Path, **kw):
+        report = {}
+        err = _lib.write_embedded_keywords(path, backup=_no_backup(self.tmp), command='t',
+                                           report=report, **kw)
+        return err, report
+
+    def test_an_accented_add_leaves_old_latin1_text_byte_for_byte(self) -> None:
+        path = self._latin1_scan()
+        caption, keywords = self._raw(path, 'Caption-Abstract'), self._raw(path, 'Keywords')
+        self.assertIn('München'.encode('latin-1'), keywords)   # really Latin-1 bytes
+        err, report = self._write(path, add=['Zoë Kowalczyk'])
+        self.assertIsNone(err)
+        self.assertEqual(self._raw(path, 'Caption-Abstract'), caption)
+        self.assertTrue(self._raw(path, 'Keywords').startswith(keywords))
+        self.assertEqual(self._raw(path, 'CodedCharacterSet'), b'')   # not relabelled
+        self.assertEqual(read_fields(path)['IPTC:Keywords'], ['München', 'Hartley', 'Zoë Kowalczyk'])
+        self.assertEqual(report['notes'], [])
+
+    def test_a_name_latin1_cannot_spell_stays_out_of_iptc_and_says_so(self) -> None:
+        path = self._latin1_scan()
+        keywords = self._raw(path, 'Keywords')
+        err, report = self._write(path, add=['Łódź'])
+        self.assertIsNone(err)
+        self.assertEqual(self._raw(path, 'Keywords'), keywords)
+        fields = read_fields(path)
+        self.assertEqual(fields['XMP-dc:Subject'], ['Łódź'])
+        self.assertEqual(fields['XMP-lr:HierarchicalSubject'], ['Łódź'])
+        self.assertEqual(report['iptc_skipped'], ['Łódź'])
+        self.assertIn('not to its older IPTC field', report['notes'][0])
+
+    def test_an_accented_latin1_keyword_can_be_removed(self) -> None:
+        path = self._latin1_scan()
+        err, _report = self._write(path, remove=['München'])
+        self.assertIsNone(err)
+        self.assertEqual(read_fields(path)['IPTC:Keywords'], ['Hartley'])
+        self.assertIn('München'.encode('latin-1'), self._raw(path, 'Caption-Abstract'))
+
+    def test_a_utf8_block_keeps_working_as_before(self) -> None:
+        path = write_fixture(self.tmp / 'utf8.jpg')
+        self._exiftool_args(path, '-charset', 'iptc=UTF8', '-IPTC:CodedCharacterSet=UTF8',
+                            '-IPTC:Keywords=München')
+        err, _report = self._write(path, add=['Łódź'])
+        self.assertIsNone(err)
+        self.assertEqual(read_fields(path)['IPTC:Keywords'], ['München', 'Łódź'])
+
+    def test_an_ascii_block_gets_utf8_and_is_labelled(self) -> None:
+        path = write_fixture(self.tmp / 'ascii.jpg')
+        self._exiftool_args(path, '-IPTC:Keywords=Hartley', '-IPTC:Caption-Abstract=Ada, 1911')
+        err, _report = self._write(path, add=['Łódź'])
+        self.assertIsNone(err)
+        self.assertEqual(self._raw(path, 'CodedCharacterSet'), b'\x1b%G')
+        self.assertEqual(read_fields(path)['IPTC:Keywords'], ['Hartley', 'Łódź'])
 
 
 class FixtureSanityTests(unittest.TestCase):

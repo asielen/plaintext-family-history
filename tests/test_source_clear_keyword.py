@@ -55,7 +55,7 @@ class _FakeExiftoolStore:
         f = self._fields(path)
         return {tag: list(values) for tag, values in f.items()}
 
-    def write(self, path: Path, *, remove, add, backup):
+    def write(self, path: Path, *, remove, add, backup, report=None):
         self.write_calls.append((Path(path).resolve(), list(remove), list(add)))
         backup.ensure(path)   # exercise the real safety-copy policy, like the live wrapper
         f = self._fields(path)
@@ -272,7 +272,7 @@ class SourceClearKeywordTests(unittest.TestCase):
         # that the field ended up in the requested state - simulate a race
         # (something else touched the file between the pre-read and this
         # write) where the wrapper reports success but nothing changed.
-        def _fake_write_no_op(path, *, remove, add, backup):
+        def _fake_write_no_op(path, *, remove, add, backup, report=None):
             backup.ensure(path)
             return None   # reports success without touching self.store at all
         source_mod._run_exiftool_edit_keyword_fields = _fake_write_no_op
@@ -299,7 +299,7 @@ class SourceClearKeywordTests(unittest.TestCase):
         self.store.seed(self.asset, subject=[
             'margaret hartley', 'Margaret Hartley', 'SOURCE: ' + SID])
 
-        def _fake_write_partial_removal(path, *, remove, add, backup):
+        def _fake_write_partial_removal(path, *, remove, add, backup, report=None):
             backup.ensure(path)
             f = self.store._fields(path)
             # Only remove the FIRST matched value, simulating a write that
@@ -340,7 +340,7 @@ class SourceClearKeywordTests(unittest.TestCase):
         self.assertIn('could not be resolved', result.messages[-1].text)
 
     def test_addition_that_did_not_land_is_also_caught(self) -> None:
-        def _fake_write_only_removes(path, *, remove, add, backup):
+        def _fake_write_only_removes(path, *, remove, add, backup, report=None):
             backup.ensure(path)
             f = self.store._fields(path)
             for tag, value in remove:
@@ -459,6 +459,23 @@ class SourceClearKeywordTests(unittest.TestCase):
         self.assertIn('could not be verified', result.messages[-1].text)
         self.assertTrue(result.changed,
                         'the write itself happened even though verification could not confirm it')
+
+    def test_a_write_that_landed_is_never_reported_as_nothing_changed(self) -> None:
+        # U1: the writer had written and only its check afterwards failed;
+        # the message used to end "Nothing was changed".
+        def _wrote_then_failed(path, *, remove, add, backup, report=None):
+            self.store.write(path, remove=remove, add=add, backup=backup)
+            if report is not None:
+                report['written'] = True
+            return 'reading it back shows IPTC:Keywords still holds something'
+        source_mod._run_exiftool_edit_keyword_fields = _wrote_then_failed
+        result = self._run(keyword='Margaret Hartley')
+        self.assertEqual(result['status'], 'refused')
+        text = result.messages[-1].text
+        self.assertNotIn('Nothing was changed', text)
+        self.assertIn('exiftool changed', text)
+        self.assertIn('now hold', text)
+        self.assertTrue(result.changed)
 
     def test_case_only_replacement_does_not_delete_the_keyword(self) -> None:
         # #147 review (P2): replacing 'margaret hartley' with 'Margaret
@@ -593,6 +610,35 @@ class RealWrapperClearKeywordTests(unittest.TestCase):
         self.assertEqual(read_fields(self.asset), {
             'IPTC:Keywords': ['Ada'], 'XMP-dc:Subject': ['Ada'],
             'XMP-lr:HierarchicalSubject': ['People|Ada']})
+
+    def test_a_name_latin1_cannot_spell_on_an_old_latin1_scan(self) -> None:
+        # U1: an older scanner wrote this caption in Latin-1, with no
+        # character-set tag. Writing `Łódź` used to relabel the block UTF-8,
+        # turning "München" into "M?nchen"; now IPTC is left alone and the
+        # preview and the result both say why.
+        argfile = Path(self._tmp.name) / 'latin.args'
+        argfile.write_text('-charset\niptc=Latin\n'
+                           '-IPTC:Caption-Abstract=Brief von Tante Zoë aus München\n'
+                           '-IPTC:Keywords=Lodz\n-XMP-dc:Subject=Lodz\n-overwrite_original\n',
+                           encoding='utf-8')
+        subprocess.run(['exiftool', '-@', str(argfile), str(self.asset)], check=True,
+                       capture_output=True)
+        before = subprocess.run(['exiftool', '-b', '-charset', 'iptc=UTF8',
+                                 '-IPTC:Caption-Abstract', str(self.asset)],
+                                capture_output=True, check=True).stdout
+        preview = self._clear(keyword='Lodz', replace_with='Łódź', dry_run=True)
+        self.assertIn('not to its older IPTC field', self._messages(preview))
+        result = self._clear(keyword='Lodz', replace_with='Łódź')
+        self.assertEqual(result.exit_code, EXIT_CLEAN, self._messages(result))
+        self.assertEqual(result['added_to'], ['hierarchical', 'subject'])
+        self.assertIn('not to its older IPTC field', self._messages(result))
+        after = subprocess.run(['exiftool', '-b', '-charset', 'iptc=UTF8',
+                                '-IPTC:Caption-Abstract', str(self.asset)],
+                               capture_output=True, check=True).stdout
+        self.assertEqual(after, before)
+        fields = read_fields(self.asset)
+        self.assertEqual(fields['IPTC:Keywords'], [])
+        self.assertEqual(fields['XMP-dc:Subject'], ['Łódź'])
 
     def test_an_accented_correction_lands_and_the_old_value_goes(self) -> None:
         self._tag('-XMP-dc:Subject=Zoe Kowalczik')
