@@ -12,6 +12,8 @@ state, so a test that reads again after writing is a genuine round-trip
 check, not just an assertion on the call arguments.
 """
 
+import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -21,6 +23,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
 
 import source as source_mod
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tests'))
+from keyword_fixture_files import read_fields, write_fixture  # noqa: E402
 from _lib import EXIT_CLEAN, EXIT_FAILURE, EXIT_WARNINGS, load_fha_yaml
 
 SID = 'S-2b3c4d5e6f'
@@ -519,6 +523,84 @@ class SourceClearKeywordTests(unittest.TestCase):
         self.assertEqual(result['status'], 'ok')
         copy = backup_dir / 'documents' / 'deeds' / f'deed_{SID.lower()}.tif'
         self.assertTrue(copy.exists(), 'a pristine copy must be made before the write')
+
+
+@unittest.skipUnless(shutil.which('exiftool'), 'exiftool is not installed - run where it is')
+class RealWrapperClearKeywordTests(unittest.TestCase):
+    """#253 review: preview, write and check must be one plan.
+
+    These go through the real `_run_exiftool_edit_keyword_fields` and the real
+    exiftool - no replaced seam - because the bug lived exactly between the
+    planner and the wrapper: the plan added a correction to some fields, the
+    wrapper wrote it to all of them, and the check then blamed "something else
+    changing the file" for the difference, after the write had happened.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name) / 'archive'
+        (self.root / 'documents' / 'letters').mkdir(parents=True)
+        (self.root / 'sources' / 'letter').mkdir(parents=True)
+        (self.root / 'fha.yaml').write_text(
+            'roots:\n  photos: photos\n  documents: documents\n', encoding='utf-8')
+        self.asset = write_fixture(
+            self.root / 'documents' / 'letters' / f'letter_{SID.lower()}.jpg')
+        (self.root / 'sources' / 'letter' / f'letter_{SID.lower()}.md').write_text(
+            f'---\nid: {SID}\ntitle: Letter\nsource_type: letter\nfiles:\n'
+            f'  - file: documents/letters/letter_{SID.lower()}.jpg\n    role: primary\n'
+            '---\n\n## Notes\nA letter.\n', encoding='utf-8')
+        self.config = load_fha_yaml(self.root)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _tag(self, *args: str) -> None:
+        subprocess.run(['exiftool', '-q', '-overwrite_original', *args, str(self.asset)],
+                       check=True, capture_output=True)
+
+    def _clear(self, **kw):
+        return source_mod.run_source_clear_keyword(self.root, self.config, SID, **kw)
+
+    def _messages(self, result) -> str:
+        return '\n'.join(m.text for m in result.messages)
+
+    def test_a_field_already_holding_the_name_in_other_capitals_is_left_alone(self) -> None:
+        self._tag('-IPTC:Keywords=Margret Hartley', '-IPTC:Keywords=margaret hartley',
+                  '-XMP-dc:Subject=Margret Hartley')
+        preview = self._clear(keyword='Margret Hartley', replace_with='Margaret Hartley',
+                              dry_run=True)
+        result = self._clear(keyword='Margret Hartley', replace_with='Margaret Hartley')
+        self.assertEqual(result.exit_code, EXIT_CLEAN, self._messages(result))
+        self.assertEqual(result['added_to'], ['hierarchical', 'subject'])
+        self.assertIn("subject: 'Margaret Hartley', hierarchical: 'Margaret Hartley'",
+                      self._messages(preview))
+        fields = read_fields(self.asset)
+        self.assertEqual(fields['IPTC:Keywords'], ['margaret hartley'])
+        self.assertEqual(fields['XMP-dc:Subject'], ['Margaret Hartley'])
+        self.assertEqual(fields['XMP-lr:HierarchicalSubject'], ['Margaret Hartley'])
+
+    def test_a_lightroom_people_entry_counts_as_already_naming_the_person(self) -> None:
+        # Codex's case: every field holds the stray name, Subject already has
+        # `Ada` and the hierarchy has `People|Ada`.
+        self._tag('-IPTC:Keywords=Wrong Name', '-XMP-dc:Subject=Wrong Name',
+                  '-XMP-dc:Subject=Ada', '-XMP-lr:HierarchicalSubject=Wrong Name',
+                  '-XMP-lr:HierarchicalSubject=People|Ada')
+        preview = self._clear(keyword='Wrong Name', replace_with='Ada', dry_run=True)
+        self.assertIn("Would add keywords: 'Ada'.", self._messages(preview))
+        result = self._clear(keyword='Wrong Name', replace_with='Ada')
+        self.assertEqual(result.exit_code, EXIT_CLEAN, self._messages(result))
+        self.assertEqual(result['added_to'], ['keywords'])
+        self.assertEqual(read_fields(self.asset), {
+            'IPTC:Keywords': ['Ada'], 'XMP-dc:Subject': ['Ada'],
+            'XMP-lr:HierarchicalSubject': ['People|Ada']})
+
+    def test_an_accented_correction_lands_and_the_old_value_goes(self) -> None:
+        self._tag('-XMP-dc:Subject=Zoe Kowalczik')
+        result = self._clear(keyword='Zoe Kowalczik', replace_with='Zoë Kowalczyk')
+        self.assertEqual(result.exit_code, EXIT_CLEAN, self._messages(result))
+        fields = read_fields(self.asset)
+        for tag in ('IPTC:Keywords', 'XMP-dc:Subject', 'XMP-lr:HierarchicalSubject'):
+            self.assertEqual(fields[tag], ['Zoë Kowalczyk'], tag)
 
 
 if __name__ == '__main__':

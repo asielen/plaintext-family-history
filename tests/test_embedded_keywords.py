@@ -56,7 +56,16 @@ class _Recorder:
         self.result = SimpleNamespace(returncode=returncode, stdout=stdout, stderr=stderr)
 
     def __call__(self, cmd, **_kwargs):
-        self.calls.append(list(cmd))
+        # The writer passes its arguments in a UTF-8 argument file (`-@`, so
+        # non-ASCII values survive Windows' command line); unfold it here so a
+        # test reads the arguments exiftool would see.
+        cmd = list(cmd)
+        if '-@' in cmd:
+            i = cmd.index('-@')
+            lines = Path(cmd[i + 1]).read_text(encoding='utf-8').splitlines()
+            args = [line.removeprefix('#[CSTR]').replace(chr(92) * 2, chr(92)) for line in lines]
+            cmd = cmd[:i] + args + cmd[i + 2:]
+        self.calls.append(cmd)
         return self.result
 
 
@@ -219,6 +228,64 @@ class WriterCommandTests(unittest.TestCase):
         self.assertEqual(rec.calls, [])
         self.assertIn('No space left on device', err)
 
+    def test_values_travel_in_a_utf8_argument_file_not_on_the_command_line(self) -> None:
+        # Windows hands exiftool its command line in the local code page, so
+        # `Zoë` arrived as `Zo?` (#253 review). The values go in a UTF-8 file.
+        path = self.tmp / 'ada.jpg'
+        path.write_bytes(b'x')
+        seen = {}
+
+        def run(cmd, **_kw):
+            seen['argv'] = list(cmd)
+            seen['file'] = Path(cmd[cmd.index('-@') + 1]).read_bytes()
+            return SimpleNamespace(returncode=0, stdout='    1 image files updated\n',
+                                   stderr='')
+
+        with unittest.mock.patch.object(_lib.subprocess, 'run', run), \
+                unittest.mock.patch.object(_lib, 'read_keyword_row', lambda *a, **k: {
+                    'IPTC:Keywords': ['Zoë Kowalczyk'], 'XMP-dc:Subject': ['Zoë Kowalczyk'],
+                    'XMP-lr:HierarchicalSubject': ['Zoë Kowalczyk']}
+                    if seen else {}):
+            err = _lib.write_embedded_keywords(path, add=['Zoë Kowalczyk'],
+                                               backup=_no_backup(self.tmp), command='t')
+        self.assertIsNone(err)
+        self.assertEqual(seen['argv'][-1], str(path))
+        self.assertFalse(any('Zo' in a for a in seen['argv']))
+        text = seen['file'].decode('utf-8')
+        self.assertIn('#[CSTR]-XMP-dc:Subject+=Zoë Kowalczyk', text)
+        self.assertIn('#[CSTR]-IPTC:CodedCharacterSet=UTF8', text)
+        self.assertIn('#[CSTR]iptc=UTF8', text)
+
+    def test_an_ascii_write_leaves_the_iptc_character_set_alone(self) -> None:
+        _err, rec = self._write('ada.jpg', add=[PID])
+        self.assertNotIn('-IPTC:CodedCharacterSet=UTF8', rec.calls[0])
+
+    def test_a_non_ascii_write_that_did_not_land_is_reported(self) -> None:
+        # exiftool said "1 image files updated" but the value is still there:
+        # the read-back catches it rather than reporting success.
+        path = self.tmp / 'ada.jpg'
+        path.write_bytes(b'x')
+        row = {'XMP-dc:Subject': ['Zoë Kowalczyk']}
+        with unittest.mock.patch.object(_lib.subprocess, 'run', _Recorder()), \
+                unittest.mock.patch.object(_lib, 'read_keyword_row', lambda *a, **k: row):
+            err = _lib.write_embedded_keywords(path, remove=['Zoë Kowalczyk'],
+                                               backup=_no_backup(self.tmp), command='t')
+        self.assertIsNotNone(err)
+        self.assertIn('still holds', err)
+
+    def test_add_tags_narrows_where_an_add_goes(self) -> None:
+        _err, rec = self._write('ada.jpg', add=['Ada'], add_tags=['XMP-dc:Subject'])
+        self.assertIn('-XMP-dc:Subject+=Ada', rec.calls[0])
+        self.assertNotIn('-IPTC:Keywords+=Ada', rec.calls[0])
+
+    def test_expected_state_is_the_writers_rule(self) -> None:
+        before = {'IPTC:Keywords': ['Wrong', 'Ada'], 'XMP-dc:Subject': ['Wrong'],
+                  'XMP-lr:HierarchicalSubject': ['People|Ada']}
+        self.assertEqual(
+            _lib.expected_keyword_fields(before, ['Ada'], ['Wrong'], ('XMP-dc:Subject',)),
+            {'IPTC:Keywords': ['Ada'], 'XMP-dc:Subject': ['Ada'],
+             'XMP-lr:HierarchicalSubject': ['People|Ada']})
+
     def test_a_keyword_spanning_lines_is_refused_before_exiftool(self) -> None:
         err, rec = self._write('a.jpg', add=['two\nlines'])
         self.assertIsNotNone(err)
@@ -265,12 +332,17 @@ class CallSitesGoThroughTheSharedCodeTests(unittest.TestCase):
             self.assertIn(f'-{tag}+={PID}', cmd)
 
     def test_source_clear_keyword(self) -> None:
+        # The removal leaves every field; the correction goes exactly where the
+        # planner said (#253 review: it used to go everywhere regardless, so
+        # what was previewed and verified was not what was written).
         cmd = self._cmd_of(lambda: source_mod._run_exiftool_edit_keyword_fields(
             self.photo, remove=[('subject', 'Wrong Name')], add=[('subject', 'Right Name')],
             backup=_no_backup(self.tmp)))
         for tag in ALL_THREE:
             self.assertIn(f'-{tag}-=Wrong Name', cmd)
-            self.assertIn(f'-{tag}+=Right Name', cmd)
+        self.assertIn('-XMP-dc:Subject+=Right Name', cmd)
+        self.assertNotIn('-IPTC:Keywords+=Right Name', cmd)
+        self.assertNotIn('-XMP-lr:HierarchicalSubject+=Right Name', cmd)
 
     def test_readers_ask_for_all_three_fields(self) -> None:
         rec = _Recorder(stdout='[{}]')
@@ -388,6 +460,53 @@ class RealExiftoolTests(unittest.TestCase):
                         '-overwrite_original_in_place', str(path)], check=True,
                        capture_output=True)
         self.assertEqual(process._read_all_source_keywords(path), [SID.lower()])
+
+
+@unittest.skipUnless(EXIFTOOL, 'exiftool is not installed - these run on a machine that has it')
+class RealNonAsciiTests(unittest.TestCase):
+    """#253 review: accented names must round-trip, and removal must work."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _write(self, path: Path, **kw) -> str | None:
+        return _lib.write_embedded_keywords(path, backup=_no_backup(self.tmp),
+                                            command='test', **kw)
+
+    def test_accented_names_round_trip_in_every_field(self) -> None:
+        names = ['Zoë Kowalczyk', 'Łódź']
+        for suffix in ('.jpg', '.tif', '.png', '.pdf'):
+            with self.subTest(suffix=suffix):
+                path = write_fixture(self.tmp / f'na{suffix}')
+                self.assertIsNone(self._write(path, add=names))
+                fields = read_fields(path)
+                for tag in _lib.keyword_tags_for(path):
+                    self.assertEqual(fields[tag], names, f'{suffix} {tag}')
+                self.assertIsNone(self._write(path, remove=names))
+                self.assertEqual(_lib.read_embedded_keywords(path, command='t'), [])
+
+    def test_a_real_utf8_value_another_tool_wrote_can_be_removed(self) -> None:
+        import subprocess
+        path = write_fixture(self.tmp / 'other-tool.jpg')
+        argfile = self.tmp / 'args.txt'
+        argfile.write_text('-charset\nUTF8\n-charset\niptc=UTF8\n-IPTC:CodedCharacterSet=UTF8\n'
+                           '-IPTC:Keywords=Zoë Kowalczyk\n-XMP-dc:Subject=Zoë Kowalczyk\n'
+                           '-overwrite_original\n', encoding='utf-8')
+        subprocess.run(['exiftool', '-@', str(argfile), str(path)], check=True,
+                       capture_output=True)
+        self.assertEqual(_lib.read_embedded_keywords(path, command='t'), ['Zoë Kowalczyk'])
+        self.assertIsNone(self._write(path, remove=['Zoë Kowalczyk']))
+        self.assertEqual(_lib.read_embedded_keywords(path, command='t'), [])
+
+    def test_a_value_with_a_leading_space_or_hash_survives(self) -> None:
+        path = write_fixture(self.tmp / 'odd.jpg')
+        self.assertIsNone(self._write(path, add=['#1 Hartley farm', 'C:\\Old\\Name']))
+        self.assertEqual(read_fields(path)['XMP-dc:Subject'],
+                         ['#1 Hartley farm', 'C:\\Old\\Name'])
 
 
 class FixtureSanityTests(unittest.TestCase):

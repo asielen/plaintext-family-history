@@ -172,6 +172,8 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    read_keyword_row / read_embedded_keywords - the shared keyword read
 #    clear_read_only_bit / cleanup_exiftool_tmp / format_exiftool_tmp_error - #110
 #    exiftool_write_failure    - exit code AND report read (exit 0 can still fail)
+#    _argfile_line             - one UTF-8 exiftool argfile line (#[CSTR], survives any value)
+#    expected_keyword_fields  - the writer's resulting state, for previews and verifiers
 #    write_embedded_keywords   - THE keyword writer: add/remove in every field, one call
 #
 #  Record parsing
@@ -3813,9 +3815,55 @@ def exiftool_write_failure(proc, *, expect_change: bool) -> str | None:
     return None
 
 
+def _argfile_line(arg: str) -> str:
+    """One exiftool argfile line that reaches exiftool exactly as written.
+
+    `#[CSTR]` makes exiftool read the line as a C string, so a value's leading
+    whitespace or a leading `#` survives; a backslash is doubled and any other
+    control character escaped. Everything else - accents, `Ł`, `ő` - is
+    written as UTF-8 text.
+    """
+    escaped = arg.replace('\\', '\\\\')
+    escaped = ''.join(c if ord(c) >= 0x20 else f'\\x{ord(c):02x}' for c in escaped)
+    return '#[CSTR]' + escaped
+
+
+def expected_keyword_fields(before: dict[str, list[str]], add: list[str],
+                             remove: list[str], add_tags: tuple[str, ...]) -> dict[str, list[str]]:
+    """What each keyword field holds after `write_embedded_keywords` runs.
+
+    The writer's own rule, stated once so a planner and a verifier can use
+    the same answer: every exact `remove` value leaves every field; in each
+    field named by `add_tags`, every exact copy of an `add` value is cleared
+    and the value then goes in once.
+    """
+    out = {}
+    for tag in KEYWORD_TAGS:
+        gone = set(remove) | (set(add) if tag in add_tags else set())
+        kept = [v for v in before.get(tag, []) if v not in gone]
+        if tag in add_tags:
+            kept += list(add)
+        out[tag] = kept
+    return out
+
+
+def _counts_differ(want: dict[str, list[str]], got: dict[str, list[str]]) -> str | None:
+    """Plain words for the first field whose values differ (as a multiset)."""
+    from collections import Counter
+    for tag in KEYWORD_TAGS:
+        w, g = Counter(want.get(tag, [])), Counter(got.get(tag, []))
+        if w != g:
+            missing = ', '.join(repr(v) for v in (w - g))
+            extra = ', '.join(repr(v) for v in (g - w))
+            parts = [p for p in ((f'is missing {missing}' if missing else ''),
+                                 (f'still holds {extra}' if extra else '')) if p]
+            return f'{tag} ' + ' and '.join(parts)
+    return None
+
+
 def write_embedded_keywords(
     path: str | Path, *, add: Iterable[str] = (), remove: Iterable[str] = (),
-    backup: 'OriginalBackup', command: str,
+    backup: 'OriginalBackup', command: str, add_tags: Iterable[str] | None = None,
 ) -> str | None:
     """Add and/or remove keywords in one file, in every keyword field, in one call.
 
@@ -3824,8 +3872,23 @@ def write_embedded_keywords(
     format, written as exiftool's `-TAG-=V -TAG+=V` pair: the value ends up in
     each field exactly once whether or not some field already had it, so a
     keyword that was in IPTC alone is mirrored into XMP rather than doubled in
-    IPTC. `remove` takes the exact value out of all three fields; removing a
-    value a field does not hold is a no-op, never an error.
+    IPTC. `add_tags` narrows that to the named fields (still only those the
+    format takes) - `fha source clear-keyword` uses it to skip a field that
+    already names the person, e.g. as a Lightroom `People|…` entry.
+    `remove` takes the exact value out of all three fields; removing a value
+    a field does not hold is a no-op, never an error. `expected_keyword_fields`
+    states the resulting state, for callers that preview or verify it.
+
+    Values travel to exiftool in a UTF-8 argument file, not on the command
+    line: Windows hands exiftool its command line in the local code page, so
+    `Zoë Kowalczyk` or `Łódź` arrived as `Zo? Kowalczyk` and a removal of the
+    real value silently matched nothing. `-charset UTF8` and `-charset
+    iptc=UTF8` say how to read them, and an IPTC write of a non-ASCII value
+    also sets `CodedCharacterSet` to UTF-8 so the next reader decodes it.
+    Because a non-ASCII value is the case that has failed silently before, the
+    file is read back after such a write and any field not in the expected
+    state is reported as a failure (patterns §4: exiftool can say "updated"
+    and still not have done what was asked).
 
     Before writing, the run's `OriginalBackup` takes its pristine copy
     (TOOLING §13f) - a refused copy refuses the write - and the read-only bit
@@ -3843,28 +3906,69 @@ def write_embedded_keywords(
     for value in add + remove:
         if '\n' in value or '\r' in value or not value.strip():
             return f'{value!r} cannot be written as a keyword (it is blank or spans lines).'
+    format_tags = keyword_tags_for(path)
+    if add_tags is None:
+        tags_for_add = format_tags
+    else:
+        wanted = set(add_tags)
+        tags_for_add = tuple(tag for tag in format_tags if tag in wanted)
+    if add and not tags_for_add and not remove:
+        return None
+    non_ascii = any(not v.isascii() for v in add + remove)
+    before = None
+    if non_ascii:
+        try:
+            before = keyword_fields_from_row(read_keyword_row(path, command=command))
+        except ExiftoolUnavailableError:
+            raise
+        except RuntimeError as e:
+            return str(e)
     try:
         backup.ensure(path)
     except BackupRefused as e:
         return str(e)
     clear_read_only_bit(path)
     cleanup_exiftool_tmp(path)
-    args: list[str] = []
+    args: list[str] = ['-charset', 'UTF8', '-charset', 'iptc=UTF8']
+    if 'IPTC:Keywords' in tags_for_add and any(not v.isascii() for v in add):
+        args.append('-IPTC:CodedCharacterSet=UTF8')
     for value in remove:
         args.extend(f'-{tag}-={value}' for tag in KEYWORD_TAGS)
     for value in add:
-        for tag in keyword_tags_for(path):
+        for tag in tags_for_add:
             args.extend((f'-{tag}-={value}', f'-{tag}+={value}'))
-    cmd = ['exiftool', *args, '-overwrite_original_in_place', str(path)]
+    args.append('-overwrite_original_in_place')
+    fd, argfile = tempfile.mkstemp(prefix='fha-exiftool-', suffix='.args')
     try:
-        proc = subprocess.run(cmd, check=False, capture_output=True, text=True, encoding='utf-8')
-    except FileNotFoundError as e:
-        raise ExiftoolUnavailableError(format_exiftool_error(command)) from e
-    failure = exiftool_write_failure(proc, expect_change=bool(add))
-    if failure is None:
-        return None
-    cleanup_exiftool_tmp(path)
-    return format_exiftool_tmp_error(failure, path)
+        with os.fdopen(fd, 'w', encoding='utf-8', newline='\n') as fh:
+            fh.write(''.join(_argfile_line(a) + '\n' for a in args))
+        cmd = ['exiftool', '-@', argfile, str(path)]
+        try:
+            proc = subprocess.run(cmd, check=False, capture_output=True, text=True,
+                                  encoding='utf-8')
+        except FileNotFoundError as e:
+            raise ExiftoolUnavailableError(format_exiftool_error(command)) from e
+    finally:
+        try:
+            os.unlink(argfile)
+        except OSError:
+            pass
+    failure = exiftool_write_failure(proc, expect_change=bool(add and tags_for_add))
+    if failure is not None:
+        cleanup_exiftool_tmp(path)
+        return format_exiftool_tmp_error(failure, path)
+    if before is not None:
+        try:
+            after = keyword_fields_from_row(read_keyword_row(path, command=command))
+        except RuntimeError as e:
+            return f'the keywords were written, but reading them back failed ({e})'
+        problem = _counts_differ(
+            expected_keyword_fields(before, add if tags_for_add else [], remove, tags_for_add),
+            after)
+        if problem is not None:
+            return (f'exiftool said it updated {path.name}, but reading it back shows '
+                    f'{problem} - the keyword was not written as asked')
+    return None
 
 
 # ── Record parsing ────────────────────────────────────────────────────────────

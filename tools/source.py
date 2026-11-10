@@ -189,6 +189,7 @@ from _lib import (
     is_valid_id,
     is_working_copy,
     keyword_fields_from_row,
+    expected_keyword_fields,
     keyword_tags_for,
     load_fha_yaml,
     normalize_id,
@@ -554,15 +555,18 @@ def _run_exiftool_edit_keyword_fields(
     `remove`/`add` entries are `(field, exact_value)` with the field names of
     `_KEYWORD_BUCKETS`. The write is `_lib.write_embedded_keywords`, the one
     keyword writer (#252): a removed value comes out of every keyword field,
-    an added one goes into every field the file's format takes, and both
-    happen in one call, so there is never a moment where the file carries
-    neither the old value nor its correction. The writer also takes the
-    `originals_backup:` safety copy first (TOOLING §13f). Returns None on
-    success, the failure text (or the backup refusal) on a per-file failure;
-    raises RuntimeError only when exiftool itself is absent.
+    and an added one goes into exactly the fields `add` names - the planner's
+    choice, passed through as `add_tags`, so what is previewed, written and
+    verified is one plan. Both happen in one call, so there is never a moment
+    where the file carries neither the old value nor its correction. The
+    writer also takes the `originals_backup:` safety copy first (TOOLING
+    §13f). Returns None on success, the failure text (or the backup refusal)
+    on a per-file failure; raises RuntimeError only when exiftool is absent.
     """
+    tag_of = dict(_KEYWORD_BUCKETS)
     return write_embedded_keywords(
         file_path, add=[value for _, value in add], remove=[value for _, value in remove],
+        add_tags=[tag_of[bucket] for bucket, _ in add],
         backup=backup, command='fha source clear-keyword')
 
 
@@ -887,21 +891,30 @@ def run_source_clear_keyword(
     # is about to remove from the "already present" check fixes that; a
     # replacement equal to some OTHER, unrelated value in the field still
     # correctly gets skipped as a real duplicate.
-    removed_by_tag: dict[str, set[str]] = {}
-    for tag, value in matches:
-        removed_by_tag.setdefault(tag, set()).add(value)
+    # The shared writer takes a removed value out of EVERY field, so the
+    # "remaining" state is the read state minus every removed value anywhere.
+    remove_values = list(dict.fromkeys(value for _, value in matches))
 
     # #252: the correction goes into every keyword field the file's format
-    # takes - the same rule as every other fha keyword write - not just the
-    # field the stray value happened to sit in, so a photo manager reading
-    # any one of them sees it.
+    # takes - the same rule as every other fha keyword write - except a field
+    # that already names it (in any capitals, or as the last part of a
+    # Lightroom `People|…` entry), so Lightroom is not handed the person twice.
+    # This plan is passed to the writer as-is and is what the preview shows
+    # and the check below verifies (#253 review: they used to disagree).
     add: list[tuple[str, str]] = []
     if replacement:
         for tag in _buckets_for(abs_path):
-            remaining = [v for v in fields.get(tag, []) if v not in removed_by_tag.get(tag, set())]
+            remaining = [v for v in fields.get(tag, []) if v not in remove_values]
             if not any(_keyword_leaf(tag, v).strip().lower() == replacement.lower()
                        for v in remaining):
                 add.append((tag, replacement))
+    tag_of = dict(_KEYWORD_BUCKETS)
+    bucket_of = {tag: bucket for bucket, tag in _KEYWORD_BUCKETS}
+    expected_by_tag = expected_keyword_fields(
+        {tag_of[b]: list(v) for b, v in fields.items() if b in tag_of},
+        [replacement] if add else [], remove_values,
+        tuple(tag_of[b] for b, _ in add))
+    expected = {bucket_of[tag]: values for tag, values in expected_by_tag.items()}
 
     if dry_run:
         result.data['status'] = 'dry-run'
@@ -989,13 +1002,8 @@ def run_source_clear_keyword(
     # every value per tag - original counts, minus every matched removal,
     # plus every intended addition - against what's actually on disk.
     problems = []
-    touched_tags = sorted({tag for tag, _ in matches} | {tag for tag, _ in add})
-    for tag in touched_tags:
-        expected_counts = (
-            Counter(fields.get(tag, []))
-            - Counter(value for t, value in matches if t == tag)
-            + Counter(value for t, value in add if t == tag)
-        )
+    for tag in sorted(set(expected) | set(after_fields)):
+        expected_counts = Counter(expected.get(tag, []))
         actual_counts = Counter(after_fields.get(tag, []))
         missing = expected_counts - actual_counts
         extra = actual_counts - expected_counts
@@ -1711,12 +1719,14 @@ Clear or correct one embedded keyword on a source's documents-root file.
   fha source clear-keyword S-2b3c4d5e6f --keyword "Margaret Hartley" \\
       --replace-with "Margaret Cole"
 
-Reads the file's own Keywords/Subject values, matches --keyword case-
-insensitively, and removes the EXACT on-file value from wherever it actually
-sits (IPTC Keywords or XMP dc:subject) - so a keyword typed slightly
-differently on the command line refuses instead of silently doing nothing.
---replace-with corrects it in place, in the same field, rather than adding a
-new one. Documents-root only (`fha lint --with-exif` W131 finds candidates);
+Reads the file's keyword fields (IPTC Keywords, XMP dc:subject and
+Lightroom's hierarchical keywords), matches --keyword case-insensitively, and
+removes the EXACT on-file value from every field it sits in - so a keyword
+typed slightly differently on the command line refuses instead of silently
+doing nothing. --replace-with writes the correction into every keyword field
+the file takes, skipping one that already names it (a Lightroom "People|..."
+entry counts). The preview shows exactly what each field will hold.
+Documents-root only (`fha lint --with-exif` W131 finds candidates);
 --file NAME picks among several files listed on the source. Preview first
 with --dry-run."""
 
@@ -1735,8 +1745,9 @@ def _add_clear_keyword_arguments(sub: argparse._SubParsersAction) -> None:
                     help='The keyword to remove, exactly as it reads (matched '
                          'case-insensitively against the file).')
     ck.add_argument('--replace-with', metavar='TEXT', dest='replace_with',
-                    help='Add this keyword in place of the one removed, in the '
-                         'same field. Omit to just clear it.')
+                    help='Add this keyword in place of the one removed, in every '
+                         'keyword field that does not already name it. Omit to just '
+                         'clear it.')
     ck.add_argument('--file', metavar='NAME',
                     help='Which documents-root file to correct, when the source '
                          'lists more than one (a filename or its files: alias).')
