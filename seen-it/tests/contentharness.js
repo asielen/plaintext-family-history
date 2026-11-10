@@ -21,17 +21,19 @@ function fakeElement(tag) {
   return el;
 }
 
-function loadContentScript(file, { pathname, search = '', origin }) {
+function loadContentScript(file, { pathname, search = '', origin, querySelector }) {
   const queries = [];
+  const listeners = {};
+  const sent = [];
   const document = {
     scripts: [], title: '', visibilityState: 'visible', readyState: 'complete',
     body: fakeElement('body'), documentElement: fakeElement('html'),
     querySelectorAll: (sel) => { queries.push(sel); return []; },
-    querySelector: (sel) => { queries.push(sel); return null; },
+    querySelector: (sel) => { queries.push(sel); return querySelector ? querySelector(sel) : null; },
     getElementById: () => null,
     createElement: fakeElement,
     createTextNode: (t) => ({ textContent: t }),
-    addEventListener() {},
+    addEventListener(type, fn) { (listeners[type] = listeners[type] || []).push(fn); },
   };
   const timers = [];
   const keep = (t) => { timers.push(t); return t; };
@@ -40,7 +42,7 @@ function loadContentScript(file, { pathname, search = '', origin }) {
     location: { pathname, search, origin, href: origin + pathname + search, hostname: new URL(origin).hostname },
     chrome: {
       storage: { local: { get: async () => ({}), set: async () => {} }, onChanged: { addListener() {} } },
-      runtime: { sendMessage: async () => null, getURL: (p) => p },
+      runtime: { sendMessage: async (m) => { sent.push(m); return null; }, getURL: (p) => p },
     },
     console: { log() {}, warn() {}, error() {} },
     setTimeout: (...a) => keep(setTimeout(...a)),
@@ -60,6 +62,8 @@ function loadContentScript(file, { pathname, search = '', origin }) {
   }
   return {
     queries,
+    listeners,
+    sent,
     stop: () => { for (const t of timers) { clearTimeout(t); clearInterval(t); } },
   };
 }

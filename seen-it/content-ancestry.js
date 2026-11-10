@@ -4,7 +4,10 @@
 // A tree person's Facts page lists its sources as /search/collections/{dbId}/
 // records/{recordId}; search results link to the same address; the record page
 // itself lives there (older links: /discoveryui-content/view/{recordId}:{dbId}).
-// Images are /imageviewer/collections/{dbId}/images/{imageId}.
+// Images are /imageviewer/collections/{dbId}/images/{imageId}. A photo or
+// story someone shared to their tree is a media item,
+// /mediaui-viewer/tree/{treeId}/person/{pid}/media/{mediaId} - one id
+// wherever that photo is offered (med:{mediaId}).
 //
 // On a record or image page:
 //   • records the look (and how long it was on screen),
@@ -14,6 +17,11 @@
 // Everywhere else (search results, a person's Facts page, hints…):
 //   • puts small pills after every link to a record or image you have opened,
 //     marked, captured or filed.
+// On a person's Hints page:
+//   • opening a hint (its title or Review, which slides in Ancestry's side
+//     panel without leaving the page) counts as opening that record or photo,
+//     and the badge shows for it while the panel is open. Scrolling past a
+//     hint counts for nothing.
 //
 // It never clicks, saves or changes anything on the site.
 
@@ -240,6 +248,10 @@
     if (m) return 'rec:' + m[1] + ':' + m[2];
     m = /\/imageviewer\/collections\/(\d+)\/images\/([^/?#]+)/.exec(p);
     if (m) return 'img:' + m[1] + ':' + m[2];
+    // A shared photo or story: the media id is the same in every tree that
+    // saved it, so the tree and person in front of it are not part of the key.
+    m = /\/mediaui-viewer\/(?:[^?#]*\/)?media\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i.exec(p);
+    if (m) return 'med:' + m[1].toLowerCase();
     return null;
   }
 
@@ -290,7 +302,7 @@
     const a = data.anc[key] || {};
     const tree = treeOf(key);
     if (tree) wrap.appendChild(treePill(tree));
-    const what = key.startsWith('img:') ? 'image' : key.startsWith('clip:') ? 'clipping' : 'record';
+    const what = key.startsWith('img:') ? 'image' : key.startsWith('clip:') ? 'clipping' : key.startsWith('med:') ? 'photo' : 'record';
     if (k && k.state === 'filed') {
       wrap.appendChild(pill('nsi-archive', '📚 In archive' + (k.sid ? ' · ' + k.sid : ''),
         'This ' + what + ' is filed in the family archive' + (k.sid ? ' as ' + k.sid : '') + '.'));
@@ -364,9 +376,20 @@
   // links with something to say get pills, so pages are not cluttered.
   function renderLinks() {
     const here = keyFromPath(location.pathname);
-    for (const a of document.querySelectorAll('a[href*="/records/"], a[href*="/discoveryui-content/view/"], a[href*="/imageviewer/collections/"], a[href*="/interactive/"], a[href*="newspapers.com/clip/"], a[href*="newspapers.com/article/"], a[href*="findagrave.com/memorial/"]')) {
+    const shownInCard = new Map();
+    for (const a of document.querySelectorAll('a[href*="/records/"], a[href*="/discoveryui-content/view/"], a[href*="/imageviewer/collections/"], a[href*="/interactive/"], a[href*="/mediaui-viewer/"], a[href*="newspapers.com/clip/"], a[href*="newspapers.com/article/"], a[href*="findagrave.com/memorial/"]')) {
       if (a.closest('#nsi-anc-badge')) continue;
-      const key = keyFromHref(a.getAttribute('href'));
+      // A hint card links its title, thumbnail and Review button to the same
+      // item: each item gets its pills once (a record hint's scan is its own
+      // item, so its thumbnail keeps them), never on the Review button.
+      const hintCard = a.closest(HINT_CARD);
+      let key = keyFromHref(a.getAttribute('href'));
+      if (hintCard && key) {
+        const seenInCard = shownInCard.get(hintCard) || new Set();
+        shownInCard.set(hintCard, seenInCard);
+        if (a.classList.contains('ancBtn') || seenInCard.has(key)) key = null;
+        else seenInCard.add(key);
+      }
       // Where the pills go: right after a link with text; for an icon-only link
       // (a tree person's Facts page lists sources as cards - an empty icon link
       // beside a .userCardContent block with the collection title) inside that
@@ -406,7 +429,7 @@
   }
 
   function render() {
-    renderBadge(keyFromPath(location.pathname));
+    renderBadge(keyFromPath(location.pathname) || openHint);
     renderLinks();
     const person = personFromPath(location.pathname);
     if (person) trackPerson(person);
@@ -437,9 +460,54 @@
     };
   }
 
+  // ── a hint opened in the side panel ───────────────────────────────────────
+  // On a person's Hints page a click on a hint's title or Review slides in
+  // Ancestry's side panel; the page address does not change. That click is
+  // the look (and the reading time runs until the panel closes). A hint only
+  // scrolled past is never counted. A click that opens a new tab (Ctrl, ⌘,
+  // Shift or the middle button) is left to that tab, which counts the page it
+  // opens, so one look is not counted twice.
+  const HINT_CARD = 'section.extHintCard';
+  // The title link: a photo hint's heading, a record hint's collection title.
+  const HINT_TITLE = '.hintCardContentHeader, .recordCardV2CollectionTitle';
+  let openHint = null;
+  let openHintAt = 0;
+  const panelOpen = () => !!document.querySelector('aside.sidebar:not(.noDisplay)');
+
+  function onHintClick(e) {
+    if (e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return;
+    const a = e.target && e.target.closest && e.target.closest('a[href]');
+    const card = a && a.closest(HINT_CARD);
+    if (!card) return;
+    const key = keyFromHref(a.getAttribute('href'));
+    if (!key) return;
+    const header = card.querySelector(HINT_TITLE);
+    const title = header ? (header.innerText || header.textContent || '').trim() : '';
+    openHint = key;
+    openHintAt = Date.now();
+    dwellFlush();
+    dwellKey = key;
+    dwellSince = document.visibilityState === 'visible' ? Date.now() : 0;
+    send({ type: 'ancLook', key, info: { title: title || null } });
+    scheduleRender();
+  }
+  document.addEventListener('click', onHintClick, true);
+
+  function checkHintPanel() {
+    // Wait for the panel to appear before treating "not open" as closed.
+    if (!openHint || panelOpen() || Date.now() - openHintAt < 1500) return;
+    dwellFlush();
+    openHint = null;
+    dwellKey = keyFromPath(location.pathname);
+    dwellSince = dwellKey && document.visibilityState === 'visible' ? Date.now() : 0;
+    scheduleRender();
+  }
+
   let lastPath = null;
   function onLocation() {
+    checkHintPanel();
     if (location.pathname === lastPath) return;
+    openHint = null;
     lastPath = location.pathname;
     const key = keyFromPath(location.pathname);
     dwellFlush();

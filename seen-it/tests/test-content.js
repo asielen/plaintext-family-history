@@ -55,3 +55,56 @@ test('content.js uses that rule, and forgets the last search on leaving the resu
   const np = manifest.content_scripts.find((c) => c.js.includes('content.js'));
   assert.deepStrictEqual(np.js, ['cliplist.js', 'searchrun.js', 'content.js']);
 });
+
+// Ancestry Hints page (person/hints): opening a hint slides in Ancestry's side
+// panel without changing the address. That click is the look; a photo hint is
+// keyed by its media id; scrolling past hints records nothing.
+function hintClick(href, { header = true, button = 0, ctrlKey = false } = {}) {
+  const card = { querySelector: (sel) => (/hintCardContentHeader/.test(sel) ? { innerText: 'Photo of the family' } : null) };
+  const a = {
+    getAttribute: (n) => (n === 'href' ? href : null),
+    classList: { contains: (c) => header && c === 'hintCardContentHeader' },
+    closest: (sel) => (sel === 'section.extHintCard' ? card : null),
+  };
+  return { button, ctrlKey, metaKey: false, shiftKey: false, altKey: false, target: { closest: (sel) => (sel === 'a[href]' ? a : null) } };
+}
+
+test('Ancestry hints: opening a photo hint counts as opening that photo', async () => {
+  let panel = null;
+  const page = loadContentScript('content-ancestry.js', {
+    pathname: '/family-trees/111/people/222/hints', origin: 'https://www.ancestry.com',
+    querySelector: (sel) => (sel === 'aside.sidebar:not(.noDisplay)' ? panel : null),
+  });
+  let look;
+  try {
+    await wait(50);
+    assert.strictEqual(page.sent.filter((m) => m.type === 'ancLook').length, 0, 'the hints page itself is not a look');
+    const click = page.listeners.click && page.listeners.click[0];
+    assert.ok(click, 'no click listener on the hints page');
+    panel = {};
+    click(hintClick('https://www.ancestry.com/mediaui-viewer/tree/333/person/444/media/ABCDEF01-2222-4333-8444-ABCDEFABCDEF?usePUBJs=true'));
+    look = page.sent.find((m) => m.type === 'ancLook');
+  } finally {
+    page.stop();
+  }
+  assert.ok(look, 'opening the hint recorded no look');
+  assert.strictEqual(look.key, 'med:abcdef01-2222-4333-8444-abcdefabcdef');
+  assert.strictEqual(look.info.title, 'Photo of the family');
+});
+
+test('Ancestry hints: a record hint opened in the panel counts; a new-tab click is left to the new tab', async () => {
+  const page = loadContentScript('content-ancestry.js', { pathname: '/family-trees/111/people/222/hints', origin: 'https://www.ancestry.com' });
+  try {
+    await wait(50);
+    const click = page.listeners.click && page.listeners.click[0];
+    assert.ok(click, 'no click listener on the hints page');
+    click(hintClick('https://www.ancestry.com/search/collections/6742/records/4321?tid=1', { ctrlKey: true }));
+    click(hintClick('https://www.ancestry.com/search/collections/6742/records/4321?tid=1', { button: 1 }));
+    assert.strictEqual(page.sent.filter((m) => m.type === 'ancLook').length, 0, 'a new-tab click was counted here too');
+    click(hintClick('https://www.ancestry.com/search/collections/6742/records/4321?tid=1'));
+  } finally {
+    page.stop();
+  }
+  assert.deepStrictEqual(page.sent.filter((m) => m.type === 'ancLook').map((m) => m.key), ['rec:6742:4321']);
+});
+
