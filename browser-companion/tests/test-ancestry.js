@@ -562,3 +562,39 @@ test('round 5 (audit): a commenter is never recorded as who added the photo; "Or
   assert.deepStrictEqual(details('<section><h3>Comments (2)</h3><p>Shared by <a>cousin_member_two</a></p>' +
     '<h3>Description</h3><p>A note from a member</p></section>'), {});
 });
+
+// ── PR #258 round 6 ──────────────────────────────────────────────────────────
+
+test('round 6: a sentence that starts "Shared by" / "Added by" / "Uploaded by" is the description, not an upload line', () => {
+  const box = (inner) => details('<aside><h2>Details</h2>' + inner +
+    '<p class="attribution">Originally added by <a>hartley_family_tree</a> on 3 Mar 2015</p></aside>');
+  assert.deepStrictEqual(box('<dl><dt>Date</dt><dd>abt 1925</dd><dt>Description</dt><dd>Shared by Aunt Ethel Hartley ' +
+    'at the 1950 reunion; she is the girl on the left.</dd></dl>'), {
+    date: 'abt 1925', originallyAddedBy: 'hartley_family_tree on 3 Mar 2015',
+    description: 'Shared by Aunt Ethel Hartley at the 1950 reunion; she is the girl on the left.' });
+  assert.strictEqual(box('<dl><dt>Date</dt><dd>abt 1925</dd><dt>Description</dt><dd><p>Thomas and Margaret on the ' +
+    'porch of the farmhouse.</p><p>Added by Grandma Ruth to her album in 1960.</p></dd></dl>').description,
+  'Thomas and Margaret on the porch of the farmhouse.\nAdded by Grandma Ruth to her album in 1960.');
+  assert.strictEqual(box('<section><h3>Description</h3><p>Thomas and Margaret on the porch.</p><p>Uploaded by me from ' +
+    'Mother\'s album.</p><p>The dog is Shep, who lived to 1934.</p></section>').description,
+  'Thomas and Margaret on the porch.\nUploaded by me from Mother\'s album.\nThe dog is Shep, who lived to 1934.');
+  // The real upload line - a link, or one username, and a date - still ends a field (Codex PRRT_kwDOS6vm6c61yqx6).
+  assert.deepStrictEqual(details('<aside><h2>Details</h2><dl><dt>Description</dt><dd></dd></dl>' +
+    '<p>Originally added by <a>cousin_member</a> on 3 Mar 2015</p></aside>'), { originallyAddedBy: 'cousin_member on 3 Mar 2015' });
+  assert.deepStrictEqual(details('<aside><h2>Details</h2><dl><dt>Description</dt><dd></dd></dl>' +
+    '<p>Added by cousin_member_4 on 4 Apr 2019</p></aside>'), { originallyAddedBy: 'cousin_member_4 on 4 Apr 2019' });
+});
+
+test('round 6 (audit N): a "Linked to" or "Description" beside the box is read whatever its wrapper is called', () => {
+  const panel = (beside) => details('<div class="panel"><aside aria-label="Details"><dl><dt>Date</dt><dd>abt 1925</dd></dl>' +
+    '</aside>' + beside + '</div>');
+  assert.deepStrictEqual(panel('<section class="linked-people"><h3>Linked to</h3><ul><li>Thomas Hartley 1840–1910</li>' +
+    '</ul></section>'), { date: 'abt 1925', linkedTo: ['Thomas Hartley'] });
+  assert.deepStrictEqual(panel('<section class="card"><h3>Description</h3><p>Thomas and Margaret on the porch.</p></section>'),
+    { date: 'abt 1925', description: 'Thomas and Margaret on the porch.' });
+  assert.deepStrictEqual(panel('<section><h3>About this photo</h3><h4>Description</h4><p>Thomas and Margaret on the ' +
+    'porch.</p></section>'), { date: 'abt 1925', description: 'Thomas and Margaret on the porch.' });
+  // A person's card - marked so, headed by a name - is still never read.
+  assert.deepStrictEqual(panel('<div class="person-card"><h4>Thomas Hartley</h4><dl><dt>Description</dt>' +
+    '<dd>Born on the moors.</dd><dt>Attached to</dt><dd>cousin_member_one</dd></dl></div>'), { date: 'abt 1925' });
+});

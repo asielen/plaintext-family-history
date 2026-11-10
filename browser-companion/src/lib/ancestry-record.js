@@ -529,6 +529,24 @@ const ANC_MEDIA_HEADING_TAGS = ['H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'DT', 'TH', 
 // "Originally added by hartley_genealogy on 3 Mar 2015", on one line.
 const ANC_MEDIA_INLINE_RE = /^((?:originally )?(?:added|uploaded|shared) by)\s*:?\s+(.+)$/i;
 const ANC_MEDIA_INLINE_START_RE = /^((?:originally )?(?:added|uploaded|shared) by)\b/i;
+// An upload line is attribution only when it is shaped like one: the phrase,
+// then the uploader in a link, or one username-like word, and at most "on
+// <date>" after - nothing else. "Shared by Aunt Ethel Hartley at the 1950
+// reunion; she is the girl on the left." is the family's description, and
+// stays one (PR #258 round 6).
+const ANC_MEDIA_ATTRIB_LINKED_RE = /^((?:originally )?(?:added|uploaded|shared) by)\s*:?\s*(on\s+[^.;!?]{3,40})?$/i;
+const ANC_MEDIA_ATTRIB_WORD_RE = /^((?:originally )?(?:added|uploaded|shared) by)\s*:?\s+[a-z0-9_.@-]*[a-z0-9_@-](\s+on\s+[^.;!?]{3,40})?$/i;
+
+// An attribution line - { phrase, who } - or null. `text(n)` reads a node.
+function ancMediaAttribution(el, text) {
+  const own = ancOwnText(el);
+  if (!ANC_MEDIA_INLINE_START_RE.test(own)) return null;
+  const line = text(el).split('\n')[0];
+  const linked = ANC_MEDIA_ATTRIB_LINKED_RE.test(own) && ancElements(el, (e) => ancTag(e) === 'A').length > 0;
+  if (!linked && !ANC_MEDIA_ATTRIB_WORD_RE.test(line)) return null;
+  const m = ANC_MEDIA_INLINE_RE.exec(line);
+  return m ? { phrase: m[1], who: m[2].trim() } : null;
+}
 
 // The text an element holds directly (not in its child elements). A live
 // NodeList has no filter, so the children are copied first.
@@ -563,8 +581,9 @@ function ancMediaValue(el, text, scope) {
     .filter(Boolean).join('\n');
   // Where one field ends: the next label, or an upload attribution
   // ("Originally added by <a>name</a> on …"), which is never a value of
-  // another field (PR #258 round 5, Codex PRRT_kwDOS6vm6c61yqx6).
-  const boundary = (n) => !!ancMediaLabel(n) || ANC_MEDIA_INLINE_START_RE.test(ancOwnText(n));
+  // another field (PR #258 round 5, Codex PRRT_kwDOS6vm6c61yqx6) - only one
+  // shaped like attribution, never a sentence (round 6).
+  const boundary = (n) => !!ancMediaLabel(n) || !!ancMediaAttribution(n, text);
   const holdsLabel = (n) => n.nodeType === 1 && (boundary(n) || ancElements(n, boundary).length > 0);
   const inside = tidy([...(el.childNodes || [])].filter((c) => c.nodeType === 1).map((c) => text(c)));
   if (inside) return inside;
@@ -661,10 +680,9 @@ function ancMediaDetails(root, opts) {
       }
       // "Originally added by hartley_genealogy", in the one element whose own
       // words start with it (the name may sit in a link inside).
-      const inline = ANC_MEDIA_INLINE_START_RE.test(ancOwnText(c))
-        ? ANC_MEDIA_INLINE_RE.exec(text(c).split('\n')[0]) : null;
+      const inline = ancMediaAttribution(c, text);
       if (inline) {
-        claim('originallyAddedBy', inline[2].trim(), addedByWeight(inline[1]));
+        claim('originallyAddedBy', inline.who, addedByWeight(inline.phrase));
         continue;
       }
       walk(c);
@@ -714,15 +732,23 @@ function ancMediaMembersSection(el) {
 }
 
 // A card about someone else beside the photo's Details box - a linked
-// person's, a member's profile: marked so (person, profile, member, card,
-// comment), or headed by something that is not one of the photo's labels
-// (a name). Never read beside the box.
+// person's, a member's profile, a comment. Only one that is clearly so is
+// skipped: marked as a person, profile or comment, AND headed by something
+// that is not one of the photo's labels (a name). One whose own first
+// heading or label is a field ("Linked to", "Description") is always read,
+// whatever its wrapper is called ("linked-people", "card"): where the
+// markup is unsure, her text is kept (PR #258 round 6).
 function ancMediaOthersCard(el) {
+  const kids = [...(el.childNodes || [])].filter((c) => c.nodeType === 1);
+  const head = kids.find((c) => /^H[1-6]$/.test(ancTag(c)));
+  const field = (c) => {
+    const key = c ? ancMediaLabel(c) : null;
+    return !!key && key !== 'comments' && key !== 'savedBy';
+  };
+  if (field(kids[0]) || field(head)) return false;
   const cls = el.className && el.className.baseVal !== undefined ? el.className.baseVal : el.className;
-  if (/(^|[\s_-])(person|people|profile|member|members|comment|comments|card|cards)([\s_-]|$)/i
-    .test(String(el.id || '') + ' ' + String(cls || ''))) return true;
-  const head = [...(el.childNodes || [])].find((c) => c.nodeType === 1 && /^H[1-6]$/.test(ancTag(c)));
-  return !!head && !ancMediaLabel(head);
+  return /(^|[\s_-])(person|persons|profile|profiles|comment|comments)([\s_-]|$)/i
+    .test(String(el.id || '') + ' ' + String(cls || ''));
 }
 
 // The people a shared photo is linked to, as names: one per line, without

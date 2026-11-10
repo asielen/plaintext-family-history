@@ -108,11 +108,12 @@ import time
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlparse, urlsplit
 
 sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
+    PHOTO_EXTENSIONS,
     EXIT_CLEAN,
     EXIT_ERRORS,
     EXIT_FAILURE,
@@ -1374,18 +1375,42 @@ _SHARED_PHOTO_COPY_NOTE = ("The copy of Ancestry's page was left out: it lists o
 _PAGE_COPY_SUFFIXES = ('.html', '.htm', '.xhtml', '.mhtml', '.mht')
 
 
+class SharedPhotoWithoutPicture(BundleError):
+    """A shared Ancestry photo's capture that holds no photo once the copy of
+    Ancestry's page is left out - an older add-on saved only that copy. Not
+    ingested at all: filed, it would be a photo source with no photo, which
+    the Seen It add-on would show as "in the archive" (PR #258 round 6)."""
+
+
+_SHARED_PHOTO_OLD_ADDON = (
+    "This shared photo was captured with an older version of the add-on, which saved only a copy of "
+    "Ancestry's page (it lists other members) and not the photo. Nothing was filed. Update the add-on "
+    "(fha update-tools, then reload it in chrome://extensions), open the photo again and press Capture "
+    "this photo.")
+
+
 def _without_shared_photo_page_copy(cap: dict, assets: list[tuple[Path, str]]) -> list[tuple[Path, str]]:
     """A shared Ancestry photo's capture, less any copy of Ancestry's page.
 
     The copy (role `webpage`, or any saved HTML page) stays in the staging
     folder, parked with the rest of the bundle - never deleted - and one plain
-    line in the notes says why it is not in the archive. Every other capture
-    is returned as it came."""
-    if not _ANCESTRY_SHARED_PHOTO_RE.search(str(cap.get('url') or '')):
+    line in the notes says why it is not in the archive. The photo's address
+    keeps only its path through /media/{id}: its query (destTreeId, hid, …)
+    names her own tree, and goes into no citation or link. A capture left
+    with no photo at all raises `SharedPhotoWithoutPicture`, and is left in
+    the staging folder as it is. Every other capture is returned as it came."""
+    url = str(cap.get('url') or '')
+    if not _ANCESTRY_SHARED_PHOTO_RE.search(url):
         return assets
+    parts = urlsplit(url)
+    m = re.match(r'^(.*?/media/[0-9a-f-]{36})', parts.path, re.I)
+    if parts.scheme and parts.netloc and m:
+        cap['url'] = f'{parts.scheme}://{parts.netloc}{m.group(1)}'
     kept = [(path, role) for path, role in assets
             if role != 'webpage' and path.suffix.lower() not in _PAGE_COPY_SUFFIXES]
     if len(kept) != len(assets):
+        if not any(path.suffix.lower() in PHOTO_EXTENSIONS for path, _role in kept):
+            raise SharedPhotoWithoutPicture(_SHARED_PHOTO_OLD_ADDON)
         notes = str(cap.get('notes') or '').rstrip()
         cap['notes'] = (notes + '\n\n' + _SHARED_PHOTO_COPY_NOTE) if notes else _SHARED_PHOTO_COPY_NOTE
     return kept
@@ -1704,6 +1729,13 @@ def run_ingest(
         try:
             cap, html, assets = _read_bundle(bundle)
             assets = _without_shared_photo_page_copy(cap, assets)
+        except SharedPhotoWithoutPicture as e:
+            # Not malformed, and not filed anywhere: left exactly where it is.
+            print(f'WARNING: {e}', file=sys.stderr)
+            print(f'         left in place at {bundle}', file=sys.stderr)
+            failed += 1
+            outcomes.append({'bundle': name, 'status': 'shared-photo-without-photo', 'error': str(e)})
+            continue
         except BundleError as e:
             print(f'WARNING: skipping malformed bundle {name}: {e}', file=sys.stderr)
             print(f'         left in place at {bundle}', file=sys.stderr)

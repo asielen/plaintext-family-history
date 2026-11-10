@@ -224,6 +224,7 @@ from _lib import (
     normalize_id,
     parse_frontmatter_strict,
     parse_media_filename,
+    ASSET_ROOT_ALIASES,
     path_to_alias,
     picture_data_hash,
     read_embedded_keywords,
@@ -1320,6 +1321,12 @@ def _relocate_from_inbox(
         processed_root / sidecar.resolve().relative_to(inbox_root.resolve())
         if sidecar is not None else None
     )
+    if parked_path.exists() and new_path.name != file_path.name:
+        # A print filed under its print name (`name_if_taken`): an earlier
+        # print of the same photo, captured into the same inbox folder name,
+        # was parked under the shared name already - park this one under its
+        # print name too.
+        parked_path = parked_path.with_name(new_path.name)
     if parked_path.exists():
         raise ProcessError(f'destination already exists: {_rel(parked_path, archive_root)}')
     if parked_sidecar is not None and parked_sidecar.exists():
@@ -2949,14 +2956,11 @@ def _photo_already_filed_message(archive_root: Path, fha_config: dict, dest: Pat
                 holder = m.group(1) if m else None
                 break
     where = f'source {fmt_id_display(holder)}' if holder else 'a source in your archive'
-    try:
-        shown = _rel(folder, archive_root)
-    except ValueError:
-        shown = folder.name
-    try:
-        src_shown = _rel(src, archive_root)
-    except ValueError:
-        src_shown = src.name
+    # Every path is written in the form `fha process` reads back as typed,
+    # wherever the inbox and the photo library live (`_resolve_input_file`
+    # maps `inbox/…` and `photos/…` to their configured folders).
+    shown = path_to_alias(folder, 'inbox', fha_config, archive_root)
+    src_shown = path_to_alias(src, 'inbox', fha_config, archive_root)
     rename = (f'rename {src.name} in {shown} - and the same name in that folder\'s notes.md, which lists it - '
               if named_in_notes else f'rename {src.name} in {shown} ')
     filed_hash = picture_data_hash(dest)
@@ -2965,12 +2969,20 @@ def _photo_already_filed_message(archive_root: Path, fha_config: dict, dest: Pat
         return (f'this photo ({dest.name}) is already in your photo library, filed as {where}. '
                 f'{shown} is a second copy of the same photo. Delete that folder if it adds '
                 f'nothing; if it holds a file the source lacks, attach that file to the source with '
-                f'`fha process {alias} --more <file> ROLE`. Nothing was changed.')
+                f'`fha process "{alias}" --more <file> ROLE`. Nothing was changed.')
     if _ANCESTRY_PHOTO_NAME_RE.match(dest.name) and dest.name.lower() == src.name.lower():
+        # The next print letter the photo library does not hold yet: a
+        # third version must not be offered the second one's name.
+        letter = next((c for c in 'bcdefghijklmnopqrstuvwxyz'
+                       if not (dest.parent / f'{dest.stem}-{c}{dest.suffix}').exists()), None)
+        if letter is None:
+            return (f'{src_shown} is another version of the same Ancestry photo ({dest.name}), which is '
+                    f'already filed as {where}, with every print letter already used; nothing was changed. '
+                    f'If it adds nothing, delete the folder {shown}.')
         return (f'{src_shown} is another version of the same Ancestry photo ({dest.name}), which is '
                 f'already filed as {where}; nothing was changed. To keep this version with that source, '
-                f'run `fha process {alias} --more "{src_shown}" front:b`. If it adds nothing, delete the '
-                f'folder {shown}.')
+                f'run `fha process "{alias}" --more "{src_shown}" front:{letter}`, then delete the folder '
+                f'{shown}: its photo is then with {where}. If it adds nothing, just delete the folder.')
     if filed_hash is not None and this_hash is not None:
         return (f'a different photo with the same name ({dest.name}) is already in your photo library, '
                 f'filed as {where}; nothing was changed. To file this one, {rename}and process it again.')
@@ -3044,7 +3056,11 @@ def process_bundle(
     missing_hints = sorted(name for name in file_hints if not (folder / name).is_file())
     if missing_hints:
         names = ', '.join(missing_hints)
-        raise ProcessError(f'bundle notes contain file hints for missing assets: {names}.')
+        raise ProcessError(
+            f"the notes in {folder.name} name a file that is no longer in that folder: {names}. "
+            'If you already filed it (for example with `fha process … --more`), this folder has '
+            'nothing left to file: delete it. If you renamed it, change the name in the folder\'s '
+            'notes.md to match, then process the folder again. Nothing was changed.')
 
     final_title = str(sidecar_meta['title']) if sidecar_meta.get('title') \
         else _slugify(folder.name).replace('-', ' ')
@@ -5537,8 +5553,15 @@ def _resolve_input_file(
     *,
     require_file: bool = False,
     what: str = 'file',
+    fha_config: dict | None = None,
 ) -> tuple[Path | None, str | None]:
     """Resolve a user-typed asset path: as typed first, then under the archive root.
+
+    A path that starts with a root's name - `photos/…`, `documents/…`,
+    `inbox/…`, the alias form every record stores and every printed `fha
+    process` command uses - is also looked for under that root as fha.yaml
+    configures it (`fha_config`), so it works when the photo library or the
+    inbox lives outside the archive folder (PR #258 round 6).
 
     The docs tell the user to run commands from the workshop folder (the
     PARENT of the archive), so the path they naturally type is the one they
@@ -5585,6 +5608,12 @@ def _resolve_input_file(
     primary = resolved(raw_path, where='as typed')
     if found(primary):
         return primary, None
+    if not raw_path.is_absolute() and fha_config is not None:
+        first = raw.replace('\\', '/').split('/', 1)[0]
+        if first in ASSET_ROOT_ALIASES:
+            mapped = resolved(resolve_path(raw, fha_config, archive_root), where=f'in your {first} folder')
+            if found(mapped):
+                return mapped, None
     if not raw_path.is_absolute():
         retry = resolved(archive_root / raw_path, where='inside your archive')
         # retry == primary when the command already runs from the archive root
@@ -5831,7 +5860,7 @@ def _run_process(args: argparse.Namespace) -> int:
     # archive root, so the cheat-sheet spelling ("inbox/scan.jpg" typed from
     # the workshop folder) just works.
     try:
-        file_path, path_error = _resolve_input_file(args.file, archive_root)
+        file_path, path_error = _resolve_input_file(args.file, archive_root, fha_config=fha_config)
     except ProcessError as e:
         print(f'ERROR: {e}', file=sys.stderr)
         return EXIT_ERRORS
@@ -6006,7 +6035,7 @@ def _run_process(args: argparse.Namespace) -> int:
             # Same forgiving lookup as the FILE positional, narrowed to regular
             # files - --more attaches exactly one file to an existing source.
             more_file, more_error = _resolve_input_file(
-                args.more[0], archive_root, require_file=True, what='--more file')
+                args.more[0], archive_root, require_file=True, what='--more file', fha_config=fha_config)
             role_spec = args.more[1]
             if more_file is None:
                 print(f'ERROR: {more_error}', file=sys.stderr)
