@@ -11935,6 +11935,15 @@ def _bx_example() -> str:
             f'if you do not want the add-ons.')
 
 
+def _bx_unopenable(folder: Path, exc: OSError) -> str:
+    """The plain message for a folder the tools are not allowed to look into."""
+    why = exc.strerror or str(exc)
+    return (f'{BROWSER_EXT_SETTING}: in fha.yaml points at {folder}, which this '
+            f'computer will not let the tools open ({why}). Check that the folder '
+            f'is yours - that you can open it in your file browser - or pick another '
+            f'one, then run `fha update-tools` again.')
+
+
 def _bx_folder_problem(folder: Path, fha_config: dict, archive: Path) -> str:
     """Why `folder` cannot hold the add-ons, or '' when it can."""
     anchor = folder.anchor
@@ -12000,14 +12009,20 @@ def browser_ext_read_setting(fha_config: dict, archive_root: Path) -> BrowserExt
     archive = Path(archive_root).resolve()
     folder = Path(os.path.expanduser(text))
     folder = (folder if folder.is_absolute() else archive / folder).resolve()
-    problem = _bx_folder_problem(folder, fha_config, archive)
-    if problem:
-        return BrowserExtSetting('bad', folder, problem)
-    addon = _bx_addon_name(folder)
-    if not addon:
-        return BrowserExtSetting('folder', folder)
-    parent = folder.parent
-    problem = _bx_folder_problem(parent, fha_config, archive)
+    try:
+        problem = _bx_folder_problem(folder, fha_config, archive)
+        if problem:
+            return BrowserExtSetting('bad', folder, problem)
+        addon = _bx_addon_name(folder)
+        if not addon:
+            return BrowserExtSetting('folder', folder)
+        parent = folder.parent
+        problem = _bx_folder_problem(parent, fha_config, archive)
+    except OSError as exc:
+        # Python 3.12+ raises from exists()/is_dir() inside a folder this user
+        # may not open (it used to answer False); doctor and update-tools
+        # must say so plainly instead of stopping.
+        return BrowserExtSetting('bad', folder, _bx_unopenable(folder, exc))
     if problem:
         return BrowserExtSetting('bad', parent, problem, addon)
     return BrowserExtSetting('folder', parent, (
@@ -12027,6 +12042,19 @@ def browser_ext_doctor_check(archive_root: Path, fha_config: dict) -> tuple[str,
     where = Path(archive_root) / 'fha.yaml'
     if setting.state in ('absent', 'declined'):
         return None
+    try:
+        return _bx_doctor_reading(setting, where)
+    except OSError as exc:
+        return ('warn', _bx_unopenable(setting.folder, exc),
+                f'fix the {BROWSER_EXT_SETTING}: line in {where}')
+
+
+def _bx_doctor_reading(setting: BrowserExtSetting, where: Path) -> tuple[str, str, str]:
+    """browser_ext_doctor_check's body, for a setting that is present.
+
+    Every folder question here may raise OSError (a folder this user may not
+    open); the caller turns that into the plain warning.
+    """
     if setting.state == 'bad':
         return ('warn', setting.message, f'fix the {BROWSER_EXT_SETTING}: line in {where}')
     if setting.message:
@@ -12037,14 +12065,10 @@ def browser_ext_doctor_check(archive_root: Path, fha_config: dict) -> tuple[str,
                       f'`fha update-tools` creates it)', '')
     # What update-tools would refuse to touch, found the same read-only way.
     refusals = []
-    try:
-        for folder_name, short, _purpose, _helper, ident in BROWSER_EXTENSIONS:
-            found = _bx_locate(setting.folder, folder_name, ident)
-            if found['action'] in ('ambiguous', 'blocked'):
-                refusals.append(_bx_refusal_message(short, setting.folder, found))
-    except OSError as exc:
-        return ('warn', f'{setting.folder} could not be read ({exc})',
-                'check the folder (is its drive connected?)')
+    for folder_name, short, _purpose, _helper, ident in BROWSER_EXTENSIONS:
+        found = _bx_locate(setting.folder, folder_name, ident)
+        if found['action'] in ('ambiguous', 'blocked'):
+            refusals.append(_bx_refusal_message(short, setting.folder, found))
     if refusals:
         return ('warn', ' '.join(refusals), 'do what the message says, then run '
                                             '`fha update-tools`')
@@ -12300,6 +12324,14 @@ def _bx_ignored(rel: str, patterns: list[str]) -> bool:
 def browser_ext_shipped_files(repo_root: Path, folder_name: str) -> list[tuple[str, Path]]:
     """The (relative path, file) pairs of one add-on that get copied.
 
+    (The files only; `_bx_shipped` also says which listed files are missing.)
+    """
+    return _bx_shipped(repo_root, folder_name)[0]
+
+
+def _bx_shipped(repo_root: Path, folder_name: str) -> tuple[list[tuple[str, Path]], list[str], bool]:
+    """-> (files to copy, files that should be there but are not, listed by git?).
+
     The files git tracks in the clone's add-on folder - so a data file, a
     helper settings file or a cache lying in a developer's clone (exactly
     what the add-on's .gitignore exists to keep out) is never shipped into
@@ -12307,9 +12339,15 @@ def browser_ext_shipped_files(repo_root: Path, folder_name: str) -> list[tuple[s
     applied instead. Either way the add-on's own tests, package files and
     bytecode stay home (_DEV_*). Sorted so a preview and the real run list
     files in the same order.
+
+    A listed file that is not there - deleted from a git clone (git still
+    lists it), or a broken link in an unzipped one - is reported as missing
+    rather than skipped: an add-on copied without it would be broken, and
+    nothing would say why.
     """
     src_dir = Path(repo_root) / folder_name
     tracked = _bx_git_tracked(Path(repo_root), folder_name)
+    from_git = tracked is not None
     if tracked is None:
         patterns = _bx_gitignore_patterns(src_dir)
         tracked = []
@@ -12320,6 +12358,7 @@ def browser_ext_shipped_files(repo_root: Path, folder_name: str) -> list[tuple[s
                 if not _bx_ignored(rel, patterns):
                     tracked.append(rel)
     out: list[tuple[str, Path]] = []
+    missing: list[str] = []
     for rel in sorted(tracked):
         parts = rel.split('/')
         if (_bx_DEV_DIRS.intersection(parts[:-1]) or parts[-1] in _bx_DEV_FILES
@@ -12328,7 +12367,9 @@ def browser_ext_shipped_files(repo_root: Path, folder_name: str) -> list[tuple[s
         p = src_dir / rel
         if p.is_file():
             out.append((rel, p))
-    return out
+        else:
+            missing.append(rel)
+    return out, missing, from_git
 
 
 def _bx_version_tuple(text) -> tuple[int, ...] | None:
@@ -12338,6 +12379,14 @@ def _bx_version_tuple(text) -> tuple[int, ...] | None:
     except ValueError:
         return None
     return parts if 1 <= len(parts) <= 4 else None
+
+
+def _bx_exists(path: Path) -> bool:
+    """`path.exists()` that answers False, never raises, for a folder it may not open."""
+    try:
+        return path.exists()
+    except OSError:
+        return False
 
 
 def _bx_same_bytes(a: Path, b: Path) -> bool:
@@ -12476,7 +12525,13 @@ def browser_ext_plan(repo_root: Path, ext_dir: Path, date_str: str) -> list[dict
         ident = browser_ext_id(repo_manifest['key'])
         if ident is None:
             continue
-        files = browser_ext_shipped_files(repo_root, folder_name)
+        files, missing, from_git = _bx_shipped(repo_root, folder_name)
+        if missing:
+            # Checked before anything else: copying the rest would leave a
+            # broken add-on behind, so the installed copy is not touched.
+            item.update(action='source-incomplete', missing=missing,
+                        from_git=from_git, source=src)
+            continue
         found = _bx_locate(ext_dir, folder_name, ident, src)
         if found['action'] != 'found':
             item.update(found)
@@ -12573,14 +12628,14 @@ def _bx_update(item: dict) -> str | None:
     new_dirs: set[Path] = set()
     for rel, _src in item['copy']:
         d = (target / rel).parent
-        while d != target and not d.exists():
+        while d != target and not _bx_exists(d):
             new_dirs.add(d)
             d = d.parent
     written: list[tuple[str, bool]] = []
     for rel, src in item['copy']:
         dest = target / rel
-        existed = dest.exists()
         try:
+            existed = dest.exists()
             _bx_copy_file(src, dest)
         except OSError as exc:
             failed, cause = rel, exc
@@ -12626,7 +12681,7 @@ def browser_ext_apply_plan(items: list[dict], ext_dir: Path) -> tuple[list[str],
         elif item['action'] == 'update':
             had_backup = item['backup_exists']
             problem = _bx_update(item)
-            if not had_backup and (problem is None or item['backup'].is_dir()):
+            if not had_backup and (problem is None or _bx_exists(item['backup'])):
                 changed.append(str(item['backup']))
             if problem is None:
                 changed.append(str(item['target']))
@@ -12656,6 +12711,18 @@ def _bx_report(items: list[dict], ext_dir: Path, dry_run: bool) -> list[str]:
                   f'copy these tools carry ({item["new_version"]}) - left as it is.')
         elif action in ('ambiguous', 'blocked'):
             msg = _bx_refusal_message(name, ext_dir, item)
+            print(msg)
+            warnings.append(msg)
+        elif action == 'source-incomplete':
+            first = item['missing'][0]
+            more = (f' (and {len(item["missing"]) - 1} more)'
+                    if len(item['missing']) > 1 else '')
+            restore = (f'Restore it with `git -C "{item["source"].parent}" checkout -- '
+                       f'{item["extension"]}/{first}`, or download the tools again'
+                       if item['from_git'] else 'Download the tools again')
+            msg = (f'{name} was not updated: the tools copy is missing '
+                   f'{item["extension"]}/{first}{more}, so it was left exactly as it '
+                   f'is. {restore}, then run `fha update-tools` again.')
             print(msg)
             warnings.append(msg)
         elif action == 'install':
@@ -12754,7 +12821,7 @@ def browser_ext_run(archive_root: Path, repo_root: Path, *, dry_run: bool = Fals
     if setting.message:
         print(setting.message)
     if dry_run:
-        if not ext_dir.exists():
+        if not _bx_exists(ext_dir):
             print(f'[dry-run] Would create the folder {ext_dir}.')
     else:
         if any(i['action'] == 'install' for i in items):

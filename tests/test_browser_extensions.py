@@ -715,6 +715,88 @@ class AgentShellIsNotATerminal(unittest.TestCase):
         self.assertEqual(proc.stdout.strip().splitlines()[-1], 'True', proc.stderr)
 
 
+class Round4(_Base):
+    """PR #257 review round 4."""
+
+    def test_the_add_on_code_lives_in_lib_and_no_tool_imports_it(self):
+        # One file per tool, shared code only in _lib.py, tools never import
+        # tools (AGENTS_TOOLING.md).
+        self.assertFalse((ROOT / 'tools' / 'browser_extensions.py').exists())
+        self.assertTrue(callable(getattr(bx, 'browser_ext_run', None)))
+        for tool in (ROOT / 'tools').glob('*.py'):
+            text = tool.read_text(encoding='utf-8')
+            self.assertNotIn('import browser_extensions', text, tool.name)
+            self.assertNotIn('from browser_extensions', text, tool.name)
+
+    @unittest.skipUnless(shutil.which('git'), 'git not installed')
+    def test_a_file_deleted_from_the_clone_refuses_instead_of_shipping_short(self):
+        git = ['git', '-C', str(self.repo), '-c', 'user.email=t@t', '-c', 'user.name=t']
+        subprocess.run(git + ['init', '-q'], check=True)
+        subprocess.run(git + ['add', 'seen-it'], check=True)
+        subprocess.run(git + ['commit', '-q', '-m', 'x'], check=True)
+        (self.repo / 'seen-it' / 'background.js').unlink()      # git still lists it
+        installed = self.owner_layout()
+        self.set_folder(self.ext.as_posix())
+        before = _tree(self.ext)
+        rc, dry = self.update(dry_run=True)
+        self.assertIn('the tools copy is missing seen-it/background.js', dry)
+        rc, out = self.update()
+        self.assertEqual(rc, EXIT_WARNINGS)
+        self.assertEqual(_tree(self.ext), before)            # nothing touched, no backup
+        self.assertIn('the tools copy is missing seen-it/background.js', out)
+        self.assertIn('checkout -- seen-it/background.js', out)
+        self.assertTrue((installed / 'background.js').is_file())
+
+    def test_a_broken_link_in_an_unzipped_clone_is_missing_too(self):
+        link = self.repo / 'seen-it' / 'popup.js'
+        try:
+            os.symlink(self.repo / 'seen-it' / 'no-such-file.js', link)
+        except (OSError, NotImplementedError):
+            self.skipTest('this machine cannot make symbolic links')
+        _files, missing, from_git = bx._bx_shipped(self.repo, 'seen-it')
+        self.assertFalse(from_git)
+        self.assertEqual(missing, ['popup.js'])
+
+    def _no_entry(self):
+        """Path.exists/is_dir raising PermissionError inside the add-on folder (Python 3.12+)."""
+        real_exists, real_is_dir = Path.exists, Path.is_dir
+        ext = os.path.normcase(str(self.ext))
+
+        def guarded(real):
+            def check(path, *args, **kwargs):
+                if os.path.normcase(str(path)).startswith(ext):
+                    raise PermissionError(13, 'Access is denied', str(path))
+                return real(path, *args, **kwargs)
+            return check
+        return contextlib.ExitStack(), [
+            mock.patch.object(Path, 'exists', guarded(real_exists)),
+            mock.patch.object(Path, 'is_dir', guarded(real_is_dir))]
+
+    def test_a_folder_the_tools_may_not_open_is_a_plain_doctor_warning(self):
+        self.set_folder(self.ext.as_posix())
+        import doctor
+        from _lib import load_fha_yaml
+        cfg = load_fha_yaml(self.archive)
+        stack, patches = self._no_entry()
+        with stack:
+            for patch in patches:
+                stack.enter_context(patch)
+            result = doctor.run_doctor(self.archive, cfg)
+        check = {c['id']: c for c in result.data['checks']}['browser_extensions']
+        self.assertEqual(check['status'], 'warn')
+        self.assertIn('will not let the tools open', check['detail'])
+
+    def test_a_folder_the_tools_may_not_open_does_not_stop_update_tools(self):
+        self.set_folder(self.ext.as_posix())
+        stack, patches = self._no_entry()
+        with stack:
+            for patch in patches:
+                stack.enter_context(patch)
+            rc, out = self.update()
+        self.assertEqual(rc, EXIT_WARNINGS)
+        self.assertIn('will not let the tools open', out)
+
+
 class CaptureAddOnReload(_Base):
 
     def test_capture_add_on_update_says_to_reload_it(self):
