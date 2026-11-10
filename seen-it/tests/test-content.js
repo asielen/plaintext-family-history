@@ -230,3 +230,35 @@ test('Ancestry hints: Ignore or a help link in a card does not count as opening 
   assert.deepStrictEqual(page.sent.filter((m) => m.type === 'ancLook').map((m) => m.key), []);
 });
 
+test('Ancestry hints: a bare scan link beside the title box finds its own pills, not the title\'s', async () => {
+  const card = fakeCard('recordCardV2CollectionTitle');
+  const box = { textContent: '1880 census Thomas Hartley', children: [] };
+  box.appendChild = (el) => { box.children.push(el); return el; };
+  box.querySelector = (sel) => {
+    const m = /data-nsi-owner="([^"]+)"/.exec(sel);
+    return box.children.find((c) => (m ? c.dataset.nsiOwner === m[1] : !!c.dataset.nsiFor)) || null;
+  };
+  const scan = fakeLink('https://www.ancestry.com/imageviewer/collections/6742/images/4321_0001', { cls: 'photoContainer photo', card });
+  scan.nextElementSibling = box;
+  const title = fakeLink('https://www.ancestry.com/search/collections/6742/records/4321', { text: '1880 census', cls: 'link recordCardV2CollectionTitle', card });
+  // The title sits first in the box, so its pills land ahead of the scan's.
+  title.insertAdjacentElement = (pos, el) => { box.children.unshift(el); title.nextElementSibling = el; };
+  card.title = title;
+  const day = Date.now() - 24 * 3600 * 1000;
+  const page = loadContentScript('content-ancestry.js', {
+    pathname: '/family-trees/111/people/222/hints', origin: 'https://www.ancestry.com',
+    querySelectorAll: (sel) => (sel.includes('imageviewer') ? [scan, title] : []),
+    storage: { anc: { 'rec:6742:4321': { t: [day], last: day, mark: null }, 'img:6742:4321_0001': { t: [day], last: day, mark: null } } },
+  });
+  try {
+    await wait(700);
+    const first = box.children.length;
+    page.listeners.click[0]({ button: 0, target: { closest: (sel) => (sel === 'a[href]' ? title : null) } });
+    await wait(700);
+    assert.strictEqual(first, 2, 'the record and its scan each get one set');
+    assert.strictEqual(box.children.length, 2, 'a second render added more pills');
+  } finally {
+    page.stop();
+  }
+});
+

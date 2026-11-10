@@ -410,7 +410,10 @@
       } else {
         const box = (a.closest('.userCard') && a.closest('.userCard').querySelector('.userCardContent')) ||
           (a.nextElementSibling && (a.nextElementSibling.textContent || '').trim() ? a.nextElementSibling : null);
-        if (box) place = { existing: box.querySelector(':scope > .nsi-pills[data-nsi-for]'), put: (el) => box.appendChild(el) };
+        // In a hint card the box may also hold the title's pills: look up this
+        // link's own (#256 review), or it would never find them and add more.
+        const mine = hintCard ? ':scope > .nsi-pills[data-nsi-owner="' + ownerOf(a, linkKey) + '"]' : ':scope > .nsi-pills[data-nsi-for]';
+        if (box) place = { existing: box.querySelector(mine), put: (el) => box.appendChild(el) };
       }
       if (hintCard && key) {
         const m = claimsOf(hintCard);
