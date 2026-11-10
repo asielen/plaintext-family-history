@@ -25,7 +25,7 @@ const path = require('node:path');
 
 const { openPanel, read, settle, tick, holdFirst, PORT_CLOSED } = require('./panel-harness.js');
 const anc = require('../src/lib/ancestry-record.js');
-const { parse } = require('./mini-dom.js');
+const { parse, serialize } = require('./mini-dom.js');
 
 const REPO = path.join(__dirname, '..', '..');
 const SAMPLES = path.join(REPO, 'tests', 'fixtures', 'capture-samples');
@@ -515,4 +515,404 @@ test('PR #221 sweep (F8): the page going away while the scan downloads says "the
   assert.strictEqual(p.written.length, 0);
   assert.match(p.result(), /^Could not capture: the page in the tab changed while this record was being saved, so nothing was saved/);
   assert.doesNotMatch(p.result(), /message port/);
+});
+
+// ── a photo someone shared to their tree ─────────────────────────────────────
+// The owner: "we should be able to download shared photos as sources". On a
+// photo's viewer page Capture saves the photo and its Details as a bundle
+// that files as a PHOTO source, under the address Seen It knows it by. The
+// page is the synthetic viewer page tests/fixtures/capture-samples/
+// ancestry-media-photo.html; the bundle it stages is the committed sample
+// in browser-companion/test-bundle/, which tests/test_browser_companion.py
+// files through `fha process`.
+
+const MEDIA_ID = '7c0ffee0-1234-4abc-8def-0123456789ab';
+const PHOTO = 'https://www.ancestry.com/mediaui-viewer/tree/90000001/person/90000002/media/' + MEDIA_ID;
+const PHOTO_OPEN = PHOTO + '?destTreeId=90000003&destPersonId=90000004&hid=h1&usePUBJs=true';
+const HINTS = 'https://www.ancestry.com/family-trees/90000001/people/90000002/hints';
+// A tiny file shaped like a JPEG (start, a JFIF header, one scan, end), so
+// the archive's picture-data hash can read it: fictional, not a picture.
+const PHOTO_BYTES = Buffer.from('\xff\xd8\xff\xe0\x00\x07JFIF\x00\xff\xda\x00\x04\x00\x00' +
+  'fictional shared photo\xff\xd9', 'latin1');
+const SAMPLE_BUNDLE = path.join(REPO, 'browser-companion', 'test-bundle',
+  'thomas-and-margaret-hartley-at-the-fairview-farm-about-1925-20261110-101500-k3m9px');
+const PHOTO_FILE = 'ancestry-' + MEDIA_ID + '-photo.jpg';
+
+// The content script on the photo's page, answering as content.js does, or
+// on a person's Hints page. `photo` is how the photo fetch answers;
+// `detailsAtFirst: false` is a Details panel she opened only after the panel
+// first read the page.
+const photoCopies = []; // every page copy a shared photo's page was asked for
+function photoSite({ photo, detailsAtFirst = true, detailsNever = false, edit, oldPageScript = false } = {}) {
+  const raw = fs.readFileSync(path.join(SAMPLES, 'ancestry-media-photo.html'), 'utf8');
+  const html = edit ? edit(raw) : raw; // `edit`: the page as some other photo shows it
+  let reads = 0;
+  return (msg, tab) => {
+    const full = parse(html);
+    const doc = detailsNever ? parse('<html><title>' + full.title + '</title><body>' +
+      '<img src="https://www.ancestry.com/api/media/retrieval/v2/image/namespaces/4242/media/' + MEDIA_ID +
+      '?client=trees-mediaservice&amp;imageQuality=hq"></body></html>') : full;
+    const media = anc.ancParseMediaPage(tab.url);
+    const read = (d) => {
+      const info = anc.ancMediaFrom(d, tab.url, { title: d.title, origin: 'https://www.ancestry.com' });
+      if (info.ok) info.hints = anc.ancMediaHints(info.details);
+      return info;
+    };
+    switch (msg.action) {
+      case 'prefill': {
+        reads += 1;
+        const closed = !detailsAtFirst && reads === 1;
+        const info = media ? read(closed ? parse('<html><title>' + doc.title + '</title></html>') : doc) : null;
+        return {
+          ok: true,
+          prefill: {
+            url: tab.url, title: info ? info.media.title : 'Hints for Thomas Hartley',
+            sourceDate: info ? info.hints.sourceDate || '' : null,
+            people: info ? (info.details.linkedTo || []).slice() : [],
+            repository: 'ancestry.com', recipeHint: 'ancestry', sourceType: media ? 'photo' : undefined,
+            ancestryPhoto: !!media, ancestryMediaId: media ? media.mediaId : null,
+            ancestryPhotoShown: info && !oldPageScript ? Object.keys(info.details) : undefined,
+            ancestryRecord: !!anc.ancParseRecordPage(tab.url),
+          },
+        };
+      }
+      case 'ancestryPhotoInfo':
+        return read(doc);
+      case 'ancestryPhoto':
+        return photo || { ok: true, base64: PHOTO_BYTES.toString('base64'), ext: 'jpg', contentType: 'image/jpeg' };
+      case 'pagehtml':
+        // content.js serializePage: the page as it is - the scrape source,
+        // which ingestion reads and never files.
+        return { ok: true, html };
+      case 'singlefile':
+        // A shared photo never asks for a copy of the page (PR #258 round 4).
+        // Asked anyway, it answers as content.js would: the page itself.
+        photoCopies.push(tab.url);
+        return { ok: true, html: serialize(doc) };
+      default: return { ok: false, error: 'unexpected ' + msg.action };
+    }
+  };
+}
+const openPhoto = (url, opts) => openPanel(Object.assign({ url, respond: photoSite(opts) }, opts || {}));
+const photoAsks = (p) => p.sent.filter((m) => m.action === 'ancestryPhoto');
+
+test('round 4: a shared photo never keeps a copy of Ancestry\'s page, whatever the page-copy setting', async () => {
+  // Ancestry's page lists the other members who saved the photo: the archive
+  // keeps the photo and its details instead (the owner's call, reversible).
+  photoCopies.length = 0;
+  const p = await openPhoto(PHOTO_OPEN);
+  assert.strictEqual(p.$('cb-pagecopy').checked, true, 'her page-copy setting is left as it is');
+  assert.strictEqual(p.$('page-copy-card').style.display, 'none');
+  assert.strictEqual(p.$('opt-none').style.display, 'none', '"the page copy is the record" is not offered either');
+  assert.strictEqual(p.$('pagecopy-note').style.display, 'block');
+  assert.doesNotMatch(p.$('asset-status').textContent, /Whole-page copy/);
+  await p.capture();
+  assert.deepStrictEqual(p.files(p.written[0]), [PHOTO_FILE, 'photo-data.json']);
+  assert.deepStrictEqual(photoCopies, [], 'a page copy was asked for');
+  // On a record page the copy is offered and kept, as before.
+  const rec = await open(CALVIN);
+  assert.strictEqual(rec.$('page-copy-card').style.display, '');
+  await rec.capture();
+  assert.ok(rec.files(rec.written[0]).includes('page-snapshot.html'));
+});
+
+test('a shared photo\'s page offers "Capture this photo"; a record page and a Hints page do not', async () => {
+  const p = await openPhoto(PHOTO_OPEN);
+  assert.strictEqual(p.$('btn-capture').textContent, 'Capture this photo');
+  assert.match(p.$('recipe-banner').textContent, /^Looks like a photo shared on Ancestry\./);
+  assert.match(p.$('asset-status').textContent, /Record files: the photo \+ its details \(Ancestry, auto\)/);
+  assert.strictEqual(p.$('f-type').value, 'photo');
+  // Out of scope: the "Evaluate photo" panel on a Hints page keeps the page's
+  // own address, so the panel cannot tell which photo is open there.
+  const hints = await openPhoto(HINTS);
+  assert.strictEqual(hints.$('btn-capture').textContent, 'Capture & save');
+  assert.doesNotMatch(hints.$('asset-status').textContent, /the photo/);
+  const rec = await open(CALVIN);
+  assert.strictEqual(rec.$('btn-capture').textContent, 'Capture & save');
+});
+
+test('the people the photo is linked to are offered as people she can untick, never added behind her back', async () => {
+  const p = await openPhoto(PHOTO_OPEN);
+  assert.deepStrictEqual(p.$('people-list').children.map((l) => l.children[1].textContent),
+    ['Thomas Hartley', 'Margaret Hartley']);
+  // She unticks one: it is not filed with the photo.
+  p.$('people-list').children[1].children[0].checked = false;
+  await p.capture();
+  assert.deepStrictEqual(p.capJson(p.written[0]).people, ['Thomas Hartley']);
+});
+
+test('round 3 (Codex PRRT_kwDOS6vm6c61wZYJ): Details opened after the panel read the page are shown before anything is saved', async () => {
+  const late = await openPhoto(PHOTO_OPEN, { detailsAtFirst: false });
+  assert.deepStrictEqual(late.$('people-list').children, []);
+  // The first Capture reads the page again, finds the Details, and saves nothing.
+  await late.capture();
+  assert.strictEqual(late.written.length, 0);
+  assert.strictEqual(late.result(), 'I found more on the page — check the people below, then press Capture this photo.');
+  assert.match(late.resultClass(), /warn/);
+  assert.deepStrictEqual(late.$('people-list').children.map((l) => [l.children[1].textContent, l.children[0].checked]),
+    [['Thomas Hartley', true], ['Margaret Hartley', true]]);
+  assert.strictEqual(late.$('f-date').value, '1925~');
+  assert.strictEqual(photoAsks(late).length, 0, 'the photo is not fetched before she has checked');
+  // She unticks one and presses Capture: one bundle, with what she saw.
+  late.$('people-list').children[1].children[0].checked = false;
+  await late.capture();
+  assert.strictEqual(late.written.length, 1);
+  const cap = late.capJson(late.written[0]);
+  assert.deepStrictEqual(cap.people, ['Thomas Hartley']);
+  assert.strictEqual(cap.source_date, '1925~');
+  // No advice anywhere to capture the same photo again once it is staged.
+  assert.doesNotMatch(late.result(), /again/i);
+});
+
+test('round 3: a page script that does not say which Details it read still stages once the names are shown', async () => {
+  // (scratch258/advice-retry.test.js) Capture, the names appear; Re-read
+  // page; Capture: one bundle, not a second "found more".
+  const p = await openPhoto(PHOTO_OPEN, { detailsAtFirst: false, oldPageScript: true });
+  await p.capture();
+  assert.strictEqual(p.written.length, 0);
+  await p.reread();
+  await p.capture();
+  assert.strictEqual(p.written.length, 1, p.result());
+});
+
+test('round 3 (audit C): a photo with nothing new on the page is staged once, with no advice to capture it again', async () => {
+  const p = await openPhoto(PHOTO_OPEN);
+  await p.capture();
+  assert.strictEqual(p.written.length, 1);
+  assert.doesNotMatch(p.result(), /again/i);
+  // Details closed on the page: said BEFORE Capture, never after.
+  const closed = await openPhoto(PHOTO_OPEN, { detailsAtFirst: false, detailsNever: true });
+  assert.match(closed.$('asset-status').textContent, /The add-on couldn’t find this photo’s Details on the page \(they may be closed, or Ancestry shows them in a way it doesn’t recognise yet\)\. The photo and its address are saved; its date, place and description can be read on Ancestry from that address/);
+  await closed.capture();
+  assert.strictEqual(closed.written.length, 1);
+  assert.doesNotMatch(closed.result(), /again/i);
+});
+
+test('Capture saves the shared photo as a photo source: the photo as served, its details, the address to keep', async () => {
+  const p = await openPhoto(PHOTO_OPEN);
+  await p.capture();
+  assert.strictEqual(p.written.length, 1, p.result());
+  const b = p.written[0];
+  assert.deepStrictEqual(p.files(b), [PHOTO_FILE, 'photo-data.json']);
+  const cap = p.capJson(b);
+  // The viewer's own address without how she got there: Seen It's med: key.
+  assert.strictEqual(cap.url, PHOTO);
+  assert.strictEqual(cap.title, 'Thomas and Margaret Hartley at the Fairview farm, about 1925');
+  assert.strictEqual(cap.source_type, 'photo');
+  assert.strictEqual(cap.source_date, '1925~');
+  assert.deepStrictEqual(cap.people, ['Thomas Hartley', 'Margaret Hartley']);
+  assert.deepStrictEqual(cap.assets, [
+    { file: PHOTO_FILE, role: 'front', mode: 'ancestry-media', is_primary: true },
+    { file: 'photo-data.json', role: 'site-data', mode: 'ancestry-media-data' },
+  ]);
+  // The photo as Ancestry sent it, never re-encoded: the page's bytes go
+  // straight to bundle.js base64ToBlob (which the harness leaves as text).
+  const photo = b.assets.find((a) => a.filename === PHOTO_FILE);
+  assert.strictEqual(await photo.blob.text(), PHOTO_BYTES.toString('base64'));
+  assert.strictEqual(photo.blob.type, 'image/jpeg');
+  assert.deepStrictEqual(photoAsks(p), [{ action: 'ancestryPhoto', mediaId: MEDIA_ID }]);
+  const data = JSON.parse(await b.assets.find((a) => a.filename === 'photo-data.json').blob.text());
+  assert.deepStrictEqual(data.media, {
+    mediaId: MEDIA_ID, treeId: '90000001', personId: '90000002', url: PHOTO,
+    title: 'Thomas and Margaret Hartley at the Fairview farm, about 1925',
+    imageUrl: 'https://www.ancestry.com/api/media/retrieval/v2/image/namespaces/4242/media/' + MEDIA_ID +
+      '?client=trees-mediaservice&imageQuality=hq',
+    photoSaved: true,
+  });
+  assert.strictEqual(data.details.place, 'Fairview, Breton, Kansas, USA');
+  // Who first added it is kept with Ancestry's data, not in the record's notes.
+  assert.strictEqual(data.details.originallyAddedBy, 'hartley_family_tree on 3 Mar 2015');
+  assert.strictEqual(cap.notes, 'A photo shared on Ancestry by another member. Its details on Ancestry:\n' +
+    'Date: abt 1925\nPlace: Fairview, Breton, Kansas, USA\nLinked to: Thomas Hartley; Margaret Hartley\n\n' +
+    'Description on Ancestry:\nThomas and Margaret on the porch of the farmhouse.\nThe dog is Shep.');
+  // Other members who saved it are in nothing that is filed (page.html is
+  // the scrape source only, never filed).
+  const kept = JSON.stringify(cap) + JSON.stringify(data);
+  for (const never of ['cousin_member_one', 'cousin_member_two', 'Saved by']) {
+    assert.ok(!kept.includes(never), 'copied out of the page: ' + never);
+  }
+  assert.match(p.result(), /^Staged to \/dl\/fha-inbox\//);
+  assert.doesNotMatch(p.resultClass(), /warn|error/);
+});
+
+test('the staged photo bundle is the committed sample that tests/test_browser_companion.py files', async () => {
+  const p = await openPhoto(PHOTO_OPEN);
+  await p.capture();
+  const b = p.written[0];
+  const sample = (name) => fs.readFileSync(path.join(SAMPLE_BUNDLE, name));
+  const want = JSON.parse(sample('capture.json'));
+  assert.deepStrictEqual(Object.assign({}, p.capJson(b), { accessed: want.accessed }), want);
+  assert.strictEqual(b.pageHtml, sample('page.html').toString('utf8'));
+  for (const a of b.assets) {
+    // (The harness's base64ToBlob keeps the photo as its base64 text.)
+    const got = a.filename === PHOTO_FILE ? Buffer.from(await a.blob.text(), 'base64')
+      : Buffer.from(await a.blob.arrayBuffer());
+    assert.ok(got.equals(sample(a.filename)), a.filename + ' differs from the sample');
+  }
+});
+
+test('what she typed wins; a file she drops in is the photo, saved with its details', async () => {
+  const p = await openPhoto(PHOTO_OPEN);
+  p.$('f-title').value = 'Grandpa Tom and Grandma Maggie on the farm';
+  await p.$('f-title').fire('input');
+  p.$('f-date').value = '1926';
+  dropFile(p, 'Hartley farm original.png');
+  await p.capture();
+  const b = p.written[0];
+  const cap = p.capJson(b);
+  assert.strictEqual(cap.title, 'Grandpa Tom and Grandma Maggie on the farm');
+  assert.strictEqual(cap.source_date, '1926');
+  assert.deepStrictEqual(p.files(b), ['ancestry-' + MEDIA_ID + '-photo.png', 'photo-data.json']);
+  assert.deepStrictEqual(cap.assets[0], { file: 'ancestry-' + MEDIA_ID + '-photo.png', role: 'front', mode: 'manual',
+    is_primary: true });
+  assert.strictEqual(photoAsks(p).length, 0, 'her file is used; Ancestry is not asked');
+});
+
+test('PR #258 review: no photo, no capture - a refused photo stages nothing, and says how to add it by hand', async () => {
+  const p = await openPhoto(PHOTO_OPEN, { photo: { ok: false, error: 'Ancestry refused the photo (HTTP 403) - sign in ' +
+    'on this page and press Capture again' } });
+  await p.capture();
+  // A photo source without its picture would file as the photo (Seen It
+  // would show it saved), and the retry with her own file a second source.
+  assert.strictEqual(p.written.length, 0);
+  assert.match(p.result(), /^Could not capture: the photo could not be fetched from Ancestry: Ancestry refused the photo \(HTTP 403\)/);
+  assert.match(p.result(), /Nothing was saved\. If you can download the photo yourself \(right-click it, Save image as\), drop that file into the panel and press Capture this photo$/);
+  assert.match(p.resultClass(), /error/);
+  // Her downloaded file, dropped in: one capture, with her file as the photo.
+  dropFile(p, 'downloaded.jpg');
+  await p.capture();
+  assert.strictEqual(p.written.length, 1);
+  assert.deepStrictEqual(p.files(p.written[0]), [PHOTO_FILE, 'photo-data.json']);
+  assert.strictEqual(p.capJson(p.written[0]).assets[0].mode, 'manual');
+});
+
+// An undated photo, from the page to the inbox: the panel sends no date, and
+// ingestion must not take one from the page - "Thomas Hartley 1840–1910" is
+// a linked relative's life, not the photo's day (Codex PRRT_kwDOS6vm6c61wZYE).
+test('round 3 (Codex PRRT_kwDOS6vm6c61wZYE): an undated shared photo reaches the inbox undated',
+  { skip: PYTHON ? false : 'no Python 3 on this computer to run tools/capture.py' }, async () => {
+    const undated = (h) => h.replace(/about 1925/g, 'on the porch')
+      .replace('<div class="detail-row"><div><span>Date</span></div><div>abt 1925</div></div>', '');
+    const p = await openPhoto(PHOTO_OPEN, { edit: undated });
+    await p.capture();
+    const b = p.written[0];
+    assert.ok(!('source_date' in b.captureJson), 'the panel sent a date: ' + b.captureJson.source_date);
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'fha-undated-'));
+    try {
+      const dir = path.join(tmp, 'staging', b.bundleName);
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, 'page.html'), b.pageHtml);
+      for (const a of b.assets) {
+        const buf = a.filename === PHOTO_FILE ? Buffer.from(await a.blob.text(), 'base64')
+          : Buffer.from(await a.blob.arrayBuffer());
+        fs.writeFileSync(path.join(dir, a.filename), buf);
+      }
+      fs.writeFileSync(path.join(dir, 'capture.json'), JSON.stringify(b.captureJson, null, 2));
+      fs.mkdirSync(path.join(tmp, 'archive'));
+      fs.writeFileSync(path.join(tmp, 'archive', 'fha.yaml'), 'roots:\n  photos: photos\n  documents: documents\n');
+      const code = 'import sys, io, contextlib, json; from pathlib import Path; sys.path.insert(0, sys.argv[1]); ' +
+        'import capture; from _lib import load_fha_yaml, read_record; a = Path(sys.argv[2]); ' +
+        'out = io.StringIO()\nwith contextlib.redirect_stdout(out):\n  capture.run_ingest(a, load_fha_yaml(a, strict=True), staging_dir=sys.argv[3])\n' +
+        'm = read_record(next((a / "inbox").rglob("notes.md")))["meta"]; print(json.dumps({k: str(v) for k, v in m.items()}))';
+      const r = spawnSync(PYTHON[0], PYTHON.slice(1).concat(['-c', code, path.join(REPO, 'tools'),
+        path.join(tmp, 'archive'), path.join(tmp, 'staging')]), { encoding: 'utf8' });
+      assert.strictEqual(r.status, 0, r.stderr);
+      const meta = JSON.parse(r.stdout.trim().split('\n').pop());
+      assert.strictEqual(meta.source_type, 'photo');
+      assert.ok(!('source_date' in meta), 'filed with a date: ' + meta.source_date);
+      assert.doesNotMatch(meta.citation, /1840|1910|2015/);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+// The invariant, end to end (PR #258 round 4): no other member's username
+// reaches the archive. A shared photo whose page lists "Saved by 2 members"
+// the awkward ways - sibling rows, a two-line row, a "Jr.", a long name -
+// is staged by the panel, ingested and filed with the archive's own tools,
+// and the whole archive is searched. The family's words stay: a caption, and
+// a sentence that happens to begin "Saved by".
+test('round 4: from the page to the archive, no member who saved the photo is named anywhere in it',
+  { skip: PYTHON ? false : 'no Python 3 on this computer to run tools/capture.py and tools/process.py' }, async () => {
+    const MEMBERS = ['cousin_member_one', 'Cousin Member Two Jr.', 'Joined Ancestry in 2015',
+      'cousin member with a very long display name that goes on past sixty characters'];
+    const edit = (h) => h
+      .replace('<p>The dog is Shep. <button type="button">Show more</button></p>',
+        '<p>The dog is Shep. <button type="button">Show more</button></p>' +
+        '<p>Saved by Aunt Ethel from the 1938 farmhouse fire.</p><p>Hartley farm, 1925</p>')
+      .replace(/<section>\s*<h3>Saved by<\/h3>[\s\S]*?<\/section>/,
+        '<section><h3>Saved by 2 members</h3><div>cousin_member_one</div>' +
+        '<div>Cousin Member Two Jr.<br>Joined Ancestry in 2015</div>' +
+        '<div>cousin member with a very long display name that goes on past sixty characters</div></section>');
+    assert.ok(edit(fs.readFileSync(path.join(SAMPLES, 'ancestry-media-photo.html'), 'utf8')).includes('Saved by 2 members'));
+    const p = await openPhoto(PHOTO_OPEN, { edit });
+    await p.capture();
+    const b = p.written[0];
+    assert.ok(b, p.result());
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'fha-members-'));
+    try {
+      const dir = path.join(tmp, 'staging', b.bundleName);
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, 'page.html'), b.pageHtml);
+      for (const a of b.assets) {
+        const buf = a.filename === PHOTO_FILE ? Buffer.from(await a.blob.text(), 'base64')
+          : Buffer.from(await a.blob.arrayBuffer());
+        fs.writeFileSync(path.join(dir, a.filename), buf);
+      }
+      fs.writeFileSync(path.join(dir, 'capture.json'), JSON.stringify(b.captureJson, null, 2));
+      const archive = path.join(tmp, 'archive');
+      fs.mkdirSync(archive);
+      fs.writeFileSync(path.join(archive, 'fha.yaml'), 'roots:\n  photos: photos\n  documents: documents\n');
+      const code = [
+        'import sys, io, json, contextlib',
+        'from pathlib import Path',
+        'from unittest import mock',
+        'sys.path.insert(0, sys.argv[1])',
+        'import capture, process',
+        'from _lib import load_fha_yaml',
+        'a = Path(sys.argv[2]); cfg = load_fha_yaml(a, strict=True)',
+        'out = io.StringIO()',
+        'with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):',
+        '    capture.run_ingest(a, cfg, staging_dir=sys.argv[3])',
+        '    folder = next(p for p in (a / "inbox").iterdir() if p.is_dir())',
+        '    with mock.patch.object(process, "_run_exiftool_embed_source", return_value=None), \\',
+        '            mock.patch.object(process, "_run_exiftool_read_keywords", return_value=[]), \\',
+        '            mock.patch.object(process, "_run_exiftool_remove_source", return_value=None):',
+        '        rc = process.process_bundle(a, cfg, folder, source_date=None, dry_run=False)',
+        'files = {str(p.relative_to(a)): p.read_bytes().decode("utf-8", "replace") for p in a.rglob("*") if p.is_file()}',
+        'rec = next(t for n, t in files.items() if n.startswith("sources"))',
+        'print(json.dumps({"rc": rc, "files": files, "record": rec}))',
+      ].join('\n');
+      const r = spawnSync(PYTHON[0], PYTHON.slice(1).concat(['-c', code, path.join(REPO, 'tools'), archive,
+        path.join(tmp, 'staging')]), { encoding: 'utf8' });
+      assert.strictEqual(r.status, 0, r.stderr);
+      const got = JSON.parse(r.stdout.trim().split('\n').pop());
+      assert.strictEqual(got.rc, 0);
+      for (const [name, text] of Object.entries(got.files)) {
+        for (const m of MEMBERS) assert.ok(!text.includes(m), name + ' names a member: ' + m);
+        assert.ok(!/Saved by 2 members/.test(text), name);
+      }
+      assert.ok(Object.keys(got.files).some((n) => /photos[\\/]ancestry-.*-photo\.jpg$/.test(n)), 'the photo is filed');
+      assert.match(got.record, /Saved by Aunt Ethel from the 1938 farmhouse fire\./);
+      assert.match(got.record, /Hartley farm, 1925/);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+test('round 5 (Codex PRRT_kwDOS6vm6c61yqx6): with an empty description, who added the photo is only in photo-data.json', async () => {
+  const edit = (h) => h
+    .replace('<p class="attribution">Originally added by <a href="/profile/x">hartley_family_tree</a> on 3 Mar 2015</p>', '')
+    .replace(/<section>\s*<h3>Description<\/h3>[\s\S]*?<\/section>/,
+      '<section><h3>Description</h3></section><p>Originally added by <a href="/profile/z">cousin_member_three</a> on 3 Mar 2015</p>');
+  assert.ok(edit(fs.readFileSync(path.join(SAMPLES, 'ancestry-media-photo.html'), 'utf8')).includes('cousin_member_three'));
+  const p = await openPhoto(PHOTO_OPEN, { edit });
+  await p.capture();
+  const b = p.written[0];
+  const cap = p.capJson(b);
+  assert.ok(!JSON.stringify(cap).includes('cousin_member_three'), cap.notes);
+  assert.doesNotMatch(cap.notes, /Description on Ancestry/);
+  const data = JSON.parse(await b.assets.find((a) => a.filename === 'photo-data.json').blob.text());
+  assert.strictEqual(data.details.originallyAddedBy, 'cousin_member_three on 3 Mar 2015');
+  assert.ok(!('description' in data.details));
 });

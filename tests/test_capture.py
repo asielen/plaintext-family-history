@@ -387,6 +387,96 @@ class CaptureTestCase(unittest.TestCase):
         self.assertEqual(str(meta['source_date']), '1957-01-07')   # her death, not 1940
         self.assertEqual(meta['source_class'], 'derivative')       # an index entry
 
+    def test_ancestry_citation_keeps_every_date_but_a_bare_year_the_title_names(self) -> None:
+        """PR #258 round 3: the citation dropped a real date whose year opened
+        the collection's range - a death on 1940-01-07 in "Death Index,
+        1940-1997" lost its date. Only a bare year the title already names on
+        its own is dropped ("1880 United States Federal Census. 1880.")."""
+        from capture_recipes import ancestry
+        html = _sample('ancestry-record-death-index')
+        for day in ('1940-01-07', '1997-01-07', '1957-01-07'):
+            r = ancestry.extract(html.replace('1957', day[:4]),
+                                 'https://www.ancestry.com/search/collections/90002/records/2000001')
+            self.assertEqual(r['source_date'], day)
+            self.assertIn(f'1940-1997. {day}. Ancestry.com.', r['citation'])
+        r = ancestry.extract(_sample('ancestry-record-census'),
+                             'https://www.ancestry.com/search/collections/90001/records/1000001')
+        self.assertEqual(r['source_date'], '1880')
+        self.assertIn('Calvin Hartley - 1880 United States Federal Census. Ancestry.com.', r['citation'])
+        # A bare year the title gives only as one end of a range is kept.
+        self.assertFalse(ancestry._year_already_in_title('1917', 'U.S., WWI Draft Cards, 1917-1918'))
+        self.assertTrue(ancestry._year_already_in_title('1880', '1880 United States Federal Census'))
+
+    def test_ancestry_shared_photo_page_gives_no_people_and_no_text(self) -> None:
+        """PR #258 rounds 4-5: a shared photo's page lists the other members
+        who saved it - here as a table, which the recipe reads people from on
+        every other Ancestry page. On a shared photo it reads none, and keeps
+        none of the page's words as the stub's text: the photo's people and
+        words come from the capture add-on, which stops at that list."""
+        from capture_recipes import ancestry
+        html = ('<html><head><title>Hartley farm</title></head><body><h3>Saved by</h3><table><tr><th>Name</th>'
+                '<th>Relationship</th></tr><tr><td>Cousin Member One</td><td>3rd cousin</td></tr>'
+                '<tr><td>Cousin Member Two</td><td>friend</td></tr></table>'
+                '<p>Originally added by <a>cousin_member_three</a></p></body></html>')
+        r = ancestry.extract(html, 'https://www.ancestry.com/mediaui-viewer/tree/1/person/2/media/'
+                                   '7c0ffee0-1234-4abc-8def-0123456789ab')
+        self.assertEqual(r['people'], [])
+        self.assertEqual(r['body'], '')
+        self.assertNotIn('Cousin Member', r['citation'])
+        # Any other Ancestry page still gives its table's people.
+        r = ancestry.extract(html, 'https://www.ancestry.com/family-trees/1/people/2/facts')
+        self.assertIn('Cousin Member One', r['people'])
+
+    def test_ancestry_shared_photo_is_titled_by_its_tab_never_by_its_heading(self) -> None:
+        """PR #258 round 10 (audit W): with no title from the capture, a shared
+        photo's page gives its tab title - never its <h1> or og:title, which can
+        name the sharer's tree - and no links found in its body."""
+        from capture_recipes import ancestry
+        html = ('<html><head><title>Hartley farm | Ancestry</title><meta property="og:title" content="A tree">'
+                '<meta property="og:image" content="https://www.ancestry.com/banner.jpg"></head><body>'
+                "<h1>cousin_member_one's Hartley-Whitcombe Tree</h1>"
+                '<p>https://www.newspapers.com/clip/1234/cousin-clip/</p></body></html>')
+        url = 'https://www.ancestry.com/mediaui-viewer/tree/1/person/2/media/7c0ffee0-1234-4abc-8def-0123456789ab'
+        r = ancestry.extract(html, url)
+        self.assertEqual(r['title'], 'Hartley farm')
+        self.assertEqual(r['citation'], 'Hartley farm. Ancestry.com. ' + url)
+        self.assertEqual(r['external_links'], [{'url': url}])
+        self.assertNotIn('Tree', r['collection'])
+
+    def test_ancestry_citation_reads_a_range_however_it_is_joined(self) -> None:
+        """PR #258 round 4 (audit J): "1940 - 1997", "1865 to 1925" and
+        "1908—1932" were read as single years, so a date of 1940, 1925 or
+        1908 was dropped from the citation as if the title already said it."""
+        from capture_recipes import ancestry
+        for year, title in (('1940', 'California, U.S., Death Index, 1940 - 1997'),
+                            ('1997', 'California, U.S., Death Index, 1940 - 1997'),
+                            ('1865', 'Kansas State Census Collection, 1865 to 1925'),
+                            ('1925', 'Kansas State Census Collection, 1865 to 1925'),
+                            ('1908', 'Fairview Gazette, 1908—1932'),
+                            ('1932', 'Fairview Gazette, 1908—1932'),
+                            ('1880', 'Ledger, 1880–1890'),
+                            ('1917', 'Draft Cards, 1917/1918')):
+            self.assertFalse(ancestry._year_already_in_title(year, title), (year, title))
+        # Named on its own - and once more after a range - it is the title's.
+        self.assertTrue(ancestry._year_already_in_title('1880', 'Census of 1880, Fairview'))
+        self.assertTrue(ancestry._year_already_in_title('1880', '1870-1875 survey; the 1880 census'))
+
+    def test_ancestry_shared_photo_is_never_dated_from_the_page(self) -> None:
+        """PR #258 round 3 (Codex PRRT_kwDOS6vm6c61wZYE): an undated shared
+        photo was filed with a linked relative's birth year - 1840, from
+        "Thomas Hartley 1840-1910" - as its date. A shared photo's date is the
+        one its Details give (sent by the add-on), or unknown."""
+        from capture_recipes import ancestry
+        html = ('<html><head><title>Thomas and Margaret on the porch</title></head><body>'
+                '<aside><h2>Details</h2><h3>Linked to</h3><ul><li>Thomas Hartley 1840–1910</li></ul>'
+                '<p>Originally added by <a>hartley_family_tree</a> on 3 Mar 2015</p></aside></body></html>')
+        r = ancestry.extract(html, 'https://www.ancestry.com/mediaui-viewer/tree/90000001/person/90000002/media/'
+                                   '7c0ffee0-1234-4abc-8def-0123456789ab')
+        self.assertIsNone(r['source_date'])
+        self.assertEqual(r['source_type'], 'photo')
+        self.assertNotIn('1840', r['citation'])
+        self.assertNotIn('2015', r['citation'])
+
     def test_ancestry_record_layout_ignores_seen_it_badges(self) -> None:
         # TI-067: a page saved with the Seen It add-on's badges reads as if they
         # were not there - no badge text in the people or the stub body.

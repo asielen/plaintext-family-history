@@ -1304,8 +1304,8 @@ fha gedcom P-de957bcda1 --mode descendants --root example-archive  # valid .ged 
 `[[S-id]]` in profile body → `<ref name="S-id"/>` at use; definitions collected into hidden
 `<div name="references">` block (deduplicated). Factual sentences with cited claim `place`/
 `date` → `<span class="spacetime" data-loc="…" data-date="ISO">`. `[[P-id]]` → WikiTree link
-from `person_external`; plain name if absent. Ancestry image URLs in `external_links` →
-`{{Ancestry Image|db|id}}`. Template hooks: `tools/wikitree_templates.yaml`. Output to stdout;
+from `person_external`; plain name if absent. Ancestry record URLs in `external_links` →
+`{{Ancestry Record|db|id}}`, image-viewer URLs → `{{Ancestry Image|db|id}}`. Template hooks: `tools/wikitree_templates.yaml`. Output to stdout;
 `--out FILE` writes.
 
 **Done when:**

@@ -244,6 +244,13 @@ test('content.js Ancestry record readers are a verbatim copy of lib/ancestry-rec
   const end = '// FHA-SYNC-END ancestry';
   const canon = lib.slice(lib.indexOf(begin) + begin.length, lib.indexOf(end));
   assert.ok(canon.length > 1000, 'lib sync markers not found');
+  // The shared-photo readers too - the "Saved by" rule above all, whose drift
+  // would let other members' names into a photo's notes, and the Details-box
+  // scoping, whose drift would date a photo from a relative's card (PR #258).
+  for (const name of ['function ancMediaDetails', 'function ancMediaDetailsBoxes', 'const ANC_MEDIA_SAVED_HEADING_RE',
+    'function ancMediaImageUrl', 'function ancParseMediaPage']) {
+    assert.ok(canon.includes(name), name + ' is outside the synced block');
+  }
   const copy = extractBlock(/\/\/ FHA-SYNC-BEGIN ancestry\n/, '  ' + end)
     .split('\n').map((l) => l.replace(/^ {2}/, '')).join('\n');
   assert.strictEqual(copy, canon);

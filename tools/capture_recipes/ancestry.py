@@ -57,6 +57,12 @@ _HINT_RE = re.compile(r'match the person in your tree|^does\b.+\?$', re.I)
 
 # A durable public Newspapers.com clip URL embedded in an Ancestry index record
 # (the off-site pointer to the real upstream source).
+# A photo or story someone shared to their tree, in the media viewer
+# (/mediaui-viewer/.../media/{mediaId}). Its date is the one its Details give,
+# which the capture add-on sends; the page's other years - a linked relative's
+# "1840-1910", the day it was uploaded - are never its date (PR #258 review).
+_MEDIA_PAGE_RE = re.compile(r'/mediaui-viewer/(?:[^?#\s]*/)?media/[0-9a-f-]{36}', re.I)
+
 _OFFSITE_RE = re.compile(r'https?://(?:www\.)?newspapers\.com/clip/\d+/[^\s"\'<>]*')
 
 
@@ -254,6 +260,27 @@ def _image_url(html: str, url: str | None) -> str | None:
     return first_nonempty(meta_content(page, 'og:image'))
 
 
+# A year that is one end of a range: joined to another by a hyphen, an en or
+# em dash (spaces around it or not), a slash, or " to " - "1940-1997",
+# "1940 - 1997", "1908\u20141932", "1865 to 1925" (PR #258 round 4).
+_RANGE_JOIN = r'(?:\s*[-\u2013\u2014/]\s*|\s+to\s+)'
+
+
+def _year_already_in_title(source_date: str, title: str) -> bool:
+    """True when `source_date` is a bare year that `title` names on its own -
+    not as one end of a range of years."""
+    if not re.fullmatch(r'\d{4}', source_date):
+        return False
+    for m in re.finditer(r'(?<!\d)' + source_date + r'(?!\d)', title):
+        before, after = title[:m.start()], title[m.end():]
+        if re.search(r'\d{2,4}' + _RANGE_JOIN + r'$', before, re.I):
+            continue
+        if re.match(_RANGE_JOIN + r'\d{2,4}', after, re.I):
+            continue
+        return True
+    return False
+
+
 def extract(html: str, url: str | None) -> dict:
     html = _strip_seen_it(html)
     page = parse_html(html)
@@ -261,7 +288,16 @@ def extract(html: str, url: str | None) -> dict:
     # <title> (TI-066). Recognised by its index-fields container.
     record_layout = 'id="recordFieldsContainer"' in html or "id='recordFieldsContainer'" in html
     hints = None
-    if record_layout:
+    # A shared photo's page (the media viewer) is read for nothing but its
+    # tab title: its <h1>, og:title, tables, lists and text can name the
+    # sharer's tree or the other members who saved the photo, and none of
+    # them is the family's. Its title, people, date and words come from the
+    # capture add-on's capture.json (PR #258 rounds 4, 10).
+    shared_photo = bool(url and _MEDIA_PAGE_RE.search(url))
+    if shared_photo:
+        title = _TITLE_SUFFIX_RE.sub('', page.title or '').strip() or 'Photo shared on Ancestry'
+        collection = title
+    elif record_layout:
         collection = first_nonempty(
             meta_content(page, 'og:title'), _collection_from_title(page.title),
         )
@@ -284,11 +320,11 @@ def extract(html: str, url: str | None) -> dict:
     # image-viewer's grid-cell detail panel (imageviewer pages yield [] from the
     # table path because the panel is divs, not a <table>).
     people: list[str] = []
-    for rows in extract_tables(html):
+    for rows in ([] if shared_photo else extract_tables(html)):
         people = people_from_table(rows)
         if people:
             break
-    if not people:
+    if not people and not shared_photo:
         people = _people_from_grid(_grid_rows(html))
 
     # Body fallback for the date (Ancestry ships no og: date), but only the head
@@ -299,13 +335,23 @@ def extract(html: str, url: str | None) -> dict:
         # around the record names the collection's year RANGE, never the event.
         source_date = hints['source_date']
         source_type = hints['source_type'] or source_type_from_text(collection, 'website')
+    elif shared_photo:
+        # A shared photo: no date unless its Details give one (sent in
+        # capture.json) - unknown, never a year guessed from the page.
+        source_date = None
+        source_type = 'photo'
     else:
         source_date = harvest_date(
             collection, title, meta_content(page, 'og:description'), page.text[:400])
         source_type = source_type_from_text(f'{collection} {title}', 'website')
 
     citation_bits = [title.rstrip('.')]
-    if source_date:
+    # The date, unless it is a bare year the title already names on its own:
+    # "1880 United States Federal Census. 1880." is a stutter. A full date is
+    # always kept, and so is a year the title gives only as one end of a range
+    # ("Death Index, 1940-1997" says nothing about a death on 1940-01-07, nor
+    # "1917-1918" about which year a draft card is) - PR #258 review.
+    if source_date and not _year_already_in_title(str(source_date), title):
         citation_bits.append(source_date)
     citation = '. '.join(citation_bits) + '. Ancestry.com.'
     if url:
@@ -314,14 +360,14 @@ def extract(html: str, url: str | None) -> dict:
     external_links: list[dict] = []
     if url:
         external_links.append({'url': url})
-    image = _image_url(html, url)
+    image = None if shared_photo else _image_url(html, url)
     if image and image != url:
         external_links.append({'url': image})
     # An Ancestry "Index" record can point off-site (e.g. a Newspapers.com index
     # embeds the durable public clip URL); surface it so the reviewer can go
     # upstream to the real source. Generic mechanism, Newspapers-shaped for v1.
     seen = {link['url'] for link in external_links}
-    for clip in _OFFSITE_RE.findall(html or ''):
+    for clip in ([] if shared_photo else _OFFSITE_RE.findall(html or '')):
         clip = clip.rstrip('"\'')
         if clip not in seen:
             external_links.append({'url': clip, 'label': 'off-site source'})
@@ -335,7 +381,7 @@ def extract(html: str, url: str | None) -> dict:
         'source_date': source_date,
         'external_links': external_links,
         'people': people,
-        'body': visible_text(page),
+        'body': '' if shared_photo else visible_text(page),
         'collection': collection,
         'terms': '; '.join(people) if people else '',
         'source_class': hints['source_class'] if hints else None,

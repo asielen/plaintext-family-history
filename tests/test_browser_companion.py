@@ -26,6 +26,10 @@ honest:
 Run: python -m unittest tests.test_browser_companion -v   (from the repo root)
 """
 
+import base64
+import contextlib
+import io
+import os
 import json
 import re
 import shutil
@@ -254,6 +258,633 @@ class ExampleBundleTestCase(unittest.TestCase):
             self.assertEqual(items['rec:90002:2000001']['sid'], rec['meta']['id'])
 
 
+# The committed photo bundle: exactly what the panel stages on a shared
+# photo's viewer page (browser-companion/tests/test-panel-ancestry.js holds
+# the two equal, byte for byte).
+PHOTO_BUNDLE = (COMPANION / 'test-bundle' /
+                'thomas-and-margaret-hartley-at-the-fairview-farm-about-1925-20261110-101500-k3m9px')
+PHOTO_MEDIA_ID = '7c0ffee0-1234-4abc-8def-0123456789ab'
+PHOTO_VIEWER_URL = ('https://www.ancestry.com/mediaui-viewer/tree/90000001/person/90000002/media/'
+                    + PHOTO_MEDIA_ID)
+def _rel_posix(path: Path, root: Path) -> str:
+    return path.relative_to(root).as_posix()
+
+
+# How Seen It keys a shared photo from a source's frontmatter address
+# (seen-it/host/seenit_host.py ANC_MEDIA_RE, med:{mediaId}).
+_SEEN_IT_MEDIA_RE = re.compile(
+    r'ancestry\.[a-z.]+/mediaui-viewer/(?:[^?#\s]*/)?media/'
+    r'([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})', re.I)
+
+
+class SharedPhotoTestCase(unittest.TestCase):
+    """A photo another member shared on Ancestry files as a PHOTO source.
+
+    The owner: "we should be able to download shared photos as sources and
+    seen it should recognize them also." The panel's bundle - the photo, its
+    Details as photo-data.json, the page copy - goes through `fha capture
+    --ingest` and `fha process` like any capture: one photo source, its
+    picture in the photo library under the name it was captured with (the
+    archive never renames a photo there), and the viewer's address in its
+    frontmatter, which is what Seen It reads to know the photo again.
+    """
+
+    def test_a_shared_photo_files_as_a_photo_source_seen_it_can_find(self) -> None:
+        import process
+        from unittest import mock
+        photo_name = f'ancestry-{PHOTO_MEDIA_ID}-photo.jpg'
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            staging = tmp / 'staging'
+            staging.mkdir()
+            shutil.copytree(PHOTO_BUNDLE, staging / PHOTO_BUNDLE.name)
+            archive = tmp / 'archive'
+            archive.mkdir()
+            (archive / 'fha.yaml').write_text(
+                'roots:\n  photos: photos\n  documents: documents\n', encoding='utf-8')
+            config = load_fha_yaml(archive, strict=True)
+
+            res = capture.run_ingest(archive, config, staging_dir=str(staging))
+            self.assertEqual(res.exit_code, EXIT_CLEAN)
+            bundle_dir = next(p for p in (archive / 'inbox').iterdir() if p.is_dir())
+            with mock.patch.object(process, '_run_exiftool_embed_source', return_value=None), \
+                    mock.patch.object(process, '_run_exiftool_read_keywords', return_value=[]), \
+                    mock.patch.object(process, '_run_exiftool_remove_source', return_value=None):
+                self.assertEqual(process.process_bundle(
+                    archive, config, bundle_dir, source_date=None, dry_run=False), EXIT_CLEAN)
+
+            sources = list((archive / 'sources').rglob('*.md'))
+            self.assertEqual(len(sources), 1, sources)
+            self.assertEqual(sources[0].parent, archive / 'sources' / 'photos')
+            rec = read_record(sources[0])
+            self.assertEqual(rec['parse_errors'], [])
+            meta = rec['meta']
+            self.assertEqual(meta['source_type'], 'photo')
+            self.assertEqual(meta['title'], 'Thomas and Margaret Hartley at the Fairview farm, about 1925')
+            self.assertEqual(meta['source_date'], '1925~')
+            # The citation names the year once - the title already says it
+            # (PR #258 review: "...about 1925. 1925. Ancestry.com.").
+            self.assertEqual(' '.join(str(meta['citation']).split()),
+                             'Thomas and Margaret Hartley at the Fairview farm, about 1925. Ancestry.com. '
+                             + PHOTO_VIEWER_URL)
+            # Who first added the photo is another member's name: kept with
+            # Ancestry's data (photo-data.json), not in the record a packet or
+            # a shared site carries (PR #258 review, owner-away decision).
+            self.assertNotIn('hartley_family_tree', sources[0].read_text(encoding='utf-8'))
+            data_file = next((archive / 'documents').rglob('*site-data*.json'))
+            self.assertEqual(json.loads(data_file.read_text(encoding='utf-8'))['details']['originallyAddedBy'],
+                             'hartley_family_tree on 3 Mar 2015')
+
+            # The picture: in the photo library, under its captured name, the
+            # source's main image.
+            self.assertTrue((archive / 'photos' / photo_name).is_file())
+            by_role = {f['role']: f for f in meta['files']}
+            # No copy of Ancestry's page: it lists other members (round 4).
+            self.assertEqual(set(by_role), {'front', 'site-data'})
+            self.assertEqual(Path(by_role['front']['file']).name, photo_name)
+            self.assertTrue(by_role['front'].get('is_primary'))
+            self.assertEqual((archive / 'photos' / photo_name).read_bytes(),
+                             (PHOTO_BUNDLE / photo_name).read_bytes())
+
+            # The viewer's address, without how she got there, in the
+            # frontmatter - the one Seen It turns into med:{mediaId}.
+            urls = [link['url'] for link in meta['external_links']]
+            self.assertEqual(urls[0], PHOTO_VIEWER_URL)
+            self.assertEqual(urls.count(PHOTO_VIEWER_URL), 1)
+            self.assertNotIn('?', urls[0])
+            m = _SEEN_IT_MEDIA_RE.search(urls[0])
+            self.assertIsNotNone(m)
+            self.assertEqual('med:' + m.group(1).lower(), 'med:' + PHOTO_MEDIA_ID)
+            # Seen It's own helper (PR #256) finds it from the filed record.
+            sys.path.insert(0, str(ROOT / 'seen-it' / 'host'))
+            import seenit_host
+            self.assertIn('med:' + PHOTO_MEDIA_ID, seenit_host._keys_from_url(urls[0]))
+            items, _ = seenit_host.scan_known({'sources': [str(archive / 'sources')]})
+            self.assertEqual(items['med:' + PHOTO_MEDIA_ID]['state'], 'filed')
+            self.assertEqual(items['med:' + PHOTO_MEDIA_ID]['sid'], meta['id'])
+
+            # Other members who saved the photo are named nowhere in the
+            # archive - though the staged page.html, the scrape source that is
+            # never filed, shows them.
+            self.assertIn('cousin_member', (PHOTO_BUNDLE / 'page.html').read_text(encoding='utf-8'))
+            for p in archive.rglob('*'):
+                if p.is_file() and p.suffix in ('.md', '.json', '.html', '.txt', '.jsonl'):
+                    self.assertNotIn('cousin_member', p.read_text(encoding='utf-8'), p)
+
+    def _file_photo_twice(self, second_photo: bytes | None = None, keyword_on_filed: bool = False):
+        """File the sample photo bundle, then a second bundle under the same
+        photo name - the same bytes, or `second_photo`. `keyword_on_filed`
+        gives the filed photo an APP1 block, as fha's SOURCE: keyword write
+        does. Returns (first result, second result or refusal text, archive,
+        second inbox folder)."""
+        import process
+        from unittest import mock
+        photo_name = f'ancestry-{PHOTO_MEDIA_ID}-photo.jpg'
+        td = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, td, True)
+        tmp = Path(td)
+        archive = tmp / 'archive'
+        archive.mkdir()
+        (archive / 'fha.yaml').write_text(
+            'roots:\n  photos: photos\n  documents: documents\n', encoding='utf-8')
+        config = load_fha_yaml(archive, strict=True)
+        codes = []
+        for n in ('1', '2'):
+            staging = tmp / ('staging' + n)
+            staging.mkdir()
+            bundle = staging / (PHOTO_BUNDLE.name + n)
+            shutil.copytree(PHOTO_BUNDLE, bundle)
+            if n == '2' and second_photo is not None:
+                (bundle / photo_name).write_bytes(second_photo)
+            capture.run_ingest(archive, config, staging_dir=str(staging))
+            bundle_dir = next(p for p in (archive / 'inbox').iterdir() if p.is_dir())
+            with mock.patch.object(process, '_run_exiftool_embed_source', return_value=None), \
+                    mock.patch.object(process, '_run_exiftool_read_keywords', return_value=[]), \
+                    mock.patch.object(process, '_run_exiftool_remove_source', return_value=None):
+                try:
+                    codes.append(process.process_bundle(archive, config, bundle_dir,
+                                                        source_date=None, dry_run=False))
+                except process.ProcessError as e:
+                    codes.append(str(e))
+            if n == '1' and keyword_on_filed:
+                filed = archive / 'photos' / photo_name
+                data = filed.read_bytes()
+                body = b'Exif\x00\x00SOURCE: S-xxxxxxxxxx'
+                app1 = b'\xff\xe1' + (len(body) + 2).to_bytes(2, 'big') + body
+                filed.write_bytes(data[:2] + app1 + data[2:])
+        return codes, archive, bundle_dir
+
+    def test_a_second_copy_of_a_filed_photo_is_refused_in_plain_words(self) -> None:
+        """PR #258 round 3 (Codex PRRT_kwDOS6vm6c61wZYJ): the same shared photo
+        captured twice. The second bundle cannot be filed - the photo keeps its
+        name in the photo library and is never renamed to make room. The
+        refusal says the photo is already filed, as which source, and what to
+        do with the copy - also after fha wrote its keyword into the filed
+        photo (the picture is compared, not the file's bytes)."""
+        for keyword in (False, True):
+            codes, archive, bundle_dir = self._file_photo_twice(keyword_on_filed=keyword)
+            sid = read_record(next((archive / 'sources').rglob('*.md')))['meta']['id']
+            self.assertEqual(codes[0], EXIT_CLEAN)
+            self.assertIn(f'is already in your photo library, filed as source {sid}', codes[1])
+            self.assertIn('is a second copy of the same photo. Delete that folder if it adds nothing', codes[1])
+            self.assertIn('Nothing was changed', codes[1])
+            self.assertNotIn('destination already exists', codes[1])
+            # One source, the filed photo untouched, the copy left for her.
+            self.assertEqual(len(list((archive / 'sources').rglob('*.md'))), 1)
+            self.assertEqual([p.name for p in (archive / 'photos').iterdir()],
+                             [f'ancestry-{PHOTO_MEDIA_ID}-photo.jpg'])
+            self.assertTrue(bundle_dir.is_dir())
+
+    def test_another_version_of_a_filed_shared_photo_is_kept_with_its_source(self) -> None:
+        """PR #258 round 5 (audit L): a larger download of a shared photo already
+        filed - same Ancestry media id, so the same name, different pictures.
+        Round 4 called it "a different photo ... rename it", and renaming dead-
+        ends in a capture bundle, whose notes.md names the file. It is now
+        another version of the same Ancestry photo, and the `--more` command
+        the refusal gives files it with that source, as print b, without
+        renaming anything in the photo library."""
+        import process
+        from unittest import mock
+        photo_name = f'ancestry-{PHOTO_MEDIA_ID}-photo.jpg'
+        larger = (b'\xff\xd8\xff\xdb\x00\x04\x00\x00\xff\xda\x00\x02 a larger fictional scan \xff\xd9')
+        for second in (larger, b'not a picture at all'):
+            codes, archive, bundle_dir = self._file_photo_twice(second_photo=second)
+            sid = read_record(next((archive / 'sources').rglob('*.md')))['meta']['id']
+            self.assertEqual(codes[0], EXIT_CLEAN)
+            self.assertIn(f'is another version of the same Ancestry photo ({photo_name}), which is already filed '
+                          f'as source {sid}; nothing was changed.', codes[1])
+            command = (f'`fha process "photos/{photo_name}" --more "{_rel_posix(bundle_dir / photo_name, archive)}" '
+                       f'front:b`, then delete the folder {_rel_posix(bundle_dir, archive)}: its photo is then with '
+                       f'source {sid}.')
+            self.assertIn(command, codes[1])
+            self.assertNotIn('rename', codes[1].lower())
+            self.assertNotIn('different photo', codes[1])
+        # Her next step, as told: the version is kept with that source, as print b.
+        keywords = {}
+        with mock.patch.object(process, '_run_exiftool_embed_source',
+                               side_effect=lambda path, s_id, **k: keywords.__setitem__(Path(path).name, s_id)), \
+                mock.patch.object(process, '_run_exiftool_read_keywords',
+                                  side_effect=lambda path: ([f'SOURCE: {sid}'] if Path(path).name == photo_name
+                                                            and Path(path).parent.name == 'photos' else [])), \
+                mock.patch.object(process, '_run_exiftool_remove_source', return_value=None):
+            rc = process.attach_more(archive, load_fha_yaml(archive, strict=True), archive / 'photos' / photo_name,
+                                     bundle_dir / photo_name, 'front', 'b', dry_run=False)
+        self.assertEqual(rc, EXIT_CLEAN)
+        print_b = f'ancestry-{PHOTO_MEDIA_ID}-photo-b.jpg'
+        self.assertEqual(sorted(p.name for p in (archive / 'photos').iterdir()), sorted([photo_name, print_b]))
+        self.assertEqual((archive / 'photos' / print_b).read_bytes(), b'not a picture at all')
+        self.assertEqual(keywords.get(print_b), sid)
+        files = read_record(next((archive / 'sources').rglob('*.md')))['meta']['files']
+        self.assertIn({'file': f'photos/{print_b}', 'role': 'front', 'copy': 'b'},
+                      [{k: f[k] for k in ('file', 'role', 'copy') if k in f} for f in files])
+
+    def _file_named_photo_twice(self, name: str, first: bytes, second: bytes):
+        """Two capture bundles from somewhere other than Ancestry, each with a
+        photo called `name` (a camera's IMG_0001.jpg) and a page copy."""
+        import process
+        from unittest import mock
+        td = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, td, True)
+        tmp = Path(td)
+        archive = tmp / 'archive'
+        archive.mkdir()
+        (archive / 'fha.yaml').write_text('roots:\n  photos: photos\n  documents: documents\n', encoding='utf-8')
+        config = load_fha_yaml(archive, strict=True)
+        codes = []
+        for n, data in (('1', first), ('2', second)):
+            staging = tmp / ('staging' + n)
+            bundle = staging / f'family-photo-{n}'
+            bundle.mkdir(parents=True)
+            (bundle / 'page.html').write_text('<html><title>Family photo</title></html>', encoding='utf-8')
+            (bundle / 'page-snapshot.html').write_text('<html>copy</html>', encoding='utf-8')
+            (bundle / name).write_bytes(data)
+            (bundle / 'capture.json').write_text(json.dumps({
+                'schema': 2, 'url': f'https://photos.example.org/album/{n}', 'title': f'Family photo {n}',
+                'source_type': 'photo',
+                'assets': [{'file': name, 'role': 'front', 'mode': 'manual'},
+                           {'file': 'page-snapshot.html', 'role': 'webpage', 'mode': 'singlefile'}]}), encoding='utf-8')
+            capture.run_ingest(archive, config, staging_dir=str(staging))
+            bundle_dir = next(p for p in (archive / 'inbox').iterdir() if p.is_dir())
+            with mock.patch.object(process, '_run_exiftool_embed_source', return_value=None), \
+                    mock.patch.object(process, '_run_exiftool_read_keywords', return_value=[]), \
+                    mock.patch.object(process, '_run_exiftool_remove_source', return_value=None):
+                try:
+                    codes.append(process.process_bundle(archive, config, bundle_dir, source_date=None, dry_run=False))
+                except process.ProcessError as e:
+                    codes.append(str(e))
+        return codes, archive, bundle_dir
+
+    def test_a_different_photo_with_a_filed_photos_name_is_never_called_a_copy(self) -> None:
+        """PR #258 round 4 (audit F): two different scans that share a name -
+        two cameras' IMG_0001.jpg - are two photos. Told "a second copy ...
+        delete it", she would delete the only copy of the second photo. Only a
+        matching picture is a copy; a name alone gets the neutral words. In a
+        capture bundle the name is also in notes.md, so the rename the words
+        ask for names both places (round 5) - a rename of the file alone is
+        refused when the folder is processed again."""
+        one = b'\xff\xd8\xff\xe0\x00\x07JFIF\x00\xff\xda\x00\x04\x00\x00first fictional photo\xff\xd9'
+        two = b'\xff\xd8\xff\xe0\x00\x07JFIF\x00\xff\xda\x00\x04\x00\x00second fictional photo\xff\xd9'
+        codes, archive, bundle_dir = self._file_named_photo_twice('IMG_0001.jpg', one, two)
+        sid = read_record(next((archive / 'sources').rglob('*.md')))['meta']['id']
+        self.assertEqual(codes[0], EXIT_CLEAN)
+        self.assertIn(f'a different photo with the same name (IMG_0001.jpg) is already in your photo library, '
+                      f'filed as source {sid}; nothing was changed.', codes[1])
+        self.assertIn("rename IMG_0001.jpg in inbox/family-photo-2 - and the same name in that folder's notes.md", codes[1])
+        self.assertNotIn('Delete', codes[1])
+        self.assertNotIn('copy', codes[1])
+        self.assertTrue(bundle_dir.is_dir())
+
+    def test_a_photo_the_tools_cannot_read_is_never_called_different_or_a_copy(self) -> None:
+        """PR #258 round 5: neither file's picture can be read (a TIFF or a
+        HEIC gives no picture-data hash). The tools cannot tell, so both
+        possibilities are named - and deleting only if it is the same photo."""
+        codes, archive, bundle_dir = self._file_named_photo_twice('scan_0001.tif', b'II*\x00first', b'II*\x00second')
+        sid = read_record(next((archive / 'sources').rglob('*.md')))['meta']['id']
+        self.assertEqual(codes[0], EXIT_CLEAN)
+        self.assertIn(f'the tools could not tell whether inbox/family-photo-2/scan_0001.tif is the same photo as '
+                      f'scan_0001.tif, which is already in your photo library, filed as source {sid}; nothing was '
+                      f'changed. If it is the same photo and adds nothing, you can delete the folder', codes[1])
+        self.assertIn('If it is a different photo, rename scan_0001.tif', codes[1])
+        self.assertNotIn('a different photo with the same name', codes[1])
+        self.assertNotIn('second copy', codes[1])
+
+    def _old_addon_bundle(self, staging: Path, *, with_photo: bool) -> Path:
+        """A capture of the shared photo's page by her current, older add-on
+        (0.6.6 or earlier): an ordinary page capture - page.html and a copy of
+        the page, which lists the other members who saved the photo and who
+        uploaded it - and, if she chose "save the actual file", the page's
+        largest image as record.jpg."""
+        page = (ROOT / 'tests' / 'fixtures' / 'capture-samples' / 'ancestry-media-photo.html').read_text(encoding='utf-8')
+        bundle = staging / 'thomas-and-margaret-hartley-20261110-101500-old000'
+        bundle.mkdir(parents=True)
+        (bundle / 'page.html').write_text(page, encoding='utf-8')
+        (bundle / 'page-snapshot.html').write_text(page, encoding='utf-8')
+        assets = [{'file': 'page-snapshot.html', 'role': 'webpage', 'mode': 'singlefile'}]
+        if with_photo:
+            shutil.copy(PHOTO_BUNDLE / f'ancestry-{PHOTO_MEDIA_ID}-photo.jpg', bundle / 'record.jpg')
+            assets.insert(0, {'file': 'record.jpg', 'role': 'record', 'mode': 'fetch'})
+        (bundle / 'capture.json').write_text(json.dumps({
+            'schema': 2, 'url': PHOTO_VIEWER_URL + '?destTreeId=90000003&destPersonId=90000004&hid=h1#top',
+            'title': 'Thomas and Margaret Hartley at the Fairview farm, about 1925', 'accessed': '2026-11-10',
+            'repository': 'ancestry.com', 'recipe_hint': 'ancestry', 'people': [], 'notes': '',
+            'assets': assets}), encoding='utf-8')
+        return bundle
+
+    def _archive(self, tmp: Path, photos: str = 'photos') -> tuple[Path, dict]:
+        archive = tmp / 'archive'
+        archive.mkdir()
+        (archive / 'fha.yaml').write_text(f'roots:\n  photos: "{photos}"\n  documents: documents\n', encoding='utf-8')
+        return archive, load_fha_yaml(archive, strict=True)
+
+    def test_an_older_add_ons_capture_with_no_photo_is_not_filed_at_all(self) -> None:
+        """PR #258 rounds 6-7 (P2, P3-D): an older add-on saved only a copy of
+        the shared photo's page. Filed, it would be a photo source with no
+        photo, which Seen It then showed as "in the archive", so she would
+        never go back for the photo. It is not ingested: it is set aside in
+        the staging folder's .not-filed/ (beside .ingested/, never deleted),
+        she is told once - naming that folder - and later sweeps, doctor and
+        Seen It leave it alone."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            staging = tmp / 'staging'
+            bundle = self._old_addon_bundle(staging, with_photo=False)
+            archive, config = self._archive(tmp)
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                res = capture.run_ingest(archive, config, staging_dir=str(staging))
+            # What she would see: nothing filed, and the capture kept whole in .not-filed/.
+            inbox = archive / 'inbox'
+            self.assertFalse(inbox.exists() and any(inbox.iterdir()), 'nothing may be filed')
+            aside = staging / '.not-filed' / bundle.name
+            self.assertTrue((aside / 'page-snapshot.html').is_file(), 'the capture is kept whole in .not-filed/')
+            self.assertEqual(res.data['ingested'], 0)
+            self.assertEqual(res.data.get('not_filed'), 1)
+            self.assertEqual([o['status'] for o in res.data['bundles']], ['not-filed'])
+            self.assertIn("This shared photo was captured with an older version of the add-on, which saved only a "
+                          "copy of Ancestry's page (it lists other members) and not the photo. Nothing was filed. "
+                          "Update the add-on (fha update-tools, then reload it in chrome://extensions), open the "
+                          "photo again and press Capture this photo.", err.getvalue())
+            self.assertIn(f"It is kept in {aside.as_posix()}; once you've captured the photo again with the updated "
+                          "add-on, you can delete that folder.", err.getvalue())
+            self.assertFalse(bundle.exists())
+            self.assertTrue((aside / 'page-snapshot.html').is_file(), 'the capture is kept whole, never deleted')
+            self.assertFalse((staging / '.ingested').exists())
+            inbox = archive / 'inbox'
+            self.assertFalse(inbox.exists() and any(inbox.iterdir()), 'nothing may be filed')
+            # Said once: the next sweep is silent, and nothing is waiting.
+            err2 = io.StringIO()
+            with contextlib.redirect_stderr(err2):
+                res2 = capture.run_ingest(archive, config, staging_dir=str(staging))
+            self.assertNotIn('older version', err2.getvalue())
+            self.assertEqual(res2.data.get('bundles', []), [])
+            self.assertEqual(capture.staged_bundles(config, str(staging))[1], [])
+            sys.path.insert(0, str(ROOT / 'seen-it' / 'host'))
+            import seenit_host
+            items, _ = seenit_host.scan_known({'sources': [str(archive / 'sources')], 'filed': [str(archive / 'documents')],
+                                               'captured': [str(staging)]})
+            self.assertNotIn('med:' + PHOTO_MEDIA_ID, items)
+
+    def test_a_shared_photo_citation_never_names_the_page_heading(self) -> None:
+        """PR #258 round 10 (audit W, privacy): the viewer page's first <h1> (or
+        og:title) can be the sharer's tree name - another member's. The
+        citation took its title from there, and the citation is what a shared
+        site renders. It now names the photo by capture.json's title, else the
+        tab's own <title>; nothing else is read from a shared photo's page."""
+        tree = "cousin_member_one's Hartley-Whitcombe Tree"
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            staging = tmp / 'staging'
+            bundle = staging / PHOTO_BUNDLE.name
+            shutil.copytree(PHOTO_BUNDLE, bundle)
+            page = (bundle / 'page.html').read_text(encoding='utf-8')
+            page = page.replace('<head>', '<head><meta property="og:title" content="' + tree + '">'
+                                '<meta property="og:image" content="https://www.ancestry.com/tree-banner.jpg">', 1)
+            page = page.replace('<main id="mediaViewer">', '<main id="mediaViewer"><h1>' + tree + '</h1>'
+                                '<p>See https://www.newspapers.com/clip/1234/cousin-clip/</p>', 1)
+            (bundle / 'page.html').write_text(page, encoding='utf-8')
+            archive, config = self._archive(tmp)
+            capture.run_ingest(archive, config, staging_dir=str(staging))
+            meta = read_record(next((archive / 'inbox').rglob('notes.md')))['meta']
+            self.assertEqual(' '.join(str(meta['citation']).split()),
+                             'Thomas and Margaret Hartley at the Fairview farm, about 1925. Ancestry.com. ' + PHOTO_VIEWER_URL)
+            self.assertEqual([link['url'] for link in meta['external_links']], [PHOTO_VIEWER_URL])
+            for p in archive.rglob('*'):
+                if p.is_file():
+                    self.assertNotIn('Hartley-Whitcombe', p.read_text(encoding='utf-8', errors='replace'), p)
+
+    def test_a_shared_photo_saved_as_jfif_or_webp_is_filed_not_set_aside(self) -> None:
+        """PR #258 round 8 (regression from round 7): Chrome on Windows saves a
+        "Save image as" JPEG as .jfif, or a photo as .webp. The no-picture rule
+        judged the photo by its extension, so a good capture was set aside as
+        "only its address was saved" - and capturing again could not help. The
+        picture is now judged by its role and its bytes; the native host
+        (`fha capture --host`) files it too."""
+        photo = f'ancestry-{PHOTO_MEDIA_ID}-photo'
+        for ext in ('.jfif', '.webp'):
+            with tempfile.TemporaryDirectory() as td:
+                tmp = Path(td)
+                staging = tmp / 'staging'
+                bundle = staging / PHOTO_BUNDLE.name
+                shutil.copytree(PHOTO_BUNDLE, bundle)
+                data = (bundle / (photo + '.jpg')).read_bytes()
+                if ext == '.webp':  # a WebP file's own first bytes
+                    data = b'RIFF' + (len(data) + 4).to_bytes(4, 'little') + b'WEBP' + data
+                (bundle / (photo + '.jpg')).unlink()
+                (bundle / (photo + ext)).write_bytes(data)
+                cj = json.loads((bundle / 'capture.json').read_text(encoding='utf-8'))
+                for a in cj['assets']:
+                    if a['file'] == photo + '.jpg':
+                        a['file'], a['mode'] = photo + ext, 'manual'
+                (bundle / 'capture.json').write_text(json.dumps(cj), encoding='utf-8')
+                archive, config = self._archive(tmp)
+                res = capture.run_ingest(archive, config, staging_dir=str(staging))
+                self.assertEqual(res.data['ingested'], 1, ext)
+                self.assertFalse((staging / '.not-filed').exists(), ext)
+                self.assertTrue(any((archive / 'inbox').rglob(photo + ext)), ext)
+                # The native host, given the same capture, files it too.
+                msg = {'captureJson': cj, 'bundleName': 'host-' + ext[1:], 'pageHtml': '<html></html>',
+                       'assets': [{'filename': photo + ext, 'base64': base64.b64encode(data).decode()},
+                                  {'filename': 'photo-data.json',
+                                   'base64': base64.b64encode((PHOTO_BUNDLE / 'photo-data.json').read_bytes()).decode()}]}
+                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                    r = capture._host_ingest(archive, config, msg)
+                self.assertTrue(r.get('ok'), (ext, r))
+
+    def test_a_shared_photo_capture_with_no_picture_at_all_is_never_filed(self) -> None:
+        """PR #258 round 7: the same refusal whenever a shared-photo capture
+        holds no picture - also one with no page copy to leave out (an older
+        add-on with the page copy turned off, a citation-and-link capture)."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            staging = tmp / 'staging'
+            bundle = staging / 'thomas-old-no-copy'
+            bundle.mkdir(parents=True)
+            (bundle / 'page.html').write_text('<html><title>Hartley farm</title></html>', encoding='utf-8')
+            (bundle / 'capture.json').write_text(json.dumps({
+                'schema': 2, 'url': PHOTO_VIEWER_URL + '?destTreeId=90000003', 'title': 'Hartley farm',
+                'accessed': '2026-11-10', 'recipe_hint': 'ancestry', 'assets': []}), encoding='utf-8')
+            archive, config = self._archive(tmp)
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                res = capture.run_ingest(archive, config, staging_dir=str(staging))
+            self.assertEqual(res.data['ingested'], 0)
+            self.assertIn('This shared photo was captured without the photo itself', err.getvalue())
+            self.assertTrue((staging / '.not-filed' / bundle.name / 'capture.json').is_file())
+            inbox = archive / 'inbox'
+            self.assertFalse(inbox.exists() and any(inbox.iterdir()), 'nothing may be filed')
+
+    def test_a_root_named_path_finds_its_configured_folder_and_a_typed_path_still_wins(self) -> None:
+        """PR #258 round 7 (section 13 gap): the alias resolution on its own,
+        apart from any refusal's wording. `fha process photos/...` with the
+        photo library outside the archive: found in that library. A path that
+        exists as typed is always the one used."""
+        import process
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            library = tmp / 'Family Photos'
+            library.mkdir()
+            (library / 'portrait.jpg').write_bytes(b'library copy')
+            archive, config = self._archive(tmp, photos=library.as_posix())
+            elsewhere = tmp / 'elsewhere'
+            (elsewhere / 'photos').mkdir(parents=True)
+            cwd = os.getcwd()
+            try:
+                os.chdir(tmp)  # neither the archive nor the library
+                rc = process._standalone_main(['photos/portrait.jpg', '--dry-run', '--root', str(archive)])
+                self.assertEqual(rc, EXIT_CLEAN)
+                # As typed, it exists here: that is the file meant.
+                os.chdir(elsewhere)
+                (elsewhere / 'photos' / 'portrait.jpg').write_bytes(b'the one she typed')
+                found, _ = process._resolve_input_file('photos/portrait.jpg', archive, fha_config=config)
+                self.assertEqual(found, (elsewhere / 'photos' / 'portrait.jpg').resolve())
+                (elsewhere / 'photos' / 'portrait.jpg').unlink()
+                found, _ = process._resolve_input_file('photos/portrait.jpg', archive, fha_config=config)
+                self.assertEqual(found, (library / 'portrait.jpg').resolve())
+            finally:
+                os.chdir(cwd)
+
+    def test_an_older_add_ons_copy_of_a_shared_photos_page_never_reaches_the_archive(self) -> None:
+        """PR #258 round 5 (audit M), round 6: when the older add-on's capture
+        does hold a picture, the copy of the page is left out (it stays in the
+        staging folder, parked, never deleted) and the notes say so. Round 6
+        sweep: the address keeps only its path through /media/{id} - its query
+        (destTreeId, hid) names her own tree - in the citation and the links."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            staging = tmp / 'staging'
+            bundle = self._old_addon_bundle(staging, with_photo=True)
+            archive, config = self._archive(tmp)
+            res = capture.run_ingest(archive, config, staging_dir=str(staging))
+            self.assertEqual(res.exit_code, EXIT_CLEAN)
+            texts = {str(p.relative_to(archive)): p.read_text(encoding='utf-8', errors='replace')
+                     for p in archive.rglob('*') if p.is_file()}
+            self.assertTrue(texts)
+            for name, text in texts.items():
+                for member in ('cousin_member_one', 'cousin_member_two', 'Saved by', 'hartley_family_tree',
+                               'destTreeId', '90000003', 'hid=h1'):
+                    self.assertNotIn(member, text, name)
+            stub = next(t for n, t in texts.items() if n.endswith('.notes.md'))
+            self.assertIn("The copy of Ancestry's page was left out: it lists other members who saved this photo. "
+                          "The photo's address is kept.", stub)
+            meta = read_record(next((archive / 'inbox').glob('*.notes.md')))['meta']
+            self.assertEqual([link['url'] for link in meta['external_links']], [PHOTO_VIEWER_URL])
+            self.assertIn(PHOTO_VIEWER_URL, meta['citation'])
+            # The copy is still in the staging folder, parked with the bundle.
+            self.assertTrue((staging / '.ingested' / bundle.name / 'page-snapshot.html').is_file())
+
+    def test_every_command_a_refusal_prints_works_as_typed_with_the_photo_library_elsewhere(self) -> None:
+        """PR #258 round 6 (P2): her photo library is not inside the archive
+        folder. The "another version" refusal's own command failed as typed
+        ("file not found: photos/..."). Every root-named path a command takes
+        - photos/..., inbox/... - now finds its configured folder. Followed to
+        the end: the version is filed, the folder is deleted as told, a third
+        version is offered the next free print letter, and a folder whose
+        photo was already filed gets plain words instead of "file hints for
+        missing assets"."""
+        import process
+        import shlex
+        from unittest import mock
+        photo_name = f'ancestry-{PHOTO_MEDIA_ID}-photo.jpg'
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            library = tmp / 'Family Photos'
+            library.mkdir()
+            archive, config = self._archive(tmp, photos=library.as_posix())
+            sid = None
+
+            def keywords(path):
+                p = Path(path)
+                return [f'SOURCE: {sid}'] if sid and p.parent == library and p.name == photo_name else []
+
+            def process_folder(n: str, picture: bytes | None):
+                staging = tmp / ('staging' + n)
+                staging.mkdir()
+                bundle = staging / (PHOTO_BUNDLE.name + n)
+                shutil.copytree(PHOTO_BUNDLE, bundle)
+                if picture is not None:
+                    (bundle / photo_name).write_bytes(picture)
+                capture.run_ingest(archive, config, staging_dir=str(staging))
+                folder = next(p for p in (archive / 'inbox').iterdir() if p.is_dir() and p.name != 'processed')
+                try:
+                    return folder, process.process_bundle(archive, config, folder, source_date=None, dry_run=False)
+                except process.ProcessError as e:
+                    return folder, str(e)
+
+            def larger(tag: bytes) -> bytes:
+                return b'\xff\xd8\xff\xdb\x00\x04\x00\x00\xff\xda\x00\x02 ' + tag + b' \xff\xd9'
+
+            def follow(message: str) -> int:
+                cmd = re.search(r'`fha process ([^`]*--more[^`]*)`', message).group(1)
+                cwd = os.getcwd()
+                os.chdir(tmp)  # neither the archive nor the library: the path must resolve on its own
+                try:
+                    return process._standalone_main(shlex.split(cmd) + ['--root', str(archive)])
+                finally:
+                    os.chdir(cwd)
+
+            with mock.patch.object(process, '_run_exiftool_embed_source', return_value=None), \
+                    mock.patch.object(process, '_run_exiftool_read_keywords', side_effect=keywords), \
+                    mock.patch.object(process, '_run_exiftool_remove_source', return_value=None):
+                _, rc = process_folder('1', None)
+                self.assertEqual(rc, EXIT_CLEAN)
+                sid = read_record(next((archive / 'sources').rglob('*.md')))['meta']['id']
+                folder, refusal = process_folder('2', larger(b'second version'))
+                self.assertIn(f'front:b`, then delete the folder {_rel_posix(folder, archive)}', refusal)
+                self.assertEqual(follow(refusal), EXIT_CLEAN, refusal)
+                self.assertTrue((library / f'ancestry-{PHOTO_MEDIA_ID}-photo-b.jpg').is_file())
+                # Not deleted yet: processing it again says why, plainly.
+                try:
+                    process.process_bundle(archive, config, folder, source_date=None, dry_run=False)
+                    leftover = ''
+                except process.ProcessError as e:
+                    leftover = str(e)
+                self.assertIn(f'the notes in {folder.name} name a file that is no longer in that folder: {photo_name}',
+                              leftover)
+                self.assertIn('this folder has nothing left to file: delete it', leftover)
+                self.assertNotIn('file hints for missing assets', leftover)
+                shutil.rmtree(folder)  # as told
+                # A third version: the next free print letter, never b again.
+                folder3, refusal3 = process_folder('3', larger(b'third version'))
+                self.assertIn('front:c`', refusal3)
+                self.assertEqual(follow(refusal3), EXIT_CLEAN, refusal3)
+            self.assertEqual(sorted(p.name for p in library.iterdir()),
+                             sorted([photo_name, f'ancestry-{PHOTO_MEDIA_ID}-photo-b.jpg',
+                                     f'ancestry-{PHOTO_MEDIA_ID}-photo-c.jpg']))
+            files = read_record(next((archive / 'sources').rglob('*.md')))['meta']['files']
+            self.assertEqual(sorted(f.get('copy') or '' for f in files if f['role'] == 'front'), ['', 'b', 'c'])
+
+    def test_a_captured_ancestry_record_cites_as_a_record_on_wikitree(self) -> None:
+        """PR #258 review: `fha process` now keeps a capture's page address, and
+        `fha wikitree` turned a RECORD's address into {{Ancestry Image}} with the
+        record's number where the image's goes - a WikiTree reader following the
+        citation reached the wrong page. The 1880 census sample, filed: its
+        reference carries {{Ancestry Record|db|record}}."""
+        import process
+        import wikitree
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            staging = tmp / 'staging'
+            staging.mkdir()
+            shutil.copytree(EXAMPLE_BUNDLE, staging / EXAMPLE_BUNDLE.name)
+            archive = tmp / 'archive'
+            archive.mkdir()
+            (archive / 'fha.yaml').write_text(
+                'roots:\n  photos: photos\n  documents: documents\n', encoding='utf-8')
+            config = load_fha_yaml(archive, strict=True)
+            capture.run_ingest(archive, config, staging_dir=str(staging))
+            bundle_dir = next(p for p in (archive / 'inbox').iterdir() if p.is_dir())
+            with mock.patch.object(process, '_run_exiftool_embed_source', return_value=None), \
+                    mock.patch.object(process, '_run_exiftool_read_keywords', return_value=[]), \
+                    mock.patch.object(process, '_run_exiftool_remove_source', return_value=None):
+                self.assertEqual(process.process_bundle(
+                    archive, config, bundle_dir, source_date=None, dry_run=False), EXIT_CLEAN)
+            md = next((archive / 'sources').rglob('*.md'))
+            ref = wikitree._source_reference(archive, {'path': str(md.relative_to(archive)), 'title': 't', 'id': 'S-x'})
+            self.assertIn('{{Ancestry Record|6742|12345}}', ref)
+            self.assertNotIn('Ancestry Image', ref)
+
+
 # ── Drift-guard extraction (emission sites, not whole files) ──────────────────
 #
 # The producibility guard below must assert keys against the exact code that
@@ -341,18 +972,24 @@ class CaptureJsonProducibilityTestCase(unittest.TestCase):
 
     def test_assets_entry_keys_are_emitted_by_the_panel(self) -> None:
         panel_src = (COMPANION / 'src' / 'panel.js').read_text(encoding='utf-8')
-        fields_m = _PANEL_FIELDS_RE.search(panel_src)
-        self.assertIsNotNone(
-            fields_m,
+        fields_ms = list(_PANEL_FIELDS_RE.finditer(panel_src))
+        self.assertTrue(
+            fields_ms,
             'panel.js: no `const fields = {...};` literal found - the capture '
             'fields assembly moved; point _PANEL_FIELDS_RE at the new shape')
-        map_m = _PANEL_ASSETS_MAP_RE.search(fields_m.group(1))
-        self.assertIsNotNone(
-            map_m,
-            'panel.js: no `assets: assets.map((a) => ({...}))` inside the '
+        # Every capture path assembles its own fields literal (the generic
+        # page, each site's record, a shared photo); a sample is producible
+        # when some path emits each of its keys.
+        maps = [m for f in fields_ms for m in [_PANEL_ASSETS_MAP_RE.search(f.group(1))] if m]
+        self.assertTrue(
+            maps,
+            'panel.js: no `assets: assets.map((a) => ({...}))` inside a '
             'fields literal - the asset-entry emission moved; point '
             '_PANEL_ASSETS_MAP_RE at the new shape')
-        keys = _object_literal_keys(map_m.group(1))
+        keys = set().union(*(_object_literal_keys(m.group(1)) for m in maps))
+        # The panel says `primary`; build() writes it as `is_primary`.
+        if 'primary' in keys:
+            keys.add('is_primary')
         self.assertTrue(keys, 'panel.js: extracted asset-entry literal has no keys')
         for bundle, cap in self._samples():
             for entry in cap.get('assets', []):
@@ -813,8 +1450,17 @@ class BundleIdentityTestCase(unittest.TestCase):
             'builds; a member named after the bundle would be content-derived too')
 
     def test_every_sample_asset_name_is_one_the_panel_writes_literally(self) -> None:
-        """The committed sample cannot reference a name uniquify could have moved."""
-        allowed = re.compile(r'^(page-snapshot\.html|record\.[A-Za-z0-9]+)$')
+        """The committed sample cannot reference a name uniquify could have moved.
+
+        A shared photo's picture is the one exception, and not a name from the
+        page's words or the clock: it is named for the photo's media id (a
+        GUID, checked by lib/ancestry-record.js ancPhotoFileStem), because it
+        keeps that name for good in the photo library, where `record.jpg`
+        would collide with the next shared photo.
+        """
+        allowed = re.compile(
+            r'^(page-snapshot\.html|record\.[A-Za-z0-9]+|photo-data\.json|'
+            r'ancestry-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-photo\.[a-z0-9]+)$')
         samples = sorted((COMPANION / 'test-bundle').glob('*/capture.json'))
         self.assertTrue(samples, 'no committed test-bundle capture.json found')
         for path in samples:

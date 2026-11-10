@@ -210,6 +210,35 @@ no-op, the bundles land in `inbox/` directly.
   If the Seen It add-on is installed, the panel asks it one question before
   that download - "does the archive already hold this census page?" - so a
   household's shared page is fetched once; nothing else is asked or sent.
+  On a photo another member shared to their Ancestry tree (the media viewer,
+  `/mediaui-viewer/…/media/{mediaId}`), Capture reads the photo's Details as
+  the page shows them - stopping at its "Saved by" list of other members -
+  and fetches the one image the viewer shows, from the page's own site in your
+  session (`lib/ancestry-record.js` `ancMediaImageUrl` builds an address on
+  the page's origin only, and content.js checks it again before the fetch),
+  keeping the bytes exactly as sent. The bundle files as a `photo` source
+  whose `external_links` keep the viewer's address without its query - the
+  address Seen It knows the photo by (`med:{mediaId}`). When the photo will
+  not come and no file was dropped in, nothing is staged: a photo source is
+  never filed without its picture. No copy of the page is kept for a shared
+  photo (the page lists other members): the archive keeps the photo and
+  `photo-data.json`, whose fields are only what the Details reader extracts,
+  and the Python recipe reads no people or text from that page. `fha capture
+  --ingest` leaves out a page copy an older add-on made of such a page (it
+  stays parked in the staging folder) and says so in the notes; a shared-photo
+  capture with no picture is never filed - it is set aside, once, in the
+  staging folder's `.not-filed/`. Where the page's layout is unclear, the
+  Details reader leaves text out rather than file someone else's words as
+  hers: it reads only the photo's own Details box (`ancMediaDetailsBoxes`:
+  the element whose own heading or aria-label is "Details"), whole, each
+  field by its own label. Nothing outside the box is read, and with no box
+  found no field comes from the page body - only the photo, its address and
+  the tab's own title are kept; the rest can be read on Ancestry from the
+  saved address (PR #258 round 9, reversible). Capture
+  reads the page again first, and
+  stages nothing while the page shows Details or linked people the form has
+  not shown her (they are added to the form for her to check), so a photo is
+  captured once - a second capture of a filed photo cannot be filed.
   On a FamilySearch record or image viewer, the page reads the record and its
   image through FamilySearch's own data service, as FamilySearch's pages do,
   with your signed-in session. That session (the `fssessionid` login, sent as a
@@ -261,12 +290,14 @@ src/
     people-harvest.js  JSON-LD person harvest (canonical; ditto)
     capture-readiness.js  the "record detail looks empty" phrases (canonical; ditto)
     newspapers-page-data.js  reads a Newspapers.com page's embedded data (canonical; ditto)
-    ancestry-record.js  reads an Ancestry record page: fields, household, citation, scan, hints (canonical; ditto)
+    ancestry-record.js  reads an Ancestry record page: fields, household, citation, scan, hints;
+                       and a shared photo's viewer page: its id, image and Details (canonical; ditto)
     familysearch-record.js  a FamilySearch record from its data service: login rule, record, image, hints (canonical; ditto)
     findagrave-record.js  a Find a Grave memorial: its facts, family, citation, photo list, photo-host rule, hints (canonical; ditto)
     newspapers.js      rebuilds a Newspapers.com page from tiles; clipping, annotated view, citations
     findagrave.js      downloads a memorial's photos from Find a Grave's image host (panel side)
-test-bundle/           an example "both" bundle in the exact output shape (round-trip test)
+test-bundle/           example bundles in the exact output shape (round-trip tests): a "both"
+                       census capture, and a shared Ancestry photo the panel tests stage byte for byte
 ```
 
 content.js is an injected classic script, so it cannot `import`: the eight

@@ -653,3 +653,87 @@ test('Codex 4504665602 sweep: the page copy names the hosts that said slow down 
   assert.strictEqual(r.ok, true, r.error);
   assert.deepStrictEqual(r.slowHosts, ['images.findagrave.com']);
 });
+
+// ── a photo someone shared on Ancestry ───────────────────────────────────────
+
+const MEDIA = '7c0ffee0-1234-4abc-8def-0123456789ab';
+const SHARED = 'https://www.ancestry.com/mediaui-viewer/tree/90000001/person/90000002/media/' + MEDIA;
+const SHARED_IMG = 'https://www.ancestry.com/api/media/retrieval/v2/image/namespaces/4242/media/' + MEDIA +
+  '?client=trees-mediaservice&imageQuality=hq';
+const SHARED_BYTES = Buffer.from('\xff\xd8\xff\xe0\x00\x10JFIF fictional shared photo\xff\xd9', 'latin1');
+
+// Ancestry's media service as it answers a signed-in page; `over` by address.
+function ancestryMedia(over = {}) {
+  return async (url) => {
+    if (over[url]) return over[url];
+    if (url === SHARED_IMG) {
+      return { ok: true, status: 200, headers: { get: () => 'image/jpeg' },
+        blob: async () => new Blob([SHARED_BYTES], { type: 'image/jpeg' }) };
+    }
+    return { ok: false, status: 404, headers: { get: () => 'text/html' } };
+  };
+}
+
+test('prefill knows a shared photo\'s viewer page, and only that page', async () => {
+  const tree = parse(SAMPLE('ancestry-media-photo'));
+  let r = await loadPage({ url: SHARED + '?destTreeId=90000003&hid=h1', tree, fetch: ancestryMedia() })
+    .ask({ action: 'prefill' });
+  assert.strictEqual(r.prefill.ancestryPhoto, true);
+  assert.strictEqual(r.prefill.ancestryMediaId, MEDIA);
+  assert.strictEqual(r.prefill.sourceType, 'photo');
+  assert.strictEqual(r.prefill.ancestryRecord, false);
+  r = await loadPage({ url: 'https://www.ancestry.com/family-trees/90000001/people/90000002/hints', tree,
+    fetch: ancestryMedia() }).ask({ action: 'prefill' });
+  assert.strictEqual(r.prefill.ancestryPhoto, false);
+  assert.strictEqual(r.prefill.sourceType, undefined);
+});
+
+test('the shared photo is read from the page and fetched from Ancestry\'s own site, in her session, as sent', async () => {
+  const page = loadPage({ url: SHARED + '?hid=h1', tree: parse(SAMPLE('ancestry-media-photo')), fetch: ancestryMedia() });
+  const info = await page.ask({ action: 'ancestryPhotoInfo' });
+  assert.strictEqual(info.ok, true);
+  assert.strictEqual(info.media.url, SHARED);
+  assert.strictEqual(info.media.imageUrl, SHARED_IMG);
+  assert.deepStrictEqual(info.hints, { sourceType: 'photo', sourceDate: '1925~', sourceClass: null });
+  assert.ok(!JSON.stringify(info).includes('cousin_member'), 'the "Saved by" list was read');
+  assert.strictEqual(page.calls.length, 0, 'reading the photo asks nothing of the network');
+  const got = await page.ask({ action: 'ancestryPhoto', mediaId: MEDIA });
+  assert.strictEqual(got.ok, true, got.error);
+  assert.ok(Buffer.from(got.base64, 'base64').equals(SHARED_BYTES), 'the photo is kept byte for byte');
+  assert.strictEqual(got.ext, 'jpg');
+  assert.deepStrictEqual(page.calls.map((c) => [c.url, c.init.credentials]), [[SHARED_IMG, 'include']]);
+});
+
+test('the photo is never fetched for another photo, from another site, or as a page instead of an image', async () => {
+  const tree = parse(SAMPLE('ancestry-media-photo'));
+  let page = loadPage({ url: SHARED, tree, fetch: ancestryMedia() });
+  let r = await page.ask({ action: 'ancestryPhoto', mediaId: '1badf00d-5678-4def-9abc-ba9876543210' });
+  assert.strictEqual(r.ok, false);
+  assert.match(r.error, /no longer shows this photo/);
+  page = loadPage({ url: 'https://blog.example.org/mediaui-viewer/tree/1/person/2/media/' + MEDIA, tree,
+    fetch: ancestryMedia() });
+  r = await page.ask({ action: 'ancestryPhoto', mediaId: MEDIA });
+  assert.match(r.error, /no longer on Ancestry/);
+  assert.strictEqual(page.calls.length, 0);
+  page = loadPage({ url: SHARED, tree, fetch: ancestryMedia({ [SHARED_IMG]: { ok: true, status: 200,
+    headers: { get: () => 'text/html' }, blob: async () => new Blob(['<html>sign in</html>'], { type: 'text/html' }) } }) });
+  r = await page.ask({ action: 'ancestryPhoto', mediaId: MEDIA });
+  assert.strictEqual(r.ok, false);
+  assert.match(r.error, /sent a page instead of the photo/);
+  page = loadPage({ url: SHARED, tree, fetch: ancestryMedia({ [SHARED_IMG]: { ok: false, status: 403 } }) });
+  r = await page.ask({ action: 'ancestryPhoto', mediaId: MEDIA });
+  assert.match(r.error, /refused the photo \(HTTP 403\) - sign in/);
+  // No picture of it on the page yet: nothing is fetched.
+  page = loadPage({ url: SHARED, tree: parse('<p>loading</p>'), fetch: ancestryMedia() });
+  r = await page.ask({ action: 'ancestryPhoto', mediaId: MEDIA });
+  assert.match(r.error, /has not appeared on the page yet/);
+  assert.strictEqual(page.calls.length, 0);
+});
+
+test('PR #258 review: on a shared photo, the form starts from its Details - linked people as names to tick', async () => {
+  const r = await loadPage({ url: SHARED + '?hid=h1', tree: parse(SAMPLE('ancestry-media-photo')), fetch: ancestryMedia() })
+    .ask({ action: 'prefill' });
+  assert.strictEqual(r.prefill.title, 'Thomas and Margaret Hartley at the Fairview farm, about 1925');
+  assert.strictEqual(r.prefill.sourceDate, '1925~');
+  assert.deepStrictEqual(r.prefill.people, ['Thomas Hartley', 'Margaret Hartley']);
+});

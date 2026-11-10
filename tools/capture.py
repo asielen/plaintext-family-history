@@ -108,7 +108,7 @@ import time
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlparse, urlsplit
 
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -1361,6 +1361,110 @@ _DEFAULT_STAGING = '~/Downloads/fha-inbox'
 # Swept bundles are *parked* here, never hard-deleted (never-lose-the-human's-work).
 _INGESTED_DIRNAME = '.ingested'
 
+# A photo another member shared to an Ancestry tree, in the media viewer.
+# Ancestry's page for it lists the other members who saved the photo, so a
+# copy of that page is never brought into the archive (PR #258 round 5): the
+# capture add-on stopped making one, and a capture from an older add-on that
+# still did has it left in the staging folder.
+_ANCESTRY_SHARED_PHOTO_RE = re.compile(
+    r'ancestry\.[a-z.]+/mediaui-viewer/(?:[^?#\s]*/)?media/'
+    r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', re.I)
+_SHARED_PHOTO_COPY_NOTE = ("The copy of Ancestry's page was left out: it lists other members who saved "
+                           "this photo. The photo's address is kept.")
+_PAGE_COPY_SUFFIXES = ('.html', '.htm', '.xhtml', '.mhtml', '.mht')
+
+
+class SharedPhotoWithoutPicture(BundleError):
+    """A shared Ancestry photo's capture that holds no photo once the copy of
+    Ancestry's page is left out - an older add-on saved only that copy. Not
+    ingested at all: filed, it would be a photo source with no photo, which
+    the Seen It add-on would show as "in the archive" (PR #258 round 6)."""
+
+
+_SHARED_PHOTO_OLD_ADDON = (
+    "This shared photo was captured with an older version of the add-on, which saved only a copy of "
+    "Ancestry's page (it lists other members) and not the photo. Nothing was filed. Update the add-on "
+    "(fha update-tools, then reload it in chrome://extensions), open the photo again and press Capture "
+    "this photo.")
+_SHARED_PHOTO_NO_PICTURE = (
+    "This shared photo was captured without the photo itself - only its address was saved. Nothing was "
+    "filed. Update the add-on (fha update-tools, then reload it in chrome://extensions), open the photo "
+    "again and press Capture this photo.")
+# Where a shared-photo capture that cannot be filed is set aside in the
+# staging folder - beside `.ingested/`, never deleted - so it is reported
+# once and then left in peace (PR #258 round 7).
+_NOT_FILED_DIRNAME = '.not-filed'
+
+
+# The roles a capture gives the photo itself (the add-on's `front`, an older
+# capture's `record`, a hand-built bundle's `photo`).
+_PICTURE_ROLES = frozenset({'front', 'back', 'record', 'photo', 'primary'})
+
+
+def _looks_like_picture(path: Path) -> bool:
+    """Whether a file's first bytes are a picture's: JPEG (whatever its
+    extension - Chrome on Windows saves one as .jfif), PNG, GIF, WebP,
+    TIFF, BMP, or HEIC/AVIF. Read from the bytes, never from the name."""
+    try:
+        with open(path, 'rb') as fh:
+            head = fh.read(16)
+    except OSError:
+        return False
+    return (head[:3] == b'\xff\xd8\xff' or head[:8] == b'\x89PNG\r\n\x1a\n' or head[:6] in (b'GIF87a', b'GIF89a')
+            or (head[:4] == b'RIFF' and head[8:12] == b'WEBP') or head[:4] in (b'II*\x00', b'MM\x00*')
+            or head[:2] == b'BM' or head[4:12] in (b'ftypheic', b'ftypheix', b'ftypmif1', b'ftypavif', b'ftypmsf1'))
+
+
+def _holds_a_picture(assets: list[tuple[Path, str]]) -> bool:
+    """Whether a capture's kept assets include its picture: an asset in a
+    picture role, or any whose bytes are a picture's. Never decided by the
+    file's extension - a dropped .jfif or .webp photo is the photo (PR #258
+    round 8) - and `_lib.PHOTO_EXTENSIONS`, which other tools rely on, is
+    left as it is."""
+    for path, role in assets:
+        if path.suffix.lower() in _PAGE_COPY_SUFFIXES or path.suffix.lower() in ('.json', '.txt', '.md'):
+            continue
+        if role in _PICTURE_ROLES or _looks_like_picture(path):
+            return True
+    return False
+
+
+def _without_shared_photo_page_copy(cap: dict, assets: list[tuple[Path, str]]) -> list[tuple[Path, str]]:
+    """A shared Ancestry photo's capture, less any copy of Ancestry's page.
+
+    The copy (role `webpage`, or any saved HTML page) stays in the staging
+    folder, parked with the rest of the bundle - never deleted - and one plain
+    line in the notes says why it is not in the archive. The photo's address
+    keeps only its path through /media/{id}: its query (destTreeId, hid, …)
+    names her own tree, and goes into no citation or link. A capture with
+    no picture once that copy is left out - or with none at all - raises
+    `SharedPhotoWithoutPicture`: a photo source without its photo is never
+    filed. Every other capture is returned as it came."""
+    url = str(cap.get('url') or '')
+    if not _ANCESTRY_SHARED_PHOTO_RE.search(url):
+        return assets
+    parts = urlsplit(url)
+    m = re.match(r'^(.*?/media/[0-9a-f-]{36})', parts.path, re.I)
+    if parts.scheme and parts.netloc and m:
+        cap['url'] = f'{parts.scheme}://{parts.netloc}{m.group(1)}'
+    # The citation names the photo by the title the capture gave it, never by
+    # the page's <h1> or og:title, which can be the sharer's tree name and
+    # would reach the shared site (PR #258 round 10). With no title in
+    # capture.json, the recipe uses the tab's own <title>.
+    title = str(cap.get('title') or '').strip()
+    if title and not str(cap.get('citation') or '').strip():
+        cap['citation'] = f"{title.rstrip('.')}. Ancestry.com. {cap['url']}"
+
+    kept = [(path, role) for path, role in assets
+            if role != 'webpage' and path.suffix.lower() not in _PAGE_COPY_SUFFIXES]
+    if not _holds_a_picture(kept):
+        raise SharedPhotoWithoutPicture(
+            _SHARED_PHOTO_OLD_ADDON if len(kept) != len(assets) else _SHARED_PHOTO_NO_PICTURE)
+    if len(kept) != len(assets):
+        notes = str(cap.get('notes') or '').rstrip()
+        cap['notes'] = (notes + '\n\n' + _SHARED_PHOTO_COPY_NOTE) if notes else _SHARED_PHOTO_COPY_NOTE
+    return kept
+
 
 def _resolve_staging_dir(staging_arg: str | None, fha_config: dict) -> Path:
     """Resolve the staging folder: explicit arg → fha.yaml `capture_staging:` → default.
@@ -1379,14 +1483,16 @@ def _resolve_staging_dir(staging_arg: str | None, fha_config: dict) -> Path:
 
 
 def _iter_bundles(staging: Path) -> list[Path]:
-    """Bundle subfolders of `staging`, excluding the `.ingested/` parking lot.
+    """Bundle subfolders of `staging`, excluding the `.ingested/` parking lot
+    and the `.not-filed/` one (shared photos that could not be filed, said
+    once when they were set aside - never again, and never waiting).
 
     Sorted by name so a sweep is deterministic (the `<slug>-<timestamp>` naming
     makes that chronological in practice).
     """
     return sorted(
         d for d in staging.iterdir()
-        if d.is_dir() and d.name != _INGESTED_DIRNAME
+        if d.is_dir() and d.name not in (_INGESTED_DIRNAME, _NOT_FILED_DIRNAME)
     )
 
 
@@ -1664,6 +1770,7 @@ def run_ingest(
     skipped = 0
     failed = 0
     park_failed = 0
+    not_filed = 0
 
     for bundle in bundles:
         name = bundle.name
@@ -1674,6 +1781,33 @@ def run_ingest(
             continue
         try:
             cap, html, assets = _read_bundle(bundle)
+            assets = _without_shared_photo_page_copy(cap, assets)
+        except SharedPhotoWithoutPicture as e:
+            # Not malformed, and filed nowhere: set aside beside .ingested/,
+            # kept whole, and said this once - a later sweep does not see it.
+            aside = staging / _NOT_FILED_DIRNAME / name
+            n = 2
+            while aside.exists():
+                aside = staging / _NOT_FILED_DIRNAME / f'{name}-{n}'
+                n += 1
+            if not dry_run:
+                try:
+                    aside.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.move(str(bundle), str(aside))
+                except OSError as move_error:
+                    print(f'WARNING: {e}', file=sys.stderr)
+                    print(f'         left in place at {bundle} (it could not be set aside: {move_error})',
+                          file=sys.stderr)
+                    failed += 1
+                    outcomes.append({'bundle': name, 'status': 'shared-photo-without-photo', 'error': str(e)})
+                    continue
+            kept_at = aside.as_posix()
+            kept_words = 'It would be kept in' if dry_run else 'It is kept in'
+            print(f'WARNING: {e} {kept_words} {kept_at}; once you\'ve captured the photo again with the '
+                  f'updated add-on, you can delete that folder.', file=sys.stderr)
+            not_filed += 1
+            outcomes.append({'bundle': name, 'status': 'not-filed', 'kept': kept_at, 'error': str(e)})
+            continue
         except BundleError as e:
             print(f'WARNING: skipping malformed bundle {name}: {e}', file=sys.stderr)
             print(f'         left in place at {bundle}', file=sys.stderr)
@@ -1766,7 +1900,9 @@ def run_ingest(
                          'stub': result.data.get('stub')})
 
     verb = 'Would ingest' if dry_run else 'Ingested'
-    summary = f'{verb} {len(bundles) - skipped - failed} bundle(s)'
+    summary = f'{verb} {len(bundles) - skipped - failed - not_filed} bundle(s)'
+    if not_filed:
+        summary += f', {not_filed} shared photo(s) set aside unfiled in {_NOT_FILED_DIRNAME}/ (see above)'
     if skipped:
         summary += f', skipped {skipped} already-ingested'
     if park_failed:
@@ -1776,9 +1912,9 @@ def run_ingest(
     print(summary + '.')
 
     return Result(
-        exit_code=EXIT_ERRORS if (failed or park_failed) else EXIT_CLEAN,
+        exit_code=EXIT_ERRORS if (failed or park_failed) else EXIT_WARNINGS if not_filed else EXIT_CLEAN,
         data={'status': 'ok', 'ingested': ingested, 'skipped': skipped,
-              'failed': failed, 'park_failed': park_failed, 'bundles': outcomes},
+              'failed': failed, 'park_failed': park_failed, 'not_filed': not_filed, 'bundles': outcomes},
         changed=changed,
     )
 

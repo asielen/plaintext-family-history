@@ -1,0 +1,23 @@
+{
+  "note": "Captured from Ancestry by the archive capture extension: a photo another member shared to their tree. \"details\" is what the photo’s Details panel showed - written by whoever shared it, not checked. \"photoSaved\" is false when the photo in this capture is a screen capture; \"imageUrl\" is where the viewer shows it.",
+  "media": {
+    "mediaId": "7c0ffee0-1234-4abc-8def-0123456789ab",
+    "treeId": "90000001",
+    "personId": "90000002",
+    "url": "https://www.ancestry.com/mediaui-viewer/tree/90000001/person/90000002/media/7c0ffee0-1234-4abc-8def-0123456789ab",
+    "title": "Thomas and Margaret Hartley at the Fairview farm, about 1925",
+    "imageUrl": "https://www.ancestry.com/api/media/retrieval/v2/image/namespaces/4242/media/7c0ffee0-1234-4abc-8def-0123456789ab?client=trees-mediaservice&imageQuality=hq",
+    "photoSaved": true
+  },
+  "details": {
+    "title": "Thomas and Margaret Hartley at the Fairview farm, about 1925",
+    "date": "abt 1925",
+    "place": "Fairview, Breton, Kansas, USA",
+    "description": "Thomas and Margaret on the porch of the farmhouse.\nThe dog is Shep.",
+    "originallyAddedBy": "hartley_family_tree on 3 Mar 2015",
+    "linkedTo": [
+      "Thomas Hartley",
+      "Margaret Hartley"
+    ]
+  }
+}

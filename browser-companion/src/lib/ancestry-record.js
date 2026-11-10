@@ -13,6 +13,11 @@
 // className and getAttribute only - no selectors, no layout - so the same code
 // runs on the live page and on the small stand-in trees the tests build.
 //
+// It also reads a photo someone shared to their tree, in Ancestry's media
+// viewer (/mediaui-viewer/…/media/{mediaId}): its identity, its image and
+// its Details, so Capture can save it as a photo (the panel's
+// captureAncestryPhoto).
+//
 // What the site shows (today's record layout, /search/collections/{dbId}/records/{recordId}):
 //   - <title>: "{collection} - Ancestry.com"; <h1>: the person's name;
 //   - #recordFieldsContainer > dl: dt/dd pairs, the record's index fields;
@@ -36,6 +41,14 @@
 //   recordHints          source type, date and class from a record's own events (every site)
 //   ancHints             recordHints over an Ancestry record's labelled fields
 //   ancTitle             "{name} - {collection}", unless the human typed a title
+//   ancParseMediaPage    a shared photo's identity (its media id) and the address to keep
+//   ancMediaImageUrl     the photo's own image, as the viewer shows it, on the page's own site
+//   ancMediaDetails      the photo's Details: title, date, place, description, who added it, who it shows
+//   ancMediaMembersSection  the members sections the Details reader never reads
+//   ancLinkedNames       the names a photo is linked to, without their years or "Private"
+//   ancMediaFrom         the whole shared photo from its viewer page
+//   ancMediaHints        a photo, dated by its Details' date when the archive can read it
+//   ancPhotoFileStem     the name the photo keeps in the photo library
 
 'use strict';
 
@@ -415,6 +428,376 @@ function ancTitle(record, formTitle) {
   const typed = String(formTitle || '').trim();
   return !typed || ANC_TITLE_SUFFIX_RE.test(typed) ? auto : typed;
 }
+
+// ── shared photos (the media viewer) ──
+// A photo or story another member shared to their tree opens at
+// /mediaui-viewer/tree/{treeId}/person/{personId}/media/{mediaId}, with
+// query parameters (destTreeId, hid, …) that only say how she got there.
+// The media id - a GUID - is the photo's identity: the same in every tree
+// that saved it. Seen It keys it med:{mediaId}, lowercased
+// (seen-it/host/seenit_host.py), from the address this returns as `url`:
+// the viewer's own tree/person/media path, without the query.
+const ANC_GUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
+const ANC_MEDIA_PAGE_RE = new RegExp('^/mediaui-viewer/((?:[^/?#]+/)*?)media/(' + ANC_GUID + ')/?$', 'i');
+
+// The shared photo a viewer address names: { mediaId, treeId, personId, url },
+// or null for anything else.
+function ancParseMediaPage(href) {
+  let u;
+  try {
+    u = new URL(href);
+  } catch (e) {
+    return null;
+  }
+  if (!/(^|\.)ancestry\.[a-z.]+$/i.test(u.hostname)) return null;
+  const m = ANC_MEDIA_PAGE_RE.exec(u.pathname);
+  if (!m) return null;
+  const mediaId = m[2].toLowerCase();
+  const tree = /(?:^|\/)tree\/(\d+)\//.exec(m[1]);
+  const person = /(?:^|\/)person\/(\d+)\//.exec(m[1]);
+  return {
+    mediaId,
+    treeId: tree ? tree[1] : null,
+    personId: person ? person[1] : null,
+    url: u.origin + '/mediaui-viewer/' + m[1] + 'media/' + mediaId,
+  };
+}
+
+// The photo's image as the viewer shows it: Ancestry's media service at
+// /api/media/retrieval/v2/image/namespaces/{ns}/media/{mediaId}, asked for
+// its "hq" size (1200x1920 on the page this was built from). The page's
+// thumbnails of the same photo (…/media/{mediaId}.jpg?MaxSide=…) name the
+// namespace too, so either will do; another photo's image never does. The
+// address is always on the page's own site (`origin`), so the signed-in
+// session the fetch carries goes nowhere else. null while no image of THIS
+// photo is on the page. Whether Ancestry keeps a larger original behind the
+// page's own Download menu is not known; this is the size the page shows.
+const ANC_MEDIA_IMG_RE = new RegExp('/api/media/retrieval/v2/image/namespaces/(\\d+)/media/(' + ANC_GUID +
+  ')(\\.jpg)?(?=[?#]|$)', 'i');
+
+function ancMediaImageUrl(root, mediaId, origin) {
+  const want = String(mediaId || '').toLowerCase();
+  if (!want) return null;
+  let full = null; // the viewer's own picture names the namespace best
+  let thumb = null;
+  for (const img of ancElements(root, (e) => ancTag(e) === 'IMG')) {
+    if (ancIsSeenItNode(img) || !img.getAttribute) continue;
+    for (const attr of ['src', 'data-src']) {
+      const m = ANC_MEDIA_IMG_RE.exec(String(img.getAttribute(attr) || ''));
+      if (!m || m[2].toLowerCase() !== want) continue;
+      if (m[3]) thumb = thumb || m[1];
+      else full = full || m[1];
+    }
+  }
+  const ns = full || thumb;
+  if (!ns) return null;
+  return String(origin || 'https://www.ancestry.com') + '/api/media/retrieval/v2/image/namespaces/' + ns +
+    '/media/' + want + '?client=trees-mediaservice&imageQuality=hq';
+}
+
+// The labels of the photo's Details panel, as the page shows them.
+const ANC_MEDIA_LABELS = [
+  ['title', /^title$/i],
+  ['date', /^(date|date taken)$/i],
+  ['place', /^(place|location)$/i],
+  ['description', /^description$/i],
+  ['originallyAddedBy', /^(originally )?(added|uploaded|shared) by$/i],
+  ['linkedTo', /^(linked|attached) to$/i],
+];
+// The lists of OTHER members a photo page shows - who saved it, and their
+// comments. Never kept: their names are not the family's. Recognised only
+// where they are shaped like a heading or a label (ancMediaLabel), never
+// from words in a sentence: "Saved by Aunt Ethel from the 1938 farmhouse
+// fire" in a description is the family's story, and is kept.
+//   "Saved by", "Saved by 2 members", "Saved by (2)", "Also saved by",
+//   "Saved to 3 trees", "Members who saved this", "Comments (4)"
+const ANC_MEDIA_SAVED_HEADING_RE = /^((also\s+)?saved\s+(by|to)|(\d+\s+)?(other\s+)?(members?|people|users)\s+(who|that)\s+(also\s+)?saved(\s+this(\s+photo)?)?)(\s*\(?\d+\)?)?(\s+(other\s+)?(members?|people|users|others|trees?))?$/i;
+const ANC_MEDIA_COMMENTS_RE = /^comments?(\s*\(?\d+\)?)?$/i;
+// The one-line form, the names in links: "Saved by <a>name</a> and 3 others".
+const ANC_MEDIA_SAVED_INLINE_RE = /^(also\s+)?saved\s+by(\s*,|\s+and\s+\d+\s+others?|\s+and)*$/i;
+// ...and in plain text, a member's username (one word with a digit, "_" or
+// ".") or one name and "and N others": "Saved by cousin_member_one". Never a
+// sentence: "Saved by Aunt Ethel from the 1938 farmhouse fire." is a story.
+const ANC_MEDIA_SAVED_NAMED_RE = /^(also\s+)?saved\s+by\s+([a-z0-9._-]*[0-9_.][a-z0-9._-]*(\s*,\s*[a-z0-9._-]+)*(\s+and\s+\d+\s+others?)?|[^\s,.]+\s+and\s+\d+\s+others?)$/i;
+
+// The one-line form of a members list - its names in links, or a username.
+function ancMediaSavedInline(el, own) {
+  return (ANC_MEDIA_SAVED_INLINE_RE.test(own) && ancElements(el, (e) => ancTag(e) === 'A').length > 0) ||
+    ANC_MEDIA_SAVED_NAMED_RE.test(own);
+}
+const ANC_MEDIA_HEADING_TAGS = ['H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'DT', 'TH', 'LEGEND', 'LABEL', 'SUMMARY'];
+// "Originally added by hartley_genealogy on 3 Mar 2015", on one line.
+const ANC_MEDIA_INLINE_RE = /^((?:originally )?(?:added|uploaded|shared) by)\s*:?\s+(.+)$/i;
+const ANC_MEDIA_INLINE_START_RE = /^((?:originally )?(?:added|uploaded|shared) by)\b/i;
+// A line starting "Originally added by" (or "Originally shared/uploaded by")
+// is always the upload line, whatever follows - a link, a display name,
+// "(Ruth Hartley)": it is never a description (PR #258 round 7). A plain
+// "Added by" / "Shared by" / "Uploaded by" is one only when it is shaped like
+// one: the phrase, then the uploader in a link or one username-like word,
+// optionally "on <date>"; or a name of one to four words followed by "on
+// <date>" - a real date (round 8). Nothing else. "Shared by Aunt Ethel
+// Hartley at the 1950 reunion; she is the girl on the left." and "Shared by
+// Aunt Ethel on her 90th birthday" are the family's description, and stay
+// one (rounds 6, 8).
+const ANC_MEDIA_ORIGINALLY_RE = /^(originally (?:added|uploaded|shared) by)\b\s*:?\s*/i;
+const ANC_MEDIA_DATE = '(?:\\d{1,2}\\s+[a-z]{3,9}\\.?,?\\s+\\d{4}|[a-z]{3,9}\\.?\\s+\\d{1,2},?\\s+\\d{4}|' +
+  '[a-z]{3,9}\\.?\\s+\\d{4}|\\d{1,2}[/.-]\\d{1,2}[/.-]\\d{2,4}|\\d{4}-\\d{2}-\\d{2}|\\d{4})';
+const ANC_MEDIA_PHRASE = '((?:originally )?(?:added|uploaded|shared) by)\\s*:?';
+const ANC_MEDIA_ATTRIB_TAIL_RE = new RegExp('^' + ANC_MEDIA_PHRASE + '\\s*[^.!?;]{0,40}$', 'i');
+const ANC_MEDIA_ATTRIB_LINKED_RE = new RegExp('^' + ANC_MEDIA_PHRASE + '\\s*(on\\s+' + ANC_MEDIA_DATE + ')?$', 'i');
+const ANC_MEDIA_ATTRIB_WORD_RE = new RegExp('^' + ANC_MEDIA_PHRASE + '\\s+[a-z0-9_.@-]*[a-z0-9_@-](\\s+on\\s+' +
+  ANC_MEDIA_DATE + ')?$', 'i');
+const ANC_MEDIA_ATTRIB_NAME_RE = new RegExp('^' + ANC_MEDIA_PHRASE + "\\s+[a-z][a-z'\u2019.-]*(?:\\s+[a-z][a-z'\u2019.-]*){0,3}" +
+  '\\s+on\\s+' + ANC_MEDIA_DATE + '$', 'i');
+// The uploader a section headed "Originally added by" names: its first line,
+// when that is a link text or a name (one to four words), optionally "on
+// <date>" - never a list of other members or a sentence after it (round 8).
+const ANC_MEDIA_UPLOADER_RE = new RegExp("^[^\\s,;:!?()]+(?:\\s+[^\\s,;:!?()]+){0,3}?(?:\\s+on\\s+" + ANC_MEDIA_DATE + ')?$', 'i');
+
+// An attribution line - { phrase, who } - or null. `text(n)` reads a node.
+function ancMediaAttribution(el, text) {
+  const own = ancOwnText(el);
+  if (!ANC_MEDIA_INLINE_START_RE.test(own)) return null;
+  const line = text(el).split('\n')[0];
+  const originally = ANC_MEDIA_ORIGINALLY_RE.exec(own) && ANC_MEDIA_ORIGINALLY_RE.exec(line);
+  if (originally) return { phrase: originally[1], who: line.slice(originally[0].length).trim() };
+  const links = ancElements(el, (e) => ancTag(e) === 'A');
+  const linked = links.length > 0 && (ANC_MEDIA_ATTRIB_LINKED_RE.test(own) ||
+    // A linked username with any short tail that is no sentence - "Added by
+    // <a>hartley_family_tree</a> 3 years ago": a username is never the
+    // family's words (round 9). A display name in the link ("<a>Aunt Ethel</a>
+    // on her 90th birthday") still needs a real date.
+    (/^[a-z0-9_.@-]+$/i.test(text(links[0]).trim()) &&
+      ANC_MEDIA_ATTRIB_TAIL_RE.test(own)));
+  if (!linked && !ANC_MEDIA_ATTRIB_WORD_RE.test(line) && !ANC_MEDIA_ATTRIB_NAME_RE.test(line)) return null;
+  const m = ANC_MEDIA_INLINE_RE.exec(line);
+  return m ? { phrase: m[1], who: m[2].trim() } : null;
+}
+
+// The text an element holds directly (not in its child elements). A live
+// NodeList has no filter, so the children are copied first.
+function ancOwnText(el) {
+  return [...(el.childNodes || [])].filter((c) => c.nodeType === 3)
+    .map((c) => String(c.nodeValue || '')).join(' ').replace(/\s+/g, ' ').trim();
+}
+
+// Which Details label an element is - its own words, a colon allowed - or
+// null: a key of ANC_MEDIA_LABELS, or 'savedBy' / 'comments' for the lists
+// of other members. A members list is a heading element starting "Saved
+// by", a label in one of the forms above, or the one-line form whose names
+// are links - never a paragraph of words.
+function ancMediaLabel(el) {
+  const own = ancOwnText(el).replace(/\s*:$/, '');
+  if (!own) return null;
+  const heading = ANC_MEDIA_HEADING_TAGS.indexOf(ancTag(el)) >= 0;
+  if (ANC_MEDIA_SAVED_HEADING_RE.test(own) || (heading && /^(also\s+)?saved\s+(by|to)\b/i.test(own))) return 'savedBy';
+  if (ancMediaSavedInline(el, own)) return 'savedBy';
+  if (ANC_MEDIA_COMMENTS_RE.test(own)) return 'comments';
+  for (const [key, re] of ANC_MEDIA_LABELS) if (re.test(own)) return key;
+  return null;
+}
+
+// A label's value: what the label holds besides its own words, else what
+// follows it - its next siblings, up to the next label - or, for a label
+// alone in its box, what follows that box. Never read from outside `scope`
+// (the photo's Details box, or the page when it has none). `text(n)` reads
+// a node.
+function ancMediaValue(el, text, scope) {
+  const tidy = (parts) => parts.join('\n').split('\n').map((l) => l.replace(/\s+/g, ' ').trim())
+    .filter(Boolean).join('\n');
+  // Where one field ends: the next label, or an upload attribution
+  // ("Originally added by <a>name</a> on …"), which is never a value of
+  // another field (PR #258 round 5, Codex PRRT_kwDOS6vm6c61yqx6) - only one
+  // shaped like attribution, never a sentence (round 6).
+  const boundary = (n) => !!ancMediaLabel(n) || !!ancMediaAttribution(n, text);
+  const holdsLabel = (n) => n.nodeType === 1 && (boundary(n) || ancElements(n, boundary).length > 0);
+  const inside = tidy([...(el.childNodes || [])].filter((c) => c.nodeType === 1).map((c) => text(c)));
+  if (inside) return inside;
+  let node = el;
+  for (let up = 0; up < 3 && node && node !== scope && node.parentNode; up++) {
+    const sibs = [...(node.parentNode.childNodes || [])]; // a live NodeList has no indexOf
+    const parts = [];
+    for (let i = sibs.indexOf(node) + 1; i < sibs.length; i++) {
+      const sib = sibs[i];
+      if (holdsLabel(sib)) break;
+      parts.push(sib.nodeType === 3 ? String(sib.nodeValue || '') : sib.nodeType === 1 ? text(sib) : '');
+    }
+    const v = tidy(parts);
+    if (v) return v;
+    node = node.parentNode; // alone in its box: read on after the box
+  }
+  return '';
+}
+
+// The photo's own Details box: an element whose own label says "Details" -
+// its aria-label, or the first heading inside it. When the page has one,
+// the photo's details are read from it alone (ancMediaDetails). A class or
+// id with "detail" in it is not enough: a linked person's "person-details"
+// card is not the photo's (PR #258 review).
+function ancMediaDetailsBoxes(root) {
+  const DETAILS = /^(photo\s+|media\s+)?details$/i;
+  const named = (e) => {
+    const aria = e.getAttribute ? String(e.getAttribute('aria-label') || '').trim() : '';
+    if (DETAILS.test(aria)) return true;
+    // Its own heading: a child of it (or of its <header>), not one inside a
+    // box within it - so the page around the Details box is not the box.
+    const kids = [...(e.childNodes || [])].filter((c) => c.nodeType === 1);
+    const heads = kids.concat(...kids.filter((c) => ancTag(c) === 'HEADER').map((c) => [...(c.childNodes || [])]));
+    const h = heads.find((x) => x.nodeType === 1 && /^H[1-6]$/.test(ancTag(x)));
+    return !!h && DETAILS.test(ancOwnText(h));
+  };
+  return ancElements(root, (e) => ['ASIDE', 'SECTION', 'DIV', 'ARTICLE', 'DIALOG', 'FORM'].indexOf(ancTag(e)) >= 0 &&
+    named(e) && ancElements(e, ancMediaLabel).length > 0);
+}
+
+// The photo's Details as the page shows them: { title, date, place,
+// description, originallyAddedBy, linkedTo: [names] } - read from the
+// photo's own Details box only (ancMediaDetailsBoxes: the element whose own
+// heading or aria-label says "Details"), whole, each field by its own label.
+// A label's value is ancMediaValue's, never read from outside the box, and
+// a label claims its key only with a value; the first such value wins -
+// except that "Originally added by" wins over a plain "Added by" / "Shared
+// by" read first (PR #258 round 5).
+//
+// Nothing outside the box is read - no description, no "Linked to", no
+// upload line beside it - and with no Details box on the page (closed, or a
+// layout the add-on does not recognise) nothing at all: when the page's
+// layout is unclear, the add-on leaves text out rather than file someone
+// else's words as hers, and anything left out can still be read on Ancestry
+// from the photo's saved address (PR #258 round 9, a reversible decision -
+// five rounds of guessing at the page around the box each let a relative's
+// facts or other members' names through in a new shape). Inside the box,
+// nothing is read from a members section ("Comments (2)", "Saved by …"),
+// and a field headed by the upload label gives only its first name
+// (ANC_MEDIA_UPLOADER_RE).
+// `opts.hidden` / `opts.block` are ancText's (the live page passes its CSS).
+function ancMediaDetails(root, opts) {
+  const o = opts || {};
+  const text = (n) => ancText(n, { hidden: o.hidden, block: o.block });
+  const shown = (e) => {
+    for (let n = e; n && n.nodeType === 1; n = n.parentNode) if (o.hidden && o.hidden(n)) return false;
+    return true;
+  };
+  const found = {};
+  const rank = {};
+  let scope = root; // a value is never read from outside it
+  const claim = (key, value, weight) => {
+    if (!value) return;
+    if (key in found && !(weight > (rank[key] || 0))) return;
+    found[key] = value;
+    rank[key] = weight || 0;
+  };
+  const addedByWeight = (words) => (/^originally\b/i.test(words) ? 2 : 1);
+  const walk = (n) => {
+    for (const c of (n && n.childNodes) || []) {
+      if (c.nodeType !== 1 || ANC_SKIP_TAGS.indexOf(ancTag(c)) >= 0 || ancIsSeenItNode(c)) continue;
+      if ((o.hidden && o.hidden(c)) || ancMediaMembersSection(c)) continue;
+      const key = ancMediaLabel(c);
+      if (key) {
+        let value = ancMediaValue(c, text, scope);
+        if (key === 'originallyAddedBy') {
+          const first = value.split('\n')[0].trim();
+          value = ANC_MEDIA_UPLOADER_RE.test(first) ? first : '';
+        }
+        claim(key, value, key === 'originallyAddedBy' ? addedByWeight(ancOwnText(c)) : 0);
+        continue;
+      }
+      // "Originally added by hartley_genealogy", in the one element whose own
+      // words start with it (the name may sit in a link inside).
+      const inline = ancMediaAttribution(c, text);
+      if (inline) {
+        claim('originallyAddedBy', inline.who, addedByWeight(inline.phrase));
+        continue;
+      }
+      walk(c);
+    }
+  };
+  for (const box of ancMediaDetailsBoxes(root).filter(shown)) {
+    scope = box;
+    walk(box);
+  }
+  const details = {};
+  for (const [key] of ANC_MEDIA_LABELS) {
+    // "Saved by" and comments are never kept: other members' names.
+    if (!found[key]) continue;
+    if (key === 'linkedTo') {
+      const names = ancLinkedNames(found[key]);
+      if (names.length) details.linkedTo = names;
+    } else {
+      details[key] = key === 'description' ? found[key] : found[key].replace(/\n+/g, ' ');
+    }
+  }
+  return details;
+}
+
+// A section of other members' words: its first label or heading is
+// "Comments (N)" or a "Saved by …" list. Nothing inside it is read - a
+// commenter's "Shared by …" is not who added the photo.
+function ancMediaMembersSection(el) {
+  const kids = [...(el.childNodes || [])].filter((c) => c.nodeType === 1);
+  const head = kids.find((c) => /^H[1-6]$/.test(ancTag(c)));
+  const key = (kids[0] && ancMediaLabel(kids[0])) || (head && ancMediaLabel(head)) || null;
+  return key === 'comments' || key === 'savedBy';
+}
+
+// The people a shared photo is linked to, as names: one per line, without
+// the years Ancestry puts beside them ("Thomas Hartley 1840–1910", "abt
+// 1840–1910"); a living person Ancestry shows as "Private" or "Living …" is
+// no name.
+function ancLinkedNames(value) {
+  const names = [];
+  for (const line of String(value || '').split(/\n|;/)) {
+    const n = line
+      .replace(/\(?\s*((abt|about|bef|aft|circa|ca|c)\.?\s+)?(\d{4}|\?{1,4})?\s*[-–—]\s*((abt|about|bef|aft|circa|ca|c)\.?\s+)?(\d{4}|\?{1,4})?\s*\)?\s*$/i, '')
+      .replace(/\s+/g, ' ').trim();
+    if (n.length >= 2 && n.length <= 80 && !/^(private|living)\b/i.test(n) && names.indexOf(n) < 0) names.push(n);
+  }
+  return names;
+}
+
+// The whole shared photo from its viewer page (`root`: the document, or a
+// stand-in tree): { ok, media: { mediaId, treeId, personId, url, title,
+// imageUrl, fileStem }, details }. `opts.title` is the document title (the photo's
+// title, as whoever shared it wrote it); `opts.origin` the site origin.
+function ancMediaFrom(root, href, opts) {
+  const o = opts || {};
+  const id = ancParseMediaPage(href);
+  if (!id) return { ok: false, error: 'this is not a photo shared on Ancestry' };
+  const details = ancMediaDetails(root, o);
+  const docTitle = String(o.title || '').replace(ANC_TITLE_SUFFIX_RE, '').trim();
+  let origin = 'https://www.ancestry.com';
+  try {
+    origin = new URL(href).origin;
+  } catch (e) {
+    /* parsed above */
+  }
+  return {
+    ok: true,
+    media: Object.assign({}, id, {
+      title: details.title || docTitle || null,
+      imageUrl: ancMediaImageUrl(root, id.mediaId, o.origin || origin),
+      fileStem: ancPhotoFileStem(id.mediaId),
+    }),
+    details,
+  };
+}
+
+// What a shared photo says about itself, for filing: a photo, dated by the
+// date its Details give when that is one the archive can read ("1925",
+// "abt 1925", "12 Jun 1925"), else no date - never a guess.
+function ancMediaHints(details) {
+  return { sourceType: 'photo', sourceDate: ancDateToEdtf((details || {}).date) || null, sourceClass: null };
+}
+
+// The name the photo is filed under, without its extension. It lands in the
+// photo library and is never renamed there (SPEC §12.1), so it is unique to
+// the photo - its media id, letters, digits and dashes only, never the
+// free-text title - and ends in a word, never in what the archive reads as a
+// print letter ("…6f") or a back ("…-back"). null for anything not a media id.
+function ancPhotoFileStem(mediaId) {
+  const id = String(mediaId || '').toLowerCase();
+  return new RegExp('^' + ANC_GUID + '$').test(id) ? 'ancestry-' + id + '-photo' : null;
+}
 // FHA-SYNC-END ancestry
 
 module.exports = {
@@ -431,4 +814,12 @@ module.exports = {
   recordHints,
   ancHints,
   ancTitle,
+  ancParseMediaPage,
+  ancMediaImageUrl,
+  ancMediaDetails,
+  ancLinkedNames,
+  ancMediaLabel,
+  ancMediaFrom,
+  ancMediaHints,
+  ancPhotoFileStem,
 };

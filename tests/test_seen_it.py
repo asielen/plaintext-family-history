@@ -383,6 +383,24 @@ class ScanKnown(_TempHome):
         self.assertEqual(items['med:' + media.lower()], {'state': 'filed', 'where': 'photos', 'sid': SID_B})
         self.assertEqual(items['med:abcdef01-9999-4333-8444-abcdefabcdef']['state'], 'captured')
 
+    def test_a_shared_photo_the_archive_set_aside_unfiled_is_not_captured(self):
+        # PR #258 round 7: `fha capture --ingest` moves a shared-photo capture
+        # it cannot file (an older add-on saved no photo) to .not-filed/ in the
+        # staging folder. Counted "Captured, not filed", Seen It would tell her
+        # the photo was saved, and she would never capture it again.
+        archive, settings = self.build()
+        staging = Path(settings['capture_staging'])
+        media = 'abcdef01-7777-4333-8444-abcdefabcdef'
+        _json(staging / '.not-filed' / 'thomas-old-page-copy' / 'capture.json',
+              {'url': 'https://www.ancestry.com/mediaui-viewer/tree/555/person/666/media/' + media})
+        items, _missing = host.scan_known(host.scan_folders(settings))
+        self.assertNotIn('med:' + media, items)
+        # The same capture still waiting in the staging folder itself is captured.
+        _json(staging / 'thomas-new-capture' / 'capture.json',
+              {'url': 'https://www.ancestry.com/mediaui-viewer/tree/555/person/666/media/' + media})
+        items, _missing = host.scan_known(host.scan_folders(settings))
+        self.assertEqual(items['med:' + media]['state'], 'captured')
+
     def test_a_batch_ledger_never_says_the_archive_holds_anything(self):
         # The capture add-on's batch downloads keep a reading copy of each
         # queue at the staging root. It names records as done the moment

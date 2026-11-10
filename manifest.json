@@ -168,7 +168,7 @@
     {
       "path": ".fha/browser-companion/README.md",
       "category": "operating",
-      "sha256": "77ee0913848133208eb2c668796d9cac8c462facbde9b87f2d2f7c3f2ca52aae",
+      "sha256": "bb0babbcf1c5aa586f8d090cf92bc75aa6350a5b6bce718a0288927c33afe7ba",
       "spec_version": "1.2",
       "src": "browser-companion/README-ARCHIVE.md"
     },
@@ -203,7 +203,7 @@
     {
       "path": ".fha/browser-companion/manifest.json",
       "category": "operating",
-      "sha256": "1b5c1edd106cfc07fadf5b9e799acb99a2d24892155d4e23d1d84da25bda99c1",
+      "sha256": "493fd86cb33db6eb33a03ba3c38a5ded35211a509a4b2cba5bcc42cedd3cb42a",
       "spec_version": "1.2",
       "src": "browser-companion/manifest.json"
     },
@@ -224,14 +224,14 @@
     {
       "path": ".fha/browser-companion/src/content.js",
       "category": "operating",
-      "sha256": "30438eca0b6a148b43ffa00ac81893f9a5de37cde146a150011f79a617348fe1",
+      "sha256": "56f893f3c26d1fcf5110957405e3e5940305d82883fc6c6df0fe1102361e880f",
       "spec_version": "1.2",
       "src": "browser-companion/src/content.js"
     },
     {
       "path": ".fha/browser-companion/src/lib/ancestry-record.js",
       "category": "operating",
-      "sha256": "b7fb06711b6916fc9f98d37aa6e45d8d29355968a4df4e11e5f95f6c0de5e23b",
+      "sha256": "31622ea74a13b43c142e3d8494f304dec1c404a011371fb835cc11f350d10cbe",
       "spec_version": "1.2",
       "src": "browser-companion/src/lib/ancestry-record.js"
     },
@@ -357,14 +357,14 @@
     {
       "path": ".fha/browser-companion/src/panel.html",
       "category": "operating",
-      "sha256": "470ea31309e5d22e4e531d41de5aeae3afa08bd09ed8a2c3c0f19a744a9dfd44",
+      "sha256": "b71220996205ffb68e56e9d1422c68d160f0b553c2ad6ae0ca36d889b29e7c9b",
       "spec_version": "1.2",
       "src": "browser-companion/src/panel.html"
     },
     {
       "path": ".fha/browser-companion/src/panel.js",
       "category": "operating",
-      "sha256": "0edbf8952b9ab40888fab5b09e31ccd7c17bc84d86274114aec71812f545e55b",
+      "sha256": "f731186e6e2cf1369cc75755d9c23d5f340a262ea4ee2f4d75b86b1b3fd974c9",
       "spec_version": "1.2",
       "src": "browser-companion/src/panel.js"
     },
@@ -483,14 +483,14 @@
     {
       "path": ".fha/tools/README.md",
       "category": "operating",
-      "sha256": "a118d8d6f36836c07b30f5364742c9dc2ad435e40f8354e31fa2754c5d18c198",
+      "sha256": "c741b912e80d5255ab74bc2f89d2cbe1bec797f8f1d2452fe0bb1f8ea6818455",
       "spec_version": "1.2",
       "src": "tools/README.md"
     },
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "6a2f90e5cc7243d28734aecfaacbe2f0388d462131781d5769b547717ab33900",
+      "sha256": "2061908ddbb431a15b635dc550d156e933de55e273bc1859ecdefe1c47b5a3c1",
       "spec_version": "1.2",
       "src": "tools/_lib.py"
     },
@@ -504,7 +504,7 @@
     {
       "path": ".fha/tools/capture.py",
       "category": "operating",
-      "sha256": "cd8b3194c0b4a608feb3a8fd262910d3922f85877c15c5b91ff5113e9bc68e2c",
+      "sha256": "f5bf0a260ba9a6c57f54c57623412958fde2b0d82ec62a6f0121f973aee7ff83",
       "spec_version": "1.2",
       "src": "tools/capture.py"
     },
@@ -525,7 +525,7 @@
     {
       "path": ".fha/tools/capture_recipes/ancestry.py",
       "category": "operating",
-      "sha256": "ff3f0d2700fd99d8faab01dfe28581f92f43072ee27a83872bf9f0f95f0a666c",
+      "sha256": "a253257b58131c92c474b5d42fc632c12e84f2445e61995fb0ff1cdf2bb53059",
       "spec_version": "1.2",
       "src": "tools/capture_recipes/ancestry.py"
     },
@@ -665,7 +665,7 @@
     {
       "path": ".fha/tools/photoindex.py",
       "category": "operating",
-      "sha256": "2d2b7ece1be6d69a9bc55a42335a046d5f5871be0335b62d77b813f960e96659",
+      "sha256": "2aa28cfd4f9fbe95271f62e44449ab0ef802c8cf46dd76fded279fa19995a107",
       "spec_version": "1.2",
       "src": "tools/photoindex.py"
     },
@@ -679,7 +679,7 @@
     {
       "path": ".fha/tools/process.py",
       "category": "operating",
-      "sha256": "eb42d52d95170726ee50645f3d21ff387d5f79a5329585d2f1b4f2afed625cb8",
+      "sha256": "671ea3070ea3759c59d31309c097f0e99f7771447444c511a170bb487ca08d3c",
       "spec_version": "1.2",
       "src": "tools/process.py"
     },
@@ -889,7 +889,7 @@
     {
       "path": ".fha/tools/wikitree.py",
       "category": "operating",
-      "sha256": "74b6c4f482ca7e131ee800ff1ebf4f47bc8a35232e4893cf6ecf77c4937c2027",
+      "sha256": "0d56c9e88c4ffcc59fd1d292e61842a2795bb2305f63e2abf2314024c7bb0b42",
       "spec_version": "1.2",
       "src": "tools/wikitree.py"
     },
@@ -961,7 +961,7 @@
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "7ac16c582aa572cba76cd0520a29e22cf545a0389db6c95cf0f2b2dc5ddddd0d",
+      "sha256": "3b2e5fbc9af69ae3aa06498aa5591dd26dcf098fe09c43e98b8f8365b97869e2",
       "spec_version": "1.2"
     },
     {

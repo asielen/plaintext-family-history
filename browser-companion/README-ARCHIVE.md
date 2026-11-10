@@ -196,6 +196,89 @@ image together.
 Badges from the Seen It add-on ("Seen 2×", "Captured, not filed") are never saved
 as part of a record or a page copy.
 
+### Photos other members shared on Ancestry
+
+When a photo someone else shared to their Ancestry tree is open on its own page
+(the photo fills the screen; the address has `mediaui-viewer` in it), the panel's
+button reads **Capture this photo**. It saves:
+
+- the photo itself, exactly as Ancestry shows it, named
+  `ancestry-…-photo.jpg` after the photo's own number on Ancestry;
+- `photo-data.json` - the photo's details as Ancestry shows them: its title,
+  date, place, description, who first added it, and who it is linked to. These
+  were written by whoever shared it, so treat them as their word, not a fact.
+
+It does **not** keep a copy of Ancestry's page, whatever your "Keep a copy of the
+whole page" setting: that page lists the other members who saved the photo, and
+the archive keeps the photo and its details instead. The panel says so in one
+line, and does not offer the page copy there.
+
+When you file it, it becomes a **photo** source: the photo goes into your photo
+library like any other, and the record keeps the photo's Ancestry address, so
+the Seen It add-on knows it is already in your archive. The record's notes
+repeat the date, place, description and the people it is linked to. The name of
+the member who first added it is kept in `photo-data.json` only, never in the
+record's notes. With no date in its
+Details, the photo is filed undated - never with a year from elsewhere on the
+page, such as a linked relative's birth.
+
+Open the photo's **Details** on Ancestry before you open the panel: what is on
+screen is what gets saved. The people the photo is linked to appear in the
+panel's list of names, where you can untick anyone who does not belong. If the
+add-on can't find the photo's Details on the page (they may be closed, or
+Ancestry shows them in a way it doesn't recognise yet), the panel says so before
+you press Capture: the photo and its address are still saved, and its date,
+place and description can be read on Ancestry from that address. When you press
+**Capture this photo**, the panel looks at the page once more first. If the
+Details now show something the panel had not listed (you opened them after the
+panel read the page), it saves nothing yet: it adds those people to the list,
+ticked, and says "I found more on the page — check the people below, then press
+Capture this photo." Check them, then press it. Each photo is captured once.
+
+The list of other members who saved the photo ("Saved by …") never reaches your
+archive: with no copy of the page, the only words kept are the photo's details,
+and reading them stops at that list. A sentence of the description that happens
+to begin "Saved by …" is the photo's story, and is kept.
+
+When the page's layout is unclear, the add-on leaves text out rather than file
+someone else's words as yours. Anything left out can still be read on Ancestry
+from the photo's saved address. So only the photo's own **Details** box is read
+- the part of the page headed "Details" - each detail by its own label.
+Anything outside that box is left out, even a description or a "Linked to" list
+that sits just beside it; and when the add-on does not recognise Ancestry's
+layout (no Details box it can find), all of the photo's details are left out
+and only the photo and its address are saved. A line that begins "Originally
+added by" is always taken as who uploaded the photo, never as its description.
+
+If Ancestry will not hand over the photo (you are signed out, say), **nothing is
+saved**, and the panel says why: a photo source is never filed without its
+picture. If you can download the photo yourself (right-click it, **Save image
+as**), drop that file into the panel and press **Capture this photo**; your file
+is then saved as the photo. To keep a larger copy than the one the viewer shows,
+drop it in the same way before you press Capture.
+
+If a photo does get captured twice, filing the second copy stops with a message
+naming the source that already holds the photo, and leaves the copy in your inbox
+for you to delete. If the second capture is a *different version* of the same
+Ancestry photo (a larger download, say), the message gives you the one command
+that keeps it with that photo's source, as a second print, and tells you to
+delete the folder afterwards. A *different* photo
+that only shares a filed photo's name is never called a copy, and the message
+says how to rename it so it can be filed. Nothing is ever offered for deleting
+on a matching name alone.
+
+A capture of a shared photo made with an older version of this add-on may still
+hold a copy of Ancestry's page. When you file it, that copy is left out (it
+stays in your download folder) and the notes say why. If a capture of
+a shared photo holds no photo at all (an older add-on saved only the page, or
+only the address), nothing is filed. It is moved, whole, into a `.not-filed`
+folder in your download folder, and the message - shown that once - tells you to
+update the add-on, open the photo again and press **Capture this photo**. Once
+you have, you can delete that folder.
+
+From a person's **Hints** page, open the photo on its own page first (the
+"Evaluate photo" side panel is not captured).
+
 ---
 
 ## FamilySearch records
