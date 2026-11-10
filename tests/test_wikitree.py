@@ -78,13 +78,28 @@ def _add_claim(conn, cid, ctype, persons, date_edtf='', place_text=None,
 
 
 class WikitreeUnitTests(unittest.TestCase):
+    # A record is not an image (PR #258 review): WikiTree's {{Ancestry Record}}
+    # links the index entry, {{Ancestry Image}} a scan in the image viewer.
     def test_ancestry_dbid_h(self):
         url = 'https://search.ancestry.com/cgi-bin/sse.dll?dbid=6224&h=12345'
-        self.assertEqual(wikitree._ancestry_image_template(url), '{{Ancestry Image|6224|12345}}')
+        self.assertEqual(wikitree._ancestry_image_template(url), '{{Ancestry Record|6224|12345}}')
 
     def test_ancestry_view(self):
         url = 'https://www.ancestry.com/discoveryui-content/view/98765:6224'
-        self.assertEqual(wikitree._ancestry_image_template(url), '{{Ancestry Image|6224|98765}}')
+        self.assertEqual(wikitree._ancestry_image_template(url), '{{Ancestry Record|6224|98765}}')
+
+    def test_ancestry_search_record_and_image_viewer(self):
+        self.assertEqual(wikitree._ancestry_image_template(
+            'https://www.ancestry.com/search/collections/6224/records/98765?tid=1'), '{{Ancestry Record|6224|98765}}')
+        self.assertEqual(wikitree._ancestry_image_template(
+            'https://www.ancestry.com/imageviewer/collections/6224/images/4000123_00045?pId=98765'),
+            '{{Ancestry Image|6224|4000123_00045}}')
+
+    def test_a_shared_photo_or_a_tree_gets_no_ancestry_template(self):
+        for url in ('https://www.ancestry.com/mediaui-viewer/tree/90000001/person/90000002/media/'
+                    '7c0ffee0-1234-4abc-8def-0123456789ab',
+                    'https://www.ancestry.com/family-trees/90000001/people/90000002/facts'):
+            self.assertIsNone(wikitree._ancestry_image_template(url), url)
 
     def test_non_ancestry(self):
         self.assertIsNone(wikitree._ancestry_image_template('https://findagrave.com/123'))
@@ -552,7 +567,7 @@ class WikitreeRenderTests(unittest.TestCase):
 
     def test_ancestry_template_in_reference(self):
         r = wikitree.run_wikitree(self.root, 'p-0000000001')
-        self.assertIn('{{Ancestry Image|6224|99}}', r['text'])
+        self.assertIn('{{Ancestry Record|6224|99}}', r['text'])
 
     def test_placeholder_removed(self):
         r = wikitree.run_wikitree(self.root, 'p-0000000001')

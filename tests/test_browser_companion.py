@@ -314,6 +314,18 @@ class SharedPhotoTestCase(unittest.TestCase):
             self.assertEqual(meta['source_type'], 'photo')
             self.assertEqual(meta['title'], 'Thomas and Margaret Hartley at the Fairview farm, about 1925')
             self.assertEqual(meta['source_date'], '1925~')
+            # The citation names the year once - the title already says it
+            # (PR #258 review: "...about 1925. 1925. Ancestry.com.").
+            self.assertEqual(' '.join(str(meta['citation']).split()),
+                             'Thomas and Margaret Hartley at the Fairview farm, about 1925. Ancestry.com. '
+                             + PHOTO_VIEWER_URL)
+            # Who first added the photo is another member's name: kept with
+            # Ancestry's data (photo-data.json), not in the record a packet or
+            # a shared site carries (PR #258 review, owner-away decision).
+            self.assertNotIn('hartley_family_tree', sources[0].read_text(encoding='utf-8'))
+            data_file = next((archive / 'documents').rglob('*site-data*.json'))
+            self.assertEqual(json.loads(data_file.read_text(encoding='utf-8'))['details']['originallyAddedBy'],
+                             'hartley_family_tree on 3 Mar 2015')
 
             # The picture: in the photo library, under its captured name, the
             # source's main image.
@@ -342,10 +354,42 @@ class SharedPhotoTestCase(unittest.TestCase):
             self.assertEqual(items['med:' + PHOTO_MEDIA_ID]['state'], 'filed')
             self.assertEqual(items['med:' + PHOTO_MEDIA_ID]['sid'], meta['id'])
 
-            # Other members who saved the photo are named nowhere in the archive.
-            for p in archive.rglob('*'):
+            # Other members who saved the photo are named nowhere in the archive,
+            # nor in what the panel staged (its page.html included).
+            for p in list(archive.rglob('*')) + list(PHOTO_BUNDLE.iterdir()):
                 if p.is_file() and p.suffix in ('.md', '.json', '.html'):
                     self.assertNotIn('cousin_member', p.read_text(encoding='utf-8'), p)
+
+    def test_a_captured_ancestry_record_cites_as_a_record_on_wikitree(self) -> None:
+        """PR #258 review: `fha process` now keeps a capture's page address, and
+        `fha wikitree` turned a RECORD's address into {{Ancestry Image}} with the
+        record's number where the image's goes - a WikiTree reader following the
+        citation reached the wrong page. The 1880 census sample, filed: its
+        reference carries {{Ancestry Record|db|record}}."""
+        import process
+        import wikitree
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            staging = tmp / 'staging'
+            staging.mkdir()
+            shutil.copytree(EXAMPLE_BUNDLE, staging / EXAMPLE_BUNDLE.name)
+            archive = tmp / 'archive'
+            archive.mkdir()
+            (archive / 'fha.yaml').write_text(
+                'roots:\n  photos: photos\n  documents: documents\n', encoding='utf-8')
+            config = load_fha_yaml(archive, strict=True)
+            capture.run_ingest(archive, config, staging_dir=str(staging))
+            bundle_dir = next(p for p in (archive / 'inbox').iterdir() if p.is_dir())
+            with mock.patch.object(process, '_run_exiftool_embed_source', return_value=None), \
+                    mock.patch.object(process, '_run_exiftool_read_keywords', return_value=[]), \
+                    mock.patch.object(process, '_run_exiftool_remove_source', return_value=None):
+                self.assertEqual(process.process_bundle(
+                    archive, config, bundle_dir, source_date=None, dry_run=False), EXIT_CLEAN)
+            md = next((archive / 'sources').rglob('*.md'))
+            ref = wikitree._source_reference(archive, {'path': str(md.relative_to(archive)), 'title': 't', 'id': 'S-x'})
+            self.assertIn('{{Ancestry Record|6742|12345}}', ref)
+            self.assertNotIn('Ancestry Image', ref)
 
 
 # ── Drift-guard extraction (emission sites, not whole files) ──────────────────

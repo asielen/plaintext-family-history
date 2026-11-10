@@ -432,3 +432,57 @@ test('ancLinkedNames: names without their years, never "Private"', () => {
     'Ethel Hartley 1890–\nThomas Hartley 1840-1910'), ['Thomas Hartley', 'Margaret Hartley', 'Ethel Hartley']);
   assert.deepStrictEqual(anc.ancLinkedNames(''), []);
 });
+
+// ── PR #258 review: other members' names, and a label elsewhere on the page ───
+
+const details = (html) => anc.ancMediaDetails(parse('<html><body>' + html + '</body></html>'));
+
+test('PR #258 review: a "Saved by" list, however it is headed, never reads as linked people or description', () => {
+  const linked = '<aside><h3>Linked to</h3><ul><li>Thomas Hartley 1840–1910</li></ul>';
+  for (const heading of ['Saved by', 'Saved by 2 members', 'Saved by (2)', 'Saved by:', 'Also saved by',
+    'Saved to 3 trees', 'Members who saved this photo', '2 other members who saved this', 'Comments (4)']) {
+    const d = details(linked + '<h3>' + heading + '</h3><ul><li>cousin_member_one</li><li>cousin_member_two</li></ul></aside>');
+    assert.deepStrictEqual(d, { linkedTo: ['Thomas Hartley'] }, heading);
+  }
+  assert.deepStrictEqual(details('<dl><dt>Description</dt><dd>On the porch.</dd><dt>Saved by (2)</dt>' +
+    '<dd>cousin_member_one</dd></dl>'), { description: 'On the porch.' });
+  assert.deepStrictEqual(details('<div><span>Description</span></div><div>On the porch.</div>' +
+    '<div>Saved by cousin_member_one</div>'), { description: 'On the porch.' });
+  assert.deepStrictEqual(details('<p>Originally added by <a>hartley_tree</a> on 3 Mar 2015</p>' +
+    '<p>Saved by <a>cousin_member_one</a> and 3 others</p>'), { originallyAddedBy: 'hartley_tree on 3 Mar 2015' });
+});
+
+test('PR #258 review: an empty label elsewhere on the page (a search form) does not hide the photo\'s own Details', () => {
+  const form = '<form class="quick-search"><label>Location</label><input name="loc"><label>Date</label><input name="d"></form>';
+  assert.deepStrictEqual(details(form + '<aside><dl><dt>Date</dt><dd>abt 1925</dd><dt>Place</dt>' +
+    '<dd>Fairview, Kansas</dd></dl></aside>'), { date: 'abt 1925', place: 'Fairview, Kansas' });
+  // A label with a value elsewhere loses to the photo's own Details box.
+  assert.deepStrictEqual(details('<div class="search-bar"><span>Location</span><span>Anywhere</span></div>' +
+    '<section class="media-details"><dl><dt>Location</dt><dd>Fairview, Kansas</dd></dl></section>'),
+  { place: 'Fairview, Kansas' });
+});
+
+test('PR #258 review: linked people lose their "abt" years, and a living person is no name', () => {
+  assert.deepStrictEqual(details('<dl><dt>Linked to</dt><dd>Thomas Hartley abt 1840–1910<br>Living Hartley<br>' +
+    'Ethel Hartley (bef 1890–?)</dd></dl>'), { linkedTo: ['Thomas Hartley', 'Ethel Hartley'] });
+});
+
+test('PR #258 review: ancMediaMemberNodes takes the "Saved by" list out of a copy of the page, and nothing else', () => {
+  const { serialize } = require('./mini-dom.js');
+  const doc = page('ancestry-media-photo');
+  for (const el of anc.ancMediaMemberNodes(doc)) el.parentNode.removeChild(el);
+  const html = serialize(doc);
+  for (const gone of ['cousin_member_one', 'cousin_member_two', 'Saved by']) assert.ok(!html.includes(gone), gone);
+  for (const kept of ['Linked to', 'Thomas Hartley', 'Description', 'The dog is Shep.', 'Originally added by',
+    'abt 1925', '/media/' + MEDIA_ID + '?client']) {
+    assert.ok(html.includes(kept), kept);
+  }
+  // Its Details read the same without the list.
+  assert.deepStrictEqual(anc.ancMediaDetails(doc), anc.ancMediaDetails(page('ancestry-media-photo')));
+  // Inline, and a heading with a count, each go whole; a page with none loses nothing.
+  const inline = parse('<html><body><p>Saved by <a>cousin_member_one</a> and 3 others</p>' +
+    '<h3>Saved by 2 members</h3><ul><li>cousin_member_two</li></ul><p>Kept.</p><h3>Description</h3><p>Porch</p></body></html>');
+  for (const el of anc.ancMediaMemberNodes(inline)) el.parentNode.removeChild(el);
+  assert.strictEqual(serialize(inline), '<html><body><p>Kept.</p><h3>Description</h3><p>Porch</p></body></html>');
+  assert.deepStrictEqual(anc.ancMediaMemberNodes(page('ancestry-record-census')), []);
+});

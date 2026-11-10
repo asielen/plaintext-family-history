@@ -211,14 +211,26 @@ button reads **Capture this photo**. It saves:
 
 When you file it, it becomes a **photo** source: the photo goes into your photo
 library like any other, and the record keeps the photo's Ancestry address, so
-the Seen It add-on knows it is already in your archive.
+the Seen It add-on knows it is already in your archive. The record's notes
+repeat the date, place, description and the people it is linked to; the name of
+the member who first added it stays in `photo-data.json` only.
 
-Open the photo's **Details** on Ancestry before you press Capture: what is on
-screen is what gets saved, and the panel says so if the date, place and
-description were not showing. The list of other members who saved the photo is
-never copied into your archive. The photo is saved at the size Ancestry's viewer
-shows it; if you download a larger copy from the page yourself, drop it into the
-panel before you press Capture and that file is saved as the photo instead.
+Open the photo's **Details** on Ancestry before you open the panel (or press
+**↻ Re-read page** after opening them): what is on screen is what gets saved.
+The people the photo is linked to then appear in the panel's list of names,
+where you can untick anyone who does not belong; the panel says so if the date,
+place and description were not showing.
+
+The list of other members who saved the photo ("Saved by …") is left out of
+everything the add-on saves - its copy of the page included - and never reaches
+your archive.
+
+If Ancestry will not hand over the photo (you are signed out, say), **nothing is
+saved**, and the panel says why: a photo source is never filed without its
+picture. If you can download the photo yourself (right-click it, **Save image
+as**), drop that file into the panel and press **Capture this photo** again; your
+file is then saved as the photo. The same goes for a larger copy than the one
+the viewer shows.
 
 From a person's **Hints** page, open the photo on its own page first (the
 "Evaluate photo" side panel is not captured).

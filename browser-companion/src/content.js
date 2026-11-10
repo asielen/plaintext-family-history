@@ -58,6 +58,14 @@
     for (const el of root.querySelectorAll(seenItSelector())) el.remove();
   }
 
+  // On a photo someone shared on Ancestry, the lists of the other members who
+  // saved it are left out of everything saved - page.html and the copy of the
+  // page alike (lib/ancestry-record.js ancMediaMemberNodes finds them).
+  function stripOtherMembers(root) {
+    if (!ancParseMediaPage(location.href)) return;
+    for (const el of ancMediaMemberNodes(root)) if (el.parentNode) el.parentNode.removeChild(el);
+  }
+
   function absUrl(href) {
     if (!href) return null;
     try {
@@ -999,10 +1007,7 @@
       '/media/' + want + '?client=trees-mediaservice&imageQuality=hq';
   }
 
-  // The labels of the photo's Details panel, as the page shows them. "Saved
-  // by" lists other members who saved the photo: it is recognised only so its
-  // names are never read as the value of another label, and is never kept
-  // (the page copy alone holds what the page showed).
+  // The labels of the photo's Details panel, as the page shows them.
   const ANC_MEDIA_LABELS = [
     ['title', /^title$/i],
     ['date', /^(date|date taken)$/i],
@@ -1010,67 +1015,106 @@
     ['description', /^description$/i],
     ['originallyAddedBy', /^(originally )?(added|uploaded|shared) by$/i],
     ['linkedTo', /^(linked|attached) to$/i],
-    ['savedBy', /^saved by$/i],
   ];
+  // The lists of OTHER members a photo page shows - who saved it, and their
+  // comments. Never kept: their names are not the family's. Recognised by how
+  // their heading starts, whatever count follows ("Saved by", "Saved by 2
+  // members", "Saved by (2)", "Also saved by", "Saved to 3 trees", "Members
+  // who saved this", "Comments (4)"), so no name in them is ever read as the
+  // value of another label. A "Saved by" list is also taken out of the saved
+  // copy of the page (ancMediaMemberNodes).
+  const ANC_MEDIA_SAVED_RE = /^(also\s+)?saved\s+(by|to)\b|^(\d+\s+)?(other\s+)?(members?|people|users)\s+(who|that)\s+(also\s+)?saved\b/i;
+  const ANC_MEDIA_COMMENTS_RE = /^comments?\b\s*(\(?\d+\)?)?$/i;
+  // A "Saved by" heading with no names in its own words (a count at most);
+  // anything else that starts so names the members inline.
+  const ANC_MEDIA_SAVED_HEADING_RE = /^((also\s+)?saved\s+(by|to)|(\d+\s+)?(other\s+)?(members?|people|users)\s+(who|that)\s+(also\s+)?saved(\s+this(\s+photo)?)?)(\s*\(?\d+\)?)?(\s+(other\s+)?(members?|people|users|others|trees?))?$/i;
   // "Originally added by hartley_genealogy on 3 Mar 2015", on one line.
-  const ANC_MEDIA_INLINE_RE = /^((?:originally )?(?:added|uploaded|shared) by|saved by)\s*:?\s+(.+)$/i;
-  const ANC_MEDIA_INLINE_START_RE = /^((?:originally )?(?:added|uploaded|shared) by|saved by)\b/i;
+  const ANC_MEDIA_INLINE_RE = /^((?:originally )?(?:added|uploaded|shared) by)\s*:?\s+(.+)$/i;
+  const ANC_MEDIA_INLINE_START_RE = /^((?:originally )?(?:added|uploaded|shared) by)\b/i;
 
-  // The text an element holds directly (not in its child elements).
+  // The text an element holds directly (not in its child elements). A live
+  // NodeList has no filter, so the children are copied first.
   function ancOwnText(el) {
     return [...(el.childNodes || [])].filter((c) => c.nodeType === 3)
       .map((c) => String(c.nodeValue || '')).join(' ').replace(/\s+/g, ' ').trim();
   }
 
-  // Which Details label an element is - its own words, a colon allowed - or null.
+  // Which Details label an element is - its own words, a colon allowed - or
+  // null: a key of ANC_MEDIA_LABELS, or 'savedBy' / 'comments' for the lists
+  // of other members.
   function ancMediaLabel(el) {
     const own = ancOwnText(el).replace(/\s*:$/, '');
     if (!own) return null;
+    if (ANC_MEDIA_SAVED_RE.test(own)) return 'savedBy';
+    if (ANC_MEDIA_COMMENTS_RE.test(own)) return 'comments';
     for (const [key, re] of ANC_MEDIA_LABELS) if (re.test(own)) return key;
     return null;
+  }
+
+  // Where a label's value is: what the label holds besides its own words, else
+  // what follows it - its next siblings, up to the next label - or, for a
+  // label alone in its box, what follows that box. { box, nodes, text }: `box`
+  // is the label or the box it sits alone in, `nodes` the siblings after it
+  // that hold the value. `text(n)` reads a node.
+  function ancMediaValue(el, text) {
+    const tidy = (parts) => parts.join('\n').split('\n').map((l) => l.replace(/\s+/g, ' ').trim())
+      .filter(Boolean).join('\n');
+    const holdsLabel = (n) => n.nodeType === 1 && (!!ancMediaLabel(n) || ancElements(n, ancMediaLabel).length > 0);
+    const inside = tidy([...(el.childNodes || [])].filter((c) => c.nodeType === 1).map((c) => text(c)));
+    if (inside) return { box: el, nodes: [], text: inside };
+    let node = el;
+    for (let up = 0; up < 3 && node && node.parentNode; up++) {
+      const sibs = [...(node.parentNode.childNodes || [])]; // a live NodeList has no indexOf
+      const nodes = [];
+      for (let i = sibs.indexOf(node) + 1; i < sibs.length; i++) {
+        if (holdsLabel(sibs[i])) break;
+        nodes.push(sibs[i]);
+      }
+      const v = tidy(nodes.map((s) => (s.nodeType === 3 ? String(s.nodeValue || '') : s.nodeType === 1 ? text(s) : '')));
+      if (v) return { box: node, nodes, text: v };
+      node = node.parentNode; // alone in its box: read on after the box
+    }
+    return { box: el, nodes: [], text: '' };
+  }
+
+  // The photo's own Details box, when the page marks one ("details" in its id,
+  // class or label) and it holds a label: read first, so a label elsewhere on
+  // the page (a search form's "Location") never stands in for it.
+  function ancMediaDetailsBoxes(root) {
+    const marked = (e) => {
+      const cls = e.className && e.className.baseVal !== undefined ? e.className.baseVal : e.className;
+      const aria = e.getAttribute ? e.getAttribute('aria-label') : '';
+      return /detail/i.test([e.id, cls, aria].map((v) => String(v || '')).join(' '));
+    };
+    return ancElements(root, (e) => marked(e) && ancElements(e, ancMediaLabel).length > 0);
   }
 
   // The photo's Details as the page shows them: { title, date, place,
   // description, originallyAddedBy, linkedTo: [names] } - each only when the
   // page shows it (the Details panel may be closed until she opens it). A
-  // label's value is what it holds besides its own words, else what follows
-  // it - its next siblings, up to the next label - or, for a label alone in
-  // its box, what follows that box. The first of each label on the page wins.
-  // `opts.hidden` / `opts.block` are ancText's (the live page passes its CSS).
+  // label's value is ancMediaValue's. A label claims its key only with a value,
+  // the photo's own Details box first, then the rest of the page; the first
+  // such value wins. `opts.hidden` / `opts.block` are ancText's (the live page
+  // passes its CSS).
   function ancMediaDetails(root, opts) {
     const o = opts || {};
     const text = (n) => ancText(n, { hidden: o.hidden, block: o.block });
-    const tidy = (parts) => parts.join('\n').split('\n').map((l) => l.replace(/\s+/g, ' ').trim())
-      .filter(Boolean).join('\n');
-    const holdsLabel = (n) => n.nodeType === 1 && (!!ancMediaLabel(n) || ancElements(n, ancMediaLabel).length > 0);
-    const valueOf = (el) => {
-      const inside = tidy([...(el.childNodes || [])].filter((c) => c.nodeType === 1).map((c) => text(c)));
-      if (inside) return inside;
-      let node = el;
-      for (let up = 0; up < 3 && node && node.parentNode; up++) {
-        const sibs = [...(node.parentNode.childNodes || [])]; // a live NodeList has no indexOf
-        const parts = [];
-        for (let i = sibs.indexOf(node) + 1; i < sibs.length; i++) {
-          const s = sibs[i];
-          if (holdsLabel(s)) break;
-          if (s.nodeType === 3) parts.push(String(s.nodeValue || ''));
-          else if (s.nodeType === 1) parts.push(text(s));
-        }
-        const v = tidy(parts);
-        if (v) return v;
-        node = node.parentNode; // alone in its box: read on after the box
-      }
-      return '';
+    const shown = (e) => {
+      for (let n = e; n && n.nodeType === 1; n = n.parentNode) if (o.hidden && o.hidden(n)) return false;
+      return true;
     };
     const found = {};
-    (function walk(n) {
+    const claim = (key, value) => {
+      if (value && !(key in found)) found[key] = value;
+    };
+    const walk = (n) => {
       for (const c of (n && n.childNodes) || []) {
         if (c.nodeType !== 1) continue;
         if (ANC_SKIP_TAGS.indexOf(ancTag(c)) >= 0 || ancIsSeenItNode(c)) continue;
         if (o.hidden && o.hidden(c)) continue;
         const key = ancMediaLabel(c);
         if (key) {
-          if (!(key in found)) found[key] = valueOf(c);
+          claim(key, ancMediaValue(c, text).text);
           continue;
         }
         // "Originally added by hartley_genealogy", in the one element whose own
@@ -1078,17 +1122,18 @@
         const inline = ANC_MEDIA_INLINE_START_RE.test(ancOwnText(c))
           ? ANC_MEDIA_INLINE_RE.exec(text(c).split('\n')[0]) : null;
         if (inline) {
-          const k = /^saved/i.test(inline[1]) ? 'savedBy' : 'originallyAddedBy';
-          if (!(k in found)) found[k] = inline[2].trim();
+          claim('originallyAddedBy', inline[2].trim());
           continue;
         }
         walk(c);
       }
-    })(root);
+    };
+    for (const box of ancMediaDetailsBoxes(root)) if (shown(box)) walk(box);
+    walk(root);
     const details = {};
     for (const [key] of ANC_MEDIA_LABELS) {
-      // "Saved by" is never kept: other members' names.
-      if (key === 'savedBy' || !found[key]) continue;
+      // "Saved by" and comments are never kept: other members' names.
+      if (!found[key]) continue;
       if (key === 'linkedTo') {
         const names = ancLinkedNames(found[key]);
         if (names.length) details.linkedTo = names;
@@ -1099,15 +1144,48 @@
     return details;
   }
 
+  // The parts of a photo page (or of a copy of it) that list the other members
+  // who saved the photo - each "Saved by" heading and the names after it, or
+  // the one element that names them inline - for the saved copy of the page to
+  // leave out. Hidden or not: a closed Details panel is still in the copy.
+  function ancMediaMemberNodes(root) {
+    const out = [];
+    const text = (n) => ancText(n, {});
+    (function walk(n) {
+      for (const c of (n && n.childNodes) || []) {
+        if (c.nodeType !== 1) continue;
+        if (ancMediaLabel(c) === 'savedBy') {
+          const own = ancOwnText(c).replace(/\s*:$/, '');
+          if (!ANC_MEDIA_SAVED_HEADING_RE.test(own)) {
+            out.push(c); // "Saved by cousin_member_one and 3 others"
+          } else {
+            // The heading and the one list after it - not what follows the list.
+            const v = ancMediaValue(c, text);
+            out.push(v.box);
+            for (const s of v.nodes) {
+              out.push(s);
+              if (s.nodeType === 1 && text(s)) break;
+            }
+          }
+          continue;
+        }
+        walk(c);
+      }
+    })(root);
+    return out;
+  }
+
   // The people a shared photo is linked to, as names: one per line, without
-  // the years Ancestry puts beside them ("Thomas Hartley 1840–1910"); a living
-  // person Ancestry shows as "Private" is no name.
+  // the years Ancestry puts beside them ("Thomas Hartley 1840–1910", "abt
+  // 1840–1910"); a living person Ancestry shows as "Private" or "Living …" is
+  // no name.
   function ancLinkedNames(value) {
     const names = [];
     for (const line of String(value || '').split(/\n|;/)) {
-      const n = line.replace(/\(?\s*(\d{4}|\?{1,4})?\s*[-–—]\s*(\d{4}|\?{1,4})?\s*\)?\s*$/, '')
+      const n = line
+        .replace(/\(?\s*((abt|about|bef|aft|circa|ca|c)\.?\s+)?(\d{4}|\?{1,4})?\s*[-–—]\s*((abt|about|bef|aft|circa|ca|c)\.?\s+)?(\d{4}|\?{1,4})?\s*\)?\s*$/i, '')
         .replace(/\s+/g, ' ').trim();
-      if (n.length >= 2 && n.length <= 80 && !/^private$/i.test(n) && names.indexOf(n) < 0) names.push(n);
+      if (n.length >= 2 && n.length <= 80 && !/^(private|living)\b/i.test(n) && names.indexOf(n) < 0) names.push(n);
     }
     return names;
   }
@@ -2977,15 +3055,25 @@
     const fagRec = memorial && memorial.ok ? memorial.record : null;
     // A photo someone shared on Ancestry: Capture saves it as a photo.
     const ancPhoto = ancParseMediaPage(url);
+    // Its title, date and the people it is linked to start the form - the
+    // people as names she ticks or unticks, never added behind her back.
+    let photo = null;
+    try {
+      photo = ancPhoto ? ancestryPhotoInfo() : null;
+    } catch (e) {
+      photo = null; // the page's own title, as anywhere else
+    }
+    const photoInfo = photo && photo.ok ? photo : null;
     return {
       url,
       canonical,
-      title: fagRec ? memorial.title : title,
-      sourceDate: fagRec ? memorial.hints.sourceDate : sourceDate,
+      title: fagRec ? memorial.title : photoInfo && photoInfo.media.title ? photoInfo.media.title : title,
+      sourceDate: fagRec ? memorial.hints.sourceDate : photoInfo ? photoInfo.hints.sourceDate || '' : sourceDate,
       sourceType: fagRec ? memorial.hints.sourceType : ancPhoto ? 'photo' : undefined,
       repository: fagRec ? 'Find a Grave' : hostnameOf(url) || null,
       people: fagRec ? [fagRec.name].concat(fagRec.family.map((f) => f.name)).filter(Boolean)
-        .filter((n, i, a) => a.indexOf(n) === i) : harvestPeople(),
+        .filter((n, i, a) => a.indexOf(n) === i)
+        : photoInfo ? (photoInfo.details.linkedTo || []).slice() : harvestPeople(),
       // A Find a Grave memorial page (not its gallery): Capture saves the
       // memorial's own facts and citation and its photos at full size.
       findagraveMemorial: !!fagMemorialPage(url),
@@ -3033,6 +3121,7 @@
       : '<!DOCTYPE html>\n';
     const page = document.documentElement.cloneNode(true);
     stripSeenIt(page);
+    stripOtherMembers(page);
     return doctype + page.outerHTML;
   }
 
@@ -3745,6 +3834,7 @@
     singleFileSlowHosts = new Set();
     const clone = document.documentElement.cloneNode(true);
     stripSeenIt(clone);
+    stripOtherMembers(clone);
 
     // Drop EXECUTABLE scripts (they add nothing to a preservation snapshot and
     // only invite breakage) but KEEP non-executable data scripts - chiefly

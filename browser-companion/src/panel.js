@@ -1549,7 +1549,9 @@
   // kept byte for byte. capture.json's `url` is the viewer's address without
   // its query, so Seen It knows the photo again (med:{mediaId}) once it is
   // filed. Ancestry's "Saved by" list (other members' names) is never copied
-  // out of the page.
+  // out of the page - content.js leaves it out of page.html and the page copy
+  // too. No photo, no capture: when the photo will not come and she has not
+  // dropped her own file in, nothing is staged and the panel says why.
   //
   // The photo's file keeps its name for good: a photo source's picture goes
   // into the photo library, where the archive never renames a file. So it is
@@ -1573,47 +1575,41 @@
 
     const dropped = form.dropped;
     const provisional = !!dropped && form.provisional;
-    // The page copy, from the tab before the download, when she asked for it.
-    let pageCopy = await recordPageCopy('early', wantPageCopy, recordUrl, [media.mediaId]);
+    // The page copy, from the tab before the download, when she asked for it
+    // (and only then: a photo capture always holds the photo, so nothing else
+    // needs the copy to be filed with).
+    const pageCopy = await recordPageCopy('early', wantPageCopy, recordUrl, [media.mediaId]);
     const assets = [];
-    let imageWarning = null;
+    if (pageCopy) assets.push({ filename: pageCopy.filename, blob: pageCopy.blob, role: 'webpage', mode: 'singlefile' });
     if (dropped) {
-      // Her own file (Ancestry's Download, or a scan she has) is the photo.
+      // Her own file (one she downloaded, or a scan she has) is the photo.
       assets.push({ filename: media.fileStem + '.' + dropped.ext, blob: dropped.blob, role: 'front', mode: 'manual',
         provisional, primary: true });
     } else {
       setStageResult('Fetching the photo from Ancestry…', '');
       const img = await autoFetch('Ancestry photo', { action: 'ancestryPhoto', mediaId: media.mediaId },
         { recordUrl, ids: [media.mediaId] });
-      if (img && img.ok) {
-        assets.push({
-          filename: media.fileStem + '.' + (/^[a-z0-9]{1,5}$/i.test(String(img.ext || '')) ? img.ext : 'jpg'),
-          blob: bundle.base64ToBlob(img.base64, img.contentType),
-          role: 'front', mode: 'ancestry-media', primary: true,
-        });
-      } else {
-        imageWarning = ((img && img.error) || 'no answer from the page') +
-          '. The photo’s details are saved. To add the photo, save it from the page yourself (right-click it, ' +
-          'Save image as), drop that file into the panel and press Capture again: that capture holds both.';
+      if (!img || !img.ok) {
+        // No photo, no capture (PR #258 review): a photo source without its
+        // picture would file as the photo - Seen It would show it as saved -
+        // and the retry with her own file would make a second source.
+        throw new Error('the photo could not be fetched from Ancestry: ' +
+          String((img && img.error) || 'no answer from the page').replace(/[.\s]+$/, '') +
+          '. Nothing was saved. If you can download the photo yourself (right-click it, Save image as), ' +
+          'drop that file into the panel and press Capture this photo again');
       }
-    }
-    const photoSaved = assets.some((a) => a.role === 'front') && !provisional;
-
-    // With no photo, the page copy comes too, ticked or not: filed alone,
-    // photo-data.json would become the source's main file (as for a record
-    // with no scan, PR #213 audit #4).
-    const hasPhoto = assets.length > 0;
-    if (!pageCopy && !hasPhoto) pageCopy = await recordPageCopy('late', true, recordUrl, [media.mediaId]);
-    let forcedCopy = false;
-    if (pageCopy && (wantPageCopy || !hasPhoto)) {
-      assets.unshift({ filename: pageCopy.filename, blob: pageCopy.blob, role: 'webpage', mode: 'singlefile' });
-      forcedCopy = !wantPageCopy;
+      assets.push({
+        filename: media.fileStem + '.' + (/^[a-z0-9]{1,5}$/i.test(String(img.ext || '')) ? img.ext : 'jpg'),
+        blob: bundle.base64ToBlob(img.base64, img.contentType),
+        role: 'front', mode: 'ancestry-media', primary: true,
+      });
     }
 
     const data = {
       note: 'Captured from Ancestry by the archive capture extension: a photo another member shared to their ' +
         'tree. "details" is what the photo’s Details panel showed - written by whoever shared it, not checked. ' +
-        '"photoSaved" says whether this capture holds the photo; "imageUrl" is where the viewer shows it.',
+        '"photoSaved" is false when the photo in this capture is a screen capture; "imageUrl" is where the ' +
+        'viewer shows it.',
       media: {
         mediaId: media.mediaId,
         treeId: media.treeId,
@@ -1621,7 +1617,7 @@
         url: media.url,
         title: media.title,
         imageUrl: media.imageUrl,
-        photoSaved,
+        photoSaved: !provisional,
       },
       details,
     };
@@ -1634,24 +1630,20 @@
 
     const title = (form.edited.has('f-title') && form.title) || media.title || form.title ||
       ('Photo shared on Ancestry ' + media.mediaId);
+    // Who first added the photo is another member's name: it stays in
+    // photo-data.json, never in the record's notes, which a packet or a
+    // shared site carries (owner-away decision, PR #258 review).
     const said = [
       details.date ? 'Date: ' + details.date : '',
       details.place ? 'Place: ' + details.place : '',
       details.linkedTo ? 'Linked to: ' + details.linkedTo.join('; ') : '',
-      details.originallyAddedBy ? 'Originally added by: ' + details.originallyAddedBy : '',
     ].filter(Boolean);
     const notes = [
       gatherNotes(provisional, form.notes),
       'A photo shared on Ancestry by another member' +
         (said.length ? '. Its details on Ancestry:\n' + said.join('\n') : '.'),
       details.description ? 'Description on Ancestry:\n' + details.description : '',
-      imageWarning ? 'The photo was not saved: ' + imageWarning : '',
     ].filter((t) => t && t.trim()).join('\n\n');
-    // The people it is linked to are hints for filing, after hers.
-    const people = form.people.slice();
-    for (const n of details.linkedTo || []) {
-      if (!people.some((p) => p.toLowerCase() === n.toLowerCase())) people.push(n);
-    }
     const fields = {
       url: media.url,
       title,
@@ -1660,7 +1652,9 @@
       sourceDate: form.date || hints.sourceDate || '',
       sourceType: form.type || hints.sourceType || 'photo',
       repository: form.repo || 'Ancestry.com',
-      people,
+      // Only the people she was shown and left ticked (the form lists those
+      // the photo is linked to when the panel reads the page).
+      people: form.people,
       notes,
       recipeHint: 'ancestry',
       assets: assets.map((a) => ({ file: a.filename, role: a.role, mode: a.mode, provisional: !!a.provisional,
@@ -1671,19 +1665,17 @@
     const detailNote = Object.keys(details).some((k) => k !== 'title')
       ? null
       : 'The photo’s date, place and description were not on the page. To save them too, open the photo’s ' +
-        'Details on Ancestry and press Capture again.';
-    const copyNote = forcedCopy
-      ? 'A copy of the web page was kept too: with no photo, it is what the photo’s details are filed with.'
+        'Details on Ancestry and press Capture this photo again.';
+    // People the photo is linked to that the form never listed (she opened
+    // the Details after the panel read the page): named in the notes only.
+    const offered = ((state.prefill && state.prefill.people) || []).map((n) => String(n).toLowerCase());
+    const unlisted = (details.linkedTo || []).filter((n) => offered.indexOf(n.toLowerCase()) < 0);
+    const peopleNote = unlisted.length
+      ? 'Ancestry links this photo to ' + unlisted.join(', ') + ', who were not in the people list: they are in ' +
+        'the notes only. To list them, press ↻ Re-read page, check the people, and press Capture this photo again.'
       : null;
-    // Said in its own words rather than as a missing "record image".
-    const photoNote = imageWarning ? 'The photo was not saved: ' + imageWarning : null;
-    reportStaged(st.where, st.viaHost, null,
-      [photoNote, st.hostWarning, detailNote, copyNote].filter(Boolean).join('\n') || null);
-    return {
-      key: 'med:' + media.mediaId,
-      bundle: st.bundle, where: st.where,
-      note: imageWarning ? 'photo not saved: ' + imageWarning.split('. The photo')[0] : null,
-    };
+    reportStaged(st.where, st.viaHost, null, [st.hostWarning, detailNote, peopleNote].filter(Boolean).join('\n') || null);
+    return { key: 'med:' + media.mediaId, bundle: st.bundle, where: st.where, note: null };
   }
 
   // ── FamilySearch records and images ───────────────────────────────────────────

@@ -62,7 +62,7 @@ CODE MAP
 --------
   Source data
     _load_templates                  - parse tools/wikitree_templates.yaml
-    _ancestry_image_template         - Ancestry URL → {{Ancestry Image|db|id}}
+    _ancestry_image_template         - Ancestry URL → {{Ancestry Record|db|id}} / {{Ancestry Image|db|id}}
     _source_reference                - one source's citation text + image templates
     _person_link                     - [P-id] → wiki link or plain name
     _spacetime_index                 - (subject, source) → single dated+placed claim
@@ -184,26 +184,47 @@ def _load_templates(path: Path = _TEMPLATES_FILE) -> dict:
     return data if isinstance(data, dict) else {}
 
 
-# ── Ancestry images ─────────────────────────────────────────────────────────────
+# ── Ancestry images and records ─────────────────────────────────────────────────
+#
+# WikiTree has one template for each kind of Ancestry address, and a record is
+# not an image: {{Ancestry Record|db|record}} links the index entry, {{Ancestry
+# Image|db|image}} the scan in the image viewer. Before PR #258 a record's
+# address (/discoveryui-content/view/{record}:{db}, or an old search link's
+# dbid=…&h=…, where h is the record) was written as {{Ancestry Image}} with
+# the record's number in the image's place, so a WikiTree reader following
+# the citation landed on the wrong page or none. Any other Ancestry address -
+# a photo someone shared (/mediaui-viewer/…), a tree - gets no template.
 
 _ANCESTRY_DBID_RE = re.compile(r'[?&]dbid=(\d+)', re.I)
 _ANCESTRY_H_RE = re.compile(r'[?&]h=(\d+)', re.I)
-# Newer discovery URLs: /view/{imageId}:{dbId}
-_ANCESTRY_VIEW_RE = re.compile(r'/view/(\d+):(\d+)', re.I)
+# A record: /discoveryui-content/view/{recordId}:{dbId}, or today's
+# /search/collections/{dbId}/records/{recordId}.
+_ANCESTRY_VIEW_RE = re.compile(r'/discoveryui-content/view/(\d+):(\d+)', re.I)
+_ANCESTRY_RECORD_RE = re.compile(r'/search/collections/(\d+)/records/(\d+)', re.I)
+# A scan in the image viewer: /imageviewer/collections/{dbId}/images/{imageId}.
+_ANCESTRY_IMAGE_RE = re.compile(r'/imageviewer/collections/(\d+)/images/([A-Za-z0-9._-]+)', re.I)
 
 
 def _ancestry_image_template(url: str) -> str | None:
-    """Map a recognized Ancestry image URL to `{{Ancestry Image|db|id}}`, else None."""
+    """Map an Ancestry address to the WikiTree template for what it is -
+    `{{Ancestry Image|db|image}}` for a scan, `{{Ancestry Record|db|record}}`
+    for a record - else None."""
     if 'ancestry.' not in url.lower():
         return None
+    image = _ANCESTRY_IMAGE_RE.search(url)
+    if image:
+        return f'{{{{Ancestry Image|{image.group(1)}|{image.group(2)}}}}}'
     view = _ANCESTRY_VIEW_RE.search(url)
     if view:
-        image_id, db = view.group(1), view.group(2)
-        return f'{{{{Ancestry Image|{db}|{image_id}}}}}'
+        record_id, db = view.group(1), view.group(2)
+        return f'{{{{Ancestry Record|{db}|{record_id}}}}}'
+    record = _ANCESTRY_RECORD_RE.search(url)
+    if record:
+        return f'{{{{Ancestry Record|{record.group(1)}|{record.group(2)}}}}}'
     dbid = _ANCESTRY_DBID_RE.search(url)
     h = _ANCESTRY_H_RE.search(url)
     if dbid and h:
-        return f'{{{{Ancestry Image|{dbid.group(1)}|{h.group(1)}}}}}'
+        return f'{{{{Ancestry Record|{dbid.group(1)}|{h.group(1)}}}}}'
     return None
 
 
@@ -229,7 +250,7 @@ def _external_link_urls(meta: dict) -> list[str]:
 def _source_reference(archive_root: Path, source_row: sqlite3.Row) -> str:
     """Citation text for a source's `<ref>` definition: the record's `citation`
     field (collapsed to one line), falling back to its title, plus any Ancestry
-    image templates derived from its `external_links`."""
+    record or image templates derived from its `external_links`."""
     citation = ''
     image_templates: list[str] = []
     try:

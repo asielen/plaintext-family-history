@@ -18,6 +18,13 @@ function decode(s) {
   });
 }
 
+// el.removeChild(child), as the DOM has it.
+function removeChild(child) {
+  this.childNodes = this.childNodes.filter((c) => c !== child);
+  child.parentNode = null;
+  return child;
+}
+
 function element(tag, attrs, parent) {
   return {
     nodeType: 1,
@@ -30,11 +37,12 @@ function element(tag, attrs, parent) {
     getAttribute(name) {
       return Object.prototype.hasOwnProperty.call(this.attrs, name) ? this.attrs[name] : null;
     },
+    removeChild,
   };
 }
 
 function parse(html) {
-  const doc = { nodeType: 9, childNodes: [], title: '' };
+  const doc = { nodeType: 9, childNodes: [], title: '', removeChild };
   let cur = doc;
   const re = /<!--[\s\S]*?-->|<!doctype[^>]*>|<\/([a-zA-Z][\w-]*)\s*>|<([a-zA-Z][\w-]*)((?:\s+[^\s=>/]+(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+))?)*)\s*(\/?)>|([^<]+|<)/gi;
   let m;
@@ -84,4 +92,20 @@ function find(root, pred) {
   return null;
 }
 
-module.exports = { parse, find };
+// A parsed tree written back as HTML (for a page the tests have edited, as a
+// content script edits its copy of the page). Attribute values and text are
+// escaped; script and style text is written as it was.
+function serialize(node) {
+  const esc = (s, attr) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(attr ? /"/g : /$^/, '&quot;');
+  if (node.nodeType === 3) {
+    return node.parentNode && RAW.has(node.parentNode.tagName) ? node.nodeValue : esc(node.nodeValue);
+  }
+  const inner = (node.childNodes || []).map(serialize).join('');
+  if (node.nodeType !== 1) return inner;
+  const tag = node.tagName.toLowerCase();
+  const attrs = Object.keys(node.attrs).map((k) => ' ' + k + '="' + esc(node.attrs[k], true) + '"').join('');
+  return '<' + tag + attrs + '>' + (VOID.has(node.tagName) ? '' : inner + '</' + tag + '>');
+}
+
+module.exports = { parse, find, serialize };

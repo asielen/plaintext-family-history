@@ -305,7 +305,9 @@ def extract(html: str, url: str | None) -> dict:
         source_type = source_type_from_text(f'{collection} {title}', 'website')
 
     citation_bits = [title.rstrip('.')]
-    if source_date:
+    # The date, unless the title already says it: "...about 1925. 1925." read
+    # as a stutter (and the year was only ever found IN the title) - PR #258.
+    if source_date and str(source_date)[:4] not in title:
         citation_bits.append(source_date)
     citation = '. '.join(citation_bits) + '. Ancestry.com.'
     if url:

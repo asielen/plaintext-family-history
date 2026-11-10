@@ -25,7 +25,7 @@ const path = require('node:path');
 
 const { openPanel, read, settle, tick, holdFirst, PORT_CLOSED } = require('./panel-harness.js');
 const anc = require('../src/lib/ancestry-record.js');
-const { parse } = require('./mini-dom.js');
+const { parse, serialize } = require('./mini-dom.js');
 
 const REPO = path.join(__dirname, '..', '..');
 const SAMPLES = path.join(REPO, 'tests', 'fixtures', 'capture-samples');
@@ -535,33 +535,46 @@ const SAMPLE_BUNDLE = path.join(REPO, 'browser-companion', 'test-bundle',
   'thomas-and-margaret-hartley-at-the-fairview-farm-about-1925-20261110-101500-k3m9px');
 const PHOTO_FILE = 'ancestry-' + MEDIA_ID + '-photo.jpg';
 
-// The content script on the photo's page (as content.js answers), or on a
-// person's Hints page. `photo` is how the photo fetch answers.
-function photoSite({ photo } = {}) {
+// The content script on the photo's page, answering as content.js does, or
+// on a person's Hints page. `photo` is how the photo fetch answers;
+// `detailsAtFirst: false` is a Details panel she opened only after the panel
+// first read the page.
+function photoSite({ photo, detailsAtFirst = true } = {}) {
   const html = fs.readFileSync(path.join(SAMPLES, 'ancestry-media-photo.html'), 'utf8');
+  let reads = 0;
   return (msg, tab) => {
     const doc = parse(html);
     const media = anc.ancParseMediaPage(tab.url);
+    const read = (d) => {
+      const info = anc.ancMediaFrom(d, tab.url, { title: d.title, origin: 'https://www.ancestry.com' });
+      if (info.ok) info.hints = anc.ancMediaHints(info.details);
+      return info;
+    };
     switch (msg.action) {
-      case 'prefill':
+      case 'prefill': {
+        reads += 1;
+        const closed = !detailsAtFirst && reads === 1;
+        const info = media ? read(closed ? parse('<html><title>' + doc.title + '</title></html>') : doc) : null;
         return {
           ok: true,
           prefill: {
-            url: tab.url, title: media ? doc.title : 'Hints for Thomas Hartley', people: [],
+            url: tab.url, title: info ? info.media.title : 'Hints for Thomas Hartley',
+            sourceDate: info ? info.hints.sourceDate || '' : null,
+            people: info ? (info.details.linkedTo || []).slice() : [],
             repository: 'ancestry.com', recipeHint: 'ancestry', sourceType: media ? 'photo' : undefined,
             ancestryPhoto: !!media, ancestryMediaId: media ? media.mediaId : null,
             ancestryRecord: !!anc.ancParseRecordPage(tab.url),
           },
         };
-      case 'ancestryPhotoInfo': {
-        // As content.js ancestryPhotoInfo composes it.
-        const info = anc.ancMediaFrom(doc, tab.url, { title: doc.title, origin: 'https://www.ancestry.com' });
-        if (info.ok) info.hints = anc.ancMediaHints(info.details);
-        return info;
       }
+      case 'ancestryPhotoInfo':
+        return read(doc);
       case 'ancestryPhoto':
         return photo || { ok: true, base64: PHOTO_BYTES.toString('base64'), ext: 'jpg', contentType: 'image/jpeg' };
-      case 'pagehtml': return { ok: true, html };
+      case 'pagehtml':
+        // content.js serializePage: the page, without the "Saved by" list.
+        for (const el of anc.ancMediaMemberNodes(doc)) el.parentNode.removeChild(el);
+        return { ok: true, html: serialize(doc) };
       case 'singlefile': return { ok: true, html: '<html>copy of the shared photo page</html>\n' };
       default: return { ok: false, error: 'unexpected ' + msg.action };
     }
@@ -583,6 +596,25 @@ test('a shared photo\'s page offers "Capture this photo"; a record page and a Hi
   assert.doesNotMatch(hints.$('asset-status').textContent, /the photo/);
   const rec = await open(CALVIN);
   assert.strictEqual(rec.$('btn-capture').textContent, 'Capture & save');
+});
+
+test('the people the photo is linked to are offered as people she can untick, never added behind her back', async () => {
+  const p = await openPhoto(PHOTO_OPEN);
+  assert.deepStrictEqual(p.$('people-list').children.map((l) => l.children[1].textContent),
+    ['Thomas Hartley', 'Margaret Hartley']);
+  // She unticks one: it is not filed with the photo.
+  p.$('people-list').children[1].children[0].checked = false;
+  await p.capture();
+  assert.deepStrictEqual(p.capJson(p.written[0]).people, ['Thomas Hartley']);
+  // Details opened only after the panel read the page: the names are in the
+  // notes, not the people list, and the panel says how to list them.
+  const late = await openPhoto(PHOTO_OPEN, { detailsAtFirst: false });
+  assert.deepStrictEqual(late.$('people-list').children, []);
+  await late.capture();
+  const cap = late.capJson(late.written[0]);
+  assert.ok(!('people' in cap), JSON.stringify(cap.people));
+  assert.match(cap.notes, /Linked to: Thomas Hartley; Margaret Hartley/);
+  assert.match(late.result(), /Ancestry links this photo to Thomas Hartley, Margaret Hartley, who were not in the people list/);
 });
 
 test('Capture saves the shared photo as a photo source: the photo as served, its details, the address to keep', async () => {
@@ -618,14 +650,17 @@ test('Capture saves the shared photo as a photo source: the photo as served, its
     photoSaved: true,
   });
   assert.strictEqual(data.details.place, 'Fairview, Breton, Kansas, USA');
-  assert.match(cap.notes, /Date: abt 1925\nPlace: Fairview, Breton, Kansas, USA\nLinked to: Thomas Hartley; Margaret Hartley\n/);
-  assert.match(cap.notes, /Originally added by: hartley_family_tree on 3 Mar 2015/);
-  assert.match(cap.notes, /Description on Ancestry:\nThomas and Margaret on the porch of the farmhouse\.\nThe dog is Shep\./);
-  // Other members who saved it are never copied out of the page.
-  const kept = JSON.stringify(cap) + JSON.stringify(data);
+  // Who first added it is kept with Ancestry's data, not in the record's notes.
+  assert.strictEqual(data.details.originallyAddedBy, 'hartley_family_tree on 3 Mar 2015');
+  assert.strictEqual(cap.notes, 'A photo shared on Ancestry by another member. Its details on Ancestry:\n' +
+    'Date: abt 1925\nPlace: Fairview, Breton, Kansas, USA\nLinked to: Thomas Hartley; Margaret Hartley\n\n' +
+    'Description on Ancestry:\nThomas and Margaret on the porch of the farmhouse.\nThe dog is Shep.');
+  // Other members who saved it are never copied out of the page - page.html included.
+  const kept = JSON.stringify(cap) + JSON.stringify(data) + b.pageHtml;
   for (const never of ['cousin_member_one', 'cousin_member_two', 'Saved by']) {
     assert.ok(!kept.includes(never), 'copied out of the page: ' + never);
   }
+  assert.ok(b.pageHtml.includes('Linked to'), 'the rest of the page is kept');
   assert.match(p.result(), /^Staged to \/dl\/fha-inbox\//);
   assert.doesNotMatch(p.resultClass(), /warn|error/);
 });
@@ -663,17 +698,27 @@ test('what she typed wins; a file she drops in is the photo, saved with its deta
   assert.strictEqual(photoAsks(p).length, 0, 'her file is used; Ancestry is not asked');
 });
 
-test('a photo Ancestry will not hand over still saves its details and the page, and says why', async () => {
-  const p = await openPhoto(PHOTO_OPEN, { photo: { ok: false, error: 'Ancestry refused the photo (HTTP 403) - sign in' } });
+test('the page copy she unticked is not saved', async () => {
+  const p = await openPhoto(PHOTO_OPEN);
   p.$('cb-pagecopy').checked = false;
   await p.capture();
+  assert.deepStrictEqual(p.files(p.written[0]), [PHOTO_FILE, 'photo-data.json']);
+});
+
+test('PR #258 review: no photo, no capture - a refused photo stages nothing, and says how to add it by hand', async () => {
+  const p = await openPhoto(PHOTO_OPEN, { photo: { ok: false, error: 'Ancestry refused the photo (HTTP 403) - sign in ' +
+    'on this page and press Capture again' } });
+  await p.capture();
+  // A photo source without its picture would file as the photo (Seen It
+  // would show it saved), and the retry with her own file a second source.
+  assert.strictEqual(p.written.length, 0);
+  assert.match(p.result(), /^Could not capture: the photo could not be fetched from Ancestry: Ancestry refused the photo \(HTTP 403\)/);
+  assert.match(p.result(), /Nothing was saved\. If you can download the photo yourself \(right-click it, Save image as\), drop that file into the panel and press Capture this photo again/);
+  assert.match(p.resultClass(), /error/);
+  // Her downloaded file, dropped in: one capture, with her file as the photo.
+  dropFile(p, 'downloaded.jpg');
+  await p.capture();
   assert.strictEqual(p.written.length, 1);
-  const b = p.written[0];
-  // The page copy comes too, so the details are not filed as the main file.
-  assert.deepStrictEqual(p.files(b), ['page-snapshot.html', 'photo-data.json']);
-  assert.match(p.capJson(b).notes, /The photo was not saved: Ancestry refused the photo \(HTTP 403\)/);
-  assert.strictEqual(JSON.parse(await b.assets[1].blob.text()).media.photoSaved, false);
-  assert.match(p.result(), /The photo was not saved: Ancestry refused the photo \(HTTP 403\)/);
-  assert.match(p.result(), /A copy of the web page was kept too/);
-  assert.match(p.resultClass(), /warn/);
+  assert.deepStrictEqual(p.files(p.written[0]), ['page-snapshot.html', PHOTO_FILE, 'photo-data.json']);
+  assert.strictEqual(p.capJson(p.written[0]).assets[1].mode, 'manual');
 });

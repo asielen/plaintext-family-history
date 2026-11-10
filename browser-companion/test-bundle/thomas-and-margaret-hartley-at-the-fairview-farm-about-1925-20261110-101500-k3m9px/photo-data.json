@@ -1,5 +1,5 @@
 {
-  "note": "Captured from Ancestry by the archive capture extension: a photo another member shared to their tree. \"details\" is what the photo’s Details panel showed - written by whoever shared it, not checked. \"photoSaved\" says whether this capture holds the photo; \"imageUrl\" is where the viewer shows it.",
+  "note": "Captured from Ancestry by the archive capture extension: a photo another member shared to their tree. \"details\" is what the photo’s Details panel showed - written by whoever shared it, not checked. \"photoSaved\" is false when the photo in this capture is a screen capture; \"imageUrl\" is where the viewer shows it.",
   "media": {
     "mediaId": "7c0ffee0-1234-4abc-8def-0123456789ab",
     "treeId": "90000001",

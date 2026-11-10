@@ -212,13 +212,17 @@ no-op, the bundles land in `inbox/` directly.
   household's shared page is fetched once; nothing else is asked or sent.
   On a photo another member shared to their Ancestry tree (the media viewer,
   `/mediaui-viewer/…/media/{mediaId}`), Capture reads the photo's Details as
-  the page shows them - never its "Saved by" list of other members - and
+  the page shows them - never its "Saved by" list of other members, which
+  content.js also cuts out of page.html and the page copy
+  (`ancMediaMemberNodes`) - and
   fetches the one image the viewer shows, from the page's own site in your
   session (`lib/ancestry-record.js` `ancMediaImageUrl` builds an address on
   the page's origin only, and content.js checks it again before the fetch),
   keeping the bytes exactly as sent. The bundle files as a `photo` source
   whose `external_links` keep the viewer's address without its query - the
-  address Seen It knows the photo by (`med:{mediaId}`).
+  address Seen It knows the photo by (`med:{mediaId}`). When the photo will
+  not come and no file was dropped in, nothing is staged: a photo source is
+  never filed without its picture.
   On a FamilySearch record or image viewer, the page reads the record and its
   image through FamilySearch's own data service, as FamilySearch's pages do,
   with your signed-in session. That session (the `fssessionid` login, sent as a
