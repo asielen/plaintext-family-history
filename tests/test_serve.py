@@ -2261,5 +2261,82 @@ class PickFileTests(_ServeCase):
         self.assertEqual(s, 403)
 
 
+class DeathAcceptMarksNotLivingTests(_ServeCase):
+    """#246 through the workbench: accepting a death claim in the browser marks
+    the person as no longer living, exactly as `fha claim` does, and the index
+    is rebuilt in full so the site stops treating them as living at once (a
+    one-source upsert never rereads the person record)."""
+
+    ALEX = 'P-0a1b2c3d4e'   # example-archive: living: unknown
+
+    def _add_death_claim(self) -> str:
+        import sqlite3
+        conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
+        try:
+            sid = conn.execute('SELECT id FROM sources ORDER BY id LIMIT 1').fetchone()[0]
+        finally:
+            conn.close()
+        result = serve.claim.run_claim_new(
+            self.root, source_id=sid, claim_type='death', value='Alex died 1999',
+            persons=[self.ALEX], status='suggested', confidence='high')
+        self.assertTrue(result.ok, [m.text for m in result.messages])
+        index_mod.build_index(self.root, self.config)
+        return result['claim_id']
+
+    def _living_in_index(self) -> str:
+        import sqlite3
+        conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
+        try:
+            return conn.execute('SELECT living FROM persons WHERE id = ?',
+                                (self.ALEX.lower(),)).fetchone()[0]
+        finally:
+            conn.close()
+
+    def test_accept_in_the_workbench_marks_and_reindexes_the_person(self):
+        cid = self._add_death_claim()
+        self.assertEqual(self._living_in_index(), 'unknown')
+        s, d, _h = self.post_run('claim.review', {'claim_id': cid, 'status': 'accepted'}, False)
+        self.assertEqual(s, 200)
+        payload = json.loads(d)
+        self.assertTrue(payload['ok'], payload['messages'])
+        self.assertIn('is now marked as no longer living',
+                      ' '.join(m['text'] for m in payload['messages']))
+        self.assertEqual(self._living_in_index(), 'false')
+
+    def test_keep_living_reaches_the_engine_and_the_echo(self):
+        cid = self._add_death_claim()
+        s, d, _h = self.post_run('claim.review', {'claim_id': cid, 'status': 'accepted',
+                                                  'keep_living': True}, False)
+        payload = json.loads(d)
+        self.assertTrue(payload['ok'], payload['messages'])
+        self.assertIn('--keep-living', payload['cli_echo'])
+        self.assertEqual(self._living_in_index(), 'unknown')
+
+    def test_un_accepting_in_the_workbench_warns_and_keeps_the_flag(self):
+        cid = self._add_death_claim()
+        self.post_run('claim.review', {'claim_id': cid, 'status': 'accepted'}, False)
+        s, d, _h = self.post_run('claim.review', {'claim_id': cid, 'status': 'rejected'},
+                                 False)
+        payload = json.loads(d)
+        self.assertTrue(payload['ok'], payload['messages'])
+        warnings = [m['text'] for m in payload['messages'] if m['level'] == 'warning']
+        self.assertTrue(any(f'fha person set-living {self.ALEX} unknown' in w
+                            for w in warnings), payload['messages'])
+        self.assertEqual(self._living_in_index(), 'false')
+
+    def test_editing_an_accepted_death_in_the_workbench_warns(self):
+        cid = self._add_death_claim()
+        self.post_run('claim.review', {'claim_id': cid, 'status': 'accepted'}, False)
+        self.assertEqual(self._living_in_index(), 'false')
+        s, d, _h = self.post_run('claim.review', {'claim_id': cid,
+                                                  'claim_type': 'residence'}, False)
+        payload = json.loads(d)
+        self.assertTrue(payload['ok'], payload['messages'])
+        warnings = [m['text'] for m in payload['messages'] if m['level'] == 'warning']
+        self.assertTrue(any(f'fha person set-living {self.ALEX} unknown' in w
+                            for w in warnings), payload['messages'])
+        self.assertEqual(self._living_in_index(), 'false')
+
+
 if __name__ == '__main__':
     unittest.main()

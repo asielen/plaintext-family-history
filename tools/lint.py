@@ -63,6 +63,7 @@ from _lib import (
     CLAIM_TYPES,
     COMPANION_KINDS,
     CROCKFORD_ALPHA,
+    DEATH_CLAIM_TYPES,
     EXIT_CLEAN,
     EXIT_ERRORS,
     EXIT_FAILURE,
@@ -83,12 +84,14 @@ from _lib import (
     claim_item_key_indent,
     claims_edit_problem,
     contradiction_question_heading,
+    claim_death_reading,
     edtf_bounds,
     files_carry_searchable_text,
     finding_to_message,
     bracket_given_name,
     is_genetic_parent_subtype,
     nonbirth_bracket_label,
+    normalize_living,
     public_name_variants,
     reconcile_bracket_entries,
     parentage_parties,
@@ -232,7 +235,9 @@ configure_utf8_stdout()
 #    _check_agent_drift          - E018: deprecated commands in AGENTS.md
 #    _check_untranscribed_evidence - W124: accepted claims on evidence the
 #                                   archive holds no words for (no transcript)
-#    _check_roots_change         - W121: a roots: change orphaned filed assets
+#    _check_died_but_living      - W136: an accepted death/burial for a person still
+#                                   treated as living (living: unknown or true)
+#    _check_roots_change        - W121: a roots: change orphaned filed assets
 #                                   (runs first; the E011 fallout follows it)
 #    _check_unreadable_dirs      - W123: a record folder this lint could not open
 #                                   (runs last; the caveat on everything above)
@@ -3349,6 +3354,9 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
     # W124: accepted claims resting on evidence nobody has written out
     _check_untranscribed_evidence(registry, findings)
 
+    # W136: an accepted death, but the person is still treated as living
+    _check_died_but_living(registry, findings, alias_map)
+
     # E016: new claims referencing a merged person
     for pid, meta in registry.person_meta.items():
         if str(meta.get('status', '')) == 'merged':
@@ -3396,6 +3404,85 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
     # W123: a record folder Pass 1 could not open. Last, so it reads as the
     # caveat on everything above it rather than as one more finding among many.
     _check_unreadable_dirs(registry, findings)
+
+
+def _check_died_but_living(
+    registry: Registry, findings: list[Finding], alias_map: dict[str, str],
+) -> None:
+    """W136: the archive has accepted someone's death, but still treats them as living.
+
+    A person with an accepted death certificate, grave or obituary whose
+    `living:` reads `unknown` is left out of every shared export and the site
+    (SPEC §19: unknown counts as living), and the missing-death reminder
+    skips them too, so nothing ever pointed at the stale flag. One real
+    archive had 27 (#246). `living: true` beside an accepted death is the
+    stronger case: someone recorded this person as alive, so either the flag
+    or the claim is wrong, and the message says so.
+
+    Who died is `_lib.claim_death_reading`, the rule `fha claim` uses when
+    the human accepts the claim, so lint and the accept agree: a person named
+    `deceased:`, the one person on a claim with no roles, or (reported here
+    but never changed automatically) the one the archive reads as the
+    deceased because everyone else on the claim has another part. A claim
+    naming several people with no roles names nobody (W132 asks for the
+    roles), nor does one whose `roles:` names somebody missing from its
+    `persons:` (W133) or a name that resolves to nobody, and a negated claim ("this death did not happen") names nobody
+    either. Only `accepted` claims count: a suggested one is not yet a fact.
+    A merged record is skipped - E016 already asks for the claim to name the
+    survivor. One finding per person, naming the first such claim.
+    """
+    first_claim: dict[str, tuple[str, str, bool]] = {}
+    for sid in sorted(registry.source_claims):
+        for claim in registry.source_claims[sid]:
+            if not isinstance(claim, dict):
+                continue
+            ctype = str(claim.get('type', '')).strip().lower()
+            if ctype not in DEATH_CLAIM_TYPES:
+                continue
+            if str(claim.get('status', '')).strip() != 'accepted':
+                continue
+            if str(claim.get('negated')).strip().lower() == 'true':
+                continue
+            # `unsure` (a roles: entry for someone missing from persons:,
+            # or a name nobody resolves) names nobody: read without that
+            # entry, the widow on a husband's death record looks like the
+            # only person on it, and this would tell the owner to mark her
+            # as dead (#250 review). W133 reports the orphaned role itself.
+            reading = claim_death_reading(claim, alias_map)
+            cid = str(claim.get('id') or '?')
+            for pid, named in ([(p, True) for p in reading.named]
+                               + [(p, False) for p in reading.by_elimination]):
+                first_claim.setdefault(pid, (cid, ctype, named))
+
+    for pid in sorted(first_claim):
+        meta = registry.person_meta.get(pid)
+        if meta is None or str(meta.get('status', '')).strip().lower() == 'merged':
+            continue
+        living = normalize_living(meta.get('living'))
+        if living == 'false':
+            continue
+        cid, ctype, named = first_claim[pid]
+        who = _person_label(registry, pid)
+        shown = fmt_id_display(pid)
+        paths = registry.person_profile_paths.get(pid) or [Path(pid)]
+        how = ('' if named else
+               f' (the claim names nobody `deceased:`; the archive reads {who} as the '
+               'one who died because everyone else on it has another part)')
+        if living == 'true':
+            message = (
+                f'{who} is marked as living (living: true), but accepted {ctype} claim '
+                f'{cid} records their death{how}. One of the two is wrong. If they have '
+                f'died, run `fha person set-living {shown} false` so shared exports and '
+                f'the site can include them; if they are alive, look at {cid} again - it '
+                'may be about someone else.')
+        else:
+            state = 'unknown' if living in (None, 'unknown') else repr(meta.get('living'))
+            message = (
+                f'{who} has an accepted {ctype} claim ({cid}){how} but is still '
+                f'living: {state}, which is treated as living, so shared exports and '
+                'the site leave them out. If they have died, run '
+                f'`fha person set-living {shown} false`.')
+        findings.append(Finding('W', 'W136', paths[0], message))
 
 
 def _check_untranscribed_evidence(
