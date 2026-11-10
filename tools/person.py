@@ -278,6 +278,7 @@ from _lib import (
     extract_bare_ids,
     find_person_record_path,
     fmt_id_display,
+    folder_name_text,
     format_edtf_error,
     format_person_sex_error,
     frontmatter_edit_problem,
@@ -1738,7 +1739,10 @@ def run_promote(
                 'marriage takes a letter suffix, e.g. '
                 f'"{e.prefix:03d}b …"; SPEC §12.2), then retry. Nothing was written.')
         if dest_folder is None:
-            display = name or fmt_id_display(pid)
+            # A name with nothing a folder can hold ("?") reads "unknown",
+            # the placeholder a later `fha person rename` knows to replace,
+            # instead of a folder named "002 ". A missing name keeps the P-id.
+            display = (folder_name_text(name) or 'unknown') if name else fmt_id_display(pid)
             dest_folder = people_dir / f'{str(prefix).zfill(3)} {display}'
     result.data['folder'] = dest_folder.name
     # Plain-words position note for the human-facing messages below - a
@@ -2089,14 +2093,18 @@ def _renamed_couple_folder_name(
     prefix, segments, bracket = _split_couple_folder_name(folder_name)
     if not segments:
         return None, 'the folder name has no recognisable partner-name text to update'
-    norm_old = _norm_variant_text(old_name)
-    matches = [i for i, seg in enumerate(segments) if _norm_variant_text(seg) == norm_old]
+    # The folder may carry the name as the tools wrote it (`folder_name_text`:
+    # `Margaret 'Peggy' Cole` for `Margaret "Peggy" Cole`), so either spelling matches.
+    norm_old = {_norm_variant_text(old_name), _norm_variant_text(folder_name_text(old_name))}
+    matches = [i for i, seg in enumerate(segments) if _norm_variant_text(seg) in norm_old]
     if not matches:
         return None, f'{old_name!r} does not appear in the folder name as written'
     if len(matches) > 1:
         return None, f'{old_name!r} appears more than once in the folder name - which one is ambiguous'
+    if not folder_name_text(new_name):
+        return None, f'{new_name!r} has nothing a folder name can hold, so the folder keeps its name'
     new_segments = list(segments)
-    new_segments[matches[0]] = new_name
+    new_segments[matches[0]] = folder_name_text(new_name)
     new_base = prefix + ' + '.join(new_segments)
     return (f'{new_base} {bracket}' if bracket else new_base), None
 

@@ -575,10 +575,22 @@ def bracket_given_name(full_name: str) -> str:
     nun recorded as "Sister Mary", the name that tells her from her sister
     "Sister Anne". A name that is nothing but titles is returned whole.
 
+    The token goes inside a folder name, so it is passed through
+    `folder_safe_chars` (a quoted nickname, `"Peggy" Smith`, reads `'Peggy'`).
+
     Shared by lint and views (W103) so both backends derive the same token."""
+    return folder_safe_chars(_bracket_given_name_raw(full_name))
+
+
+def _bracket_given_name_raw(full_name: str) -> str:
     words = full_name.split()
     if not words:
         return full_name
+    # A leading "?" for an unknown first name, when another given name
+    # follows it ("? Mary Hartley" -> Mary). "? Hartley" keeps its "?", so the
+    # surname never stands in for a first name; that child is left out.
+    while len(words) > 2 and not folder_safe_chars(words[0]):
+        words = words[1:]
     i = 0
     while i < len(words) and _title_key(words[i]) in _NAME_TITLES:
         i += 1
@@ -680,7 +692,7 @@ def reconcile_bracket_entries(
         row: list[int | None] = []
         for base, words, tok_label in zip(bases, tok_words, tok_labels):
             relabel = 0 if tok_label == label else 1
-            if base == default:
+            if default and base == default:
                 row.append(relabel)
             # A bare title ("Mrs.") fits every married woman and names no one;
             # it is the defect being repaired, never a choice worth keeping.
@@ -693,6 +705,11 @@ def reconcile_bracket_entries(
     out = []
     for i, (default, label, _names) in enumerate(kids):
         j = tok_of[i]
+        if j is None and not default:
+            # No first name a folder can hold ("? Hartley"): leave the child
+            # out rather than write an empty slot the next read drops again,
+            # which made every refresh "rename" the folder to itself.
+            continue
         out.append(format_bracket_child(bases[j] if j is not None else default, label))
     return sorted(out)
 
@@ -1355,7 +1372,9 @@ def spouse_extended_base(
         return base_name, None
 
     def _norm(s: str) -> str:
-        return ' '.join(s.split()).casefold()
+        # Compared through `folder_name_text`, so a base the tools wrote from
+        # `Margaret "Peggy" Cole` (`Margaret 'Peggy' Cole`) still matches her.
+        return ' '.join(folder_name_text(s).split()).casefold()
 
     base_person = _norm(m.group(2))
     matched = [pid for pid in partner_ids
@@ -1367,10 +1386,48 @@ def spouse_extended_base(
     # A partner with no recorded name resolves to their bare P-id, or to one
     # of the archive's placeholders - a folder name is for humans, so never
     # write an ID or a placeholder into it.
+    # A name made only of characters a folder can't hold ("???") is a
+    # placeholder too: its empty "+ " half would be kept for ever, since this
+    # rule never touches a base that already has a "+".
     if (not other_name or other_name == other or is_placeholder_name(other_name)
-            or _norm(other_name) == base_person):
+            or not folder_name_text(other_name) or _norm(other_name) == base_person):
         return base_name, None
-    return f'{base_name} + {other_name}', other_name
+    return f'{base_name} + {folder_name_text(other_name)}', other_name
+
+
+_FOLDER_DROP_CHARS = re.compile(r'[:*?<>|]')
+_FOLDER_SPACE_CHARS = re.compile(r'[\x00-\x1f]')
+
+
+def folder_safe_chars(text: str) -> str:
+    """`folder_name_text` without the end trim, for text that sits INSIDE a
+    folder name - a bracket token like `Mrs.` keeps its dot, since only the
+    folder name's last character is subject to Windows' trailing-dot rule."""
+    text = str(text).replace('"', "'").replace('/', '-').replace('\\', '-')
+    text = _FOLDER_DROP_CHARS.sub('', _FOLDER_SPACE_CHARS.sub(' ', text))
+    return ' '.join(text.split())
+
+
+def folder_name_text(name: str) -> str:
+    """A person's name made safe to stand in a folder name on every OS.
+
+    A recorded name is free text and keeps exactly what the source says -
+    `Margaret "Peggy" Cole` is a perfectly good `name:`. A folder name is not:
+    Windows refuses `\\ / : * ? " < > |`, control characters, and a trailing
+    dot or space, so a promote that writes the raw name into a new couple folder
+    can only fail there (the engine rolls back, but the person never gets
+    promoted). Every place that derives folder text from a name runs it through
+    here, so the rule is one rule:
+      - a double quote becomes a single quote (`Margaret 'Peggy' Cole` - the
+        nickname still reads as a nickname);
+      - a slash or backslash becomes a hyphen (`Ann/Anna` -> `Ann-Anna`), so
+        the name can never be read as a path;
+      - `: * ? < > |` are dropped, and a control character (a tab) becomes a
+        space so the words on either side stay apart;
+      - runs of spaces collapse, and trailing dots and spaces are trimmed,
+        because a name written by these sites can end the folder name.
+    Names without any of these come back unchanged."""
+    return folder_safe_chars(name).rstrip(' .')
 
 
 def is_placeholder_name(name: object) -> bool:
