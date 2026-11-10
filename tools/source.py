@@ -80,9 +80,11 @@ DESIGN RULES (why the code looks the way it does)
   archive - had no sanctioned way back out. `clear-keyword` finds the exact
   on-file spelling of `--keyword` (exiftool's list `-=` removal is an exact
   value match, so the text is read back off the file rather than trusted
-  from the command line), removes it from whichever of Keywords/Subject it
+  from the command line), removes it from whichever keyword field it
   actually lives in, and - with `--replace-with` - adds the correction to
-  that SAME field, never a new one the file did not already carry. Scope is
+  every keyword field the file's format takes (IPTC Keywords, XMP
+  dc:subject, Lightroom's lr:hierarchicalSubject - #252, the rule every fha
+  keyword write follows). Scope is
   documents-root only, matching lint's W131 (the check that finds these):
   see that check's docstring in lint.py for why a photos-root twin is a
   separate, undesigned decision. Uses the same `_lib.OriginalBackup` safety-
@@ -160,9 +162,7 @@ from __future__ import annotations
 import argparse
 import copy
 import difflib
-import json
 import re
-import subprocess
 import sys
 from collections import Counter
 from pathlib import Path, PurePosixPath
@@ -174,7 +174,6 @@ import yaml
 from _lib import (
     append_file_entry_to_record,
     append_paragraph_to_section,
-    BackupRefused,
     claims_edit_problem,
     configure_utf8_stdout,
     EXIT_CLEAN,
@@ -183,13 +182,14 @@ from _lib import (
     FhaConfigError,
     find_source_record_path,
     fmt_id_display,
-    format_exiftool_error,
     FRONT_RE,
     frontmatter_edit_problem,
     frontmatter_fence_span,
     id_type_of,
     is_valid_id,
     is_working_copy,
+    keyword_fields_from_row,
+    keyword_tags_for,
     load_fha_yaml,
     normalize_id,
     OriginalBackup,
@@ -197,6 +197,7 @@ from _lib import (
     PHOTO_EXTENSIONS,
     parse_media_filename,
     pip_command,
+    read_keyword_row,
     read_record,
     read_text_exact,
     reapply_newline,
@@ -206,6 +207,7 @@ from _lib import (
     Result,
     result_fail,
     variant_role,
+    write_embedded_keywords,
     write_text_exact_atomic,
     safe_load_yaml,
     yaml_inline,)
@@ -507,73 +509,61 @@ def run_source_edit_note(
 # Tests monkeypatch these two functions the same way test_process.py already
 # monkeypatches process._run_exiftool_read_keywords/_run_exiftool_embed_source.
 
-def _run_exiftool_read_keyword_fields(file_path: Path) -> dict[str, list[str]]:
-    """Return {'keywords': […], 'subject': […]} - each field's raw values,
-    kept SEPARATE rather than merged into one union.
+# The three keyword fields, by the short names `clear-keyword` reports them
+# under (`removed_from`/`added_to`) and the exiftool tag each one is (#252).
+_KEYWORD_BUCKETS: tuple[tuple[str, str], ...] = (
+    ('keywords', 'IPTC:Keywords'),
+    ('subject', 'XMP-dc:Subject'),
+    ('hierarchical', 'XMP-lr:HierarchicalSubject'),
+)
 
-    `clear-keyword` has to know which field a value actually lives in: exiftool's
-    list `-=` removal operator needs both the exact value AND the exact tag, and
-    a correction (`--replace-with`) must land in the SAME field the stray value
-    came from rather than silently growing a field the file never carried.
-    Raises RuntimeError if exiftool is missing or its output cannot be parsed -
-    an environment problem the caller surfaces, distinct from "no such keyword".
+
+def _buckets_for(path: Path) -> list[str]:
+    """The fields a keyword ADDED to this file goes into (its format's set)."""
+    tags = keyword_tags_for(path)
+    return [bucket for bucket, tag in _KEYWORD_BUCKETS if tag in tags]
+
+
+def _keyword_leaf(bucket: str, value: str) -> str:
+    """The keyword a stored value names: a Lightroom hierarchical value
+    (`People|Margaret Hartley`) names its last part."""
+    return value.rsplit('|', 1)[-1] if bucket == 'hierarchical' else value
+
+
+def _run_exiftool_read_keyword_fields(file_path: Path) -> dict[str, list[str]]:
+    """Return {'keywords': […], 'subject': […], 'hierarchical': […]} - each
+    keyword field's raw values, kept SEPARATE rather than merged into one union.
+
+    `clear-keyword` has to know which field a value actually lives in, to
+    report it and to verify the write afterwards field by field. The read is
+    `_lib.read_keyword_row`, the one keyword reader (#252). Raises
+    RuntimeError if exiftool is missing or its output cannot be parsed - an
+    environment problem the caller surfaces, distinct from "no such keyword".
     """
-    cmd = ['exiftool', '-j', '-Keywords', '-Subject', str(file_path)]
-    try:
-        proc = subprocess.run(cmd, check=False, capture_output=True, text=True, encoding='utf-8')
-    except FileNotFoundError as e:
-        raise RuntimeError(format_exiftool_error('fha source clear-keyword')) from e
-    if proc.returncode != 0:
-        raise RuntimeError(f'exiftool failed reading {file_path.name}: {proc.stderr.strip()}')
-    try:
-        rows = json.loads(proc.stdout or '[]')
-    except json.JSONDecodeError as e:
-        raise RuntimeError(f'exiftool returned invalid JSON: {e}') from e
-    out: dict[str, list[str]] = {'keywords': [], 'subject': []}
-    if not rows:
-        return out
-    row = rows[0]
-    for key, bucket in (('Keywords', 'keywords'), ('Subject', 'subject')):
-        val = row.get(key)
-        if val is None:
-            continue
-        for v in (val if isinstance(val, list) else [val]):
-            out[bucket].append(str(v))
-    return out
+    fields = keyword_fields_from_row(
+        read_keyword_row(file_path, command='fha source clear-keyword'))
+    return {bucket: list(fields[tag]) for bucket, tag in _KEYWORD_BUCKETS}
 
 
 def _run_exiftool_edit_keyword_fields(
     file_path: Path, *, remove: list[tuple[str, str]], add: list[tuple[str, str]],
     backup: OriginalBackup,
 ) -> str | None:
-    """Remove/add exact (field, value) pairs on one file in a single exiftool call.
+    """Remove/add keyword values on one file in a single exiftool call.
 
-    `remove`/`add` entries are `('keywords' | 'subject', exact_value)`. `-=` is
-    exiftool's exact-value list-remove (the same technique `fha process`'s
-    SOURCE: rollback uses); `+=` is the matching list-append. One call does
-    both so a remove+replace lands atomically - never a moment where the file
-    carries neither the old nor the new value because a second exiftool
-    invocation failed in between.
-
-    `backup` is the run's safety-copy policy (`_lib.OriginalBackup`, TOOLING
-    §13f) - the same discipline `fha process`'s SOURCE: embed and `fha
-    photoindex tag-person`/`set-summary` already follow for every other write
-    into an original asset. Returns None on success, the stderr text (or the
-    backup refusal text) on a per-file failure; raises RuntimeError only when
-    exiftool itself is absent.
+    `remove`/`add` entries are `(field, exact_value)` with the field names of
+    `_KEYWORD_BUCKETS`. The write is `_lib.write_embedded_keywords`, the one
+    keyword writer (#252): a removed value comes out of every keyword field,
+    an added one goes into every field the file's format takes, and both
+    happen in one call, so there is never a moment where the file carries
+    neither the old value nor its correction. The writer also takes the
+    `originals_backup:` safety copy first (TOOLING §13f). Returns None on
+    success, the failure text (or the backup refusal) on a per-file failure;
+    raises RuntimeError only when exiftool itself is absent.
     """
-    try:
-        backup.ensure(file_path)
-    except BackupRefused as e:
-        return str(e)
-    args = ([f'-{tag}-={value}' for tag, value in remove]
-            + [f'-{tag}+={value}' for tag, value in add])
-    cmd = ['exiftool'] + args + ['-overwrite_original_in_place', str(file_path)]
-    try:
-        proc = subprocess.run(cmd, check=False, capture_output=True, text=True, encoding='utf-8')
-    except FileNotFoundError as e:
-        raise RuntimeError(format_exiftool_error('fha source clear-keyword')) from e
-    return None if proc.returncode == 0 else proc.stderr.strip()
+    return write_embedded_keywords(
+        file_path, add=[value for _, value in add], remove=[value for _, value in remove],
+        backup=backup, command='fha source clear-keyword')
 
 
 def run_source_clear_keyword(
@@ -600,9 +590,9 @@ def run_source_clear_keyword(
     because exiftool's `-=` list-remove needs an exact value: a keyword typed
     slightly differently on the command line would otherwise silently fail to
     remove anything while still reporting a plausible-looking command. A
-    `--replace-with` correction lands in the SAME Keywords/Subject field the
-    stray value was found in, never a new one the file did not already carry,
-    and is skipped (not duplicated) if that field already holds it.
+    `--replace-with` correction lands in every keyword field the file's
+    format takes (#252), and is skipped (not duplicated) in a field that
+    already holds it.
 
     Scope is documents-root only - the source must list a documents-root file
     in `files:` (matching W131's own scope; see that check's docstring in
@@ -874,12 +864,12 @@ def run_source_clear_keyword(
 
     matches: list[tuple[str, str]] = [
         (tag, value)
-        for tag in ('keywords', 'subject')
+        for tag in fields
         for value in fields[tag]
-        if value.strip().lower() == keyword_text.lower()
+        if _keyword_leaf(tag, value).strip().lower() == keyword_text.lower()
     ]
     if not matches:
-        current = fields['keywords'] + fields['subject']
+        current = [v for tag in fields for v in fields[tag]]
         shown = ', '.join(repr(v) for v in current[:10]) if current else '(none)'
         return _refuse(
             'refused',
@@ -901,12 +891,16 @@ def run_source_clear_keyword(
     for tag, value in matches:
         removed_by_tag.setdefault(tag, set()).add(value)
 
+    # #252: the correction goes into every keyword field the file's format
+    # takes - the same rule as every other fha keyword write - not just the
+    # field the stray value happened to sit in, so a photo manager reading
+    # any one of them sees it.
     add: list[tuple[str, str]] = []
     if replacement:
-        tags_with_match = sorted({tag for tag, _ in matches})
-        for tag in tags_with_match:
-            remaining = [v for v in fields[tag] if v not in removed_by_tag.get(tag, set())]
-            if not any(v.strip().lower() == replacement.lower() for v in remaining):
+        for tag in _buckets_for(abs_path):
+            remaining = [v for v in fields.get(tag, []) if v not in removed_by_tag.get(tag, set())]
+            if not any(_keyword_leaf(tag, v).strip().lower() == replacement.lower()
+                       for v in remaining):
                 add.append((tag, replacement))
 
     if dry_run:

@@ -1,0 +1,228 @@
+"""`fha process` writes the ID into scanned records too (#252 item 4).
+
+What the owner would notice: a scanned record (TIFF, JPEG, PNG or PDF) filed
+in the documents root now carries its `SOURCE: S-…` keyword inside the file,
+as a photo does - so if a sync tool or an export renames it, the file still
+says which source it is. A format that cannot hold one (a recording, a text
+transcript) is filed exactly as before, without a word about it.
+
+Run: py -3.14 -m unittest tests.test_process_document_keyword -v
+"""
+
+from __future__ import annotations
+
+import contextlib
+import io
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / 'tools'))
+sys.path.insert(0, str(ROOT / 'tests'))
+
+import process  # noqa: E402
+from _lib import EXIT_CLEAN, EXIT_FAILURE  # noqa: E402
+from keyword_fixture_files import EXIFTOOL, read_fields, write_fixture  # noqa: E402
+
+
+def _make_archive(tmp: Path) -> Path:
+    archive = tmp / 'archive'
+    for sub in ('documents/census', 'photos/1911', 'sources', 'people', 'notes'):
+        (archive / sub).mkdir(parents=True)
+    (archive / 'fha.yaml').write_text(
+        'roots:\n  photos: photos\n  documents: documents\n', encoding='utf-8')
+    return archive
+
+
+class _Store:
+    """In-memory keywords keyed by path, patched over process's exiftool seams."""
+
+    def __init__(self) -> None:
+        self.keywords: dict[str, list[str]] = {}
+        self.embed_calls: list[Path] = []
+        self.unavailable = False
+
+    def read(self, path: Path) -> list[str]:
+        return list(self.keywords.get(str(path), []))
+
+    def embed(self, path, sid, extra_keywords=None, *, backup=None):
+        if self.unavailable:
+            raise process.ExiftoolUnavailableError(
+                'fha process needs exiftool for the keywords inside photos and scans.')
+        self.embed_calls.append(Path(path))
+        self.keywords.setdefault(str(path), []).extend([f'SOURCE: {sid}'] + list(extra_keywords or []))
+        return None
+
+    def remove(self, path, sid, extra_keywords=None, *, backup=None):
+        drop = {f'SOURCE: {sid}'} | set(extra_keywords or [])
+        self.keywords[str(path)] = [k for k in self.keywords.get(str(path), []) if k not in drop]
+        return None
+
+
+class _Base(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self.archive = _make_archive(self.tmp)
+        self._saved = {name: getattr(process, name) for name in (
+            '_run_exiftool_read_keywords', '_run_exiftool_embed_source',
+            '_run_exiftool_remove_source', '_prompt')}
+
+    def tearDown(self) -> None:
+        for name, fn in self._saved.items():
+            setattr(process, name, fn)
+        self._tmp.cleanup()
+
+    def _install_store(self) -> _Store:
+        store = _Store()
+        process._run_exiftool_read_keywords = store.read
+        process._run_exiftool_embed_source = store.embed
+        process._run_exiftool_remove_source = store.remove
+        return store
+
+    def _run(self, argv: list[str]) -> tuple[int, str, str]:
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = process._standalone_main(argv + ['--root', str(self.archive)])
+        return rc, out.getvalue(), err.getvalue()
+
+    def _records(self, kind: str = 'census') -> list[Path]:
+        return sorted((self.archive / 'sources' / kind).glob('*_S-*.md'))
+
+
+class DocumentKeywordTests(_Base):
+    """#252 item 4: a documents-root file that can hold a keyword gets one."""
+
+    def test_each_metadata_format_gets_the_keyword_and_others_do_not(self) -> None:
+        store = self._install_store()
+        for name, expect in (('scan.tif', True), ('scan2.jpg', True), ('scan3.png', True),
+                             ('will.pdf', True), ('talk.mp3', False), ('notes.md', False)):
+            with self.subTest(name=name):
+                store.embed_calls.clear()
+                (self.archive / 'documents' / 'census' / name).write_bytes(b'x')
+                rc, out, err = self._run([str(self.archive / 'documents' / 'census' / name),
+                                          '--type', 'census'])
+                self.assertEqual(rc, EXIT_CLEAN, err)
+                renamed = list((self.archive / 'documents' / 'census').glob(
+                    f'{Path(name).stem}_S-*{Path(name).suffix}'))
+                self.assertEqual(len(renamed), 1)
+                if expect:
+                    self.assertEqual(store.embed_calls, renamed)
+                    self.assertIn(f'Embedded SOURCE: ', out)
+                else:
+                    self.assertEqual(store.embed_calls, [])
+                    self.assertNotIn('Embedded SOURCE', out)
+                self.assertNotIn('WARNING', err)
+
+    def test_dry_run_names_the_embed_and_writes_nothing(self) -> None:
+        store = self._install_store()
+        scan = self.archive / 'documents' / 'census' / 'scan.tif'
+        scan.write_bytes(b'x')
+        rc, out, _err = self._run([str(scan), '--type', 'census', '--dry-run'])
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertRegex(out, r'Would embed SOURCE: S-\w+ in scan_S-\w+\.tif')
+        self.assertEqual(store.embed_calls, [])
+        self.assertTrue(scan.exists())
+        self.assertEqual(self._records(), [])
+        # The live run does what the preview said, to the same-named file.
+        rc, live, _err = self._run([str(scan), '--type', 'census'])
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertRegex(live, r'Embedded SOURCE: S-\w+ in scan_S-\w+\.tif')
+
+    def test_without_exiftool_the_document_is_still_filed_with_a_plain_warning(self) -> None:
+        store = self._install_store()
+        store.unavailable = True
+        scan = self.archive / 'documents' / 'census' / 'scan.pdf'
+        scan.write_bytes(b'x')
+        rc, out, err = self._run([str(scan), '--type', 'census'])
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertEqual(len(self._records()), 1)
+        self.assertIn('was filed without its SOURCE:', err)
+        self.assertIn('Nothing is lost', err)
+        self.assertNotIn('Traceback', err)
+
+    def test_a_failed_record_write_takes_the_keyword_back_out(self) -> None:
+        store = self._install_store()
+        scan = self.archive / 'documents' / 'census' / 'scan.tif'
+        scan.write_bytes(b'x')
+        (self.archive / 'sources' / 'census').write_text('blocker', encoding='utf-8')
+        rc, _out, err = self._run([str(scan), '--type', 'census'])
+        self.assertEqual(rc, EXIT_FAILURE)
+        self.assertTrue(scan.exists(), 'the rename is undone')
+        self.assertEqual(len(store.embed_calls), 1, 'the keyword was written first')
+        self.assertEqual(store.keywords[str(store.embed_calls[0])], [], 'and then taken out')
+        self.assertIn('rolled back', err)
+
+    def test_a_back_scan_beside_it_gets_the_keyword_too(self) -> None:
+        store = self._install_store()
+        folder = self.archive / 'documents' / 'census'
+        (folder / 'sheet.jpg').write_bytes(b'x')
+        (folder / 'sheet-back.jpg').write_bytes(b'x')
+        rc, _out, err = self._run([str(folder / 'sheet.jpg'), '--type', 'census'])
+        self.assertEqual(rc, EXIT_CLEAN, err)
+        self.assertEqual(sorted(p.name.split('_S-')[0] for p in store.embed_calls),
+                         ['sheet', 'sheet-back'])
+
+    def test_a_bundle_document_gets_the_keyword(self) -> None:
+        store = self._install_store()
+        bundle = self.archive / 'inbox' / 'hartley-letter'
+        bundle.mkdir(parents=True)
+        (bundle / 'notes.md').write_text('---\nsource_type: letter\n---\nA letter.\n',
+                                         encoding='utf-8')
+        (bundle / 'letter.pdf').write_bytes(b'x')
+        (bundle / 'letter-transcript.md').write_text('Dear Ada', encoding='utf-8')
+        rc, out, err = self._run([str(bundle)])
+        self.assertEqual(rc, EXIT_CLEAN, err)
+        self.assertEqual([p.suffix for p in store.embed_calls], ['.pdf'])
+        self.assertIn('SOURCE: ', out)
+
+    def test_an_attached_document_scan_gets_the_keyword(self) -> None:
+        store = self._install_store()
+        folder = self.archive / 'documents' / 'census'
+        (folder / 'will.pdf').write_bytes(b'x')
+        rc, _out, err = self._run([str(folder / 'will.pdf'), '--type', 'census'])
+        self.assertEqual(rc, EXIT_CLEAN, err)
+        primary = next(folder.glob('will_S-*.pdf'))
+        (folder / 'codicil.tif').write_bytes(b'x')
+        store.embed_calls.clear()
+        rc, out, err = self._run([str(primary), '--more', str(folder / 'codicil.tif'), 'codicil'])
+        self.assertEqual(rc, EXIT_CLEAN, err)
+        self.assertEqual(len(store.embed_calls), 1)
+        self.assertTrue(store.embed_calls[0].name.startswith('codicil-codicil_S-'))
+
+
+@unittest.skipUnless(EXIFTOOL, 'exiftool is not installed - these run on a machine that has it')
+class RealDocumentKeywordTests(_Base):
+    """The same, with the real exiftool writing real files."""
+
+    def test_tiff_jpeg_png_and_pdf_carry_the_keyword_after_processing(self) -> None:
+        for name, fields in (('scan.tif', 3), ('photo-of-will.jpg', 3),
+                             ('chart.png', 2), ('will.pdf', 2)):
+            with self.subTest(name=name):
+                write_fixture(self.archive / 'documents' / 'census' / name)
+                rc, out, err = self._run([str(self.archive / 'documents' / 'census' / name),
+                                          '--type', 'census'])
+                self.assertEqual(rc, EXIT_CLEAN, err)
+                self.assertNotIn('WARNING', err)
+                renamed = next((self.archive / 'documents' / 'census').glob(
+                    f'{Path(name).stem}_S-*{Path(name).suffix}'))
+                sid = renamed.stem.rsplit('_', 1)[1]
+                got = read_fields(renamed)
+                holding = [tag for tag, vals in got.items() if f'SOURCE: {sid}' in vals]
+                self.assertEqual(len(holding), fields, got)
+                # E012's reader agrees: the identity carrier is readable back.
+                self.assertEqual(process._read_all_source_keywords(renamed), [sid.lower()])
+
+    def test_a_document_exiftool_cannot_update_is_still_filed(self) -> None:
+        bad = self.archive / 'documents' / 'census' / 'locked.pdf'
+        bad.write_bytes(b'%PDF-1.4 not really a pdf')
+        rc, _out, err = self._run([str(bad), '--type', 'census'])
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertEqual(len(self._records()), 1)
+        self.assertIn('was filed without its SOURCE:', err)
+
+
+if __name__ == '__main__':
+    unittest.main()

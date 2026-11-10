@@ -118,6 +118,8 @@ from _lib import (
     is_working_copy,
     is_valid_edtf,
     is_valid_id,
+    KEYWORD_READ_ARGS,
+    keyword_values_from_row,
     FhaConfigError,
     load_fha_yaml,
     normalize_date,
@@ -172,7 +174,6 @@ configure_utf8_stdout()
 #    _research_hypothesis_ids    - H-ids defined in a person file's ## Hypotheses
 #                                   (any kind - #56, content decides not filename)
 #    _question_blocks            - split a questions.md into per-heading blocks
-#    _metadata_values            - normalise scalar/list exiftool field values
 #    _w122_message               - W122: filename says generated page, content says person
 #    _person_label               - `Ada Hartley (P-…)` for findings; ID alone if nameless
 #
@@ -213,7 +214,7 @@ configure_utf8_stdout()
 #    _check_reverse_inventory    - E011: document files vs source inventory lists
 #    _check_embedded_source_keywords - E012: exiftool SOURCE: keyword vs inventory;
 #                                   also runs W131 off the same exiftool pass
-#    _run_exiftool_keyword_rows  - ONE exiftool -j -Keywords -Subject call over
+#    _run_exiftool_keyword_rows  - ONE exiftool keyword read (_lib.KEYWORD_READ_ARGS) over
 #                                   one batch of files (monkeypatchable seam,
 #                                   mirrors photoindex.py's own _run_exiftool -
 #                                   tools never import tools)
@@ -3673,7 +3674,7 @@ def _check_embedded_source_keywords(registry: Registry, findings: list[Finding])
     _check_stray_person_keywords(registry, findings, raw_keywords, path_aliases)
 
 
-# One `exiftool -j -Keywords -Subject` invocation covers at most this many
+# One exiftool keyword-read invocation covers at most this many
 # files - an argv-length safety limit (unrelated to the memory concern
 # _read_exif_keywords fixes below), matched to the batch size this check has
 # always used.
@@ -3681,7 +3682,8 @@ _KEYWORD_BATCH_SIZE = 50
 
 
 def _run_exiftool_keyword_rows(paths: list[Path]) -> list[dict]:
-    """One `exiftool -j -Keywords -Subject` call over this BATCH of files.
+    """One exiftool keyword read (`_lib.KEYWORD_READ_ARGS`: IPTC Keywords, XMP
+    dc:subject, Lightroom's lr:hierarchicalSubject - #252) over this BATCH.
 
     A monkeypatchable seam (tests substitute canned JSON rows so `--with-exif`
     is exercised with no real exiftool binary on PATH) - mirrors the same
@@ -3694,7 +3696,7 @@ def _run_exiftool_keyword_rows(paths: list[Path]) -> list[dict]:
     environment problems the caller (`_check_embedded_source_keywords`) turns
     into one E012 finding rather than crashing the whole lint run.
     """
-    cmd = ['exiftool', '-j', '-Keywords', '-Subject'] + [str(p) for p in paths]
+    cmd = ['exiftool', '-j', *KEYWORD_READ_ARGS] + [str(p) for p in paths]
     try:
         proc = subprocess.run(
             cmd,
@@ -3761,11 +3763,7 @@ def _read_exif_keywords(
             if not source_file:
                 continue
             path = Path(source_file).resolve()
-            values: list[str] = []
-            for key in ('Keywords', 'Subject'):
-                for v in _metadata_values(row.get(key)):
-                    if v not in values:
-                        values.append(v)
+            values = keyword_values_from_row(row)
             sids = _source_ids_in_keywords(values)
             if sids:
                 source_keywords[path] = sids
@@ -3878,15 +3876,6 @@ def _check_stray_person_keywords(
                 f'`fha source clear-keyword {fmt_id_display(sid)} --keyword '
                 f'{shell_quote(text)}`; if the person genuinely belongs on this '
                 f'source, add them to its people: list instead.'))
-
-
-def _metadata_values(value: object) -> list[str]:
-    """Return metadata scalar/list values as strings."""
-    if value is None:
-        return []
-    if isinstance(value, list):
-        return [str(v) for v in value]
-    return [str(value)]
 
 
 def _question_blocks(text: str) -> list[str]:

@@ -55,6 +55,7 @@ import secrets
 import shutil
 import sqlite3
 import shlex
+import stat
 import subprocess
 import sys
 import tempfile
@@ -156,6 +157,17 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    format_size               - bytes -> B/KB/MB/GB a human reads
 #    OriginalBackup            - one run's policy: copy once per file, warn once,
 #                                 fail closed; the ONE rule all four writers use
+#
+#  Embedded keywords: one reader, one writer (SPEC §20, #252)
+#    ExiftoolUnavailableError  - exiftool not installed (vs a failure on one file)
+#    KEYWORD_TAGS              - IPTC:Keywords, XMP-dc:Subject, XMP-lr:HierarchicalSubject
+#    keyword_tags_for          - which of those a file's format takes
+#    EMBEDDED_KEYWORD_DOCUMENT_SUFFIXES - documents-root formats that hold a keyword
+#    keyword_fields_from_row / keyword_values_from_row - one exiftool row -> keywords
+#    read_keyword_row / read_embedded_keywords - the shared keyword read
+#    clear_read_only_bit / cleanup_exiftool_tmp / format_exiftool_tmp_error - #110
+#    exiftool_write_failure    - exit code AND report read (exit 0 can still fail)
+#    write_embedded_keywords   - THE keyword writer: add/remove in every field, one call
 #
 #  Record parsing
 #    read_text_exact            - newline-exact record read (no CRLF/LF translation)
@@ -1645,7 +1657,7 @@ def format_exiftool_error(command: str = 'fha process') -> str:
     the archive after installation.
     """
     return (
-        f'{command} needs exiftool for photo metadata. Install exiftool and make '
+        f'{command} needs exiftool for the keywords inside photos and scans. Install exiftool and make '
         f'sure the `exiftool` command works, then run `{command}` again. '
         'Run `fha doctor` to check your archive.'
     )
@@ -3452,6 +3464,277 @@ class OriginalBackup:
             if parts:
                 out.append(('info', 'Safety copies: ' + '; '.join(parts) + '.'))
         return out
+
+
+# ── Embedded keywords: one reader, one writer (SPEC §20, #252) ────────────────
+#
+# A photo manager reads keywords from more than one field. Lightroom Classic
+# shows and saves the XMP lists - `dc:subject` (the flat keyword list) and its
+# own `lr:hierarchicalSubject` - and older tools read IPTC `Keywords`. Before
+# #252 every fha keyword write went to IPTC alone, so in a Lightroom library
+# the `SOURCE: S-…` and `P-…` keywords never showed, and the next "Save
+# Metadata to File" rewrote the XMP lists from the catalog and could erase
+# them. So every keyword fha adds or removes now goes into all of those fields
+# in ONE exiftool call, and every read unions them. Every call site - `fha
+# process` and its rollbacks, `fha photoindex tag-person`, `fha source
+# clear-keyword`, and the keyword readers in process, source, lint and
+# photoindex - goes through the functions below, so the field list lives in
+# one place.
+
+class ExiftoolUnavailableError(RuntimeError):
+    """exiftool itself could not be run (it is not installed or not on PATH).
+
+    Distinct from a failure on one particular file: that means exiftool ran
+    and did not like this file. A caller that may carry on without exiftool
+    (a preview, or a documents-root file whose filename already carries its
+    ID) catches this narrowly and never a plain RuntimeError, so a real
+    per-file failure is never mistaken for "exiftool is not here".
+    """
+
+
+# The writable spellings. `XMP-dc:` takes a hyphen: ExifTool rejects the
+# two-colon `XMP:dc:Subject` with "doesn't exist or isn't writable" and writes
+# nothing (the spelling photokin's canonical.py uses, for the same reason).
+# tests/test_embedded_keywords.py writes each one into a real file and reads
+# it back, so a misspelling fails a test instead of a family's library.
+KEYWORD_TAGS: tuple[str, ...] = (
+    'IPTC:Keywords', 'XMP-dc:Subject', 'XMP-lr:HierarchicalSubject')
+
+# Formats where an IPTC block is standard. Everywhere else (PNG, GIF, HEIC,
+# PDF) only the two XMP fields are written: ExifTool puts IPTC into a PNG only
+# as a "non-standard" block no photo manager reads, and silently skips it in a
+# PDF or GIF, so asking for it there would make a good write look partial.
+_IPTC_KEYWORD_SUFFIXES = frozenset({
+    '.jpg', '.jpeg', '.tif', '.tiff', '.dng', '.cr2', '.nef', '.arw', '.orf', '.rw2',
+})
+
+# Documents-root formats that can hold an embedded keyword (#252 item 4). The
+# filename already carries a document's S-id, but a sync tool, an export or a
+# well-meaning rename can change a filename; the keyword survives that.
+EMBEDDED_KEYWORD_DOCUMENT_SUFFIXES = frozenset({
+    '.jpg', '.jpeg', '.tif', '.tiff', '.png', '.pdf',
+})
+
+# What a keyword read asks exiftool for. `-a -G1` returns every copy, named
+# by its group (`IPTC:Keywords`, `XMP-dc:Subject`, ...), so a value that sits
+# in one field and not another stays visible; `keyword_fields_from_row` keeps
+# only the three fields above, which keeps a PDF's free-text `PDF:Subject`
+# title from being read as a keyword.
+KEYWORD_READ_ARGS: tuple[str, ...] = (
+    '-a', '-G1', '-Keywords', '-Subject', '-HierarchicalSubject')
+
+# Row keys read as keywords, and the field each one is. The bare names are
+# what a read WITHOUT `-G1` returns (photoindex's one big catalog read, and
+# the canned rows tests hand the readers).
+_KEYWORD_ROW_KEYS: tuple[tuple[str, str], ...] = (
+    ('IPTC:Keywords', 'IPTC:Keywords'), ('Keywords', 'IPTC:Keywords'),
+    ('XMP-dc:Subject', 'XMP-dc:Subject'), ('Subject', 'XMP-dc:Subject'),
+    ('XMP-lr:HierarchicalSubject', 'XMP-lr:HierarchicalSubject'),
+    ('HierarchicalSubject', 'XMP-lr:HierarchicalSubject'),
+)
+
+
+def keyword_tags_for(path: str | Path) -> tuple[str, ...]:
+    """The keyword fields fha writes for a file of this format.
+
+    IPTC plus both XMP lists where IPTC is standard (JPEG, TIFF, the
+    TIFF-based raw formats); the two XMP lists everywhere else.
+    """
+    if Path(path).suffix.lower() in _IPTC_KEYWORD_SUFFIXES:
+        return KEYWORD_TAGS
+    return KEYWORD_TAGS[1:]
+
+
+def _row_values(raw) -> list[str]:
+    """exiftool gives one value as a scalar and several as a list; a numeric
+    keyword (`1912`) arrives as a number."""
+    if raw is None:
+        return []
+    return [str(v) for v in (raw if isinstance(raw, list) else [raw])]
+
+
+def keyword_fields_from_row(row: dict) -> dict[str, list[str]]:
+    """The raw values of each keyword field in one exiftool JSON row.
+
+    Keyed by `KEYWORD_TAGS`, values exactly as stored (a hierarchical entry
+    keeps its full `Parent|Child` path), so a caller that must take one exact
+    value out of one exact field (`fha source clear-keyword`) can.
+    """
+    out: dict[str, list[str]] = {tag: [] for tag in KEYWORD_TAGS}
+    for key, tag in _KEYWORD_ROW_KEYS:
+        out[tag].extend(_row_values(row.get(key)))
+    return out
+
+
+def keyword_values_from_row(row: dict) -> list[str]:
+    """Every keyword in one exiftool JSON row: the union of all three fields.
+
+    Order-preserving and de-duplicated. A Lightroom hierarchical keyword
+    (`People|Hartley|Ada Hartley`) contributes its last part, the keyword
+    itself - Lightroom writes that same leaf into `dc:subject` too, so the
+    union does not list a person twice - and a flat value fha wrote reads
+    back exactly as written.
+    """
+    out: list[str] = []
+    for tag, values in keyword_fields_from_row(row).items():
+        for value in values:
+            if tag == 'XMP-lr:HierarchicalSubject':
+                value = value.rsplit('|', 1)[-1]
+            if value not in out:
+                out.append(value)
+    return out
+
+
+def read_keyword_row(path: str | Path, *, command: str) -> dict:
+    """One exiftool read of a file's keyword fields; its JSON row (or {}).
+
+    Raises `ExiftoolUnavailableError` when exiftool is missing and a plain
+    RuntimeError when it ran but could not read this file (or printed
+    something that is not JSON). "No keywords" is an empty row, never an
+    exception.
+    """
+    path = Path(path)
+    cmd = ['exiftool', '-j', *KEYWORD_READ_ARGS, str(path)]
+    try:
+        proc = subprocess.run(cmd, check=False, capture_output=True, text=True, encoding='utf-8')
+    except FileNotFoundError as e:
+        raise ExiftoolUnavailableError(format_exiftool_error(command)) from e
+    if proc.returncode != 0:
+        raise RuntimeError(f'exiftool failed reading {path.name}: {proc.stderr.strip()}')
+    try:
+        rows = json.loads(proc.stdout or '[]')
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f'exiftool returned invalid JSON: {e}') from e
+    return rows[0] if rows and isinstance(rows[0], dict) else {}
+
+
+def read_embedded_keywords(path: str | Path, *, command: str) -> list[str]:
+    """Every keyword embedded in one file, all three fields unioned."""
+    return keyword_values_from_row(read_keyword_row(path, command=command))
+
+
+# exiftool's `-overwrite_original_in_place` writes through `<file>_exiftool_tmp`
+# and renames it over the original only on success (#110).
+_EXIFTOOL_TMP_SUFFIX = '_exiftool_tmp'
+_EXIFTOOL_TMP_EXISTS_RE = re.compile(r'temporary file already exists', re.I)
+_EXIFTOOL_NOT_UPDATED_RE = re.compile(r"files weren't updated due to errors", re.I)
+_EXIFTOOL_UPDATED_RE = re.compile(r'(\d+) image files updated', re.I)
+
+
+def clear_read_only_bit(path: Path) -> None:
+    """Make a file writable before exiftool writes to it, best-effort (#110).
+
+    An original copied off read-only media keeps its read-only bit, and
+    exiftool then fails with a permission error that names no fix. Silent on
+    failure: exiftool's own error still surfaces exactly as before.
+    """
+    try:
+        path.chmod(path.stat().st_mode | stat.S_IWRITE)
+    except OSError:
+        pass
+
+
+def cleanup_exiftool_tmp(path: Path) -> None:
+    """Delete a stray `<file>_exiftool_tmp` left by an earlier failed write (#110).
+
+    Left in place, it makes the next attempt fail with exiftool's "temporary
+    file already exists" - a second, differently-worded error that hides
+    whether the first cause was fixed. Best-effort.
+    """
+    try:
+        path.with_name(path.name + _EXIFTOOL_TMP_SUFFIX).unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def format_exiftool_tmp_error(stderr_text: str, path: Path) -> str:
+    """Rewrite exiftool's "temporary file already exists" to name the fix (#110)."""
+    if not _EXIFTOOL_TMP_EXISTS_RE.search(stderr_text):
+        return stderr_text
+    tmp_path = path.with_name(path.name + _EXIFTOOL_TMP_SUFFIX)
+    return (
+        f'{stderr_text} - this is a stray file left by a previous failed attempt, '
+        f'not a new problem; delete {tmp_path} and try again'
+    )
+
+
+def exiftool_write_failure(proc, *, expect_change: bool) -> str | None:
+    """What went wrong with one exiftool write, or None if it really worked.
+
+    The exit code alone is not enough: exiftool can exit 0 and still say it
+    wrote nothing ("0 image files updated, 1 image files unchanged" - what an
+    IPTC keyword write into a GIF does) or that a file was skipped for an
+    error. A write that was meant to ADD something and changed no file is a
+    failure; a removal that found nothing to remove is not, because the file
+    already is the way it was asked to be.
+    """
+    out = (proc.stdout or '').strip()
+    err = (proc.stderr or '').strip()
+    if proc.returncode != 0:
+        return err or out or f'exiftool stopped with exit code {proc.returncode}'
+    if (_EXIFTOOL_NOT_UPDATED_RE.search(out) or _EXIFTOOL_NOT_UPDATED_RE.search(err)
+            or re.search(r'^Error:', err, re.M)):
+        return err or out
+    counts = [int(n) for n in _EXIFTOOL_UPDATED_RE.findall(out)]
+    if expect_change and counts and not any(counts):
+        said = ' '.join(line.strip() for line in out.splitlines() if line.strip())
+        return (f'exiftool reported the file unchanged ({said}) - nothing was written'
+                + (f'; {err}' if err else ''))
+    return None
+
+
+def write_embedded_keywords(
+    path: str | Path, *, add: Iterable[str] = (), remove: Iterable[str] = (),
+    backup: 'OriginalBackup', command: str,
+) -> str | None:
+    """Add and/or remove keywords in one file, in every keyword field, in one call.
+
+    This is the only function in the tools that writes a keyword into a file.
+    `add` goes into every field `keyword_tags_for` names for the file's
+    format, written as exiftool's `-TAG-=V -TAG+=V` pair: the value ends up in
+    each field exactly once whether or not some field already had it, so a
+    keyword that was in IPTC alone is mirrored into XMP rather than doubled in
+    IPTC. `remove` takes the exact value out of all three fields; removing a
+    value a field does not hold is a no-op, never an error.
+
+    Before writing, the run's `OriginalBackup` takes its pristine copy
+    (TOOLING §13f) - a refused copy refuses the write - and the read-only bit
+    and any stray `_exiftool_tmp` are cleared (#110). After, exiftool's report
+    is read, not only its exit code (`exiftool_write_failure`).
+
+    Returns None on success and the human-facing failure text otherwise;
+    raises `ExiftoolUnavailableError` only when exiftool is not installed.
+    """
+    path = Path(path)
+    add = list(dict.fromkeys(str(v) for v in add))
+    remove = list(dict.fromkeys(str(v) for v in remove))
+    if not add and not remove:
+        return None
+    for value in add + remove:
+        if '\n' in value or '\r' in value or not value.strip():
+            return f'{value!r} cannot be written as a keyword (it is blank or spans lines).'
+    try:
+        backup.ensure(path)
+    except BackupRefused as e:
+        return str(e)
+    clear_read_only_bit(path)
+    cleanup_exiftool_tmp(path)
+    args: list[str] = []
+    for value in remove:
+        args.extend(f'-{tag}-={value}' for tag in KEYWORD_TAGS)
+    for value in add:
+        for tag in keyword_tags_for(path):
+            args.extend((f'-{tag}-={value}', f'-{tag}+={value}'))
+    cmd = ['exiftool', *args, '-overwrite_original_in_place', str(path)]
+    try:
+        proc = subprocess.run(cmd, check=False, capture_output=True, text=True, encoding='utf-8')
+    except FileNotFoundError as e:
+        raise ExiftoolUnavailableError(format_exiftool_error(command)) from e
+    failure = exiftool_write_failure(proc, expect_change=bool(add))
+    if failure is None:
+        return None
+    cleanup_exiftool_tmp(path)
+    return format_exiftool_tmp_error(failure, path)
 
 
 # ── Record parsing ────────────────────────────────────────────────────────────

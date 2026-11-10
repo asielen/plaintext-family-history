@@ -38,17 +38,18 @@ class _FakeExiftoolStore:
         self.files: dict[str, dict[str, list[str]]] = {}
         self.write_calls: list[tuple[Path, list, list]] = []
 
-    def seed(self, path: Path, *, keywords=None, subject=None) -> None:
+    def seed(self, path: Path, *, keywords=None, subject=None, hierarchical=None) -> None:
         self.files[str(Path(path).resolve())] = {
-            'keywords': list(keywords or []), 'subject': list(subject or [])}
+            'keywords': list(keywords or []), 'subject': list(subject or []),
+            'hierarchical': list(hierarchical or [])}
 
     def _fields(self, path: Path) -> dict:
         return self.files.setdefault(
-            str(Path(path).resolve()), {'keywords': [], 'subject': []})
+            str(Path(path).resolve()), {'keywords': [], 'subject': [], 'hierarchical': []})
 
     def read(self, path: Path) -> dict:
         f = self._fields(path)
-        return {'keywords': list(f['keywords']), 'subject': list(f['subject'])}
+        return {tag: list(values) for tag, values in f.items()}
 
     def write(self, path: Path, *, remove, add, backup):
         self.write_calls.append((Path(path).resolve(), list(remove), list(add)))
@@ -114,17 +115,34 @@ class SourceClearKeywordTests(unittest.TestCase):
         self.assertNotIn('Margaret Hartley', after['subject'])
         self.assertIn('SOURCE: ' + SID, after['subject'])   # untouched
 
-    def test_replace_with_lands_in_the_same_field_and_round_trips(self) -> None:
+    def test_replace_with_lands_in_every_keyword_field_and_round_trips(self) -> None:
+        # #252: a correction is a keyword write like any other, so it goes
+        # into every field a photo manager reads (IPTC Keywords, XMP
+        # dc:subject, Lightroom's hierarchicalSubject), not only the one the
+        # stray value happened to sit in.
         result = self._run(keyword='Margaret Hartley', replace_with='Margaret Cole')
         self.assertEqual(result.exit_code, EXIT_CLEAN)
         self.assertEqual(result['status'], 'ok')
         self.assertEqual(result['removed_from'], ['subject'])
-        self.assertEqual(result['added_to'], ['subject'])
+        self.assertEqual(result['added_to'], ['hierarchical', 'keywords', 'subject'])
 
         after = source_mod._run_exiftool_read_keyword_fields(self.asset)
         self.assertNotIn('Margaret Hartley', after['subject'])
-        self.assertIn('Margaret Cole', after['subject'])
-        self.assertNotIn('Margaret Cole', after['keywords'])   # never grows a NEW field
+        for field in ('keywords', 'subject', 'hierarchical'):
+            self.assertIn('Margaret Cole', after[field])
+
+    def test_a_lightroom_hierarchical_keyword_is_found_by_its_last_part(self) -> None:
+        # Lightroom stores a nested keyword as `People|Margaret Hartley` in
+        # hierarchicalSubject; asking to clear "Margaret Hartley" must find
+        # and remove that exact stored value too, or Lightroom keeps it.
+        self.store.seed(self.asset, subject=['SOURCE: ' + SID, 'Margaret Hartley'],
+                        hierarchical=['People|Margaret Hartley'])
+        result = self._run(keyword='Margaret Hartley')
+        self.assertEqual(result['status'], 'ok')
+        self.assertEqual(result['removed_from'], ['hierarchical', 'subject'])
+        after = source_mod._run_exiftool_read_keyword_fields(self.asset)
+        self.assertEqual(after['hierarchical'], [])
+        self.assertNotIn('Margaret Hartley', after['subject'])
 
     def test_match_is_case_insensitive_but_removes_the_exact_on_file_spelling(self) -> None:
         # exiftool's -= is an exact-value match; the command line spelling may
@@ -452,7 +470,8 @@ class SourceClearKeywordTests(unittest.TestCase):
         result = self._run(keyword='margaret hartley', replace_with='Margaret Hartley')
         self.assertEqual(result['status'], 'ok')
         self.assertEqual(result['removed_from'], ['subject'])
-        self.assertEqual(result['added_to'], ['subject'])
+        # #252: the correction goes into every keyword field the file takes.
+        self.assertEqual(result['added_to'], ['hierarchical', 'keywords', 'subject'])
         after = source_mod._run_exiftool_read_keyword_fields(self.asset)
         self.assertNotIn('margaret hartley', after['subject'])
         self.assertEqual(after['subject'].count('Margaret Hartley'), 1)
