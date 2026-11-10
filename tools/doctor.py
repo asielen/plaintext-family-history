@@ -120,6 +120,7 @@ from _lib import (
     sqlite_cache_schema_status,
     undecodable_file_recorder,
     VENDOR_DIR,
+    browser_ext_doctor_check,
 )
 
 configure_utf8_stdout()
@@ -1587,14 +1588,13 @@ def _check_browser_extensions(archive_root: Path, fha_config: dict, lines: list[
     record folders or the photos/documents/inbox roots, the archive itself, a
     drive that is not connected) and reads an add-on's own folder as its
     parent - each with a plain message. Doctor reports the same reading
-    (`browser_extensions.doctor_check`, one source of truth) so the owner can
+    (`_lib.browser_ext_doctor_check`, one source of truth) so the owner can
     find and fix it without running an update. Nothing is shown when the
     setting is absent or `none`: the add-ons are optional.
 
     Returns the exit-code contribution.
     """
-    from browser_extensions import doctor_check
-    found = doctor_check(archive_root, fha_config)
+    found = browser_ext_doctor_check(archive_root, fha_config)
     if found is None:
         return EXIT_CLEAN
     status, detail, next_step = found

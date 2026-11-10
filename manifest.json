@@ -490,7 +490,7 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "d7a02a68e9021327ffb723b08fcdea0280fd9e3fab8bb91604a8af006804ce8a",
+      "sha256": "a7d2a8d21a3d9629421adf59d5d9826e609c6ecd48e9352a6573728eba81cc5d",
       "spec_version": "1.2",
       "src": "tools/_lib.py"
     },
@@ -500,13 +500,6 @@
       "sha256": "fe06c3d4bfb8f13e490b00f5ff818a918117f6b2db17a4137b396506a038b37a",
       "spec_version": "1.2",
       "src": "tools/backup.py"
-    },
-    {
-      "path": ".fha/tools/browser_extensions.py",
-      "category": "operating",
-      "sha256": "611208b8f76c40e04def7ec68965245a7189d9f8503685e38085b8089ec74bb9",
-      "spec_version": "1.2",
-      "src": "tools/browser_extensions.py"
     },
     {
       "path": ".fha/tools/capture.py",
@@ -588,7 +581,7 @@
     {
       "path": ".fha/tools/doctor.py",
       "category": "operating",
-      "sha256": "f2479deaff1184e9f7835e0e5faa7dc02496402094b5332f825213bfb9c39c87",
+      "sha256": "111cc85ae901d142ec45ab7612f11b588d56adf094e43c1a6029e899fd1ce236",
       "spec_version": "1.2",
       "src": "tools/doctor.py"
     },
@@ -728,7 +721,7 @@
     {
       "path": ".fha/tools/scaffold.py",
       "category": "operating",
-      "sha256": "628e6aa4f1179a42bfb470fdf393ecf5db66063df9a669def960d493ae4a8482",
+      "sha256": "ad75c6faec020168a37b63b505e7b430a711297b8a2fef967cee07e6747eae0e",
       "spec_version": "1.2",
       "src": "tools/scaffold.py"
     },

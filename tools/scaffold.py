@@ -157,6 +157,8 @@ from _lib import (
     EXIT_WARNINGS,
     VENDOR_DIR,
     FhaConfigError,
+    browser_ext_capture_reload_note,
+    browser_ext_run,
     Result,
     configure_utf8_stdout,
     external_asset_roots,
@@ -169,7 +171,6 @@ from _lib import (
     walk_files,
     yaml_available,
 )
-from browser_extensions import capture_reload_note, run_extensions
 
 configure_utf8_stdout()
 
@@ -2239,7 +2240,7 @@ def run_install(
                   f'fha.yaml roots: already renames it there.')
         for m in advisories:
             print(f'\nNote: {m}')
-        run_extensions(archive_path, repo_root, dry_run=True)
+        browser_ext_run(archive_path, repo_root, dry_run=True)
         print('\nNothing was written (dry run). Re-run without --dry-run to install.')
         return Result(exit_code=EXIT_CLEAN, data={'dry_run': True, 'file_count': len(files)})
 
@@ -2307,7 +2308,7 @@ def run_install(
         print(f'\nNote: {m}')
     # Last, because it may ask a question: the browser add-ons (Seen It), kept
     # in the folder fha.yaml's `browser_extensions:` names (TOOLING §13c).
-    extensions = run_extensions(archive_path, repo_root, ask=ask)
+    extensions = browser_ext_run(archive_path, repo_root, ask=ask)
     changed.extend(extensions['changed'])
     if extensions['warnings']:
         return Result(ok=False, exit_code=EXIT_WARNINGS, changed=changed,
@@ -2961,12 +2962,12 @@ def run_update_tools(
             print(f'[dry-run] {yaml_missing_note}')
         if config_broken:
             print(f'[dry-run] {config_broken_note}')
-        note = capture_reload_note(
+        note = browser_ext_capture_reload_note(
             [ap for ap, _src in plan['added'] + plan['stock'] + plan['customized']],
             repo_root, dry_run=True)
         if note:
             print(note)
-        if run_extensions(archive_root, repo_root, dry_run=True)['printed']:
+        if browser_ext_run(archive_root, repo_root, dry_run=True)['printed']:
             print()
         print(
             f'Plan: {n_added} to add, {n_stock} to update, {n_custom} to back up '
@@ -3339,13 +3340,13 @@ def run_update_tools(
 
     # The capture add-on's files are part of the operating layer and were just
     # refreshed above; Chrome keeps running the old ones until it is reloaded.
-    note = capture_reload_note(list(installed_ok), repo_root)
+    note = browser_ext_capture_reload_note(list(installed_ok), repo_root)
     if note:
         print()
         print(note)
     # The other add-ons (Seen It) live wherever `browser_extensions:` says,
     # often outside the archive, and are refreshed from this same clone.
-    extensions = run_extensions(archive_root, repo_root, ask=ask)
+    extensions = browser_ext_run(archive_root, repo_root, ask=ask)
 
     print()
     print(

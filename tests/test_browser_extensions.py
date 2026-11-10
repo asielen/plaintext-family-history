@@ -1,5 +1,5 @@
 """
-Tests for tools/browser_extensions.py - `fha install` / `fha update-tools`
+Tests for the browser add-on section of tools/_lib.py - `fha install` / `fha update-tools`
 keeping the owner's installed Chrome add-ons (Seen It) current from the tools,
 in the folder fha.yaml's `browser_extensions:` names (TOOLING §13c).
 
@@ -33,10 +33,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
 
 import scaffold
-try:
-    import browser_extensions as bx
-except ImportError:     # before this feature: let each test fail on its own
-    bx = None
+import _lib as bx
 from _lib import EXIT_CLEAN, EXIT_WARNINGS
 
 # Seen It's real, public key (seen-it/README.md, "Why the manifest has a key"):
@@ -197,11 +194,11 @@ class FindAndUpdateInPlace(_Base):
         self.set_folder(self.ext.as_posix())
         ext_before = _tree(self.ext)
         yaml_before = (self.archive / 'fha.yaml').read_bytes()
-        dry, dry_out = _quiet(bx.run_extensions, self.archive, self.repo, dry_run=True)
+        dry, dry_out = _quiet(bx.browser_ext_run, self.archive, self.repo, dry_run=True)
         self.assertEqual(_tree(self.ext), ext_before)
         self.assertEqual((self.archive / 'fha.yaml').read_bytes(), yaml_before)
         self.assertIn('[dry-run] Would update Seen It', dry_out)
-        real, _out = _quiet(bx.run_extensions, self.archive, self.repo)
+        real, _out = _quiet(bx.browser_ext_run, self.archive, self.repo)
 
         def shape(items):
             return [(i['action'], i['target'], i['backup'],
@@ -378,7 +375,7 @@ class FirstCopyAndSetting(_Base):
                 archive = self.tmp / f'answer {len(first)} {first.strip() or "enter"}'
                 shutil.copytree(self.archive, archive)
                 answers = iter([first, ''])
-                _quiet(bx.run_extensions, archive, self.repo, ask=lambda _p: next(answers))
+                _quiet(bx.browser_ext_run, archive, self.repo, ask=lambda _p: next(answers))
                 self.assertIn(f'browser_extensions: {saved}\n',
                               (archive / 'fha.yaml').read_text(encoding='utf-8'))
 
@@ -442,14 +439,14 @@ class AllOrNothing(_Base):
     """An update that cannot finish leaves the add-on exactly as it was."""
 
     def _failing_on(self, name):
-        real = bx._copy_file
+        real = bx._bx_copy_file
 
         def copy(src, dest):
             if dest.name == name and 'newspapers-seen-it' == dest.parent.name \
                     and BX_BACKUPS not in dest.parts:
                 raise PermissionError(f'{dest} is in use')
             return real(src, dest)
-        return mock.patch.object(bx, '_copy_file', side_effect=copy)
+        return mock.patch.object(bx, '_bx_copy_file', side_effect=copy)
 
     def test_a_write_failure_puts_every_file_back(self):
         installed = self.owner_layout()
@@ -488,13 +485,13 @@ class UnfinishedCopies(_Base):
     def test_a_failed_first_copy_leaves_nothing_in_the_way(self):
         self.ext.mkdir()
         self.set_folder(self.ext.as_posix())
-        real = bx._copy_file
+        real = bx._bx_copy_file
 
         def copy(src, dest):
             if dest.name == 'manifest.json':
                 raise OSError('disk full')
             return real(src, dest)
-        with mock.patch.object(bx, '_copy_file', side_effect=copy):
+        with mock.patch.object(bx, '_bx_copy_file', side_effect=copy):
             rc, _out = self.update()
         self.assertEqual(rc, EXIT_WARNINGS)
         self.assertEqual(sorted(p.name for p in self.ext.iterdir()), [])
@@ -504,7 +501,7 @@ class UnfinishedCopies(_Base):
 
     def test_our_own_leftover_is_replaced_and_the_preview_says_so(self):
         part = self.ext / 'seen-it.part'
-        _write(part / bx._PART_MARKER, 'unfinished\n')
+        _write(part / bx._bx_PART_MARKER, 'unfinished\n')
         _write(part / 'background.js', '// half\n')
         self.set_folder(self.ext.as_posix())
         rc, dry = self.update(dry_run=True)
@@ -515,7 +512,7 @@ class UnfinishedCopies(_Base):
         self.assertFalse(part.exists())
         self.assertEqual((self.ext / 'seen-it' / 'background.js').read_text(encoding='utf-8'),
                          '// background 0.2.0\n')
-        self.assertFalse((self.ext / 'seen-it' / bx._PART_MARKER).exists())
+        self.assertFalse((self.ext / 'seen-it' / bx._bx_PART_MARKER).exists())
 
     def test_a_part_folder_that_is_not_ours_blocks_preview_and_run_alike(self):
         part = self.ext / 'seen-it.part'
@@ -541,7 +538,7 @@ class OnlyTrackedFilesShip(_Base):
 
     def test_without_git_the_add_on_gitignore_is_honoured(self):
         self._junk()
-        rels = [r for r, _p in bx.shipped_files(self.repo, 'seen-it')]
+        rels = [r for r, _p in bx.browser_ext_shipped_files(self.repo, 'seen-it')]
         self.assertIn('background.js', rels)
         for junk in ('data/seen-it-devpc.json', 'seen-it-devpc.json', 'config.json'):
             self.assertNotIn(junk, rels)
@@ -554,7 +551,7 @@ class OnlyTrackedFilesShip(_Base):
         subprocess.run(git + ['add', 'seen-it'], check=True)
         subprocess.run(git + ['commit', '-q', '-m', 'x'], check=True)
         _write(self.repo / 'seen-it' / 'scratch-notes.js', '// not committed\n')
-        rels = [r for r, _p in bx.shipped_files(self.repo, 'seen-it')]
+        rels = [r for r, _p in bx.browser_ext_shipped_files(self.repo, 'seen-it')]
         self.assertIn('background.js', rels)
         self.assertNotIn('scratch-notes.js', rels)
         self.assertNotIn('config.json', rels)
@@ -569,7 +566,7 @@ class QuietWhenDeclined(_Base):
         for dry_run in (False, True):
             with self.subTest(dry_run=dry_run):
                 _rc, out = self.update(dry_run=dry_run)
-                with mock.patch.object(scaffold, 'run_extensions', return_value=silent):
+                with mock.patch.object(scaffold, 'browser_ext_run', return_value=silent):
                     _rc, baseline = self.update(dry_run=dry_run)
                 self.assertEqual(out, baseline)
                 self.assertNotIn('\n\n\n', out)
@@ -580,7 +577,7 @@ class Round3(_Base):
 
     def _first(self, answers):
         it = iter(answers)
-        return _quiet(bx.run_extensions, self.archive, self.repo, ask=lambda _p: next(it))
+        return _quiet(bx.browser_ext_run, self.archive, self.repo, ask=lambda _p: next(it))
 
     def test_n_a_and_y_n_are_never_read_as_a_folder(self):
         for n, answer in enumerate(('n/a', 'N/A', 'y/n')):
@@ -588,7 +585,7 @@ class Round3(_Base):
                 archive = self.tmp / f'archive {n}'
                 shutil.copytree(self.archive, archive)
                 it = iter([answer, 'n'])
-                _res, out = _quiet(bx.run_extensions, archive, self.repo,
+                _res, out = _quiet(bx.browser_ext_run, archive, self.repo,
                                    ask=lambda _p: next(it))
                 self.assertIn('Please answer y (yes) or n (no)', out)
                 self.assertIn('browser_extensions: none\n',
@@ -617,27 +614,27 @@ class Round3(_Base):
         self.assertIn('cannot hold a `:`', checks['browser_extensions']['detail'])
 
     def test_the_tools_own_packing_list_is_not_an_add_on(self):
-        self.assertFalse(bx.is_extension_manifest(
+        self.assertFalse(bx.browser_ext_is_extension_manifest(
             json.loads((ROOT / 'manifest.json').read_text(encoding='utf-8'))))
-        self.assertTrue(bx.is_extension_manifest(
+        self.assertTrue(bx.browser_ext_is_extension_manifest(
             json.loads((ROOT / 'seen-it' / 'manifest.json').read_text(encoding='utf-8'))))
-        self.assertEqual(bx._addon_name(ROOT), '')
-        self.assertEqual(bx._addon_name(ROOT / 'seen-it'), 'Seen It')
+        self.assertEqual(bx._bx_addon_name(ROOT), '')
+        self.assertEqual(bx._bx_addon_name(ROOT / 'seen-it'), 'Seen It')
 
     def test_pasting_the_clones_seen_it_folder_stops_at_the_clone(self):
         clone = self.tmp / 'workshop clone'
         clone.mkdir()
         shutil.copy2(ROOT / 'manifest.json', clone / 'manifest.json')
         _write(clone / 'seen-it' / 'manifest.json', _seen_it_manifest('0.2.0'))
-        setting = bx.read_setting({'browser_extensions': str(clone / 'seen-it')}, self.archive)
+        setting = bx.browser_ext_read_setting({'browser_extensions': str(clone / 'seen-it')}, self.archive)
         self.assertEqual(setting.state, 'folder')
         self.assertEqual(setting.folder, clone.resolve())          # one level up, not two
         self.assertIn('the folder of the Seen It add-on itself', setting.message)
         self.assertNotIn('add-on add-on', setting.message)
 
     def test_the_pinned_chrome_id_matches_the_repo_key(self):
-        ident = {e[0]: e[4] for e in bx.EXTENSIONS}['seen-it']
-        self.assertEqual(bx.extension_id(KEY), ident)
+        ident = {e[0]: e[4] for e in bx.BROWSER_EXTENSIONS}['seen-it']
+        self.assertEqual(bx.browser_ext_id(KEY), ident)
 
 
 class DoctorSeesRefusals(_Base):
