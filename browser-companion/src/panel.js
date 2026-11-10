@@ -2274,7 +2274,12 @@
       } else if (state.ancPhoto) {
         const open = !state.photoShown || !state.photoShown.keys || state.photoShown.keys.some((k) => k !== 'title');
         parts.push('Record files: the photo + its details (Ancestry, auto)' + (open ? ''
-          : '. Its Details are not open on the page: open them on Ancestry first to save its date, place and description'));
+          // Not only "closed": the Details may be open in a layout the add-on
+          // does not recognise yet, where opening them again changes nothing
+          // (PR #258 round 10).
+          : '. The add-on couldn’t find this photo’s Details on the page (they may be closed, or Ancestry shows ' +
+            'them in a way it doesn’t recognise yet). The photo and its address are saved; its date, place and ' +
+            'description can be read on Ancestry from that address'));
       } else if (state.fagRecord) {
         parts.push('Record files: the memorial’s facts and citation + its photos at full size (Find a Grave, auto)');
       } else if (state.fsRecord || state.fsImage) {

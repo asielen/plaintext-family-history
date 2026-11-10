@@ -427,6 +427,22 @@ class CaptureTestCase(unittest.TestCase):
         r = ancestry.extract(html, 'https://www.ancestry.com/family-trees/1/people/2/facts')
         self.assertIn('Cousin Member One', r['people'])
 
+    def test_ancestry_shared_photo_is_titled_by_its_tab_never_by_its_heading(self) -> None:
+        """PR #258 round 10 (audit W): with no title from the capture, a shared
+        photo's page gives its tab title - never its <h1> or og:title, which can
+        name the sharer's tree - and no links found in its body."""
+        from capture_recipes import ancestry
+        html = ('<html><head><title>Hartley farm | Ancestry</title><meta property="og:title" content="A tree">'
+                '<meta property="og:image" content="https://www.ancestry.com/banner.jpg"></head><body>'
+                "<h1>cousin_member_one's Hartley-Whitcombe Tree</h1>"
+                '<p>https://www.newspapers.com/clip/1234/cousin-clip/</p></body></html>')
+        url = 'https://www.ancestry.com/mediaui-viewer/tree/1/person/2/media/7c0ffee0-1234-4abc-8def-0123456789ab'
+        r = ancestry.extract(html, url)
+        self.assertEqual(r['title'], 'Hartley farm')
+        self.assertEqual(r['citation'], 'Hartley farm. Ancestry.com. ' + url)
+        self.assertEqual(r['external_links'], [{'url': url}])
+        self.assertNotIn('Tree', r['collection'])
+
     def test_ancestry_citation_reads_a_range_however_it_is_joined(self) -> None:
         """PR #258 round 4 (audit J): "1940 - 1997", "1865 to 1925" and
         "1908—1932" were read as single years, so a date of 1940, 1925 or

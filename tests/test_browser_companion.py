@@ -624,6 +624,34 @@ class SharedPhotoTestCase(unittest.TestCase):
                                                'captured': [str(staging)]})
             self.assertNotIn('med:' + PHOTO_MEDIA_ID, items)
 
+    def test_a_shared_photo_citation_never_names_the_page_heading(self) -> None:
+        """PR #258 round 10 (audit W, privacy): the viewer page's first <h1> (or
+        og:title) can be the sharer's tree name - another member's. The
+        citation took its title from there, and the citation is what a shared
+        site renders. It now names the photo by capture.json's title, else the
+        tab's own <title>; nothing else is read from a shared photo's page."""
+        tree = "cousin_member_one's Hartley-Whitcombe Tree"
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            staging = tmp / 'staging'
+            bundle = staging / PHOTO_BUNDLE.name
+            shutil.copytree(PHOTO_BUNDLE, bundle)
+            page = (bundle / 'page.html').read_text(encoding='utf-8')
+            page = page.replace('<head>', '<head><meta property="og:title" content="' + tree + '">'
+                                '<meta property="og:image" content="https://www.ancestry.com/tree-banner.jpg">', 1)
+            page = page.replace('<main id="mediaViewer">', '<main id="mediaViewer"><h1>' + tree + '</h1>'
+                                '<p>See https://www.newspapers.com/clip/1234/cousin-clip/</p>', 1)
+            (bundle / 'page.html').write_text(page, encoding='utf-8')
+            archive, config = self._archive(tmp)
+            capture.run_ingest(archive, config, staging_dir=str(staging))
+            meta = read_record(next((archive / 'inbox').rglob('notes.md')))['meta']
+            self.assertEqual(' '.join(str(meta['citation']).split()),
+                             'Thomas and Margaret Hartley at the Fairview farm, about 1925. Ancestry.com. ' + PHOTO_VIEWER_URL)
+            self.assertEqual([link['url'] for link in meta['external_links']], [PHOTO_VIEWER_URL])
+            for p in archive.rglob('*'):
+                if p.is_file():
+                    self.assertNotIn('Hartley-Whitcombe', p.read_text(encoding='utf-8', errors='replace'), p)
+
     def test_a_shared_photo_saved_as_jfif_or_webp_is_filed_not_set_aside(self) -> None:
         """PR #258 round 8 (regression from round 7): Chrome on Windows saves a
         "Save image as" JPEG as .jfif, or a photo as .webp. The no-picture rule

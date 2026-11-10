@@ -224,8 +224,11 @@ page, such as a linked relative's birth.
 
 Open the photo's **Details** on Ancestry before you open the panel: what is on
 screen is what gets saved. The people the photo is linked to appear in the
-panel's list of names, where you can untick anyone who does not belong; if the
-Details are not open, the panel says so before you press Capture. When you press
+panel's list of names, where you can untick anyone who does not belong. If the
+add-on can't find the photo's Details on the page (they may be closed, or
+Ancestry shows them in a way it doesn't recognise yet), the panel says so before
+you press Capture: the photo and its address are still saved, and its date,
+place and description can be read on Ancestry from that address. When you press
 **Capture this photo**, the panel looks at the page once more first. If the
 Details now show something the panel had not listed (you opened them after the
 panel read the page), it saves nothing yet: it adds those people to the list,

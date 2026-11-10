@@ -586,10 +586,8 @@ function photoSite({ photo, detailsAtFirst = true, detailsNever = false, edit, o
         return { ok: true, html };
       case 'singlefile':
         // A shared photo never asks for a copy of the page (PR #258 round 4).
-        // Asked anyway, it answers as content.js would: the page itself (less
-        // what an older add-on's member-row strip took out, where it has one).
+        // Asked anyway, it answers as content.js would: the page itself.
         photoCopies.push(tab.url);
-        if (anc.ancMediaMemberNodes) for (const el of anc.ancMediaMemberNodes(doc)) el.parentNode.removeChild(el);
         return { ok: true, html: serialize(doc) };
       default: return { ok: false, error: 'unexpected ' + msg.action };
     }
@@ -684,7 +682,7 @@ test('round 3 (audit C): a photo with nothing new on the page is staged once, wi
   assert.doesNotMatch(p.result(), /again/i);
   // Details closed on the page: said BEFORE Capture, never after.
   const closed = await openPhoto(PHOTO_OPEN, { detailsAtFirst: false, detailsNever: true });
-  assert.match(closed.$('asset-status').textContent, /Its Details are not open on the page: open them on Ancestry first/);
+  assert.match(closed.$('asset-status').textContent, /The add-on couldn’t find this photo’s Details on the page \(they may be closed, or Ancestry shows them in a way it doesn’t recognise yet\)\. The photo and its address are saved; its date, place and description can be read on Ancestry from that address/);
   await closed.capture();
   assert.strictEqual(closed.written.length, 1);
   assert.doesNotMatch(closed.result(), /again/i);

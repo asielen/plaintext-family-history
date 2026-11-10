@@ -288,7 +288,16 @@ def extract(html: str, url: str | None) -> dict:
     # <title> (TI-066). Recognised by its index-fields container.
     record_layout = 'id="recordFieldsContainer"' in html or "id='recordFieldsContainer'" in html
     hints = None
-    if record_layout:
+    # A shared photo's page (the media viewer) is read for nothing but its
+    # tab title: its <h1>, og:title, tables, lists and text can name the
+    # sharer's tree or the other members who saved the photo, and none of
+    # them is the family's. Its title, people, date and words come from the
+    # capture add-on's capture.json (PR #258 rounds 4, 10).
+    shared_photo = bool(url and _MEDIA_PAGE_RE.search(url))
+    if shared_photo:
+        title = _TITLE_SUFFIX_RE.sub('', page.title or '').strip() or 'Photo shared on Ancestry'
+        collection = title
+    elif record_layout:
         collection = first_nonempty(
             meta_content(page, 'og:title'), _collection_from_title(page.title),
         )
@@ -310,11 +319,6 @@ def extract(html: str, url: str | None) -> dict:
     # People from the household/index table (records pages), else the
     # image-viewer's grid-cell detail panel (imageviewer pages yield [] from the
     # table path because the panel is divs, not a <table>).
-    # A shared photo's page (the media viewer) is read for nothing but its
-    # title: its tables, lists and text include the other members who saved
-    # the photo, and none of them is the family's. Its people, date and words
-    # come from the capture add-on's capture.json (PR #258 round 4).
-    shared_photo = bool(url and _MEDIA_PAGE_RE.search(url))
     people: list[str] = []
     for rows in ([] if shared_photo else extract_tables(html)):
         people = people_from_table(rows)
@@ -356,14 +360,14 @@ def extract(html: str, url: str | None) -> dict:
     external_links: list[dict] = []
     if url:
         external_links.append({'url': url})
-    image = _image_url(html, url)
+    image = None if shared_photo else _image_url(html, url)
     if image and image != url:
         external_links.append({'url': image})
     # An Ancestry "Index" record can point off-site (e.g. a Newspapers.com index
     # embeds the durable public clip URL); surface it so the reviewer can go
     # upstream to the real source. Generic mechanism, Newspapers-shaped for v1.
     seen = {link['url'] for link in external_links}
-    for clip in _OFFSITE_RE.findall(html or ''):
+    for clip in ([] if shared_photo else _OFFSITE_RE.findall(html or '')):
         clip = clip.rstrip('"\'')
         if clip not in seen:
             external_links.append({'url': clip, 'label': 'off-site source'})

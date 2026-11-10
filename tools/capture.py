@@ -1447,6 +1447,14 @@ def _without_shared_photo_page_copy(cap: dict, assets: list[tuple[Path, str]]) -
     m = re.match(r'^(.*?/media/[0-9a-f-]{36})', parts.path, re.I)
     if parts.scheme and parts.netloc and m:
         cap['url'] = f'{parts.scheme}://{parts.netloc}{m.group(1)}'
+    # The citation names the photo by the title the capture gave it, never by
+    # the page's <h1> or og:title, which can be the sharer's tree name and
+    # would reach the shared site (PR #258 round 10). With no title in
+    # capture.json, the recipe uses the tab's own <title>.
+    title = str(cap.get('title') or '').strip()
+    if title and not str(cap.get('citation') or '').strip():
+        cap['citation'] = f"{title.rstrip('.')}. Ancestry.com. {cap['url']}"
+
     kept = [(path, role) for path, role in assets
             if role != 'webpage' and path.suffix.lower() not in _PAGE_COPY_SUFFIXES]
     if not _holds_a_picture(kept):
