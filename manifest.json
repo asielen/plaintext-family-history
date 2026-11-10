@@ -504,7 +504,7 @@
     {
       "path": ".fha/tools/browser_extensions.py",
       "category": "operating",
-      "sha256": "1210f16e13da7f9eac40deab5a483c6f947cc70581a2adfb7cbd8c754d90fec4",
+      "sha256": "f072528d744beca68129070026f271aabbfcdd39b6fea544d175be25e871dc89",
       "spec_version": "1.2",
       "src": "tools/browser_extensions.py"
     },
@@ -968,7 +968,7 @@
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "f06e0c317a81976a4531da9640cd63f982d8b1e6236f3636fa82e4f45d053071",
+      "sha256": "b0ca68e4e0181dab655a0184e1538eaa6c76691a4f6fbfe81014199f747a0fc2",
       "spec_version": "1.2"
     },
     {

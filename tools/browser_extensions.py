@@ -58,14 +58,18 @@ CODE MAP
 --------
   Setting
     Setting / read_setting   - fha.yaml value -> state, folder, message
-    doctor_check             - the same reading, for `fha doctor`
+    is_extension_manifest    - is this manifest.json a browser add-on's?
+    extension_id             - the Chrome ID a manifest `key` fixes
+    doctor_check             - the same reading (and refusals), for `fha doctor`
     save_setting             - append the one line to fha.yaml, surgically
     ask_for_setting          - the once-only question at a terminal
   Repo side
     shipped_files            - the files of one add-on that are copied
     read_extension_manifest  - manifest.json of a folder, or None
   Installed side
-    find_installed           - folders under the setting whose key matches
+    find_installed           - folders under the setting with the add-on's ID
+    _locate / _refusal_message - where one add-on is; what blocks it (shared
+                               by the plan and doctor)
     plan_extensions          - decide what to do for every add-on
     apply_plan               - do it (back up, copy, put back on failure)
   Entry point
@@ -75,8 +79,11 @@ CODE MAP
 
 from __future__ import annotations
 
+import base64
+import binascii
 import datetime
 import fnmatch
+import hashlib
 import json
 import os
 import re
@@ -102,11 +109,16 @@ DEFAULT_FOLDER = 'extensions'
 BACKUPS_DIR = '_backups'
 
 # The add-ons this file keeps current: (repo folder, short name for the
-# prompts, what it is for, its helper subfolder or None). Short names because
-# Chrome's own title for Seen It runs to four site names.
-EXTENSIONS: tuple[tuple[str, str, str, str | None], ...] = (
+# prompts, what it is for, its helper subfolder or None, its Chrome ID).
+# Short names because Chrome's own title for Seen It runs to four site names.
+# The ID is what the manifest `key` fixes (seen-it/README.md, "Why the manifest
+# has a key"); it is written here so `fha doctor`, which runs inside an archive
+# with no tools clone at hand, can recognise the installed copy too. A test
+# checks it against the key in the repo's manifest.
+EXTENSIONS: tuple[tuple[str, str, str, str | None, str], ...] = (
     ('seen-it', 'Seen It',
-     'marks the newspaper pages and records you have already looked at', 'host'),
+     'marks the newspaper pages and records you have already looked at', 'host',
+     'cennkaddolfbhiabacldomegncpdphed'),
 )
 
 # The capture add-on, named in the question so the owner knows it exists and
@@ -138,6 +150,12 @@ _RESERVED_ARCHIVE_FOLDERS = frozenset({
 })
 
 _DECLINED = frozenset({'none', 'no', 'off', 'false'})
+
+# Characters a folder name cannot hold. `:` everywhere, except right after a
+# leading drive letter (`D:/…`) - a sentence like "Yes, D:\Chrome Extensions"
+# saved whole would otherwise fail every later run with WinError 123. The rest
+# only on Windows, where they are forbidden and the archive most often lives.
+_BAD_NAME_CHARS = '<>"|?*' if os.name == 'nt' else ''
 
 # The first question's answers. A person types what he would say out loud, so
 # "ok" and "sure" are yes; anything not clearly yes or no is asked again
@@ -176,17 +194,52 @@ def _inside(child: Path, parent: Path) -> bool:
     return c == p or c.startswith(p.rstrip('\\/') + os.sep)
 
 
+_EXTENSION_PARTS = ('background', 'content_scripts', 'action', 'browser_action',
+                    'permissions')
+
+
+def is_extension_manifest(manifest) -> bool:
+    """Whether a parsed manifest.json is a browser add-on's, not some other file's.
+
+    Other folders carry a manifest.json too - the tools clone's own packing
+    list has a `manifest_version` (the string "1") - so the name alone proves
+    nothing. A browser add-on's has `manifest_version` 2 or 3 as a number, a
+    `name`, and at least one of the parts an add-on is made of.
+    """
+    if not isinstance(manifest, dict):
+        return False
+    version = manifest.get('manifest_version')
+    return (type(version) is int and version in (2, 3)
+            and isinstance(manifest.get('name'), str) and bool(manifest['name'].strip())
+            and any(part in manifest for part in _EXTENSION_PARTS))
+
+
 def _addon_name(folder: Path) -> str:
     """The add-on whose own folder this is, or '' when it is not one.
 
-    A Chrome add-on folder is recognised by its manifest.json naming a
-    `manifest_version`. Seen It's title runs to four site names; the part
-    before the colon is the name a person knows it by.
+    Seen It's title runs to four site names; the part before the colon is the
+    name a person knows it by.
     """
     manifest = read_extension_manifest(folder)
-    if not manifest or 'manifest_version' not in manifest:
+    if not is_extension_manifest(manifest):
         return ''
-    return str(manifest.get('name') or 'an add-on').split(':')[0].strip()
+    return manifest['name'].split(':')[0].strip() or manifest['name'].strip()
+
+
+def extension_id(key) -> str | None:
+    """The Chrome ID a manifest `key` fixes, or None for a missing or broken key.
+
+    Chrome's own rule: the SHA-256 of the decoded public key, first 32 hex
+    digits, each written as a letter a-p.
+    """
+    if not isinstance(key, str) or not key.strip():
+        return None
+    try:
+        der = base64.b64decode(key.strip(), validate=True)
+    except (binascii.Error, ValueError):
+        return None
+    digest = hashlib.sha256(der).hexdigest()[:32]
+    return ''.join(chr(ord('a') + int(c, 16)) for c in digest)
 
 
 def _example() -> str:
@@ -249,8 +302,16 @@ def read_setting(fha_config: dict, archive_root: Path) -> Setting:
     if not isinstance(raw, str) or not raw.strip():
         return Setting('bad', None, f'{SETTING}: in fha.yaml is blank or not a folder. '
                                     f'{_example()}')
+    text = raw.strip()
+    stray = [c for c in text if c in _BAD_NAME_CHARS]
+    if ':' in (text[2:] if re.match(r'^[A-Za-z]:', text) else text) or stray:
+        bad = ':' if not stray else stray[0]
+        return Setting('bad', None, (
+            f'{SETTING}: in fha.yaml reads `{text}`, and a folder name cannot hold '
+            f'a `{bad}` - the line should name only the folder. Change it to, for '
+            f'example, `{SETTING}: D:/Chrome Extensions`, or `{SETTING}: none`.'))
     archive = Path(archive_root).resolve()
-    folder = Path(os.path.expanduser(raw.strip()))
+    folder = Path(os.path.expanduser(text))
     folder = (folder if folder.is_absolute() else archive / folder).resolve()
     problem = _folder_problem(folder, fha_config, archive)
     if problem:
@@ -263,8 +324,8 @@ def read_setting(fha_config: dict, archive_root: Path) -> Setting:
     if problem:
         return Setting('bad', parent, problem, addon)
     return Setting('folder', parent, (
-        f'{SETTING}: in fha.yaml points at {folder}, which is the {addon} add-on '
-        f'itself - the add-ons are kept in its parent folder, {parent}. Change '
+        f'{SETTING}: in fha.yaml points at {folder}, which is the folder of the '
+        f'{addon} add-on itself - the add-ons are kept in its parent folder, {parent}. Change '
         f'the line to `{SETTING}: {parent.as_posix()}` to stop this note.'), addon)
 
 
@@ -287,6 +348,19 @@ def doctor_check(archive_root: Path, fha_config: dict) -> tuple[str, str, str] |
     if not setting.folder.exists():
         return ('ok', f'kept in {setting.folder} (not made yet - the next '
                       f'`fha update-tools` creates it)', '')
+    # What update-tools would refuse to touch, found the same read-only way.
+    refusals = []
+    try:
+        for folder_name, short, _purpose, _helper, ident in EXTENSIONS:
+            found = _locate(setting.folder, folder_name, ident)
+            if found['action'] in ('ambiguous', 'blocked'):
+                refusals.append(_refusal_message(short, setting.folder, found))
+    except OSError as exc:
+        return ('warn', f'{setting.folder} could not be read ({exc})',
+                'check the folder (is its drive connected?)')
+    if refusals:
+        return ('warn', ' '.join(refusals), 'do what the message says, then run '
+                                            '`fha update-tools`')
     return ('ok', f'kept up to date in {setting.folder} by `fha update-tools`', '')
 
 
@@ -346,9 +420,14 @@ def _hint_line() -> str:
             f'add `{SETTING}: none` to stop this note.')
 
 
-def _looks_like_path(text: str) -> bool:
-    return ('/' in text or '\\' in text or text.startswith('~')
-            or re.match(r'^[A-Za-z]:', text) is not None)
+def _is_absolute_path(text: str) -> bool:
+    """A folder someone pasted: a drive and separator, a network share, / or ~.
+
+    Only these count at the yes/no question - "n/a" or "y/n" has a slash in
+    it and means no (or nothing), never a folder named `n/a` in the archive.
+    """
+    return (re.match(r'^[A-Za-z]:[\\/]', text) is not None
+            or text.startswith(('\\\\', '//', '/', '~')))
 
 
 def _first_answer(text: str) -> tuple[str, str]:
@@ -361,8 +440,16 @@ def _first_answer(text: str) -> tuple[str, str]:
     cleaned = text.strip().strip('"\'').strip()
     if not cleaned:
         return 'no', ''
-    if _looks_like_path(cleaned):
+    if _is_absolute_path(cleaned):
         return 'path', cleaned
+    # "Yes, D:\Genealogy\Chrome Extensions": a yes that already says where.
+    said = re.match(r'^(\w+)[\s,.;:!-]+(.+)$', cleaned)
+    if said and said.group(1).lower() in _YES_WORDS:
+        rest = said.group(2).strip().strip('"\'').strip()
+        if _is_absolute_path(rest):
+            return 'path', rest
+    if '/' in cleaned or '\\' in cleaned:
+        return 'unclear', ''
     word = cleaned.split()[0].lower().strip('.,!')
     if word in _YES_WORDS:
         return 'yes', ''
@@ -423,7 +510,7 @@ def ask_for_setting(archive_root: Path, fha_config: dict, ask) -> str | None:
     """
     print()
     print('Browser add-ons (optional). These tools come with:')
-    for _folder, short, purpose, _helper in EXTENSIONS:
+    for _folder, short, purpose, _helper, _id in EXTENSIONS:
         print(f'  - {short} - {purpose}.')
     print(f'  - {_CAPTURE_LINE}')
     kind, path = 'unclear', ''
@@ -590,10 +677,11 @@ def _same_tree(a: Path, b: Path) -> bool:
 
 # ── Installed side ─────────────────────────────────────────────────────────────
 
-def find_installed(ext_dir: Path, key: str) -> list[Path]:
-    """Folders directly under `ext_dir` whose manifest carries `key`.
+def find_installed(ext_dir: Path, ident: str) -> list[Path]:
+    """Folders directly under `ext_dir` holding the add-on with Chrome ID `ident`.
 
-    By key, not by name, because the key IS the add-on's identity to Chrome:
+    By the ID its manifest `key` fixes, not by name, because that IS the
+    add-on's identity to Chrome:
     the owner's Seen It lives in `newspapers-seen-it`, an older name. Only one
     level down - `_backups/` holds older copies with the same key, one level
     deeper, and is skipped by name too.
@@ -604,7 +692,7 @@ def find_installed(ext_dir: Path, key: str) -> list[Path]:
         if child.name == BACKUPS_DIR or child.name.endswith('.part') or not child.is_dir():
             continue
         manifest = read_extension_manifest(child)
-        if manifest and str(manifest.get('key', '')).strip() == key:
+        if manifest and extension_id(manifest.get('key')) == ident:
             found.append(child)
     return found
 
@@ -631,6 +719,52 @@ def _backup_path(ext_dir: Path, folder: Path, old_version: str,
     return candidate, False
 
 
+def _locate(ext_dir: Path, folder_name: str, ident: str, src: Path | None = None) -> dict:
+    """Where one add-on is in `ext_dir`, read only -> {'action', 'target', ...}.
+
+    'found' (target = the installed copy), 'install' (not there; target is
+    where it would go, clear_part our own leftover `.part` if any),
+    'ambiguous' (others = every copy), or 'blocked' (blocked_by = the folder
+    in the way). Shared by the update plan and `fha doctor`, so doctor reports
+    exactly the refusals update-tools would make. `src` is the clone's own
+    copy, never counted as installed.
+    """
+    matches = []
+    if ext_dir.is_dir():
+        matches = [m for m in find_installed(ext_dir, ident)
+                   if src is None or m.resolve() != src.resolve()]
+    if len(matches) > 1:
+        return {'action': 'ambiguous', 'target': None, 'others': matches}
+    if matches:
+        return {'action': 'found', 'target': matches[0]}
+    target = ext_dir / folder_name
+    part = target.with_name(target.name + '.part')
+    if target.exists() and (not target.is_dir() or any(target.iterdir())):
+        return {'action': 'blocked', 'target': target, 'blocked_by': target}
+    if part.exists():
+        if not (part / _PART_MARKER).is_file():
+            return {'action': 'blocked', 'target': target, 'blocked_by': part}
+        return {'action': 'install', 'target': target, 'clear_part': part}
+    return {'action': 'install', 'target': target, 'clear_part': None}
+
+
+def _refusal_message(name: str, ext_dir: Path, found: dict) -> str:
+    """The plain message (and recovery step) for an add-on update-tools will not touch."""
+    if found['action'] == 'ambiguous':
+        listing = ', '.join(str(p) for p in found['others'])
+        return (f'{name} is in more than one folder in {ext_dir} ({listing}) - '
+                f'left them all alone, because Chrome uses only one. Move the copy '
+                f'Chrome is not using out of {ext_dir} (into {BACKUPS_DIR}, say), '
+                f'then run `fha update-tools` again.')
+    blocker, target = found['blocked_by'], found['target']
+    if blocker != target:
+        return (f'{name} was not copied: {blocker} is in the way and was not '
+                f'made by these tools. Move or delete that folder, then run '
+                f'`fha update-tools` again.')
+    return (f'{name} was not copied: {target} already exists and is not '
+            f'{name}. Rename that folder, then run `fha update-tools` again.')
+
+
 def plan_extensions(repo_root: Path, ext_dir: Path, date_str: str) -> list[dict]:
     """Decide, without writing anything, what to do for each add-on.
 
@@ -639,7 +773,7 @@ def plan_extensions(repo_root: Path, ext_dir: Path, date_str: str) -> list[dict]
       install / update / current / newer / ambiguous / blocked / no-source
     """
     items: list[dict] = []
-    for folder_name, short, _purpose, helper in EXTENSIONS:
+    for folder_name, short, _purpose, helper, _pinned_id in EXTENSIONS:
         src = Path(repo_root) / folder_name
         repo_manifest = read_extension_manifest(src)
         item = {'extension': folder_name, 'name': short, 'helper': helper,
@@ -652,28 +786,17 @@ def plan_extensions(repo_root: Path, ext_dir: Path, date_str: str) -> list[dict]
             continue
         item['title'] = str(repo_manifest.get('name') or short)
         item['new_version'] = str(repo_manifest.get('version', ''))
+        ident = extension_id(repo_manifest['key'])
+        if ident is None:
+            continue
         files = shipped_files(repo_root, folder_name)
-        key = str(repo_manifest['key']).strip()
-        matches = [m for m in (find_installed(ext_dir, key) if ext_dir.is_dir() else [])
-                   if m.resolve() != src.resolve()]
-        if len(matches) > 1:
-            item.update(action='ambiguous', others=matches)
+        found = _locate(ext_dir, folder_name, ident, src)
+        if found['action'] != 'found':
+            item.update(found)
+            if found['action'] == 'install':
+                item['copy'] = files
             continue
-        if not matches:
-            target = ext_dir / folder_name
-            part = target.with_name(target.name + '.part')
-            item['target'] = target
-            if target.exists() and (not target.is_dir() or any(target.iterdir())):
-                item.update(action='blocked', blocked_by=target)
-                continue
-            if part.exists():
-                if not (part / _PART_MARKER).is_file():
-                    item.update(action='blocked', blocked_by=part)
-                    continue
-                item['clear_part'] = part
-            item.update(action='install', copy=files)
-            continue
-        target = matches[0]
+        target = found['target']
         installed = read_extension_manifest(target) or {}
         old = str(installed.get('version', ''))
         item.update(target=target, old_version=old)
@@ -844,23 +967,8 @@ def _report(items: list[dict], ext_dir: Path, dry_run: bool) -> list[str]:
         elif action == 'newer':
             print(f'{name} in {target} is version {item["old_version"]}, newer than the '
                   f'copy these tools carry ({item["new_version"]}) - left as it is.')
-        elif action == 'ambiguous':
-            listing = ', '.join(str(p) for p in item['others'])
-            msg = (f'{name} is in more than one folder in {ext_dir} ({listing}) - '
-                   f'left them all alone, because Chrome uses only one. Move the copy '
-                   f'Chrome is not using out of {ext_dir} (into {BACKUPS_DIR}, say), '
-                   f'then run `fha update-tools` again.')
-            print(msg)
-            warnings.append(msg)
-        elif action == 'blocked':
-            blocker = item['blocked_by']
-            if blocker != target:
-                msg = (f'{name} was not copied: {blocker} is in the way and was not '
-                       f'made by these tools. Move or delete that folder, then run '
-                       f'`fha update-tools` again.')
-            else:
-                msg = (f'{name} was not copied: {target} already exists and is not '
-                       f'{name}. Rename that folder, then run `fha update-tools` again.')
+        elif action in ('ambiguous', 'blocked'):
+            msg = _refusal_message(name, ext_dir, item)
             print(msg)
             warnings.append(msg)
         elif action == 'install':

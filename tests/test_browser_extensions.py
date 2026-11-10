@@ -39,7 +39,9 @@ except ImportError:     # before this feature: let each test fail on its own
     bx = None
 from _lib import EXIT_CLEAN, EXIT_WARNINGS
 
-KEY = 'MIIBfakeSeenItKeyForTests'
+# Seen It's real, public key (seen-it/README.md, "Why the manifest has a key"):
+# `fha doctor` recognises the installed copy by the Chrome ID it fixes.
+KEY = json.loads((ROOT / 'seen-it' / 'manifest.json').read_text(encoding='utf-8'))['key']
 TODAY = datetime.date.today().isoformat()
 BX_BACKUPS = '_backups'
 
@@ -51,7 +53,8 @@ def _write(path: Path, text: str) -> None:
 
 def _seen_it_manifest(version: str, key: str = KEY) -> str:
     return json.dumps({'manifest_version': 3, 'name': 'Seen It: Test Sites',
-                       'version': version, 'key': key}, indent=2)
+                       'version': version, 'key': key,
+                       'background': {'service_worker': 'background.js'}}, indent=2)
 
 
 def _make_repo(repo: Path, version: str = '0.2.0') -> Path:
@@ -415,7 +418,7 @@ class FirstCopyAndSetting(_Base):
         rc, out = self.update()
         self.assertEqual(rc, EXIT_CLEAN, out)
         self.assertFalse((installed / 'seen-it').exists())
-        self.assertIn('which is the Seen It add-on itself', out)
+        self.assertIn('which is the folder of the Seen It add-on itself', out)
         self.assertEqual((installed / 'background.js').read_text(encoding='utf-8'),
                          '// background 0.2.0\n')
 
@@ -570,6 +573,107 @@ class QuietWhenDeclined(_Base):
                     _rc, baseline = self.update(dry_run=dry_run)
                 self.assertEqual(out, baseline)
                 self.assertNotIn('\n\n\n', out)
+
+
+class Round3(_Base):
+    """PR #257 review round 3: answers and folders a person really gives."""
+
+    def _first(self, answers):
+        it = iter(answers)
+        return _quiet(bx.run_extensions, self.archive, self.repo, ask=lambda _p: next(it))
+
+    def test_n_a_and_y_n_are_never_read_as_a_folder(self):
+        for n, answer in enumerate(('n/a', 'N/A', 'y/n')):
+            with self.subTest(answer=answer):
+                archive = self.tmp / f'archive {n}'
+                shutil.copytree(self.archive, archive)
+                it = iter([answer, 'n'])
+                _res, out = _quiet(bx.run_extensions, archive, self.repo,
+                                   ask=lambda _p: next(it))
+                self.assertIn('Please answer y (yes) or n (no)', out)
+                self.assertIn('browser_extensions: none\n',
+                              (archive / 'fha.yaml').read_text(encoding='utf-8'))
+                self.assertFalse((archive / 'n').exists())
+                self.assertFalse((archive / 'N').exists())
+                self.assertFalse((archive / 'y').exists())
+
+    def test_yes_followed_by_a_folder_is_a_yes_there(self):
+        _res, out = self._first([f'Yes, {self.ext}'])
+        import yaml
+        text = (self.archive / 'fha.yaml').read_text(encoding='utf-8')
+        self.assertEqual(Path(yaml.safe_load(text)['browser_extensions']), self.ext, out)
+        self.assertTrue((self.ext / 'seen-it' / 'manifest.json').is_file())
+
+    def test_a_setting_with_a_stray_colon_names_the_line_to_fix(self):
+        self.set_folder("'Yes, D:/Genealogy/Tools/Chrome Extensions'")
+        rc, out = self.update()
+        self.assertEqual(rc, EXIT_WARNINGS)
+        self.assertIn('cannot hold a `:`', out)
+        import doctor
+        from _lib import load_fha_yaml
+        checks = {c['id']: c for c in
+                  doctor.run_doctor(self.archive, load_fha_yaml(self.archive)).data['checks']}
+        self.assertEqual(checks['browser_extensions']['status'], 'warn')
+        self.assertIn('cannot hold a `:`', checks['browser_extensions']['detail'])
+
+    def test_the_tools_own_packing_list_is_not_an_add_on(self):
+        self.assertFalse(bx.is_extension_manifest(
+            json.loads((ROOT / 'manifest.json').read_text(encoding='utf-8'))))
+        self.assertTrue(bx.is_extension_manifest(
+            json.loads((ROOT / 'seen-it' / 'manifest.json').read_text(encoding='utf-8'))))
+        self.assertEqual(bx._addon_name(ROOT), '')
+        self.assertEqual(bx._addon_name(ROOT / 'seen-it'), 'Seen It')
+
+    def test_pasting_the_clones_seen_it_folder_stops_at_the_clone(self):
+        clone = self.tmp / 'workshop clone'
+        clone.mkdir()
+        shutil.copy2(ROOT / 'manifest.json', clone / 'manifest.json')
+        _write(clone / 'seen-it' / 'manifest.json', _seen_it_manifest('0.2.0'))
+        setting = bx.read_setting({'browser_extensions': str(clone / 'seen-it')}, self.archive)
+        self.assertEqual(setting.state, 'folder')
+        self.assertEqual(setting.folder, clone.resolve())          # one level up, not two
+        self.assertIn('the folder of the Seen It add-on itself', setting.message)
+        self.assertNotIn('add-on add-on', setting.message)
+
+    def test_the_pinned_chrome_id_matches_the_repo_key(self):
+        ident = {e[0]: e[4] for e in bx.EXTENSIONS}['seen-it']
+        self.assertEqual(bx.extension_id(KEY), ident)
+
+
+class DoctorSeesRefusals(_Base):
+    """`fha doctor` warns about what `fha update-tools` would refuse to touch."""
+
+    def _check(self):
+        import doctor
+        from _lib import load_fha_yaml
+        result = doctor.run_doctor(self.archive, load_fha_yaml(self.archive))
+        return {c['id']: c for c in result.data['checks']}['browser_extensions']
+
+    def test_two_copies_are_a_doctor_warning(self):
+        self.owner_layout()
+        shutil.copytree(self.ext / 'newspapers-seen-it', self.ext / 'seen-it copy')
+        self.set_folder(self.ext.as_posix())
+        check = self._check()
+        self.assertEqual(check['status'], 'warn')
+        self.assertIn('more than one folder', check['detail'])
+        self.assertIn('Move the copy Chrome is not using', check['detail'])
+
+    def test_a_part_folder_that_is_not_ours_is_a_doctor_warning(self):
+        _write(self.ext / 'seen-it.part' / 'mine.txt', 'keep\n')
+        self.set_folder(self.ext.as_posix())
+        check = self._check()
+        self.assertEqual(check['status'], 'warn')
+        self.assertIn('is in the way', check['detail'])
+
+    def test_an_unrelated_seen_it_folder_is_a_doctor_warning(self):
+        _write(self.ext / 'seen-it' / 'mine.txt', 'not an add-on\n')
+        self.set_folder(self.ext.as_posix())
+        self.assertEqual(self._check()['status'], 'warn')
+
+    def test_a_normal_install_is_ok(self):
+        self.owner_layout()
+        self.set_folder(self.ext.as_posix())
+        self.assertEqual(self._check()['status'], 'ok')
 
 
 class DoctorReadsTheSetting(_Base):
