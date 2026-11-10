@@ -7,6 +7,7 @@ process.py - fha process: Stage A of the intake pipeline.
   fha process <photo> --more <file> ROLE[:copy]                  Attach a file to its source
   fha process refile <S-id> --to photos|documents [--type TYPE] [--dest SUB]
                                                                  Move a filed file across roots
+  fha process <photo> --variants one|separate                    Answer the front/back question up front
   fha process <file> --dry-run                                   Preview, write nothing
 
 This is the *deterministic* stage of processing an original into a Source
@@ -2549,6 +2550,7 @@ def _process_variation_set(
     source_id: str | None = None,
     report: dict | None = None,
     backup: OriginalBackup | None = None,
+    variants: str | None = None,
 ) -> int:
     """Surface a variation set and process it per the human's one/separate/skip choice.
 
@@ -2569,6 +2571,13 @@ def _process_variation_set(
     variation set always mints through the interactive one/separate/skip
     choice, which `fha serve` cannot drive (TOOLING §6's prompt needs a
     human), so no caller ever has a previewed id to pass for those branches.
+
+    `variants` is `--variants one|separate` (#249): the answer to the prompt,
+    given up front, so an agent or a script can process a front/back pair
+    without a keyboard. Without it the prompt is asked as before; when there
+    is no one to answer it (stdin closed or empty), the run stops with a
+    sentence naming the flag rather than Python's bare "EOF when reading a
+    line", and nothing has been written.
     """
     members = sorted(members)
     real_paths = real_paths or {}
@@ -2591,8 +2600,21 @@ def _process_variation_set(
             label = f'[role: {role}{f", copy {copy}" if copy else ""}]'
         print(f'  {m.name}  {label}')
 
-    answer = _prompt('Process as ONE source (shared S-id) or separately? '
-                     '[one / separate / skip]: ').strip().lower()
+    if variants:
+        answer = variants
+        print(f'Processing them as {"ONE source" if variants == "one" else "separate sources"} '
+              f'(--variants {variants}).')
+    else:
+        try:
+            answer = _prompt('Process as ONE source (shared S-id) or separately? '
+                             '[one / separate / skip]: ').strip().lower()
+        except EOFError:
+            raise ProcessError(
+                f'{primary.name} has {len(members) - 1} variation(s) beside it, and '
+                'there is no one here to answer whether they are one photo or '
+                'separate ones. Re-run with --variants one (one source for the '
+                'whole set - a front and its back, say) or --variants separate '
+                '(a source for each file). Nothing was written.') from None
     if answer.startswith('one') or answer == 'o':
         return process_photo_group(archive_root, fha_config, members,
                                    slug=slug, title=title, source_date=source_date,
@@ -2650,6 +2672,7 @@ def process_folder(
     source_type: str | None = None,
     people: list[str] | None = None,
     backup: OriginalBackup | None = None,
+    variants: str | None = None,
 ) -> int:
     """M7.3: triage a folder's unprocessed photos, then process selected groups.
 
@@ -2693,7 +2716,14 @@ def process_folder(
         extra = f' (+{len(c["members"]) - 1} variant)' if len(c['members']) > 1 else ''
         print(f'  {i:>2}. {c["primary"].name}{extra}  score={c["score"]:+d}  [{signals}]')
 
-    answer = _prompt('Select groups to process (numbers, comma-list, or "all"; blank to skip): ')
+    try:
+        answer = _prompt('Select groups to process (numbers, comma-list, or "all"; blank to skip): ')
+    except EOFError:
+        raise ProcessError(
+            f'Folder triage asks which of the {len(scored)} group(s) in {folder.name} to '
+            'process, and there is no one here to answer. Process one photo at a '
+            'time instead, e.g. `fha process <photo> --variants one`. Nothing was '
+            'written.') from None
     chosen = _parse_selection(answer, len(scored))
     if not chosen:
         print('Nothing selected.')
@@ -2710,7 +2740,7 @@ def process_folder(
         rc = max(rc, _process_variation_set(
             archive_root, fha_config, members, slug=None, title=None,
             source_date=source_date, dry_run=dry_run, source_type=source_type,
-            people=people, backup=backup))
+            people=people, backup=backup, variants=variants))
     return rc
 
 
@@ -5285,6 +5315,9 @@ File a new document or photo into the archive with a permanent ID.
   fha process <photo> --more <file> ROLE    Attach another file to its source
   fha process refile <S-id> --to photos|documents [--dest SUB]
                                             Move a filed file to the other root
+  fha process <photo> --variants one        A photo with its back beside it: file
+                                            both as ONE source without being asked
+                                            (or --variants separate)
   fha process <file> --dry-run              Preview, write nothing
 
 Documents are renamed with their new ID (the old name is kept as provenance);
@@ -5424,6 +5457,11 @@ def _add_arguments(p: argparse.ArgumentParser) -> None:
                         'in the photo file and populates the source record\'s people: '
                         'list. Photos only; use `fha photoindex tag-person` to tag '
                         'photos already processed.')
+    p.add_argument('--variants', choices=('one', 'separate'),
+                   help='When the photo has variations beside it (a back, a second '
+                        'print, a crop), process them as ONE source or as separate '
+                        'sources without being asked - the answer to the '
+                        '[one / separate / skip] question, for scripts and agents')
     p.add_argument('--dry-run', action='store_true', help='Preview without writing')
 
 
@@ -5559,6 +5597,14 @@ def _run_process(args: argparse.Namespace) -> int:
         )
         return EXIT_ERRORS
 
+    variants = getattr(args, 'variants', None)
+    if variants and args.more:
+        print('ERROR: --variants answers the "one source or separate?" question for '
+              'a photo with variations beside it. With --more you are attaching one '
+              'file to a source that already exists, so drop --variants.',
+              file=sys.stderr)
+        return EXIT_ERRORS
+
     # Folder modes (BUILD.md M7.3/M7.4): a folder holding a bare notes.md is a
     # source-stub bundle that dissolves into one source; any other folder is a
     # triage target whose unprocessed photos are ranked and offered for
@@ -5582,7 +5628,7 @@ def _run_process(args: argparse.Namespace) -> int:
             return process_folder(
                 archive_root, fha_config, file_path,
                 source_date=source_date, dry_run=dry_run,
-                source_type=source_type,
+                source_type=source_type, variants=variants,
             )
         except ProcessError as e:
             print(f'ERROR: {e}', file=sys.stderr)
@@ -5689,18 +5735,29 @@ def _run_process(args: argparse.Namespace) -> int:
                 # the destination directory (the same one live would scan
                 # after moving) and file_path stands in for the moved file.
                 siblings = _photo_variation_siblings(file_path)
+                if variants and len(siblings) == 1:
+                    print(f'Note: --variants {variants} has nothing to decide - no '
+                          f'variations were found beside {file_path.name}, so it is '
+                          'processed on its own.')
                 rc = _process_variation_set(
                     archive_root, fha_config, siblings,
                     slug=args.slug, title=args.title, source_date=source_date,
                     dry_run=dry_run, source_type=source_type, people=people or None,
                     real_paths={file_path: real_path} if real_path is not None else None,
                     source_id=source_id_override, report=mint_report,
+                    variants=variants,
                 )
             else:
                 if people:
                     print('ERROR: --people is for photo sources only. '
                           'To record people in a document source, edit its `people:` '
                           'field directly after processing.',
+                          file=sys.stderr)
+                    rc = EXIT_ERRORS
+                elif variants:
+                    print(f'ERROR: --variants is for photos with variations beside them. '
+                          f'{file_path.name} is being filed as a document, whose back '
+                          'scan (if any) is attached automatically - drop --variants.',
                           file=sys.stderr)
                     rc = EXIT_ERRORS
                 else:
