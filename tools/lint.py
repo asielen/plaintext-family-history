@@ -51,6 +51,7 @@ import datetime
 import json
 import os
 import re
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path
@@ -233,6 +234,8 @@ configure_utf8_stdout()
 #    _check_agent_drift          - E018: deprecated commands in AGENTS.md
 #    _check_untranscribed_evidence - W124: accepted claims on evidence the
 #                                   archive holds no words for (no transcript)
+#    _check_evidence_paths       - W137: a claim/prose cites a photos- or documents-
+#                                   root file by path that no source owns (#249)
 #    _check_roots_change         - W121: a roots: change orphaned filed assets
 #                                   (runs first; the E011 fallout follows it)
 #    _check_unreadable_dirs      - W123: a record folder this lint could not open
@@ -330,6 +333,9 @@ class Registry:
 
         # Source meta: {S-id: meta_dict}
         self.source_meta: dict[str, dict] = {}
+
+        # Source record bodies: {S-id: body_text}, kept for W137's prose scan.
+        self.source_bodies: dict[str, str] = {}
 
         # Source file inventory: {S-id: {alias/path, ...}}
         self.source_inventory: dict[str, set[str]] = {}
@@ -1279,6 +1285,7 @@ def _process_source_file(path: Path, registry: Registry, findings: list[Finding]
 
     registry.source_paths[sid] = path
     registry.source_meta[sid] = meta
+    registry.source_bodies[sid] = rec.get('body') or ''
     registry.all_record_ids[sid] = path
 
     # E010: Required fields
@@ -3349,6 +3356,7 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
 
     # W124: accepted claims resting on evidence nobody has written out
     _check_untranscribed_evidence(registry, findings)
+    _check_evidence_paths(registry, findings)
 
     # E016: new claims referencing a merged person
     for pid, meta in registry.person_meta.items():
@@ -3455,6 +3463,165 @@ def _check_untranscribed_evidence(
             'out what it says, then attach it with `fha process <one of its '
             'files> --more <your-transcript.md> transcript`. Either way, run '
             '`fha index` afterwards so the words become searchable.'))
+
+
+# ── W137: evidence pointed at by folder path, not by its source ID (#249) ────
+#
+# A claim can rest on a photograph that is not a source: the interview reads
+# out the inscription on the back of a print, the mining pass cites the
+# interview, and the photo itself turns up later in the library - scanned,
+# never processed - and its path gets pasted into the claim's notes. That path
+# breaks silently the day the library is reorganised (`fha reconcile` heals
+# `files:` entries, not prose), the photo's own page never connects to the
+# claim, and the inscription has no record to keep its transcript or citation
+# in. SPEC §8.4: evidence a claim rests on is a source, cited as [[S-…]].
+
+_W137_EXT = r'\.[A-Za-z0-9]{2,5}(?![A-Za-z0-9/\\])'
+# A path tail: no whitespace first, no line break, colon, quote or bracket
+# inside (a filename may hold spaces, commas and parentheses), ending at the
+# first file extension that is not itself followed by more path.
+_W137_TAIL = r'(?P<tail>[^\s:"\'`<>|*?\[\]][^\n\r:"\'`<>|*?\[\]]{0,258}?' + _W137_EXT + ')'
+# A processed documents-root file carries its S-id in its own name (SPEC §13).
+_W137_SID_IN_NAME_RE = re.compile(r'_S-[0-9a-hjkmnp-tv-z]{10}\.[A-Za-z0-9]+$', re.I)
+_W137_URL_RE = re.compile(r'\b[a-z][a-z0-9+.\-]*://\S+', re.I)
+
+
+def _w137_key(alias_path: str) -> str:
+    """One spelling for a root-relative path: forward slashes, no doubles,
+    case-folded (Windows and macOS treat `Photos/A.jpg` and `photos/a.jpg` as
+    one file, and a human types whichever he sees)."""
+    return re.sub(r'/+', '/', str(alias_path).replace('\\', '/')).strip().strip('/').casefold()
+
+
+def _w137_patterns(registry: Registry) -> list[tuple[str, re.Pattern]]:
+    """One regex per asset root, matching both ways a human writes a path into
+    it: root-relative (`photos/1911/ada.jpg`, the form `files:` uses) and the
+    absolute folder `fha.yaml` maps it to (`D:/Family Photos/1911/ada.jpg`),
+    either slash. The root-relative form needs a word boundary before it, so
+    the `/photos/` inside a web address or a longer path is not read as one."""
+    out = []
+    for alias in ('photos', 'documents'):
+        root = resolve_path(alias, registry.fha_config, registry.archive_root)
+        try:
+            root = root.resolve()
+        except (OSError, RuntimeError):
+            pass
+        parts = [re.escape(part) for part in str(root).replace('\\', '/').rstrip('/').split('/')]
+        absolute = r'[\\/]+'.join(parts)
+        out.append((alias, re.compile(
+            rf'(?:{absolute}|(?<![A-Za-z0-9_.\-/\\]){re.escape(alias)})[\\/]+{_W137_TAIL}',
+            re.I)))
+    return out
+
+
+def _w137_owned_paths(registry: Registry) -> set[str]:
+    """Every root-relative path some source owns: each `files:` entry, plus
+    the name a renamed document had before processing (`original_filename`,
+    so a note written before the rename is not reported as unowned)."""
+    owned: set[str] = set()
+    for meta in registry.source_meta.values():
+        for entry in meta.get('files') or []:
+            alias = entry.get('file') if isinstance(entry, dict) else entry
+            if not alias:
+                continue
+            key = _w137_key(alias)
+            owned.add(key)
+            if isinstance(entry, dict) and entry.get('original_filename'):
+                folder = key.rsplit('/', 1)[0] if '/' in key else ''
+                owned.add(_w137_key(f'{folder}/{entry["original_filename"]}'))
+    return owned
+
+
+def _w137_keyworded_photos(registry: Registry) -> set[str]:
+    """Photos the photo index says already carry a `SOURCE:` keyword.
+
+    Only read when lint has found a photos-root path no `files:` entry owns,
+    and only if the index exists - lint never needs `fha photoindex` to have
+    run. A photo carrying the keyword IS processed (its record is a different
+    finding, E011/E012, if missing), so it is not this warning's business.
+    """
+    db = registry.archive_root / '.cache' / 'photos.sqlite'
+    if not db.is_file():
+        return set()
+    try:
+        conn = sqlite3.connect(f'file:{db.as_posix()}?mode=ro', uri=True)
+        try:
+            rows = conn.execute(
+                "SELECT path FROM photos WHERE source_id IS NOT NULL AND source_id != ''"
+            ).fetchall()
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return set()
+    return {_w137_key(path) for (path,) in rows if path}
+
+
+def _check_evidence_paths(registry: Registry, findings: list[Finding]) -> None:
+    """W137 (#249): a claim's `value:`/`notes:`, or a source's or person's
+    prose, points at a file in the photos or documents root by its folder
+    path, and no source owns that file.
+
+    One pass over text already in memory: the owned-paths set is built once
+    from every record's `files:` list, and nothing on disk is walked or opened
+    per claim. "Owned" means a `files:` entry (or the pre-rename name of one),
+    a documents-root filename carrying an `_S-…` ID, or - for a photo - a
+    `SOURCE:` keyword the photo index has already seen. `[[S-…]]` links and
+    web addresses are not paths and never match.
+
+    Warning, not error: the claim is still a claim. The fix is to make the
+    file a source - `fha process <path> --type photo` for a photo (a front
+    and its back become one source) - and cite it as `[[S-…]]`.
+    """
+    patterns = _w137_patterns(registry)
+    owned = _w137_owned_paths(registry)
+    keyworded: set[str] | None = None
+    reported: set[tuple[str, str, str]] = set()
+
+    def scan(text, record_path: Path, where: str) -> None:
+        nonlocal keyworded
+        if not text:
+            return
+        text = _W137_URL_RE.sub(' ', str(text))
+        for alias, pattern in patterns:
+            for m in pattern.finditer(text):
+                tail = m.group('tail').strip()
+                key = _w137_key(f'{alias}/{tail}')
+                if key in owned or _W137_SID_IN_NAME_RE.search(key):
+                    continue
+                if alias == 'photos':
+                    if keyworded is None:
+                        keyworded = _w137_keyworded_photos(registry)
+                    if key in keyworded:
+                        continue
+                if (str(record_path), where, key) in reported:
+                    continue
+                reported.add((str(record_path), where, key))
+                shown = m.group(0).strip()
+                target = resolve_path(f'{alias}/{tail.replace(chr(92), "/")}',
+                                      registry.fha_config, registry.archive_root)
+                type_flag = ' --type photo' if alias == 'photos' else ''
+                findings.append(Finding('W', 'W137', record_path,
+                    f'{where} points at {shown} by its folder path, but no source '
+                    'record owns that file - so it is not evidence the archive can '
+                    'cite, and the path breaks silently if the folder is ever '
+                    f'reorganised. Make it a source: `fha process "{target}"'
+                    f'{type_flag}`, then cite it here as [[S-…]] instead of the path.'))
+
+    for sid, claims in sorted(registry.source_claims.items()):
+        record_path = registry.source_paths.get(sid, registry.archive_root / str(sid))
+        for claim in claims:
+            if not isinstance(claim, dict):
+                continue
+            cid = fmt_id_display(normalize_id(str(claim.get('id', '')))) if claim.get('id') else 'A claim'
+            for field in ('value', 'notes'):
+                scan(claim.get(field), record_path, f'Claim {cid} (its {field}:)')
+    for sid, body in sorted(registry.source_bodies.items()):
+        record_path = registry.source_paths.get(sid, registry.archive_root / str(sid))
+        scan(CLAIMS_RE.sub('', body or ''), record_path, 'The source record\'s prose')
+    for pid, body in sorted(registry.person_bodies.items()):
+        paths = registry.person_profile_paths.get(pid) or []
+        if paths:
+            scan(body, paths[0], 'The person record\'s prose')
 
 
 def _check_unreadable_dirs(registry: Registry, findings: list[Finding]) -> None:
