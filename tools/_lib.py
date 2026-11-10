@@ -586,6 +586,11 @@ def _bracket_given_name_raw(full_name: str) -> str:
     words = full_name.split()
     if not words:
         return full_name
+    # A leading "?" for an unknown first name, when another given name
+    # follows it ("? Mary Hartley" -> Mary). "? Hartley" keeps its "?", so the
+    # surname never stands in for a first name; that child is left out.
+    while len(words) > 2 and not folder_safe_chars(words[0]):
+        words = words[1:]
     i = 0
     while i < len(words) and _title_key(words[i]) in _NAME_TITLES:
         i += 1

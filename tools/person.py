@@ -1739,9 +1739,10 @@ def run_promote(
                 'marriage takes a letter suffix, e.g. '
                 f'"{e.prefix:03d}b …"; SPEC §12.2), then retry. Nothing was written.')
         if dest_folder is None:
-            # A name with nothing a folder can hold ("?") falls back to the
-            # P-id, like a missing name, instead of a folder named "002 ".
-            display = folder_name_text(name or '') or fmt_id_display(pid)
+            # A name with nothing a folder can hold ("?") reads "unknown",
+            # the placeholder a later `fha person rename` knows to replace,
+            # instead of a folder named "002 ". A missing name keeps the P-id.
+            display = (folder_name_text(name) or 'unknown') if name else fmt_id_display(pid)
             dest_folder = people_dir / f'{str(prefix).zfill(3)} {display}'
     result.data['folder'] = dest_folder.name
     # Plain-words position note for the human-facing messages below - a

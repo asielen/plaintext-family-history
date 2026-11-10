@@ -2180,7 +2180,7 @@ def _new_couple_folder(archive_root: Path, prefix: int, members: list[dict]) -> 
                                if c is not None and not is_placeholder_name(c['name']))
              if safe]
     label = (' + '.join(named) if named
-             else folder_name_text(namer['name']) or fmt_id_display(namer['pid']))
+             else folder_name_text(namer['name']) or 'unknown')
     return archive_root / 'people' / f'{str(prefix).zfill(3)} {label}'
 
 

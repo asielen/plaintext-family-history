@@ -99,6 +99,8 @@ class NothingAFolderCanHoldTests(unittest.TestCase):
         # Before: an empty token the next read drops again, so every
         # `--fix` "renamed" the folder to [ + Kid] and lint never cleared.
         self.assertEqual(bracket_given_name('? Hartley'), '')
+        # ...but a later given name is used when there is one.
+        self.assertEqual(bracket_given_name('? Mary Hartley'), 'Mary')
         kids = [('', None, ['? Hartley']), ('Kid', None, ['Kid Hartley'])]
         self.assertEqual(reconcile_bracket_entries(kids, ['Kid']), ['Kid'])
         self.assertEqual(reconcile_bracket_entries(kids, []), ['Kid'])
@@ -122,7 +124,7 @@ class NothingAFolderCanHoldTests(unittest.TestCase):
                    {'pid': MA, 'pos': 3, 'name': '???'}]
         self.assertEqual(views._new_couple_folder(root, 2, members).name, '002 Thomas Hartley')
         members = [{'pid': PA, 'pos': 2, 'name': '?'}]
-        self.assertEqual(views._new_couple_folder(root, 2, members).name, f'002 {PA}')
+        self.assertEqual(views._new_couple_folder(root, 2, members).name, '002 unknown')
 
     def test_a_rename_to_nothing_a_folder_can_hold_leaves_the_folder_alone(self) -> None:
         new, reason = person._renamed_couple_folder_name(
@@ -187,13 +189,15 @@ class PromoteCreatesASafeFolderTests(unittest.TestCase):
         self.assertTrue((root / 'people' / "002 Margaret 'Peggy' Cole"
                          / f'cole__margaret_peggy_{MA}.md').is_file())
 
-    def test_single_promote_of_a_question_mark_name_falls_back_to_the_id(self) -> None:
+    def test_single_promote_of_a_question_mark_name_reads_unknown(self) -> None:
         # Before: a folder named "002 " (Windows refuses the trailing space,
         # so the promote failed with "cannot find the path specified").
         root = _build(ma_name='?')
         res = _quiet(person.run_promote, root, MA)
-        self.assertEqual(res.data.get('folder'), f'002 {MA}')
-        self.assertTrue((root / 'people' / f'002 {MA}' / f'cole__margaret_peggy_{MA}.md').is_file())
+        # "unknown", not her P-id: a later rename to her real name finds the
+        # placeholder and renames the folder too.
+        self.assertEqual(res.data.get('folder'), '002 unknown')
+        self.assertTrue((root / 'people' / '002 unknown' / f'cole__margaret_peggy_{MA}.md').is_file())
 
 
 if __name__ == '__main__':
