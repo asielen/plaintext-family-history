@@ -310,7 +310,7 @@
       wrap.appendChild(pill('nsi-archive', '📚 Processed', 'This ' + what + ' was processed into the archive.'));
     } else if (k && k.state === 'captured') {
       wrap.appendChild(pill('nsi-captured', '📥 Captured, not filed', 'Captured into the inbox (' + (k.where || '') + '), waiting to be filed.'));
-    } else if (full && adv()) {
+    } else if (full && adv() && !key.startsWith('med:')) {
       wrap.appendChild(pill('nsi-notyet', Object.keys(data.known).length ? '○ Not in archive' : 'Archive list not loaded',
         Object.keys(data.known).length ? 'This ' + what + ' has not been captured into the family archive.'
           : 'The helper has not reported what the archive holds yet.'));
@@ -376,7 +376,22 @@
   // links with something to say get pills, so pages are not cluttered.
   function renderLinks() {
     const here = keyFromPath(location.pathname);
-    const shownInCard = new Map();
+    // In a hint card the title claims its item before any thumbnail can, and
+    // another link claims an item only once its pills have somewhere to go -
+    // so a bare thumbnail ahead of the title can never leave a hint without
+    // pills (#256 review).
+    const claims = new Map();
+    const claimsOf = (card) => {
+      let m = claims.get(card);
+      if (!m) {
+        m = new Map();
+        const t = card.querySelector(HINT_TITLE);
+        const tk = t && keyFromHref(t.getAttribute('href'));
+        if (tk) m.set(tk, t);
+        claims.set(card, m);
+      }
+      return m;
+    };
     for (const a of document.querySelectorAll('a[href*="/records/"], a[href*="/discoveryui-content/view/"], a[href*="/imageviewer/collections/"], a[href*="/interactive/"], a[href*="/mediaui-viewer/"], a[href*="newspapers.com/clip/"], a[href*="newspapers.com/article/"], a[href*="findagrave.com/memorial/"]')) {
       if (a.closest('#nsi-anc-badge')) continue;
       // A hint card links its title, thumbnail and Review button to the same
@@ -384,12 +399,6 @@
       // item, so its thumbnail keeps them), never on the Review button.
       const hintCard = a.closest(HINT_CARD);
       let key = keyFromHref(a.getAttribute('href'));
-      if (hintCard && key) {
-        const seenInCard = shownInCard.get(hintCard) || new Set();
-        shownInCard.set(hintCard, seenInCard);
-        if (a.classList.contains('ancBtn') || seenInCard.has(key)) key = null;
-        else seenInCard.add(key);
-      }
       // Where the pills go: right after a link with text; for an icon-only link
       // (a tree person's Facts page lists sources as cards - an empty icon link
       // beside a .userCardContent block with the collection title) inside that
@@ -402,8 +411,17 @@
           (a.nextElementSibling && (a.nextElementSibling.textContent || '').trim() ? a.nextElementSibling : null);
         if (box) place = { existing: box.querySelector(':scope > .nsi-pills[data-nsi-for]'), put: (el) => box.appendChild(el) };
       }
+      if (hintCard && key) {
+        const m = claimsOf(hintCard);
+        const owner = m.get(key);
+        if (a.classList.contains('ancBtn') || (owner && owner !== a) || (!owner && !place)) key = null;
+        else m.set(key, a);
+      }
       const cand = place && place.existing;
-      const existing = cand && cand.classList && cand.classList.contains('nsi-pills') && cand.dataset.nsiFor ? cand : null;
+      let existing = cand && cand.classList && cand.classList.contains('nsi-pills') && cand.dataset.nsiFor ? cand : null;
+      // Inside a hint card a link touches only the pills it put there itself,
+      // so the title and the thumbnail never take each other's down.
+      if (existing && hintCard && existing.dataset.nsiOwner !== ownerOf(a)) existing = null;
       if (!key || key === here || !place) {
         if (existing) existing.remove();
         continue;
@@ -416,10 +434,22 @@
       const pills = pillsFor(key, false, false);
       pills.dataset.key = sig;
       pills.dataset.nsiFor = key;
+      if (hintCard) pills.dataset.nsiOwner = ownerOf(a);
       place.put(pills);
       const row = a.closest('[class*="result"], [class*="Result"], li, tr');
       if (row) row.classList.toggle('nsi-ruled-out', (data.anc[key] || {}).mark === 'nothing');
     }
+  }
+
+  const owners = new WeakMap();
+  let ownerSeq = 0;
+  function ownerOf(a) {
+    let id = owners.get(a);
+    if (!id) {
+      id = String(++ownerSeq);
+      owners.set(a, id);
+    }
+    return id;
   }
 
   let renderTimer = null;
@@ -472,6 +502,7 @@
   const HINT_TITLE = '.hintCardContentHeader, .recordCardV2CollectionTitle';
   let openHint = null;
   let openHintAt = 0;
+  let openHintPanelSeen = false;
   const panelOpen = () => !!document.querySelector('aside.sidebar:not(.noDisplay)');
 
   function onHintClick(e) {
@@ -479,12 +510,15 @@
     const a = e.target && e.target.closest && e.target.closest('a[href]');
     const card = a && a.closest(HINT_CARD);
     if (!card) return;
-    const key = keyFromHref(a.getAttribute('href'));
-    if (!key) return;
+    // Whatever was clicked in the card (title, Review, a record hint's scan),
+    // the panel opens that card's hint: count its title's record or photo.
     const header = card.querySelector(HINT_TITLE);
+    const key = (header && keyFromHref(header.getAttribute('href'))) || keyFromHref(a.getAttribute('href'));
+    if (!key) return;
     const title = header ? (header.innerText || header.textContent || '').trim() : '';
     openHint = key;
     openHintAt = Date.now();
+    openHintPanelSeen = false;
     dwellFlush();
     dwellKey = key;
     dwellSince = document.visibilityState === 'visible' ? Date.now() : 0;
@@ -494,8 +528,14 @@
   document.addEventListener('click', onHintClick, true);
 
   function checkHintPanel() {
-    // Wait for the panel to appear before treating "not open" as closed.
-    if (!openHint || panelOpen() || Date.now() - openHintAt < 1500) return;
+    if (!openHint) return;
+    if (panelOpen()) {
+      openHintPanelSeen = true;
+      return;
+    }
+    // Not open: closed again - or, on a slow connection, not open yet. Wait
+    // for it up to 10 seconds before giving up on it (#256 review).
+    if (!openHintPanelSeen && Date.now() - openHintAt < 10000) return;
     dwellFlush();
     openHint = null;
     dwellKey = keyFromPath(location.pathname);

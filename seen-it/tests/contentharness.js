@@ -11,7 +11,7 @@ const vm = require('vm');
 function fakeElement(tag) {
   const el = {
     tagName: String(tag || 'div').toUpperCase(), children: [], childNodes: [], style: {}, dataset: {},
-    classList: { add() {}, remove() {}, toggle() {}, contains: () => false },
+    classList: { add() {}, remove() {}, toggle() {}, contains: (c) => String(el.className || '').split(/\s+/).includes(c) },
     textContent: '', innerText: '', id: '',
     appendChild(c) { el.children.push(c); return c; },
     insertAdjacentElement() {}, remove() {}, setAttribute() {}, getAttribute: () => null,
@@ -21,14 +21,14 @@ function fakeElement(tag) {
   return el;
 }
 
-function loadContentScript(file, { pathname, search = '', origin, querySelector }) {
+function loadContentScript(file, { pathname, search = '', origin, querySelector, querySelectorAll, storage }) {
   const queries = [];
   const listeners = {};
   const sent = [];
   const document = {
     scripts: [], title: '', visibilityState: 'visible', readyState: 'complete',
     body: fakeElement('body'), documentElement: fakeElement('html'),
-    querySelectorAll: (sel) => { queries.push(sel); return []; },
+    querySelectorAll: (sel) => { queries.push(sel); return querySelectorAll ? querySelectorAll(sel) : []; },
     querySelector: (sel) => { queries.push(sel); return querySelector ? querySelector(sel) : null; },
     getElementById: () => null,
     createElement: fakeElement,
@@ -41,7 +41,7 @@ function loadContentScript(file, { pathname, search = '', origin, querySelector 
     document,
     location: { pathname, search, origin, href: origin + pathname + search, hostname: new URL(origin).hostname },
     chrome: {
-      storage: { local: { get: async () => ({}), set: async () => {} }, onChanged: { addListener() {} } },
+      storage: { local: { get: async () => (storage || {}), set: async () => {} }, onChanged: { addListener() {} } },
       runtime: { sendMessage: async (m) => { sent.push(m); return null; }, getURL: (p) => p },
     },
     console: { log() {}, warn() {}, error() {} },

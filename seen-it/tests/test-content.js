@@ -60,7 +60,7 @@ test('content.js uses that rule, and forgets the last search on leaving the resu
 // panel without changing the address. That click is the look; a photo hint is
 // keyed by its media id; scrolling past hints records nothing.
 function hintClick(href, { header = true, button = 0, ctrlKey = false } = {}) {
-  const card = { querySelector: (sel) => (/hintCardContentHeader/.test(sel) ? { innerText: 'Photo of the family' } : null) };
+  const card = { querySelector: (sel) => (/hintCardContentHeader/.test(sel) ? { innerText: 'Photo of the family', getAttribute: () => null } : null) };
   const a = {
     getAttribute: (n) => (n === 'href' ? href : null),
     classList: { contains: (c) => header && c === 'hintCardContentHeader' },
@@ -106,5 +106,78 @@ test('Ancestry hints: a record hint opened in the panel counts; a new-tab click 
     page.stop();
   }
   assert.deepStrictEqual(page.sent.filter((m) => m.type === 'ancLook').map((m) => m.key), ['rec:6742:4321']);
+});
+
+// PR #256 review: inside a hint card the title claims its item first, so a
+// bare thumbnail ahead of the title cannot leave the hint without pills; a
+// click on a record hint's scan counts the hint's record; a slow side panel
+// is waited for.
+const MED = 'abcdef01-2222-4333-8444-abcdefabcdef';
+function fakeLink(href, { text = '', cls = '', card = null } = {}) {
+  const a = {
+    className: cls, textContent: text, innerText: text, nextElementSibling: null, inserted: [],
+    getAttribute: (n) => (n === 'href' ? href : null),
+    classList: { contains: (c) => cls.split(' ').includes(c) },
+    closest: (sel) => (sel === 'section.extHintCard' ? card : null),
+    insertAdjacentElement(pos, el) { a.inserted.push(el); a.nextElementSibling = el; },
+    querySelector: () => null,
+  };
+  return a;
+}
+function fakeCard(titleCls) {
+  const card = { title: null };
+  card.querySelector = (sel) => (sel.includes(titleCls) ? card.title : null);
+  return card;
+}
+
+test('Ancestry hints: a thumbnail ahead of the title still leaves the title its pills', async () => {
+  const card = fakeCard('hintCardContentHeader');
+  const href = 'https://www.ancestry.com/mediaui-viewer/tree/333/person/444/media/' + MED;
+  const thumb = fakeLink(href, { cls: 'photo photoCenter', card });
+  const title = fakeLink(href, { text: 'Photo of the family', cls: 'link hintCardContentHeader', card });
+  card.title = title;
+  const page = loadContentScript('content-ancestry.js', {
+    pathname: '/family-trees/111/people/222/hints', origin: 'https://www.ancestry.com',
+    querySelectorAll: (sel) => (sel.includes('mediaui-viewer') ? [thumb, title] : []),
+    storage: { anc: { ['med:' + MED]: { t: [Date.now() - 86400000], last: Date.now() - 86400000, mark: null } } },
+  });
+  try {
+    await wait(700);
+  } finally {
+    page.stop();
+  }
+  assert.strictEqual(title.inserted.length, 1, 'the title got no pills');
+  assert.strictEqual(thumb.inserted.length, 0);
+});
+
+test('Ancestry hints: clicking a record hint\'s scan counts the hint\'s record', async () => {
+  const card = fakeCard('recordCardV2CollectionTitle');
+  card.title = fakeLink('https://www.ancestry.com/search/collections/6742/records/4321', { text: '1880 census', cls: 'link recordCardV2CollectionTitle', card });
+  const scan = fakeLink('https://www.ancestry.com/imageviewer/collections/6742/images/4321_0001', { cls: 'photoContainer photo', card });
+  const page = loadContentScript('content-ancestry.js', { pathname: '/family-trees/111/people/222/hints', origin: 'https://www.ancestry.com' });
+  try {
+    await wait(50);
+    page.listeners.click[0]({ button: 0, target: { closest: (sel) => (sel === 'a[href]' ? scan : null) } });
+  } finally {
+    page.stop();
+  }
+  assert.deepStrictEqual(page.sent.filter((m) => m.type === 'ancLook').map((m) => m.key), ['rec:6742:4321']);
+});
+
+test('Ancestry hints: a side panel slow to appear is waited for, not taken as closed', async () => {
+  let panel = null;
+  const page = loadContentScript('content-ancestry.js', {
+    pathname: '/family-trees/111/people/222/hints', origin: 'https://www.ancestry.com',
+    querySelector: (sel) => (sel === 'aside.sidebar:not(.noDisplay)' ? panel : null),
+  });
+  try {
+    await wait(50);
+    page.listeners.click[0](hintClick('https://www.ancestry.com/mediaui-viewer/tree/333/person/444/media/' + MED));
+    await wait(2600);
+    assert.strictEqual(page.sent.filter((m) => m.type === 'ancDwell').length, 0, 'the reading time was stopped before the panel appeared');
+    panel = {};
+  } finally {
+    page.stop();
+  }
 });
 
