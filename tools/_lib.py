@@ -687,7 +687,7 @@ def reconcile_bracket_entries(
         row: list[int | None] = []
         for base, words, tok_label in zip(bases, tok_words, tok_labels):
             relabel = 0 if tok_label == label else 1
-            if base == default:
+            if default and base == default:
                 row.append(relabel)
             # A bare title ("Mrs.") fits every married woman and names no one;
             # it is the defect being repaired, never a choice worth keeping.
@@ -700,6 +700,11 @@ def reconcile_bracket_entries(
     out = []
     for i, (default, label, _names) in enumerate(kids):
         j = tok_of[i]
+        if j is None and not default:
+            # No first name a folder can hold ("? Hartley"): leave the child
+            # out rather than write an empty slot the next read drops again,
+            # which made every refresh "rename" the folder to itself.
+            continue
         out.append(format_bracket_child(bases[j] if j is not None else default, label))
     return sorted(out)
 
@@ -1376,8 +1381,11 @@ def spouse_extended_base(
     # A partner with no recorded name resolves to their bare P-id, or to one
     # of the archive's placeholders - a folder name is for humans, so never
     # write an ID or a placeholder into it.
+    # A name made only of characters a folder can't hold ("???") is a
+    # placeholder too: its empty "+ " half would be kept for ever, since this
+    # rule never touches a base that already has a "+".
     if (not other_name or other_name == other or is_placeholder_name(other_name)
-            or _norm(other_name) == base_person):
+            or not folder_name_text(other_name) or _norm(other_name) == base_person):
         return base_name, None
     return f'{base_name} + {folder_name_text(other_name)}', other_name
 

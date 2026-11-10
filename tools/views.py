@@ -2174,9 +2174,13 @@ def _new_couple_folder(archive_root: Path, prefix: int, members: list[dict]) -> 
     """
     namer = min(members, key=lambda c: c['pos'])
     partner = next((c for c in members if c['pos'] == namer['pos'] + 1), None)
-    named = [folder_name_text(c['name']) for c in (namer, partner)
-             if c is not None and not is_placeholder_name(c['name'])]
-    label = ' + '.join(named) if named else folder_name_text(namer['name'])
+    # A name made only of characters a folder can't hold ("???") counts as a
+    # placeholder: its safe form is empty and would leave "002 Thomas + ".
+    named = [safe for safe in (folder_name_text(c['name']) for c in (namer, partner)
+                               if c is not None and not is_placeholder_name(c['name']))
+             if safe]
+    label = (' + '.join(named) if named
+             else folder_name_text(namer['name']) or fmt_id_display(namer['pid']))
     return archive_root / 'people' / f'{str(prefix).zfill(3)} {label}'
 
 

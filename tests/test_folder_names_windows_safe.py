@@ -28,6 +28,7 @@ from _lib import (
     bracket_given_name,
     folder_name_text,
     load_fha_yaml,
+    reconcile_bracket_entries,
     spouse_extended_base,
 )
 
@@ -89,13 +90,54 @@ class SharedRuleSitesTests(unittest.TestCase):
         self.assertEqual(new, "040 Thomas Hartley + Margaret 'Meg' Cole [Anna]")
 
 
+class NothingAFolderCanHoldTests(unittest.TestCase):
+    """A name made only of characters Windows refuses ("?", "???") has an
+    empty safe form. Each site treats that like a missing name instead of
+    writing an empty slot into a folder name."""
+
+    def test_a_child_with_no_usable_first_name_is_left_out_of_the_brackets(self) -> None:
+        # Before: an empty token the next read drops again, so every
+        # `--fix` "renamed" the folder to [ + Kid] and lint never cleared.
+        self.assertEqual(bracket_given_name('? Hartley'), '')
+        kids = [('', None, ['? Hartley']), ('Kid', None, ['Kid Hartley'])]
+        self.assertEqual(reconcile_bracket_entries(kids, ['Kid']), ['Kid'])
+        self.assertEqual(reconcile_bracket_entries(kids, []), ['Kid'])
+        # A token that still fits the unnamed child's variants is kept.
+        kids = [('', None, ['? Hartley', 'Baby Hartley']), ('Kid', None, ['Kid Hartley'])]
+        self.assertEqual(reconcile_bracket_entries(kids, ['Baby', 'Kid']), ['Baby', 'Kid'])
+        # A bare label token never becomes " (adopted)".
+        kids = [('', 'adopted', ['? Hartley'])]
+        self.assertEqual(reconcile_bracket_entries(kids, ['(adopted)']), [])
+
+    def test_no_empty_partner_half_is_added(self) -> None:
+        # Before: "040 Thomas Hartley + " - and the add-only rule never
+        # revisits a base with a "+", so the real name could never be added.
+        base, other = spouse_extended_base(
+            '040 Thomas Hartley', ['p-1', 'p-3'], {'p-1': 'Thomas Hartley', 'p-3': '???'})
+        self.assertEqual((base, other), ('040 Thomas Hartley', None))
+
+    def test_a_new_couple_folder_never_ends_in_an_empty_name(self) -> None:
+        root = Path('/archive')
+        members = [{'pid': PA, 'pos': 2, 'name': 'Thomas Hartley'},
+                   {'pid': MA, 'pos': 3, 'name': '???'}]
+        self.assertEqual(views._new_couple_folder(root, 2, members).name, '002 Thomas Hartley')
+        members = [{'pid': PA, 'pos': 2, 'name': '?'}]
+        self.assertEqual(views._new_couple_folder(root, 2, members).name, f'002 {PA}')
+
+    def test_a_rename_to_nothing_a_folder_can_hold_leaves_the_folder_alone(self) -> None:
+        new, reason = person._renamed_couple_folder_name(
+            '040 Thomas Hartley + Margaret Cole', 'Margaret Cole', '???')
+        self.assertIsNone(new)
+        self.assertIn('keeps its name', reason)
+
+
 def _ptext(pid: str, name: str, sex: str) -> str:
     name_yaml = name.replace('"', '\\"')
     return (f'---\nid: {pid}\nname: "{name_yaml}"\nsex: {sex}\nliving: false\n'
             f'tier: stub\n---\n\n# {name}\n\n## Biography\n\nx\n')
 
 
-def _build() -> Path:
+def _build(ma_name: str = PEGGY) -> Path:
     root = Path(tempfile.mkdtemp())
     (root / 'people' / 'stubs').mkdir(parents=True)
     (root / 'sources' / 'notes').mkdir(parents=True)
@@ -111,7 +153,7 @@ def _build() -> Path:
     files = {
         f'people/stubs/hartley__kid_{KID}.md': _ptext(KID, 'Kid Hartley', 'F'),
         f'people/stubs/hartley__thomas_{PA}.md': _ptext(PA, 'Thomas Hartley', 'M'),
-        f'people/stubs/cole__margaret_peggy_{MA}.md': _ptext(MA, PEGGY, 'F'),
+        f'people/stubs/cole__margaret_peggy_{MA}.md': _ptext(MA, ma_name, 'F'),
         f'sources/notes/{SID.lower()}.md': (
             f'---\nid: {SID}\ntitle: Rel\nsource_type: other\n---\n\n'
             f'## Claims\n```yaml\n{claim}```\n'),
@@ -144,6 +186,14 @@ class PromoteCreatesASafeFolderTests(unittest.TestCase):
         self.assertEqual(res.data.get('folder'), "002 Margaret 'Peggy' Cole")
         self.assertTrue((root / 'people' / "002 Margaret 'Peggy' Cole"
                          / f'cole__margaret_peggy_{MA}.md').is_file())
+
+    def test_single_promote_of_a_question_mark_name_falls_back_to_the_id(self) -> None:
+        # Before: a folder named "002 " (Windows refuses the trailing space,
+        # so the promote failed with "cannot find the path specified").
+        root = _build(ma_name='?')
+        res = _quiet(person.run_promote, root, MA)
+        self.assertEqual(res.data.get('folder'), f'002 {MA}')
+        self.assertTrue((root / 'people' / f'002 {MA}' / f'cole__margaret_peggy_{MA}.md').is_file())
 
 
 if __name__ == '__main__':

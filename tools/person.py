@@ -1739,8 +1739,10 @@ def run_promote(
                 'marriage takes a letter suffix, e.g. '
                 f'"{e.prefix:03d}b …"; SPEC §12.2), then retry. Nothing was written.')
         if dest_folder is None:
-            display = name or fmt_id_display(pid)
-            dest_folder = people_dir / f'{str(prefix).zfill(3)} {folder_name_text(display)}'
+            # A name with nothing a folder can hold ("?") falls back to the
+            # P-id, like a missing name, instead of a folder named "002 ".
+            display = folder_name_text(name or '') or fmt_id_display(pid)
+            dest_folder = people_dir / f'{str(prefix).zfill(3)} {display}'
     result.data['folder'] = dest_folder.name
     # Plain-words position note for the human-facing messages below - a
     # connections/ record has no Ahnentafel number to report (#80).
@@ -2098,6 +2100,8 @@ def _renamed_couple_folder_name(
         return None, f'{old_name!r} does not appear in the folder name as written'
     if len(matches) > 1:
         return None, f'{old_name!r} appears more than once in the folder name - which one is ambiguous'
+    if not folder_name_text(new_name):
+        return None, f'{new_name!r} has nothing a folder name can hold, so the folder keeps its name'
     new_segments = list(segments)
     new_segments[matches[0]] = folder_name_text(new_name)
     new_base = prefix + ' + '.join(new_segments)
