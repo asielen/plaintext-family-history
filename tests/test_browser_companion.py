@@ -334,14 +334,13 @@ class SharedPhotoTestCase(unittest.TestCase):
             m = _SEEN_IT_MEDIA_RE.search(urls[0])
             self.assertIsNotNone(m)
             self.assertEqual('med:' + m.group(1).lower(), 'med:' + PHOTO_MEDIA_ID)
-            # Once Seen It's helper knows shared photos (PR #256), it must
-            # find this one from the filed record itself.
+            # Seen It's own helper (PR #256) finds it from the filed record.
             sys.path.insert(0, str(ROOT / 'seen-it' / 'host'))
             import seenit_host
-            if hasattr(seenit_host, 'ANC_MEDIA_RE'):
-                self.assertIn('med:' + PHOTO_MEDIA_ID, seenit_host._keys_from_url(urls[0]))
-                items, _ = seenit_host.scan_known({'sources': [str(archive / 'sources')]})
-                self.assertEqual(items['med:' + PHOTO_MEDIA_ID]['sid'], meta['id'])
+            self.assertIn('med:' + PHOTO_MEDIA_ID, seenit_host._keys_from_url(urls[0]))
+            items, _ = seenit_host.scan_known({'sources': [str(archive / 'sources')]})
+            self.assertEqual(items['med:' + PHOTO_MEDIA_ID]['state'], 'filed')
+            self.assertEqual(items['med:' + PHOTO_MEDIA_ID]['sid'], meta['id'])
 
             # Other members who saved the photo are named nowhere in the archive.
             for p in archive.rglob('*'):
