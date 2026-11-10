@@ -1033,11 +1033,15 @@
   // "Originally added by hartley_genealogy on 3 Mar 2015", on one line.
   const ANC_MEDIA_INLINE_RE = /^((?:originally )?(?:added|uploaded|shared) by)\s*:?\s+(.+)$/i;
   const ANC_MEDIA_INLINE_START_RE = /^((?:originally )?(?:added|uploaded|shared) by)\b/i;
-  // An upload line is attribution only when it is shaped like one: the phrase,
-  // then the uploader in a link, or one username-like word, and at most "on
-  // <date>" after - nothing else. "Shared by Aunt Ethel Hartley at the 1950
-  // reunion; she is the girl on the left." is the family's description, and
-  // stays one (PR #258 round 6).
+  // A line starting "Originally added by" (or "Originally shared/uploaded by")
+  // is always the upload line, whatever follows - a link, a display name,
+  // "(Ruth Hartley)": it is never a description (PR #258 round 7). A plain
+  // "Added by" / "Shared by" / "Uploaded by" is one only when it is shaped like
+  // one: the phrase, then the uploader in a link, or one username-like word,
+  // and at most "on <date>" after - nothing else. "Shared by Aunt Ethel
+  // Hartley at the 1950 reunion; she is the girl on the left." is the family's
+  // description, and stays one (round 6).
+  const ANC_MEDIA_ORIGINALLY_RE = /^(originally (?:added|uploaded|shared) by)\b\s*:?\s*/i;
   const ANC_MEDIA_ATTRIB_LINKED_RE = /^((?:originally )?(?:added|uploaded|shared) by)\s*:?\s*(on\s+[^.;!?]{3,40})?$/i;
   const ANC_MEDIA_ATTRIB_WORD_RE = /^((?:originally )?(?:added|uploaded|shared) by)\s*:?\s+[a-z0-9_.@-]*[a-z0-9_@-](\s+on\s+[^.;!?]{3,40})?$/i;
 
@@ -1046,6 +1050,8 @@
     const own = ancOwnText(el);
     if (!ANC_MEDIA_INLINE_START_RE.test(own)) return null;
     const line = text(el).split('\n')[0];
+    const originally = ANC_MEDIA_ORIGINALLY_RE.exec(own) && ANC_MEDIA_ORIGINALLY_RE.exec(line);
+    if (originally) return { phrase: originally[1], who: line.slice(originally[0].length).trim() };
     const linked = ANC_MEDIA_ATTRIB_LINKED_RE.test(own) && ancElements(el, (e) => ancTag(e) === 'A').length > 0;
     if (!linked && !ANC_MEDIA_ATTRIB_WORD_RE.test(line)) return null;
     const m = ANC_MEDIA_INLINE_RE.exec(line);
@@ -1140,9 +1146,9 @@
   // never filled from a linked relative's card (PR #258 round 4, Codex
   // PRRT_kwDOS6vm6c61xYYi) - with one exception, the description, which may
   // sit beside the box in the same panel (round 5). Who it is linked to and
-  // who added it may sit anywhere beside the box. Beside the box, a card about
-  // someone else - one headed by a name, or marked as a person, profile or
-  // card - is never read. Nowhere is anything read from inside a members
+  // who added it may sit anywhere beside the box. Beside the box, a section
+  // headed by anything but one of those fields is never read
+  // (ancMediaOthersCard, round 7). Nowhere is anything read from inside a members
   // section ("Comments (2)", "Saved by …"). With no Details box at all, the
   // whole page is read in order.
   // `opts.hidden` / `opts.block` are ancText's (the live page passes its CSS).
@@ -1235,24 +1241,21 @@
     return key === 'comments' || key === 'savedBy';
   }
 
-  // A card about someone else beside the photo's Details box - a linked
-  // person's, a member's profile, a comment. Only one that is clearly so is
-  // skipped: marked as a person, profile or comment, AND headed by something
-  // that is not one of the photo's labels (a name). One whose own first
-  // heading or label is a field ("Linked to", "Description") is always read,
-  // whatever its wrapper is called ("linked-people", "card"): where the
-  // markup is unsure, her text is kept (PR #258 round 6).
+  // Beside the photo's Details box, a section is read only when its own first
+  // heading or label is one of the photo's fields - "Description", "Linked
+  // to" / "Attached to", or the upload line's label. Headed by anything else
+  // - a person's name, "About this photo", a username - it is skipped, with
+  // everything inside it, whatever its class says. When the page's layout is
+  // unclear, the add-on leaves text out rather than file someone else's words
+  // as hers; anything left out can still be read on Ancestry from the photo's
+  // saved address (PR #258 round 7). An element with no heading or label of
+  // its own is only a wrapper, and is looked inside.
   function ancMediaOthersCard(el) {
     const kids = [...(el.childNodes || [])].filter((c) => c.nodeType === 1);
-    const head = kids.find((c) => /^H[1-6]$/.test(ancTag(c)));
-    const field = (c) => {
-      const key = c ? ancMediaLabel(c) : null;
-      return !!key && key !== 'comments' && key !== 'savedBy';
-    };
-    if (field(kids[0]) || field(head)) return false;
-    const cls = el.className && el.className.baseVal !== undefined ? el.className.baseVal : el.className;
-    return /(^|[\s_-])(person|persons|profile|profiles|comment|comments)([\s_-]|$)/i
-      .test(String(el.id || '') + ' ' + String(cls || ''));
+    const head = kids.find((c) => /^H[1-6]$/.test(ancTag(c)) || !!ancMediaLabel(c));
+    if (!head) return false;
+    const key = ancMediaLabel(head);
+    return !(key === 'description' || key === 'linkedTo' || key === 'originallyAddedBy');
   }
 
   // The people a shared photo is linked to, as names: one per line, without

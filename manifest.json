@@ -168,7 +168,7 @@
     {
       "path": ".fha/browser-companion/README.md",
       "category": "operating",
-      "sha256": "347326bcdeec811e14480330b091cc871eff66dc69b9a60f23c8a9a818601ad1",
+      "sha256": "372eb79f847fb80a2a5dd7c25b4a70b9c565065ee42ef63b3fdf5ede3dd96967",
       "spec_version": "1.2",
       "src": "browser-companion/README-ARCHIVE.md"
     },
@@ -224,14 +224,14 @@
     {
       "path": ".fha/browser-companion/src/content.js",
       "category": "operating",
-      "sha256": "642a42d1f8662d78be94c1f98f8c1f16758ef175b1b4ee1491f8298cf1ab3e51",
+      "sha256": "d84fa959b7a15d86e28992e10045bfca25df4bdd433b940068620b88975d243a",
       "spec_version": "1.2",
       "src": "browser-companion/src/content.js"
     },
     {
       "path": ".fha/browser-companion/src/lib/ancestry-record.js",
       "category": "operating",
-      "sha256": "e48af34ace90c889a20d9fc96bff2affefcc7ef7193398d47bafc020760e72ad",
+      "sha256": "9e3b5610e343b61198854c213b46aa5d25b0df522c2d8e6cab9027daa1d6318e",
       "spec_version": "1.2",
       "src": "browser-companion/src/lib/ancestry-record.js"
     },
@@ -504,7 +504,7 @@
     {
       "path": ".fha/tools/capture.py",
       "category": "operating",
-      "sha256": "46a4bc1073f95b4c7228603f4bcfb54129dee498b9e1e75075c910f96c6ba065",
+      "sha256": "b964bbdc64d781db601144d84defbde0922079df4f8779a9824f475fcddbbb9a",
       "spec_version": "1.2",
       "src": "tools/capture.py"
     },

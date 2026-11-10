@@ -1152,6 +1152,12 @@ def scan_known(folders, cache=None):
             # count: an inbox that itself lives under a folder called
             # "processed" is not all done.
             inside = [x.lower() for x in p.relative_to(root).parts[:-1]]
+            # `fha capture --ingest` sets a shared photo it could not file (an
+            # older add-on saved no photo) aside in .not-filed/: it is not
+            # captured, so Seen It must not say "Captured, not filed" for it
+            # and stop her capturing the photo again (PR #258 round 7).
+            if '.not-filed' in inside:
+                continue
             state = 'processed' if 'processed' in inside else 'captured'
             if is_stub:
                 # `fha capture --ingest` turns a bundle into an inbox stub

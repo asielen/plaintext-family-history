@@ -576,12 +576,13 @@ class SharedPhotoTestCase(unittest.TestCase):
         return archive, load_fha_yaml(archive, strict=True)
 
     def test_an_older_add_ons_capture_with_no_photo_is_not_filed_at_all(self) -> None:
-        """PR #258 round 6 (P2): an older add-on saved only a copy of the
-        shared photo's page. Leaving the copy out (round 5) left a photo source
-        with no photo, which Seen It then showed as "in the archive", so she
-        would never go back for the photo. Now the capture is not ingested:
-        it stays where it is in the staging folder (not parked, nothing lost),
-        nothing is filed, and she is told how to capture the photo itself."""
+        """PR #258 rounds 6-7 (P2, P3-D): an older add-on saved only a copy of
+        the shared photo's page. Filed, it would be a photo source with no
+        photo, which Seen It then showed as "in the archive", so she would
+        never go back for the photo. It is not ingested: it is set aside in
+        the staging folder's .not-filed/ (beside .ingested/, never deleted),
+        she is told once - naming that folder - and later sweeps, doctor and
+        Seen It leave it alone."""
         with tempfile.TemporaryDirectory() as td:
             tmp = Path(td)
             staging = tmp / 'staging'
@@ -591,19 +592,85 @@ class SharedPhotoTestCase(unittest.TestCase):
             with contextlib.redirect_stderr(err):
                 res = capture.run_ingest(archive, config, staging_dir=str(staging))
             self.assertEqual(res.data['ingested'], 0)
-            self.assertEqual([o['status'] for o in res.data['bundles']], ['shared-photo-without-photo'])
+            self.assertEqual(res.data['not_filed'], 1)
+            self.assertEqual([o['status'] for o in res.data['bundles']], ['not-filed'])
+            aside = staging / '.not-filed' / bundle.name
             self.assertIn("This shared photo was captured with an older version of the add-on, which saved only a "
                           "copy of Ancestry's page (it lists other members) and not the photo. Nothing was filed. "
                           "Update the add-on (fha update-tools, then reload it in chrome://extensions), open the "
                           "photo again and press Capture this photo.", err.getvalue())
-            self.assertTrue((bundle / 'page-snapshot.html').is_file(), 'the capture must stay where it was')
+            self.assertIn(f"It is kept in {aside.as_posix()}; once you've captured the photo again with the updated "
+                          "add-on, you can delete that folder.", err.getvalue())
+            self.assertFalse(bundle.exists())
+            self.assertTrue((aside / 'page-snapshot.html').is_file(), 'the capture is kept whole, never deleted')
             self.assertFalse((staging / '.ingested').exists())
             inbox = archive / 'inbox'
             self.assertFalse(inbox.exists() and any(inbox.iterdir()), 'nothing may be filed')
+            # Said once: the next sweep is silent, and nothing is waiting.
+            err2 = io.StringIO()
+            with contextlib.redirect_stderr(err2):
+                res2 = capture.run_ingest(archive, config, staging_dir=str(staging))
+            self.assertNotIn('older version', err2.getvalue())
+            self.assertEqual(res2.data.get('bundles', []), [])
+            self.assertEqual(capture.staged_bundles(config, str(staging))[1], [])
             sys.path.insert(0, str(ROOT / 'seen-it' / 'host'))
             import seenit_host
-            items, _ = seenit_host.scan_known({'sources': [str(archive / 'sources')], 'filed': [str(archive / 'documents')]})
+            items, _ = seenit_host.scan_known({'sources': [str(archive / 'sources')], 'filed': [str(archive / 'documents')],
+                                               'captured': [str(staging)]})
             self.assertNotIn('med:' + PHOTO_MEDIA_ID, items)
+
+    def test_a_shared_photo_capture_with_no_picture_at_all_is_never_filed(self) -> None:
+        """PR #258 round 7: the same refusal whenever a shared-photo capture
+        holds no picture - also one with no page copy to leave out (an older
+        add-on with the page copy turned off, a citation-and-link capture)."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            staging = tmp / 'staging'
+            bundle = staging / 'thomas-old-no-copy'
+            bundle.mkdir(parents=True)
+            (bundle / 'page.html').write_text('<html><title>Hartley farm</title></html>', encoding='utf-8')
+            (bundle / 'capture.json').write_text(json.dumps({
+                'schema': 2, 'url': PHOTO_VIEWER_URL + '?destTreeId=90000003', 'title': 'Hartley farm',
+                'accessed': '2026-11-10', 'recipe_hint': 'ancestry', 'assets': []}), encoding='utf-8')
+            archive, config = self._archive(tmp)
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                res = capture.run_ingest(archive, config, staging_dir=str(staging))
+            self.assertEqual(res.data['ingested'], 0)
+            self.assertIn('This shared photo was captured without the photo itself', err.getvalue())
+            self.assertTrue((staging / '.not-filed' / bundle.name / 'capture.json').is_file())
+            inbox = archive / 'inbox'
+            self.assertFalse(inbox.exists() and any(inbox.iterdir()), 'nothing may be filed')
+
+    def test_a_root_named_path_finds_its_configured_folder_and_a_typed_path_still_wins(self) -> None:
+        """PR #258 round 7 (section 13 gap): the alias resolution on its own,
+        apart from any refusal's wording. `fha process photos/...` with the
+        photo library outside the archive: found in that library. A path that
+        exists as typed is always the one used."""
+        import process
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            library = tmp / 'Family Photos'
+            library.mkdir()
+            (library / 'portrait.jpg').write_bytes(b'library copy')
+            archive, config = self._archive(tmp, photos=library.as_posix())
+            elsewhere = tmp / 'elsewhere'
+            (elsewhere / 'photos').mkdir(parents=True)
+            cwd = os.getcwd()
+            try:
+                os.chdir(tmp)  # neither the archive nor the library
+                rc = process._standalone_main(['photos/portrait.jpg', '--dry-run', '--root', str(archive)])
+                self.assertEqual(rc, EXIT_CLEAN)
+                # As typed, it exists here: that is the file meant.
+                os.chdir(elsewhere)
+                (elsewhere / 'photos' / 'portrait.jpg').write_bytes(b'the one she typed')
+                found, _ = process._resolve_input_file('photos/portrait.jpg', archive, fha_config=config)
+                self.assertEqual(found, (elsewhere / 'photos' / 'portrait.jpg').resolve())
+                (elsewhere / 'photos' / 'portrait.jpg').unlink()
+                found, _ = process._resolve_input_file('photos/portrait.jpg', archive, fha_config=config)
+                self.assertEqual(found, (library / 'portrait.jpg').resolve())
+            finally:
+                os.chdir(cwd)
 
     def test_an_older_add_ons_copy_of_a_shared_photos_page_never_reaches_the_archive(self) -> None:
         """PR #258 round 5 (audit M), round 6: when the older add-on's capture

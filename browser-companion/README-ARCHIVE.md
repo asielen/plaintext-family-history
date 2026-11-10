@@ -237,6 +237,13 @@ archive: with no copy of the page, the only words kept are the photo's details,
 and reading them stops at that list. A sentence of the description that happens
 to begin "Saved by …" is the photo's story, and is kept.
 
+When the page's layout is unclear, the add-on leaves text out rather than file
+someone else's words as yours. Anything left out can still be read on Ancestry
+from the photo's saved address. So a description that sits under some other
+heading (a relative's card, "About this photo") is not saved, and a line that
+begins "Originally added by" is always taken as who uploaded the photo, never as
+its description.
+
 If Ancestry will not hand over the photo (you are signed out, say), **nothing is
 saved**, and the panel says why: a photo source is never filed without its
 picture. If you can download the photo yourself (right-click it, **Save image
@@ -256,10 +263,12 @@ on a matching name alone.
 
 A capture of a shared photo made with an older version of this add-on may still
 hold a copy of Ancestry's page. When you file it, that copy is left out (it
-stays in your download folder) and the notes say why. If that older capture
-saved only the page and not the photo, nothing is filed at all - it stays in
-your download folder - and the message tells you to update the add-on, open the
-photo again and press **Capture this photo**.
+stays in your download folder) and the notes say why. If a capture of
+a shared photo holds no photo at all (an older add-on saved only the page, or
+only the address), nothing is filed. It is moved, whole, into a `.not-filed`
+folder in your download folder, and the message - shown that once - tells you to
+update the add-on, open the photo again and press **Capture this photo**. Once
+you have, you can delete that folder.
 
 From a person's **Hints** page, open the photo on its own page first (the
 "Evaluate photo" side panel is not captured).

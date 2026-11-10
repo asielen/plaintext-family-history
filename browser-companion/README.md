@@ -225,7 +225,12 @@ no-op, the bundles land in `inbox/` directly.
   `photo-data.json`, whose fields are only what the Details reader extracts,
   and the Python recipe reads no people or text from that page. `fha capture
   --ingest` leaves out a page copy an older add-on made of such a page (it
-  stays parked in the staging folder) and says so in the notes. Capture
+  stays parked in the staging folder) and says so in the notes; a shared-photo
+  capture with no picture is never filed - it is set aside, once, in the
+  staging folder's `.not-filed/`. Where the page's layout is unclear, the
+  Details reader leaves text out rather than file someone else's words as
+  hers: beside the Details box only sections headed "Description" / "Linked
+  to" / the upload line are read. Capture
   reads the page again first, and
   stages nothing while the page shows Details or linked people the form has
   not shown her (they are added to the form for her to check), so a photo is

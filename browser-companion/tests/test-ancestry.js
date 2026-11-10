@@ -592,9 +592,49 @@ test('round 6 (audit N): a "Linked to" or "Description" beside the box is read w
     '</ul></section>'), { date: 'abt 1925', linkedTo: ['Thomas Hartley'] });
   assert.deepStrictEqual(panel('<section class="card"><h3>Description</h3><p>Thomas and Margaret on the porch.</p></section>'),
     { date: 'abt 1925', description: 'Thomas and Margaret on the porch.' });
+  // A section headed by anything else is left out whole (round 7): its
+  // description is the accepted cost; it can still be read on Ancestry.
   assert.deepStrictEqual(panel('<section><h3>About this photo</h3><h4>Description</h4><p>Thomas and Margaret on the ' +
-    'porch.</p></section>'), { date: 'abt 1925', description: 'Thomas and Margaret on the porch.' });
-  // A person's card - marked so, headed by a name - is still never read.
+    'porch.</p></section>'), { date: 'abt 1925' });
+  // A person's card - headed by a name - is never read.
   assert.deepStrictEqual(panel('<div class="person-card"><h4>Thomas Hartley</h4><dl><dt>Description</dt>' +
     '<dd>Born on the moors.</dd><dt>Attached to</dt><dd>cousin_member_one</dd></dl></div>'), { date: 'abt 1925' });
+});
+
+// ── PR #258 round 7: leave text out rather than file someone else's words ───
+
+test('round 7: a line starting "Originally added by" is always the uploader, never a description', () => {
+  const box = (line) => details('<aside aria-label="Details"><h3>Description</h3><p>' + line + '</p></aside>');
+  assert.deepStrictEqual(box('Originally added by Ruth Hartley on 3 Mar 2015'),
+    { originallyAddedBy: 'Ruth Hartley on 3 Mar 2015' });
+  assert.deepStrictEqual(box('Originally added by <a>hartley_family_tree</a> (Ruth Hartley) on 3 Mar 2015'),
+    { originallyAddedBy: 'hartley_family_tree (Ruth Hartley) on 3 Mar 2015' });
+  const empty = (line) => details('<aside><h2>Details</h2><dl><dt>Description</dt><dd></dd></dl><p>' + line + '</p></aside>');
+  assert.deepStrictEqual(empty('Originally added by <span class="user-name">Mary Jones</span> on 3 Mar 2015'),
+    { originallyAddedBy: 'Mary Jones on 3 Mar 2015' });
+  assert.deepStrictEqual(empty('Originally added by Mary Jones on 3 Mar 2015'), { originallyAddedBy: 'Mary Jones on 3 Mar 2015' });
+  // Without "Originally", a sentence stays the description (round 6's A, B, C still hold).
+  assert.strictEqual(box('Shared by Aunt Ethel Hartley at the 1950 reunion; she is the girl on the left.').description,
+    'Shared by Aunt Ethel Hartley at the 1950 reunion; she is the girl on the left.');
+});
+
+test('round 7: beside the box, only a section headed by one of the photo\'s fields is read - no class-word guessing', () => {
+  const main = (html) => details('<main>' + html + '</main>');
+  // A relative's card, whatever its class: nothing from it.
+  assert.deepStrictEqual(main('<aside aria-label="Details"><dl><dt>Date</dt><dd>abt 1925</dd></dl></aside>' +
+    '<div class="css-1q2w3e"><h4>Thomas Hartley</h4><dl><dt>Description</dt><dd>Born on the moors of Yorkshire.</dd></dl></div>'),
+  { date: 'abt 1925' });
+  assert.deepStrictEqual(main('<div class="relative-card"><h4>Thomas Hartley</h4><dl><dt>Attached to</dt>' +
+    '<dd>Margaret Whitcombe (wife)<br>cousin_member_one</dd></dl></div>' +
+    '<aside aria-label="Details"><dl><dt>Date</dt><dd>abt 1925</dd></dl></aside>'), { date: 'abt 1925' });
+  // A member's card headed by a username: no uploader from it.
+  assert.deepStrictEqual(main('<aside aria-label="Details"><dl><dt>Date</dt><dd>abt 1925</dd></dl></aside>' +
+    '<div class="member-card"><h4>cousin_member_one</h4><p>Shared by <a>cousin_member_one</a></p></div>'), { date: 'abt 1925' });
+  // A lone upload line beside the box, in no such section, is still the uploader.
+  assert.deepStrictEqual(main('<aside aria-label="Details"><dl><dt>Date</dt><dd>abt 1925</dd></dl></aside>' +
+    '<p class="attribution">Originally added by <a>hartley_family_tree</a> on 3 Mar 2015</p>'),
+  { date: 'abt 1925', originallyAddedBy: 'hartley_family_tree on 3 Mar 2015' });
+  // Comments are still never read.
+  assert.deepStrictEqual(main('<aside aria-label="Details"><dl><dt>Date</dt><dd>abt 1925</dd></dl></aside>' +
+    '<section><h3>Comments (1)</h3><p>Shared by <a>cousin_member_two</a></p></section>'), { date: 'abt 1925' });
 });

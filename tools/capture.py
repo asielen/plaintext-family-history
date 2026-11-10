@@ -1387,6 +1387,14 @@ _SHARED_PHOTO_OLD_ADDON = (
     "Ancestry's page (it lists other members) and not the photo. Nothing was filed. Update the add-on "
     "(fha update-tools, then reload it in chrome://extensions), open the photo again and press Capture "
     "this photo.")
+_SHARED_PHOTO_NO_PICTURE = (
+    "This shared photo was captured without the photo itself - only its address was saved. Nothing was "
+    "filed. Update the add-on (fha update-tools, then reload it in chrome://extensions), open the photo "
+    "again and press Capture this photo.")
+# Where a shared-photo capture that cannot be filed is set aside in the
+# staging folder - beside `.ingested/`, never deleted - so it is reported
+# once and then left in peace (PR #258 round 7).
+_NOT_FILED_DIRNAME = '.not-filed'
 
 
 def _without_shared_photo_page_copy(cap: dict, assets: list[tuple[Path, str]]) -> list[tuple[Path, str]]:
@@ -1396,9 +1404,10 @@ def _without_shared_photo_page_copy(cap: dict, assets: list[tuple[Path, str]]) -
     folder, parked with the rest of the bundle - never deleted - and one plain
     line in the notes says why it is not in the archive. The photo's address
     keeps only its path through /media/{id}: its query (destTreeId, hid, …)
-    names her own tree, and goes into no citation or link. A capture left
-    with no photo at all raises `SharedPhotoWithoutPicture`, and is left in
-    the staging folder as it is. Every other capture is returned as it came."""
+    names her own tree, and goes into no citation or link. A capture with
+    no picture once that copy is left out - or with none at all - raises
+    `SharedPhotoWithoutPicture`: a photo source without its photo is never
+    filed. Every other capture is returned as it came."""
     url = str(cap.get('url') or '')
     if not _ANCESTRY_SHARED_PHOTO_RE.search(url):
         return assets
@@ -1408,9 +1417,10 @@ def _without_shared_photo_page_copy(cap: dict, assets: list[tuple[Path, str]]) -
         cap['url'] = f'{parts.scheme}://{parts.netloc}{m.group(1)}'
     kept = [(path, role) for path, role in assets
             if role != 'webpage' and path.suffix.lower() not in _PAGE_COPY_SUFFIXES]
+    if not any(path.suffix.lower() in PHOTO_EXTENSIONS for path, _role in kept):
+        raise SharedPhotoWithoutPicture(
+            _SHARED_PHOTO_OLD_ADDON if len(kept) != len(assets) else _SHARED_PHOTO_NO_PICTURE)
     if len(kept) != len(assets):
-        if not any(path.suffix.lower() in PHOTO_EXTENSIONS for path, _role in kept):
-            raise SharedPhotoWithoutPicture(_SHARED_PHOTO_OLD_ADDON)
         notes = str(cap.get('notes') or '').rstrip()
         cap['notes'] = (notes + '\n\n' + _SHARED_PHOTO_COPY_NOTE) if notes else _SHARED_PHOTO_COPY_NOTE
     return kept
@@ -1433,14 +1443,16 @@ def _resolve_staging_dir(staging_arg: str | None, fha_config: dict) -> Path:
 
 
 def _iter_bundles(staging: Path) -> list[Path]:
-    """Bundle subfolders of `staging`, excluding the `.ingested/` parking lot.
+    """Bundle subfolders of `staging`, excluding the `.ingested/` parking lot
+    and the `.not-filed/` one (shared photos that could not be filed, said
+    once when they were set aside - never again, and never waiting).
 
     Sorted by name so a sweep is deterministic (the `<slug>-<timestamp>` naming
     makes that chronological in practice).
     """
     return sorted(
         d for d in staging.iterdir()
-        if d.is_dir() and d.name != _INGESTED_DIRNAME
+        if d.is_dir() and d.name not in (_INGESTED_DIRNAME, _NOT_FILED_DIRNAME)
     )
 
 
@@ -1718,6 +1730,7 @@ def run_ingest(
     skipped = 0
     failed = 0
     park_failed = 0
+    not_filed = 0
 
     for bundle in bundles:
         name = bundle.name
@@ -1730,11 +1743,30 @@ def run_ingest(
             cap, html, assets = _read_bundle(bundle)
             assets = _without_shared_photo_page_copy(cap, assets)
         except SharedPhotoWithoutPicture as e:
-            # Not malformed, and not filed anywhere: left exactly where it is.
-            print(f'WARNING: {e}', file=sys.stderr)
-            print(f'         left in place at {bundle}', file=sys.stderr)
-            failed += 1
-            outcomes.append({'bundle': name, 'status': 'shared-photo-without-photo', 'error': str(e)})
+            # Not malformed, and filed nowhere: set aside beside .ingested/,
+            # kept whole, and said this once - a later sweep does not see it.
+            aside = staging / _NOT_FILED_DIRNAME / name
+            n = 2
+            while aside.exists():
+                aside = staging / _NOT_FILED_DIRNAME / f'{name}-{n}'
+                n += 1
+            if not dry_run:
+                try:
+                    aside.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.move(str(bundle), str(aside))
+                except OSError as move_error:
+                    print(f'WARNING: {e}', file=sys.stderr)
+                    print(f'         left in place at {bundle} (it could not be set aside: {move_error})',
+                          file=sys.stderr)
+                    failed += 1
+                    outcomes.append({'bundle': name, 'status': 'shared-photo-without-photo', 'error': str(e)})
+                    continue
+            kept_at = aside.as_posix()
+            kept_words = 'It would be kept in' if dry_run else 'It is kept in'
+            print(f'WARNING: {e} {kept_words} {kept_at}; once you\'ve captured the photo again with the '
+                  f'updated add-on, you can delete that folder.', file=sys.stderr)
+            not_filed += 1
+            outcomes.append({'bundle': name, 'status': 'not-filed', 'kept': kept_at, 'error': str(e)})
             continue
         except BundleError as e:
             print(f'WARNING: skipping malformed bundle {name}: {e}', file=sys.stderr)
@@ -1828,7 +1860,9 @@ def run_ingest(
                          'stub': result.data.get('stub')})
 
     verb = 'Would ingest' if dry_run else 'Ingested'
-    summary = f'{verb} {len(bundles) - skipped - failed} bundle(s)'
+    summary = f'{verb} {len(bundles) - skipped - failed - not_filed} bundle(s)'
+    if not_filed:
+        summary += f', {not_filed} shared photo(s) set aside unfiled in {_NOT_FILED_DIRNAME}/ (see above)'
     if skipped:
         summary += f', skipped {skipped} already-ingested'
     if park_failed:
@@ -1838,9 +1872,9 @@ def run_ingest(
     print(summary + '.')
 
     return Result(
-        exit_code=EXIT_ERRORS if (failed or park_failed) else EXIT_CLEAN,
+        exit_code=EXIT_ERRORS if (failed or park_failed) else EXIT_WARNINGS if not_filed else EXIT_CLEAN,
         data={'status': 'ok', 'ingested': ingested, 'skipped': skipped,
-              'failed': failed, 'park_failed': park_failed, 'bundles': outcomes},
+              'failed': failed, 'park_failed': park_failed, 'not_filed': not_filed, 'bundles': outcomes},
         changed=changed,
     )
 
