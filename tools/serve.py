@@ -830,7 +830,7 @@ def gather_review(state: ServeState) -> dict:
                         'pair_b_source': cb_title,
                         'pairs_with': cb_title,
                         'meta': (f'proposed by fha xref - {noun} candidate for {pname}'
-                                 f' - matched on person + {ca.get("type") or "claim"} type'),
+                                 f' - matched on person + {ca.get("type") or "claim"} type + date or place'),
                         'actions': 'xref',
                     })
     except Exception:
