@@ -160,11 +160,24 @@ its claims to the people asked about and leave the rest for later sessions.
      straight to `accepted`.
 
 5. **Close out the batch.**
-   If a **`death` claim was accepted** this session for a person whose `living:` is still `true` or
-   `unknown`, offer the flag flip before anything else — "mark them as no longer living, so exports can
-   include them? → `fha person set-living <P-id> false`" — and run it **only on his explicit yes**. The
-   flag is a privacy judgment and nothing ever flips it automatically; the tool's own output states the
-   export consequence.
+   If a **`death` or `burial` claim was accepted** this session, the accept itself marked the person
+   who died as no longer living (`living: unknown` → `false`) — `fha claim` prints one line per person
+   ("Ada Hartley is now marked as no longer living; shared exports and the site may now include her").
+   **Report that line to him plainly**; do not ask again or run `set-living` yourself. The accept only
+   changes the person the claim names `deceased:` (or the one person on a claim with no roles), and only
+   when their flag read `unknown`. When `fha claim` printed a **warning** instead, put it to him and wait:
+   - someone already marked `living: true` — "the record says Thomas died, but he's marked as living;
+     has he passed away?" → only on his yes, `fha person set-living <P-id> false`; on a no, the claim
+     may be about someone else, so look at it again together;
+   - a claim that names several people without saying which of them died, or that reads someone as the
+     deceased only because everyone else on it has another part — ask who died, then (on his answer)
+     `fha person set-living <P-id> false` for each.
+   If he wants a death accepted but the person kept out of exports anyway, accept with `--keep-living`
+   (re-accepting that claim later never changes the flag).
+   If he moves a death he accepted earlier to rejected/disputed/needs-review, `fha claim` warns that the
+   person is still marked as no longer living — the flag is never put back on its own. Ask him ("should
+   Ada go back to unknown, so she's kept out of exports again?") and only on his yes run
+   `fha person set-living <P-id> unknown`.
    ```
    fha index                      # full rebuild — if this pass minted new people/places (a
                                   # process-source / mine-transcript hand-off usually does), `--source`

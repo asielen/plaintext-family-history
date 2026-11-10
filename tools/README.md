@@ -271,8 +271,11 @@ into its derived couple folder - the TOOLING §5 carve-out, M11.4). Every verb l
 (`_lib.find_person_record_path`, shared with `fha confirm draft`), so a stale or absent
 index never blocks a write - with one carve-out: `promote` reads the index to derive
 WHERE the record files (never WHETHER; a stale index there is a plain refusal naming
-`fha index`, since a wrong couple-folder destination is worse than a wait). Nothing flips `living:` automatically - accepting a `death`
-claim only makes the `review-claims` skill *offer* the `set-living` command.
+`fha index`, since a wrong couple-folder destination is worse than a wait). No `fha person` verb flips `living:` on its own. The one other writer is the
+human's accept of a `death`/`burial` claim (`fha claim … --status accepted`, #246),
+which marks the person the claim names `deceased:` (or its one person) as `false`
+when they read `unknown`, through the same `_lib.set_person_living` writer - and
+never touches a `living: true`.
 
 | Command | Flags | Status | Notes |
 |---|---|---|---|

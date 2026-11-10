@@ -1119,7 +1119,7 @@ def _verb_claim_review(state, kw, dry_run):
             place_text=kw.get('place_text'), persons=kw.get('persons'),
             confidence=kw.get('confidence'), information=kw.get('information'),
             evidence=kw.get('evidence'), anchor=kw.get('anchor'), notes=kw.get('notes'),
-            dry_run=dry_run)
+            dry_run=dry_run, keep_living=bool(kw.get('keep_living', False)))
     return claim.run_claim(
         state.archive_root, claim_id=kw.get('claim_id', ''),
         status=kw.get('status'), value=kw.get('value'), date=kw.get('date'),
@@ -1127,7 +1127,7 @@ def _verb_claim_review(state, kw, dry_run):
         place_text=kw.get('place_text'), persons=kw.get('persons'),
         confidence=kw.get('confidence'), information=kw.get('information'),
         evidence=kw.get('evidence'), anchor=kw.get('anchor'), notes=kw.get('notes'),
-        dry_run=dry_run)
+        dry_run=dry_run, keep_living=bool(kw.get('keep_living', False)))
 
 
 def _echo_claim_review(kw):
@@ -1161,6 +1161,8 @@ def _echo_claim_review(kw):
         parts += ['--anchor', _q(kw['anchor'])]
     if kw.get('notes'):
         parts += ['--notes', _q(kw['notes'])]
+    if kw.get('keep_living'):
+        parts += ['--keep-living']
     return ' '.join(parts)
 
 
@@ -1186,7 +1188,8 @@ def _verb_claim_new(state, kw, dry_run):
         # second, different C-id (P2 codex finding, round 5, PR #30). The
         # CLI (`fha claim new`) never sends this - the schema key exists
         # only for this verb's own round-trip.
-        claim_id=kw.get('claim_id'))
+        claim_id=kw.get('claim_id'),
+        keep_living=bool(kw.get('keep_living', False)))
 
 
 def _echo_claim_new(kw):
@@ -1219,6 +1222,8 @@ def _echo_claim_new(kw):
     # verb will actually run, including the confirmed-absence flag.
     if kw.get('negated'):
         parts += ['--negated']
+    if kw.get('keep_living'):
+        parts += ['--keep-living']
     return ' '.join(parts)
 
 
@@ -1825,14 +1830,14 @@ VERBS: dict[str, dict] = {
                                'value': 'str', 'date': 'str', 'claim_type': 'str',
                                'place': 'str', 'place_text': 'str', 'persons': 'list',
                                'confidence': 'str', 'information': 'str', 'evidence': 'str',
-                               'anchor': 'str', 'notes': 'str'},
+                               'anchor': 'str', 'notes': 'str', 'keep_living': 'bool'},
                      'run': _verb_claim_review, 'echo': _echo_claim_review, 'reindex': 'source'},
     'claim.new': {'schema': {'source_id': 'str', 'claim_type': 'str', 'value': 'str',
                             'date': 'str', 'place': 'str', 'place_text': 'str',
                             'persons': 'list', 'subtype': 'str', 'status': 'str',
                             'confidence': 'str', 'negated': 'bool', 'claim_id': 'str',
                             'information': 'str', 'evidence': 'str', 'anchor': 'str',
-                            'notes': 'str'},
+                            'notes': 'str', 'keep_living': 'bool'},
                   'run': _verb_claim_new, 'echo': _echo_claim_new, 'reindex': 'source'},
     'confirm.xref': {'schema': {'claim_a': 'str', 'claim_b': 'str', 'relation': 'str'},
                      'run': _verb_xref, 'echo': _echo_xref, 'reindex': 'full'},
@@ -1916,7 +1921,10 @@ def _reindex_after(state: ServeState, verb: str, result: Result) -> None:
     policy = VERBS[verb]['reindex']
     if policy == 'none':
         return
-    if policy == 'source':
+    # Accepting a death can also mark the person as no longer living (#246):
+    # a person record changed, which a one-source upsert does not reread, so
+    # the site would keep treating them as living until the next full build.
+    if policy == 'source' and not result.get('marked_not_living'):
         sid = result.get('source_id')
         if sid and is_valid_id(sid) and id_type_of(normalize_id(sid)) == 'S':
             outcome = index_mod.upsert_source(state.archive_root, state.fha_config, normalize_id(sid))
