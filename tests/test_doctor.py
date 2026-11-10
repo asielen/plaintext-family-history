@@ -1725,16 +1725,23 @@ class CopyMeNextStepsNameTheLauncherTests(unittest.TestCase):
         report errors (a clean lint says "no action needed" and names no
         command), and the staged-captures check only speaks when the browser
         companion's staging folder exists.
+
+        Doctor gets the fixture's own fha.yaml, not `{}`: its unreachable
+        `photos:` root is the one check that names `doctor` on every machine.
+        Passed `{}`, only a missing exiftool or ffprobe named it, so the test
+        failed wherever both are installed (#259). Loaded strictly, so a
+        fixture that stops parsing fails here instead of becoming `{}` again.
         """
         staging = self.root / 'staged'
         staging.mkdir()
+        fha_config = _lib.load_fha_yaml(self.root, strict=True)
         import lint as lint_mod
         orig_lint = lint_mod.run_lint_silent
         orig_bundles = capture.staged_bundles
         lint_mod.run_lint_silent = lambda root, cfg: (2, 1, [])
         capture.staged_bundles = lambda cfg: (staging, [staging / 'bundle-1'])
         try:
-            result = doctor.run_doctor(self.root, {})
+            result = doctor.run_doctor(self.root, fha_config)
         finally:
             lint_mod.run_lint_silent = orig_lint
             capture.staged_bundles = orig_bundles
