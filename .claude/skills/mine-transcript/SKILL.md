@@ -94,6 +94,14 @@ what's usable from Ethel's interview." **Nothing mines silently** (AGENTS.md, TO
      you translate, he never types EDTF), plus the Mills fields (interview testimony is usually
      `information: primary` from the speaker but `confidence: low` when the memory is vague — SPEC §8.5).
    - Skip chatter, tangents, and un-anchorable generalities.
+   - **A passage that reads out or describes one particular photo or document** (the inscription on
+     the back of a print, a letter held up to the recorder) points at the real evidence: that object.
+     Look it up first — `fha photoindex find --text "<words from it>"` (and `fha find --text` for a
+     scan in the documents root). Found but unprocessed → offer `fha process <path> --type photo`
+     (`--variants one` files a front and its back as one source) and draft the claim on **that**
+     source; this one keeps only a secondary reading, linked with `corroborates:`. Not found → a
+     "find the photo" `## Q:` in `notes/questions.md`. Never cite the object by its folder path in
+     `notes:` — cite `[[S-…]]` (SPEC §8.4; `fha lint` W137 flags a path).
 
 3. **Resolve each named person against the index — propose, don't guess.**
    ```

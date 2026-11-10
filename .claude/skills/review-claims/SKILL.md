@@ -91,6 +91,12 @@ its claims to the people asked about and leave the rest for later sessions.
    `value:` — an **edit** (below) moves it there before you accept, rather than publishing it onto the
    Timeline a family member reads.
 
+   **A claim whose evidence is a photo or scan that is not a source yet** (its `notes:` name a
+   photos-root path, `fha lint` W137 lists it, or it says "a photograph shown in the interview"):
+   before he accepts it, offer to make the photo a source — `fha process <path> --type photo` (with
+   `--variants one` for a front and its back) — so the claim can be drafted on that photo's own record
+   and this one linked to it with `corroborates:` (SPEC §8.4). His no is fine; the claim stays reviewable.
+
    Then ask for his decision: **accept / dispute / edit / reject / park** — plus any claim he wants to
    *add* by hand that the draft missed.
 
