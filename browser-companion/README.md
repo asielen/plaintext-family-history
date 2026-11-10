@@ -229,13 +229,12 @@ no-op, the bundles land in `inbox/` directly.
   capture with no picture is never filed - it is set aside, once, in the
   staging folder's `.not-filed/`. Where the page's layout is unclear, the
   Details reader leaves text out rather than file someone else's words as
-  hers, by one rule (`ancMediaSectionField`): the photo's own Details box is
-  read whole; everywhere else - beside the box, or the whole page when there
-  is no box - a section is read only when its first visible text is a field
-  label ("Description", "Linked to" / "Attached to", the upload label; with no
-  box, also "Title" / "Date" / "Place"). A section whose first visible text is
-  anything else (a name in a heading, a link or bold type) is skipped whole,
-  and a section headed by the upload label gives only its first name. Capture
+  hers: it reads only the photo's own Details box (`ancMediaDetailsBoxes`:
+  the element whose own heading or aria-label is "Details"), whole, each
+  field by its own label. Nothing outside the box is read, and with no box
+  found no field comes from the page body - only the photo, its address and
+  the tab's own title are kept; the rest can be read on Ancestry from the
+  saved address (PR #258 round 9, reversible). Capture
   reads the page again first, and
   stages nothing while the page shows Details or linked people the form has
   not shown her (they are added to the form for her to check), so a photo is

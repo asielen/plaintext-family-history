@@ -239,15 +239,13 @@ to begin "Saved by …" is the photo's story, and is kept.
 
 When the page's layout is unclear, the add-on leaves text out rather than file
 someone else's words as yours. Anything left out can still be read on Ancestry
-from the photo's saved address. It works by one rule: the photo's own Details
-box is read whole; anywhere else on the page, a section is read only when the
-first words it shows are one of the photo's labels - "Description", "Linked
-to" / "Attached to", or "Originally added by" (and, when the page has no
-Details box, also "Title", "Date" or "Place"). A section that starts with
-anything else - a relative's name, in a heading, a link or bold type, "About
-this photo", a member's name - is left out with everything in it. A line that
-begins "Originally added by" is always taken as who uploaded the photo, never as
-its description, and from a section headed that way only the first name is kept.
+from the photo's saved address. So only the photo's own **Details** box is read
+- the part of the page headed "Details" - each detail by its own label.
+Anything outside that box is left out, even a description or a "Linked to" list
+that sits just beside it; and when the add-on does not recognise Ancestry's
+layout (no Details box it can find), all of the photo's details are left out
+and only the photo and its address are saved. A line that begins "Originally
+added by" is always taken as who uploaded the photo, never as its description.
 
 If Ancestry will not hand over the photo (you are signed out, say), **nothing is
 saved**, and the panel says why: a photo source is never filed without its

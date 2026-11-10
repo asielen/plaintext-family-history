@@ -433,263 +433,164 @@ test('ancLinkedNames: names without their years, never "Private"', () => {
   assert.deepStrictEqual(anc.ancLinkedNames(''), []);
 });
 
-// ── PR #258 review: other members' names, and a label elsewhere on the page ───
+// ── The photo's Details: read from the photo's own Details box only ─────────
+// PR #258 rounds 3-9. Round 9 (a reversible decision under the owner's
+// principle): fields come only from the photo's own Details box - the
+// element whose own heading or aria-label says "Details" - read whole. When
+// the page's layout is unclear, the add-on leaves text out rather than file
+// someone else's words as hers; anything left out can still be read on
+// Ancestry from the photo's saved address. Tests below marked "accepted cost"
+// pin text that is now left out on purpose.
 
 const details = (html) => anc.ancMediaDetails(parse('<html><body>' + html + '</body></html>'));
+const inBox = (inner) => details('<aside aria-label="Details">' + inner + '</aside>');
+const BOX = '<aside aria-label="Details"><dl><dt>Date</dt><dd>abt 1925</dd></dl></aside>';
 
-test('PR #258 review: a "Saved by" list, however it is headed, never reads as linked people or description', () => {
-  const linked = '<aside><h3>Linked to</h3><ul><li>Thomas Hartley 1840–1910</li></ul>';
+test('in the box: a "Saved by" list, however it is headed, never reads as linked people or description', () => {
+  const linked = '<h3>Linked to</h3><ul><li>Thomas Hartley 1840–1910</li></ul>';
   for (const heading of ['Saved by', 'Saved by 2 members', 'Saved by (2)', 'Saved by:', 'Also saved by',
     'Saved to 3 trees', 'Members who saved this photo', '2 other members who saved this', 'Comments (4)']) {
-    const d = details(linked + '<h3>' + heading + '</h3><ul><li>cousin_member_one</li><li>cousin_member_two</li></ul></aside>');
-    assert.deepStrictEqual(d, { linkedTo: ['Thomas Hartley'] }, heading);
+    assert.deepStrictEqual(inBox(linked + '<h3>' + heading + '</h3><ul><li>cousin_member_one</li><li>cousin_member_two</li></ul>'),
+      { linkedTo: ['Thomas Hartley'] }, heading);
   }
-  assert.deepStrictEqual(details('<dl><dt>Description</dt><dd>On the porch.</dd><dt>Saved by (2)</dt>' +
-    '<dd>cousin_member_one</dd></dl>'), { description: 'On the porch.' });
-  assert.deepStrictEqual(details('<div><span>Description</span></div><div>On the porch.</div>' +
-    '<div>Saved by cousin_member_one</div>'), { description: 'On the porch.' });
-  assert.deepStrictEqual(details('<p>Originally added by <a>hartley_tree</a> on 3 Mar 2015</p>' +
+  assert.deepStrictEqual(inBox('<dl><dt>Description</dt><dd>On the porch.</dd><dt>Saved by (2)</dt><dd>cousin_member_one</dd></dl>'),
+    { description: 'On the porch.' });
+  assert.deepStrictEqual(inBox('<p>Originally added by <a>hartley_tree</a> on 3 Mar 2015</p>' +
     '<p>Saved by <a>cousin_member_one</a> and 3 others</p>'), { originallyAddedBy: 'hartley_tree on 3 Mar 2015' });
 });
 
-test('PR #258 review: an empty label elsewhere on the page (a search form) does not hide the photo\'s own Details', () => {
-  const form = '<form class="quick-search"><label>Location</label><input name="loc"><label>Date</label><input name="d"></form>';
-  assert.deepStrictEqual(details(form + '<aside><dl><dt>Date</dt><dd>abt 1925</dd><dt>Place</dt>' +
-    '<dd>Fairview, Kansas</dd></dl></aside>'), { date: 'abt 1925', place: 'Fairview, Kansas' });
-  // A label with a value elsewhere loses to the photo's own Details box.
-  assert.deepStrictEqual(details('<div class="search-bar"><span>Location</span><span>Anywhere</span></div>' +
-    '<section class="media-panel"><h2>Details</h2><dl><dt>Location</dt><dd>Fairview, Kansas</dd></dl></section>'),
-  { place: 'Fairview, Kansas' });
-});
-
-test('PR #258 review: linked people lose their "abt" years, and a living person is no name', () => {
-  assert.deepStrictEqual(details('<dl><dt>Linked to</dt><dd>Thomas Hartley abt 1840–1910<br>Living Hartley<br>' +
-    'Ethel Hartley (bef 1890–?)</dd></dl>'), { linkedTo: ['Thomas Hartley', 'Ethel Hartley'] });
-});
-
-// ── PR #258 round 3/4 ────────────────────────────────────────────────────────
-// No copy of the page is kept for a shared photo (round 4), so what keeps
-// other members' names out of the archive is this reader: it stops at every
-// members-list label, and keeps only what it extracts.
-
-test('round 3/4: the reader stops at a "Saved by" list however its members are laid out, and keeps none of them', () => {
+test('in the box: member rows in any layout are never kept', () => {
   for (const rows of ['<div>cousin_member_one</div><div>cousin_member_two</div>',
     '<div>cousin_member_one<br>Joined 2015</div><div>Cousin Member Two Jr.</div>',
     '<div>cousin member with a very long display name that goes on past sixty characters</div>',
     '<ul><li>cousin_member_one</li></ul><p>Hartley farm, 1925</p>',
     '<dl><dd>cousin_member_one</dd><dd>cousin_member_two</dd></dl>']) {
-    const d = details('<aside><h2>Details</h2><h3>Description</h3><p>On the porch.</p><h3>Linked to</h3>' +
-      '<ul><li>Thomas Hartley</li></ul><h3>Saved by 2 members</h3>' + rows + '</aside>');
-    assert.deepStrictEqual(d, { description: 'On the porch.', linkedTo: ['Thomas Hartley'] }, rows);
+    assert.deepStrictEqual(inBox('<h3>Description</h3><p>On the porch.</p><h3>Linked to</h3><ul><li>Thomas Hartley</li>' +
+      '</ul><h3>Saved by 2 members</h3>' + rows), { description: 'On the porch.', linkedTo: ['Thomas Hartley'] }, rows);
   }
 });
 
-test('round 3 (audit A): a family sentence starting "Saved by" is the description, kept in the notes', () => {
-  const html = '<aside id="mediaDetails"><dl><dt>Date</dt><dd>abt 1925</dd></dl><section><h3>Description</h3>' +
-    '<p>Thomas and Margaret on the porch.</p><p>Saved by Aunt Ethel from the 1938 farmhouse fire.</p>' +
-    '<p>The dog is Shep.</p></section><section><h3>Saved by</h3><ul><li>cousin_member_one</li></ul></section></aside>';
-  assert.strictEqual(details(html).description,
-    'Thomas and Margaret on the porch.\nSaved by Aunt Ethel from the 1938 farmhouse fire.\nThe dog is Shep.');
-  assert.ok(!JSON.stringify(details(html)).includes('cousin_member_one'));
-  // A member's username in plain text is still a members line.
-  assert.deepStrictEqual(details('<div><span>Description</span></div><div>On the porch.</div>' +
-    '<div>Saved by cousin_member_one</div>'), { description: 'On the porch.' });
+test('in the box: linked people lose their years, and a living person is no name', () => {
+  assert.deepStrictEqual(inBox('<dl><dt>Linked to</dt><dd>Thomas Hartley abt 1840–1910<br>Living Hartley<br>' +
+    'Ethel Hartley (bef 1890–?)</dd></dl>'), { linkedTo: ['Thomas Hartley', 'Ethel Hartley'] });
 });
 
-test('round 3 (audit D): a linked person\'s "person-details" card is not the photo\'s Details box', () => {
-  assert.deepStrictEqual(details('<aside id="photoInfo"><dl><dt>Date</dt><dd>abt 1925</dd><dt>Place</dt>' +
-    '<dd>Fairview, Kansas</dd></dl></aside><div class="person-details"><h4>Thomas Hartley</h4><dl><dt>Date</dt>' +
-    '<dd>1840</dd><dt>Place</dt><dd>Yorkshire, England</dd></dl></div>'), { date: 'abt 1925', place: 'Fairview, Kansas' });
-  // A box labelled "Details" is read first, wherever it sits.
-  assert.deepStrictEqual(details('<div class="person-details"><h4>Thomas Hartley</h4><dl><dt>Date</dt><dd>1840</dd>' +
-    '</dl></div><aside aria-label="Details"><dl><dt>Date</dt><dd>abt 1925</dd></dl></aside>'), { date: 'abt 1925' });
-});
-
-test('round 4 (Codex PRRT_kwDOS6vm6c61xYYi): a field the photo\'s Details box does not give stays unknown', () => {
-  // The photo's own box gives only its title; a linked relative's card says 1840 and Yorkshire.
-  const html = '<aside><h2>Details</h2><dl><dt>Title</dt><dd>Thomas and Margaret on the porch</dd></dl></aside>' +
-    '<div class="person-details"><h4>Thomas Hartley</h4><dl><dt>Date</dt><dd>1840</dd><dt>Place</dt>' +
-    '<dd>Yorkshire, England</dd><dt>Description</dt><dd>Born on the moors.</dd></dl></div>';
-  const d = details(html);
-  assert.deepStrictEqual(d, { title: 'Thomas and Margaret on the porch' });
-  assert.strictEqual(anc.ancMediaHints(d).sourceDate, null);
-  // A label at the end of the box with nothing after it does not read on past the box.
-  assert.deepStrictEqual(details('<div><aside><h2>Details</h2><div><span>Date</span></div></aside><p>1840</p></div>'), {});
-  // Who it is linked to and who added it may sit beside the box.
-  assert.deepStrictEqual(details('<aside><h2>Details</h2><dl><dt>Date</dt><dd>abt 1925</dd></dl></aside>' +
-    '<section><h3>Linked to</h3><ul><li>Thomas Hartley</li></ul></section>'),
-  { date: 'abt 1925', linkedTo: ['Thomas Hartley'] });
-  // No Details box at all: the page is read in order, as before.
-  assert.deepStrictEqual(details('<dl><dt>Date</dt><dd>abt 1925</dd></dl>'), { date: 'abt 1925' });
-});
-
-// ── PR #258 round 5 ──────────────────────────────────────────────────────────
-
-test('round 5 (Codex PRRT_kwDOS6vm6c61yqx6): an upload line ends a field - an empty description never reads it', () => {
-  const d = details('<aside><h2>Details</h2><dl><dt>Description</dt><dd></dd></dl>' +
-    '<p>Originally added by <a>cousin_member</a> on 3 Mar 2015</p></aside>');
-  assert.deepStrictEqual(d, { originallyAddedBy: 'cousin_member on 3 Mar 2015' });
-  // Every attribution form is a boundary, with no Details box too.
-  for (const line of ['Added by', 'Shared by', 'Uploaded by', 'Originally added by']) {
-    assert.deepStrictEqual(details('<div><span>Description</span></div><p>' + line + ' <a>cousin_member</a></p>'),
-      { originallyAddedBy: 'cousin_member' }, line);
-  }
-});
-
-test('round 5 (audit K): a description beside the Details box, in its panel, is kept; a linked person\'s card is not read', () => {
-  assert.deepStrictEqual(details('<aside aria-label="Details"><dl><dt>Date</dt><dd>abt 1925</dd><dt>Place</dt>' +
-    '<dd>Fairview, Kansas</dd></dl></aside><section><h3>Description</h3><p>Thomas and Margaret on the porch.</p></section>'),
-  { date: 'abt 1925', place: 'Fairview, Kansas', description: 'Thomas and Margaret on the porch.' });
-  assert.deepStrictEqual(details('<aside aria-label="Details"><dl><dt>Date</dt><dd>abt 1925</dd></dl></aside>' +
-    '<div class="person-details"><h4>Thomas Hartley</h4><dl><dt>Description</dt><dd>Born on the moors.</dd></dl></div>'),
-  { date: 'abt 1925' });
-  // Nor a card's "Attached to" list as the photo's linked people.
-  assert.deepStrictEqual(details('<div class="person-card"><h4>Thomas Hartley</h4><dl><dt>Attached to</dt>' +
-    '<dd>Margaret Whitcombe (wife)<br>cousin_member_one</dd></dl></div>' +
-    '<aside aria-label="Details"><dl><dt>Date</dt><dd>abt 1925</dd></dl></aside>'), { date: 'abt 1925' });
-});
-
-test('round 5 (audit): a commenter is never recorded as who added the photo; "Originally added by" wins', () => {
-  assert.deepStrictEqual(details('<section class="comments"><h3>Comments (1)</h3><div><p>Shared by ' +
-    '<a>cousin_member_two</a> on 4 Apr 2019</p><p>Lovely photo!</p></div></section>' +
-    '<aside aria-label="Details"><dl><dt>Date</dt><dd>abt 1925</dd></dl></aside>' +
-    '<p class="attribution">Originally added by <a>hartley_family_tree</a> on 3 Mar 2015</p>'),
-  { date: 'abt 1925', originallyAddedBy: 'hartley_family_tree on 3 Mar 2015' });
-  // A plain "Shared by" read first gives way to "Originally added by".
-  assert.deepStrictEqual(details('<p>Shared by <a>tree_owner_two</a></p><p>Originally added by <a>hartley_family_tree</a></p>'),
-    { originallyAddedBy: 'hartley_family_tree' });
-  // Comments without a Details box are not read either.
-  assert.deepStrictEqual(details('<section><h3>Comments (2)</h3><p>Shared by <a>cousin_member_two</a></p>' +
-    '<h3>Description</h3><p>A note from a member</p></section>'), {});
-});
-
-// ── PR #258 round 6 ──────────────────────────────────────────────────────────
-
-test('round 6: a sentence that starts "Shared by" / "Added by" / "Uploaded by" is the description, not an upload line', () => {
+test('in the box: family sentences stay the description (A, B, C, and one starting "Saved by")', () => {
   const box = (inner) => details('<aside><h2>Details</h2>' + inner +
     '<p class="attribution">Originally added by <a>hartley_family_tree</a> on 3 Mar 2015</p></aside>');
-  assert.deepStrictEqual(box('<dl><dt>Date</dt><dd>abt 1925</dd><dt>Description</dt><dd>Shared by Aunt Ethel Hartley ' +
-    'at the 1950 reunion; she is the girl on the left.</dd></dl>'), {
-    date: 'abt 1925', originallyAddedBy: 'hartley_family_tree on 3 Mar 2015',
-    description: 'Shared by Aunt Ethel Hartley at the 1950 reunion; she is the girl on the left.' });
-  assert.strictEqual(box('<dl><dt>Date</dt><dd>abt 1925</dd><dt>Description</dt><dd><p>Thomas and Margaret on the ' +
-    'porch of the farmhouse.</p><p>Added by Grandma Ruth to her album in 1960.</p></dd></dl>').description,
+  assert.strictEqual(box('<dl><dt>Date</dt><dd>abt 1925</dd><dt>Description</dt><dd>Shared by Aunt Ethel Hartley at the ' +
+    '1950 reunion; she is the girl on the left.</dd></dl>').description,
+  'Shared by Aunt Ethel Hartley at the 1950 reunion; she is the girl on the left.');
+  assert.strictEqual(box('<dl><dt>Description</dt><dd><p>Thomas and Margaret on the porch of the farmhouse.</p>' +
+    '<p>Added by Grandma Ruth to her album in 1960.</p></dd></dl>').description,
   'Thomas and Margaret on the porch of the farmhouse.\nAdded by Grandma Ruth to her album in 1960.');
   assert.strictEqual(box('<section><h3>Description</h3><p>Thomas and Margaret on the porch.</p><p>Uploaded by me from ' +
     'Mother\'s album.</p><p>The dog is Shep, who lived to 1934.</p></section>').description,
   'Thomas and Margaret on the porch.\nUploaded by me from Mother\'s album.\nThe dog is Shep, who lived to 1934.');
-  // The real upload line - a link, or one username, and a date - still ends a field (Codex PRRT_kwDOS6vm6c61yqx6).
-  assert.deepStrictEqual(details('<aside><h2>Details</h2><dl><dt>Description</dt><dd></dd></dl>' +
-    '<p>Originally added by <a>cousin_member</a> on 3 Mar 2015</p></aside>'), { originallyAddedBy: 'cousin_member on 3 Mar 2015' });
-  assert.deepStrictEqual(details('<aside><h2>Details</h2><dl><dt>Description</dt><dd></dd></dl>' +
-    '<p>Added by cousin_member_4 on 4 Apr 2019</p></aside>'), { originallyAddedBy: 'cousin_member_4 on 4 Apr 2019' });
+  const html = '<dl><dt>Date</dt><dd>abt 1925</dd></dl><section><h3>Description</h3><p>Thomas and Margaret on the porch.</p>' +
+    '<p>Saved by Aunt Ethel from the 1938 farmhouse fire.</p><p>The dog is Shep.</p></section><section><h3>Saved by</h3>' +
+    '<ul><li>cousin_member_one</li></ul></section>';
+  assert.strictEqual(inBox(html).description,
+    'Thomas and Margaret on the porch.\nSaved by Aunt Ethel from the 1938 farmhouse fire.\nThe dog is Shep.');
+  assert.ok(!JSON.stringify(inBox(html)).includes('cousin_member_one'));
+  // A member's username in plain text is still a members line.
+  assert.deepStrictEqual(inBox('<div><span>Description</span></div><div>On the porch.</div>' +
+    '<div>Saved by cousin_member_one</div>'), { description: 'On the porch.' });
 });
 
-test('round 6 (audit N): a "Linked to" or "Description" beside the box is read whatever its wrapper is called', () => {
-  const panel = (beside) => details('<div class="panel"><aside aria-label="Details"><dl><dt>Date</dt><dd>abt 1925</dd></dl>' +
-    '</aside>' + beside + '</div>');
-  assert.deepStrictEqual(panel('<section class="linked-people"><h3>Linked to</h3><ul><li>Thomas Hartley 1840–1910</li>' +
-    '</ul></section>'), { date: 'abt 1925', linkedTo: ['Thomas Hartley'] });
-  assert.deepStrictEqual(panel('<section class="card"><h3>Description</h3><p>Thomas and Margaret on the porch.</p></section>'),
-    { date: 'abt 1925', description: 'Thomas and Margaret on the porch.' });
-  // A section headed by anything else is left out whole (round 7): its
-  // description is the accepted cost; it can still be read on Ancestry.
-  assert.deepStrictEqual(panel('<section><h3>About this photo</h3><h4>Description</h4><p>Thomas and Margaret on the ' +
-    'porch.</p></section>'), { date: 'abt 1925' });
-  // A person's card - headed by a name - is never read.
-  assert.deepStrictEqual(panel('<div class="person-card"><h4>Thomas Hartley</h4><dl><dt>Description</dt>' +
-    '<dd>Born on the moors.</dd><dt>Attached to</dt><dd>cousin_member_one</dd></dl></div>'), { date: 'abt 1925' });
+test('in the box: a field it does not give stays unknown, and no value is read past the box', () => {
+  assert.deepStrictEqual(details('<aside><h2>Details</h2><dl><dt>Title</dt><dd>Thomas and Margaret on the porch</dd></dl>' +
+    '</aside><div class="person-details"><h4>Thomas Hartley</h4><dl><dt>Date</dt><dd>1840</dd><dt>Place</dt>' +
+    '<dd>Yorkshire, England</dd></dl></div>'), { title: 'Thomas and Margaret on the porch' });
+  assert.deepStrictEqual(details('<div><aside><h2>Details</h2><div><span>Date</span></div></aside><p>1840</p></div>'), {});
+  // A search form's empty labels outside the box change nothing.
+  assert.deepStrictEqual(details('<form><label>Location</label><input name="loc"><label>Date</label><input name="d"></form>' +
+    '<aside><h2>Details</h2><dl><dt>Date</dt><dd>abt 1925</dd><dt>Place</dt><dd>Fairview, Kansas</dd></dl></aside>'),
+  { date: 'abt 1925', place: 'Fairview, Kansas' });
 });
 
-// ── PR #258 round 7: leave text out rather than file someone else's words ───
-
-test('round 7: a line starting "Originally added by" is always the uploader, never a description', () => {
-  const box = (line) => details('<aside aria-label="Details"><h3>Description</h3><p>' + line + '</p></aside>');
-  assert.deepStrictEqual(box('Originally added by Ruth Hartley on 3 Mar 2015'),
-    { originallyAddedBy: 'Ruth Hartley on 3 Mar 2015' });
-  assert.deepStrictEqual(box('Originally added by <a>hartley_family_tree</a> (Ruth Hartley) on 3 Mar 2015'),
-    { originallyAddedBy: 'hartley_family_tree (Ruth Hartley) on 3 Mar 2015' });
+test('in the box: upload lines (rounds 5-9) - "Originally" always, a shaped plain one, and a linked username with a short tail', () => {
   const empty = (line) => details('<aside><h2>Details</h2><dl><dt>Description</dt><dd></dd></dl><p>' + line + '</p></aside>');
+  assert.deepStrictEqual(empty('Originally added by <a>cousin_member</a> on 3 Mar 2015'), { originallyAddedBy: 'cousin_member on 3 Mar 2015' });
   assert.deepStrictEqual(empty('Originally added by <span class="user-name">Mary Jones</span> on 3 Mar 2015'),
     { originallyAddedBy: 'Mary Jones on 3 Mar 2015' });
   assert.deepStrictEqual(empty('Originally added by Mary Jones on 3 Mar 2015'), { originallyAddedBy: 'Mary Jones on 3 Mar 2015' });
-  // Without "Originally", a sentence stays the description (round 6's A, B, C still hold).
-  assert.strictEqual(box('Shared by Aunt Ethel Hartley at the 1950 reunion; she is the girl on the left.').description,
-    'Shared by Aunt Ethel Hartley at the 1950 reunion; she is the girl on the left.');
-});
-
-test('round 7: beside the box, only a section headed by one of the photo\'s fields is read - no class-word guessing', () => {
-  const main = (html) => details('<main>' + html + '</main>');
-  // A relative's card, whatever its class: nothing from it.
-  assert.deepStrictEqual(main('<aside aria-label="Details"><dl><dt>Date</dt><dd>abt 1925</dd></dl></aside>' +
-    '<div class="css-1q2w3e"><h4>Thomas Hartley</h4><dl><dt>Description</dt><dd>Born on the moors of Yorkshire.</dd></dl></div>'),
-  { date: 'abt 1925' });
-  assert.deepStrictEqual(main('<div class="relative-card"><h4>Thomas Hartley</h4><dl><dt>Attached to</dt>' +
-    '<dd>Margaret Whitcombe (wife)<br>cousin_member_one</dd></dl></div>' +
-    '<aside aria-label="Details"><dl><dt>Date</dt><dd>abt 1925</dd></dl></aside>'), { date: 'abt 1925' });
-  // A member's card headed by a username: no uploader from it.
-  assert.deepStrictEqual(main('<aside aria-label="Details"><dl><dt>Date</dt><dd>abt 1925</dd></dl></aside>' +
-    '<div class="member-card"><h4>cousin_member_one</h4><p>Shared by <a>cousin_member_one</a></p></div>'), { date: 'abt 1925' });
-  // A lone upload line beside the box, in no such section, is still the uploader.
-  assert.deepStrictEqual(main('<aside aria-label="Details"><dl><dt>Date</dt><dd>abt 1925</dd></dl></aside>' +
-    '<p class="attribution">Originally added by <a>hartley_family_tree</a> on 3 Mar 2015</p>'),
-  { date: 'abt 1925', originallyAddedBy: 'hartley_family_tree on 3 Mar 2015' });
-  // Comments are still never read.
-  assert.deepStrictEqual(main('<aside aria-label="Details"><dl><dt>Date</dt><dd>abt 1925</dd></dl></aside>' +
-    '<section><h3>Comments (1)</h3><p>Shared by <a>cousin_member_two</a></p></section>'), { date: 'abt 1925' });
-});
-
-// ── PR #258 round 8: one rule - a section is read when its first visible text is a field label ──
-
-const R8_BOX = '<aside aria-label="Details"><dl><dt>Date</dt><dd>abt 1925</dd></dl></aside>';
-
-test('round 8 (R1, R2): a relative\'s card whose name is a link or bold type is left out whole', () => {
-  assert.deepStrictEqual(details('<main>' + R8_BOX + '<div class="css-9z8y"><a href="/family-tree/person/1">Thomas ' +
-    'Hartley</a><span>1840–1910</span><dl><dt>Description</dt><dd>Born on the moors of Yorkshire.</dd></dl></div></main>'),
-  { date: 'abt 1925' });
-  assert.deepStrictEqual(details('<main>' + R8_BOX + '<div class="css-9z8y"><strong>Thomas Hartley</strong><dl>' +
-    '<dt>Attached to</dt><dd>Margaret Whitcombe (wife)<br>cousin_member_one</dd></dl></div></main>'), { date: 'abt 1925' });
-});
-
-test('round 8 (R4): with no Details box, each section is read by the same rule - never a relative\'s card', () => {
-  assert.deepStrictEqual(details('<main><dl><dt>Date</dt><dd>abt 1925</dd></dl><div class="css-1q2w3e"><h4>Thomas ' +
-    'Hartley</h4><dl><dt>Description</dt><dd>Born on the moors of Yorkshire.</dd></dl></div></main>'), { date: 'abt 1925' });
-  // The photo's own labelled sections are still read.
-  assert.deepStrictEqual(details('<main><header><nav><a>Trees</a><a>Search</a></nav></header><section><h3>Description</h3>' +
-    '<p>Thomas and Margaret on the porch.</p></section><section><h3>Linked to</h3><ul><li>Thomas Hartley 1840–1910</li>' +
-    '</ul></section></main>'), { description: 'Thomas and Margaret on the porch.', linkedTo: ['Thomas Hartley'] });
-});
-
-test('round 8: what the one rule still keeps - N\'s linked people, K\'s description, the family sentences', () => {
-  const panel = (beside) => details('<div class="panel">' + R8_BOX + beside + '</div>');
-  assert.deepStrictEqual(panel('<section class="linked-people"><h3>Linked to</h3><ul><li>Thomas Hartley 1840–1910</li>' +
-    '</ul></section>'), { date: 'abt 1925', linkedTo: ['Thomas Hartley'] });
-  assert.deepStrictEqual(panel('<section><h3>Description</h3><p>Thomas and Margaret on the porch.</p></section>'),
-    { date: 'abt 1925', description: 'Thomas and Margaret on the porch.' });
-  const box = (inner) => details('<aside><h2>Details</h2>' + inner + '</aside>');
-  assert.strictEqual(box('<dl><dt>Description</dt><dd>Shared by Aunt Ethel Hartley at the 1950 reunion; she is the girl ' +
-    'on the left.</dd></dl>').description, 'Shared by Aunt Ethel Hartley at the 1950 reunion; she is the girl on the left.');
-});
-
-test('round 8: a section headed by the upload label gives only the first name - no member list, no sentence after it', () => {
-  const beside = (section) => details('<div>' + R8_BOX + section + '</div>');
-  assert.deepStrictEqual(beside('<section><h3>Originally added by</h3><p><a>hartley_family_tree</a> on 3 Mar 2015</p>' +
-    '<p>Ruth Hartley wrote: this is Grandpa Tom with his brother.</p></section>'),
-  { date: 'abt 1925', originallyAddedBy: 'hartley_family_tree on 3 Mar 2015' });
-  assert.deepStrictEqual(beside('<section><h3>Originally added by</h3><ul><li><a>hartley_family_tree</a></li>' +
-    '<li><a>cousin_member_one</a></li><li><a>cousin_member_two</a></li></ul></section>'),
-  { date: 'abt 1925', originallyAddedBy: 'hartley_family_tree' });
-});
-
-test('round 8 (R3): "Added by <Name> on <date>" is an upload line; "on her 90th birthday" is not a date', () => {
-  const empty = (line) => details('<aside><h2>Details</h2><dl><dt>Description</dt><dd></dd></dl><p>' + line + '</p></aside>');
   assert.deepStrictEqual(empty('Added by <span class="user-name">Mary Jones</span> on 3 Mar 2015'),
     { originallyAddedBy: 'Mary Jones on 3 Mar 2015' });
-  assert.deepStrictEqual(empty('Shared by Mary Hartley Jones on March 3, 2015'),
-    { originallyAddedBy: 'Mary Hartley Jones on March 3, 2015' });
-  const desc = (line) => details('<aside><h2>Details</h2><section><h3>Description</h3><p>' + line + '</p></section></aside>');
+  assert.deepStrictEqual(empty('Added by cousin_member_4 on 4 Apr 2019'), { originallyAddedBy: 'cousin_member_4 on 4 Apr 2019' });
+  for (const line of ['Added by', 'Shared by', 'Uploaded by', 'Originally added by']) {
+    assert.deepStrictEqual(inBox('<div><span>Description</span></div><p>' + line + ' <a>cousin_member</a></p>'),
+      { originallyAddedBy: 'cousin_member' }, line);
+  }
+  const desc = (line) => inBox('<h3>Description</h3><p>' + line + '</p>');
+  assert.deepStrictEqual(desc('Originally added by Ruth Hartley on 3 Mar 2015'), { originallyAddedBy: 'Ruth Hartley on 3 Mar 2015' });
+  assert.deepStrictEqual(desc('Originally added by <a>hartley_family_tree</a> (Ruth Hartley) on 3 Mar 2015'),
+    { originallyAddedBy: 'hartley_family_tree (Ruth Hartley) on 3 Mar 2015' });
+  // V (round 9): a linked username with a short tail that is no sentence.
+  assert.deepStrictEqual(desc('Added by <a>hartley_family_tree</a> 3 years ago'),
+    { originallyAddedBy: 'hartley_family_tree 3 years ago' });
+  // Still the description: no real date after "on", or a linked display name with a sentence.
   assert.strictEqual(desc('Shared by Aunt Ethel on her 90th birthday').description, 'Shared by Aunt Ethel on her 90th birthday');
-  assert.strictEqual(desc('Shared by <a>Aunt Ethel</a> on her 90th birthday').description,
-    'Shared by Aunt Ethel on her 90th birthday');
+  assert.strictEqual(desc('Shared by <a>Aunt Ethel</a> on her 90th birthday').description, 'Shared by Aunt Ethel on her 90th birthday');
   assert.strictEqual(desc('Added by Grandma Ruth to her album in 1960.').description, 'Added by Grandma Ruth to her album in 1960.');
+});
+
+test('in the box: "Originally added by" wins; a commenter is never the uploader; an upload section gives its first name only', () => {
+  assert.deepStrictEqual(inBox('<p>Shared by <a>tree_owner_two</a></p><p>Originally added by <a>hartley_family_tree</a></p>'),
+    { originallyAddedBy: 'hartley_family_tree' });
+  assert.deepStrictEqual(inBox('<section><h3>Comments (1)</h3><p>Shared by <a>cousin_member_two</a> on 4 Apr 2019</p></section>' +
+    '<dl><dt>Date</dt><dd>abt 1925</dd></dl>'), { date: 'abt 1925' });
+  assert.deepStrictEqual(inBox('<section><h3>Originally added by</h3><p><a>hartley_family_tree</a> on 3 Mar 2015</p>' +
+    '<p>Ruth Hartley wrote: this is Grandpa Tom with his brother.</p></section>'),
+  { originallyAddedBy: 'hartley_family_tree on 3 Mar 2015' });
+  assert.deepStrictEqual(inBox('<section><h3>Originally added by</h3><ul><li><a>hartley_family_tree</a></li>' +
+    '<li><a>cousin_member_one</a></li></ul></section>'), { originallyAddedBy: 'hartley_family_tree' });
+});
+
+test('round 9: nothing beside the box is read - a relative\'s card in any shape gives nothing (N1-N4, R1, R2, C1, C2)', () => {
+  const NAME_IN_DIV = '<div class="css-hdr"><a href="/family-tree/person/1">Thomas Hartley</a> <span>1840–1910</span></div>';
+  const cards = [
+    '<div class="css-card">' + NAME_IN_DIV + '<dl><dt>Description</dt><dd>Born on the moors of Yorkshire.</dd></dl></div>',
+    '<div class="css-card">' + NAME_IN_DIV + '<dl><dt>Attached to</dt><dd>Margaret Whitcombe (wife)<br>cousin_member_one</dd></dl></div>',
+    '<section><header><h4>Thomas Hartley</h4></header><dl><dt>Description</dt><dd>Born on the moors of Yorkshire.</dd></dl></section>',
+    '<div class="css-9z8y"><a href="/family-tree/person/1">Thomas Hartley</a><span>1840–1910</span><dl><dt>Description</dt>' +
+      '<dd>Born on the moors of Yorkshire.</dd></dl></div>',
+    '<div class="css-9z8y"><strong>Thomas Hartley</strong><dl><dt>Attached to</dt><dd>cousin_member_one</dd></dl></div>',
+    '<div class="css-1q2w3e"><h4>Thomas Hartley</h4><dl><dt>Description</dt><dd>Born on the moors of Yorkshire.</dd></dl></div>',
+    '<div class="member-card"><h4>cousin_member_one</h4><p>Shared by <a>cousin_member_one</a></p></div>',
+  ];
+  for (const card of cards) {
+    assert.deepStrictEqual(details('<main>' + BOX + card + '</main>'), { date: 'abt 1925' }, card);
+    assert.deepStrictEqual(details('<main>' + card + BOX + '</main>'), { date: 'abt 1925' }, card);
+  }
+});
+
+test('round 9: with no Details box, no field comes from the page body - never a relative\'s 1840 as the photo\'s date (N3)', () => {
+  const n3 = details('<main><dl><dt>Title</dt><dd>Hartley farm</dd></dl><div class="css-card"><div class="css-hdr">' +
+    '<a>Thomas Hartley</a> <span>1840–1910</span></div><dl><dt>Date</dt><dd>12 Mar 1840</dd><dt>Place</dt>' +
+    '<dd>Haworth, Yorkshire, England</dd></dl></div></main>');
+  assert.deepStrictEqual(n3, {});
+  assert.strictEqual(anc.ancMediaHints(n3).sourceDate, null);
+  for (const page of ['<aside class="info"><dl><dt>Date</dt><dd>abt 1925</dd><dt>Place</dt><dd>Fairview, Kansas</dd></dl></aside>',
+    '<dl><dt>Date</dt><dd>abt 1925</dd></dl>',
+    '<section><h3>Description</h3><p>Thomas and Margaret on the porch.</p></section>',
+    '<aside id="photoInfo"><dl><dt>Date</dt><dd>abt 1925</dd></dl></aside>']) {
+    assert.deepStrictEqual(details(page), {}, page);
+  }
+  // The tab's own title still names the photo (ancMediaFrom), never the body.
+  const r = anc.ancMediaFrom(parse('<html><body><dl><dt>Title</dt><dd>Body title</dd></dl></body></html>'), PHOTO_URL,
+    { title: 'Hartley farm | Ancestry' });
+  assert.strictEqual(r.media.title, 'Hartley farm');
+});
+
+test('round 9, accepted cost: text beside the box is left out even when it is hers (K, linked people, T, other heading)', () => {
+  const panel = (beside) => details('<div class="panel">' + BOX + beside + '</div>');
+  for (const beside of [
+    '<section><h3>Description</h3><p>Thomas and Margaret on the porch.</p></section>', // K, T's besidePlain
+    '<section class="linked-people"><h3>Linked to</h3><ul><li>Thomas Hartley 1840–1910</li></ul></section>', // N's linkedInPeopleBeside
+    '<section><h3>About this photo</h3><h4>Description</h4><p>Thomas and Margaret on the porch.</p></section>',
+    '<p class="attribution">Originally added by <a>hartley_family_tree</a> on 3 Mar 2015</p>',
+  ]) {
+    assert.deepStrictEqual(panel(beside), { date: 'abt 1925' }, beside);
+  }
 });

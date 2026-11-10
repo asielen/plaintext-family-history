@@ -44,7 +44,7 @@
 //   ancParseMediaPage    a shared photo's identity (its media id) and the address to keep
 //   ancMediaImageUrl     the photo's own image, as the viewer shows it, on the page's own site
 //   ancMediaDetails      the photo's Details: title, date, place, description, who added it, who it shows
-//   ancMediaMembersSection / ancMediaSectionField  what the Details reader skips / reads
+//   ancMediaMembersSection  the members sections the Details reader never reads
 //   ancLinkedNames       the names a photo is linked to, without their years or "Private"
 //   ancMediaFrom         the whole shared photo from its viewer page
 //   ancMediaHints        a photo, dated by its Details' date when the archive can read it
@@ -543,6 +543,7 @@ const ANC_MEDIA_ORIGINALLY_RE = /^(originally (?:added|uploaded|shared) by)\b\s*
 const ANC_MEDIA_DATE = '(?:\\d{1,2}\\s+[a-z]{3,9}\\.?,?\\s+\\d{4}|[a-z]{3,9}\\.?\\s+\\d{1,2},?\\s+\\d{4}|' +
   '[a-z]{3,9}\\.?\\s+\\d{4}|\\d{1,2}[/.-]\\d{1,2}[/.-]\\d{2,4}|\\d{4}-\\d{2}-\\d{2}|\\d{4})';
 const ANC_MEDIA_PHRASE = '((?:originally )?(?:added|uploaded|shared) by)\\s*:?';
+const ANC_MEDIA_ATTRIB_TAIL_RE = new RegExp('^' + ANC_MEDIA_PHRASE + '\\s*[^.!?;]{0,40}$', 'i');
 const ANC_MEDIA_ATTRIB_LINKED_RE = new RegExp('^' + ANC_MEDIA_PHRASE + '\\s*(on\\s+' + ANC_MEDIA_DATE + ')?$', 'i');
 const ANC_MEDIA_ATTRIB_WORD_RE = new RegExp('^' + ANC_MEDIA_PHRASE + '\\s+[a-z0-9_.@-]*[a-z0-9_@-](\\s+on\\s+' +
   ANC_MEDIA_DATE + ')?$', 'i');
@@ -560,7 +561,14 @@ function ancMediaAttribution(el, text) {
   const line = text(el).split('\n')[0];
   const originally = ANC_MEDIA_ORIGINALLY_RE.exec(own) && ANC_MEDIA_ORIGINALLY_RE.exec(line);
   if (originally) return { phrase: originally[1], who: line.slice(originally[0].length).trim() };
-  const linked = ANC_MEDIA_ATTRIB_LINKED_RE.test(own) && ancElements(el, (e) => ancTag(e) === 'A').length > 0;
+  const links = ancElements(el, (e) => ancTag(e) === 'A');
+  const linked = links.length > 0 && (ANC_MEDIA_ATTRIB_LINKED_RE.test(own) ||
+    // A linked username with any short tail that is no sentence - "Added by
+    // <a>hartley_family_tree</a> 3 years ago": a username is never the
+    // family's words (round 9). A display name in the link ("<a>Aunt Ethel</a>
+    // on her 90th birthday") still needs a real date.
+    (/^[a-z0-9_.@-]+$/i.test(text(links[0]).trim()) &&
+      ANC_MEDIA_ATTRIB_TAIL_RE.test(own)));
   if (!linked && !ANC_MEDIA_ATTRIB_WORD_RE.test(line) && !ANC_MEDIA_ATTRIB_NAME_RE.test(line)) return null;
   const m = ANC_MEDIA_INLINE_RE.exec(line);
   return m ? { phrase: m[1], who: m[2].trim() } : null;
@@ -643,28 +651,25 @@ function ancMediaDetailsBoxes(root) {
 }
 
 // The photo's Details as the page shows them: { title, date, place,
-// description, originallyAddedBy, linkedTo: [names] } - each only when the
-// page shows it (the Details panel may be closed until she opens it). A
-// label's value is ancMediaValue's, and a label claims its key only with a
-// value; the first such value wins - except that "Originally added by" wins
-// over a plain "Added by" / "Shared by" read first (PR #258 round 5).
+// description, originallyAddedBy, linkedTo: [names] } - read from the
+// photo's own Details box only (ancMediaDetailsBoxes: the element whose own
+// heading or aria-label says "Details"), whole, each field by its own label.
+// A label's value is ancMediaValue's, never read from outside the box, and
+// a label claims its key only with a value; the first such value wins -
+// except that "Originally added by" wins over a plain "Added by" / "Shared
+// by" read first (PR #258 round 5).
 //
-// When the page's layout is unclear, the add-on leaves text out rather than
-// file someone else's words as hers; anything left out can still be read on
-// Ancestry from the photo's saved address. So:
-//   * The photo's own Details box (ancMediaDetailsBoxes) is read whole.
-//   * Everywhere else - beside the box, or the whole page when there is no
-//     box - a section is read only when its first visible text is one of the
-//     photo's field labels (ancMediaSectionField): beside the box
-//     "Description", "Linked to" / "Attached to" or the upload label; with no
-//     box, any of the photo's labels. A section whose first text is anything
-//     else - a relative's name in a heading, a link or bold type, "About this
-//     photo", a username - is left out with everything inside it (round 8).
-//   * A field the box does not give is unknown - never a linked relative's
-//     date or place (round 4, Codex PRRT_kwDOS6vm6c61xYYi).
-//   * Nothing is read from inside a members section ("Comments (2)", "Saved
-//     by …"), and a section headed by the upload label gives only its first
-//     name (ANC_MEDIA_UPLOADER_RE).
+// Nothing outside the box is read - no description, no "Linked to", no
+// upload line beside it - and with no Details box on the page (closed, or a
+// layout the add-on does not recognise) nothing at all: when the page's
+// layout is unclear, the add-on leaves text out rather than file someone
+// else's words as hers, and anything left out can still be read on Ancestry
+// from the photo's saved address (PR #258 round 9, a reversible decision -
+// five rounds of guessing at the page around the box each let a relative's
+// facts or other members' names through in a new shape). Inside the box,
+// nothing is read from a members section ("Comments (2)", "Saved by …"),
+// and a field headed by the upload label gives only its first name
+// (ANC_MEDIA_UPLOADER_RE).
 // `opts.hidden` / `opts.block` are ancText's (the live page passes its CSS).
 function ancMediaDetails(root, opts) {
   const o = opts || {};
@@ -673,83 +678,43 @@ function ancMediaDetails(root, opts) {
     for (let n = e; n && n.nodeType === 1; n = n.parentNode) if (o.hidden && o.hidden(n)) return false;
     return true;
   };
-  const boxes = ancMediaDetailsBoxes(root).filter(shown);
-  const boxLine = new Set(); // the boxes and every element holding one
-  for (const b of boxes) for (let n = b; n; n = n.parentNode) boxLine.add(n);
   const found = {};
   const rank = {};
-  let only = null; // the keys a pass may claim (null: every one)
   let scope = root; // a value is never read from outside it
   const claim = (key, value, weight) => {
-    if (!value || (only && only.indexOf(key) < 0)) return;
+    if (!value) return;
     if (key in found && !(weight > (rank[key] || 0))) return;
     found[key] = value;
     rank[key] = weight || 0;
   };
   const addedByWeight = (words) => (/^originally\b/i.test(words) ? 2 : 1);
-  const skipped = (c) => c.nodeType !== 1 || ANC_SKIP_TAGS.indexOf(ancTag(c)) >= 0 || ancIsSeenItNode(c) ||
-    (o.hidden && o.hidden(c)) || ancMediaMembersSection(c);
-  // One element read for what it says: a label and its value, an upload
-  // line, or else its children.
-  const visit = (c, inside) => {
-    const key = ancMediaLabel(c);
-    if (key) {
-      let value = ancMediaValue(c, text, scope);
-      if (key === 'originallyAddedBy') {
-        const first = value.split('\n')[0].trim();
-        value = ANC_MEDIA_UPLOADER_RE.test(first) ? first : '';
-      }
-      claim(key, value, key === 'originallyAddedBy' ? addedByWeight(ancOwnText(c)) : 0);
-      return;
-    }
-    // "Originally added by hartley_genealogy", in the one element whose own
-    // words start with it (the name may sit in a link inside).
-    const inline = ancMediaAttribution(c, text);
-    if (inline) {
-      claim('originallyAddedBy', inline.who, addedByWeight(inline.phrase));
-      return;
-    }
-    inside(c);
-  };
-  // The photo's own box: every element in it.
-  const walkBox = (n) => {
-    for (const c of (n && n.childNodes) || []) if (!skipped(c)) visit(c, walkBox);
-  };
-  // Anywhere else: section by section (ancMediaSectionField).
-  const walkSections = (n, fields) => {
+  const walk = (n) => {
     for (const c of (n && n.childNodes) || []) {
-      if (skipped(c) || boxes.indexOf(c) >= 0) continue; // a box is read on its own
-      if (boxLine.has(c)) {
-        walkSections(c, fields); // a wrapper around the box
+      if (c.nodeType !== 1 || ANC_SKIP_TAGS.indexOf(ancTag(c)) >= 0 || ancIsSeenItNode(c)) continue;
+      if ((o.hidden && o.hidden(c)) || ancMediaMembersSection(c)) continue;
+      const key = ancMediaLabel(c);
+      if (key) {
+        let value = ancMediaValue(c, text, scope);
+        if (key === 'originallyAddedBy') {
+          const first = value.split('\n')[0].trim();
+          value = ANC_MEDIA_UPLOADER_RE.test(first) ? first : '';
+        }
+        claim(key, value, key === 'originallyAddedBy' ? addedByWeight(ancOwnText(c)) : 0);
         continue;
       }
-      const field = ancMediaSectionField(c, text);
-      if (field === null) {
-        walkSections(c, fields); // a wrapper: its sections are judged one by one
-      } else if (field && fields.indexOf(field) >= 0) {
-        visit(c, (e) => walkSections(e, fields));
+      // "Originally added by hartley_genealogy", in the one element whose own
+      // words start with it (the name may sit in a link inside).
+      const inline = ancMediaAttribution(c, text);
+      if (inline) {
+        claim('originallyAddedBy', inline.who, addedByWeight(inline.phrase));
+        continue;
       }
-      // anything else: left out, with everything inside it
+      walk(c);
     }
   };
-  const ALL = ['title', 'date', 'place', 'description', 'linkedTo', 'originallyAddedBy'];
-  if (!boxes.length) {
-    walkSections(root, ALL);
-  } else {
-    for (const box of boxes) {
-      scope = box;
-      walkBox(box);
-    }
-    // Beside the box, in its own panel: the description too.
-    for (const box of boxes) {
-      const panel = box.parentNode && box.parentNode.nodeType === 1 ? box.parentNode : root;
-      scope = panel;
-      only = ['description', 'linkedTo', 'originallyAddedBy'];
-      walkSections(panel, only);
-    }
-    scope = root;
-    only = ['linkedTo', 'originallyAddedBy'];
-    walkSections(root, only);
+  for (const box of ancMediaDetailsBoxes(root).filter(shown)) {
+    scope = box;
+    walk(box);
   }
   const details = {};
   for (const [key] of ANC_MEDIA_LABELS) {
@@ -763,26 +728,6 @@ function ancMediaDetails(root, opts) {
     }
   }
   return details;
-}
-
-// What an element is, for reading section by section: null for a wrapper
-// (its first visible text sits inside a block of its own - look at its
-// children one by one), else the field its first visible text names - a key
-// of ANC_MEDIA_LABELS, 'originallyAddedBy' for an upload line - or '' for
-// anything else (a name, a heading of some other kind, plain text).
-const ANC_MEDIA_WRAPPER_TAGS = ['DIV', 'SECTION', 'ARTICLE', 'ASIDE', 'MAIN', 'HEADER', 'FOOTER', 'NAV', 'FORM',
-  'FIGURE', 'DL', 'UL', 'OL', 'TABLE', 'TBODY', 'THEAD', 'TR', 'BODY', 'HTML', 'DIALOG', 'DETAILS'];
-function ancMediaSectionField(el, text) {
-  const first = [...(el.childNodes || [])].find((c) =>
-    (c.nodeType === 3 && String(c.nodeValue || '').trim()) ||
-    (c.nodeType === 1 && ANC_SKIP_TAGS.indexOf(ancTag(c)) < 0 && !ancIsSeenItNode(c) && text(c)));
-  if (!first) return '';
-  if (first.nodeType === 1 && ANC_MEDIA_WRAPPER_TAGS.indexOf(ancTag(first)) >= 0) return null;
-  const words = (first.nodeType === 3 ? String(first.nodeValue) : text(first)).split('\n')[0]
-    .replace(/\s+/g, ' ').trim().replace(/\s*:$/, '');
-  if (ANC_MEDIA_INLINE_START_RE.test(words)) return 'originallyAddedBy';
-  for (const [key, re] of ANC_MEDIA_LABELS) if (re.test(words)) return key;
-  return '';
 }
 
 // A section of other members' words: its first label or heading is
