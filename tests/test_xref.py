@@ -1360,12 +1360,15 @@ class RecurringTypeCorroborationTests(unittest.TestCase):
         )
         self.assertEqual(pairs, [])
 
-    def test_undated_negated_occupation_does_not_contradict_every_occupation(self) -> None:
+    def test_undated_negated_occupation_is_weighed_against_every_occupation(self) -> None:
+        # Decided in the #247 review: a researched absence of a recurring
+        # type is offered against every positive claim of that type (only
+        # event/note are exempt) - the human reads the values.
         pairs = self._pairs(
             dict(ctype='occupation', value='was never a farmer', negated=1),
             dict(ctype='occupation', value='blacksmith', date_edtf='1900'),
         )
-        self.assertEqual(pairs, [])
+        self.assertEqual([p['kind'] for p in pairs], ['contradicts'])
 
     def test_negated_occupation_same_year_still_contradicts(self) -> None:
         pairs = self._pairs(
@@ -1374,6 +1377,149 @@ class RecurringTypeCorroborationTests(unittest.TestCase):
             dict(ctype='occupation', value='farmer', date_edtf='1900'),
         )
         self.assertEqual([p['kind'] for p in pairs], ['contradicts'])
+
+    # -- #247 delta review: researched absences (C1) ------------------------
+
+    def test_undated_negated_farmer_contradicts_dated_farmer(self) -> None:
+        pairs = self._pairs(
+            dict(ctype='occupation', value='was never a farmer', negated=1),
+            dict(ctype='occupation', value='farmer', date_edtf='1900'),
+        )
+        self.assertEqual([p['kind'] for p in pairs], ['contradicts'])
+
+    def test_no_service_found_contradicts_a_service_record(self) -> None:
+        pairs = self._pairs(
+            dict(ctype='military', negated=1,
+                 value='did not serve; no record in roster or pension index'),
+            dict(ctype='military', value='private, Co. B', date_edtf='1861/1865'),
+        )
+        self.assertEqual([p['kind'] for p in pairs], ['contradicts'])
+
+    def test_never_lived_in_registered_place_contradicts_text_residence(self) -> None:
+        pairs = self._pairs(
+            dict(ctype='residence', value='never lived in Riverton', negated=1,
+                 place_id='l-aaaaaaaaaa'),
+            dict(ctype='residence', value='lived in Riverton', date_edtf='1910',
+                 place_text='Riverton'),
+        )
+        self.assertEqual([p['kind'] for p in pairs], ['contradicts'])
+
+    def test_never_lived_in_town_contradicts_fuller_wording_of_that_town(self) -> None:
+        pairs = self._pairs(
+            dict(ctype='residence', value='never lived in Riverton', negated=1,
+                 place_text='Riverton'),
+            dict(ctype='residence', value='lived in Riverton', date_edtf='1910',
+                 place_text='Riverton, Hamilton Co., Ohio'),
+        )
+        self.assertEqual([p['kind'] for p in pairs], ['contradicts'])
+
+    def test_never_emigrated_contradicts_an_arrival(self) -> None:
+        pairs = self._pairs(
+            dict(ctype='immigration', value='never left the old country', negated=1),
+            dict(ctype='immigration', value='arrived New York', date_edtf='1880'),
+        )
+        self.assertEqual([p['kind'] for p in pairs], ['contradicts'])
+
+    def test_not_found_in_census_contradicts_census_entry_same_year(self) -> None:
+        pairs = self._pairs(
+            dict(ctype='census', value='not found in 1880 census', negated=1,
+                 date_edtf='1880'),
+            dict(ctype='census', value='Thomas, head', date_edtf='1880',
+                 place_text='Riverton'),
+        )
+        self.assertEqual([p['kind'] for p in pairs], ['contradicts'])
+
+    def test_negated_residence_in_a_different_unregistered_town_not_paired(self) -> None:
+        pairs = self._pairs(
+            dict(ctype='residence', value='never lived in Riverton', negated=1,
+                 place_text='Riverton, Ohio'),
+            dict(ctype='residence', value='lived in Oakdale', date_edtf='1910',
+                 place_text='Oakdale, Ohio'),
+        )
+        self.assertEqual(pairs, [])
+
+    # -- #247 delta review: different unregistered towns (A1) ---------------
+
+    def test_unregistered_riverton_and_oakdale_same_year_not_paired(self) -> None:
+        pairs = self._pairs(
+            dict(ctype='residence', value='lived in Riverton', date_edtf='1880',
+                 place_text='Riverton'),
+            dict(ctype='residence', value='lived in Oakdale', date_edtf='1880-06',
+                 place_text='Oakdale'),
+        )
+        self.assertEqual(pairs, [])
+
+    def test_about_1880_riverton_and_1881_oakdale_same_state_not_paired(self) -> None:
+        pairs = self._pairs(
+            dict(ctype='residence', value='family lived in Riverton', date_edtf='1880~',
+                 place_text='Riverton, Ohio'),
+            dict(ctype='residence', value='listed at Main St', date_edtf='1881',
+                 place_text='Oakdale, Ohio'),
+        )
+        self.assertEqual(pairs, [])
+
+    def test_census_enumerated_twice_in_two_towns_not_paired(self) -> None:
+        pairs = self._pairs(
+            dict(ctype='census', value='boarder at the works', date_edtf='1900-06-02',
+                 place_text='Oakdale, Hamilton, Ohio'),
+            dict(ctype='census', value='son, at home', date_edtf='1900-06-15',
+                 place_text='Riverton, Hamilton, Ohio'),
+        )
+        self.assertEqual(pairs, [])
+
+    def test_farmer_in_riverton_and_blacksmith_in_oakdale_not_paired(self) -> None:
+        pairs = self._pairs(
+            dict(ctype='occupation', value='farmer', date_edtf='1880',
+                 place_text='Riverton'),
+            dict(ctype='occupation', value='blacksmith', date_edtf='1880',
+                 place_text='Oakdale'),
+        )
+        self.assertEqual(pairs, [])
+
+    def test_state_only_place_gives_no_signal_and_dates_decide(self) -> None:
+        pairs = self._pairs(
+            dict(ctype='residence', value='lived in Riverton', date_edtf='1880',
+                 place_text='Riverton, Ohio'),
+            dict(ctype='residence', value='lived in Ohio', date_edtf='1880',
+                 place_text='Ohio'),
+        )
+        self.assertEqual([p['kind'] for p in pairs], ['corroborates'])
+
+
+class ComparePlaceTextsTests(unittest.TestCase):
+    """#247 delta review: as-written place texts of one town must not read
+    as two places, and two towns must not read as one. 'same' and
+    'no-signal' never admit a pair by themselves; only 'differ' acts (a
+    veto)."""
+
+    CASES = [
+        ('Riverton, Ohio', 'Riverton, Hamilton Co., Ohio', 'same'),
+        ('Riverton City, Hamilton, Ohio', 'Riverton, Ohio', 'same'),
+        ('Riverton, Ohio', 'Riverton Ohio', 'same'),
+        ('Riverton, Ohio', 'Ohio', 'no-signal'),
+        ('Riverton, Hamilton, Ohio, USA', 'Riverton, Hamilton County, Ohio, United States', 'same'),
+        ('Fairview City, Breton, Kansas', 'Fairview, Breton County, Kansas', 'same'),
+        ('Fairview, Breton County, Kansas', 'Fairview, Kansas', 'same'),
+        ('Fairview', 'Fairview, Breton County, Kansas', 'same'),
+        ('Riverton', 'Oakdale', 'differ'),
+        ('Riverton, Ohio', 'Oakdale, Ohio', 'differ'),
+        ('Riverton, Hamilton, Ohio', 'Oakdale, Hamilton, Ohio', 'differ'),
+        ('Springfield, Ohio', 'Springfield, Illinois', 'differ'),
+        ('Ohio', 'Oakdale, Ohio', 'no-signal'),
+        ('York', 'New York', 'differ'),
+        ('Hamilton, Ohio', 'Riverton, Hamilton Co., Ohio', 'no-signal'),
+    ]
+
+    def test_verdict_table(self) -> None:
+        for a, b, want in self.CASES:
+            with self.subTest(a=a, b=b):
+                self.assertEqual(xref._compare_place_texts(a, b), want)
+                self.assertEqual(xref._compare_place_texts(b, a), want)
+
+    def test_empty_side_gives_no_signal(self) -> None:
+        self.assertEqual(xref._compare_place_texts('', 'Riverton'), 'no-signal')
+        self.assertEqual(xref._compare_place_texts(None, 'Riverton'), 'no-signal')
+        self.assertEqual(xref._compare_place_texts('County', 'Riverton'), 'no-signal')
 
 
 class XrefStdoutIsValidUtf8Tests(unittest.TestCase):

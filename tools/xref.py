@@ -21,12 +21,11 @@ every pair of claims from *different* sources that isn't already linked via
 `claim_links` is a candidate:
 
   - negation polarity differs (`negated`)          -> contradiction candidate,
-                                                        when bounds overlap; for
-                                                        a recurring type only if
-                                                        the pair also agrees (see
-                                                        "WHAT COUNTS AS
-                                                        AGREEMENT"), never for
-                                                        `event`/`note`
+                                                        when bounds overlap and
+                                                        (non-vital types) the two
+                                                        claims don't name
+                                                        different places; never
+                                                        for `event`/`note`
   - bounds don't overlap, vital type                -> contradiction candidate
   - bounds don't overlap, substantive type           -> not a candidate
     (residence, occupation, ... recur by design, §8.2; non-overlapping dates
@@ -58,17 +57,22 @@ agrees (`_recurring_agreement`):
   - `event` / `note`: never - neither as corroborating nor, through a
     negation, as contradicting. The type says nothing about what the fact
     is; matching them up is a reading job for a person or an agent.
-  - both claims carry a registered `place_id` and the ids differ: no. This is
-    the only place difference that vetoes - a registered place is a decision
-    someone made. It also vetoes a town against its own county (two ids);
-    that is an owner-reversible choice (#247 review), one line to flip.
+  - both claims carry a registered `place_id` and the ids differ: no - a
+    registered place is a decision someone made. It also vetoes a town
+    against its own county (two ids); that is an owner-reversible choice
+    (#247 review), one line to flip in `_places_differ`.
   - both claims carry the same `place_id`, or the same normalized
     `place_text`: agrees, whatever the dates.
-  - any other place wording difference does NOT veto. SPEC §8 and §15 keep
-    `place_text` as the source wrote it, so one town arrives as "Riverton,
-    Ohio" and "Riverton, Hamilton Co., Ohio"; reading that as two places hid
-    real pairs (two copies of one 1880 census entry). The pair falls through
-    to the date test.
+  - otherwise, two `place_text`s are compared by `_compare_place_texts`.
+    SPEC §8 and §15 keep `place_text` as the source wrote it, so one town
+    arrives as "Riverton, Ohio" and "Riverton, Hamilton Co., Ohio" - an exact
+    comparison hid real pairs (two copies of one 1880 census entry), while no
+    comparison at all offered "Riverton" 1880 against "Oakdale" 1880. A
+    verdict of 'differ' (the towns disagree: "Riverton" vs "Oakdale",
+    "Springfield, Ohio" vs "Springfield, Illinois") vetoes. 'same' (a wording
+    variant) or 'no-signal' ("Ohio" vs "Riverton, Ohio": one side only names
+    the larger area) never admits a pair by itself - it falls through to the
+    date test.
   - both claims dated and the dates agree: agrees. Dates agree when both
     claims carry the IDENTICAL finite range (`1861/1865` twice - a war
     service, a long career - however wide), or when each date is no wider
@@ -79,11 +83,17 @@ agrees (`_recurring_agreement`):
     that is not the same span on both sides.
   - anything else: no.
 
-The negated-vs-positive branch applies the same test to recurring types on
-top of its existing place check (a negation and a positive claim naming two
-different places, by id or by text, are still never a contradiction - "did
-not live in Topeka" and "lived in Boston" can both be true). Vital types,
-relationship and divorce keep their contradiction rules unchanged.
+The negated-vs-positive branch does NOT require agreement: a researched
+absence is usually written undated and placeless ("did not serve; no roster
+or pension record", "never left the old country"), and it is meant to be
+weighed against every positive claim of that type. For a recurring type it is
+a contradiction candidate unless the two claims name different places, read
+through the same `_places_differ` test ("did not live in Topeka" and "lived in
+Boston" can both be true; "never lived in Riverton" against "Riverton,
+Hamilton Co., Ohio" is a real conflict). `event` and `note` never produce
+one - "never went to sea" says nothing about a mortgage. Relationship and
+divorce keep the original exact place-text comparison here; vital types are
+unchanged.
 
 Place comparison prefers structured `place_id` when both claims have one;
 it falls back to normalized `place_text`, then to a place phrase parsed out
@@ -188,6 +198,9 @@ CODE MAP
     _place_from_vital_value     - vital-claim place extraction (uses _lib.normalize_place_text)
     _classify_pair              - corroborates/contradicts for one claim pair
     _recurring_agreement        - "same place or agreeing dates" test for recurring types (#245)
+    _places_differ / _compare_place_texts
+                                - "do these claims name two different places?" (ids, else
+                                  as-written text compared town-first, token-subset)
     run_xref                    - group claims by person+type, pair, classify
                                    (marriage/divorce grouping uses _lib.spouse_parties,
                                    see "MARRIAGE/DIVORCE BUCKETING" above)
@@ -215,6 +228,7 @@ from _lib import (
     edtf_bounds,
     fmt_id_display,
     normalize_place_text,
+    place_text_cluster_key,
     open_index_db,
     resolve_root_arg,
     spouse_parties,
@@ -300,7 +314,8 @@ def _classify_pair(a: dict, b: dict) -> str | None:
         # absence and the presence have to be about the *same* place - a
         # negated "did not reside in Topeka" doesn't conflict with a positive
         # "resided in Boston" the same year, since both can be true at once.
-        if a['type'] not in _VITAL_TYPES:
+        if a['type'] in _PINNED_TYPES - _VITAL_TYPES:
+            # relationship / divorce: unchanged.
             if a['place_id'] and b['place_id']:
                 if a['place_id'] != b['place_id']:
                     return None
@@ -309,11 +324,14 @@ def _classify_pair(a: dict, b: dict) -> str | None:
                 place_b = normalize_place_text(b['place_text'])
                 if place_a and place_b and place_a != place_b:
                     return None
-            # A recurring type also needs the pair to be about the same
-            # thing (#245's contradiction-side twin): an undated "never went
-            # to sea" is not in conflict with every other event on file.
-            if (a['type'] not in _PINNED_TYPES
-                    and not _recurring_agreement(a, b, a_min, a_max, b_min, b_max)):
+        elif a['type'] not in _VITAL_TYPES:
+            # An undated "never went to sea" is not in conflict with every
+            # other event on file (#245's contradiction-side twin).
+            if a['type'] in _NO_CORROBORATION_TYPES:
+                return None
+            # Otherwise a researched absence is weighed against every
+            # positive claim of the type - unless they name different places.
+            if _places_differ(a, b):
                 return None
         return 'contradicts'
 
@@ -343,29 +361,98 @@ def _year_span(lo: str, hi: str) -> int:
 
 _OPEN_MIN, _OPEN_MAX = edtf_bounds(None)
 
+# Words that say what kind of place a token names, not which place: dropped
+# before comparing two place texts ("Riverton City" is "Riverton").
+_PLACE_FILLER_WORDS = frozenset({
+    'city', 'county', 'township', 'twp', 'usa', 'us', 'united', 'states', 'of',
+    'america',
+})
+
+
+def _place_part_tokens(part: str) -> set[str]:
+    return set(place_text_cluster_key(part).split()) - _PLACE_FILLER_WORDS
+
+
+def _compare_place_texts(text_a: str | None, text_b: str | None) -> str:
+    """
+    Compare two as-written place texts: 'same', 'differ', or 'no-signal'.
+
+    Each text is split on commas into parts (town first, then the larger
+    areas), and each part into tokens through `_lib.place_text_cluster_key`
+    ("Co." -> "County", punctuation dropped) minus `_PLACE_FILLER_WORDS`.
+
+      - the towns (first parts) agree, or one side is the comma-less form of
+        the other ("Riverton Ohio" / "Riverton, Ohio"), AND the shorter
+        text's tokens all appear in the longer's -> 'same':
+          "Riverton, Ohio" / "Riverton, Hamilton Co., Ohio"
+          "Fairview City, Breton, Kansas" / "Fairview, Breton County, Kansas"
+          "Fairview" / "Fairview, Breton County, Kansas"
+      - one side names only a larger area the other lies in -> 'no-signal':
+          "Ohio" / "Riverton, Ohio"; "Hamilton, Ohio" / "Riverton, Hamilton
+          Co., Ohio" (a town called Hamilton, or the county? can't tell)
+      - anything else -> 'differ':
+          "Riverton" / "Oakdale"; "Riverton, Ohio" / "Oakdale, Ohio";
+          "Springfield, Ohio" / "Springfield, Illinois"; "York" / "New York"
+      - either side empty -> 'no-signal'.
+
+    Callers treat only 'differ' as meaningful (a veto); 'same' and
+    'no-signal' never admit a pair on their own (#245).
+    """
+    parts_a = [t for t in (_place_part_tokens(x) for x in (text_a or '').split(',')) if t]
+    parts_b = [t for t in (_place_part_tokens(x) for x in (text_b or '').split(',')) if t]
+    if not parts_a or not parts_b:
+        return 'no-signal'
+    all_a, all_b = set().union(*parts_a), set().union(*parts_b)
+    if parts_a[0] != parts_b[0]:
+        rest_a, rest_b = set().union(*parts_a[1:]), set().union(*parts_b[1:])
+        if all_a <= rest_b or all_b <= rest_a:
+            return 'no-signal'
+        commaless = (
+            (len(parts_a) == 1 and parts_a[0] <= all_b and parts_b[0] <= parts_a[0])
+            or (len(parts_b) == 1 and parts_b[0] <= all_a and parts_a[0] <= parts_b[0])
+        )
+        if not commaless:
+            return 'differ'
+    small, big = (all_a, all_b) if len(all_a) <= len(all_b) else (all_b, all_a)
+    return 'same' if small <= big else 'differ'
+
+
+def _places_differ(a: dict, b: dict) -> bool:
+    """Whether two claims name two different places: different registered
+    `place_id`s (a town and its own county included - owner-reversible, #247
+    review), or, short of two ids, two `place_text`s `_compare_place_texts`
+    calls 'differ'."""
+    if a['place_id'] and b['place_id']:
+        return a['place_id'] != b['place_id']
+    if normalize_place_text(a['place_text']) == normalize_place_text(b['place_text']):
+        return False
+    return _compare_place_texts(a['place_text'], b['place_text']) == 'differ'
+
 
 def _recurring_agreement(a: dict, b: dict, a_min: str, a_max: str,
                          b_min: str, b_max: str) -> bool:
     """
     Whether two claims of a recurring type (residence, occupation, census,
     ...) whose dates already overlap say something specific in common: the
-    same place, or dates that agree. Used for both corroboration and the
-    negated-vs-positive contradiction. See the module docstring's "WHAT
-    COUNTS AS AGREEMENT" section (#245).
+    same place, or dates that agree. Gates corroboration only. See the module
+    docstring's "WHAT COUNTS AS AGREEMENT" section (#245).
     """
     if a['type'] in _NO_CORROBORATION_TYPES:
         return False
 
     if a['place_id'] and b['place_id']:
         # Two registered places: the ids decide. Different ids (a town vs
-        # its county included) veto - the one place difference that does.
+        # its county included) veto.
         return a['place_id'] == b['place_id']
     text_a = normalize_place_text(a['place_text'])
     text_b = normalize_place_text(b['place_text'])
     if text_a and text_a == text_b:
         return True
-    # Any other wording difference is not evidence of two places (SPEC §8, §15:
-    # place_text is as the source wrote it) - fall through to the dates.
+    if _places_differ(a, b):
+        return False
+    # A wording variant of one place, or no signal either way, proves
+    # nothing on its own (SPEC §8, §15: place_text is as the source wrote
+    # it) - the dates decide.
 
     if not (a['date_edtf'] and b['date_edtf']):
         return False

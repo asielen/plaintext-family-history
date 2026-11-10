@@ -907,9 +907,9 @@ fresh index; exit 3 if absent (TOOLING §14a).
 **`fha xref`**. Query pairs of accepted/needs-review claims: same person, same type, different
 source, not already linked (`a.id < b.id` deduplication). Post-filter in Python:
 - Bounds overlap (via `edtf_bounds()`) → corroboration candidate (vital types,
-  `relationship`, `divorce`); other types also need a shared place or agreeing dates, and
-  `event`/`note` get none - the same test gates a negated-vs-positive contradiction
-  (#245, TOOLING §14a)
+  `relationship`, `divorce`); other types also need a shared place or agreeing dates and
+  must not name different places, and `event`/`note` get none; a negated-vs-positive
+  contradiction for those types needs only "not different places" (#245, TOOLING §14a)
 - Bounds don't overlap → contradiction candidate (vital types: also flag incompatible values)
 
 Group output by person; label each pair with both claim IDs, sources, dates, values.
