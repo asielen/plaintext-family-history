@@ -901,3 +901,20 @@ test('round 4: from the page to the archive, no member who saved the photo is na
       fs.rmSync(tmp, { recursive: true, force: true });
     }
   });
+
+test('round 5 (Codex PRRT_kwDOS6vm6c61yqx6): with an empty description, who added the photo is only in photo-data.json', async () => {
+  const edit = (h) => h
+    .replace('<p class="attribution">Originally added by <a href="/profile/x">hartley_family_tree</a> on 3 Mar 2015</p>', '')
+    .replace(/<section>\s*<h3>Description<\/h3>[\s\S]*?<\/section>/,
+      '<section><h3>Description</h3></section><p>Originally added by <a href="/profile/z">cousin_member_three</a> on 3 Mar 2015</p>');
+  assert.ok(edit(fs.readFileSync(path.join(SAMPLES, 'ancestry-media-photo.html'), 'utf8')).includes('cousin_member_three'));
+  const p = await openPhoto(PHOTO_OPEN, { edit });
+  await p.capture();
+  const b = p.written[0];
+  const cap = p.capJson(b);
+  assert.ok(!JSON.stringify(cap).includes('cousin_member_three'), cap.notes);
+  assert.doesNotMatch(cap.notes, /Description on Ancestry/);
+  const data = JSON.parse(await b.assets.find((a) => a.filename === 'photo-data.json').blob.text());
+  assert.strictEqual(data.details.originallyAddedBy, 'cousin_member_three on 3 Mar 2015');
+  assert.ok(!('description' in data.details));
+});

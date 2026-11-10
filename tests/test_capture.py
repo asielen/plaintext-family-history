@@ -407,6 +407,26 @@ class CaptureTestCase(unittest.TestCase):
         self.assertFalse(ancestry._year_already_in_title('1917', 'U.S., WWI Draft Cards, 1917-1918'))
         self.assertTrue(ancestry._year_already_in_title('1880', '1880 United States Federal Census'))
 
+    def test_ancestry_shared_photo_page_gives_no_people_and_no_text(self) -> None:
+        """PR #258 rounds 4-5: a shared photo's page lists the other members
+        who saved it - here as a table, which the recipe reads people from on
+        every other Ancestry page. On a shared photo it reads none, and keeps
+        none of the page's words as the stub's text: the photo's people and
+        words come from the capture add-on, which stops at that list."""
+        from capture_recipes import ancestry
+        html = ('<html><head><title>Hartley farm</title></head><body><h3>Saved by</h3><table><tr><th>Name</th>'
+                '<th>Relationship</th></tr><tr><td>Cousin Member One</td><td>3rd cousin</td></tr>'
+                '<tr><td>Cousin Member Two</td><td>friend</td></tr></table>'
+                '<p>Originally added by <a>cousin_member_three</a></p></body></html>')
+        r = ancestry.extract(html, 'https://www.ancestry.com/mediaui-viewer/tree/1/person/2/media/'
+                                   '7c0ffee0-1234-4abc-8def-0123456789ab')
+        self.assertEqual(r['people'], [])
+        self.assertEqual(r['body'], '')
+        self.assertNotIn('Cousin Member', r['citation'])
+        # Any other Ancestry page still gives its table's people.
+        r = ancestry.extract(html, 'https://www.ancestry.com/family-trees/1/people/2/facts')
+        self.assertIn('Cousin Member One', r['people'])
+
     def test_ancestry_citation_reads_a_range_however_it_is_joined(self) -> None:
         """PR #258 round 4 (audit J): "1940 - 1997", "1865 to 1925" and
         "1908—1932" were read as single years, so a date of 1940, 1925 or

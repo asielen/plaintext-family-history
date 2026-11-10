@@ -1065,7 +1065,11 @@
   function ancMediaValue(el, text, scope) {
     const tidy = (parts) => parts.join('\n').split('\n').map((l) => l.replace(/\s+/g, ' ').trim())
       .filter(Boolean).join('\n');
-    const holdsLabel = (n) => n.nodeType === 1 && (!!ancMediaLabel(n) || ancElements(n, ancMediaLabel).length > 0);
+    // Where one field ends: the next label, or an upload attribution
+    // ("Originally added by <a>name</a> on …"), which is never a value of
+    // another field (PR #258 round 5, Codex PRRT_kwDOS6vm6c61yqx6).
+    const boundary = (n) => !!ancMediaLabel(n) || ANC_MEDIA_INLINE_START_RE.test(ancOwnText(n));
+    const holdsLabel = (n) => n.nodeType === 1 && (boundary(n) || ancElements(n, boundary).length > 0);
     const inside = tidy([...(el.childNodes || [])].filter((c) => c.nodeType === 1).map((c) => text(c)));
     if (inside) return inside;
     let node = el;
@@ -1109,13 +1113,19 @@
   // description, originallyAddedBy, linkedTo: [names] } - each only when the
   // page shows it (the Details panel may be closed until she opens it). A
   // label's value is ancMediaValue's, and a label claims its key only with a
-  // value; the first such value wins. When the page has the photo's own
-  // Details box, its title, date, place and description come from that box
-  // alone: a field it does not give is unknown, never filled from a linked
-  // relative's card elsewhere on the page (PR #258 round 4, Codex
-  // PRRT_kwDOS6vm6c61xYYi). Who it is linked to and who added it may sit beside
-  // the box, and are read from the rest of the page when the box lacks them.
-  // With no Details box at all, the whole page is read in order.
+  // value; the first such value wins - except that "Originally added by" wins
+  // over a plain "Added by" / "Shared by" read first (PR #258 round 5).
+  //
+  // When the page has the photo's own Details box, its title, date, place and
+  // description come from that box. A field the box does not give is unknown,
+  // never filled from a linked relative's card (PR #258 round 4, Codex
+  // PRRT_kwDOS6vm6c61xYYi) - with one exception, the description, which may
+  // sit beside the box in the same panel (round 5). Who it is linked to and
+  // who added it may sit anywhere beside the box. Beside the box, a card about
+  // someone else - one headed by a name, or marked as a person, profile or
+  // card - is never read. Nowhere is anything read from inside a members
+  // section ("Comments (2)", "Saved by …"). With no Details box at all, the
+  // whole page is read in order.
   // `opts.hidden` / `opts.block` are ancText's (the live page passes its CSS).
   function ancMediaDetails(root, opts) {
     const o = opts || {};
@@ -1124,22 +1134,33 @@
       for (let n = e; n && n.nodeType === 1; n = n.parentNode) if (o.hidden && o.hidden(n)) return false;
       return true;
     };
+    const boxes = ancMediaDetailsBoxes(root).filter(shown);
+    const boxLine = new Set(); // the boxes and every element holding one
+    for (const b of boxes) for (let n = b; n; n = n.parentNode) boxLine.add(n);
+    const holdsBox = (e) => boxLine.has(e);
     const found = {};
-    // While the rest of the page is read beside a Details box, only these.
-    const BESIDE = ['linkedTo', 'originallyAddedBy'];
-    let only = null;
-    let scope = root;
-    const claim = (key, value) => {
-      if (value && !(key in found) && (!only || only.indexOf(key) >= 0)) found[key] = value;
+    const rank = {};
+    let only = null; // the keys a pass may claim (null: every one)
+    let scope = root; // a value is never read from outside it
+    let beside = false; // reading beside the box: someone else's card is skipped
+    const claim = (key, value, weight) => {
+      if (!value || (only && only.indexOf(key) < 0)) return;
+      if (key in found && !(weight > (rank[key] || 0))) return;
+      found[key] = value;
+      rank[key] = weight || 0;
     };
+    const addedByWeight = (words) => (/^originally\b/i.test(words) ? 2 : 1);
     const walk = (n) => {
       for (const c of (n && n.childNodes) || []) {
         if (c.nodeType !== 1) continue;
         if (ANC_SKIP_TAGS.indexOf(ancTag(c)) >= 0 || ancIsSeenItNode(c)) continue;
         if (o.hidden && o.hidden(c)) continue;
+        if (ancMediaMembersSection(c)) continue;
+        if (beside && !holdsBox(c) && ancMediaOthersCard(c)) continue;
+        if (beside && boxes.indexOf(c) >= 0) continue; // read already, on its own
         const key = ancMediaLabel(c);
         if (key) {
-          claim(key, ancMediaValue(c, text, scope));
+          claim(key, ancMediaValue(c, text, scope), key === 'originallyAddedBy' ? addedByWeight(ancOwnText(c)) : 0);
           continue;
         }
         // "Originally added by hartley_genealogy", in the one element whose own
@@ -1147,21 +1168,31 @@
         const inline = ANC_MEDIA_INLINE_START_RE.test(ancOwnText(c))
           ? ANC_MEDIA_INLINE_RE.exec(text(c).split('\n')[0]) : null;
         if (inline) {
-          claim('originallyAddedBy', inline[2].trim());
+          claim('originallyAddedBy', inline[2].trim(), addedByWeight(inline[1]));
           continue;
         }
         walk(c);
       }
     };
-    const boxes = ancMediaDetailsBoxes(root);
-    for (const box of boxes) {
-      if (!shown(box)) continue;
-      scope = box;
-      walk(box);
+    if (!boxes.length) {
+      walk(root);
+    } else {
+      for (const box of boxes) {
+        scope = box;
+        walk(box);
+      }
+      // Beside the box, in its own panel: the description too.
+      beside = true;
+      for (const box of boxes) {
+        const panel = box.parentNode && box.parentNode.nodeType === 1 ? box.parentNode : root;
+        scope = panel;
+        only = ['description', 'linkedTo', 'originallyAddedBy'];
+        walk(panel);
+      }
+      scope = root;
+      only = ['linkedTo', 'originallyAddedBy'];
+      walk(root);
     }
-    scope = root;
-    only = boxes.length ? BESIDE : null;
-    walk(root);
     const details = {};
     for (const [key] of ANC_MEDIA_LABELS) {
       // "Saved by" and comments are never kept: other members' names.
@@ -1174,6 +1205,28 @@
       }
     }
     return details;
+  }
+
+  // A section of other members' words: its first label or heading is
+  // "Comments (N)" or a "Saved by …" list. Nothing inside it is read - a
+  // commenter's "Shared by …" is not who added the photo.
+  function ancMediaMembersSection(el) {
+    const kids = [...(el.childNodes || [])].filter((c) => c.nodeType === 1);
+    const head = kids.find((c) => /^H[1-6]$/.test(ancTag(c)));
+    const key = (kids[0] && ancMediaLabel(kids[0])) || (head && ancMediaLabel(head)) || null;
+    return key === 'comments' || key === 'savedBy';
+  }
+
+  // A card about someone else beside the photo's Details box - a linked
+  // person's, a member's profile: marked so (person, profile, member, card,
+  // comment), or headed by something that is not one of the photo's labels
+  // (a name). Never read beside the box.
+  function ancMediaOthersCard(el) {
+    const cls = el.className && el.className.baseVal !== undefined ? el.className.baseVal : el.className;
+    if (/(^|[\s_-])(person|people|profile|member|members|comment|comments|card|cards)([\s_-]|$)/i
+      .test(String(el.id || '') + ' ' + String(cls || ''))) return true;
+    const head = [...(el.childNodes || [])].find((c) => c.nodeType === 1 && /^H[1-6]$/.test(ancTag(c)));
+    return !!head && !ancMediaLabel(head);
   }
 
   // The people a shared photo is linked to, as names: one per line, without

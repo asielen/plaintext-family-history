@@ -1224,10 +1224,18 @@ def _relocate_from_inbox(
     *,
     source_type: str | None = None,
     dry_run: bool,
+    name_if_taken: str | None = None,
 ) -> tuple[Path, Path | None, object]:
     """File a COPY of an inbox-staged asset (+ sidecar) into its documents/
     photos root, and park the original(s) in `inbox/processed/` rather than
     deleting them.
+
+    `name_if_taken` is the name a photo is filed under when its own name is
+    already taken in the photo library - `--more` attaching another print of
+    a filed photo that arrives under the same name, as a second download of
+    a shared Ancestry photo does (PR #258 round 5). It is the name the copy
+    enters the photo library with; nothing already there is renamed, and the
+    original in the inbox keeps its name.
 
     `fha capture --asset` (and a hand-dropped file) stage in `inbox/`, but
     `process_document`/`process_photo` require the asset already under the
@@ -1294,6 +1302,8 @@ def _relocate_from_inbox(
         else resolve_path('documents', fha_config, archive_root)
     )
     new_path = dest_root / file_path.name
+    if new_path.exists() and kind == 'photo' and name_if_taken and sidecar is None:
+        new_path = dest_root / name_if_taken
     new_sidecar = dest_root / sidecar.name if sidecar is not None else None
     if new_path.exists():
         raise ProcessError(f'destination already exists: {_rel(new_path, archive_root)}')
@@ -1410,7 +1420,8 @@ def _relocate_from_inbox(
             f'{_rel(processed_root, archive_root)}/: {e}.{recovery_note}'
         ) from e
 
-    print(f'Filed {file_path.name} into {_rel(dest_root, archive_root)}/ and parked the '
+    filed_as = '' if new_path.name == file_path.name else f' as {new_path.name}'
+    print(f'Filed {file_path.name} into {_rel(dest_root, archive_root)}/{filed_as} and parked the '
           f'original at {_rel(parked_path, archive_root)}')
 
     def undo() -> None:
@@ -2900,18 +2911,30 @@ def process_folder(
     return rc
 
 
-def _photo_already_filed_message(archive_root: Path, fha_config: dict, dest: Path, src: Path,
-                                 folder: Path) -> str:
-    """What to say when a bundle's photo would land on a name the photo library
-    already holds.
+_ANCESTRY_PHOTO_NAME_RE = re.compile(
+    r'^ancestry-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-photo\.[a-z0-9]+$', re.I)
 
-    Only when the two hold the same picture (`picture_data_hash`, which a
-    keyword write does not change) is it a second copy, which she may delete
-    if it adds nothing. A name alone proves nothing: two scans both called
-    IMG_0001.jpg are two photos, and the second must never be called a copy
-    of the first (PR #258 round 4). The source holding the filed photo is
-    named when a record's `files:` names its path (a text search of sources/,
-    run only on this refusal). The filed photo is never renamed."""
+
+def _photo_already_filed_message(archive_root: Path, fha_config: dict, dest: Path, src: Path,
+                                 folder: Path, *, named_in_notes: bool = False) -> str:
+    """What to say when a bundle's photo would land on a name the photo library
+    already holds. The filed photo is never renamed, and nothing is changed.
+
+      * The same picture (`picture_data_hash`, which a keyword write does not
+        change): a second copy, which she may delete if it adds nothing.
+      * Both named for one shared Ancestry photo (`ancestry-{id}-photo`): a
+        second version of that photo - a larger download, say - which
+        `--more` keeps with the source that holds it.
+      * Two pictures that differ: a different photo that only shares the
+        name. Never called a copy, never offered for deletion.
+      * Neither picture readable (a TIFF, a HEIC): the tools cannot tell, so
+        both possibilities are named.
+
+    A name alone never earns advice to delete (PR #258 rounds 4-5). In a
+    capture bundle the file is named in its notes.md, so a rename must be
+    made in both places, or processing the folder again refuses it. The
+    source holding the filed photo is named when a record's `files:` names
+    its path (a text search of sources/, run only on this refusal)."""
     alias = path_to_alias(dest, _PHOTO_DIR, fha_config, archive_root)
     holder = None
     sources_dir = archive_root / 'sources'
@@ -2930,15 +2953,31 @@ def _photo_already_filed_message(archive_root: Path, fha_config: dict, dest: Pat
         shown = _rel(folder, archive_root)
     except ValueError:
         shown = folder.name
+    try:
+        src_shown = _rel(src, archive_root)
+    except ValueError:
+        src_shown = src.name
+    rename = (f'rename {src.name} in {shown} - and the same name in that folder\'s notes.md, which lists it - '
+              if named_in_notes else f'rename {src.name} in {shown} ')
     filed_hash = picture_data_hash(dest)
-    if filed_hash is not None and filed_hash == picture_data_hash(src):
+    this_hash = picture_data_hash(src)
+    if filed_hash is not None and filed_hash == this_hash:
         return (f'this photo ({dest.name}) is already in your photo library, filed as {where}. '
                 f'{shown} is a second copy of the same photo. Delete that folder if it adds '
                 f'nothing; if it holds a file the source lacks, attach that file to the source with '
                 f'`fha process {alias} --more <file> ROLE`. Nothing was changed.')
-    return (f'a different photo with the same name ({dest.name}) is already in your photo library, '
-            f'filed as {where}; nothing was changed. Rename this one ({src.name}) in {shown} and '
-            f'process it again.')
+    if _ANCESTRY_PHOTO_NAME_RE.match(dest.name) and dest.name.lower() == src.name.lower():
+        return (f'{src_shown} is another version of the same Ancestry photo ({dest.name}), which is '
+                f'already filed as {where}; nothing was changed. To keep this version with that source, '
+                f'run `fha process {alias} --more "{src_shown}" front:b`. If it adds nothing, delete the '
+                f'folder {shown}.')
+    if filed_hash is not None and this_hash is not None:
+        return (f'a different photo with the same name ({dest.name}) is already in your photo library, '
+                f'filed as {where}; nothing was changed. To file this one, {rename}and process it again.')
+    return (f'the tools could not tell whether {src_shown} is the same photo as {dest.name}, which is '
+            f'already in your photo library, filed as {where}; nothing was changed. If it is the same '
+            f'photo and adds nothing, you can delete the folder {shown}. If it is a different photo, '
+            f'{rename}and process it again.')
 
 
 def process_bundle(
@@ -3101,8 +3140,9 @@ def process_bundle(
             # A photo of that name is already filed: a second copy of it, or a
             # different photo that shares its name - said plainly, with the
             # source that holds it. The filed original is never renamed.
-            raise ProcessError(_photo_already_filed_message(archive_root, fha_config, item['dest'],
-                                                            item['src'], folder))
+            raise ProcessError(_photo_already_filed_message(
+                archive_root, fha_config, item['dest'], item['src'], folder,
+                named_in_notes=item['src'].name in file_hints))
         if item['dest'].exists():
             raise ProcessError(f'destination already exists: {item["dest"].name}')
         if item['kind'] == 'document' and (
@@ -3730,9 +3770,14 @@ def attach_more(
         archive_root, fha_config, primary_path, real_path,
         dry_run=dry_run, source_type=source_type)
     pre_move_more = more_file
+    # Another print of a filed photo under that photo's own name (a larger
+    # download of a shared Ancestry photo): it enters the photo library as
+    # that print - "{name}-b.jpg" for `front:b` - beside the one it copies.
+    print_name = (f'{more_file.stem}-{copy}{more_file.suffix}'
+                  if copy and re.fullmatch(r'[a-z0-9]{1,12}', str(copy), re.I) else None)
     more_file, _, more_relocate_undo = _relocate_from_inbox(
         archive_root, fha_config, more_file, None,
-        source_type=source_type, dry_run=dry_run)
+        source_type=source_type, dry_run=dry_run, name_if_taken=print_name)
     more_real_path = pre_move_more if dry_run and more_file != pre_move_more else None
     try:
         rc = _attach_more_engine(

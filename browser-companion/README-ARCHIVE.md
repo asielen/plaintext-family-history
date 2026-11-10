@@ -246,8 +246,16 @@ drop it in the same way before you press Capture.
 
 If a photo does get captured twice, filing the second copy stops with a message
 naming the source that already holds the photo, and leaves the copy in your inbox
-for you to delete. A *different* photo that only shares a filed photo's name is
-never called a copy: you are asked to rename it in the inbox and file it again.
+for you to delete. If the second capture is a *different version* of the same
+Ancestry photo (a larger download, say), the message gives you the one command
+that keeps it with that photo's source, as a second print. A *different* photo
+that only shares a filed photo's name is never called a copy, and the message
+says how to rename it so it can be filed. Nothing is ever offered for deleting
+on a matching name alone.
+
+A capture of a shared photo made with an older version of this add-on may still
+hold a copy of Ancestry's page. When you file it, that copy is left out (it
+stays in your download folder) and the notes say why.
 
 From a person's **Hints** page, open the photo on its own page first (the
 "Evaluate photo" side panel is not captured).

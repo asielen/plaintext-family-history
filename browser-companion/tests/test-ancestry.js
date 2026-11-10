@@ -522,3 +522,43 @@ test('round 4 (Codex PRRT_kwDOS6vm6c61xYYi): a field the photo\'s Details box do
   // No Details box at all: the page is read in order, as before.
   assert.deepStrictEqual(details('<dl><dt>Date</dt><dd>abt 1925</dd></dl>'), { date: 'abt 1925' });
 });
+
+// ── PR #258 round 5 ──────────────────────────────────────────────────────────
+
+test('round 5 (Codex PRRT_kwDOS6vm6c61yqx6): an upload line ends a field - an empty description never reads it', () => {
+  const d = details('<aside><h2>Details</h2><dl><dt>Description</dt><dd></dd></dl>' +
+    '<p>Originally added by <a>cousin_member</a> on 3 Mar 2015</p></aside>');
+  assert.deepStrictEqual(d, { originallyAddedBy: 'cousin_member on 3 Mar 2015' });
+  // Every attribution form is a boundary, with no Details box too.
+  for (const line of ['Added by', 'Shared by', 'Uploaded by', 'Originally added by']) {
+    assert.deepStrictEqual(details('<div><span>Description</span></div><p>' + line + ' <a>cousin_member</a></p>'),
+      { originallyAddedBy: 'cousin_member' }, line);
+  }
+});
+
+test('round 5 (audit K): a description beside the Details box, in its panel, is kept; a linked person\'s card is not read', () => {
+  assert.deepStrictEqual(details('<aside aria-label="Details"><dl><dt>Date</dt><dd>abt 1925</dd><dt>Place</dt>' +
+    '<dd>Fairview, Kansas</dd></dl></aside><section><h3>Description</h3><p>Thomas and Margaret on the porch.</p></section>'),
+  { date: 'abt 1925', place: 'Fairview, Kansas', description: 'Thomas and Margaret on the porch.' });
+  assert.deepStrictEqual(details('<aside aria-label="Details"><dl><dt>Date</dt><dd>abt 1925</dd></dl></aside>' +
+    '<div class="person-details"><h4>Thomas Hartley</h4><dl><dt>Description</dt><dd>Born on the moors.</dd></dl></div>'),
+  { date: 'abt 1925' });
+  // Nor a card's "Attached to" list as the photo's linked people.
+  assert.deepStrictEqual(details('<div class="person-card"><h4>Thomas Hartley</h4><dl><dt>Attached to</dt>' +
+    '<dd>Margaret Whitcombe (wife)<br>cousin_member_one</dd></dl></div>' +
+    '<aside aria-label="Details"><dl><dt>Date</dt><dd>abt 1925</dd></dl></aside>'), { date: 'abt 1925' });
+});
+
+test('round 5 (audit): a commenter is never recorded as who added the photo; "Originally added by" wins', () => {
+  assert.deepStrictEqual(details('<section class="comments"><h3>Comments (1)</h3><div><p>Shared by ' +
+    '<a>cousin_member_two</a> on 4 Apr 2019</p><p>Lovely photo!</p></div></section>' +
+    '<aside aria-label="Details"><dl><dt>Date</dt><dd>abt 1925</dd></dl></aside>' +
+    '<p class="attribution">Originally added by <a>hartley_family_tree</a> on 3 Mar 2015</p>'),
+  { date: 'abt 1925', originallyAddedBy: 'hartley_family_tree on 3 Mar 2015' });
+  // A plain "Shared by" read first gives way to "Originally added by".
+  assert.deepStrictEqual(details('<p>Shared by <a>tree_owner_two</a></p><p>Originally added by <a>hartley_family_tree</a></p>'),
+    { originallyAddedBy: 'hartley_family_tree' });
+  // Comments without a Details box are not read either.
+  assert.deepStrictEqual(details('<section><h3>Comments (2)</h3><p>Shared by <a>cousin_member_two</a></p>' +
+    '<h3>Description</h3><p>A note from a member</p></section>'), {});
+});

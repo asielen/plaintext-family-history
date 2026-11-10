@@ -1361,6 +1361,35 @@ _DEFAULT_STAGING = '~/Downloads/fha-inbox'
 # Swept bundles are *parked* here, never hard-deleted (never-lose-the-human's-work).
 _INGESTED_DIRNAME = '.ingested'
 
+# A photo another member shared to an Ancestry tree, in the media viewer.
+# Ancestry's page for it lists the other members who saved the photo, so a
+# copy of that page is never brought into the archive (PR #258 round 5): the
+# capture add-on stopped making one, and a capture from an older add-on that
+# still did has it left in the staging folder.
+_ANCESTRY_SHARED_PHOTO_RE = re.compile(
+    r'ancestry\.[a-z.]+/mediaui-viewer/(?:[^?#\s]*/)?media/'
+    r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', re.I)
+_SHARED_PHOTO_COPY_NOTE = ("The copy of Ancestry's page was left out: it lists other members who saved "
+                           "this photo. The photo's address is kept.")
+_PAGE_COPY_SUFFIXES = ('.html', '.htm', '.xhtml', '.mhtml', '.mht')
+
+
+def _without_shared_photo_page_copy(cap: dict, assets: list[tuple[Path, str]]) -> list[tuple[Path, str]]:
+    """A shared Ancestry photo's capture, less any copy of Ancestry's page.
+
+    The copy (role `webpage`, or any saved HTML page) stays in the staging
+    folder, parked with the rest of the bundle - never deleted - and one plain
+    line in the notes says why it is not in the archive. Every other capture
+    is returned as it came."""
+    if not _ANCESTRY_SHARED_PHOTO_RE.search(str(cap.get('url') or '')):
+        return assets
+    kept = [(path, role) for path, role in assets
+            if role != 'webpage' and path.suffix.lower() not in _PAGE_COPY_SUFFIXES]
+    if len(kept) != len(assets):
+        notes = str(cap.get('notes') or '').rstrip()
+        cap['notes'] = (notes + '\n\n' + _SHARED_PHOTO_COPY_NOTE) if notes else _SHARED_PHOTO_COPY_NOTE
+    return kept
+
 
 def _resolve_staging_dir(staging_arg: str | None, fha_config: dict) -> Path:
     """Resolve the staging folder: explicit arg → fha.yaml `capture_staging:` → default.
@@ -1674,6 +1703,7 @@ def run_ingest(
             continue
         try:
             cap, html, assets = _read_bundle(bundle)
+            assets = _without_shared_photo_page_copy(cap, assets)
         except BundleError as e:
             print(f'WARNING: skipping malformed bundle {name}: {e}', file=sys.stderr)
             print(f'         left in place at {bundle}', file=sys.stderr)

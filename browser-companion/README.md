@@ -223,7 +223,9 @@ no-op, the bundles land in `inbox/` directly.
   never filed without its picture. No copy of the page is kept for a shared
   photo (the page lists other members): the archive keeps the photo and
   `photo-data.json`, whose fields are only what the Details reader extracts,
-  and the Python recipe reads no people or text from that page. Capture
+  and the Python recipe reads no people or text from that page. `fha capture
+  --ingest` leaves out a page copy an older add-on made of such a page (it
+  stays parked in the staging folder) and says so in the notes. Capture
   reads the page again first, and
   stages nothing while the page shows Details or linked people the form has
   not shown her (they are added to the form for her to check), so a photo is
