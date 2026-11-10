@@ -181,3 +181,52 @@ test('Ancestry hints: a side panel slow to appear is waited for, not taken as cl
   }
 });
 
+// PR #256 second review: a link Ancestry redraws picks its pills back up (no
+// pile-up), and a click on a link that names no record, scan or photo (Ignore,
+// a help page) does not open the hint.
+test('Ancestry hints: a redrawn title link reuses its pills instead of adding more', async () => {
+  const card = fakeCard('hintCardContentHeader');
+  const href = 'https://www.ancestry.com/mediaui-viewer/tree/333/person/444/media/' + MED;
+  let title = fakeLink(href, { text: 'Photo of the family', cls: 'link hintCardContentHeader', card });
+  card.title = title;
+  let links = [title];
+  const storage = { anc: { ['med:' + MED]: { t: [Date.now() - 24 * 3600 * 1000], last: Date.now() - 24 * 3600 * 1000, mark: null } } };
+  const page = loadContentScript('content-ancestry.js', {
+    pathname: '/family-trees/111/people/222/hints', origin: 'https://www.ancestry.com',
+    querySelectorAll: (sel) => (sel.includes('mediaui-viewer') ? links : []),
+    storage,
+  });
+  try {
+    await wait(700);
+    assert.strictEqual(title.inserted.length, 1);
+    // Ancestry redraws the title: a new link element, our pills still beside it.
+    const pills = title.nextElementSibling;
+    const redrawn = fakeLink(href, { text: 'Photo of the family', cls: 'link hintCardContentHeader', card });
+    redrawn.nextElementSibling = pills;
+    card.title = redrawn;
+    links = [redrawn];
+    // Opening the hint schedules the next render.
+    page.listeners.click[0]({ button: 0, target: { closest: (sel) => (sel === 'a[href]' ? redrawn : null) } });
+    await wait(700);
+  } finally {
+    page.stop();
+  }
+  assert.strictEqual(links[0].inserted.length, 0, 'a second set of pills was added beside the redrawn title');
+});
+
+test('Ancestry hints: Ignore or a help link in a card does not count as opening the hint', async () => {
+  const card = fakeCard('recordCardV2CollectionTitle');
+  card.title = fakeLink('https://www.ancestry.com/search/collections/6742/records/4321', { text: '1880 census', cls: 'link recordCardV2CollectionTitle', card });
+  const page = loadContentScript('content-ancestry.js', { pathname: '/family-trees/111/people/222/hints', origin: 'https://www.ancestry.com' });
+  try {
+    await wait(50);
+    for (const href of ['#', 'https://support.ancestry.com/s/article/hints', 'https://www.ancestry.com/family-tree/person/tree/333/person/444/facts']) {
+      const a = fakeLink(href, { text: 'x', card });
+      page.listeners.click[0]({ button: 0, target: { closest: (sel) => (sel === 'a[href]' ? a : null) } });
+    }
+  } finally {
+    page.stop();
+  }
+  assert.deepStrictEqual(page.sent.filter((m) => m.type === 'ancLook').map((m) => m.key), []);
+});
+

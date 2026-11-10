@@ -399,6 +399,7 @@
       // item, so its thumbnail keeps them), never on the Review button.
       const hintCard = a.closest(HINT_CARD);
       let key = keyFromHref(a.getAttribute('href'));
+      const linkKey = key;
       // Where the pills go: right after a link with text; for an icon-only link
       // (a tree person's Facts page lists sources as cards - an empty icon link
       // beside a .userCardContent block with the collection title) inside that
@@ -421,7 +422,7 @@
       let existing = cand && cand.classList && cand.classList.contains('nsi-pills') && cand.dataset.nsiFor ? cand : null;
       // Inside a hint card a link touches only the pills it put there itself,
       // so the title and the thumbnail never take each other's down.
-      if (existing && hintCard && existing.dataset.nsiOwner !== ownerOf(a)) existing = null;
+      if (existing && hintCard && existing.dataset.nsiOwner !== ownerOf(a, linkKey)) existing = null;
       if (!key || key === here || !place) {
         if (existing) existing.remove();
         continue;
@@ -434,22 +435,20 @@
       const pills = pillsFor(key, false, false);
       pills.dataset.key = sig;
       pills.dataset.nsiFor = key;
-      if (hintCard) pills.dataset.nsiOwner = ownerOf(a);
+      if (hintCard) pills.dataset.nsiOwner = ownerOf(a, linkKey);
       place.put(pills);
       const row = a.closest('[class*="result"], [class*="Result"], li, tr');
       if (row) row.classList.toggle('nsi-ruled-out', (data.anc[key] || {}).mark === 'nothing');
     }
   }
 
-  const owners = new WeakMap();
-  let ownerSeq = 0;
-  function ownerOf(a) {
-    let id = owners.get(a);
-    if (!id) {
-      id = String(++ownerSeq);
-      owners.set(a, id);
-    }
-    return id;
+  // Whose pills these are inside a hint card: the item and which link (the
+  // title, or another link such as a record hint's scan). Said in words, not
+  // tied to the link element, so when Ancestry redraws a link the new one
+  // picks up its pills instead of adding another set (#256 review).
+  function ownerOf(a, key) {
+    const isTitle = a.classList.contains('hintCardContentHeader') || a.classList.contains('recordCardV2CollectionTitle');
+    return (isTitle ? 'title|' : 'link|') + (key || '');
   }
 
   let renderTimer = null;
@@ -512,9 +511,12 @@
     if (!card) return;
     // Whatever was clicked in the card (title, Review, a record hint's scan),
     // the panel opens that card's hint: count its title's record or photo.
+    // Only a link to the record, its scan or the photo opens the hint - not
+    // Ignore, a help link or someone's tree page (#256 review).
+    const own = keyFromHref(a.getAttribute('href'));
+    if (!own) return;
     const header = card.querySelector(HINT_TITLE);
-    const key = (header && keyFromHref(header.getAttribute('href'))) || keyFromHref(a.getAttribute('href'));
-    if (!key) return;
+    const key = (header && keyFromHref(header.getAttribute('href'))) || own;
     const title = header ? (header.innerText || header.textContent || '').trim() : '';
     openHint = key;
     openHintAt = Date.now();
