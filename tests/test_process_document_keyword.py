@@ -23,7 +23,7 @@ sys.path.insert(0, str(ROOT / 'tools'))
 sys.path.insert(0, str(ROOT / 'tests'))
 
 import process  # noqa: E402
-from _lib import EXIT_CLEAN, EXIT_FAILURE  # noqa: E402
+from _lib import EXIT_CLEAN, EXIT_ERRORS, EXIT_FAILURE  # noqa: E402
 from keyword_fixture_files import EXIFTOOL, read_fields, write_fixture  # noqa: E402
 
 
@@ -178,6 +178,20 @@ class DocumentKeywordTests(_Base):
         self.assertEqual([p.suffix for p in store.embed_calls], ['.pdf'])
         self.assertIn('SOURCE: ', out)
 
+    def test_a_renamed_processed_scan_is_not_given_a_second_id(self) -> None:
+        # The day the keyword earns its keep: a sync tool renamed the scan, so
+        # its filename no longer says which source it is - the keyword does.
+        store = self._install_store()
+        scan = self.archive / 'documents' / 'census' / 'renamed-by-dropbox.tif'
+        scan.write_bytes(b'x')
+        store.keywords[str(scan)] = ['SOURCE: S-a1b2c3d4e5']
+        rc, _out, err = self._run([str(scan), '--type', 'census'])
+        self.assertEqual(rc, EXIT_ERRORS)
+        self.assertIn('already carries SOURCE: S-a1b2c3d4e5', err)
+        self.assertIn('fha find S-a1b2c3d4e5', err)
+        self.assertTrue(scan.exists())
+        self.assertEqual(self._records(), [])
+
     def test_an_attached_document_scan_gets_the_keyword(self) -> None:
         store = self._install_store()
         folder = self.archive / 'documents' / 'census'
@@ -214,6 +228,18 @@ class RealDocumentKeywordTests(_Base):
                 self.assertEqual(len(holding), fields, got)
                 # E012's reader agrees: the identity carrier is readable back.
                 self.assertEqual(process._read_all_source_keywords(renamed), [sid.lower()])
+
+    def test_a_scan_renamed_after_processing_is_recognised(self) -> None:
+        scan = write_fixture(self.archive / 'documents' / 'census' / 'sheet.tif')
+        rc, _out, err = self._run([str(scan), '--type', 'census'])
+        self.assertEqual(rc, EXIT_CLEAN, err)
+        processed = next((self.archive / 'documents' / 'census').glob('sheet_S-*.tif'))
+        renamed = processed.with_name('sheet (1).tif')
+        processed.rename(renamed)
+        rc, _out, err = self._run([str(renamed), '--type', 'census'])
+        self.assertEqual(rc, EXIT_ERRORS)
+        self.assertIn('already carries SOURCE:', err)
+        self.assertEqual(len(self._records()), 1)
 
     def test_a_document_exiftool_cannot_update_is_still_filed(self) -> None:
         bad = self.archive / 'documents' / 'census' / 'locked.pdf'

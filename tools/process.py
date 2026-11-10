@@ -663,6 +663,24 @@ def _embed_document_keyword(path: Path, sid: str, *, backup: OriginalBackup) -> 
                'after that will carry it.' if missing_exiftool else ''))
 
 
+def _document_source_keyword(path: Path) -> str | None:
+    """The S-id a documents-root file already carries INSIDE it, or None.
+
+    The embedded keyword exists for exactly the day a sync tool or an export
+    renames a processed scan: its filename no longer ends in `_{S-id}`, and
+    without this check `fha process` would take it for a new file and mint
+    it a second ID. Best-effort by design - a document's keyword is a spare
+    copy of its identity, so a machine without exiftool, or a file exiftool
+    cannot read, simply skips the check rather than blocking the filing.
+    """
+    if not _document_takes_keyword(path):
+        return None
+    try:
+        return _read_source_keyword(path)
+    except RuntimeError:
+        return None
+
+
 def _document_keyword_undo(path: Path, sid: str, backup: OriginalBackup):
     """An undo step that takes a just-written document keyword back out.
 
@@ -1788,6 +1806,14 @@ def process_document(
         raise ProcessError(
             f'{file_path.name} already carries an S-id ({existing.upper()}); '
             'it looks already processed. Refusing to mint a second ID.'
+        )
+    if embedded := _document_source_keyword(real_path if real_path is not None else file_path):
+        shown = fmt_id_display(embedded)
+        raise ProcessError(
+            f'{file_path.name} already carries SOURCE: {shown} inside the file, so it '
+            'was processed before - another program has probably changed its name. '
+            f'Refusing to mint a second ID. Run `fha find {shown}` to see the name '
+            'its record lists, and rename the file back to that.'
         )
 
     documents_root = resolve_path('documents', fha_config, archive_root)
