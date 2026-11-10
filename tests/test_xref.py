@@ -1505,6 +1505,19 @@ class RecurringTypeCorroborationTests(unittest.TestCase):
         )
         self.assertEqual([p['kind'] for p in pairs], ['corroborates'])
 
+    def test_multi_word_town_inside_a_longer_phrase_corroborates(self) -> None:
+        # Codex on #247: "farm outside New York" vs "New York" was vetoed -
+        # the whole-word test only looked at single words.
+        self.assertNotEqual(xref._compare_place_texts('farm outside New York', 'New York'), 'differ')
+        self.assertNotEqual(xref._compare_place_texts('New York', 'farm outside New York'), 'differ')
+        pairs = self._pairs(
+            dict(ctype='residence', value='lived on a farm', date_edtf='1900',
+                 place_text='farm outside New York'),
+            dict(ctype='residence', value='lived in New York', date_edtf='1900',
+                 place_text='New York'),
+        )
+        self.assertEqual([p['kind'] for p in pairs], ['corroborates'])
+
     def test_st_and_saint_spellings_corroborate(self) -> None:
         pairs = self._pairs(
             dict(ctype='residence', value='lived in St. Louis', date_edtf='1910',

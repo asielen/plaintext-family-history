@@ -409,12 +409,14 @@ def _town_key(text: str | None) -> str:
 
 def _towns_are_variants(text_a: str | None, text_b: str | None) -> bool:
     """Whether two place texts' towns could be one town written two ways:
-    equal once folded, one a whole word of the other ("farm outside
-    Riverton" / "Riverton"), or close spellings by difflib ratio."""
+    equal once folded, one a run of whole words inside the other ("farm
+    outside Riverton" / "Riverton", "farm outside New York" / "New York"),
+    or close spellings by difflib ratio."""
     town_a, town_b = sorted((_town_key(text_a), _town_key(text_b)))
     if not town_a or not town_b:
         return False
-    if town_a == town_b or town_a in town_b.split() or town_b in town_a.split():
+    if (town_a == town_b or f' {town_a} ' in f' {town_b} '
+            or f' {town_b} ' in f' {town_a} '):
         return True
     return difflib.SequenceMatcher(None, town_a, town_b).ratio() >= _TOWN_VARIANT_RATIO
 
