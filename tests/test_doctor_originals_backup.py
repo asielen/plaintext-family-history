@@ -66,6 +66,23 @@ class DoctorOriginalsBackupTests(unittest.TestCase):
         self.assertEqual(check['status'], 'ok')
         self.assertIn(str(dest.resolve()), line)
 
+    def test_a_file_where_the_folder_should_be_warns(self) -> None:
+        # Codex: a FILE at the configured path passed as "on", while every
+        # copy - and so every keyword write - would be refused.
+        blocker = self.tmp / 'PhotoOriginals'
+        blocker.write_text('not a folder', encoding='utf-8')
+        for dest in (blocker, blocker / 'inside'):
+            with self.subTest(dest=dest.name):
+                result, check, line, _cfg = self._doctor(f'originals_backup: {dest.as_posix()}\n')
+                self.assertEqual(check['status'], 'warn')
+                self.assertIn('is a file', line)
+                self.assertGreaterEqual(result.exit_code, 1)
+
+    def test_a_folder_that_does_not_exist_yet_is_fine(self) -> None:
+        _result, check, _line, _cfg = self._doctor(
+            f'originals_backup: {(self.tmp / "not-yet" / "copies").as_posix()}\n')
+        self.assertEqual(check['status'], 'ok')
+
     def test_set_inside_the_archive_warns_that_writes_will_be_refused(self) -> None:
         result, check, line, _cfg = self._doctor('originals_backup: safety\n')
         self.assertEqual(check['status'], 'warn')

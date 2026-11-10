@@ -1564,6 +1564,21 @@ def _suggest_originals_backup_folder(archive_root: Path, fha_config: dict) -> Pa
     return None
 
 
+def _first_file_in_path(dest: Path) -> Path | None:
+    """The first existing path component of `dest` that is a file, or None.
+
+    Walks up from `dest` to the nearest thing that exists; only that one is
+    looked at (everything above an existing folder is a folder). One `stat`
+    or two, never a walk of the tree.
+    """
+    probe = Path(dest)
+    while not probe.exists():
+        if probe.parent == probe:
+            return None
+        probe = probe.parent
+    return None if probe.is_dir() else probe
+
+
 def _check_originals_backup(archive_root: Path, fha_config: dict, lines: list[str],
                             checks: list[dict]) -> int:
     """Report whether `originals_backup:` (TOOLING §13f) is set up (#252 item 5).
@@ -1593,6 +1608,21 @@ def _check_originals_backup(archive_root: Path, fha_config: dict, lines: list[st
             'into photos and scans')
         checks.append({'id': 'originals_backup', 'status': 'warn',
                        'detail': backup.refusal,
+                       'next_step': 'fix originals_backup: in fha.yaml'})
+        return EXIT_WARNINGS
+    if backup.dest is not None and (blocker := _first_file_in_path(backup.dest)) is not None:
+        # #253 review: the setting reads fine, but a FILE sits where the folder
+        # (or one of the folders above it) has to be, so every copy - and
+        # with it every keyword write - would be refused. A folder that does
+        # not exist yet is fine: the first copy creates it.
+        reason = (f'{backup.dest} is a file, not a folder' if blocker == backup.dest
+                  else f'{blocker} is a file, so the folder {backup.dest} cannot be made under it')
+        lines.append(
+            f'safety copies: {_WARN} originals_backup: points at {backup.dest}, but {reason}  '
+            f'next: point originals_backup: in {archive_root / "fha.yaml"} at a folder '
+            '(or a place one can be made) - until then fha refuses to write keywords '
+            'into photos and scans')
+        checks.append({'id': 'originals_backup', 'status': 'warn', 'detail': reason,
                        'next_step': 'fix originals_backup: in fha.yaml'})
         return EXIT_WARNINGS
     if backup.dest is not None:
