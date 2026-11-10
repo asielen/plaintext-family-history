@@ -8,6 +8,9 @@ This page is the whole ritual - it takes about two minutes, and your records are
 Your `sources/`, `people/`, `places/`, `notes/`, photos, and documents are not part of any
 update. Your settings (`fha.yaml`), your place list (`places/places.yaml`), and your site styling
 (`.fha/design/custom.css`) are written once at install and never overwritten by an update either.
+(One small exception: the first time, the update asks whether you want the Seen It browser
+add-on kept up to date, and where. Your answer is added as one line at the end of `fha.yaml`;
+nothing else in it changes.)
 
 ---
 
@@ -72,6 +75,12 @@ root; the launcher finds them there, and `update-tools` refreshes them in place.
    anything real inside it - a file you added, an edit to the starting note - leaves the folder
    untouched. Point the setting back inside the archive and the next `fha update-tools` brings the
    folder back.
+
+   **Browser add-ons.** If `fha.yaml` names a `browser_extensions:` folder, the update also
+   refreshes the Seen It add-on there (your old copy goes to that folder's `_backups/` first).
+   When it says so, open `chrome://extensions` and click the **reload arrow** on the add-on.
+   **Do not remove it** and load it again - removing an add-on deletes everything it remembers.
+   The same goes for the capture add-on when the update says it changed.
 
 5. **If your archive is a git repository, commit the update** as its own commit, so tool
    updates never mix with record changes:

@@ -194,6 +194,9 @@ The capture **browser extension** (`browser-companion/` in the project repo) run
 copy at `.fha/browser-companion/` (chrome://extensions → Developer mode → "Load unpacked" →
 that folder; its README says the same). At run time its whole archive footprint is the
 staged bundles it drops and the `fha capture --ingest` sweep that files them (TOOLING §13b).
+The optional **Seen It** add-on is kept current by `fha update-tools` in the folder fha.yaml's
+`browser_extensions:` names (TOOLING §13c). Never tell the human to *remove* an add-on and load
+it again - Chrome deletes its data with it; the reload arrow in chrome://extensions is the step.
 Working ON the extension is a project-repo activity like any other tool-building.
 
 ## Format quick reference
