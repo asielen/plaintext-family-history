@@ -3058,7 +3058,7 @@ def process_bundle(
         names = ', '.join(missing_hints)
         raise ProcessError(
             f"the notes in {folder.name} name a file that is no longer in that folder: {names}. "
-            'If you already filed it (for example with `fha process … --more`), this folder has '
+            'If you already filed it (for example with `fha process ... --more`), this folder has '
             'nothing left to file: delete it. If you renamed it, change the name in the folder\'s '
             'notes.md to match, then process the folder again. Nothing was changed.')
 
