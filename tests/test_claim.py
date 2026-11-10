@@ -3845,6 +3845,41 @@ class DeathClaimReviewFixTests(_DeathFixture, unittest.TestCase):
         self.assertIn('so he stays out', self._text(result))
         self.assertNotIn('so him stays', self._text(result))
 
+    # 9. An edit to an accepted death claim that stops naming someone as the
+    # deceased warns like an un-accept (never reverts); whoever it newly
+    # names is not marked - only a move into accepted marks anyone.
+    def test_editing_an_accepted_death_away_from_someone_warns(self) -> None:
+        _death_source(self.root, _claim_item('C-aa11bb22cc', 'death', _ADA)
+                      + _claim_item('C-bb22cc33dd', 'burial', _JOHN))
+        self._accept('C-aa11bb22cc', 'C-bb22cc33dd')
+        self.assertEqual(self._living(self.ada), 'false')
+        self.assertEqual(self._living(self.john), 'false')
+        cases = (
+            ('dry run, --persons', 'C-aa11bb22cc', {'persons': [_MARY], 'dry_run': True}, _ADA),
+            ('--persons Ada -> Mary', 'C-aa11bb22cc', {'persons': [_MARY]}, _ADA),
+            ('--type away from burial', 'C-bb22cc33dd', {'claim_type': 'residence'}, _JOHN),
+        )
+        for label, cid, kw, pid in cases:
+            with self.subTest(label):
+                result = claim.run_claim_batch(self.root, claim_ids=[cid], **kw)
+                self.assertEqual(result.exit_code, EXIT_CLEAN, self._text(result))
+                warnings = [m.text for m in result.messages if m.level == 'warning']
+                self.assertEqual(len(warnings), 1, self._text(result))
+                self.assertIn('as the one who died', warnings[0])
+                self.assertIn(f'fha person set-living {pid} unknown', warnings[0])
+        self.assertEqual(self._living(self.ada), 'false')
+        self.assertEqual(self._living(self.john), 'false')
+        self.assertEqual(self._living(self.mary), 'unknown')   # newly named: not marked
+
+    def test_an_edit_that_still_names_the_deceased_says_nothing_extra(self) -> None:
+        _death_source(self.root, _claim_item('C-aa11bb22cc', 'death', _ADA))
+        self._accept('C-aa11bb22cc')
+        result = claim.run_claim(self.root, claim_id='C-aa11bb22cc', date='1980')
+        self.assertEqual([m for m in result.messages if m.level == 'warning'], [])
+        result = claim.run_claim(self.root, claim_id='C-aa11bb22cc',
+                                 persons=[_ADA, _JOHN])   # now unscoped: Ada dropped
+        self.assertIn(f'fha person set-living {_ADA} unknown', self._text(result))
+
 
 if __name__ == '__main__':
     unittest.main()

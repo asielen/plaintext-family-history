@@ -221,8 +221,9 @@ CODE MAP
     _death_reading_of         - _lib.claim_death_reading for a non-negated death/burial
     _mark_deceased_not_living - THE accept-side step every accept path calls: mark
                                 who died as living: false (unknown only), warn otherwise
-    _warn_unaccepted_deaths   - a death claim leaving accepted: say who is still
-                                marked as no longer living (never reverted)
+    _warn_still_marked        - an accepted death claim that stops naming someone
+                                (un-accepted, or edited): say who is still marked as
+                                no longer living (never reverted)
 
   fha claim <C-id> [<C-id> ...] (review + field edit; batch = status-only)
     _find_claim_record        - scan sources/ for the .md holding one C-id
@@ -1343,30 +1344,43 @@ def _mark_deceased_not_living(
                        f'longer living: {why}')
 
 
-def _warn_unaccepted_deaths(
-    archive_root: Path, result: Result, claims: list[dict], new_status: str, *,
+def _warn_still_marked(
+    archive_root: Path, result: Result,
+    changes: list[tuple[dict, dict | None]], new_status: str | None, *,
     dry_run: bool = False,
 ) -> None:
-    """A death/burial claim leaving `accepted`: say if its person stays marked dead.
+    """An accepted death/burial claim that stops naming someone: say if they
+    are still marked as no longer living.
 
-    Accepting the claim may have marked the person as no longer living; moving
-    it to rejected/disputed/needs-review/superseded does NOT undo that (owner
-    decision, #250 review): the flag may have been set by hand, or rest on
-    another record, and quietly hiding someone again is its own surprise. So
-    the move is said plainly instead - for each person the claim names as the
-    deceased whose record now reads `living: false`, one warning naming the
-    command that puts them back, `fha person set-living <P-id> unknown`.
-    `claims` are only those this command moved OUT of accepted.
+    Accepting the claim may have marked the person as no longer living. Two
+    later moves stop the claim saying they died, and neither undoes the flag
+    (owner decision, #250 review): the flag may have been set by hand, or rest
+    on another record, and quietly hiding someone again is its own surprise.
+    So the change is said plainly instead - for each person the claim named
+    as the deceased who now reads `living: false`, one warning naming the
+    command that puts them back, `fha person set-living <P-id> unknown`:
+
+      - the claim leaves `accepted` (rejected/disputed/needs-review/
+        superseded): `changes` holds `(claim as it was, None)`;
+      - the claim stays accepted but an edit stops naming them - `--persons`
+        drops them, `--type` moves away from death/burial, or the claim now
+        reads as negated: `changes` holds `(claim as it was, claim as edited)`.
+        Somebody the edit newly names (Ada -> Mary) is NOT marked: only a
+        move into accepted marks anyone, and lint W136 reports Mary.
     """
     seen: set[str] = set()
-    for claim in claims:
-        read = _death_reading_of(claim)
+    for before, after in changes:
+        read = _death_reading_of(before)
         if read is None:
             continue
         ctype, reading = read
-        cid = _claim_label(claim)
+        still: set[str] = set()
+        if after is not None:
+            now = _death_reading_of(after)
+            still = set(now[1].named) if now is not None else set()
+        cid = _claim_label(before)
         for pid in reading.named:
-            if pid in seen:
+            if pid in seen or pid in still:
                 continue
             seen.add(pid)
             _path, meta = _read_person(archive_root, pid)
@@ -1375,13 +1389,19 @@ def _warn_unaccepted_deaths(
             if normalize_living(meta.get('living')) != 'false':
                 continue
             name = str(meta.get('name') or '').strip() or fmt_id_display(pid)
-            moved = 'would no longer be' if dry_run else 'is no longer'
+            shown = fmt_id_display(pid)
+            if after is None:
+                moved = 'would no longer be' if dry_run else 'is no longer'
+                lead = f'{cid} {moved} accepted (now {new_status}), but {name} ({shown})'
+            else:
+                moved = 'would no longer name' if dry_run else 'no longer names'
+                lead = (f'{cid} {moved} {name} ({shown}) as the one who died, but '
+                        f'{_pronouns(meta)[0]}')
             result.add('warning',
-                       f'{cid} {moved} accepted (now {new_status}), but {name} '
-                       f'({fmt_id_display(pid)}) is still marked as no longer living, '
-                       f'so shared exports and the site still include {_pronouns(meta)[1]}. '
-                       f'If this {ctype} record was the only reason, run '
-                       f'`fha person set-living {fmt_id_display(pid)} unknown`.')
+                       f'{lead} is still marked as no longer living, so shared exports '
+                       f'and the site still include {_pronouns(meta)[1]}. If this '
+                       f'{ctype} record was the only reason, run '
+                       f'`fha person set-living {shown} unknown`.')
 
 
 # ── Top-level operation ───────────────────────────────────────────────────────
@@ -1511,9 +1531,10 @@ def run_claim(
     Accepting a `death`/`burial` claim also marks who died as no longer
     living (`_mark_deceased_not_living`, #246; `keep_living` skips that).
     Only a claim this call moves INTO accepted counts: re-accepting an
-    accepted claim changes nobody (#250 review). A death/burial claim this
-    call moves OUT of accepted warns when its person still reads
-    `living: false` (`_warn_unaccepted_deaths`) - never reverted.
+    accepted claim changes nobody (#250 review). An accepted death/burial
+    claim this call moves OUT of accepted, or edits so it no longer names
+    someone as the deceased, warns when that person still reads
+    `living: false` (`_warn_still_marked`) - never reverted.
     `_in_batch` (set by `run_claim_batch`, live or dry run) leaves both steps
     to the batch, which runs them once for the claims it actually applied;
     `_claims_read` hands it each claim exactly as this call read it.
@@ -1786,16 +1807,21 @@ def run_claim(
     # a refusal: the archive already holds what the human asked for.
     # The death-claim steps (#246). Only a move INTO accepted marks anyone:
     # a claim that was already accepted changes nobody, so a rerun cannot
-    # undo an earlier --keep-living (#250 review). A move OUT of accepted
-    # only warns. A batch (`_in_batch`) runs both itself, after its writes.
+    # undo an earlier --keep-living (#250 review). An accepted claim that
+    # stops naming someone as the deceased - moved out of accepted, or
+    # edited (--persons/--type) while it stays accepted - only warns
+    # (`_warn_still_marked`). A batch (`_in_batch`) runs these itself.
     was_accepted = before_status.strip().lower() == 'accepted'
-    accepted_now = unaccepted_now = None
-    if not _in_batch and status is not None:
+    accepted_now = None
+    still_marked: tuple[dict, dict | None] | None = None
+    if not _in_batch:
         edited = _effective_claim(claim, claim_type=claim_type, persons=persons_norm)
         if status == 'accepted' and not was_accepted:
             accepted_now = edited
-        elif status != 'accepted' and was_accepted:
-            unaccepted_now = edited
+        elif was_accepted and status is not None and status != 'accepted':
+            still_marked = (claim, None)
+        elif was_accepted:
+            still_marked = (claim, edited)
 
     out_text = reapply_newline(new_text, text)
     if out_text == text:
@@ -1833,9 +1859,8 @@ def run_claim(
         if accepted_now is not None:
             _mark_deceased_not_living(archive_root, result, [accepted_now],
                                       dry_run=True, keep_living=keep_living)
-        if unaccepted_now is not None:
-            _warn_unaccepted_deaths(archive_root, result, [unaccepted_now], status,
-                                    dry_run=True)
+        if still_marked is not None:
+            _warn_still_marked(archive_root, result, [still_marked], status, dry_run=True)
         result.add('info', _DRY_RUN_TRAILER)
         return result
 
@@ -1870,8 +1895,8 @@ def run_claim(
     if accepted_now is not None:
         _mark_deceased_not_living(archive_root, result, [accepted_now],
                                   keep_living=keep_living)
-    if unaccepted_now is not None:
-        _warn_unaccepted_deaths(archive_root, result, [unaccepted_now], status)
+    if still_marked is not None:
+        _warn_still_marked(archive_root, result, [still_marked], status)
     result.add('info', _INDEX_REMINDER, next_step='fha index')
     return result
 
@@ -2195,8 +2220,8 @@ def run_claim_batch(
         _mark_deceased_not_living(archive_root, result, accepted_claims,
                                   dry_run=dry_run, keep_living=keep_living)
     if unaccepted_claims:
-        _warn_unaccepted_deaths(archive_root, result, unaccepted_claims, status,
-                                dry_run=dry_run)
+        _warn_still_marked(archive_root, result, [(c, None) for c in unaccepted_claims],
+                           status, dry_run=dry_run)
 
     if stopped is not None or write_failed is not None:
         # Name what was applied, what was not, and the exact command that
