@@ -1099,6 +1099,163 @@ class XrefTests(unittest.TestCase):
         self.assertIn('which of them died', output)
 
 
+class RecurringTypeCorroborationTests(unittest.TestCase):
+    """#245: for a type a person has many of (residence, occupation, event,
+    ...), "same person, same type, dates overlap" is not evidence two claims
+    record the same fact - and an undated claim overlaps everything. One
+    undated interview anecdote about Thomas Hartley was offered as
+    corroborating every other event on file for him. A corroboration
+    candidate for these types now needs a shared place or a close date;
+    `event`/`note` never get one."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.archive_root = Path(self._tmp.name)
+        self.conn = _make_index(self.archive_root)
+        self.conn.execute("INSERT INTO persons(id, name, living, tier, path) VALUES "
+                          "('p-aaaaaaaaaa','Thomas Hartley','false','curated','x.md')")
+        self.conn.execute("INSERT INTO sources(id, title, path) VALUES "
+                          "('s-1111111111','Interview with Ruth Hartley','a.md')")
+        self.conn.execute("INSERT INTO sources(id, title, path) VALUES "
+                          "('s-2222222222','Riverton city directory','b.md')")
+
+    def tearDown(self) -> None:
+        self.conn.close()
+        self._tmp.cleanup()
+
+    def _pairs(self, a: dict, b: dict) -> list[dict]:
+        _insert_claim(self.conn, 'c-aaaaaaaaaa', 's-1111111111', persons=['p-aaaaaaaaaa'], **a)
+        _insert_claim(self.conn, 'c-bbbbbbbbbb', 's-2222222222', persons=['p-aaaaaaaaaa'], **b)
+        self.conn.commit()
+        result = xref.run_xref(self.archive_root)
+        self.assertEqual(result['status'], 'ok')
+        return [pair for group in result['groups'] for pair in group['pairs']]
+
+    def test_two_undated_events_are_not_paired(self) -> None:
+        pairs = self._pairs(
+            dict(ctype='event', value='courted his wife by taking the weekend train'),
+            dict(ctype='event', value='took out a mortgage on the farm'),
+        )
+        self.assertEqual(pairs, [])
+
+    def test_undated_event_and_dated_event_are_not_paired(self) -> None:
+        pairs = self._pairs(
+            dict(ctype='event', value='courted his wife by taking the weekend train'),
+            dict(ctype='event', value='bought a steamer ticket', date_edtf='1939'),
+        )
+        self.assertEqual(pairs, [])
+
+    def test_events_with_matching_dates_are_still_not_paired(self) -> None:
+        # The type says nothing about what an event is: a 1915 mortgage and
+        # a 1915 lodge election share a date, not a fact.
+        pairs = self._pairs(
+            dict(ctype='event', value='took out a mortgage', date_edtf='1915-04-02'),
+            dict(ctype='event', value='elected lodge treasurer', date_edtf='1915-04-02'),
+        )
+        self.assertEqual(pairs, [])
+
+    def test_two_undated_notes_are_not_paired(self) -> None:
+        pairs = self._pairs(
+            dict(ctype='note', value='was said to be a fine fiddler'),
+            dict(ctype='note', value='never learned to drive'),
+        )
+        self.assertEqual(pairs, [])
+
+    def test_undated_residence_and_dated_residence_elsewhere_not_paired(self) -> None:
+        pairs = self._pairs(
+            dict(ctype='residence', value='lived in Oakdale', place_text='Oakdale'),
+            dict(ctype='residence', value='lived in Riverton', date_edtf='1910',
+                 place_text='Riverton'),
+        )
+        self.assertEqual(pairs, [])
+
+    def test_undated_residence_without_place_not_paired(self) -> None:
+        pairs = self._pairs(
+            dict(ctype='residence', value='lived on a farm'),
+            dict(ctype='residence', value='lived in Riverton', date_edtf='1910',
+                 place_text='Riverton'),
+        )
+        self.assertEqual(pairs, [])
+
+    def test_residences_in_same_town_and_year_corroborate(self) -> None:
+        pairs = self._pairs(
+            dict(ctype='residence', value='lived in Riverton', date_edtf='1910',
+                 place_text='Riverton, Kansas'),
+            dict(ctype='residence', value='listed at 14 Elm St', date_edtf='1910',
+                 place_text='riverton,  Kansas'),
+        )
+        self.assertEqual([p['kind'] for p in pairs], ['corroborates'])
+
+    def test_residences_in_different_towns_same_year_not_paired(self) -> None:
+        pairs = self._pairs(
+            dict(ctype='residence', value='lived in Riverton', date_edtf='1910',
+                 place_text='Riverton'),
+            dict(ctype='residence', value='lived in Oakdale', date_edtf='1910',
+                 place_text='Oakdale'),
+        )
+        self.assertEqual(pairs, [])
+
+    def test_open_ended_residence_not_paired_with_residence_elsewhere(self) -> None:
+        # "lived in Riverton from 1906 on" used to link to every later
+        # residence claim for the person.
+        pairs = self._pairs(
+            dict(ctype='residence', value='lived in Riverton from 1906 on',
+                 date_edtf='[1906..]', place_text='Riverton'),
+            dict(ctype='residence', value='lived in Oakdale', date_edtf='1931',
+                 place_text='Oakdale'),
+        )
+        self.assertEqual(pairs, [])
+
+    def test_open_ended_residence_without_place_not_paired_on_dates_alone(self) -> None:
+        pairs = self._pairs(
+            dict(ctype='residence', value='lived in the county from 1906 on',
+                 date_edtf='[1906..]'),
+            dict(ctype='residence', value='lived on a farm', date_edtf='1931'),
+        )
+        self.assertEqual(pairs, [])
+
+    def test_open_ended_residence_in_the_same_town_corroborates(self) -> None:
+        pairs = self._pairs(
+            dict(ctype='residence', value='lived in Riverton from 1906 on',
+                 date_edtf='[1906..]', place_id='l-aaaaaaaaaa', place_text='Riverton'),
+            dict(ctype='residence', value='Riverton directory listing', date_edtf='1931',
+                 place_id='l-aaaaaaaaaa', place_text='Riverton, Breton County'),
+        )
+        self.assertEqual([p['kind'] for p in pairs], ['corroborates'])
+
+    def test_occupations_with_close_dates_and_no_place_corroborate(self) -> None:
+        pairs = self._pairs(
+            dict(ctype='occupation', value='blacksmith', date_edtf='1880~'),
+            dict(ctype='occupation', value='smith', date_edtf='1880-06-01'),
+        )
+        self.assertEqual([p['kind'] for p in pairs], ['corroborates'])
+
+    def test_occupation_dated_only_to_a_decade_not_paired_on_dates(self) -> None:
+        pairs = self._pairs(
+            dict(ctype='occupation', value='blacksmith', date_edtf='188X'),
+            dict(ctype='occupation', value='farmer', date_edtf='1884'),
+        )
+        self.assertEqual(pairs, [])
+
+    def test_undated_negated_residence_still_contradicts_same_place(self) -> None:
+        # Contradiction detection is untouched by #245.
+        pairs = self._pairs(
+            dict(ctype='residence', value='never lived in Riverton', negated=1,
+                 place_text='Riverton'),
+            dict(ctype='residence', value='lived in Riverton', date_edtf='1910',
+                 place_text='Riverton'),
+        )
+        self.assertEqual([p['kind'] for p in pairs], ['contradicts'])
+
+    def test_undated_vital_claims_still_corroborate(self) -> None:
+        # Vital types are one fact per person: overlap is still enough.
+        pairs = self._pairs(
+            dict(ctype='death', value='died at home'),
+            dict(ctype='death', value='died 1944', date_edtf='1944'),
+        )
+        self.assertEqual([p['kind'] for p in pairs], ['corroborates'])
+
+
 class XrefStdoutIsValidUtf8Tests(unittest.TestCase):
     """Issue #64's sibling scope: `xref.py` was one of the 11 confirmed
     missing-`configure_utf8_stdout()` modules alongside lint.py. Unlike

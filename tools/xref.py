@@ -26,11 +26,44 @@ every pair of claims from *different* sources that isn't already linked via
   - bounds don't overlap, substantive type           -> not a candidate
     (residence, occupation, ... recur by design, §8.2; non-overlapping dates
     are expected, not a conflict)
-  - bounds overlap                                  -> corroboration candidate
+  - bounds overlap, vital/relationship/divorce type  -> corroboration candidate
   - vital type AND bounds overlap AND both claims     -> also a contradiction
     carry a `place_id`/`place_text` that disagree        candidate (incompatible
                                                           value), even though the
                                                           dates don't conflict
+  - bounds overlap, any other type                   -> corroboration candidate
+    ONLY when something specific agrees (#245): see
+    "WHAT COUNTS AS AGREEMENT" below. `event`/`note`
+    never get one.
+
+WHAT COUNTS AS AGREEMENT (#245)
+-------------------------------
+For a vital type, a relationship, or a divorce, the bucket a claim lands in
+already says WHICH fact it is (this person's one birth; this bond with this
+counterpart; this couple's divorce), so overlapping dates are enough to call
+two claims a match. Every other type recurs: a person has many residences,
+occupations, censuses, events. "Same person, same type, dates overlap" said
+nothing there - and an undated claim gets unbounded bounds, so it overlapped
+everything. One undated interview anecdote was proposed as corroborating
+every other `event` on file for that man, and a bulk confirm wrote the links.
+
+So for those types a corroboration candidate needs something specific:
+
+  - `event` / `note`: never. The type says nothing about what the fact is;
+    matching them up is a reading job for a person or an agent.
+  - both claims name a place and the places differ (`place_id` when both
+    have one, else normalized `place_text` - the same comparison the
+    negated-residence branch uses): not a candidate. Two towns in one year is
+    a move or two homes, not one fact recorded twice.
+  - both claims name the same place: candidate, whatever the dates.
+  - both claims carry a date no wider than `_CLOSE_DATE_MAX_YEARS` calendar
+    years and those dates overlap: candidate. Three years admits "about 1880"
+    (`1880~`, which edtf_bounds widens to 1879-1881) and a short range like
+    `1905/1907`; it rules out an undated claim, an open-ended one (`[1906..]`,
+    "from 1906 on"), a decade (`188X`) and a long span.
+  - anything else: not a candidate.
+
+Contradiction detection is unchanged by this rule.
 
 Place comparison prefers structured `place_id` when both claims have one;
 it falls back to normalized `place_text`, then to a place phrase parsed out
@@ -134,6 +167,7 @@ CODE MAP
   Classification
     _place_from_vital_value     - vital-claim place extraction (uses _lib.normalize_place_text)
     _classify_pair              - corroborates/contradicts for one claim pair
+    _recurring_agreement        - the stricter corroboration test for recurring types (#245)
     run_xref                    - group claims by person+type, pair, classify
                                    (marriage/divorce grouping uses _lib.spouse_parties,
                                    see "MARRIAGE/DIVORCE BUCKETING" above)
@@ -170,6 +204,19 @@ from _lib import (
 configure_utf8_stdout()
 
 _VITAL_TYPES = {'birth', 'death', 'marriage', 'baptism', 'burial'}
+
+# Types whose comparison bucket already pins down which single fact a claim is
+# about, so overlapping dates are enough for a corroboration candidate. See
+# the module docstring's "WHAT COUNTS AS AGREEMENT" section (#245).
+_PINNED_TYPES = _VITAL_TYPES | {'divorce', 'relationship'}
+
+# Incidental types (SPEC §8.2): the type says nothing about what the fact is,
+# so two of them are never proposed as corroborating each other (#245).
+_NO_CORROBORATION_TYPES = {'event', 'note'}
+
+# How wide (in calendar years) each claim's date may be for a date match to
+# count as agreement on a recurring type (#245). Three admits `1880~`.
+_CLOSE_DATE_MAX_YEARS = 3
 
 _REQUIRED_TABLES = ('persons', 'claims', 'sources', 'claim_persons', 'claim_links')
 
@@ -209,7 +256,9 @@ def _place_from_vital_value(text: str | None) -> str:
 def _classify_pair(a: dict, b: dict) -> str | None:
     """
     Return 'corroborates', 'contradicts', or None (not a comparable pair) for a
-    same-person, same-type pair.
+    same-person, same-type pair. Overlapping dates are enough to corroborate
+    only for `_PINNED_TYPES`; every other type goes through
+    `_recurring_agreement` (#245).
     """
     a_min, a_max = edtf_bounds(a['date_edtf'])
     b_min, b_max = edtf_bounds(b['date_edtf'])
@@ -251,8 +300,43 @@ def _classify_pair(a: dict, b: dict) -> str | None:
             place_b = normalize_place_text(b['place_text']) or _place_from_vital_value(b['value'])
             if place_a and place_b and place_a != place_b:
                 return 'contradicts'
+        return 'corroborates'
 
-    return 'corroborates'
+    if a['type'] in _PINNED_TYPES:
+        return 'corroborates'
+
+    return _recurring_agreement(a, b, a_min, a_max, b_min, b_max)
+
+
+def _year_span(lo: str, hi: str) -> int:
+    """Calendar years an edtf_bounds pair covers (1880-01-01..1880-12-31 -> 1)."""
+    return int(hi[:4]) - int(lo[:4]) + 1
+
+
+def _recurring_agreement(a: dict, b: dict, a_min: str, a_max: str,
+                         b_min: str, b_max: str) -> str | None:
+    """
+    Corroboration test for a recurring type (residence, occupation, census,
+    ...) whose dates already overlap: 'corroborates' only when the place or a
+    close date actually agrees, else None. See the module docstring's "WHAT
+    COUNTS AS AGREEMENT" section (#245).
+    """
+    if a['type'] in _NO_CORROBORATION_TYPES:
+        return None
+
+    if a['place_id'] and b['place_id']:
+        place_a, place_b = a['place_id'], b['place_id']
+    else:
+        place_a = normalize_place_text(a['place_text'])
+        place_b = normalize_place_text(b['place_text'])
+    if place_a and place_b:
+        return 'corroborates' if place_a == place_b else None
+
+    if (a['date_edtf'] and b['date_edtf']
+            and _year_span(a_min, a_max) <= _CLOSE_DATE_MAX_YEARS
+            and _year_span(b_min, b_max) <= _CLOSE_DATE_MAX_YEARS):
+        return 'corroborates'
+    return None
 
 
 def run_xref(archive_root: Path) -> Result:
