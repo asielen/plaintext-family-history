@@ -2706,6 +2706,48 @@ class _InlineExecutor:
         pass
 
 
+class PicturePoolCloseTests(unittest.TestCase):
+    """An interrupted build's `close` (#248): it waits for the pool's own
+    manager thread as well as the workers. That thread reaps the same workers,
+    and while it is still finishing, this process can see a worker that has
+    already gone as "still running" - the flake the Ctrl+C test caught."""
+
+    def test_an_interrupted_close_waits_for_the_manager_thread_after_the_workers(self):
+        order = []
+
+        class _Proc:
+            def __init__(self, name):
+                self.name = name
+
+            def terminate(self):
+                order.append(('terminate', self.name))
+
+            def join(self, timeout=None):
+                order.append(('join', self.name))
+
+        class _Manager:
+            def join(self, timeout=None):
+                order.append(('join', 'manager'))
+
+        class _Executor:
+            def __init__(self):
+                self._processes = {1: _Proc('w1'), 2: _Proc('w2')}
+                self._executor_manager_thread = _Manager()
+
+            def shutdown(self, wait=True, cancel_futures=False):
+                order.append(('shutdown', wait))
+                # What the real one does: it forgets its workers and thread.
+                self._processes = None
+                self._executor_manager_thread = None
+
+        pool = site._PicturePool(2)
+        pool._executor = _Executor()
+        pool.close(abort=True)
+        self.assertIn(('join', 'manager'), order)
+        self.assertEqual(order[-1], ('join', 'manager'), order)
+        self.assertTrue(pool.broken)
+
+
 @unittest.skipUnless(site._PIL_AVAILABLE, 'Pillow not installed')
 class ParallelPictureTests(_Base):
     """A first `fha site` of a big archive spent most of its ten-odd minutes
