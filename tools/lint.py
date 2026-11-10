@@ -3563,11 +3563,25 @@ def _check_untranscribed_evidence(
 # claim, and the inscription has no record to keep its transcript or citation
 # in. SPEC §8.4: evidence a claim rests on is a source, cited as [[S-…]].
 
-_W137_EXT = r'\.[A-Za-z0-9]{2,5}(?![A-Za-z0-9/\\])'
-# A path tail: no whitespace first, no line break, colon, quote or bracket
-# inside (a filename may hold spaces, commas and parentheses), ending at the
-# first file extension that is not itself followed by more path.
-_W137_TAIL = r'(?P<tail>[^\s:"\'`<>|*?\[\]][^\n\r:"\'`<>|*?\[\]]{0,258}?' + _W137_EXT + ')'
+# The file kinds the archive files as evidence: images, scans, PDFs, camera
+# RAW, video and audio. A fixed list, not "any .xyz": research prose is full
+# of dotted words that are not files - "Ancestry.com", "findagrave.com",
+# "12.05.1911", "$3.25" (#253 review) - and an extension outside this list is
+# never a photo or a scan this warning could help with.
+_W137_EXTENSIONS = (
+    'jpg', 'jpeg', 'jpe', 'tif', 'tiff', 'png', 'gif', 'bmp', 'webp', 'heic', 'heif', 'pdf',
+    'dng', 'cr2', 'cr3', 'crw', 'nef', 'nrw', 'arw', 'srf', 'sr2', 'orf', 'rw2', 'raf',
+    'pef', 'srw', 'x3f', 'raw',
+    'mp4', 'm4v', 'mov', 'avi', 'mkv', 'mpg', 'mpeg', 'wmv', '3gp', 'mts', 'm2ts',
+    'mp3', 'm4a', 'wav', 'flac', 'aac', 'ogg', 'oga', 'opus', 'wma', 'aif', 'aiff',
+)
+_W137_EXT_RE = re.compile(
+    r'\.(?:' + '|'.join(_W137_EXTENSIONS) + r')(?![A-Za-z0-9])', re.I)
+# Where a written path certainly ends: a line break, a colon, a quote, or a
+# character no filename may hold. Spaces, commas, apostrophes, brackets and
+# parentheses are all allowed - `Ada's 16th birthday.jpg`, `[1911] Ada back.jpg`.
+_W137_STOP_RE = re.compile(r'[\n\r:"`<>|*?]')
+_W137_MAX_TAIL = 260
 # A processed documents-root file carries its S-id in its own name (SPEC §13).
 _W137_SID_IN_NAME_RE = re.compile(r'_S-[0-9a-hjkmnp-tv-z]{10}\.[A-Za-z0-9]+$', re.I)
 _W137_URL_RE = re.compile(r'\b[a-z][a-z0-9+.\-]*://\S+', re.I)
@@ -3596,7 +3610,7 @@ def _w137_patterns(registry: Registry) -> list[tuple[str, re.Pattern]]:
         parts = [re.escape(part) for part in str(root).replace('\\', '/').rstrip('/').split('/')]
         absolute = r'[\\/]+'.join(parts)
         out.append((alias, re.compile(
-            rf'(?:{absolute}|(?<![A-Za-z0-9_.\-/\\]){re.escape(alias)})[\\/]+{_W137_TAIL}',
+            rf'(?:{absolute}|(?<![A-Za-z0-9_.\-/\\]){re.escape(alias)})[\\/]+(?=[^\s:"`<>|*?])',
             re.I)))
     return out
 
@@ -3646,11 +3660,17 @@ def _w137_keyworded_photos(registry: Registry) -> set[str]:
 def _check_evidence_paths(registry: Registry, findings: list[Finding]) -> None:
     """W137 (#249): a claim's `value:`/`notes:`, or a source's or person's
     prose, points at a file in the photos or documents root by its folder
-    path, and no source owns that file.
+    path, the file is really there, and no source owns it.
+
+    A candidate counts only if it ends in a real media or document extension
+    (`_W137_EXTENSIONS`) and - outside working-copy mode - names a file that
+    exists: research prose is full of things that look like paths and are not
+    ("photos/letters are scanned on Ancestry.com"), and only an existing,
+    unowned file is one `fha process` can fix (#253 review).
 
     One pass over text already in memory: the owned-paths set is built once
-    from every record's `files:` list, and nothing on disk is walked or opened
-    per claim. "Owned" means a `files:` entry (or the pre-rename name of one),
+    from every record's `files:` list; the only disk access is one `stat` per
+    matched candidate, never a walk. "Owned" means a `files:` entry (or the pre-rename name of one),
     a documents-root filename carrying an `_S-…` ID, or - for a photo - a
     `SOURCE:` keyword the photo index has already seen. `[[S-…]]` links and
     web addresses are not paths and never match.
@@ -3664,28 +3684,52 @@ def _check_evidence_paths(registry: Registry, findings: list[Finding]) -> None:
     keyworded: set[str] | None = None
     reported: set[tuple[str, str, str]] = set()
 
-    def scan(text, record_path: Path, where: str) -> None:
+    def owned_key(alias: str, key: str) -> bool:
         nonlocal keyworded
+        if key in owned or _W137_SID_IN_NAME_RE.search(key):
+            return True
+        if alias == 'photos':
+            if keyworded is None:
+                keyworded = _w137_keyworded_photos(registry)
+            return key in keyworded
+        return False
+
+    def scan(text, record_path: Path, where: str) -> None:
         if not text:
             return
         text = _W137_URL_RE.sub(' ', str(text))
         for alias, pattern in patterns:
             for m in pattern.finditer(text):
-                tail = m.group('tail').strip()
-                key = _w137_key(f'{alias}/{tail}')
-                if key in owned or _W137_SID_IN_NAME_RE.search(key):
+                rest = text[m.end():]
+                stop = _W137_STOP_RE.search(rest)
+                span = (rest[:stop.start()] if stop else rest)[:_W137_MAX_TAIL]
+                # Every place the run could end in a real extension, shortest
+                # first: `Ada.scan.jpg` reads through to `.jpg`, and `ada.jpg
+                # copy.jpg` is tried as `ada.jpg` and then as the longer name.
+                chosen = None
+                for end_m in _W137_EXT_RE.finditer(span):
+                    tail = span[:end_m.end()].strip()
+                    key = _w137_key(f'{alias}/{tail}')
+                    if owned_key(alias, key):
+                        chosen = None
+                        break
+                    target = resolve_path(f'{alias}/{tail.replace(chr(92), "/")}',
+                                          registry.fha_config, registry.archive_root)
+                    # Only a file that is really there is one `fha process`
+                    # can fix; a path to nothing is not this warning's
+                    # business (#253 review). One stat per candidate - never
+                    # a walk. A working copy has no originals to look at, so
+                    # there the extension alone decides.
+                    if registry.is_working_copy or target.is_file():
+                        chosen = (tail, key, target)
+                        break
+                if chosen is None:
                     continue
-                if alias == 'photos':
-                    if keyworded is None:
-                        keyworded = _w137_keyworded_photos(registry)
-                    if key in keyworded:
-                        continue
+                tail, key, target = chosen
                 if (str(record_path), where, key) in reported:
                     continue
                 reported.add((str(record_path), where, key))
-                shown = m.group(0).strip()
-                target = resolve_path(f'{alias}/{tail.replace(chr(92), "/")}',
-                                      registry.fha_config, registry.archive_root)
+                shown = (m.group(0) + tail).strip()
                 type_flag = ' --type photo' if alias == 'photos' else ''
                 findings.append(Finding('W', 'W137', record_path,
                     f'{where} points at {shown} by its folder path, but no source '

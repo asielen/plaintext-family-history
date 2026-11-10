@@ -51,6 +51,17 @@ class W137Tests(unittest.TestCase):
                     'documents/letters', 'photos/1911'):
             (self.root / sub).mkdir(parents=True)
         self._config('roots:\n  photos: photos\n  documents: documents\n')
+        # W137 speaks only about files that are really there (#253 review): a
+        # path to nothing is not evidence `fha process` could make a source.
+        for rel in ('photos/1911/ada-1911-back.jpg', 'photos/1911/ada-1911.jpg',
+                    'photos/1911/ada.jpg', 'documents/letters/ada-letter.pdf'):
+            self._file(rel)
+
+    def _file(self, rel: str, base: Path | None = None) -> Path:
+        path = (base or self.root) / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b'x')
+        return path
 
     def tearDown(self) -> None:
         self._tmp.cleanup()
@@ -92,6 +103,8 @@ class W137Tests(unittest.TestCase):
         library = self.tmp / 'Family Photos'
         (library / '1911').mkdir(parents=True)
         self._config(f'roots:\n  photos: {library.as_posix()}\n  documents: documents\n')
+        self._file('1911/Ada Hartley 16 - 1911-back.jpg', library)
+        self._file('1911/Ada Hartley 16 - 1911.jpg', library)
         windows = str(library).replace('/', '\\') + r'\1911\Ada Hartley 16 - 1911-back.jpg'
         posix = library.as_posix() + '/1911/Ada Hartley 16 - 1911.jpg'
         self._interview(claims_notes=f'Back: {windows} and front: {posix} (found in review).')
@@ -123,7 +136,60 @@ class W137Tests(unittest.TestCase):
         self.assertEqual(len(found), 1)
         self.assertIn("person record's prose", found[0].message)
 
+    def test_apostrophes_and_brackets_in_a_real_filename_fire(self) -> None:
+        self._file("photos/1911/Ada's 16th birthday.jpg")
+        self._file('photos/1911/[1911] Ada back.jpg')
+        self._interview(claims_notes="Front is photos/1911/Ada's 16th birthday.jpg; "
+                                     'back is photos/1911/[1911] Ada back.jpg.')
+        shown = sorted(f.message.split(' by its folder path')[0] for f in self._w137())
+        self.assertEqual(len(shown), 2, shown)
+        self.assertTrue(shown[0].endswith("photos/1911/Ada's 16th birthday.jpg"), shown)
+        self.assertTrue(shown[1].endswith('photos/1911/[1911] Ada back.jpg'), shown)
+
+    def test_a_dotted_filename_is_read_through_to_its_real_extension(self) -> None:
+        self._file('photos/1911/Ada.scan.jpg')
+        self._interview(claims_notes='See photos/1911/Ada.scan.jpg for the inscription.')
+        found = self._w137()
+        self.assertEqual(len(found), 1)
+        self.assertIn('photos/1911/Ada.scan.jpg by its folder path', found[0].message)
+        self.assertIn('Ada.scan.jpg" --type photo', found[0].message)
+
+    def test_a_longer_real_name_is_found_past_an_earlier_extension(self) -> None:
+        self._file('photos/1911/ada-1911.jpg copy.jpg')
+        (self.root / 'photos/1911/ada-1911.jpg').unlink()
+        self._interview(claims_notes='See photos/1911/ada-1911.jpg copy.jpg here.')
+        found = self._w137()
+        self.assertEqual(len(found), 1)
+        self.assertIn('ada-1911.jpg copy.jpg', found[0].message)
+
+    def test_working_copy_mode_trusts_the_extension(self) -> None:
+        # No originals on this machine, so nothing to look at: the extension decides.
+        (self.root / 'WORKING_COPY').write_text('working copy', encoding='utf-8')
+        self._interview(claims_notes='See photos/1911/not-on-this-laptop.jpg.')
+        self.assertEqual(len(self._w137()), 1)
+
     # -- it stays quiet ----------------------------------------------------------
+
+    def test_quiet_for_research_prose_that_only_looks_like_a_path(self) -> None:
+        for notes in ("Ruth's photos/letters are scanned on Ancestry.com",
+                      'Her photos/papers - see findagrave.com memorial',
+                      'Original documents/letters dated 12.05.1911 are with Ruth',
+                      'The photos/papers sold at the estate sale for $3.25',
+                      'photos/letters are scanned as jpg files like ada.jpg'):
+            with self.subTest(notes=notes):
+                self._interview(claims_notes=notes)
+                self.assertEqual([f.message for f in self._w137()], [])
+
+    def test_quiet_for_a_path_to_a_file_that_is_not_there(self) -> None:
+        self._interview(claims_notes='Maybe photos/1911/never-scanned.jpg one day.')
+        self.assertEqual(self._w137(), [])
+
+    def test_quiet_for_an_owned_dotted_filename(self) -> None:
+        self._file('photos/1911/Ada.scan.jpg')
+        self._write(PHOTO_SRC, kind='photos', files=['photos/1911/Ada.scan.jpg'])
+        self._interview(claims_notes='See photos/1911/Ada.scan.jpg for the inscription.')
+        self.assertEqual(self._w137(), [])
+
 
     def test_quiet_when_a_source_owns_the_file_any_case_either_slash(self) -> None:
         self._write(PHOTO_SRC, kind='photos', files=['photos/1911/Ada-1911-back.jpg'])
