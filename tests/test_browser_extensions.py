@@ -786,6 +786,38 @@ class Round4(_Base):
         self.assertEqual(check['status'], 'warn')
         self.assertIn('will not let the tools open', check['detail'])
 
+    def test_a_folder_the_tools_may_not_open_on_python_3_14_is_not_called_ok(self):
+        # Python 3.14's Path.exists()/is_dir() answer False instead of raising, so
+        # doctor used to say "not made yet" and update-tools then failed to make it.
+        self.set_folder(self.ext.as_posix())
+        ext = os.path.normcase(str(self.ext))
+        real_stat = os.stat
+
+        def denied(path, *args, **kwargs):
+            if os.path.normcase(os.fspath(path)).startswith(ext):
+                raise PermissionError(13, 'Access is denied', os.fspath(path))
+            return real_stat(path, *args, **kwargs)
+
+        def false_inside(real):
+            def check(path, *args, **kwargs):
+                if os.path.normcase(str(path)).startswith(ext):
+                    return False
+                return real(path, *args, **kwargs)
+            return check
+        import doctor
+        from _lib import load_fha_yaml
+        cfg = load_fha_yaml(self.archive)
+        with mock.patch.object(Path, 'exists', false_inside(Path.exists)), \
+                mock.patch.object(Path, 'is_dir', false_inside(Path.is_dir)), \
+                mock.patch('os.stat', denied):
+            result = doctor.run_doctor(self.archive, cfg)
+            rc, out = self.update()
+        check = {c['id']: c for c in result.data['checks']}['browser_extensions']
+        self.assertEqual(check['status'], 'warn', check['detail'])
+        self.assertIn('will not let the tools open', check['detail'])
+        self.assertEqual(rc, EXIT_WARNINGS)
+        self.assertIn('will not let the tools open', out)
+
     def test_a_folder_the_tools_may_not_open_does_not_stop_update_tools(self):
         self.set_folder(self.ext.as_posix())
         stack, patches = self._no_entry()

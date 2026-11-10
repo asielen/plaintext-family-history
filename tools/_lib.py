@@ -11969,6 +11969,14 @@ def _bx_folder_problem(folder: Path, fha_config: dict, archive: Path) -> str:
             return (f'{BROWSER_EXT_SETTING}: in fha.yaml points inside your {alias} folder '
                     f'({root}), where the add-on\'s files would be filed as '
                     f'{alias}. {_bx_example()}')
+    # Ask the OS directly: Path.exists() answers False on Python 3.14 for a
+    # folder this user may not open (3.10-3.13 raise), and a False here would
+    # read as "not made yet" - then the next run fails to create it. os.stat
+    # raises on every version; the caller turns that into the plain warning.
+    try:
+        os.stat(folder)
+    except (FileNotFoundError, NotADirectoryError):
+        pass
     if folder.exists() and not folder.is_dir():
         return (f'{BROWSER_EXT_SETTING}: in fha.yaml points at {folder}, which is a file, not a '
                 f'folder. Point it at a folder, then run `fha update-tools` again.')
@@ -12019,9 +12027,9 @@ def browser_ext_read_setting(fha_config: dict, archive_root: Path) -> BrowserExt
         parent = folder.parent
         problem = _bx_folder_problem(parent, fha_config, archive)
     except OSError as exc:
-        # Python 3.12+ raises from exists()/is_dir() inside a folder this user
-        # may not open (it used to answer False); doctor and update-tools
-        # must say so plainly instead of stopping.
+        # A folder this user may not open: Python 3.10-3.13 raise from
+        # exists()/is_dir(), and on 3.14 _bx_folder_problem's os.stat does;
+        # doctor and update-tools must say so plainly instead of stopping.
         return BrowserExtSetting('bad', folder, _bx_unopenable(folder, exc))
     if problem:
         return BrowserExtSetting('bad', parent, problem, addon)
