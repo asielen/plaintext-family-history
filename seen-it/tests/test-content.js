@@ -139,7 +139,7 @@ test('Ancestry hints: a thumbnail ahead of the title still leaves the title its 
   const page = loadContentScript('content-ancestry.js', {
     pathname: '/family-trees/111/people/222/hints', origin: 'https://www.ancestry.com',
     querySelectorAll: (sel) => (sel.includes('mediaui-viewer') ? [thumb, title] : []),
-    storage: { anc: { ['med:' + MED]: { t: [Date.now() - 86400000], last: Date.now() - 86400000, mark: null } } },
+    storage: { anc: { ['med:' + MED]: { t: [Date.now() - 24 * 3600 * 1000], last: Date.now() - 24 * 3600 * 1000, mark: null } } },
   });
   try {
     await wait(700);
