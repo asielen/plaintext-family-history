@@ -103,6 +103,10 @@ are found the user is asked whether they are *one* source (shared S-id) or
 #    _run_exiftool_embed_source  - write `SOURCE: {S-id}` into one file
 #    _run_exiftool_remove_source - remove a just-written `SOURCE: {S-id}`
 #    _embed_document_keyword     - the same keyword into a documents-root file (#252)
+#    _document_source_keyword    - the S-id a document already carries inside it
+#    _take_undo_copy / _restore_undo_copy / _discard_undo_copies - byte-exact
+#                                  rollback of a document keyword (a PDF append)
+#    _document_keyword_undo      - the undo step that restores those bytes
 #    _open_backup                - the run's safety-copy policy, announced (TOOLING §13f)
 #    _flush_backup_messages      - print its notices (warnings to stderr)
 #    _read_source_keyword        - the FIRST S-id embedded in a photo, or None
@@ -173,6 +177,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import yaml
@@ -636,8 +641,13 @@ def _document_takes_keyword(path: Path) -> bool:
     return path.suffix.lower() in EMBEDDED_KEYWORD_DOCUMENT_SUFFIXES
 
 
-def _embed_document_keyword(path: Path, sid: str, *, backup: OriginalBackup) -> str | None:
-    """Write `SOURCE: {sid}` into a documents-root file; None, or a warning.
+def _embed_document_keyword(
+    path: Path, sid: str, *, backup: OriginalBackup,
+) -> tuple[str | None, Path | None]:
+    """Write `SOURCE: {sid}` into a documents-root file.
+
+    Returns `(warning, undo_copy)`: `(None, copy)` when the keyword went in,
+    `(text, None)` when it did not.
 
     The third identity carrier for a document (SPEC §14: filename, inventory,
     embedded keyword where supported). It is a backup for the other two, not
@@ -646,7 +656,21 @@ def _embed_document_keyword(path: Path, sid: str, *, backup: OriginalBackup) -> 
     (exiftool not installed, a password-protected PDF exiftool cannot update,
     a safety copy that was refused) is still processed. The caller prints the
     returned warning, which says what happened and that nothing is lost.
+
+    `undo_copy` is the file's bytes exactly as they were before the write,
+    taken first (#253 review): removing a keyword again does not give a PDF
+    its old bytes back - exiftool edits a PDF by appending an update - so a
+    rollback puts this copy back instead (`_document_keyword_undo`) and the
+    original is byte-for-byte what it was. A copy that cannot be made skips
+    the keyword rather than write without a way back. The caller deletes the
+    copy once the run has succeeded (`_discard_undo_copies`).
     """
+    try:
+        undo_copy = _take_undo_copy(path)
+    except OSError as e:
+        return (f'WARNING: {path.name} was filed without its SOURCE: {sid} keyword inside '
+                f'it (no undo copy could be made first: {e}). Nothing is lost - its '
+                'filename and its source record still tie it to the source.'), None
     missing_exiftool = False
     try:
         err = _run_exiftool_embed_source(path, sid, backup=backup)
@@ -655,12 +679,58 @@ def _embed_document_keyword(path: Path, sid: str, *, backup: OriginalBackup) -> 
     except OSError as e:
         err = f'exiftool could not be started: {e}'
     if err is None:
-        return None
+        return None, undo_copy
+    _restore_undo_copy(undo_copy, path)
     return (f'WARNING: {path.name} was filed without its SOURCE: {sid} keyword inside '
             f'it ({err}). Nothing is lost - its filename and its source record still '
             'tie it to the source; the keyword is only a spare copy of that link.'
             + (' Install exiftool (`fha doctor` checks for it) and the scans you file '
-               'after that will carry it.' if missing_exiftool else ''))
+               'after that will carry it.' if missing_exiftool else '')), None
+
+
+def _source_lists_a_photo(archive_root: Path, sid: str) -> bool:
+    """Does the source record for `sid` list a photos-root file?"""
+    record = find_source_record_path(archive_root, sid)
+    if record is None:
+        return False
+    try:
+        files = (read_record(record).get('meta') or {}).get('files') or []
+    except Exception:
+        return False
+    return any(str(e.get('file', '') if isinstance(e, dict) else e)
+               .replace('\\', '/').split('/', 1)[0] == _PHOTO_DIR for e in files)
+
+
+def _take_undo_copy(path: Path) -> Path:
+    """Copy `path`'s bytes to a private temp file; return the copy's path."""
+    fd, name = tempfile.mkstemp(prefix='fha-undo-', suffix=path.suffix)
+    os.close(fd)
+    try:
+        shutil.copy2(path, name)
+    except OSError:
+        Path(name).unlink(missing_ok=True)
+        raise
+    return Path(name)
+
+
+def _restore_undo_copy(undo_copy: Path, path: Path) -> None:
+    """Put `path` back to the bytes `undo_copy` holds, then drop the copy.
+
+    Raises OSError if the bytes could not be put back; the copy is then KEPT,
+    so the caller's report can name where the original bytes still are.
+    """
+    _clear_read_only(path)
+    shutil.copy2(undo_copy, path)
+    undo_copy.unlink(missing_ok=True)
+
+
+def _discard_undo_copies(copies) -> None:
+    """Delete undo copies a successful run no longer needs (best-effort)."""
+    for copy in copies:
+        try:
+            Path(copy).unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def _document_source_keyword(path: Path) -> str | None:
@@ -681,16 +751,20 @@ def _document_source_keyword(path: Path) -> str | None:
         return None
 
 
-def _document_keyword_undo(path: Path, sid: str, backup: OriginalBackup):
-    """An undo step that takes a just-written document keyword back out.
+def _document_keyword_undo(path: Path, undo_copy: Path):
+    """An undo step that puts a document back to its exact pre-keyword bytes.
 
-    Raises on failure so `_run_undo` reports the keyword it could not remove
-    instead of claiming a clean rollback.
+    Byte-for-byte, not "remove the keyword again": exiftool appends an update
+    to a PDF rather than rewriting it, so a removal leaves the PDF changed, and
+    a document that already carried this same source's keyword keeps it.
+    Raises on failure (naming where the original bytes are) so `_run_undo`
+    reports it instead of claiming a clean rollback.
     """
     def _undo() -> None:
-        err = _run_exiftool_remove_source(path, sid, backup=backup)
-        if err is not None:
-            raise RuntimeError(err)
+        try:
+            _restore_undo_copy(undo_copy, path)
+        except OSError as e:
+            raise RuntimeError(f'{e}; its original bytes are kept at {undo_copy}') from e
     return _undo
 
 
@@ -1809,12 +1883,22 @@ def process_document(
         )
     if embedded := _document_source_keyword(real_path if real_path is not None else file_path):
         shown = fmt_id_display(embedded)
-        raise ProcessError(
+        message = (
             f'{file_path.name} already carries SOURCE: {shown} inside the file, so it '
             'was processed before - another program has probably changed its name. '
             f'Refusing to mint a second ID. Run `fha find {shown}` to see the name '
-            'its record lists, and rename the file back to that.'
-        )
+            'its record lists, and rename the file back to that.')
+        if _source_lists_a_photo(archive_root, embedded):
+            # #253 review: the other way this happens is a photo from the
+            # library moved by hand to be filed as a record - for which
+            # "rename it back" is the wrong advice.
+            message += (
+                ' If it is a photo from your library that you want filed with your '
+                'records instead, put it back where it was in the photo library and run '
+                f'`fha process refile {shown} --to documents --type '
+                f'{source_type if source_type != _DEFAULT_DOCUMENT_TYPE else "<type>"}` - '
+                'that moves it out of the photo library and updates its record.')
+        raise ProcessError(message)
 
     documents_root = resolve_path('documents', fha_config, archive_root)
     _require_contained(
@@ -1963,6 +2047,7 @@ def process_document(
     undo: list[tuple[str, object]] = []
     keyword_warnings: list[str] = []
     embedded_in: list[Path] = []
+    undo_copies: list[Path] = []
     if keyword_targets:
         backup = _open_backup(archive_root, fha_config, backup)
     try:
@@ -1981,13 +2066,14 @@ def process_document(
         # and before the record, so the undo list strips it before moving the
         # file back.
         for target in keyword_targets:
-            warning = _embed_document_keyword(target, sid, backup=backup)
+            warning, undo_copy = _embed_document_keyword(target, sid, backup=backup)
             if warning is not None:
                 keyword_warnings.append(warning)
                 continue
             embedded_in.append(target)
+            undo_copies.append(undo_copy)
             undo.append((f'remove the SOURCE: {sid} keyword from {target.name}',
-                         _document_keyword_undo(target, sid, backup)))
+                         _document_keyword_undo(target, undo_copy)))
 
         record_dir.mkdir(parents=True, exist_ok=True)
         record_path.write_text(text, encoding='utf-8')
@@ -2009,6 +2095,7 @@ def process_document(
             print(f'ERROR: processing failed, rolled back: {e}', file=sys.stderr)
         return EXIT_FAILURE
 
+    _discard_undo_copies(undo_copies)
     if keyword_targets:
         _flush_backup_messages(backup)
     print(f'Minted {sid}')
@@ -2928,6 +3015,14 @@ def process_bundle(
     for item in plan:
         if item['dest'].exists():
             raise ProcessError(f'destination already exists: {item["dest"].name}')
+        if item['kind'] == 'document' and (
+                doc_sid := _document_source_keyword(item['src'])):
+            raise ProcessError(
+                f'{item["src"].name} already carries SOURCE: {fmt_id_display(doc_sid)} '
+                'inside the file, so it was processed before - another program has '
+                'probably changed its name. Take it out of the bundle (run `fha find '
+                f'{fmt_id_display(doc_sid)}` to see the record it belongs to), then '
+                'process the bundle again. Nothing was changed.')
         if item['kind'] == 'photo':
             existing, _ = _read_existing_source_keyword(item['src'], dry_run)
             if existing:
@@ -2978,6 +3073,7 @@ def process_bundle(
     undo: list = []
     embedded: list[tuple[Path, str]] = []
     keyword_warnings: list[str] = []
+    undo_copies: list[Path] = []
     notes_text = notes_path.read_text(encoding='utf-8')
     try:
         for item in plan:
@@ -2989,12 +3085,14 @@ def process_bundle(
             if item['embed'] and item['kind'] == 'document':
                 # A document's filename already carries the S-id, so a keyword
                 # that cannot be written warns rather than failing the bundle.
-                warning = _embed_document_keyword(dest, sid, backup=backup)
+                warning, undo_copy = _embed_document_keyword(dest, sid, backup=backup)
                 if warning is not None:
                     keyword_warnings.append(warning)
                     item['embed'] = False
                 else:
-                    embedded.append((dest, sid))
+                    undo_copies.append(undo_copy)
+                    undo.append((f'remove the SOURCE: {sid} keyword from {dest.name}',
+                                 _document_keyword_undo(dest, undo_copy)))
             elif item['embed']:
                 err = _run_exiftool_embed_source(dest, sid, backup=backup)
                 if err is not None:
@@ -3035,6 +3133,7 @@ def process_bundle(
             print(f'ERROR: bundle dissolution failed, rolled back: {e}', file=sys.stderr)
         return EXIT_FAILURE
 
+    _discard_undo_copies(undo_copies)
     if backup is not None:
         _flush_backup_messages(backup)
     print(f'Minted {sid} for bundle {folder.name}')
@@ -3762,6 +3861,19 @@ def _attach_more_engine(
     # filed for another source, which is exactly the silent-re-processing
     # case it exists to catch.
     existing_doc_sid = _filename_has_source_id(more_file)
+    # The name is one carrier; the keyword inside the file is another (#252).
+    # A scan another program renamed still says which source it belongs to,
+    # and attaching it here would give one file two sources (#253 review).
+    # Checked before any rename or write.
+    embedded_doc_sid = _document_source_keyword(more_on_disk)
+    if embedded_doc_sid is not None and embedded_doc_sid != sid.lower():
+        shown = fmt_id_display(embedded_doc_sid)
+        raise ProcessError(
+            f'{more_file.name} already carries SOURCE: {shown} inside the file, so it '
+            f'belongs to that source, not {sid} - another program has probably '
+            'changed its name. Attaching it here would give one file two sources. '
+            f'Run `fha find {shown}` to see the record it belongs to. Nothing was '
+            'changed.')
     if existing_doc_sid is not None and existing_doc_sid != sid.lower():
         raise ProcessError(
             f'{more_file.name} already carries a different S-id '
@@ -3974,6 +4086,7 @@ def _attach_more_engine(
               f'{_rel(record_path, archive_root)}: {e}', file=sys.stderr)
         return EXIT_FAILURE
     keyword_warning: str | None = None
+    undo_copies: list[Path] = []
     if takes_keyword:
         backup = _open_backup(archive_root, fha_config, backup)
     try:
@@ -3983,10 +4096,11 @@ def _attach_more_engine(
             undo.append((f'move {new_path.name} back to {more_file.name}',
                          lambda: new_path.rename(more_file)))
         if takes_keyword:
-            keyword_warning = _embed_document_keyword(new_path, sid, backup=backup)
+            keyword_warning, undo_copy = _embed_document_keyword(new_path, sid, backup=backup)
             if keyword_warning is None:
+                undo_copies.append(undo_copy)
                 undo.append((f'remove the SOURCE: {sid} keyword from {new_path.name}',
-                             _document_keyword_undo(new_path, sid, backup)))
+                             _document_keyword_undo(new_path, undo_copy)))
         # Atomic for the same reason as the photos branch above: an existing
         # source record is being replaced, not created.
         write_text_exact_atomic(record_path, reapply_newline(new_text, old_text))
@@ -4010,6 +4124,7 @@ def _attach_more_engine(
         else:
             print(f'ERROR: attach failed, rolled back: {e}', file=sys.stderr)
         return EXIT_FAILURE
+    _discard_undo_copies(undo_copies)
     if takes_keyword:
         _flush_backup_messages(backup)
     if needs_move:

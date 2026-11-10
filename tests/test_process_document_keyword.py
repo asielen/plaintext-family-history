@@ -53,6 +53,8 @@ class _Store:
                 'fha process needs exiftool for the keywords inside photos and scans.')
         self.embed_calls.append(Path(path))
         self.keywords.setdefault(str(path), []).extend([f'SOURCE: {sid}'] + list(extra_keywords or []))
+        with open(path, 'ab') as fh:   # a real write changes the bytes, as exiftool does
+            fh.write(b'-KEYWORD')
         return None
 
     def remove(self, path, sid, extra_keywords=None, *, backup=None):
@@ -152,7 +154,7 @@ class DocumentKeywordTests(_Base):
         self.assertEqual(rc, EXIT_FAILURE)
         self.assertTrue(scan.exists(), 'the rename is undone')
         self.assertEqual(len(store.embed_calls), 1, 'the keyword was written first')
-        self.assertEqual(store.keywords[str(store.embed_calls[0])], [], 'and then taken out')
+        self.assertEqual(scan.read_bytes(), b'x', 'and the original is byte-for-byte back')
         self.assertIn('rolled back', err)
 
     def test_a_back_scan_beside_it_gets_the_keyword_too(self) -> None:
@@ -191,6 +193,57 @@ class DocumentKeywordTests(_Base):
         self.assertIn('fha find S-a1b2c3d4e5', err)
         self.assertTrue(scan.exists())
         self.assertEqual(self._records(), [])
+
+    def test_a_renamed_photo_from_the_library_is_pointed_at_refile(self) -> None:
+        # #253 review: a processed photo moved by hand to be filed as a record
+        # used to be told only to "rename it back".
+        store = self._install_store()
+        sid = 'S-a1b2c3d4e5'
+        (self.archive / 'sources' / 'photos').mkdir(parents=True, exist_ok=True)
+        (self.archive / 'sources' / 'photos' / f'postcard_{sid}.md').write_text(
+            f'---\nid: {sid}\ntitle: Postcard\nsource_type: photo\nfiles:\n'
+            '  - file: photos/1911/postcard.jpg\n    role: primary\n---\n', encoding='utf-8')
+        scan = self.archive / 'documents' / 'census' / 'postcard.jpg'
+        scan.write_bytes(b'x')
+        store.keywords[str(scan)] = [f'SOURCE: {sid}']
+        rc, _out, err = self._run([str(scan), '--type', 'letter'])
+        self.assertEqual(rc, EXIT_ERRORS)
+        self.assertIn(f'fha process refile {sid} --to documents --type letter', err)
+
+    def test_more_refuses_a_scan_that_belongs_to_another_source(self) -> None:
+        # #253 review / Codex: the main path refused this renamed scan, but
+        # --more stamped a second SOURCE: into it and listed it under a second
+        # source.
+        store = self._install_store()
+        folder = self.archive / 'documents' / 'census'
+        (folder / 'will.pdf').write_bytes(b'x')
+        rc, _out, err = self._run([str(folder / 'will.pdf'), '--type', 'census'])
+        self.assertEqual(rc, EXIT_CLEAN, err)
+        primary = next(folder.glob('will_S-*.pdf'))
+        stray = folder / 'census 1910 (synced).tif'
+        stray.write_bytes(b'x')
+        store.keywords[str(stray)] = ['SOURCE: S-a1b2c3d4e5']
+        store.embed_calls.clear()
+        rc, _out, err = self._run([str(primary), '--more', str(stray), 'page'])
+        self.assertEqual(rc, EXIT_ERRORS)
+        self.assertIn('already carries SOURCE: S-a1b2c3d4e5', err)
+        self.assertIn('two sources', err)
+        self.assertTrue(stray.exists(), 'not renamed')
+        self.assertEqual(store.embed_calls, [])
+
+    def test_a_bundle_refuses_a_document_that_belongs_to_another_source(self) -> None:
+        store = self._install_store()
+        bundle = self.archive / 'inbox' / 'aunt-ruth'
+        bundle.mkdir(parents=True)
+        (bundle / 'notes.md').write_text('---\nsource_type: letter\n---\nLetters.\n',
+                                         encoding='utf-8')
+        (bundle / 'letter.pdf').write_bytes(b'x')
+        store.keywords[str(bundle / 'letter.pdf')] = ['SOURCE: S-a1b2c3d4e5']
+        rc, _out, err = self._run([str(bundle)])
+        self.assertEqual(rc, EXIT_ERRORS)
+        self.assertIn('already carries SOURCE: S-a1b2c3d4e5', err)
+        self.assertTrue((bundle / 'letter.pdf').exists())
+        self.assertEqual(store.embed_calls, [])
 
     def test_an_attached_document_scan_gets_the_keyword(self) -> None:
         store = self._install_store()
@@ -240,6 +293,45 @@ class RealDocumentKeywordTests(_Base):
         self.assertEqual(rc, EXIT_ERRORS)
         self.assertIn('already carries SOURCE:', err)
         self.assertEqual(len(self._records()), 1)
+
+    def test_a_rolled_back_run_leaves_every_format_byte_for_byte_as_it_was(self) -> None:
+        # #253 review: removing the keyword again does not restore a PDF -
+        # exiftool appends an update to it - so a rollback restores the bytes.
+        (self.archive / 'sources' / 'letter').write_text('blocker', encoding='utf-8')
+        for name in ('will.pdf', 'will.tif', 'will.jpg', 'will.png'):
+            with self.subTest(name=name):
+                scan = write_fixture(self.archive / 'documents' / 'census' / name)
+                before = scan.read_bytes()
+                rc, _out, err = self._run([str(scan), '--type', 'letter'])
+                self.assertEqual(rc, EXIT_FAILURE, err)
+                self.assertEqual(scan.read_bytes(), before)
+
+    def test_more_rollback_keeps_a_matching_keyword_the_file_already_had(self) -> None:
+        # Codex: a scan that already carries THIS source's keyword keeps it
+        # when a failed --more is undone.
+        folder = self.archive / 'documents' / 'census'
+        primary = write_fixture(folder / 'will.tif')
+        rc, _out, err = self._run([str(primary), '--type', 'census'])
+        self.assertEqual(rc, EXIT_CLEAN, err)
+        primary = next(folder.glob('will_S-*.tif'))
+        sid = primary.stem.rsplit('_', 1)[1]
+        page = write_fixture(folder / 'will page 2.tif')
+        import subprocess
+        subprocess.run(['exiftool', '-q', '-overwrite_original',
+                        f'-XMP-dc:Subject=SOURCE: {sid}', str(page)], check=True)
+        before = page.read_bytes()
+        real_write = process.write_text_exact_atomic
+
+        def _fail(*_a, **_k):
+            raise OSError('disk full')
+        process.write_text_exact_atomic = _fail
+        try:
+            rc, _out, err = self._run([str(primary), '--more', str(page), 'page'])
+        finally:
+            process.write_text_exact_atomic = real_write
+        self.assertEqual(rc, EXIT_FAILURE, err)
+        self.assertEqual(page.read_bytes(), before)
+        self.assertEqual(process._read_all_source_keywords(page), [sid.lower()])
 
     def test_a_document_exiftool_cannot_update_is_still_filed(self) -> None:
         bad = self.archive / 'documents' / 'census' / 'locked.pdf'
