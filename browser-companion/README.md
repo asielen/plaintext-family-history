@@ -229,8 +229,13 @@ no-op, the bundles land in `inbox/` directly.
   capture with no picture is never filed - it is set aside, once, in the
   staging folder's `.not-filed/`. Where the page's layout is unclear, the
   Details reader leaves text out rather than file someone else's words as
-  hers: beside the Details box only sections headed "Description" / "Linked
-  to" / the upload line are read. Capture
+  hers, by one rule (`ancMediaSectionField`): the photo's own Details box is
+  read whole; everywhere else - beside the box, or the whole page when there
+  is no box - a section is read only when its first visible text is a field
+  label ("Description", "Linked to" / "Attached to", the upload label; with no
+  box, also "Title" / "Date" / "Place"). A section whose first visible text is
+  anything else (a name in a heading, a link or bold type) is skipped whole,
+  and a section headed by the upload label gives only its first name. Capture
   reads the page again first, and
   stages nothing while the page shows Details or linked people the form has
   not shown her (they are added to the form for her to check), so a photo is

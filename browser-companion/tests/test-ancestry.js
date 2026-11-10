@@ -638,3 +638,58 @@ test('round 7: beside the box, only a section headed by one of the photo\'s fiel
   assert.deepStrictEqual(main('<aside aria-label="Details"><dl><dt>Date</dt><dd>abt 1925</dd></dl></aside>' +
     '<section><h3>Comments (1)</h3><p>Shared by <a>cousin_member_two</a></p></section>'), { date: 'abt 1925' });
 });
+
+// ── PR #258 round 8: one rule - a section is read when its first visible text is a field label ──
+
+const R8_BOX = '<aside aria-label="Details"><dl><dt>Date</dt><dd>abt 1925</dd></dl></aside>';
+
+test('round 8 (R1, R2): a relative\'s card whose name is a link or bold type is left out whole', () => {
+  assert.deepStrictEqual(details('<main>' + R8_BOX + '<div class="css-9z8y"><a href="/family-tree/person/1">Thomas ' +
+    'Hartley</a><span>1840–1910</span><dl><dt>Description</dt><dd>Born on the moors of Yorkshire.</dd></dl></div></main>'),
+  { date: 'abt 1925' });
+  assert.deepStrictEqual(details('<main>' + R8_BOX + '<div class="css-9z8y"><strong>Thomas Hartley</strong><dl>' +
+    '<dt>Attached to</dt><dd>Margaret Whitcombe (wife)<br>cousin_member_one</dd></dl></div></main>'), { date: 'abt 1925' });
+});
+
+test('round 8 (R4): with no Details box, each section is read by the same rule - never a relative\'s card', () => {
+  assert.deepStrictEqual(details('<main><dl><dt>Date</dt><dd>abt 1925</dd></dl><div class="css-1q2w3e"><h4>Thomas ' +
+    'Hartley</h4><dl><dt>Description</dt><dd>Born on the moors of Yorkshire.</dd></dl></div></main>'), { date: 'abt 1925' });
+  // The photo's own labelled sections are still read.
+  assert.deepStrictEqual(details('<main><header><nav><a>Trees</a><a>Search</a></nav></header><section><h3>Description</h3>' +
+    '<p>Thomas and Margaret on the porch.</p></section><section><h3>Linked to</h3><ul><li>Thomas Hartley 1840–1910</li>' +
+    '</ul></section></main>'), { description: 'Thomas and Margaret on the porch.', linkedTo: ['Thomas Hartley'] });
+});
+
+test('round 8: what the one rule still keeps - N\'s linked people, K\'s description, the family sentences', () => {
+  const panel = (beside) => details('<div class="panel">' + R8_BOX + beside + '</div>');
+  assert.deepStrictEqual(panel('<section class="linked-people"><h3>Linked to</h3><ul><li>Thomas Hartley 1840–1910</li>' +
+    '</ul></section>'), { date: 'abt 1925', linkedTo: ['Thomas Hartley'] });
+  assert.deepStrictEqual(panel('<section><h3>Description</h3><p>Thomas and Margaret on the porch.</p></section>'),
+    { date: 'abt 1925', description: 'Thomas and Margaret on the porch.' });
+  const box = (inner) => details('<aside><h2>Details</h2>' + inner + '</aside>');
+  assert.strictEqual(box('<dl><dt>Description</dt><dd>Shared by Aunt Ethel Hartley at the 1950 reunion; she is the girl ' +
+    'on the left.</dd></dl>').description, 'Shared by Aunt Ethel Hartley at the 1950 reunion; she is the girl on the left.');
+});
+
+test('round 8: a section headed by the upload label gives only the first name - no member list, no sentence after it', () => {
+  const beside = (section) => details('<div>' + R8_BOX + section + '</div>');
+  assert.deepStrictEqual(beside('<section><h3>Originally added by</h3><p><a>hartley_family_tree</a> on 3 Mar 2015</p>' +
+    '<p>Ruth Hartley wrote: this is Grandpa Tom with his brother.</p></section>'),
+  { date: 'abt 1925', originallyAddedBy: 'hartley_family_tree on 3 Mar 2015' });
+  assert.deepStrictEqual(beside('<section><h3>Originally added by</h3><ul><li><a>hartley_family_tree</a></li>' +
+    '<li><a>cousin_member_one</a></li><li><a>cousin_member_two</a></li></ul></section>'),
+  { date: 'abt 1925', originallyAddedBy: 'hartley_family_tree' });
+});
+
+test('round 8 (R3): "Added by <Name> on <date>" is an upload line; "on her 90th birthday" is not a date', () => {
+  const empty = (line) => details('<aside><h2>Details</h2><dl><dt>Description</dt><dd></dd></dl><p>' + line + '</p></aside>');
+  assert.deepStrictEqual(empty('Added by <span class="user-name">Mary Jones</span> on 3 Mar 2015'),
+    { originallyAddedBy: 'Mary Jones on 3 Mar 2015' });
+  assert.deepStrictEqual(empty('Shared by Mary Hartley Jones on March 3, 2015'),
+    { originallyAddedBy: 'Mary Hartley Jones on March 3, 2015' });
+  const desc = (line) => details('<aside><h2>Details</h2><section><h3>Description</h3><p>' + line + '</p></section></aside>');
+  assert.strictEqual(desc('Shared by Aunt Ethel on her 90th birthday').description, 'Shared by Aunt Ethel on her 90th birthday');
+  assert.strictEqual(desc('Shared by <a>Aunt Ethel</a> on her 90th birthday').description,
+    'Shared by Aunt Ethel on her 90th birthday');
+  assert.strictEqual(desc('Added by Grandma Ruth to her album in 1960.').description, 'Added by Grandma Ruth to her album in 1960.');
+});

@@ -113,7 +113,6 @@ from urllib.parse import parse_qs, urlparse, urlsplit
 sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
-    PHOTO_EXTENSIONS,
     EXIT_CLEAN,
     EXIT_ERRORS,
     EXIT_FAILURE,
@@ -1397,6 +1396,39 @@ _SHARED_PHOTO_NO_PICTURE = (
 _NOT_FILED_DIRNAME = '.not-filed'
 
 
+# The roles a capture gives the photo itself (the add-on's `front`, an older
+# capture's `record`, a hand-built bundle's `photo`).
+_PICTURE_ROLES = frozenset({'front', 'back', 'record', 'photo', 'primary'})
+
+
+def _looks_like_picture(path: Path) -> bool:
+    """Whether a file's first bytes are a picture's: JPEG (whatever its
+    extension - Chrome on Windows saves one as .jfif), PNG, GIF, WebP,
+    TIFF, BMP, or HEIC/AVIF. Read from the bytes, never from the name."""
+    try:
+        with open(path, 'rb') as fh:
+            head = fh.read(16)
+    except OSError:
+        return False
+    return (head[:3] == b'\xff\xd8\xff' or head[:8] == b'\x89PNG\r\n\x1a\n' or head[:6] in (b'GIF87a', b'GIF89a')
+            or (head[:4] == b'RIFF' and head[8:12] == b'WEBP') or head[:4] in (b'II*\x00', b'MM\x00*')
+            or head[:2] == b'BM' or head[4:12] in (b'ftypheic', b'ftypheix', b'ftypmif1', b'ftypavif', b'ftypmsf1'))
+
+
+def _holds_a_picture(assets: list[tuple[Path, str]]) -> bool:
+    """Whether a capture's kept assets include its picture: an asset in a
+    picture role, or any whose bytes are a picture's. Never decided by the
+    file's extension - a dropped .jfif or .webp photo is the photo (PR #258
+    round 8) - and `_lib.PHOTO_EXTENSIONS`, which other tools rely on, is
+    left as it is."""
+    for path, role in assets:
+        if path.suffix.lower() in _PAGE_COPY_SUFFIXES or path.suffix.lower() in ('.json', '.txt', '.md'):
+            continue
+        if role in _PICTURE_ROLES or _looks_like_picture(path):
+            return True
+    return False
+
+
 def _without_shared_photo_page_copy(cap: dict, assets: list[tuple[Path, str]]) -> list[tuple[Path, str]]:
     """A shared Ancestry photo's capture, less any copy of Ancestry's page.
 
@@ -1417,7 +1449,7 @@ def _without_shared_photo_page_copy(cap: dict, assets: list[tuple[Path, str]]) -
         cap['url'] = f'{parts.scheme}://{parts.netloc}{m.group(1)}'
     kept = [(path, role) for path, role in assets
             if role != 'webpage' and path.suffix.lower() not in _PAGE_COPY_SUFFIXES]
-    if not any(path.suffix.lower() in PHOTO_EXTENSIONS for path, _role in kept):
+    if not _holds_a_picture(kept):
         raise SharedPhotoWithoutPicture(
             _SHARED_PHOTO_OLD_ADDON if len(kept) != len(assets) else _SHARED_PHOTO_NO_PICTURE)
     if len(kept) != len(assets):

@@ -26,6 +26,7 @@ honest:
 Run: python -m unittest tests.test_browser_companion -v   (from the repo root)
 """
 
+import base64
 import contextlib
 import io
 import os
@@ -591,10 +592,14 @@ class SharedPhotoTestCase(unittest.TestCase):
             err = io.StringIO()
             with contextlib.redirect_stderr(err):
                 res = capture.run_ingest(archive, config, staging_dir=str(staging))
-            self.assertEqual(res.data['ingested'], 0)
-            self.assertEqual(res.data['not_filed'], 1)
-            self.assertEqual([o['status'] for o in res.data['bundles']], ['not-filed'])
+            # What she would see: nothing filed, and the capture kept whole in .not-filed/.
+            inbox = archive / 'inbox'
+            self.assertFalse(inbox.exists() and any(inbox.iterdir()), 'nothing may be filed')
             aside = staging / '.not-filed' / bundle.name
+            self.assertTrue((aside / 'page-snapshot.html').is_file(), 'the capture is kept whole in .not-filed/')
+            self.assertEqual(res.data['ingested'], 0)
+            self.assertEqual(res.data.get('not_filed'), 1)
+            self.assertEqual([o['status'] for o in res.data['bundles']], ['not-filed'])
             self.assertIn("This shared photo was captured with an older version of the add-on, which saved only a "
                           "copy of Ancestry's page (it lists other members) and not the photo. Nothing was filed. "
                           "Update the add-on (fha update-tools, then reload it in chrome://extensions), open the "
@@ -618,6 +623,44 @@ class SharedPhotoTestCase(unittest.TestCase):
             items, _ = seenit_host.scan_known({'sources': [str(archive / 'sources')], 'filed': [str(archive / 'documents')],
                                                'captured': [str(staging)]})
             self.assertNotIn('med:' + PHOTO_MEDIA_ID, items)
+
+    def test_a_shared_photo_saved_as_jfif_or_webp_is_filed_not_set_aside(self) -> None:
+        """PR #258 round 8 (regression from round 7): Chrome on Windows saves a
+        "Save image as" JPEG as .jfif, or a photo as .webp. The no-picture rule
+        judged the photo by its extension, so a good capture was set aside as
+        "only its address was saved" - and capturing again could not help. The
+        picture is now judged by its role and its bytes; the native host
+        (`fha capture --host`) files it too."""
+        photo = f'ancestry-{PHOTO_MEDIA_ID}-photo'
+        for ext in ('.jfif', '.webp'):
+            with tempfile.TemporaryDirectory() as td:
+                tmp = Path(td)
+                staging = tmp / 'staging'
+                bundle = staging / PHOTO_BUNDLE.name
+                shutil.copytree(PHOTO_BUNDLE, bundle)
+                data = (bundle / (photo + '.jpg')).read_bytes()
+                if ext == '.webp':  # a WebP file's own first bytes
+                    data = b'RIFF' + (len(data) + 4).to_bytes(4, 'little') + b'WEBP' + data
+                (bundle / (photo + '.jpg')).unlink()
+                (bundle / (photo + ext)).write_bytes(data)
+                cj = json.loads((bundle / 'capture.json').read_text(encoding='utf-8'))
+                for a in cj['assets']:
+                    if a['file'] == photo + '.jpg':
+                        a['file'], a['mode'] = photo + ext, 'manual'
+                (bundle / 'capture.json').write_text(json.dumps(cj), encoding='utf-8')
+                archive, config = self._archive(tmp)
+                res = capture.run_ingest(archive, config, staging_dir=str(staging))
+                self.assertEqual(res.data['ingested'], 1, ext)
+                self.assertFalse((staging / '.not-filed').exists(), ext)
+                self.assertTrue(any((archive / 'inbox').rglob(photo + ext)), ext)
+                # The native host, given the same capture, files it too.
+                msg = {'captureJson': cj, 'bundleName': 'host-' + ext[1:], 'pageHtml': '<html></html>',
+                       'assets': [{'filename': photo + ext, 'base64': base64.b64encode(data).decode()},
+                                  {'filename': 'photo-data.json',
+                                   'base64': base64.b64encode((PHOTO_BUNDLE / 'photo-data.json').read_bytes()).decode()}]}
+                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                    r = capture._host_ingest(archive, config, msg)
+                self.assertTrue(r.get('ok'), (ext, r))
 
     def test_a_shared_photo_capture_with_no_picture_at_all_is_never_filed(self) -> None:
         """PR #258 round 7: the same refusal whenever a shared-photo capture
