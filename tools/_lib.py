@@ -103,6 +103,11 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #                                 per claim type (birth/baptism -> child, …)
 #    vital_subjects            - whose OWN Born/Died/Married a vital claim
 #                                 supplies, or None when the claim never said
+#    death_claim_deceased      - who a death/burial claim says died, split into
+#                                 named / by-elimination / unscoped (#246: what
+#                                 accepting it flips, and what lint W136 reads)
+#    claim_death_reading       - the same for a raw claim dict, `unsure` when its
+#                                 roles:/persons: name someone it cannot place
 #    claim_is_own_vital        - the same question against the index: is claim X
 #                                 a record OF person Y? read by site, gedcom,
 #                                 views and wikitree
@@ -179,6 +184,12 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    frontmatter_fence_span    - the ONE `---` fence grammar (exact, FRONT_RE-matched)
 #    parse_frontmatter_strict  - frontmatter mapping via plain yaml.safe_load (no coercion)
 #    frontmatter_edit_problem  - pre-write guard for surgical frontmatter edits
+#    LIVING_VALUES / normalize_living - the living flag's vocabulary (SPEC §9/§19)
+#    frontmatter_key_line_indexes - column-0 `key:` lines inside the fence span
+#    living_edit_problem       - frontmatter_edit_problem + "living reads the target"
+#    set_person_living         - THE living-flag writer: `fha person set-living` and
+#                                 `fha claim`'s death-claim accept (#246) share it;
+#                                 `only_from=` makes it compare-and-set
 #    section_bounds            - locate one `## Heading` prose section's line span
 #    lines_end_with_newline    - did this split('\n') list end in the EOF sentinel?
 #    create_section_at_eof     - shared "heading missing, append it at EOF" tail
@@ -575,10 +586,22 @@ def bracket_given_name(full_name: str) -> str:
     nun recorded as "Sister Mary", the name that tells her from her sister
     "Sister Anne". A name that is nothing but titles is returned whole.
 
+    The token goes inside a folder name, so it is passed through
+    `folder_safe_chars` (a quoted nickname, `"Peggy" Smith`, reads `'Peggy'`).
+
     Shared by lint and views (W103) so both backends derive the same token."""
+    return folder_safe_chars(_bracket_given_name_raw(full_name))
+
+
+def _bracket_given_name_raw(full_name: str) -> str:
     words = full_name.split()
     if not words:
         return full_name
+    # A leading "?" for an unknown first name, when another given name
+    # follows it ("? Mary Hartley" -> Mary). "? Hartley" keeps its "?", so the
+    # surname never stands in for a first name; that child is left out.
+    while len(words) > 2 and not folder_safe_chars(words[0]):
+        words = words[1:]
     i = 0
     while i < len(words) and _title_key(words[i]) in _NAME_TITLES:
         i += 1
@@ -680,7 +703,7 @@ def reconcile_bracket_entries(
         row: list[int | None] = []
         for base, words, tok_label in zip(bases, tok_words, tok_labels):
             relabel = 0 if tok_label == label else 1
-            if base == default:
+            if default and base == default:
                 row.append(relabel)
             # A bare title ("Mrs.") fits every married woman and names no one;
             # it is the defect being repaired, never a choice worth keeping.
@@ -693,6 +716,11 @@ def reconcile_bracket_entries(
     out = []
     for i, (default, label, _names) in enumerate(kids):
         j = tok_of[i]
+        if j is None and not default:
+            # No first name a folder can hold ("? Hartley"): leave the child
+            # out rather than write an empty slot the next read drops again,
+            # which made every refresh "rename" the folder to itself.
+            continue
         out.append(format_bracket_child(bases[j] if j is not None else default, label))
     return sorted(out)
 
@@ -1045,6 +1073,125 @@ def vital_subjects(
     return [pid for pid, role in pairs if not role]
 
 
+# The claim types whose subject has died (SPEC §8.3: both name him `deceased:`).
+DEATH_CLAIM_TYPES = frozenset({'death', 'burial'})
+
+
+@dataclasses.dataclass(frozen=True)
+class DeceasedReading:
+    """Who a death or burial claim says has died, sorted by how surely it says so.
+
+    `named`: the claim says so outright - they are under `roles: deceased:`, or
+    they are the only person on a claim with no `roles:` at all.
+    `by_elimination`: SPEC §8.3's older shape - nobody is marked `deceased:`,
+    but everyone else on the claim has some other part (the widow, the
+    informant), so the archive reads whoever is left as the one who died.
+    `unscoped`: several people and no roles at all, so nobody can say which of
+    them died (W132's shape).
+    `unsure`: the claim names someone who cannot be matched to a person on its
+    own `persons:` list - a `roles:` entry for somebody missing from
+    `persons:` (W133's shape, or a misspelled role key on them), or a name
+    link that does not resolve - as the raw entries. Reading such a claim
+    without them can make the widow look like the only person on it (#250
+    review), so it names nobody.
+    """
+    named: tuple[str, ...] = ()
+    by_elimination: tuple[str, ...] = ()
+    unscoped: tuple[str, ...] = ()
+    unsure: tuple[str, ...] = ()
+
+
+def death_claim_deceased(
+    claim_type: Any, persons_with_roles: Iterable[tuple[str, Any]],
+) -> DeceasedReading:
+    """Who a death/burial claim says has died - `vital_subjects`, split by certainty.
+
+    Accepting a death claim now marks the person as no longer living
+    (#246), and `fha lint` W136 reports a person still treated as living
+    whose death the archive has accepted. Both must agree on who died, and
+    both must agree with the Died: line the site and GEDCOM already show,
+    so this reads `vital_subjects` (the one rule for whose own death a claim
+    records) and only sorts its answer:
+
+      - a person under `roles: deceased:`, or the one person on a claim
+        with no roles at all, is `named`. Only these are ever changed
+        automatically: the claim itself says they died.
+      - SPEC §8.3's by-elimination reading (nobody marked `deceased:`, the
+        one left without a part) is `by_elimination`. The site already shows
+        their death, so lint reports them, but nothing changes their privacy
+        flag on that reading alone: one forgotten role on a living son
+        would otherwise publish him.
+      - several people with no roles at all is `unscoped`: `vital_subjects`
+        credits nobody, and so does this. "The family plot holds A, B and C,
+        with a space for me" must not mark the narrator as dead.
+
+    Any claim type other than death/burial reads as nobody.
+    """
+    ctype = str(claim_type or '').strip().lower()
+    if ctype not in DEATH_CLAIM_TYPES:
+        return DeceasedReading()
+    first_role: dict[str, str] = {}
+    for pid, role in persons_with_roles:
+        if pid not in first_role:
+            first_role[pid] = str(role or '').strip().lower()
+    pairs = list(first_role.items())
+    subjects = vital_subjects(ctype, pairs)
+    if subjects is None:                       # one person (or none), no roles
+        return DeceasedReading(named=tuple(pid for pid, _ in pairs))
+    if not any(role for _pid, role in pairs):  # several people, no roles
+        return DeceasedReading(unscoped=tuple(pid for pid, _ in pairs))
+    if any(role == VITAL_SUBJECT_ROLES[ctype] for _pid, role in pairs):
+        return DeceasedReading(named=tuple(subjects))
+    return DeceasedReading(by_elimination=tuple(subjects))
+
+
+def claim_death_reading(
+    claim: dict, alias_map: dict[str, str] | None = None,
+) -> DeceasedReading:
+    """`death_claim_deceased` for a raw claim dict - THE entry point both the
+    death-claim accept (`fha claim`, no alias map: it works without the index)
+    and lint W136 (with the archive's alias map) call.
+
+    It first checks the raw claim for anything its resolved `(pid, role)`
+    pairs would silently lose, because losing it changes who looks dead:
+
+      - a `roles:` value naming somebody who is not on `persons:` - by P-id,
+        by a name link, or under a misspelled key (`decedent:`). The pairs
+        drop that person, so a death record listing only the widow in
+        `persons:` and her husband under `roles: deceased:` read as the
+        widow's own death, and accepting it published her (#250 review);
+      - a `persons:` or `roles:` entry that does not resolve at all - a name
+        link this caller cannot match (`fha claim` has no alias map, so every
+        name link is one), or a code that is not a person's.
+
+    Either makes the reading `unsure`: nobody is named, and the caller says
+    so in general terms rather than naming a person to mark. Otherwise it is
+    `death_claim_deceased` on the resolved pairs. So "the only person on a
+    claim with no roles" means the raw claim truly has no roles.
+    """
+    ctype = str(claim.get('type') or '').strip().lower()
+    if ctype not in DEATH_CLAIM_TYPES:
+        return DeceasedReading()
+    pairs = resolve_claim_persons_with_roles(claim, alias_map)
+    on_claim = {pid for pid, _role in pairs}
+    unsure: list[str] = []
+    for raw in link_field_refs(claim.get('persons')):
+        if resolve_typed_ref(raw, alias_map, want='P') is None:
+            unsure.append(str(raw))
+    roles = claim.get('roles')
+    if isinstance(roles, dict):
+        for role_val in roles.values():
+            for raw in link_field_refs(role_val):
+                pid = resolve_typed_ref(raw, alias_map, want='P')
+                if pid is None or pid not in on_claim:
+                    unsure.append(str(raw))
+    elif roles:
+        unsure.append(str(roles))   # a roles: that is not a mapping at all
+    if unsure:
+        return DeceasedReading(unsure=tuple(dict.fromkeys(unsure)))
+    return death_claim_deceased(ctype, pairs)
+
+
 _VITAL_CONFIDENCE_RANK = {'high': 0, 'medium': 1, 'low': 2}
 _ISO_DAY_RE = re.compile(r'^(\d{1,4})-(\d{2})-(\d{2})')
 
@@ -1355,7 +1502,9 @@ def spouse_extended_base(
         return base_name, None
 
     def _norm(s: str) -> str:
-        return ' '.join(s.split()).casefold()
+        # Compared through `folder_name_text`, so a base the tools wrote from
+        # `Margaret "Peggy" Cole` (`Margaret 'Peggy' Cole`) still matches her.
+        return ' '.join(folder_name_text(s).split()).casefold()
 
     base_person = _norm(m.group(2))
     matched = [pid for pid in partner_ids
@@ -1367,10 +1516,48 @@ def spouse_extended_base(
     # A partner with no recorded name resolves to their bare P-id, or to one
     # of the archive's placeholders - a folder name is for humans, so never
     # write an ID or a placeholder into it.
+    # A name made only of characters a folder can't hold ("???") is a
+    # placeholder too: its empty "+ " half would be kept for ever, since this
+    # rule never touches a base that already has a "+".
     if (not other_name or other_name == other or is_placeholder_name(other_name)
-            or _norm(other_name) == base_person):
+            or not folder_name_text(other_name) or _norm(other_name) == base_person):
         return base_name, None
-    return f'{base_name} + {other_name}', other_name
+    return f'{base_name} + {folder_name_text(other_name)}', other_name
+
+
+_FOLDER_DROP_CHARS = re.compile(r'[:*?<>|]')
+_FOLDER_SPACE_CHARS = re.compile(r'[\x00-\x1f]')
+
+
+def folder_safe_chars(text: str) -> str:
+    """`folder_name_text` without the end trim, for text that sits INSIDE a
+    folder name - a bracket token like `Mrs.` keeps its dot, since only the
+    folder name's last character is subject to Windows' trailing-dot rule."""
+    text = str(text).replace('"', "'").replace('/', '-').replace('\\', '-')
+    text = _FOLDER_DROP_CHARS.sub('', _FOLDER_SPACE_CHARS.sub(' ', text))
+    return ' '.join(text.split())
+
+
+def folder_name_text(name: str) -> str:
+    """A person's name made safe to stand in a folder name on every OS.
+
+    A recorded name is free text and keeps exactly what the source says -
+    `Margaret "Peggy" Cole` is a perfectly good `name:`. A folder name is not:
+    Windows refuses `\\ / : * ? " < > |`, control characters, and a trailing
+    dot or space, so a promote that writes the raw name into a new couple folder
+    can only fail there (the engine rolls back, but the person never gets
+    promoted). Every place that derives folder text from a name runs it through
+    here, so the rule is one rule:
+      - a double quote becomes a single quote (`Margaret 'Peggy' Cole` - the
+        nickname still reads as a nickname);
+      - a slash or backslash becomes a hyphen (`Ann/Anna` -> `Ann-Anna`), so
+        the name can never be read as a path;
+      - `: * ? < > |` are dropped, and a control character (a tab) becomes a
+        space so the words on either side stay apart;
+      - runs of spaces collapse, and trailing dots and spaces are trimmed,
+        because a name written by these sites can end the folder name.
+    Names without any of these come back unchanged."""
+    return folder_safe_chars(name).rstrip(' .')
 
 
 def is_placeholder_name(name: object) -> bool:
@@ -4321,6 +4508,342 @@ def frontmatter_edit_problem(
         if meta.get(key) != before_meta.get(key):
             return f'the {key!r} field would change value'
     return None
+
+
+# ── The living flag (SPEC §9/§19) - the one writer ────────────────────────────
+# `fha person set-living` and `fha claim` (accepting a death claim, #246) both
+# change a person's `living:` flag. Both go through `set_person_living` below,
+# so the surgical one-line edit, its pre-write guard and its merged-tombstone
+# refusal exist once. It lived in person.py until a second tool needed it, and
+# tools never import tools.
+
+# The closed vocabulary of the living flag (SPEC §9: true | false | unknown).
+LIVING_VALUES = ('true', 'false', 'unknown')
+
+# One `living:` value line: key at column 0, optional spacing, the value, and an
+# optional trailing `# comment` that must survive the rewrite. `[^#]*?` treats
+# the first `#` as the comment start - close enough for a field whose only
+# legal values are bare true/false/unknown, and the pre-write guard re-parses
+# the result anyway.
+_LIVING_LINE_RE = re.compile(r'^(living:)([ \t]*)([^#]*?)([ \t]*)(#.*?)?(\r?)$')
+
+
+def normalize_living(value: object) -> str | None:
+    """Collapse a parsed frontmatter `living` value to its comparable form.
+
+    YAML reads `living: true` as a Python bool and `living: unknown` as a
+    string; hand edits may carry stray case or whitespace. None means the key
+    is absent (or explicitly null) - callers treat that as "needs writing",
+    never as equal to any target value.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return 'true' if value else 'false'
+    return str(value).strip().lower()
+
+
+def frontmatter_key_line_indexes(lines: list[str], start: int, end: int, key: str) -> list[int]:
+    """Indexes of column-0 `key:` lines between two bounds (exclusive).
+
+    Column 0 is what makes a line a TOP-LEVEL mapping key: a `living:` inside a
+    nested mapping or a block scalar is indented, and a commented-out line
+    starts with '#' - neither matches. (A column-0 lookalike inside a multi-line
+    quoted scalar CAN match; that is why the caller refuses on more than one
+    candidate and the pre-write guard re-parses the result.)
+    """
+    pattern = re.compile(rf'{re.escape(key)}:(?=\s|$)')
+    return [i for i in range(start, end) if pattern.match(lines[i])]
+
+
+def _replace_living_line(line: str, value: str) -> str:
+    """Rewrite one `living:` line to the new value, preserving a trailing comment.
+
+    Only the value between the colon and any `# comment` changes; the key, the
+    comment, and a CRLF ending all survive. Author spacing after the colon is
+    normalized to one space (the value's width changes anyway, so alignment
+    cannot be preserved exactly).
+    """
+    m = _LIVING_LINE_RE.match(line)
+    if m is None:  # caller matched the key already; this is belt-and-braces
+        return line
+    comment = m.group(5)
+    cr = m.group(6)
+    if comment:
+        sep = m.group(4) or '  '
+        return f'living: {value}{sep}{comment}{cr}'
+    return f'living: {value}{cr}'
+
+
+def living_edit_problem(
+    new_text: str, *, expect_living: str, before_meta: dict,
+) -> str | None:
+    """Vet the rewritten record's frontmatter BEFORE it is written.
+
+    The shared guard `frontmatter_edit_problem` (the frontmatter sibling
+    of `_lib.claims_edit_problem`, also used by `fha confirm merge`) carries
+    the general contract: the rewrite must parse as a mapping, `id` must be
+    unchanged, and no field outside the declared intent - here exactly
+    `{'living'}` - may appear, disappear, or change value. The value-identity
+    check is deliberately stronger than a key-set compare: it catches a
+    `living:` lookalike inside a multi-line quoted scalar, where replacing
+    the line silently rewrites ANOTHER field's value. This wrapper adds the
+    one field-specific check the shared guard cannot know: `living` must
+    equal the target after normalization.
+
+    Returns None when the rewrite is sound, else a short plain-language
+    description of what would break; the caller refuses and writes nothing.
+    """
+    problem = frontmatter_edit_problem(
+        new_text, before_meta=before_meta, changed_keys={'living'})
+    if problem is not None:
+        return problem
+    meta = safe_load_yaml(FRONT_RE.match(new_text).group(1))
+    if normalize_living(meta.get('living')) != expect_living:
+        return (f'the living flag would read {meta.get("living")!r} '
+                f'instead of {expect_living!r}')
+    return None
+
+
+def set_person_living(
+    archive_root: Path, person_id: str, value: str, dry_run: bool = False,
+    *, only_from: tuple[str | None, ...] | None = None,
+) -> 'Result':
+    """Set one person record's `living:` flag; return a Result.
+
+    The engine behind `fha person set-living` (person.py's `run_set_living`
+    is this function) and behind `fha claim`'s death-claim accept (#246).
+
+    `only_from` makes the write compare-and-set: the flag changes only when
+    the value this call itself reads is one of them (None = the key is absent
+    or empty). Anything else is a `conflict`, nothing written, `data['old']`
+    naming what it found. The death-claim accept passes `(None, '', 'unknown')`
+    so a `living: true` someone saved after it looked is never overwritten
+    (#250 review). `fha person set-living` passes nothing: it is the human's
+    direct order.
+
+    `data` is {'status': 'ok'|'already'|'dry-run'|'not-found'|'merged'|'refused',
+    'person_id', 'path', 'old', 'new'}; `changed` names the record on a live
+    write. `old` is the record's normalized value before the edit (None when
+    the key was absent). Exit codes: 0 for ok/already/dry-run, 1 for
+    not-found (with the `fha find` next step), 3 for every refusal (invalid
+    id, merged tombstone, guard failure, unreadable/unwritable file).
+
+    Validation happens before any read, the pre-write guard before any write;
+    the file is either updated in exactly one line or untouched.
+    """
+    import difflib
+
+    result = Result(data={
+        'status': None, 'person_id': None, 'path': None, 'old': None, 'new': None,
+    })
+
+    def _refuse(status: str, message: str) -> 'Result':
+        result.ok = False
+        result.exit_code = EXIT_FAILURE
+        result.data['status'] = status
+        result.add('error', message)
+        return result
+
+    val = str(value).strip().lower()
+    if val not in LIVING_VALUES:
+        return _refuse(
+            'refused',
+            f'{value!r} is not a living value. Use one of: true, false, unknown '
+            f'- e.g. `fha person set-living {person_id} false` for someone who '
+            'has passed away. (unknown is treated as living - the safe default.)')
+    result.data['new'] = val
+
+    if not (is_valid_id(person_id) and id_type_of(person_id) == 'P'):
+        return _refuse(
+            'refused',
+            f'{person_id!r} is not a valid person ID. P-ids look like P-2b3c4d5e6f '
+            '- a P followed by a dash and 10 characters from the archive alphabet.')
+    pid = normalize_id(person_id)
+    result.data['person_id'] = fmt_id_display(pid)
+
+    path = find_person_record_path(archive_root, pid)
+    if path is None:
+        result.ok = False
+        result.exit_code = EXIT_WARNINGS
+        result.data['status'] = 'not-found'
+        result.add('warning',
+                   f'No person record found for {fmt_id_display(pid)} under '
+                   f'{Path(archive_root) / "people"} - check the id with '
+                   f'`fha find {fmt_id_display(pid)}`.',
+                   next_step='fha find ' + fmt_id_display(pid))
+        return result
+    result.data['path'] = str(path)
+
+    try:
+        text = read_text_exact(path)
+    except OSError as e:
+        return _refuse('refused', f'cannot read {path}: {e}. Check the file is '
+                       'not open in another program and try again.')
+
+    fm = FRONT_RE.match(text)
+    if fm is None:
+        return _refuse(
+            'refused',
+            f'{path.name} has no frontmatter block (the header between --- lines '
+            f'at the top of the file), so there is nowhere safe to write the flag. '
+            f'Open {path} and add the header by hand, then run `fha lint`. '
+            'Nothing was written.')
+    try:
+        before_meta = safe_load_yaml(fm.group(1))
+    except yaml.YAMLError:
+        before_meta = None
+    if not isinstance(before_meta, dict):
+        return _refuse(
+            'refused',
+            f'the header of {path.name} does not read as YAML, so editing it '
+            f'automatically could make things worse. Open {path}, fix the header '
+            'by hand (run `fha lint` to see the problem line), then retry. '
+            'Nothing was written.')
+
+    name = str(before_meta.get('name') or '').strip()
+    label = f'{fmt_id_display(pid)} ({name})' if name else fmt_id_display(pid)
+
+    # A merged tombstone is never edited: readers resolve THROUGH merged_into
+    # (SPEC §9), so writing the flag here would fork the truth between the
+    # tombstone and the surviving record. is_merged_meta normalizes, so a
+    # hand-edited `status: Merged` cannot slip past the guard.
+    if is_merged_meta(before_meta):
+        result.exit_code = EXIT_FAILURE
+        result.ok = False
+        result.data['status'] = 'merged'
+        survivor = normalize_id(str(before_meta.get('merged_into') or ''))
+        if survivor and is_valid_id(survivor):
+            result.add('error',
+                       f'{label} was merged into {fmt_id_display(survivor)} - this record '
+                       'is a tombstone that readers resolve through, so the flag lives on '
+                       'the surviving record. Set it there: '
+                       f'`fha person set-living {fmt_id_display(survivor)} {val}`.')
+        else:
+            result.add('error',
+                       f'{label} is a merged tombstone, but its merged_into: pointer is '
+                       'missing or malformed, so the surviving record cannot be named. '
+                       f'Find it with `fha find {fmt_id_display(pid)}`, then set the flag '
+                       'on the survivor. Nothing was written.')
+        return result
+
+    old = normalize_living(before_meta.get('living'))
+    result.data['old'] = old
+
+    if 'living' in before_meta and old == val:
+        result.data['status'] = 'already'
+        result.add('info', f'{label} is already living: {val} - nothing to change.')
+        return result
+    if only_from is not None and old not in only_from:
+        result.data['status'] = 'conflict'
+        result.add('info', f'{label} reads living: {old} - left as it is.')
+        return result
+
+    lines = text.split('\n')
+    bounds = frontmatter_fence_span(lines)
+    if bounds is None:  # FRONT_RE matched, so this cannot normally happen
+        return _refuse(
+            'refused',
+            f'could not locate the frontmatter fences in {path.name} to edit '
+            f'safely. Open {path} and set living: {val} by hand, then run `fha lint`. '
+            'Nothing was written.')
+    start, end = bounds
+
+    key_lines = frontmatter_key_line_indexes(lines, start + 1, end, 'living')
+    new_lines = list(lines)
+    if len(key_lines) > 1:
+        return _refuse(
+            'refused',
+            f'{path.name} has more than one top-level living: line in its header, '
+            'so the right one to edit cannot be chosen safely. Open '
+            f'{path} and fix the duplicate by hand, then run `fha lint`. '
+            'Nothing was written.')
+    if key_lines and 'living' not in before_meta:
+        # A column-0 lookalike (e.g. inside a multi-line quoted scalar) with no
+        # real top-level field behind it: editing that line would rewrite some
+        # OTHER field's value. The guard below would also catch this, but the
+        # direct refusal names the actual situation.
+        return _refuse(
+            'refused',
+            f'{path.name} has a living: line that belongs to another field\'s '
+            'value, not a real living field, so it cannot be edited safely. '
+            f'Open {path} and add a top-level living: {val} line by hand, then '
+            'run `fha lint`. Nothing was written.')
+    if key_lines:
+        new_lines[key_lines[0]] = _replace_living_line(lines[key_lines[0]], val)
+    elif 'living' in before_meta:
+        # The field parses but owns no column-0 line (a one-line `{...}` header
+        # or similar exotic shape) - refuse rather than guess where to write.
+        return _refuse(
+            'refused',
+            f'the living field in {path.name} is not written as its own line, so '
+            f'it cannot be edited safely. Open {path} and set living: {val} by '
+            'hand, then run `fha lint`. Nothing was written.')
+    else:
+        # Key absent (legal for a hand-made record): insert in the stub scaffold's
+        # field order - right after name:, else just before the closing ---.
+        cr = '\r' if lines[start].endswith('\r') else ''
+        name_lines = frontmatter_key_line_indexes(lines, start + 1, end, 'name')
+        insert_at = (name_lines[0] + 1) if name_lines else end
+        new_lines.insert(insert_at, f'living: {val}{cr}')
+
+    new_text = '\n'.join(new_lines)
+    problem = living_edit_problem(new_text, expect_living=val,
+                                  before_meta=before_meta)
+    if problem is not None:
+        return _refuse(
+            'refused',
+            f'Refusing to change {label}: {problem}, so saving could corrupt the '
+            f'record. Nothing was written. Open {path} and set living: {val} by '
+            'hand, then run `fha lint` to check it.')
+
+    old_display = old if 'living' in before_meta else '(absent)'
+    if dry_run:
+        result.data['status'] = 'dry-run'
+        result.add('info', f'[dry-run] Would set {label} living: {old_display} -> {val}.')
+        for dline in difflib.unified_diff(
+            text.splitlines(), new_text.splitlines(),
+            fromfile=f'{path} (before)', tofile=f'{path} (after)', lineterm='',
+        ):
+            result.add('info', dline)
+        result.add('info', '[dry-run] No file written. Re-run without --dry-run to apply.')
+        return result
+
+    try:
+        write_text_exact_atomic(path, reapply_newline(new_text, text))
+    except OSError as e:
+        return _refuse(
+            'refused',
+            f'cannot write {path}: {e}. Check the file is not open elsewhere and '
+            'the folder is writable, then retry.')
+
+    result.data['status'] = 'ok'
+    result.note_changed(path)
+    result.add('info', f'{label} is now living: {val}.', path=path)
+    if val == 'false':
+        result.add('info',
+                   "Exports may now include this person's name and facts "
+                   '(the site, GEDCOM, and packets all follow this flag).')
+    elif val == 'true':
+        result.add('info',
+                   'This person will now be redacted from every export '
+                   '(the site, GEDCOM, and packets all follow this flag).')
+    else:
+        result.add('info',
+                   'unknown is treated as living - the safe default - so this '
+                   'person will be redacted from every export (the site, GEDCOM, '
+                   'and packets all follow this flag).')
+    # Not "when convenient": every export reads living: from the index, not
+    # from the record, and refuses to run while the index is out of date
+    # (`fha site`, `fha packet` and `fha gedcom` all open it strictly). So the
+    # rebuild is what has to happen before the next export, not after it.
+    result.add('info',
+               'Next: run `fha index` so queries and exports see the change - '
+               '`fha site`, `fha packet` and `fha gedcom` read this flag from '
+               'the index, and stop with an "index is stale" message until you '
+               'rebuild it.',
+               next_step='fha index')
+    return result
 
 
 # ── Prose-section locate/append (## Heading bodies) ───────────────────────────
@@ -8288,6 +8811,37 @@ def find_person_record_path(
             if carries_person_record_fields(meta):
                 named_like_a_companion = path
     return named_like_a_companion
+
+
+def claim_in_text(text: str, claim_id: str) -> dict | None:
+    """The one claim `claim_id` names in a record's TEXT, parsed the way
+    `read_record` parses it (scalars coerced), or None when the fenced
+    `## Claims` block does not read or holds it zero or several times.
+
+    For a writer that must judge the claim exactly as it is about to write
+    it, not as an earlier lookup saw it: `fha claim` decides who a death
+    claim marks as no longer living from the text it is saving (#250
+    review), so an edit saved in between cannot point it at someone else.
+    """
+    if yaml is None:
+        return None
+    body = text
+    fm = FRONT_RE.match(text)
+    if fm:
+        body = text[fm.end():]
+    cm = CLAIMS_RE.search(body)
+    if cm is None:
+        return None
+    try:
+        parsed = safe_load_yaml(cm.group(1))
+    except yaml.YAMLError:
+        return None
+    if not isinstance(parsed, list):
+        return None
+    target = normalize_id(claim_id)
+    hits = [c for c in parsed if isinstance(c, dict) and c.get('id') is not None
+            and normalize_id(str(c['id'])) == target]
+    return _coerce_yaml(hits[0]) if len(hits) == 1 else None
 
 
 def record_claims_by_id(path: Path) -> dict[str, dict]:

@@ -2405,6 +2405,12 @@ class _PicturePool:
         # `_processes` is read before shutdown, which empties it. (Python 3.14
         # has `terminate_workers()`; this works on every supported version.)
         processes = list((getattr(executor, '_processes', None) or {}).values())
+        # The pool's own manager thread reaps the same workers once they die.
+        # Two threads waiting on one process can leave this thread's view of it
+        # "still running" after it has gone (#248), so the manager thread is
+        # waited for too: when `close` returns, every worker is gone and known
+        # to be gone.
+        manager = getattr(executor, '_executor_manager_thread', None)
         executor.shutdown(wait=False, cancel_futures=True)
         for proc in processes:
             with contextlib.suppress(Exception):
@@ -2412,6 +2418,9 @@ class _PicturePool:
         for proc in processes:
             with contextlib.suppress(Exception):
                 proc.join(10)
+        if manager is not None:
+            with contextlib.suppress(Exception):
+                manager.join(10)
 
 
 class _DerivativeCache:
