@@ -21,7 +21,12 @@ every pair of claims from *different* sources that isn't already linked via
 `claim_links` is a candidate:
 
   - negation polarity differs (`negated`)          -> contradiction candidate,
-                                                        regardless of dates
+                                                        when bounds overlap; for
+                                                        a recurring type only if
+                                                        the pair also agrees (see
+                                                        "WHAT COUNTS AS
+                                                        AGREEMENT"), never for
+                                                        `event`/`note`
   - bounds don't overlap, vital type                -> contradiction candidate
   - bounds don't overlap, substantive type           -> not a candidate
     (residence, occupation, ... recur by design, §8.2; non-overlapping dates
@@ -47,23 +52,38 @@ nothing there - and an undated claim gets unbounded bounds, so it overlapped
 everything. One undated interview anecdote was proposed as corroborating
 every other `event` on file for that man, and a bulk confirm wrote the links.
 
-So for those types a corroboration candidate needs something specific:
+So for those types a pair is a candidate only when something specific
+agrees (`_recurring_agreement`):
 
-  - `event` / `note`: never. The type says nothing about what the fact is;
-    matching them up is a reading job for a person or an agent.
-  - both claims name a place and the places differ (`place_id` when both
-    have one, else normalized `place_text` - the same comparison the
-    negated-residence branch uses): not a candidate. Two towns in one year is
-    a move or two homes, not one fact recorded twice.
-  - both claims name the same place: candidate, whatever the dates.
-  - both claims carry a date no wider than `_CLOSE_DATE_MAX_YEARS` calendar
-    years and those dates overlap: candidate. Three years admits "about 1880"
-    (`1880~`, which edtf_bounds widens to 1879-1881) and a short range like
-    `1905/1907`; it rules out an undated claim, an open-ended one (`[1906..]`,
-    "from 1906 on"), a decade (`188X`) and a long span.
-  - anything else: not a candidate.
+  - `event` / `note`: never - neither as corroborating nor, through a
+    negation, as contradicting. The type says nothing about what the fact
+    is; matching them up is a reading job for a person or an agent.
+  - both claims carry a registered `place_id` and the ids differ: no. This is
+    the only place difference that vetoes - a registered place is a decision
+    someone made. It also vetoes a town against its own county (two ids);
+    that is an owner-reversible choice (#247 review), one line to flip.
+  - both claims carry the same `place_id`, or the same normalized
+    `place_text`: agrees, whatever the dates.
+  - any other place wording difference does NOT veto. SPEC §8 and §15 keep
+    `place_text` as the source wrote it, so one town arrives as "Riverton,
+    Ohio" and "Riverton, Hamilton Co., Ohio"; reading that as two places hid
+    real pairs (two copies of one 1880 census entry). The pair falls through
+    to the date test.
+  - both claims dated and the dates agree: agrees. Dates agree when both
+    claims carry the IDENTICAL finite range (`1861/1865` twice - a war
+    service, a long career - however wide), or when each date is no wider
+    than `_CLOSE_DATE_MAX_YEARS` calendar years and they overlap. Three years
+    admits "about 1880" (`1880~`, which edtf_bounds widens to 1879-1881) and
+    a short range like `1905/1907`; it rules out an undated claim, an
+    open-ended one (`[1906..]`, "from 1906 on"), and a decade or long span
+    that is not the same span on both sides.
+  - anything else: no.
 
-Contradiction detection is unchanged by this rule.
+The negated-vs-positive branch applies the same test to recurring types on
+top of its existing place check (a negation and a positive claim naming two
+different places, by id or by text, are still never a contradiction - "did
+not live in Topeka" and "lived in Boston" can both be true). Vital types,
+relationship and divorce keep their contradiction rules unchanged.
 
 Place comparison prefers structured `place_id` when both claims have one;
 it falls back to normalized `place_text`, then to a place phrase parsed out
@@ -167,7 +187,7 @@ CODE MAP
   Classification
     _place_from_vital_value     - vital-claim place extraction (uses _lib.normalize_place_text)
     _classify_pair              - corroborates/contradicts for one claim pair
-    _recurring_agreement        - the stricter corroboration test for recurring types (#245)
+    _recurring_agreement        - "same place or agreeing dates" test for recurring types (#245)
     run_xref                    - group claims by person+type, pair, classify
                                    (marriage/divorce grouping uses _lib.spouse_parties,
                                    see "MARRIAGE/DIVORCE BUCKETING" above)
@@ -289,6 +309,12 @@ def _classify_pair(a: dict, b: dict) -> str | None:
                 place_b = normalize_place_text(b['place_text'])
                 if place_a and place_b and place_a != place_b:
                     return None
+            # A recurring type also needs the pair to be about the same
+            # thing (#245's contradiction-side twin): an undated "never went
+            # to sea" is not in conflict with every other event on file.
+            if (a['type'] not in _PINNED_TYPES
+                    and not _recurring_agreement(a, b, a_min, a_max, b_min, b_max)):
+                return None
         return 'contradicts'
 
     if a['type'] in _VITAL_TYPES:
@@ -305,7 +331,9 @@ def _classify_pair(a: dict, b: dict) -> str | None:
     if a['type'] in _PINNED_TYPES:
         return 'corroborates'
 
-    return _recurring_agreement(a, b, a_min, a_max, b_min, b_max)
+    if _recurring_agreement(a, b, a_min, a_max, b_min, b_max):
+        return 'corroborates'
+    return None
 
 
 def _year_span(lo: str, hi: str) -> int:
@@ -313,30 +341,40 @@ def _year_span(lo: str, hi: str) -> int:
     return int(hi[:4]) - int(lo[:4]) + 1
 
 
+_OPEN_MIN, _OPEN_MAX = edtf_bounds(None)
+
+
 def _recurring_agreement(a: dict, b: dict, a_min: str, a_max: str,
-                         b_min: str, b_max: str) -> str | None:
+                         b_min: str, b_max: str) -> bool:
     """
-    Corroboration test for a recurring type (residence, occupation, census,
-    ...) whose dates already overlap: 'corroborates' only when the place or a
-    close date actually agrees, else None. See the module docstring's "WHAT
+    Whether two claims of a recurring type (residence, occupation, census,
+    ...) whose dates already overlap say something specific in common: the
+    same place, or dates that agree. Used for both corroboration and the
+    negated-vs-positive contradiction. See the module docstring's "WHAT
     COUNTS AS AGREEMENT" section (#245).
     """
     if a['type'] in _NO_CORROBORATION_TYPES:
-        return None
+        return False
 
     if a['place_id'] and b['place_id']:
-        place_a, place_b = a['place_id'], b['place_id']
-    else:
-        place_a = normalize_place_text(a['place_text'])
-        place_b = normalize_place_text(b['place_text'])
-    if place_a and place_b:
-        return 'corroborates' if place_a == place_b else None
+        # Two registered places: the ids decide. Different ids (a town vs
+        # its county included) veto - the one place difference that does.
+        return a['place_id'] == b['place_id']
+    text_a = normalize_place_text(a['place_text'])
+    text_b = normalize_place_text(b['place_text'])
+    if text_a and text_a == text_b:
+        return True
+    # Any other wording difference is not evidence of two places (SPEC §8, §15:
+    # place_text is as the source wrote it) - fall through to the dates.
 
-    if (a['date_edtf'] and b['date_edtf']
-            and _year_span(a_min, a_max) <= _CLOSE_DATE_MAX_YEARS
-            and _year_span(b_min, b_max) <= _CLOSE_DATE_MAX_YEARS):
-        return 'corroborates'
-    return None
+    if not (a['date_edtf'] and b['date_edtf']):
+        return False
+    if (a_min, a_max) == (b_min, b_max) and a_min != _OPEN_MIN and a_max != _OPEN_MAX:
+        # The identical finite range on both sides (1861/1865 twice), however
+        # wide - not an open-ended one.
+        return True
+    return (_year_span(a_min, a_max) <= _CLOSE_DATE_MAX_YEARS
+            and _year_span(b_min, b_max) <= _CLOSE_DATE_MAX_YEARS)
 
 
 def run_xref(archive_root: Path) -> Result:

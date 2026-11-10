@@ -1186,12 +1186,53 @@ class RecurringTypeCorroborationTests(unittest.TestCase):
         )
         self.assertEqual([p['kind'] for p in pairs], ['corroborates'])
 
-    def test_residences_in_different_towns_same_year_not_paired(self) -> None:
+    def test_residences_in_different_registered_towns_same_year_not_paired(self) -> None:
+        # Two registered places are a decision someone made: different ids
+        # veto, even when the year matches.
         pairs = self._pairs(
             dict(ctype='residence', value='lived in Riverton', date_edtf='1910',
-                 place_text='Riverton'),
+                 place_id='l-aaaaaaaaaa', place_text='Riverton'),
             dict(ctype='residence', value='lived in Oakdale', date_edtf='1910',
-                 place_text='Oakdale'),
+                 place_id='l-bbbbbbbbbb', place_text='Oakdale'),
+        )
+        self.assertEqual(pairs, [])
+
+    def test_town_and_its_county_registered_separately_not_paired(self) -> None:
+        # Owner-reversible decision (#247 review): a town id and its county
+        # id are two different places to this test.
+        pairs = self._pairs(
+            dict(ctype='residence', value='lived in Riverton', date_edtf='1880',
+                 place_id='l-aaaaaaaaaa'),
+            dict(ctype='residence', value='lived in Hamilton County', date_edtf='1880',
+                 place_id='l-cccccccccc'),
+        )
+        self.assertEqual(pairs, [])
+
+    def test_census_same_year_with_place_worded_differently_corroborates(self) -> None:
+        # place_text is as each source wrote it: one town, two wordings.
+        # Two copies of one 1880 census entry must still be offered.
+        pairs = self._pairs(
+            dict(ctype='census', value='Thomas, farmer, in household', date_edtf='1880',
+                 place_text='Riverton, Ohio'),
+            dict(ctype='census', value='Thomas, head', date_edtf='1880-06-01',
+                 place_text='Riverton, Hamilton Co., Ohio'),
+        )
+        self.assertEqual([p['kind'] for p in pairs], ['corroborates'])
+
+    def test_registered_place_vs_text_only_wording_falls_through_to_dates(self) -> None:
+        pairs = self._pairs(
+            dict(ctype='residence', value='lived in Fairview', date_edtf='1880-06~',
+                 place_id='l-aaaaaaaaaa', place_text='Fairview City, Breton, Kansas'),
+            dict(ctype='residence', value='lived in Fairview', date_edtf='1880',
+                 place_text='Fairview, Breton County, Kansas'),
+        )
+        self.assertEqual([p['kind'] for p in pairs], ['corroborates'])
+
+    def test_place_worded_differently_does_not_admit_an_undated_claim(self) -> None:
+        pairs = self._pairs(
+            dict(ctype='census', value='Thomas, farmer', place_text='Riverton, Ohio'),
+            dict(ctype='census', value='Thomas, head', date_edtf='1880',
+                 place_text='Riverton, Hamilton Co., Ohio'),
         )
         self.assertEqual(pairs, [])
 
@@ -1254,6 +1295,85 @@ class RecurringTypeCorroborationTests(unittest.TestCase):
             dict(ctype='death', value='died 1944', date_edtf='1944'),
         )
         self.assertEqual([p['kind'] for p in pairs], ['corroborates'])
+
+    def test_undated_divorce_from_the_same_spouse_still_corroborates(self) -> None:
+        # Divorce is bucketed by couple, so like a vital type it names one
+        # fact: overlap is still enough.
+        self.conn.execute("INSERT INTO persons(id, name, living, tier, path) VALUES "
+                          "('p-bbbbbbbbbb','Ruth Hartley','false','curated','y.md')")
+        both = ['p-aaaaaaaaaa', 'p-bbbbbbbbbb']
+        roles = {'p-aaaaaaaaaa': 'spouse', 'p-bbbbbbbbbb': 'spouse'}
+        _insert_claim(self.conn, 'c-aaaaaaaaaa', 's-1111111111', 'divorce',
+                      'they divorced', persons=both, roles=roles)
+        _insert_claim(self.conn, 'c-bbbbbbbbbb', 's-2222222222', 'divorce',
+                      'divorce decree', date_edtf='1922', persons=both, roles=roles)
+        self.conn.commit()
+        result = xref.run_xref(self.archive_root)
+        kinds = {p['kind'] for g in result['groups'] for p in g['pairs']}
+        self.assertEqual(kinds, {'corroborates'})
+
+    def test_two_notes_with_the_same_date_are_not_paired(self) -> None:
+        pairs = self._pairs(
+            dict(ctype='note', value='family moved the piano', date_edtf='1912-05-01'),
+            dict(ctype='note', value='first telephone in the house', date_edtf='1912-05-01'),
+        )
+        self.assertEqual(pairs, [])
+
+    def test_identical_wide_service_range_corroborates(self) -> None:
+        # A pension file and a regimental roster both give 1861/1865: the
+        # same span, however wide, is agreement.
+        pairs = self._pairs(
+            dict(ctype='military', value='private, Co. B, 12th Ohio Infantry',
+                 date_edtf='1861/1865'),
+            dict(ctype='military', value='served in Co. B, 12th Ohio',
+                 date_edtf='1861/1865'),
+        )
+        self.assertEqual([p['kind'] for p in pairs], ['corroborates'])
+
+    def test_overlapping_but_different_wide_ranges_not_paired(self) -> None:
+        pairs = self._pairs(
+            dict(ctype='occupation', value='teacher', date_edtf='1978/2012'),
+            dict(ctype='occupation', value='school board clerk', date_edtf='1990/1999'),
+        )
+        self.assertEqual(pairs, [])
+
+    def test_identical_open_ended_ranges_not_paired_on_dates(self) -> None:
+        pairs = self._pairs(
+            dict(ctype='occupation', value='farmer', date_edtf='[1906..]'),
+            dict(ctype='occupation', value='kept bees', date_edtf='[1906..]'),
+        )
+        self.assertEqual(pairs, [])
+
+    def test_undated_negated_event_does_not_contradict_unrelated_event(self) -> None:
+        # "He never went to sea" is not in conflict with a mortgage.
+        pairs = self._pairs(
+            dict(ctype='event', value='never went to sea', negated=1),
+            dict(ctype='event', value='took out a mortgage', date_edtf='1915'),
+        )
+        self.assertEqual(pairs, [])
+
+    def test_negated_note_on_the_same_date_does_not_contradict(self) -> None:
+        pairs = self._pairs(
+            dict(ctype='note', value='did not attend the reunion', negated=1,
+                 date_edtf='1931-07-04'),
+            dict(ctype='note', value='brought the photographs', date_edtf='1931-07-04'),
+        )
+        self.assertEqual(pairs, [])
+
+    def test_undated_negated_occupation_does_not_contradict_every_occupation(self) -> None:
+        pairs = self._pairs(
+            dict(ctype='occupation', value='was never a farmer', negated=1),
+            dict(ctype='occupation', value='blacksmith', date_edtf='1900'),
+        )
+        self.assertEqual(pairs, [])
+
+    def test_negated_occupation_same_year_still_contradicts(self) -> None:
+        pairs = self._pairs(
+            dict(ctype='occupation', value='was not a farmer that year', negated=1,
+                 date_edtf='1900'),
+            dict(ctype='occupation', value='farmer', date_edtf='1900'),
+        )
+        self.assertEqual([p['kind'] for p in pairs], ['contradicts'])
 
 
 class XrefStdoutIsValidUtf8Tests(unittest.TestCase):
