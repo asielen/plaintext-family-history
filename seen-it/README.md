@@ -43,6 +43,13 @@ It also loads in Microsoft Edge (`edge://extensions`) and other Chromium browser
 **On a newspaper page or a record page,** a small badge shows the same pills plus two buttons
 to mark it (**Nothing here / Not ours** and **Later**). Click again to clear.
 
+**On an Ancestry person's Hints page,** each record and photo hint you have opened before shows
+its pills beside its title. Opening a hint (its title or **Review**, which slides in Ancestry's
+side panel) counts as opening that record or photo, and the badge with **Not ours** and
+**Later** shows for it while the panel is open. Scrolling past hints counts for nothing. A
+photo hint is the same photo wherever it is offered, so "Seen" follows it from one person's
+hints to another's.
+
 **Above Newspapers.com results,** if you have run the same search before, a banner says when,
 how many results it had, and what you opened, clipped and ruled out from it.
 
