@@ -3880,6 +3880,91 @@ class DeathClaimReviewFixTests(_DeathFixture, unittest.TestCase):
                                  persons=[_ADA, _JOHN])   # now unscoped: Ada dropped
         self.assertIn(f'fha person set-living {_ADA} unknown', self._text(result))
 
+    # 10. Compare-and-set: a `living: true` saved after the accept looked at
+    # the record (another editor, another session) is never overwritten.
+    def test_a_living_true_saved_meanwhile_is_never_overwritten(self) -> None:
+        _death_source(self.root, _claim_item('C-aa11bb22cc', 'death', _ADA))
+        real_read = claim._read_person
+
+        def read_then_someone_saves_true(root, pid):
+            path, meta = real_read(root, pid)
+            if pid.lower() == _ADA.lower():
+                path.write_text(path.read_text(encoding='utf-8').replace(
+                    'living: unknown', 'living: true'), encoding='utf-8')
+            return path, meta          # the stale look: still unknown
+        with mock.patch.object(claim, '_read_person', read_then_someone_saves_true):
+            result = self._accept('C-aa11bb22cc')
+        self.assertEqual(self._living(self.ada), 'true')
+        self.assertEqual(result['marked_not_living'], [])
+        self.assertIn('is marked as living', self._text(result))
+
+    def test_set_living_itself_still_obeys_the_human(self) -> None:
+        # The explicit command is the human's direct order: unchanged.
+        import person
+        result = person.run_set_living(self.root, _THOMAS, 'false')
+        self.assertEqual(result['status'], 'ok')
+        self.assertEqual(self._living(self.thomas), 'false')
+
+    # 11. A single accept judges the claim in the text it writes, not the
+    # lookup taken before that text was read.
+    def test_single_accept_marks_who_the_written_claim_names(self) -> None:
+        source = _death_source(self.root, _claim_item('C-aa11bb22cc', 'death', _ADA))
+        real_find = claim._find_claim_record
+
+        def find_then_corrected(*a, **k):
+            found = real_find(*a, **k)    # sees Ada ...
+            source.write_text(source.read_text(encoding='utf-8').replace(
+                f'persons: [{_ADA}]', f'persons: [{_MARY}]'), encoding='utf-8')
+            return found                   # ... but the file now names Mary
+        with mock.patch.object(claim, '_find_claim_record', find_then_corrected):
+            result = claim.run_claim(self.root, claim_id='C-aa11bb22cc', status='accepted')
+        self.assertEqual(self._living(self.ada), 'unknown', self._text(result))
+        self.assertEqual(self._living(self.mary), 'false')
+
+    # 12. (verification for Codex P2) a status move plus a field edit in one
+    # command warns about the ORIGINAL deceased.
+    def test_un_accept_with_a_field_edit_warns_about_the_original_deceased(self) -> None:
+        _death_source(self.root, _claim_item('C-aa11bb22cc', 'death', _ADA)
+                      + _claim_item('C-bb22cc33dd', 'death', _JOHN))
+        self._accept('C-aa11bb22cc', 'C-bb22cc33dd')
+        for cid, kw, pid in (('C-aa11bb22cc', {'persons': [_MARY]}, _ADA),
+                             ('C-bb22cc33dd', {'claim_type': 'residence'}, _JOHN)):
+            with self.subTest(kw=kw):
+                result = claim.run_claim(self.root, claim_id=cid, status='rejected', **kw)
+                self.assertIn(f'fha person set-living {pid} unknown', self._text(result))
+        self.assertEqual(self._living(self.mary), 'unknown')
+
+    # 13. "they are still marked", never "they is".
+    def test_still_marked_warning_agrees_with_its_pronoun(self) -> None:
+        sam = _death_person(self.root, 'P-gggggggggg', 'Sam Hartley', 'unknown', 'U')
+        _death_source(self.root, _claim_item('C-aa11bb22cc', 'death', 'P-gggggggggg'))
+        self._accept('C-aa11bb22cc')
+        self.assertEqual(self._living(sam), 'false')
+        result = claim.run_claim(self.root, claim_id='C-aa11bb22cc', persons=[_MARY])
+        self.assertIn('but they are still marked', self._text(result))
+        self.assertNotIn('they is', self._text(result))
+        # she / he read "is"
+        _death_source(self.root, _claim_item('C-bb22cc33dd', 'death', _ADA))
+        self._accept('C-bb22cc33dd')
+        result = claim.run_claim(self.root, claim_id='C-bb22cc33dd', persons=[_MARY])
+        self.assertIn('but she is still marked', self._text(result))
+
+    # 14. A batch whose record will not read back after the write says so.
+    def test_batch_says_so_when_the_written_record_will_not_read_back(self) -> None:
+        _death_source(self.root, _claim_item('C-aa11bb22cc', 'death', _ADA)
+                      + _claim_item('C-bb22cc33dd', 'residence', _ADA))
+        real = claim._record_claims
+
+        def unreadable_after_write(path):
+            if 'status: accepted' in Path(path).read_text(encoding='utf-8'):
+                return {}
+            return real(path)
+        with mock.patch.object(claim, '_record_claims', unreadable_after_write):
+            result = self._accept('C-aa11bb22cc', 'C-bb22cc33dd')
+        self.assertEqual(self._living(self.ada), 'unknown')
+        self.assertIn('could not be read back', self._text(result))
+        self.assertIn('W136', self._text(result))
+
 
 if __name__ == '__main__':
     unittest.main()

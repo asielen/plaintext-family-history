@@ -188,7 +188,8 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    frontmatter_key_line_indexes - column-0 `key:` lines inside the fence span
 #    living_edit_problem       - frontmatter_edit_problem + "living reads the target"
 #    set_person_living         - THE living-flag writer: `fha person set-living` and
-#                                 `fha claim`'s death-claim accept (#246) share it
+#                                 `fha claim`'s death-claim accept (#246) share it;
+#                                 `only_from=` makes it compare-and-set
 #    section_bounds            - locate one `## Heading` prose section's line span
 #    lines_end_with_newline    - did this split('\n') list end in the EOF sentinel?
 #    create_section_at_eof     - shared "heading missing, append it at EOF" tail
@@ -4606,11 +4607,20 @@ def living_edit_problem(
 
 def set_person_living(
     archive_root: Path, person_id: str, value: str, dry_run: bool = False,
+    *, only_from: tuple[str | None, ...] | None = None,
 ) -> 'Result':
     """Set one person record's `living:` flag; return a Result.
 
     The engine behind `fha person set-living` (person.py's `run_set_living`
     is this function) and behind `fha claim`'s death-claim accept (#246).
+
+    `only_from` makes the write compare-and-set: the flag changes only when
+    the value this call itself reads is one of them (None = the key is absent
+    or empty). Anything else is a `conflict`, nothing written, `data['old']`
+    naming what it found. The death-claim accept passes `(None, '', 'unknown')`
+    so a `living: true` someone saved after it looked is never overwritten
+    (#250 review). `fha person set-living` passes nothing: it is the human's
+    direct order.
 
     `data` is {'status': 'ok'|'already'|'dry-run'|'not-found'|'merged'|'refused',
     'person_id', 'path', 'old', 'new'}; `changed` names the record on a live
@@ -4723,6 +4733,10 @@ def set_person_living(
     if 'living' in before_meta and old == val:
         result.data['status'] = 'already'
         result.add('info', f'{label} is already living: {val} - nothing to change.')
+        return result
+    if only_from is not None and old not in only_from:
+        result.data['status'] = 'conflict'
+        result.add('info', f'{label} reads living: {old} - left as it is.')
         return result
 
     lines = text.split('\n')
@@ -8797,6 +8811,37 @@ def find_person_record_path(
             if carries_person_record_fields(meta):
                 named_like_a_companion = path
     return named_like_a_companion
+
+
+def claim_in_text(text: str, claim_id: str) -> dict | None:
+    """The one claim `claim_id` names in a record's TEXT, parsed the way
+    `read_record` parses it (scalars coerced), or None when the fenced
+    `## Claims` block does not read or holds it zero or several times.
+
+    For a writer that must judge the claim exactly as it is about to write
+    it, not as an earlier lookup saw it: `fha claim` decides who a death
+    claim marks as no longer living from the text it is saving (#250
+    review), so an edit saved in between cannot point it at someone else.
+    """
+    if yaml is None:
+        return None
+    body = text
+    fm = FRONT_RE.match(text)
+    if fm:
+        body = text[fm.end():]
+    cm = CLAIMS_RE.search(body)
+    if cm is None:
+        return None
+    try:
+        parsed = safe_load_yaml(cm.group(1))
+    except yaml.YAMLError:
+        return None
+    if not isinstance(parsed, list):
+        return None
+    target = normalize_id(claim_id)
+    hits = [c for c in parsed if isinstance(c, dict) and c.get('id') is not None
+            and normalize_id(str(c['id'])) == target]
+    return _coerce_yaml(hits[0]) if len(hits) == 1 else None
 
 
 def record_claims_by_id(path: Path) -> dict[str, dict]:

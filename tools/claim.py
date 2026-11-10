@@ -285,6 +285,7 @@ from _lib import (
     configure_utf8_stdout,
     DeceasedReading,
     claim_death_reading,
+    claim_in_text,
     find_person_record_path,
     find_source_record_path,
     fmt_id_display,
@@ -1177,6 +1178,11 @@ def _read_person(archive_root: Path, pid: str) -> tuple[Path | None, dict | None
         return path, None
 
 
+# The living values an accepted death may change to false: unknown, or no
+# value at all. Never true (someone recorded them as alive) or anything odd.
+_MARKABLE_LIVING: tuple[str | None, ...] = (None, '', 'unknown')
+
+
 def _mark_deceased_not_living(
     archive_root: Path, result: Result, claims: list[dict], *,
     dry_run: bool = False, keep_living: bool = False,
@@ -1287,23 +1293,25 @@ def _mark_deceased_not_living(
                        'lists it as E016). Nobody was marked as no longer living; '
                        f'if this is the same person, run {where}.')
             continue
+        def _left_alone(found: str | None) -> None:
+            """The flag reads something other than unknown: say so, write nothing."""
+            if found == 'true':
+                result.add('warning',
+                           f'{name} ({shown_pid}) is marked as living, but you accepted '
+                           f'{cid}, a {ctype} record for {them}. {name} was left marked '
+                           f'as living, so {_stays_out(meta)} of shared exports and the '
+                           f'site. If {name} has died, run `fha person set-living '
+                           f'{shown_pid} false`; if not, this record may be about someone '
+                           f'else - look at {cid} again.')
+            elif found != 'false':
+                result.add('warning',
+                           f'{name} ({shown_pid}) has living: {found!r}, which is not one '
+                           'of true, false or unknown, so it was left alone. If '
+                           f'{name} has died, run `fha person set-living {shown_pid} false`.')
+
         living = normalize_living(meta.get('living'))
-        if living == 'false':
-            continue   # already recorded; nothing to say
-        if living == 'true':
-            result.add('warning',
-                       f'{name} ({shown_pid}) is marked as living, but you accepted '
-                       f'{cid}, a {ctype} record for {them}. {name} was left marked '
-                       f'as living, so {_stays_out(meta)} of shared exports and the '
-                       f'site. If {name} has died, run `fha person set-living '
-                       f'{shown_pid} false`; if not, this record may be about someone '
-                       f'else - look at {cid} again.')
-            continue
-        if living not in (None, 'unknown'):
-            result.add('warning',
-                       f'{name} ({shown_pid}) has living: {meta.get("living")!r}, which '
-                       'is not one of true, false or unknown, so it was left alone. If '
-                       f'{name} has died, run `fha person set-living {shown_pid} false`.')
+        if living not in _MARKABLE_LIVING:
+            _left_alone(living)   # false: already recorded, nothing to say
             continue
         if not named:
             result.add('warning',
@@ -1321,9 +1329,15 @@ def _mark_deceased_not_living(
                        f'(--keep-living), so {_stays_out(meta)} of shared exports and '
                        'the site.')
             continue
-        sub = set_person_living(archive_root, pid, 'false', dry_run=dry_run)
+        # Compare-and-set: the writer re-reads the flag and changes it only
+        # if it STILL reads unknown, so a `living: true` saved since the look
+        # above is left alone and reported, never overwritten (#250 review).
+        sub = set_person_living(archive_root, pid, 'false', dry_run=dry_run,
+                                only_from=_MARKABLE_LIVING)
         status = sub.data.get('status')
-        if status == 'dry-run':
+        if status == 'conflict':
+            _left_alone(sub.data.get('old'))
+        elif status == 'dry-run':
             marked.append(shown_pid)
             result.add('info',
                        f'[dry-run] Would mark {name} as no longer living ({ctype} '
@@ -1395,10 +1409,12 @@ def _warn_still_marked(
                 lead = f'{cid} {moved} accepted (now {new_status}), but {name} ({shown})'
             else:
                 moved = 'would no longer name' if dry_run else 'no longer names'
+                subject = _pronouns(meta)[0]
                 lead = (f'{cid} {moved} {name} ({shown}) as the one who died, but '
-                        f'{_pronouns(meta)[0]}')
+                        f'{subject}')
+            verb = 'are' if lead.endswith(' they') else 'is'
             result.add('warning',
-                       f'{lead} is still marked as no longer living, so shared exports '
+                       f'{lead} {verb} still marked as no longer living, so shared exports '
                        f'and the site still include {_pronouns(meta)[1]}. If this '
                        f'{ctype} record was the only reason, run '
                        f'`fha person set-living {shown} unknown`.')
@@ -1456,7 +1472,7 @@ def run_claim(
     _record_hint: Path | None = None,
     _pending: dict[Path, tuple[str, str]] | None = None,
     _in_batch: bool = False,
-    _claims_read: dict[str, dict] | None = None,
+    _claims_read: dict[str, tuple[dict, dict]] | None = None,
 ) -> Result:
     """Edit one claim (status move and/or field corrections); return a Result.
 
@@ -1537,7 +1553,8 @@ def run_claim(
     `living: false` (`_warn_still_marked`) - never reverted.
     `_in_batch` (set by `run_claim_batch`, live or dry run) leaves both steps
     to the batch, which runs them once for the claims it actually applied;
-    `_claims_read` hands it each claim exactly as this call read it.
+    `_claims_read` hands it each claim as `(read, written)` from the text
+    this call edited.
     """
     result = Result(data={
         'status': None, 'claim_id': None, 'before_status': None,
@@ -1629,8 +1646,6 @@ def run_claim(
 
     record_path, claim = found
     before_status = str(claim.get('status') or '')
-    if _claims_read is not None:
-        _claims_read[cid] = claim
     result.data['before_status'] = before_status
     result.data['source'] = str(record_path)
 
@@ -1811,17 +1826,28 @@ def run_claim(
     # stops naming someone as the deceased - moved out of accepted, or
     # edited (--persons/--type) while it stays accepted - only warns
     # (`_warn_still_marked`). A batch (`_in_batch`) runs these itself.
-    was_accepted = before_status.strip().lower() == 'accepted'
+    #
+    # Judged from the TEXT being written - the claim as it read in `text`
+    # and as it reads in `new_text` - never the `_find_claim_record`
+    # snapshot taken before `text` was read, which an edit saved in between
+    # (Ada -> Mary) would make stale (#250 review). The pre-write guard
+    # above has already parsed both, so a None here cannot normally happen;
+    # it falls back to the snapshot plus this call's own edits.
+    read_claim = claim_in_text(text, cid) or claim
+    written_claim = claim_in_text(new_text, cid) or _effective_claim(
+        claim, claim_type=claim_type, persons=persons_norm)
+    if _claims_read is not None:
+        _claims_read[cid] = (read_claim, written_claim)
+    was_accepted = str(read_claim.get('status') or '').strip().lower() == 'accepted'
     accepted_now = None
     still_marked: tuple[dict, dict | None] | None = None
     if not _in_batch:
-        edited = _effective_claim(claim, claim_type=claim_type, persons=persons_norm)
         if status == 'accepted' and not was_accepted:
-            accepted_now = edited
+            accepted_now = _effective_claim(written_claim)
         elif was_accepted and status is not None and status != 'accepted':
-            still_marked = (claim, None)
+            still_marked = (read_claim, None)
         elif was_accepted:
-            still_marked = (claim, edited)
+            still_marked = (read_claim, written_claim)
 
     out_text = reapply_newline(new_text, text)
     if out_text == text:
@@ -2122,7 +2148,7 @@ def run_claim_batch(
     pending: dict[Path, tuple[str, str]] | None = None if dry_run else {}
     planned: list[tuple[str, Result]] = []
     stopped: Result | None = None
-    claims_read: dict[str, dict] = {}
+    claims_read: dict[str, tuple[dict, dict]] = {}
     for cid in ids:
         sub = run_claim(archive_root, claim_id=cid, status=status,
                         reviewed=reviewed, dry_run=dry_run,
@@ -2179,6 +2205,7 @@ def run_claim_batch(
     accepted_claims: list[dict] = []
     unaccepted_claims: list[dict] = []
     as_written: dict[Path, dict[str, dict]] = {}
+    unreadable: list[str] = []
     for cid, sub in planned:
         if (dry_run or sub.data.get('status') == 'already-done'
                 or Path(sub.data['source']) in written):
@@ -2189,19 +2216,28 @@ def run_claim_batch(
             # meanwhile (Ada -> Mary) would make stale (#250 review). A dry
             # run reads the claim as `run_claim` just read it. Only a claim
             # this batch moved into (or out of) accepted counts.
-            was_accepted = str(sub.data.get('before_status') or '').strip().lower() \
+            read_claim, written_claim = claims_read.get(cid, (None, None))
+            was_accepted = str((read_claim or {}).get('status') or '').strip().lower() \
                 == 'accepted'
             moved = sub.data.get('status') != 'already-done' and (
                 (status == 'accepted') != was_accepted)
             if moved:
                 if dry_run:
-                    now = claims_read.get(cid)
+                    now = written_claim
                 else:
                     path = Path(sub.data['source'])
                     if path not in as_written:
                         as_written[path] = _record_claims(path)
                     now = as_written[path].get(cid)
-                if now is not None:
+                if now is None:
+                    # The claim was written, but its record would not read
+                    # back, so nobody's flag was looked at - said below
+                    # rather than skipped silently (#250 review). Only a
+                    # death/burial claim (as this batch wrote it) matters.
+                    wtype = str((written_claim or {}).get('type') or 'death').strip().lower()
+                    if wtype in DEATH_CLAIM_TYPES:
+                        unreadable.append(fmt_id_display(cid))
+                else:
                     (accepted_claims if status == 'accepted' else unaccepted_claims).append(
                         _effective_claim(now) if status == 'accepted' else now)
             for msg in sub.messages:
@@ -2219,6 +2255,14 @@ def run_claim_batch(
     if accepted_claims:
         _mark_deceased_not_living(archive_root, result, accepted_claims,
                                   dry_run=dry_run, keep_living=keep_living)
+    if unreadable:
+        one = len(unreadable) == 1
+        result.add('warning',
+                   f'{", ".join(unreadable)} {"was" if one else "were"} saved as {status}, '
+                   'but the record could not be read back afterwards, so nobody\'s living '
+                   f'flag was checked for {"it" if one else "them"}. Run `fha lint`: W136 '
+                   'lists anyone with an accepted death still treated as living (fix each '
+                   'with `fha person set-living <P-id> false`).')
     if unaccepted_claims:
         _warn_still_marked(archive_root, result, [(c, None) for c in unaccepted_claims],
                            status, dry_run=dry_run)
@@ -2641,9 +2685,13 @@ def run_claim_new(
 
     # Minting an accepted death is accepting it: the same step as `fha claim
     # C-x --status accepted` (#246). A new claim carries no roles:.
-    accepted_now = ({'id': cid, 'type': claim_type, 'persons': list(persons_norm or []),
-                     'status': 'accepted', 'negated': bool(negated)}
-                    if status == 'accepted' else None)
+    accepted_now = None
+    if status == 'accepted':
+        # The claim exactly as it is appended (#250 review: judge what is
+        # written), falling back to the fields this call rendered.
+        accepted_now = claim_in_text(after, cid) or {
+            'id': cid, 'type': claim_type, 'persons': list(persons_norm or []),
+            'status': 'accepted', 'negated': bool(negated)}
 
     if dry_run:
         result.data['status'] = 'ok'
