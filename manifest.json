@@ -504,7 +504,7 @@
     {
       "path": ".fha/tools/browser_extensions.py",
       "category": "operating",
-      "sha256": "67ed04feb6cf1ffc36103721ca825cfc0f1120be3e25adcc454b48d472d6a92e",
+      "sha256": "1210f16e13da7f9eac40deab5a483c6f947cc70581a2adfb7cbd8c754d90fec4",
       "spec_version": "1.2",
       "src": "tools/browser_extensions.py"
     },

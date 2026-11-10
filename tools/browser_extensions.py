@@ -800,8 +800,8 @@ def _update(item: dict) -> str | None:
                 f'{target}, then run `fha update-tools` again.')
     return (f'{item["name"]} was not updated - nothing changed in {target}. '
             f'{failed} could not be written ({cause}). A copy of it as it is now is '
-            f'in {backup}. Close Chrome (or any program using that folder), then '
-            f'run `fha update-tools` again.')
+            f'in {backup}. Close Chrome (or any program using that folder) and check '
+            f'the file is not marked read-only, then run `fha update-tools` again.')
 
 
 def apply_plan(items: list[dict], ext_dir: Path) -> tuple[list[str], list[str]]:
