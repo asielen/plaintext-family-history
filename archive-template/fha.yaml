@@ -83,7 +83,9 @@
 #   archive shares its fate. If the copy cannot be made, fha refuses to write to
 #   the photo and says why: a safety copy you are relying on must never quietly
 #   not happen. Leave the line out and nothing changes, except that fha says
-#   once per run that no copies are being kept.
+#   once per run that no copies are being kept. Scanned records (TIFF, JPEG,
+#   PNG, PDF) get the same protection, because fha writes their ID into them
+#   too. `fha doctor` tells you whether this is set up and suggests a folder.
 #
 # originals_backup: D:/PhotoOriginals        # Windows
 # originals_backup: /Volumes/Archive/PhotoOriginals   # Mac

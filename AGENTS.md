@@ -295,7 +295,7 @@ fha source extract <S-id> [--pages A-B]           dump a source PDF's embedded t
                             untouched; anchor claims to the PDF's own page numbers)
 fha source edit-note <S-id> --old-text … --text …  rewrite ONE existing ## Notes paragraph
 fha source clear-keyword <S-id> --keyword … [--replace-with …]   clear or correct one
-                            embedded Keywords/Subject value on a documents-root file
+                            embedded keyword on a documents-root file
                             (the fix for a stray keyword `fha lint --with-exif` finds)
 fha source set-primary <S-id> --file NAME          make the named photo the source's main
                             image (the fix `fha doctor` names when a record calls a
@@ -304,8 +304,10 @@ fha places set <L-id> --coords|--aka|--history …   human-directed place regist
                             (each field a full replace; dry-run diff first)
 fha places note <L-id> --text …                    append a dated research note to a place
 fha places edit-note <L-id> --old-text … --text …  rewrite ONE existing place note
-fha process <file|folder>   process an original into a Source (documents: rename;
-                            photos: NEVER rename - keyword only; + record scaffold)
+fha process <file|folder>   process an original into a Source (documents: rename,
+                            plus the SOURCE: keyword where the format holds one;
+                            photos: NEVER rename - keyword only; + record scaffold;
+                            --variants one|separate answers the front/back question)
 fha process refile <S-id> --to photos|documents
                             move a misfiled source file ACROSS roots (SPEC 12.1's
                             sanctioned correction; rename at the crossing; --dry-run)

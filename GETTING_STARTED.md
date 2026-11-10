@@ -102,8 +102,10 @@ its last lines for the reason.
 ### 3. exiftool (optional - only for photo features)
 
 `exiftool` lets the archive read and write the hidden metadata inside photos (so a scan can
-carry its own ID and keywords). **If you're starting with documents and notes, skip this for
-now** and add it later when you bring in a photo library. Nothing in the walkthrough below needs it.
+carry its own ID and keywords, in the places your photo program - Lightroom included - looks for
+them). Scanned records get their ID written inside them too, as a spare copy of the one in the
+filename. **If you're starting with documents and notes, skip this for now** and add it later
+when you bring in a photo library. Nothing in the walkthrough below needs it.
 
 When you're ready: download it from **<https://exiftool.org/>** (Windows users grab the
 "Windows Executable"; Mac users can use the installer there or `brew install exiftool`).
