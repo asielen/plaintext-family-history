@@ -2899,6 +2899,36 @@ def process_folder(
     return rc
 
 
+def _photo_already_filed_message(archive_root: Path, fha_config: dict, dest: Path, folder: Path) -> str:
+    """What to say when a bundle's photo is already in the photo library under
+    its name - nearly always a second capture of the same photo.
+
+    The source that lists it is named when a record's `files:` names that
+    path (a plain text search of sources/, run only on this refusal)."""
+    alias = path_to_alias(dest, _PHOTO_DIR, fha_config, archive_root)
+    holder = None
+    sources_dir = archive_root / 'sources'
+    if sources_dir.is_dir():
+        for rec in sources_dir.rglob('*.md'):
+            try:
+                text = rec.read_text(encoding='utf-8')
+            except (OSError, UnicodeDecodeError):
+                continue
+            if alias in text:
+                m = re.search(r'^id:\s*["\']?(S-[0-9a-z]{10})', text, re.M)
+                holder = m.group(1) if m else None
+                break
+    where = f'source {fmt_id_display(holder)}' if holder else 'your archive'
+    try:
+        shown = _rel(folder, archive_root)
+    except ValueError:
+        shown = folder.name
+    return (f'this photo ({dest.name}) is already in your photo library, filed as {where}. '
+            f'{shown} is a second capture of the same photo. If it adds nothing, delete that '
+            f'folder; if it holds a file the source lacks, attach that file to the source with '
+            f'`fha process {alias} --more <file> ROLE`. Nothing was changed.')
+
+
 def process_bundle(
     archive_root: Path,
     fha_config: dict,
@@ -3055,6 +3085,11 @@ def process_bundle(
                          'embed': _document_takes_keyword(dest), 'entry': entry})
 
     for item in plan:
+        if item['dest'].exists() and item['kind'] == 'photo':
+            # A second capture of a photo already filed (the same shared photo
+            # captured twice): said plainly, with the source that holds it.
+            # The filed original is never renamed to make room (PR #258 review).
+            raise ProcessError(_photo_already_filed_message(archive_root, fha_config, item['dest'], folder))
         if item['dest'].exists():
             raise ProcessError(f'destination already exists: {item["dest"].name}')
         if item['kind'] == 'document' and (

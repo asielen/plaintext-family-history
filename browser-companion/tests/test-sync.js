@@ -246,7 +246,7 @@ test('content.js Ancestry record readers are a verbatim copy of lib/ancestry-rec
   assert.ok(canon.length > 1000, 'lib sync markers not found');
   // The shared-photo readers too - the "Saved by" rule above all, whose drift
   // would let other members' names into what the page script saves (PR #258).
-  for (const name of ['function ancMediaDetails', 'function ancMediaMemberNodes', 'const ANC_MEDIA_SAVED_RE',
+  for (const name of ['function ancMediaDetails', 'function ancMediaMemberNodes', 'const ANC_MEDIA_SAVED_HEADING_RE',
     'function ancMediaImageUrl', 'function ancParseMediaPage']) {
     assert.ok(canon.includes(name), name + ' is outside the synced block');
   }

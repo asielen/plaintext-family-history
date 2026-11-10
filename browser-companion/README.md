@@ -222,7 +222,10 @@ no-op, the bundles land in `inbox/` directly.
   whose `external_links` keep the viewer's address without its query - the
   address Seen It knows the photo by (`med:{mediaId}`). When the photo will
   not come and no file was dropped in, nothing is staged: a photo source is
-  never filed without its picture.
+  never filed without its picture. Capture reads the page again first, and
+  stages nothing while the page shows Details or linked people the form has
+  not shown her (they are added to the form for her to check), so a photo is
+  captured once - a second capture of a filed photo cannot be filed.
   On a FamilySearch record or image viewer, the page reads the record and its
   image through FamilySearch's own data service, as FamilySearch's pages do,
   with your signed-in session. That session (the `fssessionid` login, sent as a

@@ -212,25 +212,37 @@ button reads **Capture this photo**. It saves:
 When you file it, it becomes a **photo** source: the photo goes into your photo
 library like any other, and the record keeps the photo's Ancestry address, so
 the Seen It add-on knows it is already in your archive. The record's notes
-repeat the date, place, description and the people it is linked to; the name of
-the member who first added it stays in `photo-data.json` only.
+repeat the date, place, description and the people it is linked to. The name of
+the member who first added it is in `photo-data.json` and in the copy of the
+page (it was on the page), never in the record's notes. With no date in its
+Details, the photo is filed undated - never with a year from elsewhere on the
+page, such as a linked relative's birth.
 
-Open the photo's **Details** on Ancestry before you open the panel (or press
-**↻ Re-read page** after opening them): what is on screen is what gets saved.
-The people the photo is linked to then appear in the panel's list of names,
-where you can untick anyone who does not belong; the panel says so if the date,
-place and description were not showing.
+Open the photo's **Details** on Ancestry before you open the panel: what is on
+screen is what gets saved. The people the photo is linked to appear in the
+panel's list of names, where you can untick anyone who does not belong; if the
+Details are not open, the panel says so before you press Capture. When you press
+**Capture this photo**, the panel looks at the page once more first. If the
+Details now show something the panel had not listed (you opened them after the
+panel read the page), it saves nothing yet: it adds those people to the list,
+ticked, and says "I found more on the page — check the people below, then press
+Capture this photo." Check them, then press it. Each photo is captured once.
 
-The list of other members who saved the photo ("Saved by …") is left out of
-everything the add-on saves - its copy of the page included - and never reaches
-your archive.
+The list of other members who saved the photo - its "Saved by …" heading and the
+names under it - is left out of everything the add-on saves, its copy of the
+page included, and never reaches your archive. A sentence of the description that
+happens to begin "Saved by …" is the photo's story, and is kept.
 
 If Ancestry will not hand over the photo (you are signed out, say), **nothing is
 saved**, and the panel says why: a photo source is never filed without its
 picture. If you can download the photo yourself (right-click it, **Save image
-as**), drop that file into the panel and press **Capture this photo** again; your
-file is then saved as the photo. The same goes for a larger copy than the one
-the viewer shows.
+as**), drop that file into the panel and press **Capture this photo**; your file
+is then saved as the photo. To keep a larger copy than the one the viewer shows,
+drop it in the same way before you press Capture.
+
+If a photo does get captured twice, filing the second copy stops with a message
+naming the source that already holds the photo, and leaves the copy in your inbox
+for you to delete.
 
 From a person's **Hints** page, open the photo on its own page first (the
 "Evaluate photo" side panel is not captured).

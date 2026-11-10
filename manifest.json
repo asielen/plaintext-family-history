@@ -168,7 +168,7 @@
     {
       "path": ".fha/browser-companion/README.md",
       "category": "operating",
-      "sha256": "e65e9a1972cdf21fb472be94ae63b3a5cc590f9572c27321830a60d9d0df0d34",
+      "sha256": "ad29dfc736949f2fb8c7db0138309f6a4de1654cef911c5b931a65d1509c28e6",
       "spec_version": "1.2",
       "src": "browser-companion/README-ARCHIVE.md"
     },
@@ -224,14 +224,14 @@
     {
       "path": ".fha/browser-companion/src/content.js",
       "category": "operating",
-      "sha256": "b2ed893122a61464ff37b3af368fec185efd4fdd383e6ef985dd5fffbf0e7b5d",
+      "sha256": "2a69ff6c482be9f77c272c36f3ed4075efe62cd5ffeb00ed8239d3edefbf1fdc",
       "spec_version": "1.2",
       "src": "browser-companion/src/content.js"
     },
     {
       "path": ".fha/browser-companion/src/lib/ancestry-record.js",
       "category": "operating",
-      "sha256": "db21a566e6c605eec09b5d6f576bdf5929c00b94e08433a4616b07fc8cf7618d",
+      "sha256": "1c8d0b6ded0291ae21d575080223c9687a21588b602deef208157407b710f1b7",
       "spec_version": "1.2",
       "src": "browser-companion/src/lib/ancestry-record.js"
     },
@@ -364,7 +364,7 @@
     {
       "path": ".fha/browser-companion/src/panel.js",
       "category": "operating",
-      "sha256": "79d5ddc42f1744a1a2d86a5871f804dead68bc91dfca37a0e12836ea179b9cb6",
+      "sha256": "191d59ee1088427109b921cc7d287acb083f8bb83f347ea684c869a8d2866a2d",
       "spec_version": "1.2",
       "src": "browser-companion/src/panel.js"
     },
@@ -525,7 +525,7 @@
     {
       "path": ".fha/tools/capture_recipes/ancestry.py",
       "category": "operating",
-      "sha256": "2c4dbc0cd83f8286d812bc2f2bc5f7091f734212f32a0961d46ce52738579cf5",
+      "sha256": "d19dd47122cd9c448ecdcf89af3ef3c26a600a0626895d87a01097b1fb545e29",
       "spec_version": "1.2",
       "src": "tools/capture_recipes/ancestry.py"
     },
@@ -679,7 +679,7 @@
     {
       "path": ".fha/tools/process.py",
       "category": "operating",
-      "sha256": "41beea3093cac19f984eeb90d0a6e6081930cf757f97ffd963061a56ce08234f",
+      "sha256": "49e619cbc937279c028ab3a5ba660d3b9aac7e3ed1f2d981bd075a008b4e784d",
       "spec_version": "1.2",
       "src": "tools/process.py"
     },

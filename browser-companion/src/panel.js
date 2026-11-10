@@ -89,6 +89,10 @@
     // Capture saves the photo the page shows, with its Details, filed as a
     // photo. Set from the prefill; drives captureAncestryPhoto.
     ancPhoto: false,
+    // On a shared photo: { keys, people } - the Details the form was filled
+    // from, and the names it lists (lowercased). Capture stages nothing new
+    // to her (captureAncestryPhoto).
+    photoShown: null,
     // FamilySearch: a record (ark 1:1, or the viewer opened from one) and a
     // bare image viewer (ark 3:1). fsCheck is the answer to "can this page's
     // image be saved from here?", asked when the page is read (null until it
@@ -597,6 +601,12 @@
     }
     fill('f-type', prefill.sourceType || '');
     if (!keep.has('people')) renderPeople(prefill.people);
+    // On a shared photo: what of its Details the form now shows - the names
+    // listed, the Details it was filled from - for Capture to compare with
+    // the page as it is then (captureAncestryPhoto).
+    state.photoShown = prefill.ancestryPhoto
+      ? { keys: (prefill.ancestryPhotoShown || []).slice(), people: (prefill.people || []).map((n) => String(n).toLowerCase()) }
+      : null;
     // Her clipping ticks, too, when she changed them since (and a dropped
     // file is never let go on the same record: clearEvidenceSelection above).
     const keepNp = keep.has('npTicks') && state.np
@@ -630,7 +640,7 @@
   // rest; the "Re-read file" button sets it alone, so the title, date, people
   // and notes she has stay as they are.
   const FILE_PREFILL_KEYS = ['imageUrl', 'pdfUrl', 'ancestryImageViewer', 'ancestryRecord', 'ancestryPhoto',
-    'ancestryMediaId',
+    'ancestryMediaId', 'ancestryPhotoShown',
     'familysearchRecord', 'familysearchImageViewer', 'familysearchImageId', 'findagraveMemorial',
     'newspapers', 'iiif'];
 
@@ -1573,6 +1583,27 @@
     // The photo was read from the tab: it must still be on this photo.
     await checkTabStillOn(recordUrl, [media.mediaId]);
 
+    // The page read again, before anything is saved: what it shows now that
+    // the form does not - the people it is linked to, Details she opened
+    // after the panel read the page - is put in front of her first, and
+    // nothing is staged. A photo is captured once; there is no "capture it
+    // again for the rest" (a second capture of a filed photo cannot be filed,
+    // PR #258 review).
+    const shown = state.photoShown || { keys: [], people: [] };
+    const newKeys = Object.keys(details).filter((k) => k !== 'title' && shown.keys.indexOf(k) < 0);
+    const newPeople = (details.linkedTo || []).filter((n) => shown.people.indexOf(n.toLowerCase()) < 0);
+    if (newKeys.length || newPeople.length) {
+      for (const n of newPeople) addPersonRow(n, true);
+      if (!form.edited.has('f-date') && !$('f-date').value.trim() && hints.sourceDate) $('f-date').value = hints.sourceDate;
+      state.photoShown = {
+        keys: shown.keys.concat(newKeys),
+        people: shown.people.concat(newPeople.map((n) => n.toLowerCase())),
+      };
+      clearAutoLog(); // nothing was saved: the box goes back to what Capture will save
+      setStageResult('I found more on the page — check the people below, then press Capture this photo.', 'warn');
+      return { staged: false };
+    }
+
     const dropped = form.dropped;
     const provisional = !!dropped && form.provisional;
     // The page copy, from the tab before the download, when she asked for it
@@ -1596,7 +1627,7 @@
         throw new Error('the photo could not be fetched from Ancestry: ' +
           String((img && img.error) || 'no answer from the page').replace(/[.\s]+$/, '') +
           '. Nothing was saved. If you can download the photo yourself (right-click it, Save image as), ' +
-          'drop that file into the panel and press Capture this photo again');
+          'drop that file into the panel and press Capture this photo');
       }
       assets.push({
         filename: media.fileStem + '.' + (/^[a-z0-9]{1,5}$/i.test(String(img.ext || '')) ? img.ext : 'jpg'),
@@ -1662,19 +1693,7 @@
     };
     const cap = captureJson.build(fields);
     const st = await stageBundle(captureJson.bundleName(title), pageHtml, cap, assets, opts);
-    const detailNote = Object.keys(details).some((k) => k !== 'title')
-      ? null
-      : 'The photo’s date, place and description were not on the page. To save them too, open the photo’s ' +
-        'Details on Ancestry and press Capture this photo again.';
-    // People the photo is linked to that the form never listed (she opened
-    // the Details after the panel read the page): named in the notes only.
-    const offered = ((state.prefill && state.prefill.people) || []).map((n) => String(n).toLowerCase());
-    const unlisted = (details.linkedTo || []).filter((n) => offered.indexOf(n.toLowerCase()) < 0);
-    const peopleNote = unlisted.length
-      ? 'Ancestry links this photo to ' + unlisted.join(', ') + ', who were not in the people list: they are in ' +
-        'the notes only. To list them, press ↻ Re-read page, check the people, and press Capture this photo again.'
-      : null;
-    reportStaged(st.where, st.viaHost, null, [st.hostWarning, detailNote, peopleNote].filter(Boolean).join('\n') || null);
+    reportStaged(st.where, st.viaHost, null, st.hostWarning || null);
     return { key: 'med:' + media.mediaId, bundle: st.bundle, where: st.where, note: null };
   }
 
@@ -2238,7 +2257,9 @@
       } else if (state.ancRecord) {
         parts.push('Record files: the record’s index and citation + its scan, if it has one (Ancestry, auto)');
       } else if (state.ancPhoto) {
-        parts.push('Record files: the photo + its details (Ancestry, auto)');
+        const open = state.photoShown && state.photoShown.keys.some((k) => k !== 'title');
+        parts.push('Record files: the photo + its details (Ancestry, auto)' + (open ? ''
+          : '. Its Details are not open on the page: open them on Ancestry first to save its date, place and description'));
       } else if (state.fagRecord) {
         parts.push('Record files: the memorial’s facts and citation + its photos at full size (Find a Grave, auto)');
       } else if (state.fsRecord || state.fsImage) {
@@ -2734,6 +2755,12 @@
       // as a photo - or the file she dropped in, saved as the photo.
       if (wantEvidence && state.ancPhoto && !evidenceUrl()) {
         const got = await captureAncestryPhoto(pageResp.html, wantPageCopy, form, recordUrl, siteOpts);
+        if (got.staged === false) {
+          // More on the page than the form showed: nothing staged, her
+          // dropped file and form kept for the Capture she presses next.
+          outcome = { ok: false, error: 'more details on the page to check first' };
+          return outcome;
+        }
         resetForNext();
         outcome = Object.assign({ ok: true, site: null }, got);
         return outcome;

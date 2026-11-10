@@ -539,11 +539,15 @@ const PHOTO_FILE = 'ancestry-' + MEDIA_ID + '-photo.jpg';
 // on a person's Hints page. `photo` is how the photo fetch answers;
 // `detailsAtFirst: false` is a Details panel she opened only after the panel
 // first read the page.
-function photoSite({ photo, detailsAtFirst = true } = {}) {
-  const html = fs.readFileSync(path.join(SAMPLES, 'ancestry-media-photo.html'), 'utf8');
+function photoSite({ photo, detailsAtFirst = true, detailsNever = false, edit } = {}) {
+  const raw = fs.readFileSync(path.join(SAMPLES, 'ancestry-media-photo.html'), 'utf8');
+  const html = edit ? edit(raw) : raw; // `edit`: the page as some other photo shows it
   let reads = 0;
   return (msg, tab) => {
-    const doc = parse(html);
+    const full = parse(html);
+    const doc = detailsNever ? parse('<html><title>' + full.title + '</title><body>' +
+      '<img src="https://www.ancestry.com/api/media/retrieval/v2/image/namespaces/4242/media/' + MEDIA_ID +
+      '?client=trees-mediaservice&amp;imageQuality=hq"></body></html>') : full;
     const media = anc.ancParseMediaPage(tab.url);
     const read = (d) => {
       const info = anc.ancMediaFrom(d, tab.url, { title: d.title, origin: 'https://www.ancestry.com' });
@@ -563,6 +567,7 @@ function photoSite({ photo, detailsAtFirst = true } = {}) {
             people: info ? (info.details.linkedTo || []).slice() : [],
             repository: 'ancestry.com', recipeHint: 'ancestry', sourceType: media ? 'photo' : undefined,
             ancestryPhoto: !!media, ancestryMediaId: media ? media.mediaId : null,
+            ancestryPhotoShown: info ? Object.keys(info.details) : null,
             ancestryRecord: !!anc.ancParseRecordPage(tab.url),
           },
         };
@@ -572,8 +577,10 @@ function photoSite({ photo, detailsAtFirst = true } = {}) {
       case 'ancestryPhoto':
         return photo || { ok: true, base64: PHOTO_BYTES.toString('base64'), ext: 'jpg', contentType: 'image/jpeg' };
       case 'pagehtml':
-        // content.js serializePage: the page, without the "Saved by" list.
-        for (const el of anc.ancMediaMemberNodes(doc)) el.parentNode.removeChild(el);
+        // content.js serializePage: the page, without the "Saved by" list
+        // (guarded, so a commit without the stripper fails its own assertion
+        // about the list, never here).
+        if (anc.ancMediaMemberNodes) for (const el of anc.ancMediaMemberNodes(doc)) el.parentNode.removeChild(el);
         return { ok: true, html: serialize(doc) };
       case 'singlefile': return { ok: true, html: '<html>copy of the shared photo page</html>\n' };
       default: return { ok: false, error: 'unexpected ' + msg.action };
@@ -606,15 +613,42 @@ test('the people the photo is linked to are offered as people she can untick, ne
   p.$('people-list').children[1].children[0].checked = false;
   await p.capture();
   assert.deepStrictEqual(p.capJson(p.written[0]).people, ['Thomas Hartley']);
-  // Details opened only after the panel read the page: the names are in the
-  // notes, not the people list, and the panel says how to list them.
+});
+
+test('round 3 (Codex PRRT_kwDOS6vm6c61wZYJ): Details opened after the panel read the page are shown before anything is saved', async () => {
   const late = await openPhoto(PHOTO_OPEN, { detailsAtFirst: false });
   assert.deepStrictEqual(late.$('people-list').children, []);
+  // The first Capture reads the page again, finds the Details, and saves nothing.
   await late.capture();
+  assert.strictEqual(late.written.length, 0);
+  assert.strictEqual(late.result(), 'I found more on the page — check the people below, then press Capture this photo.');
+  assert.match(late.resultClass(), /warn/);
+  assert.deepStrictEqual(late.$('people-list').children.map((l) => [l.children[1].textContent, l.children[0].checked]),
+    [['Thomas Hartley', true], ['Margaret Hartley', true]]);
+  assert.strictEqual(late.$('f-date').value, '1925~');
+  assert.strictEqual(photoAsks(late).length, 0, 'the photo is not fetched before she has checked');
+  // She unticks one and presses Capture: one bundle, with what she saw.
+  late.$('people-list').children[1].children[0].checked = false;
+  await late.capture();
+  assert.strictEqual(late.written.length, 1);
   const cap = late.capJson(late.written[0]);
-  assert.ok(!('people' in cap), JSON.stringify(cap.people));
-  assert.match(cap.notes, /Linked to: Thomas Hartley; Margaret Hartley/);
-  assert.match(late.result(), /Ancestry links this photo to Thomas Hartley, Margaret Hartley, who were not in the people list/);
+  assert.deepStrictEqual(cap.people, ['Thomas Hartley']);
+  assert.strictEqual(cap.source_date, '1925~');
+  // No advice anywhere to capture the same photo again once it is staged.
+  assert.doesNotMatch(late.result(), /again/i);
+});
+
+test('round 3 (audit C): a photo with nothing new on the page is staged once, with no advice to capture it again', async () => {
+  const p = await openPhoto(PHOTO_OPEN);
+  await p.capture();
+  assert.strictEqual(p.written.length, 1);
+  assert.doesNotMatch(p.result(), /again/i);
+  // Details closed on the page: said BEFORE Capture, never after.
+  const closed = await openPhoto(PHOTO_OPEN, { detailsAtFirst: false, detailsNever: true });
+  assert.match(closed.$('asset-status').textContent, /Its Details are not open on the page: open them on Ancestry first/);
+  await closed.capture();
+  assert.strictEqual(closed.written.length, 1);
+  assert.doesNotMatch(closed.result(), /again/i);
 });
 
 test('Capture saves the shared photo as a photo source: the photo as served, its details, the address to keep', async () => {
@@ -698,13 +732,6 @@ test('what she typed wins; a file she drops in is the photo, saved with its deta
   assert.strictEqual(photoAsks(p).length, 0, 'her file is used; Ancestry is not asked');
 });
 
-test('the page copy she unticked is not saved', async () => {
-  const p = await openPhoto(PHOTO_OPEN);
-  p.$('cb-pagecopy').checked = false;
-  await p.capture();
-  assert.deepStrictEqual(p.files(p.written[0]), [PHOTO_FILE, 'photo-data.json']);
-});
-
 test('PR #258 review: no photo, no capture - a refused photo stages nothing, and says how to add it by hand', async () => {
   const p = await openPhoto(PHOTO_OPEN, { photo: { ok: false, error: 'Ancestry refused the photo (HTTP 403) - sign in ' +
     'on this page and press Capture again' } });
@@ -713,7 +740,7 @@ test('PR #258 review: no photo, no capture - a refused photo stages nothing, and
   // would show it saved), and the retry with her own file a second source.
   assert.strictEqual(p.written.length, 0);
   assert.match(p.result(), /^Could not capture: the photo could not be fetched from Ancestry: Ancestry refused the photo \(HTTP 403\)/);
-  assert.match(p.result(), /Nothing was saved\. If you can download the photo yourself \(right-click it, Save image as\), drop that file into the panel and press Capture this photo again/);
+  assert.match(p.result(), /Nothing was saved\. If you can download the photo yourself \(right-click it, Save image as\), drop that file into the panel and press Capture this photo$/);
   assert.match(p.resultClass(), /error/);
   // Her downloaded file, dropped in: one capture, with her file as the photo.
   dropFile(p, 'downloaded.jpg');
@@ -722,3 +749,43 @@ test('PR #258 review: no photo, no capture - a refused photo stages nothing, and
   assert.deepStrictEqual(p.files(p.written[0]), ['page-snapshot.html', PHOTO_FILE, 'photo-data.json']);
   assert.strictEqual(p.capJson(p.written[0]).assets[1].mode, 'manual');
 });
+
+// An undated photo, from the page to the inbox: the panel sends no date, and
+// ingestion must not take one from the page - "Thomas Hartley 1840–1910" is
+// a linked relative's life, not the photo's day (Codex PRRT_kwDOS6vm6c61wZYE).
+test('round 3 (Codex PRRT_kwDOS6vm6c61wZYE): an undated shared photo reaches the inbox undated',
+  { skip: PYTHON ? false : 'no Python 3 on this computer to run tools/capture.py' }, async () => {
+    const undated = (h) => h.replace(/about 1925/g, 'on the porch')
+      .replace('<div class="detail-row"><div><span>Date</span></div><div>abt 1925</div></div>', '');
+    const p = await openPhoto(PHOTO_OPEN, { edit: undated });
+    await p.capture();
+    const b = p.written[0];
+    assert.ok(!('source_date' in b.captureJson), 'the panel sent a date: ' + b.captureJson.source_date);
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'fha-undated-'));
+    try {
+      const dir = path.join(tmp, 'staging', b.bundleName);
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, 'page.html'), b.pageHtml);
+      for (const a of b.assets) {
+        const buf = a.filename === PHOTO_FILE ? Buffer.from(await a.blob.text(), 'base64')
+          : Buffer.from(await a.blob.arrayBuffer());
+        fs.writeFileSync(path.join(dir, a.filename), buf);
+      }
+      fs.writeFileSync(path.join(dir, 'capture.json'), JSON.stringify(b.captureJson, null, 2));
+      fs.mkdirSync(path.join(tmp, 'archive'));
+      fs.writeFileSync(path.join(tmp, 'archive', 'fha.yaml'), 'roots:\n  photos: photos\n  documents: documents\n');
+      const code = 'import sys, io, contextlib, json; from pathlib import Path; sys.path.insert(0, sys.argv[1]); ' +
+        'import capture; from _lib import load_fha_yaml, read_record; a = Path(sys.argv[2]); ' +
+        'out = io.StringIO()\nwith contextlib.redirect_stdout(out):\n  capture.run_ingest(a, load_fha_yaml(a, strict=True), staging_dir=sys.argv[3])\n' +
+        'm = read_record(next((a / "inbox").rglob("notes.md")))["meta"]; print(json.dumps({k: str(v) for k, v in m.items()}))';
+      const r = spawnSync(PYTHON[0], PYTHON.slice(1).concat(['-c', code, path.join(REPO, 'tools'),
+        path.join(tmp, 'archive'), path.join(tmp, 'staging')]), { encoding: 'utf8' });
+      assert.strictEqual(r.status, 0, r.stderr);
+      const meta = JSON.parse(r.stdout.trim().split('\n').pop());
+      assert.strictEqual(meta.source_type, 'photo');
+      assert.ok(!('source_date' in meta), 'filed with a date: ' + meta.source_date);
+      assert.doesNotMatch(meta.citation, /1840|1910|2015/);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });

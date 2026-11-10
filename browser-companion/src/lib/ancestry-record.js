@@ -505,17 +505,27 @@ const ANC_MEDIA_LABELS = [
   ['linkedTo', /^(linked|attached) to$/i],
 ];
 // The lists of OTHER members a photo page shows - who saved it, and their
-// comments. Never kept: their names are not the family's. Recognised by how
-// their heading starts, whatever count follows ("Saved by", "Saved by 2
-// members", "Saved by (2)", "Also saved by", "Saved to 3 trees", "Members
-// who saved this", "Comments (4)"), so no name in them is ever read as the
-// value of another label. A "Saved by" list is also taken out of the saved
-// copy of the page (ancMediaMemberNodes).
-const ANC_MEDIA_SAVED_RE = /^(also\s+)?saved\s+(by|to)\b|^(\d+\s+)?(other\s+)?(members?|people|users)\s+(who|that)\s+(also\s+)?saved\b/i;
-const ANC_MEDIA_COMMENTS_RE = /^comments?\b\s*(\(?\d+\)?)?$/i;
-// A "Saved by" heading with no names in its own words (a count at most);
-// anything else that starts so names the members inline.
+// comments. Never kept: their names are not the family's. Recognised only
+// where they are shaped like a heading or a label (ancMediaLabel), never
+// from words in a sentence: "Saved by Aunt Ethel from the 1938 farmhouse
+// fire" in a description is the family's story, and is kept.
+//   "Saved by", "Saved by 2 members", "Saved by (2)", "Also saved by",
+//   "Saved to 3 trees", "Members who saved this", "Comments (4)"
 const ANC_MEDIA_SAVED_HEADING_RE = /^((also\s+)?saved\s+(by|to)|(\d+\s+)?(other\s+)?(members?|people|users)\s+(who|that)\s+(also\s+)?saved(\s+this(\s+photo)?)?)(\s*\(?\d+\)?)?(\s+(other\s+)?(members?|people|users|others|trees?))?$/i;
+const ANC_MEDIA_COMMENTS_RE = /^comments?(\s*\(?\d+\)?)?$/i;
+// The one-line form, the names in links: "Saved by <a>name</a> and 3 others".
+const ANC_MEDIA_SAVED_INLINE_RE = /^(also\s+)?saved\s+by(\s*,|\s+and\s+\d+\s+others?|\s+and)*$/i;
+// ...and in plain text, a member's username (one word with a digit, "_" or
+// ".") or one name and "and N others": "Saved by cousin_member_one". Never a
+// sentence: "Saved by Aunt Ethel from the 1938 farmhouse fire." is a story.
+const ANC_MEDIA_SAVED_NAMED_RE = /^(also\s+)?saved\s+by\s+([a-z0-9._-]*[0-9_.][a-z0-9._-]*(\s*,\s*[a-z0-9._-]+)*(\s+and\s+\d+\s+others?)?|[^\s,.]+\s+and\s+\d+\s+others?)$/i;
+
+// The one-line form of a members list - its names in links, or a username.
+function ancMediaSavedInline(el, own) {
+  return (ANC_MEDIA_SAVED_INLINE_RE.test(own) && ancElements(el, (e) => ancTag(e) === 'A').length > 0) ||
+    ANC_MEDIA_SAVED_NAMED_RE.test(own);
+}
+const ANC_MEDIA_HEADING_TAGS = ['H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'DT', 'TH', 'LEGEND', 'LABEL', 'SUMMARY'];
 // "Originally added by hartley_genealogy on 3 Mar 2015", on one line.
 const ANC_MEDIA_INLINE_RE = /^((?:originally )?(?:added|uploaded|shared) by)\s*:?\s+(.+)$/i;
 const ANC_MEDIA_INLINE_START_RE = /^((?:originally )?(?:added|uploaded|shared) by)\b/i;
@@ -529,11 +539,15 @@ function ancOwnText(el) {
 
 // Which Details label an element is - its own words, a colon allowed - or
 // null: a key of ANC_MEDIA_LABELS, or 'savedBy' / 'comments' for the lists
-// of other members.
+// of other members. A members list is a heading element starting "Saved
+// by", a label in one of the forms above, or the one-line form whose names
+// are links - never a paragraph of words.
 function ancMediaLabel(el) {
   const own = ancOwnText(el).replace(/\s*:$/, '');
   if (!own) return null;
-  if (ANC_MEDIA_SAVED_RE.test(own)) return 'savedBy';
+  const heading = ANC_MEDIA_HEADING_TAGS.indexOf(ancTag(el)) >= 0;
+  if (ANC_MEDIA_SAVED_HEADING_RE.test(own) || (heading && /^(also\s+)?saved\s+(by|to)\b/i.test(own))) return 'savedBy';
+  if (ancMediaSavedInline(el, own)) return 'savedBy';
   if (ANC_MEDIA_COMMENTS_RE.test(own)) return 'comments';
   for (const [key, re] of ANC_MEDIA_LABELS) if (re.test(own)) return key;
   return null;
@@ -565,16 +579,21 @@ function ancMediaValue(el, text) {
   return { box: el, nodes: [], text: '' };
 }
 
-// The photo's own Details box, when the page marks one ("details" in its id,
-// class or label) and it holds a label: read first, so a label elsewhere on
-// the page (a search form's "Location") never stands in for it.
+// The photo's own Details box: an element whose own label says "Details" -
+// its aria-label, or the first heading inside it. Read first, so a label
+// elsewhere on the page (a search form's "Location") never stands in for
+// it. A class or id with "detail" in it is not enough: a linked person's
+// "person-details" card is not the photo's (PR #258 review).
 function ancMediaDetailsBoxes(root) {
-  const marked = (e) => {
-    const cls = e.className && e.className.baseVal !== undefined ? e.className.baseVal : e.className;
-    const aria = e.getAttribute ? e.getAttribute('aria-label') : '';
-    return /detail/i.test([e.id, cls, aria].map((v) => String(v || '')).join(' '));
+  const DETAILS = /^(photo\s+|media\s+)?details$/i;
+  const named = (e) => {
+    const aria = e.getAttribute ? String(e.getAttribute('aria-label') || '').trim() : '';
+    if (DETAILS.test(aria)) return true;
+    const h = ancElements(e, (x) => /^H[1-6]$/.test(ancTag(x)))[0];
+    return !!h && DETAILS.test(ancOwnText(h));
   };
-  return ancElements(root, (e) => marked(e) && ancElements(e, ancMediaLabel).length > 0);
+  return ancElements(root, (e) => ['ASIDE', 'SECTION', 'DIV', 'ARTICLE', 'DIALOG', 'FORM'].indexOf(ancTag(e)) >= 0 &&
+    named(e) && ancElements(e, ancMediaLabel).length > 0);
 }
 
 // The photo's Details as the page shows them: { title, date, place,
@@ -632,32 +651,76 @@ function ancMediaDetails(root, opts) {
   return details;
 }
 
+// Where a "Saved by" section ends, for ancMediaMemberNodes: a heading or a
+// label, or a box of its own (a section, a story, a note on the back).
+const ANC_MEDIA_SECTION_TAGS = ['SECTION', 'ASIDE', 'ARTICLE', 'FIGURE', 'FOOTER', 'HEADER', 'NAV', 'MAIN', 'FORM',
+  'BODY', 'DIALOG', 'DETAILS'];
+const ANC_MEDIA_LIST_TAGS = ['UL', 'OL', 'DL', 'TABLE'];
+
 // The parts of a photo page (or of a copy of it) that list the other members
-// who saved the photo - each "Saved by" heading and the names after it, or
-// the one element that names them inline - for the saved copy of the page to
-// leave out. Hidden or not: a closed Details panel is still in the copy.
+// who saved the photo, for the saved copy of the page to leave out: each
+// "Saved by" heading and every member row after it, up to the next heading,
+// label or box of its own - never past the heading's own section. A list
+// after the heading is taken whole and ends the section (an empty one, a list
+// not loaded yet, is taken alone); single rows are short lines, one name
+// each, so a paragraph after them - a story, a note from the back of the
+// photo - is never a row. The one-line form ("Saved by <a>name</a> and 3
+// others") goes whole. Hidden or not: a closed Details panel is still in the
+// copy.
 function ancMediaMemberNodes(root) {
   const out = [];
   const text = (n) => ancText(n, {});
+  const boundary = (n) => n.nodeType === 1 && (ANC_MEDIA_SECTION_TAGS.indexOf(ancTag(n)) >= 0 ||
+    ANC_MEDIA_HEADING_TAGS.indexOf(ancTag(n)) >= 0 || !!ancMediaLabel(n) ||
+    ancElements(n, (e) => !!ancMediaLabel(e) || /^H[1-6]$/.test(ancTag(e))).length > 0);
+  const row = (n) => {
+    const t = text(n);
+    return t.indexOf('\n') < 0 && t.length <= 60 && !/[.!?]["')”]?$/.test(t);
+  };
+  const rowsAfter = (node) => {
+    const sibs = [...(node.parentNode.childNodes || [])];
+    const rows = [];
+    for (let i = sibs.indexOf(node) + 1; i < sibs.length; i++) {
+      const s = sibs[i];
+      if (s.nodeType === 3) {
+        if (String(s.nodeValue || '').trim()) break; // words in the box itself: not a list of names
+        rows.push(s);
+        continue;
+      }
+      if (s.nodeType !== 1 || boundary(s)) break;
+      if (ANC_MEDIA_LIST_TAGS.indexOf(ancTag(s)) >= 0) {
+        rows.push(s);
+        break;
+      }
+      if (!row(s)) break;
+      rows.push(s);
+    }
+    return rows;
+  };
   (function walk(n) {
     for (const c of (n && n.childNodes) || []) {
       if (c.nodeType !== 1) continue;
-      if (ancMediaLabel(c) === 'savedBy') {
-        const own = ancOwnText(c).replace(/\s*:$/, '');
-        if (!ANC_MEDIA_SAVED_HEADING_RE.test(own)) {
-          out.push(c); // "Saved by cousin_member_one and 3 others"
-        } else {
-          // The heading and the one list after it - not what follows the list.
-          const v = ancMediaValue(c, text);
-          out.push(v.box);
-          for (const s of v.nodes) {
-            out.push(s);
-            if (s.nodeType === 1 && text(s)) break;
-          }
-        }
+      if (ancMediaLabel(c) !== 'savedBy') {
+        walk(c);
         continue;
       }
-      walk(c);
+      const own = ancOwnText(c).replace(/\s*:$/, '');
+      if (ancMediaSavedInline(c, own) || !c.parentNode) {
+        out.push(c); // "Saved by <a>cousin_member_one</a> and 3 others"
+        continue;
+      }
+      // The heading alone in a box that is not a section of its own (a
+      // <div><span>Saved by</span></div>): the rows follow the box.
+      let head = c;
+      const meaningful = (p) => [...(p.childNodes || [])].filter((x) => x.nodeType === 1 ||
+        (x.nodeType === 3 && String(x.nodeValue || '').trim()));
+      while (head.parentNode && head.parentNode.parentNode && head.parentNode.nodeType === 1 &&
+        ANC_MEDIA_SECTION_TAGS.indexOf(ancTag(head.parentNode)) < 0 &&
+        meaningful(head.parentNode).length === 1 && !rowsAfter(head).length) {
+        head = head.parentNode;
+      }
+      out.push(head);
+      for (const r of rowsAfter(head)) out.push(r);
     }
   })(root);
   return out;

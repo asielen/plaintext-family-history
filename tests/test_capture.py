@@ -387,6 +387,42 @@ class CaptureTestCase(unittest.TestCase):
         self.assertEqual(str(meta['source_date']), '1957-01-07')   # her death, not 1940
         self.assertEqual(meta['source_class'], 'derivative')       # an index entry
 
+    def test_ancestry_citation_keeps_every_date_but_a_bare_year_the_title_names(self) -> None:
+        """PR #258 round 3: the citation dropped a real date whose year opened
+        the collection's range - a death on 1940-01-07 in "Death Index,
+        1940-1997" lost its date. Only a bare year the title already names on
+        its own is dropped ("1880 United States Federal Census. 1880.")."""
+        from capture_recipes import ancestry
+        html = _sample('ancestry-record-death-index')
+        for day in ('1940-01-07', '1997-01-07', '1957-01-07'):
+            r = ancestry.extract(html.replace('1957', day[:4]),
+                                 'https://www.ancestry.com/search/collections/90002/records/2000001')
+            self.assertEqual(r['source_date'], day)
+            self.assertIn(f'1940-1997. {day}. Ancestry.com.', r['citation'])
+        r = ancestry.extract(_sample('ancestry-record-census'),
+                             'https://www.ancestry.com/search/collections/90001/records/1000001')
+        self.assertEqual(r['source_date'], '1880')
+        self.assertIn('Calvin Hartley - 1880 United States Federal Census. Ancestry.com.', r['citation'])
+        # A bare year the title gives only as one end of a range is kept.
+        self.assertFalse(ancestry._year_already_in_title('1917', 'U.S., WWI Draft Cards, 1917-1918'))
+        self.assertTrue(ancestry._year_already_in_title('1880', '1880 United States Federal Census'))
+
+    def test_ancestry_shared_photo_is_never_dated_from_the_page(self) -> None:
+        """PR #258 round 3 (Codex PRRT_kwDOS6vm6c61wZYE): an undated shared
+        photo was filed with a linked relative's birth year - 1840, from
+        "Thomas Hartley 1840-1910" - as its date. A shared photo's date is the
+        one its Details give (sent by the add-on), or unknown."""
+        from capture_recipes import ancestry
+        html = ('<html><head><title>Thomas and Margaret on the porch</title></head><body>'
+                '<aside><h2>Details</h2><h3>Linked to</h3><ul><li>Thomas Hartley 1840–1910</li></ul>'
+                '<p>Originally added by <a>hartley_family_tree</a> on 3 Mar 2015</p></aside></body></html>')
+        r = ancestry.extract(html, 'https://www.ancestry.com/mediaui-viewer/tree/90000001/person/90000002/media/'
+                                   '7c0ffee0-1234-4abc-8def-0123456789ab')
+        self.assertIsNone(r['source_date'])
+        self.assertEqual(r['source_type'], 'photo')
+        self.assertNotIn('1840', r['citation'])
+        self.assertNotIn('2015', r['citation'])
+
     def test_ancestry_record_layout_ignores_seen_it_badges(self) -> None:
         # TI-067: a page saved with the Seen It add-on's badges reads as if they
         # were not there - no badge text in the people or the stub body.

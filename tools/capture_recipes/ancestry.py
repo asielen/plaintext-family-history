@@ -57,6 +57,12 @@ _HINT_RE = re.compile(r'match the person in your tree|^does\b.+\?$', re.I)
 
 # A durable public Newspapers.com clip URL embedded in an Ancestry index record
 # (the off-site pointer to the real upstream source).
+# A photo or story someone shared to their tree, in the media viewer
+# (/mediaui-viewer/.../media/{mediaId}). Its date is the one its Details give,
+# which the capture add-on sends; the page's other years - a linked relative's
+# "1840-1910", the day it was uploaded - are never its date (PR #258 review).
+_MEDIA_PAGE_RE = re.compile(r'/mediaui-viewer/(?:[^?#\s]*/)?media/[0-9a-f-]{36}', re.I)
+
 _OFFSITE_RE = re.compile(r'https?://(?:www\.)?newspapers\.com/clip/\d+/[^\s"\'<>]*')
 
 
@@ -254,6 +260,14 @@ def _image_url(html: str, url: str | None) -> str | None:
     return first_nonempty(meta_content(page, 'og:image'))
 
 
+def _year_already_in_title(source_date: str, title: str) -> bool:
+    """True when `source_date` is a bare year that `title` names on its own -
+    not as one end of a range of years."""
+    if not re.fullmatch(r'\d{4}', source_date):
+        return False
+    return re.search(r'(?<![\d\-–/])' + source_date + r'(?![\d\-–/])', title) is not None
+
+
 def extract(html: str, url: str | None) -> dict:
     html = _strip_seen_it(html)
     page = parse_html(html)
@@ -299,15 +313,23 @@ def extract(html: str, url: str | None) -> dict:
         # around the record names the collection's year RANGE, never the event.
         source_date = hints['source_date']
         source_type = hints['source_type'] or source_type_from_text(collection, 'website')
+    elif url and _MEDIA_PAGE_RE.search(url):
+        # A shared photo: no date unless its Details give one (sent in
+        # capture.json) - unknown, never a year guessed from the page.
+        source_date = None
+        source_type = 'photo'
     else:
         source_date = harvest_date(
             collection, title, meta_content(page, 'og:description'), page.text[:400])
         source_type = source_type_from_text(f'{collection} {title}', 'website')
 
     citation_bits = [title.rstrip('.')]
-    # The date, unless the title already says it: "...about 1925. 1925." read
-    # as a stutter (and the year was only ever found IN the title) - PR #258.
-    if source_date and str(source_date)[:4] not in title:
+    # The date, unless it is a bare year the title already names on its own:
+    # "1880 United States Federal Census. 1880." is a stutter. A full date is
+    # always kept, and so is a year the title gives only as one end of a range
+    # ("Death Index, 1940-1997" says nothing about a death on 1940-01-07, nor
+    # "1917-1918" about which year a draft card is) - PR #258 review.
+    if source_date and not _year_already_in_title(str(source_date), title):
         citation_bits.append(source_date)
     citation = '. '.join(citation_bits) + '. Ancestry.com.'
     if url:

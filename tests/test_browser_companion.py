@@ -360,6 +360,48 @@ class SharedPhotoTestCase(unittest.TestCase):
                 if p.is_file() and p.suffix in ('.md', '.json', '.html'):
                     self.assertNotIn('cousin_member', p.read_text(encoding='utf-8'), p)
 
+    def test_a_second_capture_of_a_filed_photo_is_refused_in_plain_words(self) -> None:
+        """PR #258 round 3 (Codex PRRT_kwDOS6vm6c61wZYJ): the same shared photo
+        captured twice. The second bundle cannot be filed - the photo keeps its
+        name in the photo library and is never renamed to make room - and the
+        refusal said only "destination already exists: ...". It now says the
+        photo is already filed, as which source, and what to do with the copy."""
+        import process
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            archive = tmp / 'archive'
+            archive.mkdir()
+            (archive / 'fha.yaml').write_text(
+                'roots:\n  photos: photos\n  documents: documents\n', encoding='utf-8')
+            config = load_fha_yaml(archive, strict=True)
+            codes = []
+            for n in ('1', '2'):
+                staging = tmp / ('staging' + n)
+                staging.mkdir()
+                shutil.copytree(PHOTO_BUNDLE, staging / (PHOTO_BUNDLE.name + n))
+                capture.run_ingest(archive, config, staging_dir=str(staging))
+                bundle_dir = next(p for p in (archive / 'inbox').iterdir() if p.is_dir())
+                with mock.patch.object(process, '_run_exiftool_embed_source', return_value=None), \
+                        mock.patch.object(process, '_run_exiftool_read_keywords', return_value=[]), \
+                        mock.patch.object(process, '_run_exiftool_remove_source', return_value=None):
+                    try:
+                        codes.append(process.process_bundle(archive, config, bundle_dir,
+                                                            source_date=None, dry_run=False))
+                    except process.ProcessError as e:
+                        codes.append(str(e))
+            sid = read_record(next((archive / 'sources').rglob('*.md')))['meta']['id']
+            self.assertEqual(codes[0], EXIT_CLEAN)
+            self.assertIn(f'is already in your photo library, filed as source {sid}', codes[1])
+            self.assertIn('is a second capture of the same photo', codes[1])
+            self.assertIn('Nothing was changed', codes[1])
+            self.assertNotIn('destination already exists', codes[1])
+            # One source, the filed photo untouched, the copy left for her.
+            self.assertEqual(len(list((archive / 'sources').rglob('*.md'))), 1)
+            self.assertEqual([p.name for p in (archive / 'photos').iterdir()],
+                             [f'ancestry-{PHOTO_MEDIA_ID}-photo.jpg'])
+            self.assertTrue(bundle_dir.is_dir())
+
     def test_a_captured_ancestry_record_cites_as_a_record_on_wikitree(self) -> None:
         """PR #258 review: `fha process` now keeps a capture's page address, and
         `fha wikitree` turned a RECORD's address into {{Ancestry Image}} with the
