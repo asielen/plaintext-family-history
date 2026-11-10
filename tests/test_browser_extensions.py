@@ -41,6 +41,7 @@ from _lib import EXIT_CLEAN, EXIT_WARNINGS
 
 KEY = 'MIIBfakeSeenItKeyForTests'
 TODAY = datetime.date.today().isoformat()
+BX_BACKUPS = '_backups'
 
 
 def _write(path: Path, text: str) -> None:
@@ -349,6 +350,75 @@ class FirstCopyAndSetting(_Base):
         self.assertEqual(rc, EXIT_CLEAN)
         self.assertEqual((self.archive / 'fha.yaml').read_bytes(), before)
 
+    def test_ctrl_c_or_closed_input_at_either_question_prints_the_hint(self):
+        for exc in (KeyboardInterrupt, EOFError):
+            for answers in ([exc()], ['y', exc()]):
+                with self.subTest(exc=exc.__name__, answers=len(answers)):
+                    it = iter(answers)
+
+                    def ask(_p):
+                        a = next(it)
+                        if isinstance(a, BaseException):
+                            raise a
+                        return a
+                    before = (self.archive / 'fha.yaml').read_bytes()
+                    _rc, out = self.update(ask=ask)
+                    self.assertEqual((self.archive / 'fha.yaml').read_bytes(), before)
+                    self.assertIn('Browser add-ons: not set up', out)
+
+    def test_first_answer_words_people_type(self):
+        cases = {'ok': 'extensions', 'sure': 'extensions', 'yeah': 'extensions',
+                 'Yes please': 'extensions', 'YEP': 'extensions',
+                 '': 'none', 'n': 'none', 'nope': 'none', 'no thanks': 'none'}
+        for first, saved in cases.items():
+            with self.subTest(first=first):
+                archive = self.tmp / f'answer {len(first)} {first.strip() or "enter"}'
+                shutil.copytree(self.archive, archive)
+                answers = iter([first, ''])
+                _quiet(bx.run_extensions, archive, self.repo, ask=lambda _p: next(answers))
+                self.assertIn(f'browser_extensions: {saved}\n',
+                              (archive / 'fha.yaml').read_text(encoding='utf-8'))
+
+    def test_a_folder_pasted_at_the_first_question_is_a_yes_there(self):
+        answers = iter([f'"{self.ext}"'])
+        rc, out = self.update(ask=lambda _p: next(answers))
+        self.assertEqual(rc, EXIT_CLEAN, out)
+        import yaml
+        text = (self.archive / 'fha.yaml').read_text(encoding='utf-8')
+        self.assertEqual(Path(yaml.safe_load(text)['browser_extensions']), self.ext)
+        self.assertTrue((self.ext / 'seen-it' / 'manifest.json').is_file())
+
+    def test_an_unclear_answer_is_asked_again_never_saved_as_no(self):
+        before = (self.archive / 'fha.yaml').read_bytes()
+        rc, out = self.update(ask=lambda _p: 'maybe later')
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertEqual((self.archive / 'fha.yaml').read_bytes(), before)
+        self.assertEqual(out.count('Please answer y (yes) or n (no)'), 3)
+        self.assertIn('Browser add-ons: not set up', out)
+
+    def test_pasting_the_add_on_folder_itself_keeps_add_ons_in_its_parent(self):
+        installed = self.owner_layout()
+        answers = iter(['y', f'"{installed}"'])      # what he picked in Load unpacked
+        rc, out = self.update(ask=lambda _p: next(answers))
+        self.assertEqual(rc, EXIT_CLEAN, out)
+        self.assertIn('That is the Seen It folder itself', out)
+        self.assertFalse((installed / 'seen-it').exists())          # nothing nested inside it
+        self.assertEqual((installed / 'background.js').read_text(encoding='utf-8'),
+                         '// background 0.2.0\n')
+        import yaml
+        text = (self.archive / 'fha.yaml').read_text(encoding='utf-8')
+        self.assertEqual(Path(yaml.safe_load(text)['browser_extensions']), self.ext)
+
+    def test_a_setting_naming_the_add_on_folder_uses_its_parent(self):
+        installed = self.owner_layout()
+        self.set_folder(installed.as_posix())
+        rc, out = self.update()
+        self.assertEqual(rc, EXIT_CLEAN, out)
+        self.assertFalse((installed / 'seen-it').exists())
+        self.assertIn('which is the Seen It add-on itself', out)
+        self.assertEqual((installed / 'background.js').read_text(encoding='utf-8'),
+                         '// background 0.2.0\n')
+
     def test_a_folder_inside_the_archive_records_is_refused(self):
         self.set_folder('sources/addons')
         rc, out = self.update()
@@ -363,6 +433,185 @@ class FirstCopyAndSetting(_Base):
         self.assertEqual(rc, EXIT_CLEAN, out)
         self.assertEqual((installed / 'background.js').read_text(encoding='utf-8'),
                          '// background 0.2.0\n')
+
+
+class AllOrNothing(_Base):
+    """An update that cannot finish leaves the add-on exactly as it was."""
+
+    def _failing_on(self, name):
+        real = bx._copy_file
+
+        def copy(src, dest):
+            if dest.name == name and 'newspapers-seen-it' == dest.parent.name \
+                    and BX_BACKUPS not in dest.parts:
+                raise PermissionError(f'{dest} is in use')
+            return real(src, dest)
+        return mock.patch.object(bx, '_copy_file', side_effect=copy)
+
+    def test_a_write_failure_puts_every_file_back(self):
+        installed = self.owner_layout()
+        self.set_folder(self.ext.as_posix())
+        before = _tree(installed)
+        with self._failing_on('manifest.json'):      # sorted after files already written
+            rc, out = self.update()
+        self.assertEqual(rc, EXIT_WARNINGS)
+        self.assertEqual(_tree(installed), before)
+        self.assertIn('nothing changed', out)
+        self.assertIn('is in use', out)
+        backups = sorted(p.name for p in (self.ext / '_backups').iterdir())
+        # A second failing run does not pile up identical backups.
+        with self._failing_on('manifest.json'):
+            self.update()
+        self.assertEqual(sorted(p.name for p in (self.ext / '_backups').iterdir()), backups)
+        # And once nothing holds the file, the update goes through.
+        rc, out = self.update()
+        self.assertEqual(rc, EXIT_CLEAN, out)
+        self.assertEqual((installed / 'background.js').read_text(encoding='utf-8'),
+                         '// background 0.2.0\n')
+        self.assertEqual(sorted(p.name for p in (self.ext / '_backups').iterdir()), backups)
+
+    def test_a_file_added_by_a_failed_update_is_removed_again(self):
+        installed = self.owner_layout()
+        (installed / 'README.md').unlink(missing_ok=True)   # the update would add it
+        self.set_folder(self.ext.as_posix())
+        before = _tree(installed)
+        with self._failing_on('manifest.json'):
+            self.update()
+        self.assertEqual(_tree(installed), before)
+
+
+class UnfinishedCopies(_Base):
+
+    def test_a_failed_first_copy_leaves_nothing_in_the_way(self):
+        self.ext.mkdir()
+        self.set_folder(self.ext.as_posix())
+        real = bx._copy_file
+
+        def copy(src, dest):
+            if dest.name == 'manifest.json':
+                raise OSError('disk full')
+            return real(src, dest)
+        with mock.patch.object(bx, '_copy_file', side_effect=copy):
+            rc, _out = self.update()
+        self.assertEqual(rc, EXIT_WARNINGS)
+        self.assertEqual(sorted(p.name for p in self.ext.iterdir()), [])
+        rc, out = self.update()
+        self.assertEqual(rc, EXIT_CLEAN, out)
+        self.assertTrue((self.ext / 'seen-it' / 'manifest.json').is_file())
+
+    def test_our_own_leftover_is_replaced_and_the_preview_says_so(self):
+        part = self.ext / 'seen-it.part'
+        _write(part / bx._PART_MARKER, 'unfinished\n')
+        _write(part / 'background.js', '// half\n')
+        self.set_folder(self.ext.as_posix())
+        rc, dry = self.update(dry_run=True)
+        self.assertIn('[dry-run] Would replace the unfinished copy', dry)
+        self.assertIn('[dry-run] Would copy Seen It', dry)
+        rc, out = self.update()
+        self.assertEqual(rc, EXIT_CLEAN, out)
+        self.assertFalse(part.exists())
+        self.assertEqual((self.ext / 'seen-it' / 'background.js').read_text(encoding='utf-8'),
+                         '// background 0.2.0\n')
+        self.assertFalse((self.ext / 'seen-it' / bx._PART_MARKER).exists())
+
+    def test_a_part_folder_that_is_not_ours_blocks_preview_and_run_alike(self):
+        part = self.ext / 'seen-it.part'
+        _write(part / 'mine.txt', 'keep\n')
+        self.set_folder(self.ext.as_posix())
+        rc, dry = self.update(dry_run=True)
+        self.assertIn(f'{part} is in the way', dry)
+        self.assertNotIn('Would copy', dry)
+        rc, out = self.update()
+        self.assertEqual(rc, EXIT_WARNINGS)
+        self.assertIn(f'{part} is in the way', out)
+        self.assertEqual(_tree(part), {'mine.txt': b'keep\n'})
+
+
+class OnlyTrackedFilesShip(_Base):
+
+    def _junk(self):
+        seen = self.repo / 'seen-it'
+        _write(seen / 'data' / 'seen-it-devpc.json', '{"looked": ["every page"]}\n')
+        _write(seen / 'seen-it-devpc.json', '{}\n')
+        _write(seen / 'config.json', '{"archive": "D:/Someone"}\n')
+        _write(seen / '.gitignore', 'data/\nseen-it-*.json\nconfig.json\n')
+
+    def test_without_git_the_add_on_gitignore_is_honoured(self):
+        self._junk()
+        rels = [r for r, _p in bx.shipped_files(self.repo, 'seen-it')]
+        self.assertIn('background.js', rels)
+        for junk in ('data/seen-it-devpc.json', 'seen-it-devpc.json', 'config.json'):
+            self.assertNotIn(junk, rels)
+
+    @unittest.skipUnless(shutil.which('git'), 'git not installed')
+    def test_in_a_git_clone_only_tracked_files_ship(self):
+        self._junk()
+        git = ['git', '-C', str(self.repo), '-c', 'user.email=t@t', '-c', 'user.name=t']
+        subprocess.run(git + ['init', '-q'], check=True)
+        subprocess.run(git + ['add', 'seen-it'], check=True)
+        subprocess.run(git + ['commit', '-q', '-m', 'x'], check=True)
+        _write(self.repo / 'seen-it' / 'scratch-notes.js', '// not committed\n')
+        rels = [r for r, _p in bx.shipped_files(self.repo, 'seen-it')]
+        self.assertIn('background.js', rels)
+        self.assertNotIn('scratch-notes.js', rels)
+        self.assertNotIn('config.json', rels)
+
+
+class QuietWhenDeclined(_Base):
+    """`browser_extensions: none` adds nothing to update-tools' output."""
+
+    def test_output_is_unchanged_with_none(self):
+        self.set_folder('none')
+        silent = {'items': [], 'changed': [], 'warnings': [], 'printed': False}
+        for dry_run in (False, True):
+            with self.subTest(dry_run=dry_run):
+                _rc, out = self.update(dry_run=dry_run)
+                with mock.patch.object(scaffold, 'run_extensions', return_value=silent):
+                    _rc, baseline = self.update(dry_run=dry_run)
+                self.assertEqual(out, baseline)
+                self.assertNotIn('\n\n\n', out)
+
+
+class DoctorReadsTheSetting(_Base):
+
+    def _doctor(self):
+        import doctor
+        from _lib import load_fha_yaml
+        result = doctor.run_doctor(self.archive, load_fha_yaml(self.archive))
+        return {c['id']: c for c in result.data['checks']}, '\n'.join(result.data['lines'])
+
+    def test_a_folder_inside_the_records_is_a_doctor_warning(self):
+        self.set_folder('sources/addons')
+        checks, report = self._doctor()
+        self.assertEqual(checks['browser_extensions']['status'], 'warn')
+        self.assertIn('sources/', checks['browser_extensions']['detail'])
+        self.assertIn('browser add-ons:', report)
+
+    def test_the_add_on_folder_itself_is_a_doctor_warning_naming_the_parent(self):
+        installed = self.owner_layout()
+        self.set_folder(installed.as_posix())
+        checks, _report = self._doctor()
+        self.assertEqual(checks['browser_extensions']['status'], 'warn')
+        self.assertIn(self.ext.as_posix(), checks['browser_extensions']['next_step'])
+
+    def test_a_good_folder_is_ok_and_no_setting_is_silent(self):
+        _checks, report = self._doctor()
+        self.assertNotIn('browser add-ons', report)
+        self.ext.mkdir()
+        self.set_folder(self.ext.as_posix())
+        checks, _report = self._doctor()
+        self.assertEqual(checks['browser_extensions']['status'], 'ok')
+
+
+@unittest.skipUnless(os.name == 'nt', 'the NUL-reports-a-terminal quirk is Windows-only')
+class AgentShellIsNotATerminal(unittest.TestCase):
+
+    def test_nul_stdin_is_not_asked(self):
+        code = ('import sys; sys.path.insert(0, sys.argv[1]); import scaffold; '
+                'print(scaffold._terminal_ask() is None)')
+        proc = subprocess.run([sys.executable, '-c', code, str(ROOT / 'tools')],
+                              stdin=subprocess.DEVNULL, capture_output=True, text=True)
+        self.assertEqual(proc.stdout.strip().splitlines()[-1], 'True', proc.stderr)
 
 
 class CaptureAddOnReload(_Base):

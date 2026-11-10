@@ -1579,6 +1579,36 @@ def _first_file_in_path(dest: Path) -> Path | None:
     return None if probe.is_dir() else probe
 
 
+def _check_browser_extensions(archive_root: Path, fha_config: dict, lines: list[str],
+                              checks: list[dict]) -> int:
+    """Report the `browser_extensions:` folder (TOOLING §13c), when one is set.
+
+    `fha update-tools` refuses a folder it cannot use (inside the archive's
+    record folders or the photos/documents/inbox roots, the archive itself, a
+    drive that is not connected) and reads an add-on's own folder as its
+    parent - each with a plain message. Doctor reports the same reading
+    (`browser_extensions.doctor_check`, one source of truth) so the owner can
+    find and fix it without running an update. Nothing is shown when the
+    setting is absent or `none`: the add-ons are optional.
+
+    Returns the exit-code contribution.
+    """
+    from browser_extensions import doctor_check
+    found = doctor_check(archive_root, fha_config)
+    if found is None:
+        return EXIT_CLEAN
+    status, detail, next_step = found
+    if status == 'ok':
+        lines.append(f'browser add-ons: {_OK} {detail}  next: no action needed')
+        checks.append({'id': 'browser_extensions', 'status': 'ok', 'detail': detail,
+                       'next_step': None})
+        return EXIT_CLEAN
+    lines.append(f'browser add-ons: {_WARN} {detail}  next: {next_step}')
+    checks.append({'id': 'browser_extensions', 'status': 'warn', 'detail': detail,
+                   'next_step': next_step})
+    return EXIT_WARNINGS
+
+
 def _check_originals_backup(archive_root: Path, fha_config: dict, lines: list[str],
                             checks: list[dict]) -> int:
     """Report whether `originals_backup:` (TOOLING §13f) is set up (#252 item 5).
@@ -2048,6 +2078,7 @@ def run_doctor(archive_root: Path, fha_config: dict) -> Result:
         checks.append({'id': 'exiftool', 'status': 'warn', 'detail': 'not found on PATH', 'next_step': doctor_cmd})
         worst = max(worst, EXIT_WARNINGS)
     worst = max(worst, _check_originals_backup(archive_root, fha_config, lines, checks))
+    worst = max(worst, _check_browser_extensions(archive_root, fha_config, lines, checks))
 
     # ffprobe (part of ffmpeg) is `fha media probe`'s primary backend (#44) -
     # reported the same way exiftool is above, because both are external

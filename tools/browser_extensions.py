@@ -22,24 +22,32 @@ THE ONE SETTING
 
 A folder that holds one subfolder per add-on. Relative values are joined to
 the archive root, like `roots:`. When the line is absent, `fha install` and
-`fha update-tools` ask once (only at a terminal) and write the answer -
-including a "no" - into fha.yaml, so the question never comes back.
+`fha update-tools` ask once (only when a person is at the keyboard) and write
+the answer - including a "no" - into fha.yaml, so the question never comes
+back. A value that names an add-on's OWN folder (the one picked in Load
+unpacked) is read as its parent: nothing is ever copied inside an add-on.
 
 WHAT A RUN DOES, PER ADD-ON
 ---------------------------
   1. Find the installed copy by the `key` in its manifest.json (the key fixes
      the add-on's ID, so a folder renamed by hand is still found).
-  2. Not there yet: copy it in as `<folder>/<repo folder name>` and print the
-     Load-unpacked steps, once.
+  2. Not there yet: copy it in as `<folder>/<repo folder name>` (built in a
+     marked `.part` folder and renamed) and print the Load-unpacked steps.
   3. There, and already the same files: say so and touch nothing.
   4. There, but NEWER than the tools' copy: leave it alone (never downgrade -
      a newer add-on may have already changed its saved data).
   5. Otherwise: copy the whole installed folder to
      `<folder>/_backups/<name>-<old version>-<date>` (never over an existing
-     backup), then write the tools' files over it in place. Files the tools do
-     not ship (a launcher the helper wrote, old tests) are kept; sibling
-     folders (Seen It's `-data` folder) are never opened.
+     backup, and not again when an identical one is already there), then
+     write the tools' files over it in place. If any file cannot be written,
+     every file already written is put back, so the add-on is exactly as it
+     was. Files the tools do not ship are kept; sibling folders (Seen It's
+     `-data` folder) are never opened.
   Then print the one step left: click the reload arrow, do not remove it.
+
+What "the tools' files" are: the files git tracks in the clone's add-on folder
+(so a data file or helper setting lying in a developer's clone never ships),
+minus its tests and package files.
 
 Only add-ons with a manifest `key` are handled here. The capture add-on has no
 key - its ID comes from the folder Chrome loaded it from - and it lives in the
@@ -49,7 +57,8 @@ archive at `.fha/browser-companion/`, which update-tools already keeps current;
 CODE MAP
 --------
   Setting
-    read_setting             - fha.yaml value -> (state, folder, problem)
+    Setting / read_setting   - fha.yaml value -> state, folder, message
+    doctor_check             - the same reading, for `fha doctor`
     save_setting             - append the one line to fha.yaml, surgically
     ask_for_setting          - the once-only question at a terminal
   Repo side
@@ -58,7 +67,7 @@ CODE MAP
   Installed side
     find_installed           - folders under the setting whose key matches
     plan_extensions          - decide what to do for every add-on
-    apply_plan               - do it (back up, copy)
+    apply_plan               - do it (back up, copy, put back on failure)
   Entry point
     run_extensions           - setting + plan + apply/preview + report
     capture_reload_note      - reload reminder for .fha/browser-companion/
@@ -67,11 +76,15 @@ CODE MAP
 from __future__ import annotations
 
 import datetime
+import fnmatch
 import json
 import os
+import re
 import shutil
+import subprocess
 import sys
 from pathlib import Path
+from typing import NamedTuple
 
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -110,6 +123,11 @@ _DEV_FILES = frozenset({'package.json', 'package-lock.json', '.gitignore',
                         '.gitattributes'})
 _DEV_SUFFIXES = ('.pyc', '.pyo')
 
+# Written first into a fresh copy's `.part` folder and removed just before it
+# is renamed into place. A `.part` holding it is this tool's own unfinished
+# copy, safe to clear; a `.part` without it is somebody's, and is left alone.
+_PART_MARKER = '.fha-unfinished-copy'
+
 # Top-level archive folders the tools own or read as records. An add-on folder
 # inside one of them would be read as records, scanned as photos, or swept up
 # by an update - so the setting may not point there.
@@ -121,8 +139,31 @@ _RESERVED_ARCHIVE_FOLDERS = frozenset({
 
 _DECLINED = frozenset({'none', 'no', 'off', 'false'})
 
+# The first question's answers. A person types what he would say out loud, so
+# "ok" and "sure" are yes; anything not clearly yes or no is asked again
+# rather than saved as a permanent "no".
+_YES_WORDS = frozenset({'y', 'yes', 'ok', 'okay', 'sure', 'yeah', 'yep'})
+_NO_WORDS = frozenset({'n', 'no', 'nope'})
+_ATTEMPTS = 3
+
 
 # ── Setting ────────────────────────────────────────────────────────────────────
+
+class Setting(NamedTuple):
+    """What `browser_extensions:` says, read once and shared by every caller.
+
+    state:   'absent' (no line: ask or hint), 'declined' (`none`),
+             'folder' (usable; `folder` is the resolved path), or
+             'bad' (present but unusable; `message` says why and what to write)
+    message: for 'bad', the problem; for 'folder', a note when the value named
+             an add-on's own folder and its parent is used instead ('' if not)
+    addon:   that add-on's name, when the value named its folder ('' if not)
+    """
+    state: str
+    folder: Path | None = None
+    message: str = ''
+    addon: str = ''
+
 
 def _inside(child: Path, parent: Path) -> bool:
     """True when `child` is `parent` or below it, comparing as the OS does.
@@ -135,58 +176,118 @@ def _inside(child: Path, parent: Path) -> bool:
     return c == p or c.startswith(p.rstrip('\\/') + os.sep)
 
 
-def read_setting(fha_config: dict, archive_root: Path) -> tuple[str, Path | None, str]:
-    """Read `browser_extensions:` -> (state, folder, problem).
+def _addon_name(folder: Path) -> str:
+    """The add-on whose own folder this is, or '' when it is not one.
 
-    state is one of:
-      'absent'   - no line at all: ask (at a terminal) or print the hint
-      'declined' - `none` (or no/off/false): do nothing, say nothing
-      'folder'   - a usable folder; `folder` is its resolved path
-      'bad'      - present but unusable; `problem` says why and what to write
-
-    A blank or wrong-shaped value is 'bad', not 'absent': the line is there, so
-    asking again would add a second one. A folder inside the archive is fine
-    (the default is `extensions`), but not the archive itself, not inside a
-    folder the tools own or read as records, and not inside a photos,
-    documents or inbox folder wherever those live - an add-on's icons there
-    would be catalogued as photos.
+    A Chrome add-on folder is recognised by its manifest.json naming a
+    `manifest_version`. Seen It's title runs to four site names; the part
+    before the colon is the name a person knows it by.
     """
-    if SETTING not in fha_config:
-        return 'absent', None, ''
-    raw = fha_config.get(SETTING)
-    example = (f'Write one folder, e.g. `{SETTING}: {DEFAULT_FOLDER}` (inside '
-               f'the archive) or `{SETTING}: D:/Chrome Extensions`, or '
-               f'`{SETTING}: none` if you do not want the add-ons.')
-    if raw is False or (isinstance(raw, str) and raw.strip().lower() in _DECLINED):
-        return 'declined', None, ''
-    if not isinstance(raw, str) or not raw.strip():
-        return 'bad', None, f'{SETTING}: in fha.yaml is blank or not a folder. {example}'
-    archive = Path(archive_root).resolve()
-    text = os.path.expanduser(raw.strip())
-    folder = Path(text)
-    folder = (folder if folder.is_absolute() else archive / folder).resolve()
+    manifest = read_extension_manifest(folder)
+    if not manifest or 'manifest_version' not in manifest:
+        return ''
+    return str(manifest.get('name') or 'an add-on').split(':')[0].strip()
+
+
+def _example() -> str:
+    return (f'Write one folder, e.g. `{SETTING}: {DEFAULT_FOLDER}` (inside the '
+            f'archive) or `{SETTING}: D:/Chrome Extensions`, or `{SETTING}: none` '
+            f'if you do not want the add-ons.')
+
+
+def _folder_problem(folder: Path, fha_config: dict, archive: Path) -> str:
+    """Why `folder` cannot hold the add-ons, or '' when it can."""
+    anchor = folder.anchor
+    if anchor and not Path(anchor).exists():
+        return (f'{SETTING}: in fha.yaml points at {folder}, on a drive that is not '
+                f'connected. Connect the drive, or change the line, then run '
+                f'`fha update-tools` again.')
     if _inside(archive, folder):
-        return 'bad', folder, (
-            f'{SETTING}: in fha.yaml points at {folder}, which holds the whole '
-            f'archive - the add-ons need a folder of their own. {example}')
+        return (f'{SETTING}: in fha.yaml points at {folder}, which holds the whole '
+                f'archive - the add-ons need a folder of their own. {_example()}')
     if _inside(folder, archive):
         first = folder.relative_to(archive).parts[0].lower()
         if first in _RESERVED_ARCHIVE_FOLDERS:
-            return 'bad', folder, (
-                f'{SETTING}: in fha.yaml points inside the archive\'s {first}/ '
-                f'folder, where the tools would read the add-on as records. '
-                f'{example}')
+            return (f'{SETTING}: in fha.yaml points inside the archive\'s {first}/ '
+                    f'folder, where the tools would read the add-on as records. '
+                    f'{_example()}')
     for alias in ASSET_ROOT_ALIASES:
         try:
             root = resolve_path(alias, fha_config, archive).resolve()
         except (OSError, TypeError, ValueError):
             continue
         if _inside(folder, root):
-            return 'bad', folder, (
-                f'{SETTING}: in fha.yaml points inside your {alias} folder '
-                f'({root}), where the add-on\'s files would be filed as '
-                f'{alias}. {example}')
-    return 'folder', folder, ''
+            return (f'{SETTING}: in fha.yaml points inside your {alias} folder '
+                    f'({root}), where the add-on\'s files would be filed as '
+                    f'{alias}. {_example()}')
+    if folder.exists() and not folder.is_dir():
+        return (f'{SETTING}: in fha.yaml points at {folder}, which is a file, not a '
+                f'folder. Point it at a folder, then run `fha update-tools` again.')
+    return ''
+
+
+def read_setting(fha_config: dict, archive_root: Path) -> Setting:
+    """Read `browser_extensions:` from fha.yaml (see `Setting` for the states).
+
+    A blank or wrong-shaped value is 'bad', not 'absent': the line is there, so
+    asking again would add a second one. A folder inside the archive is fine
+    (the default is `extensions`), but not the archive itself, not inside a
+    folder the tools own or read as records, not inside a photos, documents
+    or inbox folder wherever those live (an add-on's icons there would be
+    catalogued as photos), and not on a drive that is not connected.
+
+    A value naming an add-on's own folder - what a person picked in Load
+    unpacked, so the natural thing to paste - is read as its parent, with a
+    note: copying an add-on inside another add-on's folder would leave the
+    real one never updated again.
+    """
+    if SETTING not in fha_config:
+        return Setting('absent')
+    raw = fha_config.get(SETTING)
+    if raw is False or (isinstance(raw, str) and raw.strip().lower() in _DECLINED):
+        return Setting('declined')
+    if not isinstance(raw, str) or not raw.strip():
+        return Setting('bad', None, f'{SETTING}: in fha.yaml is blank or not a folder. '
+                                    f'{_example()}')
+    archive = Path(archive_root).resolve()
+    folder = Path(os.path.expanduser(raw.strip()))
+    folder = (folder if folder.is_absolute() else archive / folder).resolve()
+    problem = _folder_problem(folder, fha_config, archive)
+    if problem:
+        return Setting('bad', folder, problem)
+    addon = _addon_name(folder)
+    if not addon:
+        return Setting('folder', folder)
+    parent = folder.parent
+    problem = _folder_problem(parent, fha_config, archive)
+    if problem:
+        return Setting('bad', parent, problem, addon)
+    return Setting('folder', parent, (
+        f'{SETTING}: in fha.yaml points at {folder}, which is the {addon} add-on '
+        f'itself - the add-ons are kept in its parent folder, {parent}. Change '
+        f'the line to `{SETTING}: {parent.as_posix()}` to stop this note.'), addon)
+
+
+def doctor_check(archive_root: Path, fha_config: dict) -> tuple[str, str, str] | None:
+    """`fha doctor`'s reading of the setting: (status, detail, next step), or None.
+
+    The same `read_setting` update-tools uses, so the two can never disagree
+    about what is wrong. No line at all when the setting is absent or `none`:
+    the add-ons are optional, and update-tools asks about them itself.
+    """
+    setting = read_setting(fha_config, archive_root)
+    where = Path(archive_root) / 'fha.yaml'
+    if setting.state in ('absent', 'declined'):
+        return None
+    if setting.state == 'bad':
+        return ('warn', setting.message, f'fix the {SETTING}: line in {where}')
+    if setting.message:
+        return ('warn', setting.message,
+                f'change the line in {where} to `{SETTING}: {setting.folder.as_posix()}`')
+    if not setting.folder.exists():
+        return ('ok', f'kept in {setting.folder} (not made yet - the next '
+                      f'`fha update-tools` creates it)', '')
+    return ('ok', f'kept up to date in {setting.folder} by `fha update-tools`', '')
 
 
 def save_setting(archive_root: Path, value: str) -> str | None:
@@ -239,55 +340,111 @@ def save_setting(archive_root: Path, value: str) -> str | None:
 
 
 def _hint_line() -> str:
-    """The one line a run that cannot ask prints instead of asking."""
+    """The one line a run that cannot (or did not get to) ask prints instead."""
     return (f'Browser add-ons: not set up. To have Seen It kept up to date, add '
             f'`{SETTING}: {DEFAULT_FOLDER}` to fha.yaml (or name another folder); '
             f'add `{SETTING}: none` to stop this note.')
 
 
+def _looks_like_path(text: str) -> bool:
+    return ('/' in text or '\\' in text or text.startswith('~')
+            or re.match(r'^[A-Za-z]:', text) is not None)
+
+
+def _first_answer(text: str) -> tuple[str, str]:
+    """Classify the yes/no answer -> ('yes'|'no'|'path'|'unclear', path).
+
+    Enter alone is the default, No. A pasted folder is a yes that already
+    says where. Only the leading word counts, so "Yes please" is a yes and
+    "no thanks" a no.
+    """
+    cleaned = text.strip().strip('"\'').strip()
+    if not cleaned:
+        return 'no', ''
+    if _looks_like_path(cleaned):
+        return 'path', cleaned
+    word = cleaned.split()[0].lower().strip('.,!')
+    if word in _YES_WORDS:
+        return 'yes', ''
+    if word in _NO_WORDS:
+        return 'no', ''
+    return 'unclear', ''
+
+
+def _gave_up() -> None:
+    """Ctrl-C, closed input or no clear answer: nothing saved, and say what to add."""
+    print()
+    print(_hint_line())
+
+
+def _ask_folder(archive_root: Path, fha_config: dict, ask, first: str) -> str | None:
+    """The 'which folder?' half. Returns the value to save, or None (nothing saved)."""
+    default = Path(archive_root).resolve() / DEFAULT_FOLDER
+    candidates_tried = 0
+    pending = first
+    while candidates_tried < _ATTEMPTS:
+        if pending:
+            typed, pending = pending, ''
+        else:
+            try:
+                typed = ask(f'Which folder? Press Enter for {default}, or type '
+                            f'(or paste) a folder: ')
+            except (EOFError, KeyboardInterrupt):
+                _gave_up()
+                return None
+        candidates_tried += 1
+        # File Explorer's "Copy as path" wraps the path in quotes.
+        typed = typed.strip().strip('"').strip("'").strip()
+        candidate = typed or DEFAULT_FOLDER
+        setting = read_setting({**fha_config, SETTING: candidate}, archive_root)
+        if setting.state == 'folder':
+            if setting.addon:
+                print(f'That is the {setting.addon} folder itself; the add-ons will '
+                      f'be kept in the folder it sits in, {setting.folder}.')
+                return setting.folder.as_posix()
+            return candidate
+        print(setting.message if setting.state == 'bad' else
+              'That reads as "no" - type a folder, or press Enter for the default.')
+    print('No folder was saved.')
+    _gave_up()
+    return None
+
+
 def ask_for_setting(archive_root: Path, fha_config: dict, ask) -> str | None:
     """Ask once whether he wants the add-ons, and where. Returns the value saved.
 
-    `ask` is `input` at a terminal and a stub in tests. Enter on the first
-    question means No (the add-ons are optional); Enter on the second takes the
-    default folder inside the archive. A "no" is saved too, as `none`, so the
-    question never comes back. Ctrl-C or a closed input saves nothing - that is
-    not an answer, and the question comes back next time.
+    `ask` is `input` at a terminal and a stub in tests. Enter, n, no or nope
+    on the first question means No (the add-ons are optional) and is saved as
+    `none`, so the question never comes back; y/yes/ok/sure/yeah/yep means
+    yes; a pasted folder means yes, there; anything else is asked again, and
+    after three tries nothing is saved. Ctrl-C or a closed input saves
+    nothing either. Every way of saving nothing ends with the hint line, so
+    he still learns which line to add.
     """
     print()
     print('Browser add-ons (optional). These tools come with:')
     for _folder, short, purpose, _helper in EXTENSIONS:
         print(f'  - {short} - {purpose}.')
     print(f'  - {_CAPTURE_LINE}')
-    try:
-        answer = ask('Keep Seen It up to date in a folder on this computer? [y/N] ')
-    except (EOFError, KeyboardInterrupt):
-        print()
+    kind, path = 'unclear', ''
+    for _attempt in range(_ATTEMPTS):
+        try:
+            answer = ask('Keep Seen It up to date in a folder on this computer? [y/N] ')
+        except (EOFError, KeyboardInterrupt):
+            _gave_up()
+            return None
+        kind, path = _first_answer(answer)
+        if kind != 'unclear':
+            break
+        print('Please answer y (yes) or n (no) - or paste the folder to keep them in.')
+    if kind == 'unclear':
+        _gave_up()
         return None
-    if answer.strip().lower() not in ('y', 'yes'):
+    if kind == 'no':
         value = 'none'
     else:
-        default = Path(archive_root).resolve() / DEFAULT_FOLDER
-        value = None
-        for _attempt in range(3):
-            try:
-                typed = ask(f'Which folder? Press Enter for {default}, or type '
-                            f'(or paste) a folder: ')
-            except (EOFError, KeyboardInterrupt):
-                print()
-                return None
-            # File Explorer's "Copy as path" wraps the path in quotes.
-            typed = typed.strip().strip('"').strip("'").strip()
-            candidate = typed or DEFAULT_FOLDER
-            state, _folder, problem = read_setting(
-                {**fha_config, SETTING: candidate}, archive_root)
-            if state == 'folder':
-                value = candidate
-                break
-            print(problem if state == 'bad' else
-                  'That reads as "no" - type a folder, or press Enter for the default.')
+        value = _ask_folder(archive_root, fha_config, ask, path)
         if value is None:
-            print('No folder was saved; you will be asked again next time.')
             return None
     problem = save_setting(archive_root, value)
     if problem:
@@ -314,21 +471,89 @@ def read_extension_manifest(folder: Path) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
-def shipped_files(src_dir: Path) -> list[tuple[str, Path]]:
+def _git_tracked(repo_root: Path, folder_name: str) -> list[str] | None:
+    """Files git tracks under `folder_name` in the clone, relative to it; None if unknown.
+
+    None (not []) whenever git cannot answer - not installed, not a git
+    checkout (an unzipped download), or a folder git knows nothing about (a
+    download unzipped inside some other repository) - so the caller falls back
+    to walking the folder.
+    """
+    try:
+        proc = subprocess.run(
+            ['git', '-C', str(repo_root), 'ls-files', '-z', '--', folder_name],
+            capture_output=True, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    prefix = folder_name + '/'
+    rels = [p[len(prefix):] for p in proc.stdout.decode('utf-8', 'replace').split('\0')
+            if p.startswith(prefix)]
+    return rels or None
+
+
+def _gitignore_patterns(src_dir: Path) -> list[str]:
+    """The add-on's own .gitignore lines (comments, blanks and negations dropped)."""
+    try:
+        text = (src_dir / '.gitignore').read_text(encoding='utf-8')
+    except OSError:
+        return []
+    return [line.strip() for line in text.splitlines()
+            if line.strip() and not line.lstrip().startswith(('#', '!'))]
+
+
+def _ignored(rel: str, patterns: list[str]) -> bool:
+    """Whether .gitignore-style `patterns` exclude the file at `rel`.
+
+    Enough of git's rules for the patterns an add-on's .gitignore uses:
+    `name/` matches a folder of that name at any depth, `*.json` a file name
+    at any depth, and a pattern with a slash a path from the add-on folder.
+    """
+    parts = rel.split('/')
+    for pattern in patterns:
+        if pattern.endswith('/'):
+            if any(fnmatch.fnmatch(d, pattern[:-1]) for d in parts[:-1]):
+                return True
+        elif '/' in pattern.strip('/'):
+            if fnmatch.fnmatch(rel, pattern.lstrip('/')):
+                return True
+        elif fnmatch.fnmatch(parts[-1], pattern.lstrip('/')):
+            return True
+    return False
+
+
+def shipped_files(repo_root: Path, folder_name: str) -> list[tuple[str, Path]]:
     """The (relative path, file) pairs of one add-on that get copied.
 
-    Everything Chrome loads, the helper, and the README - minus the add-on's
-    own test furniture, git files and bytecode (see _DEV_*). Sorted so a
-    preview and the real run list files in the same order.
+    The files git tracks in the clone's add-on folder - so a data file, a
+    helper settings file or a cache lying in a developer's clone (exactly
+    what the add-on's .gitignore exists to keep out) is never shipped into
+    someone's archive. Without git, the folder is walked and its .gitignore
+    applied instead. Either way the add-on's own tests, package files and
+    bytecode stay home (_DEV_*). Sorted so a preview and the real run list
+    files in the same order.
     """
+    src_dir = Path(repo_root) / folder_name
+    tracked = _git_tracked(Path(repo_root), folder_name)
+    if tracked is None:
+        patterns = _gitignore_patterns(src_dir)
+        tracked = []
+        for dirpath, dirnames, filenames in os.walk(src_dir):
+            dirnames[:] = [d for d in dirnames if d != '.git']
+            for name in filenames:
+                rel = (Path(dirpath) / name).relative_to(src_dir).as_posix()
+                if not _ignored(rel, patterns):
+                    tracked.append(rel)
     out: list[tuple[str, Path]] = []
-    for dirpath, dirnames, filenames in os.walk(src_dir):
-        dirnames[:] = sorted(d for d in dirnames if d not in _DEV_DIRS)
-        for name in sorted(filenames):
-            if name in _DEV_FILES or name.endswith(_DEV_SUFFIXES):
-                continue
-            p = Path(dirpath) / name
-            out.append((p.relative_to(src_dir).as_posix(), p))
+    for rel in sorted(tracked):
+        parts = rel.split('/')
+        if (_DEV_DIRS.intersection(parts[:-1]) or parts[-1] in _DEV_FILES
+                or parts[-1].endswith(_DEV_SUFFIXES)):
+            continue
+        p = src_dir / rel
+        if p.is_file():
+            out.append((rel, p))
     return out
 
 
@@ -349,6 +574,20 @@ def _same_bytes(a: Path, b: Path) -> bool:
         return False
 
 
+def _file_map(folder: Path) -> dict[str, Path]:
+    return {p.relative_to(folder).as_posix(): p
+            for p in folder.rglob('*') if p.is_file()}
+
+
+def _same_tree(a: Path, b: Path) -> bool:
+    """Whether two folders hold the same files with the same bytes."""
+    try:
+        fa, fb = _file_map(a), _file_map(b)
+    except OSError:
+        return False
+    return fa.keys() == fb.keys() and all(_same_bytes(fa[k], fb[k]) for k in fa)
+
+
 # ── Installed side ─────────────────────────────────────────────────────────────
 
 def find_installed(ext_dir: Path, key: str) -> list[Path]:
@@ -361,7 +600,7 @@ def find_installed(ext_dir: Path, key: str) -> list[Path]:
     """
     found: list[Path] = []
     for child in sorted(ext_dir.iterdir()):
-        # `.part` is an interrupted copy of ours, never the one Chrome loads.
+        # `.part` is an unfinished copy, never the one Chrome loads.
         if child.name == BACKUPS_DIR or child.name.endswith('.part') or not child.is_dir():
             continue
         manifest = read_extension_manifest(child)
@@ -370,20 +609,26 @@ def find_installed(ext_dir: Path, key: str) -> list[Path]:
     return found
 
 
-def _backup_path(ext_dir: Path, folder: Path, old_version: str, date_str: str) -> Path:
-    """`_backups/<folder>-<version>-<date>`, numbered on so none is overwritten.
+def _backup_path(ext_dir: Path, folder: Path, old_version: str,
+                 date_str: str) -> tuple[Path, bool]:
+    """Where to back `folder` up -> (path, already there).
 
-    The owner's own naming (`newspapers-seen-it-0.10.1-2026-11-10`). A `.part`
-    left by an interrupted run also counts as taken: it is somebody's partial
-    copy, and nothing here deletes it.
+    `_backups/<folder>-<version>-<date>`, the owner's own naming
+    (`newspapers-seen-it-0.10.1-2026-11-10`), numbered on so none is ever
+    overwritten. When one of those already holds exactly what the folder
+    holds now - the same day's run, retried after a failure put everything
+    back - it IS the backup, and no second identical copy is made. A `.part`
+    left by an interrupted backup counts as taken and is never reused.
     """
     base = f'{folder.name}-{old_version}-{date_str}'
     candidate = ext_dir / BACKUPS_DIR / base
     n = 2
     while candidate.exists() or candidate.with_name(candidate.name + '.part').exists():
+        if candidate.is_dir() and _same_tree(candidate, folder):
+            return candidate, True
         candidate = ext_dir / BACKUPS_DIR / f'{base}-{n}'
         n += 1
-    return candidate
+    return candidate, False
 
 
 def plan_extensions(repo_root: Path, ext_dir: Path, date_str: str) -> list[dict]:
@@ -399,14 +644,15 @@ def plan_extensions(repo_root: Path, ext_dir: Path, date_str: str) -> list[dict]
         repo_manifest = read_extension_manifest(src)
         item = {'extension': folder_name, 'name': short, 'helper': helper,
                 'action': 'no-source', 'target': None, 'backup': None,
+                'backup_exists': False, 'clear_part': None,
                 'old_version': None, 'new_version': None, 'copy': [],
-                'helper_changed': False, 'others': []}
+                'helper_changed': False, 'others': [], 'blocked_by': None}
         items.append(item)
         if not repo_manifest or not str(repo_manifest.get('key', '')).strip():
             continue
         item['title'] = str(repo_manifest.get('name') or short)
         item['new_version'] = str(repo_manifest.get('version', ''))
-        files = shipped_files(src)
+        files = shipped_files(repo_root, folder_name)
         key = str(repo_manifest['key']).strip()
         matches = [m for m in (find_installed(ext_dir, key) if ext_dir.is_dir() else [])
                    if m.resolve() != src.resolve()]
@@ -415,10 +661,16 @@ def plan_extensions(repo_root: Path, ext_dir: Path, date_str: str) -> list[dict]
             continue
         if not matches:
             target = ext_dir / folder_name
+            part = target.with_name(target.name + '.part')
             item['target'] = target
             if target.exists() and (not target.is_dir() or any(target.iterdir())):
-                item['action'] = 'blocked'
+                item.update(action='blocked', blocked_by=target)
                 continue
+            if part.exists():
+                if not (part / _PART_MARKER).is_file():
+                    item.update(action='blocked', blocked_by=part)
+                    continue
+                item['clear_part'] = part
             item.update(action='install', copy=files)
             continue
         target = matches[0]
@@ -433,8 +685,8 @@ def plan_extensions(repo_root: Path, ext_dir: Path, date_str: str) -> list[dict]
         if not changed:
             item['action'] = 'current'
             continue
-        item.update(action='update', copy=changed,
-                    backup=_backup_path(ext_dir, target, old or 'unknown', date_str),
+        backup, exists = _backup_path(ext_dir, target, old or 'unknown', date_str)
+        item.update(action='update', copy=changed, backup=backup, backup_exists=exists,
                     helper_changed=bool(helper) and any(
                         rel.startswith(f'{helper}/') for rel, _p in changed))
     return items
@@ -456,63 +708,123 @@ def _copy_file(src: Path, dest: Path) -> None:
         raise
 
 
-def apply_plan(items: list[dict], ext_dir: Path) -> tuple[list[str], list[str]]:
-    """Carry out a plan. Returns (changed paths, failures), never raises OSError.
+def _install(item: dict, ext_dir: Path) -> str | None:
+    """A first copy, built in a marked `.part` folder and renamed into place.
 
-    A fresh copy is built in `<name>.part` and renamed into place, so a failed
-    install leaves no half-copied add-on for Chrome to load. An update backs
-    the whole installed folder up first (again through `.part`), and does not
-    start copying until that backup is complete - no backup, no update.
+    Returns a failure message, or None. A failed copy removes its own `.part`
+    at once; if even that fails, the marker inside lets the next run clear it.
     """
+    target = item['target']
+    part = target.with_name(target.name + '.part')
+    created = False
+    try:
+        if item['clear_part'] is not None:
+            shutil.rmtree(part)
+        part.mkdir(parents=True)
+        created = True
+        (part / _PART_MARKER).write_text(
+            'An unfinished copy made by fha update-tools; the next run replaces it.\n',
+            encoding='utf-8')
+        for rel, src in item['copy']:
+            _copy_file(src, part / rel)
+        (part / _PART_MARKER).unlink()
+        if target.is_dir():
+            target.rmdir()      # the empty folder plan_extensions allowed
+        part.rename(target)
+    except OSError as exc:
+        if created:
+            shutil.rmtree(part, ignore_errors=True)
+        return (f'{item["name"]} was not copied into {ext_dir} ({exc}). Check that '
+                f'you can write there, then run `fha update-tools` again.')
+    return None
+
+
+def _update(item: dict) -> str | None:
+    """Back up, then copy the new files over the installed add-on - all or nothing.
+
+    Returns a failure message, or None. If any file cannot be written (Chrome
+    or a virus scanner holding it, a read-only file), every file already
+    written this run is put back from the backup and every file it added is
+    removed, so the add-on ends exactly as it was: never a mix of two versions
+    that Chrome would load. Only if putting back fails too does the message
+    point at the backup to restore by hand.
+    """
+    target, backup = item['target'], item['backup']
+    if not item['backup_exists']:
+        part = backup.with_name(backup.name + '.part')
+        try:
+            backup.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(target, part, symlinks=True)
+            part.rename(backup)
+        except OSError as exc:
+            return (f'{item["name"]} was not updated: its backup to {backup} could '
+                    f'not be made ({exc}), so nothing was changed. Check the disk '
+                    f'has room, then run `fha update-tools` again.')
+    new_dirs: set[Path] = set()
+    for rel, _src in item['copy']:
+        d = (target / rel).parent
+        while d != target and not d.exists():
+            new_dirs.add(d)
+            d = d.parent
+    written: list[tuple[str, bool]] = []
+    for rel, src in item['copy']:
+        dest = target / rel
+        existed = dest.exists()
+        try:
+            _copy_file(src, dest)
+        except OSError as exc:
+            failed, cause = rel, exc
+            break
+        written.append((rel, existed))
+    else:
+        return None
+    not_restored: list[str] = []
+    for rel, existed in reversed(written):
+        try:
+            if existed:
+                _copy_file(backup / rel, target / rel)
+            else:
+                (target / rel).unlink()
+        except OSError as exc:
+            not_restored.append(f'{rel} ({exc})')
+    for d in sorted(new_dirs, key=lambda p: len(p.parts), reverse=True):
+        try:
+            d.rmdir()
+        except OSError:
+            pass
+    if not_restored:
+        return (f'{item["name"]} could not be updated ({failed}: {cause}), and '
+                f'{len(not_restored)} file(s) could not be put back as they were: '
+                f'{"; ".join(not_restored[:3])}. Your copy from before the update is '
+                f'in {backup} - close Chrome, copy everything in it back over '
+                f'{target}, then run `fha update-tools` again.')
+    return (f'{item["name"]} was not updated - nothing changed in {target}. '
+            f'{failed} could not be written ({cause}). A copy of it as it is now is '
+            f'in {backup}. Close Chrome (or any program using that folder), then '
+            f'run `fha update-tools` again.')
+
+
+def apply_plan(items: list[dict], ext_dir: Path) -> tuple[list[str], list[str]]:
+    """Carry out a plan. Returns (changed paths, failures), never raises OSError."""
     changed: list[str] = []
     failures: list[str] = []
     for item in items:
-        action, target = item['action'], item['target']
-        if action == 'install':
-            part = target.with_name(target.name + '.part')
-            try:
-                if part.exists():
-                    raise OSError(f'{part} is in the way (left by an earlier run - '
-                                  f'move it out of {ext_dir})')
-                for rel, src in item['copy']:
-                    _copy_file(src, part / rel)
-                if target.is_dir():
-                    target.rmdir()      # the empty folder plan_extensions allowed
-                part.rename(target)
-            except OSError as exc:
-                item['error'] = str(exc)
-                failures.append(f'{item["name"]} was not copied into {ext_dir} ({exc}). '
-                                f'Check that you can write there, then run '
-                                f'`fha update-tools` again.')
-                continue
-            changed.append(str(target))
-        elif action == 'update':
-            backup = item['backup']
-            part = backup.with_name(backup.name + '.part')
-            try:
-                backup.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copytree(target, part, symlinks=True)
-                part.rename(backup)
-            except OSError as exc:
-                item['error'] = str(exc)
-                failures.append(f'{item["name"]} was not updated: its backup to {backup} '
-                                f'could not be made ({exc}), so nothing was changed. '
-                                f'Check the disk has room, then run `fha update-tools` again.')
-                continue
-            changed.append(str(backup))
-            bad: list[str] = []
-            for rel, src in item['copy']:
-                try:
-                    _copy_file(src, target / rel)
-                except OSError as exc:
-                    bad.append(f'{rel} ({exc})')
-            if bad:
-                item['error'] = '; '.join(bad)
-                failures.append(f'{item["name"]} was only partly updated - {len(bad)} '
-                                f'file(s) could not be written: {"; ".join(bad[:3])}. '
-                                f'Your earlier copy is safe in {backup}. Close Chrome, '
-                                f'then run `fha update-tools` again.')
-            changed.append(str(target))
+        if item['action'] == 'install':
+            problem = _install(item, ext_dir)
+            if problem is None:
+                changed.append(str(item['target']))
+        elif item['action'] == 'update':
+            had_backup = item['backup_exists']
+            problem = _update(item)
+            if not had_backup and (problem is None or item['backup'].is_dir()):
+                changed.append(str(item['backup']))
+            if problem is None:
+                changed.append(str(item['target']))
+        else:
+            continue
+        if problem:
+            item['error'] = problem
+            failures.append(problem)
     return changed, failures
 
 
@@ -541,11 +853,20 @@ def _report(items: list[dict], ext_dir: Path, dry_run: bool) -> list[str]:
             print(msg)
             warnings.append(msg)
         elif action == 'blocked':
-            msg = (f'{name} was not copied: {target} already exists and is not {name}. '
-                   f'Rename that folder, then run `fha update-tools` again.')
+            blocker = item['blocked_by']
+            if blocker != target:
+                msg = (f'{name} was not copied: {blocker} is in the way and was not '
+                       f'made by these tools. Move or delete that folder, then run '
+                       f'`fha update-tools` again.')
+            else:
+                msg = (f'{name} was not copied: {target} already exists and is not '
+                       f'{name}. Rename that folder, then run `fha update-tools` again.')
             print(msg)
             warnings.append(msg)
         elif action == 'install':
+            if item['clear_part'] is not None:
+                print(f'{would}{"replace" if dry_run else "Replaced"} the unfinished '
+                      f'copy an earlier run left at {item["clear_part"]}.')
             verb = 'copy' if dry_run else 'Copied'
             print(f'{would}{verb} {name} {item["new_version"]} into {target}.')
             print(f'  To start using it (once): open chrome://extensions, turn on '
@@ -556,10 +877,11 @@ def _report(items: list[dict], ext_dir: Path, dry_run: bool) -> list[str]:
                       f'(Mac or Linux: run `sh install.sh` there).')
         elif action == 'update':
             versions = f'{item["old_version"]} -> {item["new_version"]}'
+            kept = ('your current one is already copied in' if item['backup_exists']
+                    else 'after copying your current one to')
             if dry_run:
                 print(f'{would}update {name} {versions} in {target} '
-                      f'({len(item["copy"])} file(s)), after copying your current '
-                      f'one to {item["backup"]}.')
+                      f'({len(item["copy"])} file(s)), {kept} {item["backup"]}.')
             else:
                 print(f'Updated {name} {versions} in {target} ({len(item["copy"])} '
                       f'file(s)). Your earlier copy is in {item["backup"]}.')
@@ -579,63 +901,63 @@ def run_extensions(archive_root: Path, repo_root: Path, *, dry_run: bool = False
                    ask=None, date_str: str | None = None) -> dict:
     """Keep the owner's add-ons current. Called by install and update-tools.
 
-    `ask` is the prompt function (`input`) when a person is at the terminal,
+    `ask` is the prompt function (`input`) when a person is at the keyboard,
     None otherwise - then nothing is asked and an unset setting gets one hint
     line. A dry run never asks either: answering would write fha.yaml.
-    Returns {'items', 'changed', 'warnings'}; every warning has already been
-    printed, and the caller folds them into its exit status.
+    Prints nothing at all when the setting is `none`, so that run's output is
+    exactly what it was before this feature.
+    Returns {'items', 'changed', 'warnings', 'printed'}; every warning has
+    already been printed, and the caller folds them into its exit status.
     """
     archive_root = Path(archive_root).resolve()
-    out = {'items': [], 'changed': [], 'warnings': []}
-    print()
+    out = {'items': [], 'changed': [], 'warnings': [], 'printed': False}
+
+    def say(msg: str, *, warn: bool = False) -> dict:
+        if not out['printed']:
+            print()
+            out['printed'] = True
+        print(msg)
+        if warn:
+            out['warnings'].append(msg)
+        return out
+
     if not yaml_available():
         # A note, not a warning: install treats a missing PyYAML as advisory
         # (it is how a fresh machine bootstraps), and update-tools already
         # reports it as its own warning.
-        print(f'Browser add-ons were not checked: reading fha.yaml needs PyYAML. '
-              f'Install it with `{pip_command("pyyaml")}`, then run '
-              f'`fha update-tools` again.')
-        return out
+        return say(f'Browser add-ons were not checked: reading fha.yaml needs PyYAML. '
+                   f'Install it with `{pip_command("pyyaml")}`, then run '
+                   f'`fha update-tools` again.')
     try:
         fha_config = load_fha_yaml(archive_root, strict=True)
     except FhaConfigError as exc:
-        msg = (f'Browser add-ons were not checked: fha.yaml could not be read. {exc}')
-        print(msg)
-        out['warnings'].append(msg)
-        return out
-    state, ext_dir, problem = read_setting(fha_config, archive_root)
-    if state == 'absent':
+        return say(f'Browser add-ons were not checked: fha.yaml could not be read. {exc}',
+                   warn=True)
+    setting = read_setting(fha_config, archive_root)
+    if setting.state == 'absent':
         if ask is None or dry_run:
-            print(_hint_line())
-            return out
+            return say(_hint_line())
+        out['printed'] = True       # the question prints its own blank line
         if ask_for_setting(archive_root, fha_config, ask) is None:
             return out
         fha_config = load_fha_yaml(archive_root, strict=True)
-        state, ext_dir, problem = read_setting(fha_config, archive_root)
-    if state == 'declined':
+        setting = read_setting(fha_config, archive_root)
+    if setting.state == 'declined':
         return out
-    if state == 'bad':
-        print(problem)
-        out['warnings'].append(problem)
-        return out
-    if ext_dir.exists() and not ext_dir.is_dir():
-        msg = (f'{SETTING}: in fha.yaml points at {ext_dir}, which is a file, not a '
-               f'folder. Point it at a folder, then run `fha update-tools` again.')
-        print(msg)
-        out['warnings'].append(msg)
-        return out
+    if setting.state == 'bad':
+        return say(setting.message, warn=True)
+    ext_dir = setting.folder
     date_str = date_str or datetime.date.today().isoformat()
     try:
         items = plan_extensions(repo_root, ext_dir, date_str)
     except OSError as exc:
-        msg = (f'Browser add-ons were not checked: {ext_dir} could not be read ({exc}). '
-               f'Check the folder (is its drive connected?), then run '
-               f'`fha update-tools` again.')
-        print(msg)
-        out['warnings'].append(msg)
-        return out
+        return say(f'Browser add-ons were not checked: {ext_dir} could not be read '
+                   f'({exc}). Check the folder (is its drive connected?), then run '
+                   f'`fha update-tools` again.', warn=True)
     out['items'] = items
-    print(f'Browser add-ons in {ext_dir}:')
+    say(f'Browser add-ons in {ext_dir}:')
+    if setting.message:
+        print(setting.message)
     if dry_run:
         if not ext_dir.exists():
             print(f'[dry-run] Would create the folder {ext_dir}.')
@@ -644,11 +966,9 @@ def run_extensions(archive_root: Path, repo_root: Path, *, dry_run: bool = False
             try:
                 ext_dir.mkdir(parents=True, exist_ok=True)
             except OSError as exc:
-                msg = (f'Could not create {ext_dir} ({exc}). Check the folder in '
-                       f'`{SETTING}:` in fha.yaml, then run `fha update-tools` again.')
-                print(msg)
-                out['warnings'].append(msg)
-                return out
+                return say(f'Could not create {ext_dir} ({exc}). Check the folder in '
+                           f'`{SETTING}:` in fha.yaml, then run `fha update-tools` '
+                           f'again.', warn=True)
         out['changed'], failures = apply_plan(items, ext_dir)
         for f in failures:
             print(f)

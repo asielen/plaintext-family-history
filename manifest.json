@@ -504,7 +504,7 @@
     {
       "path": ".fha/tools/browser_extensions.py",
       "category": "operating",
-      "sha256": "051e0c1849e073cc4fe9d443500055998f738d4d6ccabf94338079622ae273b3",
+      "sha256": "67ed04feb6cf1ffc36103721ca825cfc0f1120be3e25adcc454b48d472d6a92e",
       "spec_version": "1.2",
       "src": "tools/browser_extensions.py"
     },
@@ -588,7 +588,7 @@
     {
       "path": ".fha/tools/doctor.py",
       "category": "operating",
-      "sha256": "8c3c2ad8df4e45371cc9a7ebf6320b6706edd57f45a5c24fa43147b65b7fa57e",
+      "sha256": "f2479deaff1184e9f7835e0e5faa7dc02496402094b5332f825213bfb9c39c87",
       "spec_version": "1.2",
       "src": "tools/doctor.py"
     },
@@ -728,7 +728,7 @@
     {
       "path": ".fha/tools/scaffold.py",
       "category": "operating",
-      "sha256": "e71268e2cc1539cf59eeea251f378ea3889ec04179a6999cfded75daf72c5290",
+      "sha256": "628e6aa4f1179a42bfb470fdf393ecf5db66063df9a669def960d493ae4a8482",
       "spec_version": "1.2",
       "src": "tools/scaffold.py"
     },
@@ -968,7 +968,7 @@
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "95004d7a1d7777008a18b5e2cb11f9a598ea7106490322953c85a79fc6c36706",
+      "sha256": "f06e0c317a81976a4531da9640cd63f982d8b1e6236f3636fa82e4f45d053071",
       "spec_version": "1.2"
     },
     {

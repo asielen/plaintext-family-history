@@ -2320,14 +2320,33 @@ def run_install(
 def _terminal_ask():
     """`input` when a person is at the keyboard, else None (never prompt).
 
-    A scheduled run, a pipe, CI or a test has nobody to answer, and a prompt
-    there would hang or read garbage - so the add-on question is only asked
-    when stdin is a terminal.
+    A scheduled run, a pipe, CI, an AI agent's shell or a test has nobody to
+    answer, and a prompt there would hang or print a question nobody sees -
+    so the add-on question is only asked when stdin is a real console. On
+    Windows `isatty()` is not enough: the NUL device an agent's shell hands
+    over reports True, so the console itself is asked (GetConsoleMode fails
+    on anything that is not one).
     """
     try:
-        return input if sys.stdin is not None and sys.stdin.isatty() else None
-    except (AttributeError, ValueError):
+        if sys.stdin is None or not sys.stdin.isatty():
+            return None
+        if os.name == 'nt' and not _windows_console(sys.stdin):
+            return None
+    except (AttributeError, ValueError, OSError):
         return None
+    return input
+
+
+def _windows_console(stream) -> bool:
+    """True when `stream` is an interactive Windows console (not NUL, a pipe or a file)."""
+    try:
+        import ctypes
+        import msvcrt
+        handle = msvcrt.get_osfhandle(stream.fileno())
+        mode = ctypes.c_uint32()
+        return bool(ctypes.windll.kernel32.GetConsoleMode(handle, ctypes.byref(mode)))
+    except (AttributeError, ImportError, OSError, ValueError):
+        return False
 
 
 def _cmd_install(args: argparse.Namespace) -> int:
@@ -2947,8 +2966,8 @@ def run_update_tools(
             repo_root, dry_run=True)
         if note:
             print(note)
-        run_extensions(archive_root, repo_root, dry_run=True)
-        print()
+        if run_extensions(archive_root, repo_root, dry_run=True)['printed']:
+            print()
         print(
             f'Plan: {n_added} to add, {n_stock} to update, {n_custom} to back up '
             f'and update, {n_retired} retired, {n_current} already up to date'
