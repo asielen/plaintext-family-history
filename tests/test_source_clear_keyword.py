@@ -12,6 +12,8 @@ state, so a test that reads again after writing is a genuine round-trip
 check, not just an assertion on the call arguments.
 """
 
+import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -21,6 +23,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
 
 import source as source_mod
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tests'))
+from keyword_fixture_files import read_fields, write_fixture  # noqa: E402
 from _lib import EXIT_CLEAN, EXIT_FAILURE, EXIT_WARNINGS, load_fha_yaml
 
 SID = 'S-2b3c4d5e6f'
@@ -38,19 +42,20 @@ class _FakeExiftoolStore:
         self.files: dict[str, dict[str, list[str]]] = {}
         self.write_calls: list[tuple[Path, list, list]] = []
 
-    def seed(self, path: Path, *, keywords=None, subject=None) -> None:
+    def seed(self, path: Path, *, keywords=None, subject=None, hierarchical=None) -> None:
         self.files[str(Path(path).resolve())] = {
-            'keywords': list(keywords or []), 'subject': list(subject or [])}
+            'keywords': list(keywords or []), 'subject': list(subject or []),
+            'hierarchical': list(hierarchical or [])}
 
     def _fields(self, path: Path) -> dict:
         return self.files.setdefault(
-            str(Path(path).resolve()), {'keywords': [], 'subject': []})
+            str(Path(path).resolve()), {'keywords': [], 'subject': [], 'hierarchical': []})
 
     def read(self, path: Path) -> dict:
         f = self._fields(path)
-        return {'keywords': list(f['keywords']), 'subject': list(f['subject'])}
+        return {tag: list(values) for tag, values in f.items()}
 
-    def write(self, path: Path, *, remove, add, backup):
+    def write(self, path: Path, *, remove, add, backup, report=None):
         self.write_calls.append((Path(path).resolve(), list(remove), list(add)))
         backup.ensure(path)   # exercise the real safety-copy policy, like the live wrapper
         f = self._fields(path)
@@ -114,17 +119,34 @@ class SourceClearKeywordTests(unittest.TestCase):
         self.assertNotIn('Margaret Hartley', after['subject'])
         self.assertIn('SOURCE: ' + SID, after['subject'])   # untouched
 
-    def test_replace_with_lands_in_the_same_field_and_round_trips(self) -> None:
+    def test_replace_with_lands_in_every_keyword_field_and_round_trips(self) -> None:
+        # #252: a correction is a keyword write like any other, so it goes
+        # into every field a photo manager reads (IPTC Keywords, XMP
+        # dc:subject, Lightroom's hierarchicalSubject), not only the one the
+        # stray value happened to sit in.
         result = self._run(keyword='Margaret Hartley', replace_with='Margaret Cole')
         self.assertEqual(result.exit_code, EXIT_CLEAN)
         self.assertEqual(result['status'], 'ok')
         self.assertEqual(result['removed_from'], ['subject'])
-        self.assertEqual(result['added_to'], ['subject'])
+        self.assertEqual(result['added_to'], ['hierarchical', 'keywords', 'subject'])
 
         after = source_mod._run_exiftool_read_keyword_fields(self.asset)
         self.assertNotIn('Margaret Hartley', after['subject'])
-        self.assertIn('Margaret Cole', after['subject'])
-        self.assertNotIn('Margaret Cole', after['keywords'])   # never grows a NEW field
+        for field in ('keywords', 'subject', 'hierarchical'):
+            self.assertIn('Margaret Cole', after[field])
+
+    def test_a_lightroom_hierarchical_keyword_is_found_by_its_last_part(self) -> None:
+        # Lightroom stores a nested keyword as `People|Margaret Hartley` in
+        # hierarchicalSubject; asking to clear "Margaret Hartley" must find
+        # and remove that exact stored value too, or Lightroom keeps it.
+        self.store.seed(self.asset, subject=['SOURCE: ' + SID, 'Margaret Hartley'],
+                        hierarchical=['People|Margaret Hartley'])
+        result = self._run(keyword='Margaret Hartley')
+        self.assertEqual(result['status'], 'ok')
+        self.assertEqual(result['removed_from'], ['hierarchical', 'subject'])
+        after = source_mod._run_exiftool_read_keyword_fields(self.asset)
+        self.assertEqual(after['hierarchical'], [])
+        self.assertNotIn('Margaret Hartley', after['subject'])
 
     def test_match_is_case_insensitive_but_removes_the_exact_on_file_spelling(self) -> None:
         # exiftool's -= is an exact-value match; the command line spelling may
@@ -250,7 +272,7 @@ class SourceClearKeywordTests(unittest.TestCase):
         # that the field ended up in the requested state - simulate a race
         # (something else touched the file between the pre-read and this
         # write) where the wrapper reports success but nothing changed.
-        def _fake_write_no_op(path, *, remove, add, backup):
+        def _fake_write_no_op(path, *, remove, add, backup, report=None):
             backup.ensure(path)
             return None   # reports success without touching self.store at all
         source_mod._run_exiftool_edit_keyword_fields = _fake_write_no_op
@@ -277,7 +299,7 @@ class SourceClearKeywordTests(unittest.TestCase):
         self.store.seed(self.asset, subject=[
             'margaret hartley', 'Margaret Hartley', 'SOURCE: ' + SID])
 
-        def _fake_write_partial_removal(path, *, remove, add, backup):
+        def _fake_write_partial_removal(path, *, remove, add, backup, report=None):
             backup.ensure(path)
             f = self.store._fields(path)
             # Only remove the FIRST matched value, simulating a write that
@@ -318,7 +340,7 @@ class SourceClearKeywordTests(unittest.TestCase):
         self.assertIn('could not be resolved', result.messages[-1].text)
 
     def test_addition_that_did_not_land_is_also_caught(self) -> None:
-        def _fake_write_only_removes(path, *, remove, add, backup):
+        def _fake_write_only_removes(path, *, remove, add, backup, report=None):
             backup.ensure(path)
             f = self.store._fields(path)
             for tag, value in remove:
@@ -438,6 +460,23 @@ class SourceClearKeywordTests(unittest.TestCase):
         self.assertTrue(result.changed,
                         'the write itself happened even though verification could not confirm it')
 
+    def test_a_write_that_landed_is_never_reported_as_nothing_changed(self) -> None:
+        # U1: the writer had written and only its check afterwards failed;
+        # the message used to end "Nothing was changed".
+        def _wrote_then_failed(path, *, remove, add, backup, report=None):
+            self.store.write(path, remove=remove, add=add, backup=backup)
+            if report is not None:
+                report['written'] = True
+            return 'reading it back shows IPTC:Keywords still holds something'
+        source_mod._run_exiftool_edit_keyword_fields = _wrote_then_failed
+        result = self._run(keyword='Margaret Hartley')
+        self.assertEqual(result['status'], 'refused')
+        text = result.messages[-1].text
+        self.assertNotIn('Nothing was changed', text)
+        self.assertIn('exiftool changed', text)
+        self.assertIn('now hold', text)
+        self.assertTrue(result.changed)
+
     def test_case_only_replacement_does_not_delete_the_keyword(self) -> None:
         # #147 review (P2): replacing 'margaret hartley' with 'Margaret
         # Hartley' (same text, different case) used to be silently dropped -
@@ -452,7 +491,8 @@ class SourceClearKeywordTests(unittest.TestCase):
         result = self._run(keyword='margaret hartley', replace_with='Margaret Hartley')
         self.assertEqual(result['status'], 'ok')
         self.assertEqual(result['removed_from'], ['subject'])
-        self.assertEqual(result['added_to'], ['subject'])
+        # #252: the correction goes into every keyword field the file takes.
+        self.assertEqual(result['added_to'], ['hierarchical', 'keywords', 'subject'])
         after = source_mod._run_exiftool_read_keyword_fields(self.asset)
         self.assertNotIn('margaret hartley', after['subject'])
         self.assertEqual(after['subject'].count('Margaret Hartley'), 1)
@@ -500,6 +540,113 @@ class SourceClearKeywordTests(unittest.TestCase):
         self.assertEqual(result['status'], 'ok')
         copy = backup_dir / 'documents' / 'deeds' / f'deed_{SID.lower()}.tif'
         self.assertTrue(copy.exists(), 'a pristine copy must be made before the write')
+
+
+@unittest.skipUnless(shutil.which('exiftool'), 'exiftool is not installed - run where it is')
+class RealWrapperClearKeywordTests(unittest.TestCase):
+    """#253 review: preview, write and check must be one plan.
+
+    These go through the real `_run_exiftool_edit_keyword_fields` and the real
+    exiftool - no replaced seam - because the bug lived exactly between the
+    planner and the wrapper: the plan added a correction to some fields, the
+    wrapper wrote it to all of them, and the check then blamed "something else
+    changing the file" for the difference, after the write had happened.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name) / 'archive'
+        (self.root / 'documents' / 'letters').mkdir(parents=True)
+        (self.root / 'sources' / 'letter').mkdir(parents=True)
+        (self.root / 'fha.yaml').write_text(
+            'roots:\n  photos: photos\n  documents: documents\n', encoding='utf-8')
+        self.asset = write_fixture(
+            self.root / 'documents' / 'letters' / f'letter_{SID.lower()}.jpg')
+        (self.root / 'sources' / 'letter' / f'letter_{SID.lower()}.md').write_text(
+            f'---\nid: {SID}\ntitle: Letter\nsource_type: letter\nfiles:\n'
+            f'  - file: documents/letters/letter_{SID.lower()}.jpg\n    role: primary\n'
+            '---\n\n## Notes\nA letter.\n', encoding='utf-8')
+        self.config = load_fha_yaml(self.root)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _tag(self, *args: str) -> None:
+        subprocess.run(['exiftool', '-q', '-overwrite_original', *args, str(self.asset)],
+                       check=True, capture_output=True)
+
+    def _clear(self, **kw):
+        return source_mod.run_source_clear_keyword(self.root, self.config, SID, **kw)
+
+    def _messages(self, result) -> str:
+        return '\n'.join(m.text for m in result.messages)
+
+    def test_a_field_already_holding_the_name_in_other_capitals_is_left_alone(self) -> None:
+        self._tag('-IPTC:Keywords=Margret Hartley', '-IPTC:Keywords=margaret hartley',
+                  '-XMP-dc:Subject=Margret Hartley')
+        preview = self._clear(keyword='Margret Hartley', replace_with='Margaret Hartley',
+                              dry_run=True)
+        result = self._clear(keyword='Margret Hartley', replace_with='Margaret Hartley')
+        self.assertEqual(result.exit_code, EXIT_CLEAN, self._messages(result))
+        self.assertEqual(result['added_to'], ['hierarchical', 'subject'])
+        self.assertIn("subject: 'Margaret Hartley', hierarchical: 'Margaret Hartley'",
+                      self._messages(preview))
+        fields = read_fields(self.asset)
+        self.assertEqual(fields['IPTC:Keywords'], ['margaret hartley'])
+        self.assertEqual(fields['XMP-dc:Subject'], ['Margaret Hartley'])
+        self.assertEqual(fields['XMP-lr:HierarchicalSubject'], ['Margaret Hartley'])
+
+    def test_a_lightroom_people_entry_counts_as_already_naming_the_person(self) -> None:
+        # Codex's case: every field holds the stray name, Subject already has
+        # `Ada` and the hierarchy has `People|Ada`.
+        self._tag('-IPTC:Keywords=Wrong Name', '-XMP-dc:Subject=Wrong Name',
+                  '-XMP-dc:Subject=Ada', '-XMP-lr:HierarchicalSubject=Wrong Name',
+                  '-XMP-lr:HierarchicalSubject=People|Ada')
+        preview = self._clear(keyword='Wrong Name', replace_with='Ada', dry_run=True)
+        self.assertIn("Would add keywords: 'Ada'.", self._messages(preview))
+        result = self._clear(keyword='Wrong Name', replace_with='Ada')
+        self.assertEqual(result.exit_code, EXIT_CLEAN, self._messages(result))
+        self.assertEqual(result['added_to'], ['keywords'])
+        self.assertEqual(read_fields(self.asset), {
+            'IPTC:Keywords': ['Ada'], 'XMP-dc:Subject': ['Ada'],
+            'XMP-lr:HierarchicalSubject': ['People|Ada']})
+
+    def test_a_name_latin1_cannot_spell_on_an_old_latin1_scan(self) -> None:
+        # U1: an older scanner wrote this caption in Latin-1, with no
+        # character-set tag. Writing `Łódź` used to relabel the block UTF-8,
+        # turning "München" into "M?nchen"; now IPTC is left alone and the
+        # preview and the result both say why.
+        argfile = Path(self._tmp.name) / 'latin.args'
+        argfile.write_text('-charset\niptc=Latin\n'
+                           '-IPTC:Caption-Abstract=Brief von Tante Zoë aus München\n'
+                           '-IPTC:Keywords=Lodz\n-XMP-dc:Subject=Lodz\n-overwrite_original\n',
+                           encoding='utf-8')
+        subprocess.run(['exiftool', '-@', str(argfile), str(self.asset)], check=True,
+                       capture_output=True)
+        before = subprocess.run(['exiftool', '-b', '-charset', 'iptc=UTF8',
+                                 '-IPTC:Caption-Abstract', str(self.asset)],
+                                capture_output=True, check=True).stdout
+        preview = self._clear(keyword='Lodz', replace_with='Łódź', dry_run=True)
+        self.assertIn('not to its older IPTC field', self._messages(preview))
+        result = self._clear(keyword='Lodz', replace_with='Łódź')
+        self.assertEqual(result.exit_code, EXIT_CLEAN, self._messages(result))
+        self.assertEqual(result['added_to'], ['hierarchical', 'subject'])
+        self.assertIn('not to its older IPTC field', self._messages(result))
+        after = subprocess.run(['exiftool', '-b', '-charset', 'iptc=UTF8',
+                                '-IPTC:Caption-Abstract', str(self.asset)],
+                               capture_output=True, check=True).stdout
+        self.assertEqual(after, before)
+        fields = read_fields(self.asset)
+        self.assertEqual(fields['IPTC:Keywords'], [])
+        self.assertEqual(fields['XMP-dc:Subject'], ['Łódź'])
+
+    def test_an_accented_correction_lands_and_the_old_value_goes(self) -> None:
+        self._tag('-XMP-dc:Subject=Zoe Kowalczik')
+        result = self._clear(keyword='Zoe Kowalczik', replace_with='Zoë Kowalczyk')
+        self.assertEqual(result.exit_code, EXIT_CLEAN, self._messages(result))
+        fields = read_fields(self.asset)
+        for tag in ('IPTC:Keywords', 'XMP-dc:Subject', 'XMP-lr:HierarchicalSubject'):
+            self.assertEqual(fields[tag], ['Zoë Kowalczyk'], tag)
 
 
 if __name__ == '__main__':

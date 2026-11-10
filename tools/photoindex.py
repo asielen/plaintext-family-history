@@ -75,7 +75,7 @@ CODE MAP
     is_catalogued_photo_name  - which files the catalog keeps (imported from _lib, #202)
     _run_exiftool             - batched `exiftool -j -struct` invocation (test seam)
     _SOURCE_KEYWORD_RE, _PID_KEYWORD_RE, _DATE_KEYWORD_RE - keyword patterns
-    _extract_keywords         - flatten Keywords+Subject into one string list
+    _extract_keywords         - every keyword: the three keyword fields unioned (_lib)
     (the DATE: keyword vocabulary itself - the SPEC §20 letter grammar, its
      pairing with EXIF DateTimeOriginal, and the non-spec-form test - lives in
      _lib so `fha process` folder triage reads a photo's date by the same rule:
@@ -158,9 +158,9 @@ CODE MAP
     BACKUP_MESSAGE_CODE       - the Message code carrying safety-copy notices (§13f)
     _add_backup_messages      - fold the run's safety-copy notices into a Result
     _print_backup_messages    - render them (warnings to stderr, the size line to stdout)
-    _run_exiftool_write       - per-file `exiftool -keywords+=` write (the one path here that
-                                 mutates an original photo file, not the cache); reports per-path
-                                 success/failure rather than batching all candidates into one call
+    _run_exiftool_write       - per-file keyword write through _lib.write_embedded_keywords
+                                 (IPTC + XMP, #252); reports per-path success/failure rather
+                                 than batching all candidates into one call
     _refresh_photo_fts_keywords - resync photo_fts.keywords for just-tagged paths
     apply_tag_person          - write the P-id keyword + update photo_keywords/photo_people/photo_fts
 
@@ -243,12 +243,14 @@ from _lib import (
     fmt_id_display,
     format_edtf_error,
     format_exiftool_error,
+    keyword_values_from_row,
     bundle_role,
     grouping_stem as _grouping_stem,
     humanize_edtf as _humanize_edtf,
     id_type_of,
     index_manifest_path,
     is_catalogued_photo_name,
+    write_embedded_keywords,
     is_nonspec_photo_date_keyword as _is_nonspec_date_keyword,
     is_valid_edtf,
     is_valid_id,
@@ -622,7 +624,7 @@ class _FingerprintBudget:
 _EXIFTOOL_FIELDS = [
     '-Title', '-Caption-Abstract', '-XMP-dc:Description', '-UserComment', '-DateTimeOriginal',
     '-Location', '-City', '-State', '-Country', '-GPSLatitude', '-GPSLongitude',
-    '-Keywords', '-Subject', '-XMP-mwg-rs:RegionInfo',
+    '-Keywords', '-Subject', '-HierarchicalSubject', '-XMP-mwg-rs:RegionInfo',
 ]
 
 # Reconcile's bookkeeping prefix for a photo that vanished from disk: the
@@ -905,12 +907,15 @@ def _as_list(value: object) -> list[str]:
 
 
 def _extract_keywords(row: dict) -> list[str]:
-    """Keywords and Subject overlap heavily in practice; union them, dedup, keep order."""
-    seen: list[str] = []
-    for value in _as_list(row.get('Keywords')) + _as_list(row.get('Subject')):
-        if value not in seen:
-            seen.append(value)
-    return seen
+    """Every keyword on one photo: IPTC Keywords, XMP dc:subject and Lightroom's
+    lr:hierarchicalSubject unioned, de-duplicated, in order.
+
+    The union itself is `_lib.keyword_values_from_row`, the one reader every
+    tool shares (#252), so the catalog sees a `SOURCE:`/P-id keyword in
+    whichever field it sits - the same answer `fha process` and `fha lint`
+    get for the same file.
+    """
+    return keyword_values_from_row(row)
 
 
 def _best_group_date(edtfs: list[str]) -> tuple[str | None, int | None]:
@@ -3825,9 +3830,12 @@ def _run_exiftool_write(
     paths: list[Path], keyword: str, *, backup: OriginalBackup,
 ) -> dict[Path, str | None]:
     """
-    Add `keyword` to each file's embedded Keywords (exiftool's `+=` list-
-    append syntax - existing keywords, including SOURCE:/DATE:, are never
-    removed) and overwrite the original in place.
+    Add `keyword` to each file's embedded keywords and overwrite the original
+    in place. The write is `_lib.write_embedded_keywords`, the one keyword
+    writer: the P-id lands in IPTC Keywords, XMP dc:subject and Lightroom's
+    lr:hierarchicalSubject in one exiftool call, so a Lightroom library sees
+    it and its next metadata save keeps it (#252). Existing keywords,
+    including SOURCE:/DATE:, are never removed.
 
     One exiftool process per file, not one batched call across every
     candidate: exiftool reports a single non-zero exit for the whole
@@ -3856,17 +3864,8 @@ def _run_exiftool_write(
     """
     results: dict[Path, str | None] = {}
     for p in paths:
-        try:
-            backup.ensure(p)
-        except BackupRefused as e:
-            results[p] = str(e)
-            continue
-        cmd = ['exiftool', f'-keywords+={keyword}', '-overwrite_original_in_place', str(p)]
-        try:
-            proc = subprocess.run(cmd, check=False, capture_output=True, text=True, encoding='utf-8')
-        except FileNotFoundError as e:
-            raise RuntimeError(format_exiftool_error('fha photoindex tag-person')) from e
-        results[p] = None if proc.returncode == 0 else proc.stderr.strip()
+        results[p] = write_embedded_keywords(
+            p, add=[keyword], backup=backup, command='fha photoindex tag-person')
     return results
 
 

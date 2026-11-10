@@ -7,6 +7,7 @@ process.py - fha process: Stage A of the intake pipeline.
   fha process <photo> --more <file> ROLE[:copy]                  Attach a file to its source
   fha process refile <S-id> --to photos|documents [--type TYPE] [--dest SUB]
                                                                  Move a filed file across roots
+  fha process <photo> --variants one|separate                    Answer the front/back question up front
   fha process <file> --dry-run                                   Preview, write nothing
 
 This is the *deterministic* stage of processing an original into a Source
@@ -95,17 +96,23 @@ are found the user is asked whether they are *one* source (shared S-id) or
 #    _filename_has_source_id   - does a filename already carry _{S-id}? (refuse)
 #
 #  exiftool seams (monkeypatched in tests - process never imports photoindex)
-#    _run_exiftool_read_keywords - read embedded Keywords/Subject of one file
-#    _clear_read_only            - make a file writable before exiftool touches it (#110)
-#    _cleanup_exiftool_tmp       - delete a stray <file>_exiftool_tmp left by a failed write (#110)
-#    _format_exiftool_tmp_error  - name the real fix if a tmp-file collision still surfaces (#110)
+#    (all four delegate to _lib's shared keyword reader/writer - #252: every
+#     keyword goes into IPTC Keywords + XMP dc:subject + lr:hierarchicalSubject)
+#    _run_exiftool_read_keywords - every keyword embedded in one file (fields unioned)
+#    _clear_read_only / _cleanup_exiftool_tmp / _format_exiftool_tmp_error - #110 aliases
 #    _run_exiftool_embed_source  - write `SOURCE: {S-id}` into one file
 #    _run_exiftool_remove_source - remove a just-written `SOURCE: {S-id}`
+#    _embed_document_keyword     - the same keyword into a documents-root file (#252)
+#    _document_source_keyword    - the S-id a document already carries inside it
+#    _take_undo_copy / _restore_undo_copy / _discard_undo_copies - byte-exact
+#                                  rollback of a document keyword (a PDF append)
+#    _document_keyword_undo      - the undo step that restores those bytes
+#    _refuse_if_document_belongs_elsewhere - the embedded-ID preflight for companions
 #    _open_backup                - the run's safety-copy policy, announced (TOOLING §13f)
 #    _flush_backup_messages      - print its notices (warnings to stderr)
 #    _read_source_keyword        - the FIRST S-id embedded in a photo, or None
 #    _read_all_source_keywords   - every distinct S-id embedded in a photo (refile identity check)
-#    ExiftoolUnavailableError    - exiftool itself missing, distinct from a per-file read failure
+#    ExiftoolUnavailableError    - (from _lib) exiftool missing, vs a per-file read failure
 #
 #  Record scaffolding
 #    _scaffold_text            - the §14 source-record template as text
@@ -131,7 +138,7 @@ are found the user is asked whether they are *one* source (shared S-id) or
 #    _score_photo_group        - TOOLING §15b evidence score (mirrors photoindex)
 #
 #  Top-level operations
-#    process_document          - M7.1: rename + scaffold (transactional)
+#    process_document          - M7.1: rename + keyword (where the format allows) + scaffold
 #    process_photo             - M7.2: keyword + scaffold (transactional)
 #    _photo_root_type_note     - the refile next step for a typed photos-root file
 #    process_photo_group       - M7.3: one S-id over a variation set (transactional)
@@ -169,9 +176,9 @@ import json
 import os
 import re
 import shutil
-import stat
 import subprocess
 import sys
+import tempfile
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import yaml
@@ -188,23 +195,29 @@ from _lib import (
     SOURCE_PURPOSE_BLOCK,
     SOURCE_TYPES,
     BackupRefused,
+    EMBEDDED_KEYWORD_DOCUMENT_SUFFIXES,
+    ExiftoolUnavailableError,
     FhaConfigError,
     OriginalBackup,
     ParsedName,
     append_paragraph_to_section,
     bundle_role,
     claims_edit_problem,
+    clear_read_only_bit,
+    cleanup_exiftool_tmp,
     configure_utf8_stdout,
     edtf_confidence,
     find_source_record_path,
     format_edtf_error,
     format_exiftool_error,
+    format_exiftool_tmp_error,
     format_source_type_error,
     fmt_id_display,
     frontmatter_fence_span,
     grouping_stem,
     id_type_of,
     is_valid_id,
+    keyword_values_from_row,
     load_fha_yaml,
     mint_ids,
     normalize_date,
@@ -212,6 +225,7 @@ from _lib import (
     parse_frontmatter_strict,
     parse_media_filename,
     path_to_alias,
+    read_embedded_keywords,
     read_record,
     read_text_exact,
     reapply_newline,
@@ -224,6 +238,7 @@ from _lib import (
     select_variation_primary,
     is_working_copy,
     variant_role,
+    write_embedded_keywords,
     write_text_exact_atomic,
     yaml_inline,
     safe_load_yaml,
@@ -538,175 +553,63 @@ def _filename_has_source_id(file_path: Path) -> str | None:
 # photoindex's (tools never import tools - TOOLING §15). Tests monkeypatch these
 # two functions to exercise the photo paths without exiftool on PATH.
 
-class ExiftoolUnavailableError(RuntimeError):
-    """exiftool itself could not be run at all (missing from PATH).
-
-    Distinct from a per-file read/parse failure (a nonzero exit reading THIS
-    file, or invalid JSON on its stdout) - both of those mean exiftool IS
-    present and runnable, it just did not like this particular file. A caller
-    that soft-fails when the environment lacks exiftool (the refile identity
-    check's weaker containment-only fallback) must catch narrowly, only this,
-    rather than blanket `RuntimeError` - otherwise a photo that is unreadable
-    for some OTHER reason but still carries a conflicting embedded source id
-    would silently pass the identity check instead of refusing (P1 audit
-    finding on `fha process refile`).
-    """
+# `ExiftoolUnavailableError` now lives in `_lib` with the shared keyword
+# layer (#252) and is imported above under the same name, so `except
+# process.ExiftoolUnavailableError` and every caller here keep working.
 
 
 def _run_exiftool_read_keywords(file_path: Path) -> list[str]:
-    """Return the embedded Keywords/Subject of one file (union, order-preserving).
+    """Return every keyword embedded in one file (all keyword fields unioned).
 
-    Used only to detect an already-embedded `SOURCE:` keyword before processing
-    a photo. Raises `ExiftoolUnavailableError` (a `RuntimeError` subclass) if
-    exiftool itself is missing - an environment problem the caller surfaces,
-    distinct from "no keyword present"; raises plain `RuntimeError` for every
-    other read failure (nonzero exit, invalid JSON), since exiftool ran but
-    this specific read did not succeed.
+    Used to detect an already-embedded `SOURCE:` keyword and the P-ids a photo
+    already carries. A thin seam over `_lib.read_embedded_keywords` (the ONE
+    keyword reader - IPTC `Keywords`, XMP `dc:subject` and Lightroom's
+    `lr:hierarchicalSubject`, #252) that tests monkeypatch. Raises
+    `ExiftoolUnavailableError` (a RuntimeError) when exiftool is missing and
+    plain RuntimeError for any other read failure.
     """
-    cmd = ['exiftool', '-j', '-Keywords', '-Subject', str(file_path)]
-    try:
-        proc = subprocess.run(cmd, check=False, capture_output=True, text=True, encoding='utf-8')
-    except FileNotFoundError as e:
-        raise ExiftoolUnavailableError(format_exiftool_error('fha process')) from e
-    if proc.returncode != 0:
-        raise RuntimeError(f'exiftool failed reading {file_path.name}: {proc.stderr.strip()}')
-    try:
-        rows = json.loads(proc.stdout or '[]')
-    except json.JSONDecodeError as e:
-        raise RuntimeError(f'exiftool returned invalid JSON: {e}') from e
-    if not rows:
-        return []
-    row = rows[0]
-    out: list[str] = []
-    for key in ('Keywords', 'Subject'):
-        val = row.get(key)
-        if val is None:
-            continue
-        for v in (val if isinstance(val, list) else [val]):
-            s = str(v)
-            if s not in out:
-                out.append(s)
-    return out
+    return read_embedded_keywords(file_path, command='fha process')
 
 
-# The literal suffix exiftool's `-overwrite_original_in_place` appends to the
-# temp file it writes through before swapping it in for the real one - no dot,
-# no configurability, verified against the issue's own reproduction (#110).
+# The #110 hygiene helpers moved to `_lib` with the shared writer; these names
+# stay so existing callers and tests read the same.
 _EXIFTOOL_TMP_SUFFIX = '_exiftool_tmp'
-_EXIFTOOL_TMP_EXISTS_RE = re.compile(r'temporary file already exists', re.I)
-
-
-def _clear_read_only(file_path: Path) -> None:
-    """Make `file_path` writable before exiftool's own write, best-effort (#110).
-
-    `_relocate_from_inbox` is a plain move/rename, which preserves whatever
-    permission bits a file already had - an inbox-staged original that
-    arrived read-only (common: copied off read-only media, or a personal
-    "protect this" habit) reaches the embed step still locked, and exiftool
-    then fails with a write-permission error that names no fix. Nothing in
-    this archive's design requires a filed original to stay read-only for
-    fha's own subsequent keyword write, so this clears the bit unconditionally
-    before every embed/remove attempt. Best-effort and silent on failure: if
-    clearing it does not work either, exiftool's own error still surfaces
-    exactly as it did before this existed - this is not a new failure mode,
-    only a chance to avoid the old one.
-    """
-    try:
-        mode = file_path.stat().st_mode
-        file_path.chmod(mode | stat.S_IWRITE)
-    except OSError:
-        pass
-
-
-def _cleanup_exiftool_tmp(file_path: Path) -> None:
-    """Delete a stray `<file>_exiftool_tmp` left beside `file_path` (#110).
-
-    exiftool's `-overwrite_original_in_place` writes through a temp file
-    named literally `<path>_exiftool_tmp` and renames it over the original
-    only on success; a write that fails part-way (e.g. the destination was
-    read-only) leaves that temp file behind. A later attempt against the same
-    destination then trips exiftool's OWN "temporary file already exists"
-    guard - a second, different-looking error that names the wrong cause and
-    masks that the real one (e.g. read-only) may already be fixed. Called
-    both before an embed/remove attempt (clears a stale file left by an
-    EARLIER failed run) and after one fails (clears whatever THIS attempt
-    left), so a retry only ever meets the real, current cause. Best-effort:
-    the rare case a locked temp file cannot be deleted still surfaces via
-    `_format_exiftool_tmp_error` naming the manual fix.
-    """
-    tmp_path = file_path.with_name(file_path.name + _EXIFTOOL_TMP_SUFFIX)
-    try:
-        tmp_path.unlink(missing_ok=True)
-    except OSError:
-        pass
-
-
-def _format_exiftool_tmp_error(stderr_text: str, file_path: Path) -> str:
-    """Rewrite exiftool's "temp file already exists" stderr to name the fix (#110).
-
-    `_cleanup_exiftool_tmp` runs before every embed/remove attempt, so this
-    text should be rare - it only reaches a user if the stray temp file could
-    not be deleted (e.g. locked by another process). When it does, the raw
-    exiftool text alone reads as an unrelated new failure rather than the
-    leftover of a previous one; naming the exact file and the delete-then-
-    retry fix keeps the next step honest (AGENTS.md: every error names the
-    fix, not just the symptom).
-    """
-    if not _EXIFTOOL_TMP_EXISTS_RE.search(stderr_text):
-        return stderr_text
-    tmp_path = file_path.with_name(file_path.name + _EXIFTOOL_TMP_SUFFIX)
-    return (
-        f'{stderr_text} - this is a stray file left by a previous failed attempt, '
-        f'not a new problem; delete {tmp_path} and try again'
-    )
+_clear_read_only = clear_read_only_bit
+_cleanup_exiftool_tmp = cleanup_exiftool_tmp
+_format_exiftool_tmp_error = format_exiftool_tmp_error
 
 
 def _run_exiftool_embed_source(
     file_path: Path, s_id: str, extra_keywords: list[str] | None = None,
-    *, backup: OriginalBackup,
+    *, backup: OriginalBackup, remove_keywords: list[str] | None = None,
 ) -> str | None:
-    """Append `SOURCE: {s_id}` (and any extra keywords) to a photo's Keywords.
+    """Write `SOURCE: {s_id}` (and any extra keywords) into one file.
 
-    Uses exiftool's `+=` list-append so existing keywords (DATE:, P-ids) are
-    preserved - the only sanctioned write to a photo original (AGENTS.md: photos
-    are never renamed, but spec'd keyword writes through fha tools are allowed).
-    `extra_keywords` carries bare P-id strings (e.g. `['P-de957bcda1']`) added
-    in the same call so SOURCE: and people are atomic: one exiftool invocation
-    per file, one rollback path if the record scaffold fails.
+    Goes through `_lib.write_embedded_keywords`, so the keyword lands in IPTC
+    `Keywords`, XMP `dc:subject` and `lr:hierarchicalSubject` alike, in one
+    exiftool call (#252) - the fields Lightroom reads, so the ID shows in the
+    catalog and survives its next metadata save. Existing keywords (DATE:,
+    P-ids, the human's own) are never touched. `extra_keywords` carries bare
+    P-id strings written in the same call, so SOURCE: and people are atomic:
+    one exiftool invocation per file, one rollback path.
 
     `backup` is the run's safety-copy policy (`_lib.OriginalBackup`, TOOLING
-    §13f). This is the write that matters most to it: it is the FIRST time fha
-    touches the file, so the copy it takes is the photo exactly as the human's
-    camera or scanner left it. A copy that fails refuses the write, returned
-    through the same per-file error string an exiftool failure uses, so the
-    caller's existing rollback runs unchanged.
+    §13f). For a photo this is the FIRST time fha touches the file, so the
+    copy it takes is the photo as the camera or scanner left it; a copy that
+    fails refuses the write, returned through the same per-file error string
+    an exiftool failure uses, so the caller's rollback runs unchanged. The
+    read-only bit and any stray `_exiftool_tmp` are cleared first (#110).
 
-    Returns None on success, the stderr text on a per-file failure; raises
-    RuntimeError only when exiftool itself is absent.
-
-    Before writing: clears any read-only bit on `file_path` and any stray
-    `_exiftool_tmp` left beside it by an earlier failed attempt (#110) - both
-    are cheap, best-effort, and mean an ordinary retry after fixing the real
-    cause (e.g. clearing read-only by hand) just works, instead of tripping a
-    second, differently-worded failure that hides the first one was fixed.
+    Returns None on success, the failure text on a per-file failure (including
+    exiftool exiting 0 while reporting that it wrote nothing); raises
+    `ExiftoolUnavailableError` (a RuntimeError) only when exiftool is absent.
     """
-    try:
-        backup.ensure(file_path)
-    except BackupRefused as e:
-        return str(e)
-    _clear_read_only(file_path)
-    _cleanup_exiftool_tmp(file_path)
     keywords = [f'SOURCE: {s_id}'] + (extra_keywords or [])
-    kw_args = [f'-keywords+={kw}' for kw in keywords]
-    cmd = ['exiftool'] + kw_args + ['-overwrite_original_in_place', str(file_path)]
-    try:
-        proc = subprocess.run(cmd, check=False, capture_output=True, text=True, encoding='utf-8')
-    except FileNotFoundError as e:
-        raise RuntimeError(format_exiftool_error('fha process')) from e
-    if proc.returncode == 0:
-        return None
-    _cleanup_exiftool_tmp(file_path)
-    return _format_exiftool_tmp_error(proc.stderr.strip(), file_path)
+    # `remove_keywords`: another spelling of this same source's keyword the
+    # file already carries (`SOURCE: S-J3Z…` in capitals), replaced in the
+    # same call so the file does not end up holding the ID twice.
+    return write_embedded_keywords(file_path, add=keywords, remove=remove_keywords or (),
+                                   backup=backup, command='fha process')
 
 
 def _run_exiftool_remove_source(
@@ -715,43 +618,189 @@ def _run_exiftool_remove_source(
 ) -> str | None:
     """Remove a just-added SOURCE keyword (and any extra keywords) during rollback.
 
-    The normal photo path writes the keyword before the record, because a
-    failed exiftool write must abort without a dangling source record. If the
-    later record write fails, this inverse operation restores the photo to its
-    pre-run identity state so the command remains transactional. `extra_keywords`
-    must match what was passed to `_run_exiftool_embed_source` so the rollback
-    removes exactly what was added.
+    The keyword is written before the record, because a failed exiftool write
+    must abort without a dangling source record. If the later record write
+    fails, this inverse restores the file's pre-run identity so the command
+    stays transactional. `extra_keywords` must match what was passed to
+    `_run_exiftool_embed_source`, and callers pass only values that were NOT
+    there before this run: the removal takes a value out of every keyword
+    field, so rolling back a P-id that predated the run would delete it.
 
-    It takes the same `backup` guard as the forward write, and for the same
-    reason: this is a write to an original photo file, and the rule is on the
-    act of writing, not on the caller's intention. In practice the copy is
-    already there - the forward write made it, or refused and left nothing to
-    roll back - so this call costs one `exists()` check and can only refuse in
-    the case where the forward write would have refused too.
+    Same writer, same `backup` guard as the forward write - the rule is on the
+    act of writing into an original, not on the caller's intention. In
+    practice the copy already exists, so this costs one `exists()` check.
+    """
+    keywords = [f'SOURCE: {s_id}'] + (extra_keywords or [])
+    return write_embedded_keywords(file_path, remove=keywords, backup=backup,
+                                   command='fha process')
 
-    Shares the same read-only-clear / stray-tmp-cleanup discipline as
-    `_run_exiftool_embed_source` (#110) - the forward write already clears
-    both, so in practice this is a no-op here, but the rollback is its own
-    exiftool invocation and can fail for the identical reason if something
-    else re-locked the file mid-run.
+
+def _document_takes_keyword(path: Path) -> bool:
+    """Can this documents-root file hold an embedded `SOURCE:` keyword (#252)?
+
+    TIFF, JPEG, PNG and PDF can. A recording, a text transcript or a Word file
+    cannot, and is skipped without a word - its filename and record carry the
+    identity, as they always did.
+    """
+    return path.suffix.lower() in EMBEDDED_KEYWORD_DOCUMENT_SUFFIXES
+
+
+def _embed_document_keyword(
+    path: Path, sid: str, *, backup: OriginalBackup,
+) -> tuple[str | None, Path | None]:
+    """Write `SOURCE: {sid}` into a documents-root file.
+
+    Returns `(warning, undo_copy)`: `(None, copy)` when the keyword went in,
+    `(text, None)` when it did not.
+
+    The third identity carrier for a document (SPEC §14: filename, inventory,
+    embedded keyword where supported). It is a backup for the other two, not
+    the only one - the file was just renamed to end in `_{sid}` and the record
+    lists it - so unlike a photo, a document whose keyword cannot be written
+    (exiftool not installed, a password-protected PDF exiftool cannot update,
+    a safety copy that was refused) is still processed. The caller prints the
+    returned warning, which says what happened and that nothing is lost.
+
+    `undo_copy` is the file's bytes exactly as they were before the write,
+    taken first (#253 review): removing a keyword again does not give a PDF
+    its old bytes back - exiftool edits a PDF by appending an update - so a
+    rollback puts this copy back instead (`_document_keyword_undo`) and the
+    original is byte-for-byte what it was. A copy that cannot be made skips
+    the keyword rather than write without a way back. The caller deletes the
+    copy once the run has succeeded (`_discard_undo_copies`).
     """
     try:
-        backup.ensure(file_path)
-    except BackupRefused as e:
-        return str(e)
-    _clear_read_only(file_path)
-    _cleanup_exiftool_tmp(file_path)
-    keywords = [f'SOURCE: {s_id}'] + (extra_keywords or [])
-    kw_args = [f'-keywords-={kw}' for kw in keywords]
-    cmd = ['exiftool'] + kw_args + ['-overwrite_original_in_place', str(file_path)]
+        undo_copy = _take_undo_copy(path)
+    except OSError as e:
+        return (f'WARNING: {path.name} was filed without its SOURCE: {sid} keyword inside '
+                f'it (no undo copy could be made first: {e}). Nothing is lost - its '
+                'filename and its source record still tie it to the source.'), None
+    missing_exiftool = False
     try:
-        proc = subprocess.run(cmd, check=False, capture_output=True, text=True, encoding='utf-8')
-    except FileNotFoundError as e:
-        raise RuntimeError(format_exiftool_error('fha process')) from e
-    if proc.returncode == 0:
+        existing = _run_exiftool_read_keywords(path)
+    except RuntimeError:
+        existing = []
+    canonical = f'SOURCE: {sid}'
+    variants = [kw for kw in existing if kw != canonical
+                and (m := _SOURCE_KEYWORD_RE.match(kw.strip()))
+                and m.group(1).lower() == sid.lower()]
+    try:
+        err = _run_exiftool_embed_source(
+            path, sid, backup=backup, **({'remove_keywords': variants} if variants else {}))
+    except ExiftoolUnavailableError:
+        err, missing_exiftool = 'exiftool is not installed on this computer', True
+    except OSError as e:
+        err = f'exiftool could not be started: {e}'
+    if err is None:
+        return None, undo_copy
+    _restore_undo_copy(undo_copy, path)
+    return (f'WARNING: {path.name} was filed without its SOURCE: {sid} keyword inside '
+            f'it ({err}). Nothing is lost - its filename and its source record still '
+            'tie it to the source; the keyword is only a spare copy of that link.'
+            + (' Install exiftool (`fha doctor` checks for it) and the scans you file '
+               'after that will carry it.' if missing_exiftool else '')), None
+
+
+def _source_lists_a_photo(archive_root: Path, sid: str) -> bool:
+    """Does the source record for `sid` list a photos-root file?"""
+    record = find_source_record_path(archive_root, sid)
+    if record is None:
+        return False
+    try:
+        files = (read_record(record).get('meta') or {}).get('files') or []
+    except Exception:
+        return False
+    return any(str(e.get('file', '') if isinstance(e, dict) else e)
+               .replace('\\', '/').split('/', 1)[0] == _PHOTO_DIR for e in files)
+
+
+def _take_undo_copy(path: Path) -> Path:
+    """Copy `path`'s bytes to a private temp file; return the copy's path."""
+    fd, name = tempfile.mkstemp(prefix='fha-undo-', suffix=path.suffix)
+    os.close(fd)
+    try:
+        shutil.copy2(path, name)
+    except OSError:
+        Path(name).unlink(missing_ok=True)
+        raise
+    return Path(name)
+
+
+def _restore_undo_copy(undo_copy: Path, path: Path) -> None:
+    """Put `path` back to the bytes `undo_copy` holds, then drop the copy.
+
+    Raises OSError if the bytes could not be put back; the copy is then KEPT,
+    so the caller's report can name where the original bytes still are.
+    """
+    _clear_read_only(path)
+    shutil.copy2(undo_copy, path)
+    undo_copy.unlink(missing_ok=True)
+
+
+def _discard_undo_copies(copies) -> None:
+    """Delete undo copies a successful run no longer needs (best-effort)."""
+    for copy in copies:
+        try:
+            Path(copy).unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _document_source_keyword(path: Path) -> str | None:
+    """The S-id a documents-root file already carries INSIDE it, or None.
+
+    The embedded keyword exists for exactly the day a sync tool or an export
+    renames a processed scan: its filename no longer ends in `_{S-id}`, and
+    without this check `fha process` would take it for a new file and mint
+    it a second ID. Best-effort by design - a document's keyword is a spare
+    copy of its identity, so a machine without exiftool, or a file exiftool
+    cannot read, simply skips the check rather than blocking the filing.
+    """
+    if not _document_takes_keyword(path):
         return None
-    _cleanup_exiftool_tmp(file_path)
-    return _format_exiftool_tmp_error(proc.stderr.strip(), file_path)
+    try:
+        return _read_source_keyword(path)
+    except RuntimeError:
+        return None
+
+
+def _refuse_if_document_belongs_elsewhere(path: Path, sid: str | None, *, role: str) -> None:
+    """Refuse before any rename or write if a document file that is about
+    to receive a `SOURCE:` keyword already carries a DIFFERENT source's.
+
+    The one embedded-identity preflight every documents-root write path runs
+    (#253 review sweep): the primary's own check is in `process_document`;
+    this covers the companions processed with it - the `-back` scan pulled in
+    automatically, `--more`, a bundle's documents and a refile out of the
+    documents root - so no file is ever given a second source. `sid` None
+    means "no source minted yet": any embedded ID refuses.
+    """
+    embedded = _document_source_keyword(path)
+    if embedded is None or (sid is not None and embedded == sid.lower()):
+        return
+    shown = fmt_id_display(embedded)
+    raise ProcessError(
+        f'{path.name} ({role}) already carries SOURCE: {shown} inside the file, so it '
+        'belongs to that source - another program has probably changed its name. '
+        'Filing it here would give one file two sources. Run '
+        f'`fha find {shown}` to see the record it belongs to. Nothing was changed.')
+
+
+def _document_keyword_undo(path: Path, undo_copy: Path):
+    """An undo step that puts a document back to its exact pre-keyword bytes.
+
+    Byte-for-byte, not "remove the keyword again": exiftool appends an update
+    to a PDF rather than rewriting it, so a removal leaves the PDF changed, and
+    a document that already carried this same source's keyword keeps it.
+    Raises on failure (naming where the original bytes are) so `_run_undo`
+    reports it instead of claiming a clean rollback.
+    """
+    def _undo() -> None:
+        try:
+            _restore_undo_copy(undo_copy, path)
+        except OSError as e:
+            raise RuntimeError(f'{e}; its original bytes are kept at {undo_copy}') from e
+    return _undo
 
 
 def _open_backup(
@@ -1675,13 +1724,7 @@ def _photo_meta_from_row(row: dict) -> dict:
     a fake metadata row - the parsing is where the tools have to agree, and the
     subprocess is what a test cannot run.
     """
-    keywords: list[str] = []
-    for key in ('Keywords', 'Subject'):
-        val = row.get(key)
-        if val is None:
-            continue
-        for v in (val if isinstance(val, list) else [val]):
-            keywords.append(str(v))
+    keywords = keyword_values_from_row(row)
 
     date_pattern = None
     for kw in keywords:
@@ -1711,7 +1754,8 @@ def _run_exiftool_read_meta(file_path: Path) -> dict:
     than fail.
     """
     cmd = ['exiftool', '-j', '-Caption-Abstract', '-XMP-dc:Description',
-           '-UserComment', '-DateTimeOriginal', '-Keywords', '-Subject', str(file_path)]
+           '-UserComment', '-DateTimeOriginal', '-Keywords', '-Subject',
+           '-HierarchicalSubject', str(file_path)]
     try:
         proc = subprocess.run(cmd, check=False, capture_output=True, text=True, encoding='utf-8')
     except FileNotFoundError as e:
@@ -1830,6 +1874,7 @@ def process_document(
     source_id: str | None = None,
     report: dict | None = None,
     back_sibling: Path | None = None,
+    backup: OriginalBackup | None = None,
 ) -> int:
     """M7.1: rename a documents-root original and scaffold its source record.
 
@@ -1859,12 +1904,36 @@ def process_document(
     function falls back to its own same-folder discovery via
     `_find_back_sibling` - covering the common case of a back scan already
     co-located with its primary, just without inbox-awareness.
+
+    A renamed file whose format holds embedded metadata (TIFF, JPEG, PNG,
+    PDF) also gets the `SOURCE: {S-id}` keyword, through the same writer and
+    the same `originals_backup:` guard as a photo (#252 item 4), and the
+    rollback takes it back out. See `_embed_document_keyword` for why a
+    keyword that cannot be written warns instead of failing the run.
     """
     if existing := _filename_has_source_id(file_path):
         raise ProcessError(
             f'{file_path.name} already carries an S-id ({existing.upper()}); '
             'it looks already processed. Refusing to mint a second ID.'
         )
+    if embedded := _document_source_keyword(real_path if real_path is not None else file_path):
+        shown = fmt_id_display(embedded)
+        message = (
+            f'{file_path.name} already carries SOURCE: {shown} inside the file, so it '
+            'was processed before - another program has probably changed its name. '
+            f'Refusing to mint a second ID. Run `fha find {shown}` to see the name '
+            'its record lists, and rename the file back to that.')
+        if _source_lists_a_photo(archive_root, embedded):
+            # #253 review: the other way this happens is a photo from the
+            # library moved by hand to be filed as a record - for which
+            # "rename it back" is the wrong advice.
+            message += (
+                ' If it is a photo from your library that you want filed with your '
+                'records instead, put it back where it was in the photo library and run '
+                f'`fha process refile {shown} --to documents --type '
+                f'{source_type if source_type != _DEFAULT_DOCUMENT_TYPE else "<type>"}` - '
+                'that moves it out of the photo library and updates its record.')
+        raise ProcessError(message)
 
     documents_root = resolve_path('documents', fha_config, archive_root)
     _require_contained(
@@ -1903,6 +1972,8 @@ def process_document(
     # file's bytes actually are right now.
     if back_sibling is None:
         back_sibling = _find_back_sibling(real_path if real_path is not None else file_path)
+    if back_sibling is not None and back_sibling.exists():
+        _refuse_if_document_belongs_elsewhere(back_sibling, None, role='the back scan beside it')
 
     # DNA sources always carry restricted: true and must live under
     # documents/dna/ (SPEC §8.5.5, lint E017) - refuse before scaffolding a
@@ -1987,8 +2058,12 @@ def process_document(
     # the preview names the full relative path, not just the new filename.
     dest_display = (new_name if new_path.parent == file_path.parent
                     else _rel(new_path, archive_root))
+    keyword_targets = [p for p in (new_path, back_new_path)
+                       if p is not None and _document_takes_keyword(p)]
 
     if dry_run:
+        if keyword_targets:
+            _open_backup(archive_root, fha_config, backup)
         print(f'[dry-run] Would mint {sid}')
         print(f'[dry-run] Would rename {file_path.name} -> {dest_display}')
         if back_sibling is not None:
@@ -1996,6 +2071,8 @@ def process_document(
                             else _rel(back_new_path, archive_root))
             print(f'[dry-run] Would also rename {back_sibling.name} -> {back_display} '
                   f'(role: back - found beside {file_path.name})')
+        for target in keyword_targets:
+            print(f'[dry-run] Would embed SOURCE: {sid} in {target.name}')
         print(f'[dry-run] Would scaffold {_rel(record_path, archive_root)}')
         if sidecar is not None:
             print(f'[dry-run] Would delete stub {sidecar.name} (its notes -> ## Notes)')
@@ -2005,6 +2082,11 @@ def process_document(
     # name exactly what it left behind - a swallowed undo failure that still
     # reported "rolled back" is the whole hazard here.
     undo: list[tuple[str, object]] = []
+    keyword_warnings: list[str] = []
+    embedded_in: list[Path] = []
+    undo_copies: list[Path] = []
+    if keyword_targets:
+        backup = _open_backup(archive_root, fha_config, backup)
     try:
         new_path.parent.mkdir(parents=True, exist_ok=True)
         file_path.rename(new_path)
@@ -2017,6 +2099,19 @@ def process_document(
             undo.append((f'move {back_new_path.name} back to {back_sibling.name}',
                          lambda: back_new_path.rename(back_sibling)))
 
+        # After the renames (the keyword goes into the file at its final name)
+        # and before the record, so the undo list strips it before moving the
+        # file back.
+        for target in keyword_targets:
+            warning, undo_copy = _embed_document_keyword(target, sid, backup=backup)
+            if warning is not None:
+                keyword_warnings.append(warning)
+                continue
+            embedded_in.append(target)
+            undo_copies.append(undo_copy)
+            undo.append((f'remove the SOURCE: {sid} keyword from {target.name}',
+                         _document_keyword_undo(target, undo_copy)))
+
         record_dir.mkdir(parents=True, exist_ok=True)
         record_path.write_text(text, encoding='utf-8')
         undo.append((f'delete the half-written record {record_path.name}',
@@ -2024,6 +2119,11 @@ def process_document(
 
         if sidecar is not None:
             sidecar.unlink()
+    except (KeyboardInterrupt, SystemExit):
+        # Ctrl+C mid-run is not a rollback (that path stays as it was), but the
+        # private pre-write copies must not be left behind in TEMP (#253 review).
+        _discard_undo_copies(undo_copies)
+        raise
     except Exception as e:
         failed = _run_undo(undo)
         if failed:
@@ -2037,6 +2137,9 @@ def process_document(
             print(f'ERROR: processing failed, rolled back: {e}', file=sys.stderr)
         return EXIT_FAILURE
 
+    _discard_undo_copies(undo_copies)
+    if keyword_targets:
+        _flush_backup_messages(backup)
     print(f'Minted {sid}')
     print(f'Renamed {file_path.name} -> {dest_display}')
     if back_sibling is not None:
@@ -2044,6 +2147,10 @@ def process_document(
                         else _rel(back_new_path, archive_root))
         print(f'Also renamed {back_sibling.name} -> {back_display} (role: back - '
               f'found beside {file_path.name} and attached automatically)')
+    for target in embedded_in:
+        print(f'Embedded SOURCE: {sid} in {target.name}')
+    for warning in keyword_warnings:
+        print(warning, file=sys.stderr)
     print(f'Scaffolded {_rel(record_path, archive_root)}')
     if sidecar is not None:
         print(f'Consumed stub {sidecar.name} (notes -> ## Notes)')
@@ -2598,6 +2705,7 @@ def _process_variation_set(
     source_id: str | None = None,
     report: dict | None = None,
     backup: OriginalBackup | None = None,
+    variants: str | None = None,
 ) -> int:
     """Surface a variation set and process it per the human's one/separate/skip choice.
 
@@ -2618,6 +2726,13 @@ def _process_variation_set(
     variation set always mints through the interactive one/separate/skip
     choice, which `fha serve` cannot drive (TOOLING §6's prompt needs a
     human), so no caller ever has a previewed id to pass for those branches.
+
+    `variants` is `--variants one|separate` (#249): the answer to the prompt,
+    given up front, so an agent or a script can process a front/back pair
+    without a keyboard. Without it the prompt is asked as before; when there
+    is no one to answer it (stdin closed or empty), the run stops with a
+    sentence naming the flag rather than Python's bare "EOF when reading a
+    line", and nothing has been written.
     """
     members = sorted(members)
     real_paths = real_paths or {}
@@ -2640,8 +2755,21 @@ def _process_variation_set(
             label = f'[role: {role}{f", copy {copy}" if copy else ""}]'
         print(f'  {m.name}  {label}')
 
-    answer = _prompt('Process as ONE source (shared S-id) or separately? '
-                     '[one / separate / skip]: ').strip().lower()
+    if variants:
+        answer = variants
+        print(f'Processing them as {"ONE source" if variants == "one" else "separate sources"} '
+              f'(--variants {variants}).')
+    else:
+        try:
+            answer = _prompt('Process as ONE source (shared S-id) or separately? '
+                             '[one / separate / skip]: ').strip().lower()
+        except EOFError:
+            raise ProcessError(
+                f'{primary.name} has {len(members) - 1} variation(s) beside it, and '
+                'there is no one here to answer whether they are one photo or '
+                'separate ones. Re-run with --variants one (one source for the '
+                'whole set - a front and its back, say) or --variants separate '
+                '(a source for each file). Nothing was written.') from None
     if answer.startswith('one') or answer == 'o':
         return process_photo_group(archive_root, fha_config, members,
                                    slug=slug, title=title, source_date=source_date,
@@ -2699,6 +2827,7 @@ def process_folder(
     source_type: str | None = None,
     people: list[str] | None = None,
     backup: OriginalBackup | None = None,
+    variants: str | None = None,
 ) -> int:
     """M7.3: triage a folder's unprocessed photos, then process selected groups.
 
@@ -2742,7 +2871,14 @@ def process_folder(
         extra = f' (+{len(c["members"]) - 1} variant)' if len(c['members']) > 1 else ''
         print(f'  {i:>2}. {c["primary"].name}{extra}  score={c["score"]:+d}  [{signals}]')
 
-    answer = _prompt('Select groups to process (numbers, comma-list, or "all"; blank to skip): ')
+    try:
+        answer = _prompt('Select groups to process (numbers, comma-list, or "all"; blank to skip): ')
+    except EOFError:
+        raise ProcessError(
+            f'Folder triage asks which of the {len(scored)} group(s) in {folder.name} to '
+            'process, and there is no one here to answer. Process one photo at a '
+            'time instead, e.g. `fha process <photo> --variants one`. Nothing was '
+            'written.') from None
     chosen = _parse_selection(answer, len(scored))
     if not chosen:
         print('Nothing selected.')
@@ -2759,7 +2895,7 @@ def process_folder(
         rc = max(rc, _process_variation_set(
             archive_root, fha_config, members, slug=None, title=None,
             source_date=source_date, dry_run=dry_run, source_type=source_type,
-            people=people, backup=backup))
+            people=people, backup=backup, variants=variants))
     return rc
 
 
@@ -2915,11 +3051,20 @@ def process_bundle(
                 entry['copy'] = copy
             if hint.get('is_primary'):
                 entry['is_primary'] = True
-            plan.append({'src': asset, 'kind': 'document', 'dest': dest, 'embed': False, 'entry': entry})
+            plan.append({'src': asset, 'kind': 'document', 'dest': dest,
+                         'embed': _document_takes_keyword(dest), 'entry': entry})
 
     for item in plan:
         if item['dest'].exists():
             raise ProcessError(f'destination already exists: {item["dest"].name}')
+        if item['kind'] == 'document' and (
+                doc_sid := _document_source_keyword(item['src'])):
+            raise ProcessError(
+                f'{item["src"].name} already carries SOURCE: {fmt_id_display(doc_sid)} '
+                'inside the file, so it was processed before - another program has '
+                'probably changed its name. Take it out of the bundle (run `fha find '
+                f'{fmt_id_display(doc_sid)}` to see the record it belongs to), then '
+                'process the bundle again. Nothing was changed.')
         if item['kind'] == 'photo':
             existing, _ = _read_existing_source_keyword(item['src'], dry_run)
             if existing:
@@ -2950,19 +3095,27 @@ def process_bundle(
             _open_backup(archive_root, fha_config, backup)
         print(f'[dry-run] Would mint {sid} for bundle {folder.name} ({len(assets)} files)')
         for item in plan:
-            verb = 'move + embed SOURCE in' if item['kind'] == 'photo' else 'rename + file'
+            if item['kind'] == 'photo':
+                verb = 'move + embed SOURCE in'
+            elif item['embed']:
+                verb = 'rename + file + embed SOURCE in'
+            else:
+                verb = 'rename + file'
             print(f'[dry-run] Would {verb} {item["src"].name} -> '
                   f'{_rel(item["dest"], archive_root)}')
         print(f'[dry-run] Would scaffold {_rel(record_path, archive_root)}')
         print(f'[dry-run] Would delete the dissolved bundle folder {folder.name}')
         return EXIT_CLEAN
 
-    # Only when the bundle actually holds a photo to keyword: a bundle of
-    # documents is renamed and filed, never written into.
+    # Only when the bundle holds a file to keyword (a photo, or a document in
+    # a format that holds metadata): a bundle of recordings and transcripts
+    # is renamed and filed, never written into.
     if any(item['embed'] for item in plan):
         backup = _open_backup(archive_root, fha_config, backup)
     undo: list = []
     embedded: list[tuple[Path, str]] = []
+    keyword_warnings: list[str] = []
+    undo_copies: list[Path] = []
     notes_text = notes_path.read_text(encoding='utf-8')
     try:
         for item in plan:
@@ -2971,7 +3124,18 @@ def process_bundle(
             src.rename(dest)
             undo.append((f'move {dest.name} back to {src.name}',
                          lambda s=src, d=dest: d.rename(s)))
-            if item['embed']:
+            if item['embed'] and item['kind'] == 'document':
+                # A document's filename already carries the S-id, so a keyword
+                # that cannot be written warns rather than failing the bundle.
+                warning, undo_copy = _embed_document_keyword(dest, sid, backup=backup)
+                if warning is not None:
+                    keyword_warnings.append(warning)
+                    item['embed'] = False
+                else:
+                    undo_copies.append(undo_copy)
+                    undo.append((f'remove the SOURCE: {sid} keyword from {dest.name}',
+                                 _document_keyword_undo(dest, undo_copy)))
+            elif item['embed']:
                 err = _run_exiftool_embed_source(dest, sid, backup=backup)
                 if err is not None:
                     raise RuntimeError(f'exiftool could not embed SOURCE keyword in {dest.name}: {err}')
@@ -2986,6 +3150,11 @@ def process_bundle(
         undo.append((f'restore the bundle notes stub {notes_path.name}',
                      lambda p=notes_path, text=notes_text: p.write_text(text, encoding='utf-8')))
         folder.rmdir()
+    except (KeyboardInterrupt, SystemExit):
+        # Ctrl+C mid-run is not a rollback (that path stays as it was), but the
+        # private pre-write copies must not be left behind in TEMP (#253 review).
+        _discard_undo_copies(undo_copies)
+        raise
     except Exception as e:
         # Keyword removals and the file/record undos are all best-effort, and any
         # that fail are reported: a file left in its destination or a keyword left
@@ -3011,6 +3180,7 @@ def process_bundle(
             print(f'ERROR: bundle dissolution failed, rolled back: {e}', file=sys.stderr)
         return EXIT_FAILURE
 
+    _discard_undo_copies(undo_copies)
     if backup is not None:
         _flush_backup_messages(backup)
     print(f'Minted {sid} for bundle {folder.name}')
@@ -3018,8 +3188,13 @@ def process_bundle(
         if item['kind'] == 'photo':
             print(f'Filed {item["src"].name} -> {_rel(item["dest"], archive_root)} '
                   f'(SOURCE: {sid}, not renamed)')
+        elif item['embed']:
+            print(f'Filed {item["src"].name} -> {_rel(item["dest"], archive_root)} '
+                  f'(SOURCE: {sid} embedded)')
         else:
             print(f'Filed {item["src"].name} -> {_rel(item["dest"], archive_root)}')
+    for warning in keyword_warnings:
+        print(warning, file=sys.stderr)
     print(f'Scaffolded {_rel(record_path, archive_root)} with {len(assets)} files')
     print(f'Dissolved bundle folder {folder.name}')
     return EXIT_CLEAN
@@ -3733,6 +3908,19 @@ def _attach_more_engine(
     # filed for another source, which is exactly the silent-re-processing
     # case it exists to catch.
     existing_doc_sid = _filename_has_source_id(more_file)
+    # The name is one carrier; the keyword inside the file is another (#252).
+    # A scan another program renamed still says which source it belongs to,
+    # and attaching it here would give one file two sources (#253 review).
+    # Checked before any rename or write.
+    embedded_doc_sid = _document_source_keyword(more_on_disk)
+    if embedded_doc_sid is not None and embedded_doc_sid != sid.lower():
+        shown = fmt_id_display(embedded_doc_sid)
+        raise ProcessError(
+            f'{more_file.name} already carries SOURCE: {shown} inside the file, so it '
+            f'belongs to that source, not {sid} - another program has probably '
+            'changed its name. Attaching it here would give one file two sources. '
+            f'Run `fha find {shown}` to see the record it belongs to. Nothing was '
+            'changed.')
     if existing_doc_sid is not None and existing_doc_sid != sid.lower():
         raise ProcessError(
             f'{more_file.name} already carries a different S-id '
@@ -3884,12 +4072,17 @@ def _attach_more_engine(
 
     more_dest_display = (new_name if new_path.parent == more_file.parent
                          else _rel(new_path, archive_root))
+    takes_keyword = _document_takes_keyword(new_path)
 
     if dry_run:
+        if takes_keyword:
+            _open_backup(archive_root, fha_config, backup)
         if needs_move:
             print(f'[dry-run] Would rename {more_file.name} -> {more_dest_display}')
         else:
             print(f"[dry-run] {more_file.name} already carries this source's S-id; keeping its name.")
+        if takes_keyword:
+            print(f'[dry-run] Would embed SOURCE: {sid} in {new_name}')
         if needs_dna_upgrade:
             # Validate the rewrite here too, not just on the live path
             # (issue #169 followup review, finding 3): `_force_dna_
@@ -3939,15 +4132,30 @@ def _attach_more_engine(
         print(f'ERROR: could not add files: entry to '
               f'{_rel(record_path, archive_root)}: {e}', file=sys.stderr)
         return EXIT_FAILURE
+    keyword_warning: str | None = None
+    undo_copies: list[Path] = []
+    if takes_keyword:
+        backup = _open_backup(archive_root, fha_config, backup)
     try:
         if needs_move:
             new_path.parent.mkdir(parents=True, exist_ok=True)
             more_file.rename(new_path)
             undo.append((f'move {new_path.name} back to {more_file.name}',
                          lambda: new_path.rename(more_file)))
+        if takes_keyword:
+            keyword_warning, undo_copy = _embed_document_keyword(new_path, sid, backup=backup)
+            if keyword_warning is None:
+                undo_copies.append(undo_copy)
+                undo.append((f'remove the SOURCE: {sid} keyword from {new_path.name}',
+                             _document_keyword_undo(new_path, undo_copy)))
         # Atomic for the same reason as the photos branch above: an existing
         # source record is being replaced, not created.
         write_text_exact_atomic(record_path, reapply_newline(new_text, old_text))
+    except (KeyboardInterrupt, SystemExit):
+        # Ctrl+C mid-run is not a rollback (that path stays as it was), but the
+        # private pre-write copies must not be left behind in TEMP (#253 review).
+        _discard_undo_copies(undo_copies)
+        raise
     except Exception as e:
         # Undo the record entry and the rename best-effort, but keep any failure:
         # a file left renamed while the record no longer lists it is inconsistent,
@@ -3968,10 +4176,17 @@ def _attach_more_engine(
         else:
             print(f'ERROR: attach failed, rolled back: {e}', file=sys.stderr)
         return EXIT_FAILURE
+    _discard_undo_copies(undo_copies)
+    if takes_keyword:
+        _flush_backup_messages(backup)
     if needs_move:
         print(f'Renamed {more_file.name} -> {more_dest_display}')
     else:
         print(f'Kept {more_file.name} (already named for this source)')
+    if takes_keyword and keyword_warning is None:
+        print(f'Embedded SOURCE: {sid} in {new_name}')
+    if keyword_warning is not None:
+        print(keyword_warning, file=sys.stderr)
     if dna_restriction_set:
         print(f'Set restricted: dna on {_rel(record_path, archive_root)} '
               '(required for the attached DNA file).')
@@ -4582,6 +4797,10 @@ def process_refile(
                 f'{stored_alias}`, and either point it at the correct on-disk '
                 f'file for this source (one whose own filename ends `_{sid}`) '
                 'or delete the entry if no such file exists. Nothing was moved.')
+        if to == _PHOTO_DIR:
+            # The move ends with a SOURCE: write into this file; a second,
+            # different ID already inside it must refuse first (#253 sweep).
+            _refuse_if_document_belongs_elsewhere(src, sid, role='the file to refile')
     else:
         try:
             embedded_sids = _read_all_source_keywords(src)
@@ -5046,7 +5265,9 @@ def process_refile(
                 print(f'{rel_record} is unchanged and the file is back at {rel_home}, '
                       f'but the SOURCE: {sid} keyword this run embedded could not be '
                       f'removed ({keyword_cleanup_error}) - the file still carries it. '
-                      f'Remove it by hand: `exiftool -keywords-="SOURCE: {sid}" '
+                      f'Remove it by hand: `exiftool -IPTC:Keywords-="SOURCE: {sid}" '
+                      f'-XMP-dc:Subject-="SOURCE: {sid}" '
+                      f'-XMP-lr:HierarchicalSubject-="SOURCE: {sid}" '
                       f'-overwrite_original_in_place "{rel_home}"`, then re-run.',
                       file=sys.stderr)
             else:
@@ -5291,6 +5512,9 @@ File a new document or photo into the archive with a permanent ID.
   fha process <photo> --more <file> ROLE    Attach another file to its source
   fha process refile <S-id> --to photos|documents [--dest SUB]
                                             Move a filed file to the other root
+  fha process <photo> --variants one        A photo with its back beside it: file
+                                            both as ONE source without being asked
+                                            (or --variants separate)
   fha process <file> --dry-run              Preview, write nothing
 
 Documents are renamed with their new ID (the old name is kept as provenance);
@@ -5430,6 +5654,11 @@ def _add_arguments(p: argparse.ArgumentParser) -> None:
                         'in the photo file and populates the source record\'s people: '
                         'list. Photos only; use `fha photoindex tag-person` to tag '
                         'photos already processed.')
+    p.add_argument('--variants', choices=('one', 'separate'),
+                   help='When the photo has variations beside it (a back, a second '
+                        'print, a crop), process them as ONE source or as separate '
+                        'sources without being asked - the answer to the '
+                        '[one / separate / skip] question, for scripts and agents')
     p.add_argument('--dry-run', action='store_true', help='Preview without writing')
 
 
@@ -5565,6 +5794,14 @@ def _run_process(args: argparse.Namespace) -> int:
         )
         return EXIT_ERRORS
 
+    variants = getattr(args, 'variants', None)
+    if variants and args.more:
+        print('ERROR: --variants answers the "one source or separate?" question for '
+              'a photo with variations beside it. With --more you are attaching one '
+              'file to a source that already exists, so drop --variants.',
+              file=sys.stderr)
+        return EXIT_ERRORS
+
     # Folder modes (BUILD.md M7.3/M7.4): a folder holding a bare notes.md is a
     # source-stub bundle that dissolves into one source; any other folder is a
     # triage target whose unprocessed photos are ranked and offered for
@@ -5588,7 +5825,7 @@ def _run_process(args: argparse.Namespace) -> int:
             return process_folder(
                 archive_root, fha_config, file_path,
                 source_date=source_date, dry_run=dry_run,
-                source_type=source_type,
+                source_type=source_type, variants=variants,
             )
         except ProcessError as e:
             print(f'ERROR: {e}', file=sys.stderr)
@@ -5695,12 +5932,17 @@ def _run_process(args: argparse.Namespace) -> int:
                 # the destination directory (the same one live would scan
                 # after moving) and file_path stands in for the moved file.
                 siblings = _photo_variation_siblings(file_path)
+                if variants and len(siblings) == 1:
+                    print(f'Note: --variants {variants} has nothing to decide - no '
+                          f'variations were found beside {file_path.name}, so it is '
+                          'processed on its own.')
                 rc = _process_variation_set(
                     archive_root, fha_config, siblings,
                     slug=args.slug, title=args.title, source_date=source_date,
                     dry_run=dry_run, source_type=source_type, people=people or None,
                     real_paths={file_path: real_path} if real_path is not None else None,
                     source_id=source_id_override, report=mint_report,
+                    variants=variants,
                 )
             else:
                 if people:
@@ -5709,9 +5951,17 @@ def _run_process(args: argparse.Namespace) -> int:
                           'field directly after processing.',
                           file=sys.stderr)
                     rc = EXIT_ERRORS
+                elif variants:
+                    print(f'ERROR: --variants is for photos with variations beside them. '
+                          f'{file_path.name} is being filed as a document, whose back '
+                          'scan (if any) is attached automatically - drop --variants.',
+                          file=sys.stderr)
+                    rc = EXIT_ERRORS
                 else:
                     back_src = _find_back_sibling(pre_move_path)
                     if back_src is not None:
+                        _refuse_if_document_belongs_elsewhere(
+                            back_src, None, role='the back scan beside it')
                         # Same resolved classification as the primary's own
                         # relocation just above (relocate_type, not the raw
                         # --type) - see that call's comment. A back sibling

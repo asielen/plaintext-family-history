@@ -79,6 +79,7 @@ except ImportError:
 
 from _lib import (
     PHOTO_EXTENSIONS,
+    OriginalBackup,
     carries_person_record_fields,
     COMPANION_KINDS,
     configure_utf8_stdout,
@@ -1544,6 +1545,109 @@ def _check_backup_stamp(archive_root: Path, lines: list[str], checks: list[dict]
                    'next_step': backup_cmd})
 
 
+def _suggest_originals_backup_folder(archive_root: Path, fha_config: dict) -> Path | None:
+    """A folder `originals_backup:` could name that the guard would accept.
+
+    Tried in order: beside the archive (`<archive>-originals`), then beside
+    the photos root (`<photos>-originals`). Each is checked by the real rule
+    (`OriginalBackup`'s own outside-the-archive-and-every-root test), never a
+    copy of it, so the suggestion is never one the next write would refuse.
+    None when neither passes - the line then asks for any folder outside.
+    """
+    archive = Path(archive_root).resolve()
+    photos = resolve_path('photos', fha_config, archive_root).resolve()
+    for candidate in (archive.parent / f'{archive.name}-originals',
+                      photos.parent / f'{photos.name}-originals'):
+        probe = OriginalBackup(archive_root, {**fha_config, 'originals_backup': str(candidate)})
+        if probe.refusal is None:
+            return candidate
+    return None
+
+
+def _first_file_in_path(dest: Path) -> Path | None:
+    """The first existing path component of `dest` that is a file, or None.
+
+    Walks up from `dest` to the nearest thing that exists; only that one is
+    looked at (everything above an existing folder is a folder). One `stat`
+    or two, never a walk of the tree.
+    """
+    probe = Path(dest)
+    while not probe.exists():
+        if probe.parent == probe:
+            return None
+        probe = probe.parent
+    return None if probe.is_dir() else probe
+
+
+def _check_originals_backup(archive_root: Path, fha_config: dict, lines: list[str],
+                            checks: list[dict]) -> int:
+    """Report whether `originals_backup:` (TOOLING §13f) is set up (#252 item 5).
+
+    fha writes keywords into original photos and scans; without this setting
+    there is no pristine copy of any of them, and the only notice was a
+    once-per-run warning that is easy to miss - 275 originals were written to
+    on a real archive before anyone noticed. So doctor says it plainly:
+
+      - set and usable   -> ok, naming the folder;
+      - set but unusable (malformed, or inside the archive or an asset root)
+                         -> warn with the guard's own sentence, because every
+                            keyword write will be REFUSED until it is fixed;
+      - unset            -> info with a ready-to-paste line naming a folder
+                            the guard accepts. Info, not a warning, like the
+                            "no backup recorded" line: safety copies are opt-in,
+                            and a reminder that turns every fresh archive's
+                            doctor amber trains people to ignore amber.
+
+    Returns the exit-code contribution.
+    """
+    backup = OriginalBackup(archive_root, fha_config)
+    if backup.refusal is not None:
+        lines.append(
+            f'safety copies: {_WARN} {backup.refusal}  next: fix originals_backup: in '
+            f'{archive_root / "fha.yaml"} - until then fha refuses to write keywords '
+            'into photos and scans')
+        checks.append({'id': 'originals_backup', 'status': 'warn',
+                       'detail': backup.refusal,
+                       'next_step': 'fix originals_backup: in fha.yaml'})
+        return EXIT_WARNINGS
+    if backup.dest is not None and (blocker := _first_file_in_path(backup.dest)) is not None:
+        # #253 review: the setting reads fine, but a FILE sits where the folder
+        # (or one of the folders above it) has to be, so every copy - and
+        # with it every keyword write - would be refused. A folder that does
+        # not exist yet is fine: the first copy creates it.
+        reason = (f'{backup.dest} is a file, not a folder' if blocker == backup.dest
+                  else f'{blocker} is a file, so the folder {backup.dest} cannot be made under it')
+        lines.append(
+            f'safety copies: {_WARN} originals_backup: points at {backup.dest}, but {reason}  '
+            f'next: point originals_backup: in {archive_root / "fha.yaml"} at a folder '
+            '(or a place one can be made) - until then fha refuses to write keywords '
+            'into photos and scans')
+        checks.append({'id': 'originals_backup', 'status': 'warn', 'detail': reason,
+                       'next_step': 'fix originals_backup: in fha.yaml'})
+        return EXIT_WARNINGS
+    if backup.dest is not None:
+        lines.append(
+            f'safety copies: {_OK} on - one pristine copy of each photo or scan is kept '
+            f'in {backup.dest} before fha first writes into it  next: no action needed')
+        checks.append({'id': 'originals_backup', 'status': 'ok',
+                       'detail': str(backup.dest), 'next_step': None})
+        return EXIT_CLEAN
+    suggestion = _suggest_originals_backup_folder(archive_root, fha_config)
+    example = (suggestion.as_posix() if suggestion is not None
+               else 'D:/PhotoOriginals')
+    lines.append(
+        'safety copies: not set up - fha writes ID keywords into your photos and '
+        'scans, and right now no copy of a file is kept before it does  next: add '
+        f'this line to {archive_root / "fha.yaml"}:\n'
+        f'    originals_backup: {example}\n'
+        '  (any folder outside your archive and your photo and document folders '
+        'works; copies are made once per file, the first time fha writes into it)')
+    checks.append({'id': 'originals_backup', 'status': 'info',
+                   'detail': 'not set up',
+                   'next_step': f'add `originals_backup: {example}` to fha.yaml'})
+    return EXIT_CLEAN
+
+
 # ── Main report ───────────────────────────────────────────────────────────────
 
 def _legacy_doctor_report_before_next_step_audit(archive_root: Path, fha_config: dict) -> int:
@@ -1943,6 +2047,7 @@ def run_doctor(archive_root: Path, fha_config: dict) -> Result:
         )
         checks.append({'id': 'exiftool', 'status': 'warn', 'detail': 'not found on PATH', 'next_step': doctor_cmd})
         worst = max(worst, EXIT_WARNINGS)
+    worst = max(worst, _check_originals_backup(archive_root, fha_config, lines, checks))
 
     # ffprobe (part of ffmpeg) is `fha media probe`'s primary backend (#44) -
     # reported the same way exiftool is above, because both are external

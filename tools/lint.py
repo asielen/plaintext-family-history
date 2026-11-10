@@ -51,6 +51,7 @@ import datetime
 import json
 import os
 import re
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path
@@ -121,6 +122,8 @@ from _lib import (
     is_working_copy,
     is_valid_edtf,
     is_valid_id,
+    KEYWORD_READ_ARGS,
+    keyword_values_from_row,
     FhaConfigError,
     load_fha_yaml,
     normalize_date,
@@ -175,7 +178,6 @@ configure_utf8_stdout()
 #    _research_hypothesis_ids    - H-ids defined in a person file's ## Hypotheses
 #                                   (any kind - #56, content decides not filename)
 #    _question_blocks            - split a questions.md into per-heading blocks
-#    _metadata_values            - normalise scalar/list exiftool field values
 #    _w122_message               - W122: filename says generated page, content says person
 #    _person_label               - `Ada Hartley (P-…)` for findings; ID alone if nameless
 #
@@ -216,7 +218,7 @@ configure_utf8_stdout()
 #    _check_reverse_inventory    - E011: document files vs source inventory lists
 #    _check_embedded_source_keywords - E012: exiftool SOURCE: keyword vs inventory;
 #                                   also runs W131 off the same exiftool pass
-#    _run_exiftool_keyword_rows  - ONE exiftool -j -Keywords -Subject call over
+#    _run_exiftool_keyword_rows  - ONE exiftool keyword read (_lib.KEYWORD_READ_ARGS) over
 #                                   one batch of files (monkeypatchable seam,
 #                                   mirrors photoindex.py's own _run_exiftool -
 #                                   tools never import tools)
@@ -235,9 +237,11 @@ configure_utf8_stdout()
 #    _check_agent_drift          - E018: deprecated commands in AGENTS.md
 #    _check_untranscribed_evidence - W124: accepted claims on evidence the
 #                                   archive holds no words for (no transcript)
+#    _check_evidence_paths       - W137: a claim/prose cites a photos- or documents-
+#                                   root file by path that no source owns (#249)
 #    _check_died_but_living      - W136: an accepted death/burial for a person still
 #                                   treated as living (living: unknown or true)
-#    _check_roots_change        - W121: a roots: change orphaned filed assets
+#    _check_roots_change         - W121: a roots: change orphaned filed assets
 #                                   (runs first; the E011 fallout follows it)
 #    _check_unreadable_dirs      - W123: a record folder this lint could not open
 #                                   (runs last; the caveat on everything above)
@@ -334,6 +338,9 @@ class Registry:
 
         # Source meta: {S-id: meta_dict}
         self.source_meta: dict[str, dict] = {}
+
+        # Source record bodies: {S-id: body_text}, kept for W137's prose scan.
+        self.source_bodies: dict[str, str] = {}
 
         # Source file inventory: {S-id: {alias/path, ...}}
         self.source_inventory: dict[str, set[str]] = {}
@@ -1283,6 +1290,7 @@ def _process_source_file(path: Path, registry: Registry, findings: list[Finding]
 
     registry.source_paths[sid] = path
     registry.source_meta[sid] = meta
+    registry.source_bodies[sid] = rec.get('body') or ''
     registry.all_record_ids[sid] = path
 
     # E010: Required fields
@@ -3353,6 +3361,7 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
 
     # W124: accepted claims resting on evidence nobody has written out
     _check_untranscribed_evidence(registry, findings)
+    _check_evidence_paths(registry, findings)
 
     # W136: an accepted death, but the person is still treated as living
     _check_died_but_living(registry, findings, alias_map)
@@ -3541,6 +3550,209 @@ def _check_untranscribed_evidence(
             'out what it says, then attach it with `fha process <one of its '
             'files> --more <your-transcript.md> transcript`. Either way, run '
             '`fha index` afterwards so the words become searchable.'))
+
+
+# ── W137: evidence pointed at by folder path, not by its source ID (#249) ────
+#
+# A claim can rest on a photograph that is not a source: the interview reads
+# out the inscription on the back of a print, the mining pass cites the
+# interview, and the photo itself turns up later in the library - scanned,
+# never processed - and its path gets pasted into the claim's notes. That path
+# breaks silently the day the library is reorganised (`fha reconcile` heals
+# `files:` entries, not prose), the photo's own page never connects to the
+# claim, and the inscription has no record to keep its transcript or citation
+# in. SPEC §8.4: evidence a claim rests on is a source, cited as [[S-…]].
+
+# The file kinds the archive files as evidence: images, scans, PDFs, camera
+# RAW, video and audio. A fixed list, not "any .xyz": research prose is full
+# of dotted words that are not files - "Ancestry.com", "findagrave.com",
+# "12.05.1911", "$3.25" (#253 review) - and an extension outside this list is
+# never a photo or a scan this warning could help with.
+_W137_EXTENSIONS = (
+    'jpg', 'jpeg', 'jpe', 'tif', 'tiff', 'png', 'gif', 'bmp', 'webp', 'heic', 'heif', 'pdf',
+    'dng', 'cr2', 'cr3', 'crw', 'nef', 'nrw', 'arw', 'srf', 'sr2', 'orf', 'rw2', 'raf',
+    'pef', 'srw', 'x3f', 'raw',
+    'mp4', 'm4v', 'mov', 'avi', 'mkv', 'mpg', 'mpeg', 'wmv', '3gp', 'mts', 'm2ts',
+    'mp3', 'm4a', 'wav', 'flac', 'aac', 'ogg', 'oga', 'opus', 'wma', 'aif', 'aiff',
+)
+_W137_EXT_RE = re.compile(
+    r'\.(?:' + '|'.join(_W137_EXTENSIONS) + r')(?![A-Za-z0-9])', re.I)
+# Where a written path certainly ends: a line break, a colon, a quote, or a
+# character no filename may hold. Spaces, commas, apostrophes, brackets and
+# parentheses are all allowed - `Ada's 16th birthday.jpg`, `[1911] Ada back.jpg`.
+_W137_STOP_RE = re.compile(r'[\n\r:"`<>|*?]')
+_W137_MAX_TAIL = 260
+# A processed documents-root file carries its S-id in its own name (SPEC §13).
+_W137_SID_IN_NAME_RE = re.compile(r'_S-[0-9a-hjkmnp-tv-z]{10}\.[A-Za-z0-9]+$', re.I)
+_W137_URL_RE = re.compile(r'\b[a-z][a-z0-9+.\-]*://\S+', re.I)
+
+
+def _w137_key(alias_path: str) -> str:
+    """One spelling for a root-relative path: forward slashes, no doubles,
+    case-folded (Windows and macOS treat `Photos/A.jpg` and `photos/a.jpg` as
+    one file, and a human types whichever he sees)."""
+    return re.sub(r'/+', '/', str(alias_path).replace('\\', '/')).strip().strip('/').casefold()
+
+
+def _w137_patterns(registry: Registry) -> list[tuple[str, re.Pattern]]:
+    """One regex per asset root, matching both ways a human writes a path into
+    it: root-relative (`photos/1911/ada.jpg`, the form `files:` uses) and the
+    absolute folder `fha.yaml` maps it to (`D:/Family Photos/1911/ada.jpg`),
+    either slash. The root-relative form needs a word boundary before it, so
+    the `/photos/` inside a web address or a longer path is not read as one."""
+    out = []
+    for alias in ('photos', 'documents'):
+        root = resolve_path(alias, registry.fha_config, registry.archive_root)
+        try:
+            root = root.resolve()
+        except (OSError, RuntimeError):
+            pass
+        parts = [re.escape(part) for part in str(root).replace('\\', '/').rstrip('/').split('/')]
+        absolute = r'[\\/]+'.join(parts)
+        out.append((alias, re.compile(
+            rf'(?:{absolute}|(?<![A-Za-z0-9_.\-/\\]){re.escape(alias)})[\\/]+(?=[^\s:"`<>|*?])',
+            re.I)))
+    return out
+
+
+def _w137_owned_paths(registry: Registry) -> set[str]:
+    """Every root-relative path some source owns: each `files:` entry, plus
+    the name a renamed document had before processing (`original_filename`,
+    so a note written before the rename is not reported as unowned)."""
+    owned: set[str] = set()
+    for meta in registry.source_meta.values():
+        for entry in meta.get('files') or []:
+            alias = entry.get('file') if isinstance(entry, dict) else entry
+            if not alias:
+                continue
+            key = _w137_key(alias)
+            owned.add(key)
+            if isinstance(entry, dict) and entry.get('original_filename'):
+                folder = key.rsplit('/', 1)[0] if '/' in key else ''
+                owned.add(_w137_key(f'{folder}/{entry["original_filename"]}'))
+    return owned
+
+
+def _w137_keyworded_photos(registry: Registry) -> set[str]:
+    """Photos the photo index says already carry a `SOURCE:` keyword.
+
+    Only read when lint has found a photos-root path no `files:` entry owns,
+    and only if the index exists - lint never needs `fha photoindex` to have
+    run. A photo carrying the keyword IS processed (its record is a different
+    finding, E011/E012, if missing), so it is not this warning's business.
+    """
+    db = registry.archive_root / '.cache' / 'photos.sqlite'
+    if not db.is_file():
+        return set()
+    try:
+        conn = sqlite3.connect(f'file:{db.as_posix()}?mode=ro', uri=True)
+        try:
+            rows = conn.execute(
+                "SELECT path FROM photos WHERE source_id IS NOT NULL AND source_id != ''"
+            ).fetchall()
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return set()
+    return {_w137_key(path) for (path,) in rows if path}
+
+
+def _check_evidence_paths(registry: Registry, findings: list[Finding]) -> None:
+    """W137 (#249): a claim's `value:`/`notes:`, or a source's or person's
+    prose, points at a file in the photos or documents root by its folder
+    path, the file is really there, and no source owns it.
+
+    A candidate counts only if it ends in a real media or document extension
+    (`_W137_EXTENSIONS`) and - outside working-copy mode - names a file that
+    exists: research prose is full of things that look like paths and are not
+    ("photos/letters are scanned on Ancestry.com"), and only an existing,
+    unowned file is one `fha process` can fix (#253 review).
+
+    One pass over text already in memory: the owned-paths set is built once
+    from every record's `files:` list; the only disk access is one `stat` per
+    matched candidate, never a walk. "Owned" means a `files:` entry (or the pre-rename name of one),
+    a documents-root filename carrying an `_S-…` ID, or - for a photo - a
+    `SOURCE:` keyword the photo index has already seen. `[[S-…]]` links and
+    web addresses are not paths and never match.
+
+    Warning, not error: the claim is still a claim. The fix is to make the
+    file a source - `fha process <path> --type photo` for a photo (a front
+    and its back become one source) - and cite it as `[[S-…]]`.
+    """
+    patterns = _w137_patterns(registry)
+    owned = _w137_owned_paths(registry)
+    keyworded: set[str] | None = None
+    reported: set[tuple[str, str, str]] = set()
+
+    def owned_key(alias: str, key: str) -> bool:
+        nonlocal keyworded
+        if key in owned or _W137_SID_IN_NAME_RE.search(key):
+            return True
+        if alias == 'photos':
+            if keyworded is None:
+                keyworded = _w137_keyworded_photos(registry)
+            return key in keyworded
+        return False
+
+    def scan(text, record_path: Path, where: str) -> None:
+        if not text:
+            return
+        text = _W137_URL_RE.sub(' ', str(text))
+        for alias, pattern in patterns:
+            for m in pattern.finditer(text):
+                rest = text[m.end():]
+                stop = _W137_STOP_RE.search(rest)
+                span = (rest[:stop.start()] if stop else rest)[:_W137_MAX_TAIL]
+                # Every place the run could end in a real extension, shortest
+                # first: `Ada.scan.jpg` reads through to `.jpg`, and `ada.jpg
+                # copy.jpg` is tried as `ada.jpg` and then as the longer name.
+                chosen = None
+                for end_m in _W137_EXT_RE.finditer(span):
+                    tail = span[:end_m.end()].strip()
+                    key = _w137_key(f'{alias}/{tail}')
+                    if owned_key(alias, key):
+                        chosen = None
+                        break
+                    target = resolve_path(f'{alias}/{tail.replace(chr(92), "/")}',
+                                          registry.fha_config, registry.archive_root)
+                    # Only a file that is really there is one `fha process`
+                    # can fix; a path to nothing is not this warning's
+                    # business (#253 review). One stat per candidate - never
+                    # a walk. A working copy has no originals to look at, so
+                    # there the extension alone decides.
+                    if registry.is_working_copy or target.is_file():
+                        chosen = (tail, key, target)
+                        break
+                if chosen is None:
+                    continue
+                tail, key, target = chosen
+                if (str(record_path), where, key) in reported:
+                    continue
+                reported.add((str(record_path), where, key))
+                shown = (m.group(0) + tail).strip()
+                type_flag = ' --type photo' if alias == 'photos' else ''
+                findings.append(Finding('W', 'W137', record_path,
+                    f'{where} points at {shown} by its folder path, but no source '
+                    'record owns that file - so it is not evidence the archive can '
+                    'cite, and the path breaks silently if the folder is ever '
+                    f'reorganised. Make it a source: `fha process "{target}"'
+                    f'{type_flag}`, then cite it here as [[S-…]] instead of the path.'))
+
+    for sid, claims in sorted(registry.source_claims.items()):
+        record_path = registry.source_paths.get(sid, registry.archive_root / str(sid))
+        for claim in claims:
+            if not isinstance(claim, dict):
+                continue
+            cid = fmt_id_display(normalize_id(str(claim.get('id', '')))) if claim.get('id') else 'A claim'
+            for field in ('value', 'notes'):
+                scan(claim.get(field), record_path, f'Claim {cid} (its {field}:)')
+    for sid, body in sorted(registry.source_bodies.items()):
+        record_path = registry.source_paths.get(sid, registry.archive_root / str(sid))
+        scan(CLAIMS_RE.sub('', body or ''), record_path, 'The source record\'s prose')
+    for pid, body in sorted(registry.person_bodies.items()):
+        paths = registry.person_profile_paths.get(pid) or []
+        if paths:
+            scan(body, paths[0], 'The person record\'s prose')
 
 
 def _check_unreadable_dirs(registry: Registry, findings: list[Finding]) -> None:
@@ -3760,7 +3972,7 @@ def _check_embedded_source_keywords(registry: Registry, findings: list[Finding])
     _check_stray_person_keywords(registry, findings, raw_keywords, path_aliases)
 
 
-# One `exiftool -j -Keywords -Subject` invocation covers at most this many
+# One exiftool keyword-read invocation covers at most this many
 # files - an argv-length safety limit (unrelated to the memory concern
 # _read_exif_keywords fixes below), matched to the batch size this check has
 # always used.
@@ -3768,7 +3980,8 @@ _KEYWORD_BATCH_SIZE = 50
 
 
 def _run_exiftool_keyword_rows(paths: list[Path]) -> list[dict]:
-    """One `exiftool -j -Keywords -Subject` call over this BATCH of files.
+    """One exiftool keyword read (`_lib.KEYWORD_READ_ARGS`: IPTC Keywords, XMP
+    dc:subject, Lightroom's lr:hierarchicalSubject - #252) over this BATCH.
 
     A monkeypatchable seam (tests substitute canned JSON rows so `--with-exif`
     is exercised with no real exiftool binary on PATH) - mirrors the same
@@ -3781,7 +3994,7 @@ def _run_exiftool_keyword_rows(paths: list[Path]) -> list[dict]:
     environment problems the caller (`_check_embedded_source_keywords`) turns
     into one E012 finding rather than crashing the whole lint run.
     """
-    cmd = ['exiftool', '-j', '-Keywords', '-Subject'] + [str(p) for p in paths]
+    cmd = ['exiftool', '-j', *KEYWORD_READ_ARGS] + [str(p) for p in paths]
     try:
         proc = subprocess.run(
             cmd,
@@ -3848,11 +4061,7 @@ def _read_exif_keywords(
             if not source_file:
                 continue
             path = Path(source_file).resolve()
-            values: list[str] = []
-            for key in ('Keywords', 'Subject'):
-                for v in _metadata_values(row.get(key)):
-                    if v not in values:
-                        values.append(v)
+            values = keyword_values_from_row(row)
             sids = _source_ids_in_keywords(values)
             if sids:
                 source_keywords[path] = sids
@@ -3965,15 +4174,6 @@ def _check_stray_person_keywords(
                 f'`fha source clear-keyword {fmt_id_display(sid)} --keyword '
                 f'{shell_quote(text)}`; if the person genuinely belongs on this '
                 f'source, add them to its people: list instead.'))
-
-
-def _metadata_values(value: object) -> list[str]:
-    """Return metadata scalar/list values as strings."""
-    if value is None:
-        return []
-    if isinstance(value, list):
-        return [str(v) for v in value]
-    return [str(value)]
 
 
 def _question_blocks(text: str) -> list[str]:

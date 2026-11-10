@@ -4122,8 +4122,14 @@ class TypeFlagRoutingTests(unittest.TestCase):
         self.assertEqual(
             [p.name for p in (self.archive / 'photos').rglob('*') if p.is_file()],
             [], 'the photos root must hold no files')
-        self.assertEqual(self.store.keywords, {},
-                         'no photo keyword may be embedded on a document route')
+        # A document in a format that holds metadata now carries its own
+        # SOURCE: keyword (#252 item 4) - but only ever under the documents
+        # root, never in the photo library.
+        documents_root = (self.archive / 'documents').resolve()
+        for written in self.store.keywords:
+            self.assertTrue(
+                process._is_under(Path(written), documents_root),
+                f'a keyword was embedded outside the documents root: {written}')
 
     # -- the reported case -----------------------------------------------------
 
