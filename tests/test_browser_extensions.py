@@ -10,7 +10,7 @@ data folder left exactly as they were. A wrong move here deletes years of
 "already looked at" history.
 
 Every fixture lives in a throwaway folder whose name has a space in it, the
-way `D:/Genealogy/Tools/Chrome Extensions` does.
+way `E:/Family History/Browser Add-ons` does.
 
 Run: python -m unittest tests.test_browser_extensions -v
 """
@@ -605,7 +605,7 @@ class Round3(_Base):
         self.assertTrue((self.ext / 'seen-it' / 'manifest.json').is_file())
 
     def test_a_setting_with_a_stray_colon_names_the_line_to_fix(self):
-        self.set_folder("'Yes, D:/Genealogy/Tools/Chrome Extensions'")
+        self.set_folder("'Yes, E:/Family History/Browser Add-ons'")
         rc, out = self.update()
         self.assertEqual(rc, EXIT_WARNINGS)
         self.assertIn('cannot hold a `:`', out)

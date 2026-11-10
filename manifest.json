@@ -504,7 +504,7 @@
     {
       "path": ".fha/tools/browser_extensions.py",
       "category": "operating",
-      "sha256": "f072528d744beca68129070026f271aabbfcdd39b6fea544d175be25e871dc89",
+      "sha256": "611208b8f76c40e04def7ec68965245a7189d9f8503685e38085b8089ec74bb9",
       "spec_version": "1.2",
       "src": "tools/browser_extensions.py"
     },
@@ -968,7 +968,7 @@
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "b0ca68e4e0181dab655a0184e1538eaa6c76691a4f6fbfe81014199f747a0fc2",
+      "sha256": "807f5627573acdb7a1e89117f342128e6ed926918bfac6d7594ee230dea17af6",
       "spec_version": "1.2"
     },
     {
@@ -1053,7 +1053,7 @@
     {
       "path": "fha.yaml",
       "category": "skeleton",
-      "sha256": "11d2cbd0cd181848192c42af65ba34c95f4d0e7ebabdcda68e071544cfa9edc0",
+      "sha256": "a4f3a902df86ca976c47158b1ff0fd01cbd4e0882f4f0d2cd8345901595a727e",
       "spec_version": "1.2",
       "src": "archive-template/fha.yaml"
     },

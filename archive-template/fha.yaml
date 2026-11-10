@@ -99,7 +99,7 @@
 #   there.
 #
 # browser_extensions: extensions                            # inside this archive
-# browser_extensions: D:/Genealogy/Tools/Chrome Extensions  # or anywhere
+# browser_extensions: E:/Family History/Browser Add-ons  # or anywhere
 # browser_extensions: none
 
 # ── Biography voice (optional) ──

@@ -17,7 +17,7 @@ leaving the rest, and keeping a backup. This file does it.
 THE ONE SETTING
 ---------------
     browser_extensions: extensions                         # inside the archive
-    browser_extensions: D:/Genealogy/Tools/Chrome Extensions   # or anywhere
+    browser_extensions: E:/Family History/Browser Add-ons   # or anywhere
     browser_extensions: none                               # "no thanks"
 
 A folder that holds one subfolder per add-on. Relative values are joined to
@@ -442,7 +442,7 @@ def _first_answer(text: str) -> tuple[str, str]:
         return 'no', ''
     if _is_absolute_path(cleaned):
         return 'path', cleaned
-    # "Yes, D:\Genealogy\Chrome Extensions": a yes that already says where.
+    # "Yes, E:\Family History\Browser Add-ons": a yes that already says where.
     said = re.match(r'^(\w+)[\s,.;:!-]+(.+)$', cleaned)
     if said and said.group(1).lower() in _YES_WORDS:
         rest = said.group(2).strip().strip('"\'').strip()

@@ -1046,7 +1046,7 @@ You may edit any operating-layer file freely (a tool, `AGENTS.md`, the spec); th
 ```yaml
 # fha.yaml
 browser_extensions: extensions                            # inside the archive (the default answer)
-browser_extensions: D:/Genealogy/Tools/Chrome Extensions  # or any folder; relative = under the archive root
+browser_extensions: E:/Family History/Browser Add-ons  # or any folder; relative = under the archive root
 browser_extensions: none                                  # "no thanks" - never asked again
 ```
 
