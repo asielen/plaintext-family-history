@@ -2312,6 +2312,18 @@ class DeathAcceptMarksNotLivingTests(_ServeCase):
         self.assertIn('--keep-living', payload['cli_echo'])
         self.assertEqual(self._living_in_index(), 'unknown')
 
+    def test_un_accepting_in_the_workbench_warns_and_keeps_the_flag(self):
+        cid = self._add_death_claim()
+        self.post_run('claim.review', {'claim_id': cid, 'status': 'accepted'}, False)
+        s, d, _h = self.post_run('claim.review', {'claim_id': cid, 'status': 'rejected'},
+                                 False)
+        payload = json.loads(d)
+        self.assertTrue(payload['ok'], payload['messages'])
+        warnings = [m['text'] for m in payload['messages'] if m['level'] == 'warning']
+        self.assertTrue(any(f'fha person set-living {self.ALEX} unknown' in w
+                            for w in warnings), payload['messages'])
+        self.assertEqual(self._living_in_index(), 'false')
+
 
 if __name__ == '__main__':
     unittest.main()

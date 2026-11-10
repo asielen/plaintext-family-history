@@ -166,7 +166,12 @@ its claims to the people asked about and leave the rest for later sessions.
    - a claim that names several people without saying which of them died, or that reads someone as the
      deceased only because everyone else on it has another part — ask who died, then (on his answer)
      `fha person set-living <P-id> false` for each.
-   If he wants a death accepted but the person kept out of exports anyway, accept with `--keep-living`.
+   If he wants a death accepted but the person kept out of exports anyway, accept with `--keep-living`
+   (re-accepting that claim later never changes the flag).
+   If he moves a death he accepted earlier to rejected/disputed/needs-review, `fha claim` warns that the
+   person is still marked as no longer living — the flag is never put back on its own. Ask him ("should
+   Ada go back to unknown, so she's kept out of exports again?") and only on his yes run
+   `fha person set-living <P-id> unknown`.
    ```
    fha index                      # full rebuild — if this pass minted new people/places (a
                                   # process-source / mine-transcript hand-off usually does), `--source`

@@ -108,7 +108,7 @@
     {
       "path": ".claude/skills/review-claims/SKILL.md",
       "category": "operating",
-      "sha256": "c5e72dc9fe80a6e9714c764fa351686eeba5817d420d2a2cebd4033f8e6e0c4a",
+      "sha256": "b3e801207add710a8392e599a0c25e7a052504afd2d03a545ce848561a7b2619",
       "spec_version": "1.2"
     },
     {
@@ -490,7 +490,7 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "ecfd9056c191c24e47aeb4e2491c787ae40cce46eaf7162915126128ffb8e78c",
+      "sha256": "a23493e561e7a4fa98d262410baf298d78a9a52e5dfcd18540f410502057a144",
       "spec_version": "1.2",
       "src": "tools/_lib.py"
     },
@@ -553,7 +553,7 @@
     {
       "path": ".fha/tools/claim.py",
       "category": "operating",
-      "sha256": "baf6d09086aaf28de2903aaa45f3449cad435467ca9ffc4db5b1c962ba9e6a9e",
+      "sha256": "a7624c155b730641ab47ac9d5f73ba92ccbc40f5c3338268b10758d8f76379ce",
       "spec_version": "1.2",
       "src": "tools/claim.py"
     },
@@ -630,7 +630,7 @@
     {
       "path": ".fha/tools/lint.py",
       "category": "operating",
-      "sha256": "0a4c2815791339eff97a1688b9c316f83e51c46ef8174f7ec5e10560a7c19c33",
+      "sha256": "a68db5a94f33f1d66ffb69366c267b9a56151b7d5acbf03d6c6c9d762bad3c02",
       "spec_version": "1.2",
       "src": "tools/lint.py"
     },
@@ -961,7 +961,7 @@
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "76a90689b8bb0f39549fc285862b544caabc11b681a5113c84b0c885d3c860be",
+      "sha256": "724f5063e1992e98065a377aef3534d49ff41b992257e7e4a44c5f619cce24d6",
       "spec_version": "1.2"
     },
     {

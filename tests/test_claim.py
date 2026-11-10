@@ -3470,11 +3470,9 @@ def _claim_item(cid: str, ctype: str, persons: str, *, roles: str = '',
             '  confidence: high\n\n')
 
 
-class DeathClaimMarksNotLivingTests(unittest.TestCase):
-    """#246: a person with an accepted death certificate, grave or obituary
-    stayed `living: unknown`, so every shared export and the site left them
-    out. Accepting the claim now records that they died - for the person the
-    claim says died, and nobody else."""
+class _DeathFixture:
+    """Ada, Thomas, Mary, John and Edith Hartley, plus a merged record - the
+    people the #246 death-claim tests accept records for."""
 
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
@@ -3502,6 +3500,13 @@ class DeathClaimMarksNotLivingTests(unittest.TestCase):
     def _accept(self, *cids: str, **kw):
         return claim.run_claim_batch(self.root, claim_ids=list(cids),
                                      status='accepted', **kw)
+
+
+class DeathClaimMarksNotLivingTests(_DeathFixture, unittest.TestCase):
+    """#246: a person with an accepted death certificate, grave or obituary
+    stayed `living: unknown`, so every shared export and the site left them
+    out. Accepting the claim now records that they died - for the person the
+    claim says died, and nobody else."""
 
     def test_single_person_death_marks_them_no_longer_living(self) -> None:
         _death_source(self.root, _claim_item('C-aa11bb22cc', 'death', _ADA))
@@ -3653,7 +3658,7 @@ class DeathClaimMarksNotLivingTests(unittest.TestCase):
                                              f'{_ADA}, "[[John Hartley]]"'))
         result = self._accept('C-aa11bb22cc')
         self.assertEqual(self._living(self.ada), 'unknown')
-        self.assertIn('by name rather than by ID', self._text(result))
+        self.assertIn('a name rather than an ID', self._text(result))
 
     def test_accept_with_a_type_correction_reads_the_corrected_claim(self) -> None:
         _death_source(self.root, _claim_item('C-aa11bb22cc', 'residence', _ADA))
@@ -3713,6 +3718,132 @@ class DeathClaimMarksNotLivingTests(unittest.TestCase):
         findings, _reg = lint._run_lint_core(self.root, load_fha_yaml(self.root))
         flagged = sorted(f.message.split(' (')[0] for f in findings if f.code == 'W136')
         self.assertEqual(flagged, ['Mary Hartley', 'Thomas Hartley'])
+
+
+class DeathClaimReviewFixTests(_DeathFixture, unittest.TestCase):
+    """#250 review: the cases where the first version of the death-claim step
+    marked the wrong person, kept quiet, or forgot the human's choice."""
+
+    # 1. A roles: entry naming someone missing from persons: must never make
+    # the widow look like the only person on her husband's death record.
+    def test_a_role_for_someone_missing_from_persons_marks_nobody(self) -> None:
+        for roles in (f'  roles:\n    deceased: [{_JOHN}]\n',
+                      '  roles:\n    deceased: ["[[John Hartley]]"]\n',
+                      f'  roles:\n    decedent: [{_JOHN}]\n'):
+            with self.subTest(roles=roles):
+                _death_source(self.root, _claim_item(
+                    'C-aa11bb22cc', 'death', _ADA, roles=roles))
+                result = self._accept('C-aa11bb22cc')
+                self.assertEqual(self._living(self.ada), 'unknown')
+                self.assertEqual(self._living(self.john), 'unknown')
+                self.assertEqual(result['marked_not_living'], [])
+                self.assertIn('cannot be told for sure who died', self._text(result))
+                self.assertNotIn(f'set-living {_ADA}', self._text(result))
+
+    # 2. Moving an accepted death claim out of accepted warns (never reverts).
+    def test_un_accepting_a_death_warns_and_names_the_way_back(self) -> None:
+        _death_source(self.root, _claim_item('C-aa11bb22cc', 'death', _ADA)
+                      + _claim_item('C-bb22cc33dd', 'death', _MARY))
+        self._accept('C-aa11bb22cc', 'C-bb22cc33dd')
+        self.assertEqual(self._living(self.ada), 'false')
+        # dry run, then live (single), then a batch moving one more out
+        for status, cids, dry, pid in (('rejected', ['C-aa11bb22cc'], True, _ADA),
+                                       ('rejected', ['C-aa11bb22cc'], False, _ADA),
+                                       ('needs-review', ['C-aa11bb22cc', 'C-bb22cc33dd'],
+                                        False, _MARY)):
+            with self.subTest(status=status, cids=cids, dry=dry):
+                result = claim.run_claim_batch(self.root, claim_ids=cids, status=status,
+                                               dry_run=dry)
+                self.assertEqual(self._living(self.ada), 'false')
+                self.assertEqual(self._living(self.mary), 'false')
+                warnings = [m.text for m in result.messages if m.level == 'warning']
+                self.assertEqual(len(warnings), 1, self._text(result))
+                self.assertIn(f'fha person set-living {pid} unknown', warnings[0])
+
+    def test_un_accepting_names_only_people_still_marked(self) -> None:
+        # Ada was kept private (--keep-living), Mary was marked: rejecting
+        # both warns about Mary alone.
+        _death_source(self.root, _claim_item('C-aa11bb22cc', 'death', _ADA)
+                      + _claim_item('C-bb22cc33dd', 'death', _MARY))
+        self._accept('C-aa11bb22cc', keep_living=True)
+        self._accept('C-bb22cc33dd')
+        result = claim.run_claim_batch(self.root, claim_ids=['C-aa11bb22cc', 'C-bb22cc33dd'],
+                                       status='rejected')
+        self.assertNotIn(f'set-living {_ADA}', self._text(result))
+        self.assertIn(f'fha person set-living {_MARY} unknown', self._text(result))
+
+    # 3. A claim that was already accepted never marks anyone: a rerun must
+    # not undo an earlier --keep-living.
+    def test_keep_living_sticks_through_a_later_re_accept(self) -> None:
+        _death_source(self.root, _claim_item('C-aa11bb22cc', 'death', _ADA)
+                      + _claim_item('C-bb22cc33dd', 'residence', _ADA))
+        self._accept('C-aa11bb22cc', keep_living=True)
+        self._accept('C-aa11bb22cc', 'C-bb22cc33dd')
+        self.assertEqual(self._living(self.ada), 'unknown')
+        claim.run_claim(self.root, claim_id='C-aa11bb22cc', status='accepted',
+                        reviewed='2026-12-01')
+        self.assertEqual(self._living(self.ada), 'unknown')
+
+    # 4. One claim naming the person is enough, whatever order the batch is in.
+    def test_a_naming_claim_after_a_by_elimination_one_still_marks(self) -> None:
+        _death_source(self.root,
+                      _claim_item('C-aa11bb22cc', 'death', f'{_ADA}, {_JOHN}',
+                                  roles=f'  roles:\n    spouse: [{_JOHN}]\n')
+                      + _claim_item('C-bb22cc33dd', 'death', _ADA))
+        result = self._accept('C-aa11bb22cc', 'C-bb22cc33dd')
+        self.assertEqual(self._living(self.ada), 'false')
+        self.assertNotIn('does not name anyone as `deceased:`', self._text(result))
+
+    # 5. A name link in roles: never turns into "mark the son as dead".
+    def test_a_name_link_in_roles_never_names_another_person_to_mark(self) -> None:
+        _death_source(self.root, _claim_item(
+            'C-aa11bb22cc', 'death', f'{_THOMAS}, {_MARY}, {_JOHN}',
+            roles=f'  roles:\n    spouse: [{_MARY}]\n    child: ["[[John Hartley]]"]\n'))
+        result = self._accept('C-aa11bb22cc')
+        for path in (self.mary, self.john):
+            self.assertEqual(self._living(path), 'unknown')
+        self.assertNotIn(f'set-living {_JOHN}', self._text(result))
+        self.assertNotIn(f'set-living {_MARY}', self._text(result))
+
+    # 6. A stopped batch's recovery command keeps --keep-living.
+    def test_recovery_commands_carry_keep_living(self) -> None:
+        _death_source(self.root, _claim_item('C-aa11bb22cc', 'death', _ADA))
+        dup = self.root / 'sources' / 'other' / 'dup_S-2222222222.md'
+        dup.write_text(
+            '---\nid: S-2222222222\ntitle: Dup\nsource_type: other\n---\n\n'
+            '## Claims\n```yaml\n'
+            + _claim_item('C-ee55ff66gh', 'death', _MARY)
+            + _claim_item('C-ee55ff66gh', 'death', _MARY) + '```\n', encoding='utf-8')
+        for dry in (False, True):
+            with self.subTest(dry_run=dry):
+                result = self._accept('C-aa11bb22cc', 'C-ee55ff66gh',
+                                      keep_living=True, dry_run=dry)
+                self.assertNotEqual(result.exit_code, EXIT_CLEAN)
+                stop = [m.text for m in result.messages if m.text.startswith('Stopped at')]
+                self.assertEqual(len(stop), 1, self._text(result))
+                self.assertIn('--keep-living', stop[0])
+        self.assertEqual(self._living(self.ada), 'unknown')
+
+    # 7. The batch reads the claim it actually wrote, not its first snapshot.
+    def test_batch_marks_who_the_written_claim_names(self) -> None:
+        # The human corrects Ada -> Mary while the batch is starting up.
+        source = _death_source(self.root, _claim_item('C-aa11bb22cc', 'death', _ADA)
+                               + _claim_item('C-bb22cc33dd', 'residence', _JOHN))
+        ids = [claim.normalize_id('C-aa11bb22cc'), claim.normalize_id('C-bb22cc33dd')]
+        stale = claim._locate_claims(self.root, ids)
+        source.write_text(source.read_text(encoding='utf-8').replace(
+            f'persons: [{_ADA}]', f'persons: [{_MARY}]'), encoding='utf-8')
+        with mock.patch.object(claim, '_locate_claims', return_value=stale):
+            result = self._accept('C-aa11bb22cc', 'C-bb22cc33dd')
+        self.assertEqual(self._living(self.ada), 'unknown', self._text(result))
+        self.assertEqual(self._living(self.mary), 'false')
+
+    # 8. Plain English: "so he stays out", never "so him stays out".
+    def test_warnings_use_a_subject_pronoun(self) -> None:
+        _death_source(self.root, _claim_item('C-aa11bb22cc', 'death', _THOMAS))
+        result = self._accept('C-aa11bb22cc')
+        self.assertIn('so he stays out', self._text(result))
+        self.assertNotIn('so him stays', self._text(result))
 
 
 if __name__ == '__main__':

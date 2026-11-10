@@ -106,6 +106,8 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    death_claim_deceased      - who a death/burial claim says died, split into
 #                                 named / by-elimination / unscoped (#246: what
 #                                 accepting it flips, and what lint W136 reads)
+#    claim_death_reading       - the same for a raw claim dict, `unsure` when its
+#                                 roles:/persons: name someone it cannot place
 #    claim_is_own_vital        - the same question against the index: is claim X
 #                                 a record OF person Y? read by site, gedcom,
 #                                 views and wikitree
@@ -1085,10 +1087,17 @@ class DeceasedReading:
     informant), so the archive reads whoever is left as the one who died.
     `unscoped`: several people and no roles at all, so nobody can say which of
     them died (W132's shape).
+    `unsure`: the claim names someone who cannot be matched to a person on its
+    own `persons:` list - a `roles:` entry for somebody missing from
+    `persons:` (W133's shape, or a misspelled role key on them), or a name
+    link that does not resolve - as the raw entries. Reading such a claim
+    without them can make the widow look like the only person on it (#250
+    review), so it names nobody.
     """
     named: tuple[str, ...] = ()
     by_elimination: tuple[str, ...] = ()
     unscoped: tuple[str, ...] = ()
+    unsure: tuple[str, ...] = ()
 
 
 def death_claim_deceased(
@@ -1133,6 +1142,53 @@ def death_claim_deceased(
     if any(role == VITAL_SUBJECT_ROLES[ctype] for _pid, role in pairs):
         return DeceasedReading(named=tuple(subjects))
     return DeceasedReading(by_elimination=tuple(subjects))
+
+
+def claim_death_reading(
+    claim: dict, alias_map: dict[str, str] | None = None,
+) -> DeceasedReading:
+    """`death_claim_deceased` for a raw claim dict - THE entry point both the
+    death-claim accept (`fha claim`, no alias map: it works without the index)
+    and lint W136 (with the archive's alias map) call.
+
+    It first checks the raw claim for anything its resolved `(pid, role)`
+    pairs would silently lose, because losing it changes who looks dead:
+
+      - a `roles:` value naming somebody who is not on `persons:` - by P-id,
+        by a name link, or under a misspelled key (`decedent:`). The pairs
+        drop that person, so a death record listing only the widow in
+        `persons:` and her husband under `roles: deceased:` read as the
+        widow's own death, and accepting it published her (#250 review);
+      - a `persons:` or `roles:` entry that does not resolve at all - a name
+        link this caller cannot match (`fha claim` has no alias map, so every
+        name link is one), or a code that is not a person's.
+
+    Either makes the reading `unsure`: nobody is named, and the caller says
+    so in general terms rather than naming a person to mark. Otherwise it is
+    `death_claim_deceased` on the resolved pairs. So "the only person on a
+    claim with no roles" means the raw claim truly has no roles.
+    """
+    ctype = str(claim.get('type') or '').strip().lower()
+    if ctype not in DEATH_CLAIM_TYPES:
+        return DeceasedReading()
+    pairs = resolve_claim_persons_with_roles(claim, alias_map)
+    on_claim = {pid for pid, _role in pairs}
+    unsure: list[str] = []
+    for raw in link_field_refs(claim.get('persons')):
+        if resolve_typed_ref(raw, alias_map, want='P') is None:
+            unsure.append(str(raw))
+    roles = claim.get('roles')
+    if isinstance(roles, dict):
+        for role_val in roles.values():
+            for raw in link_field_refs(role_val):
+                pid = resolve_typed_ref(raw, alias_map, want='P')
+                if pid is None or pid not in on_claim:
+                    unsure.append(str(raw))
+    elif roles:
+        unsure.append(str(roles))   # a roles: that is not a mapping at all
+    if unsure:
+        return DeceasedReading(unsure=tuple(dict.fromkeys(unsure)))
+    return death_claim_deceased(ctype, pairs)
 
 
 _VITAL_CONFIDENCE_RANK = {'high': 0, 'medium': 1, 'low': 2}

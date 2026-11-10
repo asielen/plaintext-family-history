@@ -84,7 +84,7 @@ from _lib import (
     claim_item_key_indent,
     claims_edit_problem,
     contradiction_question_heading,
-    death_claim_deceased,
+    claim_death_reading,
     edtf_bounds,
     files_carry_searchable_text,
     finding_to_message,
@@ -3419,13 +3419,14 @@ def _check_died_but_living(
     stronger case: someone recorded this person as alive, so either the flag
     or the claim is wrong, and the message says so.
 
-    Who died is `_lib.death_claim_deceased`, the rule `fha claim` uses when
+    Who died is `_lib.claim_death_reading`, the rule `fha claim` uses when
     the human accepts the claim, so lint and the accept agree: a person named
     `deceased:`, the one person on a claim with no roles, or (reported here
     but never changed automatically) the one the archive reads as the
     deceased because everyone else on the claim has another part. A claim
     naming several people with no roles names nobody (W132 asks for the
-    roles), and a negated claim ("this death did not happen") names nobody
+    roles), nor does one whose `roles:` names somebody missing from its
+    `persons:` (W133) or a name that resolves to nobody, and a negated claim ("this death did not happen") names nobody
     either. Only `accepted` claims count: a suggested one is not yet a fact.
     A merged record is skipped - E016 already asks for the claim to name the
     survivor. One finding per person, naming the first such claim.
@@ -3442,8 +3443,12 @@ def _check_died_but_living(
                 continue
             if str(claim.get('negated')).strip().lower() == 'true':
                 continue
-            reading = death_claim_deceased(
-                ctype, resolve_claim_persons_with_roles(claim, alias_map))
+            # `unsure` (a roles: entry for someone missing from persons:,
+            # or a name nobody resolves) names nobody: read without that
+            # entry, the widow on a husband's death record looks like the
+            # only person on it, and this would tell the owner to mark her
+            # as dead (#250 review). W133 reports the orphaned role itself.
+            reading = claim_death_reading(claim, alias_map)
             cid = str(claim.get('id') or '?')
             for pid, named in ([(p, True) for p in reading.named]
                                + [(p, False) for p in reading.by_elimination]):

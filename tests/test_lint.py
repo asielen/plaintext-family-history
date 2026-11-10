@@ -5063,6 +5063,20 @@ class DiedButLivingW136Tests(unittest.TestCase):
         self._claim('"[[Ada Hartley]]"')
         self.assertEqual(len(self._w136()), 1)
 
+    def test_a_role_for_someone_missing_from_persons_never_blames_the_widow(self) -> None:
+        # #250 review: the husband under roles: deceased:, only the widow on
+        # persons:. Read without him she looked like the claim's one person,
+        # and W136 told the owner to mark HER as dead. W133 reports the role.
+        self._person(self.ADA, 'Ada Hartley', 'unknown')
+        self._person(self.JOHN, 'John Hartley', 'unknown')
+        self._person(self.MARY, 'Mary Hartley', 'unknown')
+        for roles in (f'  roles:\n    deceased: [{self.JOHN}]\n',
+                      '  roles:\n    deceased: ["[[John Hartley]]"]\n',
+                      f'  roles:\n    decedent: [{self.JOHN}]\n'):
+            with self.subTest(roles=roles):
+                self._claim(self.ADA, roles=roles, also=self.MARY_DEATH)
+                self.assertEqual(self._names(), ['Mary Hartley'])
+
 
 if __name__ == '__main__':
     unittest.main()
