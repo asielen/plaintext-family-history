@@ -245,6 +245,84 @@ class DocumentKeywordTests(_Base):
         self.assertTrue((bundle / 'letter.pdf').exists())
         self.assertEqual(store.embed_calls, [])
 
+    def test_the_back_scan_beside_it_is_checked_too(self) -> None:
+        # Codex 4521910862: record.jpg + record-back.jpg - the back is pulled in
+        # automatically, and a back already belonging to another source used to
+        # get a second SOURCE: keyword (exit 0).
+        store = self._install_store()
+        folder = self.archive / 'documents' / 'census'
+        (folder / 'record.jpg').write_bytes(b'x')
+        (folder / 'record-back.jpg').write_bytes(b'x')
+        store.keywords[str(folder / 'record-back.jpg')] = ['SOURCE: S-a1b2c3d4e5']
+        for extra in ([], ['--dry-run']):
+            with self.subTest(dry_run=bool(extra)):
+                rc, _out, err = self._run([str(folder / 'record.jpg'), '--type', 'census'] + extra)
+                self.assertEqual(rc, EXIT_ERRORS)
+                self.assertIn('record-back.jpg (the back scan beside it) already carries '
+                              'SOURCE: S-a1b2c3d4e5', err)
+        self.assertTrue((folder / 'record.jpg').exists())
+        self.assertTrue((folder / 'record-back.jpg').exists())
+        self.assertEqual(store.embed_calls, [])
+        self.assertEqual(self._records(), [])
+
+    def test_the_back_scan_in_the_inbox_is_checked_before_anything_moves(self) -> None:
+        store = self._install_store()
+        inbox = self.archive / 'inbox'
+        inbox.mkdir()
+        (inbox / 'record.jpg').write_bytes(b'x')
+        (inbox / 'record-back.jpg').write_bytes(b'x')
+        store.keywords[str(inbox / 'record-back.jpg')] = ['SOURCE: S-a1b2c3d4e5']
+        rc, _out, err = self._run([str(inbox / 'record.jpg'), '--type', 'census'])
+        self.assertEqual(rc, EXIT_ERRORS)
+        self.assertIn('already carries SOURCE: S-a1b2c3d4e5', err)
+        self.assertTrue((inbox / 'record.jpg').exists(), 'the primary went back to the inbox')
+        self.assertTrue((inbox / 'record-back.jpg').exists())
+        self.assertEqual(store.embed_calls, [])
+
+    def test_ctrl_c_after_the_keyword_leaves_no_undo_copy_behind(self) -> None:
+        import tempfile as _tempfile
+        store = self._install_store()
+        scan = self.archive / 'documents' / 'census' / 'will.pdf'
+        scan.write_bytes(b'x')
+        before = set(Path(_tempfile.gettempdir()).glob('fha-undo-*'))
+        real_mkdir = Path.mkdir
+
+        def _interrupt(self_path, *a, **k):
+            if self_path.name == 'census' and 'sources' in self_path.parts:
+                raise KeyboardInterrupt
+            return real_mkdir(self_path, *a, **k)
+        Path.mkdir = _interrupt
+        try:
+            with self.assertRaises(KeyboardInterrupt):
+                self._run([str(scan), '--type', 'census'])
+        finally:
+            Path.mkdir = real_mkdir
+        self.assertEqual(len(store.embed_calls), 1, 'the keyword had been written')
+        self.assertEqual(set(Path(_tempfile.gettempdir()).glob('fha-undo-*')) - before, set())
+
+    def test_refile_into_the_photo_library_checks_the_files_own_keyword(self) -> None:
+        # The sweep: refile ends with a SOURCE: write into the moved file, so a
+        # different ID already inside it must refuse before anything moves.
+        store = self._install_store()
+        sid = 'S-b2c3d4e5f6'
+        folder = self.archive / 'documents' / 'census'
+        scan = folder / f'portrait_{sid}.jpg'
+        scan.write_bytes(b'x')
+        (self.archive / 'sources' / 'census').mkdir(parents=True, exist_ok=True)
+        (self.archive / 'sources' / 'census' / f'portrait_{sid}.md').write_text(
+            f'---\nid: {sid}\ntitle: Portrait\nsource_type: census\nfiles:\n'
+            f'  - file: documents/census/portrait_{sid}.jpg\n    role: primary\n---\n',
+            encoding='utf-8')
+        store.keywords[str(scan)] = ['SOURCE: S-a1b2c3d4e5']
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = process._standalone_main(['refile', sid, '--to', 'photos', '--dest', '1911',
+                                           '--type', 'photo', '--root', str(self.archive)])
+        self.assertNotEqual(rc, EXIT_CLEAN)
+        self.assertIn('already carries SOURCE: S-a1b2c3d4e5', err.getvalue())
+        self.assertTrue(scan.exists(), 'nothing moved')
+        self.assertEqual(store.embed_calls, [])
+
     def test_an_attached_document_scan_gets_the_keyword(self) -> None:
         store = self._install_store()
         folder = self.archive / 'documents' / 'census'
@@ -332,6 +410,23 @@ class RealDocumentKeywordTests(_Base):
         self.assertEqual(rc, EXIT_FAILURE, err)
         self.assertEqual(page.read_bytes(), before)
         self.assertEqual(process._read_all_source_keywords(page), [sid.lower()])
+
+    def test_this_sources_keyword_in_other_capitals_is_not_doubled(self) -> None:
+        folder = self.archive / 'documents' / 'census'
+        primary = write_fixture(folder / 'will.tif')
+        rc, _out, err = self._run([str(primary), '--type', 'census'])
+        self.assertEqual(rc, EXIT_CLEAN, err)
+        primary = next(folder.glob('will_S-*.tif'))
+        sid = primary.stem.rsplit('_', 1)[1]
+        page = write_fixture(folder / 'page3.tif')
+        import subprocess
+        subprocess.run(['exiftool', '-q', '-overwrite_original',
+                        f'-XMP-dc:Subject=SOURCE: {sid.upper()}', str(page)], check=True)
+        rc, _out, err = self._run([str(primary), '--more', str(page), 'page'])
+        self.assertEqual(rc, EXIT_CLEAN, err)
+        attached = next(folder.glob('page3-page_S-*.tif'))
+        for tag, values in read_fields(attached).items():
+            self.assertEqual(values, [f'SOURCE: {sid}'], tag)
 
     def test_a_document_exiftool_cannot_update_is_still_filed(self) -> None:
         bad = self.archive / 'documents' / 'census' / 'locked.pdf'

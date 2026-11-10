@@ -107,6 +107,7 @@ are found the user is asked whether they are *one* source (shared S-id) or
 #    _take_undo_copy / _restore_undo_copy / _discard_undo_copies - byte-exact
 #                                  rollback of a document keyword (a PDF append)
 #    _document_keyword_undo      - the undo step that restores those bytes
+#    _refuse_if_document_belongs_elsewhere - the embedded-ID preflight for companions
 #    _open_backup                - the run's safety-copy policy, announced (TOOLING §13f)
 #    _flush_backup_messages      - print its notices (warnings to stderr)
 #    _read_source_keyword        - the FIRST S-id embedded in a photo, or None
@@ -580,7 +581,7 @@ _format_exiftool_tmp_error = format_exiftool_tmp_error
 
 def _run_exiftool_embed_source(
     file_path: Path, s_id: str, extra_keywords: list[str] | None = None,
-    *, backup: OriginalBackup,
+    *, backup: OriginalBackup, remove_keywords: list[str] | None = None,
 ) -> str | None:
     """Write `SOURCE: {s_id}` (and any extra keywords) into one file.
 
@@ -604,8 +605,11 @@ def _run_exiftool_embed_source(
     `ExiftoolUnavailableError` (a RuntimeError) only when exiftool is absent.
     """
     keywords = [f'SOURCE: {s_id}'] + (extra_keywords or [])
-    return write_embedded_keywords(file_path, add=keywords, backup=backup,
-                                   command='fha process')
+    # `remove_keywords`: another spelling of this same source's keyword the
+    # file already carries (`SOURCE: S-J3Z…` in capitals), replaced in the
+    # same call so the file does not end up holding the ID twice.
+    return write_embedded_keywords(file_path, add=keywords, remove=remove_keywords or (),
+                                   backup=backup, command='fha process')
 
 
 def _run_exiftool_remove_source(
@@ -673,7 +677,16 @@ def _embed_document_keyword(
                 'filename and its source record still tie it to the source.'), None
     missing_exiftool = False
     try:
-        err = _run_exiftool_embed_source(path, sid, backup=backup)
+        existing = _run_exiftool_read_keywords(path)
+    except RuntimeError:
+        existing = []
+    canonical = f'SOURCE: {sid}'
+    variants = [kw for kw in existing if kw != canonical
+                and (m := _SOURCE_KEYWORD_RE.match(kw.strip()))
+                and m.group(1).lower() == sid.lower()]
+    try:
+        err = _run_exiftool_embed_source(
+            path, sid, backup=backup, **({'remove_keywords': variants} if variants else {}))
     except ExiftoolUnavailableError:
         err, missing_exiftool = 'exiftool is not installed on this computer', True
     except OSError as e:
@@ -749,6 +762,28 @@ def _document_source_keyword(path: Path) -> str | None:
         return _read_source_keyword(path)
     except RuntimeError:
         return None
+
+
+def _refuse_if_document_belongs_elsewhere(path: Path, sid: str | None, *, role: str) -> None:
+    """Refuse before any rename or write if a document file that is about
+    to receive a `SOURCE:` keyword already carries a DIFFERENT source's.
+
+    The one embedded-identity preflight every documents-root write path runs
+    (#253 review sweep): the primary's own check is in `process_document`;
+    this covers the companions processed with it - the `-back` scan pulled in
+    automatically, `--more`, a bundle's documents and a refile out of the
+    documents root - so no file is ever given a second source. `sid` None
+    means "no source minted yet": any embedded ID refuses.
+    """
+    embedded = _document_source_keyword(path)
+    if embedded is None or (sid is not None and embedded == sid.lower()):
+        return
+    shown = fmt_id_display(embedded)
+    raise ProcessError(
+        f'{path.name} ({role}) already carries SOURCE: {shown} inside the file, so it '
+        'belongs to that source - another program has probably changed its name. '
+        'Filing it here would give one file two sources. Run '
+        f'`fha find {shown}` to see the record it belongs to. Nothing was changed.')
 
 
 def _document_keyword_undo(path: Path, undo_copy: Path):
@@ -1937,6 +1972,8 @@ def process_document(
     # file's bytes actually are right now.
     if back_sibling is None:
         back_sibling = _find_back_sibling(real_path if real_path is not None else file_path)
+    if back_sibling is not None and back_sibling.exists():
+        _refuse_if_document_belongs_elsewhere(back_sibling, None, role='the back scan beside it')
 
     # DNA sources always carry restricted: true and must live under
     # documents/dna/ (SPEC §8.5.5, lint E017) - refuse before scaffolding a
@@ -2082,6 +2119,11 @@ def process_document(
 
         if sidecar is not None:
             sidecar.unlink()
+    except (KeyboardInterrupt, SystemExit):
+        # Ctrl+C mid-run is not a rollback (that path stays as it was), but the
+        # private pre-write copies must not be left behind in TEMP (#253 review).
+        _discard_undo_copies(undo_copies)
+        raise
     except Exception as e:
         failed = _run_undo(undo)
         if failed:
@@ -3108,6 +3150,11 @@ def process_bundle(
         undo.append((f'restore the bundle notes stub {notes_path.name}',
                      lambda p=notes_path, text=notes_text: p.write_text(text, encoding='utf-8')))
         folder.rmdir()
+    except (KeyboardInterrupt, SystemExit):
+        # Ctrl+C mid-run is not a rollback (that path stays as it was), but the
+        # private pre-write copies must not be left behind in TEMP (#253 review).
+        _discard_undo_copies(undo_copies)
+        raise
     except Exception as e:
         # Keyword removals and the file/record undos are all best-effort, and any
         # that fail are reported: a file left in its destination or a keyword left
@@ -4104,6 +4151,11 @@ def _attach_more_engine(
         # Atomic for the same reason as the photos branch above: an existing
         # source record is being replaced, not created.
         write_text_exact_atomic(record_path, reapply_newline(new_text, old_text))
+    except (KeyboardInterrupt, SystemExit):
+        # Ctrl+C mid-run is not a rollback (that path stays as it was), but the
+        # private pre-write copies must not be left behind in TEMP (#253 review).
+        _discard_undo_copies(undo_copies)
+        raise
     except Exception as e:
         # Undo the record entry and the rename best-effort, but keep any failure:
         # a file left renamed while the record no longer lists it is inconsistent,
@@ -4745,6 +4797,10 @@ def process_refile(
                 f'{stored_alias}`, and either point it at the correct on-disk '
                 f'file for this source (one whose own filename ends `_{sid}`) '
                 'or delete the entry if no such file exists. Nothing was moved.')
+        if to == _PHOTO_DIR:
+            # The move ends with a SOURCE: write into this file; a second,
+            # different ID already inside it must refuse first (#253 sweep).
+            _refuse_if_document_belongs_elsewhere(src, sid, role='the file to refile')
     else:
         try:
             embedded_sids = _read_all_source_keywords(src)
@@ -5904,6 +5960,8 @@ def _run_process(args: argparse.Namespace) -> int:
                 else:
                     back_src = _find_back_sibling(pre_move_path)
                     if back_src is not None:
+                        _refuse_if_document_belongs_elsewhere(
+                            back_src, None, role='the back scan beside it')
                         # Same resolved classification as the primary's own
                         # relocation just above (relocate_type, not the raw
                         # --type) - see that call's comment. A back sibling
