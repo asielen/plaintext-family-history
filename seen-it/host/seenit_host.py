@@ -143,6 +143,12 @@ NP_ARTICLE_RE = re.compile(r'newspapers\.com/(?:article|clip)/(?:[^/]+/)?(\d+)')
 FS_RECORD_RE = re.compile(r'familysearch\.org/(?:[a-z]{2}/)?ark:/61903/1:1:([A-Z0-9-]+)', re.I)
 FAG_MEMORIAL_RE = re.compile(r'findagrave\.com/memorial/(\d+)', re.I)
 SOURCE_ID_RE = re.compile(r'^id:\s*["\']?(S-[0-9a-z]{10})', re.M)
+# A photo or story someone shared to an Ancestry tree: its media id is the same
+# in every tree that saved it, so the tree and person in the address are not
+# part of the key (content-ancestry.js keys it the same way: med:{id}).
+ANC_MEDIA_RE = re.compile(
+    r'ancestry\.[a-z.]+/mediaui-viewer/(?:[^?#\s]*/)?media/'
+    r'([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})', re.I)
 ANC_RECORD_RE = re.compile(
     r'/(?:search/collections|collections)/(\d+)/records/(\d+)'
     r'|discoveryui-content/view/(\d+):(\d+)'
@@ -765,6 +771,9 @@ def _keys_from_url(url):
         else:
             db, rid = m.group(5), m.group(6)
         keys.append('rec:%s:%s' % (db, rid))
+    m = ANC_MEDIA_RE.search(url)
+    if m:
+        keys.append('med:%s' % m.group(1).lower())
     return keys
 
 

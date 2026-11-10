@@ -310,7 +310,7 @@
       wrap.appendChild(pill('nsi-archive', '📚 Processed', 'This ' + what + ' was processed into the archive.'));
     } else if (k && k.state === 'captured') {
       wrap.appendChild(pill('nsi-captured', '📥 Captured, not filed', 'Captured into the inbox (' + (k.where || '') + '), waiting to be filed.'));
-    } else if (full && adv() && !key.startsWith('med:')) {
+    } else if (full && adv()) {
       wrap.appendChild(pill('nsi-notyet', Object.keys(data.known).length ? '○ Not in archive' : 'Archive list not loaded',
         Object.keys(data.known).length ? 'This ' + what + ' has not been captured into the family archive.'
           : 'The helper has not reported what the archive holds yet.'));

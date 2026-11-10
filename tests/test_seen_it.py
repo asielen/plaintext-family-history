@@ -367,6 +367,22 @@ class ScanKnown(_TempHome):
         self.assertEqual(items['rec:7602:9909']['state'], 'captured')  # a -* chunk folder
         self.assertEqual(len(items), 13)
 
+    def test_a_shared_ancestry_photo_is_known_by_its_media_id(self):
+        # A photo someone shared to their tree, saved as a source: Seen It's
+        # Hints-page pills key it med:{mediaId} - the same in every tree that
+        # saved it - so the source record's address must say the same.
+        archive, settings = self.build()
+        media = 'ABCDEF01-2222-4333-8444-ABCDEFABCDEF'
+        _write(archive / 'sources' / 'photos' / ('hartley-family-photo_%s.md' % SID_B),
+               '---\nid: %s\ntitle: Hartley family photo\n'
+               'url: https://www.ancestry.com/mediaui-viewer/tree/333/person/444/media/%s?usePUBJs=true\n---\n'
+               % (SID_B, media))
+        _json(archive / 'inbox' / 'shared-photo' / 'capture.json',
+              {'url': 'https://www.ancestry.com/mediaui-viewer/tree/555/person/666/media/abcdef01-9999-4333-8444-abcdefabcdef'})
+        items, _missing = host.scan_known(host.scan_folders(settings))
+        self.assertEqual(items['med:' + media.lower()], {'state': 'filed', 'where': 'photos', 'sid': SID_B})
+        self.assertEqual(items['med:abcdef01-9999-4333-8444-abcdefabcdef']['state'], 'captured')
+
     def test_a_batch_ledger_never_says_the_archive_holds_anything(self):
         # The capture add-on's batch downloads keep a reading copy of each
         # queue at the staging root. It names records as done the moment
