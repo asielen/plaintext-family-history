@@ -402,6 +402,10 @@ When a newer version comes out, `fha update-tools` refreshes that copy. Be clear
 "refresh" means:
 
 - **Never touched:** your records, `fha.yaml`, your place list, and your `custom.css` stylesheet.
+  (Once, it asks where to keep the Seen It browser add-on, and adds your answer as one line at
+  the end of `fha.yaml`.)
+- **Browser add-ons:** the Seen It add-on is refreshed in its folder too, after a backup; then
+  click its reload arrow in `chrome://extensions` - never remove it, which deletes its data.
 - **Replaced:** tool files and rulebooks. If you had edited one, your version is moved into
   `.plaintext-backup/` first and the new stock file takes its place - so your edit survives, but
   stops being in effect until you re-apply it.

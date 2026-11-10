@@ -90,6 +90,18 @@
 # originals_backup: D:/PhotoOriginals        # Windows
 # originals_backup: /Volumes/Archive/PhotoOriginals   # Mac
 
+# ── Browser add-ons (optional) ──
+#   The folder where `fha update-tools` keeps the Seen It add-on up to date
+#   (it marks the newspaper pages and records you have already looked at).
+#   `fha install` and `fha update-tools` ask you once and add the line for you;
+#   `none` means you said no. Change it here any time. The capture add-on
+#   needs no setting: it lives in .fha/browser-companion and is kept current
+#   there.
+#
+# browser_extensions: extensions                            # inside this archive
+# browser_extensions: D:/Genealogy/Tools/Chrome Extensions  # or anywhere
+# browser_extensions: none
+
 # ── Biography voice (optional) ──
 #   How the assistant's drafted biographies read. The facts and citations are
 #   identical either way - this only sets the voice. You can always override

@@ -169,6 +169,7 @@ from _lib import (
     walk_files,
     yaml_available,
 )
+from browser_extensions import capture_reload_note, run_extensions
 
 configure_utf8_stdout()
 
@@ -1982,6 +1983,7 @@ def run_install(
     repo_root: Path,
     *,
     dry_run: bool = False,
+    ask=None,
 ) -> Result:
     """Create an archive's skeleton + operating layer and stamp it; return a Result.
 
@@ -2237,6 +2239,7 @@ def run_install(
                   f'fha.yaml roots: already renames it there.')
         for m in advisories:
             print(f'\nNote: {m}')
+        run_extensions(archive_path, repo_root, dry_run=True)
         print('\nNothing was written (dry run). Re-run without --dry-run to install.')
         return Result(exit_code=EXIT_CLEAN, data={'dry_run': True, 'file_count': len(files)})
 
@@ -2302,8 +2305,29 @@ def run_install(
     print(f'  4. Run `fha doctor` from inside the archive to check everything is set up.')
     for m in advisories:
         print(f'\nNote: {m}')
+    # Last, because it may ask a question: the browser add-ons (Seen It), kept
+    # in the folder fha.yaml's `browser_extensions:` names (TOOLING §13c).
+    extensions = run_extensions(archive_path, repo_root, ask=ask)
+    changed.extend(extensions['changed'])
+    if extensions['warnings']:
+        return Result(ok=False, exit_code=EXIT_WARNINGS, changed=changed,
+                      data={'file_count': len(files),
+                            'extension_warnings': extensions['warnings']})
     return Result(exit_code=EXIT_CLEAN, changed=changed,
                   data={'file_count': len(files)})
+
+
+def _terminal_ask():
+    """`input` when a person is at the keyboard, else None (never prompt).
+
+    A scheduled run, a pipe, CI or a test has nobody to answer, and a prompt
+    there would hang or read garbage - so the add-on question is only asked
+    when stdin is a terminal.
+    """
+    try:
+        return input if sys.stdin is not None and sys.stdin.isatty() else None
+    except (AttributeError, ValueError):
+        return None
 
 
 def _cmd_install(args: argparse.Namespace) -> int:
@@ -2314,6 +2338,7 @@ def _cmd_install(args: argparse.Namespace) -> int:
             Path(args.archive_path),
             repo_root,
             dry_run=bool(getattr(args, 'dry_run', False)),
+            ask=_terminal_ask(),
         ).exit_code
     except ScaffoldError as exc:
         print(f'ERROR: {exc}', file=sys.stderr)
@@ -2635,6 +2660,7 @@ def run_update_tools(
     *,
     dry_run: bool = False,
     verbose: bool = False,
+    ask=None,
 ) -> Result:
     """Refresh the operating layer in an existing archive from a public clone.
 
@@ -2916,6 +2942,13 @@ def run_update_tools(
             print(f'[dry-run] {yaml_missing_note}')
         if config_broken:
             print(f'[dry-run] {config_broken_note}')
+        note = capture_reload_note(
+            [ap for ap, _src in plan['added'] + plan['stock'] + plan['customized']],
+            repo_root, dry_run=True)
+        if note:
+            print(note)
+        run_extensions(archive_root, repo_root, dry_run=True)
+        print()
         print(
             f'Plan: {n_added} to add, {n_stock} to update, {n_custom} to back up '
             f'and update, {n_retired} retired, {n_current} already up to date'
@@ -3285,6 +3318,16 @@ def run_update_tools(
                 )
     _seed_roots_stamp(archive_root)
 
+    # The capture add-on's files are part of the operating layer and were just
+    # refreshed above; Chrome keeps running the old ones until it is reloaded.
+    note = capture_reload_note(list(installed_ok), repo_root)
+    if note:
+        print()
+        print(note)
+    # The other add-ons (Seen It) live wherever `browser_extensions:` says,
+    # often outside the archive, and are refreshed from this same clone.
+    extensions = run_extensions(archive_root, repo_root, ask=ask)
+
     print()
     print(
         f'Done: {n_added_ok} added, {n_stock_ok} updated, {n_custom_ok} backed up '
@@ -3306,6 +3349,7 @@ def run_update_tools(
     # restored executable bit is - a headless caller's audit should see it.
     changed.extend(str(archive_root / folder_name) for _alias, folder_name in pruned_external)
     changed.append(str(archive_root / VERSION_FILE))
+    changed.extend(extensions['changed'])
     update_data = {
         'added': n_added_ok, 'stock': n_stock_ok, 'customized': n_custom_ok,
         'retired': n_retired_ok, 'current': n_current,
@@ -3322,7 +3366,13 @@ def run_update_tools(
             file=sys.stderr,
         )
         return Result(ok=False, exit_code=EXIT_WARNINGS, changed=changed,
-                      data={**update_data, 'failures': failures})
+                      data={**update_data, 'failures': failures,
+                            'extension_warnings': extensions['warnings']})
+    if extensions['warnings']:
+        # Already printed, each with its next step; only the exit status is left.
+        return Result(ok=False, exit_code=EXIT_WARNINGS, changed=changed,
+                      data={**update_data,
+                            'extension_warnings': extensions['warnings']})
     return Result(exit_code=EXIT_CLEAN, changed=changed, data=update_data)
 
 
@@ -3413,6 +3463,7 @@ def _cmd_update_tools(args: argparse.Namespace) -> int:
             repo_root,
             dry_run=bool(getattr(args, 'dry_run', False)),
             verbose=bool(getattr(args, 'verbose', False)),
+            ask=_terminal_ask(),
         ).exit_code
     except ScaffoldError as exc:
         print(f'ERROR: {exc}', file=sys.stderr)

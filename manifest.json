@@ -1,7 +1,7 @@
 {
   "manifest_version": "1",
   "spec_version": "1.2",
-  "generated": "2026-11-09",
+  "generated": "2026-11-10",
   "files": [
     {
       "path": ".claude/skills/README.md",
@@ -502,6 +502,13 @@
       "src": "tools/backup.py"
     },
     {
+      "path": ".fha/tools/browser_extensions.py",
+      "category": "operating",
+      "sha256": "051e0c1849e073cc4fe9d443500055998f738d4d6ccabf94338079622ae273b3",
+      "spec_version": "1.2",
+      "src": "tools/browser_extensions.py"
+    },
+    {
       "path": ".fha/tools/capture.py",
       "category": "operating",
       "sha256": "cd8b3194c0b4a608feb3a8fd262910d3922f85877c15c5b91ff5113e9bc68e2c",
@@ -721,7 +728,7 @@
     {
       "path": ".fha/tools/scaffold.py",
       "category": "operating",
-      "sha256": "f6f68509c4d53bbe77e3f3c6cbe194e211a0bcc9598fe4f60a4d13e105d941df",
+      "sha256": "e71268e2cc1539cf59eeea251f378ea3889ec04179a6999cfded75daf72c5290",
       "spec_version": "1.2",
       "src": "tools/scaffold.py"
     },
@@ -949,7 +956,7 @@
     {
       "path": "GETTING_STARTED.md",
       "category": "operating",
-      "sha256": "1df83f3e0826212e8810e3119741561b22e57f6f51b04cd2629422fff8dd1f76",
+      "sha256": "0a73bef5f3bd575d9eb1af924f06bd88ab47e492c739eb9bf89b1b71193ab533",
       "spec_version": "1.2"
     },
     {
@@ -961,7 +968,7 @@
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "79bbbd0ccfd28ecdef614a3de17bf7c67e94df21f9421874fede624490659daf",
+      "sha256": "95004d7a1d7777008a18b5e2cb11f9a598ea7106490322953c85a79fc6c36706",
       "spec_version": "1.2"
     },
     {
@@ -1015,7 +1022,7 @@
     {
       "path": "docs/UPDATING.md",
       "category": "operating",
-      "sha256": "dbb50a29a4bdb405e04a85457d7bef5f3f2d4ece9af8ad2cf0d86a37d7ac8909",
+      "sha256": "6d3293c6da8d1e5f4cca1aafc879dc640695dab090d4f653c0eaac4adf50397f",
       "spec_version": "1.2"
     },
     {
@@ -1046,7 +1053,7 @@
     {
       "path": "fha.yaml",
       "category": "skeleton",
-      "sha256": "09012db99fdff2326150db197922d8f5f7e2919c220dd432e94f80d62cb86337",
+      "sha256": "11d2cbd0cd181848192c42af65ba34c95f4d0e7ebabdcda68e071544cfa9edc0",
       "spec_version": "1.2",
       "src": "archive-template/fha.yaml"
     },
