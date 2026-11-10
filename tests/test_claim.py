@@ -3432,5 +3432,288 @@ class OnOrAfterAuditTests(unittest.TestCase):
         self.assertEqual(format_date_spread(None, None), 'no dates')
 
 
+# ── #246: accepting a death marks the person as no longer living ─────────────
+
+_ADA = 'P-aaaaaaaaaa'        # living: unknown - the ordinary stub
+_THOMAS = 'P-bbbbbbbbbb'     # living: true - recorded as alive on purpose
+_MARY = 'P-cccccccccc'       # living: unknown
+_JOHN = 'P-dddddddddd'       # living: unknown - the narrator / informant
+_EDITH = 'P-eeeeeeeeee'      # living: false already
+_OLD = 'P-ffffffffff'        # a merged record (tombstone)
+
+
+def _death_person(root: Path, pid: str, name: str, living: str, sex: str = 'F') -> Path:
+    first, last = name.lower().split()
+    path = root / 'people' / 'stubs' / f'{last}__{first}_{pid}.md'
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        f'---\nid: {pid}\nname: {name}\nsex: {sex}\nliving: {living}\n'
+        'tier: stub\ncreated: 2026-07-01\n---\n', encoding='utf-8')
+    return path
+
+
+def _death_source(root: Path, claims: str) -> Path:
+    path = root / 'sources' / 'other' / 'records_S-1111111111.md'
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        '---\nid: S-1111111111\ntitle: Family records\nsource_type: other\n'
+        'source_class: original\nrepository: example collection\n'
+        'citation: A fictional citation.\ncreated: 2026-06-01\n---\n\n'
+        f'## Claims\n```yaml\n{claims}```\n', encoding='utf-8')
+    return path
+
+
+def _claim_item(cid: str, ctype: str, persons: str, *, roles: str = '',
+                extra: str = '', status: str = 'suggested') -> str:
+    return (f'- value: "a {ctype} record"\n  id: {cid}\n  type: {ctype}\n'
+            f'  persons: [{persons}]\n{roles}{extra}  status: {status}\n'
+            '  confidence: high\n\n')
+
+
+class DeathClaimMarksNotLivingTests(unittest.TestCase):
+    """#246: a person with an accepted death certificate, grave or obituary
+    stayed `living: unknown`, so every shared export and the site left them
+    out. Accepting the claim now records that they died - for the person the
+    claim says died, and nobody else."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.ada = _death_person(self.root, _ADA, 'Ada Hartley', 'unknown')
+        self.thomas = _death_person(self.root, _THOMAS, 'Thomas Hartley', 'true', 'M')
+        self.mary = _death_person(self.root, _MARY, 'Mary Hartley', 'unknown')
+        self.john = _death_person(self.root, _JOHN, 'John Hartley', 'unknown', 'M')
+        self.edith = _death_person(self.root, _EDITH, 'Edith Hartley', 'false')
+        self.old = self.root / 'people' / 'stubs' / \
+            f'MERGED-INTO-{_ADA}__hartley__ada_{_OLD}.md'
+        self.old.write_text(
+            f'---\nid: {_OLD}\nname: Ada Hartley\nliving: unknown\nstatus: merged\n'
+            f'merged_into: {_ADA}\n---\n', encoding='utf-8')
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _living(self, path: Path) -> str:
+        return str(read_record(path)['meta'].get('living')).lower()
+
+    def _text(self, result) -> str:
+        return '\n'.join(m.text for m in result.messages)
+
+    def _accept(self, *cids: str, **kw):
+        return claim.run_claim_batch(self.root, claim_ids=list(cids),
+                                     status='accepted', **kw)
+
+    def test_single_person_death_marks_them_no_longer_living(self) -> None:
+        _death_source(self.root, _claim_item('C-aa11bb22cc', 'death', _ADA))
+        result = self._accept('C-aa11bb22cc')
+        self.assertEqual(result.exit_code, EXIT_CLEAN, self._text(result))
+        self.assertEqual(self._living(self.ada), 'false')
+        self.assertIn(str(self.ada), result.changed)
+        self.assertIn('Ada Hartley is now marked as no longer living', self._text(result))
+        self.assertIn('may now include her', self._text(result))
+        self.assertEqual(result['marked_not_living'], [_ADA])
+
+    def test_deceased_role_marks_only_the_deceased(self) -> None:
+        _death_source(self.root, _claim_item(
+            'C-aa11bb22cc', 'death', f'{_ADA}, {_JOHN}',
+            roles=f'  roles:\n    deceased: [{_ADA}]\n    informant: [{_JOHN}]\n'))
+        self._accept('C-aa11bb22cc')
+        self.assertEqual(self._living(self.ada), 'false')
+        self.assertEqual(self._living(self.john), 'unknown')
+
+    def test_family_plot_burial_never_marks_the_narrator(self) -> None:
+        # "The family plot holds Ada and Mary, with a space for me."
+        _death_source(self.root, _claim_item(
+            'C-aa11bb22cc', 'burial', f'{_ADA}, {_MARY}, {_JOHN}',
+            roles=f'  roles:\n    deceased: [{_ADA}, {_MARY}]\n'))
+        result = self._accept('C-aa11bb22cc')
+        self.assertEqual(self._living(self.ada), 'false')
+        self.assertEqual(self._living(self.mary), 'false')
+        self.assertEqual(self._living(self.john), 'unknown')
+        self.assertNotIn('John Hartley', self._text(result))
+
+    def test_living_true_is_left_alone_with_a_warning(self) -> None:
+        _death_source(self.root, _claim_item('C-aa11bb22cc', 'death', _THOMAS))
+        before = self.thomas.read_bytes()
+        result = self._accept('C-aa11bb22cc')
+        self.assertEqual(self.thomas.read_bytes(), before)
+        warnings = [m.text for m in result.messages if m.level == 'warning']
+        self.assertEqual(len(warnings), 1, warnings)
+        self.assertIn('Thomas Hartley', warnings[0])
+        self.assertIn('marked as living', warnings[0])
+        self.assertIn(f'fha person set-living {_THOMAS} false', warnings[0])
+
+    def test_multi_person_burial_with_no_roles_marks_nobody_and_warns(self) -> None:
+        _death_source(self.root, _claim_item('C-aa11bb22cc', 'burial',
+                                             f'{_ADA}, {_MARY}, {_JOHN}'))
+        result = self._accept('C-aa11bb22cc')
+        for path in (self.ada, self.mary, self.john):
+            self.assertEqual(self._living(path), 'unknown')
+        warnings = [m.text for m in result.messages if m.level == 'warning']
+        self.assertEqual(len(warnings), 1, warnings)
+        self.assertIn('does not say which of them died', warnings[0])
+        self.assertIn('roles: {deceased:', warnings[0])
+
+    def test_by_elimination_is_reported_but_not_changed(self) -> None:
+        # The older shape SPEC §8.3 still reads: nobody marked deceased:, the
+        # widower has a role, so Ada is read as the one who died. The site
+        # shows that, but one forgotten role must never publish a living
+        # person, so the flag is left for the human.
+        _death_source(self.root, _claim_item(
+            'C-aa11bb22cc', 'death', f'{_ADA}, {_JOHN}',
+            roles=f'  roles:\n    spouse: [{_JOHN}]\n'))
+        result = self._accept('C-aa11bb22cc')
+        self.assertEqual(self._living(self.ada), 'unknown')
+        self.assertEqual(self._living(self.john), 'unknown')
+        self.assertIn(f'fha person set-living {_ADA} false', self._text(result))
+
+    def test_negated_death_marks_nobody(self) -> None:
+        # "We searched and Ada did not die then" says nobody died. Mary's
+        # ordinary death in the same batch shows the step did run.
+        _death_source(self.root, _claim_item(
+            'C-aa11bb22cc', 'death', _ADA,
+            extra='  negated: true\n  evidence: negative\n')
+            + _claim_item('C-bb22cc33dd', 'death', _MARY))
+        result = self._accept('C-aa11bb22cc', 'C-bb22cc33dd')
+        self.assertEqual(self._living(self.ada), 'unknown')
+        self.assertNotIn('Ada Hartley', self._text(result))
+        self.assertEqual(self._living(self.mary), 'false')
+
+    def test_already_not_living_is_unchanged_and_silent(self) -> None:
+        _death_source(self.root, _claim_item('C-aa11bb22cc', 'death', _EDITH))
+        before = self.edith.read_bytes()
+        result = self._accept('C-aa11bb22cc')
+        self.assertEqual(self.edith.read_bytes(), before)
+        self.assertNotIn('Edith Hartley', self._text(result))
+        self.assertNotIn(str(self.edith), result.changed)
+        self.assertEqual(result['marked_not_living'], [])
+
+    def test_only_an_accept_marks_anyone(self) -> None:
+        _death_source(self.root, _claim_item('C-aa11bb22cc', 'death', _ADA))
+        for status in ('needs-review', 'disputed', 'rejected', 'superseded'):
+            with self.subTest(status=status):
+                claim.run_claim(self.root, claim_id='C-aa11bb22cc', status=status)
+                self.assertEqual(self._living(self.ada), 'unknown')
+        claim.run_claim(self.root, claim_id='C-aa11bb22cc', status='accepted')
+        self.assertEqual(self._living(self.ada), 'false')
+
+    def test_other_claim_types_mark_nobody(self) -> None:
+        _death_source(self.root, _claim_item('C-aa11bb22cc', 'residence', _ADA)
+                      + _claim_item('C-bb22cc33dd', 'birth', _JOHN)
+                      + _claim_item('C-cc33dd44ee', 'burial', _MARY))
+        self._accept('C-aa11bb22cc', 'C-bb22cc33dd', 'C-cc33dd44ee')
+        self.assertEqual(self._living(self.ada), 'unknown')
+        self.assertEqual(self._living(self.john), 'unknown')
+        self.assertEqual(self._living(self.mary), 'false')
+
+    def test_batch_accept_marks_each_person_once(self) -> None:
+        _death_source(self.root,
+                      _claim_item('C-aa11bb22cc', 'death', _ADA)
+                      + _claim_item('C-bb22cc33dd', 'burial', _ADA)
+                      + _claim_item('C-cc33dd44ee', 'death', _MARY)
+                      + _claim_item('C-dd44ee55ff', 'birth', _JOHN))
+        result = self._accept('C-aa11bb22cc', 'C-bb22cc33dd', 'C-cc33dd44ee', 'C-dd44ee55ff')
+        self.assertEqual(result.exit_code, EXIT_CLEAN, self._text(result))
+        self.assertEqual(self._living(self.ada), 'false')
+        self.assertEqual(self._living(self.mary), 'false')
+        self.assertEqual(self._living(self.john), 'unknown')
+        self.assertEqual(self._text(result).count('Ada Hartley is now marked'), 1)
+        self.assertEqual(sorted(result['marked_not_living']), [_ADA, _MARY])
+
+    def test_dry_run_writes_nothing_and_says_what_would_happen(self) -> None:
+        _death_source(self.root, _claim_item('C-aa11bb22cc', 'death', _ADA)
+                      + _claim_item('C-bb22cc33dd', 'death', _MARY))
+        for cids in (['C-aa11bb22cc'], ['C-aa11bb22cc', 'C-bb22cc33dd']):
+            with self.subTest(cids=cids):
+                before = self.ada.read_bytes()
+                result = self._accept(*cids, dry_run=True)
+                self.assertEqual(self.ada.read_bytes(), before)
+                self.assertEqual(self._text(result).count(
+                    '[dry-run] Would mark Ada Hartley as no longer living'), 1)
+
+    def test_keep_living_accepts_without_marking(self) -> None:
+        source = _death_source(self.root, _claim_item('C-aa11bb22cc', 'death', _ADA))
+        result = self._accept('C-aa11bb22cc', keep_living=True)
+        self.assertEqual(self._living(self.ada), 'unknown')
+        self.assertIn('status: accepted', source.read_text(encoding='utf-8'))
+        self.assertIn('--keep-living', self._text(result))
+
+    def test_a_merged_record_is_skipped_and_the_survivor_named(self) -> None:
+        _death_source(self.root, _claim_item('C-aa11bb22cc', 'death', _OLD))
+        before = self.old.read_bytes()
+        result = self._accept('C-aa11bb22cc')
+        self.assertEqual(self.old.read_bytes(), before)
+        self.assertEqual(self._living(self.ada), 'unknown')
+        self.assertIn(f'fha person set-living {_ADA} false', self._text(result))
+
+    def test_a_name_link_beside_an_id_marks_nobody(self) -> None:
+        # Without the index "[[John Hartley]]" cannot be resolved here, and
+        # reading the claim as Ada's alone could mark the wrong person dead.
+        _death_source(self.root, _claim_item('C-aa11bb22cc', 'death',
+                                             f'{_ADA}, "[[John Hartley]]"'))
+        result = self._accept('C-aa11bb22cc')
+        self.assertEqual(self._living(self.ada), 'unknown')
+        self.assertIn('by name rather than by ID', self._text(result))
+
+    def test_accept_with_a_type_correction_reads_the_corrected_claim(self) -> None:
+        _death_source(self.root, _claim_item('C-aa11bb22cc', 'residence', _ADA))
+        claim.run_claim(self.root, claim_id='C-aa11bb22cc', status='accepted',
+                        claim_type='death')
+        self.assertEqual(self._living(self.ada), 'false')
+
+    def test_claim_new_accepted_death_marks_them(self) -> None:
+        _death_source(self.root, '')
+        result = claim.run_claim_new(self.root, source_id='S-1111111111',
+                                     claim_type='death', value='Ada died 1980',
+                                     persons=[_ADA], status='accepted')
+        self.assertEqual(result.exit_code, EXIT_CLEAN, self._text(result))
+        self.assertEqual(self._living(self.ada), 'false')
+
+    def test_claim_new_suggested_or_negated_marks_nobody(self) -> None:
+        _death_source(self.root, '')
+        claim.run_claim_new(self.root, source_id='S-1111111111', claim_type='death',
+                            value='Ada died 1980', persons=[_ADA], status='suggested')
+        claim.run_claim_new(self.root, source_id='S-1111111111', claim_type='death',
+                            value='no death record found', persons=[_ADA],
+                            status='accepted', negated=True)
+        self.assertEqual(self._living(self.ada), 'unknown')
+        claim.run_claim_new(self.root, source_id='S-1111111111', claim_type='death',
+                            value='Mary died 1975', persons=[_MARY], status='accepted')
+        self.assertEqual(self._living(self.mary), 'false')
+
+    def test_cli_accept_marks_and_keep_living_flag_opts_out(self) -> None:
+        import fha
+        (self.root / 'fha.yaml').write_text('roots:\n  documents: documents\n',
+                                            encoding='utf-8')
+        _death_source(self.root, _claim_item('C-aa11bb22cc', 'death', _ADA)
+                      + _claim_item('C-bb22cc33dd', 'death', _MARY))
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = fha.main(['claim', 'C-aa11bb22cc', '--status', 'accepted',
+                           '--root', str(self.root)])
+            rc2 = fha.main(['claim', 'C-bb22cc33dd', '--status', 'accepted',
+                            '--keep-living', '--root', str(self.root)])
+        self.assertEqual((rc, rc2), (EXIT_CLEAN, EXIT_CLEAN), err.getvalue())
+        self.assertIn('Ada Hartley is now marked as no longer living', out.getvalue())
+        self.assertEqual(self._living(self.ada), 'false')
+        self.assertEqual(self._living(self.mary), 'unknown')
+
+    def test_accept_and_lint_agree(self) -> None:
+        # The accept and lint W136 read one rule (`_lib.death_claim_deceased`):
+        # after the accept, lint reports exactly the people it did not mark.
+        import lint
+        _death_source(self.root,
+                      _claim_item('C-aa11bb22cc', 'death', _ADA)
+                      + _claim_item('C-bb22cc33dd', 'death', _THOMAS)
+                      + _claim_item('C-cc33dd44ee', 'burial', f'{_MARY}, {_JOHN}',
+                                    roles=f'  roles:\n    spouse: [{_JOHN}]\n'))
+        (self.root / 'fha.yaml').write_text('roots:\n  documents: documents\n',
+                                            encoding='utf-8')
+        self._accept('C-aa11bb22cc', 'C-bb22cc33dd', 'C-cc33dd44ee')
+        findings, _reg = lint._run_lint_core(self.root, load_fha_yaml(self.root))
+        flagged = sorted(f.message.split(' (')[0] for f in findings if f.code == 'W136')
+        self.assertEqual(flagged, ['Mary Hartley', 'Thomas Hartley'])
+
+
 if __name__ == '__main__':
     unittest.main()

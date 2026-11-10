@@ -4942,5 +4942,127 @@ class DuplicatePersonW135Tests(unittest.TestCase):
         self.assertEqual(self._w135(root), [])
 
 
+class DiedButLivingW136Tests(unittest.TestCase):
+    """W136 (#246): a person whose death the archive has accepted, but who is
+    still treated as living (`living: unknown` or `true`), so every shared
+    export and the site leave them out - and nothing used to say so."""
+
+    ADA = 'P-aaaaaaaaaa'
+    MARY = 'P-cccccccccc'
+    JOHN = 'P-dddddddddd'
+    SID = 'S-1111111111'
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        (self.root / 'people').mkdir()
+        (self.root / 'sources' / 'notes').mkdir(parents=True)
+        (self.root / 'fha.yaml').write_text('roots:\n  documents: documents\n',
+                                            encoding='utf-8')
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _person(self, pid: str, name: str, living: str) -> None:
+        first, last = name.lower().split()
+        (self.root / 'people' / f'{last}__{first}_{pid}.md').write_text(
+            f'---\nid: {pid}\nname: {name}\nsex: F\nliving: {living}\n'
+            f'tier: stub\n---\n\n# {name}\n', encoding='utf-8')
+
+    def _claim(self, persons: str, *, ctype: str = 'death', status: str = 'accepted',
+               roles: str = '', extra: str = '', cid: str = 'C-aa11bb22cc',
+               also: str = '') -> None:
+        reviewed = '  reviewed: 2026-01-01\n' if status == 'accepted' else ''
+        claim = (f'- id: {cid}\n  type: {ctype}\n  persons: [{persons}]\n'
+                 f'{roles}{extra}  value: "died 1980"\n  status: {status}\n{reviewed}'
+                 '  confidence: high\n  date: 1980\n')
+        (self.root / 'sources' / 'notes' / f'rec_{self.SID.lower()}.md').write_text(
+            f'---\nid: {self.SID}\ntitle: Rec\nsource_type: note\n---\n\n'
+            f'## Claims\n```yaml\n{claim}{also}```\n', encoding='utf-8')
+
+    # An accepted death for Mary, written beside the claim under test: the
+    # warning that DOES fire for her proves the check ran.
+    MARY_DEATH = ('- id: C-bb22cc33dd\n  type: death\n  persons: [P-cccccccccc]\n'
+                  '  value: "died 1975"\n  status: accepted\n  reviewed: 2026-01-01\n'
+                  '  confidence: high\n  date: 1975\n')
+
+    def _names(self) -> list:
+        return sorted(f.message.split(' (')[0] for f in self._w136())
+
+    def _w136(self) -> list:
+        from _lib import load_fha_yaml
+        findings, _reg = lint._run_lint_core(self.root, load_fha_yaml(self.root))
+        return [f for f in findings if f.code == 'W136']
+
+    def test_unknown_with_an_accepted_death_warns_and_names_the_fix(self) -> None:
+        self._person(self.ADA, 'Ada Hartley', 'unknown')
+        self._claim(self.ADA)
+        found = self._w136()
+        self.assertEqual(len(found), 1)
+        self.assertIn('Ada Hartley', found[0].message)
+        self.assertIn('C-aa11bb22cc', found[0].message)
+        self.assertIn(f'fha person set-living {self.ADA} false', found[0].message)
+
+    def test_living_true_reads_as_the_stronger_conflict(self) -> None:
+        self._person(self.ADA, 'Ada Hartley', 'true')
+        self._claim(self.ADA, ctype='burial')
+        found = self._w136()
+        self.assertEqual(len(found), 1)
+        self.assertIn('marked as living (living: true)', found[0].message)
+        self.assertIn('One of the two is wrong', found[0].message)
+        self.assertIn(f'fha person set-living {self.ADA} false', found[0].message)
+
+    def test_living_false_is_silent(self) -> None:
+        self._person(self.ADA, 'Ada Hartley', 'false')
+        self._person(self.MARY, 'Mary Hartley', 'unknown')
+        self._claim(self.ADA, also=self.MARY_DEATH)
+        self.assertEqual(self._names(), ['Mary Hartley'])
+
+    def test_a_suggested_or_needs_review_death_is_silent(self) -> None:
+        self._person(self.ADA, 'Ada Hartley', 'unknown')
+        self._person(self.MARY, 'Mary Hartley', 'unknown')
+        for status in ('suggested', 'needs-review'):
+            with self.subTest(status=status):
+                self._claim(self.ADA, status=status, also=self.MARY_DEATH)
+                self.assertEqual(self._names(), ['Mary Hartley'])
+
+    def test_a_negated_death_is_silent(self) -> None:
+        self._person(self.ADA, 'Ada Hartley', 'unknown')
+        self._person(self.MARY, 'Mary Hartley', 'unknown')
+        self._claim(self.ADA, extra='  negated: true\n  evidence: negative\n',
+                    also=self.MARY_DEATH)
+        self.assertEqual(self._names(), ['Mary Hartley'])
+
+    def test_only_the_deceased_is_named_not_the_narrator(self) -> None:
+        self._person(self.ADA, 'Ada Hartley', 'unknown')
+        self._person(self.JOHN, 'John Hartley', 'unknown')
+        self._claim(f'{self.ADA}, {self.JOHN}', ctype='burial',
+                    roles=f'  roles:\n    deceased: [{self.ADA}]\n')
+        found = self._w136()
+        self.assertEqual([f.message.split(' (')[0] for f in found], ['Ada Hartley'])
+
+    def test_several_people_with_no_roles_is_left_to_w132(self) -> None:
+        self._person(self.ADA, 'Ada Hartley', 'unknown')
+        self._person(self.JOHN, 'John Hartley', 'unknown')
+        self._person(self.MARY, 'Mary Hartley', 'unknown')
+        self._claim(f'{self.ADA}, {self.JOHN}', ctype='burial', also=self.MARY_DEATH)
+        self.assertEqual(self._names(), ['Mary Hartley'])
+
+    def test_a_death_read_by_elimination_is_reported_and_says_so(self) -> None:
+        self._person(self.ADA, 'Ada Hartley', 'unknown')
+        self._person(self.JOHN, 'John Hartley', 'unknown')
+        self._claim(f'{self.ADA}, {self.JOHN}',
+                    roles=f'  roles:\n    spouse: [{self.JOHN}]\n')
+        found = self._w136()
+        self.assertEqual(len(found), 1)
+        self.assertIn('Ada Hartley', found[0].message)
+        self.assertIn('names nobody `deceased:`', found[0].message)
+
+    def test_a_name_link_resolves_through_the_alias_map(self) -> None:
+        self._person(self.ADA, 'Ada Hartley', 'unknown')
+        self._claim('"[[Ada Hartley]]"')
+        self.assertEqual(len(self._w136()), 1)
+
+
 if __name__ == '__main__':
     unittest.main()
