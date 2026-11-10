@@ -196,6 +196,33 @@ image together.
 Badges from the Seen It add-on ("Seen 2×", "Captured, not filed") are never saved
 as part of a record or a page copy.
 
+### Photos other members shared on Ancestry
+
+When a photo someone else shared to their Ancestry tree is open on its own page
+(the photo fills the screen; the address has `mediaui-viewer` in it), the panel's
+button reads **Capture this photo**. It saves:
+
+- the photo itself, exactly as Ancestry shows it, named
+  `ancestry-…-photo.jpg` after the photo's own number on Ancestry;
+- `photo-data.json` - the photo's details as Ancestry shows them: its title,
+  date, place, description, who first added it, and who it is linked to. These
+  were written by whoever shared it, so treat them as their word, not a fact;
+- a copy of the page, if you keep one.
+
+When you file it, it becomes a **photo** source: the photo goes into your photo
+library like any other, and the record keeps the photo's Ancestry address, so
+the Seen It add-on knows it is already in your archive.
+
+Open the photo's **Details** on Ancestry before you press Capture: what is on
+screen is what gets saved, and the panel says so if the date, place and
+description were not showing. The list of other members who saved the photo is
+never copied into your archive. The photo is saved at the size Ancestry's viewer
+shows it; if you download a larger copy from the page yourself, drop it into the
+panel before you press Capture and that file is saved as the photo instead.
+
+From a person's **Hints** page, open the photo on its own page first (the
+"Evaluate photo" side panel is not captured).
+
 ---
 
 ## FamilySearch records

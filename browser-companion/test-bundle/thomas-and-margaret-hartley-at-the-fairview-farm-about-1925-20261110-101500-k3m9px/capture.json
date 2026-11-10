@@ -1,0 +1,33 @@
+{
+  "schema": 2,
+  "url": "https://www.ancestry.com/mediaui-viewer/tree/90000001/person/90000002/media/7c0ffee0-1234-4abc-8def-0123456789ab",
+  "title": "Thomas and Margaret Hartley at the Fairview farm, about 1925",
+  "accessed": "2026-11-10",
+  "source_date": "1925~",
+  "source_type": "photo",
+  "repository": "ancestry.com",
+  "assets": [
+    {
+      "file": "page-snapshot.html",
+      "role": "webpage",
+      "mode": "singlefile"
+    },
+    {
+      "file": "ancestry-7c0ffee0-1234-4abc-8def-0123456789ab-photo.jpg",
+      "role": "front",
+      "mode": "ancestry-media",
+      "is_primary": true
+    },
+    {
+      "file": "photo-data.json",
+      "role": "site-data",
+      "mode": "ancestry-media-data"
+    }
+  ],
+  "people": [
+    "Thomas Hartley",
+    "Margaret Hartley"
+  ],
+  "notes": "A photo shared on Ancestry by another member. Its details on Ancestry:\nDate: abt 1925\nPlace: Fairview, Breton, Kansas, USA\nLinked to: Thomas Hartley; Margaret Hartley\nOriginally added by: hartley_family_tree on 3 Mar 2015\n\nDescription on Ancestry:\nThomas and Margaret on the porch of the farmhouse.\nThe dog is Shep.",
+  "recipe_hint": "ancestry"
+}

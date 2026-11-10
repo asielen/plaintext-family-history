@@ -1,7 +1,7 @@
 {
   "manifest_version": "1",
   "spec_version": "1.2",
-  "generated": "2026-11-09",
+  "generated": "2026-11-10",
   "files": [
     {
       "path": ".claude/skills/README.md",
@@ -168,7 +168,7 @@
     {
       "path": ".fha/browser-companion/README.md",
       "category": "operating",
-      "sha256": "77ee0913848133208eb2c668796d9cac8c462facbde9b87f2d2f7c3f2ca52aae",
+      "sha256": "c0372edeecbd087d36bd34ae2d657114bf921182dd34efac2eaf8fdf2054243d",
       "spec_version": "1.2",
       "src": "browser-companion/README-ARCHIVE.md"
     },
@@ -203,7 +203,7 @@
     {
       "path": ".fha/browser-companion/manifest.json",
       "category": "operating",
-      "sha256": "1b5c1edd106cfc07fadf5b9e799acb99a2d24892155d4e23d1d84da25bda99c1",
+      "sha256": "493fd86cb33db6eb33a03ba3c38a5ded35211a509a4b2cba5bcc42cedd3cb42a",
       "spec_version": "1.2",
       "src": "browser-companion/manifest.json"
     },
@@ -224,14 +224,14 @@
     {
       "path": ".fha/browser-companion/src/content.js",
       "category": "operating",
-      "sha256": "30438eca0b6a148b43ffa00ac81893f9a5de37cde146a150011f79a617348fe1",
+      "sha256": "c91ba770e145e27e9d74f671938ca16db8f13dfbc02b6d0b5e78d77583a38356",
       "spec_version": "1.2",
       "src": "browser-companion/src/content.js"
     },
     {
       "path": ".fha/browser-companion/src/lib/ancestry-record.js",
       "category": "operating",
-      "sha256": "b7fb06711b6916fc9f98d37aa6e45d8d29355968a4df4e11e5f95f6c0de5e23b",
+      "sha256": "a32cfe3a6cf407b7273f0364e5fc1727b0a5c7e7e70173f6dd52866e0fc917dd",
       "spec_version": "1.2",
       "src": "browser-companion/src/lib/ancestry-record.js"
     },
@@ -364,7 +364,7 @@
     {
       "path": ".fha/browser-companion/src/panel.js",
       "category": "operating",
-      "sha256": "0edbf8952b9ab40888fab5b09e31ccd7c17bc84d86274114aec71812f545e55b",
+      "sha256": "bc9f6ef4fb0183a4e525ce1340268b01a2c53f79157e399d97a1ab6674addbb2",
       "spec_version": "1.2",
       "src": "browser-companion/src/panel.js"
     },
@@ -679,7 +679,7 @@
     {
       "path": ".fha/tools/process.py",
       "category": "operating",
-      "sha256": "eb42d52d95170726ee50645f3d21ff387d5f79a5329585d2f1b4f2afed625cb8",
+      "sha256": "41beea3093cac19f984eeb90d0a6e6081930cf757f97ffd963061a56ce08234f",
       "spec_version": "1.2",
       "src": "tools/process.py"
     },

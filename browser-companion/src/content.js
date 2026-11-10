@@ -932,6 +932,229 @@
     const typed = String(formTitle || '').trim();
     return !typed || ANC_TITLE_SUFFIX_RE.test(typed) ? auto : typed;
   }
+
+  // ── shared photos (the media viewer) ──
+  // A photo or story another member shared to their tree opens at
+  // /mediaui-viewer/tree/{treeId}/person/{personId}/media/{mediaId}, with
+  // query parameters (destTreeId, hid, …) that only say how she got there.
+  // The media id - a GUID - is the photo's identity: the same in every tree
+  // that saved it. Seen It keys it med:{mediaId}, lowercased
+  // (seen-it/host/seenit_host.py), from the address this returns as `url`:
+  // the viewer's own tree/person/media path, without the query.
+  const ANC_GUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
+  const ANC_MEDIA_PAGE_RE = new RegExp('^/mediaui-viewer/((?:[^/?#]+/)*?)media/(' + ANC_GUID + ')/?$', 'i');
+
+  // The shared photo a viewer address names: { mediaId, treeId, personId, url },
+  // or null for anything else.
+  function ancParseMediaPage(href) {
+    let u;
+    try {
+      u = new URL(href);
+    } catch (e) {
+      return null;
+    }
+    if (!/(^|\.)ancestry\.[a-z.]+$/i.test(u.hostname)) return null;
+    const m = ANC_MEDIA_PAGE_RE.exec(u.pathname);
+    if (!m) return null;
+    const mediaId = m[2].toLowerCase();
+    const tree = /(?:^|\/)tree\/(\d+)\//.exec(m[1]);
+    const person = /(?:^|\/)person\/(\d+)\//.exec(m[1]);
+    return {
+      mediaId,
+      treeId: tree ? tree[1] : null,
+      personId: person ? person[1] : null,
+      url: u.origin + '/mediaui-viewer/' + m[1] + 'media/' + mediaId,
+    };
+  }
+
+  // The photo's image as the viewer shows it: Ancestry's media service at
+  // /api/media/retrieval/v2/image/namespaces/{ns}/media/{mediaId}, asked for
+  // its "hq" size (1200x1920 on the page this was built from). The page's
+  // thumbnails of the same photo (…/media/{mediaId}.jpg?MaxSide=…) name the
+  // namespace too, so either will do; another photo's image never does. The
+  // address is always on the page's own site (`origin`), so the signed-in
+  // session the fetch carries goes nowhere else. null while no image of THIS
+  // photo is on the page. Whether Ancestry keeps a larger original behind the
+  // page's own Download menu is not known; this is the size the page shows.
+  const ANC_MEDIA_IMG_RE = new RegExp('/api/media/retrieval/v2/image/namespaces/(\\d+)/media/(' + ANC_GUID +
+    ')(\\.jpg)?(?=[?#]|$)', 'i');
+
+  function ancMediaImageUrl(root, mediaId, origin) {
+    const want = String(mediaId || '').toLowerCase();
+    if (!want) return null;
+    let full = null; // the viewer's own picture names the namespace best
+    let thumb = null;
+    for (const img of ancElements(root, (e) => ancTag(e) === 'IMG')) {
+      if (ancIsSeenItNode(img) || !img.getAttribute) continue;
+      for (const attr of ['src', 'data-src']) {
+        const m = ANC_MEDIA_IMG_RE.exec(String(img.getAttribute(attr) || ''));
+        if (!m || m[2].toLowerCase() !== want) continue;
+        if (m[3]) thumb = thumb || m[1];
+        else full = full || m[1];
+      }
+    }
+    const ns = full || thumb;
+    if (!ns) return null;
+    return String(origin || 'https://www.ancestry.com') + '/api/media/retrieval/v2/image/namespaces/' + ns +
+      '/media/' + want + '?client=trees-mediaservice&imageQuality=hq';
+  }
+
+  // The labels of the photo's Details panel, as the page shows them. "Saved
+  // by" lists other members who saved the photo: it is recognised only so its
+  // names are never read as the value of another label, and is never kept
+  // (the page copy alone holds what the page showed).
+  const ANC_MEDIA_LABELS = [
+    ['title', /^title$/i],
+    ['date', /^(date|date taken)$/i],
+    ['place', /^(place|location)$/i],
+    ['description', /^description$/i],
+    ['originallyAddedBy', /^(originally )?(added|uploaded|shared) by$/i],
+    ['linkedTo', /^(linked|attached) to$/i],
+    ['savedBy', /^saved by$/i],
+  ];
+  // "Originally added by hartley_genealogy on 3 Mar 2015", on one line.
+  const ANC_MEDIA_INLINE_RE = /^((?:originally )?(?:added|uploaded|shared) by|saved by)\s*:?\s+(.+)$/i;
+  const ANC_MEDIA_INLINE_START_RE = /^((?:originally )?(?:added|uploaded|shared) by|saved by)\b/i;
+
+  // The text an element holds directly (not in its child elements).
+  function ancOwnText(el) {
+    return [...(el.childNodes || [])].filter((c) => c.nodeType === 3)
+      .map((c) => String(c.nodeValue || '')).join(' ').replace(/\s+/g, ' ').trim();
+  }
+
+  // Which Details label an element is - its own words, a colon allowed - or null.
+  function ancMediaLabel(el) {
+    const own = ancOwnText(el).replace(/\s*:$/, '');
+    if (!own) return null;
+    for (const [key, re] of ANC_MEDIA_LABELS) if (re.test(own)) return key;
+    return null;
+  }
+
+  // The photo's Details as the page shows them: { title, date, place,
+  // description, originallyAddedBy, linkedTo: [names] } - each only when the
+  // page shows it (the Details panel may be closed until she opens it). A
+  // label's value is what it holds besides its own words, else what follows
+  // it - its next siblings, up to the next label - or, for a label alone in
+  // its box, what follows that box. The first of each label on the page wins.
+  // `opts.hidden` / `opts.block` are ancText's (the live page passes its CSS).
+  function ancMediaDetails(root, opts) {
+    const o = opts || {};
+    const text = (n) => ancText(n, { hidden: o.hidden, block: o.block });
+    const tidy = (parts) => parts.join('\n').split('\n').map((l) => l.replace(/\s+/g, ' ').trim())
+      .filter(Boolean).join('\n');
+    const holdsLabel = (n) => n.nodeType === 1 && (!!ancMediaLabel(n) || ancElements(n, ancMediaLabel).length > 0);
+    const valueOf = (el) => {
+      const inside = tidy([...(el.childNodes || [])].filter((c) => c.nodeType === 1).map((c) => text(c)));
+      if (inside) return inside;
+      let node = el;
+      for (let up = 0; up < 3 && node && node.parentNode; up++) {
+        const sibs = [...(node.parentNode.childNodes || [])]; // a live NodeList has no indexOf
+        const parts = [];
+        for (let i = sibs.indexOf(node) + 1; i < sibs.length; i++) {
+          const s = sibs[i];
+          if (holdsLabel(s)) break;
+          if (s.nodeType === 3) parts.push(String(s.nodeValue || ''));
+          else if (s.nodeType === 1) parts.push(text(s));
+        }
+        const v = tidy(parts);
+        if (v) return v;
+        node = node.parentNode; // alone in its box: read on after the box
+      }
+      return '';
+    };
+    const found = {};
+    (function walk(n) {
+      for (const c of (n && n.childNodes) || []) {
+        if (c.nodeType !== 1) continue;
+        if (ANC_SKIP_TAGS.indexOf(ancTag(c)) >= 0 || ancIsSeenItNode(c)) continue;
+        if (o.hidden && o.hidden(c)) continue;
+        const key = ancMediaLabel(c);
+        if (key) {
+          if (!(key in found)) found[key] = valueOf(c);
+          continue;
+        }
+        // "Originally added by hartley_genealogy", in the one element whose own
+        // words start with it (the name may sit in a link inside).
+        const inline = ANC_MEDIA_INLINE_START_RE.test(ancOwnText(c))
+          ? ANC_MEDIA_INLINE_RE.exec(text(c).split('\n')[0]) : null;
+        if (inline) {
+          const k = /^saved/i.test(inline[1]) ? 'savedBy' : 'originallyAddedBy';
+          if (!(k in found)) found[k] = inline[2].trim();
+          continue;
+        }
+        walk(c);
+      }
+    })(root);
+    const details = {};
+    for (const [key] of ANC_MEDIA_LABELS) {
+      // "Saved by" is never kept: other members' names.
+      if (key === 'savedBy' || !found[key]) continue;
+      if (key === 'linkedTo') {
+        const names = ancLinkedNames(found[key]);
+        if (names.length) details.linkedTo = names;
+      } else {
+        details[key] = key === 'description' ? found[key] : found[key].replace(/\n+/g, ' ');
+      }
+    }
+    return details;
+  }
+
+  // The people a shared photo is linked to, as names: one per line, without
+  // the years Ancestry puts beside them ("Thomas Hartley 1840–1910"); a living
+  // person Ancestry shows as "Private" is no name.
+  function ancLinkedNames(value) {
+    const names = [];
+    for (const line of String(value || '').split(/\n|;/)) {
+      const n = line.replace(/\(?\s*(\d{4}|\?{1,4})?\s*[-–—]\s*(\d{4}|\?{1,4})?\s*\)?\s*$/, '')
+        .replace(/\s+/g, ' ').trim();
+      if (n.length >= 2 && n.length <= 80 && !/^private$/i.test(n) && names.indexOf(n) < 0) names.push(n);
+    }
+    return names;
+  }
+
+  // The whole shared photo from its viewer page (`root`: the document, or a
+  // stand-in tree): { ok, media: { mediaId, treeId, personId, url, title,
+  // imageUrl, fileStem }, details }. `opts.title` is the document title (the photo's
+  // title, as whoever shared it wrote it); `opts.origin` the site origin.
+  function ancMediaFrom(root, href, opts) {
+    const o = opts || {};
+    const id = ancParseMediaPage(href);
+    if (!id) return { ok: false, error: 'this is not a photo shared on Ancestry' };
+    const details = ancMediaDetails(root, o);
+    const docTitle = String(o.title || '').replace(ANC_TITLE_SUFFIX_RE, '').trim();
+    let origin = 'https://www.ancestry.com';
+    try {
+      origin = new URL(href).origin;
+    } catch (e) {
+      /* parsed above */
+    }
+    return {
+      ok: true,
+      media: Object.assign({}, id, {
+        title: details.title || docTitle || null,
+        imageUrl: ancMediaImageUrl(root, id.mediaId, o.origin || origin),
+        fileStem: ancPhotoFileStem(id.mediaId),
+      }),
+      details,
+    };
+  }
+
+  // What a shared photo says about itself, for filing: a photo, dated by the
+  // date its Details give when that is one the archive can read ("1925",
+  // "abt 1925", "12 Jun 1925"), else no date - never a guess.
+  function ancMediaHints(details) {
+    return { sourceType: 'photo', sourceDate: ancDateToEdtf((details || {}).date) || null, sourceClass: null };
+  }
+
+  // The name the photo is filed under, without its extension. It lands in the
+  // photo library and is never renamed there (SPEC §12.1), so it is unique to
+  // the photo - its media id, letters, digits and dashes only, never the
+  // free-text title - and ends in a word, never in what the archive reads as a
+  // print letter ("…6f") or a back ("…-back"). null for anything not a media id.
+  function ancPhotoFileStem(mediaId) {
+    const id = String(mediaId || '').toLowerCase();
+    return new RegExp('^' + ANC_GUID + '$').test(id) ? 'ancestry-' + id + '-photo' : null;
+  }
   // FHA-SYNC-END ancestry
 
   // What the live page shows: ancText asks the page's CSS whether an element
@@ -961,6 +1184,72 @@
     info.hints = ancHints(info.record, info.fields);
     info.title = ancTitle(info.record, formTitle);
     return info;
+  }
+
+  // ── A photo someone shared on Ancestry (the media viewer) ────────────────────
+  // On /mediaui-viewer/…/media/{mediaId} Capture saves the photo the page
+  // shows, with its Details (title, date, place, description, who added it,
+  // who it is linked to - never the "Saved by" list of other members), so it
+  // files as a photo. The readers are in the ancestry block above.
+
+  function ancestryPhotoInfo() {
+    const info = ancMediaFrom(document, location.href, {
+      title: document.title,
+      origin: location.origin,
+      hidden: ANC_CSS.hidden,
+      block: ANC_CSS.block,
+    });
+    if (!info.ok) return info;
+    info.hints = ancMediaHints(info.details);
+    return info;
+  }
+
+  // The photo's image, in her session, from Ancestry's own site only: the
+  // address ancMediaImageUrl builds is on this page's origin, and is checked
+  // again here, so the session goes to no other host. The bytes are kept
+  // exactly as Ancestry sends them. `mediaId` is the photo the panel read;
+  // the page must still be showing it.
+  async function fetchAncestryPhoto(mediaId) {
+    const here = ancParseMediaPage(location.href);
+    if (!here || here.mediaId !== String(mediaId || '').toLowerCase()) {
+      return { ok: false, error: 'the page no longer shows this photo, so it was not fetched - go back to the ' +
+        'photo and press Capture again' };
+    }
+    const url = ancMediaImageUrl(document, here.mediaId, location.origin);
+    if (!url) {
+      return { ok: false, transient: true, error: 'the photo has not appeared on the page yet - wait until it ' +
+        'shows, then press Capture again' };
+    }
+    let target;
+    try {
+      target = new URL(url);
+    } catch (e) {
+      target = null;
+    }
+    if (!target || target.origin !== location.origin || target.protocol !== 'https:') {
+      return { ok: false, error: 'the photo’s address is not on Ancestry’s own site, so it was not fetched' };
+    }
+    try {
+      const resp = await fetch(target.href, { credentials: 'include', headers: { accept: 'image/*' } });
+      if (!resp.ok) {
+        const why = resp.status === 401 || resp.status === 403
+          ? 'Ancestry refused the photo (HTTP ' + resp.status + ') - sign in on this page and press Capture again'
+          : 'Ancestry would not hand over the photo (HTTP ' + resp.status + ')';
+        return { ok: false, error: why, status: resp.status, slowDown: resp.status === 429 || resp.status === 503,
+          transient: resp.status === 401 || resp.status === 429 || resp.status >= 500 };
+      }
+      const blob = await resp.blob();
+      const type = String(blob.type || (resp.headers && resp.headers.get('content-type')) || '').split(';')[0].trim();
+      if (!/^image\//i.test(type)) {
+        return { ok: false, error: 'Ancestry sent a page instead of the photo - sign in on this page and press ' +
+          'Capture again' };
+      }
+      const ext = extFromContentType(type, target.href);
+      return { ok: true, base64: await blobToBase64(blob), ext: ext === 'bin' ? 'jpg' : ext, contentType: type,
+        imageUrl: target.href };
+    } catch (e) {
+      return brokeOff(e);
+    }
   }
 
   // ── FamilySearch records (the record's own data, through its data service) ───
@@ -2686,12 +2975,14 @@
       memorial = null; // the page's own title and people, as anywhere else
     }
     const fagRec = memorial && memorial.ok ? memorial.record : null;
+    // A photo someone shared on Ancestry: Capture saves it as a photo.
+    const ancPhoto = ancParseMediaPage(url);
     return {
       url,
       canonical,
       title: fagRec ? memorial.title : title,
       sourceDate: fagRec ? memorial.hints.sourceDate : sourceDate,
-      sourceType: fagRec ? memorial.hints.sourceType : undefined,
+      sourceType: fagRec ? memorial.hints.sourceType : ancPhoto ? 'photo' : undefined,
       repository: fagRec ? 'Find a Grave' : hostnameOf(url) || null,
       people: fagRec ? [fagRec.name].concat(fagRec.family.map((f) => f.name)).filter(Boolean)
         .filter((n, i, a) => a.indexOf(n) === i) : harvestPeople(),
@@ -2705,6 +2996,10 @@
       // An Ancestry record page: Capture saves the record's own fields and
       // citation (record-data.json) and fetches its linked scan, if it has one.
       ancestryRecord: !!ancParseRecordPage(url),
+      // A photo someone shared to their Ancestry tree, in the media viewer:
+      // Capture saves the photo the page shows, with its Details.
+      ancestryPhoto: !!ancPhoto,
+      ancestryMediaId: ancPhoto ? ancPhoto.mediaId : null,
       // A FamilySearch record (or the image viewer opened from one): Capture
       // saves FamilySearch's own data for it and its image.
       familysearchRecord: !!fsParseRecordPage(url),
@@ -3764,6 +4059,24 @@
           sendResponse({ ok: false, error: String(e) });
         }
         return;
+      case 'ancestryPhotoInfo':
+        try {
+          sendResponse(ancestryPhotoInfo());
+        } catch (e) {
+          sendResponse({ ok: false, error: String(e) });
+        }
+        return;
+      case 'ancestryPhoto':
+        // Only from an Ancestry page, and only the photo it still shows.
+        if (!/(^|\.)ancestry\.[a-z.]+$/i.test(location.hostname)) {
+          sendResponse({ ok: false, error: 'the tab is no longer on Ancestry, so the photo was not fetched - ' +
+            'go back to the photo and press Capture again' });
+          return;
+        }
+        fetchAncestryPhoto(msg.mediaId)
+          .then(sendResponse)
+          .catch((e) => sendResponse(brokeOff(e)));
+        return true; // async response
       case 'findagraveMemorialInfo':
         try {
           sendResponse(findagraveMemorialInfo(msg.today));

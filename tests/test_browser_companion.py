@@ -254,6 +254,101 @@ class ExampleBundleTestCase(unittest.TestCase):
             self.assertEqual(items['rec:90002:2000001']['sid'], rec['meta']['id'])
 
 
+# The committed photo bundle: exactly what the panel stages on a shared
+# photo's viewer page (browser-companion/tests/test-panel-ancestry.js holds
+# the two equal, byte for byte).
+PHOTO_BUNDLE = (COMPANION / 'test-bundle' /
+                'thomas-and-margaret-hartley-at-the-fairview-farm-about-1925-20261110-101500-k3m9px')
+PHOTO_MEDIA_ID = '7c0ffee0-1234-4abc-8def-0123456789ab'
+PHOTO_VIEWER_URL = ('https://www.ancestry.com/mediaui-viewer/tree/90000001/person/90000002/media/'
+                    + PHOTO_MEDIA_ID)
+# How Seen It keys a shared photo from a source's frontmatter address
+# (seen-it/host/seenit_host.py ANC_MEDIA_RE, med:{mediaId}).
+_SEEN_IT_MEDIA_RE = re.compile(
+    r'ancestry\.[a-z.]+/mediaui-viewer/(?:[^?#\s]*/)?media/'
+    r'([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})', re.I)
+
+
+class SharedPhotoTestCase(unittest.TestCase):
+    """A photo another member shared on Ancestry files as a PHOTO source.
+
+    The owner: "we should be able to download shared photos as sources and
+    seen it should recognize them also." The panel's bundle - the photo, its
+    Details as photo-data.json, the page copy - goes through `fha capture
+    --ingest` and `fha process` like any capture: one photo source, its
+    picture in the photo library under the name it was captured with (the
+    archive never renames a photo there), and the viewer's address in its
+    frontmatter, which is what Seen It reads to know the photo again.
+    """
+
+    def test_a_shared_photo_files_as_a_photo_source_seen_it_can_find(self) -> None:
+        import process
+        from unittest import mock
+        photo_name = f'ancestry-{PHOTO_MEDIA_ID}-photo.jpg'
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            staging = tmp / 'staging'
+            staging.mkdir()
+            shutil.copytree(PHOTO_BUNDLE, staging / PHOTO_BUNDLE.name)
+            archive = tmp / 'archive'
+            archive.mkdir()
+            (archive / 'fha.yaml').write_text(
+                'roots:\n  photos: photos\n  documents: documents\n', encoding='utf-8')
+            config = load_fha_yaml(archive, strict=True)
+
+            res = capture.run_ingest(archive, config, staging_dir=str(staging))
+            self.assertEqual(res.exit_code, EXIT_CLEAN)
+            bundle_dir = next(p for p in (archive / 'inbox').iterdir() if p.is_dir())
+            with mock.patch.object(process, '_run_exiftool_embed_source', return_value=None), \
+                    mock.patch.object(process, '_run_exiftool_read_keywords', return_value=[]), \
+                    mock.patch.object(process, '_run_exiftool_remove_source', return_value=None):
+                self.assertEqual(process.process_bundle(
+                    archive, config, bundle_dir, source_date=None, dry_run=False), EXIT_CLEAN)
+
+            sources = list((archive / 'sources').rglob('*.md'))
+            self.assertEqual(len(sources), 1, sources)
+            self.assertEqual(sources[0].parent, archive / 'sources' / 'photos')
+            rec = read_record(sources[0])
+            self.assertEqual(rec['parse_errors'], [])
+            meta = rec['meta']
+            self.assertEqual(meta['source_type'], 'photo')
+            self.assertEqual(meta['title'], 'Thomas and Margaret Hartley at the Fairview farm, about 1925')
+            self.assertEqual(meta['source_date'], '1925~')
+
+            # The picture: in the photo library, under its captured name, the
+            # source's main image.
+            self.assertTrue((archive / 'photos' / photo_name).is_file())
+            by_role = {f['role']: f for f in meta['files']}
+            self.assertEqual(set(by_role), {'front', 'webpage', 'site-data'})
+            self.assertEqual(Path(by_role['front']['file']).name, photo_name)
+            self.assertTrue(by_role['front'].get('is_primary'))
+            self.assertEqual((archive / 'photos' / photo_name).read_bytes(),
+                             (PHOTO_BUNDLE / photo_name).read_bytes())
+
+            # The viewer's address, without how she got there, in the
+            # frontmatter - the one Seen It turns into med:{mediaId}.
+            urls = [link['url'] for link in meta['external_links']]
+            self.assertEqual(urls[0], PHOTO_VIEWER_URL)
+            self.assertEqual(urls.count(PHOTO_VIEWER_URL), 1)
+            self.assertNotIn('?', urls[0])
+            m = _SEEN_IT_MEDIA_RE.search(urls[0])
+            self.assertIsNotNone(m)
+            self.assertEqual('med:' + m.group(1).lower(), 'med:' + PHOTO_MEDIA_ID)
+            # Once Seen It's helper knows shared photos (PR #256), it must
+            # find this one from the filed record itself.
+            sys.path.insert(0, str(ROOT / 'seen-it' / 'host'))
+            import seenit_host
+            if hasattr(seenit_host, 'ANC_MEDIA_RE'):
+                self.assertIn('med:' + PHOTO_MEDIA_ID, seenit_host._keys_from_url(urls[0]))
+                items, _ = seenit_host.scan_known({'sources': [str(archive / 'sources')]})
+                self.assertEqual(items['med:' + PHOTO_MEDIA_ID]['sid'], meta['id'])
+
+            # Other members who saved the photo are named nowhere in the archive.
+            for p in archive.rglob('*'):
+                if p.is_file() and p.suffix in ('.md', '.json', '.html'):
+                    self.assertNotIn('cousin_member', p.read_text(encoding='utf-8'), p)
+
+
 # ── Drift-guard extraction (emission sites, not whole files) ──────────────────
 #
 # The producibility guard below must assert keys against the exact code that
@@ -341,18 +436,24 @@ class CaptureJsonProducibilityTestCase(unittest.TestCase):
 
     def test_assets_entry_keys_are_emitted_by_the_panel(self) -> None:
         panel_src = (COMPANION / 'src' / 'panel.js').read_text(encoding='utf-8')
-        fields_m = _PANEL_FIELDS_RE.search(panel_src)
-        self.assertIsNotNone(
-            fields_m,
+        fields_ms = list(_PANEL_FIELDS_RE.finditer(panel_src))
+        self.assertTrue(
+            fields_ms,
             'panel.js: no `const fields = {...};` literal found - the capture '
             'fields assembly moved; point _PANEL_FIELDS_RE at the new shape')
-        map_m = _PANEL_ASSETS_MAP_RE.search(fields_m.group(1))
-        self.assertIsNotNone(
-            map_m,
-            'panel.js: no `assets: assets.map((a) => ({...}))` inside the '
+        # Every capture path assembles its own fields literal (the generic
+        # page, each site's record, a shared photo); a sample is producible
+        # when some path emits each of its keys.
+        maps = [m for f in fields_ms for m in [_PANEL_ASSETS_MAP_RE.search(f.group(1))] if m]
+        self.assertTrue(
+            maps,
+            'panel.js: no `assets: assets.map((a) => ({...}))` inside a '
             'fields literal - the asset-entry emission moved; point '
             '_PANEL_ASSETS_MAP_RE at the new shape')
-        keys = _object_literal_keys(map_m.group(1))
+        keys = set().union(*(_object_literal_keys(m.group(1)) for m in maps))
+        # The panel says `primary`; build() writes it as `is_primary`.
+        if 'primary' in keys:
+            keys.add('is_primary')
         self.assertTrue(keys, 'panel.js: extracted asset-entry literal has no keys')
         for bundle, cap in self._samples():
             for entry in cap.get('assets', []):
@@ -813,8 +914,17 @@ class BundleIdentityTestCase(unittest.TestCase):
             'builds; a member named after the bundle would be content-derived too')
 
     def test_every_sample_asset_name_is_one_the_panel_writes_literally(self) -> None:
-        """The committed sample cannot reference a name uniquify could have moved."""
-        allowed = re.compile(r'^(page-snapshot\.html|record\.[A-Za-z0-9]+)$')
+        """The committed sample cannot reference a name uniquify could have moved.
+
+        A shared photo's picture is the one exception, and not a name from the
+        page's words or the clock: it is named for the photo's media id (a
+        GUID, checked by lib/ancestry-record.js ancPhotoFileStem), because it
+        keeps that name for good in the photo library, where `record.jpg`
+        would collide with the next shared photo.
+        """
+        allowed = re.compile(
+            r'^(page-snapshot\.html|record\.[A-Za-z0-9]+|photo-data\.json|'
+            r'ancestry-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-photo\.[a-z0-9]+)$')
         samples = sorted((COMPANION / 'test-bundle').glob('*/capture.json'))
         self.assertTrue(samples, 'no committed test-bundle capture.json found')
         for path in samples:

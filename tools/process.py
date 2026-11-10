@@ -3087,6 +3087,11 @@ def process_bundle(
         repository=_sidecar_str(sidecar_meta, 'repository'),
         source_date=source_date or _sidecar_source_date(sidecar_meta, notes_path.name),
         provenance=_sidecar_str(sidecar_meta, 'provenance'),
+        # The page a capture came from, with the day it was read. Dropped
+        # here, a filed capture kept its address only if the citation
+        # happened to quote it - and the Seen It add-on, which knows a filed
+        # page by the addresses in its record's frontmatter, could lose it.
+        external_links=_sidecar_external_links(sidecar_meta),
         source_class=_sidecar_str(sidecar_meta, 'source_class'),
     )
 

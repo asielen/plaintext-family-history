@@ -85,6 +85,10 @@
     // Capture saves the record's own index (record-data.json) and its linked
     // scan, if it has one. Set from the prefill; drives captureAncestryRecord.
     ancRecord: false,
+    // True on a photo someone shared on Ancestry (/mediaui-viewer/…/media/{id}):
+    // Capture saves the photo the page shows, with its Details, filed as a
+    // photo. Set from the prefill; drives captureAncestryPhoto.
+    ancPhoto: false,
     // FamilySearch: a record (ark 1:1, or the viewer opened from one) and a
     // bare image viewer (ark 3:1). fsCheck is the answer to "can this page's
     // image be saved from here?", asked when the page is read (null until it
@@ -262,6 +266,7 @@
   function autoPathLabel() {
     if (state.ancestryViewer) return 'the full record image (Ancestry)';
     if (state.ancRecord) return 'the record’s index and citation, and its scan if it has one (Ancestry)';
+    if (state.ancPhoto) return 'the photo, as Ancestry’s viewer shows it, and its details (Ancestry)';
     if (state.fsRecord) {
       const fc = state.fsCheck;
       return fc && fc.available && fc.imageId
@@ -601,7 +606,7 @@
     state.touched = new Set();
 
     const banner = $('recipe-banner');
-    const hintLabel = RECIPE_LABELS[prefill.recipeHint];
+    const hintLabel = prefill.ancestryPhoto ? 'a photo shared on Ancestry' : RECIPE_LABELS[prefill.recipeHint];
     if (prefill.warning) {
       // The capture-timing guard (§08-A): the record detail looks empty/unloaded,
       // so a capture now would stage a page.html the recipe can't extract from.
@@ -624,14 +629,15 @@
   // the best-guess file address. A new record (applyPrefill) sets it with the
   // rest; the "Re-read file" button sets it alone, so the title, date, people
   // and notes she has stay as they are.
-  const FILE_PREFILL_KEYS = ['imageUrl', 'pdfUrl', 'ancestryImageViewer', 'ancestryRecord',
+  const FILE_PREFILL_KEYS = ['imageUrl', 'pdfUrl', 'ancestryImageViewer', 'ancestryRecord', 'ancestryPhoto',
+    'ancestryMediaId',
     'familysearchRecord', 'familysearchImageViewer', 'familysearchImageId', 'findagraveMemorial',
     'newspapers', 'iiif'];
 
   // Pages whose record file is fetched without her: there the "File address
   // on the page" box has no job, and is hidden (the drop zone stays).
   function autoFilePage(prefill) {
-    return !!(prefill.ancestryImageViewer || prefill.ancestryRecord || prefill.familysearchRecord ||
+    return !!(prefill.ancestryImageViewer || prefill.ancestryRecord || prefill.ancestryPhoto || prefill.familysearchRecord ||
       prefill.familysearchImageViewer || prefill.findagraveMemorial || prefill.iiif || prefill.newspapers);
   }
 
@@ -644,6 +650,9 @@
     state.autoMissed = false;
     state.iiif = !!prefill.iiif;
     state.ancRecord = !!prefill.ancestryRecord;
+    state.ancPhoto = !!prefill.ancestryPhoto;
+    // On a shared photo the button says what it saves.
+    $('btn-capture').textContent = state.ancPhoto ? 'Capture this photo' : 'Capture & save';
     state.fsRecord = !!prefill.familysearchRecord;
     state.fsImage = !!prefill.familysearchImageViewer;
     state.fagRecord = !!prefill.findagraveMemorial;
@@ -1528,6 +1537,155 @@
     };
   }
 
+  // ── Photos shared on Ancestry ─────────────────────────────────────────────────
+  // A photo another member shared to their tree, open in Ancestry's media
+  // viewer (/mediaui-viewer/…/media/{mediaId}), is one bundle that files as a
+  // PHOTO source: page.html, the page copy, the photo itself (role `front`,
+  // the source's main image - SPEC §13's name for a photo's picture; it is
+  // not a record scan, so not `record`) and photo-data.json (the photo's
+  // Details as the page shows them - title, date, place, description, who
+  // added it, who it is linked to - role site-data). The photo is the image
+  // the viewer shows, fetched from Ancestry's own site in her session and
+  // kept byte for byte. capture.json's `url` is the viewer's address without
+  // its query, so Seen It knows the photo again (med:{mediaId}) once it is
+  // filed. Ancestry's "Saved by" list (other members' names) is never copied
+  // out of the page.
+  //
+  // The photo's file keeps its name for good: a photo source's picture goes
+  // into the photo library, where the archive never renames a file. So it is
+  // named for the photo (ancestry-{mediaId}-photo.jpg, lib/ancestry-record.js
+  // ancPhotoFileStem) rather than `record.jpg`, which the next shared photo
+  // would collide with. The name comes from the media id alone - checked to be
+  // one - never from the title, so nothing the page writes reaches a filename.
+
+  // `opts` (a batch download only): see captureNewspapers. Returns what was
+  // staged: { key, bundle, where, note }.
+  async function captureAncestryPhoto(pageHtml, wantPageCopy, form, recordUrl, opts = {}) {
+    const info = await autoFetch('Ancestry photo details', { action: 'ancestryPhotoInfo' }, { recordUrl });
+    if (!info || !info.ok) throw new Error((info && info.error) || 'could not read the photo on Ancestry');
+    const media = info.media;
+    const details = info.details || {};
+    const hints = info.hints || {};
+    if (!media.fileStem) throw new Error('the page does not name the photo it shows, so nothing was saved');
+    notQueued(opts, 'med:' + media.mediaId, 'Ancestry photo ' + media.mediaId);
+    // The photo was read from the tab: it must still be on this photo.
+    await checkTabStillOn(recordUrl, [media.mediaId]);
+
+    const dropped = form.dropped;
+    const provisional = !!dropped && form.provisional;
+    // The page copy, from the tab before the download, when she asked for it.
+    let pageCopy = await recordPageCopy('early', wantPageCopy, recordUrl, [media.mediaId]);
+    const assets = [];
+    let imageWarning = null;
+    if (dropped) {
+      // Her own file (Ancestry's Download, or a scan she has) is the photo.
+      assets.push({ filename: media.fileStem + '.' + dropped.ext, blob: dropped.blob, role: 'front', mode: 'manual',
+        provisional, primary: true });
+    } else {
+      setStageResult('Fetching the photo from Ancestry…', '');
+      const img = await autoFetch('Ancestry photo', { action: 'ancestryPhoto', mediaId: media.mediaId },
+        { recordUrl, ids: [media.mediaId] });
+      if (img && img.ok) {
+        assets.push({
+          filename: media.fileStem + '.' + (/^[a-z0-9]{1,5}$/i.test(String(img.ext || '')) ? img.ext : 'jpg'),
+          blob: bundle.base64ToBlob(img.base64, img.contentType),
+          role: 'front', mode: 'ancestry-media', primary: true,
+        });
+      } else {
+        imageWarning = ((img && img.error) || 'no answer from the page') +
+          '. The photo’s details are saved. To add the photo, save it from the page yourself (right-click it, ' +
+          'Save image as), drop that file into the panel and press Capture again: that capture holds both.';
+      }
+    }
+    const photoSaved = assets.some((a) => a.role === 'front') && !provisional;
+
+    // With no photo, the page copy comes too, ticked or not: filed alone,
+    // photo-data.json would become the source's main file (as for a record
+    // with no scan, PR #213 audit #4).
+    const hasPhoto = assets.length > 0;
+    if (!pageCopy && !hasPhoto) pageCopy = await recordPageCopy('late', true, recordUrl, [media.mediaId]);
+    let forcedCopy = false;
+    if (pageCopy && (wantPageCopy || !hasPhoto)) {
+      assets.unshift({ filename: pageCopy.filename, blob: pageCopy.blob, role: 'webpage', mode: 'singlefile' });
+      forcedCopy = !wantPageCopy;
+    }
+
+    const data = {
+      note: 'Captured from Ancestry by the archive capture extension: a photo another member shared to their ' +
+        'tree. "details" is what the photo’s Details panel showed - written by whoever shared it, not checked. ' +
+        '"photoSaved" says whether this capture holds the photo; "imageUrl" is where the viewer shows it.',
+      media: {
+        mediaId: media.mediaId,
+        treeId: media.treeId,
+        personId: media.personId,
+        url: media.url,
+        title: media.title,
+        imageUrl: media.imageUrl,
+        photoSaved,
+      },
+      details,
+    };
+    assets.push({
+      filename: 'photo-data.json',
+      blob: new Blob([JSON.stringify(data, null, 2) + '\n'], { type: 'application/json' }),
+      role: 'site-data',
+      mode: 'ancestry-media-data',
+    });
+
+    const title = (form.edited.has('f-title') && form.title) || media.title || form.title ||
+      ('Photo shared on Ancestry ' + media.mediaId);
+    const said = [
+      details.date ? 'Date: ' + details.date : '',
+      details.place ? 'Place: ' + details.place : '',
+      details.linkedTo ? 'Linked to: ' + details.linkedTo.join('; ') : '',
+      details.originallyAddedBy ? 'Originally added by: ' + details.originallyAddedBy : '',
+    ].filter(Boolean);
+    const notes = [
+      gatherNotes(provisional, form.notes),
+      'A photo shared on Ancestry by another member' +
+        (said.length ? '. Its details on Ancestry:\n' + said.join('\n') : '.'),
+      details.description ? 'Description on Ancestry:\n' + details.description : '',
+      imageWarning ? 'The photo was not saved: ' + imageWarning : '',
+    ].filter((t) => t && t.trim()).join('\n\n');
+    // The people it is linked to are hints for filing, after hers.
+    const people = form.people.slice();
+    for (const n of details.linkedTo || []) {
+      if (!people.some((p) => p.toLowerCase() === n.toLowerCase())) people.push(n);
+    }
+    const fields = {
+      url: media.url,
+      title,
+      accessed: captureJson.accessedDate(),
+      // What the human typed wins; else what the photo says about itself.
+      sourceDate: form.date || hints.sourceDate || '',
+      sourceType: form.type || hints.sourceType || 'photo',
+      repository: form.repo || 'Ancestry.com',
+      people,
+      notes,
+      recipeHint: 'ancestry',
+      assets: assets.map((a) => ({ file: a.filename, role: a.role, mode: a.mode, provisional: !!a.provisional,
+        primary: !!a.primary })),
+    };
+    const cap = captureJson.build(fields);
+    const st = await stageBundle(captureJson.bundleName(title), pageHtml, cap, assets, opts);
+    const detailNote = Object.keys(details).some((k) => k !== 'title')
+      ? null
+      : 'The photo’s date, place and description were not on the page. To save them too, open the photo’s ' +
+        'Details on Ancestry and press Capture again.';
+    const copyNote = forcedCopy
+      ? 'A copy of the web page was kept too: with no photo, it is what the photo’s details are filed with.'
+      : null;
+    // Said in its own words rather than as a missing "record image".
+    const photoNote = imageWarning ? 'The photo was not saved: ' + imageWarning : null;
+    reportStaged(st.where, st.viaHost, null,
+      [photoNote, st.hostWarning, detailNote, copyNote].filter(Boolean).join('\n') || null);
+    return {
+      key: 'med:' + media.mediaId,
+      bundle: st.bundle, where: st.where,
+      note: imageWarning ? 'photo not saved: ' + imageWarning.split('. The photo')[0] : null,
+    };
+  }
+
   // ── FamilySearch records and images ───────────────────────────────────────────
   // A record (ark:/61903/1:1:{id}, or the image viewer opened from one) is one
   // bundle: page.html, the page copy, record-data.json (FamilySearch's own
@@ -2049,7 +2207,8 @@
     // On an Ancestry image-viewer or an IIIF page the auto path supplies the
     // full record on Capture, so "Yes" is satisfied with no dropped file or URL.
     // A dropped file or a typed URL still takes precedence (manual override).
-    if (state.ancestryViewer || state.ancRecord || state.fsRecord || state.fsImage || state.fagRecord || state.iiif) return true;
+    if (state.ancestryViewer || state.ancRecord || state.ancPhoto || state.fsRecord || state.fsImage || state.fagRecord ||
+        state.iiif) return true;
     if (npActive() && !state.droppedAsset) return state.npSelected.size > 0;
     return !!(state.droppedAsset || evidenceUrl());
   }
@@ -2067,6 +2226,7 @@
         const note = $('f-provisional').checked ? ' (screen capture)' : '';
         parts.push('Record file: ' + state.droppedAsset.filename + note +
           (state.ancRecord ? ', with the record’s index and citation (Ancestry)'
+            : state.ancPhoto ? ', as the photo, with its details (Ancestry)'
             : state.fsRecord ? ', with the record’s data and citation (FamilySearch)'
               : state.fagRecord ? ', with the memorial’s facts, citation and photos (Find a Grave)' : ''));
       } else if (state.npPage && state.npLoading) {
@@ -2085,6 +2245,8 @@
         parts.push('Record file: full record (Ancestry, auto)');
       } else if (state.ancRecord) {
         parts.push('Record files: the record’s index and citation + its scan, if it has one (Ancestry, auto)');
+      } else if (state.ancPhoto) {
+        parts.push('Record files: the photo + its details (Ancestry, auto)');
       } else if (state.fagRecord) {
         parts.push('Record files: the memorial’s facts and citation + its photos at full size (Find a Grave, auto)');
       } else if (state.fsRecord || state.fsImage) {
@@ -2498,7 +2660,7 @@
       return refuse('Still reading your clippings on this Newspapers.com page - wait a moment, then press Capture again.');
     }
     if (wantEvidence && !state.droppedAsset && !evidenceUrl()
-        && !state.ancestryViewer && !state.ancRecord && !state.fsRecord && !state.fsImage
+        && !state.ancestryViewer && !state.ancRecord && !state.ancPhoto && !state.fsRecord && !state.fsImage
         && !state.fagRecord && !state.iiif && !npActive()) {
       if (state.npPage) {
         return refuse('Newspapers.com: ' + npUnavailableReason(), null, npUnavailableCause());
@@ -2509,7 +2671,7 @@
     // The record this capture is of: the one the form was filled for.
     const recordUrl = state.prefilledUrl;
     const recordCapture = wantEvidence && !evidenceUrl() &&
-      ((npActive() && !state.droppedAsset) || state.ancRecord || state.fsRecord || state.fagRecord);
+      ((npActive() && !state.droppedAsset) || state.ancRecord || state.ancPhoto || state.fsRecord || state.fagRecord);
     // A batch saves a record page's own files only, never a file dropped
     // into the panel meanwhile or a page that is not a record.
     if (opts.batch && state.droppedAsset) {
@@ -2573,6 +2735,15 @@
         const got = await captureAncestryRecord(pageResp.html, wantPageCopy, form, recordUrl, siteOpts);
         resetForNext();
         outcome = Object.assign({ ok: true, site: 'ancestry' }, got);
+        return outcome;
+      }
+
+      // A photo someone shared on Ancestry: the photo and its Details, filed
+      // as a photo - or the file she dropped in, saved as the photo.
+      if (wantEvidence && state.ancPhoto && !evidenceUrl()) {
+        const got = await captureAncestryPhoto(pageResp.html, wantPageCopy, form, recordUrl, siteOpts);
+        resetForNext();
+        outcome = Object.assign({ ok: true, site: null }, got);
         return outcome;
       }
 

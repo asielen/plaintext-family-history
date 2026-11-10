@@ -210,6 +210,15 @@ no-op, the bundles land in `inbox/` directly.
   If the Seen It add-on is installed, the panel asks it one question before
   that download - "does the archive already hold this census page?" - so a
   household's shared page is fetched once; nothing else is asked or sent.
+  On a photo another member shared to their Ancestry tree (the media viewer,
+  `/mediaui-viewer/…/media/{mediaId}`), Capture reads the photo's Details as
+  the page shows them - never its "Saved by" list of other members - and
+  fetches the one image the viewer shows, from the page's own site in your
+  session (`lib/ancestry-record.js` `ancMediaImageUrl` builds an address on
+  the page's origin only, and content.js checks it again before the fetch),
+  keeping the bytes exactly as sent. The bundle files as a `photo` source
+  whose `external_links` keep the viewer's address without its query - the
+  address Seen It knows the photo by (`med:{mediaId}`).
   On a FamilySearch record or image viewer, the page reads the record and its
   image through FamilySearch's own data service, as FamilySearch's pages do,
   with your signed-in session. That session (the `fssessionid` login, sent as a
@@ -261,12 +270,14 @@ src/
     people-harvest.js  JSON-LD person harvest (canonical; ditto)
     capture-readiness.js  the "record detail looks empty" phrases (canonical; ditto)
     newspapers-page-data.js  reads a Newspapers.com page's embedded data (canonical; ditto)
-    ancestry-record.js  reads an Ancestry record page: fields, household, citation, scan, hints (canonical; ditto)
+    ancestry-record.js  reads an Ancestry record page: fields, household, citation, scan, hints;
+                       and a shared photo's viewer page: its id, image and Details (canonical; ditto)
     familysearch-record.js  a FamilySearch record from its data service: login rule, record, image, hints (canonical; ditto)
     findagrave-record.js  a Find a Grave memorial: its facts, family, citation, photo list, photo-host rule, hints (canonical; ditto)
     newspapers.js      rebuilds a Newspapers.com page from tiles; clipping, annotated view, citations
     findagrave.js      downloads a memorial's photos from Find a Grave's image host (panel side)
-test-bundle/           an example "both" bundle in the exact output shape (round-trip test)
+test-bundle/           example bundles in the exact output shape (round-trip tests): a "both"
+                       census capture, and a shared Ancestry photo the panel tests stage byte for byte
 ```
 
 content.js is an injected classic script, so it cannot `import`: the eight

@@ -309,3 +309,126 @@ test('page.html and the page copy are saved without Seen It\'s badges, on every 
   assert.ok(left.some((e) => /nsi-ruled-out/.test(e.className)), 'the site row Seen It marked must stay');
   assert.ok(left.some((e) => e.id === 'recordFieldsContainer'));
 });
+
+// ── a photo someone shared to their tree (the media viewer) ──────────────────
+// The page: tests/fixtures/capture-samples/ancestry-media-photo.html, a
+// synthetic viewer page (the live page's Details markup was not recorded, so
+// it carries the shapes a details panel is built from).
+
+const MEDIA_ID = '7c0ffee0-1234-4abc-8def-0123456789ab';
+const PHOTO_URL = 'https://www.ancestry.com/mediaui-viewer/tree/90000001/person/90000002/media/' + MEDIA_ID;
+
+test('ancParseMediaPage: a shared photo is its media id; the address kept has no query', () => {
+  assert.deepStrictEqual(
+    anc.ancParseMediaPage(PHOTO_URL.replace(MEDIA_ID, MEDIA_ID.toUpperCase()) +
+      '?destTreeId=90000003&destPersonId=90000004&hid=abc&usePUBJs=true#top'),
+    { mediaId: MEDIA_ID, treeId: '90000001', personId: '90000002', url: PHOTO_URL });
+  // Another Ancestry site keeps its own address; a trailing slash is the same photo.
+  assert.strictEqual(anc.ancParseMediaPage('https://www.ancestry.co.uk/mediaui-viewer/tree/1/person/2/media/' +
+    MEDIA_ID + '/').url, 'https://www.ancestry.co.uk/mediaui-viewer/tree/1/person/2/media/' + MEDIA_ID);
+  for (const u of [
+    'https://www.ancestry.com/mediaui-viewer/tree/1/person/2/media/not-a-guid',
+    'https://www.ancestry.com/mediaui-viewer/tree/1/person/2/media/' + MEDIA_ID + '/comments',
+    'https://www.ancestry.com/family-trees/1/people/2/hints',
+    'https://www.ancestry.com/search/collections/90001/records/1000001',
+    'https://example.org/mediaui-viewer/tree/1/person/2/media/' + MEDIA_ID,
+    'not a url', '', null,
+  ]) {
+    assert.strictEqual(anc.ancParseMediaPage(u), null, String(u));
+  }
+});
+
+test('ancMediaImageUrl: this photo at the viewer\'s size, on the page\'s own site; never another photo', () => {
+  const doc = page('ancestry-media-photo');
+  assert.strictEqual(anc.ancMediaImageUrl(doc, MEDIA_ID, 'https://www.ancestry.com'),
+    'https://www.ancestry.com/api/media/retrieval/v2/image/namespaces/4242/media/' + MEDIA_ID +
+    '?client=trees-mediaservice&imageQuality=hq');
+  // Only a thumbnail on the page: its namespace still names the full image.
+  const thumbOnly = parse('<img src="https://www.ancestry.com/api/media/retrieval/v2/image/namespaces/77/media/' +
+    MEDIA_ID + '.jpg?client=trees-mediaservice&MaxSide=160">');
+  assert.strictEqual(anc.ancMediaImageUrl(thumbOnly, MEDIA_ID, 'https://www.ancestry.com'),
+    'https://www.ancestry.com/api/media/retrieval/v2/image/namespaces/77/media/' + MEDIA_ID +
+    '?client=trees-mediaservice&imageQuality=hq');
+  // An image served from elsewhere is still fetched from the page's own site.
+  const elsewhere = parse('<img src="https://cdn.example.net/api/media/retrieval/v2/image/namespaces/5/media/' +
+    MEDIA_ID + '">');
+  assert.match(anc.ancMediaImageUrl(elsewhere, MEDIA_ID, 'https://www.ancestry.com'), /^https:\/\/www\.ancestry\.com\//);
+  // Another photo's picture is never this one's; no picture yet is null.
+  assert.strictEqual(anc.ancMediaImageUrl(doc, '1badf00d-5678-4def-9abc-ba9876543210', 'https://www.ancestry.com'),
+    'https://www.ancestry.com/api/media/retrieval/v2/image/namespaces/4242/media/1badf00d-5678-4def-9abc-ba9876543210' +
+    '?client=trees-mediaservice&imageQuality=hq'); // (its own thumbnail is on the page)
+  assert.strictEqual(anc.ancMediaImageUrl(parse('<img src="/x.jpg">'), MEDIA_ID, 'https://www.ancestry.com'), null);
+});
+
+test('ancMediaDetails reads the photo\'s Details, and never the "Saved by" list or Seen It\'s badges', () => {
+  const details = anc.ancMediaDetails(page('ancestry-media-photo'));
+  assert.deepStrictEqual(details, {
+    title: 'Thomas and Margaret Hartley at the Fairview farm, about 1925',
+    date: 'abt 1925',
+    place: 'Fairview, Breton, Kansas, USA',
+    description: 'Thomas and Margaret on the porch of the farmhouse.\nThe dog is Shep.',
+    originallyAddedBy: 'hartley_family_tree on 3 Mar 2015',
+    linkedTo: ['Thomas Hartley', 'Margaret Hartley'],
+  });
+  const all = JSON.stringify(details);
+  for (const never of ['cousin_member_one', 'cousin_member_two', 'Saved by', 'Seen 1×', 'Show more', 'Private']) {
+    assert.ok(!all.includes(never), 'kept from the page: ' + never);
+  }
+  // A closed Details panel (hidden on the live page) gives nothing, not a guess.
+  const doc = page('ancestry-media-photo');
+  assert.deepStrictEqual(anc.ancMediaDetails(doc, { hidden: (el) => el.id === 'mediaDetails' }), {});
+});
+
+// The page as the browser hands it over: childNodes is a NodeList - it can
+// be iterated and indexed, but has no indexOf, filter or map.
+function liveLike(node) {
+  const kids = node.childNodes || [];
+  for (const c of kids) liveLike(c);
+  const list = { length: kids.length, item: (i) => kids[i] || null, [Symbol.iterator]: () => kids[Symbol.iterator]() };
+  kids.forEach((c, i) => { list[i] = c; });
+  node.childNodes = list;
+  return node;
+}
+
+test('the photo\'s readers work on the live page\'s NodeLists, not only on arrays', () => {
+  const want = anc.ancMediaFrom(page('ancestry-media-photo'), PHOTO_URL, { origin: 'https://www.ancestry.com' });
+  const live = anc.ancMediaFrom(liveLike(page('ancestry-media-photo')), PHOTO_URL, { origin: 'https://www.ancestry.com' });
+  assert.deepStrictEqual(live, want);
+  assert.strictEqual(live.details.date, 'abt 1925');
+});
+
+test('ancMediaFrom + ancMediaHints: the photo, its details, and a date only when the archive can read it', () => {
+  const doc = page('ancestry-media-photo');
+  const r = anc.ancMediaFrom(doc, PHOTO_URL + '?hid=1', { title: doc.title, origin: 'https://www.ancestry.com' });
+  assert.strictEqual(r.ok, true);
+  assert.deepStrictEqual(r.media, {
+    mediaId: MEDIA_ID, treeId: '90000001', personId: '90000002', url: PHOTO_URL,
+    title: 'Thomas and Margaret Hartley at the Fairview farm, about 1925',
+    imageUrl: 'https://www.ancestry.com/api/media/retrieval/v2/image/namespaces/4242/media/' + MEDIA_ID +
+      '?client=trees-mediaservice&imageQuality=hq',
+    fileStem: 'ancestry-' + MEDIA_ID + '-photo',
+  });
+  assert.deepStrictEqual(anc.ancMediaHints(r.details), { sourceType: 'photo', sourceDate: '1925~', sourceClass: null });
+  assert.strictEqual(anc.ancMediaHints({ date: 'summer, the year the barn burned' }).sourceDate, null);
+  assert.strictEqual(anc.ancMediaHints({}).sourceDate, null);
+  // No Details on the page: the tab title is the photo's title, without the site's name.
+  const bare = anc.ancMediaFrom(parse('<p>x</p>'), PHOTO_URL, { title: 'Hartley farm | Ancestry' });
+  assert.strictEqual(bare.media.title, 'Hartley farm');
+  assert.deepStrictEqual(bare.details, {});
+  assert.strictEqual(anc.ancMediaFrom(doc, 'https://www.ancestry.com/family-trees/1/people/2/hints').ok, false);
+});
+
+test('ancPhotoFileStem: the photo library name is the media id, ending in a word the archive reads as no print or back', () => {
+  assert.strictEqual(anc.ancPhotoFileStem(MEDIA_ID.toUpperCase()), 'ancestry-' + MEDIA_ID + '-photo');
+  for (const bad of ['../x', 'Thomas Hartley', '', null, MEDIA_ID + '/x']) {
+    assert.strictEqual(anc.ancPhotoFileStem(bad), null, String(bad));
+  }
+  // A media id ending in a digit and a letter would read as print "b" on its own.
+  assert.match(anc.ancPhotoFileStem('00000000-0000-4000-8000-00000000000b'), /-photo$/);
+});
+
+test('ancLinkedNames: names without their years, never "Private"', () => {
+  assert.deepStrictEqual(anc.ancLinkedNames('Thomas Hartley 1840–1910\nMargaret Hartley (1845-1920)\nPrivate\n' +
+    'Ethel Hartley 1890–\nThomas Hartley 1840-1910'), ['Thomas Hartley', 'Margaret Hartley', 'Ethel Hartley']);
+  assert.deepStrictEqual(anc.ancLinkedNames(''), []);
+});
