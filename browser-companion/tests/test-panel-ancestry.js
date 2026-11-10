@@ -539,7 +539,7 @@ const PHOTO_FILE = 'ancestry-' + MEDIA_ID + '-photo.jpg';
 // on a person's Hints page. `photo` is how the photo fetch answers;
 // `detailsAtFirst: false` is a Details panel she opened only after the panel
 // first read the page.
-function photoSite({ photo, detailsAtFirst = true, detailsNever = false, edit } = {}) {
+function photoSite({ photo, detailsAtFirst = true, detailsNever = false, edit, oldPageScript = false } = {}) {
   const raw = fs.readFileSync(path.join(SAMPLES, 'ancestry-media-photo.html'), 'utf8');
   const html = edit ? edit(raw) : raw; // `edit`: the page as some other photo shows it
   let reads = 0;
@@ -567,7 +567,7 @@ function photoSite({ photo, detailsAtFirst = true, detailsNever = false, edit } 
             people: info ? (info.details.linkedTo || []).slice() : [],
             repository: 'ancestry.com', recipeHint: 'ancestry', sourceType: media ? 'photo' : undefined,
             ancestryPhoto: !!media, ancestryMediaId: media ? media.mediaId : null,
-            ancestryPhotoShown: info ? Object.keys(info.details) : null,
+            ancestryPhotoShown: info && !oldPageScript ? Object.keys(info.details) : undefined,
             ancestryRecord: !!anc.ancParseRecordPage(tab.url),
           },
         };
@@ -636,6 +636,17 @@ test('round 3 (Codex PRRT_kwDOS6vm6c61wZYJ): Details opened after the panel read
   assert.strictEqual(cap.source_date, '1925~');
   // No advice anywhere to capture the same photo again once it is staged.
   assert.doesNotMatch(late.result(), /again/i);
+});
+
+test('round 3: a page script that does not say which Details it read still stages once the names are shown', async () => {
+  // (scratch258/advice-retry.test.js) Capture, the names appear; Re-read
+  // page; Capture: one bundle, not a second "found more".
+  const p = await openPhoto(PHOTO_OPEN, { detailsAtFirst: false, oldPageScript: true });
+  await p.capture();
+  assert.strictEqual(p.written.length, 0);
+  await p.reread();
+  await p.capture();
+  assert.strictEqual(p.written.length, 1, p.result());
 });
 
 test('round 3 (audit C): a photo with nothing new on the page is staged once, with no advice to capture it again', async () => {

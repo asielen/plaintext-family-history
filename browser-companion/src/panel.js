@@ -605,7 +605,10 @@
     // listed, the Details it was filled from - for Capture to compare with
     // the page as it is then (captureAncestryPhoto).
     state.photoShown = prefill.ancestryPhoto
-      ? { keys: (prefill.ancestryPhotoShown || []).slice(), people: (prefill.people || []).map((n) => String(n).toLowerCase()) }
+      // `keys` null: the page did not say which Details it read (an older
+      // page script): then only the names are compared.
+      ? { keys: Array.isArray(prefill.ancestryPhotoShown) ? prefill.ancestryPhotoShown.slice() : null,
+        people: (prefill.people || []).map((n) => String(n).toLowerCase()) }
       : null;
     // Her clipping ticks, too, when she changed them since (and a dropped
     // file is never let go on the same record: clearEvidenceSelection above).
@@ -1590,13 +1593,13 @@
     // again for the rest" (a second capture of a filed photo cannot be filed,
     // PR #258 review).
     const shown = state.photoShown || { keys: [], people: [] };
-    const newKeys = Object.keys(details).filter((k) => k !== 'title' && shown.keys.indexOf(k) < 0);
+    const newKeys = shown.keys ? Object.keys(details).filter((k) => k !== 'title' && shown.keys.indexOf(k) < 0) : [];
     const newPeople = (details.linkedTo || []).filter((n) => shown.people.indexOf(n.toLowerCase()) < 0);
     if (newKeys.length || newPeople.length) {
       for (const n of newPeople) addPersonRow(n, true);
       if (!form.edited.has('f-date') && !$('f-date').value.trim() && hints.sourceDate) $('f-date').value = hints.sourceDate;
       state.photoShown = {
-        keys: shown.keys.concat(newKeys),
+        keys: shown.keys ? shown.keys.concat(newKeys) : null,
         people: shown.people.concat(newPeople.map((n) => n.toLowerCase())),
       };
       clearAutoLog(); // nothing was saved: the box goes back to what Capture will save
@@ -2257,7 +2260,7 @@
       } else if (state.ancRecord) {
         parts.push('Record files: the record’s index and citation + its scan, if it has one (Ancestry, auto)');
       } else if (state.ancPhoto) {
-        const open = state.photoShown && state.photoShown.keys.some((k) => k !== 'title');
+        const open = !state.photoShown || !state.photoShown.keys || state.photoShown.keys.some((k) => k !== 'title');
         parts.push('Record files: the photo + its details (Ancestry, auto)' + (open ? ''
           : '. Its Details are not open on the page: open them on Ancestry first to save its date, place and description'));
       } else if (state.fagRecord) {
