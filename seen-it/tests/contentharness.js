@@ -13,15 +13,16 @@ function fakeElement(tag) {
     tagName: String(tag || 'div').toUpperCase(), children: [], childNodes: [], style: {}, dataset: {},
     classList: { add() {}, remove() {}, toggle() {}, contains: (c) => String(el.className || '').split(/\s+/).includes(c) },
     textContent: '', innerText: '', id: '',
-    appendChild(c) { el.children.push(c); return c; },
-    insertAdjacentElement() {}, remove() {}, setAttribute() {}, getAttribute: () => null,
+    appendChild(c) { el.children.push(c); c.parentNode = el; return c; },
+    insertAdjacentElement() {}, setAttribute() {}, getAttribute: () => null,
+    remove() { if (el.parentNode) el.parentNode.children = el.parentNode.children.filter((c) => c !== el); el.parentNode = null; },
     addEventListener() {}, querySelector: () => null, querySelectorAll: () => [], closest: () => null,
     getBoundingClientRect: () => ({ top: 0, left: 0, width: 0, height: 0 }),
   };
   return el;
 }
 
-function loadContentScript(file, { pathname, search = '', origin, querySelector, querySelectorAll, storage }) {
+function loadContentScript(file, { pathname, search = '', origin, querySelector, querySelectorAll, getElementById, storage }) {
   const queries = [];
   const listeners = {};
   const sent = [];
@@ -30,7 +31,9 @@ function loadContentScript(file, { pathname, search = '', origin, querySelector,
     body: fakeElement('body'), documentElement: fakeElement('html'),
     querySelectorAll: (sel) => { queries.push(sel); return querySelectorAll ? querySelectorAll(sel) : []; },
     querySelector: (sel) => { queries.push(sel); return querySelector ? querySelector(sel) : null; },
-    getElementById: () => null,
+    // The page's own elements come from the test; the script's own (a badge
+    // it added to the page) are found where it put them.
+    getElementById: (id) => (getElementById && getElementById(id)) || document.body.children.find((c) => c.id === id) || null,
     createElement: fakeElement,
     createTextNode: (t) => ({ textContent: t }),
     addEventListener(type, fn) { (listeners[type] = listeners[type] || []).push(fn); },
@@ -61,6 +64,7 @@ function loadContentScript(file, { pathname, search = '', origin, querySelector,
     vm.runInContext(fs.readFileSync(path.join(dir, f), 'utf8'), context, { filename: f });
   }
   return {
+    document,
     queries,
     listeners,
     sent,

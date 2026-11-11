@@ -126,7 +126,10 @@ connects the add-on to a family archive kept with
 
 - marks what the archive already holds (**📚 in archive**, **📥 captured, not filed**,
   **○ not in archive**) on all four sites;
-- shows, on each tree person and in the tree view, how many of their sources are saved;
+- shows, on each tree person and in the tree view, how many of their sources are saved; once you
+  have opened an Ancestry person's **Gallery**, their gallery gets its own count beside it
+  ("12 of 15 sources saved · 3 of 6 gallery items saved"), counting only the gallery pages you
+  have opened;
 - keeps the add-on's data in a folder you choose, so a sync tool (OneDrive, Dropbox, a network
   drive) can share it between your computers.
 
