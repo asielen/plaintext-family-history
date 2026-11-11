@@ -3022,29 +3022,33 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
                         # is unplaced the map is whole and there is nothing to
                         # ask (#260) - the child arm alone has this exit.
                         # Placement reads EVERY key a person is listed under,
-                        # not just the first one the index keeps. This arm
-                        # only runs when no parent edge was derived, so anyone
-                        # under `parent:` here had that role hidden by a key
-                        # written before it - the mother who was also the
-                        # informant - and is not placed at all. Someone under
-                        # both `child:` and another key is the same muddle.
+                        # not just the first one the index keeps. A person is
+                        # unplaced when (1) the claim gives them no role, (2)
+                        # ANY of their keys is outside the SPEC list - the
+                        # `mother:` written after `informant:` is still a typo
+                        # the tree cannot read - or (3) any of their keys is
+                        # `parent`: this arm only runs when no parent edge was
+                        # derived, so that line was hidden by a key written
+                        # before it (the mother who was also the informant).
+                        # A child who ALSO carries a recognised role - the
+                        # adult registering her own delayed birth as informant,
+                        # a twin who reported it - is placed: the index reads
+                        # her as a child, and warning would ask her to delete
+                        # a true fact.
                         all_roles = _claim_all_roles_by_person(claim, alias_map)
 
                         def _unplaced_reason(pid: str) -> str | None:
-                            first = by_person.get(pid)
                             keys = all_roles.get(pid, [])
-                            if 'parent' in keys:
-                                return (f'listed as a parent, but the `{first}:` '
-                                        f'line written before it hides that')
-                            if not first:
+                            if not keys:
                                 return 'no role given'
-                            if first not in CLAIM_ROLE_WORDS:
-                                return (f'under `{first}:`, which is not a role '
-                                        f'word the archive reads')
-                            if 'child' in keys and len(keys) > 1:
-                                others = ', '.join(f'`{k}:`' for k in keys
-                                                   if k != 'child')
-                                return f'listed under both `child:` and {others}'
+                            if 'parent' in keys:
+                                return (f'listed as a parent, but the '
+                                        f'`{by_person.get(pid)}:` line written '
+                                        f'before it hides that')
+                            off_list = [k for k in keys if k not in CLAIM_ROLE_WORDS]
+                            if off_list:
+                                return (f'under `{off_list[0]}:`, which is not a '
+                                        f'role word the archive reads')
                             return None
 
                         reasons = {pid: _unplaced_reason(pid) for pid in distinct}
@@ -3053,10 +3057,19 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
                             listing = ', '.join(
                                 f'{fmt_id_display(pid)} ({reasons[pid]})'
                                 for pid in unplaced)
-                            doubled = any(len(all_roles.get(pid, [])) > 1
-                                          for pid in unplaced)
                             hidden = any('parent' in all_roles.get(pid, [])
                                          for pid in unplaced)
+                            # The child herself can only be here for an
+                            # off-list word beside her `child:` line; the
+                            # parent repair is never offered for her.
+                            stray_on_child = any(
+                                by_person.get(pid) == 'child'
+                                and 'parent' not in all_roles.get(pid, [])
+                                for pid in unplaced)
+                            others = any(
+                                by_person.get(pid) != 'child'
+                                or 'parent' in all_roles.get(pid, [])
+                                for pid in unplaced)
                             findings.append(Finding('W', 'W126', src_path,
                                 f'{head} and says who was born, but '
                                 + ('its `parent:` line is hidden behind another role'
@@ -3065,16 +3078,21 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
                                 + f', so no parent link is recorded'
                                 f'{where_it_goes}'
                                 f'Not yet placed: {listing}. '
-                                + ('Someone listed under two roles is read by the '
-                                   'first one only: give them one role, or put the '
-                                   '`parent:` line first. ' if doubled else '')
-                                + 'If they are the parents, add them to the roles: '
-                                'map - an indented `parent: [P-…, P-…]` line beside the '
-                                '`child:` one (`parent:` covers a mother and a father '
-                                'alike). If they are not, give each one the part they '
-                                'played instead - an `informant:`, `witness:`, '
-                                '`midwife:` or `physician:` line - and this note '
-                                'clears.'))
+                                + ('The archive reads each person by the first role '
+                                   'listed for them: give a parent one role, or put '
+                                   'the `parent:` line first. ' if hidden else '')
+                                + ('If they are the parents, add them to the roles: '
+                                   'map - an indented `parent: [P-…, P-…]` line beside '
+                                   'the `child:` one (`parent:` covers a mother and a '
+                                   'father alike). If they are not, give each one the '
+                                   'part they played instead - an `informant:`, '
+                                   '`witness:`, `midwife:` or `physician:` line - and '
+                                   'this note clears.' if others else '')
+                                + ((' ' if others else '')
+                                   + 'For the person born, change the unreadable line '
+                                   'to a role word the archive reads (`informant:`, '
+                                   '`witness:`, ...) or remove it.'
+                                   if stray_on_child else '')))
                     elif role_parents:
                         # The mirror: the parents are marked and nobody is
                         # marked as born. The subject is not positional either.

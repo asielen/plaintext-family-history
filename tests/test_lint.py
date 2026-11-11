@@ -3077,6 +3077,53 @@ class BirthClaimWithoutParentageW126Tests(unittest.TestCase):
         self.assertEqual(len(w), 1)
         self.assertIn('`child:` line written before it', w[0].message)
 
+    # -- #260 review, round 3: every key counts, both ways ---------------------
+    # A child who also carries a recognised role is still read as a child, so
+    # warning would ask the owner to delete a true fact. An off-list word is
+    # unreadable wherever it sits, first key or not.
+
+    def test_registrant_who_is_her_own_informant_is_clean(self) -> None:
+        # A delayed registration: the adult registers her own birth.
+        roles = (f'  roles:\n    child: [{self.CHILD}]\n'
+                 f'    informant: [{self.CHILD}]\n    witness: [{self.MOTHER}]\n')
+        self.assertEqual(self._hidden_parent_w126(roles), [])
+
+    def test_twin_who_was_the_informant_is_clean(self) -> None:
+        roles = (f'  roles:\n    child: [{self.CHILD}, {self.FATHER}]\n'
+                 f'    informant: [{self.FATHER}]\n')
+        self.assertEqual(self._w126(self._build(
+            persons=[self.CHILD, self.FATHER], roles_block=roles)), [])
+
+    def test_mother_word_after_informant_still_warns(self) -> None:
+        w = self._hidden_parent_w126(
+            f'  roles:\n    child: [{self.CHILD}]\n'
+            f'    informant: [{self.MOTHER}]\n    mother: [{self.MOTHER}]\n')
+        self.assertEqual(len(w), 1)
+        self.assertIn(f'{lint.fmt_id_display(self.MOTHER)} (under `mother:`, '
+                      'which is not a role word', w[0].message)
+
+    def test_mother_and_father_words_name_both_parents(self) -> None:
+        w = self._w126(self._build(roles_block=(
+            f'  roles:\n    child: [{self.CHILD}]\n'
+            f'    informant: [{self.MOTHER}]\n    mother: [{self.MOTHER}]\n'
+            f'    father: [{self.FATHER}]\n')))
+        self.assertEqual(len(w), 1)
+        msg = w[0].message
+        self.assertIn(f'{lint.fmt_id_display(self.MOTHER)} (under `mother:`', msg)
+        self.assertIn(f'{lint.fmt_id_display(self.FATHER)} (under `father:`', msg)
+
+    def test_stray_word_on_the_child_never_asks_her_to_be_a_parent(self) -> None:
+        # The only unplaced person is the one born: the repair is to fix that
+        # line, never to list her as somebody's parent.
+        w = self._hidden_parent_w126(
+            f'  roles:\n    child: [{self.CHILD}]\n'
+            f'    registrant: [{self.CHILD}]\n    informant: [{self.MOTHER}]\n')
+        self.assertEqual(len(w), 1)
+        msg = w[0].message
+        self.assertIn('`registrant:`', msg)
+        self.assertNotIn('If they are the parents', msg)
+        self.assertNotIn('put the `parent:` line first', msg)
+
     def test_parent_written_before_informant_derives_and_is_clean(self) -> None:
         # The control: `parent:` first, so the index builds the link and
         # there is no silence to report.
