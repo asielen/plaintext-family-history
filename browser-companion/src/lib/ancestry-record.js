@@ -704,9 +704,10 @@ function ancClasses(el) {
 // The photo's Details from Ancestry's own panel, by the panel's structure
 // alone - never by the label reading of the box rules: the panel's comments
 // are headed "Comments on this photo", and a commenter's "Shared by …" is
-// not who shared the photo. A value is only a .mediaDataFieldValue's own
-// words: on her own photo, an empty field holds Ancestry's "add a date"
-// prompt in an element of its own, and that is no date. The description
+// not who shared the photo. A value is only what a .mediaDataFieldValue
+// holds, less Ancestry's own prompts and icons: on her own photo, an empty
+// field holds Ancestry's "add a date" prompt (a .link), and that is no date;
+// a value with Ancestry's AI mark in it is no value of hers. The description
 // keeps its own line breaks (Ancestry shows them as written); the other
 // fields are one line. Who first shared it is the owner card's name, with
 // the date beside it ("hartley_family_tree on 3 Mar 2015"); the people it
@@ -727,14 +728,39 @@ function ancMediaPanelDetails(panel, hidden) {
     for (let n = e.parentNode; n && n !== panel; n = n.parentNode) if (has(n, k)) return n;
     return null;
   };
-  const lines = (e) => [...(e.childNodes || [])].filter((c) => c.nodeType === 3)
-    .map((c) => String(c.nodeValue || '')).join('').split('\n')
-    .map((l) => l.replace(/\s+/g, ' ').trim()).filter(Boolean);
+  // A value's words, line by line: all of its text - words in <em> or a
+  // link inside it too, a <br> or a block a new line, its own line breaks
+  // kept (the description's) - but never Ancestry's "Add a …" prompt (a
+  // .link) or an icon inside it.
+  const lines = (e) => {
+    const parts = [];
+    (function walk(n) {
+      for (const c of n.childNodes || []) {
+        if (c.nodeType === 3) {
+          parts.push(String(c.nodeValue || ''));
+          continue;
+        }
+        if (c.nodeType !== 1 || (hidden && hidden(c)) || ANC_SKIP_TAGS.indexOf(ancTag(c)) >= 0 || ancIsSeenItNode(c) ||
+          has(c, 'link') || has(c, 'icon')) continue;
+        if (ancTag(c) === 'BR') {
+          parts.push('\n');
+          continue;
+        }
+        const block = ANC_BLOCK_TAGS.indexOf(ancTag(c)) >= 0;
+        if (block) parts.push('\n');
+        walk(c);
+        if (block) parts.push('\n');
+      }
+    })(e);
+    return parts.join('').split('\n').map((l) => l.replace(/\s+/g, ' ').trim()).filter(Boolean);
+  };
+  // A value Ancestry marks as its AI's estimate is not hers.
+  const markedAi = (e) => ancElements(e, (x) => ancClasses(x).some((k) => ANC_MEDIA_PANEL_NEVER.indexOf(k) >= 0)).length > 0;
   const words = (e) => ancText(e, { hidden }).replace(/\s+/g, ' ').trim();
   const found = {};
   for (const v of els.filter((e) => has(e, 'mediaDataFieldValue'))) {
     const box = v.parentNode;
-    if (!has(box, 'mediaDataField')) continue;
+    if (!has(box, 'mediaDataField') || markedAi(v)) continue;
     let key = has(box, 'mediaTitle') ? 'title' : null;
     if (!key) {
       const icon = [...(box.childNodes || [])].find((c) => c.nodeType === 1 && ancTag(c) === 'SPAN' && has(c, 'icon') &&

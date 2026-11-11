@@ -795,6 +795,21 @@ test('#261: an item Ancestry calls a document is filed as one - an obituary as a
   }
 });
 
+test('#261 audit A2: a description with markup keeps every word and its line breaks', () => {
+  const DESC = 'Thomas and Margaret outside the Fairview church.\nHer sister Ethel is on the left.';
+  const desc = (inner) => anc.ancMediaDetails(panelPage((h) => h.replace(DESC, inner))).description;
+  assert.strictEqual(desc('Thomas and <em>not</em> Margaret.'), 'Thomas and not Margaret.');
+  assert.strictEqual(desc('Thomas outside <a href="/x">Fairview Church</a> in June.'), 'Thomas outside Fairview Church in June.');
+  assert.strictEqual(desc('Thomas and Margaret outside the church.<br>Her sister Ethel is on the left.'),
+    'Thomas and Margaret outside the church.\nHer sister Ethel is on the left.');
+  // Ancestry's own prompt and icons inside a value are still never words of hers.
+  assert.strictEqual(desc('<span class="link">Add a description</span><span aria-hidden="true" class="icon iconEdit"></span>'),
+    undefined);
+  // A value Ancestry marks as its AI's estimate is not hers.
+  assert.strictEqual(anc.ancMediaDetails(panelPage((h) => h.replace('>12 Jun 1919<',
+    '>1920s<span class="icon iconAi" aria-label="Estimated"></span><'))).date, undefined);
+});
+
 test('#261: inside Ancestry\'s panel, only its own fields are read - never a label-shaped line in the comments', () => {
   // A comment laid out like a Details label is still a member's comment.
   const doc = panelPage((h) => h.replace('<p class="commentBody">Shared by cousin_member_three</p>',

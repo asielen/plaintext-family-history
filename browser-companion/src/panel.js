@@ -608,7 +608,11 @@
       // `keys` null: the page did not say which Details it read (an older
       // page script): then only the names are compared.
       ? { keys: Array.isArray(prefill.ancestryPhotoShown) ? prefill.ancestryPhotoShown.slice() : null,
-        people: (prefill.people || []).map((n) => String(n).toLowerCase()) }
+        people: (prefill.people || []).map((n) => String(n).toLowerCase()),
+        // What the page filled the form with: a field still holding it at
+        // Capture follows the page as it is then (#261 audit A1).
+        // A field kept as she had it (a retry) is hers, never the page's.
+        filled: Object.fromEntries(['f-date', 'f-title', 'f-type'].map((id) => [id, keep.has(id) ? null : $(id).value.trim()])) }
       : null;
     // Her clipping ticks, too, when she changed them since (and a dropped
     // file is never let go on the same record: clearEvidenceSelection above).
@@ -1617,18 +1621,46 @@
     // nothing is staged. A photo is captured once; there is no "capture it
     // again for the rest" (a second capture of a filed photo cannot be filed,
     // PR #258 review).
+    //
+    // What the page filled in and she never changed follows the page as it
+    // is now, and a change is shown to her before anything is saved: the
+    // photo may have changed under the form (#261 audit A1 - Ancestry's
+    // gallery arrow moves to the next photo before its Details show, so the
+    // panel first read the last photo's date, title, Kind and people). What
+    // she typed or ticked herself always wins.
     const shown = state.photoShown || { keys: [], people: [] };
     const newKeys = shown.keys ? Object.keys(details).filter((k) => k !== 'title' && shown.keys.indexOf(k) < 0) : [];
-    const newPeople = (details.linkedTo || []).filter((n) => shown.people.indexOf(n.toLowerCase()) < 0);
-    if (newKeys.length || newPeople.length) {
-      for (const n of newPeople) addPersonRow(n, true);
-      if (!form.edited.has('f-date') && !$('f-date').value.trim() && hints.sourceDate) $('f-date').value = hints.sourceDate;
+    const linked = details.linkedTo || [];
+    const newPeople = linked.filter((n) => shown.people.indexOf(n.toLowerCase()) < 0);
+    const gonePeople = state.touched.has('people') ? []
+      : shown.people.filter((n) => !linked.some((l) => l.toLowerCase() === n));
+    const changed = [];
+    const filled = shown.filled || {};
+    // Only a value the page filled in and that still stands as filled: one
+    // she typed (or chose) is hers.
+    const follow = (id, was, now) => {
+      if (form.edited.has(id) || !(id in filled) || was !== filled[id] || was === now) return;
+      $(id).value = now;
+      changed.push(id);
+    };
+    follow('f-date', form.date, hints.sourceDate || '');
+    if (media.title) follow('f-title', form.title, media.title);
+    if (form.type) follow('f-type', form.type, hints.sourceType || 'photo');
+    if (newKeys.length || newPeople.length || gonePeople.length || changed.length) {
+      if (gonePeople.length) renderPeople(linked);
+      else for (const n of newPeople) addPersonRow(n, true);
+      if (changed.indexOf('f-type') >= 0) $('btn-capture').textContent = ancCaptureLabel();
+      const now = Object.assign({}, filled);
+      for (const id of changed) now[id] = $(id).value;
       state.photoShown = {
-        keys: shown.keys ? shown.keys.concat(newKeys) : null,
-        people: shown.people.concat(newPeople.map((n) => n.toLowerCase())),
+        keys: shown.keys ? Object.keys(details) : null,
+        people: linked.map((n) => n.toLowerCase()),
+        filled: now,
       };
       clearAutoLog(); // nothing was saved: the box goes back to what Capture will save
-      setStageResult('I found more on the page — check the people below, then press ' + ancCaptureLabel() + '.', 'warn');
+      setStageResult(newKeys.length || newPeople.length
+        ? 'I found more on the page — check the people below, then press ' + ancCaptureLabel() + '.'
+        : 'The details on the page have changed — check them below, then press ' + ancCaptureLabel() + '.', 'warn');
       return { staged: false };
     }
 

@@ -719,6 +719,97 @@ test('#261: on Ancestry\'s own Details panel the add-on finds the Details - no "
   assert.strictEqual(cap.assets.find((a) => a.mode === 'ancestry-media').role, 'front');
 });
 
+// #261 audit A1: she moves to photo B with Ancestry's gallery arrow; the
+// panel reads the page before Ancestry's Details panel shows B, so the form
+// is filled from photo A. By Capture the page shows B. B must never be
+// filed with A's date (or title, or Kind, or people).
+const PHOTO_B = '0b0b0b0b-1234-4abc-8def-0123456789ab';
+const PHOTO_B_URL = 'https://www.ancestry.com/mediaui-viewer/tree/90000001/person/90000002/media/' + PHOTO_B;
+const PANEL_A = fs.readFileSync(path.join(SAMPLES, 'ancestry-media-panel.html'), 'utf8').replace('<div class="viewerStage">',
+  '<div class="viewerStage"><img id="' + PHOTO_B + '" src="https://www.ancestry.com/api/media/retrieval/v2/image/namespaces/4242/media/' +
+  PHOTO_B + '?client=trees-mediaservice&amp;imageQuality=hq">');
+const A_DATE_FIELD = '<div class="mediaDataFieldWrapper"><div class="mediaDataField flex  "><span aria-label="Date" class="icon iconCalendar">' +
+  '</span><span class="mediaDataFieldValue textWrap ">12 Jun 1919</span></div></div>';
+const A_TITLE = 'Wedding of Thomas Hartley and Margaret Ellis</span>';
+// The page as the panel first reads it (A's Details), then as it is at Capture.
+function stalePanelSite(pageB) {
+  let reads = 0;
+  return (msg, tab) => {
+    const read = (html) => {
+      const d = parse(html);
+      const i = anc.ancMediaFrom(d, tab.url, { title: d.title, origin: 'https://www.ancestry.com' });
+      i.hints = anc.ancMediaHints(i.details);
+      return i;
+    };
+    switch (msg.action) {
+      case 'prefill': {
+        reads += 1;
+        const info = read(reads === 1 ? PANEL_A : pageB);
+        return { ok: true, prefill: { url: tab.url, title: info.media.title, sourceDate: info.hints.sourceDate || '',
+          people: (info.details.linkedTo || []).slice(), repository: 'ancestry.com', recipeHint: 'ancestry',
+          sourceType: info.hints.sourceType || 'photo', ancestryPhoto: true, ancestryMediaId: PHOTO_B,
+          ancestryPhotoShown: Object.keys(info.details), ancestryRecord: false } };
+      }
+      case 'ancestryPhotoInfo': return read(pageB);
+      case 'ancestryPhoto': return { ok: true, base64: PHOTO_BYTES.toString('base64'), ext: 'jpg', contentType: 'image/jpeg' };
+      case 'pagehtml': return { ok: true, html: pageB };
+      default: return { ok: false, error: 'unexpected ' + msg.action };
+    }
+  };
+}
+
+test('#261 audit A1: photo B is never filed with photo A\'s date - the form shows B\'s first, then Capture files it', async () => {
+  const pageB = PANEL_A.replace('>12 Jun 1919<', '>4 Feb 1958<').replace(A_TITLE, 'Photo B title</span>');
+  const p = await openPanel({ url: PHOTO_B_URL, respond: stalePanelSite(pageB) });
+  assert.strictEqual(p.$('f-date').value, '1919-06-12'); // A's, as first read
+  await p.capture();
+  assert.strictEqual(p.written.length, 0, 'nothing is saved while the form shows another photo\'s details');
+  assert.match(p.result(), /check .* then press Capture this photo/);
+  assert.match(p.resultClass(), /warn/);
+  assert.strictEqual(p.$('f-date').value, '1958-02-04');
+  assert.strictEqual(p.$('f-title').value, 'Photo B title');
+  await p.capture();
+  assert.strictEqual(p.written.length, 1, p.result());
+  const cap = p.capJson(p.written[0]);
+  assert.strictEqual(cap.source_date, '1958-02-04');
+  assert.strictEqual(cap.title, 'Photo B title');
+});
+
+test('#261 audit A1: an undated photo B after a dated photo A is filed undated', async () => {
+  const pageB = PANEL_A.replace(A_DATE_FIELD, '').replace(A_TITLE, 'Photo B title</span>');
+  assert.ok(pageB !== PANEL_A.replace(A_TITLE, 'Photo B title</span>'), 'the fixture edit took');
+  const p = await openPanel({ url: PHOTO_B_URL, respond: stalePanelSite(pageB) });
+  await p.capture();
+  assert.strictEqual(p.written.length, 0);
+  assert.strictEqual(p.$('f-date').value, '');
+  await p.capture();
+  assert.strictEqual(p.written.length, 1, p.result());
+  assert.ok(!p.capJson(p.written[0]).source_date, 'no date is filed');
+});
+
+test('#261 audit A1: what she typed herself always wins; people she never touched follow photo B', async () => {
+  // B is linked to Margaret only, and is a document; she typed a date.
+  const pageB = PANEL_A.replace('>12 Jun 1919<', '>4 Feb 1958<').replace(A_TITLE, 'Obituary for Thomas Hartley</span>')
+    .replace('Portrait / Family Photo', 'Document / Certificate')
+    .replace(/<button type="button" class="ancBtn sml inThisTreeButton[^>]*><img[^>]*><span class="linkedToName textClipped extraSpace">Thomas Hartley<\/span><\/button>/, '');
+  assert.ok(!/linkedToName[^>]*>Thomas Hartley/.test(pageB), 'the fixture edit took');
+  const p = await openPanel({ url: PHOTO_B_URL, respond: stalePanelSite(pageB) });
+  p.$('f-date').value = 'abt 1950';
+  await p.$('f-date').fire('input');
+  await p.capture();
+  assert.strictEqual(p.written.length, 0);
+  assert.strictEqual(p.$('f-date').value, 'abt 1950'); // hers
+  assert.strictEqual(p.$('f-type').value, 'newspaper'); // B's Kind
+  assert.strictEqual(p.$('btn-capture').textContent, 'Capture this record');
+  assert.deepStrictEqual(p.$('people-list').children.map((l) => l.children[1].textContent), ['Margaret Hartley']);
+  await p.capture();
+  assert.strictEqual(p.written.length, 1, p.result());
+  const cap = p.capJson(p.written[0]);
+  assert.strictEqual(cap.source_date, 'abt 1950');
+  assert.strictEqual(cap.source_type, 'newspaper');
+  assert.deepStrictEqual(cap.people, ['Margaret Hartley']);
+});
+
 // A newspaper clipping shared from Newspapers.com, which its sharer put in
 // Ancestry's "Document / Certificate" category (#261, the owner: "should be
 // saved as a document").
