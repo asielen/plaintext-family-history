@@ -121,6 +121,8 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #                                 headline: most exact date, then confidence (#201)
 #    social_parties            - who a friend/associate/neighbor claim says knew
 #                                 EACH OTHER; read by index
+#    CLAIM_ROLE_WORDS          - SPEC §8.3's closed list of roles: words; read
+#                                 by lint W126 only (#260)
 #
 #  Archive configuration
 #    find_archive_root         - walk up from CWD to find fha.yaml
@@ -917,9 +919,12 @@ def parentage_parties(
     one is merely missing. Silence is recoverable, a false parent is not.
 
     Nothing here is silent in the archive: `fha lint` W126 warns whenever an
-    accepted birth claim names two or more people and this returns nothing, so
-    the refusal is never the end of the story - the same bargain W125 strikes
-    for couple claims.
+    accepted birth claim names two or more people, this returns nothing, and
+    the claim either names nobody as the child or leaves someone unplaced (no
+    role, or a word outside `CLAIM_ROLE_WORDS`), so the refusal is never the
+    end of the story - the same bargain W125 strikes for couple claims. A claim
+    that placed everyone (the child and the informant) has said all its record
+    says; there is nothing left to ask it (#260).
 
     Shared by `fha index` (both the `birth` and the `relationship` branch of
     relationship derivation, so two ways of writing one fact reach the tree as
@@ -1419,6 +1424,27 @@ def resolve_claim_persons_with_roles(
 # clearly, and refusing to read it would be fussy about a distinction the
 # archive itself does not draw.
 SOCIAL_TIE_SUBTYPES: frozenset[str] = frozenset({'friend', 'associate', 'neighbor'})
+
+
+# The closed list of `roles:` words SPEC §8.3 gives a meaning to ("Role words",
+# #260). A person filed under one of these has been placed by the claim - the
+# record said who they were. A word outside it (`mother:`, `father:`) is not an
+# error and nothing rejects it, but no tool reads a meaning from it.
+#
+# One consumer today, on purpose: lint W126 asks it whether a birth claim that
+# names a child has said who EVERYONE else was, so a claim naming the child and
+# the informant is left alone while `{child: [...], mother: [...]}` is still
+# reported. Nothing else validates role words against this list, so no archive
+# gets a new warning from its existence. tests/test_lint.py checks it against
+# the SPEC paragraph, so the two cannot drift apart.
+CLAIM_ROLE_WORDS: frozenset[str] = frozenset({
+    # The family, household, power-tie and affiliation roles §8.3 defines.
+    'child', 'parent', 'spouse', 'head', 'household_member',
+    'enslaved', 'enslaver', 'employer', 'employee', 'member',
+    'deceased',
+    # The people a record names who are not parties to the event.
+    'informant', 'witness', 'midwife', 'physician',
+}) | SOCIAL_TIE_SUBTYPES
 
 
 def social_parties(

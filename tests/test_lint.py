@@ -2976,6 +2976,84 @@ class BirthClaimWithoutParentageW126Tests(unittest.TestCase):
         self.assertIn('says who was born', msg)
         self.assertIn('parent: [P-', msg)
 
+    # -- #260: a map that places everyone has said all its record says --------
+    # A warning nothing can clear without inventing a role teaches the owner
+    # to skip W126 altogether, real cases included. SPEC §8.3 now reports a
+    # child-naming map only when it leaves someone unplaced: no role, or a role
+    # word outside the section's closed list.
+
+    def test_child_and_associate_with_everyone_placed_is_clean(self) -> None:
+        # An interview: "Aunt Clara was born in 1896", naming the relative
+        # discussed alongside her. Nobody here is a parent and nobody is
+        # unplaced, so there is no parentage to ask for.
+        roles = (f'  roles:\n    child: [{self.CHILD}]\n'
+                 f'    associate: [{self.MOTHER}]\n')
+        self.assertEqual(self._w126(self._build(
+            persons=[self.CHILD, self.MOTHER], roles_block=roles)), [])
+
+    def test_two_children_whose_parents_the_record_omits_is_clean(self) -> None:
+        # A son's certificate gives his parents' own births. One claim records
+        # two births, and the document names no parents of theirs at all.
+        roles = f'  roles:\n    child: [{self.CHILD}, {self.FATHER}]\n'
+        self.assertEqual(self._w126(self._build(
+            persons=[self.CHILD, self.FATHER], roles_block=roles)), [])
+
+    def test_every_role_word_places_the_other_person(self) -> None:
+        # The SPEC list is the whole contract: any word on it says who the
+        # other person was. `parent` places them too, by deriving the edge.
+        # `child` is the two-children test above (a second `child:` key here
+        # would be a duplicate YAML key, which overwrites the first).
+        for word in sorted(lint.CLAIM_ROLE_WORDS - {'child'}):
+            with self.subTest(role=word):
+                roles = (f'  roles:\n    child: [{self.CHILD}]\n'
+                         f'    {word}: [{self.MOTHER}]\n')
+                self.assertEqual(self._w126(self._build(
+                    persons=[self.CHILD, self.MOTHER], roles_block=roles)), [])
+
+    def test_child_with_another_person_unroled_still_warns(self) -> None:
+        roles = f'  roles:\n    child: [{self.CHILD}]\n'
+        w = self._w126(self._build(persons=[self.CHILD, self.MOTHER],
+                                   roles_block=roles))
+        self.assertEqual(len(w), 1)
+        msg = w[0].message
+        # Names who is still unplaced, and offers both ways to place them.
+        self.assertIn(f'{lint.fmt_id_display(self.MOTHER)} (no role given)', msg)
+        self.assertNotIn(lint.fmt_id_display(self.CHILD) + ' (', msg)
+        self.assertIn('parent: [P-', msg)
+        self.assertIn('informant:', msg)
+
+    def test_child_with_mother_typo_still_warns(self) -> None:
+        # `mother:` reads as correct to whoever wrote it, and no tool reads a
+        # parent out of it. This is the shape the list exists to keep catching.
+        roles = (f'  roles:\n    child: [{self.CHILD}]\n'
+                 f'    mother: [{self.MOTHER}]\n')
+        w = self._w126(self._build(persons=[self.CHILD, self.MOTHER],
+                                   roles_block=roles))
+        self.assertEqual(len(w), 1)
+        msg = w[0].message
+        self.assertIn('`mother:`, which is not a role word', msg)
+        self.assertIn('parent: [P-', msg)
+
+    def test_parents_with_no_child_still_warn_when_everyone_has_a_role(self) -> None:
+        # #260 relaxed the child arm only. Two parents and nobody born is
+        # still a record of a birth that does not say whose birth it was.
+        roles = f'  roles:\n    parent: [{self.FATHER}, {self.MOTHER}]\n'
+        w = self._w126(self._build(persons=[self.FATHER, self.MOTHER],
+                                   roles_block=roles))
+        self.assertEqual(len(w), 1)
+        self.assertIn('does not say who was born', w[0].message)
+
+    def test_role_word_list_matches_spec(self) -> None:
+        # One list, two homes: SPEC §8.3's "Role words" paragraph is the law
+        # and _lib.CLAIM_ROLE_WORDS is what W126 reads. They must not drift.
+        spec = (Path(__file__).resolve().parent.parent / 'SPEC.md').read_text(
+            encoding='utf-8')
+        para = next(line for line in spec.splitlines()
+                    if line.startswith('**Role words.**'))
+        listed = para.split('A word outside the list')[0]
+        words = set(re.findall(r'`([a-z_]+)`', listed))
+        self.assertEqual(words, set(lint.CLAIM_ROLE_WORDS))
+
     def test_parent_role_alone_warns_and_asks_who_was_born(self) -> None:
         roles = f'  roles:\n    parent: [{self.FATHER}, {self.MOTHER}]\n'
         w = self._w126(self._build(roles_block=roles))
