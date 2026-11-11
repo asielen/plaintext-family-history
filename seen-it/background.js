@@ -33,7 +33,7 @@
 //             Kept apart from the Newspapers.com page data so neither schema
 //             changes; it travels in backups and the data-folder files.
 //   ancPeople: { ['{treeId}:{personId}' | 'fs:{PID}' | 'ged:{xref}']: { name, keys: ['rec:…'], at,
-//                gallery?: { pages: { [pageNo]: ['med:…'] }, at } } }
+//                gallery?: { pages: { [pageNo]: { keys: ['med:…'], at } }, at } } }
 //             A tree person's sources, as last seen on their Ancestry Facts page or
 //             FamilySearch person page, or read from a GEDCOM file (ged:, replaced
 //             whole on each load) - so search results can say "in your tree".
@@ -244,7 +244,9 @@ function recordAncMark(key, mark) {
 // A person's sources (`keys`, from their Facts page) and their gallery (one
 // page of it, from their Gallery page) are read on different pages: each
 // reading updates only its own part. A gallery page read again replaces that
-// page's items, so an item taken off Ancestry drops out; other pages are kept.
+// page's items, so an item taken off Ancestry drops out when that page is read
+// again; other pages are kept. Each page carries the time it was read, so two
+// computers' readings merge page by page (mergeGallery).
 function recordAncPerson(key, name, keys, gallery) {
   return update(['ancPeople'], ({ ancPeople }) => {
     const old = ancPeople[key] || {};
@@ -257,10 +259,26 @@ function recordAncPerson(key, name, keys, gallery) {
     }
     const page = gallery && Math.floor(Number(gallery.page));
     if (page >= 1 && Array.isArray(gallery.keys)) {
-      p.gallery = { pages: { ...((old.gallery && old.gallery.pages) || {}), [page]: [...new Set(gallery.keys)] }, at: Date.now() };
+      const now = Date.now();
+      p.gallery = mergeGallery(old.gallery, { pages: { [page]: { keys: [...new Set(gallery.keys)], at: now } }, at: now });
     }
     ancPeople[key] = p;
   });
+}
+
+// Two readings of a person's gallery, page by page: each page keeps its newest
+// reading, a page read on only one side is kept, and the gallery is dated by
+// its newest page. (A page stored as a bare list takes its gallery's date.)
+function mergeGallery(a, b) {
+  const pages = {};
+  for (const g of [a, b]) {
+    for (const [n, pg] of Object.entries((g && g.pages) || {})) {
+      const read = Array.isArray(pg) ? { keys: pg, at: g.at || 0 } : { keys: (pg && pg.keys) || [], at: (pg && pg.at) || 0 };
+      if (!pages[n] || read.at >= pages[n].at) pages[n] = read; // a tie: the later reading (b)
+    }
+  }
+  const at = Math.max(0, ...Object.values(pages).map((pg) => pg.at));
+  return Object.keys(pages).length ? { pages, at } : null;
 }
 
 // ── settings ────────────────────────────────────────────────────────────────
@@ -588,8 +606,8 @@ async function importAll(obj) {
       if (k.startsWith('ged:')) continue;
       const cur = ancPeople[k];
       const p = !cur || (ip.at || 0) > (cur.at || 0) ? { ...ip } : { ...cur };
-      // The gallery is read on its own pages: its newest reading wins on its own.
-      const g = [cur && cur.gallery, ip.gallery].filter(Boolean).sort((a, b) => (b.at || 0) - (a.at || 0))[0];
+      // The gallery is read a page at a time, maybe on both computers: merged page by page.
+      const g = mergeGallery(cur && cur.gallery, ip.gallery);
       if (g) p.gallery = g;
       ancPeople[k] = p;
     }

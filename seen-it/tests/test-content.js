@@ -316,8 +316,38 @@ test('Ancestry gallery: the items on a gallery page are remembered for that pers
   assert.strictEqual(msg.keys, undefined, 'a gallery page claimed the person has no sources');
 });
 
+// PR #271 audit: moving from one person's gallery to another's inside the
+// page, Seen It can read before Ancestry redraws the tiles. Tiles belonging to
+// someone else are never filed under the person in the address bar.
+test('Ancestry gallery: tiles still showing another person\'s gallery are not counted for this person', async () => {
+  const stale = await personPage({
+    pathname: '/family-tree/person/tree/111/person/333/gallery', search: '?galleryPage=1',
+    tiles: [tile('/mediaui-viewer/tree/111/person/222/media/' + GAL(1)), tile('/mediaui-viewer/collection/1030/tree/111/person/222/media/' + GAL(2))],
+  });
+  assert.deepStrictEqual(stale.page.sent.filter((m) => m.type === 'ancPerson'), [], 'another person\'s tiles were filed under this one');
+  // once redrawn, her own tiles are counted (and a stray tile of someone else's is not)
+  const own = await personPage({
+    pathname: '/family-tree/person/tree/111/person/333/gallery', search: '?galleryPage=1',
+    tiles: [tile('/mediaui-viewer/tree/111/person/333/media/' + GAL(3)), tile('/mediaui-viewer/tree/111/person/222/media/' + GAL(1))],
+  });
+  const msg = own.page.sent.find((m) => m.type === 'ancPerson');
+  assert.ok(msg, 'her own gallery page was not remembered');
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(msg.gallery)), { page: 1, keys: ['med:' + GAL(3)] });
+});
+
+test('Ancestry Facts page: a gallery page stored as a bare list still counts', async () => {
+  const p = hartley({ 1: ['med:' + GAL(1)] });
+  p.gallery.pages[2] = ['med:' + GAL(2)];
+  const { texts } = await personPage({ ...FACTS, storage: {
+    settings: { advanced: true }, known: { ['med:' + GAL(1)]: FILED }, ancPeople: { '111:222': p },
+  } });
+  assert.ok(texts.includes('1 of 2 gallery items saved'), JSON.stringify(texts));
+});
+
+// Each gallery page is stored with the time it was read: { keys, at }.
 const hartley = (gallery) => ({ name: 'Thomas Hartley', keys: ['rec:1001:2002', 'rec:3003:4004'], at: Date.now() - DAY_MS,
-  ...(gallery ? { gallery: { pages: gallery, at: Date.now() - DAY_MS } } : {}) });
+  ...(gallery ? { gallery: { at: Date.now() - DAY_MS,
+    pages: Object.fromEntries(Object.entries(gallery).map(([n, keys]) => [n, { keys, at: Date.now() - DAY_MS }])) } } : {}) });
 const FACTS = { pathname: '/family-tree/person/tree/111/person/222/facts', sources: [sourceLink(1001, 2002), sourceLink(3003, 4004)] };
 
 test('Ancestry Facts page: the gallery gets its own count beside the sources', async () => {

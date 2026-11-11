@@ -99,14 +99,18 @@
   // The photos, stories and documents on the gallery page in front of her, and
   // which page of the gallery it is. Nothing until the tiles are drawn (an
   // empty page cannot be told from one still loading), and nothing on a tab
-  // that shows only part of the gallery.
-  function galleryPageItems() {
+  // that shows only part of the gallery. Only tiles whose link names this
+  // person (…/tree/{t}/person/{p}/media/…) count: moving from one person's
+  // gallery to another's, the last person's tiles can still be on screen.
+  function galleryPageItems(person) {
     const q = new URLSearchParams(location.search);
     if (q.get('tab') && q.get('tab') !== 'gallery') return null;
     const keys = [];
+    const mine = '/tree/' + person.tree + '/person/' + person.pid + '/';
     for (const a of document.querySelectorAll('.mediaGalleryItem a[href]')) {
-      const k = keyFromHref(a.getAttribute('href'));
-      if (k && k.startsWith('med:') && !keys.includes(k)) keys.push(k);
+      const href = a.getAttribute('href') || '';
+      const k = keyFromHref(href);
+      if (k && k.startsWith('med:') && href.includes(mine) && !keys.includes(k)) keys.push(k);
     }
     return keys.length ? { page: Math.max(1, parseInt(q.get('galleryPage'), 10) || 1), keys } : null;
   }
@@ -118,7 +122,8 @@
     if (live) pages[live.page] = live.keys;
     const nums = Object.keys(pages).map(Number).filter((n) => n >= 1).sort((a, b) => a - b);
     const keys = [];
-    for (const n of nums) for (const k of pages[n] || []) if (!keys.includes(k)) keys.push(k);
+    // A page is stored as { keys, at } (or, from an early 0.12.3, a bare list).
+    for (const n of nums) for (const k of (Array.isArray(pages[n]) ? pages[n] : (pages[n] && pages[n].keys)) || []) if (!keys.includes(k)) keys.push(k);
     if (!keys.length) return null;
     return { keys, pages: nums, at: (p && p.gallery && p.gallery.at) || null };
   }
@@ -211,7 +216,7 @@
 
   let lastPersonSig = null;
   function trackPerson(person) {
-    const gallery = person.view === 'gallery' ? galleryPageItems() : null;
+    const gallery = person.view === 'gallery' ? galleryPageItems(person) : null;
     const keys = gallery ? null : personSourceKeys();
     if (!keys && !gallery) return;
     const sig = person.key + '|' + (keys ? keys.join(',') : 'gallery ' + gallery.page + '|' + gallery.keys.join(','));
@@ -229,7 +234,7 @@
     const stored = person && data.ancPeople[person.key];
     const onGallery = person && person.view === 'gallery';
     const keys = person && (onGallery ? (stored && Array.isArray(stored.keys) ? stored.keys : null) : personSourceKeys());
-    const g = person && galleryOf(stored, onGallery ? galleryPageItems() : null);
+    const g = person && galleryOf(stored, onGallery ? galleryPageItems(person) : null);
     if (!person || (!keys && !(onGallery && g))) {
       if (box) box.remove();
       return;
