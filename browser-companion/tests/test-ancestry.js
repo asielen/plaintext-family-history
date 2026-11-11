@@ -606,7 +606,7 @@ test('round 9, accepted cost: text beside the box is left out even when it is he
 const PANEL_HTML = fs.readFileSync(path.join(SAMPLES, 'ancestry-media-panel.html'), 'utf8');
 const panelPage = (edit) => parse(edit ? edit(PANEL_HTML) : PANEL_HTML);
 const OTHERS = ['cousin_member_one', 'cousin_member_two', 'cousin_member_three', 'Saved by', 'Shared by', 'Comments',
-  'Save to someone else', 'Portraits', 'Category', '1921', 'grandmother', 'HF', 'CO'];
+  'Save to someone else', '1921', 'grandmother', 'HF', 'CO'];
 // One field of the panel, to cut out or swap for something else.
 const field = (cls) => new RegExp('<div class="mediaDataFieldWrapper"><div class="mediaDataField flex  "><span aria-label="[^"]*" ' +
   'class="icon ' + cls + '"></span><span class="mediaDataFieldValue[^"]*">[^<]*</span></div></div>');
@@ -617,6 +617,7 @@ test('#261: Ancestry\'s own Details panel gives the photo\'s title, date, place,
     title: 'Wedding of Thomas Hartley and Margaret Ellis',
     date: '12 Jun 1919',
     place: 'Fairview, Breton, Kansas, USA',
+    category: 'Portrait / Family Photo',
     description: 'Thomas and Margaret outside the Fairview church.\nHer sister Ethel is on the left.',
     originallyAddedBy: 'hartley_family_tree on 3 Mar 2015',
     linkedTo: ['Thomas Hartley', 'Margaret Hartley'],
@@ -637,6 +638,7 @@ test('#261: a panel with only a title and a category (the owner\'s page) still g
   const d = anc.ancMediaDetails(parse(html));
   assert.deepStrictEqual(d, {
     title: 'Wedding of Thomas Hartley and Margaret Ellis',
+    category: 'Portrait / Family Photo',
     originallyAddedBy: 'hartley_family_tree on 3 Mar 2015',
     linkedTo: ['Thomas Hartley', 'Margaret Hartley'],
   });
@@ -690,7 +692,7 @@ test('#261: on Ancestry in another language, the fields are known by their icons
   assert.strictEqual(d.date, '12 Jun 1919');
   assert.strictEqual(d.place, 'Fairview, Breton, Kansas, USA');
   assert.strictEqual(d.description, 'Thomas and Margaret outside the Fairview church.\nHer sister Ethel is on the left.');
-  assert.ok(!JSON.stringify(d).includes('Portraits'));
+  assert.strictEqual(d.category, 'Portrait / Family Photo');
 });
 
 test('#261: the panel\'s id is what marks it - without it the old rules apply, and a closed panel gives nothing', () => {
@@ -745,15 +747,52 @@ test('#261: on a clipping she may edit, Ancestry\'s "Add a description" prompts 
     title: 'Obituary of Thomas Hartley',
     date: '4 Feb 1958',
     place: 'Fairview, Breton, Kansas, USA',
+    category: 'Document / Certificate',
     originallyAddedBy: 'hartley_family_tree on 9 Sep 2021',
     linkedTo: ['Thomas Hartley'],
   });
   const all = JSON.stringify(d);
-  for (const never of ['Add a', 'description', 'transcription', 'this article', 'Newspapers.com', 'Document',
+  for (const never of ['Add a', 'description', 'transcription', 'this article', 'Newspapers.com',
     'cousin_member_one', 'Saved by', 'Save to someone else']) {
     assert.ok(!all.includes(never), 'kept from the page: ' + never);
   }
   assert.strictEqual(anc.ancMediaHints(d).sourceDate, '1958-02-04');
+});
+
+test('#261: an item Ancestry calls a document is filed as one - an obituary as a newspaper; a photo stays a photo', () => {
+  // The owner: an item whose Ancestry category is a document "should be
+  // saved as a document". The clipping: "Document / Certificate", titled
+  // as an obituary.
+  const clip = anc.ancMediaDetails(parse(CLIP_HTML));
+  assert.strictEqual(clip.category, 'Document / Certificate');
+  assert.deepStrictEqual(anc.ancMediaHints(clip), { sourceType: 'newspaper', sourceDate: '1958-02-04', sourceClass: null });
+  assert.strictEqual(anc.ancMediaHints(anc.ancMediaDetails(panelPage())).sourceType, 'photo');
+  // Ancestry's category words (the English site's), and what each files as.
+  const doc = (category, title) => anc.ancMediaKind(category, title || 'Thomas Hartley');
+  for (const [category, kind] of [
+    ['Obituary', 'newspaper'], ['Newspaper Article', 'newspaper'],
+    ['Birth Certificate', 'vital-record'], ['Death Certificate', 'vital-record'], ['Marriage Certificate', 'vital-record'],
+    ['Military Service', 'military-record'], ['Property Record', 'land-record'],
+    ['Document / Certificate', 'other'], ['Legal Document', 'other'], ['Personal Paper', 'other'], ['Diploma', 'other'],
+    ['Immigration', 'other'], ['Yearbook', 'other'], ['Education', 'other'], ['Occupation', 'other'],
+    // When unsure, nothing changes: a photo.
+    ['Portrait / Family Photo', 'photo'], ['Site', 'photo'], ['Headstone', 'photo'], ['Heirloom', 'photo'],
+    ['Recipe', 'photo'], ['Award / Medal', 'photo'], ['Other', 'photo'], ['', 'photo'], [undefined, 'photo'],
+    ['Dokument / Urkunde', 'photo'], ['Portrait / Photo de famille', 'photo'],
+  ]) {
+    assert.strictEqual(doc(category), kind, String(category));
+  }
+  // Another document is what its title says it is.
+  assert.strictEqual(doc('Document / Certificate', 'Obituary for Thomas Hartley'), 'newspaper');
+  assert.strictEqual(doc('Document / Certificate', 'Death record of Margaret Hartley'), 'vital-record');
+  assert.strictEqual(doc('Legal Document', '1880 United States Federal Census'), 'census');
+  // The title alone never makes a photo a document.
+  assert.strictEqual(doc('Portrait / Family Photo', 'Obituary for Thomas Hartley'), 'photo');
+  // Every kind is one the archive's Kind list knows.
+  const KINDS = ['census', 'vital-record', 'newspaper', 'photo', 'military-record', 'land-record', 'website', 'other'];
+  for (const c of ['Obituary', 'Birth Certificate', 'Military Service', 'Property Record', 'Diploma', 'Site']) {
+    assert.ok(KINDS.indexOf(doc(c)) >= 0, c);
+  }
 });
 
 test('#261: inside Ancestry\'s panel, only its own fields are read - never a label-shaped line in the comments', () => {

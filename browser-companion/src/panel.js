@@ -659,6 +659,18 @@
   // page's defaults; a new record never passes it.
   // `keepAddress`: the file address box holds one she typed (a retry), so
   // the page's guess does not replace it.
+  // A shared Ancestry item is captured as what the form's Kind says (#261):
+  // the Kind she sees, or - left on Auto-detect - what the page said it is
+  // (a photo unless its Ancestry category names a document). A photo goes to
+  // her photo library; anything else is a record, filed with her documents.
+  function ancItemKind() {
+    return $('f-type').value || (state.prefill && state.prefill.sourceType) || 'photo';
+  }
+
+  function ancCaptureLabel() {
+    return ancItemKind() === 'photo' ? 'Capture this photo' : 'Capture this record';
+  }
+
   function applyFilePrefill(prefill, keepNp, keepAddress) {
     state.autoMissed = false;
     state.iiif = !!prefill.iiif;
@@ -667,7 +679,7 @@
     // On a shared photo the button says what it saves, and the page copy and
     // "the page copy is the record" are not offered (pageCopyOn): one plain
     // line says why.
-    $('btn-capture').textContent = state.ancPhoto ? 'Capture this photo' : 'Capture & save';
+    $('btn-capture').textContent = state.ancPhoto ? ancCaptureLabel() : 'Capture & save';
     $('page-copy-card').style.display = state.ancPhoto ? 'none' : '';
     $('opt-none').style.display = state.ancPhoto ? 'none' : '';
     $('pagecopy-note').style.display = state.ancPhoto ? 'block' : 'none';
@@ -1566,7 +1578,10 @@
   // The photo is the image the viewer shows, fetched from Ancestry's own site
   // in her session and kept byte for byte. capture.json's `url` is the
   // viewer's address without its query, so Seen It knows the photo again
-  // (med:{mediaId}) once it is filed.
+  // (med:{mediaId}) once it is filed. An item its sharer put in a document
+  // category on Ancestry (an obituary, a certificate) files as that kind of
+  // record instead, its picture in role `record`, with her documents - or as
+  // whatever Kind she chooses before Capture (ancItemKind, #261).
   //
   // No other member's name reaches the archive: no copy of the page is kept
   // for a shared photo (pageCopyOn), the Details reader stops at member lists
@@ -1613,17 +1628,24 @@
         people: shown.people.concat(newPeople.map((n) => n.toLowerCase())),
       };
       clearAutoLog(); // nothing was saved: the box goes back to what Capture will save
-      setStageResult('I found more on the page — check the people below, then press Capture this photo.', 'warn');
+      setStageResult('I found more on the page — check the people below, then press ' + ancCaptureLabel() + '.', 'warn');
       return { staged: false };
     }
 
     const dropped = form.dropped;
     const provisional = !!dropped && form.provisional;
+    // What it is filed as: the Kind on the form when she presses Capture -
+    // hers if she chose one, else what the page said (a photo unless its
+    // Ancestry category names a document, #261). A photo's picture is its
+    // `front`, for the photo library; a document's is its `record`, for her
+    // documents, like any other Ancestry record's scan.
+    const kind = form.type || hints.sourceType || 'photo';
+    const pictureRole = kind === 'photo' ? 'front' : 'record';
     // No copy of the page, ever (pageCopyOn): the photo and its details only.
     const assets = [];
     if (dropped) {
       // Her own file (one she downloaded, or a scan she has) is the photo.
-      assets.push({ filename: media.fileStem + '.' + dropped.ext, blob: dropped.blob, role: 'front', mode: 'manual',
+      assets.push({ filename: media.fileStem + '.' + dropped.ext, blob: dropped.blob, role: pictureRole, mode: 'manual',
         provisional, primary: true });
     } else {
       setStageResult('Fetching the photo from Ancestry…', '');
@@ -1636,12 +1658,12 @@
         throw new Error('the photo could not be fetched from Ancestry: ' +
           String((img && img.error) || 'no answer from the page').replace(/[.\s]+$/, '') +
           '. Nothing was saved. If you can download the photo yourself (right-click it, Save image as), ' +
-          'drop that file into the panel and press Capture this photo');
+          'drop that file into the panel and press ' + ancCaptureLabel());
       }
       assets.push({
         filename: media.fileStem + '.' + (/^[a-z0-9]{1,5}$/i.test(String(img.ext || '')) ? img.ext : 'jpg'),
         blob: bundle.base64ToBlob(img.base64, img.contentType),
-        role: 'front', mode: 'ancestry-media', primary: true,
+        role: pictureRole, mode: 'ancestry-media', primary: true,
       });
     }
 
@@ -1680,7 +1702,7 @@
     ].filter(Boolean);
     const notes = [
       gatherNotes(provisional, form.notes),
-      'A photo shared on Ancestry by another member' +
+      (kind === 'photo' ? 'A photo' : 'An item') + ' shared on Ancestry by another member' +
         (said.length ? '. Its details on Ancestry:\n' + said.join('\n') : '.'),
       details.description ? 'Description on Ancestry:\n' + details.description : '',
     ].filter((t) => t && t.trim()).join('\n\n');
@@ -1690,7 +1712,7 @@
       accessed: captureJson.accessedDate(),
       // What the human typed wins; else what the photo says about itself.
       sourceDate: form.date || hints.sourceDate || '',
-      sourceType: form.type || hints.sourceType || 'photo',
+      sourceType: kind,
       repository: form.repo || 'Ancestry.com',
       // Only the people she was shown and left ticked (the form lists those
       // the photo is linked to when the panel reads the page).
@@ -3533,6 +3555,10 @@
       $(id).addEventListener('input', () => { state.userEdited.add(id); state.touched.add(id); });
       $(id).addEventListener('change', () => { state.userEdited.add(id); state.touched.add(id); });
     }
+    // On a shared Ancestry item, the button says what her Kind will save.
+    $('f-type').addEventListener('change', () => {
+      if (state.ancPhoto) $('btn-capture').textContent = ancCaptureLabel();
+    });
     $('f-provisional').addEventListener('change', updateAssetStatus);
     $('btn-capture').addEventListener('click', capture);
     $('btn-rescrape').addEventListener('click', rescrape);

@@ -49,6 +49,7 @@
 //   ancLinkedNames       the names a photo is linked to, without their years or "Private"
 //   ancMediaFrom         the whole shared photo from its viewer page
 //   ancMediaHints        a photo, dated by its Details' date when the archive can read it
+//   ancMediaKind         photo, or the document kind its Ancestry category names (#261)
 //   ancPhotoFileStem     the name the photo keeps in the photo library
 
 'use strict';
@@ -674,13 +675,18 @@ function ancMediaDetailsBoxes(root) {
 // id finds it. Each field in it is a .mediaDataField: an icon whose
 // aria-label names the field - translated on Ancestry's other-language
 // sites, so the icon's class names it too - then the field's
-// .mediaDataFieldValue. Category and transcription are not read.
+// .mediaDataFieldValue. The category - Ancestry's label for what the item
+// is, as its sharer chose it ("Portrait / Family Photo", "Document /
+// Certificate") - says whether it is filed as a photo or a document
+// (ancMediaKind). The transcription is not read.
 const ANC_MEDIA_PANEL_ID = 'mediaViewerDetailsPanel';
 const ANC_MEDIA_PANEL_FIELDS = [
   ['date', /^date$/i, 'iconCalendar'],
   ['place', /^location$/i, 'iconMap'],
+  ['category', /^category$/i, 'iconTileLarge'],
   ['description', /^description$/i, 'iconNote'],
 ];
+const ANC_MEDIA_PANEL_KEYS = ['title', 'date', 'place', 'category', 'description', 'originallyAddedBy', 'linkedTo'];
 // Never read inside the panel: what Ancestry's AI suggests in place of an
 // empty field (an estimated date such as "1920s", a suggested description -
 // Ancestry's guess, never the words of whoever shared the photo), the
@@ -751,7 +757,7 @@ function ancMediaPanelDetails(panel, hidden) {
   const linked = ancLinkedNames(els.filter((e) => has(e, 'linkedToName') && up(e, 'linkedToSection')).map(words).join('\n'));
   if (linked.length) found.linkedTo = linked;
   const details = {};
-  for (const [key] of ANC_MEDIA_LABELS) if (found[key]) details[key] = found[key];
+  for (const key of ANC_MEDIA_PANEL_KEYS) if (found[key]) details[key] = found[key];
   return details;
 }
 
@@ -896,11 +902,41 @@ function ancMediaFrom(root, href, opts) {
   };
 }
 
-// What a shared photo says about itself, for filing: a photo, dated by the
+// What kind of source a shared item is, from the category its sharer chose
+// on Ancestry (issue #261, the owner: an item Ancestry calls a document
+// "should be saved as a document"). The page shows only the category's
+// words, in the site's language, so they are matched loosely, in English:
+//   an obituary or newspaper article      newspaper
+//   a birth, death or marriage certificate vital-record
+//   military service                       military-record
+//   a property record                      land-record
+//   another document - "Document / Certificate", a legal document, personal
+//   papers, a diploma, immigration, a yearbook, education, occupation - is
+//   what its title says (recordHints: "Obituary for Thomas Hartley" is a
+//   newspaper), else other;
+//   anything else - "Portrait / Family Photo", a site, a headstone, an
+//   heirloom, a recipe, an award, "Other", no category, or words in a
+//   language this does not know - a photo, as before: when unsure, nothing
+//   changes. She can still change the Kind before she captures it.
+function ancMediaKind(category, title) {
+  const c = String(category || '').toLowerCase();
+  if (/\bobituar|\bnewspaper/.test(c)) return 'newspaper';
+  if (/\b(birth|death|marriage)\b/.test(c) && /\bcertificate/.test(c)) return 'vital-record';
+  if (/\bmilitary\b/.test(c)) return 'military-record';
+  if (/\bproperty\b/.test(c)) return 'land-record';
+  if (/\b(documents?|certificates?|legal|papers?|diploma|immigration|yearbook|education|occupation)\b/.test(c)) {
+    return recordHints(String(title || '')).sourceType || 'other';
+  }
+  return 'photo';
+}
+
+// What a shared item says about itself, for filing: its kind (ancMediaKind:
+// a photo unless its Ancestry category says it is a document), dated by the
 // date its Details give when that is one the archive can read ("1925",
 // "abt 1925", "12 Jun 1925"), else no date - never a guess.
 function ancMediaHints(details) {
-  return { sourceType: 'photo', sourceDate: ancDateToEdtf((details || {}).date) || null, sourceClass: null };
+  const d = details || {};
+  return { sourceType: ancMediaKind(d.category, d.title), sourceDate: ancDateToEdtf(d.date) || null, sourceClass: null };
 }
 
 // The name the photo is filed under, without its extension. It lands in the
@@ -935,5 +971,6 @@ module.exports = {
   ancMediaLabel,
   ancMediaFrom,
   ancMediaHints,
+  ancMediaKind,
   ancPhotoFileStem,
 };

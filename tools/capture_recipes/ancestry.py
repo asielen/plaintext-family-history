@@ -337,7 +337,11 @@ def extract(html: str, url: str | None) -> dict:
         source_type = hints['source_type'] or source_type_from_text(collection, 'website')
     elif shared_photo:
         # A shared photo: no date unless its Details give one (sent in
-        # capture.json) - unknown, never a year guessed from the page.
+        # capture.json) - unknown, never a year guessed from the page. A
+        # photo unless capture.json says otherwise: its source_type wins
+        # (run_capture), so an item its sharer put in a document category on
+        # Ancestry - an obituary, a certificate - files as that record, with
+        # her documents (#261).
         source_date = None
         source_type = 'photo'
     else:

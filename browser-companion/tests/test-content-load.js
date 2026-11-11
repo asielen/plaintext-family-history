@@ -747,13 +747,28 @@ test('#261: a shared newspaper clipping, whose picture has an image id of its ow
   assert.strictEqual(info.media.fileStem, 'ancestry-' + clip + '-photo');
   assert.deepStrictEqual(info.details, {
     title: 'Obituary of Thomas Hartley', date: '4 Feb 1958', place: 'Fairview, Breton, Kansas, USA',
-    originallyAddedBy: 'hartley_family_tree on 9 Sep 2021', linkedTo: ['Thomas Hartley'],
+    category: 'Document / Certificate', originallyAddedBy: 'hartley_family_tree on 9 Sep 2021', linkedTo: ['Thomas Hartley'],
   });
   assert.strictEqual(info.hints.sourceDate, '1958-02-04');
   const got = await page.ask({ action: 'ancestryPhoto', mediaId: clip });
   assert.strictEqual(got.ok, true, got.error);
   assert.ok(Buffer.from(got.base64, 'base64').equals(SHARED_BYTES), 'the photo is kept byte for byte');
   assert.deepStrictEqual(page.calls.map((c) => c.url), [image]);
+});
+
+test('#261: the form\'s Kind starts from the item\'s Ancestry category - a document as a document, a photo as a photo', async () => {
+  const clip = '5eed0000-1234-4abc-8def-0123456789ab';
+  const url = 'https://www.ancestry.com/mediaui-viewer/collection/90003/tree/90000001/person/90000002/media/' + clip;
+  let r = await loadPage({ url, tree: parse(SAMPLE('ancestry-media-clipping')), fetch: ancestryMedia() })
+    .ask({ action: 'prefill' });
+  assert.strictEqual(r.prefill.ancestryPhoto, true);
+  assert.strictEqual(r.prefill.sourceType, 'newspaper');
+  r = await loadPage({ url: SHARED, tree: parse(SAMPLE('ancestry-media-panel')), fetch: ancestryMedia() })
+    .ask({ action: 'prefill' });
+  assert.strictEqual(r.prefill.sourceType, 'photo');
+  r = await loadPage({ url: SHARED, tree: parse(SAMPLE('ancestry-media-photo')), fetch: ancestryMedia() })
+    .ask({ action: 'prefill' });
+  assert.strictEqual(r.prefill.sourceType, 'photo');
 });
 
 test('PR #258 review: on a shared photo, the form starts from its Details - linked people as names to tick', async () => {

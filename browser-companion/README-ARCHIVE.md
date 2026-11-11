@@ -222,6 +222,14 @@ record's notes. With no date in its
 Details, the photo is filed undated - never with a year from elsewhere on the
 page, such as a linked relative's birth.
 
+Some things shared this way are documents, not photos: an obituary, a death
+certificate. When whoever shared it put it in one of Ancestry's document
+categories ("Document / Certificate", "Obituary", "Birth Certificate"…), the
+panel's **Kind** starts as that kind of record - a newspaper, a vital record -
+and the button reads **Capture this record**. It is then filed as that record,
+with your documents rather than in your photo library. You can change the Kind
+before you press the button; whatever it says then decides where it goes.
+
 Open the photo's **Details** on Ancestry before you open the panel: what is on
 screen is what gets saved. The people the photo is linked to appear in the
 panel's list of names, where you can untick anyone who does not belong. If the

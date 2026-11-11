@@ -569,7 +569,9 @@ function photoSite({ photo, detailsAtFirst = true, detailsNever = false, edit, o
             url: tab.url, title: info ? info.media.title : 'Hints for Thomas Hartley',
             sourceDate: info ? info.hints.sourceDate || '' : null,
             people: info ? (info.details.linkedTo || []).slice() : [],
-            repository: 'ancestry.com', recipeHint: 'ancestry', sourceType: media ? 'photo' : undefined,
+            repository: 'ancestry.com', recipeHint: 'ancestry',
+            // As content.js: a photo unless its Ancestry category names a document (#261).
+            sourceType: media ? (info && info.hints.sourceType) || 'photo' : undefined,
             ancestryPhoto: !!media, ancestryMediaId: media ? media.mediaId : null,
             ancestryPhotoShown: info && !oldPageScript ? Object.keys(info.details) : undefined,
             ancestryRecord: !!anc.ancParseRecordPage(tab.url),
@@ -703,13 +705,66 @@ test('#261: on Ancestry\'s own Details panel the add-on finds the Details - no "
   const data = JSON.parse(await p.written[0].assets.find((a) => a.filename === 'photo-data.json').blob.text());
   assert.deepStrictEqual(data.details, {
     title: 'Wedding of Thomas Hartley and Margaret Ellis',
+    category: 'Portrait / Family Photo',
     originallyAddedBy: 'hartley_family_tree on 3 Mar 2015',
     linkedTo: ['Thomas Hartley', 'Margaret Hartley'],
   });
   const kept = JSON.stringify(p.capJson(p.written[0])) + JSON.stringify(data);
-  for (const never of ['cousin_member_one', 'cousin_member_two', 'cousin_member_three', 'Portraits']) {
+  for (const never of ['cousin_member_one', 'cousin_member_two', 'cousin_member_three']) {
     assert.ok(!kept.includes(never), 'kept from the page: ' + never);
   }
+  // A portrait is a photo: its picture is the photo's front, for her photo library.
+  const cap = p.capJson(p.written[0]);
+  assert.strictEqual(cap.source_type, 'photo');
+  assert.strictEqual(cap.assets.find((a) => a.mode === 'ancestry-media').role, 'front');
+});
+
+// A newspaper clipping shared from Newspapers.com, which its sharer put in
+// Ancestry's "Document / Certificate" category (#261, the owner: "should be
+// saved as a document").
+const CLIP_ID = '5eed0000-1234-4abc-8def-0123456789ab';
+const CLIP_PAGE = 'https://www.ancestry.com/mediaui-viewer/collection/90003/tree/90000001/person/90000002/media/' + CLIP_ID;
+const clipHtml = () => fs.readFileSync(path.join(SAMPLES, 'ancestry-media-clipping.html'), 'utf8');
+
+test('#261: an obituary Ancestry files under "Document / Certificate" is captured as a newspaper record, for her documents', async () => {
+  const p = await openPhoto(CLIP_PAGE + '?hid=h1', { edit: clipHtml });
+  assert.strictEqual(p.$('f-type').value, 'newspaper');
+  assert.strictEqual(p.$('btn-capture').textContent, 'Capture this record');
+  await p.capture();
+  assert.strictEqual(p.written.length, 1, p.result());
+  const cap = p.capJson(p.written[0]);
+  assert.strictEqual(cap.source_type, 'newspaper');
+  assert.strictEqual(cap.url, CLIP_PAGE); // still the address Seen It knows (med:{mediaId})
+  const picture = cap.assets.find((a) => a.mode === 'ancestry-media');
+  assert.strictEqual(picture.role, 'record');
+  assert.strictEqual(picture.file, 'ancestry-' + CLIP_ID + '-photo.jpg');
+  assert.match(cap.notes, /^An item shared on Ancestry by another member\. Its details on Ancestry:\nDate: 4 Feb 1958\n/);
+  const data = JSON.parse(await p.written[0].assets.find((a) => a.filename === 'photo-data.json').blob.text());
+  assert.strictEqual(data.details.category, 'Document / Certificate');
+  const kept = JSON.stringify(cap) + JSON.stringify(data);
+  for (const never of ['cousin_member_one', 'this article', 'Add a']) assert.ok(!kept.includes(never), never);
+});
+
+test('#261: the Kind she chooses decides - a document she calls a photo goes to her photos, and back', async () => {
+  const p = await openPhoto(CLIP_PAGE, { edit: clipHtml });
+  p.$('f-type').value = 'photo';
+  await p.$('f-type').fire('change');
+  assert.strictEqual(p.$('btn-capture').textContent, 'Capture this photo');
+  await p.capture();
+  let cap = p.capJson(p.written[0]);
+  assert.strictEqual(cap.source_type, 'photo');
+  assert.strictEqual(cap.assets.find((a) => a.mode === 'ancestry-media').role, 'front');
+  assert.match(cap.notes, /^A photo shared on Ancestry by another member/);
+  // A photo she calls a letter is a record.
+  const q = await openPhoto(PHOTO_OPEN);
+  assert.strictEqual(q.$('btn-capture').textContent, 'Capture this photo');
+  q.$('f-type').value = 'letter';
+  await q.$('f-type').fire('change');
+  assert.strictEqual(q.$('btn-capture').textContent, 'Capture this record');
+  await q.capture();
+  cap = q.capJson(q.written[0]);
+  assert.strictEqual(cap.source_type, 'letter');
+  assert.strictEqual(cap.assets.find((a) => a.mode === 'ancestry-media').role, 'record');
 });
 
 test('Capture saves the shared photo as a photo source: the photo as served, its details, the address to keep', async () => {

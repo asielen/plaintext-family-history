@@ -371,6 +371,74 @@ class SharedPhotoTestCase(unittest.TestCase):
                 if p.is_file() and p.suffix in ('.md', '.json', '.html', '.txt', '.jsonl'):
                     self.assertNotIn('cousin_member', p.read_text(encoding='utf-8'), p)
 
+    def test_a_shared_item_captured_as_a_document_files_with_her_documents(self) -> None:
+        """#261, the owner: an item shared on Ancestry whose Ancestry category
+        is a document "should be saved as a document". The add-on captures
+        it with the Kind the form ends on - here a newspaper (an obituary its
+        sharer filed under "Document / Certificate") - and its picture in
+        role `record`. It files as a newspaper source with the picture in the
+        documents root, never the photo library; the viewer's address is
+        still the one Seen It knows; no copy of Ancestry's page and no other
+        member's name reaches the archive."""
+        import process
+        from unittest import mock
+        photo_name = f'ancestry-{PHOTO_MEDIA_ID}-photo.jpg'
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            staging = tmp / 'staging'
+            staging.mkdir()
+            bundle = staging / PHOTO_BUNDLE.name
+            shutil.copytree(PHOTO_BUNDLE, bundle)
+            cap = json.loads((bundle / 'capture.json').read_text(encoding='utf-8'))
+            cap['title'] = 'Obituary of Thomas Hartley'
+            cap['source_type'] = 'newspaper'
+            cap['source_date'] = '1958-02-04'
+            cap['notes'] = cap['notes'].replace('A photo shared on Ancestry', 'An item shared on Ancestry')
+            for a in cap['assets']:
+                if a['file'] == photo_name:
+                    a['role'] = 'record'
+            (bundle / 'capture.json').write_text(json.dumps(cap, indent=2), encoding='utf-8')
+            archive = tmp / 'archive'
+            archive.mkdir()
+            (archive / 'fha.yaml').write_text(
+                'roots:\n  photos: photos\n  documents: documents\n', encoding='utf-8')
+            config = load_fha_yaml(archive, strict=True)
+
+            res = capture.run_ingest(archive, config, staging_dir=str(staging))
+            self.assertEqual(res.exit_code, EXIT_CLEAN)
+            bundle_dir = next(p for p in (archive / 'inbox').iterdir() if p.is_dir())
+            with mock.patch.object(process, '_run_exiftool_embed_source', return_value=None), \
+                    mock.patch.object(process, '_run_exiftool_read_keywords', return_value=[]), \
+                    mock.patch.object(process, '_run_exiftool_remove_source', return_value=None):
+                self.assertEqual(process.process_bundle(
+                    archive, config, bundle_dir, source_date=None, dry_run=False), EXIT_CLEAN)
+
+            sources = list((archive / 'sources').rglob('*.md'))
+            self.assertEqual(len(sources), 1, sources)
+            meta = read_record(sources[0])['meta']
+            self.assertEqual(meta['source_type'], 'newspaper')
+            self.assertEqual(meta['title'], 'Obituary of Thomas Hartley')
+            self.assertNotEqual(sources[0].parent, archive / 'sources' / 'photos')
+            # The picture: with her documents, never in the photo library.
+            self.assertFalse((archive / 'photos').exists() and any((archive / 'photos').rglob('*.jpg')))
+            by_role = {f['role']: f for f in meta['files']}
+            self.assertEqual(set(by_role), {'record', 'site-data'})
+            self.assertTrue(by_role['record'].get('is_primary'))
+            filed = archive / 'documents'
+            pictures = [p for p in filed.rglob('*.jpg')]
+            self.assertEqual(len(pictures), 1, pictures)
+            self.assertEqual(pictures[0].read_bytes(), (PHOTO_BUNDLE / photo_name).read_bytes())
+            # Still the address Seen It knows it by.
+            urls = [link['url'] for link in meta['external_links']]
+            self.assertEqual(urls[0], PHOTO_VIEWER_URL)
+            sys.path.insert(0, str(ROOT / 'seen-it' / 'host'))
+            import seenit_host
+            items, _ = seenit_host.scan_known({'sources': [str(archive / 'sources')]})
+            self.assertEqual(items['med:' + PHOTO_MEDIA_ID]['sid'], meta['id'])
+            for p in archive.rglob('*'):
+                if p.is_file() and p.suffix in ('.md', '.json', '.html', '.txt', '.jsonl'):
+                    self.assertNotIn('cousin_member', p.read_text(encoding='utf-8'), p)
+
     def _file_photo_twice(self, second_photo: bytes | None = None, keyword_on_filed: bool = False):
         """File the sample photo bundle, then a second bundle under the same
         photo name - the same bytes, or `second_photo`. `keyword_on_filed`
