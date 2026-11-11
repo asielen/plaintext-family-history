@@ -222,6 +222,14 @@ record's notes. With no date in its
 Details, the photo is filed undated - never with a year from elsewhere on the
 page, such as a linked relative's birth.
 
+Some things shared this way are documents, not photos: an obituary, a death
+certificate. When whoever shared it put it in one of Ancestry's document
+categories ("Document / Certificate", "Obituary", "Birth Certificate"…), the
+panel's **Kind** starts as that kind of record - a newspaper, a vital record -
+and the button reads **Capture this record**. It is then filed as that record,
+with your documents rather than in your photo library. You can change the Kind
+before you press the button; whatever it says then decides where it goes.
+
 Open the photo's **Details** on Ancestry before you open the panel: what is on
 screen is what gets saved. The people the photo is linked to appear in the
 panel's list of names, where you can untick anyone who does not belong. If the
@@ -234,6 +242,13 @@ Details now show something the panel had not listed (you opened them after the
 panel read the page), it saves nothing yet: it adds those people to the list,
 ticked, and says "I found more on the page — check the people below, then press
 Capture this photo." Check them, then press it. Each photo is captured once.
+If you move to the next photo with Ancestry's arrow and press at once, the
+panel may say the details on the page have not caught up with the picture
+yet: nothing is saved, so wait a moment and press again. If they still have
+not caught up, that second press saves the photo and its address without the
+page's details, which can still be read on Ancestry from that address. A photo
+you downloaded yourself and dropped into the panel is saved at the first press.
+What you typed, chose or added yourself is kept either way.
 
 The list of other members who saved the photo ("Saved by …") never reaches your
 archive: with no copy of the page, the only words kept are the photo's details,
@@ -243,8 +258,11 @@ to begin "Saved by …" is the photo's story, and is kept.
 When the page's layout is unclear, the add-on leaves text out rather than file
 someone else's words as yours. Anything left out can still be read on Ancestry
 from the photo's saved address. So only the photo's own **Details** box is read
-- the part of the page headed "Details" - each detail by its own label.
-Anything outside that box is left out, even a description or a "Linked to" list
+- on Ancestry's photo viewer, the Details panel beside the photo - each detail
+in its own place. A date or description that Ancestry's AI suggests (an
+estimated date such as "1920s") is Ancestry's guess, not the words of whoever
+shared the photo, and is never kept: with no date of their own, the photo is
+filed undated. Anything outside that box is left out, even a description or a "Linked to" list
 that sits just beside it; and when the add-on does not recognise Ancestry's
 layout (no Details box it can find), all of the photo's details are left out
 and only the photo and its address are saved. A line that begins "Originally

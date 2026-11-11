@@ -730,6 +730,63 @@ test('the photo is never fetched for another photo, from another site, or as a p
   assert.strictEqual(page.calls.length, 0);
 });
 
+test('#261: a shared newspaper clipping, whose picture has an image id of its own, is read and fetched - not "has not appeared"', async () => {
+  // tests/fixtures/capture-samples/ancestry-media-clipping.html: the viewer's
+  // picture carries the photo's media id as its id; Ancestry serves the
+  // picture only under its own image id, and says "not found" for the media id.
+  const clip = '5eed0000-1234-4abc-8def-0123456789ab';
+  const url = 'https://www.ancestry.com/mediaui-viewer/collection/90003/tree/90000001/person/90000002/media/' + clip;
+  const image = 'https://www.ancestry.com/api/media/retrieval/v2/image/namespaces/4242/media/' +
+    'a55e7000-1234-4abc-8def-0123456789ab?client=trees-mediaservice&imageQuality=hq';
+  const fetch = ancestryMedia({ [image]: { ok: true, status: 200, headers: { get: () => 'image/jpeg' },
+    blob: async () => new Blob([SHARED_BYTES], { type: 'image/jpeg' }) } });
+  const page = loadPage({ url: url + '?hid=h1', tree: parse(SAMPLE('ancestry-media-clipping')), fetch });
+  const info = await page.ask({ action: 'ancestryPhotoInfo' });
+  assert.strictEqual(info.ok, true, info.error);
+  assert.strictEqual(info.media.imageUrl, image);
+  assert.strictEqual(info.media.fileStem, 'ancestry-' + clip + '-photo');
+  assert.deepStrictEqual(info.details, {
+    title: 'Obituary of Thomas Hartley', date: '4 Feb 1958', place: 'Fairview, Breton, Kansas, USA',
+    category: 'Document / Certificate', originallyAddedBy: 'hartley_family_tree on 9 Sep 2021', linkedTo: ['Thomas Hartley'],
+  });
+  assert.strictEqual(info.hints.sourceDate, '1958-02-04');
+  const got = await page.ask({ action: 'ancestryPhoto', mediaId: clip });
+  assert.strictEqual(got.ok, true, got.error);
+  assert.ok(Buffer.from(got.base64, 'base64').equals(SHARED_BYTES), 'the photo is kept byte for byte');
+  assert.deepStrictEqual(page.calls.map((c) => c.url), [image]);
+});
+
+test('#261 audit B1: while Ancestry\'s Details still describe the photo before, the form takes nothing from them, and Capture waits', async () => {
+  const B = '0b0b0b0b-1234-4abc-8def-0123456789ab';
+  const url = 'https://www.ancestry.com/mediaui-viewer/tree/90000001/person/90000002/media/' + B;
+  const stale = SAMPLE('ancestry-media-panel').replace('<div class="viewerStage">', '<div class="viewerStage"><img id="' + B +
+    '" alt="Photo B" src="https://www.ancestry.com/api/media/retrieval/v2/image/namespaces/4242/media/' + B + '?client=x">');
+  const page = loadPage({ url, tree: parse(stale), fetch: ancestryMedia() });
+  const r = await page.ask({ action: 'prefill' });
+  assert.strictEqual(r.prefill.ancestryPhoto, true);
+  assert.match(r.prefill.ancestryPhotoNotReady, /have not caught up with the picture yet/);
+  assert.deepStrictEqual(r.prefill.people, []); // never photo A's, and never harvested from the page
+  assert.ok(!/1919/.test(String(r.prefill.sourceDate || '')), 'no date of photo A');
+  const info = await page.ask({ action: 'ancestryPhotoInfo' });
+  assert.deepStrictEqual([info.ok, info.transient], [false, true]);
+  assert.ok(!JSON.stringify(info).includes('Wedding'));
+});
+
+test('#261: the form\'s Kind starts from the item\'s Ancestry category - a document as a document, a photo as a photo', async () => {
+  const clip = '5eed0000-1234-4abc-8def-0123456789ab';
+  const url = 'https://www.ancestry.com/mediaui-viewer/collection/90003/tree/90000001/person/90000002/media/' + clip;
+  let r = await loadPage({ url, tree: parse(SAMPLE('ancestry-media-clipping')), fetch: ancestryMedia() })
+    .ask({ action: 'prefill' });
+  assert.strictEqual(r.prefill.ancestryPhoto, true);
+  assert.strictEqual(r.prefill.sourceType, 'newspaper');
+  r = await loadPage({ url: SHARED, tree: parse(SAMPLE('ancestry-media-panel')), fetch: ancestryMedia() })
+    .ask({ action: 'prefill' });
+  assert.strictEqual(r.prefill.sourceType, 'photo');
+  r = await loadPage({ url: SHARED, tree: parse(SAMPLE('ancestry-media-photo')), fetch: ancestryMedia() })
+    .ask({ action: 'prefill' });
+  assert.strictEqual(r.prefill.sourceType, 'photo');
+});
+
 test('PR #258 review: on a shared photo, the form starts from its Details - linked people as names to tick', async () => {
   const r = await loadPage({ url: SHARED + '?hid=h1', tree: parse(SAMPLE('ancestry-media-photo')), fetch: ancestryMedia() })
     .ask({ action: 'prefill' });

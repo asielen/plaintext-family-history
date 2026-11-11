@@ -93,6 +93,9 @@
     // from, and the names it lists (lowercased). Capture stages nothing new
     // to her (captureAncestryPhoto).
     photoShown: null,
+    // The shared item whose Capture last found Ancestry's Details behind its
+    // picture (#261 audit C1): pressed again, it is saved without them.
+    photoBehind: null,
     // FamilySearch: a record (ark 1:1, or the viewer opened from one) and a
     // bare image viewer (ark 3:1). fsCheck is the answer to "can this page's
     // image be saved from here?", asked when the page is read (null until it
@@ -270,7 +273,7 @@
   function autoPathLabel() {
     if (state.ancestryViewer) return 'the full record image (Ancestry)';
     if (state.ancRecord) return 'the record’s index and citation, and its scan if it has one (Ancestry)';
-    if (state.ancPhoto) return 'the photo, as Ancestry’s viewer shows it, and its details (Ancestry)';
+    if (state.ancPhoto) return 'the ' + ancItemWord() + ', as Ancestry’s viewer shows it, and its details (Ancestry)';
     if (state.fsRecord) {
       const fc = state.fsCheck;
       return fc && fc.available && fc.imageId
@@ -608,7 +611,11 @@
       // `keys` null: the page did not say which Details it read (an older
       // page script): then only the names are compared.
       ? { keys: Array.isArray(prefill.ancestryPhotoShown) ? prefill.ancestryPhotoShown.slice() : null,
-        people: (prefill.people || []).map((n) => String(n).toLowerCase()) }
+        people: (prefill.people || []).map((n) => String(n).toLowerCase()),
+        // What the page filled the form with: a field still holding it at
+        // Capture follows the page as it is then (#261 audit A1).
+        // A field kept as she had it (a retry) is hers, never the page's.
+        filled: Object.fromEntries(['f-date', 'f-title', 'f-type'].map((id) => [id, keep.has(id) ? null : $(id).value.trim()])) }
       : null;
     // Her clipping ticks, too, when she changed them since (and a dropped
     // file is never let go on the same record: clearEvidenceSelection above).
@@ -643,7 +650,7 @@
   // rest; the "Re-read file" button sets it alone, so the title, date, people
   // and notes she has stay as they are.
   const FILE_PREFILL_KEYS = ['imageUrl', 'pdfUrl', 'ancestryImageViewer', 'ancestryRecord', 'ancestryPhoto',
-    'ancestryMediaId', 'ancestryPhotoShown',
+    'ancestryMediaId', 'ancestryPhotoShown', 'ancestryPhotoNotReady',
     'familysearchRecord', 'familysearchImageViewer', 'familysearchImageId', 'findagraveMemorial',
     'newspapers', 'iiif'];
 
@@ -659,6 +666,23 @@
   // page's defaults; a new record never passes it.
   // `keepAddress`: the file address box holds one she typed (a retry), so
   // the page's guess does not replace it.
+  // A shared Ancestry item is captured as what the form's Kind says (#261):
+  // the Kind she sees, or - left on Auto-detect - what the page said it is
+  // (a photo unless its Ancestry category names a document). A photo goes to
+  // her photo library; anything else is a record, filed with her documents.
+  function ancItemKind() {
+    return $('f-type').value || (state.prefill && state.prefill.sourceType) || 'photo';
+  }
+
+  function ancCaptureLabel() {
+    return ancItemKind() === 'photo' ? 'Capture this photo' : 'Capture this record';
+  }
+
+  // What the panel calls it in its own words: a photo, or (any other Kind) an item.
+  function ancItemWord() {
+    return ancItemKind() === 'photo' ? 'photo' : 'item';
+  }
+
   function applyFilePrefill(prefill, keepNp, keepAddress) {
     state.autoMissed = false;
     state.iiif = !!prefill.iiif;
@@ -667,7 +691,7 @@
     // On a shared photo the button says what it saves, and the page copy and
     // "the page copy is the record" are not offered (pageCopyOn): one plain
     // line says why.
-    $('btn-capture').textContent = state.ancPhoto ? 'Capture this photo' : 'Capture & save';
+    $('btn-capture').textContent = state.ancPhoto ? ancCaptureLabel() : 'Capture & save';
     $('page-copy-card').style.display = state.ancPhoto ? 'none' : '';
     $('opt-none').style.display = state.ancPhoto ? 'none' : '';
     $('pagecopy-note').style.display = state.ancPhoto ? 'block' : 'none';
@@ -1566,7 +1590,10 @@
   // The photo is the image the viewer shows, fetched from Ancestry's own site
   // in her session and kept byte for byte. capture.json's `url` is the
   // viewer's address without its query, so Seen It knows the photo again
-  // (med:{mediaId}) once it is filed.
+  // (med:{mediaId}) once it is filed. An item its sharer put in a document
+  // category on Ancestry (an obituary, a certificate) files as that kind of
+  // record instead, its picture in role `record`, with her documents - or as
+  // whatever Kind she chooses before Capture (ancItemKind, #261).
   //
   // No other member's name reaches the archive: no copy of the page is kept
   // for a shared photo (pageCopyOn), the Details reader stops at member lists
@@ -1587,11 +1614,30 @@
   // staged: { key, bundle, where, note }.
   async function captureAncestryPhoto(pageHtml, form, recordUrl, opts = {}) {
     const info = await autoFetch('Ancestry photo details', { action: 'ancestryPhotoInfo' }, { recordUrl });
-    if (!info || !info.ok) throw new Error((info && info.error) || 'could not read the photo on Ancestry');
+    // Ancestry's Details still describe the item shown before (#261 audit
+    // B1). One way out, never a dead end (audit C1): the first press saves
+    // nothing and says so; pressing again on the same item - or pressing
+    // with her own file dropped in - saves the picture and its address
+    // WITHOUT the page's details (when the layout is unclear, text is left
+    // out; it can still be read on Ancestry from the saved address, #258).
+    // A batch download never takes that way: it waits.
+    const behind = !!(info && !info.ok && info.behind && info.media && !opts.batch);
+    if (!info || (!info.ok && !behind)) throw new Error((info && info.error) || 'could not read the photo on Ancestry');
     const media = info.media;
-    const details = info.details || {};
-    const hints = info.hints || {};
     if (!media.fileStem) throw new Error('the page does not name the photo it shows, so nothing was saved');
+    if (behind && !form.dropped && state.photoBehind !== media.mediaId) {
+      state.photoBehind = media.mediaId;
+      clearAutoLog();
+      const what = ancItemWord();
+      setStageResult('The details on the page have not caught up with the ' + what + ' yet, so nothing was saved. ' +
+        'Wait a moment and press ' + ancCaptureLabel() + ' again: if they have caught up by then, they are saved ' +
+        'with it; if not, the ' + what + ' and its address are saved without them (they can still be read on ' +
+        'Ancestry from that address).', 'warn');
+      return { staged: false };
+    }
+    state.photoBehind = null;
+    const details = behind ? {} : info.details || {};
+    const hints = behind ? {} : info.hints || {};
     notQueued(opts, 'med:' + media.mediaId, 'Ancestry photo ' + media.mediaId);
     // The photo was read from the tab: it must still be on this photo.
     await checkTabStillOn(recordUrl, [media.mediaId]);
@@ -1602,28 +1648,72 @@
     // nothing is staged. A photo is captured once; there is no "capture it
     // again for the rest" (a second capture of a filed photo cannot be filed,
     // PR #258 review).
+    //
+    // What the page filled in and she never changed follows the page as it
+    // is now, and a change is shown to her before anything is saved: the
+    // photo may have changed under the form (#261 audit A1 - Ancestry's
+    // gallery arrow moves to the next photo before its Details show, so the
+    // panel first read the last photo's date, title, Kind and people). What
+    // she typed or ticked herself always wins.
     const shown = state.photoShown || { keys: [], people: [] };
     const newKeys = shown.keys ? Object.keys(details).filter((k) => k !== 'title' && shown.keys.indexOf(k) < 0) : [];
-    const newPeople = (details.linkedTo || []).filter((n) => shown.people.indexOf(n.toLowerCase()) < 0);
-    if (newKeys.length || newPeople.length) {
-      for (const n of newPeople) addPersonRow(n, true);
-      if (!form.edited.has('f-date') && !$('f-date').value.trim() && hints.sourceDate) $('f-date').value = hints.sourceDate;
+    const linked = details.linkedTo || [];
+    const newPeople = linked.filter((n) => shown.people.indexOf(n.toLowerCase()) < 0);
+    const gonePeople = state.touched.has('people') ? []
+      : shown.people.filter((n) => !linked.some((l) => l.toLowerCase() === n));
+    const changed = [];
+    const filled = shown.filled || {};
+    // Only a value the page filled in and that still stands as filled: one
+    // she typed (or chose) is hers.
+    const follow = (id, was, now) => {
+      if (form.edited.has(id) || !(id in filled) || was !== filled[id] || was === now) return;
+      $(id).value = now;
+      changed.push(id);
+    };
+    // A value is hers when she typed or chose it, or it no longer holds what
+    // the page filled in.
+    const hers = (id, value) => form.edited.has(id) || (id in filled && value !== filled[id]);
+    if (!behind) {
+      follow('f-date', form.date, hints.sourceDate || '');
+      if (media.title) follow('f-title', form.title, media.title);
+      if (form.type) follow('f-type', form.type, hints.sourceType || 'photo');
+    }
+    if (!behind && (newKeys.length || newPeople.length || gonePeople.length || changed.length)) {
+      if (gonePeople.length) renderPeople(linked);
+      else for (const n of newPeople) addPersonRow(n, true);
+      if (changed.indexOf('f-type') >= 0) {
+        $('btn-capture').textContent = ancCaptureLabel();
+        updateAssetStatus();
+      }
+      const now = Object.assign({}, filled);
+      for (const id of changed) now[id] = $(id).value;
       state.photoShown = {
-        keys: shown.keys ? shown.keys.concat(newKeys) : null,
-        people: shown.people.concat(newPeople.map((n) => n.toLowerCase())),
+        keys: shown.keys ? Object.keys(details) : null,
+        people: linked.map((n) => n.toLowerCase()),
+        filled: now,
       };
       clearAutoLog(); // nothing was saved: the box goes back to what Capture will save
-      setStageResult('I found more on the page — check the people below, then press Capture this photo.', 'warn');
+      setStageResult(newKeys.length || newPeople.length
+        ? 'I found more on the page — check the people below, then press ' + ancCaptureLabel() + '.'
+        : 'The details on the page have changed — check them below, then press ' + ancCaptureLabel() + '.', 'warn');
       return { staged: false };
     }
 
     const dropped = form.dropped;
     const provisional = !!dropped && form.provisional;
+    // What it is filed as: the Kind on the form when she presses Capture -
+    // hers if she chose one, else what the page said (a photo unless its
+    // Ancestry category names a document, #261). A photo's picture is its
+    // `front`, for the photo library; a document's is its `record`, for her
+    // documents, like any other Ancestry record's scan.
+    // Without the page's details (behind), only a Kind she chose herself.
+    const kind = behind ? (hers('f-type', form.type) && form.type) || 'photo' : form.type || hints.sourceType || 'photo';
+    const pictureRole = kind === 'photo' ? 'front' : 'record';
     // No copy of the page, ever (pageCopyOn): the photo and its details only.
     const assets = [];
     if (dropped) {
       // Her own file (one she downloaded, or a scan she has) is the photo.
-      assets.push({ filename: media.fileStem + '.' + dropped.ext, blob: dropped.blob, role: 'front', mode: 'manual',
+      assets.push({ filename: media.fileStem + '.' + dropped.ext, blob: dropped.blob, role: pictureRole, mode: 'manual',
         provisional, primary: true });
     } else {
       setStageResult('Fetching the photo from Ancestry…', '');
@@ -1636,12 +1726,12 @@
         throw new Error('the photo could not be fetched from Ancestry: ' +
           String((img && img.error) || 'no answer from the page').replace(/[.\s]+$/, '') +
           '. Nothing was saved. If you can download the photo yourself (right-click it, Save image as), ' +
-          'drop that file into the panel and press Capture this photo');
+          'drop that file into the panel and press ' + ancCaptureLabel());
       }
       assets.push({
         filename: media.fileStem + '.' + (/^[a-z0-9]{1,5}$/i.test(String(img.ext || '')) ? img.ext : 'jpg'),
         blob: bundle.base64ToBlob(img.base64, img.contentType),
-        role: 'front', mode: 'ancestry-media', primary: true,
+        role: pictureRole, mode: 'ancestry-media', primary: true,
       });
     }
 
@@ -1668,8 +1758,11 @@
       mode: 'ancestry-media-data',
     });
 
-    const title = (form.edited.has('f-title') && form.title) || media.title || form.title ||
-      ('Photo shared on Ancestry ' + media.mediaId);
+    // Without the page's details (behind): her own title, else the alt text
+    // of this item's picture, else the tab's title (media.title).
+    const title = behind
+      ? (hers('f-title', form.title) && form.title) || media.title || ('Photo shared on Ancestry ' + media.mediaId)
+      : (form.edited.has('f-title') && form.title) || media.title || form.title || ('Photo shared on Ancestry ' + media.mediaId);
     // Who first added the photo is another member's name: it stays in
     // photo-data.json, never in the record's notes, which a packet or a
     // shared site carries (owner-away decision, PR #258 review).
@@ -1680,8 +1773,10 @@
     ].filter(Boolean);
     const notes = [
       gatherNotes(provisional, form.notes),
-      'A photo shared on Ancestry by another member' +
-        (said.length ? '. Its details on Ancestry:\n' + said.join('\n') : '.'),
+      (kind === 'photo' ? 'A photo' : 'An item') + ' shared on Ancestry by another member' +
+        (behind ? '. Its details on Ancestry were left out: the page had not caught up with the picture when it ' +
+          'was saved. They can be read on Ancestry from the saved address.'
+          : said.length ? '. Its details on Ancestry:\n' + said.join('\n') : '.'),
       details.description ? 'Description on Ancestry:\n' + details.description : '',
     ].filter((t) => t && t.trim()).join('\n\n');
     const fields = {
@@ -1689,12 +1784,14 @@
       title,
       accessed: captureJson.accessedDate(),
       // What the human typed wins; else what the photo says about itself.
-      sourceDate: form.date || hints.sourceDate || '',
-      sourceType: form.type || hints.sourceType || 'photo',
+      // Without the page's details (behind), only a date she typed herself.
+      sourceDate: behind ? (hers('f-date', form.date) && form.date) || '' : form.date || hints.sourceDate || '',
+      sourceType: kind,
       repository: form.repo || 'Ancestry.com',
       // Only the people she was shown and left ticked (the form lists those
-      // the photo is linked to when the panel reads the page).
-      people: form.people,
+      // the photo is linked to when the panel reads the page) - without the
+      // page's details, only those she added herself.
+      people: behind ? form.people.filter((n) => shown.people.indexOf(String(n).toLowerCase()) < 0) : form.people,
       notes,
       recipeHint: 'ancestry',
       assets: assets.map((a) => ({ file: a.filename, role: a.role, mode: a.mode, provisional: !!a.provisional,
@@ -2252,7 +2349,7 @@
         const note = $('f-provisional').checked ? ' (screen capture)' : '';
         parts.push('Record file: ' + state.droppedAsset.filename + note +
           (state.ancRecord ? ', with the record’s index and citation (Ancestry)'
-            : state.ancPhoto ? ', as the photo, with its details (Ancestry)'
+            : state.ancPhoto ? ', as the ' + ancItemWord() + ', with its details (Ancestry)'
             : state.fsRecord ? ', with the record’s data and citation (FamilySearch)'
               : state.fagRecord ? ', with the memorial’s facts, citation and photos (Find a Grave)' : ''));
       } else if (state.npPage && state.npLoading) {
@@ -2273,12 +2370,19 @@
         parts.push('Record files: the record’s index and citation + its scan, if it has one (Ancestry, auto)');
       } else if (state.ancPhoto) {
         const open = !state.photoShown || !state.photoShown.keys || state.photoShown.keys.some((k) => k !== 'title');
-        parts.push('Record files: the photo + its details (Ancestry, auto)' + (open ? ''
+        const what = ancItemWord();
+        const behind = state.prefill && state.prefill.ancestryPhotoNotReady;
+        parts.push('Record files: the ' + what + ' + its details (Ancestry, auto)' + (behind
+          // Ancestry's Details still describe the item shown before (#261
+          // audit B1): Capture will wait for them too.
+          ? '. The details on the page have not caught up with the ' + what + ' yet - wait a moment, then press ' +
+            'Re-read page (or press ' + ancCaptureLabel() + ' twice to save the ' + what + ' and its address without them)'
+          : open ? ''
           // Not only "closed": the Details may be open in a layout the add-on
           // does not recognise yet, where opening them again changes nothing
           // (PR #258 round 10).
-          : '. The add-on couldn’t find this photo’s Details on the page (they may be closed, or Ancestry shows ' +
-            'them in a way it doesn’t recognise yet). The photo and its address are saved; its date, place and ' +
+          : '. The add-on couldn’t find this ' + what + '’s Details on the page (they may be closed, or Ancestry shows ' +
+            'them in a way it doesn’t recognise yet). The ' + what + ' and its address are saved; its date, place and ' +
             'description can be read on Ancestry from that address'));
       } else if (state.fagRecord) {
         parts.push('Record files: the memorial’s facts and citation + its photos at full size (Find a Grave, auto)');
@@ -3533,6 +3637,13 @@
       $(id).addEventListener('input', () => { state.userEdited.add(id); state.touched.add(id); });
       $(id).addEventListener('change', () => { state.userEdited.add(id); state.touched.add(id); });
     }
+    // On a shared Ancestry item, the button says what her Kind will save.
+    $('f-type').addEventListener('change', () => {
+      if (state.ancPhoto) {
+        $('btn-capture').textContent = ancCaptureLabel();
+        updateAssetStatus();
+      }
+    });
     $('f-provisional').addEventListener('change', updateAssetStatus);
     $('btn-capture').addEventListener('click', capture);
     $('btn-rescrape').addEventListener('click', rescrape);

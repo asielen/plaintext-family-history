@@ -569,7 +569,9 @@ function photoSite({ photo, detailsAtFirst = true, detailsNever = false, edit, o
             url: tab.url, title: info ? info.media.title : 'Hints for Thomas Hartley',
             sourceDate: info ? info.hints.sourceDate || '' : null,
             people: info ? (info.details.linkedTo || []).slice() : [],
-            repository: 'ancestry.com', recipeHint: 'ancestry', sourceType: media ? 'photo' : undefined,
+            repository: 'ancestry.com', recipeHint: 'ancestry',
+            // As content.js: a photo unless its Ancestry category names a document (#261).
+            sourceType: media ? (info && info.hints.sourceType) || 'photo' : undefined,
             ancestryPhoto: !!media, ancestryMediaId: media ? media.mediaId : null,
             ancestryPhotoShown: info && !oldPageScript ? Object.keys(info.details) : undefined,
             ancestryRecord: !!anc.ancParseRecordPage(tab.url),
@@ -686,6 +688,303 @@ test('round 3 (audit C): a photo with nothing new on the page is staged once, wi
   await closed.capture();
   assert.strictEqual(closed.written.length, 1);
   assert.doesNotMatch(closed.result(), /again/i);
+});
+
+test('#261: on Ancestry\'s own Details panel the add-on finds the Details - no "couldn\'t find" - and files its title and people', async () => {
+  // The panel as a real page drew it: a title and a category, the member
+  // who shared it, two linked people (tests/fixtures/capture-samples/
+  // ancestry-media-panel.html, fictional Hartleys).
+  const panel = fs.readFileSync(path.join(SAMPLES, 'ancestry-media-panel.html'), 'utf8')
+    .replace(/<div class="mediaDataFieldWrapper"><div class="mediaDataField flex  "><span aria-label="(Date|Location|Description)"[^]*?<\/div><\/div>/g, '');
+  assert.ok(!/aria-label="(Date|Location|Description)"/.test(panel) && /aria-label="Category"/.test(panel), 'the fixture edit took');
+  const p = await openPhoto(PHOTO_OPEN, { edit: () => panel });
+  assert.doesNotMatch(p.$('asset-status').textContent, /couldn’t find this photo’s Details/);
+  assert.deepStrictEqual(p.$('people-list').children.map((l) => l.children[1].textContent), ['Thomas Hartley', 'Margaret Hartley']);
+  await p.capture();
+  assert.strictEqual(p.written.length, 1, p.result());
+  const data = JSON.parse(await p.written[0].assets.find((a) => a.filename === 'photo-data.json').blob.text());
+  assert.deepStrictEqual(data.details, {
+    title: 'Wedding of Thomas Hartley and Margaret Ellis',
+    category: 'Portrait / Family Photo',
+    originallyAddedBy: 'hartley_family_tree on 3 Mar 2015',
+    linkedTo: ['Thomas Hartley', 'Margaret Hartley'],
+  });
+  const kept = JSON.stringify(p.capJson(p.written[0])) + JSON.stringify(data);
+  for (const never of ['cousin_member_one', 'cousin_member_two', 'cousin_member_three']) {
+    assert.ok(!kept.includes(never), 'kept from the page: ' + never);
+  }
+  // A portrait is a photo: its picture is the photo's front, for her photo library.
+  const cap = p.capJson(p.written[0]);
+  assert.strictEqual(cap.source_type, 'photo');
+  assert.strictEqual(cap.assets.find((a) => a.mode === 'ancestry-media').role, 'front');
+});
+
+// #261 audit A1: she moves to photo B with Ancestry's gallery arrow; the
+// panel reads the page before Ancestry's Details panel shows B, so the form
+// is filled from photo A. By Capture the page shows B. B must never be
+// filed with A's date (or title, or Kind, or people).
+const PHOTO_B = '0b0b0b0b-1234-4abc-8def-0123456789ab';
+const PHOTO_B_URL = 'https://www.ancestry.com/mediaui-viewer/tree/90000001/person/90000002/media/' + PHOTO_B;
+const PANEL_A = fs.readFileSync(path.join(SAMPLES, 'ancestry-media-panel.html'), 'utf8').replace('<div class="viewerStage">',
+  '<div class="viewerStage"><img id="' + PHOTO_B + '" src="https://www.ancestry.com/api/media/retrieval/v2/image/namespaces/4242/media/' +
+  PHOTO_B + '?client=trees-mediaservice&amp;imageQuality=hq">');
+const A_DATE_FIELD = '<div class="mediaDataFieldWrapper"><div class="mediaDataField flex  "><span aria-label="Date" class="icon iconCalendar">' +
+  '</span><span class="mediaDataFieldValue textWrap ">12 Jun 1919</span></div></div>';
+const A_TITLE = 'Wedding of Thomas Hartley and Margaret Ellis</span>';
+// The page as the panel first reads it (A's Details), then as it is at Capture.
+function stalePanelSite(pageB) {
+  let reads = 0;
+  return (msg, tab) => {
+    const read = (html) => {
+      const d = parse(html);
+      const i = anc.ancMediaFrom(d, tab.url, { title: d.title, origin: 'https://www.ancestry.com' });
+      i.hints = anc.ancMediaHints(i.details);
+      return i;
+    };
+    switch (msg.action) {
+      case 'prefill': {
+        reads += 1;
+        const info = read(reads === 1 ? PANEL_A : pageB);
+        return { ok: true, prefill: { url: tab.url, title: info.media.title, sourceDate: info.hints.sourceDate || '',
+          people: (info.details.linkedTo || []).slice(), repository: 'ancestry.com', recipeHint: 'ancestry',
+          sourceType: info.hints.sourceType || 'photo', ancestryPhoto: true, ancestryMediaId: PHOTO_B,
+          ancestryPhotoShown: Object.keys(info.details), ancestryRecord: false } };
+      }
+      case 'ancestryPhotoInfo': return read(pageB);
+      case 'ancestryPhoto': return { ok: true, base64: PHOTO_BYTES.toString('base64'), ext: 'jpg', contentType: 'image/jpeg' };
+      case 'pagehtml': return { ok: true, html: pageB };
+      default: return { ok: false, error: 'unexpected ' + msg.action };
+    }
+  };
+}
+
+test('#261 audit A1: photo B is never filed with photo A\'s date - the form shows B\'s first, then Capture files it', async () => {
+  const pageB = PANEL_A.replace('>12 Jun 1919<', '>4 Feb 1958<').replace(A_TITLE, 'Photo B title</span>');
+  const p = await openPanel({ url: PHOTO_B_URL, respond: stalePanelSite(pageB) });
+  assert.strictEqual(p.$('f-date').value, '1919-06-12'); // A's, as first read
+  await p.capture();
+  assert.strictEqual(p.written.length, 0, 'nothing is saved while the form shows another photo\'s details');
+  assert.match(p.result(), /check .* then press Capture this photo/);
+  assert.match(p.resultClass(), /warn/);
+  assert.strictEqual(p.$('f-date').value, '1958-02-04');
+  assert.strictEqual(p.$('f-title').value, 'Photo B title');
+  await p.capture();
+  assert.strictEqual(p.written.length, 1, p.result());
+  const cap = p.capJson(p.written[0]);
+  assert.strictEqual(cap.source_date, '1958-02-04');
+  assert.strictEqual(cap.title, 'Photo B title');
+});
+
+test('#261 audit A1: an undated photo B after a dated photo A is filed undated', async () => {
+  const pageB = PANEL_A.replace(A_DATE_FIELD, '').replace(A_TITLE, 'Photo B title</span>');
+  assert.ok(pageB !== PANEL_A.replace(A_TITLE, 'Photo B title</span>'), 'the fixture edit took');
+  const p = await openPanel({ url: PHOTO_B_URL, respond: stalePanelSite(pageB) });
+  await p.capture();
+  assert.strictEqual(p.written.length, 0);
+  assert.strictEqual(p.$('f-date').value, '');
+  await p.capture();
+  assert.strictEqual(p.written.length, 1, p.result());
+  assert.ok(!p.capJson(p.written[0]).source_date, 'no date is filed');
+});
+
+test('#261 audit A1: what she typed herself always wins; people she never touched follow photo B', async () => {
+  // B is linked to Margaret only, and is a document; she typed a date.
+  const pageB = PANEL_A.replace('>12 Jun 1919<', '>4 Feb 1958<').replace(A_TITLE, 'Obituary for Thomas Hartley</span>')
+    .replace('Portrait / Family Photo', 'Document / Certificate')
+    .replace(/<button type="button" class="ancBtn sml inThisTreeButton[^>]*><img[^>]*><span class="linkedToName textClipped extraSpace">Thomas Hartley<\/span><\/button>/, '');
+  assert.ok(!/linkedToName[^>]*>Thomas Hartley/.test(pageB), 'the fixture edit took');
+  const p = await openPanel({ url: PHOTO_B_URL, respond: stalePanelSite(pageB) });
+  p.$('f-date').value = 'abt 1950';
+  await p.$('f-date').fire('input');
+  await p.capture();
+  assert.strictEqual(p.written.length, 0);
+  assert.strictEqual(p.$('f-date').value, 'abt 1950'); // hers
+  assert.strictEqual(p.$('f-type').value, 'newspaper'); // B's Kind
+  assert.strictEqual(p.$('btn-capture').textContent, 'Capture this record');
+  assert.deepStrictEqual(p.$('people-list').children.map((l) => l.children[1].textContent), ['Margaret Hartley']);
+  await p.capture();
+  assert.strictEqual(p.written.length, 1, p.result());
+  const cap = p.capJson(p.written[0]);
+  assert.strictEqual(cap.source_date, 'abt 1950');
+  assert.strictEqual(cap.source_type, 'newspaper');
+  assert.deepStrictEqual(cap.people, ['Margaret Hartley']);
+});
+
+// #261 audit B1: she presses Capture at once, and Ancestry's Details still
+// describe photo A on every read - B's picture, with B's title as its alt
+// text, is already there. `site.html` is the page as it is now; the prefill
+// answers as content.js does.
+function behindSite(html) {
+  const site = { html };
+  site.respond = (msg, tab) => {
+    const read = () => {
+      const d = parse(site.html);
+      const i = anc.ancMediaFrom(d, tab.url, { title: d.title, origin: 'https://www.ancestry.com' });
+      if (i.ok) i.hints = anc.ancMediaHints(i.details);
+      return i;
+    };
+    switch (msg.action) {
+      case 'prefill': {
+        const info = read();
+        const ok = info.ok ? info : null;
+        return { ok: true, prefill: { url: tab.url, title: ok ? ok.media.title : 'Photo B | Ancestry',
+          sourceDate: ok ? ok.hints.sourceDate || '' : null, people: ok ? (ok.details.linkedTo || []).slice() : [],
+          repository: 'ancestry.com', recipeHint: 'ancestry', sourceType: (ok && ok.hints.sourceType) || 'photo',
+          ancestryPhoto: true, ancestryMediaId: PHOTO_B, ancestryPhotoShown: ok ? Object.keys(ok.details) : null,
+          ancestryPhotoNotReady: !info.ok && info.transient ? info.error : null, ancestryRecord: false } };
+      }
+      case 'ancestryPhotoInfo': return read();
+      case 'ancestryPhoto': return { ok: true, base64: PHOTO_BYTES.toString('base64'), ext: 'jpg', contentType: 'image/jpeg' };
+      case 'pagehtml': return { ok: true, html: site.html };
+      default: return { ok: false, error: 'unexpected ' + msg.action };
+    }
+  };
+  return site;
+}
+
+test('#261 audit B1: photo B is never filed with photo A\'s details, however fast she presses Capture', async () => {
+  const stale = PANEL_A.replace('<img id="' + PHOTO_B + '" src=', '<img id="' + PHOTO_B + '" alt="Photo B" src=');
+  assert.ok(stale.includes('alt="Photo B"'), 'the fixture edit took');
+  const site = behindSite(stale);
+  const p = await openPanel({ url: PHOTO_B_URL, respond: site.respond });
+  assert.match(p.$('asset-status').textContent, /The details on the page have not caught up with the photo yet - wait a moment, then press Re-read page \(or press Capture this photo twice to save the photo and its address without them\)/);
+  assert.deepStrictEqual(p.$('people-list').children, []);
+  assert.strictEqual(p.$('f-date').value, '');
+  await p.capture();
+  assert.strictEqual(p.written.length, 0, 'nothing is saved with another photo\'s details');
+  assert.strictEqual(p.result(), 'The details on the page have not caught up with the photo yet, so nothing was saved. ' +
+    'Wait a moment and press Capture this photo again: if they have caught up by then, they are saved with it; if not, ' +
+    'the photo and its address are saved without them (they can still be read on Ancestry from that address).');
+  assert.match(p.resultClass(), /warn/);
+  // Ancestry catches up before she presses again: the normal way - B's own
+  // details are shown to her, then filed.
+  site.html = stale.replace('>12 Jun 1919<', '>4 Feb 1958<').replace(A_TITLE, 'Photo B</span>');
+  await p.capture();
+  assert.strictEqual(p.written.length, 0, 'what the page now shows is put in front of her first');
+  assert.strictEqual(p.$('f-date').value, '1958-02-04');
+  await p.capture();
+  assert.strictEqual(p.written.length, 1, p.result());
+  const cap = p.capJson(p.written[0]);
+  assert.strictEqual(cap.title, 'Photo B');
+  assert.strictEqual(cap.source_date, '1958-02-04');
+  assert.ok(!JSON.stringify(cap).includes('Wedding'));
+});
+
+test('#261 audit C1: if Ancestry never catches up, the second press saves the photo and its address without the page\'s details', async () => {
+  // Photo A's panel (12 Jun 1919, Thomas and Margaret) on photo B's page,
+  // whose picture's alt text is B's title - on every read.
+  const stale = PANEL_A.replace('<img id="' + PHOTO_B + '" src=', '<img id="' + PHOTO_B + '" alt="Photo B at the farm" src=');
+  const site = behindSite(stale);
+  const p = await openPanel({ url: PHOTO_B_URL, respond: site.respond });
+  p.$('f-notes').value = 'From cousin Ruth.';
+  await p.capture();
+  assert.strictEqual(p.written.length, 0);
+  await p.capture();
+  assert.strictEqual(p.written.length, 1, p.result());
+  const cap = p.capJson(p.written[0]);
+  assert.strictEqual(cap.url, PHOTO_B_URL);
+  assert.strictEqual(cap.title, 'Photo B at the farm'); // its picture's own alt text
+  assert.ok(!cap.source_date, 'no date');
+  assert.strictEqual(cap.source_type, 'photo');
+  assert.ok(!cap.people || cap.people.length === 0, 'no people');
+  assert.strictEqual(cap.assets.find((a) => a.mode === 'ancestry-media').role, 'front');
+  assert.strictEqual(cap.notes, 'From cousin Ruth.\n\nA photo shared on Ancestry by another member. Its details on Ancestry ' +
+    'were left out: the page had not caught up with the picture when it was saved. They can be read on Ancestry from the ' +
+    'saved address.');
+  const data = JSON.parse(await p.written[0].assets.find((a) => a.filename === 'photo-data.json').blob.text());
+  assert.deepStrictEqual(data.details, {});
+  assert.strictEqual(data.media.mediaId, PHOTO_B);
+  assert.strictEqual(data.media.title, 'Photo B at the farm');
+  const kept = JSON.stringify(cap) + JSON.stringify(data);
+  for (const never of ['Wedding', '1919', 'Thomas Hartley', 'Margaret Hartley', 'Fairview', 'hartley_family_tree', 'cousin_member']) {
+    assert.ok(!kept.includes(never), 'photo A\'s details were filed: ' + never);
+  }
+});
+
+test('#261 audit C1: what she typed, chose and added herself is kept without the page\'s details; her own file saves at once', async () => {
+  const stale = PANEL_A.replace('<img id="' + PHOTO_B + '" src=', '<img id="' + PHOTO_B + '" alt="Photo B at the farm" src=');
+  const p = await openPanel({ url: PHOTO_B_URL, respond: behindSite(stale).respond });
+  p.$('f-title').value = 'Aunt Ethel at the farm';
+  await p.$('f-title').fire('input');
+  p.$('f-date').value = '1931';
+  await p.$('f-date').fire('input');
+  p.$('f-type').value = 'letter';
+  await p.$('f-type').fire('change');
+  p.$('f-add-person').value = 'Ethel Hartley';
+  await p.$('btn-add-person').fire('click');
+  dropFile(p, 'my download.jpg');
+  await p.capture();
+  assert.strictEqual(p.written.length, 1, 'her own file is saved at the first press: ' + p.result());
+  const cap = p.capJson(p.written[0]);
+  assert.strictEqual(cap.title, 'Aunt Ethel at the farm');
+  assert.strictEqual(cap.source_date, '1931');
+  assert.strictEqual(cap.source_type, 'letter');
+  assert.deepStrictEqual(cap.people, ['Ethel Hartley']);
+  assert.deepStrictEqual(cap.assets[0], { file: 'ancestry-' + PHOTO_B + '-photo.jpg', role: 'record', mode: 'manual',
+    is_primary: true });
+  const data = JSON.parse(await p.written[0].assets.find((a) => a.filename === 'photo-data.json').blob.text());
+  assert.deepStrictEqual(data.details, {});
+  assert.strictEqual(photoAsks(p).length, 0, 'her file is used; Ancestry is not asked');
+});
+test('#261 audit B2: on an item filed as a record, the panel\'s words say "item", not "photo"', async () => {
+  const clip = '5eed0000-1234-4abc-8def-0123456789ab';
+  const p = await openPhoto('https://www.ancestry.com/mediaui-viewer/collection/90003/tree/90000001/person/90000002/media/' +
+    clip, { edit: () => fs.readFileSync(path.join(SAMPLES, 'ancestry-media-clipping.html'), 'utf8') });
+  assert.strictEqual(p.$('btn-capture').textContent, 'Capture this record');
+  assert.match(p.$('asset-status').textContent, /Record files: the item \+ its details \(Ancestry, auto\)/);
+  assert.doesNotMatch(p.$('asset-status').textContent, /photo/);
+  // She calls it a photo: the words follow her Kind.
+  p.$('f-type').value = 'photo';
+  await p.$('f-type').fire('change');
+  assert.match(p.$('asset-status').textContent, /Record files: the photo \+ its details \(Ancestry, auto\)/);
+});
+
+// A newspaper clipping shared from Newspapers.com, which its sharer put in
+// Ancestry's "Document / Certificate" category (#261, the owner: "should be
+// saved as a document").
+const CLIP_ID = '5eed0000-1234-4abc-8def-0123456789ab';
+const CLIP_PAGE = 'https://www.ancestry.com/mediaui-viewer/collection/90003/tree/90000001/person/90000002/media/' + CLIP_ID;
+const clipHtml = () => fs.readFileSync(path.join(SAMPLES, 'ancestry-media-clipping.html'), 'utf8');
+
+test('#261: an obituary Ancestry files under "Document / Certificate" is captured as a newspaper record, for her documents', async () => {
+  const p = await openPhoto(CLIP_PAGE + '?hid=h1', { edit: clipHtml });
+  assert.strictEqual(p.$('f-type').value, 'newspaper');
+  assert.strictEqual(p.$('btn-capture').textContent, 'Capture this record');
+  await p.capture();
+  assert.strictEqual(p.written.length, 1, p.result());
+  const cap = p.capJson(p.written[0]);
+  assert.strictEqual(cap.source_type, 'newspaper');
+  assert.strictEqual(cap.url, CLIP_PAGE); // still the address Seen It knows (med:{mediaId})
+  const picture = cap.assets.find((a) => a.mode === 'ancestry-media');
+  assert.strictEqual(picture.role, 'record');
+  assert.strictEqual(picture.file, 'ancestry-' + CLIP_ID + '-photo.jpg');
+  assert.match(cap.notes, /^An item shared on Ancestry by another member\. Its details on Ancestry:\nDate: 4 Feb 1958\n/);
+  const data = JSON.parse(await p.written[0].assets.find((a) => a.filename === 'photo-data.json').blob.text());
+  assert.strictEqual(data.details.category, 'Document / Certificate');
+  const kept = JSON.stringify(cap) + JSON.stringify(data);
+  for (const never of ['cousin_member_one', 'this article', 'Add a']) assert.ok(!kept.includes(never), never);
+});
+
+test('#261: the Kind she chooses decides - a document she calls a photo goes to her photos, and back', async () => {
+  const p = await openPhoto(CLIP_PAGE, { edit: clipHtml });
+  p.$('f-type').value = 'photo';
+  await p.$('f-type').fire('change');
+  assert.strictEqual(p.$('btn-capture').textContent, 'Capture this photo');
+  await p.capture();
+  let cap = p.capJson(p.written[0]);
+  assert.strictEqual(cap.source_type, 'photo');
+  assert.strictEqual(cap.assets.find((a) => a.mode === 'ancestry-media').role, 'front');
+  assert.match(cap.notes, /^A photo shared on Ancestry by another member/);
+  // A photo she calls a letter is a record.
+  const q = await openPhoto(PHOTO_OPEN);
+  assert.strictEqual(q.$('btn-capture').textContent, 'Capture this photo');
+  q.$('f-type').value = 'letter';
+  await q.$('f-type').fire('change');
+  assert.strictEqual(q.$('btn-capture').textContent, 'Capture this record');
+  await q.capture();
+  cap = q.capJson(q.written[0]);
+  assert.strictEqual(cap.source_type, 'letter');
+  assert.strictEqual(cap.assets.find((a) => a.mode === 'ancestry-media').role, 'record');
 });
 
 test('Capture saves the shared photo as a photo source: the photo as served, its details, the address to keep', async () => {

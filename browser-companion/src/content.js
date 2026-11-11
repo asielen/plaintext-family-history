@@ -971,32 +971,47 @@
   // /api/media/retrieval/v2/image/namespaces/{ns}/media/{mediaId}, asked for
   // its "hq" size (1200x1920 on the page this was built from). The page's
   // thumbnails of the same photo (…/media/{mediaId}.jpg?MaxSide=…) name the
-  // namespace too, so either will do; another photo's image never does. The
-  // address is always on the page's own site (`origin`), so the signed-in
-  // session the fetch carries goes nowhere else. null while no image of THIS
-  // photo is on the page. Whether Ancestry keeps a larger original behind the
-  // page's own Download menu is not known; this is the size the page shows.
+  // namespace too, so either will do; another photo's image never does. Some
+  // photos - a newspaper clipping shared from Newspapers.com, say - keep their
+  // picture under an image id of its own: the viewer's <img> then carries the
+  // photo's media id as its id attribute, and its src names that image id,
+  // which is the one to fetch (asked for by the media id, Ancestry answers
+  // "not found", and the capture failed with "the photo has not appeared on the
+  // page yet" - issue #261). Only the picture the viewer marks with this
+  // photo's id is taken that way, never another photo's. The address is
+  // always on the page's own site (`origin`), so the signed-in session the
+  // fetch carries goes nowhere else. null while no image of THIS photo is on
+  // the page. Whether Ancestry keeps a larger original behind the page's own
+  // Download menu is not known; this is the size the page shows. The photo is
+  // still filed under its media id (ancPhotoFileStem), the id Seen It knows.
   const ANC_MEDIA_IMG_RE = new RegExp('/api/media/retrieval/v2/image/namespaces/(\\d+)/media/(' + ANC_GUID +
     ')(\\.jpg)?(?=[?#]|$)', 'i');
 
   function ancMediaImageUrl(root, mediaId, origin) {
     const want = String(mediaId || '').toLowerCase();
     if (!want) return null;
-    let full = null; // the viewer's own picture names the namespace best
+    // Each [namespace, image id]. The viewer's own picture of the media id
+    // names the namespace best; then the picture marked with the photo's id;
+    // then a thumbnail of the media id.
+    let full = null;
+    let marked = null;
     let thumb = null;
     for (const img of ancElements(root, (e) => ancTag(e) === 'IMG')) {
       if (ancIsSeenItNode(img) || !img.getAttribute) continue;
+      const ours = String(img.getAttribute('id') || '').trim().toLowerCase() === want;
       for (const attr of ['src', 'data-src']) {
         const m = ANC_MEDIA_IMG_RE.exec(String(img.getAttribute(attr) || ''));
-        if (!m || m[2].toLowerCase() !== want) continue;
-        if (m[3]) thumb = thumb || m[1];
-        else full = full || m[1];
+        if (!m) continue;
+        const image = m[2].toLowerCase();
+        if (image === want && m[3]) thumb = thumb || [m[1], image];
+        else if (image === want) full = full || [m[1], image];
+        else if (ours) marked = marked || [m[1], image];
       }
     }
-    const ns = full || thumb;
-    if (!ns) return null;
-    return String(origin || 'https://www.ancestry.com') + '/api/media/retrieval/v2/image/namespaces/' + ns +
-      '/media/' + want + '?client=trees-mediaservice&imageQuality=hq';
+    const pick = full || marked || thumb;
+    if (!pick) return null;
+    return String(origin || 'https://www.ancestry.com') + '/api/media/retrieval/v2/image/namespaces/' + pick[0] +
+      '/media/' + pick[1] + '?client=trees-mediaservice&imageQuality=hq';
   }
 
   // The labels of the photo's Details panel, as the page shows them.
@@ -1154,8 +1169,130 @@
       named(e) && ancElements(e, ancMediaLabel).length > 0);
   }
 
+  // Ancestry's own Details panel in its photo viewer (issue #261, from a real
+  // page and the viewer's own script): the element whose id is exactly
+  // "mediaViewerDetailsPanel". Its "Details" heading sits in a button in a
+  // header shown only on phones, so the box rules above never found it, and a
+  // shared photo's title, uploader and linked people were all left out; its
+  // id finds it. Each field in it is a .mediaDataField: an icon whose
+  // aria-label names the field - translated on Ancestry's other-language
+  // sites, so the icon's class names it too - then the field's
+  // .mediaDataFieldValue. The category - Ancestry's label for what the item
+  // is, as its sharer chose it ("Portrait / Family Photo", "Document /
+  // Certificate") - says whether it is filed as a photo or a document
+  // (ancMediaKind). The transcription is not read.
+  const ANC_MEDIA_PANEL_ID = 'mediaViewerDetailsPanel';
+  const ANC_MEDIA_PANEL_FIELDS = [
+    ['date', /^date$/i, 'iconCalendar'],
+    ['place', /^location$/i, 'iconMap'],
+    ['category', /^category$/i, 'iconTileLarge'],
+    ['description', /^description$/i, 'iconNote'],
+  ];
+  const ANC_MEDIA_PANEL_KEYS = ['title', 'date', 'place', 'category', 'description', 'originallyAddedBy', 'linkedTo'];
+  // Never read inside the panel: what Ancestry's AI suggests in place of an
+  // empty field (an estimated date such as "1920s", a suggested description -
+  // Ancestry's guess, never the words of whoever shared the photo), the
+  // members who saved it (their names hidden for screen readers), the
+  // comments, and the panel's "Save to someone else in your tree".
+  const ANC_MEDIA_PANEL_NEVER = ['autodateField', 'photoInsightWrapper', 'iconAi', 'insightBtn', 'savedBy',
+    'userCardPile', 'mediaComments', 'hideVisually', 'addMediaToPerson'];
+
+  // An element's classes, as a list (an SVG element's className is an object).
+  function ancClasses(el) {
+    const cls = el.className && el.className.baseVal !== undefined ? el.className.baseVal : el.className;
+    return String(cls || '').split(/\s+/).filter(Boolean);
+  }
+
+  // The photo's Details from Ancestry's own panel, by the panel's structure
+  // alone - never by the label reading of the box rules: the panel's comments
+  // are headed "Comments on this photo", and a commenter's "Shared by …" is
+  // not who shared the photo. A value is only what a .mediaDataFieldValue
+  // holds, less Ancestry's own prompts and icons: on her own photo, an empty
+  // field holds Ancestry's "add a date" prompt (a .link), and that is no date;
+  // a value with Ancestry's AI mark in it is no value of hers. The description
+  // keeps its own line breaks (Ancestry shows them as written); the other
+  // fields are one line. Who first shared it is the owner card's name, with
+  // the date beside it ("hartley_family_tree on 3 Mar 2015"); the people it
+  // is linked to are the names on the panel's "Linked to" buttons.
+  // `hidden(el)`: is this element not shown on the page (it is left out).
+  function ancMediaPanelDetails(panel, hidden) {
+    const els = [];
+    (function walk(n) {
+      for (const c of n.childNodes || []) {
+        if (c.nodeType !== 1 || ancIsSeenItNode(c) || (hidden && hidden(c))) continue;
+        if (ancClasses(c).some((k) => ANC_MEDIA_PANEL_NEVER.indexOf(k) >= 0)) continue;
+        els.push(c);
+        walk(c);
+      }
+    })(panel);
+    const has = (e, k) => !!e && e.nodeType === 1 && ancClasses(e).indexOf(k) >= 0;
+    const up = (e, k) => {
+      for (let n = e.parentNode; n && n !== panel; n = n.parentNode) if (has(n, k)) return n;
+      return null;
+    };
+    // A value's words, line by line: all of its text - words in <em> or a
+    // link inside it too, a <br> or a block a new line, its own line breaks
+    // kept (the description's) - but never Ancestry's "Add a …" prompt (a
+    // .link) or an icon inside it.
+    const lines = (e) => {
+      const parts = [];
+      (function walk(n) {
+        for (const c of n.childNodes || []) {
+          if (c.nodeType === 3) {
+            parts.push(String(c.nodeValue || ''));
+            continue;
+          }
+          if (c.nodeType !== 1 || (hidden && hidden(c)) || ANC_SKIP_TAGS.indexOf(ancTag(c)) >= 0 || ancIsSeenItNode(c) ||
+            has(c, 'link') || has(c, 'icon')) continue;
+          if (ancTag(c) === 'BR') {
+            parts.push('\n');
+            continue;
+          }
+          const block = ANC_BLOCK_TAGS.indexOf(ancTag(c)) >= 0;
+          if (block) parts.push('\n');
+          walk(c);
+          if (block) parts.push('\n');
+        }
+      })(e);
+      return parts.join('').split('\n').map((l) => l.replace(/\s+/g, ' ').trim()).filter(Boolean);
+    };
+    // A value Ancestry marks as its AI's estimate is not hers.
+    const markedAi = (e) => ancElements(e, (x) => ancClasses(x).some((k) => ANC_MEDIA_PANEL_NEVER.indexOf(k) >= 0)).length > 0;
+    const words = (e) => ancText(e, { hidden }).replace(/\s+/g, ' ').trim();
+    const found = {};
+    for (const v of els.filter((e) => has(e, 'mediaDataFieldValue'))) {
+      const box = v.parentNode;
+      if (!has(box, 'mediaDataField') || markedAi(v)) continue;
+      let key = has(box, 'mediaTitle') ? 'title' : null;
+      if (!key) {
+        const icon = [...(box.childNodes || [])].find((c) => c.nodeType === 1 && ancTag(c) === 'SPAN' && has(c, 'icon') &&
+          c.getAttribute && String(c.getAttribute('aria-label') || '').trim());
+        const label = icon ? String(icon.getAttribute('aria-label')).trim() : '';
+        const def = icon && ANC_MEDIA_PANEL_FIELDS.find(([, re, cls]) => re.test(label) || has(icon, cls));
+        key = def ? def[0] : null;
+      }
+      const value = lines(v).join(key === 'description' ? '\n' : ' ');
+      if (key && value && !(key in found)) found[key] = value;
+    }
+    const owner = els.find((e) => has(e, 'mediaOwnerFullName') && up(e, 'mediaOwnerCard'));
+    const name = owner ? words(owner) : '';
+    if (name) {
+      const card = up(owner, 'mediaOwnerCard');
+      const when = els.find((e) => has(e, 'mediaOwnerDate') && up(e, 'mediaOwnerCard') === card);
+      const date = when ? words(when) : '';
+      found.originallyAddedBy = date ? name + ' on ' + date : name;
+    }
+    const linked = ancLinkedNames(els.filter((e) => has(e, 'linkedToName') && up(e, 'linkedToSection')).map(words).join('\n'));
+    if (linked.length) found.linkedTo = linked;
+    const details = {};
+    for (const key of ANC_MEDIA_PANEL_KEYS) if (found[key]) details[key] = found[key];
+    return details;
+  }
+
   // The photo's Details as the page shows them: { title, date, place,
-  // description, originallyAddedBy, linkedTo: [names] } - read from the
+  // description, originallyAddedBy, linkedTo: [names] } - from Ancestry's own
+  // Details panel when the page has one (ancMediaPanelDetails, issue #261);
+  // otherwise read from the
   // photo's own Details box only (ancMediaDetailsBoxes: the element whose own
   // heading or aria-label says "Details"), whole, each field by its own label.
   // A label's value is ancMediaValue's, never read from outside the box, and
@@ -1182,6 +1319,13 @@
       for (let n = e; n && n.nodeType === 1; n = n.parentNode) if (o.hidden && o.hidden(n)) return false;
       return true;
     };
+    // Ancestry's own panel, when the page has one: read by its structure
+    // alone (ancMediaPanelDetails), and nothing else - closed, it gives nothing.
+    const panels = ancElements(root, (e) => e.id === ANC_MEDIA_PANEL_ID);
+    if (panels.length) {
+      const panel = panels.find(shown);
+      return panel ? ancMediaPanelDetails(panel, o.hidden) : {};
+    }
     const found = {};
     const rank = {};
     let scope = root; // a value is never read from outside it
@@ -1259,6 +1403,44 @@
     return names;
   }
 
+  // Does Ancestry's Details panel describe the item in the address? When she
+  // clicks the viewer's arrow to the next item, the address and the picture
+  // change before the panel does, and for a moment it still shows the last
+  // item's title, date and people (#261 audit B1). The viewer's own picture
+  // of the item - the <img> marked with its media id, or whose address names
+  // it (never a thumbnail) - carries the item's title as its alt text, on
+  // both real pages this was built from. So when that alt text and the
+  // panel's title are both there and differ, the panel is still on another
+  // item and nothing of it is filed: the capture waits (ANC_MEDIA_PANEL_BEHIND).
+  // With no alt text, or no title in Ancestry's own panel, nothing is checked.
+  const ANC_MEDIA_PANEL_BEHIND = 'the details on the page have not caught up with the picture yet (they still ' +
+    'describe the item shown before), so nothing was saved - wait a moment, then press Capture again';
+
+  function ancMediaPanelIsFor(root, mediaId, details) {
+    const title = String((details && details.title) || '');
+    if (!title || !ancElements(root, (e) => e.id === ANC_MEDIA_PANEL_ID).length) return true;
+    const tidy = (s) => String(s || '').toLowerCase();
+    return ancMediaOwnAlts(root, mediaId).every((alt) => tidy(alt) === tidy(title.replace(/\s+/g, ' ').trim()));
+  }
+
+  // The alt text of the viewer's own picture of this item (the <img> marked
+  // with its media id, or whose address names it - never a thumbnail), spaces
+  // tidied, the empty ones left out. It names this item's picture, so it is
+  // the title kept when the Details panel is left out (ancMediaFrom).
+  function ancMediaOwnAlts(root, mediaId) {
+    const want = String(mediaId || '').toLowerCase();
+    const alts = [];
+    for (const img of ancElements(root, (e) => ancTag(e) === 'IMG')) {
+      if (ancIsSeenItNode(img) || !img.getAttribute) continue;
+      const marked = String(img.getAttribute('id') || '').trim().toLowerCase() === want;
+      const m = ANC_MEDIA_IMG_RE.exec(String(img.getAttribute('src') || ''));
+      const named = !!m && !m[3] && m[2].toLowerCase() === want;
+      const alt = String(img.getAttribute('alt') || '').replace(/\s+/g, ' ').trim();
+      if ((marked || named) && alt) alts.push(alt);
+    }
+    return alts;
+  }
+
   // The whole shared photo from its viewer page (`root`: the document, or a
   // stand-in tree): { ok, media: { mediaId, treeId, personId, url, title,
   // imageUrl, fileStem }, details }. `opts.title` is the document title (the photo's
@@ -1275,6 +1457,19 @@
     } catch (e) {
       /* parsed above */
     }
+    if (!ancMediaPanelIsFor(root, id.mediaId, details)) {
+      // The panel is on another item: none of it. What names this item -
+      // its address, its picture and that picture's alt text - is still given
+      // (`behind`), for when she chooses to save it without its details.
+      return {
+        ok: false, transient: true, behind: true, error: ANC_MEDIA_PANEL_BEHIND,
+        media: Object.assign({}, id, {
+          title: ancMediaOwnAlts(root, id.mediaId)[0] || docTitle || null,
+          imageUrl: ancMediaImageUrl(root, id.mediaId, o.origin || origin),
+          fileStem: ancPhotoFileStem(id.mediaId),
+        }),
+      };
+    }
     return {
       ok: true,
       media: Object.assign({}, id, {
@@ -1286,11 +1481,41 @@
     };
   }
 
-  // What a shared photo says about itself, for filing: a photo, dated by the
+  // What kind of source a shared item is, from the category its sharer chose
+  // on Ancestry (issue #261, the owner: an item Ancestry calls a document
+  // "should be saved as a document"). The page shows only the category's
+  // words, in the site's language, so they are matched loosely, in English:
+  //   an obituary or newspaper article      newspaper
+  //   a birth, death or marriage certificate vital-record
+  //   a property record                      land-record
+  //   another document - "Document / Certificate", a legal document, personal
+  //   papers, a diploma, immigration - is what its title says (recordHints:
+  //   "Obituary for Thomas Hartley" is a newspaper), else other;
+  //   anything else - "Portrait / Family Photo", a site, a headstone, an
+  //   heirloom, a recipe, an award, "Other", no category, or words in a
+  //   language this does not know - a photo, as before: when unsure, nothing
+  //   changes. So are military service, occupation, education and yearbook
+  //   (the owner: they often hold portraits; for discharge papers or a
+  //   diploma filed there she changes the Kind). She can always change the
+  //   Kind before she captures it.
+  function ancMediaKind(category, title) {
+    const c = String(category || '').toLowerCase();
+    if (/\bobituar|\bnewspaper/.test(c)) return 'newspaper';
+    if (/\b(birth|death|marriage)\b/.test(c) && /\bcertificate/.test(c)) return 'vital-record';
+    if (/\bproperty\b/.test(c)) return 'land-record';
+    if (/\b(documents?|certificates?|legal|papers?|diploma|immigration)\b/.test(c)) {
+      return recordHints(String(title || '')).sourceType || 'other';
+    }
+    return 'photo';
+  }
+
+  // What a shared item says about itself, for filing: its kind (ancMediaKind:
+  // a photo unless its Ancestry category says it is a document), dated by the
   // date its Details give when that is one the archive can read ("1925",
   // "abt 1925", "12 Jun 1925"), else no date - never a guess.
   function ancMediaHints(details) {
-    return { sourceType: 'photo', sourceDate: ancDateToEdtf((details || {}).date) || null, sourceClass: null };
+    const d = details || {};
+    return { sourceType: ancMediaKind(d.category, d.title), sourceDate: ancDateToEdtf(d.date) || null, sourceClass: null };
   }
 
   // The name the photo is filed under, without its extension. It lands in the
@@ -3138,11 +3363,16 @@
       canonical,
       title: fagRec ? memorial.title : photoInfo && photoInfo.media.title ? photoInfo.media.title : title,
       sourceDate: fagRec ? memorial.hints.sourceDate : photoInfo ? photoInfo.hints.sourceDate || '' : sourceDate,
-      sourceType: fagRec ? memorial.hints.sourceType : ancPhoto ? 'photo' : undefined,
+      // A shared item is a photo unless its Ancestry category says it is a
+      // document (ancMediaKind: an obituary, a certificate…).
+      sourceType: fagRec ? memorial.hints.sourceType
+        : ancPhoto ? (photoInfo && photoInfo.hints.sourceType) || 'photo' : undefined,
       repository: fagRec ? 'Find a Grave' : hostnameOf(url) || null,
       people: fagRec ? [fagRec.name].concat(fagRec.family.map((f) => f.name)).filter(Boolean)
         .filter((n, i, a) => a.indexOf(n) === i)
-        : photoInfo ? (photoInfo.details.linkedTo || []).slice() : harvestPeople(),
+        // A shared item's people come only from its own Details - never
+        // harvested from its page, which names other members.
+        : photoInfo ? (photoInfo.details.linkedTo || []).slice() : ancPhoto ? [] : harvestPeople(),
       // A Find a Grave memorial page (not its gallery): Capture saves the
       // memorial's own facts and citation and its photos at full size.
       findagraveMemorial: !!fagMemorialPage(url),
@@ -3160,6 +3390,9 @@
       // Which of its Details the form was filled from (the panel compares at
       // Capture, so nothing she was not shown is staged behind her back).
       ancestryPhotoShown: photoInfo ? Object.keys(photoInfo.details) : null,
+      // Ancestry's Details still describe the item shown before (#261 audit
+      // B1): the panel says to wait, and nothing of them fills the form.
+      ancestryPhotoNotReady: photo && !photo.ok && photo.transient ? photo.error : null,
       // A FamilySearch record (or the image viewer opened from one): Capture
       // saves FamilySearch's own data for it and its image.
       familysearchRecord: !!fsParseRecordPage(url),
