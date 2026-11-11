@@ -2490,11 +2490,13 @@ class _DerivativeCache:
     call here turns an OSError into a miss, a skip or a note.
 
     `prune` runs once at the end of a standalone build and removes entries
-    whose original is gone or has changed, or that were made under another
-    recipe or Pillow version - entries no future build could reuse. An entry
-    whose original's whole folder is missing is kept: that is an unplugged
-    photo drive far more often than a deleted folder, and pruning it would make
-    the next build with the drive back decode everything again."""
+    whose original is gone or has changed, that were made under another
+    recipe or Pillow version, or whose key a `roots:` change has replaced (an
+    alias renamed or removed, a nested or same-folder alias added) - entries
+    no future build could reuse. An entry whose original's whole folder is
+    missing is kept: that is an unplugged photo drive far more often than a
+    deleted folder, and pruning it would make the next build with the drive
+    back decode everything again."""
 
     def __init__(self, archive_root: Path, fha_config: dict) -> None:
         self.dir = archive_root / _DERIVATIVE_CACHE_DIR
@@ -2827,19 +2829,26 @@ class _DerivativeCache:
         return self._source_unchanged(fields)
 
     def _source_unchanged(self, fields: dict) -> bool:
-        """Is the entry's original still the file it was made from? Its root
-        is looked up where `fha.yaml` puts it today, so a root that moved is
-        checked at its new place. Kept (True) when the original's whole folder
-        is missing - an unplugged drive, far more often than a deletion - when
-        its root is no longer in `fha.yaml` (perhaps for a moment; a removed
-        root reads like an unplugged one), or when it cannot be looked at."""
+        """Is the entry's original still the file it was made from, and would
+        a build still look it up under this entry's name? Its root is looked
+        up where `fha.yaml` puts it today, so a root that moved is checked at
+        its new place.
+
+        Dropped (False) when `roots:` changed under it: its alias is gone from
+        `fha.yaml` (renamed or removed - one remake if it ever comes back), or
+        the file is there but now has another key (`location`: a nested root
+        or a same-folder alias was added). No build could hit such an entry
+        again, and keeping it is how the cache grew for good before #240.
+        Kept (True) when the original's whole folder is missing - an
+        unplugged drive, far more often than a deletion - or when it cannot
+        be looked at."""
         root, rel = fields['root'], fields['path']
         if root == '/':
             source = Path(rel)
         elif root in self.roots:
             source = self.roots[root] / rel
         else:
-            return True
+            return False                         # that alias is no longer in fha.yaml
         try:
             st = source.stat()
         except FileNotFoundError:
@@ -2849,7 +2858,9 @@ class _DerivativeCache:
                 return True
         except (OSError, ValueError):
             return True                          # cannot tell; keep it
-        return st.st_size == fields['size'] and st.st_mtime_ns == fields['mtime_ns']
+        if st.st_size != fields['size'] or st.st_mtime_ns != fields['mtime_ns']:
+            return False
+        return self.location(source) == (root, rel)
 
     def _note_read_error(self, e: OSError) -> None:
         if self.read_error is None:

@@ -2806,6 +2806,60 @@ class DerivativeCacheTests(_Base):
         self.assertEqual(decoded, ['pic.png'])
         self.assertEqual(len(self._cache_notes()), 1)
 
+    # A `roots:` change that gives a file a new key (PR #264 audit, F1): the
+    # old entry can never be hit again, so it must go in the same build that
+    # remakes the picture - or the cache grows for good, which #240 set out
+    # to stop. An unplugged root still keeps everything.
+
+    def _set_roots(self, **aliases: Path) -> None:
+        (self.archive_root / 'fha.yaml').write_text(
+            'roots:\n' + ''.join(f'  {a}: {json.dumps(p.as_posix())}\n'
+                                 for a, p in aliases.items()), encoding='utf-8')
+
+    def _saved_places(self) -> list[tuple[str, str]]:
+        notes = [json.loads(n.read_text(encoding='utf-8'))['fields'] for n in self._cache_notes()]
+        return sorted((f['root'], f['path']) for f in notes)
+
+    def test_a_new_nested_root_leaves_no_orphan_behind(self):
+        drive = self._drive('d')
+        self._three_drive_photos(drive)
+        self._run(linked=False)
+        self._set_roots(photos=drive, scans=drive / '1895')
+        self._run(linked=False)
+        self.assertEqual(self._saved_places(),
+                         [('scans', 'a.png'), ('scans', 'b.png'), ('scans', 'c.png')])
+
+    def test_a_new_alias_for_the_same_folder_leaves_no_orphan_behind(self):
+        drive = self._drive('d')
+        self._three_drive_photos(drive)
+        self._run(linked=False)
+        self._set_roots(photos=drive, album=drive)   # `album` sorts first
+        self._run(linked=False)
+        self.assertEqual(self._saved_places(),
+                         [('album', '1895/a.png'), ('album', '1895/b.png'), ('album', '1895/c.png')])
+
+    def test_a_renamed_root_leaves_no_orphan_behind(self):
+        drive = self._drive('d')
+        self._drive_image(drive, '1895/a.png', (40, 60, 90))
+        self._set_roots(scans=drive)
+        self._photo_source('s-1111111111', 'scans/1895/a.png')
+        self._run(linked=False)
+        self.assertEqual(self._saved_places(), [('scans', '1895/a.png')])
+        self._set_roots(negatives=drive)
+        self.conn.execute("UPDATE source_files SET path = 'negatives/1895/a.png'")
+        self._run(linked=False)
+        self.assertEqual(self._saved_places(), [('negatives', '1895/a.png')])
+
+    def test_an_unplugged_root_of_its_own_still_keeps_its_saved_pictures(self):
+        drive = self._drive('d')
+        self._drive_image(drive, '1895/a.png', (40, 60, 90))
+        self._set_roots(scans=drive)
+        self._photo_source('s-1111111111', 'scans/1895/a.png')
+        self._run(linked=False)
+        shutil.move(str(drive), str(self._drive('away')))
+        self._run(linked=False)
+        self.assertEqual(self._saved_places(), [('scans', '1895/a.png')])
+
     def test_where_a_file_sits_is_its_root_and_the_path_inside_it(self):
         drive = self._drive('d')
         (self.archive_root / 'fha.yaml').write_text(
