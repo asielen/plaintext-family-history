@@ -13,6 +13,7 @@ path under the private name `fha_site` (the same trick fha.py uses).
 
 import argparse
 import contextlib
+import hashlib
 import importlib.util
 import io
 import json
@@ -2413,15 +2414,21 @@ class DerivativeCacheTests(_Base):
 
         return {
             'missing size and mtime_ns': variant(drop('size', 'mtime_ns')),
-            'missing source': variant(drop('source')),
+            'missing path': variant(drop('path')),
+            'missing root': variant(drop('root')),
             'size is null': variant(put('size', None)),
             'size is a string': variant(put('size', '1234')),
             'size is true': variant(put('size', True)),
             'mtime_ns is a float': variant(put('mtime_ns', 1.5)),
             'recipe is a string': variant(put('recipe', '1')),
-            'source is relative': variant(put('source', 'photos/pic.png')),
-            'source has a NUL': variant(put('source', good['fields']['source'] + '\x00')),
-            'source is a list': variant(put('source', ['a'])),
+            'path is empty': variant(put('path', '')),
+            'path has a NUL': variant(put('path', good['fields']['path'] + '\x00')),
+            'root has a NUL': variant(put('root', 'photos\x00')),
+            'path is a list': variant(put('path', ['a'])),
+            'root is a number': variant(put('root', 1)),
+            'the shape from before #240': variant(
+                lambda n: [n['fields'].pop('root'), n['fields'].pop('path'),
+                           n['fields'].__setitem__('source', os.path.abspath('pic.png'))]),
             'format is a path': variant(put('format', '/../x')),
             'an extra field': variant(put('extra', 1)),
             'an extra top-level key': variant(put('extra', 1, top=True)),
@@ -2493,7 +2500,7 @@ class DerivativeCacheTests(_Base):
         good = json.loads(real.read_text(encoding='utf-8'))
         other = (self.archive_root / 'photos' / '1880' / 'other.png').resolve()
         st = other.stat()
-        good['fields'].update(source=str(other), size=st.st_size, mtime_ns=st.st_mtime_ns)
+        good['fields'].update(path='1880/other.png', size=st.st_size, mtime_ns=st.st_mtime_ns)
         stray.write_text(json.dumps(good), encoding='utf-8')   # no picture beside it
         res = self._run(linked=False)
         self.assertEqual(res['status'], 'ok', res['messages'])
@@ -2628,7 +2635,7 @@ class DerivativeCacheTests(_Base):
         unplugged.unlink()
         unplugged.parent.rmdir()
         self._run(linked=False)
-        sources = sorted(Path(json.loads(n.read_text(encoding='utf-8'))['fields']['source']).name
+        sources = sorted(Path(json.loads(n.read_text(encoding='utf-8'))['fields']['path']).name
                          for n in self._cache_notes())
         self.assertEqual(sources, ['away.png', 'kept.png'])
         pictures = sorted(p.stem for p in self._cache_dir().glob('*.jpg'))
@@ -2679,6 +2686,194 @@ class DerivativeCacheTests(_Base):
         self._photo_source('s-1111111111', 'photos/1880/pic.png')
         self._run(linked=True)
         self.assertFalse(self._cache_dir().exists())
+
+    # - a photo drive or archive that moves (#240) -
+    #
+    # The saved pictures were keyed on each original's full path, so a photo
+    # drive that came back under another letter, or an archive folder moved
+    # to a new place, made the next build decode every scan again - the slow
+    # first build, all over - and left the old entries in the cache for good.
+
+    def _drive(self, name: str) -> Path:
+        """A folder outside the archive standing in for an external photo drive."""
+        drive = Path(self._tmp.name).parent / f'{Path(self._tmp.name).name}-{name}'
+        self.addCleanup(shutil.rmtree, drive, True)
+        return drive
+
+    def _point_photos_at(self, folder: Path) -> None:
+        (self.archive_root / 'fha.yaml').write_text(
+            f'roots:\n  photos: {json.dumps(folder.as_posix())}\n', encoding='utf-8')
+
+    def _drive_image(self, drive: Path, rel: str, colour) -> Path:
+        from PIL import Image
+        img = drive / rel
+        img.parent.mkdir(parents=True, exist_ok=True)
+        Image.new('RGB', (2000, 1500), colour).save(img)
+        _age(img)
+        return img
+
+    def _three_drive_photos(self, drive: Path) -> None:
+        self._point_photos_at(drive)
+        for i, name in enumerate(('a', 'b', 'c'), 1):
+            self._drive_image(drive, f'1895/{name}.png', (i * 40, 60, 90))
+            self._photo_source(f's-{i}{i}{i}{i}{i}{i}{i}{i}{i}{i}', f'photos/1895/{name}.png')
+
+    def test_a_photo_drive_under_a_new_letter_reuses_every_saved_picture(self):
+        old, new = self._drive('d'), self._drive('e')
+        self._three_drive_photos(old)
+        _, decoded = self._run_spied(linked=False)
+        self.assertEqual(sorted(decoded), ['a.png', 'b.png', 'c.png'])
+        media = self._media()
+        notes = self._cache_notes()
+
+        # The drive comes back as E: (copied with its modified times kept),
+        # and fha.yaml is pointed at it.
+        shutil.copytree(old, new, copy_function=shutil.copy2)
+        shutil.rmtree(old)
+        self._point_photos_at(new)
+        res, decoded = self._run_spied(linked=False)
+        self.assertEqual(res['status'], 'ok', res['messages'])
+        self.assertEqual(decoded, [], 'pictures were made again after the drive letter changed')
+        self.assertEqual(self._media(), media)
+        self.assertEqual(self._cache_notes(), notes, 'old entries were left behind or renamed')
+
+    def test_a_moved_archive_folder_reuses_every_saved_picture(self):
+        self._image('photos/1880/pic.png')
+        self._image('documents/letters/letter.png', colour=(5, 50, 150))
+        self._photo_source('s-1111111111', 'photos/1880/pic.png')
+        self._photo_source('s-2222222222', 'documents/letters/letter.png')
+        _, decoded = self._run_spied(linked=False)
+        self.assertEqual(sorted(decoded), ['letter.png', 'pic.png'])
+        media = self._media()
+        self.conn.commit()
+
+        moved = self._drive('moved') / 'Family Archive'
+        shutil.copytree(self.archive_root, moved, copy_function=shutil.copy2)
+        write_path_manifest(index_manifest_path(moved), record_path_manifest(moved))
+        future = time.time() + 5
+        os.utime(moved / '.cache' / 'index.sqlite', (future, future))
+        with unittest.mock.patch.object(
+                site, '_make_derivative', wraps=site._make_derivative) as spy:
+            res = site.run_site(moved, moved / '.cache' / 'site', linked=False)
+        self.assertEqual(res['status'], 'ok', res['messages'])
+        self.assertEqual(spy.call_count, 0, 'pictures were made again after the archive moved')
+        out = moved / '.cache' / 'site' / 'media'
+        self.assertEqual({p.relative_to(out).as_posix(): p.read_bytes()
+                          for p in out.rglob('*') if p.is_file()}, media)
+
+    def test_a_changed_photo_on_a_moved_drive_is_still_made_again(self):
+        old, new = self._drive('d'), self._drive('e')
+        self._three_drive_photos(old)
+        self._run(linked=False)
+        shutil.copytree(old, new, copy_function=shutil.copy2)
+        shutil.rmtree(old)
+        self._point_photos_at(new)
+        # A re-scan saved over b.png on the new drive: same size, new picture.
+        changed = self._drive_image(new, '1895/b.png', (250, 0, 0))
+        _age(changed, 1800)
+        _, decoded = self._run_spied(linked=False)
+        self.assertEqual(decoded, ['b.png'])
+        expected = self.archive_root / 'expected.jpg'
+        self.assertTrue(site._make_derivative(changed, expected))
+        self.assertEqual([data for rel, data in self._media().items() if '/b_' in rel],
+                         [expected.read_bytes()])
+        self.assertEqual(len(self._cache_notes()), 3, "b.png's old entry was not pruned")
+
+    def test_an_unplugged_drive_keeps_its_saved_pictures_until_it_returns_elsewhere(self):
+        old, new = self._drive('d'), self._drive('e')
+        self._three_drive_photos(old)
+        self._run(linked=False)
+        notes = self._cache_notes()
+        self.assertEqual(len(notes), 3)
+
+        # Unplugged: the build cannot find the photos, and must not prune them.
+        shutil.move(str(old), str(new))
+        self._run(linked=False)
+        self.assertEqual(self._cache_notes(), notes, 'an unplugged drive lost its saved pictures')
+
+        # Plugged back in, as E:.
+        self._point_photos_at(new)
+        _, decoded = self._run_spied(linked=False)
+        self.assertEqual(decoded, [])
+        self.assertEqual(self._cache_notes(), notes)
+
+    @unittest.skipUnless(os.path.normcase('A') == 'a', 'needs a case-blind file system (Windows)')
+    def test_one_photo_spelled_two_ways_is_one_saved_picture(self):
+        self._image('photos/1880/pic.png')
+        self._photo_source('s-1111111111', 'photos/1880/pic.png')
+        self._photo_source('s-2222222222', 'Photos/1880/PIC.png')
+        _, decoded = self._run_spied(linked=False)
+        self.assertEqual(decoded, ['pic.png'])
+        self.assertEqual(len(self._cache_notes()), 1)
+
+    def test_where_a_file_sits_is_its_root_and_the_path_inside_it(self):
+        drive = self._drive('d')
+        (self.archive_root / 'fha.yaml').write_text(
+            f'roots:\n  photos: {json.dumps(drive.as_posix())}\n'
+            f'  scans: {json.dumps((drive / "scans").as_posix())}\n'
+            f'  same: {json.dumps(drive.as_posix())}\n', encoding='utf-8')
+        from _lib import load_fha_yaml
+        cache = site._DerivativeCache(self.archive_root, load_fha_yaml(self.archive_root))
+        outside = self._drive('elsewhere') / 'x.jpg'
+        self.assertEqual(cache.location(drive / '1895' / 'x.jpg'), ('photos', '1895/x.jpg'))
+        # Nested roots: the most specific wins; two names for one folder: the alphabet.
+        self.assertEqual(cache.location(drive / 'scans' / 'x.jpg'), ('scans', 'x.jpg'))
+        self.assertEqual(cache.location(self.archive_root / 'notes' / 'hero.jpg'),
+                         ('', 'notes/hero.jpg'))
+        self.assertEqual(cache.location(self.archive_root / 'documents' / 'a.jpg'),
+                         ('documents', 'a.jpg'))
+        self.assertEqual(cache.location(outside), ('/', outside.resolve().as_posix()))
+
+    def _make_legacy(self, note: Path, original: Path) -> Path:
+        """Rewrite a saved picture's note the way a build before #240 wrote
+        it - keyed on the original's full path - as an update would find it."""
+        entry = json.loads(note.read_text(encoding='utf-8'))
+        fields = {k: v for k, v in entry['fields'].items() if k not in ('root', 'path', 'source')}
+        fields['source'] = os.path.abspath(original)
+        key = hashlib.sha256(json.dumps(fields, sort_keys=True).encode('utf-8')).hexdigest()[:32]
+        entry['fields'] = fields
+        legacy = self._cache_dir() / f'{key}.json'
+        picture = note.with_suffix(fields['format'])
+        if legacy != note:
+            legacy.with_suffix(fields['format']).write_bytes(picture.read_bytes())
+            picture.unlink()
+            note.unlink()
+        legacy.write_text(json.dumps(entry), encoding='utf-8')
+        return legacy
+
+    def test_pictures_saved_before_the_update_are_carried_over_not_made_again(self):
+        kept = self._image('photos/1880/kept.png', colour=(1, 1, 1))
+        changed = self._image('photos/1880/changed.png', colour=(2, 2, 2))
+        self._photo_source('s-1111111111', 'photos/1880/kept.png')
+        self._photo_source('s-2222222222', 'photos/1880/changed.png')
+        self._run(linked=False)
+        media = self._media()
+        by_name = {}
+        for note in self._cache_notes():
+            data = json.loads(note.read_text(encoding='utf-8'))['fields']
+            by_name[Path(data.get('path') or data.get('source')).name] = note
+        legacy_kept = self._make_legacy(by_name['kept.png'], kept)
+        legacy_changed = self._make_legacy(by_name['changed.png'], changed)
+        # And one that will not parse, left by who knows what.
+        (self._cache_dir() / ('d' * 32 + '.json')).write_text('{"fields": {"source": 1}}',
+                                                             encoding='utf-8')
+        _age(changed, 1800)   # changed since it was saved: not carried over
+
+        res, decoded = self._run_spied(linked=False)
+        self.assertEqual(res['status'], 'ok', res['messages'])
+        self.assertEqual(decoded, ['changed.png'])
+        self.assertEqual(self._media(), media)
+        self.assertEqual(res['notes'], [], 'an old saved picture was reported as damaged')
+        # Only new-style entries remain, one per picture, and they are reused.
+        fields = [json.loads(n.read_text(encoding='utf-8'))['fields'] for n in self._cache_notes()]
+        self.assertEqual(sorted((f.get('root'), f.get('path')) for f in fields),
+                         [('photos', '1880/changed.png'), ('photos', '1880/kept.png')])
+        self.assertFalse(legacy_kept.exists())
+        self.assertFalse(legacy_changed.exists())
+        self.assertEqual(sorted(p.stem for p in self._cache_dir().glob('*.jpg')),
+                         sorted(n.stem for n in self._cache_notes()))
+        _, decoded = self._run_spied(linked=False)
+        self.assertEqual(decoded, [])
 
 
 class _InlineExecutor:
@@ -3157,7 +3352,7 @@ class ParallelPictureTests(_Base):
     def test_a_failure_note_never_stands_in_for_a_picture(self):
         # Even a note whose key matches cannot be fetched as a picture, and a
         # picture saved under the same key clears it.
-        cache = site._DerivativeCache(self._cache_dir())
+        cache = site._DerivativeCache(self.archive_root, {})
         src = self._image('photos/1880/pic.png')
         fields = cache.entry_fields(src, os.stat(src), 1200, '.jpg')
         key = cache.entry_key(fields)
@@ -3206,7 +3401,7 @@ class ParallelPictureTests(_Base):
         self.assertEqual(multiprocessing.active_children(), [])
         leftovers = [p.name for p in self._cache_dir().glob('*')] if self._cache_dir().is_dir() else []
         self.assertFalse([n for n in leftovers if n.startswith('.tmp-')], leftovers)
-        cache = site._DerivativeCache(self._cache_dir())
+        cache = site._DerivativeCache(self.archive_root, {})
         for note in self._cache_notes():
             fields = json.loads(note.read_text(encoding='utf-8'))['fields']
             self.assertIsNotNone(cache.fetch(note.stem, fields), f'{note.name} is damaged')
