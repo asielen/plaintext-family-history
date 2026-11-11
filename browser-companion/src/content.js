@@ -1403,6 +1403,35 @@
     return names;
   }
 
+  // Does Ancestry's Details panel describe the item in the address? When she
+  // clicks the viewer's arrow to the next item, the address and the picture
+  // change before the panel does, and for a moment it still shows the last
+  // item's title, date and people (#261 audit B1). The viewer's own picture
+  // of the item - the <img> marked with its media id, or whose address names
+  // it (never a thumbnail) - carries the item's title as its alt text, on
+  // both real pages this was built from. So when that alt text and the
+  // panel's title are both there and differ, the panel is still on another
+  // item and nothing of it is filed: the capture waits (ANC_MEDIA_PANEL_BEHIND).
+  // With no alt text, or no title in Ancestry's own panel, nothing is checked.
+  const ANC_MEDIA_PANEL_BEHIND = 'the details on the page have not caught up with the picture yet (they still ' +
+    'describe the item shown before), so nothing was saved - wait a moment, then press Capture again';
+
+  function ancMediaPanelIsFor(root, mediaId, details) {
+    const title = String((details && details.title) || '');
+    if (!title || !ancElements(root, (e) => e.id === ANC_MEDIA_PANEL_ID).length) return true;
+    const want = String(mediaId || '').toLowerCase();
+    const tidy = (s) => String(s || '').replace(/\s+/g, ' ').trim().toLowerCase();
+    for (const img of ancElements(root, (e) => ancTag(e) === 'IMG')) {
+      if (ancIsSeenItNode(img) || !img.getAttribute) continue;
+      const marked = String(img.getAttribute('id') || '').trim().toLowerCase() === want;
+      const m = ANC_MEDIA_IMG_RE.exec(String(img.getAttribute('src') || ''));
+      const named = !!m && !m[3] && m[2].toLowerCase() === want;
+      const alt = tidy(img.getAttribute('alt'));
+      if ((marked || named) && alt && alt !== tidy(title)) return false;
+    }
+    return true;
+  }
+
   // The whole shared photo from its viewer page (`root`: the document, or a
   // stand-in tree): { ok, media: { mediaId, treeId, personId, url, title,
   // imageUrl, fileStem }, details }. `opts.title` is the document title (the photo's
@@ -1412,6 +1441,9 @@
     const id = ancParseMediaPage(href);
     if (!id) return { ok: false, error: 'this is not a photo shared on Ancestry' };
     const details = ancMediaDetails(root, o);
+    if (!ancMediaPanelIsFor(root, id.mediaId, details)) {
+      return { ok: false, transient: true, error: ANC_MEDIA_PANEL_BEHIND };
+    }
     const docTitle = String(o.title || '').replace(ANC_TITLE_SUFFIX_RE, '').trim();
     let origin = 'https://www.ancestry.com';
     try {
@@ -1436,23 +1468,23 @@
   // words, in the site's language, so they are matched loosely, in English:
   //   an obituary or newspaper article      newspaper
   //   a birth, death or marriage certificate vital-record
-  //   military service                       military-record
   //   a property record                      land-record
   //   another document - "Document / Certificate", a legal document, personal
-  //   papers, a diploma, immigration, a yearbook, education, occupation - is
-  //   what its title says (recordHints: "Obituary for Thomas Hartley" is a
-  //   newspaper), else other;
+  //   papers, a diploma, immigration - is what its title says (recordHints:
+  //   "Obituary for Thomas Hartley" is a newspaper), else other;
   //   anything else - "Portrait / Family Photo", a site, a headstone, an
   //   heirloom, a recipe, an award, "Other", no category, or words in a
   //   language this does not know - a photo, as before: when unsure, nothing
-  //   changes. She can still change the Kind before she captures it.
+  //   changes. So are military service, occupation, education and yearbook
+  //   (the owner: they often hold portraits; for discharge papers or a
+  //   diploma filed there she changes the Kind). She can always change the
+  //   Kind before she captures it.
   function ancMediaKind(category, title) {
     const c = String(category || '').toLowerCase();
     if (/\bobituar|\bnewspaper/.test(c)) return 'newspaper';
     if (/\b(birth|death|marriage)\b/.test(c) && /\bcertificate/.test(c)) return 'vital-record';
-    if (/\bmilitary\b/.test(c)) return 'military-record';
     if (/\bproperty\b/.test(c)) return 'land-record';
-    if (/\b(documents?|certificates?|legal|papers?|diploma|immigration|yearbook|education|occupation)\b/.test(c)) {
+    if (/\b(documents?|certificates?|legal|papers?|diploma|immigration)\b/.test(c)) {
       return recordHints(String(title || '')).sourceType || 'other';
     }
     return 'photo';
@@ -3319,7 +3351,9 @@
       repository: fagRec ? 'Find a Grave' : hostnameOf(url) || null,
       people: fagRec ? [fagRec.name].concat(fagRec.family.map((f) => f.name)).filter(Boolean)
         .filter((n, i, a) => a.indexOf(n) === i)
-        : photoInfo ? (photoInfo.details.linkedTo || []).slice() : harvestPeople(),
+        // A shared item's people come only from its own Details - never
+        // harvested from its page, which names other members.
+        : photoInfo ? (photoInfo.details.linkedTo || []).slice() : ancPhoto ? [] : harvestPeople(),
       // A Find a Grave memorial page (not its gallery): Capture saves the
       // memorial's own facts and citation and its photos at full size.
       findagraveMemorial: !!fagMemorialPage(url),
@@ -3337,6 +3371,9 @@
       // Which of its Details the form was filled from (the panel compares at
       // Capture, so nothing she was not shown is staged behind her back).
       ancestryPhotoShown: photoInfo ? Object.keys(photoInfo.details) : null,
+      // Ancestry's Details still describe the item shown before (#261 audit
+      // B1): the panel says to wait, and nothing of them fills the form.
+      ancestryPhotoNotReady: photo && !photo.ok && photo.transient ? photo.error : null,
       // A FamilySearch record (or the image viewer opened from one): Capture
       // saves FamilySearch's own data for it and its image.
       familysearchRecord: !!fsParseRecordPage(url),

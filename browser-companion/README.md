@@ -242,7 +242,20 @@ no-op, the bundles land in `inbox/` directly.
   reads the page again first, and
   stages nothing while the page shows Details or linked people the form has
   not shown her (they are added to the form for her to check), so a photo is
-  captured once - a second capture of a filed photo cannot be filed.
+  captured once - a second capture of a filed photo cannot be filed. Fields
+  the page filled in and she never changed (date, title, Kind, untouched
+  people) follow that second read, and a change is shown before anything is
+  staged; while Ancestry's panel still describes the item shown before (its
+  title differs from the alt text of the viewer's own picture of this item,
+  `ancMediaPanelIsFor`), nothing is read and Capture waits (#261 audit).
+  The panel's category is read too and sets the form's Kind
+  (`ancMediaKind`, #261): an obituary or newspaper article is a newspaper, a
+  birth, death or marriage certificate a vital record, a property record a
+  land record, another document what its title says (else other), and
+  anything else - portraits, military service, occupation, education,
+  yearbooks, unknown words - a photo. The Kind at Capture decides the
+  filing: a photo's picture is role `front` (photo library), any other
+  kind's is `record` (documents root).
   On a FamilySearch record or image viewer, the page reads the record and its
   image through FamilySearch's own data service, as FamilySearch's pages do,
   with your signed-in session. That session (the `fssessionid` login, sent as a

@@ -756,6 +756,22 @@ test('#261: a shared newspaper clipping, whose picture has an image id of its ow
   assert.deepStrictEqual(page.calls.map((c) => c.url), [image]);
 });
 
+test('#261 audit B1: while Ancestry\'s Details still describe the photo before, the form takes nothing from them, and Capture waits', async () => {
+  const B = '0b0b0b0b-1234-4abc-8def-0123456789ab';
+  const url = 'https://www.ancestry.com/mediaui-viewer/tree/90000001/person/90000002/media/' + B;
+  const stale = SAMPLE('ancestry-media-panel').replace('<div class="viewerStage">', '<div class="viewerStage"><img id="' + B +
+    '" alt="Photo B" src="https://www.ancestry.com/api/media/retrieval/v2/image/namespaces/4242/media/' + B + '?client=x">');
+  const page = loadPage({ url, tree: parse(stale), fetch: ancestryMedia() });
+  const r = await page.ask({ action: 'prefill' });
+  assert.strictEqual(r.prefill.ancestryPhoto, true);
+  assert.match(r.prefill.ancestryPhotoNotReady, /have not caught up with the picture yet/);
+  assert.deepStrictEqual(r.prefill.people, []); // never photo A's, and never harvested from the page
+  assert.ok(!/1919/.test(String(r.prefill.sourceDate || '')), 'no date of photo A');
+  const info = await page.ask({ action: 'ancestryPhotoInfo' });
+  assert.deepStrictEqual([info.ok, info.transient], [false, true]);
+  assert.ok(!JSON.stringify(info).includes('Wedding'));
+});
+
 test('#261: the form\'s Kind starts from the item\'s Ancestry category - a document as a document, a photo as a photo', async () => {
   const clip = '5eed0000-1234-4abc-8def-0123456789ab';
   const url = 'https://www.ancestry.com/mediaui-viewer/collection/90003/tree/90000001/person/90000002/media/' + clip;

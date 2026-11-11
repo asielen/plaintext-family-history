@@ -810,6 +810,77 @@ test('#261 audit A1: what she typed herself always wins; people she never touche
   assert.deepStrictEqual(cap.people, ['Margaret Hartley']);
 });
 
+// #261 audit B1: she presses Capture at once, and Ancestry's Details still
+// describe photo A on every read - B's picture, with B's title as its alt
+// text, is already there. `site.html` is the page as it is now; the prefill
+// answers as content.js does.
+function behindSite(html) {
+  const site = { html };
+  site.respond = (msg, tab) => {
+    const read = () => {
+      const d = parse(site.html);
+      const i = anc.ancMediaFrom(d, tab.url, { title: d.title, origin: 'https://www.ancestry.com' });
+      if (i.ok) i.hints = anc.ancMediaHints(i.details);
+      return i;
+    };
+    switch (msg.action) {
+      case 'prefill': {
+        const info = read();
+        const ok = info.ok ? info : null;
+        return { ok: true, prefill: { url: tab.url, title: ok ? ok.media.title : 'Photo B | Ancestry',
+          sourceDate: ok ? ok.hints.sourceDate || '' : null, people: ok ? (ok.details.linkedTo || []).slice() : [],
+          repository: 'ancestry.com', recipeHint: 'ancestry', sourceType: (ok && ok.hints.sourceType) || 'photo',
+          ancestryPhoto: true, ancestryMediaId: PHOTO_B, ancestryPhotoShown: ok ? Object.keys(ok.details) : null,
+          ancestryPhotoNotReady: !info.ok && info.transient ? info.error : null, ancestryRecord: false } };
+      }
+      case 'ancestryPhotoInfo': return read();
+      case 'ancestryPhoto': return { ok: true, base64: PHOTO_BYTES.toString('base64'), ext: 'jpg', contentType: 'image/jpeg' };
+      case 'pagehtml': return { ok: true, html: site.html };
+      default: return { ok: false, error: 'unexpected ' + msg.action };
+    }
+  };
+  return site;
+}
+
+test('#261 audit B1: photo B is never filed with photo A\'s details, however fast she presses Capture', async () => {
+  const stale = PANEL_A.replace('<img id="' + PHOTO_B + '" src=', '<img id="' + PHOTO_B + '" alt="Photo B" src=');
+  assert.ok(stale.includes('alt="Photo B"'), 'the fixture edit took');
+  const site = behindSite(stale);
+  const p = await openPanel({ url: PHOTO_B_URL, respond: site.respond });
+  assert.match(p.$('asset-status').textContent, /The details on the page have not caught up with the photo yet - wait a moment, then press Re-read page/);
+  assert.deepStrictEqual(p.$('people-list').children, []);
+  assert.strictEqual(p.$('f-date').value, '');
+  await p.capture();
+  assert.strictEqual(p.written.length, 0, 'nothing is saved with another photo\'s details');
+  assert.match(p.result(), /have not caught up with the picture yet .* nothing was saved - wait a moment, then press Capture again/);
+  await p.capture();
+  assert.strictEqual(p.written.length, 0);
+  // Ancestry catches up: B's own details are shown to her, then filed.
+  site.html = stale.replace('>12 Jun 1919<', '>4 Feb 1958<').replace(A_TITLE, 'Photo B</span>');
+  await p.capture();
+  assert.strictEqual(p.written.length, 0, 'what the page now shows is put in front of her first');
+  assert.strictEqual(p.$('f-date').value, '1958-02-04');
+  await p.capture();
+  assert.strictEqual(p.written.length, 1, p.result());
+  const cap = p.capJson(p.written[0]);
+  assert.strictEqual(cap.title, 'Photo B');
+  assert.strictEqual(cap.source_date, '1958-02-04');
+  assert.ok(!JSON.stringify(cap).includes('Wedding'));
+});
+
+test('#261 audit B2: on an item filed as a record, the panel\'s words say "item", not "photo"', async () => {
+  const clip = '5eed0000-1234-4abc-8def-0123456789ab';
+  const p = await openPhoto('https://www.ancestry.com/mediaui-viewer/collection/90003/tree/90000001/person/90000002/media/' +
+    clip, { edit: () => fs.readFileSync(path.join(SAMPLES, 'ancestry-media-clipping.html'), 'utf8') });
+  assert.strictEqual(p.$('btn-capture').textContent, 'Capture this record');
+  assert.match(p.$('asset-status').textContent, /Record files: the item \+ its details \(Ancestry, auto\)/);
+  assert.doesNotMatch(p.$('asset-status').textContent, /photo/);
+  // She calls it a photo: the words follow her Kind.
+  p.$('f-type').value = 'photo';
+  await p.$('f-type').fire('change');
+  assert.match(p.$('asset-status').textContent, /Record files: the photo \+ its details \(Ancestry, auto\)/);
+});
+
 // A newspaper clipping shared from Newspapers.com, which its sharer put in
 // Ancestry's "Document / Certificate" category (#261, the owner: "should be
 // saved as a document").

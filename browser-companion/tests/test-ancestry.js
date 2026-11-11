@@ -772,9 +772,11 @@ test('#261: an item Ancestry calls a document is filed as one - an obituary as a
   for (const [category, kind] of [
     ['Obituary', 'newspaper'], ['Newspaper Article', 'newspaper'],
     ['Birth Certificate', 'vital-record'], ['Death Certificate', 'vital-record'], ['Marriage Certificate', 'vital-record'],
-    ['Military Service', 'military-record'], ['Property Record', 'land-record'],
-    ['Document / Certificate', 'other'], ['Legal Document', 'other'], ['Personal Paper', 'other'], ['Diploma', 'other'],
-    ['Immigration', 'other'], ['Yearbook', 'other'], ['Education', 'other'], ['Occupation', 'other'],
+    ['Property Record', 'land-record'],
+    ['Document / Certificate', 'other'], ['Legal Document', 'other'], ['Personal Paper', 'other'], ['Personal Papers', 'other'],
+    ['Diploma', 'other'], ['Immigration', 'other'],
+    // The owner: these often hold portraits - a photo, unless she changes the Kind.
+    ['Military Service', 'photo'], ['Occupation', 'photo'], ['Education', 'photo'], ['Yearbook', 'photo'],
     // When unsure, nothing changes: a photo.
     ['Portrait / Family Photo', 'photo'], ['Site', 'photo'], ['Headstone', 'photo'], ['Heirloom', 'photo'],
     ['Recipe', 'photo'], ['Award / Medal', 'photo'], ['Other', 'photo'], ['', 'photo'], [undefined, 'photo'],
@@ -790,9 +792,44 @@ test('#261: an item Ancestry calls a document is filed as one - an obituary as a
   assert.strictEqual(doc('Portrait / Family Photo', 'Obituary for Thomas Hartley'), 'photo');
   // Every kind is one the archive's Kind list knows.
   const KINDS = ['census', 'vital-record', 'newspaper', 'photo', 'military-record', 'land-record', 'website', 'other'];
-  for (const c of ['Obituary', 'Birth Certificate', 'Military Service', 'Property Record', 'Diploma', 'Site']) {
+  for (const c of ['Obituary', 'Birth Certificate', 'Military Service', 'Property Record', 'Diploma', 'Site', 'Yearbook']) {
     assert.ok(KINDS.indexOf(doc(c)) >= 0, c);
   }
+});
+
+test('#261 audit B1: while Ancestry\'s Details still describe the item shown before, nothing of them is taken', () => {
+  // She clicked the viewer's arrow to photo B: the address and B's picture
+  // (its alt text is B's title) are there, the panel still shows photo A.
+  const B = '0b0b0b0b-1234-4abc-8def-0123456789ab';
+  const B_URL = 'https://www.ancestry.com/mediaui-viewer/tree/90000001/person/90000002/media/' + B;
+  const withPicture = (img) => panelPage((h) => h.replace('<div class="viewerStage">', '<div class="viewerStage">' + img));
+  const src = 'https://www.ancestry.com/api/media/retrieval/v2/image/namespaces/4242/media/';
+  const stale = anc.ancMediaFrom(withPicture('<img id="' + B + '" alt="Photo B" src="' + src + B + '?client=x">'), B_URL);
+  assert.strictEqual(stale.ok, false);
+  assert.strictEqual(stale.transient, true);
+  assert.match(stale.error, /have not caught up with the picture yet .* nothing was saved - wait a moment, then press Capture again/);
+  assert.ok(!JSON.stringify(stale).includes('Wedding'), 'nothing of photo A is passed on');
+  // B's picture known by its address alone (no id), or under an image id of its own.
+  assert.strictEqual(anc.ancMediaFrom(withPicture('<img alt="Photo B" src="' + src + B + '?client=x">'), B_URL).ok, false);
+  assert.strictEqual(anc.ancMediaFrom(withPicture('<img id="' + B.toUpperCase() + '" alt="Photo B" src="' + src +
+    'a55e7000-1234-4abc-8def-0123456789ab?client=x">'), B_URL).ok, false);
+  // The panel caught up: its title is the picture's alt text (spacing and case aside) - read.
+  const caught = anc.ancMediaFrom(withPicture('<img id="' + B + '" alt="  wedding of Thomas Hartley   and Margaret Ellis" src="' +
+    src + B + '?client=x">'), B_URL);
+  assert.strictEqual(caught.ok, true);
+  assert.strictEqual(caught.details.date, '12 Jun 1919');
+  // No alt text, a thumbnail's alt, or another photo's picture: no check - read, as before.
+  assert.strictEqual(anc.ancMediaFrom(withPicture('<img id="' + B + '" alt="" src="' + src + B + '?client=x">'), B_URL).ok, true);
+  assert.strictEqual(anc.ancMediaFrom(withPicture('<img id="' + B + '" src="' + src + B + '?client=x">'), B_URL).ok, true);
+  assert.strictEqual(anc.ancMediaFrom(withPicture('<img alt="Photo B" src="' + src + B + '.jpg?MaxSide=80">'), B_URL).ok, true);
+  assert.strictEqual(anc.ancMediaFrom(withPicture('<img id="1badf00d-5678-4def-9abc-ba9876543210" alt="Another" src="' + src +
+    '1badf00d-5678-4def-9abc-ba9876543210?client=x">'), B_URL).ok, true);
+  // Without Ancestry's own panel (another layout), nothing is checked.
+  const other = parse(fs.readFileSync(path.join(SAMPLES, 'ancestry-media-photo.html'), 'utf8')
+    .replace('alt="Thomas and Margaret Hartley at the Fairview farm, about 1925"', 'alt="Something else"'));
+  assert.strictEqual(anc.ancMediaFrom(other, PHOTO_URL).ok, true);
+  // Both real shapes: the clipping's picture carries its title.
+  assert.strictEqual(anc.ancMediaFrom(parse(CLIP_HTML), CLIP_URL).ok, true);
 });
 
 test('#261 audit A2: a description with markup keeps every word and its line breaks', () => {

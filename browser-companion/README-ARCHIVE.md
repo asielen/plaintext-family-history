@@ -242,6 +242,9 @@ Details now show something the panel had not listed (you opened them after the
 panel read the page), it saves nothing yet: it adds those people to the list,
 ticked, and says "I found more on the page — check the people below, then press
 Capture this photo." Check them, then press it. Each photo is captured once.
+If you move to the next photo with Ancestry's arrow and press at once, the
+panel may say the details on the page have not caught up with the picture
+yet: nothing is saved, so wait a moment and press again.
 
 The list of other members who saved the photo ("Saved by …") never reaches your
 archive: with no copy of the page, the only words kept are the photo's details,

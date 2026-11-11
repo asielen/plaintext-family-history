@@ -270,7 +270,7 @@
   function autoPathLabel() {
     if (state.ancestryViewer) return 'the full record image (Ancestry)';
     if (state.ancRecord) return 'the record’s index and citation, and its scan if it has one (Ancestry)';
-    if (state.ancPhoto) return 'the photo, as Ancestry’s viewer shows it, and its details (Ancestry)';
+    if (state.ancPhoto) return 'the ' + ancItemWord() + ', as Ancestry’s viewer shows it, and its details (Ancestry)';
     if (state.fsRecord) {
       const fc = state.fsCheck;
       return fc && fc.available && fc.imageId
@@ -647,7 +647,7 @@
   // rest; the "Re-read file" button sets it alone, so the title, date, people
   // and notes she has stay as they are.
   const FILE_PREFILL_KEYS = ['imageUrl', 'pdfUrl', 'ancestryImageViewer', 'ancestryRecord', 'ancestryPhoto',
-    'ancestryMediaId', 'ancestryPhotoShown',
+    'ancestryMediaId', 'ancestryPhotoShown', 'ancestryPhotoNotReady',
     'familysearchRecord', 'familysearchImageViewer', 'familysearchImageId', 'findagraveMemorial',
     'newspapers', 'iiif'];
 
@@ -673,6 +673,11 @@
 
   function ancCaptureLabel() {
     return ancItemKind() === 'photo' ? 'Capture this photo' : 'Capture this record';
+  }
+
+  // What the panel calls it in its own words: a photo, or (any other Kind) an item.
+  function ancItemWord() {
+    return ancItemKind() === 'photo' ? 'photo' : 'item';
   }
 
   function applyFilePrefill(prefill, keepNp, keepAddress) {
@@ -1649,7 +1654,10 @@
     if (newKeys.length || newPeople.length || gonePeople.length || changed.length) {
       if (gonePeople.length) renderPeople(linked);
       else for (const n of newPeople) addPersonRow(n, true);
-      if (changed.indexOf('f-type') >= 0) $('btn-capture').textContent = ancCaptureLabel();
+      if (changed.indexOf('f-type') >= 0) {
+        $('btn-capture').textContent = ancCaptureLabel();
+        updateAssetStatus();
+      }
       const now = Object.assign({}, filled);
       for (const id of changed) now[id] = $(id).value;
       state.photoShown = {
@@ -2306,7 +2314,7 @@
         const note = $('f-provisional').checked ? ' (screen capture)' : '';
         parts.push('Record file: ' + state.droppedAsset.filename + note +
           (state.ancRecord ? ', with the record’s index and citation (Ancestry)'
-            : state.ancPhoto ? ', as the photo, with its details (Ancestry)'
+            : state.ancPhoto ? ', as the ' + ancItemWord() + ', with its details (Ancestry)'
             : state.fsRecord ? ', with the record’s data and citation (FamilySearch)'
               : state.fagRecord ? ', with the memorial’s facts, citation and photos (Find a Grave)' : ''));
       } else if (state.npPage && state.npLoading) {
@@ -2327,12 +2335,19 @@
         parts.push('Record files: the record’s index and citation + its scan, if it has one (Ancestry, auto)');
       } else if (state.ancPhoto) {
         const open = !state.photoShown || !state.photoShown.keys || state.photoShown.keys.some((k) => k !== 'title');
-        parts.push('Record files: the photo + its details (Ancestry, auto)' + (open ? ''
+        const what = ancItemWord();
+        const behind = state.prefill && state.prefill.ancestryPhotoNotReady;
+        parts.push('Record files: the ' + what + ' + its details (Ancestry, auto)' + (behind
+          // Ancestry's Details still describe the item shown before (#261
+          // audit B1): Capture will wait for them too.
+          ? '. The details on the page have not caught up with the ' + what + ' yet - wait a moment, then press ' +
+            'Re-read page'
+          : open ? ''
           // Not only "closed": the Details may be open in a layout the add-on
           // does not recognise yet, where opening them again changes nothing
           // (PR #258 round 10).
-          : '. The add-on couldn’t find this photo’s Details on the page (they may be closed, or Ancestry shows ' +
-            'them in a way it doesn’t recognise yet). The photo and its address are saved; its date, place and ' +
+          : '. The add-on couldn’t find this ' + what + '’s Details on the page (they may be closed, or Ancestry shows ' +
+            'them in a way it doesn’t recognise yet). The ' + what + ' and its address are saved; its date, place and ' +
             'description can be read on Ancestry from that address'));
       } else if (state.fagRecord) {
         parts.push('Record files: the memorial’s facts and citation + its photos at full size (Find a Grave, auto)');
@@ -3589,7 +3604,10 @@
     }
     // On a shared Ancestry item, the button says what her Kind will save.
     $('f-type').addEventListener('change', () => {
-      if (state.ancPhoto) $('btn-capture').textContent = ancCaptureLabel();
+      if (state.ancPhoto) {
+        $('btn-capture').textContent = ancCaptureLabel();
+        updateAssetStatus();
+      }
     });
     $('f-provisional').addEventListener('change', updateAssetStatus);
     $('btn-capture').addEventListener('click', capture);
