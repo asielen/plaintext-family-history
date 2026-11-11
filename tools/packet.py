@@ -139,7 +139,8 @@ CODE MAP
                                      the privacy rules
     _other_named_persons          - living/unknown persons named by included sources, for the
                                      README caution
-    _resolve_source_files         - source_files rows → resolved paths + missing/unresolvable notes
+    _living_caution_people        - those rows, merges followed, named by the survivor (#237)
+    _resolve_source_files        - source_files rows → resolved paths + missing/unresolvable notes
     _is_image_path                - extension sniff for photo-type asset files
 
   Privacy redaction of copied records
@@ -227,9 +228,12 @@ from _lib import (
     is_placeholder_name,
     is_working_copy,
     load_fha_yaml,
+    merge_survivor,
     normalize_id,
     open_index_db,
     path_to_alias,
+    person_is_living,
+    person_merge_chain,
     photoindex_status,
     read_record,
     read_text_exact,
@@ -1322,7 +1326,8 @@ def _other_named_persons(
     Return living/unknown persons (other than pid) named by an included
     source's claims or its source_people list - the README caution set
     (TOOLING §8: "any *other* person ... with living: true is named in a
-    README caution"). living: unknown counts as living throughout.
+    README caution"). living: unknown counts as living throughout, and a
+    merged duplicate of a living person counts as that person (#237).
     """
     if not included_source_ids:
         return []
@@ -1331,7 +1336,7 @@ def _other_named_persons(
         f"""
         SELECT DISTINCT p.id, p.name
         FROM persons p
-        WHERE p.id != ? AND p.living IN ('true', 'unknown') AND p.id IN (
+        WHERE p.id != ? AND p.id IN (
             SELECT cp.person_id FROM claim_persons cp
             JOIN claims c ON cp.claim_id = c.id
             WHERE c.source_id IN ({placeholders})
@@ -1342,7 +1347,29 @@ def _other_named_persons(
         """,
         [pid] + included_source_ids + included_source_ids,
     ).fetchall()
-    return rows
+    return _living_caution_people(conn, rows, pid)
+
+
+def _living_caution_people(conn: sqlite3.Connection, rows, pid: str) -> list[dict]:
+    """The living people a README caution names, from index rows (id, name).
+
+    Merges are followed (#237): an old merged id counts as living when anyone
+    on its chain does, and the caution names the survivor at the end of the
+    chain - by the survivor's name and id, since the tombstone's own `name:`
+    may be a former name the survivor marked restricted (SPEC §18). A
+    duplicate that was merged into the packet's own subject is the subject,
+    not another person, so it is not listed. A broken chain has no survivor;
+    the old record is named as it stands."""
+    out: list[dict] = []
+    for r in rows:
+        if not person_is_living(conn, r['id']):
+            continue
+        chain = person_merge_chain(conn, r['id'])
+        shown = merge_survivor(chain) or (chain[0] if chain else r)
+        if shown['id'] == pid:
+            continue
+        out.append({'id': shown['id'], 'name': shown['name'] or r['name']})
+    return out
 
 
 def _citation_named_persons(
@@ -1353,7 +1380,8 @@ def _citation_named_persons(
     citation token anywhere in the packet's copied .md files (profile,
     research note, included source records) - catches a living person
     mentioned only in prose, with no `claim_persons`/`source_people` row,
-    that `_other_named_persons` would otherwise miss.
+    that `_other_named_persons` would otherwise miss. Merges are followed
+    the same way (#237).
     """
     if not copied_paths:
         return []
@@ -1362,14 +1390,14 @@ def _citation_named_persons(
         f"""
         SELECT DISTINCT p.id, p.name
         FROM persons p
-        WHERE p.id != ? AND p.living IN ('true', 'unknown') AND p.id IN (
+        WHERE p.id != ? AND p.id IN (
             SELECT token FROM citations WHERE kind = 'P' AND path IN ({placeholders})
         )
         ORDER BY p.name
         """,
         [pid] + list(copied_paths),
     ).fetchall()
-    return rows
+    return _living_caution_people(conn, rows, pid)
 
 
 def _is_under_root(path: Path, root: Path) -> bool:
@@ -3047,11 +3075,12 @@ def _packet_payload(
                         }
                         if photo_person_ids:
                             pplaceholders = ','.join('?' * len(photo_person_ids))
-                            for row in conn.execute(
-                                f"SELECT id, name FROM persons WHERE id IN ({pplaceholders}) "
-                                f"AND living IN ('true', 'unknown')",
+                            # Merges followed (#237): a photo tagged with a
+                            # merged duplicate's old id shows the survivor.
+                            for row in _living_caution_people(conn, conn.execute(
+                                f"SELECT id, name FROM persons WHERE id IN ({pplaceholders})",
                                 list(photo_person_ids),
-                            ).fetchall():
+                            ).fetchall(), pid):
                                 other_named_by_id.setdefault(row['id'], row)
                 finally:
                     pconn.close()

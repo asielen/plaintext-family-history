@@ -548,6 +548,70 @@ class PacketTests(unittest.TestCase):
         self.assertIn('CAUTION', readme)
         self.assertIn('Unknown Living Person', readme)
 
+    def test_merged_duplicate_of_a_living_person_named_in_caution(self):
+        # The source names a duplicate record that was merged into a living
+        # person; the tombstone still says living: false. The README must
+        # still warn that a living person is in the packet (#237).
+        self._seed_person()
+        self._seed_person(pid='p-bbbbbbbbbb', name='Still Living', living='true', surname='Other')
+        self._seed_person(pid='p-cccccccccc', name='Old Duplicate', living='false', surname='Dup')
+        self.conn.execute("UPDATE persons SET status = 'merged', merged_into = 'p-bbbbbbbbbb' "
+                          "WHERE id = 'p-cccccccccc'")
+        self._seed_source('s-1111111111', 'Joint Source')
+        _insert_claim(self.conn, 'c-aaaaaaaaaa', 's-1111111111', 'residence', 'lived together',
+                      persons=['p-aaaaaaaaaa', 'p-cccccccccc'])
+        self._commit_fresh()
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir, no_photos=True)
+        readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
+        self.assertIn('CAUTION', readme)
+        # Named as the survivor: the duplicate's own name may be a former
+        # name the survivor marked restricted (#237 audit).
+        self.assertIn('Still Living [P-bbbbbbbbbb]', readme)
+        self.assertNotIn('Old Duplicate', readme)
+
+    def _seed_merged_living(self):
+        self._seed_person(pid='p-bbbbbbbbbb', name='Still Living', living='true', surname='Other')
+        self._seed_person(pid='p-cccccccccc', name='Old Duplicate', living='false', surname='Dup')
+        self.conn.execute("UPDATE persons SET status = 'merged', merged_into = 'p-bbbbbbbbbb' "
+                          "WHERE id = 'p-cccccccccc'")
+
+    def test_merged_duplicate_named_only_in_prose_gets_caution_as_survivor(self):
+        profile_path = self._seed_person()
+        self._seed_merged_living()
+        profile_path.write_text(
+            '---\nid: p-aaaaaaaaaa\nname: Test Person\n---\n'
+            '# Test Person\n\nRaised alongside [P-cccccccccc].\n',
+            encoding='utf-8',
+        )
+        self.conn.execute(
+            "INSERT INTO citations(token, kind, path, line) VALUES ('p-cccccccccc', 'P', ?, 4)",
+            (profile_path.relative_to(self.archive_root).as_posix(),),
+        )
+        self._commit_fresh()
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir, no_photos=True)
+        readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
+        self.assertIn('Still Living [P-bbbbbbbbbb]', readme)
+        self.assertNotIn('Old Duplicate', readme)
+
+    def test_duplicate_merged_into_the_subject_is_not_another_person(self):
+        # A stub (living: unknown) folded into the packet's own subject is the
+        # subject; the caution must not list the subject as "another" person.
+        self._seed_person()
+        self._seed_person(pid='p-cccccccccc', name='Stub Of Subject', living='unknown',
+                          surname='Stub')
+        self.conn.execute("UPDATE persons SET status = 'merged', merged_into = 'p-aaaaaaaaaa' "
+                          "WHERE id = 'p-cccccccccc'")
+        self._seed_source('s-1111111111', 'Joint Source')
+        _insert_claim(self.conn, 'c-aaaaaaaaaa', 's-1111111111', 'residence', 'lived there',
+                      persons=['p-cccccccccc'])
+        self._commit_fresh()
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir, no_photos=True)
+        readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
+        self.assertNotIn('CAUTION: this packet', readme)
+
     def test_excluded_source_claims_omitted_from_timeline(self):
         self._seed_person()
         self._seed_source('s-1111111111', 'Restricted Source', restricted=1)
@@ -1004,6 +1068,32 @@ class PacketTests(unittest.TestCase):
         readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
         self.assertIn('CAUTION', readme)
         self.assertIn('Photo Only Living', readme)
+
+    def test_photo_tagged_with_a_merged_duplicate_of_a_living_person_gets_caution(self):
+        # The photo's tag still names the old id (tags in photo files are
+        # never rewritten); the caution names the living survivor (#237).
+        self._seed_person()
+        self._seed_merged_living()
+        self._commit_fresh()
+
+        photos_dir = self.archive_root / 'photos'
+        photos_dir.mkdir(parents=True, exist_ok=True)
+        (photos_dir / 'group.jpg').write_bytes(b'group')
+        pconn = _make_photos_db(self.archive_root)
+        pconn.execute("INSERT INTO photos(path, group_id) VALUES ('photos/group.jpg', 'g1')")
+        for ref, via in (('p-aaaaaaaaaa', 'pid-keyword'), ('p-cccccccccc', 'face-tag')):
+            pconn.execute('INSERT INTO photo_people(path, person_ref, via) VALUES (?,?,?)',
+                          ('photos/group.jpg', ref, via))
+        self._commit_photos_fresh(pconn)
+        pconn.close()
+        future = time.time() + 5
+        os.utime(self.archive_root / '.cache' / 'photos.sqlite', (future, future))
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir)
+        self.assertEqual(result['status'], 'ok', result['messages'])
+        readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
+        self.assertIn('Still Living [P-bbbbbbbbbb]', readme)
+        self.assertNotIn('Old Duplicate', readme)
 
     def test_merged_alias_sources_still_gathered(self):
         # p-aaaaaaaaaa is merged into the survivor p-bbbbbbbbbb; a source

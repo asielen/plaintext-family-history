@@ -72,6 +72,9 @@ CODE MAP
     _restricted_person_refs          - linked restricted persons (ID or name link)
     _restricted_name_refs            - deadnames as name-links or in-token displays
     _living_person_refs              - living/unknown persons behind name-links
+    _person_record_flagged           - one person file: restricted, or unreadable (fail closed)
+    _chain_flagged_record            - the first record on an id's merge chain that is flagged
+    _broken_merge_notes              - old ids whose merge chain is broken, with the fix
 
   Rendering
     (strip_unaccepted_drafts         - drop `<!-- AI-DRAFT … -->` prose + AI markers,
@@ -113,8 +116,11 @@ from _lib import (
     fmt_id_display,
     id_type_of,
     is_valid_id,
+    merge_survivor,
     normalize_id,
     open_index_db,
+    person_is_living,
+    person_merge_chain,
     read_record,
     resolve_root_arg,
     strip_unaccepted_drafts,
@@ -282,28 +288,46 @@ def _person_info(conn: sqlite3.Connection, pid: str, cache: dict) -> tuple[str |
     """
     if pid in cache:
         return cache[pid]
-    row = conn.execute('SELECT name, living FROM persons WHERE id = ?', (pid,)).fetchone()
-    name = row['name'] if row else None
-    living = row['living'] if row else None
+    # A merged duplicate's old id is the person it was merged into (#237):
+    # it shows the survivor's name and WikiTree id - the tombstone's `name:`
+    # may be a former name the survivor marked restricted - and a living
+    # survivor is redacted behind the old id too.
+    chain = person_merge_chain(conn, pid)
+    row = chain[0] if chain else None
+    shown = merge_survivor(chain) or row
+    name = shown['name'] if shown else None
+    living = None
+    if row:
+        living = ('true' if any((r['living'] or '') in ('true', 'unknown') for r in chain)
+                  else row['living'])
     wt = conn.execute(
         "SELECT ext_id FROM person_external WHERE person_id = ? AND system = 'wikitree'",
-        (pid,),
+        (shown['id'] if shown else pid,),
     ).fetchone()
     wikitree_id = wt['ext_id'] if wt and wt['ext_id'] else None
-    forms: list[str] = []
-    if name:
-        forms.append(name)
-        parts = name.split()
-        if parts:
-            forms.append(parts[0])
-        for v in conn.execute(
-            'SELECT variant FROM person_variants WHERE person_id = ?', (pid,)
-        ).fetchall():
-            variant = v['variant']
-            # Restricted name variants (deadnames, SPEC §18) are excluded from
-            # person_variants at index time, so every entry here is public.
-            if variant:
-                forms.append(variant)
+
+    def name_forms(rec) -> list[str]:
+        out: list[str] = []
+        if rec and rec['name']:
+            out.append(rec['name'])
+            parts = rec['name'].split()
+            if parts:
+                out.append(parts[0])
+            for v in conn.execute(
+                'SELECT variant FROM person_variants WHERE person_id = ?', (rec['id'],)
+            ).fetchall():
+                variant = v['variant']
+                # Restricted name variants (deadnames, SPEC §18) are excluded from
+                # person_variants at index time, so every entry here is public.
+                if variant:
+                    out.append(variant)
+        return out
+
+    forms = name_forms(shown)
+    if living in ('true', 'unknown') and row is not shown:
+        # Redaction strips a preceding name in prose; the old record's name
+        # is one the prose may use, so strip that too.
+        forms += name_forms(row)
     # Deduplicate, longest first so 'Margaret A. Cole' beats 'Margaret'.
     forms = sorted({f for f in forms if f}, key=len, reverse=True)
     result = (name, forms, wikitree_id, living)
@@ -592,43 +616,93 @@ def _restricted_person_refs(conn: sqlite3.Connection, archive_root: Path, text: 
     restriction the human will not find in the file."""
     _, extra_pids = _resolve_wikilink_ids(conn, text)
     person_ids = sorted({
-        t for t in extract_token_ids(text) if id_type_of(t) == 'P'
+        normalize_id(t) for t in extract_token_ids(text) if id_type_of(t) == 'P'
     } | extra_pids)
-    if not person_ids:
-        return []
-    placeholders = ','.join('?' * len(person_ids))
-    rows = conn.execute(
-        f'SELECT id, name, path FROM persons WHERE id IN ({placeholders}) ORDER BY id',
-        person_ids,
-    ).fetchall()
-    flagged: list[sqlite3.Row] = []
-    for row in rows:
-        if not row['path']:
-            continue
-        record_path = archive_root / row['path']
-        try:
-            rec = read_record(record_path, on_decode_error=on_decode_error)
-        except Exception:
-            # A person record present but unreadable is assumed restricted.
-            flagged.append(row)
-            continue
-        if rec['undecodable']:
-            # Reported, not raised (see the docstring): an empty record with no
-            # parse_errors, which both tests below would read as "no marker,
-            # publishable". Fail closed here instead.
-            flagged.append(row)
-            continue
-        # read_record surfaces a malformed record through parse_errors with
-        # empty meta, not an exception. Empty meta lacks the `restricted`
-        # marker, so trusting it would publish a link to a person whose record
-        # became malformed after indexing - possibly a restricted one. Fail
-        # closed: a present-but-unparseable record is assumed private (AGENTS.md
-        # privacy rule); the index carries no person-level `restricted` to fall
-        # back on. An absent file is index staleness, handled as before.
-        malformed = bool(rec['parse_errors']) and record_path.exists()
-        if malformed or _is_restricted_value(rec['meta'].get('restricted')):
-            flagged.append(row)
+    flagged: list[dict] = []
+    for pid in person_ids:
+        hit = _chain_flagged_record(conn, archive_root, pid, on_decode_error=on_decode_error)
+        if hit is not None:
+            # The id as linked, with the name and file of the record that
+            # stopped it (the survivor, when an old merged id is linked).
+            flagged.append({'id': normalize_id(pid), 'name': hit['name'], 'path': hit['path']})
     return flagged
+
+
+def _person_record_flagged(archive_root: Path, rel_path: str, on_decode_error=None) -> bool:
+    """True when one person record's file says `restricted:` (any value) or
+    cannot be trusted to say it.
+
+    The index carries no person-level `restricted`, so the file is read. A
+    file that will not read, will not decode, or is present but malformed is
+    assumed private (AGENTS.md privacy rule, fail closed): read_record returns
+    empty meta for those rather than raising, and empty meta lacks the
+    marker. An absent file is index staleness, treated as not restricted, as
+    it always has been here."""
+    record_path = archive_root / rel_path
+    try:
+        rec = read_record(record_path, on_decode_error=on_decode_error)
+    except Exception:
+        return True
+    if rec.get('undecodable'):
+        return True
+    malformed = bool(rec['parse_errors']) and record_path.exists()
+    return malformed or _is_restricted_value(rec['meta'].get('restricted'))
+
+
+def _chain_flagged_record(conn: sqlite3.Connection, archive_root: Path, pid: str, *,
+                          on_decode_error=None, cache: dict | None = None) -> dict | None:
+    """The first record on `pid`'s merge chain whose file is flagged by
+    `_person_record_flagged`, or None.
+
+    An old merged id is the person it was merged into (SPEC §9), so a link
+    or claim using it must obey the survivor's `restricted:` marker, not just
+    the tombstone's (#237). Every record on the chain is checked: a marker on
+    any of them withholds. `cache` memoizes the verdict per record id. An id
+    the index does not hold is not checked, as before; a broken chain's
+    stand-in has no file, and `person_is_living` already treats it as living."""
+    for rec in person_merge_chain(conn, pid):
+        rel = rec.get('path')
+        if not rel:
+            continue
+        if cache is not None and rec['id'] in cache:
+            flagged = cache[rec['id']]
+        else:
+            flagged = _person_record_flagged(archive_root, rel, on_decode_error)
+            if cache is not None:
+                cache[rec['id']] = flagged
+        if flagged:
+            return rec
+    return None
+
+
+def _broken_merge_notes(conn: sqlite3.Connection, text: str) -> list[str]:
+    """One plain note per person the profile body links whose merge record is
+    broken: a `merged_into:` that loops back or names a person not in the
+    index. There is no survivor to read, so the export treats them as living
+    - a dead ancestor shown as [living person] for no visible reason - and
+    the note names the line to fix, as `fha site` does."""
+    _, extra_pids = _resolve_wikilink_ids(conn, text)
+    pids = sorted({normalize_id(t) for t in extract_token_ids(text) if id_type_of(t) == 'P'}
+                  | extra_pids)
+    notes: list[str] = []
+    seen: set[str] = set()
+    for pid in pids:
+        chain = person_merge_chain(conn, pid)
+        if not chain or merge_survivor(chain) is not None:
+            continue
+        culprit = chain[-2]     # the last real record: its merged_into: is the broken one
+        if culprit['id'] in seen:
+            continue
+        seen.add(culprit['id'])
+        why = ('its chain of merges loops back on itself' if chain[-1]['broken'] == 'loop'
+               else f'no person {fmt_id_display(chain[-1]["id"])} is in the index')
+        notes.append(
+            f'{chain[0]["name"] or fmt_id_display(pid)} ({fmt_id_display(pid)}) is recorded '
+            f'as merged into another person, but {why}, so there is no way to tell who '
+            f'they really are. WikiTree shows them as [living person] and will not name '
+            f'them. Fix the `merged_into:` line in {culprit["path"] or "their record"}, '
+            f'then run `fha index` and `fha wikitree` again.')
+    return notes
 
 
 def _restricted_name_refs(conn: sqlite3.Connection, archive_root: Path, text: str) -> list[tuple[str, str]]:
@@ -658,8 +732,11 @@ def _restricted_name_refs(conn: sqlite3.Connection, archive_root: Path, text: st
         when the linked person's record cannot be read."""
         if pid not in variant_cache:
             values: set[str] = set()
-            prow = conn.execute('SELECT path FROM persons WHERE id = ?', (pid,)).fetchone()
-            if prow is not None and prow['path']:
+            # An old merged id is the survivor: their restricted names bind
+            # it too (#237), so every record on the merge chain is read.
+            for prow in person_merge_chain(conn, pid):
+                if not prow.get('path'):
+                    continue
                 try:
                     meta = read_record(archive_root / prow['path'])['meta']
                 except Exception:
@@ -743,11 +820,13 @@ def _living_person_refs(conn: sqlite3.Connection, text: str) -> list[sqlite3.Row
     if not extra_pids:
         return []
     placeholders = ','.join('?' * len(extra_pids))
-    return conn.execute(
-        f"SELECT id, name FROM persons WHERE id IN ({placeholders}) "
-        f"AND living IN ('true', 'unknown') ORDER BY id",
+    rows = conn.execute(
+        f"SELECT id, name FROM persons WHERE id IN ({placeholders}) ORDER BY id",
         sorted(extra_pids),
     ).fetchall()
+    # Merges followed: a name that resolves to a merged duplicate of a
+    # living person names that living person (#237).
+    return [r for r in rows if person_is_living(conn, r['id'])]
 
 
 # ── Rendering ────────────────────────────────────────────────────────────────────
@@ -990,32 +1069,11 @@ def _claim_names_restricted_person(
     raising, and empty meta lacks the restriction marker, so the record must
     be treated as restricted from the parse_errors signal, not the empty meta.
     """
-    rows = conn.execute(
-        'SELECT p.id, p.path FROM claim_persons cp JOIN persons p ON cp.person_id = p.id '
-        'WHERE cp.claim_id = ?', (claim_id,)).fetchall()
-    for row in rows:
-        person_id = row['id']
-        if person_id not in cache:
-            if not row['path']:
-                cache[person_id] = False
-            else:
-                record_path = archive_root / row['path']
-                try:
-                    rec = read_record(record_path)
-                except Exception:
-                    cache[person_id] = True
-                else:
-                    # parse_errors on a present file means the record is
-                    # malformed and its meta is empty/partial - the restriction
-                    # marker may simply be missing from what parsed. Assume
-                    # restricted rather than read "no marker" as "public"
-                    # (AGENTS.md privacy rule). An absent file is index
-                    # staleness, treated as before (not restricted here).
-                    if rec['parse_errors'] and record_path.exists():
-                        cache[person_id] = True
-                    else:
-                        cache[person_id] = _is_restricted_value(rec['meta'].get('restricted'))
-        if cache[person_id]:
+    # Merges followed (#237): a claim naming an old merged id names the
+    # survivor, so the survivor's marker withholds it (`_chain_flagged_record`).
+    for row in conn.execute('SELECT person_id FROM claim_persons WHERE claim_id = ?',
+                            (claim_id,)).fetchall():
+        if _chain_flagged_record(conn, archive_root, row['person_id'], cache=cache) is not None:
             return True
     return False
 
@@ -1056,15 +1114,16 @@ def _research_notes_lines(
           AND COALESCE(s.restricted, 0) = 0
           AND COALESCE(s.source_type, '') != 'dna'
           AND COALESCE(s.publication_ok, 1) != 0
-          AND NOT EXISTS (
-            SELECT 1 FROM claim_persons cp2 JOIN persons p ON cp2.person_id = p.id
-            WHERE cp2.claim_id = c.id AND p.living IN ('true','unknown')
-          )
         ORDER BY CASE WHEN c.date_min IS NULL OR c.date_min = '' THEN 1 ELSE 0 END,
                  c.date_min ASC
         """,
         (pid,),
     ).fetchall()
+    # A claim naming anyone living is withheld, merges followed: a claim
+    # written with a merged duplicate's old id names the survivor (#237).
+    rows = [r for r in rows if not any(
+        person_is_living(conn, p['person_id']) for p in conn.execute(
+            'SELECT person_id FROM claim_persons WHERE claim_id = ?', (r['id'],)))]
     if restricted_claims:
         rows = [r for r in rows if normalize_id(str(r['id'])) not in restricted_claims]
     person_cache: dict[str, bool] = {}
@@ -1303,6 +1362,7 @@ def _wikitree_payload(archive_root: Path, pid: str) -> dict:
         # [living person] redaction only guards ID tokens. Fail closed with
         # the fix named, the same posture as the restricted name-link scans.
         living_refs = _living_person_refs(conn, body)
+        merge_notes = _broken_merge_notes(conn, body)
         if living_refs:
             items = ', '.join(
                 f'{r["name"] or "unnamed"} ({fmt_id_display(r["id"])})' for r in living_refs
@@ -1313,7 +1373,7 @@ def _wikitree_payload(archive_root: Path, pid: str) -> dict:
                         f'(or possibly living) people; these name-links would: {items}. '
                         'Remove each reference, or pin it to its [[P-id]] token so '
                         'it renders as [living person].'
-                    ]}
+                    ] + merge_notes}
         spacetime = _spacetime_index(conn, pid)
         templates = _load_templates()
         claim_restricted = _restricted_claim_ids(conn, archive_root)
@@ -1416,7 +1476,7 @@ def _wikitree_payload(archive_root: Path, pid: str) -> dict:
         out.append('<references/>')
 
         text = '\n'.join(out) + '\n'
-        messages = []
+        messages = list(merge_notes)
         if not used_sources:
             messages.append('Note: the profile body cites no sources - references block is empty.')
         return {'status': 'ok', 'text': text, 'messages': messages}

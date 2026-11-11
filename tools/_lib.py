@@ -212,6 +212,10 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    parse_frontmatter_strict  - frontmatter mapping via plain yaml.safe_load (no coercion)
 #    frontmatter_edit_problem  - pre-write guard for surgical frontmatter edits
 #    LIVING_VALUES / normalize_living - the living flag's vocabulary (SPEC §9/§19)
+#    merge_chain               - a person, then each record it was merged into (SPEC §9)
+#    merge_survivor            - the record to read for an id: the end of its chain
+#    person_merge_chain        - merge_chain read from the index, by id
+#    person_is_living          - living in shared output, merges followed (#237)
 #    frontmatter_key_line_indexes - column-0 `key:` lines inside the fence span
 #    living_edit_problem       - frontmatter_edit_problem + "living reads the target"
 #    set_person_living         - THE living-flag writer: `fha person set-living` and
@@ -5065,6 +5069,90 @@ def normalize_living(value: object) -> str | None:
     if isinstance(value, bool):
         return 'true' if value else 'false'
     return str(value).strip().lower()
+
+
+def merge_chain(row, lookup) -> list:
+    """`row`, then each record it was merged into in turn, to the survivor.
+
+    `fha confirm merge` leaves the old record behind as a tombstone that still
+    says whatever it said before (often `living: false`, from a tree imported
+    before anyone knew the two were one person), with `merged_into:` naming
+    the survivor (SPEC §9). Anything that still names the old id - a photo
+    tag, or a claim written by hand after the merge - is about the survivor,
+    so a privacy check has to read the whole chain, not the tombstone alone
+    (#236, #237).
+
+    `row` is any mapping with `id`, `living` and `merged_into` (an index row
+    or a dict); `lookup(id)` returns the next record or None. A chain that
+    loops back on itself, or names an id the index does not hold, has no
+    survivor anyone can read. It ends in a stand-in marked `broken` that reads
+    as `living: unknown`, and unknown counts as living (SPEC §19), so shared
+    output leaves the person out rather than guessing."""
+    chain = [row]
+    seen = {normalize_id(str(row['id']))}
+    current = row
+    while True:
+        try:
+            nxt = current['merged_into']
+        except (IndexError, KeyError):
+            break
+        nid = normalize_id(str(nxt or ''))
+        if not nid:
+            break
+        current = None if nid in seen else lookup(nid)
+        if current is None:
+            chain.append({'id': nid, 'living': 'unknown', 'merged_into': None,
+                          'broken': 'loop' if nid in seen else 'missing'})
+            break
+        seen.add(nid)
+        chain.append(current)
+    return chain
+
+
+def merge_survivor(chain: list):
+    """The record to read for an id: the survivor at the end of its merge chain.
+
+    Whatever an old id shows - a name, a link, the restricted names and the
+    `restricted:` marker an export must obey - comes from the person it was
+    merged into, not from the tombstone, whose `name:` may well be a former
+    name the survivor marked restricted (SPEC §18, #237). None when `chain`
+    is empty (the id is in no record) or broken (a loop, or a survivor the
+    index does not hold): there is then no record to read, and callers keep
+    the person out of shared output instead."""
+    if not chain:
+        return None
+    end = chain[-1]
+    if isinstance(end, dict) and end.get('broken'):
+        return None
+    return end
+
+
+def person_merge_chain(conn: sqlite3.Connection, pid: str) -> list:
+    """`merge_chain` for an id, read from the index: dicts carrying `id`,
+    `name`, `living`, `merged_into` and `path`. Empty when the index holds no
+    person with that id."""
+    def lookup(nid: str):
+        r = conn.execute('SELECT id, name, living, merged_into, path FROM persons WHERE id = ?',
+                         (nid,)).fetchone()
+        return None if r is None else {'id': r[0], 'name': r[1], 'living': r[2],
+                                       'merged_into': r[3], 'path': r[4]}
+
+    start = lookup(normalize_id(str(pid or '')))
+    return [] if start is None else merge_chain(start, lookup)
+
+
+def person_is_living(conn: sqlite3.Connection, pid: str) -> bool:
+    """Whether a person counts as living in shared output, merges followed.
+
+    True when the person, or anyone on their `merged_into` chain, is
+    `living: true` or `unknown`, or the chain is broken (`merge_chain`). An id
+    the index does not hold at all is not a person record, and stays False,
+    as it always has: the exports' own checks for a dangling id still apply.
+    One rule for the exports that share material: packet and wikitree read
+    it through here, site through `merge_chain` (gedcom leaves merged
+    records out of its export entirely)."""
+    return any((r['living'] or '') in ('true', 'unknown')
+               for r in person_merge_chain(conn, pid))
 
 
 def frontmatter_key_line_indexes(lines: list[str], start: int, end: int, key: str) -> list[int]:
