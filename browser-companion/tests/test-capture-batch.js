@@ -802,3 +802,112 @@ test('PR #231 sweep: a stop count, a "refused on its own" mark and a part-save c
     L.items['101'].setAsideBefore], ['queued', 0, false, 'refused twice']);
   assert.deepStrictEqual([L.items['202'].state, L.items['202'].stops, 'again' in L.items['202']], ['done', 0, false]);
 });
+
+// ── a tree person's Ancestry gallery: photos, clippings and documents ────────
+// The owner: "batch-download a person's gallery too". Each tile on the
+// person's Gallery tab is queued in the Ancestry batch beside her cited
+// records, keyed as Seen It knows a shared item (med:{mediaId}), and opened
+// only at its own viewer address, rebuilt from its checked parts.
+
+const GALLERY = 'https://www.ancestry.com/family-tree/person/tree/90000001/person/90000002/gallery?galleryPage=1&tab=gallery';
+const GAL_A = 'a1100000-1234-4abc-8def-0123456789ab';
+const GAL_B = 'b2200000-1234-4abc-8def-0123456789ab';
+const GAL_C = 'c3300000-1234-4abc-8def-0123456789ab';
+const galleryPage = () => fs.readFileSync(path.join(SAMPLES, 'ancestry-person-gallery.html'), 'utf8');
+
+test('batchAncGallery: the photos and documents in a person\'s gallery, from its tiles only, once each', () => {
+  const r = BS.batchAncGallery(parse(galleryPage()), GALLERY);
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(r.sectionFound, true);
+  assert.strictEqual(r.person, 'Thomas Hartley');
+  // Both viewer address shapes, each without its query, the id in small
+  // letters; the item shown twice once; Seen It's badge is not in a title;
+  // the tile linking off Ancestry and the link outside the tiles are not taken.
+  assert.deepStrictEqual(r.sources, [
+    { mediaId: GAL_A, url: 'https://www.ancestry.com/mediaui-viewer/collection/1030/tree/90000001/person/90000002/media/' + GAL_A,
+      title: 'Thomas Hartley at the Fairview farm' },
+    { mediaId: GAL_B, url: 'https://www.ancestry.com/mediaui-viewer/collection/1030/tree/90000001/person/90000002/media/' + GAL_B,
+      title: 'Obituary of Thomas Hartley' },
+    { mediaId: GAL_C, url: 'https://www.ancestry.com/mediaui-viewer/tree/90000001/person/90000002/media/' + GAL_C,
+      title: 'Hartley family reunion, 1902' },
+  ]);
+  // The page links to its next page: said, never followed.
+  assert.strictEqual(r.more, true);
+  assert.strictEqual(r.page, 1);
+  // The last page of the gallery has no next page.
+  const last = galleryPage().replace(/<nav class="galleryPagination[\s\S]*?<\/nav>/, '');
+  assert.ok(last !== galleryPage(), 'the fixture edit took');
+  assert.strictEqual(BS.batchAncGallery(parse(last), GALLERY.replace('galleryPage=1', 'galleryPage=2')).more, false);
+  // A person's Facts page (or any other page) is not a gallery: nothing is read from it.
+  const facts = BS.batchAncGallery(parse(galleryPage()), 'https://www.ancestry.com/family-tree/person/tree/90000001/person/90000002/facts');
+  assert.deepStrictEqual([facts.sectionFound, facts.sources], [false, []]);
+});
+
+test('gallery items queue beside her records, keyed as Seen It knows them; the records already queued are untouched', () => {
+  const L = CB.newLedger();
+  CB.addRecords('ancestry', L, [{ dbId: '90001', recordId: '1000001', persons: ['Calvin Hartley'] }], 'file: a.ged');
+  const before = clone(L.items['90001:1000001']);
+  const viewer = (guid, extra) => 'https://www.ancestry.com/mediaui-viewer/' + (extra || '') +
+    'tree/90000001/person/90000002/media/' + guid;
+  const added = CB.addRecords('ancestry', L, [
+    { mediaId: GAL_A, url: viewer(GAL_A, 'collection/1030/'), title: 'Thomas Hartley at the Fairview farm',
+      persons: ['Thomas Hartley'] },
+    { mediaId: GAL_C.toUpperCase(), url: viewer(GAL_C.toUpperCase()), title: 'Hartley family reunion, 1902' },
+    // Never queued: an address off Ancestry, one naming another item, one
+    // that is not a viewer address, an id that is not one, one not https.
+    { mediaId: GAL_B, url: 'https://evil.example/mediaui-viewer/tree/90000001/person/90000002/media/' + GAL_B },
+    { mediaId: GAL_B, url: viewer(GAL_A) },
+    { mediaId: GAL_B, url: 'https://www.ancestry.com/mediaui-viewer/x/y/media/' + GAL_B },
+    { mediaId: '../../x', url: viewer('../../x') },
+    { mediaId: GAL_B, url: 'http://www.ancestry.com/mediaui-viewer/tree/90000001/person/90000002/media/' + GAL_B },
+  ], 'gallery: Thomas Hartley');
+  assert.strictEqual(added, 2);
+  assert.deepStrictEqual(L.order, ['90001:1000001', 'med:' + GAL_A, 'med:' + GAL_C]);
+  assert.deepStrictEqual(L.items['90001:1000001'], before);
+  const a = L.items['med:' + GAL_A];
+  assert.deepStrictEqual([a.mediaId, a.url, a.state, a.persons],
+    [GAL_A, viewer(GAL_A, 'collection/1030/'), 'queued', ['Thomas Hartley']]);
+  assert.strictEqual(L.items['med:' + GAL_C].url, viewer(GAL_C));
+  const site = CB.SITES.ancestry;
+  assert.strictEqual(site.seenIt(a), 'med:' + GAL_A);
+  assert.strictEqual(site.captureKey(a), 'med:' + GAL_A);
+  assert.strictEqual(site.urlOf(a), viewer(GAL_A, 'collection/1030/'));
+  // A record's keys and address are as they always were.
+  assert.strictEqual(site.seenIt(before), 'rec:90001:1000001');
+  assert.strictEqual(site.urlOf(before), 'https://www.ancestry.com/search/collections/90001/records/1000001');
+  // A stored address someone changed is never visited: no key, no address.
+  assert.strictEqual(site.keyOf(Object.assign({}, a, { url: 'https://evil.example/' })), null);
+  // Done stays done, queued again or not.
+  CB.markDone(L, 'med:' + GAL_A, 'farm-bundle');
+  assert.strictEqual(CB.addRecords('ancestry', L, [{ mediaId: GAL_A, url: viewer(GAL_A, 'collection/1030/') }]), 0);
+  assert.strictEqual(L.items['med:' + GAL_A].state, 'done');
+  assert.strictEqual(CB.nextPending(L).key, '90001:1000001');
+});
+
+test('a gallery item\'s causes: details that have not caught up are tried again, never saved; a page that is not the item is set aside', () => {
+  const table = [
+    // content.js ANC_MEDIA_PANEL_BEHIND, as the batch's capture refuses with it.
+    ['the details on the page have not caught up with the picture yet (they still describe the item shown before), ' +
+      'so nothing was saved - wait a moment, then press Capture again', 'retry'],
+    ['more details on the page to check first', 'retry'],
+    ['the photo could not be fetched from Ancestry: the photo has not appeared on the page yet - wait until it shows, ' +
+      'then press Capture again. Nothing was saved. If you can download the photo yourself (right-click it, Save ' +
+      'image as), drop that file into the panel and press Capture this photo', 'retry'],
+    ['the page it opened is not a photo or document page (it may have been removed, or made private)', 'skip'],
+    ['the page shows Ancestry photo ' + GAL_B + ', not the one queued, so nothing was saved', 'skip'],
+  ];
+  for (const [m, want] of table) assert.strictEqual(CB.classifyError(m), want, m);
+});
+
+test('one writer: an Ancestry photo saved by hand joins the queue as done, beside the records', async () => {
+  const mem = memory();
+  const store = STORE.create(mem.deps);
+  const url = 'https://www.ancestry.com/mediaui-viewer/tree/90000001/person/90000002/media/' + GAL_A;
+  await store.handle(intent('ancestry', [['addRecords', [anc('90001', '1000001')], 'file: a.ged', 'a.ged']]));
+  await store.handle(intent('ancestry', [['manual', { ok: true, site: 'ancestry', bundle: 'farm-bundle',
+    record: { mediaId: GAL_A, url, name: 'Thomas Hartley at the Fairview farm' } }]]));
+  const L = mem.data.ancBatchLedger;
+  assert.deepStrictEqual(L.order, ['90001:1000001', 'med:' + GAL_A]);
+  assert.deepStrictEqual([L.items['med:' + GAL_A].state, L.items['med:' + GAL_A].note], ['done', 'saved by hand']);
+  assert.strictEqual(L.items['90001:1000001'].state, 'queued');
+});

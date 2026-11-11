@@ -488,6 +488,7 @@ test('F8: a head left from another record keyed in the query or a hash route is 
 const FS_PERSON = 'https://www.familysearch.org/tree/person/details/KWHR-T01';
 const NP_LIST_PAGE = 'https://www.newspapers.com/clippings/my-clippings/';
 const ANC_PERSON = 'https://www.ancestry.com/family-tree/person/tree/1/person/2/facts';
+const ANC_GALLERY = 'https://www.ancestry.com/family-tree/person/tree/90000001/person/90000002/gallery?galleryPage=1&tab=gallery';
 const BATCH_ON = { batchDownloads: true };
 
 // Every network answer a batch question could want; each request recorded.
@@ -515,6 +516,7 @@ test('switched off, every batch question is answered "switched off" and nothing 
     [FS_PERSON, { action: 'findagraveLinks' }],
     [MEMORIAL, { action: 'findagraveLinks' }],
     [ANC_PERSON, { action: 'ancestryPersonSources' }],
+    [ANC_GALLERY, { action: 'ancestryPersonGallery' }],
     [NP_LIST_PAGE, { action: 'newspapersList', cursor: 0, user: 'HartleyResearch' }],
   ];
   for (const storage of [undefined, {}, { batchDownloads: false }, { batchDownloads: 'true' }]) {
@@ -570,6 +572,15 @@ test('switched on: Find a Grave and Ancestry pages are read for what to queue wi
   // Ancestry's reader answers on Ancestry only.
   const off = loadPage({ url: MEMORIAL, fetch: anything(), storage: BATCH_ON, tree: parse(SAMPLE('findagrave-memorial')) });
   assert.strictEqual((await off.ask({ action: 'ancestryPersonSources' })).ok, false);
+  // A person's gallery: its tiles, read from the page, with no request.
+  const gal = loadPage({ url: ANC_GALLERY, fetch: anything(), storage: BATCH_ON, tree: parse(SAMPLE('ancestry-person-gallery')) });
+  const g = await gal.ask({ action: 'ancestryPersonGallery' });
+  assert.strictEqual(g.ok, true, g.error);
+  assert.deepStrictEqual(g.sources.map((s) => s.mediaId.slice(0, 8)), ['a1100000', 'b2200000', 'c3300000']);
+  assert.strictEqual(g.more, true);
+  assert.strictEqual(gal.calls.length, 0);
+  const galOff = loadPage({ url: MEMORIAL, fetch: anything(), storage: BATCH_ON, tree: parse(SAMPLE('ancestry-person-gallery')) });
+  assert.strictEqual((await galOff.ask({ action: 'ancestryPersonGallery' })).ok, false);
 });
 
 // The page data that names who is signed in, as Newspapers.com sends it.

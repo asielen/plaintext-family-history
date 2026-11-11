@@ -1,6 +1,7 @@
 // batch-sources.js - the pure, importable core of what fills a batch
 // download's queue, read from a page the owner has open: an Ancestry tree
-// person's sources, a FamilySearch tree person's sources, the Find a Grave
+// person's sources and the photos, clippings and documents in their
+// gallery, a FamilySearch tree person's sources, the Find a Grave
 // memorials a page links to, and one page of the signed-in member's own
 // Newspapers.com clippings list. Batch downloads are switched off unless the
 // browser has been told otherwise (src/batch.js); content.js answers these
@@ -26,6 +27,7 @@
 // Code map:
 //   batchDescribeOthers     "links to example.org (2), a note (1)"
 //   batchAncPersonSources   an Ancestry tree person's record links (no request)
+//   batchAncGallery         the items on an Ancestry tree person's Gallery page (no request)
 //   batchFsPersonPid        the tree person a FamilySearch address names
 //   batchFsPersonSources    a FamilySearch tree person's record ids (data service)
 //   batchFagLinks           the Find a Grave memorials a page links to
@@ -34,7 +36,7 @@
 
 'use strict';
 
-const { ancElements, ancText, ancTag, ancById, ancParseRecordPage } = require('./ancestry-record.js');
+const { ancElements, ancText, ancTag, ancById, ancParseRecordPage, ancParseMediaPage } = require('./ancestry-record.js');
 const { fsJson } = require('./familysearch-record.js');
 const { fagParseMemorial } = require('./findagrave-record.js');
 const { npObjectAt } = require('./newspapers-page-data.js');
@@ -111,6 +113,65 @@ function batchAncPersonSources(root, href) {
     other: others.length,
     otherWhat: batchDescribeOthers(others),
   };
+}
+
+// An Ancestry tree person's Gallery page (`root`, at `href`:
+// /family-tree/person/tree/{treeId}/person/{personId}/gallery): the photos,
+// clippings and documents its tiles open, as { mediaId, url, title } - the
+// media viewer's address without its query, which is how Seen It knows a
+// shared item (med:{mediaId}), and the tile's caption. Read from the tiles
+// (.mediaGalleryItem) and nowhere else on the page, once each, on the
+// page's own site; Seen It's badges are skipped (ancText), and nothing is
+// fetched. The gallery shows so many tiles a page: `more` says this page
+// links to the next one, which she opens herself - the batch never pages
+// through a gallery on its own. Not a gallery page: nothing
+// (`sectionFound: false`).
+const BATCH_ANC_GALLERY_RE = /^\/family-tree\/person\/tree\/\d+\/person\/\d+\/gallery\/?$/i;
+
+function batchAncGallery(root, href) {
+  const person = batchFirstLine(ancElements(root, (e) => ancTag(e) === 'H1')[0]) || null;
+  const sources = [];
+  let here = null;
+  try {
+    here = new URL(href);
+  } catch (e) {
+    here = null;
+  }
+  if (!here || !BATCH_ANC_HOST_RE.test(here.hostname) || !BATCH_ANC_GALLERY_RE.test(here.pathname)) {
+    return { ok: true, person, sources, sectionFound: false, total: 0, other: 0, otherWhat: '', more: false, page: 1 };
+  }
+  const hasClass = (e, c) => String(e.className || '').split(/\s+/).indexOf(c) >= 0;
+  const link = (a) => {
+    try {
+      return new URL(a.getAttribute('href'), href);
+    } catch (e) {
+      return null;
+    }
+  };
+  const seen = new Set();
+  for (const tile of ancElements(root, (e) => hasClass(e, 'mediaGalleryItem'))) {
+    const caption = ancElements(tile, (e) => hasClass(e, 'mediaCardCaption'))[0];
+    const titled = ancElements(tile, (e) => !!(e.getAttribute && e.getAttribute('title')))[0];
+    for (const a of ancElements(tile, (e) => ancTag(e) === 'A' && !!e.getAttribute('href'))) {
+      const u = link(a);
+      if (!u || u.origin !== here.origin) continue;
+      const id = ancParseMediaPage(u.href);
+      if (!id || !id.treeId || !id.personId || seen.has(id.mediaId)) continue;
+      seen.add(id.mediaId);
+      const title = batchFirstLine(caption) || String((titled && titled.getAttribute('title')) || '').slice(0, 200) ||
+        batchFirstLine(a);
+      sources.push({ mediaId: id.mediaId, url: id.url, title });
+    }
+  }
+  // The next page: a link to this gallery's galleryPage={this one + 1}.
+  const page = Math.max(1, Number(here.searchParams.get('galleryPage')) || 1);
+  const more = ancElements(root, (e) => {
+    if (ancTag(e) !== 'A' || !e.getAttribute('href')) return false;
+    const u = link(e);
+    return !!u && u.origin === here.origin && u.pathname === here.pathname &&
+      Number(u.searchParams.get('galleryPage')) === page + 1;
+  }).length > 0;
+  return { ok: true, person, sources, sectionFound: true, total: sources.length, other: 0, otherWhat: '', more, page };
 }
 
 // The FamilySearch tree person an address names (/tree/person/details/{PID}),
@@ -296,6 +357,7 @@ async function batchNpClippingsList(cursor, username, d) {
 module.exports = {
   batchDescribeOthers,
   batchAncPersonSources,
+  batchAncGallery,
   batchFsPersonPid,
   batchFsPersonSources,
   batchFagLinks,

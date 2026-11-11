@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<!-- A tree person's Gallery tab on Ancestry
+     (/family-tree/person/tree/{treeId}/person/{personId}/gallery?galleryPage=1&tab=gallery),
+     modelled on the live page's tiles: each .mediaGalleryItem holds one link
+     into the media viewer (.mediaGalleryItemAction) and the item's caption
+     (.mediaCardCaption). Fictional Hartleys, invented ids. What is particular
+     to it:
+       - two viewer address shapes: /mediaui-viewer/collection/{n}/tree/…
+         (today's) and /mediaui-viewer/tree/… (older), one written in capitals;
+       - one item shown twice (the second time with a query);
+       - a Seen It badge inside a caption, which is not part of its title;
+       - a tile that links off Ancestry, and a viewer link outside the tiles
+         ("Recently viewed"), neither of which is the gallery's;
+       - a link to the next page of the gallery.
+     Read by browser-companion/tests/test-capture-batch.js. -->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Thomas Hartley - Gallery - Ancestry</title>
+</head>
+<body>
+  <header><nav><a href="/family-trees">Trees</a> <a href="/search">Search</a></nav></header>
+  <section class="personHeader">
+    <h1 class="userCardTitle">Thomas Hartley</h1>
+    <p class="userCardSubTitle">1840–1910</p>
+  </section>
+  <nav class="personTabs"><a href="/family-tree/person/tree/90000001/person/90000002/facts">Facts</a> <a href="/family-tree/person/tree/90000001/person/90000002/gallery">Gallery</a></nav>
+  <main class="mediaGallery">
+    <div class="mediaGalleryItem" style="--justified-item-width: 240px;"><div title="Thomas Hartley at the Fairview farm">
+      <a href="/mediaui-viewer/collection/1030/tree/90000001/person/90000002/media/a1100000-1234-4abc-8def-0123456789ab" class="mediaGalleryItemAction" style="background-image: url(https://www.ancestry.com/api/media/retrieval/v2/image/namespaces/1030/media/a1100000-1234-4abc-8def-0123456789ab.jpg?MaxSide=240)"><span class="sr-only">View Thomas Hartley at the Fairview farm</span></a>
+      <div class="mediaCardCaption">Thomas Hartley at the Fairview farm<span class="nsi-pills"><span class="nsi-pill">Seen 1×</span></span></div></div>
+      <div class="mediaItemLoading"><span class="loadingSpinner"></span></div></div>
+    <div class="mediaGalleryItem" style="--justified-item-width: 180px;"><div title="Obituary of Thomas Hartley">
+      <a href="/mediaui-viewer/collection/1030/tree/90000001/person/90000002/media/b2200000-1234-4abc-8def-0123456789ab" class="mediaGalleryItemAction" style="background-image: url(https://www.ancestry.com/api/media/retrieval/v2/image/namespaces/1030/media/b2200000-1234-4abc-8def-0123456789ab.jpg?MaxSide=240)"><span class="sr-only">View Obituary of Thomas Hartley</span></a>
+      <div class="mediaCardCaption">Obituary of Thomas Hartley</div></div>
+      <div class="mediaItemLoading"><span class="loadingSpinner"></span></div></div>
+    <div class="mediaGalleryItem" style="--justified-item-width: 200px;"><div title="Hartley family reunion, 1902">
+      <a href="/mediaui-viewer/tree/90000001/person/90000002/media/C3300000-1234-4ABC-8DEF-0123456789AB" class="mediaGalleryItemAction" style="background-image: url(https://www.ancestry.com/api/media/retrieval/v2/image/namespaces/1030/media/c3300000-1234-4abc-8def-0123456789ab.jpg?MaxSide=240)"><span class="sr-only">View Hartley family reunion, 1902</span></a>
+      <div class="mediaCardCaption">Hartley family reunion, 1902</div></div>
+      <div class="mediaItemLoading"><span class="loadingSpinner"></span></div></div>
+    <div class="mediaGalleryItem" style="--justified-item-width: 240px;"><div title="Thomas Hartley at the Fairview farm">
+      <a href="/mediaui-viewer/collection/1030/tree/90000001/person/90000002/media/a1100000-1234-4abc-8def-0123456789ab?galleryPage=1&amp;tab=gallery" class="mediaGalleryItemAction"><span class="sr-only">View Thomas Hartley at the Fairview farm</span></a>
+      <div class="mediaCardCaption">Thomas Hartley at the Fairview farm</div></div>
+      <div class="mediaItemLoading"><span class="loadingSpinner"></span></div></div>
+    <div class="mediaGalleryItem" style="--justified-item-width: 200px;"><div title="Elsewhere">
+      <a href="https://www.example.org/mediaui-viewer/tree/90000001/person/90000002/media/e5500000-1234-4abc-8def-0123456789ab" class="mediaGalleryItemAction"><span class="sr-only">View Elsewhere</span></a>
+      <div class="mediaCardCaption">Elsewhere</div></div>
+      <div class="mediaItemLoading"><span class="loadingSpinner"></span></div></div>
+  </main>
+  <nav class="galleryPagination pagination" aria-label="Gallery pages">
+    <span aria-current="page">1</span>
+    <a href="/family-tree/person/tree/90000001/person/90000002/gallery?galleryPage=2&amp;tab=gallery">2</a>
+    <a href="/family-tree/person/tree/90000001/person/90000002/gallery?galleryPage=2&amp;tab=gallery" aria-label="Next page">Next</a>
+  </nav>
+  <aside class="recentlyViewed">
+    <h2>Recently viewed</h2>
+    <a href="/mediaui-viewer/tree/90000001/person/90000009/media/d4400000-1234-4abc-8def-0123456789ab">Margaret Hartley's wedding</a>
+  </aside>
+  <footer>© 1997-2026 Ancestry</footer>
+</body>
+</html>
