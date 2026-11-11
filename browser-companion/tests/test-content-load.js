@@ -730,6 +730,32 @@ test('the photo is never fetched for another photo, from another site, or as a p
   assert.strictEqual(page.calls.length, 0);
 });
 
+test('#261: a shared newspaper clipping, whose picture has an image id of its own, is read and fetched - not "has not appeared"', async () => {
+  // tests/fixtures/capture-samples/ancestry-media-clipping.html: the viewer's
+  // picture carries the photo's media id as its id; Ancestry serves the
+  // picture only under its own image id, and says "not found" for the media id.
+  const clip = '5eed0000-1234-4abc-8def-0123456789ab';
+  const url = 'https://www.ancestry.com/mediaui-viewer/collection/90003/tree/90000001/person/90000002/media/' + clip;
+  const image = 'https://www.ancestry.com/api/media/retrieval/v2/image/namespaces/4242/media/' +
+    'a55e7000-1234-4abc-8def-0123456789ab?client=trees-mediaservice&imageQuality=hq';
+  const fetch = ancestryMedia({ [image]: { ok: true, status: 200, headers: { get: () => 'image/jpeg' },
+    blob: async () => new Blob([SHARED_BYTES], { type: 'image/jpeg' }) } });
+  const page = loadPage({ url: url + '?hid=h1', tree: parse(SAMPLE('ancestry-media-clipping')), fetch });
+  const info = await page.ask({ action: 'ancestryPhotoInfo' });
+  assert.strictEqual(info.ok, true, info.error);
+  assert.strictEqual(info.media.imageUrl, image);
+  assert.strictEqual(info.media.fileStem, 'ancestry-' + clip + '-photo');
+  assert.deepStrictEqual(info.details, {
+    title: 'Obituary of Thomas Hartley', date: '4 Feb 1958', place: 'Fairview, Breton, Kansas, USA',
+    originallyAddedBy: 'hartley_family_tree on 9 Sep 2021', linkedTo: ['Thomas Hartley'],
+  });
+  assert.strictEqual(info.hints.sourceDate, '1958-02-04');
+  const got = await page.ask({ action: 'ancestryPhoto', mediaId: clip });
+  assert.strictEqual(got.ok, true, got.error);
+  assert.ok(Buffer.from(got.base64, 'base64').equals(SHARED_BYTES), 'the photo is kept byte for byte');
+  assert.deepStrictEqual(page.calls.map((c) => c.url), [image]);
+});
+
 test('PR #258 review: on a shared photo, the form starts from its Details - linked people as names to tick', async () => {
   const r = await loadPage({ url: SHARED + '?hid=h1', tree: parse(SAMPLE('ancestry-media-photo')), fetch: ancestryMedia() })
     .ask({ action: 'prefill' });

@@ -594,3 +594,175 @@ test('round 9, accepted cost: text beside the box is left out even when it is he
     assert.deepStrictEqual(panel(beside), { date: 'abt 1925' }, beside);
   }
 });
+
+// ── Ancestry's own Details panel (#mediaViewerDetailsPanel) ─────────────────
+// Issue #261: on a real photo page the Details reader found no box - the
+// "Details" heading sits in a button in a mobile-only header - so a photo's
+// title, uploader and linked people were all dropped. The page:
+// tests/fixtures/capture-samples/ancestry-media-panel.html, modelled on a real
+// page's panel (fictional Hartleys, invented ids). Read by Ancestry's own
+// structure only; what Ancestry's AI estimates is never read as hers.
+
+const PANEL_HTML = fs.readFileSync(path.join(SAMPLES, 'ancestry-media-panel.html'), 'utf8');
+const panelPage = (edit) => parse(edit ? edit(PANEL_HTML) : PANEL_HTML);
+const OTHERS = ['cousin_member_one', 'cousin_member_two', 'cousin_member_three', 'Saved by', 'Shared by', 'Comments',
+  'Save to someone else', 'Portraits', 'Category', '1921', 'grandmother', 'HF', 'CO'];
+// One field of the panel, to cut out or swap for something else.
+const field = (cls) => new RegExp('<div class="mediaDataFieldWrapper"><div class="mediaDataField flex  "><span aria-label="[^"]*" ' +
+  'class="icon ' + cls + '"></span><span class="mediaDataFieldValue[^"]*">[^<]*</span></div></div>');
+
+test('#261: Ancestry\'s own Details panel gives the photo\'s title, date, place, description, uploader and linked people', () => {
+  const d = anc.ancMediaDetails(panelPage());
+  assert.deepStrictEqual(d, {
+    title: 'Wedding of Thomas Hartley and Margaret Ellis',
+    date: '12 Jun 1919',
+    place: 'Fairview, Breton, Kansas, USA',
+    description: 'Thomas and Margaret outside the Fairview church.\nHer sister Ethel is on the left.',
+    originallyAddedBy: 'hartley_family_tree on 3 Mar 2015',
+    linkedTo: ['Thomas Hartley', 'Margaret Hartley'],
+  });
+  const all = JSON.stringify(d);
+  for (const never of OTHERS) assert.ok(!all.includes(never), 'kept from the page: ' + never);
+  assert.deepStrictEqual(anc.ancMediaHints(d), { sourceType: 'photo', sourceDate: '1919-06-12', sourceClass: null });
+  // The live page's NodeLists read the same.
+  assert.deepStrictEqual(anc.ancMediaDetails(liveLike(panelPage())), d);
+  // The panel names the photo, whatever the tab's title says.
+  const r = anc.ancMediaFrom(panelPage(), PHOTO_URL, { title: 'Other words | Ancestry' });
+  assert.strictEqual(r.media.title, 'Wedding of Thomas Hartley and Margaret Ellis');
+});
+
+test('#261: a panel with only a title and a category (the owner\'s page) still gives its title, uploader and linked people', () => {
+  const html = PANEL_HTML.replace(field('iconCalendar'), '').replace(field('iconMap'), '').replace(field('iconNote'), '');
+  assert.ok(!/iconCalendar|iconMap|iconNote/.test(html) && /iconTileLarge/.test(html), 'the fixture edit took');
+  const d = anc.ancMediaDetails(parse(html));
+  assert.deepStrictEqual(d, {
+    title: 'Wedding of Thomas Hartley and Margaret Ellis',
+    originallyAddedBy: 'hartley_family_tree on 3 Mar 2015',
+    linkedTo: ['Thomas Hartley', 'Margaret Hartley'],
+  });
+  assert.strictEqual(anc.ancMediaHints(d).sourceDate, null);
+});
+
+test('#261: a date or description Ancestry\'s AI suggests is never read as hers - the photo stays undated', () => {
+  // The estimated date Ancestry draws INSTEAD of an empty date - even one
+  // that carries a value span.
+  const autodate = panelPage((h) => h.replace(field('iconCalendar'),
+    '<div class="mediaDataFieldWrapper autodateField"><div class="mediaDataField flex"><button aria-label="Estimated date: 1920s" ' +
+    'class="ancBtn icon iconAi" type="button">1920s</button><span aria-label="Date" class="icon iconCalendar"></span>' +
+    '<span class="mediaDataFieldValue textWrap ">1920s</span></div></div>'));
+  const a = anc.ancMediaDetails(autodate);
+  assert.strictEqual(a.date, undefined);
+  assert.ok(!JSON.stringify(a).includes('1920s'));
+  assert.strictEqual(anc.ancMediaHints(a).sourceDate, null);
+  assert.strictEqual(a.place, 'Fairview, Breton, Kansas, USA');
+  // A suggested description, in its insight button.
+  const insight = panelPage((h) => h.replace(field('iconNote'),
+    '<div class="photoInsightWrapper flex"><span aria-label="Description" class="icon iconNote"></span>' +
+    '<button type="button" class="insightBtn ancBtn silver sml longText"><span class="insightIcon icon iconEnhanced"></span>' +
+    '<span class="suggestion">A bride and groom stand before a church door.</span>' +
+    '<span class="mediaDataFieldValue">A bride and groom stand before a church door.</span></button></div>'));
+  const i = anc.ancMediaDetails(insight);
+  assert.strictEqual(i.description, undefined);
+  assert.ok(!JSON.stringify(i).includes('bride'));
+  assert.strictEqual(i.date, '12 Jun 1919');
+  // An AI date button standing in a date field.
+  const iconAi = panelPage((h) => h.replace('<span class="mediaDataFieldValue textWrap ">12 Jun 1919</span>',
+    '<button class="ancBtn icon iconAi" type="button"><span class="mediaDataFieldValue">1920s</span></button>'));
+  assert.strictEqual(anc.ancMediaDetails(iconAi).date, undefined);
+});
+
+test('#261: on her own photo, Ancestry\'s "add a date" prompt in an empty field is no date', () => {
+  const own = panelPage((h) => h.replace('<div class="mediaDataField flex  "><span aria-label="Date" class="icon iconCalendar"></span>' +
+    '<span class="mediaDataFieldValue textWrap ">12 Jun 1919</span>',
+  '<div class="mediaDataField flex  isEditable" role="button" tabindex="0"><span aria-label="Date" class="icon iconCalendar"></span>' +
+    '<span class="mediaDataFieldValue textWrap "><span class="link">add a date</span>' +
+    '<span aria-hidden="true" class="icon iconEdit hideIcon"></span></span>'));
+  const d = anc.ancMediaDetails(own);
+  assert.strictEqual(d.date, undefined);
+  assert.ok(!JSON.stringify(d).includes('add a'));
+  assert.strictEqual(d.place, 'Fairview, Breton, Kansas, USA');
+});
+
+test('#261: on Ancestry in another language, the fields are known by their icons', () => {
+  const de = panelPage((h) => h.replace('aria-label="Date"', 'aria-label="Datum"').replace('aria-label="Location"', 'aria-label="Ort"')
+    .replace('aria-label="Description"', 'aria-label="Beschreibung"').replace('aria-label="Category"', 'aria-label="Kategorie"'));
+  const d = anc.ancMediaDetails(de);
+  assert.strictEqual(d.date, '12 Jun 1919');
+  assert.strictEqual(d.place, 'Fairview, Breton, Kansas, USA');
+  assert.strictEqual(d.description, 'Thomas and Margaret outside the Fairview church.\nHer sister Ethel is on the left.');
+  assert.ok(!JSON.stringify(d).includes('Portraits'));
+});
+
+test('#261: the panel\'s id is what marks it - without it the old rules apply, and a closed panel gives nothing', () => {
+  assert.ok(Object.keys(anc.ancMediaDetails(panelPage())).length > 0);
+  // The same markup without Ancestry's id: its "Details" heading is in a
+  // button in a mobile-only header, which the old rules do not take as a
+  // box's own heading - nothing is read, as before.
+  assert.deepStrictEqual(anc.ancMediaDetails(panelPage((h) => h.replace(' id="mediaViewerDetailsPanel"', ''))), {});
+  // Another id merely containing it is not it.
+  assert.deepStrictEqual(anc.ancMediaDetails(panelPage((h) => h.replace('id="mediaViewerDetailsPanel"',
+    'id="mediaViewerDetailsPanelOld"'))), {});
+  // Closed (hidden on the live page): nothing, not a guess.
+  assert.deepStrictEqual(anc.ancMediaDetails(panelPage(), { hidden: (el) => el.id === 'mediaViewerDetailsPanel' }), {});
+  // A hidden part of it is left out, the rest read.
+  const noCard = anc.ancMediaDetails(panelPage(), { hidden: (el) => /mediaOwnerCard/.test(el.className) });
+  assert.strictEqual(noCard.originallyAddedBy, undefined);
+  assert.strictEqual(noCard.date, '12 Jun 1919');
+});
+
+// A newspaper clipping shared from Newspapers.com (#261, a second real
+// page): tests/fixtures/capture-samples/ancestry-media-clipping.html.
+const CLIP_ID = '5eed0000-1234-4abc-8def-0123456789ab';
+const CLIP_IMAGE = 'a55e7000-1234-4abc-8def-0123456789ab';
+const CLIP_URL = 'https://www.ancestry.com/mediaui-viewer/collection/90003/tree/90000001/person/90000002/media/' + CLIP_ID;
+const CLIP_HTML = fs.readFileSync(path.join(SAMPLES, 'ancestry-media-clipping.html'), 'utf8');
+
+test('#261: a clipping whose picture has an image id of its own is fetched by that id, and filed under the photo\'s', () => {
+  const doc = parse(CLIP_HTML);
+  const want = 'https://www.ancestry.com/api/media/retrieval/v2/image/namespaces/4242/media/' + CLIP_IMAGE +
+    '?client=trees-mediaservice&imageQuality=hq';
+  assert.strictEqual(anc.ancMediaImageUrl(doc, CLIP_ID, 'https://www.ancestry.com'), want);
+  assert.strictEqual(anc.ancMediaImageUrl(doc, CLIP_ID.toUpperCase(), 'https://www.ancestry.com'), want);
+  const r = anc.ancMediaFrom(doc, CLIP_URL, { title: doc.title, origin: 'https://www.ancestry.com' });
+  assert.strictEqual(r.ok, true);
+  assert.deepStrictEqual(r.media, {
+    mediaId: CLIP_ID, treeId: '90000001', personId: '90000002', url: CLIP_URL,
+    title: 'Obituary of Thomas Hartley', imageUrl: want, fileStem: 'ancestry-' + CLIP_ID + '-photo',
+  });
+  // Another photo's picture on the page - marked with its own id - is never this one's.
+  assert.strictEqual(anc.ancMediaImageUrl(doc, '1badf00d-5678-4def-9abc-ba9876543210', 'https://www.ancestry.com'),
+    'https://www.ancestry.com/api/media/retrieval/v2/image/namespaces/4242/media/0dd00000-5678-4def-9abc-ba9876543210' +
+    '?client=trees-mediaservice&imageQuality=hq');
+  // A picture not marked with the photo's id is no picture of it.
+  assert.strictEqual(anc.ancMediaImageUrl(parse(CLIP_HTML.split('id="' + CLIP_ID + '"').join('')), CLIP_ID,
+    'https://www.ancestry.com'), null);
+  assert.strictEqual(anc.ancMediaImageUrl(doc, '00000000-0000-4000-8000-0000000000ff', 'https://www.ancestry.com'), null);
+});
+
+test('#261: on a clipping she may edit, Ancestry\'s "Add a description" prompts are no details, and the article link is no uploader', () => {
+  const d = anc.ancMediaDetails(parse(CLIP_HTML));
+  assert.deepStrictEqual(d, {
+    title: 'Obituary of Thomas Hartley',
+    date: '4 Feb 1958',
+    place: 'Fairview, Breton, Kansas, USA',
+    originallyAddedBy: 'hartley_family_tree on 9 Sep 2021',
+    linkedTo: ['Thomas Hartley'],
+  });
+  const all = JSON.stringify(d);
+  for (const never of ['Add a', 'description', 'transcription', 'this article', 'Newspapers.com', 'Document',
+    'cousin_member_one', 'Saved by', 'Save to someone else']) {
+    assert.ok(!all.includes(never), 'kept from the page: ' + never);
+  }
+  assert.strictEqual(anc.ancMediaHints(d).sourceDate, '1958-02-04');
+});
+
+test('#261: inside Ancestry\'s panel, only its own fields are read - never a label-shaped line in the comments', () => {
+  // A comment laid out like a Details label is still a member's comment.
+  const doc = panelPage((h) => h.replace('<p class="commentBody">Shared by cousin_member_three</p>',
+    '<dl><dt>Originally added by</dt><dd>cousin_member_three</dd><dt>Date</dt><dd>1921</dd></dl>'));
+  const d = anc.ancMediaDetails(doc);
+  assert.strictEqual(d.originallyAddedBy, 'hartley_family_tree on 3 Mar 2015');
+  assert.strictEqual(d.date, '12 Jun 1919');
+  const all = JSON.stringify(d);
+  for (const never of OTHERS) assert.ok(!all.includes(never), 'kept from the page: ' + never);
+});

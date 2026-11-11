@@ -243,8 +243,11 @@ to begin "Saved by …" is the photo's story, and is kept.
 When the page's layout is unclear, the add-on leaves text out rather than file
 someone else's words as yours. Anything left out can still be read on Ancestry
 from the photo's saved address. So only the photo's own **Details** box is read
-- the part of the page headed "Details" - each detail by its own label.
-Anything outside that box is left out, even a description or a "Linked to" list
+- on Ancestry's photo viewer, the Details panel beside the photo - each detail
+in its own place. A date or description that Ancestry's AI suggests (an
+estimated date such as "1920s") is Ancestry's guess, not the words of whoever
+shared the photo, and is never kept: with no date of their own, the photo is
+filed undated. Anything outside that box is left out, even a description or a "Linked to" list
 that sits just beside it; and when the add-on does not recognise Ancestry's
 layout (no Details box it can find), all of the photo's details are left out
 and only the photo and its address are saved. A line that begins "Originally

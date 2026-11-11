@@ -688,6 +688,30 @@ test('round 3 (audit C): a photo with nothing new on the page is staged once, wi
   assert.doesNotMatch(closed.result(), /again/i);
 });
 
+test('#261: on Ancestry\'s own Details panel the add-on finds the Details - no "couldn\'t find" - and files its title and people', async () => {
+  // The panel as a real page drew it: a title and a category, the member
+  // who shared it, two linked people (tests/fixtures/capture-samples/
+  // ancestry-media-panel.html, fictional Hartleys).
+  const panel = fs.readFileSync(path.join(SAMPLES, 'ancestry-media-panel.html'), 'utf8')
+    .replace(/<div class="mediaDataFieldWrapper"><div class="mediaDataField flex  "><span aria-label="(Date|Location|Description)"[^]*?<\/div><\/div>/g, '');
+  assert.ok(!/aria-label="(Date|Location|Description)"/.test(panel) && /aria-label="Category"/.test(panel), 'the fixture edit took');
+  const p = await openPhoto(PHOTO_OPEN, { edit: () => panel });
+  assert.doesNotMatch(p.$('asset-status').textContent, /couldn’t find this photo’s Details/);
+  assert.deepStrictEqual(p.$('people-list').children.map((l) => l.children[1].textContent), ['Thomas Hartley', 'Margaret Hartley']);
+  await p.capture();
+  assert.strictEqual(p.written.length, 1, p.result());
+  const data = JSON.parse(await p.written[0].assets.find((a) => a.filename === 'photo-data.json').blob.text());
+  assert.deepStrictEqual(data.details, {
+    title: 'Wedding of Thomas Hartley and Margaret Ellis',
+    originallyAddedBy: 'hartley_family_tree on 3 Mar 2015',
+    linkedTo: ['Thomas Hartley', 'Margaret Hartley'],
+  });
+  const kept = JSON.stringify(p.capJson(p.written[0])) + JSON.stringify(data);
+  for (const never of ['cousin_member_one', 'cousin_member_two', 'cousin_member_three', 'Portraits']) {
+    assert.ok(!kept.includes(never), 'kept from the page: ' + never);
+  }
+});
+
 test('Capture saves the shared photo as a photo source: the photo as served, its details, the address to keep', async () => {
   const p = await openPhoto(PHOTO_OPEN);
   await p.capture();

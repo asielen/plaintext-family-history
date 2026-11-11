@@ -229,9 +229,13 @@ no-op, the bundles land in `inbox/` directly.
   capture with no picture is never filed - it is set aside, once, in the
   staging folder's `.not-filed/`. Where the page's layout is unclear, the
   Details reader leaves text out rather than file someone else's words as
-  hers: it reads only the photo's own Details box (`ancMediaDetailsBoxes`:
-  the element whose own heading or aria-label is "Details"), whole, each
-  field by its own label. Nothing outside the box is read, and with no box
+  hers: it reads only the photo's own Details box - Ancestry's own panel
+  (`#mediaViewerDetailsPanel`, read by its structure alone:
+  `ancMediaPanelDetails`, #261; never the AI-estimated date or suggested
+  description Ancestry shows in place of an empty field, the "Saved by"
+  members or the comments), else the element whose own heading or
+  aria-label is "Details" (`ancMediaDetailsBoxes`), whole, each field by its
+  own label. Nothing outside the box is read, and with no box
   found no field comes from the page body - only the photo, its address and
   the tab's own title are kept; the rest can be read on Ancestry from the
   saved address (PR #258 round 9, reversible). Capture

@@ -248,7 +248,9 @@ test('content.js Ancestry record readers are a verbatim copy of lib/ancestry-rec
   // would let other members' names into a photo's notes, and the Details-box
   // scoping, whose drift would date a photo from a relative's card (PR #258).
   for (const name of ['function ancMediaDetails', 'function ancMediaDetailsBoxes', 'const ANC_MEDIA_SAVED_HEADING_RE',
-    'function ancMediaImageUrl', 'function ancParseMediaPage']) {
+    'function ancMediaImageUrl', 'function ancParseMediaPage',
+    // Ancestry's own Details panel, and what in it is never read (#261).
+    'function ancMediaPanelDetails', 'const ANC_MEDIA_PANEL_NEVER', 'const ANC_MEDIA_PANEL_FIELDS']) {
     assert.ok(canon.includes(name), name + ' is outside the synced block');
   }
   const copy = extractBlock(/\/\/ FHA-SYNC-BEGIN ancestry\n/, '  ' + end)
