@@ -61,6 +61,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from _lib import (
     configure_utf8_stdout,
     CLAIMS_RE,
+    CLAIM_ROLE_WORDS,
     CLAIM_TYPES,
     COMPANION_KINDS,
     CROCKFORD_ALPHA,
@@ -2289,6 +2290,30 @@ def _claim_roles_by_person(
     return out
 
 
+def _claim_all_roles_by_person(
+    claim: dict, alias_map: dict[str, str] | None = None,
+) -> dict[str, list[str]]:
+    """Every role key each person is listed under, in the order written.
+
+    `_claim_roles_by_person` keeps only the FIRST key, because that is all the
+    index keeps. W126 needs the rest to see what that costs: a mother listed
+    as `informant:` and then `parent:` reads as an informant to the indexer,
+    her `parent:` line is dropped, and no mother-child link is built (#260
+    review). Normalised the same way, so the two never disagree on a key.
+    """
+    roles = claim.get('roles')
+    if not isinstance(roles, dict):
+        return {}
+    out: dict[str, list[str]] = {}
+    for role_name in roles:
+        norm = str(role_name).strip().lower()
+        for pid in _role_pids(claim, role_name, alias_map):
+            keys = out.setdefault(pid, [])
+            if norm not in keys:
+                keys.append(norm)
+    return out
+
+
 def _claim_spouse_pids(
     claim: dict, alias_map: dict[str, str] | None = None,
 ) -> set[str]:
@@ -2950,13 +2975,21 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
             # this warning, primary parentage evidence would sit accepted in
             # the archive contributing exactly nothing, which is the state the
             # issue was filed about wearing a different hat.
-            # The condition IS the derivation rule, as in W125: two or more
-            # distinct persons named, and no parent edge derived. That covers
-            # every shape the silence takes - no roles: map, a map naming a
-            # child and no parent, a map naming parents and nobody born, and a
-            # map whose role words are outside the SPEC vocabulary (`mother:`,
-            # `father:`), which is the shape a person-count test would miss and
-            # the one most likely to look correct to whoever wrote it.
+            # The condition starts from the derivation rule, as in W125: two
+            # or more distinct persons named, and no parent edge derived. That
+            # covers every shape the silence takes - no roles: map, a map
+            # naming a child and leaving someone else unroled, a map naming
+            # parents and nobody born, and a map whose role words are outside
+            # the SPEC vocabulary (`mother:`, `father:`), which is the shape a
+            # person-count test would miss and the one most likely to look
+            # correct to whoever wrote it.
+            # One shape is NOT a silence (#260, SPEC §8.3): a map that names
+            # the child and places everyone else under a recognised role word
+            # (_lib.CLAIM_ROLE_WORDS) - the child and the informant, or two
+            # people's own births copied off their son's certificate, which
+            # names no parents of theirs. That claim has said all its record
+            # says, and a warning nothing can clear without inventing a role
+            # only teaches the owner to skip past W126's real cases.
             # Distinct PERSONS, not persons: entries: a bare P-id and a
             # name-link for one baby are two entries and one person, and one
             # person is not a parentage to ask about.
@@ -2983,18 +3016,83 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
                     role_parents = [pid for pid in distinct
                                     if by_person.get(pid) == 'parent']
                     if role_children:
-                        # Half a map: it says who was born and leaves everyone
-                        # else unplaced. Reading "everyone else" as the parents
-                        # is precisely the guess the indexer refuses.
-                        findings.append(Finding('W', 'W126', src_path,
-                            f'{head} and says who was born, but marks none of the '
-                            f'others as a parent, so no parent link is recorded'
-                            f'{where_it_goes}'
-                            'If the others are the parents, add them to the roles: '
-                            'map - an indented `parent: [P-…, P-…]` line beside the '
-                            '`child:` one. If they are not (an informant, a doctor, '
-                            'a witness), nothing is missing and this note is safe '
-                            'to leave.'))
+                        # Half a map: it says who was born and leaves someone
+                        # else unplaced. Reading the unplaced as the parents is
+                        # precisely the guess the indexer refuses. When nobody
+                        # is unplaced the map is whole and there is nothing to
+                        # ask (#260) - the child arm alone has this exit.
+                        # Placement reads EVERY key a person is listed under,
+                        # not just the first one the index keeps. A person is
+                        # unplaced when (1) the claim gives them no role, (2)
+                        # ANY of their keys is outside the SPEC list - the
+                        # `mother:` written after `informant:` is still a typo
+                        # the tree cannot read - or (3) any of their keys is
+                        # `parent`: this arm only runs when no parent edge was
+                        # derived, so that line was hidden by a key written
+                        # before it (the mother who was also the informant).
+                        # A child who ALSO carries a recognised role - the
+                        # adult registering her own delayed birth as informant,
+                        # a twin who reported it - is placed: the index reads
+                        # her as a child, and warning would ask her to delete
+                        # a true fact.
+                        all_roles = _claim_all_roles_by_person(claim, alias_map)
+
+                        def _unplaced_reason(pid: str) -> str | None:
+                            keys = all_roles.get(pid, [])
+                            if not keys:
+                                return 'no role given'
+                            if 'parent' in keys:
+                                return (f'listed as a parent, but the '
+                                        f'`{by_person.get(pid)}:` line written '
+                                        f'before it hides that')
+                            off_list = [k for k in keys if k not in CLAIM_ROLE_WORDS]
+                            if off_list:
+                                return (f'under `{off_list[0]}:`, which is not a '
+                                        f'role word the archive reads')
+                            return None
+
+                        reasons = {pid: _unplaced_reason(pid) for pid in distinct}
+                        unplaced = [pid for pid in distinct if reasons[pid]]
+                        if unplaced:
+                            listing = ', '.join(
+                                f'{fmt_id_display(pid)} ({reasons[pid]})'
+                                for pid in unplaced)
+                            hidden = any('parent' in all_roles.get(pid, [])
+                                         for pid in unplaced)
+                            # The child herself can only be here for an
+                            # off-list word beside her `child:` line; the
+                            # parent repair is never offered for her.
+                            stray_on_child = any(
+                                by_person.get(pid) == 'child'
+                                and 'parent' not in all_roles.get(pid, [])
+                                for pid in unplaced)
+                            others = any(
+                                by_person.get(pid) != 'child'
+                                or 'parent' in all_roles.get(pid, [])
+                                for pid in unplaced)
+                            findings.append(Finding('W', 'W126', src_path,
+                                f'{head} and says who was born, but '
+                                + ('its `parent:` line is hidden behind another role'
+                                   if hidden else
+                                   'marks none of the others as a parent')
+                                + f', so no parent link is recorded'
+                                f'{where_it_goes}'
+                                f'Not yet placed: {listing}. '
+                                + ('The archive reads each person by the first role '
+                                   'listed for them: give a parent one role, or put '
+                                   'the `parent:` line first. ' if hidden else '')
+                                + ('If they are the parents, add them to the roles: '
+                                   'map - an indented `parent: [P-…, P-…]` line beside '
+                                   'the `child:` one (`parent:` covers a mother and a '
+                                   'father alike). If they are not, give each one the '
+                                   'part they played instead - an `informant:`, '
+                                   '`witness:`, `midwife:` or `physician:` line - and '
+                                   'this note clears.' if others else '')
+                                + ((' ' if others else '')
+                                   + 'For the person born, change the unreadable line '
+                                   'to a role word the archive reads (`informant:`, '
+                                   '`witness:`, ...) or remove it.'
+                                   if stray_on_child else '')))
                     elif role_parents:
                         # The mirror: the parents are marked and nobody is
                         # marked as born. The subject is not positional either.
