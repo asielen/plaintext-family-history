@@ -809,6 +809,12 @@ test('#261 audit B1: while Ancestry\'s Details still describe the item shown bef
   assert.strictEqual(stale.transient, true);
   assert.match(stale.error, /have not caught up with the picture yet .* nothing was saved - wait a moment, then press Capture again/);
   assert.ok(!JSON.stringify(stale).includes('Wedding'), 'nothing of photo A is passed on');
+  // What names this item is still given, for saving it without the details (audit C1).
+  assert.strictEqual(stale.behind, true);
+  assert.strictEqual(stale.details, undefined);
+  assert.deepStrictEqual([stale.media.mediaId, stale.media.title, stale.media.fileStem], [B, 'Photo B', 'ancestry-' + B + '-photo']);
+  assert.strictEqual(stale.media.imageUrl, 'https://www.ancestry.com/api/media/retrieval/v2/image/namespaces/4242/media/' + B +
+    '?client=trees-mediaservice&imageQuality=hq');
   // B's picture known by its address alone (no id), or under an image id of its own.
   assert.strictEqual(anc.ancMediaFrom(withPicture('<img alt="Photo B" src="' + src + B + '?client=x">'), B_URL).ok, false);
   assert.strictEqual(anc.ancMediaFrom(withPicture('<img id="' + B.toUpperCase() + '" alt="Photo B" src="' + src +
@@ -824,6 +830,9 @@ test('#261 audit B1: while Ancestry\'s Details still describe the item shown bef
   assert.strictEqual(anc.ancMediaFrom(withPicture('<img alt="Photo B" src="' + src + B + '.jpg?MaxSide=80">'), B_URL).ok, true);
   assert.strictEqual(anc.ancMediaFrom(withPicture('<img id="1badf00d-5678-4def-9abc-ba9876543210" alt="Another" src="' + src +
     '1badf00d-5678-4def-9abc-ba9876543210?client=x">'), B_URL).ok, true);
+  // The panel fixture as the real page draws it: its own picture's alt text is its title (audit C2).
+  assert.strictEqual(anc.ancMediaFrom(panelPage(), PHOTO_URL).ok, true);
+  assert.ok(/<img id="7c0ffee0-[^>]*alt="Wedding of Thomas Hartley and Margaret Ellis"/.test(PANEL_HTML));
   // Without Ancestry's own panel (another layout), nothing is checked.
   const other = parse(fs.readFileSync(path.join(SAMPLES, 'ancestry-media-photo.html'), 'utf8')
     .replace('alt="Thomas and Margaret Hartley at the Fairview farm, about 1925"', 'alt="Something else"'));

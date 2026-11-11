@@ -917,17 +917,26 @@ const ANC_MEDIA_PANEL_BEHIND = 'the details on the page have not caught up with 
 function ancMediaPanelIsFor(root, mediaId, details) {
   const title = String((details && details.title) || '');
   if (!title || !ancElements(root, (e) => e.id === ANC_MEDIA_PANEL_ID).length) return true;
+  const tidy = (s) => String(s || '').toLowerCase();
+  return ancMediaOwnAlts(root, mediaId).every((alt) => tidy(alt) === tidy(title.replace(/\s+/g, ' ').trim()));
+}
+
+// The alt text of the viewer's own picture of this item (the <img> marked
+// with its media id, or whose address names it - never a thumbnail), spaces
+// tidied, the empty ones left out. It names this item's picture, so it is
+// the title kept when the Details panel is left out (ancMediaFrom).
+function ancMediaOwnAlts(root, mediaId) {
   const want = String(mediaId || '').toLowerCase();
-  const tidy = (s) => String(s || '').replace(/\s+/g, ' ').trim().toLowerCase();
+  const alts = [];
   for (const img of ancElements(root, (e) => ancTag(e) === 'IMG')) {
     if (ancIsSeenItNode(img) || !img.getAttribute) continue;
     const marked = String(img.getAttribute('id') || '').trim().toLowerCase() === want;
     const m = ANC_MEDIA_IMG_RE.exec(String(img.getAttribute('src') || ''));
     const named = !!m && !m[3] && m[2].toLowerCase() === want;
-    const alt = tidy(img.getAttribute('alt'));
-    if ((marked || named) && alt && alt !== tidy(title)) return false;
+    const alt = String(img.getAttribute('alt') || '').replace(/\s+/g, ' ').trim();
+    if ((marked || named) && alt) alts.push(alt);
   }
-  return true;
+  return alts;
 }
 
 // The whole shared photo from its viewer page (`root`: the document, or a
@@ -939,15 +948,25 @@ function ancMediaFrom(root, href, opts) {
   const id = ancParseMediaPage(href);
   if (!id) return { ok: false, error: 'this is not a photo shared on Ancestry' };
   const details = ancMediaDetails(root, o);
-  if (!ancMediaPanelIsFor(root, id.mediaId, details)) {
-    return { ok: false, transient: true, error: ANC_MEDIA_PANEL_BEHIND };
-  }
   const docTitle = String(o.title || '').replace(ANC_TITLE_SUFFIX_RE, '').trim();
   let origin = 'https://www.ancestry.com';
   try {
     origin = new URL(href).origin;
   } catch (e) {
     /* parsed above */
+  }
+  if (!ancMediaPanelIsFor(root, id.mediaId, details)) {
+    // The panel is on another item: none of it. What names this item -
+    // its address, its picture and that picture's alt text - is still given
+    // (`behind`), for when she chooses to save it without its details.
+    return {
+      ok: false, transient: true, behind: true, error: ANC_MEDIA_PANEL_BEHIND,
+      media: Object.assign({}, id, {
+        title: ancMediaOwnAlts(root, id.mediaId)[0] || docTitle || null,
+        imageUrl: ancMediaImageUrl(root, id.mediaId, o.origin || origin),
+        fileStem: ancPhotoFileStem(id.mediaId),
+      }),
+    };
   }
   return {
     ok: true,

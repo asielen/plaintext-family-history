@@ -93,6 +93,9 @@
     // from, and the names it lists (lowercased). Capture stages nothing new
     // to her (captureAncestryPhoto).
     photoShown: null,
+    // The shared item whose Capture last found Ancestry's Details behind its
+    // picture (#261 audit C1): pressed again, it is saved without them.
+    photoBehind: null,
     // FamilySearch: a record (ark 1:1, or the viewer opened from one) and a
     // bare image viewer (ark 3:1). fsCheck is the answer to "can this page's
     // image be saved from here?", asked when the page is read (null until it
@@ -1611,11 +1614,30 @@
   // staged: { key, bundle, where, note }.
   async function captureAncestryPhoto(pageHtml, form, recordUrl, opts = {}) {
     const info = await autoFetch('Ancestry photo details', { action: 'ancestryPhotoInfo' }, { recordUrl });
-    if (!info || !info.ok) throw new Error((info && info.error) || 'could not read the photo on Ancestry');
+    // Ancestry's Details still describe the item shown before (#261 audit
+    // B1). One way out, never a dead end (audit C1): the first press saves
+    // nothing and says so; pressing again on the same item - or pressing
+    // with her own file dropped in - saves the picture and its address
+    // WITHOUT the page's details (when the layout is unclear, text is left
+    // out; it can still be read on Ancestry from the saved address, #258).
+    // A batch download never takes that way: it waits.
+    const behind = !!(info && !info.ok && info.behind && info.media && !opts.batch);
+    if (!info || (!info.ok && !behind)) throw new Error((info && info.error) || 'could not read the photo on Ancestry');
     const media = info.media;
-    const details = info.details || {};
-    const hints = info.hints || {};
     if (!media.fileStem) throw new Error('the page does not name the photo it shows, so nothing was saved');
+    if (behind && !form.dropped && state.photoBehind !== media.mediaId) {
+      state.photoBehind = media.mediaId;
+      clearAutoLog();
+      const what = ancItemWord();
+      setStageResult('The details on the page have not caught up with the ' + what + ' yet, so nothing was saved. ' +
+        'Wait a moment and press ' + ancCaptureLabel() + ' again: if they have caught up by then, they are saved ' +
+        'with it; if not, the ' + what + ' and its address are saved without them (they can still be read on ' +
+        'Ancestry from that address).', 'warn');
+      return { staged: false };
+    }
+    state.photoBehind = null;
+    const details = behind ? {} : info.details || {};
+    const hints = behind ? {} : info.hints || {};
     notQueued(opts, 'med:' + media.mediaId, 'Ancestry photo ' + media.mediaId);
     // The photo was read from the tab: it must still be on this photo.
     await checkTabStillOn(recordUrl, [media.mediaId]);
@@ -1648,10 +1670,15 @@
       $(id).value = now;
       changed.push(id);
     };
-    follow('f-date', form.date, hints.sourceDate || '');
-    if (media.title) follow('f-title', form.title, media.title);
-    if (form.type) follow('f-type', form.type, hints.sourceType || 'photo');
-    if (newKeys.length || newPeople.length || gonePeople.length || changed.length) {
+    // A value is hers when she typed or chose it, or it no longer holds what
+    // the page filled in.
+    const hers = (id, value) => form.edited.has(id) || (id in filled && value !== filled[id]);
+    if (!behind) {
+      follow('f-date', form.date, hints.sourceDate || '');
+      if (media.title) follow('f-title', form.title, media.title);
+      if (form.type) follow('f-type', form.type, hints.sourceType || 'photo');
+    }
+    if (!behind && (newKeys.length || newPeople.length || gonePeople.length || changed.length)) {
       if (gonePeople.length) renderPeople(linked);
       else for (const n of newPeople) addPersonRow(n, true);
       if (changed.indexOf('f-type') >= 0) {
@@ -1679,7 +1706,8 @@
     // Ancestry category names a document, #261). A photo's picture is its
     // `front`, for the photo library; a document's is its `record`, for her
     // documents, like any other Ancestry record's scan.
-    const kind = form.type || hints.sourceType || 'photo';
+    // Without the page's details (behind), only a Kind she chose herself.
+    const kind = behind ? (hers('f-type', form.type) && form.type) || 'photo' : form.type || hints.sourceType || 'photo';
     const pictureRole = kind === 'photo' ? 'front' : 'record';
     // No copy of the page, ever (pageCopyOn): the photo and its details only.
     const assets = [];
@@ -1730,8 +1758,11 @@
       mode: 'ancestry-media-data',
     });
 
-    const title = (form.edited.has('f-title') && form.title) || media.title || form.title ||
-      ('Photo shared on Ancestry ' + media.mediaId);
+    // Without the page's details (behind): her own title, else the alt text
+    // of this item's picture, else the tab's title (media.title).
+    const title = behind
+      ? (hers('f-title', form.title) && form.title) || media.title || ('Photo shared on Ancestry ' + media.mediaId)
+      : (form.edited.has('f-title') && form.title) || media.title || form.title || ('Photo shared on Ancestry ' + media.mediaId);
     // Who first added the photo is another member's name: it stays in
     // photo-data.json, never in the record's notes, which a packet or a
     // shared site carries (owner-away decision, PR #258 review).
@@ -1743,7 +1774,9 @@
     const notes = [
       gatherNotes(provisional, form.notes),
       (kind === 'photo' ? 'A photo' : 'An item') + ' shared on Ancestry by another member' +
-        (said.length ? '. Its details on Ancestry:\n' + said.join('\n') : '.'),
+        (behind ? '. Its details on Ancestry were left out: the page had not caught up with the picture when it ' +
+          'was saved. They can be read on Ancestry from the saved address.'
+          : said.length ? '. Its details on Ancestry:\n' + said.join('\n') : '.'),
       details.description ? 'Description on Ancestry:\n' + details.description : '',
     ].filter((t) => t && t.trim()).join('\n\n');
     const fields = {
@@ -1751,12 +1784,14 @@
       title,
       accessed: captureJson.accessedDate(),
       // What the human typed wins; else what the photo says about itself.
-      sourceDate: form.date || hints.sourceDate || '',
+      // Without the page's details (behind), only a date she typed herself.
+      sourceDate: behind ? (hers('f-date', form.date) && form.date) || '' : form.date || hints.sourceDate || '',
       sourceType: kind,
       repository: form.repo || 'Ancestry.com',
       // Only the people she was shown and left ticked (the form lists those
-      // the photo is linked to when the panel reads the page).
-      people: form.people,
+      // the photo is linked to when the panel reads the page) - without the
+      // page's details, only those she added herself.
+      people: behind ? form.people.filter((n) => shown.people.indexOf(String(n).toLowerCase()) < 0) : form.people,
       notes,
       recipeHint: 'ancestry',
       assets: assets.map((a) => ({ file: a.filename, role: a.role, mode: a.mode, provisional: !!a.provisional,
@@ -2341,7 +2376,7 @@
           // Ancestry's Details still describe the item shown before (#261
           // audit B1): Capture will wait for them too.
           ? '. The details on the page have not caught up with the ' + what + ' yet - wait a moment, then press ' +
-            'Re-read page'
+            'Re-read page (or press ' + ancCaptureLabel() + ' twice to save the ' + what + ' and its address without them)'
           : open ? ''
           // Not only "closed": the Details may be open in a layout the add-on
           // does not recognise yet, where opening them again changes nothing

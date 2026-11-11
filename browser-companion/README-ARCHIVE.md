@@ -244,7 +244,11 @@ ticked, and says "I found more on the page — check the people below, then pres
 Capture this photo." Check them, then press it. Each photo is captured once.
 If you move to the next photo with Ancestry's arrow and press at once, the
 panel may say the details on the page have not caught up with the picture
-yet: nothing is saved, so wait a moment and press again.
+yet: nothing is saved, so wait a moment and press again. If they still have
+not caught up, that second press saves the photo and its address without the
+page's details, which can still be read on Ancestry from that address. A photo
+you downloaded yourself and dropped into the panel is saved at the first press.
+What you typed, chose or added yourself is kept either way.
 
 The list of other members who saved the photo ("Saved by …") never reaches your
 archive: with no copy of the page, the only words kept are the photo's details,

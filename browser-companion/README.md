@@ -247,7 +247,11 @@ no-op, the bundles land in `inbox/` directly.
   people) follow that second read, and a change is shown before anything is
   staged; while Ancestry's panel still describes the item shown before (its
   title differs from the alt text of the viewer's own picture of this item,
-  `ancMediaPanelIsFor`), nothing is read and Capture waits (#261 audit).
+  `ancMediaPanelIsFor`), nothing is read and Capture waits; a second press on
+  the same item, or a press with her own file dropped in, stages the picture
+  and its address with no details from the panel (`details: {}`, the title
+  from the picture's alt text unless she typed one, and only the date, Kind and
+  people she set herself) - never a dead end (#261 audit).
   The panel's category is read too and sets the form's Kind
   (`ancMediaKind`, #261): an obituary or newspaper article is a newspaper, a
   birth, death or marriage certificate a vital record, a property record a
