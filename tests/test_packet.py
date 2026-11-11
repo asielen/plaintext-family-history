@@ -548,6 +548,25 @@ class PacketTests(unittest.TestCase):
         self.assertIn('CAUTION', readme)
         self.assertIn('Unknown Living Person', readme)
 
+    def test_merged_duplicate_of_a_living_person_named_in_caution(self):
+        # The source names a duplicate record that was merged into a living
+        # person; the tombstone still says living: false. The README must
+        # still warn that a living person is in the packet (#237).
+        self._seed_person()
+        self._seed_person(pid='p-bbbbbbbbbb', name='Still Living', living='true', surname='Other')
+        self._seed_person(pid='p-cccccccccc', name='Old Duplicate', living='false', surname='Dup')
+        self.conn.execute("UPDATE persons SET status = 'merged', merged_into = 'p-bbbbbbbbbb' "
+                          "WHERE id = 'p-cccccccccc'")
+        self._seed_source('s-1111111111', 'Joint Source')
+        _insert_claim(self.conn, 'c-aaaaaaaaaa', 's-1111111111', 'residence', 'lived together',
+                      persons=['p-aaaaaaaaaa', 'p-cccccccccc'])
+        self._commit_fresh()
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir, no_photos=True)
+        readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
+        self.assertIn('CAUTION', readme)
+        self.assertIn('Old Duplicate', readme)
+
     def test_excluded_source_claims_omitted_from_timeline(self):
         self._seed_person()
         self._seed_source('s-1111111111', 'Restricted Source', restricted=1)

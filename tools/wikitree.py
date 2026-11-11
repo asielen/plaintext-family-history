@@ -115,6 +115,7 @@ from _lib import (
     is_valid_id,
     normalize_id,
     open_index_db,
+    person_is_living,
     read_record,
     resolve_root_arg,
     strip_unaccepted_drafts,
@@ -284,7 +285,11 @@ def _person_info(conn: sqlite3.Connection, pid: str, cache: dict) -> tuple[str |
         return cache[pid]
     row = conn.execute('SELECT name, living FROM persons WHERE id = ?', (pid,)).fetchone()
     name = row['name'] if row else None
-    living = row['living'] if row else None
+    # A merged duplicate's old id is the person it was merged into, so a
+    # living survivor is redacted behind the old id too (#237).
+    living = None
+    if row:
+        living = 'true' if person_is_living(conn, pid) else row['living']
     wt = conn.execute(
         "SELECT ext_id FROM person_external WHERE person_id = ? AND system = 'wikitree'",
         (pid,),
@@ -743,11 +748,13 @@ def _living_person_refs(conn: sqlite3.Connection, text: str) -> list[sqlite3.Row
     if not extra_pids:
         return []
     placeholders = ','.join('?' * len(extra_pids))
-    return conn.execute(
-        f"SELECT id, name FROM persons WHERE id IN ({placeholders}) "
-        f"AND living IN ('true', 'unknown') ORDER BY id",
+    rows = conn.execute(
+        f"SELECT id, name FROM persons WHERE id IN ({placeholders}) ORDER BY id",
         sorted(extra_pids),
     ).fetchall()
+    # Merges followed: a name that resolves to a merged duplicate of a
+    # living person names that living person (#237).
+    return [r for r in rows if person_is_living(conn, r['id'])]
 
 
 # ── Rendering ────────────────────────────────────────────────────────────────────
@@ -1056,15 +1063,16 @@ def _research_notes_lines(
           AND COALESCE(s.restricted, 0) = 0
           AND COALESCE(s.source_type, '') != 'dna'
           AND COALESCE(s.publication_ok, 1) != 0
-          AND NOT EXISTS (
-            SELECT 1 FROM claim_persons cp2 JOIN persons p ON cp2.person_id = p.id
-            WHERE cp2.claim_id = c.id AND p.living IN ('true','unknown')
-          )
         ORDER BY CASE WHEN c.date_min IS NULL OR c.date_min = '' THEN 1 ELSE 0 END,
                  c.date_min ASC
         """,
         (pid,),
     ).fetchall()
+    # A claim naming anyone living is withheld, merges followed: a claim
+    # written with a merged duplicate's old id names the survivor (#237).
+    rows = [r for r in rows if not any(
+        person_is_living(conn, p['person_id']) for p in conn.execute(
+            'SELECT person_id FROM claim_persons WHERE claim_id = ?', (r['id'],)))]
     if restricted_claims:
         rows = [r for r in rows if normalize_id(str(r['id'])) not in restricted_claims]
     person_cache: dict[str, bool] = {}

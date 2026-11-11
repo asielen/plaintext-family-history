@@ -10060,17 +10060,147 @@ class MergedDuplicatePhotoTests(_Base):
         self.assertEqual(self._published(), [], res['messages'])
         self.assertNotIn('reunion', self._read('persons/p-bbbbbbbbbb.html'))
 
-    def test_a_merge_loop_ends_and_publishes_when_no_one_on_it_is_living(self):
-        # A hand-edited loop must not hang the build, and two deceased
-        # records pointing at each other are still deceased.
+    def test_a_merge_loop_ends_and_keeps_the_photo_out(self):
+        # A hand-edited loop must not hang the build. Two records pointing at
+        # each other leave no survivor anyone can read, so the photo stays
+        # out the way an unknown person's does (#237: fail closed), and the
+        # build names the record to fix.
         self.conn.execute("UPDATE persons SET living = 'false', merged_into = 'p-bbbbbbbbbb' "
                           "WHERE id = 'p-dddddddddd'")
         self.conn.execute("UPDATE persons SET merged_into = 'p-dddddddddd' "
                           "WHERE id = 'p-bbbbbbbbbb'")
         self._catalog(fresh=True)
         res = self._run(linked=False)
+        self.assertEqual(self._published(), [], res['messages'])
+        self.assertTrue(any('loops back on itself' in m and 'merged_into:' in m
+                            for m in res['messages']), res['messages'])
+
+
+class MergedDuplicateClaimTests(_Base):
+    """A claim written by hand with a merged duplicate's old id is about the
+    person it was merged into (#237).
+
+    `fha confirm merge` moves existing claims to the survivor, but a claim
+    typed in later with the old id still names the tombstone, which says
+    `living: false`. If the survivor is living, that claim's words - and any
+    name in it - must stay out of the shared site, as they would for a claim
+    naming the living person directly."""
+
+    LARRY = 'p-aaaaaaaaaa'     # living survivor
+    DUP = 'p-dddddddddd'       # tombstone, merged into Larry
+    GRANDPA = 'p-bbbbbbbbbb'   # deceased relative, gets a page
+    SECRET = 'Lodged on Quillfeather Lane'
+    WEDDING = 'Thistlecombe Chapel'
+    PLACE_FACT = 'Boarded at Wrenhollow Farm'
+
+    def setUp(self) -> None:
+        super().setUp()
+        self._seed_person(self.LARRY, 'Larry Quist', living='true', surname='Quist')
+        self._seed_person(self.DUP, 'Lars Quistdup', living='false', surname='Quistdup')
+        self._merge(self.DUP, self.LARRY)
+        self._seed_person(self.GRANDPA, 'Grandpa Gone', surname='Gone')
+        self._seed_source('s-1111111111', 'Household census', people=(self.GRANDPA,))
+        self._seed_claim('c-1111111111', 's-1111111111', 'residence', self.SECRET,
+                         date_edtf='1950', persons=(self.GRANDPA, self.DUP))
+        self._seed_source('s-2222222222', 'Wedding register')
+        self._seed_claim('c-2222222222', 's-2222222222', 'marriage',
+                         f'Married at {self.WEDDING}', date_edtf='1952',
+                         place_text=self.WEDDING, persons=(self.GRANDPA, self.DUP),
+                         roles={self.GRANDPA: 'spouse', self.DUP: 'spouse'})
+        self.conn.execute("INSERT INTO places(id, name) VALUES ('l-1111111111', 'Wrenhollow')")
+        self._seed_source('s-3333333333', 'Farm ledger')
+        self._seed_claim('c-3333333333', 's-3333333333', 'residence', self.PLACE_FACT,
+                         date_edtf='1953', persons=(self.GRANDPA, self.DUP))
+        self.conn.execute("UPDATE claims SET place_id = 'l-1111111111' WHERE id = 'c-3333333333'")
+        # A fact about Grandpa alone, from the same census, still publishes.
+        self._seed_claim('c-4444444444', 's-1111111111', 'occupation', 'Worked as a cooper',
+                         date_edtf='1950', persons=(self.GRANDPA,))
+
+    def _merge(self, pid, into):
+        self.conn.execute("UPDATE persons SET status = 'merged', merged_into = ? WHERE id = ?",
+                          (into, pid))
+
+    def _all_output(self):
+        return '\n'.join(p.read_text(encoding='utf-8', errors='replace')
+                         for p in self.out_dir.rglob('*')
+                         if p.is_file() and p.suffix in ('.html', '.json', '.js'))
+
+    def _assert_withheld(self, res):
+        grandpa = self._read(f'persons/{self.GRANDPA}.html')
+        self.assertIn('Worked as a cooper', grandpa)   # the page itself is there
+        everything = self._all_output()
+        for text in (self.SECRET, self.WEDDING, self.PLACE_FACT, 'Quist', 'Larry', 'Lars'):
+            self.assertNotIn(text, everything, (text, res['messages']))
+        self.assertFalse((self.out_dir / 'sources' / 's-1111111111.html').exists())
+
+    def test_a_claim_naming_the_old_id_of_a_living_person_stays_out(self):
+        res = self._run(linked=False)
         self.assertEqual(res['status'], 'ok', res['messages'])
-        self.assertTrue(self._published(), res['messages'])
+        self._assert_withheld(res)
+
+    def test_the_merge_is_followed_through_a_chain(self):
+        # Merged twice: Lars -> an older duplicate -> Larry.
+        self._seed_person('p-eeeeeeeeee', 'Lorne Quistold', living='false', surname='Quistold')
+        self._merge('p-eeeeeeeeee', self.LARRY)
+        self._merge(self.DUP, 'P-eeeeeeeeee')
+        res = self._run(linked=False)
+        self._assert_withheld(res)
+
+    def test_a_merge_loop_fails_closed_and_says_which_record_to_fix(self):
+        self._seed_person('p-eeeeeeeeee', 'Lorne Quistold', living='false', surname='Quistold')
+        self._merge('p-eeeeeeeeee', self.DUP)
+        self._merge(self.DUP, 'p-eeeeeeeeee')
+        res = self._run(linked=False)
+        self.assertEqual(res['status'], 'ok', res['messages'])
+        self._assert_withheld(res)
+        warning = [m for m in res['messages'] if 'loops back on itself' in m]
+        self.assertTrue(warning, res['messages'])
+        self.assertIn('fha index', warning[0])
+
+    def test_a_merge_into_a_person_not_in_the_index_fails_closed(self):
+        self._merge(self.DUP, 'p-zzzzzzzzzz')
+        res = self._run(linked=False)
+        self.assertEqual(res['status'], 'ok', res['messages'])
+        self._assert_withheld(res)
+        self.assertTrue(any('P-zzzzzzzzzz' in m and 'merged_into:' in m
+                            for m in res['messages']), res['messages'])
+
+    def test_a_merge_into_a_restricted_person_keeps_their_sources_facts_out(self):
+        # The survivor is deceased but asked to be left out (by-request). The
+        # census lists the old id in its `people:`; its facts about Grandpa
+        # must stay out, as they do for a source naming the survivor.
+        survivor = self.archive_root / 'people' / f'quist__test_{self.LARRY}.md'
+        survivor.write_text(f'---\nid: {self.LARRY}\nname: Larry Quist\n'
+                            'restricted: by-request\n---\n# Larry Quist\n', encoding='utf-8')
+        self.conn.execute("UPDATE persons SET living = 'false' WHERE id = ?", (self.LARRY,))
+        self.conn.execute('INSERT INTO source_people(source_id, person_id) VALUES (?,?)',
+                          ('s-1111111111', self.DUP))
+        res = self._run(linked=False)
+        grandpa = self._read(f'persons/{self.GRANDPA}.html')
+        self.assertNotIn('Worked as a cooper', grandpa, res['messages'])
+        self.assertNotIn(self.SECRET, grandpa)
+
+    def test_people_who_were_never_merged_are_shown_as_before(self):
+        self.conn.execute("UPDATE persons SET status = 'active', merged_into = NULL "
+                          "WHERE id = ?", (self.DUP,))
+        res = self._run(linked=False)
+        self.assertEqual(res['status'], 'ok', res['messages'])
+        grandpa = self._read(f'persons/{self.GRANDPA}.html')
+        for text in (self.SECRET, self.WEDDING, 'Worked as a cooper'):
+            self.assertIn(text, grandpa, res['messages'])
+        self.assertIn(self.PLACE_FACT, self._read('places/l-1111111111.html'))
+        self.assertTrue((self.out_dir / 'sources' / 's-1111111111.html').exists())
+        self.assertFalse(any('merged_into:' in m for m in res['messages']), res['messages'])
+
+    def test_an_id_the_index_does_not_hold_is_treated_as_before(self):
+        # A claim naming an id that is in no record is a dangling reference
+        # (lint's job), not a merge: no crash, and nothing new withheld.
+        self.conn.execute("UPDATE claim_persons SET person_id = 'p-yyyyyyyyyy' "
+                          "WHERE person_id = ?", (self.DUP,))
+        res = self._run(linked=False)
+        self.assertEqual(res['status'], 'ok', res['messages'])
+        grandpa = self._read(f'persons/{self.GRANDPA}.html')
+        self.assertIn(self.SECRET, grandpa, res['messages'])
 
 
 @unittest.skipUnless(site._PIL_AVAILABLE, 'Pillow not installed')

@@ -230,6 +230,7 @@ from _lib import (
     normalize_id,
     open_index_db,
     path_to_alias,
+    person_is_living,
     photoindex_status,
     read_record,
     read_text_exact,
@@ -1322,7 +1323,8 @@ def _other_named_persons(
     Return living/unknown persons (other than pid) named by an included
     source's claims or its source_people list - the README caution set
     (TOOLING §8: "any *other* person ... with living: true is named in a
-    README caution"). living: unknown counts as living throughout.
+    README caution"). living: unknown counts as living throughout, and a
+    merged duplicate of a living person counts as that person (#237).
     """
     if not included_source_ids:
         return []
@@ -1331,7 +1333,7 @@ def _other_named_persons(
         f"""
         SELECT DISTINCT p.id, p.name
         FROM persons p
-        WHERE p.id != ? AND p.living IN ('true', 'unknown') AND p.id IN (
+        WHERE p.id != ? AND p.id IN (
             SELECT cp.person_id FROM claim_persons cp
             JOIN claims c ON cp.claim_id = c.id
             WHERE c.source_id IN ({placeholders})
@@ -1342,7 +1344,7 @@ def _other_named_persons(
         """,
         [pid] + included_source_ids + included_source_ids,
     ).fetchall()
-    return rows
+    return [r for r in rows if person_is_living(conn, r['id'])]
 
 
 def _citation_named_persons(
@@ -1353,7 +1355,8 @@ def _citation_named_persons(
     citation token anywhere in the packet's copied .md files (profile,
     research note, included source records) - catches a living person
     mentioned only in prose, with no `claim_persons`/`source_people` row,
-    that `_other_named_persons` would otherwise miss.
+    that `_other_named_persons` would otherwise miss. Merges are followed
+    the same way (#237).
     """
     if not copied_paths:
         return []
@@ -1362,14 +1365,14 @@ def _citation_named_persons(
         f"""
         SELECT DISTINCT p.id, p.name
         FROM persons p
-        WHERE p.id != ? AND p.living IN ('true', 'unknown') AND p.id IN (
+        WHERE p.id != ? AND p.id IN (
             SELECT token FROM citations WHERE kind = 'P' AND path IN ({placeholders})
         )
         ORDER BY p.name
         """,
         [pid] + list(copied_paths),
     ).fetchall()
-    return rows
+    return [r for r in rows if person_is_living(conn, r['id'])]
 
 
 def _is_under_root(path: Path, root: Path) -> bool:
@@ -3048,11 +3051,13 @@ def _packet_payload(
                         if photo_person_ids:
                             pplaceholders = ','.join('?' * len(photo_person_ids))
                             for row in conn.execute(
-                                f"SELECT id, name FROM persons WHERE id IN ({pplaceholders}) "
-                                f"AND living IN ('true', 'unknown')",
+                                f"SELECT id, name FROM persons WHERE id IN ({pplaceholders})",
                                 list(photo_person_ids),
                             ).fetchall():
-                                other_named_by_id.setdefault(row['id'], row)
+                                # Merges followed (#237): a photo tagged with
+                                # a merged duplicate's old id shows the survivor.
+                                if person_is_living(conn, row['id']):
+                                    other_named_by_id.setdefault(row['id'], row)
                 finally:
                     pconn.close()
 

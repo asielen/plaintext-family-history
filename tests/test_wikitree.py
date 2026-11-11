@@ -752,6 +752,67 @@ class WikitreeRenderTests(unittest.TestCase):
         self.assertIn('Ken Smith', r['messages'][0])
         self.assertIn('[living person]', r['messages'][0])   # the fix is named
 
+    def _seed_merged_duplicate_of_living_person(self, conn):
+        # Ken is living; "Kenny Smithdup" was a duplicate record of him, merged
+        # into him, and the tombstone still says living: false (#237).
+        _add_person(conn, 'p-0000000003', 'Ken Smith', tier='connection',
+                    living='true', surname='Smith')
+        _add_person(conn, 'p-0000000004', 'Kenny Smithdup', tier='stub',
+                    living='false', surname='Smithdup')
+        conn.execute("UPDATE persons SET status = 'merged', merged_into = 'p-0000000003' "
+                     "WHERE id = 'p-0000000004'")
+
+    def test_id_token_naming_a_merged_duplicate_of_a_living_person_is_redacted(self):
+        conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
+        self._seed_merged_duplicate_of_living_person(conn)
+        conn.commit()
+        conn.close()
+        profile = self.root / 'people' / 'subject.md'
+        profile.write_text(
+            profile.read_text(encoding='utf-8')
+            + '\nHe worked with Kenny Smithdup [P-0000000004] for years.\n',
+            encoding='utf-8',
+        )
+        _freshen_index(self.root)
+        r = wikitree.run_wikitree(self.root, 'p-0000000001')
+        self.assertEqual(r['status'], 'ok', r['messages'])
+        self.assertIn('[living person]', r['text'])
+        self.assertNotIn('Smithdup', r['text'])
+
+    def test_name_wikilink_to_a_merged_duplicate_of_a_living_person_refused(self):
+        conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
+        self._seed_merged_duplicate_of_living_person(conn)
+        conn.execute("INSERT INTO aliases(alias, canonical_id, kind) VALUES (?,?,?)",
+                     ('kenny smithdup', 'p-0000000004', 'name'))
+        conn.commit()
+        conn.close()
+        profile = self.root / 'people' / 'subject.md'
+        profile.write_text(
+            profile.read_text(encoding='utf-8')
+            + '\nHe knew [[Kenny Smithdup]] around town.\n',
+            encoding='utf-8',
+        )
+        _freshen_index(self.root)
+        r = wikitree.run_wikitree(self.root, 'p-0000000001')
+        self.assertEqual(r['status'], 'living-people')
+        self.assertIsNone(r['text'])
+
+    def test_research_note_naming_a_merged_duplicate_of_a_living_person_is_withheld(self):
+        conn = self._reopen()
+        self._seed_merged_duplicate_of_living_person(conn)
+        _add_claim(conn, 'c-0000000007', 'residence', ['p-0000000001', 'p-0000000004'],
+                   source_id='s-0000000002', status='needs-review',
+                   value='Possibly boarded with Kenny on Brackenwold Road')
+        # A parked claim about John alone still goes out as a question.
+        _add_claim(conn, 'c-0000000008', 'residence', ['p-0000000001'],
+                   source_id='s-0000000002', status='needs-review',
+                   value='Possibly moved to Topeka')
+        conn.commit(); conn.close()
+        r = wikitree.run_wikitree(self.root, 'p-0000000001')
+        self.assertEqual(r['status'], 'ok', r['messages'])
+        self.assertIn('Possibly moved to Topeka', r['text'])
+        self.assertNotIn('Brackenwold', r['text'])
+
     def test_living_unknown_name_wikilink_refused(self):
         # living: unknown IS living (SPEC §19) - the name-link gate must treat
         # it the same as an explicit true.

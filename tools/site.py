@@ -265,6 +265,7 @@ from _lib import (
     is_valid_id,
     is_working_copy,
     load_fha_yaml,
+    merge_chain,
     normalize_id,
     open_index_db,
     parse_filename,
@@ -488,6 +489,18 @@ _RESTRICTED_LABEL = 'Restricted - not included in this publication'
 # source citation on a page collapses to one entry, so the count/identity of the
 # restricted sources is never revealed and the label never repeats inline.
 _RESTRICTED_FN = '\x00restricted'
+
+# The standalone filter that keeps a claim off every shared page when it names
+# anyone `_person_is_redacted` withholds. It asks that one rule through the
+# `fha_person_redacted` SQL function `prepare()` registers, so a claim written
+# by hand with a merged duplicate's old id is held to the living person it was
+# merged into (#237), the same as a photo tag is (#236).
+_NO_REDACTED_PERSON_SQL = (
+    "AND NOT EXISTS ("
+    "  SELECT 1 FROM claim_persons cp2 "
+    "  WHERE cp2.claim_id = c.id AND fha_person_redacted(cp2.person_id)"
+    ")"
+)
 
 # Ownership stamp written into the output dir after every successful build.
 # `_reset_output` clears generic-named subtrees (sources/, media/, ...), so a
@@ -3984,30 +3997,47 @@ class _SiteBuilder:
                 if value and value not in self.alias_map:
                     self.alias_map[value] = rid
 
-        # Build the set of source ids that name a living person - checked via both the
+        # Every person the shared snapshot withholds, decided once by
+        # `_person_is_redacted` (merges followed) and handed to SQL as
+        # `fha_person_redacted(id)`, so the queries below and the claim
+        # filters (`_NO_REDACTED_PERSON_SQL`) ask the same rule the names,
+        # links and photos do (#237). An id the index does not hold is not
+        # in the set, as it never matched the old `JOIN persons` either.
+        redacted_ids: set[str] = set()
+        if not self.linked:
+            redacted_ids = {pid for pid, row in self.person_meta.items()
+                            if self._person_is_redacted(row)}
+            self._warn_broken_merge_chains()
+        self.conn.create_function('fha_person_redacted', 1,
+                                  lambda pid: pid in redacted_ids, deterministic=True)
+
+        # Build the set of source ids that name a withheld person - checked via both the
         # explicit source_people table (frontmatter `people:`) and via claim_persons
-        # (claims attached to the source that name a living participant).
+        # (claims attached to the source that name a withheld participant).
         source_living: set[str] = set()
         if not self.linked:
             for row in self.conn.execute(
-                "SELECT sp.source_id FROM source_people sp JOIN persons p ON sp.person_id = p.id "
-                "WHERE p.living IN ('true','unknown')"
+                "SELECT sp.source_id FROM source_people sp "
+                "WHERE fha_person_redacted(sp.person_id)"
             ):
                 source_living.add(row['source_id'])
             for row in self.conn.execute(
                 "SELECT DISTINCT c.source_id FROM claims c "
                 "JOIN claim_persons cp ON c.id = cp.claim_id "
-                "JOIN persons p ON cp.person_id = p.id "
-                "WHERE p.living IN ('true','unknown') AND c.source_id IS NOT NULL"
+                "WHERE fha_person_redacted(cp.person_id) AND c.source_id IS NOT NULL"
             ):
                 source_living.add(row['source_id'])
-            # Also exclude sources naming a person-level restricted person
-            # (deceased but carrying `restricted: by-request`). The person's
-            # page is suppressed by _person_is_redacted; the source page must
-            # follow suit so the facts don't leak through the source view.
-            if self.restricted_persons:
-                placeholders = ','.join('?' * len(self.restricted_persons))
-                rp = list(self.restricted_persons)
+            # Also mark sources naming a person-level restricted person
+            # (deceased but carrying `restricted: by-request`) - or a merged
+            # duplicate of one - as hard-restricted. The person's page is
+            # suppressed by _person_is_redacted; the source's facts must
+            # follow suit so they don't leak through a relative's timeline.
+            restricted_ids = set(self.restricted_persons) | {
+                pid for pid, row in self.person_meta.items()
+                if any(r['id'] in self.restricted_persons for r in self._merge_chain(row))}
+            if restricted_ids:
+                placeholders = ','.join('?' * len(restricted_ids))
+                rp = sorted(restricted_ids)
                 for row in self.conn.execute(
                     f"SELECT sp.source_id FROM source_people sp WHERE sp.person_id IN ({placeholders})",
                     rp,
@@ -4804,34 +4834,38 @@ class _SiteBuilder:
         return (row['living'] or '') in ('true', 'unknown')
 
     def _merge_chain(self, row: sqlite3.Row) -> list:
-        """`row`, then each record it was merged into in turn, to the survivor.
+        """`row`, then each record it was merged into in turn, to the survivor
+        (`_lib.merge_chain`, the rule packet and wikitree share).
 
-        A chain that loops back on itself stops at the repeat. One that names
-        an id the index does not hold ends in a stand-in that reads as
-        `living: unknown`: nothing is known about the survivor, and an unknown
-        person is treated as living, so the snapshot keeps them out rather
-        than guessing."""
-        chain = [row]
-        seen = {row['id']}
-        current = row
-        while True:
-            try:
-                nxt = current['merged_into']
-            except (IndexError, KeyError):
-                break
-            nxt = (nxt or '').strip()
-            if not nxt:
-                break
-            nid = normalize_id(nxt)
-            if nid in seen:
-                break
-            seen.add(nid)
-            current = self.person_meta.get(nid)
-            if current is None:
-                chain.append({'id': nid, 'living': 'unknown', 'merged_into': None})
-                break
-            chain.append(current)
-        return chain
+        A chain that loops back on itself, or names an id the index does not
+        hold, ends in a stand-in that reads as `living: unknown`: there is no
+        survivor anyone can read, and an unknown person is treated as living,
+        so the snapshot keeps them out rather than guessing (#237)."""
+        return merge_chain(row, self.person_meta.get)
+
+    def _warn_broken_merge_chains(self) -> None:
+        """Say which people this build kept out because their merge record is
+        broken, and how to fix it.
+
+        A deceased ancestor shown as "Living Person" for no visible reason is
+        a dead end for the owner. A `merged_into:` line that loops back or
+        names a person who is not in the index is why; the warning names the
+        record to fix."""
+        for pid, row in sorted(self.person_meta.items()):
+            end = self._merge_chain(row)[-1]
+            broken = end.get('broken') if isinstance(end, dict) else None
+            if not broken:
+                continue
+            why = ('its chain of merges loops back on itself' if broken == 'loop'
+                   else f'no person {fmt_id_display(end["id"])} is in the index')
+            self.messages.append(
+                f'WARNING: {row["name"] or fmt_id_display(pid)} ({fmt_id_display(pid)}) '
+                f'is recorded as merged into another person, but {why}, so there is '
+                f'no way to tell who they really are. They are kept out of this site '
+                f'the way a living person is. Fix the `merged_into:` line in '
+                f'{row["path"] or "their record"}, then run `fha index` and '
+                f'`fha site` again.'
+            )
 
     def _name_is_sensitive(self, key: str) -> bool:
         """True when a lowercased, wrapper-stripped name-link key must not be
@@ -5483,13 +5517,7 @@ class _SiteBuilder:
         # decision 2026-07-22. `--linked` (developer preview / workbench)
         # shows every status with its badge.
         status_filter = '' if self.linked else "AND status = 'accepted'"
-        living_filter = (
-            '' if self.linked else
-            "AND NOT EXISTS ("
-            "  SELECT 1 FROM claim_persons cp2 JOIN persons p ON cp2.person_id = p.id "
-            "  WHERE cp2.claim_id = c.id AND p.living IN ('true','unknown')"
-            ")"
-        )
+        living_filter = '' if self.linked else _NO_REDACTED_PERSON_SQL
         claims = []
         for c in self.conn.execute(
             'SELECT id, type, value, date_edtf, place_id, place_text, status, confidence FROM claims c '
@@ -5885,13 +5913,7 @@ class _SiteBuilder:
         first-of-each-type pick, so a relative's record cannot win the slot and
         thereby suppress the person's own.
         """
-        living_filter = (
-            '' if self.linked else
-            "AND NOT EXISTS ("
-            "  SELECT 1 FROM claim_persons cp2 JOIN persons p ON cp2.person_id = p.id "
-            "  WHERE cp2.claim_id = c.id AND p.living IN ('true','unknown')"
-            ")"
-        )
+        living_filter = '' if self.linked else _NO_REDACTED_PERSON_SQL
         rows = self.conn.execute(
             "SELECT c.id, type, value, date_edtf, date_min, date_max, place_id, place_text, "
             "source_id, confidence "
@@ -5921,7 +5943,7 @@ class _SiteBuilder:
             # Show the vital even when its source is withheld (the citation is
             # redacted); withhold only a restricted claim or a hard-restricted
             # source (DNA / by-request / publication_ok:false). A vital tagging a
-            # living person is already excluded by `living_filter` above.
+            # withheld person is already excluded by `living_filter` above.
             rows = [r for r in rows
                     if normalize_id(str(r['id'])) not in self.restricted_claims
                     and not self._source_hard_restricted(r['source_id'])]
@@ -6300,13 +6322,7 @@ class _SiteBuilder:
         """
         status_filter = ("c.status IN ('accepted','needs-review')" if self.linked
                          else "c.status = 'accepted'")
-        living_filter = (
-            '' if self.linked else
-            "AND NOT EXISTS ("
-            "  SELECT 1 FROM claim_persons cp2 JOIN persons p ON cp2.person_id = p.id "
-            "  WHERE cp2.claim_id = c.id AND p.living IN ('true','unknown')"
-            ")"
-        )
+        living_filter = '' if self.linked else _NO_REDACTED_PERSON_SQL
         rows = self.conn.execute(
             "SELECT DISTINCT c.id, c.date_edtf, c.date_min, c.type, c.value, c.place_id, c.place_text, c.source_id, "
             "c.status, c.confidence, c.reviewed "
@@ -7611,13 +7627,7 @@ class _SiteBuilder:
                 "ORDER BY CASE WHEN date_min IS NULL OR date_min = '' THEN 1 ELSE 0 END, date_min", (lid,))
         ]
 
-        living_filter = (
-            '' if self.linked else
-            "AND NOT EXISTS ("
-            "  SELECT 1 FROM claim_persons cp2 JOIN persons p ON cp2.person_id = p.id "
-            "  WHERE cp2.claim_id = c.id AND p.living IN ('true','unknown')"
-            ")"
-        )
+        living_filter = '' if self.linked else _NO_REDACTED_PERSON_SQL
         # Same audience split as the person timeline (owner decision 2026-07-22):
         # public = accepted only; linked/workbench keeps needs-review, marked.
         place_status_filter = ("c.status IN ('accepted','needs-review')" if self.linked
