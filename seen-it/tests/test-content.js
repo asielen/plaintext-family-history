@@ -274,3 +274,152 @@ test('Ancestry hints: a bare scan link beside the title box finds its own pills,
   }
 });
 
+// A tree person's gallery is counted on its own, beside their sources:
+// "1 of 2 sources saved · 1 of 3 gallery items saved". Made-up ids only.
+const GAL = (n) => 'abcdef0' + n + '-2222-4333-8444-abcdefabcdef';
+const tile = (href) => ({ getAttribute: (n) => (n === 'href' ? href : null), textContent: '', innerText: '' });
+const sourceLink = (dbId, recId) => tile('https://www.ancestry.com/search/collections/' + dbId + '/records/' + recId);
+const FILED = { state: 'filed', sid: 'S-0a1b2c3d4e' };
+const DAY_MS = 24 * 3600 * 1000;
+
+async function personPage({ pathname, search = '', tiles = [], sources = null, storage = {}, nodes = [] }) {
+  const page = loadContentScript('content-ancestry.js', {
+    pathname, search, origin: 'https://www.ancestry.com', storage,
+    getElementById: (id) => (id === 'sourcesSection' && sources ? { querySelectorAll: () => sources } : null),
+    querySelector: (sel) => (sel === 'h1' ? { innerText: 'Thomas Hartley' } : null),
+    querySelectorAll: (sel) => (sel.includes('mediaGalleryItem') ? tiles : sel === 'div.node[id]' ? nodes : []),
+  });
+  try {
+    await wait(700);
+  } finally {
+    page.stop();
+  }
+  const badge = page.document.body.children.find((c) => c.id === 'nsi-anc-person');
+  const pills = badge ? badge.children[0].children : [];
+  return { page, badge, texts: pills.map((p) => p.textContent), titles: pills.map((p) => p.title || '') };
+}
+
+test('Ancestry gallery: the items on a gallery page are remembered for that person and page', async () => {
+  const { page } = await personPage({
+    pathname: '/family-tree/person/tree/111/person/222/gallery', search: '?galleryPage=2&tab=gallery',
+    tiles: [
+      tile('/mediaui-viewer/collection/1030/tree/111/person/222/media/' + GAL(1).toUpperCase() + '?galleryPage=2'),
+      tile('/mediaui-viewer/tree/111/person/222/media/' + GAL(1)),
+      tile('/mediaui-viewer/tree/111/person/222/media/' + GAL(2)),
+    ],
+  });
+  const msg = page.sent.find((m) => m.type === 'ancPerson');
+  assert.ok(msg, 'the gallery page was not remembered');
+  assert.strictEqual(msg.key, '111:222');
+  // (copied out of the page's own world, as the message would be)
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(msg.gallery)), { page: 2, keys: ['med:' + GAL(1), 'med:' + GAL(2)] });
+  assert.strictEqual(msg.keys, undefined, 'a gallery page claimed the person has no sources');
+});
+
+// PR #271 audit: moving from one person's gallery to another's inside the
+// page, Seen It can read before Ancestry redraws the tiles. Tiles belonging to
+// someone else are never filed under the person in the address bar.
+test('Ancestry gallery: tiles still showing another person\'s gallery are not counted for this person', async () => {
+  const stale = await personPage({
+    pathname: '/family-tree/person/tree/111/person/333/gallery', search: '?galleryPage=1',
+    tiles: [tile('/mediaui-viewer/tree/111/person/222/media/' + GAL(1)), tile('/mediaui-viewer/collection/1030/tree/111/person/222/media/' + GAL(2))],
+  });
+  assert.deepStrictEqual(stale.page.sent.filter((m) => m.type === 'ancPerson'), [], 'another person\'s tiles were filed under this one');
+  // once redrawn, her own tiles are counted (and a stray tile of someone else's is not)
+  const own = await personPage({
+    pathname: '/family-tree/person/tree/111/person/333/gallery', search: '?galleryPage=1',
+    tiles: [tile('/mediaui-viewer/tree/111/person/333/media/' + GAL(3)), tile('/mediaui-viewer/tree/111/person/222/media/' + GAL(1))],
+  });
+  const msg = own.page.sent.find((m) => m.type === 'ancPerson');
+  assert.ok(msg, 'her own gallery page was not remembered');
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(msg.gallery)), { page: 1, keys: ['med:' + GAL(3)] });
+});
+
+test('Ancestry Facts page: a gallery page stored as a bare list still counts', async () => {
+  const p = hartley({ 1: ['med:' + GAL(1)] });
+  p.gallery.pages[2] = ['med:' + GAL(2)];
+  const { texts } = await personPage({ ...FACTS, storage: {
+    settings: { advanced: true }, known: { ['med:' + GAL(1)]: FILED }, ancPeople: { '111:222': p },
+  } });
+  assert.ok(texts.includes('1 of 2 gallery items saved'), JSON.stringify(texts));
+});
+
+// Each gallery page is stored with the time it was read: { keys, at }.
+const hartley = (gallery) => ({ name: 'Thomas Hartley', keys: ['rec:1001:2002', 'rec:3003:4004'], at: Date.now() - DAY_MS,
+  ...(gallery ? { gallery: { at: Date.now() - DAY_MS,
+    pages: Object.fromEntries(Object.entries(gallery).map(([n, keys]) => [n, { keys, at: Date.now() - DAY_MS }])) } } : {}) });
+const FACTS = { pathname: '/family-tree/person/tree/111/person/222/facts', sources: [sourceLink(1001, 2002), sourceLink(3003, 4004)] };
+
+test('Ancestry Facts page: the gallery gets its own count beside the sources', async () => {
+  const { texts, titles } = await personPage({ ...FACTS, storage: {
+    settings: { advanced: true },
+    known: { 'rec:1001:2002': FILED, ['med:' + GAL(1)]: FILED },
+    ancPeople: { '111:222': hartley({ 1: ['med:' + GAL(1), 'med:' + GAL(2)], 2: ['med:' + GAL(3)] }) },
+  } });
+  assert.strictEqual(texts[0], '1 of 2 sources saved');
+  const g = texts.indexOf('1 of 3 gallery items saved');
+  assert.ok(g > 0, 'no gallery count: ' + JSON.stringify(texts));
+  assert.match(titles[g], /pages 1–2/);
+});
+
+test('Ancestry Facts page: a person whose gallery was never opened shows only the sources, as before', async () => {
+  const { texts } = await personPage({ ...FACTS, storage: {
+    settings: { advanced: true },
+    known: { 'rec:1001:2002': FILED },
+    ancPeople: { '111:222': hartley(null) },
+  } });
+  assert.deepStrictEqual(texts, ['1 of 2 sources saved', '📚 1 in archive', '○ 1 not saved']);
+});
+
+test('Ancestry Facts page: outside advanced mode nothing about the archive is shown', async () => {
+  const { badge } = await personPage({ ...FACTS, storage: {
+    known: { 'rec:1001:2002': FILED, ['med:' + GAL(1)]: FILED },
+    ancPeople: { '111:222': hartley({ 1: ['med:' + GAL(1)] }) },
+  } });
+  assert.strictEqual(badge, undefined);
+});
+
+test('Ancestry gallery: the badge counts the page in front of her, with the sources from the last Facts visit', async () => {
+  const { texts, titles } = await personPage({
+    pathname: '/family-tree/person/tree/111/person/222/gallery', search: '?galleryPage=1&tab=gallery',
+    tiles: [tile('/mediaui-viewer/tree/111/person/222/media/' + GAL(1))],
+    storage: {
+      settings: { advanced: true },
+      known: { 'rec:1001:2002': FILED, ['med:' + GAL(1)]: FILED },
+      // GAL(2) was on page 1 last time; it has since been taken off Ancestry
+      ancPeople: { '111:222': hartley({ 1: ['med:' + GAL(1), 'med:' + GAL(2)], 2: ['med:' + GAL(3)] }) },
+    },
+  });
+  assert.strictEqual(texts[0], '1 of 2 sources saved');
+  assert.ok(texts.includes('1 of 2 gallery items saved'), JSON.stringify(texts));
+  assert.match(titles[0], /Facts page/);
+});
+
+test('Ancestry gallery: before her Facts page is opened, only the gallery is counted', async () => {
+  const { texts } = await personPage({
+    pathname: '/family-tree/person/tree/111/person/222/gallery',
+    tiles: [tile('/mediaui-viewer/tree/111/person/222/media/' + GAL(1))],
+    storage: { settings: { advanced: true }, known: { ['med:' + GAL(1)]: FILED } },
+  });
+  assert.deepStrictEqual(texts, ['✓ 1 gallery item saved']);
+});
+
+test('Ancestry tree view: the chip still counts sources; its tooltip adds the gallery', async () => {
+  const host = { children: [] };
+  host.appendChild = (c) => { host.children.push(c); return c; };
+  host.querySelector = () => host.children[0] || null;
+  const node = { id: '222:0', querySelector: (sel) => (sel === '.vAlignContent' ? host : null) };
+  await personPage({
+    pathname: '/family-tree/tree/111/family', nodes: [node],
+    storage: {
+      settings: { advanced: true },
+      known: { 'rec:1001:2002': FILED, ['med:' + GAL(1)]: FILED },
+      ancPeople: { '111:222': hartley({ 1: ['med:' + GAL(1), 'med:' + GAL(2), 'med:' + GAL(3)] }) },
+    },
+  });
+  const chip = host.children[0];
+  assert.ok(chip, 'no chip on the person');
+  assert.strictEqual(chip.textContent, '1/2');
+  assert.match(chip.title, /Gallery items: 1 of 3 saved/);
+});
+

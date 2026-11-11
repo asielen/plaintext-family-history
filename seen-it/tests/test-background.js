@@ -258,3 +258,73 @@ test('the toolbar window asks the writer to stamp an export or a full re-read', 
   const { meta } = await h.local.get('meta');
   assert.deepStrictEqual([meta.logExportedAt, meta.fullRefreshRequested, meta.lastSearch.key], [777, true, 'k1']);
 });
+
+// ── a tree person's gallery, counted beside their sources ────────────────
+const G1 = 'med:abcdef01-2222-4333-8444-abcdefabcdef';
+const G2 = 'med:abcdef02-2222-4333-8444-abcdefabcdef';
+const G3 = 'med:abcdef03-2222-4333-8444-abcdefabcdef';
+const G4 = 'med:abcdef04-2222-4333-8444-abcdefabcdef';
+const G5 = 'med:abcdef05-2222-4333-8444-abcdefabcdef';
+// Each gallery page's items, whatever else is stored beside them.
+const pageKeys = (g) => Object.fromEntries(Object.entries(g.pages).map(([n, pg]) => [n, Array.isArray(pg) ? pg : pg.keys]));
+
+test('a person\'s gallery is kept page by page: re-reading a page replaces it, other pages stay', async () => {
+  const h = load();
+  await h.send({ type: 'ancPerson', key: '111:222', name: 'Thomas Hartley', keys: ['rec:1001:2002'] });
+  await h.send({ type: 'ancPerson', key: '111:222', name: 'Thomas Hartley', gallery: { page: 1, keys: [G1, G2, G1] } });
+  await h.send({ type: 'ancPerson', key: '111:222', name: 'Thomas Hartley', gallery: { page: 2, keys: [G3] } });
+  // page 1 read again after a photo was taken off it on Ancestry
+  await h.send({ type: 'ancPerson', key: '111:222', name: 'Thomas Hartley', gallery: { page: 1, keys: [G1] } });
+  const p = (await h.local.get('ancPeople')).ancPeople['111:222'];
+  assert.deepStrictEqual(pageKeys(p.gallery), { 1: [G1], 2: [G3] });
+  assert.ok(p.gallery.at > 0, 'no date for the gallery reading');
+  assert.ok(p.gallery.pages[1].at > 0 && p.gallery.pages[2].at > 0, 'a gallery page has no date of its own');
+  assert.deepStrictEqual(p.keys, ['rec:1001:2002'], 'reading the gallery lost the sources');
+  // and opening the Facts page again keeps the gallery
+  await h.send({ type: 'ancPerson', key: '111:222', name: 'Thomas Hartley', keys: ['rec:1001:2002', 'rec:3003:4004'] });
+  const q = (await h.local.get('ancPeople')).ancPeople['111:222'];
+  assert.deepStrictEqual(q.keys, ['rec:1001:2002', 'rec:3003:4004']);
+  assert.deepStrictEqual(pageKeys(q.gallery), { 1: [G1], 2: [G3] });
+});
+
+test('a gallery read before the Facts page leaves the sources unknown, not "none"', async () => {
+  const h = load();
+  await h.send({ type: 'ancPerson', key: '111:333', name: 'Margaret Hartley', gallery: { page: 1, keys: [G2] } });
+  const p = (await h.local.get('ancPeople')).ancPeople['111:333'];
+  assert.strictEqual(p.keys, undefined);
+  assert.strictEqual(p.name, 'Margaret Hartley');
+});
+
+test('restoring a backup keeps the newer gallery reading even when the backup\'s sources are newer', async () => {
+  const h = load();
+  const now = Date.now();
+  await h.send({ type: 'ancPerson', key: '111:222', name: 'Thomas Hartley', gallery: { page: 1, keys: [G1] } });
+  await h.send({ type: 'import', data: { app: 'newspapers-seen-it', version: 3,
+    ancPeople: { '111:222': { name: 'Thomas Hartley', keys: ['rec:1001:2002'], at: now + DAY } } } });
+  const p = (await h.local.get('ancPeople')).ancPeople['111:222'];
+  assert.deepStrictEqual(p.keys, ['rec:1001:2002']);
+  assert.deepStrictEqual(pageKeys(p.gallery), { 1: [G1] });
+});
+
+// PR #271 audit: two computers sharing the data folder each read different
+// gallery pages; every sync must keep both computers' pages, not one side's.
+test('gallery pages read on two computers are all kept when their files are merged', async () => {
+  const a = load();
+  const now = Date.now();
+  await a.send({ type: 'ancPerson', key: '111:222', name: 'Thomas Hartley', keys: ['rec:1001:2002'] });
+  await a.send({ type: 'ancPerson', key: '111:222', name: 'Thomas Hartley', gallery: { page: 1, keys: [G1, G2] } });
+  await a.send({ type: 'ancPerson', key: '111:222', name: 'Thomas Hartley', gallery: { page: 2, keys: [G3] } });
+  // The other computer, later: page 3 read there, and page 2 read again there
+  // after a photo was added on Ancestry; its page 1 reading is older than this one's.
+  const theirs = { app: 'newspapers-seen-it', version: 3, ancPeople: { '111:222': { name: 'Thomas Hartley',
+    gallery: { pages: { 1: { keys: [G1], at: now - DAY }, 2: { keys: [G3, G4], at: now + DAY }, 3: { keys: [G5], at: now + DAY } }, at: now + DAY } } } };
+  await a.send({ type: 'import', data: theirs });
+  let p = (await a.local.get('ancPeople')).ancPeople['111:222'];
+  assert.deepStrictEqual(pageKeys(p.gallery), { 1: [G1, G2], 2: [G3, G4], 3: [G5] });
+  assert.strictEqual(p.gallery.at, now + DAY, 'the gallery is dated by its newest page');
+  assert.deepStrictEqual(p.keys, ['rec:1001:2002']);
+  // merging the same file again changes nothing
+  await a.send({ type: 'import', data: theirs });
+  p = (await a.local.get('ancPeople')).ancPeople['111:222'];
+  assert.deepStrictEqual(pageKeys(p.gallery), { 1: [G1, G2], 2: [G3, G4], 3: [G5] });
+});

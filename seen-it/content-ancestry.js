@@ -89,9 +89,61 @@
   // A person's Facts page (/family-tree/person/tree/{treeId}/person/{pid}/facts)
   // lists their Ancestry sources in #sourcesSection. Seen It remembers that
   // list per person, so the tree view can mark each person it has seen.
+  // Their Gallery page (…/person/{pid}/gallery?galleryPage=N) is counted on its
+  // own, beside the sources: "3 of 6 gallery items saved".
   function personFromPath(path) {
-    const m = /\/family-tree\/person\/tree\/(\d+)\/person\/(\d+)\/facts/.exec(String(path || ''));
-    return m ? { tree: m[1], pid: m[2], key: m[1] + ':' + m[2] } : null;
+    const m = /\/family-tree\/person\/tree\/(\d+)\/person\/(\d+)\/(facts|gallery)\b/.exec(String(path || ''));
+    return m ? { tree: m[1], pid: m[2], key: m[1] + ':' + m[2], view: m[3] } : null;
+  }
+
+  // The photos, stories and documents on the gallery page in front of her, and
+  // which page of the gallery it is. Nothing until the tiles are drawn (an
+  // empty page cannot be told from one still loading), and nothing on a tab
+  // that shows only part of the gallery. Only tiles whose link names this
+  // person (…/tree/{t}/person/{p}/media/…) count: moving from one person's
+  // gallery to another's, the last person's tiles can still be on screen.
+  function galleryPageItems(person) {
+    const q = new URLSearchParams(location.search);
+    if (q.get('tab') && q.get('tab') !== 'gallery') return null;
+    const keys = [];
+    const mine = '/tree/' + person.tree + '/person/' + person.pid + '/';
+    for (const a of document.querySelectorAll('.mediaGalleryItem a[href]')) {
+      const href = a.getAttribute('href') || '';
+      const k = keyFromHref(href);
+      if (k && k.startsWith('med:') && href.includes(mine) && !keys.includes(k)) keys.push(k);
+    }
+    return keys.length ? { page: Math.max(1, parseInt(q.get('galleryPage'), 10) || 1), keys } : null;
+  }
+
+  // What is known of a person's gallery: every item on the pages read (`live`:
+  // the page in front of her, read just now), which pages, and when.
+  function galleryOf(p, live) {
+    const pages = Object.assign({}, (p && p.gallery && p.gallery.pages) || {});
+    if (live) pages[live.page] = live.keys;
+    const nums = Object.keys(pages).map(Number).filter((n) => n >= 1).sort((a, b) => a - b);
+    const keys = [];
+    // A page is stored as { keys, at } (or, from an early 0.12.3, a bare list).
+    for (const n of nums) for (const k of (Array.isArray(pages[n]) ? pages[n] : (pages[n] && pages[n].keys)) || []) if (!keys.includes(k)) keys.push(k);
+    if (!keys.length) return null;
+    return { keys, pages: nums, at: (p && p.gallery && p.gallery.at) || null };
+  }
+
+  function galleryText(c) {
+    const items = c.total === 1 ? ' gallery item' : ' gallery items';
+    if (!c.missing) return '✓ ' + (c.total === 1 ? '' : 'All ') + c.total + items + ' saved';
+    return (c.filed + c.captured) + ' of ' + c.total + items + ' saved';
+  }
+
+  // Only what is known: the pages she has opened. Ancestry's page count is not
+  // read, so a page never opened is said to be left out, not guessed at.
+  function galleryTitle(c, g) {
+    const n = g.pages;
+    const run = n.length > 1 && n[n.length - 1] - n[0] === n.length - 1;
+    const which = (n.length === 1 ? 'page ' : 'pages ') + (run ? n[0] + '–' + n[n.length - 1] : n.join(', '));
+    return 'Gallery items: ' + (c.filed + c.captured) + ' of ' + c.total + ' saved - ' + c.filed + ' in the archive, ' +
+      c.captured + ' captured and waiting to be filed, ' + c.missing + ' not saved.\n' +
+      'From the gallery ' + (n.length === 1 ? 'page' : 'pages') + ' you have opened (' + which + ')' +
+      (g.at ? ', last read ' + fmtDate(g.at) : '') + '; a gallery page you have not opened is not counted.';
   }
 
   function treeFromPath(path) {
@@ -164,24 +216,32 @@
 
   let lastPersonSig = null;
   function trackPerson(person) {
-    const keys = personSourceKeys();
-    if (!keys) return;
-    const sig = person.key + '|' + keys.join(',');
+    const gallery = person.view === 'gallery' ? galleryPageItems(person) : null;
+    const keys = gallery ? null : personSourceKeys();
+    if (!keys && !gallery) return;
+    const sig = person.key + '|' + (keys ? keys.join(',') : 'gallery ' + gallery.page + '|' + gallery.keys.join(','));
     if (sig === lastPersonSig) return;
     lastPersonSig = sig;
     const h1 = document.querySelector('h1');
-    send({ type: 'ancPerson', key: person.key, name: h1 ? h1.innerText.trim() : null, keys });
+    const name = h1 ? h1.innerText.trim() : null;
+    send(keys ? { type: 'ancPerson', key: person.key, name, keys } : { type: 'ancPerson', key: person.key, name, gallery });
   }
 
   function renderPersonBadge(person) {
     let box = document.getElementById('nsi-anc-person');
-    const keys = person && personSourceKeys();
-    if (!person || !keys) {
+    // The sources: from the Facts page in front of her, or on the Gallery page
+    // as last seen on the Facts page. The gallery: as far as it has been read.
+    const stored = person && data.ancPeople[person.key];
+    const onGallery = person && person.view === 'gallery';
+    const keys = person && (onGallery ? (stored && Array.isArray(stored.keys) ? stored.keys : null) : personSourceKeys());
+    const g = person && galleryOf(stored, onGallery ? galleryPageItems(person) : null);
+    if (!person || (!keys && !(onGallery && g))) {
       if (box) box.remove();
       return;
     }
-    const c = coverage(keys);
-    const sig = JSON.stringify(c);
+    const c = keys ? coverage(keys) : null;
+    const gc = g ? coverage(g.keys) : null;
+    const sig = JSON.stringify([c, gc, g && g.pages, g && g.at]);
     if (box && box.dataset.key === sig) return;
     if (!box) {
       box = document.createElement('div');
@@ -192,16 +252,21 @@
     box.textContent = '';
     const wrap = document.createElement('span');
     wrap.className = 'nsi-pills';
-    wrap.appendChild(pill(c.missing ? (c.filed + c.captured ? 'nsi-captured' : 'nsi-notyet') : 'nsi-archive', coverageText(c), coverageTitle(c)));
-    if (c.total && c.missing) {
-      if (c.filed) wrap.appendChild(pill('nsi-archive', '📚 ' + c.filed + ' in archive', 'Filed as sources in the family archive.'));
-      if (c.captured) wrap.appendChild(pill('nsi-captured', '📥 ' + c.captured + ' captured', 'Captured into the inbox, waiting to be filed.'));
-      wrap.appendChild(pill('nsi-notyet', '○ ' + c.missing + ' not saved', 'Not captured yet - queue Ancestry records with the capture panel’s "Add this person’s sources"; a clipping comes in through the Newspapers.com batch.'));
+    if (c) {
+      wrap.appendChild(pill(c.missing ? (c.filed + c.captured ? 'nsi-captured' : 'nsi-notyet') : 'nsi-archive', coverageText(c),
+        coverageTitle(c) + (onGallery ? '\n(Sources as last seen on their Facts page' + (stored.at ? ', ' + fmtDate(stored.at) : '') + '.)' : '')));
+      if (c.total && c.missing) {
+        if (c.filed) wrap.appendChild(pill('nsi-archive', '📚 ' + c.filed + ' in archive', 'Filed as sources in the family archive.'));
+        if (c.captured) wrap.appendChild(pill('nsi-captured', '📥 ' + c.captured + ' captured', 'Captured into the inbox, waiting to be filed.'));
+        wrap.appendChild(pill('nsi-notyet', '○ ' + c.missing + ' not saved', 'Not captured yet - queue Ancestry records with the capture panel’s "Add this person’s sources"; a clipping comes in through the Newspapers.com batch.'));
+      }
+      if (c.webLinks) {
+        wrap.appendChild(pill('nsi-notyet', '🔗 ' + c.webLinks + ' web link' + (c.webLinks === 1 ? '' : 's'),
+          'Web links (archive.org, Google Books…) are not tracked. Open one and use the capture panel’s Capture to save it.'));
+      }
     }
-    if (c.webLinks) {
-      wrap.appendChild(pill('nsi-notyet', '🔗 ' + c.webLinks + ' web link' + (c.webLinks === 1 ? '' : 's'),
-        'Web links (archive.org, Google Books…) are not tracked. Open one and use the capture panel’s Capture to save it.'));
-    }
+    // The gallery: its own count, after the sources.
+    if (gc) wrap.appendChild(pill(gc.missing ? (gc.filed + gc.captured ? 'nsi-captured' : 'nsi-notyet') : 'nsi-archive', galleryText(gc), galleryTitle(gc, g)));
     box.appendChild(wrap);
   }
 
@@ -217,21 +282,26 @@
       const host = node.querySelector('.vAlignContent') || node.querySelector('.nodeContent');
       if (!host) continue;
       let chip = host.querySelector(':scope > .nsi-node-chip');
-      if (!p) {
+      // The chip counts sources: none for a person whose Facts page was never
+      // opened (only their gallery), rather than a "–" that says they have none.
+      if (!p || !Array.isArray(p.keys)) {
         if (chip) chip.remove();
         continue;
       }
-      const c = coverage(p.keys || []);
+      const c = coverage(p.keys);
+      const g = galleryOf(p, null);
       const text = c.total ? (c.missing ? (c.filed + c.captured) + '/' + c.total : '✓ ' + c.total + '/' + c.total) : '–';
       const cls = 'nsi-node-chip ' + (c.missing ? (c.filed + c.captured ? 'nsi-node-part' : 'nsi-node-none') : 'nsi-node-all');
-      if (chip && chip.textContent === text && chip.className === cls) continue;
+      const title = (p.name || 'This person') + ': ' + coverageTitle(c) + ' (sources as of ' + fmtDate(p.at) + ')' +
+        (g ? '\n' + galleryTitle(coverage(g.keys), g) : '');
+      if (chip && chip.textContent === text && chip.className === cls && chip.title === title) continue;
       if (!chip) {
         chip = document.createElement('span');
         host.appendChild(chip);
       }
       chip.className = cls;
       chip.textContent = text;
-      chip.title = (p.name || 'This person') + ': ' + coverageTitle(c) + ' (sources as of ' + fmtDate(p.at) + ')';
+      chip.title = title;
     }
   }
 
