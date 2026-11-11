@@ -2291,11 +2291,17 @@ const FIXTURE_MEDIA = '7c0ffee0-1234-4abc-8def-0123456789ab'; // the photo in an
 // viewer page is the shared-photo fixture, made that item's. `behind[guid]`:
 // so many reads at Capture find Ancestry's Details still on the item shown
 // before (Infinity: always). `away`: items whose address shows a page that is
-// no photo at all (Ancestry sent the tab elsewhere). Records as ancestrySite.
-function gallerySite({ behind = {}, away = [] } = {}) {
+// no photo at all (Ancestry sent the tab elsewhere). `bare[guid]`: so many
+// reads at Capture find the picture drawn but Ancestry's Details panel not
+// yet. `panel`: items shown in Ancestry's own viewer markup (its Details
+// panel, #mediaViewerDetailsPanel). Records as ancestrySite.
+function gallerySite({ behind = {}, away = [], bare = {}, panel = [] } = {}) {
   const records = ancestrySite();
   const PANEL = sample('ancestry-media-panel');
+  const NO_PANEL = PANEL.replace(/ {4}<div class="taggingSidebarWrapper">[\s\S]*?(?=\n {2}<\/div>\n {2}<footer>)/, '');
+  assert.ok(NO_PANEL.length < PANEL.length / 2 && !NO_PANEL.includes('id="mediaViewerDetailsPanel"'), 'the fixture edit took');
   const left = Object.assign({}, behind);
+  const bareLeft = Object.assign({}, bare);
   return (msg, tab) => {
     const media = anc.ancParseMediaPage(tab.url);
     if (msg.action === 'ancestryPersonGallery') {
@@ -2314,7 +2320,10 @@ function gallerySite({ behind = {}, away = [] } = {}) {
     const stale = PANEL.replace('<div class="viewerStage">', '<div class="viewerStage"><img id="' + guid +
       '" alt="Another item" src="https://www.ancestry.com/api/media/retrieval/v2/image/namespaces/4242/media/' + guid +
       '?client=trees-mediaservice&amp;imageQuality=hq">');
-    const html = (left[guid] || 0) > 0 ? stale : sample('ancestry-media-photo').split(FIXTURE_MEDIA).join(guid);
+    const html = (left[guid] || 0) > 0 ? stale
+      : (bareLeft[guid] || 0) > 0 ? NO_PANEL.split(FIXTURE_MEDIA).join(guid)
+        : panel.includes(guid) ? PANEL.split(FIXTURE_MEDIA).join(guid)
+          : sample('ancestry-media-photo').split(FIXTURE_MEDIA).join(guid);
     const read = () => {
       const d = parse(html);
       const i = anc.ancMediaFrom(d, tab.url, { title: d.title, origin: 'https://www.ancestry.com' });
@@ -2334,6 +2343,7 @@ function gallerySite({ behind = {}, away = [] } = {}) {
       case 'ancestryPhotoInfo': {
         const info = read();
         if ((left[guid] || 0) > 0) left[guid] -= 1;
+        else if ((bareLeft[guid] || 0) > 0) bareLeft[guid] -= 1;
         return info;
       }
       case 'ancestryPhoto':
@@ -2428,6 +2438,43 @@ test('a gallery item whose details have not caught up is tried again - never sav
   L = q.storage.ancBatchLedger;
   assert.strictEqual(L.items['med:' + GAL_A].state, 'failed');
   assert.match(L.items['med:' + GAL_A].lastError, /have not caught up/);
+});
+
+// Audit D1: nobody watches a batch. A page whose picture is drawn but whose
+// Details panel is not yet would file an obituary as an undated, untitled
+// photo; the batch waits for the details instead.
+test('a gallery item whose Details panel has not appeared is tried again - never saved as a bare photo', async () => {
+  // In Ancestry's own markup, with its Details panel: saved with its details.
+  const ok = await openPanel({ url: CALVIN, respond: gallerySite({ panel: [GAL_B] }),
+    storage: Object.assign({}, ON, { ancBatchLedger: galleryLedger([GAL_B]) }) });
+  quick(ok);
+  await start(ok, 'anc');
+  assert.strictEqual(ok.written.length, 1, ok.batchEl('anc-status').textContent);
+  assert.strictEqual(ok.capJson(ok.written[0]).title, 'Wedding of Thomas Hartley and Margaret Ellis');
+  assert.ok(ok.capJson(ok.written[0]).source_date, 'its date is filed');
+  // The panel not drawn at the first try, there by the second: saved once, with its details.
+  const late = await openPanel({ url: CALVIN, respond: gallerySite({ panel: [GAL_B], bare: { [GAL_B]: 1 } }),
+    storage: Object.assign({}, ON, { ancBatchLedger: galleryLedger([GAL_B]) }) });
+  quick(late);
+  await start(late, 'anc');
+  assert.strictEqual(late.written.length, 1, late.batchEl('anc-status').textContent);
+  assert.ok(late.capJson(late.written[0]).source_date, 'its date is filed');
+  let L = late.storage.ancBatchLedger;
+  assert.ok(L.log.some((l) => /try again later med:b2200000.*details have not appeared/.test(l)), L.log.join('\n'));
+  // Never drawn: nothing saved, nothing downloaded; set aside with the reason after its tries.
+  const never = await openPanel({ url: CALVIN, respond: gallerySite({ bare: { [GAL_B]: Infinity } }),
+    storage: Object.assign({}, ON, { ancBatchLedger: galleryLedger([GAL_B]) }) });
+  quick(never);
+  await start(never, 'anc');
+  assert.strictEqual(never.written.length, 0);
+  assert.strictEqual(never.sent.filter((m) => m.action === 'ancestryPhoto').length, 0, 'nothing downloaded');
+  L = never.storage.ancBatchLedger;
+  assert.deepStrictEqual([L.items['med:' + GAL_B].state, L.items['med:' + GAL_B].tries], ['failed', 2]);
+  assert.match(L.items['med:' + GAL_B].lastError, /details have not appeared on the page yet/);
+  // A Capture by hand of the same page is as before: saved, with what the page shows.
+  const hand = await openPanel({ url: viewer(GAL_B), respond: gallerySite({ bare: { [GAL_B]: Infinity } }) });
+  await hand.capture();
+  assert.strictEqual(hand.written.length, 1, hand.result());
 });
 
 test('a gallery item whose address shows no photo or document is set aside with the reason, and the run goes on', async () => {

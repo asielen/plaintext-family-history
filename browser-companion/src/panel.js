@@ -1643,6 +1643,16 @@
     const details = behind ? {} : info.details || {};
     const hints = behind ? {} : info.hints || {};
     notQueued(opts, 'med:' + media.mediaId, 'Ancestry photo ' + media.mediaId);
+    // Nobody watches a batch: a page whose picture is drawn but whose
+    // Details are not yet (no title read from them) would file an obituary
+    // as an undated, unlabelled photo, with no one to see the empty form. A
+    // batch tries the item again later instead (lib/capture-batch.js
+    // RETRY_RE), and sets it aside after its tries. Capture by hand is
+    // unchanged: she sees what the form holds.
+    if (opts.expectKey && !details.title) {
+      throw new Error('the item’s details have not appeared on the page yet (Ancestry had not drawn its Details ' +
+        'panel), so nothing was saved');
+    }
     // The photo was read from the tab: it must still be on this photo.
     await checkTabStillOn(recordUrl, [media.mediaId]);
 

@@ -559,11 +559,12 @@
   // A gallery item's page that had not finished showing it: Ancestry's
   // Details still on the item shown before (never saved without them - the
   // batch has no "press again to save it without its details"), more of its
-  // Details appearing after the panel read the page, or its picture not
-  // there yet.
+  // Details appearing after the panel read the page, its Details not drawn
+  // yet (never saved as a bare photo), or its picture not there yet.
   const RETRY_RE = new RegExp(['shows no memorial',
     'could not read the (Ancestry record|FamilySearch record|Find a Grave memorial)',
-    'have not caught up', 'more details on the page', 'has not appeared on the page'].join('|'), 'i');
+    'have not caught up', 'more details on the page', 'details have not appeared', 'has not appeared on the page',
+  ].join('|'), 'i');
   // The cause in a message, without the advice the panel or a site puts after
   // it ("Reload the page and open the panel again", "- sign in and reload the
   // page", "Wait a few minutes, then press Capture again"). Advice names the

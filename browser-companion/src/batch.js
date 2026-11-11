@@ -16,8 +16,8 @@
 // page and presses again. Each is opened at its own media viewer address and
 // saved as Capture saves a shared item by hand (panel.js
 // captureAncestryPhoto): a photo as a photo, a document as a document. Its
-// details not yet caught up with the picture is a page not finished: tried
-// again, never saved without them. A photo she uploaded to Ancestry herself
+// details not drawn yet, or not yet caught up with the picture, is a page
+// not finished: tried again, never saved without them. A photo she uploaded to Ancestry herself
 // is downloaded too, as a copy: Seen It knows a gallery item as held only
 // once it was saved from its Ancestry address, never as the file she had.
 //

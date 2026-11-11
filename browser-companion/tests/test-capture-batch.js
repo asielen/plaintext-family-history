@@ -890,6 +890,9 @@ test('a gallery item\'s causes: details that have not caught up are tried again,
     ['the details on the page have not caught up with the picture yet (they still describe the item shown before), ' +
       'so nothing was saved - wait a moment, then press Capture again', 'retry'],
     ['more details on the page to check first', 'retry'],
+    // Audit D1: the picture drawn, Ancestry's Details panel not yet.
+    ['the item’s details have not appeared on the page yet (Ancestry had not drawn its Details panel), so nothing ' +
+      'was saved', 'retry'],
     ['the photo could not be fetched from Ancestry: the photo has not appeared on the page yet - wait until it shows, ' +
       'then press Capture again. Nothing was saved. If you can download the photo yourself (right-click it, Save ' +
       'image as), drop that file into the panel and press Capture this photo', 'retry'],
