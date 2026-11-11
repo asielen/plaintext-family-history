@@ -56,6 +56,18 @@ test('content.js uses that rule, and forgets the last search on leaving the resu
   assert.deepStrictEqual(np.js, ['cliplist.js', 'searchrun.js', 'content.js']);
 });
 
+// A person's Gallery page: each tile is a link filling the tile (its picture)
+// in a .mediaGalleryItem that clips what overflows it, so pills placed after
+// the link were hidden below the picture. They sit on its top-left corner.
+test('Ancestry gallery: the pills on a photo tile are drawn over its top-left corner, above the picture', () => {
+  const css = fs.readFileSync(path.join(__dirname, '..', 'content-ancestry.css'), 'utf8');
+  const rule = /\.mediaGalleryItem \.nsi-pills\s*\{([^}]*)\}/.exec(css);
+  assert.ok(rule, 'no rule for pills inside a gallery tile');
+  for (const want of [/position:\s*absolute/, /top:\s*\d+px/, /left:\s*\d+px/, /z-index:\s*\d+/, /max-width:\s*calc\(100% - \d+px\)/]) {
+    assert.match(rule[1], want);
+  }
+});
+
 // Ancestry Hints page (person/hints): opening a hint slides in Ancestry's side
 // panel without changing the address. That click is the look; a photo hint is
 // keyed by its media id; scrolling past hints records nothing.

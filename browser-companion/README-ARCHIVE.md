@@ -196,10 +196,10 @@ image together.
 Badges from the Seen It add-on ("Seen 2×", "Captured, not filed") are never saved
 as part of a record or a page copy.
 
-### Photos other members shared on Ancestry
+### Photos shared on Ancestry
 
-When a photo someone else shared to their Ancestry tree is open on its own page
-(the photo fills the screen; the address has `mediaui-viewer` in it), the panel's
+When a photo shared to an Ancestry tree - yours or another member's - is open on
+its own page (the photo fills the screen; the address has `mediaui-viewer` in it), the panel's
 button reads **Capture this photo**. It saves:
 
 - the photo itself, exactly as Ancestry shows it, named

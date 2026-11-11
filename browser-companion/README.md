@@ -210,7 +210,7 @@ no-op, the bundles land in `inbox/` directly.
   If the Seen It add-on is installed, the panel asks it one question before
   that download - "does the archive already hold this census page?" - so a
   household's shared page is fetched once; nothing else is asked or sent.
-  On a photo another member shared to their Ancestry tree (the media viewer,
+  On a photo shared to an Ancestry tree (the media viewer,
   `/mediaui-viewer/…/media/{mediaId}`), Capture reads the photo's Details as
   the page shows them - stopping at its "Saved by" list of other members -
   and fetches the one image the viewer shows, from the page's own site in your

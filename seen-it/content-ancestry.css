@@ -47,6 +47,18 @@
 .nsi-mark:hover { border-color: #333; }
 .nsi-mark.nsi-on { background: #333; color: #fff; border-color: #333; }
 
+/* A person's Gallery: the marks sit on each photo's top-left corner. The tile
+   is its picture (a link that fills it) and hides anything below it. */
+.mediaGalleryItem .nsi-pills {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  z-index: 2;
+  margin: 0;
+  max-width: calc(100% - 12px);
+}
+.mediaGalleryItem .nsi-pill { white-space: normal; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4); }
+
 /* A person's Facts page: how many of their Ancestry sources are saved. */
 #nsi-anc-person {
   position: fixed;

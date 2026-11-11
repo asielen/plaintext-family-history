@@ -168,7 +168,7 @@
     {
       "path": ".fha/browser-companion/README.md",
       "category": "operating",
-      "sha256": "a90cb8e7d6a1b30a589d2e07ebc008f808b6436636a30779453ea9f87b2700f7",
+      "sha256": "d52389d76fe76d1e435232bd98ebb6412262dbd9c4f22d52632dd648e219367c",
       "spec_version": "1.2",
       "src": "browser-companion/README-ARCHIVE.md"
     },
@@ -203,7 +203,7 @@
     {
       "path": ".fha/browser-companion/manifest.json",
       "category": "operating",
-      "sha256": "ff82ba3979f94c7a0747f8438190f2a4265bff6874af5f58f6bfec85ab243fce",
+      "sha256": "94d4dc359c5a286e933943e868097374c7ab6e4ad6a7b028d37451b98554a7ed",
       "spec_version": "1.2",
       "src": "browser-companion/manifest.json"
     },
@@ -364,7 +364,7 @@
     {
       "path": ".fha/browser-companion/src/panel.js",
       "category": "operating",
-      "sha256": "04cf11ea73d383ea17ede5268758375d36d0e5b63add9b556c75268948637eb1",
+      "sha256": "c101c59b89bd9931314d4e1df1b2d49e528fe906883c047290a2f1e52a639589",
       "spec_version": "1.2",
       "src": "browser-companion/src/panel.js"
     },

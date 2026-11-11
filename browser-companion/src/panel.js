@@ -1736,10 +1736,10 @@
     }
 
     const data = {
-      note: 'Captured from Ancestry by the archive capture extension: a photo another member shared to their ' +
-        'tree. "details" is what the photo’s Details panel showed - written by whoever shared it, not checked. ' +
-        '"photoSaved" is false when the photo in this capture is a screen capture; "imageUrl" is where the ' +
-        'viewer shows it.',
+      note: 'Captured from Ancestry by the archive capture extension: ' + (kind === 'photo' ? 'a photo' : 'an item') +
+        ' shared to an Ancestry tree. "details" is what its Details panel showed - written by whoever shared it, ' +
+        'not checked. "photoSaved" is false when the photo in this capture is a screen capture; "imageUrl" is ' +
+        'where the viewer shows it.',
       media: {
         mediaId: media.mediaId,
         treeId: media.treeId,
@@ -1773,7 +1773,8 @@
     ].filter(Boolean);
     const notes = [
       gatherNotes(provisional, form.notes),
-      (kind === 'photo' ? 'A photo' : 'An item') + ' shared on Ancestry by another member' +
+      // Not "by another member": she may have shared it herself.
+      (kind === 'photo' ? 'A photo' : 'An item') + ' on Ancestry' +
         (behind ? '. Its details on Ancestry were left out: the page had not caught up with the picture when it ' +
           'was saved. They can be read on Ancestry from the saved address.'
           : said.length ? '. Its details on Ancestry:\n' + said.join('\n') : '.'),
