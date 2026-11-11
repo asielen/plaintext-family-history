@@ -3034,6 +3034,62 @@ class BirthClaimWithoutParentageW126Tests(unittest.TestCase):
         self.assertIn('`mother:`, which is not a role word', msg)
         self.assertIn('parent: [P-', msg)
 
+    # -- #260 review: a parent: line hidden behind an earlier role -------------
+    # The index reads each person's FIRST role key only. A mother who was also
+    # the informant, written `informant:` before `parent:`, is an informant to
+    # the tree and no mother-child link is built - so she is not "placed", and
+    # W126 must keep saying so.
+
+    def _hidden_parent_w126(self, roles: str) -> list:
+        return self._w126(self._build(persons=[self.CHILD, self.MOTHER],
+                                      roles_block=roles))
+
+    def test_mother_as_informant_then_parent_still_warns(self) -> None:
+        w = self._hidden_parent_w126(
+            f'  roles:\n    child: [{self.CHILD}]\n'
+            f'    informant: [{self.MOTHER}]\n    parent: [{self.MOTHER}]\n')
+        self.assertEqual(len(w), 1)
+        msg = w[0].message
+        self.assertIn(f'{lint.fmt_id_display(self.MOTHER)} (listed as a parent, '
+                      'but the `informant:` line written before it hides that)', msg)
+        self.assertIn('put the `parent:` line first', msg)
+
+    def test_informant_written_before_child_still_warns(self) -> None:
+        w = self._hidden_parent_w126(
+            f'  roles:\n    informant: [{self.MOTHER}]\n'
+            f'    child: [{self.CHILD}]\n    parent: [{self.MOTHER}]\n')
+        self.assertEqual(len(w), 1)
+        self.assertIn('listed as a parent', w[0].message)
+
+    def test_mother_as_witness_then_parent_still_warns(self) -> None:
+        w = self._hidden_parent_w126(
+            f'  roles:\n    child: [{self.CHILD}]\n'
+            f'    witness: [{self.MOTHER}]\n    parent: [{self.MOTHER}]\n')
+        self.assertEqual(len(w), 1)
+        self.assertIn('`witness:` line written before it', w[0].message)
+
+    def test_person_listed_as_child_and_parent_still_warns(self) -> None:
+        # A contradiction, not a placement: the index reads her as a second
+        # child and drops the parent line.
+        w = self._hidden_parent_w126(
+            f'  roles:\n    child: [{self.CHILD}, {self.MOTHER}]\n'
+            f'    parent: [{self.MOTHER}]\n')
+        self.assertEqual(len(w), 1)
+        self.assertIn('`child:` line written before it', w[0].message)
+
+    def test_parent_written_before_informant_derives_and_is_clean(self) -> None:
+        # The control: `parent:` first, so the index builds the link and
+        # there is no silence to report.
+        roles = (f'  roles:\n    child: [{self.CHILD}]\n'
+                 f'    parent: [{self.MOTHER}]\n    informant: [{self.MOTHER}]\n')
+        self.assertEqual(self._hidden_parent_w126(roles), [])
+        claim = {'persons': [self.CHILD, self.MOTHER],
+                 'roles': {'child': [self.CHILD], 'parent': [self.MOTHER],
+                           'informant': [self.MOTHER]}}
+        self.assertEqual(lint._claim_parentage_pids(claim),
+                         ({lint.normalize_id(self.CHILD)},
+                          {lint.normalize_id(self.MOTHER)}))
+
     def test_parents_with_no_child_still_warn_when_everyone_has_a_role(self) -> None:
         # #260 relaxed the child arm only. Two parents and nobody born is
         # still a record of a birth that does not say whose birth it was.

@@ -2290,6 +2290,30 @@ def _claim_roles_by_person(
     return out
 
 
+def _claim_all_roles_by_person(
+    claim: dict, alias_map: dict[str, str] | None = None,
+) -> dict[str, list[str]]:
+    """Every role key each person is listed under, in the order written.
+
+    `_claim_roles_by_person` keeps only the FIRST key, because that is all the
+    index keeps. W126 needs the rest to see what that costs: a mother listed
+    as `informant:` and then `parent:` reads as an informant to the indexer,
+    her `parent:` line is dropped, and no mother-child link is built (#260
+    review). Normalised the same way, so the two never disagree on a key.
+    """
+    roles = claim.get('roles')
+    if not isinstance(roles, dict):
+        return {}
+    out: dict[str, list[str]] = {}
+    for role_name in roles:
+        norm = str(role_name).strip().lower()
+        for pid in _role_pids(claim, role_name, alias_map):
+            keys = out.setdefault(pid, [])
+            if norm not in keys:
+                keys.append(norm)
+    return out
+
+
 def _claim_spouse_pids(
     claim: dict, alias_map: dict[str, str] | None = None,
 ) -> set[str]:
@@ -2997,21 +3021,54 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
                         # precisely the guess the indexer refuses. When nobody
                         # is unplaced the map is whole and there is nothing to
                         # ask (#260) - the child arm alone has this exit.
-                        unplaced = [pid for pid in distinct
-                                    if by_person.get(pid) not in CLAIM_ROLE_WORDS]
+                        # Placement reads EVERY key a person is listed under,
+                        # not just the first one the index keeps. This arm
+                        # only runs when no parent edge was derived, so anyone
+                        # under `parent:` here had that role hidden by a key
+                        # written before it - the mother who was also the
+                        # informant - and is not placed at all. Someone under
+                        # both `child:` and another key is the same muddle.
+                        all_roles = _claim_all_roles_by_person(claim, alias_map)
+
+                        def _unplaced_reason(pid: str) -> str | None:
+                            first = by_person.get(pid)
+                            keys = all_roles.get(pid, [])
+                            if 'parent' in keys:
+                                return (f'listed as a parent, but the `{first}:` '
+                                        f'line written before it hides that')
+                            if not first:
+                                return 'no role given'
+                            if first not in CLAIM_ROLE_WORDS:
+                                return (f'under `{first}:`, which is not a role '
+                                        f'word the archive reads')
+                            if 'child' in keys and len(keys) > 1:
+                                others = ', '.join(f'`{k}:`' for k in keys
+                                                   if k != 'child')
+                                return f'listed under both `child:` and {others}'
+                            return None
+
+                        reasons = {pid: _unplaced_reason(pid) for pid in distinct}
+                        unplaced = [pid for pid in distinct if reasons[pid]]
                         if unplaced:
                             listing = ', '.join(
-                                f'{fmt_id_display(pid)} (no role given)'
-                                if not by_person.get(pid) else
-                                f'{fmt_id_display(pid)} (under `{by_person[pid]}:`, '
-                                f'which is not a role word the archive reads)'
+                                f'{fmt_id_display(pid)} ({reasons[pid]})'
                                 for pid in unplaced)
+                            doubled = any(len(all_roles.get(pid, [])) > 1
+                                          for pid in unplaced)
+                            hidden = any('parent' in all_roles.get(pid, [])
+                                         for pid in unplaced)
                             findings.append(Finding('W', 'W126', src_path,
-                                f'{head} and says who was born, but marks none of the '
-                                f'others as a parent, so no parent link is recorded'
+                                f'{head} and says who was born, but '
+                                + ('its `parent:` line is hidden behind another role'
+                                   if hidden else
+                                   'marks none of the others as a parent')
+                                + f', so no parent link is recorded'
                                 f'{where_it_goes}'
                                 f'Not yet placed: {listing}. '
-                                'If they are the parents, add them to the roles: '
+                                + ('Someone listed under two roles is read by the '
+                                   'first one only: give them one role, or put the '
+                                   '`parent:` line first. ' if doubled else '')
+                                + 'If they are the parents, add them to the roles: '
                                 'map - an indented `parent: [P-…, P-…]` line beside the '
                                 '`child:` one (`parent:` covers a mother and a father '
                                 'alike). If they are not, give each one the part they '
