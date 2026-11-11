@@ -140,8 +140,12 @@ CODE MAP
                                  in-process if they cannot run, stop on Ctrl+C
     _DerivativeCache           - saved copies of those derivatives in
                                  .cache/site-derivatives/, reused by the next
-                                 build while the original is unchanged; also
-                                 `.failed` notes for scans that could not be made
+                                 build while the original is unchanged, keyed by
+                                 its fha.yaml root + path inside it (a moved
+                                 drive still matches, #240); also `.failed`
+                                 notes for scans that could not be made
+    _real_path                 - one spelling per file (links, drive mappings,
+                                 Windows letter case) for those keys
     _warn_as_raised_at         - replay a worker's warning through the raising
                                  module's registry (shown once, as one at a time)
 
@@ -2454,12 +2458,37 @@ class _DerivativeCache:
     withheld since the last build stays in `.cache/` (the archive's private,
     gitignored, deletable machine cache - TOOLING §1) and out of the snapshot.
 
-    The freshness test is the original's path, size and modified-time (to the
-    nanosecond), plus the size limit, the output format, the Pillow version and
-    `_DERIVATIVE_RECIPE_VERSION`. It is never a hash of the original: that would
-    mean reading every original in full (tens of GB) to save decoding them. A
-    file that changes changes its size or modified-time, and an original edited
-    in the last few seconds is not saved at all (`_DERIVATIVE_SETTLE_SECONDS`).
+    The freshness test is where the original sits, its size and modified-time
+    (to the nanosecond), plus the size limit, the output format, the Pillow
+    version and `_DERIVATIVE_RECIPE_VERSION`. It is never a hash of the
+    original: that would mean reading every original in full (tens of GB) to
+    save decoding them. A file that changes changes its size or modified-time,
+    and an original edited in the last few seconds is not saved at all
+    (`_DERIVATIVE_SETTLE_SECONDS`).
+
+    Where the original sits is written the way the records write it: the
+    `fha.yaml` root it lives under and its path inside that root
+    (`photos` + `1895/x.jpg`), never the drive letter (#240). So a photo drive
+    that comes back as E: instead of D:, or an archive folder moved or copied
+    to a new computer, still finds every saved picture once `roots:` points at
+    the new place. `location` has the rules: the most specific root wins when
+    roots nest, and the alphabet when two name one folder, so one file always
+    gets one key; a file in no root but inside the
+    archive is keyed by its path in the archive (`''` + `notes/hero.jpg`); one
+    outside everything falls back to its full path (`'/'`), which is all there
+    is to go on. On Windows the path is spelled the way the disk spells it, so
+    `Photos/X.JPG` and `photos/x.jpg` are one entry, not two.
+
+    The modified-time stays in the test on purpose. A re-scan saved over an
+    uncompressed TIFF can have exactly the old size, so the time is the only
+    sign it changed. The cost: copying originals to a new drive with a tool
+    that resets modified times (or onto a FAT/exFAT drive, which keeps them
+    less finely) makes each picture once more on the next build, after which
+    it is fast again. Explorer, robocopy and `cp -p` keep the times.
+
+    Notes from before #240 named the original by its full path. Those are
+    carried over on first use (`fetch_legacy`), so the first build after an
+    update is not the slow one, and pruned with everything else unreusable.
 
     Each entry is two files named by a hash of that test: the picture
     (`<key>.jpg`) and a small JSON note (`<key>.json`) recording the test it was
@@ -2475,25 +2504,65 @@ class _DerivativeCache:
     call here turns an OSError into a miss, a skip or a note.
 
     `prune` runs once at the end of a standalone build and removes entries
-    whose original is gone or has changed, or that were made under another
-    recipe or Pillow version - entries no future build could reuse. An entry
-    whose original's whole folder is missing is kept: that is an unplugged
-    photo drive far more often than a deleted folder, and pruning it would make
-    the next build with the drive back decode everything again."""
+    whose original is gone or has changed, that were made under another
+    recipe or Pillow version, or whose key a `roots:` change has replaced (an
+    alias renamed or removed, a nested or same-folder alias added) - entries
+    no future build could reuse. An entry whose original's whole folder is
+    missing is kept: that is an unplugged photo drive far more often than a
+    deleted folder, and pruning it would make the next build with the drive
+    back decode everything again."""
 
-    def __init__(self, cache_dir: Path) -> None:
-        self.dir = cache_dir
+    def __init__(self, archive_root: Path, fha_config: dict) -> None:
+        self.dir = archive_root / _DERIVATIVE_CACHE_DIR
         self.damaged: set[str] = set()         # keys whose entry could not be read back
         self.write_error: str | None = None    # first failure to save; saving stops
         self.prune_error: str | None = None    # could not list the folder to prune
         self.read_error: str | None = None     # first failure to read a saved picture
+        # alias -> its folder on this computer today ('' = the archive itself)
+        self.roots: dict[str, Path] = {}
+        configured = fha_config.get('roots')
+        aliases = set(ASSET_ROOT_ALIASES)
+        if isinstance(configured, dict):
+            aliases |= {a for a, v in configured.items()
+                        if type(a) is str and a and a not in ('.', '..')
+                        and not any(c in a for c in '/\\\x00') and isinstance(v, str)}
+        for alias in aliases:
+            self.roots[alias] = _real_path(resolve_path(alias, fha_config, archive_root))
+        self.roots[''] = _real_path(archive_root)
+        # Most specific folder first; on a tie a named root beats the archive
+        # itself, then the alphabet decides, so the answer never varies.
+        self._search = sorted(self.roots.items(),
+                              key=lambda ab: (-len(ab[1].parts), ab[0] == '', ab[0]))
+        self._locations: dict[str, tuple[str, str]] = {}
+
+    def location(self, src: Path) -> tuple[str, str]:
+        """Where `src` sits, as (root alias, path inside it with forward
+        slashes) - see the class docstring. The archive itself is `''`; a file
+        under no root and outside the archive is ('/', its full path)."""
+        known = self._locations.get(str(src))
+        if known is not None:
+            return known
+        real = _real_path(src)
+        found = ('/', real.as_posix())
+        for alias, base in self._search:
+            try:
+                rel = real.relative_to(base)   # case-blind on Windows
+            except ValueError:
+                continue
+            if rel.parts:
+                found = (alias, rel.as_posix())
+                break
+        self._locations[str(src)] = found
+        return found
 
     def entry_fields(self, src: Path, st: os.stat_result, max_px: int, suffix: str) -> dict:
         """Everything a derivative's bytes depend on, as recorded in its note."""
+        root, path = self.location(src)
         return {
             'recipe': _DERIVATIVE_RECIPE_VERSION,
             'pillow': _PIL_VERSION,
-            'source': os.path.abspath(src),
+            'root': root,
+            'path': path,
             'size': st.st_size,
             'mtime_ns': st.st_mtime_ns,
             'max_px': max_px,
@@ -2519,32 +2588,60 @@ class _DerivativeCache:
         `read_error`, said once. There is no existence check first: on Python
         3.10/3.11 `Path.exists` raises PermissionError where 3.12+ quietly
         answers False, so the read itself is the only probe."""
+        return self._fetch(key, fields, _NOTE_FIELD_TYPES)
+
+    def fetch_legacy(self, src: Path, st: os.stat_result, max_px: int, suffix: str) -> bytes | None:
+        """The picture a build from before #240 saved for `src`, or None.
+        Those notes named the original by its full path; when that path, size
+        and time still match, the picture is as good as ever, and the caller
+        saves it again under its new name. Without this the first build after
+        an update would make every picture again. A legacy note that does not
+        check out is just a miss, never reported: it is pruned as unreusable
+        at the end of the build either way."""
+        fields = {
+            'recipe': _DERIVATIVE_RECIPE_VERSION,
+            'pillow': _PIL_VERSION,
+            'source': os.path.abspath(src),
+            'size': st.st_size,
+            'mtime_ns': st.st_mtime_ns,
+            'max_px': max_px,
+            'format': suffix.lower(),
+        }
+        return self._fetch(self.entry_key(fields), fields, _LEGACY_NOTE_FIELD_TYPES)
+
+    def _fetch(self, key: str, fields: dict, shape: dict) -> bytes | None:
+        """`fetch`, for a note of either shape; only a current-shape entry
+        that fails its checks counts as damaged."""
+        report = shape is _NOTE_FIELD_TYPES
         note_path = self.dir / f'{key}.json'
         try:
-            note = self._read_note(note_path)
+            note = self._read_note(note_path, shape)
         except FileNotFoundError:
             return None
         except OSError as e:
             self._note_read_error(e)
             return None
         if note is None or note['fields'] != fields:
-            self.damaged.add(key)
+            if report:
+                self.damaged.add(key)
             return None
         try:
             data = (self.dir / f'{key}{fields["format"]}').read_bytes()
         except FileNotFoundError:
-            self.damaged.add(key)
+            if report:
+                self.damaged.add(key)
             return None
         except OSError as e:
             self._note_read_error(e)
             return None
         if note['bytes'] != len(data) or note['sha256'] != hashlib.sha256(data).hexdigest():
-            self.damaged.add(key)
+            if report:
+                self.damaged.add(key)
             return None
         return data
 
     @staticmethod
-    def _read_note(note_path: Path) -> dict | None:
+    def _read_note(note_path: Path, shape: dict | None = None) -> dict | None:
         """A saved picture's note, or None when it is anything but a note this
         code wrote: unreadable, empty, not JSON (binary garbage, nesting deep
         enough to exhaust the parser), or JSON of the wrong shape - a missing,
@@ -2556,7 +2653,9 @@ class _DerivativeCache:
         otherwise pass as the number 1.
 
         A failure to READ the file is raised (OSError) rather than folded into
-        None, so each caller can tell "malformed" from "could not look"."""
+        None, so each caller can tell "malformed" from "could not look".
+        `shape` is `_NOTE_FIELD_TYPES` unless a caller asks for the pre-#240
+        shape (`fetch_legacy`); a note of the other shape is malformed."""
         raw = note_path.read_bytes()
         try:
             note = json.loads(raw)
@@ -2564,7 +2663,7 @@ class _DerivativeCache:
             return None
         if type(note) is not dict or set(note) != _NOTE_KEYS:
             return None
-        if not _DerivativeCache._fields_ok(note['fields']):
+        if not _DerivativeCache._fields_ok(note['fields'], shape):
             return None
         if (type(note['bytes']) is not int or note['bytes'] < 0
                 or type(note['sha256']) is not str
@@ -2573,15 +2672,19 @@ class _DerivativeCache:
         return note
 
     @staticmethod
-    def _fields_ok(fields) -> bool:
-        """Is `fields` exactly the shape `entry_fields` makes (see `_read_note`)?"""
-        if type(fields) is not dict or set(fields) != _NOTE_FIELD_TYPES.keys():
+    def _fields_ok(fields, shape: dict | None = None) -> bool:
+        """Is `fields` exactly the shape `entry_fields` makes (see `_read_note`)?
+        Or, given `_LEGACY_NOTE_FIELD_TYPES`, the shape a pre-#240 build made."""
+        shape = _NOTE_FIELD_TYPES if shape is None else shape
+        if type(fields) is not dict or set(fields) != shape.keys():
             return False
-        if any(type(fields[k]) is not t for k, t in _NOTE_FIELD_TYPES.items()):
+        if any(type(fields[k]) is not t for k, t in shape.items()):
             return False
-        return not (fields['size'] < 0 or fields['max_px'] <= 0 or '\x00' in fields['source']
-                    or not os.path.isabs(fields['source'])
-                    or not _FORMAT_RE.fullmatch(fields['format']))
+        if fields['size'] < 0 or fields['max_px'] <= 0 or not _FORMAT_RE.fullmatch(fields['format']):
+            return False
+        if shape is _LEGACY_NOTE_FIELD_TYPES:
+            return '\x00' not in fields['source'] and os.path.isabs(fields['source'])
+        return fields['path'] != '' and '\x00' not in fields['root'] + fields['path']
 
     # - pictures that could not be made -
     #
@@ -2696,16 +2799,18 @@ class _DerivativeCache:
             except OSError:
                 pass   # removed already, or locked: try again next build
 
-    @classmethod
-    def _still_reusable(cls, note_path: Path) -> bool:
+    def _still_reusable(self, note_path: Path) -> bool:
         """Could a future build still hit this entry? A malformed note never
-        can (`_read_note`), so it is discarded with its picture. Whenever the
+        can (`_read_note`), so it is discarded with its picture - and so is a
+        note from before #240: the build that just ran carried over every one
+        it could use (`fetch_legacy`), and the rest name a full path that
+        cannot tell an unplugged drive from a moved one. Whenever the
         answer depends on a file this build cannot look at, the entry is kept:
         deleting what might be good is worse than keeping what might be stale.
         (`is_file`/`is_dir` raise on some errors on Python 3.10/3.11, so each
         probe is guarded.)"""
         try:
-            note = cls._read_note(note_path)
+            note = self._read_note(note_path)
         except FileNotFoundError:
             return False                         # removed since the listing
         except OSError:
@@ -2720,14 +2825,13 @@ class _DerivativeCache:
                 return False                     # its picture is gone
         except OSError:
             return True
-        return cls._source_unchanged(fields)
+        return self._source_unchanged(fields)
 
-    @classmethod
-    def _failure_still_relevant(cls, path: Path) -> bool:
+    def _failure_still_relevant(self, path: Path) -> bool:
         """Could a future build still ask for this failed picture? The same
         rules as `_still_reusable`, without a picture to look for."""
         try:
-            fields = cls._read_failure(path)
+            fields = self._read_failure(path)
         except FileNotFoundError:
             return False
         except OSError:
@@ -2736,14 +2840,29 @@ class _DerivativeCache:
             return False
         if fields['recipe'] != _DERIVATIVE_RECIPE_VERSION or fields['pillow'] != _PIL_VERSION:
             return False
-        return cls._source_unchanged(fields)
+        return self._source_unchanged(fields)
 
-    @staticmethod
-    def _source_unchanged(fields: dict) -> bool:
-        """Is the entry's original still the file it was made from? Kept
-        (True) when the original's whole folder is missing - an unplugged
-        drive, far more often than a deletion - or when it cannot be looked at."""
-        source = Path(fields['source'])
+    def _source_unchanged(self, fields: dict) -> bool:
+        """Is the entry's original still the file it was made from, and would
+        a build still look it up under this entry's name? Its root is looked
+        up where `fha.yaml` puts it today, so a root that moved is checked at
+        its new place.
+
+        Dropped (False) when `roots:` changed under it: its alias is gone from
+        `fha.yaml` (renamed or removed - one remake if it ever comes back), or
+        the file is there but now has another key (`location`: a nested root
+        or a same-folder alias was added). No build could hit such an entry
+        again, and keeping it is how the cache grew for good before #240.
+        Kept (True) when the original's whole folder is missing - an
+        unplugged drive, far more often than a deletion - or when it cannot
+        be looked at."""
+        root, rel = fields['root'], fields['path']
+        if root == '/':
+            source = Path(rel)
+        elif root in self.roots:
+            source = self.roots[root] / rel
+        else:
+            return False                         # that alias is no longer in fha.yaml
         try:
             st = source.stat()
         except FileNotFoundError:
@@ -2753,7 +2872,9 @@ class _DerivativeCache:
                 return True
         except (OSError, ValueError):
             return True                          # cannot tell; keep it
-        return st.st_size == fields['size'] and st.st_mtime_ns == fields['mtime_ns']
+        if st.st_size != fields['size'] or st.st_mtime_ns != fields['mtime_ns']:
+            return False
+        return self.location(source) == (root, rel)
 
     def _note_read_error(self, e: OSError) -> None:
         if self.read_error is None:
@@ -2799,8 +2920,23 @@ _FORMAT_RE = re.compile(r'\.[a-z0-9]+')
 # The exact shape of a saved picture's note (`_DerivativeCache.save` writes it,
 # `_DerivativeCache._read_note` refuses anything else).
 _NOTE_KEYS = {'fields', 'bytes', 'sha256'}
-_NOTE_FIELD_TYPES = {'recipe': int, 'pillow': str, 'source': str, 'size': int,
+_NOTE_FIELD_TYPES = {'recipe': int, 'pillow': str, 'root': str, 'path': str, 'size': int,
                      'mtime_ns': int, 'max_px': int, 'format': str}
+# The shape before #240, which named the original by its full path
+# (`_DerivativeCache.fetch_legacy` carries such entries over).
+_LEGACY_NOTE_FIELD_TYPES = {'recipe': int, 'pillow': str, 'source': str, 'size': int,
+                            'mtime_ns': int, 'max_px': int, 'format': str}
+
+
+def _real_path(path: str | Path) -> Path:
+    """`path` made absolute with links and drive mappings followed and, on
+    Windows, spelled the way the disk spells it - so one file always reads the
+    same, however a record or `fha.yaml` typed it. A path that cannot be
+    resolved (a vanished network share, a link loop) is just made absolute."""
+    try:
+        return Path(path).resolve()
+    except (OSError, RuntimeError, ValueError):
+        return Path(os.path.abspath(path))
 
 
 # ── Ancestor fan chart (static SVG) ─────────────────────────────────────────
@@ -3746,7 +3882,7 @@ class _SiteBuilder:
         # preview points at the originals and makes no derivatives at all).
         self.derivative_cache: _DerivativeCache | None = (
             None if linked or not _PIL_AVAILABLE
-            else derivative_cache or _DerivativeCache(archive_root / _DERIVATIVE_CACHE_DIR))
+            else derivative_cache or _DerivativeCache(archive_root, fha_config))
         # media/ path -> the cache key of what this build already wrote there
         # (or has handed to the workers to write), so a photo shown on many
         # pages is made once, not once per page.
@@ -5314,6 +5450,10 @@ class _SiteBuilder:
         if self._derived_dests.get(dest) == key:
             return True
         data = cache.fetch(key, fields)
+        if data is None:
+            data = cache.fetch_legacy(src, st, max_px, dest.suffix)
+            if data is not None:
+                cache.save(key, fields, data)   # under its new name, for next time
         if data is not None:
             self._collect_pictures(dest)   # an earlier picture for this file lands first
             try:
